@@ -1,6 +1,6 @@
 {
   "name": "@codegraff/sdk",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "TypeScript / Node SDK for the codegraff agent — drives `graff --json` over stdio. Types auto-generated from `graff --schema`.",
   "type": "module",
   "main": "dist/harness.js",
