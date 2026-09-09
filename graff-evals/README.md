@@ -23,6 +23,10 @@ harness under test spends model calls.
 | `mcp` | Linear-shaped fixture MCP (Blacksmith code-mode + muscle memory). Always `--no-lean` (`graff-dev-nolean`): lean is a different catalog and is not on the front. |
 | `inhouse` | Bug shapes distilled from shipped CodeGraff PRs (first six: symlink write, oneshot chrome, cache git-root, stall widen/warn, empty catalog; plus hardlink pin, x_search splice, MCP first-turn, rlm showcase gate, codedb menu, peer resume). Self-contained fixtures — not the live repo. Opt-in like `mcp`. |
 
+Published live board (2026-09-09, five harnesses on grok-4.6 SuperGrok):
+[artifacts/graff-evals-live/RECEIPT.md](../artifacts/graff-evals-live/RECEIPT.md).
+Rebuild the card with `python3 plot_live.py --from-jsonl` when `results/` is present.
+
 ```sh
 ./run.py --suite swe --harness graff-dev-old,graff-dev --model grok-4.6 -j 12
 ./run.py --suite core,rlm,swe --harness graff-dev-old,graff-dev -j 8

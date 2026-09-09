@@ -12,6 +12,10 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- Live 12-PR board on grok-4.6 SuperGrok (n=3, no SPEC.md): graff / Pi /
+  OpenCode / exo 12/12, grok 11/12 (`#727`). Honest list$ $21.48 / $18.47 /
+  $25.71 / $16.48 / $33.69. Receipt and site-palette card in
+  `artifacts/graff-evals-live/`.
 - Project layout selection favors breadth across directories, with explicit
   truncation notices. Missing `codedb list_dir` paths suggest close siblings
   without relaxing confinement or changing constraint policy (ADR 0093).
