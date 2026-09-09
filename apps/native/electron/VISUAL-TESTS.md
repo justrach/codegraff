@@ -32,14 +32,14 @@ bun run benchmark:desktop /absolute/baseline/apps/native /absolute/local-results
 bun run benchmark:desktop /absolute/candidate/apps/native /absolute/local-results/candidate
 ```
 
-The runner creates a fresh profile and uses synthetic code fences, long prose,
+The runner creates a fresh profile and uses synthetic code fences, mermaid diagrams, long prose,
 and native wheel input. It measures renderer heap after collection, summed
 process RSS, script/layout work and frame callback intervals. Repeat both runs
 and compare matching scenarios. Keep the window visible on the same display;
 the runner retains production background throttling and hardware acceleration.
 RSS includes shared pages and is not an exclusive physical-memory measurement.
 
-Set `GRAFF_BENCHMARK_TRACE=scroll` or `code` for a separate local Chromium trace.
+Set `GRAFF_BENCHMARK_TRACE=scroll`, `code`, or `mermaid` for a separate local Chromium trace.
 Tracing adds memory overhead, so use untraced runs for RAM comparisons. Frame
 callbacks measure scheduling; verify presentation from trace display-feedback
 and sequence counters before making refresh-rate claims. Keep reports and raw

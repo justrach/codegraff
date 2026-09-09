@@ -103,7 +103,7 @@ app.whenReady().then(async () => {
   };
   console.log('Benchmark: warmup');
   await send('warmup'); await sleep(1500);
-  const report = { workloadVersion: 1, build: fs.readFileSync(path.join(root, '.next/BUILD_ID'), 'utf8').trim(),
+  const report = { workloadVersion: 2, build: fs.readFileSync(path.join(root, '.next/BUILD_ID'), 'utf8').trim(),
     runtime: { electron: process.versions.electron, chrome: process.versions.chrome },
     display: (() => { const display = screen.getDisplayMatching(win.getBounds()); return { frequencyHz: display.displayFrequency, scaleFactor: display.scaleFactor, window: win.getBounds() }; })(),
     acceleration: app.getGPUFeatureStatus(), accessibility: app.accessibilitySupportEnabled,
@@ -115,6 +115,12 @@ app.whenReady().then(async () => {
     report.scenarios.push(await run(`code-${i}`, () => send('code')));
     if (i === 1 && process.env.GRAFF_BENCHMARK_TRACE === 'code') await contentTracing.stopRecording(path.join(output, 'code-trace.json'));
   }
+  if (process.env.GRAFF_BENCHMARK_TRACE === 'mermaid') await startTrace();
+  report.scenarios.push(await run('mermaid', async () => {
+    await send('mermaid');
+    await wait(`!!document.querySelector('[data-streamdown="mermaid-block"] svg')`);
+  }));
+  if (process.env.GRAFF_BENCHMARK_TRACE === 'mermaid') await contentTracing.stopRecording(path.join(output, 'mermaid-trace.json'));
   report.scenarios.push(await run('prose', () => send('prose')));
   const scroll = async () => {
     // Real wheel input exercises Chromium's scroll path, including main-thread listeners.
@@ -125,7 +131,7 @@ app.whenReady().then(async () => {
     }
   };
   report.scenarios.push(await run('scroll', scroll));
-  if (process.env.GRAFF_BENCHMARK_TRACE && !['0', 'code'].includes(process.env.GRAFF_BENCHMARK_TRACE)) {
+  if (process.env.GRAFF_BENCHMARK_TRACE && !['0', 'code', 'mermaid'].includes(process.env.GRAFF_BENCHMARK_TRACE)) {
     await startTrace();
     await scroll();
     await contentTracing.stopRecording(path.join(output, 'scroll-trace.json'));

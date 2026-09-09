@@ -9,6 +9,10 @@ function installPerformanceWorkload() {
     '\n\n- Keep the controls available.\n- Preserve the reading position.\n\n').join('');
   const code = '```typescript\n' + Array.from({ length: 300 }, (_, index) =>
     `export const sample${index} = (value: number) => value + ${index}; // sample row\n`).join('') + '```';
+  const mermaid = Array.from({ length: 8 }, (_, i) =>
+    '```mermaid\nflowchart TD\n' +
+    Array.from({ length: 6 }, (_, j) => `    n${i}_${j}[Step ${i}.${j}] --> n${i}_${(j + 1) % 6}\n`).join('') +
+    '```').join('\n\n');
   const json = value => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });
   window.fetch = async (input, options) => {
     const url = new URL(typeof input === 'string' ? input : input.url, location.origin);
@@ -17,8 +21,8 @@ function installPerformanceWorkload() {
     if (url.pathname === '/api/acp' && options?.body) {
       const body = JSON.parse(options.body);
       if (body.method === 'session/prompt') {
-        const text = window.benchmarkCase === 'prose' ? prose : window.benchmarkCase === 'code' ? code : 'Ready to review the workspace.\n\n```typescript\nconst ready = true;\n```';
-        const size = window.benchmarkCase === 'prose' ? 512 : window.benchmarkCase === 'code' ? 80 : 8;
+        const text = window.benchmarkCase === 'prose' ? prose : window.benchmarkCase === 'code' ? code : window.benchmarkCase === 'mermaid' ? mermaid : 'Ready to review the workspace.\n\n```typescript\nconst ready = true;\n```';
+        const size = window.benchmarkCase === 'prose' ? 512 : window.benchmarkCase === 'code' ? 80 : window.benchmarkCase === 'mermaid' ? 40 : 8;
         window.benchmarkChars = text.length;
         return new Response(new ReadableStream({ start(controller) {
           let index = 0;
