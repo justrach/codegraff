@@ -105,6 +105,11 @@ pub fn consumePromptImages(arena: Allocator, root: *Agent, text: []const u8) !Va
 /// After an ask_user (or any tool that staged pixels) tool result, attach the
 /// queued images as a follow-up user message. Responses/OpenAI tool output is
 /// text-only; this is the shared multimodal shape.
+///
+/// Caption cannot be empty: `imageMessages` still emits a text/input_text
+/// part, and GLM-5.3 1210s `text: ""` (`Invalid API parameter`, #812).
+pub const attached_note = "Attached image.";
+
 pub fn collectRegistry(root: *Agent) void {
     const reg = root.registry orelse return;
     var image: ?PendingImage = null;
@@ -115,7 +120,7 @@ pub fn flushPending(root: *Agent) !void {
     collectRegistry(root);
     const imgs = take(root);
     if (imgs.len == 0) return;
-    try root.messages.append(try vision.imageMessages(root.arena, root.provider.kind, "", imgs));
+    try root.messages.append(try vision.imageMessages(root.arena, root.provider.kind, attached_note, imgs));
 }
 
 pub fn withUnsupportedNote(arena: Allocator, answer: []const u8) ![]const u8 {
@@ -262,6 +267,26 @@ test "ask_user images become follow-up vision blocks (#580)" {
     try std.testing.expectEqualStrings("input_image", content[2].object.get("type").?.string);
     try std.testing.expect(std.mem.indexOf(u8, content[1].object.get("image_url").?.string, "AAA") != null);
     try std.testing.expect(std.mem.indexOf(u8, content[2].object.get("image_url").?.string, "BBB") != null);
+}
+
+test "mid-turn image follow-up has non-empty text (#812)" {
+    const a = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(a);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var root = testAgent(arena);
+    root.provider.id = "codegraff";
+    root.provider.kind = .openai;
+    root.provider.model = "glm-5.3-flash";
+    stage(&root, .{ .media_type = "image/png", .b64 = "AAA", .label = "shot.png" });
+    try root.messages.append(try messages.toolResultMessage(arena, .openai, "call1", "[image attached]", false));
+    try flushPending(&root);
+    try std.testing.expectEqual(@as(usize, 2), root.messages.items.len);
+    const content = root.messages.items[1].object.get("content").?.array.items;
+    try std.testing.expectEqualStrings("text", content[0].object.get("type").?.string);
+    try std.testing.expectEqualStrings(attached_note, content[0].object.get("text").?.string);
+    try std.testing.expect(content[0].object.get("text").?.string.len > 0);
+    try std.testing.expectEqualStrings("image_url", content[1].object.get("type").?.string);
 }
 
 test "remote URL and base64 parts become native provider image blocks (#615)" {
