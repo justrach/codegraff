@@ -190,7 +190,30 @@ const job_registry = @import("job_registry.zig"); // #199
 const cube = @import("cube.zig");
 const schema = @import("schema.zig");
 const serve = @import("serve.zig");
+const remote_control = @import("remote_control.zig"); // #722: serve without a listener
+const remote_client = @import("remote_client.zig"); // #722: `graff remote …`
 const main_mod = @import("main.zig");
+
+/// The session-child settings `graff serve` and `graff remote-control` share:
+/// both spawn the same `<exe> --json` children from the same flags.
+fn serveConfig(flags: args.Flags, environ: anytype) serve.ServeConfig {
+    return .{
+        .host = flags.host_flag,
+        .port = flags.port_flag,
+        .token = flags.token_flag orelse environ.get("HARNESS_SERVE_TOKEN") orelse environ.get("GRAFF_SERVE_TOKEN"),
+        .yolo = flags.yolo_flag,
+        .model = flags.model_flag,
+        .subagent_provider = flags.subagent_provider_flag,
+        .subagent_model = flags.subagent_model_flag,
+        .allow_cross_provider_subagents = flags.allow_cross_provider_subagents_flag,
+        .no_subagent_tier = flags.no_subagent_tier_flag,
+        .system_prompt = flags.system_prompt_flag,
+        .append_system_prompt = flags.append_system_flag,
+        .max_tool_calls = main_mod.max_tool_calls,
+        .max_model_calls = main_mod.max_model_calls,
+        .dedupe_tool_calls = main_mod.dedupe_tool_calls,
+    };
+}
 
 /// A credentialed ACP launch returns the exact ResolvedKeys value used before
 /// #613. Only a launch with no usable provider enters the lightweight loop;
@@ -287,25 +310,40 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // session is a `harness --json` child of this same binary. Keys are
     // loaded by the children, not here.
     if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "serve")) {
-        const token = flags.token_flag orelse init.environ_map.get("HARNESS_SERVE_TOKEN") orelse init.environ_map.get("GRAFF_SERVE_TOKEN");
         const exe = std.process.executablePathAlloc(io, arena) catch
             std.process.fatal("serve: cannot resolve own executable path", .{});
-        try serve.serveMain(gpa, io, .{
-            .host = flags.host_flag,
-            .port = flags.port_flag,
-            .token = token,
-            .yolo = flags.yolo_flag,
-            .model = flags.model_flag,
-            .subagent_provider = flags.subagent_provider_flag,
-            .subagent_model = flags.subagent_model_flag,
-            .allow_cross_provider_subagents = flags.allow_cross_provider_subagents_flag,
-            .no_subagent_tier = flags.no_subagent_tier_flag,
-            .system_prompt = flags.system_prompt_flag,
-            .append_system_prompt = flags.append_system_flag,
-            .max_tool_calls = main_mod.max_tool_calls,
-            .max_model_calls = main_mod.max_model_calls,
-            .dedupe_tool_calls = main_mod.dedupe_tool_calls,
+        try serve.serveMain(gpa, io, serveConfig(flags, init.environ_map), exe);
+        return true;
+    }
+
+    // `graff remote-control [--name <n>]`: the serve supervisor with no
+    // listener — dials OUT to the gateway with the `graff login` key and takes
+    // commands from the account's relay (#722). Same session children as serve.
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "remote-control")) {
+        const home = keys_cli.homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
+        const cg_key = init.environ_map.get("CODEGRAFF_API_KEY") orelse oauth.loadCodegraffKey(io, arena, home) orelse
+            std.process.fatal("remote-control: no codegraff key — run `graff login` first", .{});
+        const exe = std.process.executablePathAlloc(io, arena) catch
+            std.process.fatal("remote-control: cannot resolve own executable path", .{});
+        try remote_control.remoteControlMain(gpa, io, .{
+            .base = init.environ_map.get("GRAFF_REMOTE_BASE") orelse main_mod.codegraff_device_base,
+            .key = cg_key,
+            .home = home,
+            .name = flags.name_flag,
+            .hostname_env = init.environ_map.get("COMPUTERNAME") orelse init.environ_map.get("HOSTNAME"),
+            .serve = serveConfig(flags, init.environ_map),
         }, exe);
+        return true;
+    }
+
+    // `graff remote [sessions|agents|new|send|answer|tail|cancel|close]`: drive
+    // the sessions of any machine running `graff remote-control` on this login.
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "remote")) {
+        const cg_key = init.environ_map.get("CODEGRAFF_API_KEY") orelse
+            (if (keys_cli.homeEnv(init.environ_map)) |home| oauth.loadCodegraffKey(io, arena, home) else null) orelse
+            std.process.fatal("remote: no codegraff key — run `graff login` first", .{});
+        const base = init.environ_map.get("GRAFF_REMOTE_BASE") orelse main_mod.codegraff_device_base;
+        try remote_client.command(io, gpa, arena, base, cg_key, flags.positionals.items[1..], .{ .model = flags.model_flag, .yolo = flags.yolo_flag });
         return true;
     }
 

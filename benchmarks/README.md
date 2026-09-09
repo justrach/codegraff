@@ -7,6 +7,11 @@ These are small, honest benchmarks (a few read-only code questions on one
 machine), not a leaderboard. Run them yourself. Your numbers will vary with the
 task, the model, and the network.
 
+The 12-PR live harness board (graff / grok / OpenCode / Pi / exo on
+grok-4.6 SuperGrok) is
+[graff-live-12-report.html](graff-live-12-report.html) plus
+[artifacts/graff-evals-live/RECEIPT.md](../artifacts/graff-evals-live/RECEIPT.md).
+
 ## Prerequisites
 
 - `graff`, `claude`, and `codex` on your PATH, each authenticated.

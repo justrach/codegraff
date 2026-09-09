@@ -1,0 +1,12 @@
+{
+  "id": "graff-195",
+  "suite": "live",
+  "category": "live",
+  "source": "codegraff #195 — reconstructed 0.17 parent (July SHA is Zig 0.16)",
+  "prompt": "A long turn can grow the next model request past the context window after tool results land. Fix src/agent_context.zig so `zig build test --summary none -Dtest-filter='inputOverCompactThreshold (#193)'` passes. Do not edit that test. Do not add SPEC.md.",
+  "setup": ["python3 \"$TASK_ROOT/live_setup.py\" graff-195 ."],
+  "check": "sh \"$TASK_ROOT/live/graff-195/check_public.sh\" && sh \"$TASK_ROOT/hidden/graff-195.sh\"",
+  "timeout_s": 600,
+  "setup_timeout_s": 180,
+  "check_timeout_s": 300
+}

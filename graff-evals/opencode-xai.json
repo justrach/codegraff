@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "xai": {
+      "options": {
+        "headers": {
+          "X-XAI-Token-Auth": "xai-grok-cli"
+        }
+      }
+    }
+  }
+}

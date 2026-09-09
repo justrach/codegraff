@@ -1,0 +1,538 @@
+{
+  "title": "Live evals \u00b7 12 gated PRs",
+  "date": "2026-09-09",
+  "model": "grok-4.6",
+  "seat": "SuperGrok",
+  "n": 3,
+  "score": {
+    "task_pass": ">=2/3",
+    "cost": "passing reps of passing tasks",
+    "band": "$2 / $0.50 cached / $6 out per 1M (official low band)",
+    "failed_usd": 0,
+    "cash_usd": 0
+  },
+  "caveats": [
+    "Only graff-195 is G1\u2013G6 certified; the other 11 are published live tasks.",
+    "Stored JSONL list$ high-bands the rep sum; headline $ is the official per-request low band.",
+    "A check-green with no tokens does not count (exo turbo-ws-duplex / turbo-asgi died in <1s).",
+    "Wall is a hang detector. Do not score Graff first-token (boot \u203a)."
+  ],
+  "tasks": [
+    "graff-195",
+    "graff-726",
+    "graff-727",
+    "graff-servers",
+    "graff-interrupt",
+    "graff-acp-pixels",
+    "graff-gemini-ix",
+    "codedb-arch",
+    "codedb-hybrid",
+    "turbo-ws-load",
+    "turbo-ws-duplex",
+    "turbo-asgi"
+  ],
+  "harnesses": {
+    "graff-dev": {
+      "tasks": {
+        "graff-195": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 1.3459,
+          "timeouts": 0
+        },
+        "graff-726": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 1.8705,
+          "timeouts": 0
+        },
+        "graff-727": {
+          "n": 3,
+          "wins": 2,
+          "pass": true,
+          "cost": 0.9148,
+          "timeouts": 0
+        },
+        "graff-servers": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 1.2976,
+          "timeouts": 0
+        },
+        "graff-interrupt": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 2.3299,
+          "timeouts": 0
+        },
+        "graff-acp-pixels": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 1.2514,
+          "timeouts": 0
+        },
+        "graff-gemini-ix": {
+          "n": 3,
+          "wins": 2,
+          "pass": true,
+          "cost": 0.6365,
+          "timeouts": 1
+        },
+        "codedb-arch": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 2.0764,
+          "timeouts": 0
+        },
+        "codedb-hybrid": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 2.7353,
+          "timeouts": 0
+        },
+        "turbo-ws-load": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 2.301,
+          "timeouts": 0
+        },
+        "turbo-ws-duplex": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 2.7231,
+          "timeouts": 0
+        },
+        "turbo-asgi": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 2.0022,
+          "timeouts": 0
+        }
+      },
+      "honest_usd": 21.48,
+      "pass_reps": 34,
+      "n_reps": 36,
+      "pass_tasks": 12,
+      "n_tasks": 12,
+      "mean_wall_s": 264,
+      "timeout_ok": 1,
+      "timeout_fail": 0,
+      "label": "graff",
+      "sources": [
+        "results/run-20260908-173944.jsonl",
+        "results/run-20260908-182322.jsonl"
+      ]
+    },
+    "grok": {
+      "tasks": {
+        "graff-195": {
+          "n": 3,
+          "wins": 2,
+          "pass": true,
+          "cost": 1.9414,
+          "timeouts": 1
+        },
+        "graff-726": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 1.9048,
+          "timeouts": 0
+        },
+        "graff-727": {
+          "n": 3,
+          "wins": 1,
+          "pass": false,
+          "cost": 0.0,
+          "timeouts": 1
+        },
+        "graff-servers": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 2.3201,
+          "timeouts": 0
+        },
+        "graff-interrupt": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 2.2116,
+          "timeouts": 0
+        },
+        "graff-acp-pixels": {
+          "n": 3,
+          "wins": 2,
+          "pass": true,
+          "cost": 2.0025,
+          "timeouts": 1
+        },
+        "graff-gemini-ix": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 1.7837,
+          "timeouts": 0
+        },
+        "codedb-arch": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 5.092,
+          "timeouts": 0
+        },
+        "codedb-hybrid": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 4.0847,
+          "timeouts": 0
+        },
+        "turbo-ws-load": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 2.7395,
+          "timeouts": 0
+        },
+        "turbo-ws-duplex": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 3.1379,
+          "timeouts": 0
+        },
+        "turbo-asgi": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 6.4704,
+          "timeouts": 0
+        }
+      },
+      "honest_usd": 33.69,
+      "pass_reps": 32,
+      "n_reps": 36,
+      "pass_tasks": 11,
+      "n_tasks": 12,
+      "mean_wall_s": 362,
+      "timeout_ok": 1,
+      "timeout_fail": 2,
+      "label": "grok",
+      "sources": [
+        "results/run-20260908-173944.jsonl",
+        "results/run-20260909-011118.jsonl"
+      ]
+    },
+    "opencode": {
+      "tasks": {
+        "graff-195": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 2.3473,
+          "timeouts": 0
+        },
+        "graff-726": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 1.4321,
+          "timeouts": 0
+        },
+        "graff-727": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 0.9391,
+          "timeouts": 1
+        },
+        "graff-servers": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 2.0728,
+          "timeouts": 1
+        },
+        "graff-interrupt": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 1.0457,
+          "timeouts": 1
+        },
+        "graff-acp-pixels": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 1.3471,
+          "timeouts": 1
+        },
+        "graff-gemini-ix": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 1.3579,
+          "timeouts": 1
+        },
+        "codedb-arch": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 3.0088,
+          "timeouts": 0
+        },
+        "codedb-hybrid": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 3.8869,
+          "timeouts": 0
+        },
+        "turbo-ws-load": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 2.4725,
+          "timeouts": 0
+        },
+        "turbo-ws-duplex": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 2.5499,
+          "timeouts": 0
+        },
+        "turbo-asgi": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 3.2466,
+          "timeouts": 0
+        }
+      },
+      "honest_usd": 25.71,
+      "pass_reps": 36,
+      "n_reps": 36,
+      "pass_tasks": 12,
+      "n_tasks": 12,
+      "mean_wall_s": 309,
+      "timeout_ok": 5,
+      "timeout_fail": 0,
+      "label": "OpenCode",
+      "sources": [
+        "results/run-20260909-042501.jsonl"
+      ]
+    },
+    "pi-xai": {
+      "tasks": {
+        "graff-195": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 1.351,
+          "timeouts": 0
+        },
+        "graff-726": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 0.784,
+          "timeouts": 0
+        },
+        "graff-727": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 0.7027,
+          "timeouts": 0
+        },
+        "graff-servers": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 1.1425,
+          "timeouts": 0
+        },
+        "graff-interrupt": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 0.9211,
+          "timeouts": 0
+        },
+        "graff-acp-pixels": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 1.1851,
+          "timeouts": 0
+        },
+        "graff-gemini-ix": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 0.9448,
+          "timeouts": 0
+        },
+        "codedb-arch": {
+          "n": 3,
+          "wins": 2,
+          "pass": true,
+          "cost": 1.7248,
+          "timeouts": 2
+        },
+        "codedb-hybrid": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 3.3579,
+          "timeouts": 3
+        },
+        "turbo-ws-load": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 1.9917,
+          "timeouts": 1
+        },
+        "turbo-ws-duplex": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 2.5246,
+          "timeouts": 0
+        },
+        "turbo-asgi": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 1.8364,
+          "timeouts": 0
+        }
+      },
+      "honest_usd": 18.47,
+      "pass_reps": 35,
+      "n_reps": 36,
+      "pass_tasks": 12,
+      "n_tasks": 12,
+      "mean_wall_s": 334,
+      "timeout_ok": 5,
+      "timeout_fail": 1,
+      "label": "Pi",
+      "sources": [
+        "results/run-20260909-095017.jsonl"
+      ]
+    },
+    "exo": {
+      "tasks": {
+        "graff-195": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 1.9886,
+          "timeouts": 0
+        },
+        "graff-726": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 1.5625,
+          "timeouts": 0
+        },
+        "graff-727": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 2.4545,
+          "timeouts": 0
+        },
+        "graff-servers": {
+          "n": 3,
+          "wins": 2,
+          "pass": true,
+          "cost": 1.0468,
+          "timeouts": 1
+        },
+        "graff-interrupt": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 1.3081,
+          "timeouts": 0
+        },
+        "graff-acp-pixels": {
+          "n": 3,
+          "wins": 2,
+          "pass": true,
+          "cost": 1.4308,
+          "timeouts": 1
+        },
+        "graff-gemini-ix": {
+          "n": 3,
+          "wins": 1,
+          "pass": false,
+          "cost": 0.0,
+          "timeouts": 2
+        },
+        "codedb-arch": {
+          "n": 3,
+          "wins": 2,
+          "pass": true,
+          "cost": 1.39,
+          "timeouts": 1
+        },
+        "codedb-hybrid": {
+          "n": 3,
+          "wins": 3,
+          "pass": true,
+          "cost": 3.483,
+          "timeouts": 0
+        },
+        "turbo-ws-load": {
+          "n": 3,
+          "wins": 2,
+          "pass": true,
+          "cost": 1.3484,
+          "timeouts": 0
+        },
+        "turbo-ws-duplex": {
+          "n": 3,
+          "wins": 0,
+          "pass": false,
+          "cost": 0.0,
+          "timeouts": 0
+        },
+        "turbo-asgi": {
+          "n": 3,
+          "wins": 0,
+          "pass": false,
+          "cost": 0.0,
+          "timeouts": 0
+        }
+      },
+      "honest_usd": 16.01,
+      "pass_reps": 24,
+      "n_reps": 36,
+      "pass_tasks": 9,
+      "n_tasks": 12,
+      "mean_wall_s": 281,
+      "timeout_ok": 3,
+      "timeout_fail": 2,
+      "label": "exo",
+      "sources": [
+        "results/run-20260909-095016.jsonl"
+      ]
+    }
+  }
+}

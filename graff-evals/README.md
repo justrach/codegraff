@@ -13,7 +13,7 @@ harness under test spends model calls.
 
 ## Suites
 
-`--suite` selects which tasks run (`all` is core+rlm+swe; `mcp` is opt-in):
+`--suite` selects which tasks run (`all` is core+rlm+swe; `mcp` / `inhouse` / `live` are opt-in):
 
 | suite | what it measures |
 |---|---|
@@ -21,7 +21,12 @@ harness under test spends model calls.
 | `rlm` | scatter-gather / multi-file reads (where default rlm can overlap) |
 | `swe` | DeepSWE-shaped multi-file bugfixes, distilled from [deepswe.datacurve.ai/run](https://deepswe.datacurve.ai/run) (no Harbor/Docker) |
 | `mcp` | Linear-shaped fixture MCP (Blacksmith code-mode + muscle memory). Always `--no-lean` (`graff-dev-nolean`): lean is a different catalog and is not on the front. |
-| `inhouse` | Bug shapes distilled from shipped CodeGraff PRs (first six: symlink write, oneshot chrome, cache git-root, stall widen/warn, empty catalog; plus hardlink pin, x_search splice, MCP first-turn, rlm showcase gate, codedb menu, peer resume). Self-contained fixtures — not the live repo. Opt-in like `mcp`. |
+| `inhouse` | Distilled PR fixtures with SPEC.md. Cheap harness A/B — not the live badge. Opt-in. |
+| `live` | Capped 12 gated PRs, no SPEC.md. Pass @ n=3; list$ on passing reps only. See [LIVE.md](../artifacts/graff-evals-live/LIVE.md). |
+
+Published live board (2026-09-09, five harnesses on grok-4.6 SuperGrok):
+[artifacts/graff-evals-live/RECEIPT.md](../artifacts/graff-evals-live/RECEIPT.md).
+Rebuild the card with `python3 plot_live.py --from-jsonl` when `results/` is present.
 
 ```sh
 ./run.py --suite swe --harness graff-dev-old,graff-dev --model grok-4.6 -j 12
@@ -36,6 +41,10 @@ CODEGRAFF_API_KEY=cg_sk_… ./run.py --suite swe --harness graff-dev,pi-codegraf
 CODEGRAFF_API_KEY=cg_sk_… ./run.py --suite swe --harness graff-dev,opencode-codegraff --model deepseek-v4-flash -j 6
 # multi-harness in-house PR suite (OpenCode needs --dir; see harnesses.json):
 ./run.py --suite inhouse --harness graff-dev,grok,opencode --model grok-4.6 -j 1
+# live PRs (no SPEC.md). Smoke gates first: python3 verify_live_gates.py --only graff-195
+./run.py --suite live --harness graff-dev --reps 3 -j 1
+# same SuperGrok seat, other harnesses (OpenCode / Pi / exo local-process):
+./run.py --suite live --harness opencode,pi-xai,exo --reps 3 -j 1
 ```
 
 ## Run it
@@ -106,8 +115,10 @@ grok-build's heap or a 4-tool catalog (ADR 0024). First keep:
 
 Add a harness by adding an entry; add a model by passing `--model`.
 
-Same-model grok-4.6 series: `graff-dev`, `grok`, `opencode` (needs xAI
-auth), `dsh-grok` (needs `dsh` + an xAI key dsh will accept; 0.1.1-rc.2
+Same-model grok-4.6 series: `graff-dev`, `grok`, `opencode` / `pi-xai`
+(SuperGrok JWT + `X-XAI-Token-Auth`), `exo` (exoharness CLI,
+`--provider local-process`, no Docker; same header via a localhost
+proxy), `dsh-grok` (needs `dsh` + an xAI key dsh will accept; 0.1.1-rc.2
 catalog has no grok-4.6 — use `dsh-xai` / grok-4.5 for a live dsh point).
 Mixed-model native defaults — `opencode-zen`, `dsh-deepseek` — are a
 **different comparison**; do not read them as grok-4.6 list-price points.
