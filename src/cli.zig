@@ -21,6 +21,11 @@ const version_status = @import("version_status.zig");
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.294
+    \\  • streaming stalls recover out loud: one bounded reconnect notice, honest trace regimes
+    \\  • codex streams reasoning summaries; a fresh WS prewarms with generate:false before turn 1
+    \\  • Responses WS frames drop the transport-only stream field (xAI spec)
+    \\
     \\0.0.289
     \\  • background-agent handles survive an interrupted API turn (#753)
     \\  • prompt-cache affinity is the git root, not the leaf cwd

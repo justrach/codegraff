@@ -12,6 +12,21 @@ current is part of cutting a release.
 
 ## Unreleased
 
+## v0.0.294
+
+- Streaming stalls are no longer silent: a watchdog reconnect now prints one
+  bounded `stream stalled — reconnecting` notice instead of a bare spinner, and
+  the trace names which stall regime fired (pre-first-token ceiling vs
+  between-lines).
+- Codex Responses requests stream reasoning summaries (`summary: auto`), so
+  silent reasoning emits traffic the reader already parses instead of looking
+  like a dead socket.
+- Codex WebSocket prewarm (`generate: false`, openai/codex parity): a fresh
+  socket prepares instructions+tools state before turn 1, which chains onto
+  the warmup response id. Best-effort; falls back to a cold turn.
+- Responses WebSocket frames omit the transport-only `stream` field (xAI WS
+  spec conformance); the frame buffer is freed at its full allocated length.
+
 - `#768`: the Computer Use `node_repl` bridge no longer dies on
   `createElicitation is unavailable` during a read-only
   `sky.get_app_state({ disableDiff: true })`. Graff advertises MCP form
