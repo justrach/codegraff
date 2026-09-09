@@ -146,7 +146,7 @@ Grok drops `#727`. exo drops `graff-gemini-ix` plus both remaining turbos
 SuperGrok cash is $0.
 
 <p align="center">
-  <img src="artifacts/graff-evals-live/live-20260909.png" alt="Live eval board on the codegraff.com palette: graff 12/12 $21.48, grok 11/12 $33.69, OpenCode 12/12 $25.71, Pi 12/12 $18.47, exo 12/12 $16.48" width="960">
+  <img src="artifacts/graff-evals-live/live-20260909.png" alt="Live eval board on the codegraff.com palette: graff 12/12 $21.48, Pi 12/12 $18.47, OpenCode 12/12 $25.71, grok 11/12 $33.69, exo 9/12 $16.01" width="960">
 </p>
 
 Graff carries context through three steps: reuse the stable setup, run small
