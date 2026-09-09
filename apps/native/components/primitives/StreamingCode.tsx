@@ -1,6 +1,7 @@
 "use client";
 
 import { useContext, type JSX, type ReactNode } from "react";
+import MermaidDiagram from "./MermaidDiagram";
 import {
   CodeBlock, CodeBlockContainer, CodeBlockCopyButton, CodeBlockDownloadButton, CodeBlockHeader,
   StreamdownContext, useIsCodeFenceIncomplete, type ExtraProps,
@@ -21,6 +22,7 @@ export default function StreamingCode({ node: _node, className, children }: JSX.
   const copy = options !== false && (typeof options !== "object" || options.copy !== false);
   const download = options !== false && (typeof options !== "object" || options.download !== false);
   const actions = <>{download && <CodeBlockDownloadButton code={code} language={language} />}{copy && <CodeBlockCopyButton code={code} />}</>;
+  if (!incomplete && (language === "mermaid" || language === "mmd")) return <MermaidDiagram code={code} />;
   if (!incomplete) return <CodeBlock code={code} language={language} className={className} lineNumbers={lineNumbers}>
     {(copy || download) && actions}
   </CodeBlock>;
