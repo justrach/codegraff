@@ -10,6 +10,7 @@ const Allocator = std.mem.Allocator;
 const job_registry = @import("job_registry.zig");
 const tool_pulse = @import("tool_pulse.zig");
 const util = @import("util.zig");
+const discovery = @import("server_discovery.zig");
 
 pub fn command(gpa: Allocator, io: Io, arena: Allocator, args: []const []const u8) !void {
     var buf: [4096]u8 = undefined;
@@ -17,12 +18,12 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, args: []const []const u
     const out = &w.interface;
     defer out.flush() catch {};
     const home = job_registry.home;
-    if (home.len == 0) return out.writeAll("graff servers: no HOME, so no job records\n");
+    if (home.len == 0) try out.writeAll("graff servers: no HOME, so no job records (discovery still available)\n");
     const action = if (args.len > 0) args[0] else "list";
-    const recs = job_registry.list(io, arena, home);
+    const recs = if (home.len == 0) &.{} else job_registry.list(io, arena, home);
 
     if (std.mem.eql(u8, action, "list") or std.mem.eql(u8, action, "ls")) {
-        if (recs.len == 0) return out.writeAll("no background servers on record — graff writes one per background job it starts (~/.codegraff/jobs)\n");
+        if (recs.len == 0) try out.writeAll("no background servers on record — checking suspected orphan listeners\n");
         const now = util.unixMs(io);
         try out.writeAll("pid      state     age      owner  port(s)               command\n");
         for (recs) |rec| {
@@ -40,7 +41,20 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, args: []const []const u
             if (rec.cwd.len > 0) try out.print("  ({s})", .{rec.cwd});
             try out.writeAll("\n");
         }
-        return out.writeAll("graff servers stop <pid> ends one (its whole process group); graff servers prune drops records of dead ones\n");
+        const found = discovery.scan(gpa, io, arena) catch |err| {
+            try out.print("orphan discovery unavailable/incomplete: {s}; listener status is unknown\n", .{@errorName(err)});
+            return;
+        };
+        for (found.candidates) |candidate| {
+            var recorded = false;
+            for (recs) |rec| {
+                if (rec.pid == candidate.pid and job_registry.state(io, rec) == .running) recorded = true;
+            }
+            if (!recorded) try out.print("{d:<8} suspected orphan listener (listener pid {d}); report-only, ownership unverified\n", .{ candidate.pid, candidate.listener });
+        }
+        if (found.incomplete) try out.writeAll("orphan discovery incomplete: inspection limit or process query failed; listener status is unknown\n");
+        try out.writeAll("Suspects are never adopted or stopped: environment hints cannot prove ownership or revalidate start/executable/group identity.\n");
+        return out.writeAll("graff servers stop <pid> ends a verified recorded job only; graff servers prune drops dead records\n");
     }
 
     if (std.mem.eql(u8, action, "stop")) {
@@ -62,7 +76,7 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, args: []const []const u
             }
             return;
         }
-        return out.print("no record of pid {d} — only jobs graff started can be stopped here; graff servers lists them\n", .{pid});
+        return out.print("no record of pid {d} — suspected listeners are report-only and cannot be stopped here; exact start/executable/group identity is not available\n", .{pid});
     }
 
     if (std.mem.eql(u8, action, "prune")) {

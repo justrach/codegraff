@@ -107,6 +107,8 @@ record only when you need the evidence or the edge cases.
 | [0094](0094-subagent-interrupt-is-a-cancel-file.md) | GUI Stop writes `{id}.cancel` in the activity dir; the child finishes failed even if the model returns. Not `session/cancel`. |
 | [0096](0096-desktop-link-destination.md) | Persist the desktop link destination outside origin-scoped storage; validate once and reveal the focused chat's Browser without navigating the app. |
 | [0097](0097-isolate-probe-clipboards.md) | Offline PTY probes get private clipboard commands per process; direct probe runs retain OS clipboard integration. |
+| [0098](0098-orphan-listeners-are-not-stop-authority.md) | Legacy listener discovery is read-only; stop authority requires verified ownership, port preflight checks both families, and unknown browser visibility protects listening jobs. |
+
 
 ## When to write one
 
