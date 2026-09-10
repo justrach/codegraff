@@ -124,10 +124,11 @@ time.sleep(60)
         self.assertEqual(script, "test-tui-selection.py")
         self.assertEqual(status, 0)
         self.assertFalse(timed_out)
-        self.assertTrue(captured.get(tuiguard.clipboard_isolate.COPY_ENV))
-        self.assertTrue(captured.get(tuiguard.clipboard_isolate.PASTE_ENV))
-        self.assertTrue(os.path.isfile(captured[tuiguard.clipboard_isolate.COPY_ENV]))
-        self.assertTrue(os.path.isfile(captured[tuiguard.clipboard_isolate.PASTE_ENV]))
+        copy = captured.get(tuiguard.clipboard_isolate.COPY_ENV, "")
+        paste = captured.get(tuiguard.clipboard_isolate.PASTE_ENV, "")
+        self.assertTrue(copy.endswith("/copy"), copy)
+        self.assertTrue(paste.endswith("/paste"), paste)
+        self.assertNotEqual(copy, paste)
 
     def test_run_pool_names_still_running_on_parent_deadline(self) -> None:
         def hang(script: str, binary: str, timeout: float):
