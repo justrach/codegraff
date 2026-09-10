@@ -7,7 +7,7 @@
 //! one-line `[peer]` wake and still paints the full lines for the human.
 //!
 //! Surfaces:
-//!   - peer_message: send (default), list, inbox. Queued, one-way.
+//!   - peer_message: send (default), list, inbox, claim, release, handoff, status.
 //!   - /tell <session> <text>: the user's own line into a peer's inbox.
 //!   - /sessions: the saved-session list gains a "live now" section.
 //!   - deliverInbound: drain + park at every root step boundary.
@@ -34,9 +34,9 @@ const ExecResult = tools_mod.ExecResult;
 const Owner = worktree_lease.Owner;
 
 pub const tool_name = "peer_message";
-pub const tool_desc = "Ping a co-resident session, list who is live, or read parked inbound. action=list | inbox | send (default). session is a DM (visible title, saved-session base, id/pid/name/goal); omit for this folder's room. Presence is device-local. Not \"all\".";
+pub const tool_desc = "Ping a co-resident session, list who is live, read parked inbound, or transfer an artifact claim. action=list | inbox | send (default) | claim | release | handoff | status. session is a DM (visible title, saved-session base, id/pid/name/goal); omit for this folder's room. Presence is device-local. Not \"all\".";
 pub const tool_schema =
-    \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["send", "list", "inbox"], "description": "send (default): ping a peer. list: who is live (title, base, id, pid, worktree, goal). inbox: read+clear parked inbound."}, "session": {"type": "string", "description": "who to ping: exact visible title, exact saved-session base, unique normalized title/slug, id, pid, unique name fragment, or unique goal fragment (omit = this folder's room). Named targets are DMs. Presence is device-local. Not \"all\"."}, "text": {"type": "string", "description": "one or two sentences of coordination intent (required for send)"}}}
+    \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["send", "list", "inbox", "claim", "release", "handoff", "status"], "description": "send (default): ping a peer. list: who is live. inbox: read+clear parked inbound. claim/release/handoff/status: repository-scoped artifact ownership (kind+key)."}, "session": {"type": "string", "description": "who to ping or hand a claim to: exact visible title, exact saved-session base, unique normalized title/slug, id, pid, unique name fragment, or unique goal fragment (omit = this folder's room). Named targets are DMs. Presence is device-local. Not \"all\"."}, "text": {"type": "string", "description": "one or two sentences of coordination intent (required for send)"}, "kind": {"type": "string", "enum": ["branch", "issue", "commit", "pull_request", "publication"], "description": "artifact kind for claim/release/handoff/status"}, "key": {"type": "string", "description": "artifact key: branch name, issue number, commit SHA, or PR number"}}}
 ;
 
 /// Whether the named session sits in MY worktree (routes the post: worktree
@@ -65,6 +65,16 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
         .is_error = true,
     };
     const action = tools_mod.json_args.str(obj, "action") orelse "send";
+    if (std.mem.eql(u8, action, "claim") or std.mem.eql(u8, action, "release") or std.mem.eql(u8, action, "handoff") or std.mem.eql(u8, action, "status")) {
+        return @import("artifact_claim.zig").handleTool(
+            self.arena,
+            self.io,
+            action,
+            tools_mod.json_args.str(obj, "kind") orelse "publication",
+            tools_mod.json_args.str(obj, "key") orelse "",
+            tools_mod.json_args.str(obj, "session") orelse "",
+        );
+    }
     if (std.mem.eql(u8, action, "list")) {
         const everyone = presence.liveAllPeers(self.io, self.arena);
         return .{ .text = peer_inbox.formatList(self.arena, everyone, presence.ownIdentity()), .is_error = false };
@@ -73,7 +83,7 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
         return .{ .text = peer_inbox.takeAll(self.arena), .is_error = false };
     }
     if (!std.mem.eql(u8, action, "send")) return .{
-        .text = "peer_message action must be send, list, or inbox",
+        .text = "peer_message action must be send, list, inbox, claim, release, handoff, or status",
         .is_error = true,
     };
     const text = tools_mod.json_args.str(obj, "text") orelse "";

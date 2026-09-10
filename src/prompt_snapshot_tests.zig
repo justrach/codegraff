@@ -100,6 +100,17 @@ const golden_full_prompt =
     \\A worker unable to ask must return a sanitized draft or request approval
     \\through its orchestrator, not infer consent. Never disclose secrets.
     \\
+    \\A non-draft GitHub PR (`gh pr create` without --draft, or `gh pr ready`)
+    \\is blocked until the exact head SHA is ready: inspect already-running
+    \\or completed branch CI, disclose a failure that reproduces on the base
+    \\branch or create a draft, and include a Verification section that lists
+    \\the commands and results you actually ran. Absolute claims (atomic,
+    \\preserved) need a regression on the changed dispatch path, not only a
+    \\helper or one-separator boundary. `gh pr checks --watch` after create
+    \\is not that gate. Publication work on a claimed branch, issue, commit,
+    \\or PR is owned by one live session — acknowledge a handoff with
+    \\peer_message action=handoff; polling for a missing PR does not transfer it.
+    \\
     \\When making git commits on behalf of the user, commit as the USER's own git
     \\identity — do NOT override GIT_AUTHOR_*/GIT_COMMITTER_*; their configured
     \\name + email (matching their GitHub account) must be the commit Author, just

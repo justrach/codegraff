@@ -571,6 +571,11 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("agent_empty_completion.zig"); // #745: plain-final reconciliation
     _ = @import("agent_model_loop.zig");
     _ = @import("publication_policy_tests.zig");
+    _ = @import("artifact_claim.zig");
+    _ = @import("pr_publish.zig");
+    _ = @import("publish_gate.zig");
+    _ = @import("goal_verify.zig");
+    _ = @import("goal_verify_kind.zig");
     _ = @import("jobs_completion_tests.zig");
     _ = @import("test_hooks.zig"); // unreached modules; their tests were silently skipped
     _ = @import("list_dir_nearmiss.zig");

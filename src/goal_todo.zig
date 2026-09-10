@@ -29,32 +29,34 @@ const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
 const TodoItem = agent_mod.TodoItem;
 const goal_state = @import("goal_state.zig");
+const goal_verify_kind = @import("goal_verify_kind.zig");
 
-/// Make room for a replacement checklist on `epoch`: remove that epoch's items,
-/// EXCEPT completed ones whose content the incoming list does not mention.
-/// Items from other (parked) epochs are never touched - the authoring goal is
-/// rewriting its own list, nobody else's. Returns the number removed.
-/// Callers must guarantee `incoming` is nonempty (applyTodoWrite rejects the
-/// empty case): an empty replace here would leave only completed survivors,
-/// an epoch that reads allDone off a write that did nothing (#318).
+pub const ReplaceClear = struct { dropped_open: usize = 0, kept_verify: usize = 0 };
+
+/// Make room for a replacement checklist on `epoch`. Completed omitted items
+/// stay (#318). Open verification items also stay (#844). Ordinary omitted
+/// open work is still abandoned. Returns the dropped-open count.
 pub fn clearEpochForReplace(todos: *std.ArrayList(TodoItem), epoch: u64, incoming: []const []const u8) usize {
-    var dropped_open: usize = 0;
+    return clearEpochForReplaceEx(todos, epoch, incoming).dropped_open;
+}
+
+pub fn clearEpochForReplaceEx(todos: *std.ArrayList(TodoItem), epoch: u64, incoming: []const []const u8) ReplaceClear {
+    var out: ReplaceClear = .{};
     var i: usize = 0;
     while (i < todos.items.len) {
         const t = todos.items[i];
         const done = std.mem.eql(u8, t.status, "completed");
         const mentioned = mentions(incoming, t.content);
-        if (t.epoch != epoch or (done and !mentioned)) {
+        const verify = !done and goal_verify_kind.isVerification(t.content);
+        if (t.epoch != epoch or (done and !mentioned) or (verify and !mentioned)) {
+            if (t.epoch == epoch and verify and !mentioned) out.kept_verify += 1;
             i += 1;
             continue;
         }
-        // Open work the replacement did not mention is being ABANDONED. Count
-        // it so the caller can say so: every user-driven drop reports a count
-        // (/goal clear, /goal <new>), and only the model-driven one was silent.
-        if (!done and !mentioned) dropped_open += 1;
+        if (!done and !mentioned) out.dropped_open += 1;
         _ = todos.orderedRemove(i);
     }
-    return dropped_open;
+    return out;
 }
 
 fn mentions(contents: []const []const u8, content: []const u8) bool {
@@ -93,7 +95,7 @@ pub fn retireFinishedForNewAsk(root: *Agent) usize {
     return n;
 }
 
-pub const WriteResult = struct { text: []const u8, rejected: bool = false, dropped_open: usize = 0 };
+pub const WriteResult = struct { text: []const u8, rejected: bool = false, dropped_open: usize = 0, kept_verify: usize = 0 };
 
 /// The whole todo_write handler: replace the current epoch's checklist with
 /// `list` (the tool call's "todos" argument, already parsed), preserving
@@ -114,8 +116,8 @@ pub fn applyTodoWrite(root: *Agent, list: ?Value) !WriteResult {
     }
     if (incoming.items.len == 0)
         return .{ .text = "todo_write had no usable items; the list is unchanged. Each item needs a content string and a status. Send your full remaining plan - completed items you omit are kept automatically.", .rejected = true };
-    const dropped_open = clearEpochForReplace(&root.todos, epoch, incoming.items);
-    goal_state.noteTodoWrite(root); // fresh evidence for the completion double-check, and this-process evidence for /loop (#318)
+    const cleared = clearEpochForReplaceEx(&root.todos, epoch, incoming.items);
+    goal_state.noteTodoWrite(root); // list changed; open verification still fails allDone (#844)
     if (asArray(list)) |items| {
         for (items) |item| {
             const content = contentOf(item) orelse continue;
@@ -128,12 +130,16 @@ pub fn applyTodoWrite(root: *Agent, list: ?Value) !WriteResult {
         }
     }
     const rendered = goal_state.renderTodos(root, epoch);
-    if (dropped_open == 0) return .{ .text = rendered };
-    // Name the abandonment. The model may well have meant it, but the user
-    // reading the transcript needs the same count they get from /goal clear.
+    if (cleared.dropped_open == 0 and cleared.kept_verify == 0) return .{ .text = rendered };
+    if (cleared.kept_verify > 0 and cleared.dropped_open == 0)
+        return .{
+            .text = try std.fmt.allocPrint(root.arena, "{s}\n({d} verification item(s) you left out were kept as unresolved acceptance requirements)", .{ rendered, cleared.kept_verify }),
+            .kept_verify = cleared.kept_verify,
+        };
     return .{
-        .text = try std.fmt.allocPrint(root.arena, "{s}\n({d} open item(s) you left out were dropped; re-list one to keep it)", .{ rendered, dropped_open }),
-        .dropped_open = dropped_open,
+        .text = try std.fmt.allocPrint(root.arena, "{s}\n({d} open item(s) you left out were dropped; re-list one to keep it)", .{ rendered, cleared.dropped_open }),
+        .dropped_open = cleared.dropped_open,
+        .kept_verify = cleared.kept_verify,
     };
 }
 

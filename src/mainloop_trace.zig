@@ -177,6 +177,12 @@ fn countEntry(shape: *ResponseShape, obj: std.json.ObjectMap, kind: []const u8) 
     }
 }
 
+/// Execution success is not verified-success (#844). A normal return with
+/// unresolved verification, an unmet eval, or open goal work stays unsuccessful.
+pub fn verifiedSuccess(root: *agent_mod.Agent, executed: bool) bool {
+    return executed and @import("goal_verify.zig").taskVerified(root);
+}
+
 pub fn record(
     root: *agent_mod.Agent,
     io: Io,
@@ -198,8 +204,13 @@ pub fn record(
     const turn_ok = if (result) |_| true else |_| false;
     const turn_tools = root.tools_used.render(arena);
     const after = pricing.g_cost.snap(io);
+    const verified = @import("goal_verify.zig").taskVerified(root);
+    const claimed = root.completed != null;
     const outcome: recipe.Outcome = .{
-        .success = turn_ok,
+        .success = verifiedSuccess(root, turn_ok),
+        .executed = turn_ok,
+        .claimed = claimed,
+        .verified = verified,
         .latency_ms = @intCast(@max(0, turn_ms)),
         .model_calls = (if (root.run_budget) |budget| budget.used() else before.model_calls) -| before.model_calls,
         .tool_errors = root.tools_used.errorCount(),
@@ -223,6 +234,9 @@ pub fn record(
         .model = root.provider.model,
         .effort = @tagName(root.reasoning),
         .success = outcome.success,
+        .executed = outcome.executed,
+        .claimed = outcome.claimed,
+        .verified = outcome.verified,
         .latency_ms = outcome.latency_ms,
         .model_calls = outcome.model_calls,
         .tool_calls = root.tool_calls_this_turn,
@@ -411,4 +425,25 @@ test "#270: openai and Responses histories shape the same way" {
     );
     try std.testing.expectEqual(@as(u32, 3), cut_after_tools.blocks);
     try std.testing.expectEqualStrings("text+tool_use+reasoning", cut_after_tools.typeSet(&buf));
+}
+
+test "#844 a normal return is not verified-success telemetry" {
+    var root: agent_mod.Agent = undefined;
+    root.sub = false;
+    root.review_mode = false;
+    root.todos = .empty;
+    root.goal = .{ .objective = "ship", .epoch = 1, .status = .active };
+    root.todos_dirty = false;
+    root.eval_cmd = null;
+    root.eval_verified = false;
+    root.eval_repair_pending = false;
+    root.completed = null;
+    try root.todos.append(std.testing.allocator, .{ .content = "verify the fix", .status = "pending", .epoch = 1 });
+    defer root.todos.deinit(std.testing.allocator);
+    try std.testing.expect(verifiedSuccess(&root, true) == false);
+    try std.testing.expect(verifiedSuccess(&root, false) == false);
+    root.todos.items[0].status = "completed";
+    root.todos_dirty = true;
+    root.completed = "done";
+    try std.testing.expect(verifiedSuccess(&root, true));
 }
