@@ -220,10 +220,12 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
         // approvals prompt would ever surface the collision. The model sees
         // the peer's identity + goal and re-issues the command to proceed.
         if (presence.isSharedTreeGit(cmd) or presence.isSharedTreeShell(cmd)) {
-            if (presence.gateCheck(self.io, self.arena)) |checkpoint| return .{
-                .text = checkpoint,
-                .is_error = true,
-            };
+            if (presence.sharedTreeGateApplies(self.gpa, self.io, self.arena, cmd)) {
+                if (presence.gateCheck(self.io, self.arena)) |checkpoint| return .{
+                    .text = checkpoint,
+                    .is_error = true,
+                };
+            }
         }
         const destructive_git = Approvals.isDestructiveGit(cmd);
         const gate_ok = !destructive_git or Approvals.destructiveGitAllowed(approvals.yolo, self.sub);
@@ -385,4 +387,46 @@ test "private template collector covers subagents and workflow stages" {
     const wf_value = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"phases\":[{\"tasks\":[{\"system_prompt\":\"phase private\",\"prompt\":\"x\"}]}],\"pipeline\":{\"stages\":[{\"system_prompt\":\"stage private\",\"prompt\":\"y\"}]}}", .{});
     const wf = collectPrivateTemplates(io, .{ .id = "2", .name = "workflow", .input = wf_value });
     try std.testing.expectEqual(@as(usize, 2), wf.len);
+}
+
+test "#851 bash gate resolves the git target before gateCheck" {
+    const src = @embedFile("agent_tool_gate.zig");
+    const applies = std.mem.indexOf(u8, src, "sharedTreeGateApplies").?;
+    const check = std.mem.indexOfPos(u8, src, applies, "gateCheck(").?;
+    try std.testing.expect(applies < check);
+}
+
+test "#851 isolated git -C target does not use the caller worktree identity" {
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    const path_a = try std.fmt.allocPrint(a, "{s}/a", .{root});
+    const path_b = try std.fmt.allocPrint(a, "{s}/b", .{root});
+    try tmp.dir.createDirPath(std.testing.io, "a");
+    try tmp.dir.createDirPath(std.testing.io, "b");
+    const runner = @import("process_runner.zig");
+    for ([_][]const u8{ path_a, path_b }) |p| {
+        const r = try runner.runCapped(gpa, std.testing.io, &.{ "git", "init", "-q", p }, 4096, 4096, 15_000);
+        defer {
+            gpa.free(r.stdout);
+            gpa.free(r.stderr);
+        }
+        try std.testing.expect(runner.ranOk(r));
+    }
+    const worktree_lease = @import("worktree_lease.zig");
+    const id_a = worktree_lease.identityAt(gpa, std.testing.io, a, path_a);
+    try std.testing.expect(id_a.id.len > 0);
+    presence.bindForTest(root, id_a.id, "s-caller", .{});
+    defer presence.unbindForTest();
+    const cmd_b = try std.fmt.allocPrint(a, "git -C {s} cherry-pick abc", .{path_b});
+    const cmd_a = try std.fmt.allocPrint(a, "git -C {s} cherry-pick abc", .{path_a});
+    const cmd_sub = try std.fmt.allocPrint(a, "cd {s}/. && git stash", .{path_a});
+    try std.testing.expect(!presence.sharedTreeGateApplies(gpa, std.testing.io, a, cmd_b));
+    try std.testing.expect(presence.sharedTreeGateApplies(gpa, std.testing.io, a, cmd_a));
+    try std.testing.expect(presence.sharedTreeGateApplies(gpa, std.testing.io, a, cmd_sub));
+    try std.testing.expect(presence.sharedTreeGateApplies(gpa, std.testing.io, a, "git cherry-pick abc"));
 }
