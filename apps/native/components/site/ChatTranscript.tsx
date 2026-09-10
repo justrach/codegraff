@@ -37,7 +37,7 @@ export default memo(function ChatTranscript({ messages, register, following, onO
     return () => observer.disconnect();
   }, []);
   return <div ref={registerScroller} data-chat-transcript
-    className="min-h-0 flex-1 overflow-y-auto overscroll-contain" style={{ overflowAnchor: "none" }}>
+    className="min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain" style={{ overflowAnchor: "none" }}>
     <div className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-4 py-8 sm:px-8">
       {start > 0 && <button type="button" className="self-center rounded-lg bg-field px-3 py-2 text-xs text-ink-2 hover:bg-hover" onClick={() => {
         const el = scroller.current;

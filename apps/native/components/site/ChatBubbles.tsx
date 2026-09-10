@@ -128,7 +128,7 @@ export const AssistantBody = memo(function AssistantBody({
   const lastBlock = blocks[blocks.length - 1];
 
   return (
-    <article data-turn-status={turn.status} aria-busy={live} className="min-w-0" style={{ overflowAnchor: "none", animation: "fade-in 280ms ease both" }}>
+    <article data-turn-status={turn.status} aria-busy={live} className="min-w-0 [overflow-wrap:anywhere]" style={{ overflowAnchor: "none", animation: "fade-in 280ms ease both" }}>
       {((thinking && turn.activityKind === "agent_thought_chunk") || reasoningRows.length > 0 || (turn.thoughtMs ?? 0) >= 1500) && (
         <Reasoning
           variant="Reasoning"

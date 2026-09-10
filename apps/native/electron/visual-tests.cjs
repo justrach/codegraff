@@ -31,6 +31,12 @@ app.whenReady().then(async () => {
     if (url.origin === origin && url.pathname.startsWith('/api/')) apiRequests.push(url.pathname);
     callback({ cancel: !details.url.startsWith(origin) && !details.url.startsWith('data:') || url.pathname.startsWith('/api/') });
   });
+  if (process.env.GRAFF_VISUAL_SUITE === 'overflow') {
+    await require('./chat-overflow-visual.cjs').runChatOverflow({ win, origin, output });
+    await require('./chat-overflow-edge-visual.cjs').runOverflowEdges({ win, origin });
+    assert.deepEqual(apiRequests, [], 'Overflow fixtures never call live APIs');
+    return;
+  }
   if (process.env.GRAFF_VISUAL_SUITE === 'updates') {
     await require('./updates-visual.cjs').runUpdateVisuals({ origin, output });
     await require('./updates-transport.cjs').runUpdateTransport();
@@ -89,6 +95,8 @@ app.whenReady().then(async () => {
       results.push(`${theme}/${name}`);
     }
   }
+  await require('./chat-overflow-visual.cjs').runChatOverflow({ win, origin, output });
+  await require('./chat-overflow-edge-visual.cjs').runOverflowEdges({ win, origin });
   await require('./stress-visual.cjs').runStressVisuals({ win, origin, output });
   await require('./navigation-visual.cjs').runNavigationVisuals({ win, origin, output });
   await require('./browser-visual.cjs').runBrowserVisuals({ win, origin, output });
