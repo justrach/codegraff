@@ -7,8 +7,12 @@ function testWindowMode() {
   return 'hidden';
 }
 
-function presentWindow(win, app) {
-  const mode = testWindowMode();
+function presentWindow(win, app, extra = {}) {
+  // A WebContentsView host has to be mapped: the chrome measures the
+  // pane with getBoundingClientRect, and sendInputEvent only reaches
+  // the page when the view is visible. showInactive keeps #832 — we
+  // still do not steal focus unless foreground is requested.
+  const mode = extra.mapped && testWindowMode() === 'hidden' ? 'visible' : testWindowMode();
   if (win.webContents && !win.webContents.isDestroyed()) win.webContents.setBackgroundThrottling(false);
   if (mode === 'foreground') {
     app?.focus?.({ steal: true });

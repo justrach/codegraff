@@ -24,3 +24,15 @@ test('foreground interaction is an explicit opt-in', () => {
   expect(calls).toEqual(['steal', 'show', 'focus']);
   process.env.GRAFF_ELECTRON_FOREGROUND = previous;
 });
+
+test('mapped presentWindow shows inactive so a BrowserView host can measure', () => {
+  const previous = process.env.GRAFF_ELECTRON_FOREGROUND;
+  const visible = process.env.GRAFF_ELECTRON_VISIBLE;
+  delete process.env.GRAFF_ELECTRON_FOREGROUND;
+  delete process.env.GRAFF_ELECTRON_VISIBLE;
+  const calls = [];
+  expect(presentWindow({ show() { calls.push('show'); }, focus() { calls.push('focus'); }, showInactive() { calls.push('inactive'); }, webContents: { isDestroyed: () => false, setBackgroundThrottling() {} } }, { focus() { calls.push('steal'); } }, { mapped: true })).toBe('visible');
+  expect(calls).toEqual(['inactive']);
+  process.env.GRAFF_ELECTRON_FOREGROUND = previous;
+  process.env.GRAFF_ELECTRON_VISIBLE = visible;
+});
