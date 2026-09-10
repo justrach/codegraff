@@ -1,7 +1,8 @@
 const { BrowserWindow } = require('electron');
 const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path');
 async function runUpdateVisuals({ origin, output }) {
-  const win = new BrowserWindow({ width: 900, height: 650, show: true, webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } });
+  const { presentWindow, testWindowOptions } = require('./test-window.cjs');
+  const win = new BrowserWindow(testWindowOptions({ width: 900, height: 650, webPreferences: { sandbox: true, contextIsolation: true } }));
   const wc = win.webContents, js = source => wc.executeJavaScript(source);
   const wait = async source => { for (let i = 0; i < 100; i++) { if (await js(source)) return; await new Promise(r => setTimeout(r, 30)); } throw Error(source); };
   try {
@@ -19,7 +20,7 @@ async function runUpdateVisuals({ origin, output }) {
         return {...base(),status:'idle'};
       }};` });
     await win.loadURL(`${origin}/visual-tests`);
-    win.focus();
+    presentWindow(win);
     console.log('Update visual fixture loaded.');
     await wait(`!!document.querySelector('[data-case="waiting"]')`);
     for (const status of ['checking', 'error', 'current']) {

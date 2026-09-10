@@ -19,9 +19,16 @@ async function runComposerInteractions({ win, origin, output }) {
     await pause();
   };
   const pointer = async selector => {
-    const point = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.scrollIntoView({block:'nearest'});const r=e.getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
-    wc.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...point });
-    wc.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...point });
+    await wait(`!!document.querySelector(${JSON.stringify(selector)})`);
+    let point;
+    for (let i = 0; i < 25; i++) {
+      point = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return null;e.scrollIntoView({block:'nearest'});const r=e.getBoundingClientRect();const x=Math.round(r.x+r.width/2),y=Math.round(r.y+r.height/2);const top=document.elementFromPoint(x,y);return {x,y,hit:!!(top&&(top===e||e.contains(top)))};})()`);
+      if (point?.hit) break;
+      await pause();
+    }
+    if (!point?.hit) throw Error(`Pointer target not hittable: ${selector}`);
+    wc.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, x: point.x, y: point.y });
+    wc.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, x: point.x, y: point.y });
     await pause();
   };
   const draft = id => js(`document.querySelector('[data-chat="${id}"] textarea').value`);
@@ -29,7 +36,7 @@ async function runComposerInteractions({ win, origin, output }) {
   const windowActions = [];
   ipcMain.handle('window-control', (_event, action) => { windowActions.push(action); });
   try {
-    await wc.loadURL(origin); win.setSize(1440, 900); win.show(); win.focus();
+    await wc.loadURL(origin); win.setSize(1440, 900); require('./test-window.cjs').presentWindow(win);
     await wait(`!!document.querySelector('textarea') && !document.querySelector('[aria-label="Choose model"]').textContent.includes('Loading')`);
     await js(`(()=>{
       const original=window.fetch;window.composerRequests=[];window.composerCancels=0;window.fileChooserClicks=0;

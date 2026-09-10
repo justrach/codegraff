@@ -2,6 +2,11 @@ import { test, expect } from "bun:test";
 import { emptyTurn, applyAcpUpdate, finishAcpTurn } from "./acp";
 import { turnActivity } from "./turn-activity";
 import { createTurnPainter } from "./turn-painter";
+test("a saved snapshot does not claim the turn finished here (#839)", () => {
+  const turn = { ...emptyTurn(), status: "done" as const, startedAt: 1000 };
+  expect(turnActivity(turn, 2000).label).toBe("Turn finished");
+  expect(turnActivity(turn, 2000, { snapshot: true }).label).toBe("Saved snapshot");
+});
 test("commentary followed by silence stays visibly waiting", () => {
   const turn = { ...emptyTurn(), status: "streaming" as const, text: "Preparing the change.", connected: true, startedAt: 1000, lastUpdateAt: 4000, activityKind: "agent_message_chunk" };
   expect(turnActivity(turn, 25000)).toMatchObject({ live: true, label: "Waiting for Graff…", state: "waiting" });

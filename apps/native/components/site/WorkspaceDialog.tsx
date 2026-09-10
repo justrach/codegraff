@@ -152,10 +152,7 @@ function FolderPicker({ startPath, onPick, onClose }: { startPath?: string; onPi
   const go = useCallback(async (target: string, opts: { pick?: boolean; refresh?: boolean } = {}) => {
     const n = (seq.current += 1);
     const refresh = opts.refresh === true;
-    if (!refresh) {
-      setBusy(true);
-      setListing(null);
-    }
+    if (!refresh) setBusy(true);
     setError(null);
     try {
       const next = await browseFolders(target);

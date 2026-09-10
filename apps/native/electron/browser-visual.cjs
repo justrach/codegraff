@@ -13,7 +13,8 @@ async function runBrowserVisuals({ win: fixtureWindow, origin, output }) {
   });
   await new Promise(r => fixture.listen(0, '127.0.0.1', r));
   const url = `http://127.0.0.1:${fixture.address().port}/`;
-  const win = new BrowserWindow({ width: 1000, height: 760, show: true, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true } });
+  const { presentWindow, testWindowOptions } = require('./test-window.cjs');
+  const win = new BrowserWindow(testWindowOptions({ width: 1000, height: 760, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true } }));
   const wc = win.webContents, js = code => wc.executeJavaScript(code);
   const browser = new BrowserTabs(win, event => wc.send('browser-event', event));
   ipcMain.handle('browser', (_event, { chat, method, params }) => ['find', 'zoom'].includes(method) ? browserAction(browser, chat, method, params) : browser.command(chat, method, params));
@@ -30,7 +31,7 @@ async function runBrowserVisuals({ win: fixtureWindow, origin, output }) {
     await wait(async () => !page.isLoading());
     await js(`document.querySelector('button[aria-pressed]').click()`);
     await wait(() => js(`document.querySelector('button[aria-pressed]').getAttribute('aria-pressed')==='true'`));
-    win.focus(); page.focus();
+    presentWindow(win); page.focus();
     page.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
     await wait(() => js(`document.querySelector('button[aria-pressed]').getAttribute('aria-pressed')==='false'`));
     await js(`document.querySelector('button[aria-pressed]').click()`); await sleep(100);
@@ -66,7 +67,7 @@ async function runBrowserVisuals({ win: fixtureWindow, origin, output }) {
     console.log('Browser visuals passed: pin/cancel/numbered markers/remove, no target activation, zoom geometry, real and hidden PNG captures, suspended errors.');
   } finally {
     ipcMain.removeHandler('browser'); ipcMain.removeListener('browser-pin', pin); ipcMain.removeListener('browser-pick-cancelled', cancelled);
-    browser.closeAll(); win.destroy(); fixture.close(); fixtureWindow.show();
+    browser.closeAll(); win.destroy(); fixture.close(); presentWindow(fixtureWindow);
   }
 }
 module.exports = { runBrowserVisuals };

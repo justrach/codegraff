@@ -4,7 +4,8 @@ const {installWindowState}=require('./window-state.cjs');
 const assert=require('node:assert/strict');const path=require('node:path');const fs=require('node:fs');
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function runNavigationVisuals({win:fixtureWindow,origin,output}) {
-  const win=new BrowserWindow({width:1100,height:760,show:true,titleBarStyle:'hiddenInset',webPreferences:{preload:path.join(__dirname,'preload.cjs'),sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});
+  const {presentWindow,testWindowOptions}=require('./test-window.cjs');
+  const win=new BrowserWindow(testWindowOptions({width:1100,height:760,titleBarStyle:'hiddenInset',webPreferences:{preload:path.join(__dirname,'preload.cjs'),sandbox:true,contextIsolation:true,nodeIntegration:false}}));
   installWindowState(win);ipcMain.handle('browser',()=>null);
   // The demo workspace name maps to a disposable real folder for PTY checks.
   const terminalRoot=path.join(output,'terminal-workspace');fs.mkdirSync(terminalRoot,{recursive:true});
@@ -24,7 +25,7 @@ async function runNavigationVisuals({win:fixtureWindow,origin,output}) {
       localStorage.setItem('graff.native.workspaces',JSON.stringify(Array.from({length:50},(_,i)=>({name:'Project '+(i%10),path:'/demo/folder-'+i}))));
       const commands=[{name:'compact',description:'Compact conversation context'},...Array.from({length:100},(_,i)=>({name:'command-'+i,description:'Command '+i}))];
       const galleryFetch=window.fetch;window.fetch=async(input,options)=>{const response=await galleryFetch(input,options);if(options?.body&&JSON.parse(options.body).method==='bootstrap')return new Response(JSON.stringify({sessionId:'demo',commands}),{headers:{'content-type':'application/json'}});if(String(input).includes('/api/models')){const data=await response.json();data.result.commands=commands;data.result.current.model='example-model-with-a-long-name';data.result.models[0].name=data.result.current.model;return new Response(JSON.stringify(data),{headers:{'content-type':'application/json'}});}return response;};`});
-    await wc.loadURL(origin);win.focus();await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+    await wc.loadURL(origin);presentWindow(win);await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
     if(process.env.GRAFF_VISUAL_SUITE==='splits'){await require('./split-focus-visual.cjs').runSplitFocus({win,origin,output});return;}
     const interactions = async () => {
       await require('./navigation-keyboard-visual.cjs').runNavigationKeyboard({win,origin});
@@ -65,6 +66,6 @@ async function runNavigationVisuals({win:fixtureWindow,origin,output}) {
     assert.equal(await js(`!!document.querySelector('[data-workspace-menu]')`),false);
     if(process.platform==='darwin')await require('./terminal-visual.cjs').runTerminalVisual({win,output});
     console.log('Navigation visual checks passed: command catalog/new tabs, bounded keyboard menu, new/close/reopen, splits/zoom/resize, workspace search.');
-  } finally {terminals.closeAll();ipcMain.removeHandler('terminal');ipcMain.removeHandler('browser');win.destroy();fixtureWindow.show();fixtureWindow.focus();}
+  } finally {terminals.closeAll();ipcMain.removeHandler('terminal');ipcMain.removeHandler('browser');win.destroy();presentWindow(fixtureWindow);}
 }
 module.exports={runNavigationVisuals};

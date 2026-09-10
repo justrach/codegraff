@@ -5,9 +5,9 @@ import type { Msg } from "./harness-types";
 import { pinScrollerTail } from "@/lib/follow-scroll";
 
 const PAGE_SIZE = 80;
-export default memo(function ChatTranscript({ messages, register, following, onOpenPath, onReview }: {
+export default memo(function ChatTranscript({ messages, register, following, onOpenPath, onReview, snapshot }: {
   messages: Msg[]; register: (element: HTMLDivElement | null) => void; following: boolean;
-  onOpenPath: (path: string) => void; onReview: () => void;
+  onOpenPath: (path: string) => void; onReview: () => void; snapshot?: boolean;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const registerScroller = useCallback((element: HTMLDivElement | null) => {
@@ -38,6 +38,11 @@ export default memo(function ChatTranscript({ messages, register, following, onO
   }, []);
   return <div ref={registerScroller} data-chat-transcript
     className="min-h-0 flex-1 overflow-y-auto overscroll-contain" style={{ overflowAnchor: "none" }}>
+    {snapshot && (
+      <p role="status" data-session-snapshot className="mx-auto max-w-[720px] px-4 pt-4 text-[12.5px] leading-relaxed text-ink-2 sm:px-8">
+        Saved snapshot — this view is not attached to a live REPL run. A follow-up continues here in the GUI.
+      </p>
+    )}
     <div className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-4 py-8 sm:px-8">
       {start > 0 && <button type="button" className="self-center rounded-lg bg-field px-3 py-2 text-xs text-ink-2 hover:bg-hover" onClick={() => {
         const el = scroller.current;
@@ -47,7 +52,7 @@ export default memo(function ChatTranscript({ messages, register, following, onO
       {messages.slice(start).map((message, index) => message.role === "user"
         ? <UserBubble key={message.id} text={message.text} />
         : <AssistantBody key={message.id} turn={message.turn} onOpenPath={onOpenPath} onReview={onReview}
-            scroller={scroller} following={following && start + index === messages.length - 1} />)}
+            scroller={scroller} following={following && start + index === messages.length - 1} snapshot={snapshot} />)}
     </div>
   </div>;
 });

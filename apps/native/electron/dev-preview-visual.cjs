@@ -14,7 +14,9 @@ async function runDevPreview({ output }) {
   fs.writeFileSync(path.join(root, 'index.html'), html('Initial preview'));
   const bun = process.env.GRAFF_TEST_BUN || 'bun';
   const child = spawn(bun, ['run', 'dev'], { cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PATH: `${path.dirname(bun)}:${process.env.PATH}` } });
-  const win = new BrowserWindow({ width: 900, height: 600, show: true });
+  const { presentWindow, testWindowOptions } = require('./test-window.cjs');
+  const win = new BrowserWindow(testWindowOptions({ width: 900, height: 600 }));
+  presentWindow(win);
   const events = [], browser = new BrowserTabs(win, event => events.push(event));
   let bridge;
   try {

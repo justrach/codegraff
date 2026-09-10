@@ -17,12 +17,15 @@ async function run({ win, backend, browser }) {
   assert.equal(browser.liveCount, 0, 'An empty app must not create browser views');
   assert.equal((await fetch(`${backend.origin}/api/acp`)).status, 403);
   assert.equal(await js(`fetch('/api/acp').then(response => response.status)`), 200);
+  const { app } = require('electron');
+  assert.equal(app.isPackaged, true, 'Packaged launch must report isPackaged');
+  assert.notEqual(path.basename(process.execPath), 'Electron', 'Packaged executable must not keep the development name');
   const resources = process.env.GRAFF_ELECTRON_RESOURCES || process.resourcesPath;
   const native = require(path.join(resources, 'native/activity.node'));
   assert.equal(typeof native.show, 'function');
   const version = execFileSync(path.join(resources, 'graff'), ['--version'], { encoding: 'utf8', timeout: 10000 }).trim();
   assert.match(version, /graff/i);
-  const report = { passed: ['bundled server', 'production composer', 'empty browser lifecycle', 'request authentication', 'native module ABI', 'bundled engine executable'], version };
+  const report = { passed: ['bundled server', 'production composer', 'empty browser lifecycle', 'request authentication', 'native module ABI', 'bundled engine executable', 'packaged executable'], version };
   fs.writeFileSync(process.env.GRAFF_ELECTRON_SMOKE, JSON.stringify(report, null, 2));
   console.log('Packaged launch checks passed. No prompt sent or coding setting changed.');
 }

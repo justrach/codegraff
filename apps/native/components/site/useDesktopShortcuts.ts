@@ -1,6 +1,8 @@
 'use client';
 import { useEffect, useRef } from 'react';
 import { desktop } from '@/lib/desktop';
+export { deferredFocusStillActive } from './deferred-focus';
+
 type Actions = {
   newChat():void; closeChat(id:number):void; reopenClosed():void; toggleSplit():void;
   split(direction:'row'|'column'):void; focusChat(id:number):void; zoomPane():void;
@@ -38,7 +40,10 @@ export function useDesktopShortcuts(actions: Actions) {
       const command=e.metaKey||e.ctrlKey;
       const focus=(id:number)=>{
         a.focusChat(id);
-        requestAnimationFrame(()=>document.querySelector<HTMLTextAreaElement>(`[data-chat="${id}"] textarea`)?.focus({preventScroll:true}));
+        requestAnimationFrame(()=>{
+          if(!deferredFocusStillActive(ref.current.activeId,id))return;
+          document.querySelector<HTMLTextAreaElement>(`[data-chat="${id}"] textarea`)?.focus({preventScroll:true});
+        });
       };
       const cycle=(ids:number[],delta:number)=>{const index=ids.indexOf(a.activeId);const id=ids[(index+delta+ids.length)%ids.length];if(id!==undefined)focus(id);};
       if(e.ctrlKey&&!e.metaKey&&k==='tab'){cycle(a.chats.map(c=>c.id),e.shiftKey?-1:1);handled=true;}

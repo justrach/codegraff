@@ -43,6 +43,7 @@ test("only an explicit transcript request projects raw history; the default API 
     const response = await GET(new NextRequest(file.url("transcript")));
     const body = await response.json();
     expect(body.messages).toBeUndefined(); expect(body.presentation).toBe("transcript-v1");
+    expect(body.view).toBe("snapshot"); expect(body.execution).toBe("unknown");
     expect(body.transcript).toEqual(transcriptFromMessages(raw, "demo"));
     expect(JSON.stringify(body)).not.toContain("hidden instructions");
     expect(JSON.stringify(body)).not.toContain("large body");
@@ -58,7 +59,9 @@ test("projected and legacy responses restore exactly the same visible conversati
     expect(sessionFromResponse(projected)).toEqual(sessionFromResponse(legacy));
     const loaded = sessionFromResponse(projected);
     expect(loaded.messages.length).toBe(4);
+    expect(loaded.snapshot).toBe(true);
     expect("presentation" in loaded.meta).toBe(false); expect("transcript" in loaded.meta).toBe(false);
+    expect("view" in loaded.meta).toBe(false); expect("execution" in loaded.meta).toBe(false);
   } finally { file.cleanup(); }
 });
 

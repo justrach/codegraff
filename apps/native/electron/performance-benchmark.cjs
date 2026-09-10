@@ -40,9 +40,9 @@ app.whenReady().then(async () => {
     if (i === 199) throw Error('Benchmark server did not start');
     await sleep(100);
   }
-  win = new BrowserWindow({ width: 1440, height: 920, show: true, titleBarStyle: 'hiddenInset',
-    webPreferences: { preload: path.join(root, 'electron/preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: true } });
-  app.focus({ steal: true }); win.show(); win.focus();
+  win = new BrowserWindow(require('./test-window.cjs').testWindowOptions({ width: 1440, height: 920, titleBarStyle: 'hiddenInset',
+    webPreferences: { preload: path.join(root, 'electron/preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: true } }));
+  require('./test-window.cjs').presentWindow(win, app);
   const wc = win.webContents, js = code => wc.executeJavaScript(code);
   await wc.loadURL('about:blank');
   wc.on('console-message', event => { if (/Error|error|Illegal/.test(event.message || '')) console.error('Benchmark renderer:', event.message); });

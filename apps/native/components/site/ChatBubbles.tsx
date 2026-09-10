@@ -76,6 +76,7 @@ export const AssistantBody = memo(function AssistantBody({
   scroller,
   following,
   reasoningLabel,
+  snapshot,
 }: {
   turn: AssistantTurn;
   onOpenPath?: (path: string) => void;
@@ -83,6 +84,7 @@ export const AssistantBody = memo(function AssistantBody({
   scroller?: RefObject<HTMLDivElement | null>;
   following: boolean;
   reasoningLabel?: string;
+  snapshot?: boolean;
 }) {
   const thinking = turn.status === "thinking";
   const live = thinking || turn.status === "streaming";
@@ -137,7 +139,7 @@ export const AssistantBody = memo(function AssistantBody({
           </div>
         ),
       )}
-      <TurnActivity turn={turn} />
+      <TurnActivity turn={turn} snapshot={snapshot} />
       {turn.error && (
         <p role="alert" className="mt-4 max-w-[620px] text-[13.5px] leading-[1.65] text-red">{turn.error}</p>
       )}
