@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Run the 19 tuiguard PTY probes as a process pool (#641 / #704 / #537).
 
-Each probe owns its own pty/tmp/mock and is independent of the others. The
+Each probe owns its own pty/tmp/mock and a private clipboard command pair
+(#836) inherited by its Graff child. The
 serial loop in eval-tier1.sh was the dominant post-src wall (2–4 min). A 4–8
 worker pool brings that to roughly one long probe (fold-headers / hover).
 
@@ -26,9 +27,12 @@ import sys
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+import clipboard_isolate  # noqa: E402
 
 PROBES = (
     "tui-pty-guard.py",
@@ -105,12 +109,18 @@ def terminate_group(proc: subprocess.Popen[str]) -> None:
     proc.kill()
 
 
-def run_command(argv: list[str], timeout: float, cwd: Path | None = None) -> tuple[int, str, float, bool]:
+def run_command(
+    argv: list[str],
+    timeout: float,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str, float, bool]:
     """Run argv in its own session. On timeout, kill the whole group."""
     t0 = time.monotonic()
     proc = subprocess.Popen(
         argv,
         cwd=str(cwd or ROOT),
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -130,11 +140,18 @@ def run_command(argv: list[str], timeout: float, cwd: Path | None = None) -> tup
 
 
 def run_probe(script: str, binary: str, timeout: float) -> tuple[str, int, str, float, bool]:
-    status, blob, elapsed, timed_out = run_command(
-        [sys.executable, str(SCRIPTS / script), binary],
-        timeout,
-    )
-    return script, status, blob, elapsed, timed_out
+    scratch = tempfile.TemporaryDirectory(prefix=f"tuiguard-clip-{script}-")
+    try:
+        env = os.environ.copy()
+        env.update(clipboard_isolate.install_private(Path(scratch.name)))
+        status, blob, elapsed, timed_out = run_command(
+            [sys.executable, str(SCRIPTS / script), binary],
+            timeout,
+            env=env,
+        )
+        return script, status, blob, elapsed, timed_out
+    finally:
+        scratch.cleanup()
 
 
 def run_pool(

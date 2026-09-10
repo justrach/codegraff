@@ -375,27 +375,8 @@ fn filesCb(ctx: ?*anyopaque, gpa: Allocator) ?[]const u8 {
     return run_res.stdout;
 }
 
-fn copyCb(ctx: ?*anyopaque, text: []const u8) bool {
-    const c: *repl_glue.ReplCtx = @ptrCast(@alignCast(ctx orelse return false));
-    const argv: []const []const u8 = switch (builtin.os.tag) {
-        .macos => &.{"pbcopy"},
-        .linux => &.{ "xclip", "-selection", "clipboard" },
-        else => return false,
-    };
-    var child = std.process.spawn(c.io, .{
-        .argv = argv,
-        .stdin = .pipe,
-        .stdout = .ignore,
-        .stderr = .ignore,
-    }) catch return false;
-    var wbuf: [4096]u8 = undefined;
-    var fw = child.stdin.?.writerStreaming(c.io, &wbuf);
-    fw.interface.writeAll(text) catch {};
-    fw.interface.flush() catch {};
-    child.stdin.?.close(c.io);
-    child.stdin = null;
-    const term = child.wait(c.io) catch return false;
-    return term == .exited and term.exited == 0;
+fn copyCb(_: ?*anyopaque, text: []const u8) bool {
+    return tui.clipboard.writeText(text);
 }
 
 fn writeDoctor(w: *Io.Writer) void {

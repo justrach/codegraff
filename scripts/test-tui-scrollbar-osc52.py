@@ -32,6 +32,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import clipboard_isolate  # noqa: E402
 
 BIN = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "zig-out/bin/graff")
 COLS, ROWS = 100, 30
@@ -260,11 +261,14 @@ def main():
         return 0
     import ptyharness
 
-    # The local half of the copy writes the real clipboard; put it back.
+    # The local half of a direct run writes the host clipboard; put it back.
+    # Isolated probes (#836) own a private file and must not touch pbcopy.
     saved = None
-    if sys.platform == "darwin":
+    copy_argv, paste_argv = clipboard_isolate.tools()
+    restore_host = paste_argv is not None and not clipboard_isolate.isolated()
+    if restore_host:
         try:
-            saved = subprocess.run(["pbpaste"], capture_output=True, check=True).stdout
+            saved = subprocess.run(paste_argv, capture_output=True, check=True).stdout
         except Exception:  # noqa: BLE001
             saved = None
     try:
@@ -278,9 +282,9 @@ def main():
             print(f"tui-scrollbar-osc52: pty unavailable ({e}) — skipping")
             return 0
     finally:
-        if saved is not None:
+        if restore_host and saved is not None and copy_argv is not None:
             try:
-                subprocess.run(["pbcopy"], input=saved, check=False)
+                subprocess.run(copy_argv, input=saved, check=False)
             except Exception:  # noqa: BLE001
                 pass
     if err:

@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import time
@@ -76,6 +77,57 @@ time.sleep(60)
         for pid in pids:
             with self.assertRaises(OSError):
                 os.kill(pid, 0)
+
+    def test_private_clipboards_do_not_share(self) -> None:
+        a = tempfile.TemporaryDirectory(prefix="clip-a-")
+        b = tempfile.TemporaryDirectory(prefix="clip-b-")
+        self.addCleanup(a.cleanup)
+        self.addCleanup(b.cleanup)
+        env_a = tuiguard.clipboard_isolate.install_private(Path(a.name))
+        env_b = tuiguard.clipboard_isolate.install_private(Path(b.name))
+        self.assertNotEqual(env_a[tuiguard.clipboard_isolate.COPY_ENV], env_b[tuiguard.clipboard_isolate.COPY_ENV])
+        subprocess.run(
+            [env_a[tuiguard.clipboard_isolate.COPY_ENV]],
+            input=b"alpha-only",
+            check=True,
+        )
+        subprocess.run(
+            [env_b[tuiguard.clipboard_isolate.COPY_ENV]],
+            input=b"beta-only",
+            check=True,
+        )
+        got_a = subprocess.run(
+            [env_a[tuiguard.clipboard_isolate.PASTE_ENV]],
+            capture_output=True,
+            check=True,
+        ).stdout
+        got_b = subprocess.run(
+            [env_b[tuiguard.clipboard_isolate.PASTE_ENV]],
+            capture_output=True,
+            check=True,
+        ).stdout
+        self.assertEqual(got_a, b"alpha-only")
+        self.assertEqual(got_b, b"beta-only")
+
+    def test_run_probe_inherits_private_clipboard_env(self) -> None:
+        captured: dict[str, str] = {}
+
+        def grab(argv, timeout, cwd=None, env=None):
+            _ = argv, timeout, cwd
+            captured.update(env or {})
+            return 0, "", 0.01, False
+
+        with mock.patch.object(tuiguard, "run_command", side_effect=grab):
+            script, status, _, _, timed_out = tuiguard.run_probe(
+                "test-tui-selection.py", "/nonexistent/graff", 1.0
+            )
+        self.assertEqual(script, "test-tui-selection.py")
+        self.assertEqual(status, 0)
+        self.assertFalse(timed_out)
+        self.assertTrue(captured.get(tuiguard.clipboard_isolate.COPY_ENV))
+        self.assertTrue(captured.get(tuiguard.clipboard_isolate.PASTE_ENV))
+        self.assertTrue(os.path.isfile(captured[tuiguard.clipboard_isolate.COPY_ENV]))
+        self.assertTrue(os.path.isfile(captured[tuiguard.clipboard_isolate.PASTE_ENV]))
 
     def test_run_pool_names_still_running_on_parent_deadline(self) -> None:
         def hang(script: str, binary: str, timeout: float):

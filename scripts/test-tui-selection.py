@@ -18,6 +18,8 @@ own), the probe:
 
 Usage: python3 scripts/test-tui-selection.py [path/to/graff]  (default zig-out/bin/graff)
 Exit 0 = pass. Skips (exit 0, notice) with no pty or no clipboard tool.
+Tuiguard injects private copy/paste commands (#836); a direct run keeps
+native pbcopy/pbpaste and stays macOS-only.
 """
 import os
 import re
@@ -25,6 +27,10 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import clipboard_isolate  # noqa: E402
 
 # Absolutized BEFORE the fork: the child chdirs into its scratch workspace.
 BIN = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "zig-out/bin/graff")
@@ -111,11 +117,17 @@ def reap(pid, fd):
 
 
 def clipboard_set(text):
-    subprocess.run(["pbcopy"], input=text.encode(), check=True)
+    copy, _ = clipboard_isolate.tools()
+    if copy is None:
+        raise RuntimeError("no clipboard copy command")
+    subprocess.run(copy, input=text.encode(), check=True)
 
 
 def clipboard_get():
-    return subprocess.run(["pbpaste"], capture_output=True, check=True).stdout.decode()
+    _, paste = clipboard_isolate.tools()
+    if paste is None:
+        raise RuntimeError("no clipboard paste command")
+    return subprocess.run(paste, capture_output=True, check=True).stdout.decode()
 
 
 def clipboard_after_copy(prev, tries=10):
@@ -289,19 +301,20 @@ def main():
     except ImportError:
         print("tui-selection: no pty support here — skipping")
         return 0
-    if sys.platform != "darwin":
+    if clipboard_isolate.tools()[0] is None:
         print("tui-selection: clipboard probe is macOS-only (pbcopy/pbpaste) — skipping")
         return 0
     saved = None
+    restore_host = not clipboard_isolate.isolated()
     try:
-        saved = clipboard_get()
+        saved = clipboard_get() if restore_host else None
     except Exception:
         print("tui-selection: no clipboard access — skipping")
         return 0
     try:
         err = run()
     finally:
-        if saved is not None:
+        if restore_host and saved is not None:
             try:
                 clipboard_set(saved)
             except Exception:

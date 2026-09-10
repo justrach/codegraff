@@ -65,6 +65,7 @@ pub const theme = @import("theme.zig");
 pub const catalog = @import("catalog.zig");
 pub const dump = @import("dump.zig");
 pub const sim = @import("sim.zig");
+pub const clipboard = @import("clipboard.zig");
 
 test {
     _ = engine;
@@ -112,6 +113,8 @@ test {
     _ = @import("layout_cache.zig");
     _ = @import("selection.zig");
     _ = @import("selection_tests.zig");
+    _ = clipboard;
+    _ = @import("issue_845_tests.zig");
     _ = @import("theme_tint.zig");
     _ = @import("hover.zig");
     _ = @import("hover_tests.zig");

@@ -18,9 +18,9 @@
 //! fork engine behaviour, and nothing here reaches a provider.
 
 const std = @import("std");
-const builtin = @import("builtin");
 
 const app = @import("app.zig");
+const clipboard = @import("clipboard.zig");
 const engine = @import("engine.zig");
 const key_mod = @import("key.zig");
 const osc52 = @import("osc52.zig");
@@ -352,28 +352,7 @@ fn cpAt(s: []const u8, i: usize) Cp {
 pub fn copyText(text: []const u8) bool {
     if (text.len == 0) return false;
     if (engine.g_copy_fn) |f| return f(engine.g_turn_ctx, text);
-    const argv: []const []const u8 = switch (builtin.os.tag) {
-        .macos => &.{"pbcopy"},
-        .linux => &.{ "xclip", "-selection", "clipboard" },
-        else => return false,
-    };
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var child = std.process.spawn(io, .{
-        .argv = argv,
-        .stdin = .pipe,
-        .stdout = .ignore,
-        .stderr = .ignore,
-    }) catch return false;
-    if (child.stdin) |*s| {
-        var wbuf: [4096]u8 = undefined;
-        var w = s.writerStreaming(io, &wbuf);
-        w.interface.writeAll(text) catch {};
-        w.interface.flush() catch {};
-        s.close(io);
-        child.stdin = null;
-    }
-    const term = child.wait(io) catch return false;
-    return term == .exited and term.exited == 0;
+    return clipboard.writeText(text);
 }
 
 // ---------------------------------------------------------------- tests
