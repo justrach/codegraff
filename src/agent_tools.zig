@@ -30,6 +30,7 @@ const schema = @import("schema.zig");
 const isMetaName = schema.isMetaName;
 const eval_control = @import("agent_eval_control.zig");
 const goal_state = @import("goal_state.zig");
+const goal_verify = @import("goal_verify.zig");
 const task_outcome = @import("task_outcome.zig");
 const goal_todo = @import("goal_todo.zig"); // todo_write's replace path + the omitted-completed preserve rule
 const peer_channel = @import("peer_channel.zig");
@@ -344,7 +345,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
             self.completion_refused = true; // blocked, not silence: attempt_completion skips the tool counter, and /loop must give the model a turn to run eval (#318)
             return .{ .text = message, .is_error = true };
         }
-        if (try goal_state.completionGate(self.arena, self)) |refusal| {
+        if (try goal_verify.completionGate(self.arena, self)) |refusal| {
             goal_state.noteCompletionRefused(self); // arm the double-check (across turns) and mark the turn as worked (#318)
             if (!self.sub) engine_sink.forAgent(self).emit(self.io, .completion_deferred); // root-only notice, as ever
             return .{ .text = refusal, .is_error = true };

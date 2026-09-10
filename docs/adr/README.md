@@ -109,6 +109,7 @@ record only when you need the evidence or the edge cases.
 | [0097](0097-isolate-probe-clipboards.md) | Offline PTY probes get private clipboard commands per process; direct probe runs retain OS clipboard integration. |
 | [0098](0098-orphan-listeners-are-not-stop-authority.md) | Legacy listener discovery is read-only; stop authority requires verified ownership, port preflight checks both families, and unknown browser visibility protects listening jobs. |
 | [0099](0099-gui-saved-sessions-are-snapshots.md) | A saved-session GET is a snapshot with unknown live status; the GUI must not infer the REPL finished. |
+| [0100](0100-publication-claims-and-verified-completion.md) | Non-draft PRs fail closed on CI/Verification/helper-only claims; artifact presence ACK is not ownership; recipe success is verified task success. |
 
 
 ## When to write one
