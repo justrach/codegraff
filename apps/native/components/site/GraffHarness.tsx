@@ -22,8 +22,9 @@ import FilesPane from "@/components/site/FilesPane";
 import BrowserPane from "@/components/site/DesktopBrowserPane";
 import { annotationsBlock, type BrowserPin } from "@/lib/browser/annotations";
 import { browserClose, browserHandle, browserNav } from "@/lib/browser-client";
-import TaskRows from "@/components/primitives/TaskRows";
 import ChatTranscript from "./ChatTranscript";
+import TasksSidebar from "./TasksSidebar";
+import { MAX_COLUMNS, SPLIT_LIMIT_MESSAGE, splitLimitReached } from "./harness-split";
 import { useDesktopShortcuts } from "./useDesktopShortcuts";
 import EmptyState from "@/components/site/ChatEmpty";
 import {
@@ -55,9 +56,6 @@ import {
 
 /** Whether the sidecar browser pane was open, restored after a reload. */
 const BROWSER_OPEN_KEY = "graff.native.browser.open";
-
-/** Columns the split view will show at once, the active chat included. */
-const MAX_COLUMNS = 4;
 
 /** Rows the sidebar previews; the library pages the rest. */
 const SIDEBAR_PAGE = 12;
@@ -109,13 +107,15 @@ export default function GraffHarness() {
   // The sidecar browser: one Chrome tab per chat, and the pins the user
   // drops on it, which ride ahead of the chat's next prompt.
   const [browserOpen, setBrowserOpen] = useBrowserVisibility(BROWSER_OPEN_KEY, (chat) => {
-    const target = chats.find(c => chatHandle(pageRef.current, c.id) === chat);
-    if (target) { focusChat(target.id); setFilesOpen(false); } return !!target;
+    const target = chats.find(c => chat ? chatHandle(pageRef.current, c.id) === chat : c.id === activeId);
+    if (target) { focusChat(target.id); setFilesOpen(false); } return target ? chatHandle(pageRef.current, target.id) : false;
   });
   // The conversation library: every saved chat, paged and searchable. It takes
   // the whole chat area, so opening it leaves the other side panes.
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [conversationsOpen, setConversationsOpen] = useState(false);
+  const [tasksOpen, setTasksOpen] = useState(false);
+  const [splitNotice, setSplitNotice] = useState<string | null>(null);
   const openConversations = () => {
     setProjectsOpen(false);
     setAgentsOpen(false);
@@ -152,9 +152,6 @@ export default function GraffHarness() {
     .slice(0, MAX_COLUMNS);
   const columnKey = columnIds.join(",");
   const { paneRef, tailing } = useChatScroll(chats, columnKey);
-  const active = chatThread.messages.length > 0;
-  const busy = busyIds.has(chatThread.id);
-  const chatModel = chatThread.model ?? model ?? undefined;
   const sessionId = sessionIds[chatThread.id] ?? null;
   const handleOf = (chatId: number) => chatHandle(pageRef.current, chatId);
   const setBusyFor = (chatId: number, on: boolean) =>
@@ -364,6 +361,7 @@ export default function GraffHarness() {
           : {
               ...c,
               title,
+              snapshot: undefined,
               messages: [
                 ...c.messages,
                 { id: userId, role: "user", text: trimmed },
@@ -480,7 +478,7 @@ export default function GraffHarness() {
       const id = ++chatIdRef.current;
       const messages: Msg[] = loaded.messages.map(m => ({ id: ++msgIdRef.current, ...m }));
       sessionNamesRef.current.set(id, name);
-      const next = [...chatsRef.current, { id, title: loaded.meta.title ?? name, messages, model: loaded.meta.model ?? undefined, session: name, cwd }];
+      const next = [...chatsRef.current, { id, title: loaded.meta.title ?? name, messages, model: loaded.meta.model ?? undefined, session: name, cwd, snapshot: loaded.snapshot }];
       chatsRef.current = next; setChats(next);
       selectStored(id, cwd);
       void requireSession(id, false, loaded.meta.model ?? undefined).catch(() => undefined);
@@ -515,7 +513,11 @@ export default function GraffHarness() {
   /** Another chat beside the ones on screen, in the workspace the active
    * chat is in. Up to four columns; past that they are too narrow to read. */
   const addPane = () => {
-    if (columnIds.length >= MAX_COLUMNS) return;
+    if (splitLimitReached(columnIds.length)) {
+      setSplitNotice(SPLIT_LIMIT_MESSAGE);
+      return;
+    }
+    setSplitNotice(null);
     const id = (chatIdRef.current += 1);
     openChat(id);
     setPanes([...columnIds, id]);
@@ -639,7 +641,7 @@ export default function GraffHarness() {
 
             {hasMessages ? (
               <div className="flex min-h-0 flex-1 flex-col">
-                <ChatTranscript key={thread.id} messages={thread.messages} register={paneRef(thread.id)} following={isFollowing} onOpenPath={openPath} onReview={openChanges} />
+                <ChatTranscript key={thread.id} messages={thread.messages} register={paneRef(thread.id)} following={isFollowing} onOpenPath={openPath} onReview={openChanges} snapshot={thread.snapshot} />
                 <div className={`shrink-0 bg-page px-4 ${compactPane ? "py-2" : "pt-3 pb-6 sm:px-8"}`}>
                   <div className="mx-auto max-w-[720px]">
                     {threadPins > 0 && (
@@ -682,7 +684,7 @@ export default function GraffHarness() {
                     <PromptBar
                       demo={false}
                       tall={!compactPane}
-                      placeholder={threadBusy ? "Queue a follow-up…" : "Follow up"}
+                      placeholder={threadBusy ? "Queue a follow-up…" : thread.snapshot ? "Continue here (starts a GUI session)" : "Follow up"}
                       models={models}
                       commands={commands[thread.id] ?? catalogCommands}
                       root={cwdOf(thread)}
@@ -783,6 +785,8 @@ export default function GraffHarness() {
           browserOpen={browserOpen} onBrowser={() => { setAgentsOpen(false); setProjectsOpen(false); setConversationsOpen(false); setFilesOpen(false); setBrowserOpen(open => !open); }} pinCount={pinCount}
           terminalVisible={terminalVisible} toggleTerminal={toggleTerminal} agentsOpen={agentsOpen}
           workingAgents={workingAgents}
+          tasksOpen={tasksOpen} taskCount={paneTodos.length} onTasks={() => setTasksOpen(open => !open)}
+          splitNotice={splitNotice}
           onAgents={() => { setProjectsOpen(false); setAgentsOpen(!agentsOpen); setFilesOpen(false); setBrowserOpen(false); setConversationsOpen(false); }} />
         <ConversationOpenNotice request={savedConversation.request} onCancel={savedConversation.cancel} onRetry={savedConversation.retry} />
         <div className="flex min-h-0 flex-1 gap-2.5">
@@ -825,25 +829,8 @@ export default function GraffHarness() {
             />
           )}
 
-          {!projectsOpen && !filesOpen && !browserOpen && !conversationsOpen && active && paneTodos.length > 0 && (
-            <aside
-              className="hidden w-[360px] shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-page lg:flex"
-              style={{ animation: "fade-in 300ms ease both" }}
-            >
-              <div className="flex h-11 shrink-0 items-center border-b border-line px-4">
-                <span className="text-[13px] font-semibold text-ink">Tasks</span>
-              </div>
-              <div className="min-h-0 flex-1 overflow-y-auto p-4">
-                <TaskRows
-                  variant="List"
-                  items={paneTodos.map((todo) => ({
-                    key: todo.id,
-                    label: todo.content,
-                    status: todo.status === "in_progress" ? "in_progress" : todo.status === "completed" ? "completed" : "pending",
-                  }))}
-                />
-              </div>
-            </aside>
+          {!projectsOpen && !filesOpen && !browserOpen && !conversationsOpen && tasksOpen && (
+            <TasksSidebar items={paneTodos} onClose={() => setTasksOpen(false)} />
           )}
         </div>
         {terminalUsed && chatCwd && <TerminalPane key={chatCwd} cwd={chatCwd} visible={terminalVisible} onHide={() => setTerminalVisible(false)} />}

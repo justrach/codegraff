@@ -157,6 +157,32 @@ test "#620: a still-running foreground wait promotes instead of killing" {
     try std.testing.expect(std.mem.indexOf(u8, snap.text, "running") != null);
 }
 
+test "#850: a bounded promote leaves the child on bash_output and bash_kill" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+    jobs.g_jobs = .{};
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const id = (try jobs.spawnJob(gpa, io, "sleep 8; printf never")).id;
+    defer jobs.jobsReap(gpa, io);
+    const waited = try jobs.waitForeground(gpa, io, id, 200);
+    defer switch (waited) {
+        .running => |r| gpa.free(r.output),
+        .done => |d| gpa.free(d.output),
+        .cancelled => |c| gpa.free(c.output),
+    };
+    try std.testing.expect(waited == .running);
+    const snap = try jobs.jobOutput(gpa, io, id, 0);
+    defer gpa.free(snap.text);
+    try std.testing.expect(std.mem.indexOf(u8, snap.text, "running") != null);
+    const killed = try jobs.jobKill(gpa, io, id);
+    defer gpa.free(killed.text);
+    try std.testing.expect(!killed.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, killed.text, "killed") != null);
+    const after = try jobs.jobOutput(gpa, io, id, 2_000);
+    defer gpa.free(after.text);
+    try std.testing.expect(std.mem.indexOf(u8, after.text, "running") == null);
+}
+
 test "#620: a short foreground command finishes as done, not a job" {
     if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
     jobs.g_jobs = .{};

@@ -131,7 +131,18 @@ app.whenReady().then(async () => {
     win.webContents.focus();
     win.webContents.send('browser-event', { chat: tab.chat, type: 'pin', pin });
   });
-  installExternalLinks(win.webContents, backend.origin);
+  const linkSettings = require('./link-settings.cjs').linkSettings(app.getPath('userData'));
+  ipcMain.handle('link-settings', (event, action, value) => {
+    trusted(event);
+    if (action === 'load') return linkSettings.load();
+    if (action === 'save') return linkSettings.save(value);
+    throw new Error('Unknown link settings action');
+  });
+  installExternalLinks(win.webContents, backend.origin, async url => {
+    if (await linkSettings.load() === 'graff') {
+      if (!win.isDestroyed()) win.webContents.send('browser-event', { type: 'open-link', url });
+    } else await require('electron').shell.openExternal(url);
+  });
   win.on('minimize', () => { if (browser.visible) browser.hide(browser.visible); });
   win.on('restore', () => win.webContents.send('browser-event', { type: 'layout' }));
   const updateMenu = require('./updates.cjs').installUpdates({ app, win, ipcMain, trusted, resources });

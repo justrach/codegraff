@@ -18,11 +18,24 @@ async function runComposerInteractions({ win, origin, output }) {
     await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.focus();Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,${JSON.stringify(text)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
     await pause();
   };
+  const frames = () => js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))');
   const pointer = async selector => {
-    const point = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.scrollIntoView({block:'nearest'});const r=e.getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
-    wc.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...point });
-    wc.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...point });
-    await pause();
+    await js(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'nearest',behavior:'instant'})`);
+    for (let attempt = 0; attempt < 30; attempt++) {
+      await frames();
+      const point = await js(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
+      // Hover can scroll the active option or reposition its portal. Settle it
+      // before pressing, then verify that the coordinates still hit this row.
+      wc.sendInputEvent({ type: 'mouseMove', ...point });
+      await frames();
+      const ready = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)}),r=e.getBoundingClientRect();return Math.round(r.x+r.width/2)===${point.x}&&Math.round(r.y+r.height/2)===${point.y}&&e.contains(document.elementFromPoint(${point.x},${point.y}));})()`);
+      if (!ready) continue;
+      wc.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...point });
+      wc.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...point });
+      await pause();
+      return;
+    }
+    throw Error(`Pointer target did not settle: ${selector}`);
   };
   const draft = id => js(`document.querySelector('[data-chat="${id}"] textarea').value`);
   const focused = () => js(`Number(document.querySelector('[data-chat][data-focused="true"]').dataset.chat)`);
@@ -53,6 +66,9 @@ async function runComposerInteractions({ win, origin, output }) {
     await pointer('[data-composer-menu] [role="option"][title^="$gui-theme"]');
     assert.equal(await js('document.querySelector("textarea").value'), '$gui-theme ', 'A portaled skill selection must reach the composer');
 
+    // Do not let a stationary pointer hover newly mounted options during IME checks.
+    wc.sendInputEvent({ type: 'mouseMove', x: 1, y: 1 });
+    await frames();
     await input('/');
     await wait(`document.querySelectorAll('[data-composer-menu] [role="option"]').length>10`);
     const firstOption = await js(`document.querySelector('textarea').getAttribute('aria-activedescendant')`);
@@ -86,11 +102,17 @@ async function runComposerInteractions({ win, origin, output }) {
     await key('2', { metaKey: true });
     assert.equal(await draft(second), 'Second unsent draft', 'An older upload must not reset another chat');
     assert.equal(await js(`!!document.querySelector('[aria-label="Remove composer-image.png"]')`), false, 'Attachments never move between chats');
-    await key('1', { metaKey: true });
-
+    // Delay the first shortcut's focus frame until a newer navigation has won.
+    await js(`(()=>{const raf=window.requestAnimationFrame,frames=[];window.requestAnimationFrame=callback=>{frames.push(callback);return 0;};
+      try{document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'1',metaKey:true,bubbles:true,cancelable:true}));}
+      finally{window.requestAnimationFrame=raf;}window.flushOldFocus=()=>frames.forEach(callback=>callback(performance.now()));})()`);
+    await wait(`document.querySelector('[data-chat][data-focused="true"]')?.dataset.chat==='${first}'`);
     await key('d', { metaKey: true });
     await wait(`document.querySelectorAll('[data-chat]').length===2`);
     const split = await focused();
+    assert.notEqual(split, first, 'A new split becomes active');
+    await js('window.flushOldFocus()');
+    assert.equal(await focused(), split, 'An older shortcut focus frame must not steal the new split');
     await input('Keep this split draft');
     await pointer(`[data-chat="${first}"] textarea`);
     // Use a native key event so an accidental textarea newline is observable.

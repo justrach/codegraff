@@ -26,6 +26,7 @@ import sys
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
+from clipboard_fixture import private_clipboard
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"
@@ -105,12 +106,13 @@ def terminate_group(proc: subprocess.Popen[str]) -> None:
     proc.kill()
 
 
-def run_command(argv: list[str], timeout: float, cwd: Path | None = None) -> tuple[int, str, float, bool]:
+def run_command(argv: list[str], timeout: float, cwd: Path | None = None, env: dict[str, str] | None = None) -> tuple[int, str, float, bool]:
     """Run argv in its own session. On timeout, kill the whole group."""
     t0 = time.monotonic()
     proc = subprocess.Popen(
         argv,
         cwd=str(cwd or ROOT),
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -130,10 +132,14 @@ def run_command(argv: list[str], timeout: float, cwd: Path | None = None) -> tup
 
 
 def run_probe(script: str, binary: str, timeout: float) -> tuple[str, int, str, float, bool]:
-    status, blob, elapsed, timed_out = run_command(
-        [sys.executable, str(SCRIPTS / script), binary],
-        timeout,
-    )
+    # Each probe and its child use a private command-backed clipboard. A pool
+    # lock alone cannot protect the user's clipboard from another test process.
+    with private_clipboard() as env:
+        status, blob, elapsed, timed_out = run_command(
+            [sys.executable, str(SCRIPTS / script), binary],
+            timeout,
+            env=env,
+        )
     return script, status, blob, elapsed, timed_out
 
 

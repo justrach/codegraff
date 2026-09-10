@@ -9,7 +9,9 @@ export type Msg =
 export type Chat = { id: number; title: string | null; messages: Msg[]; model?: string; session?: string; cwd?: string;
   /** The model named this tab from its first prompt: the session poller,
    * which reads graff's own saved title, must leave it alone. */
-  titledByModel?: boolean };
+  titledByModel?: boolean;
+  /** Opened from a saved file — live REPL status is unknown (#839). */
+  snapshot?: boolean };
 
 export function newPageToken(): string {
   return Math.random().toString(36).slice(2, 10);

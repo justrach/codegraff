@@ -4,8 +4,29 @@ const path = require('node:path');
 const FIRST_CHECK_MS = 30_000;
 const POLL_MS = 6 * 60 * 60 * 1000;
 
-function createUpdates({ updater, version, available = true, automatic = true, notify, save = () => {}, onReady }) {
-  let state = { status: available ? 'idle' : 'unavailable', currentVersion: version, automatic, interactive: false };
+function unavailableMessage(reason) {
+  return {
+    smoke: 'Update checks are disabled in this test build.',
+    platform: 'Automatic updates are available on the macOS desktop app.',
+    unpackaged: 'This build is not a packaged Codegraff app, so updates are disabled.',
+    volume: 'Move Codegraff from the disk image into Applications, then check again.',
+    config: 'This build has no update configuration.',
+  }[reason] || 'Install a signed release in Applications to receive updates.';
+}
+
+function updateAvailability({ app, resources, env = process.env, execPath = process.execPath, platform = process.platform }) {
+  if (env.GRAFF_ELECTRON_SMOKE) return { available: false, reason: 'smoke' };
+  if (platform !== 'darwin') return { available: false, reason: 'platform' };
+  if (!app.isPackaged) return { available: false, reason: 'unpackaged' };
+  if (String(execPath).startsWith('/Volumes/')) return { available: false, reason: 'volume' };
+  if (!require('node:fs').existsSync(require('node:path').join(resources, 'app-update.yml'))) return { available: false, reason: 'config' };
+  return { available: true, reason: null };
+}
+
+function createUpdates({ updater, version, available = true, automatic = true, notify, save = () => {}, onReady, unavailableReason }) {
+  const blocked = !available;
+  const blockedMessage = blocked ? unavailableMessage(unavailableReason) : undefined;
+  let state = { status: available ? 'idle' : 'unavailable', currentVersion: version, automatic: available ? automatic : false, interactive: false, message: blockedMessage };
   let checking = false;
   const emit = patch => { state = { ...state, ...patch }; notify({ ...state }); };
   if (available) {
@@ -38,7 +59,7 @@ function createUpdates({ updater, version, available = true, automatic = true, n
         if (interactive) emit({ interactive: true });
         return;
       }
-      if (!available) { emit({ interactive, message: 'Install a signed release in Applications to receive updates.' }); return; }
+      if (!available) { emit({ interactive, message: blockedMessage }); return; }
       checking = true;
       emit({ status: 'checking', interactive, message: undefined });
       try {
@@ -65,10 +86,10 @@ function installUpdates({ app, win, ipcMain, trusted, resources }) {
   const prefs = path.join(app.getPath('userData'), 'updates.json');
   let automatic = true;
   try { automatic = JSON.parse(fs.readFileSync(prefs, 'utf8')).automatic !== false; } catch {}
-  const available = app.isPackaged && process.platform === 'darwin' && !process.env.GRAFF_ELECTRON_SMOKE &&
-    !process.execPath.startsWith('/Volumes/') && fs.existsSync(path.join(resources, 'app-update.yml'));
+  const gate = updateAvailability({ app, resources });
+  const available = gate.available;
   let autoItem;
-  const controller = createUpdates({ version: app.getVersion(), automatic, available,
+  const controller = createUpdates({ version: app.getVersion(), automatic, available, unavailableReason: gate.reason,
     updater: available ? require('./updater-runtime.cjs') : null,
     save: value => { fs.mkdirSync(path.dirname(prefs), { recursive: true }); fs.writeFileSync(prefs, JSON.stringify({ automatic: value })); },
     notify: state => {
@@ -90,8 +111,8 @@ function installUpdates({ app, win, ipcMain, trusted, resources }) {
       }).catch(() => {});
     },
   });
-  autoItem = { label: 'Automatically Download Updates', type: 'checkbox', checked: automatic,
-    click: item => controller.setAutomatic(item.checked) };
+  autoItem = { label: 'Automatically Download Updates', type: 'checkbox', checked: available && automatic,
+    enabled: available, click: item => controller.setAutomatic(item.checked) };
   ipcMain.handle('updates', async (event, action, value) => {
     trusted(event);
     if (action === 'check') await controller.check(true);
@@ -105,8 +126,8 @@ function installUpdates({ app, win, ipcMain, trusted, resources }) {
   first.unref(); repeat.unref();
   app.once('before-quit', () => { clearTimeout(first); clearInterval(repeat); });
   return [
-    { label: 'Check for Updates…', click: () => void controller.check(true) },
+    { label: 'Check for Updates…', enabled: available, click: () => void controller.check(true) },
     autoItem,
   ];
 }
-module.exports = { createUpdates, installUpdates, FIRST_CHECK_MS, POLL_MS };
+module.exports = { createUpdates, installUpdates, updateAvailability, unavailableMessage, FIRST_CHECK_MS, POLL_MS };

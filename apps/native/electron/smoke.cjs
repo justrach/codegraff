@@ -52,7 +52,7 @@ async function run({ win, browser, automation, backend, metrics, activity, compu
     await browser.command('smoke', 'pick', { enabled: true });
     const wc = browser.tabs.get('smoke').view.webContents;
     const point = await wc.executeJavaScript('(()=>{const r=document.querySelector("#button").getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()');
-    win.show(); win.focus(); wc.focus(); await sleep(300);
+    require('./test-window.cjs').presentWindow(win); await sleep(300);
     wc.sendInputEvent({type:'mouseMove', ...point});
     wc.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
     wc.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 });

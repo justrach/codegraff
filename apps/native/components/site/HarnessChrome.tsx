@@ -1,6 +1,7 @@
 import { IconChat, IconFolder, IconGlobe } from "@/lib/icons";
 import { useEffect, useRef } from "react";
 import { ThemeToggle } from "./ThemeToggle";
+import DesktopSettings from "./DesktopSettings";
 import type { Chat } from "./harness-types";
 import reviewStyles from "./ChangesPane.module.css";
 type Props = {
@@ -10,11 +11,12 @@ type Props = {
   filesOpen: boolean; onFiles(): void; chatCwd?: string; workspaceName: string; onFolder(): void;
   openChanges(): void; browserOpen: boolean; onBrowser(): void; pinCount: number;
   terminalVisible: boolean; toggleTerminal(): void; agentsOpen: boolean; onAgents(): void; workingAgents?: number;
+  tasksOpen?: boolean; taskCount?: number; onTasks?: () => void; splitNotice?: string | null;
 };
 export default function HarnessChrome({chats, activeId, busyIds, focusChat, closeChat, newChat,
   conversationsOpen, openConversations, split, toggleSplit, filesOpen, onFiles, chatCwd,
   workspaceName, onFolder, openChanges, browserOpen, onBrowser, pinCount, terminalVisible,
-  toggleTerminal, agentsOpen, onAgents, workingAgents = 0}: Props) {
+  toggleTerminal, agentsOpen, onAgents, workingAgents = 0, tasksOpen = false, taskCount = 0, onTasks, splitNotice}: Props) {
   const frame = useRef<HTMLDivElement>(null);
   useEffect(() => { frame.current?.querySelector(`[data-tab-id="${activeId}"]`)?.scrollIntoView({block: "nearest", inline: "nearest"}); }, [activeId]);
   return (
@@ -140,8 +142,16 @@ export default function HarnessChrome({chats, activeId, busyIds, focusChat, clos
         </button>
         <button aria-label="Toggle terminal" aria-pressed={terminalVisible} title="Terminal (⌘J)" onClick={toggleTerminal} className="rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></svg></button>
         <button aria-label="Show agents" aria-pressed={agentsOpen} onClick={onAgents} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="9" cy="7" r="3"/><path d="M3 20v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v2"/></svg><span data-toolbar-label>Agents{workingAgents > 0 ? ` (${workingAgents})` : ""}</span>{workingAgents > 0 && <span className="size-1.5 shrink-0 animate-pulse rounded-full" style={{ background: "var(--accent)" }} aria-hidden />}</button>
+        {onTasks && (
+          <button type="button" aria-pressed={tasksOpen} aria-label="Show tasks" title="Tasks — open on demand, not when a chat has a list" disabled={taskCount === 0 && !tasksOpen} onClick={onTasks}
+            className={`flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs hover:bg-hover disabled:opacity-40 ${tasksOpen ? "bg-hover-2 text-ink" : "text-ink-2"}`}>
+            <span data-toolbar-label>Tasks{taskCount > 0 ? ` (${taskCount})` : ""}</span>
+          </button>
+        )}
         <ThemeToggle />
+        <DesktopSettings />
       </div>
+      {splitNotice && <p role="status" data-split-limit className="border-t border-line px-3 py-1.5 text-[12px] text-ink-2">{splitNotice}</p>}
     </div>
   );
 

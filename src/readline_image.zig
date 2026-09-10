@@ -60,10 +60,24 @@ pub fn right(text: []const u8, cur: usize) ?usize {
     return null;
 }
 
+/// Word motion/deletion must not enter an image chip. Modified Backspace used
+/// the generic word boundary and turned `[Image #2] ` into literal `[Image`.
+pub fn prevWord(text: []const u8, cur: usize, pastes: *const PasteStore) usize {
+    return left(text, cur) orelse pastes.prevWord(text, cur);
+}
+
+pub fn nextWord(text: []const u8, cur: usize, pastes: *const PasteStore) usize {
+    return right(text, cur) orelse pastes.nextWord(text, cur);
+}
+
 /// Drop composer slots the buffer no longer names and rewrite remaining `#N`s.
 pub fn afterEdit(root: *Agent, gpa: Allocator, buf: *std.ArrayList(u8), cur: *usize) void {
+    var composer_slots: u16 = 0;
+    for (root.pending_images[0..root.pending_image_len], 0..) |img, i| {
+        if (img.from_composer) composer_slots |= @as(u16, 1) << @intCast(i);
+    }
     const remap = vision_queue.retainReferenced(root, buf.items);
-    rewriteChips(gpa, buf, cur, remap);
+    rewriteChips(gpa, buf, cur, remap, composer_slots);
 }
 
 pub fn deleteAtom(root: *Agent, gpa: Allocator, buf: *std.ArrayList(u8), cur: *usize, pastes: *PasteStore, from: usize, to: usize) void {
@@ -80,7 +94,7 @@ pub fn clearLine(root: *Agent, gpa: Allocator, buf: *std.ArrayList(u8), cur: *us
 }
 
 /// Rewrite `[Image #old]` to the compacted chip numbers. Identity is a no-op.
-pub fn rewriteChips(gpa: Allocator, buf: *std.ArrayList(u8), cur: *usize, remap: vision_queue.Remap) void {
+pub fn rewriteChips(gpa: Allocator, buf: *std.ArrayList(u8), cur: *usize, remap: vision_queue.Remap, composer_slots: u16) void {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(gpa);
     var i: usize = 0;
@@ -89,6 +103,20 @@ pub fn rewriteChips(gpa: Allocator, buf: *std.ArrayList(u8), cur: *usize, remap:
     while (i < buf.items.len) {
         if (imageChipAt(buf.items, i)) |chip| {
             const new_n: u8 = if (chip.n >= 1 and chip.n <= vision_queue.cap) remap[chip.n - 1] else 0;
+            const was_composer = chip.n >= 1 and chip.n <= vision_queue.cap and
+                (composer_slots & (@as(u16, 1) << @intCast(chip.n - 1))) != 0;
+            if (new_n == 0 and was_composer) {
+                changed = true;
+                var end = chip.end;
+                if (end < buf.items.len and buf.items[end] == ' ') end += 1;
+                if (cur.* >= end) {
+                    new_cur -= end - chip.start;
+                } else if (cur.* > chip.start) {
+                    new_cur = out.items.len;
+                }
+                i = end;
+                continue;
+            }
             var tmp: [20]u8 = undefined;
             const repl = if (new_n == 0 or new_n == chip.n)
                 buf.items[chip.start..chip.end]
@@ -147,6 +175,15 @@ test "left/right treat an image chip as one atom (#702)" {
     try std.testing.expect(right(text, 14) == null);
 }
 
+test "word deletion keeps repeated image chips atomic" {
+    const gpa = std.testing.allocator;
+    var pastes: PasteStore = .{};
+    defer pastes.deinit(gpa);
+    const text = "[Image #1] [Image #2] ";
+    try std.testing.expectEqual(@as(usize, 11), prevWord(text, text.len, &pastes));
+    try std.testing.expectEqual(@as(usize, text.len), nextWord(text, 11, &pastes));
+}
+
 test "afterEdit drops an abandoned chip and remaps the rest (#702)" {
     const gpa = std.testing.allocator;
     var root: Agent = .{
@@ -173,6 +210,42 @@ test "afterEdit drops an abandoned chip and remaps the rest (#702)" {
     try std.testing.expectEqual(@as(u8, 2), vision_queue.nextChipNumber(&root));
 }
 
+test "duplicate composer payload drops its stale chip before #2 is reused" {
+    const gpa = std.testing.allocator;
+    var root: Agent = .{
+        .gpa = gpa,
+        .arena = gpa,
+        .io = undefined,
+        .client = undefined,
+        .provider = .{ .id = "xai", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "grok-4", .context = 100_000 },
+        .messages = undefined,
+        .sub = false,
+        .label = "test",
+        .out = null,
+    };
+    vision_queue.stage(&root, .{ .media_type = "image/png", .b64 = "AAA", .label = "same.png", .from_composer = true });
+    vision_queue.stage(&root, .{ .media_type = "image/png", .b64 = "AAA", .label = "same.png", .from_composer = true });
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.appendSlice(gpa, "[Image #1] [Image #2] ");
+    var cur: usize = buf.items.len;
+    afterEdit(&root, gpa, &buf, &cur);
+    try std.testing.expectEqualStrings("[Image #1] ", buf.items);
+    try std.testing.expectEqual(@as(usize, buf.items.len), cur);
+    try std.testing.expectEqual(@as(u8, 1), root.pending_image_len);
+
+    vision_queue.stage(&root, .{ .media_type = "image/png", .b64 = "AAA", .label = "same.png" });
+    var marks: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (marks.items) |mark| gpa.free(mark);
+        marks.deinit(gpa);
+    }
+    var pastes: PasteStore = .{};
+    defer pastes.deinit(gpa);
+    insertComposerChip(&root, gpa, &buf, &cur, &marks, &pastes);
+    try std.testing.expectEqualStrings("[Image #1] [Image #2] ", buf.items);
+}
+
 test "rewriteChips remaps #2 to #1 after the first slot is dropped (#702)" {
     const gpa = std.testing.allocator;
     var buf: std.ArrayList(u8) = .empty;
@@ -181,7 +254,7 @@ test "rewriteChips remaps #2 to #1 after the first slot is dropped (#702)" {
     var cur: usize = buf.items.len;
     var remap: vision_queue.Remap = @splat(0);
     remap[1] = 1;
-    rewriteChips(gpa, &buf, &cur, remap);
+    rewriteChips(gpa, &buf, &cur, remap, @as(u16, 1) << 1);
     try std.testing.expectEqualStrings("[Image #1] look", buf.items);
     try std.testing.expectEqual(@as(usize, buf.items.len), cur);
 }

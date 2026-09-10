@@ -66,12 +66,15 @@ try {
     await chmod(sourceBinary, 0o755);
   }
 
+  const sdkManifest = JSON.parse(await readFile(join(SDK_ROOT, "package.json"), "utf8"));
   const nativeTarballs = {};
   for (const [target, packageName] of ALL_TARGETS) {
     const output = run(process.execPath, [
       join(HERE, "package-platform.mjs"),
       "--target", target,
       "--binary", sourceBinary,
+      // The SDK and native releases can differ; match the dependency being resolved.
+      "--version", sdkManifest.optionalDependencies[packageName],
       "--out", packages,
     ], SDK_ROOT);
     const { packageDir } = JSON.parse(output);
@@ -88,7 +91,7 @@ try {
     ),
   };
   await writeFile(join(consumer, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-  npmRun(["install", "--ignore-scripts", "--no-audit", "--no-fund"], consumer);
+  npmRun(["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund"], consumer);
 
   const smoke = `
 import { Harness } from "@codegraff/sdk";

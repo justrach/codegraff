@@ -244,7 +244,7 @@ pub fn readLine(
                 redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
             },
             0x17, 0x1f => { // Ctrl-W / Ctrl-_ → delete previous word
-                const s = pastes.prevWord(buf.items, cur);
+                const s = rl_image.prevWord(buf.items, cur, &pastes);
                 if (s < cur) {
                     rl_image.deleteAtom(root, gpa, buf, &cur, &pastes, s, cur);
                     cur = s;
@@ -337,7 +337,7 @@ pub fn readLine(
                 }
                 const b1 = editByte(in) orelse break; // #396: guarded
                 if (b1 == 0x7f or b1 == 0x08) { // Option/Alt+Delete → delete previous word
-                    const s = pastes.prevWord(buf.items, cur);
+                    const s = rl_image.prevWord(buf.items, cur, &pastes);
                     if (s < cur) {
                         rl_image.deleteAtom(root, gpa, buf, &cur, &pastes, s, cur);
                         cur = s;
@@ -346,17 +346,17 @@ pub fn readLine(
                     continue;
                 }
                 if (b1 == 'b') { // Alt-b → word left
-                    cur = pastes.prevWord(buf.items, cur);
+                    cur = rl_image.prevWord(buf.items, cur, &pastes);
                     redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
                     continue;
                 }
                 if (b1 == 'f') { // Alt-f → word right
-                    cur = pastes.nextWord(buf.items, cur);
+                    cur = rl_image.nextWord(buf.items, cur, &pastes);
                     redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
                     continue;
                 }
                 if (b1 == 'd') { // Alt-d → delete next word
-                    const e = pastes.nextWord(buf.items, cur);
+                    const e = rl_image.nextWord(buf.items, cur, &pastes);
                     if (e > cur) {
                         rl_image.deleteAtom(root, gpa, buf, &cur, &pastes, cur, e);
                         redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
@@ -391,11 +391,11 @@ pub fn readLine(
                         redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
                     },
                     'C' => { // right (word-right with a modifier)
-                        cur = if (word_mod) pastes.nextWord(buf.items, cur) else (rl_image.right(buf.items, cur) orelse pastes.right(cur, buf.items.len));
+                        cur = if (word_mod) rl_image.nextWord(buf.items, cur, &pastes) else (rl_image.right(buf.items, cur) orelse pastes.right(cur, buf.items.len));
                         redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
                     },
                     'D' => { // left (word-left with a modifier)
-                        cur = if (word_mod) pastes.prevWord(buf.items, cur) else (rl_image.left(buf.items, cur) orelse pastes.left(cur));
+                        cur = if (word_mod) rl_image.prevWord(buf.items, cur, &pastes) else (rl_image.left(buf.items, cur) orelse pastes.left(cur));
                         redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
                     },
                     'H' => {

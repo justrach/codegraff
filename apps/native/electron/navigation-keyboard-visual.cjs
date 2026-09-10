@@ -18,7 +18,7 @@ async function runNavigationKeyboard({win, origin}) {
   const modalContainsFocus = () => js(`document.querySelector('[aria-modal="true"]')?.contains(document.activeElement)`);
   const focusDiagnostic = () => js(`JSON.stringify({hasFocus:document.hasFocus(),active:document.activeElement?.outerHTML.slice(0,2500),modal:document.querySelector('[aria-modal="true"]')?.getAttribute('aria-label')})`);
 
-  await wc.loadURL(origin); win.show(); win.focus();
+  await wc.loadURL(origin); require('./test-window.cjs').presentWindow(win);
   await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
   wc.send('desktop-action', 'new');
   await wait(`document.querySelectorAll('[aria-label="Close tab"]').length===2`);

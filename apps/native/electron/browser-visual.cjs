@@ -13,32 +13,38 @@ async function runBrowserVisuals({ win: fixtureWindow, origin, output }) {
   });
   await new Promise(r => fixture.listen(0, '127.0.0.1', r));
   const url = `http://127.0.0.1:${fixture.address().port}/`;
-  const win = new BrowserWindow({ width: 1000, height: 760, show: true, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true } });
+  const { presentWindow, testWindowOptions } = require('./test-window.cjs');
+  const win = new BrowserWindow(testWindowOptions({ width: 1000, height: 760, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true } }));
   const wc = win.webContents, js = code => wc.executeJavaScript(code);
   const browser = new BrowserTabs(win, event => wc.send('browser-event', event));
   ipcMain.handle('browser', (_event, { chat, method, params }) => ['find', 'zoom'].includes(method) ? browserAction(browser, chat, method, params) : browser.command(chat, method, params));
   const pin = (event, value) => { if (event.sender === browser.tabs.get('browser-test')?.view?.webContents) { wc.focus(); wc.send('browser-event', { type: 'pin', chat: 'browser-test', pin: value }); } };
   const cancelled = event => { if (event.sender === browser.tabs.get('browser-test')?.view?.webContents) wc.send('browser-event', { type: 'pick-cancelled', chat: 'browser-test' }); };
   ipcMain.on('browser-pin', pin); ipcMain.on('browser-pick-cancelled', cancelled);
-  const wait = async fn => { for (let i = 0; i < 100; i++) { if (await fn()) return; await sleep(50); } throw Error('Browser visual timed out'); };
+  const wait = async (fn, what) => { for (let i = 0; i < 100; i++) { if (await fn()) return; await sleep(50); } throw Error(`Browser visual timed out: ${what}`); };
   try {
     fixtureWindow.hide();
+    presentWindow(win, undefined, { mapped: true });
     await win.loadURL(`${origin}/visual-tests/browser?url=${encodeURIComponent(url)}`);
-    await wait(() => js(`!!document.querySelector('[aria-pressed="false"]:not(:disabled)')`));
-    await wait(() => browser.tabs.get('browser-test')?.view?.webContents.getURL() === url);
+    await wait(() => js(`!!document.querySelector('[aria-pressed="false"]:not(:disabled)')`), 'pin control');
+    await wait(() => browser.tabs.get('browser-test')?.view?.webContents.getURL() === url, 'fixture URL');
     const page = browser.tabs.get('browser-test').view.webContents;
-    await wait(async () => !page.isLoading());
+    const picking = () => page.executeJavaScript(`!![...document.querySelectorAll('div')].some(el => el.textContent === 'Click an element to pin · Esc to cancel')`);
+    await wait(async () => !page.isLoading(), 'page idle');
+    await wait(() => { const rect = browser.tabs.get('browser-test')?.rect; return rect && rect.width > 80 && rect.height > 80; }, 'page bounds');
     await js(`document.querySelector('button[aria-pressed]').click()`);
-    await wait(() => js(`document.querySelector('button[aria-pressed]').getAttribute('aria-pressed')==='true'`));
-    win.focus(); page.focus();
+    await wait(() => js(`document.querySelector('button[aria-pressed]').getAttribute('aria-pressed')==='true'`), 'pick armed');
+    await wait(() => picking(), 'pick mode on page');
+    page.focus();
     page.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
-    await wait(() => js(`document.querySelector('button[aria-pressed]').getAttribute('aria-pressed')==='false'`));
-    await js(`document.querySelector('button[aria-pressed]').click()`); await sleep(100);
+    await wait(() => js(`document.querySelector('button[aria-pressed]').getAttribute('aria-pressed')==='false'`), 'Escape cancel');
+    await js(`document.querySelector('button[aria-pressed]').click()`);
+    await wait(() => picking(), 'pick mode after recancel');
     page.sendInputEvent({ type: 'mouseMove', x: 100, y: 80 });
     page.sendInputEvent({ type: 'mouseDown', x: 100, y: 80, button: 'left', clickCount: 1 });
     page.sendInputEvent({ type: 'mouseUp', x: 100, y: 80, button: 'left', clickCount: 1 });
-    await wait(() => js(`!!document.querySelector('[aria-label="Note for pin 1"]')`));
-    await wait(() => page.executeJavaScript(`document.querySelector('[data-graff-pins]')?.textContent==='1'`));
+    await wait(() => js(`!!document.querySelector('[aria-label="Note for pin 1"]')`), 'pin note');
+    await wait(() => page.executeJavaScript(`document.querySelector('[data-graff-pins]')?.textContent==='1'`), 'pin marker');
     assert.equal(await page.executeJavaScript('document.body.dataset.activated || document.body.dataset.clicked || null'), null, 'pinning must not activate the target');
     assert.equal(await js(`document.activeElement.getAttribute('aria-label')`), 'Note for pin 1');
     for (const zoom of [1, 1.25]) {
@@ -56,7 +62,7 @@ async function runBrowserVisuals({ win: fixtureWindow, origin, output }) {
     }
     fs.writeFileSync(path.join(output, 'browser-pin.png'), (await wc.capturePage()).toPNG());
     await js(`document.querySelector('[aria-label="Remove pin 1"]').click()`);
-    await wait(() => page.executeJavaScript(`!document.querySelector('[data-graff-pins]')?.textContent`));
+    await wait(() => page.executeJavaScript(`!document.querySelector('[data-graff-pins]')?.textContent`), 'pin removed');
     await wc.loadURL('about:blank'); // Leave the pane so its ResizeObserver no longer reattaches it.
     browser.hide('browser-test');
     const hidden = await browserAction(browser, 'browser-test', 'screenshot'); assert.ok(hidden.data.length > 100);
@@ -66,7 +72,7 @@ async function runBrowserVisuals({ win: fixtureWindow, origin, output }) {
     console.log('Browser visuals passed: pin/cancel/numbered markers/remove, no target activation, zoom geometry, real and hidden PNG captures, suspended errors.');
   } finally {
     ipcMain.removeHandler('browser'); ipcMain.removeListener('browser-pin', pin); ipcMain.removeListener('browser-pick-cancelled', cancelled);
-    browser.closeAll(); win.destroy(); fixture.close(); fixtureWindow.show();
+    browser.closeAll(); win.destroy(); fixture.close(); presentWindow(fixtureWindow);
   }
 }
 module.exports = { runBrowserVisuals };

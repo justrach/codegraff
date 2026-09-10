@@ -135,7 +135,7 @@ async function runProjectRecovery({ win, origin, output }) {
   assert.ok(await js(`document.querySelector('[data-project-context]').textContent.includes('/demo/recovered')`),'A late folder listing cannot replace the chosen folder');
   await wc.loadURL(origin);
   await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
-  win.show(); win.focus();
+  require('./test-window.cjs').presentWindow(win);
   console.log('Project recovery passed: initial/paged retry, stale searches, resume retry/cancel, navigation races, and typed folder validation.');
 }
 module.exports={runProjectRecovery};

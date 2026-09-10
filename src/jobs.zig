@@ -42,9 +42,6 @@ pub fn toolRunOptions(cwd: ?[]const u8) CappedRunOptions {
     };
 }
 
-// `graff worktree …` + the per-turn checkpoint commit live in worktree_cmd.zig
-// (moved out when the pool grew its idle lifecycle, #199); callers still reach
-// them through jobs.
 const worktree_cmd = @import("worktree_cmd.zig");
 pub const worktreeAutoCommit = worktree_cmd.worktreeAutoCommit;
 pub const worktreeCommand = worktree_cmd.worktreeCommand;
@@ -69,6 +66,10 @@ const Job = struct { // session-global; pump drains pipes; survives Esc
     cwd: ?[]u8 = null, // owned copy: /jobs restart reruns in the same place
     started_ms: i64 = 0, // unix ms, for age columns and the record
     last_active_ms: i64 = 0, // awake ms: last output byte, read, wait tick, or pin
+    browser_probe_after_ms: i64 = 0,
+    activity_revision: i64 = 0,
+    group_pid: i32 = 0,
+    exit_cleanup: bool = false,
     pinned: bool = false, // /jobs keep: no idle stop, retained at session end
     idle_warned: bool = false,
     stopped_idle: bool = false, // the idle policy killed it, not bash_kill
@@ -90,6 +91,7 @@ const Job = struct { // session-global; pump drains pipes; survives Esc
 pub const job_unread_cap = 256 * 1024;
 const job_wait = @import("job_wait.zig");
 const job_notify = @import("job_notify.zig");
+const browser_guard = @import("job_browser_guard.zig");
 const job_idle = @import("job_idle.zig"); // #199
 const job_registry = @import("job_registry.zig"); // #199
 const proc_identity = @import("proc_identity.zig");
@@ -124,7 +126,7 @@ fn jobDrain(job: *Job, gpa: Allocator, readers: []const *Io.Reader, now_ms: i64)
     for (readers, 0..) |r, i| {
         const b = r.buffered();
         if (b.len == 0) continue;
-        job.last_active_ms = now_ms; // output is activity (#199)
+        browser_guard.touch(job, now_ms); // output is activity (#199)
         if (job.stream) |emit| emit(job.stream_ctx, @intCast(i), b);
         job.buf.appendSlice(gpa, b) catch {};
         r.toss(b.len);
@@ -161,17 +163,14 @@ fn jobPump(job: *Job, gpa: Allocator, io: Io) void {
         // #199: silence is the idle clock — no bytes, no read, no pin.
         const idle_ms: u64 = @intCast(@max(now - job.last_active_ms, 0));
         var warn = false;
-        if (!job.kill_requested and !job.detach) {
+        if (!job.kill_requested and !job.detach and !job.exit_cleanup) {
             switch (job_idle.verdict(idle_ms, job.idle_warned, job.pinned)) {
                 .none => {},
                 .warn => {
                     job.idle_warned = true;
                     warn = true;
                 },
-                .stop => {
-                    job.kill_requested = true;
-                    job.stopped_idle = true;
-                },
+                .stop => browser_guard.checkIdle(&g_jobs, job, gpa, io, pid, now),
             }
         }
         killed = job.kill_requested;
@@ -254,7 +253,7 @@ pub fn setPinned(io: Io, id: u32, pinned: bool) ?bool {
     const job = g_jobs.find(id) orelse return null;
     if (job.done) return false;
     job.pinned = pinned;
-    job.last_active_ms = nowMs(io);
+    browser_guard.touch(job, nowMs(io));
     if (comptime posix_groups) job_registry.write(io, job_registry.home, recordOf(io, job));
     return true;
 }
@@ -275,8 +274,7 @@ pub fn restartJob(gpa: Allocator, io: Io, id: u32) !*Job {
     return spawnJobOpts(gpa, io, cmd, .{ .cwd = cwd });
 }
 
-/// Session end for a pinned job (#199): hand its pipes to a detached drainer
-/// and keep its record, instead of killing it. False = kill it after all.
+/// Hand retained pipes to a detached drainer; failure never authorizes a kill.
 fn retainAtExit(io: Io, job: *Job) bool {
     if (comptime !posix_groups) return false;
     const rec = recordOf(io, job);
@@ -328,6 +326,7 @@ pub fn spawnJobOpts(gpa: Allocator, io: Io, cmd: []const u8, opts: SpawnOpts) !*
         .id = 0,
         .cmd = cmd_copy,
         .child = child,
+        .group_pid = if (comptime posix_groups) (child.id orelse 0) else 0,
         .stream = opts.stream,
         .stream_ctx = opts.stream_ctx,
         .quiet = opts.quiet,
@@ -385,7 +384,7 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
             g_jobs.mutex.unlock(io);
             return .{ .text = try std.fmt.allocPrint(gpa, "no background job {d} — it may never have started; /jobs lists them", .{id}), .is_error = true };
         };
-        job.last_active_ms = nowMs(io); // a read or a blocking wait is activity (#199)
+        browser_guard.touch(job, nowMs(io)); // a read or a blocking wait is activity (#199)
         const deadline = job_wait.resolveDeadlineFor(wait_ms, job.persistent);
         unread = job.buf.items.len - job.cursor;
         const fresh = job.buf.items[job.cursor..];
@@ -519,7 +518,7 @@ pub fn waitForeground(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !FgWait {
             g_jobs.mutex.unlock(io);
             return error.NoSuchJob;
         };
-        job.last_active_ms = nowMs(io); // the foreground wait is activity (#199)
+        browser_guard.touch(job, nowMs(io)); // the foreground wait is activity (#199)
         if (job.done) {
             const pair = takeUnread(gpa, job) catch {
                 g_jobs.mutex.unlock(io);
@@ -573,12 +572,19 @@ pub fn jobsReap(gpa: Allocator, io: Io) void {
         g_jobs.mutex.unlock(io);
         return;
     };
-    for (jobs) |job| {
-        // #199: a pinned, still-running job is kept, not killed — its pipes
-        // go to a detached drainer, its record stays for `graff servers`.
-        if (job.pinned and !job.done and retainAtExit(io, job)) job.detach = true else job.kill_requested = true;
-    }
+    for (jobs) |job| job.exit_cleanup = true;
     g_jobs.mutex.unlock(io);
+    for (jobs) |job| {
+        const result = browser_guard.probe(gpa, io, job.group_pid);
+        g_jobs.mutex.lockUncancelable(io);
+        if (!job.done and !job.kill_requested) {
+            if (browser_guard.exitAction(result, job.pinned, false) != .stop) {
+                job.detach = browser_guard.exitAction(result, job.pinned, retainAtExit(io, job)) == .detach;
+                if (!job.detach) std.debug.print("retained job pipe handoff failed; cleanup waits while the pump keeps draining (no kill)\n", .{});
+            } else job.kill_requested = true;
+        }
+        g_jobs.mutex.unlock(io);
+    }
     for (jobs) |job| freeJob(gpa, io, job);
     gpa.free(jobs);
     // toOwnedSlice already emptied the pool; deinit would poison reuse.
@@ -587,6 +593,6 @@ pub fn jobsReap(gpa: Allocator, io: Io) void {
 test { // split-out modules: unreferenced, their tests silently never run
     _ = worktree_cmd;
     _ = @import("worktree_lease.zig");
-    _ = .{ job_wait, job_notify, job_idle, job_registry };
+    _ = .{ job_wait, job_notify, job_idle, job_registry, browser_guard };
     _ = @import("jobs_tests.zig");
 }

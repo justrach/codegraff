@@ -102,7 +102,8 @@ export default function DesktopUpdates() {
               <button
                 type="button"
                 data-desktop-update-check
-                className="rounded-lg bg-hover px-3 py-1.5 text-left text-[12.5px] font-medium hover:bg-hover-2"
+                disabled={state.status === "unavailable"}
+                className="rounded-lg bg-hover px-3 py-1.5 text-left text-[12.5px] font-medium hover:bg-hover-2 disabled:opacity-50"
                 onClick={() => void act("check")}
               >
                 Check for Updates
@@ -121,7 +122,8 @@ export default function DesktopUpdates() {
                 data-desktop-update-automatic
                 role="switch"
                 aria-checked={state.automatic}
-                className="flex items-center justify-between rounded-lg px-1 py-1 text-[12.5px] text-ink-2 hover:bg-hover"
+                disabled={state.status === "unavailable"}
+                className="flex items-center justify-between rounded-lg px-1 py-1 text-[12.5px] text-ink-2 hover:bg-hover disabled:opacity-50"
                 onClick={() => void act("automatic", !state.automatic)}
               >
                 <span>Download updates automatically</span>

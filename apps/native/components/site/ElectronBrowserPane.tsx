@@ -30,7 +30,10 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
       setError(""); const next = await desktop()!.browser(chat, method, params);
       if (next?.url !== undefined) { setInfo(next); setUrl(next.url === "about:blank" ? "" : next.url); localStorage.setItem(storageKey, next.url); }
       layoutRef.current();
-    } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      setError(/Invalid URL/i.test(raw) ? "Enter a web address or a search." : raw);
+    }
   };
   useEffect(() => {
     const bridge = desktop()!;
@@ -86,7 +89,7 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
       <button type="button" className={button} aria-label="Back" disabled={!info?.canGoBack} onClick={() => void command("back")}>←</button>
       <button type="button" className={button} aria-label="Forward" disabled={!info?.canGoForward} onClick={() => void command("forward")}>→</button>
       <button type="button" className={button} aria-label="Reload" onClick={() => void command("open", { url })}>↻</button>
-      <input ref={address} className="h-7 min-w-0 flex-1 rounded-md bg-field px-2 text-xs outline-none" aria-label="Address" placeholder="Enter a URL" value={url} onChange={e => setUrl(e.target.value)} onFocus={e => e.currentTarget.select()} />
+      <input ref={address} className="h-7 min-w-0 flex-1 rounded-md bg-field px-2 text-xs outline-none" aria-label="Address" placeholder="Search or enter a URL" value={url} onChange={e => setUrl(e.target.value)} onFocus={e => e.currentTarget.select()} />
       <button className={button}>Go</button>
     </form>
     <div className="flex h-9 items-center gap-1 border-b border-line px-2">

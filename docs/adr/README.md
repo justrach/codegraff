@@ -36,7 +36,7 @@ record only when you need the evidence or the edge cases.
 | [0023](0023-codex-subagent-is-sidecar-not-v8.md) | Codex check: take sidecar-vs-critical-path spawn prompts; reject V8 Code Mode, extra spawn tools, and parent-history fork. |
 | [0024](0024-three-harness-compare-prompt-subagent-rss.md) | Steal short child briefs + sidecar spawn; `print(read_file)` returns the file; `-p` skips the shared-tree checkpoint (evals are sibling sandboxes); reject rlm-only catalog, grok heap, Harbor. |
 | [0025](0025-io-uring-is-not-the-process-io.md) | Process Io stays Zig `Threaded`. spec-ptc is already the default loop (ADR 0022). Do not take ublk or switch `main` to `std.Io.Uring`. |
-| [0026](0026-foreground-bash-auto-backgrounds.md) | Root foreground `bash` auto-backgrounds after 120s (or `timeout` ms); it is not killed. Subagents still kill at 120s (#93). |
+| [0026](0026-foreground-bash-auto-backgrounds.md) | Root foreground `bash` auto-backgrounds after 120s (a shorter `timeout` may promote earlier); it is not killed. Subagents still kill at 120s (#93). |
 | [0027](0027-kimi-identity-is-graff.md) | Kimi Coding User-Agent is `graff/<version>`, not a spoofed `kimi-code-cli` token. X-Msh device fields follow kimi-code's shapes. |
 | [0028](0028-codex-session-id-is-the-cache-key.md) | Codex HTTP/WS `session_id` is the `prompt_cache_key` (openai/codex ModelClient default), not a per-process random UUID. |
 | [0029](0029-mcp-inside-rlm-and-return-shapes.md) | Loaded MCP tools are rlm host functions; persist return shapes on the load result, never the prefix; fat MCP results auto-slim; default `-p` connects `.mcp.json` (folded, not skipped). |
@@ -105,6 +105,12 @@ record only when you need the evidence or the edge cases.
 | [0092](0092-codedb-context-is-local-first.md) | Bare `codedb context` is `--local`; `--hybrid` / `--semantic` are opt-in remote rerank (and still refused under ADR 0084 policy). |
 | [0093](0093-project-layout-breadth-and-directory-hints.md) | Project layout favors breadth under its caps; missing directories offer bounded sibling hints without changing confinement or ADR 0090 constraint policy. |
 | [0094](0094-subagent-interrupt-is-a-cancel-file.md) | GUI Stop writes `{id}.cancel` in the activity dir; the child finishes failed even if the model returns. Not `session/cancel`. |
+| [0096](0096-desktop-link-destination.md) | Persist the desktop link destination outside origin-scoped storage; validate once and reveal the focused chat's Browser without navigating the app. |
+| [0097](0097-isolate-probe-clipboards.md) | Offline PTY probes get private clipboard commands per process; direct probe runs retain OS clipboard integration. |
+| [0098](0098-orphan-listeners-are-not-stop-authority.md) | Legacy listener discovery is read-only; stop authority requires verified ownership, port preflight checks both families, and unknown browser visibility protects listening jobs. |
+| [0099](0099-gui-saved-sessions-are-snapshots.md) | A saved-session GET is a snapshot with unknown live status; the GUI must not infer the REPL finished. |
+| [0100](0100-publication-claims-and-verified-completion.md) | Non-draft PRs fail closed on CI/Verification/helper-only claims; artifact presence ACK is not ownership; recipe success is verified task success. |
+
 
 ## When to write one
 

@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 async function runComposerVisual({ win, output }) {
   const js = code => win.webContents.executeJavaScript(code);
-  win.show(); win.focus(); win.webContents.focus();
+  require('./test-window.cjs').presentWindow(win);
   await new Promise(r => setTimeout(r, 1600));
   await js(`document.querySelector('[aria-label="Choose model"] span.truncate').textContent='Example model with a long display name'`);
   for (const width of [220, 280, 360, 420, 520]) {

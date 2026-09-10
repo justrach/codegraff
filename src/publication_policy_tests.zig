@@ -1,5 +1,13 @@
 //! Policy reachability, not a claim that a scripted model exercises judgment.
 const std = @import("std");
+
+test {
+    _ = @import("artifact_claim.zig");
+    _ = @import("pr_publish.zig");
+    _ = @import("publish_gate.zig");
+    _ = @import("goal_verify.zig");
+    _ = @import("goal_verify_kind.zig");
+}
 const prompts = @import("prompts.zig");
 const text = @import("prompt_text.zig");
 const no_local = @import("no_local_tools.zig");
@@ -21,6 +29,7 @@ test "#739 publication safety survives capability removal and lean; workers shar
         for ([_][]const u8{ floor, prompts.sub_system_prompt, prompts.main_system_prompt_strict }) |policy| {
             try std.testing.expect(std.mem.indexOf(u8, policy, text.public_write_note) != null);
             try std.testing.expect(std.mem.indexOf(u8, policy, text.constraint_authority_note) != null);
+            try std.testing.expect(std.mem.indexOf(u8, policy, text.publication_ready_note) != null);
         }
     }
     for ([_][]const u8{
@@ -54,11 +63,12 @@ test "#739 custom worker and review personas cannot remove standing policy" {
         try std.testing.expect(std.mem.startsWith(u8, policy, "CUSTOM_PERSONA"));
         try std.testing.expect(std.mem.indexOf(u8, policy, text.public_write_note) != null);
         try std.testing.expect(std.mem.indexOf(u8, policy, text.constraint_authority_note) != null);
+        try std.testing.expect(std.mem.indexOf(u8, policy, text.publication_ready_note) != null);
         try std.testing.expectEqual(policy.ptr, text.withAuthority(agent.arena, policy).ptr);
     }
     var storage: [0]u8 = .{};
     var failing = std.heap.FixedBufferAllocator.init(&storage);
-    try std.testing.expectEqualStrings(text.public_write_note ++ text.constraint_authority_note, text.withAuthority(failing.allocator(), "CUSTOM_PERSONA"));
+    try std.testing.expectEqualStrings(text.public_write_note ++ text.constraint_authority_note ++ text.publication_ready_note, text.withAuthority(failing.allocator(), "CUSTOM_PERSONA"));
 }
 
 test "#738 failed prompt allocation never installs only some variants" {
