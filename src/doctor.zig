@@ -70,6 +70,7 @@ pub const State = struct {
     jobs: []const live.JobView = &.{},
     budget_max: u64 = 0,
     budget_used: u64 = 0,
+    listener_findings: []const Check = &.{},
 };
 
 /// A goal that replaced live work legitimately starts with no checklist of its
@@ -90,11 +91,11 @@ pub fn snapshot(root: *const Agent, now_ms: i64) State {
     };
 }
 
-/// Goal/todo plus the in-process job table and RunBudget. Still no lease or
-/// listener registry — those files do not exist, so they stay unreported.
+/// Goal/todo, live jobs, budget, and read-only legacy listener discovery.
 pub fn snapshotWithLive(arena: Allocator, root: *const Agent, now_ms: i64) Allocator.Error!State {
     var st = snapshot(root, now_ms);
     st.jobs = try live.captureJobs(arena, root.io);
+    st.listener_findings = try @import("server_diagnostics.zig").capture(arena, root.io);
     if (root.run_budget) |b| {
         st.budget_max = b.max_model_calls;
         st.budget_used = b.used();
@@ -111,6 +112,7 @@ pub fn run(arena: Allocator, st: State) Allocator.Error![]const Check {
     if (try staleGoal(arena, st)) |c| try out.append(arena, c);
     if (try todoEpochAboveGoal(arena, st)) |c| try out.append(arena, c);
     if (try armedCompletionGate(arena, st)) |c| try out.append(arena, c);
+    try out.appendSlice(arena, st.listener_findings);
     try live.append(arena, &out, .{
         .jobs = st.jobs,
         .budget_max = st.budget_max,

@@ -93,6 +93,7 @@ pub const State = enum { running, gone, unverifiable };
 /// Is the recorded leader still the process we started? A live pid with a
 /// different start identity is a recycled pid: gone, and never signalled.
 pub fn state(io: Io, rec: Record) State {
+    if (rec.pid <= 1) return .unverifiable;
     return stateOf(rec.start_id, proc_identity.probe(io, rec.pid));
 }
 
@@ -100,7 +101,7 @@ pub fn stateOf(start_id: u64, live: proc_identity.Probe) State {
     return switch (live) {
         .gone => .gone,
         .unknown => .unverifiable,
-        .id => |v| if (start_id == 0 or v == start_id) .running else .gone,
+        .id => |v| if (start_id == 0 or v == 0) .unverifiable else if (v == start_id) .running else .gone,
     };
 }
 
@@ -147,25 +148,14 @@ pub fn parseLsofPorts(arena: Allocator, text: []const u8) []const u8 {
     return out.items;
 }
 
-pub const StopResult = enum { stopped, gone, unverifiable, unsupported };
+pub const StopResult = @import("job_registry_stop.zig").Result;
 
 /// TERM the whole group, give it 2s, then KILL — only when the leader still
 /// carries the recorded start identity.
 pub fn stopTree(io: Io, rec: Record) StopResult {
     if (!posix) return .unsupported;
-    switch (state(io, rec)) {
-        .gone => return .gone,
-        .unverifiable => return .unverifiable,
-        .running => {},
-    }
-    std.posix.kill(-rec.pid, .TERM) catch return .gone;
-    var waited: u64 = 0;
-    while (waited < 2000) : (waited += 100) {
-        io.sleep(.fromMilliseconds(100), .awake) catch break;
-        if (proc_identity.probe(io, rec.pid) == .gone) return .stopped;
-    }
-    std.posix.kill(-rec.pid, .KILL) catch {};
-    return .stopped;
+    const stop = @import("job_registry_stop.zig");
+    return stop.stop(rec.pid, rec.start_id, stop.Native{ .io = io });
 }
 
 /// Session end for a pinned job: hand each of its pipes to a detached
@@ -203,10 +193,10 @@ test "parseLsofPorts: n lines only, deduped, joined" {
     try std.testing.expectEqualStrings("", parseLsofPorts(arena, "p1\nf2\n"));
 }
 
-test "stateOf: a recycled pid is gone, an opaque one is unverifiable, legacy 0 trusts the pid" {
+test "stateOf: recycled pid is gone, opaque and legacy identities are unverifiable" {
     try std.testing.expectEqual(State.running, stateOf(77, .{ .id = 77 }));
     try std.testing.expectEqual(State.gone, stateOf(77, .{ .id = 78 }));
-    try std.testing.expectEqual(State.running, stateOf(0, .{ .id = 78 }));
+    try std.testing.expectEqual(State.unverifiable, stateOf(0, .{ .id = 78 }));
     try std.testing.expectEqual(State.gone, stateOf(77, .gone));
     try std.testing.expectEqual(State.unverifiable, stateOf(77, .unknown));
 }

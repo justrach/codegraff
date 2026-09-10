@@ -202,7 +202,37 @@ fn formatCapped(gpa: Allocator, cmd: []const u8, run: jobs.CappedRun) !ToolOutpu
     return .{ .text = try aw.toOwnedSlice(), .is_error = exit_code == null or exit_code.? != 0, .cancelled = run.cancelled };
 }
 
+const server_port = @import("server_port.zig");
+
+test {
+    _ = server_port;
+}
+
 pub fn exec(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
+    const cmd = strField(call.input, "command") orelse return missingArg(ctx.gpa, "command");
+    // Respect the subagent gate before running even a read-only probe.
+    const approved = if (ctx.from_sub) (if (ctx.approvals) |ap| ap.allowed(ctx.io, cmd) else true) else true;
+    var warning = false;
+    if (approved) if (server_port.requested(cmd)) |port| {
+        switch (server_port.probe(ctx.gpa, ctx.io, port)) {
+            .conflict => return .{
+                .text = try std.fmt.allocPrint(ctx.gpa, "server launch refused: TCP port {d} already has a listener (IPv4 or IPv6). No process was stopped. Reuse the intended server or choose another port after checking ownership.", .{port}),
+                .is_error = true,
+            },
+            .unknown => warning = true,
+            .clear => {},
+        }
+    };
+    var result = try execUnchecked(ctx, call);
+    if (warning) {
+        const text = try std.mem.concat(ctx.gpa, u8, &.{ server_port.unknown_warning, result.text });
+        ctx.gpa.free(result.text);
+        result.text = text;
+    }
+    return result;
+}
+
+fn execUnchecked(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
     const gpa = ctx.gpa;
     const io = ctx.io;
     const input = call.input;
