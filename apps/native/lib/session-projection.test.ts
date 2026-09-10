@@ -30,6 +30,35 @@ function fixture() {
   return { root, url, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 
+test("legacy title recovery agrees across list, search, raw and projected session views (#830)", async () => {
+  const file = fixture();
+  const messages = [
+    { role: "user", content: [{ type: "input_text", text: "[peer] wake" }] },
+    { role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,AA==" }] },
+    { role: "user", content: [{ type: "input_text", text: "Repair the sidebar label" }] },
+    { role: "assistant", content: "The fix is ready." },
+  ];
+  try {
+    for (const title of ["Untitled session", "My chosen label"]) {
+      writeFileSync(path.join(file.root, ".graff/sessions/example.session.json"), JSON.stringify({ title, model: "demo", updated_ms: 200, messages }));
+      const expected = title === "Untitled session" ? "Repair the sidebar label" : title;
+      const listUrl = new URL(file.url()); listUrl.searchParams.delete("name");
+      listUrl.searchParams.set("scope", "local"); listUrl.searchParams.set("q", expected);
+      const listing = await (await GET(new NextRequest(listUrl))).json();
+      expect(listing.sessions.find((row: { name: string }) => row.name === "example")?.title).toBe(expected);
+      for (const view of [undefined, "transcript"]) {
+        const response = await GET(new NextRequest(file.url(view)));
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.title).toBe(expected);
+        expect(body.updatedMs).toBe(200);
+        if (view) expect(body.transcript).toEqual(transcriptFromMessages(messages, "demo"));
+        else expect(body.messages).toEqual(messages);
+      }
+    }
+  } finally { file.cleanup(); }
+});
+
 test("only an explicit transcript request projects raw history; the default API stays unchanged", async () => {
   const file = fixture();
   try {
