@@ -20,7 +20,9 @@ partial output. A real compile keeps running. The model gets the turn back.
 
 ## Decision
 
-- Root foreground `bash` waits up to 120s (or `timeout` ms, capped at 10h).
+- Root foreground `bash` waits up to 120s. An explicit `timeout` may shorten
+  that wait; a larger value cannot extend it (#850). Process lifetime after
+  promotion is the job registry, not the overloaded `timeout` field.
 - If the child is still running, it is moved onto the existing job registry.
   The model receives a job id. `bash_output` / `bash_kill` / `/jobs` work as
   they do for `run_in_background: true`. The process is not killed.

@@ -188,7 +188,7 @@ def run_chain_reanchor_scenario(
             first.connection_id != rejected.connection_id
             or rejected.connection_id == rebuilt.connection_id
             or rejected.body.get("previous_response_id") != "resp_chain_1"
-            or "previous_response_id" in rebuilt.body
+            or not mock.has_fresh_parent(rebuilt)
         ):
             raise AssertionError(
                 "chain-error: rejected delta was not rebuilt as full input on a fresh WS: "

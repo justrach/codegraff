@@ -227,6 +227,7 @@ class CodexMock:
         default=None, repr=False
     )
     requests: list[RecordedRequest] = field(default_factory=list, repr=False)
+    prewarm_ids: dict[int, str] = field(default_factory=dict, repr=False)
     _sock: socket.socket | None = field(default=None, repr=False)
     _threads: list[threading.Thread] = field(default_factory=list, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -260,6 +261,26 @@ class CodexMock:
         """Return a stable snapshot for assertions after a scenario completes."""
         with self._lock:
             return list(self.requests)
+
+    def has_fresh_parent(self, request: RecordedRequest) -> bool:
+        """Only no parent or this socket's observed prewarm is a fresh anchor."""
+        parent = request.body.get("previous_response_id")
+        if parent is None:
+            return True
+        with self._lock:
+            return (
+                request.transport == "ws"
+                and parent == self.prewarm_ids.get(request.connection_id)
+            )
+
+    def assert_fresh_anchor(self, request: RecordedRequest) -> None:
+        """A full replay may chain only to this socket's empty-input prewarm."""
+        if not self.has_fresh_parent(request):
+            raise AssertionError(
+                "full replay used a stale or unexpected chain anchor: "
+                f"conn={request.connection_id} "
+                f"parent={request.body.get('previous_response_id')!r}"
+            )
 
     # ── internals ─────────────────────────────────────────────────────────
 
@@ -389,8 +410,12 @@ class CodexMock:
             # inference turn — answer with a terminal completed frame carrying
             # an id the client can chain from, and do NOT count it in ws_turns
             # (the transport smoke assertions count real model turns).
-            if event.get("generate") is False:
-                prewarm_id = f"resp_prewarm_{self.ws_turns + 1}"
+            if event.get("generate") is False or (
+                event.get("input") == [] and "previous_response_id" not in event
+            ):
+                prewarm_id = f"resp_prewarm_{connection_id}"
+                with self._lock:
+                    self.prewarm_ids[connection_id] = prewarm_id
                 _send_frame(conn, OP_TEXT, json.dumps(
                     {"type": "response.completed",
                      "response": {"id": prewarm_id, "usage": dict(USAGE)}},
