@@ -227,6 +227,7 @@ class CodexMock:
         default=None, repr=False
     )
     requests: list[RecordedRequest] = field(default_factory=list, repr=False)
+    _prewarms: dict[int, str] = field(default_factory=dict, repr=False)
     _sock: socket.socket | None = field(default=None, repr=False)
     _threads: list[threading.Thread] = field(default_factory=list, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -260,6 +261,14 @@ class CodexMock:
         """Return a stable snapshot for assertions after a scenario completes."""
         with self._lock:
             return list(self.requests)
+
+    def assert_fresh_anchor(self, request: RecordedRequest) -> None:
+        """A full replay may chain only to this socket's empty-input prewarm."""
+        with self._lock:
+            expected = self._prewarms.get(request.connection_id)
+        if (("previous_response_id" in request.body) != (expected is not None)
+                or request.body.get("previous_response_id") != expected):
+            raise AssertionError("full replay used a stale or unexpected chain anchor")
 
     # ── internals ─────────────────────────────────────────────────────────
 
@@ -391,6 +400,8 @@ class CodexMock:
             # (the transport smoke assertions count real model turns).
             if event.get("generate") is False:
                 prewarm_id = f"resp_prewarm_{self.ws_turns + 1}"
+                with self._lock:
+                    self._prewarms[connection_id] = prewarm_id
                 _send_frame(conn, OP_TEXT, json.dumps(
                     {"type": "response.completed",
                      "response": {"id": prewarm_id, "usage": dict(USAGE)}},

@@ -188,12 +188,11 @@ def run_chain_reanchor_scenario(
             first.connection_id != rejected.connection_id
             or rejected.connection_id == rebuilt.connection_id
             or rejected.body.get("previous_response_id") != "resp_chain_1"
-            or "previous_response_id" in rebuilt.body
         ):
             raise AssertionError(
-                "chain-error: rejected delta was not rebuilt as full input on a fresh WS: "
-                f"{requests!r}"
+                "chain-error: rejected delta was not rebuilt on a fresh WS"
             )
+        mock.assert_fresh_anchor(rebuilt)
         rebuilt_types = [
             item.get("type")
             for item in rebuilt.body.get("input", [])
