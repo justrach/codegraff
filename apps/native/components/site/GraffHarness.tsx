@@ -22,7 +22,8 @@ import FilesPane from "@/components/site/FilesPane";
 import BrowserPane from "@/components/site/DesktopBrowserPane";
 import { annotationsBlock, type BrowserPin } from "@/lib/browser/annotations";
 import { browserClose, browserHandle, browserNav } from "@/lib/browser-client";
-import TaskRows from "@/components/primitives/TaskRows";
+import TasksPane, { taskItems } from "./TasksPane";
+import { useTasksVisibility } from "./useTasksVisibility";
 import ChatTranscript from "./ChatTranscript";
 import { useDesktopShortcuts } from "./useDesktopShortcuts";
 import EmptyState from "@/components/site/ChatEmpty";
@@ -87,6 +88,7 @@ export default function GraffHarness() {
   const [models, setModels] = useState<PromptModel[]>([{ key: "", name: "Loading graff models…" }]);
   const [model, setModelKey] = useState<string | null>(process.env.NEXT_PUBLIC_GRAFF_MODEL || null);
   const [agentsOpen, setAgentsOpen] = useState(false);
+  const [tasksOpen, setTasksOpen] = useTasksVisibility();
   const [filesOpen, setFilesOpen] = useState(false);
   const [fileRequest, setFileRequest] = useState<{ path: string; n: number; changes?: boolean } | null>(null);
   const fileReqRef = useRef(0);
@@ -139,8 +141,6 @@ export default function GraffHarness() {
   panesRef.current = panes;
   const [following, setFollowing] = useState(true);
   const { queuesRef, queues, queueIdRef, setQueue, steerer, steerStatus, remove: removeQueued } = usePromptQueue();
-  const [workingAgents, setWorkingAgents] = useState(0);
-  const [cancelError, setCancelError] = useState<Record<number, string>>({});
   const runningRef = useRef(new Set<number>());
   // Closed tabs, oldest first, for the reopen shortcut.
   const closedRef = useRef<{ session: string | null; cwd?: string; resumable: boolean }[]>([]);
@@ -156,6 +156,7 @@ export default function GraffHarness() {
   const busy = busyIds.has(chatThread.id);
   const chatModel = chatThread.model ?? model ?? undefined;
   const sessionId = sessionIds[chatThread.id] ?? null;
+  const queued = queues[chatThread.id] ?? [];
   const handleOf = (chatId: number) => chatHandle(pageRef.current, chatId);
   const setBusyFor = (chatId: number, on: boolean) =>
     setBusyIds((current) => {
@@ -349,6 +350,7 @@ export default function GraffHarness() {
 
   const runPrompt = async (chatId: number, trimmed: string) => {
     runningRef.current.add(chatId);
+    steerer.begin(chatId);
     setFollowing(true);
     const thread = chatsRef.current.find((c) => c.id === chatId);
     const spawnModel = thread?.model ?? model ?? undefined;
@@ -373,13 +375,6 @@ export default function GraffHarness() {
       ),
     );
     setBusyFor(chatId, true);
-    setCancelError((current) => {
-      if (!current[chatId]) return current;
-      const next = { ...current };
-      delete next[chatId];
-      return next;
-    });
-    steerer.begin(chatId);
     setHistory((current) => {
       const next = pushHistory(current, trimmed);
       saveHistory(window.localStorage, next);
@@ -403,6 +398,7 @@ export default function GraffHarness() {
       turn = { ...turn, connected: true, lastUpdateAt: Date.now() };
       painter.update(turn);
       for await (const update of prompt(handleOf(chatId), id, wire)) {
+        // An update proves the prompt reached the agent; don't cancel during session startup.
         if (update.sessionUpdate === "gui_turn_end") steerer.finish(chatId);
         else steerer.ready(chatId);
         turn = applyAcpUpdate(turn, update);
@@ -453,7 +449,7 @@ export default function GraffHarness() {
   };
 
   const openChat = (id: number) => {
-    setProjectsOpen(false);
+    setProjectsOpen(false); setAgentsOpen(false);
     const session = newSessionName();
     sessionNamesRef.current.set(id, session);
     const cwd = activePathRef.current ?? undefined;
@@ -492,7 +488,7 @@ export default function GraffHarness() {
 
   /** Focus a visible chat in place, or replace only the focused split. */
   const focusChat = (id: number) => {
-    setProjectsOpen(false);
+    setProjectsOpen(false); setAgentsOpen(false);
     setConversationsOpen(false);
     const folder = chatsRef.current.find(chat => chat.id === id)?.cwd;
     if (folder && folder !== activePathRef.current) activateWorkspace(folder);
@@ -532,6 +528,7 @@ export default function GraffHarness() {
     sessionsRef.current.delete(id);
     sessionNamesRef.current.delete(id);
     runningRef.current.delete(id);
+    steerer.finish(id);
     setQueue(id, []);
     setSessionIds((current) => {
       const { [id]: _gone, ...rest } = current;
@@ -672,7 +669,6 @@ export default function GraffHarness() {
                       </div>
                     )}
                     <PromptQueue items={threadQueued} busy={threadBusy} status={steerStatus[thread.id]}
-                      error={cancelError[thread.id]}
                       onRemove={item => removeQueued(thread.id, item)}
                       onSteer={item => steerer.steer(thread.id, item, () => {
                         const session = sessionsRef.current.get(thread.id);
@@ -693,13 +689,7 @@ export default function GraffHarness() {
                       busy={threadBusy}
                       onStop={() => {
                         const live = sessionsRef.current.get(thread.id);
-                        if (!live) {
-                          setCancelError(current => ({ ...current, [thread.id]: "Nothing to interrupt yet." }));
-                          return;
-                        }
-                        void cancel(handleOf(thread.id), live).catch(err => {
-                          setCancelError(current => ({ ...current, [thread.id]: err instanceof Error ? err.message : "Could not interrupt the current turn" }));
-                        });
+                        if (live) void cancel(handleOf(thread.id), live).catch(() => {});
                       }}
                     />
                   </div>
@@ -782,7 +772,7 @@ export default function GraffHarness() {
           chatCwd={chatCwd} workspaceName={workspaceName} onFolder={() => setDialog({ mode: "new" })} openChanges={openChanges}
           browserOpen={browserOpen} onBrowser={() => { setAgentsOpen(false); setProjectsOpen(false); setConversationsOpen(false); setFilesOpen(false); setBrowserOpen(open => !open); }} pinCount={pinCount}
           terminalVisible={terminalVisible} toggleTerminal={toggleTerminal} agentsOpen={agentsOpen}
-          workingAgents={workingAgents}
+          tasksOpen={tasksOpen} taskCount={paneTodos.length} onTasks={() => { setAgentsOpen(false); setTasksOpen(!tasksOpen); }}
           onAgents={() => { setProjectsOpen(false); setAgentsOpen(!agentsOpen); setFilesOpen(false); setBrowserOpen(false); setConversationsOpen(false); }} />
         <ConversationOpenNotice request={savedConversation.request} onCancel={savedConversation.cancel} onRetry={savedConversation.retry} />
         <div className="flex min-h-0 flex-1 gap-2.5">
@@ -804,13 +794,13 @@ export default function GraffHarness() {
               />
             </section>
           ) : null}
-          <div className="min-h-0 min-w-0 flex-1" style={{ display: projectsOpen || conversationsOpen ? "none" : "flex" }}>
+          <div className="min-h-0 min-w-0 flex-1" style={{ display: projectsOpen || conversationsOpen || agentsOpen ? "none" : "flex" }}>
             <ChatSplitLayout threads={columns} liveChatIds={chats.map(chat => chat.id)} activeId={activeId} direction={splitDirection} weights={paneWeights} setWeights={setPaneWeights}
               onFocus={focusChat} onClose={closeChat} folder={thread => ({name: workspaceNameOf(thread), path: cwdOf(thread)})}
               body={columnBody} split={columnIds.length > 1} />
           </div>
 
-          {agentsOpen && !projectsOpen && !filesOpen && !browserOpen && !conversationsOpen && <AgentsPane key={chatCwd} root={chatCwd} onClose={() => setAgentsOpen(false)} onOccupancy={setWorkingAgents} />}
+          {agentsOpen && !projectsOpen && !filesOpen && !browserOpen && !conversationsOpen && <AgentsPane key={chatCwd} root={chatCwd} fullWidth onClose={() => setAgentsOpen(false)} />}
           {filesOpen && !projectsOpen && !conversationsOpen && (fileRequest?.changes ? <ChangesPane root={chatThread.cwd} onClose={() => setFilesOpen(false)} /> : <FilesPane root={chatThread.cwd} requested={fileRequest} onClose={() => setFilesOpen(false)} />)}
 
           {browserOpen && !projectsOpen && !conversationsOpen && (
@@ -825,25 +815,8 @@ export default function GraffHarness() {
             />
           )}
 
-          {!projectsOpen && !filesOpen && !browserOpen && !conversationsOpen && active && paneTodos.length > 0 && (
-            <aside
-              className="hidden w-[360px] shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-page lg:flex"
-              style={{ animation: "fade-in 300ms ease both" }}
-            >
-              <div className="flex h-11 shrink-0 items-center border-b border-line px-4">
-                <span className="text-[13px] font-semibold text-ink">Tasks</span>
-              </div>
-              <div className="min-h-0 flex-1 overflow-y-auto p-4">
-                <TaskRows
-                  variant="List"
-                  items={paneTodos.map((todo) => ({
-                    key: todo.id,
-                    label: todo.content,
-                    status: todo.status === "in_progress" ? "in_progress" : todo.status === "completed" ? "completed" : "pending",
-                  }))}
-                />
-              </div>
-            </aside>
+          {tasksOpen && !agentsOpen && !projectsOpen && !filesOpen && !browserOpen && !conversationsOpen && active && paneTodos.length > 0 && (
+            <TasksPane items={taskItems(paneTodos)} onClose={() => setTasksOpen(false)} />
           )}
         </div>
         {terminalUsed && chatCwd && <TerminalPane key={chatCwd} cwd={chatCwd} visible={terminalVisible} onHide={() => setTerminalVisible(false)} />}

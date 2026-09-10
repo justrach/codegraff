@@ -127,11 +127,12 @@ export async function* prompt(
 }
 
 export async function cancel(chat: ChatHandle, sessionId: string): Promise<void> {
-  await fetch(BASE, {
+  const response = await fetch(BASE, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ chat, method: "session/cancel", params: { sessionId } }),
-  }).catch(() => {});
+  });
+  if (!response.ok) throw new Error("Could not interrupt the current turn");
 }
 
 /** Kill a closed tab's agent. `keepalive` so a close-then-navigate still lands. */

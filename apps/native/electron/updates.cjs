@@ -1,10 +1,21 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const FIRST_CHECK_MS = 30_000;
-const POLL_MS = 6 * 60 * 60 * 1000;
-
-function createUpdates({ updater, version, available = true, automatic = true, notify, save = () => {}, onReady }) {
+// Electron's macOS isPackaged is basename(exe) != "electron", and the
+// distribution bundle keeps the executable named Electron — so it is always
+// false in signed releases. The signed feed config is the availability
+// signal instead: only distribute.sh writes app-update.yml, before signing.
+function updateAvailability({ platform, env, execPath, feedPath }) {
+  return platform === 'darwin' && !env.GRAFF_ELECTRON_SMOKE &&
+    !execPath.startsWith('/Volumes/') && fs.existsSync(feedPath);
+}
+function createUpdates({ updater, version, available = true, automatic = true, notify, save = () => {}, feedPath }) {
+  if (available && updater && feedPath && updater.isUpdaterActive && !updater.isUpdaterActive()) {
+    // Electron reports an unpackaged app even for signed releases (see
+    // updateAvailability). Point electron-updater at the signed feed config
+    // explicitly so check/download/install still run against it.
+    try { updater.forceDevUpdateConfig = true; updater.updateConfigPath = feedPath; } catch {}
+  }
   let state = { status: available ? 'idle' : 'unavailable', currentVersion: version, automatic, interactive: false };
   let checking = false;
   const emit = patch => { state = { ...state, ...patch }; notify({ ...state }); };
@@ -22,13 +33,7 @@ function createUpdates({ updater, version, available = true, automatic = true, n
       if (percent !== state.percent) emit({ status: 'downloading', percent });
     });
     updater.on('update-not-available', () => emit({ status: 'current', version: undefined, percent: undefined }));
-    updater.on('update-downloaded', info => {
-      emit({ status: 'ready', version: info.version, percent: 100 });
-      if (onReady && info.version && info.version !== state.prompted) {
-        state.prompted = info.version; // once per version: dismiss means Later, never a loop
-        onReady(info.version);
-      }
-    });
+    updater.on('update-downloaded', info => emit({ status: 'ready', version: info.version, percent: 100 }));
     updater.on('error', () => emit({ status: 'error', message: 'Could not update. Check your connection and try again.' }));
   }
   return {
@@ -61,52 +66,31 @@ function createUpdates({ updater, version, available = true, automatic = true, n
 }
 
 function installUpdates({ app, win, ipcMain, trusted, resources }) {
-  const { dialog } = require('electron');
   const prefs = path.join(app.getPath('userData'), 'updates.json');
   let automatic = true;
   try { automatic = JSON.parse(fs.readFileSync(prefs, 'utf8')).automatic !== false; } catch {}
-  const available = app.isPackaged && process.platform === 'darwin' && !process.env.GRAFF_ELECTRON_SMOKE &&
-    !process.execPath.startsWith('/Volumes/') && fs.existsSync(path.join(resources, 'app-update.yml'));
-  let autoItem;
+  const feedPath = path.join(resources, 'app-update.yml');
+  const available = updateAvailability({ platform: process.platform, env: process.env, execPath: process.execPath, feedPath });
   const controller = createUpdates({ version: app.getVersion(), automatic, available,
-    updater: available ? require('./updater-runtime.cjs') : null,
+    updater: available ? require('./updater-runtime.cjs') : null, feedPath,
     save: value => { fs.mkdirSync(path.dirname(prefs), { recursive: true }); fs.writeFileSync(prefs, JSON.stringify({ automatic: value })); },
-    notify: state => {
-      if (autoItem) autoItem.checked = state.automatic;
-      if (!win.isDestroyed()) { win.webContents.send('update-state', state); win.setProgressBar(state.status === 'downloading' ? (state.percent ?? 0) / 100 : -1); }
-    },
-    onReady: readyVersion => {
-      // The standard update modal (Sparkle/electron-updater style): pops once
-      // per downloaded version, after the download — never mid-conversation.
-      if (win.isDestroyed()) return;
-      void dialog.showMessageBox(win, {
-        type: 'info',
-        title: 'Update Available',
-        message: `Codegraff ${readyVersion} is ready to install.`,
-        detail: 'Restart to apply the update now, or keep working — Codegraff offers the restart again at next launch.',
-        buttons: ['Restart to update', 'Later'], defaultId: 0, cancelId: 1,
-      }).then(({ response }) => {
-        if (response === 0 && !win.isDestroyed()) { try { controller.restart(); } catch {} }
-      }).catch(() => {});
-    },
+    notify: state => { if (!win.isDestroyed()) { win.webContents.send('update-state', state); win.setProgressBar(state.status === 'downloading' ? (state.percent ?? 0) / 100 : -1); } },
   });
-  autoItem = { label: 'Automatically Download Updates', type: 'checkbox', checked: automatic,
-    click: item => controller.setAutomatic(item.checked) };
-  ipcMain.handle('updates', async (event, action, value) => {
+  ipcMain.handle('updates', async (event, action) => {
     trusted(event);
     if (action === 'check') await controller.check(true);
     else if (action === 'restart') controller.restart();
-    else if (action === 'automatic') controller.setAutomatic(!!value);
     else if (action !== 'state') throw Error('Unknown update action');
     return controller.state();
   });
   const check = () => { if (controller.state().automatic) void controller.check(); };
-  const first = setTimeout(check, FIRST_CHECK_MS), repeat = setInterval(check, POLL_MS);
+  const first = setTimeout(check, 30000), repeat = setInterval(check, 6 * 60 * 60 * 1000);
   first.unref(); repeat.unref();
   app.once('before-quit', () => { clearTimeout(first); clearInterval(repeat); });
   return [
     { label: 'Check for Updates…', click: () => void controller.check(true) },
-    autoItem,
+    { label: 'Automatically Download Updates', type: 'checkbox', checked: automatic,
+      click: item => controller.setAutomatic(item.checked) },
   ];
 }
-module.exports = { createUpdates, installUpdates, FIRST_CHECK_MS, POLL_MS };
+module.exports = { createUpdates, installUpdates, updateAvailability };

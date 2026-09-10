@@ -1,14 +1,16 @@
 const { test, expect } = require('bun:test');
 const { EventEmitter } = require('node:events');
-const { createUpdates } = require('./updates.cjs');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { createUpdates, updateAvailability } = require('./updates.cjs');
 function fixture(options = {}) {
   const updater = new EventEmitter(), events = [], saved = [];
   let checks = 0, installs = 0;
-  const ready = [];
   updater.checkForUpdates = async () => { checks++; updater.emit('checking-for-update'); return null; };
   updater.quitAndInstall = () => { installs++; };
-  const updates = createUpdates({ updater, version: '1.0.0', notify: state => events.push(state), save: value => saved.push(value), onReady: v => ready.push(v), ...options });
-  return { updater, updates, events, saved, ready, checks: () => checks, installs: () => installs };
+  const updates = createUpdates({ updater, version: '1.0.0', notify: state => events.push(state), save: value => saved.push(value), ...options });
+  return { updater, updates, events, saved, checks: () => checks, installs: () => installs };
 }
 test('downloads in the background but never interrupts a running task automatically', async () => {
   const f = fixture();
@@ -64,30 +66,31 @@ test('concurrent checks are coalesced and automatic-download preference persists
   expect(f.saved).toEqual([false]);
   expect(f.updates.state().automatic).toBe(false);
 });
-
-test('the ready modal pops once per version, never in a dismiss loop', async () => {
-  const f = fixture();
-  await f.updates.check();
-  f.updater.emit('update-available', { version: '1.0.1' });
-  f.updater.emit('update-downloaded', { version: '1.0.1' });
-  f.updater.emit('update-downloaded', { version: '1.0.1' }); // duplicate event after a redownload
-  expect(f.ready).toEqual(['1.0.1']);
-  await f.updates.check(); // checks while ready do not re-prompt
-  expect(f.ready).toEqual(['1.0.1']);
-  f.updater.emit('update-downloaded', { version: '1.0.2' });
-  expect(f.ready).toEqual(['1.0.1', '1.0.2']);
-});
-
-test('automatic checks wait 30s after launch then every six hours', () => {
-  const { FIRST_CHECK_MS, POLL_MS } = require('./updates.cjs');
-  expect(FIRST_CHECK_MS).toBe(30_000);
-  expect(POLL_MS).toBe(6 * 60 * 60 * 1000);
-});
-
-test('in-app settings expose check and the six-hour automatic poll', () => {
-  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../components/site/DesktopUpdates.tsx'), 'utf8');
-  expect(src).toContain('data-desktop-update-settings');
-  expect(src).toContain('Check for Updates');
-  expect(src).toContain('every six hours');
-  expect(src).toContain('data-desktop-update-automatic');
+test('a signed release whose executable is still named Electron can check', async () => {
+  // Regression: macOS isPackaged is basename(exe) != "electron", and the
+  // distribution bundle keeps the executable named Electron — so the flag is
+  // false in signed releases. The signed feed config is the signal instead.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'graff-update-gate-'));
+  try {
+    const feedPath = path.join(dir, 'app-update.yml');
+    fs.writeFileSync(feedPath, JSON.stringify({ provider: 'generic', url: 'https://example.com/' }));
+    const gate = { platform: 'darwin', env: {}, execPath: '/Applications/Codegraff.app/Contents/MacOS/Electron', feedPath };
+    expect(updateAvailability(gate)).toBe(true);
+    expect(updateAvailability({ ...gate, platform: 'linux' })).toBe(false);
+    expect(updateAvailability({ ...gate, env: { GRAFF_ELECTRON_SMOKE: '1' } })).toBe(false);
+    expect(updateAvailability({ ...gate, execPath: '/Volumes/Codegraff/Codegraff.app/Contents/MacOS/Electron' })).toBe(false);
+    expect(updateAvailability({ ...gate, feedPath: path.join(dir, 'missing.yml') })).toBe(false);
+    // electron-updater also gates on isPackaged internally; a signed bundle
+    // reporting false must be pointed at the signed feed explicitly.
+    const configured = fixture({ feedPath });
+    const seen = [];
+    configured.updater.isUpdaterActive = () => seen.length > 0;
+    Object.defineProperty(configured.updater, 'updateConfigPath', { set: value => seen.push(value) });
+    createUpdates({ updater: configured.updater, version: '1.0.0', feedPath,
+      notify: () => {}, save: () => {} });
+    expect(seen).toEqual([feedPath]);
+    expect(configured.updater.forceDevUpdateConfig).toBe(true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -30,10 +30,16 @@ type Slot = {
   /** What the agent said it services, from `available_commands_update`. */
   commands: AcpCommand[];
   spawnError: Error | null;
+  /** The in-flight session/prompt, kept so a cancel can end the turn gate. */
+  pendingPrompt: Promise<unknown> | null;
 };
 
 const HANDSHAKE_MS = 120_000;
 const RPC_MS = 30_000;
+/** How long a cancel waits for the interrupted turn to wind down on its own
+ * before the streaming gate is forced open. Without this, a turn that never
+ * sends a terminal reply (agent error, lost stream) 409s every follow-up. */
+const CANCEL_GRACE_MS = 8_000;
 
 type SpawnOpts = { model?: string; resume?: string; cwd: string; yolo: boolean; mcp: boolean };
 type BootstrapOpts = { model?: string; reset?: boolean; resume?: string; cwd?: string; yolo?: boolean; mcp?: boolean };
@@ -117,10 +123,14 @@ function spawnAgent(chat: string, opts: SpawnOpts): Slot {
   if (opts.yolo) args.push("--yolo");
   if (opts.model) args.push("--model", opts.model);
   if (opts.resume) args.push("--resume", opts.resume);
+  // Next's bundled server configuration is runtime-only. Leaking it into
+  // agent shells makes unrelated Next projects skip their own configuration.
+  const env = { ...process.env };
+  delete env.__NEXT_PRIVATE_STANDALONE_CONFIG;
   const child = spawn(graffBin(), args, {
     stdio: ["pipe", "pipe", "inherit"],
     cwd: opts.cwd,
-    env: { ...process.env, GRAFF_DESKTOP_CHAT: chat, ...(!opts.mcp ? { GRAFF_MCP_CONFIG: mcpOffPath() } : {}) },
+    env: { ...env, GRAFF_DESKTOP_CHAT: chat, ...(!opts.mcp ? { GRAFF_MCP_CONFIG: mcpOffPath() } : {}) },
   });
   const slot: Slot = {
     child,
@@ -134,6 +144,7 @@ function spawnAgent(chat: string, opts: SpawnOpts): Slot {
     mcp: opts.mcp,
     commands: [],
     spawnError: null,
+    pendingPrompt: null,
   };
   slot.transport = new AcpTransport(child, message => noteCommands(slot, message));
   child.on("error", (err) => {
@@ -165,6 +176,22 @@ async function drainCommands(slot: Slot): Promise<void> {
 function rpc(slot: Slot, method: string, params?: unknown, timeoutMs = RPC_MS): Promise<unknown> {
   if (slot.streaming) return Promise.reject(new Error("A turn is active; retry this request after it finishes"));
   return slot.transport.request(method, params, timeoutMs);
+}
+
+/** End a turn after the client cancelled it: give the interrupted
+ * session/prompt a short grace to wind down on its own, then force the gate
+ * open so follow-ups don't 409 forever on a turn that never replied. */
+async function endTurn(slot: Slot): Promise<void> {
+  const pending = slot.pendingPrompt;
+  if (pending) {
+    const grace = new Promise<void>(resolve => {
+      const timer = setTimeout(resolve, CANCEL_GRACE_MS);
+      timer.unref();
+    });
+    await Promise.race([pending.catch(() => {}), grace]);
+  }
+  slot.pendingPrompt = null;
+  slot.streaming = false;
 }
 
 /** The tab's live agent when it still matches what was asked for (model,
@@ -256,7 +283,12 @@ export async function POST(req: NextRequest) {
     }
     const slot = await bootstrap(chat, { model });
     if (method === "session/cancel") {
-      slot.transport.notify("session/cancel", body.params);
+      try {
+        slot.transport.notify("session/cancel", body.params);
+      } catch {
+        // a dead transport means the turn is over regardless
+      }
+      await endTurn(slot);
       return Response.json({ ok: true });
     }
     if (method === "session/prompt") {
@@ -268,16 +300,19 @@ export async function POST(req: NextRequest) {
       let cancelled = false;
       const stream = new ReadableStream({
         start(controller) {
-          void slot.transport.request("session/prompt", { ...promptParams, sessionId: slot.sessionId }, 24 * 60 * 60 * 1000,
-            line => { if (!cancelled) controller.enqueue(encoder.encode(`${line}\n`)); })
+          const pending = slot.transport.request("session/prompt", { ...promptParams, sessionId: slot.sessionId }, 24 * 60 * 60 * 1000,
+            line => { if (!cancelled) controller.enqueue(encoder.encode(`${line}\n`)); });
+          slot.pendingPrompt = pending;
+          void pending
             .then(() => { if (!cancelled) { cancelled = true; controller.close(); } })
             .catch(error => { if (!cancelled) { cancelled = true; controller.error(error); } })
-            .finally(() => { slot.streaming = false; });
+            .finally(() => { slot.pendingPrompt = null; slot.streaming = false; });
         },
         cancel() {
           if (cancelled) return; // Completed streams must not cancel a later turn.
           cancelled = true;
           try { slot.transport.notify("session/cancel", { sessionId: slot.sessionId }); } catch {}
+          void endTurn(slot);
         },
       });
       return new Response(stream, { headers: { "content-type": "application/x-ndjson", "cache-control": "no-store" } });

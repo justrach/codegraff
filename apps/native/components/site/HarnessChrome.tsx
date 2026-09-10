@@ -9,24 +9,28 @@ type Props = {
   conversationsOpen: boolean; openConversations(): void; split: boolean; toggleSplit(): void;
   filesOpen: boolean; onFiles(): void; chatCwd?: string; workspaceName: string; onFolder(): void;
   openChanges(): void; browserOpen: boolean; onBrowser(): void; pinCount: number;
-  terminalVisible: boolean; toggleTerminal(): void; agentsOpen: boolean; onAgents(): void; workingAgents?: number;
+  terminalVisible: boolean; toggleTerminal(): void; agentsOpen: boolean; onAgents(): void;
+  tasksOpen?: boolean; taskCount?: number; onTasks?(): void;
 };
 export default function HarnessChrome({chats, activeId, busyIds, focusChat, closeChat, newChat,
   conversationsOpen, openConversations, split, toggleSplit, filesOpen, onFiles, chatCwd,
   workspaceName, onFolder, openChanges, browserOpen, onBrowser, pinCount, terminalVisible,
-  toggleTerminal, agentsOpen, onAgents, workingAgents = 0}: Props) {
+  toggleTerminal, agentsOpen, onAgents, tasksOpen, taskCount = 0, onTasks}: Props) {
   const frame = useRef<HTMLDivElement>(null);
   useEffect(() => { frame.current?.querySelector(`[data-tab-id="${activeId}"]`)?.scrollIntoView({block: "nearest", inline: "nearest"}); }, [activeId]);
   return (
     <div ref={frame} data-workspace-toolbar className={`${reviewStyles.chatbar} flex shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-page`}>
-      {/* Tabs scroll independently; toolbar labels collapse in narrow panes. */}
+      {/* One workspace-level tab strip above every split; never owned by a pane. */}
       <div className="flex h-10 min-w-0 shrink-0 items-center gap-1 overflow-x-auto px-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <button type="button" aria-label="Show agents" aria-pressed={agentsOpen} onClick={onAgents}
+          className={`h-7 shrink-0 rounded-[7px] px-3 text-[12.5px] font-medium ${agentsOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover"}`}>Agents</button>
+        <span aria-hidden="true" className="mx-1 h-4 w-px shrink-0 bg-line" />
         {chats.map((c) => (
           <div
             data-tab-id={c.id}
             key={c.id}
             className={`group/tab flex h-7 w-36 shrink-0 items-center gap-0.5 rounded-[7px] pl-2.5 pr-1 text-[12.5px] font-medium transition-colors duration-100 ${
-              c.id === activeId ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
+              c.id === activeId && !agentsOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
             }`}
           >
             {busyIds.has(c.id) && (
@@ -38,7 +42,7 @@ export default function HarnessChrome({chats, activeId, busyIds, focusChat, clos
             )}
             <button
               type="button"
-              aria-pressed={c.id === activeId}
+              aria-pressed={c.id === activeId && !agentsOpen}
               onClick={() => {
                 focusChat(c.id);
               }}
@@ -139,7 +143,8 @@ export default function HarnessChrome({chats, activeId, busyIds, focusChat, clos
           )}
         </button>
         <button aria-label="Toggle terminal" aria-pressed={terminalVisible} title="Terminal (⌘J)" onClick={toggleTerminal} className="rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></svg></button>
-        <button aria-label="Show agents" aria-pressed={agentsOpen} onClick={onAgents} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="9" cy="7" r="3"/><path d="M3 20v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v2"/></svg><span data-toolbar-label>Agents{workingAgents > 0 ? ` (${workingAgents})` : ""}</span>{workingAgents > 0 && <span className="size-1.5 shrink-0 animate-pulse rounded-full" style={{ background: "var(--accent)" }} aria-hidden />}</button>
+        {onTasks && <button type="button" aria-label="Show tasks" aria-pressed={tasksOpen} onClick={onTasks}
+          className={`shrink-0 rounded-lg px-2 py-1 text-xs ${tasksOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover"}`}>Tasks{taskCount > 0 ? ` (${taskCount})` : ""}</button>}
         <ThemeToggle />
       </div>
     </div>
