@@ -11,7 +11,8 @@ pub const copy_env = "GRAFF_CLIPBOARD_COPY";
 pub const paste_env = "GRAFF_CLIPBOARD_PASTE";
 
 pub fn envCopy() ?[]const u8 {
-    const v = std.posix.getenv(copy_env) orelse return null;
+    const z = std.c.getenv("GRAFF_CLIPBOARD_COPY") orelse return null;
+    const v = std.mem.span(z);
     return if (v.len == 0) null else v;
 }
 
