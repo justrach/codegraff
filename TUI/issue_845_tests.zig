@@ -30,7 +30,6 @@ test "queuing a follow-up keeps the thinking indicator live (#845)" {
     term.init(alloc, 80, 24);
     defer term.deinit();
     const job = try attachThinking(&term, alloc);
-    _ = job;
 
     term.now_ms = 0;
     const idle = try term.screen();

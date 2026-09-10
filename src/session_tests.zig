@@ -146,13 +146,17 @@ test "#830 title preserves UTF-8 at the 80-byte boundary" {
     const a = arena_state.allocator();
     var root: Agent = undefined;
     root.session_title = null;
+    const a76 = "a" ** 76;
+    const a77 = "a" ** 77;
+    const a78 = "a" ** 78;
+    const a79 = "a" ** 79;
     const cases = .{
-        .{ "a" * *78 ++ "é" ++ "suffix", "a" * *78 ++ "é" },
-        .{ "a" * *79 ++ "é" ++ "suffix", "a" * *79 },
-        .{ "a" * *77 ++ "界" ++ "suffix", "a" * *77 ++ "界" },
-        .{ "a" * *78 ++ "界" ++ "suffix", "a" * *78 },
-        .{ "a" * *76 ++ "🎉" ++ "suffix", "a" * *76 ++ "🎉" },
-        .{ "a" * *79 ++ "🎉" ++ "suffix", "a" * *79 },
+        .{ a78 ++ "é" ++ "suffix", a78 ++ "é" },
+        .{ a79 ++ "é" ++ "suffix", a79 },
+        .{ a77 ++ "界" ++ "suffix", a77 ++ "界" },
+        .{ a78 ++ "界" ++ "suffix", a78 },
+        .{ a76 ++ "🎉" ++ "suffix", a76 ++ "🎉" },
+        .{ a79 ++ "🎉" ++ "suffix", a79 },
     };
     inline for (cases) |case| {
         root.messages = (try std.json.parseFromSliceLeaky(Value, a, "[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"  " ++ case[0] ++ "  \"}]}]", .{})).array;
