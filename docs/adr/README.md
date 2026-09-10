@@ -105,6 +105,7 @@ record only when you need the evidence or the edge cases.
 | [0092](0092-codedb-context-is-local-first.md) | Bare `codedb context` is `--local`; `--hybrid` / `--semantic` are opt-in remote rerank (and still refused under ADR 0084 policy). |
 | [0093](0093-project-layout-breadth-and-directory-hints.md) | Project layout favors breadth under its caps; missing directories offer bounded sibling hints without changing confinement or ADR 0090 constraint policy. |
 | [0094](0094-subagent-interrupt-is-a-cancel-file.md) | GUI Stop writes `{id}.cancel` in the activity dir; the child finishes failed even if the model returns. Not `session/cancel`. |
+| [0095](0095-mcp-apps-are-isolated-result-views.md) | MCP Apps are private saved result views in isolated GUI/browser sandboxes; app tool calls require a future approval path. |
 | [0096](0096-desktop-link-destination.md) | Persist the desktop link destination outside origin-scoped storage; validate once and reveal the focused chat's Browser without navigating the app. |
 | [0097](0097-isolate-probe-clipboards.md) | Offline PTY probes get private clipboard commands per process; direct probe runs retain OS clipboard integration. |
 | [0098](0098-orphan-listeners-are-not-stop-authority.md) | Legacy listener discovery is read-only; stop authority requires verified ownership, port preflight checks both families, and unknown browser visibility protects listening jobs. |

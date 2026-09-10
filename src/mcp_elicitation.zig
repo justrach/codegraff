@@ -22,7 +22,7 @@ const util = @import("util.zig");
 /// Legacy `initialize` `capabilities` object. `{form:{}}` is the 2025-11-25
 /// form-only shape; an empty `elicitation` object is also form-only, but
 /// node_repl checks the named form key before calling createElicitation.
-pub const client_capabilities = "{\"elicitation\":{\"form\":{}}}";
+pub const client_capabilities = "{\"elicitation\":{\"form\":{}},\"extensions\":{\"io.modelcontextprotocol/ui\":{\"mimeTypes\":[\"text/html;profile=mcp-app\"]}}}";
 
 pub const initialize_params =
     "{\"protocolVersion\":\"" ++ mcp_protocol.legacy_protocol ++

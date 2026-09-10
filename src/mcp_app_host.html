@@ -1,0 +1,53 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MCP app result</title>
+<style>body{margin:0;font:14px system-ui;background:#fafafa;color:#222}header{padding:10px 14px;display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #ddd}iframe{width:100%;height:560px;border:0;display:block}#link{color:#075;overflow-wrap:anywhere}#status{font-size:12px;color:#666}</style>
+<header><span>MCP app · saved result</span><span id="status">Loading…</span></header><a id="link" target="_blank" rel="noopener noreferrer" hidden></a>
+<script>
+'use strict';
+const snapshot = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob('GRAFF_APP_PAYLOAD'),c=>c.charCodeAt(0))));
+const status = document.querySelector('#status'), link = document.querySelector('#link');
+function domains(values){return Array.isArray(values)?values.filter(v=>typeof v==='string'&&/^https:\/\/(?:\*\.)?[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?$/i.test(v)).slice(0,32):[];}
+const declared=snapshot.resource._meta?.ui||{}, csp=declared.csp||{};
+const approved={connectDomains:domains(csp.connectDomains),resourceDomains:domains(csp.resourceDomains),frameDomains:domains(csp.frameDomains),baseUriDomains:domains(csp.baseUriDomains)};
+const clipboard=Boolean(declared.permissions?.clipboardWrite);
+// The proxy has its own opaque data: origin, distinct from both the GUI and host.
+const proxy=document.createElement('iframe');proxy.title='MCP app';proxy.sandbox='allow-scripts allow-same-origin';if(clipboard)proxy.allow='clipboard-write';
+const proxyCode=()=>{
+  let view=null;
+  window.addEventListener('message',event=>{
+    const m=event.data;if(!m||m.jsonrpc!=='2.0')return;
+    if(event.source===parent){
+      if(m.method==='ui/notifications/sandbox-resource-ready'&&!view){
+        const p=m.params,c=p.csp;
+        const policy=`default-src 'none'; script-src 'unsafe-inline' ${c.resourceDomains.join(' ')}; style-src 'unsafe-inline' ${c.resourceDomains.join(' ')}; img-src data: blob: ${c.resourceDomains.join(' ')}; font-src data: ${c.resourceDomains.join(' ')}; media-src data: blob: ${c.resourceDomains.join(' ')}; connect-src ${c.connectDomains.join(' ')||"'none'"}; frame-src ${c.frameDomains.join(' ')||"'none'"}; base-uri ${c.baseUriDomains.join(' ')||"'none'"}; object-src 'none'; form-action 'none'`;
+        view=document.createElement('iframe');view.title='Interactive tool result';view.sandbox='allow-scripts';view.style='width:100%;height:100vh;border:0;display:block';if(p.permissions?.clipboardWrite)view.allow='clipboard-write';
+        view.srcdoc='<!doctype html><meta http-equiv="Content-Security-Policy" content="'+policy+'">'+p.html;document.body.style.margin='0';document.body.append(view);
+      }else if(!String(m.method||'').startsWith('ui/notifications/sandbox-'))view?.contentWindow.postMessage(m,'*');
+    }else if(view&&event.source===view.contentWindow&&!String(m.method||'').startsWith('ui/notifications/sandbox-'))parent.postMessage(m,'*');
+  });
+  parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/sandbox-proxy-ready',params:{}},'*');
+};
+const proxyHtml='<!doctype html><script>('+proxyCode.toString()+')()<'+ '/script>';
+proxy.src='data:text/html;base64,'+btoa(proxyHtml);
+function send(value){proxy.contentWindow.postMessage({jsonrpc:'2.0',...value},'*');}
+let initialized=false;
+window.addEventListener('message',event=>{
+  if(event.source!==proxy.contentWindow)return;const m=event.data;if(!m||m.jsonrpc!=='2.0')return;
+  const reply=result=>send({id:m.id,result});
+  if(m.method==='ui/notifications/sandbox-proxy-ready'){send({method:'ui/notifications/sandbox-resource-ready',params:{html:snapshot.resource.text,csp:approved,permissions:clipboard?{clipboardWrite:{}}:{}}});return;}
+  if(m.method==='ui/initialize'){
+    if(m.params?.protocolVersion!=='2026-01-26'){send({id:m.id,error:{code:-32602,message:'Unsupported MCP Apps protocol version'}});return;}
+    reply({protocolVersion:'2026-01-26',hostInfo:{name:'Codegraff',version:'1'},hostCapabilities:{openLinks:{},sandbox:{csp:approved,permissions:{}}},hostContext:{theme:matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light',displayMode:'inline',availableDisplayModes:['inline']}});return;
+  }
+  if(m.method==='ui/notifications/initialized'&&!initialized){initialized=true;send({method:'ui/notifications/tool-input',params:{arguments:snapshot.arguments}});send({method:'ui/notifications/tool-result',params:snapshot.result});status.textContent='Result view · tool execution disabled';return;}
+  if(!initialized)return;
+  if(m.method==='ui/notifications/size-changed'){const h=m.params?.height;if(Number.isFinite(h))proxy.style.height=Math.min(1000,Math.max(240,h))+'px';return;}
+  if(m.method==='ui/open-link'){
+    try{const u=new URL(m.params.url);if(!['http:','https:'].includes(u.protocol)||u.username||u.password)throw Error('invalid');link.href=u.href;link.textContent='Open source: '+u.href;link.hidden=false;status.textContent='Click Open source to continue';reply({});}catch{reply({isError:true});}return;
+  }
+  if(m.method==='ping'){reply({});return;}
+  if(m.id!==undefined)send({id:m.id,error:{code:-32601,message:'This saved-result host does not execute tools, read additional resources, or send agent messages.'}});
+});
+document.body.append(proxy);
+setTimeout(()=>{if(!initialized)status.textContent='This app did not connect. The ordinary tool result is still available in the transcript.';},10000);
+window.addEventListener('pagehide',()=>{if(initialized)send({id:'teardown',method:'ui/resource-teardown',params:{}});});
+</script></html>

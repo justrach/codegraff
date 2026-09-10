@@ -40,6 +40,7 @@ const initializeServer = mcp_rpc.initializeServer;
 const request = mcp_rpc.request;
 
 pub const Tool = struct {
+    ui_resource_uri: ?[]const u8 = null,
     server_index: usize,
     original_name: []const u8, // name as the server knows it
     qualified_name: []const u8, // "mcp__<server>__<tool>" shown to the model
@@ -48,6 +49,7 @@ pub const Tool = struct {
 };
 
 pub const Registry = struct {
+    last_app_path: ?[]const u8 = null,
     gpa: Allocator,
     io: Io,
     home: []const u8,
@@ -408,6 +410,7 @@ pub const Registry = struct {
         };
         for (tools_v.array.items) |t| {
             if (t != .object) continue;
+            if (!@import("mcp_apps.zig").modelVisible(t)) continue;
             const name_v = t.object.get("name") orelse continue;
             if (name_v != .string) continue;
             const orig = try a.dupe(u8, name_v.string);
@@ -427,6 +430,7 @@ pub const Registry = struct {
                 .qualified_name = qualified,
                 .description = try a.dupe(u8, desc),
                 .input_schema = schema,
+                .ui_resource_uri = if (@import("mcp_apps.zig").resourceUri(t)) |uri| try a.dupe(u8, uri) else null,
             });
         }
         try servers.append(a, server);
@@ -547,6 +551,14 @@ pub const Registry = struct {
 
         var ow: Io.Writer.Allocating = .init(out_alloc);
         errdefer ow.deinit();
+        if (tool.ui_resource_uri) |uri| {
+            const path = @import("mcp_apps.zig").snapshot(reg.io, response_alloc, reg.home, server, uri, input, result_val) catch null;
+            if (path) |p| {
+                reg.last_app_path = try reg.arena().dupe(u8, p);
+                try ow.writer.print("[MCP app]({s}) — saved interactive result; /mcp apps opens it in a browser.\n", .{p});
+            } else try ow.writer.writeAll("[MCP app view unavailable; ordinary tool output follows.]\n");
+        }
+        const prefix_len = ow.writer.buffered().len;
         if (result.get("content")) |content| try renderContent(&ow.writer, content, .{
             .arena = reg.arena(),
             .slot = &reg.pending_image,
@@ -555,7 +567,7 @@ pub const Registry = struct {
         });
         // 2025-06-18+ structured tool output: if the server sent only
         // structuredContent (no text blocks), surface it instead of "".
-        if (ow.writer.buffered().len == 0) {
+        if (ow.writer.buffered().len == prefix_len) {
             if (result.get("structuredContent")) |sc| {
                 var sw: std.json.Stringify = .{ .writer = &ow.writer };
                 try sw.write(sc);
