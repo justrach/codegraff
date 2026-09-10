@@ -32,36 +32,61 @@ test {
     _ = @import("compact_status.zig");
 }
 
+/// CSI around one spinner frame. When the steer row is live, hop up one
+/// line (DECSC/DECRC) so the frame never wipes the queued follow-up (#845).
+pub fn spinnerFramePrefix(steer_visible: bool) []const u8 {
+    return if (steer_visible)
+        "\x1b7\x1b[1A\r\x1b[2K\x1b[?7l"
+    else
+        "\r\x1b[2K\x1b[?7l";
+}
+
+pub fn spinnerFrameSuffix(steer_visible: bool) []const u8 {
+    return if (steer_visible) "\x1b[?7h\x1b8" else "\x1b[?7h";
+}
+
+pub fn spinnerStopSeq(steer_visible: bool) []const u8 {
+    return if (steer_visible)
+        "\x1b[?7h\x1b7\x1b[1A\r\x1b[2K\x1b8"
+    else
+        "\x1b[?7h\r\x1b[2K";
+}
+
 pub fn spinnerTask(io: Io) void {
     var i: usize = 0;
     var buf: [512]u8 = undefined;
     var w = Io.File.stdout().writer(io, &buf);
+    const glue = @import("repl_glue.zig");
     while (!Agent.g_spin_stop.load(.acquire)) {
-        if (main_mod.g_steer_visible.load(.acquire)) {
-            io.sleep(.fromMilliseconds(20), .awake) catch break;
-            continue;
-        }
-        // Clear-then-draw each frame: animations may vary in width.
-        w.interface.writeAll("\r\x1b[2K\x1b[?7l") catch return; // ?7l: autowrap off so a wide spinner truncates instead of wrapping in a narrow window (the "goes on and on" bug)
-        if (@import("compact_status.zig").isActive()) {
-            w.interface.writeAll(@import("compact_status.zig").label) catch return;
-        } else {
-            anim.anims[anim.g_anim_current].frame(&w.interface, i) catch return;
-        }
-        w.interface.writeAll("\x1b[?7h") catch return; // restore autowrap
-        w.interface.flush() catch return;
+        const steer = main_mod.g_steer_visible.load(.acquire);
+        glue.steerLock();
+        // Clear-then-draw each frame: animations may vary in width. ?7l:
+        // autowrap off so a wide spinner truncates instead of wrapping.
+        const drew = blk: {
+            w.interface.writeAll(spinnerFramePrefix(steer)) catch break :blk false;
+            if (@import("compact_status.zig").isActive()) {
+                w.interface.writeAll(@import("compact_status.zig").label) catch break :blk false;
+            } else {
+                anim.anims[anim.g_anim_current].frame(&w.interface, i) catch break :blk false;
+            }
+            w.interface.writeAll(spinnerFrameSuffix(steer)) catch break :blk false;
+            w.interface.flush() catch break :blk false;
+            break :blk true;
+        };
+        glue.steerUnlock();
+        if (!drew) return;
         i += 1;
         const frame_ticks = @max(@as(usize, 1), @as(usize, anim.anims[anim.g_anim_current].frame_ms) / 20);
         var t: usize = 0;
         while (t < frame_ticks and !Agent.g_spin_stop.load(.acquire)) : (t += 1) {
-            if (main_mod.g_steer_visible.load(.acquire)) break;
             io.sleep(.fromMilliseconds(20), .awake) catch break;
         }
     }
-    if (!main_mod.g_steer_visible.load(.acquire)) {
-        w.interface.writeAll("\x1b[?7h\r\x1b[2K") catch return; // restore autowrap + clear
-        w.interface.flush() catch {};
-    }
+    const steer = main_mod.g_steer_visible.load(.acquire);
+    glue.steerLock();
+    w.interface.writeAll(spinnerStopSeq(steer)) catch {};
+    w.interface.flush() catch {};
+    glue.steerUnlock();
 }
 
 pub fn spinnerStart(self: *Agent) void {
@@ -155,4 +180,19 @@ pub fn toggleThinkingFold(self: *Agent) void {
         advanceThinkingRows(&self.thinking_rows, &self.thinking_col, termCols(), self.thinking_text.items);
     }
     w.flush() catch return;
+}
+
+test "a live steer row hops the spinner up one line instead of freezing (#845)" {
+    const hop = spinnerFramePrefix(true);
+    try std.testing.expect(std.mem.indexOf(u8, hop, "\x1b7") != null);
+    try std.testing.expect(std.mem.indexOf(u8, hop, "\x1b[1A") != null);
+    try std.testing.expect(std.mem.startsWith(u8, hop, "\x1b7"));
+    try std.testing.expectEqualStrings("\x1b[?7h\x1b8", spinnerFrameSuffix(true));
+    try std.testing.expect(std.mem.indexOf(u8, spinnerStopSeq(true), "\x1b[1A") != null);
+}
+
+test "without a steer row the spinner still redraws in place (#845)" {
+    try std.testing.expectEqualStrings("\r\x1b[2K\x1b[?7l", spinnerFramePrefix(false));
+    try std.testing.expectEqualStrings("\x1b[?7h", spinnerFrameSuffix(false));
+    try std.testing.expectEqualStrings("\x1b[?7h\r\x1b[2K", spinnerStopSeq(false));
 }

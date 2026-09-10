@@ -200,12 +200,12 @@ pub var g_codedbpro_licensed: bool = false; // pub: codedbpro_report's native-to
 const anim = @import("anim.zig");
 // Steering (Codex-style): bytes typed while a turn streams are captured (not discarded), echoed live in dim emerald, and queued to run next on Enter —
 // follow-ups queue without waiting for the turn to finish. TTY-only (raw-stdin esc-watch is off in --json/GUI mode); watchdog/select arms may
-// drain/echo stdin while the stream reader is blocked, so g_steer_visible pauses spinner redraws to keep the live row intact.
+// drain/echo stdin while the stream reader is blocked. g_steer_visible: spinner hops up one line (#845).
 pub var g_steer_buf: std.ArrayList(u8) = .empty; // in-progress line (page-alloc)
 const SteerEntry = repl_glue.SteerEntry; // struct { text: []const u8, force: bool }
 pub var g_steer_queue: std.ArrayList(SteerEntry) = .empty; // completed lines
 pub var g_steer_echoed = false; // "↳ steer ›" prefix shown for the current line
-pub var g_steer_visible: std.atomic.Value(bool) = .init(false); // visible live steering row; pauses spinner redraws
+pub var g_steer_visible: std.atomic.Value(bool) = .init(false); // visible live steering row; spinner draws on the line above
 pub var g_steer_lock: std.atomic.Value(bool) = .init(false); // spin-guards g_steer_queue/g_steer_buf mutations across concurrent drainers (main reader + pool esc-watch/watchdog arms) so one submit never flushes as N entries (#129); acquire via repl_glue.steerLock
 pub var g_out: ?*Io.Writer = null; // stdout writer for steer echo (set in main)
 pub var g_gui_mu: Io.Mutex = .init; // serializes --json stdout across pool-thread subagent emits (guiEmit + printDelta)

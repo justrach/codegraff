@@ -186,14 +186,18 @@ pub fn escPressed(echo: bool) bool {
         if (echo) {
             if (!main_mod.g_steer_echoed) {
                 main_mod.g_steer_visible.store(true, .release);
-                repl_glue.steerEcho("\n");
-                repl_glue.steerEcho(style.accent);
-                repl_glue.steerEcho("↳ steer ›");
-                repl_glue.steerEcho(style.reset);
-                repl_glue.steerEcho(" ");
+                repl_glue.steerLock();
+                repl_glue.steerEchoUnlocked("\n");
+                repl_glue.steerEchoUnlocked(style.accent);
+                repl_glue.steerEchoUnlocked("↳ steer ›");
+                repl_glue.steerEchoUnlocked(style.reset);
+                repl_glue.steerEchoUnlocked(" ");
                 main_mod.g_steer_echoed = true;
+                repl_glue.steerEchoUnlocked(buf[i .. i + 1]);
+                repl_glue.steerUnlock();
+            } else {
+                repl_glue.steerEcho(buf[i .. i + 1]);
             }
-            repl_glue.steerEcho(buf[i .. i + 1]);
         }
     }
     return esc_found;
