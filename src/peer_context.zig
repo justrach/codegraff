@@ -56,7 +56,7 @@ pub fn isPeerInject(m: Value) bool {
             for (arr.items) |blk| {
                 if (blk != .object) continue;
                 const t = blk.object.get("type") orelse continue;
-                if (!(t == .string and std.mem.eql(u8, t.string, "text"))) continue;
+                if (!(t == .string and (std.mem.eql(u8, t.string, "text") or std.mem.eql(u8, t.string, "input_text")))) continue;
                 if (blk.object.get("text")) |v| {
                     if (v == .string and isPeerInjectContent(v.string)) return true;
                 }

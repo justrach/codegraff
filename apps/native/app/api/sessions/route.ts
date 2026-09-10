@@ -13,6 +13,7 @@ import {
   listSessionRows,
   pageSessions,
   peekHeader,
+  recoveredSessionTitle,
   type ListScope,
 } from "@/lib/session-store";
 
@@ -62,7 +63,7 @@ export async function GET(req: NextRequest) {
       const header = peekHeader(found.file, st.size);
       return Response.json({
         name,
-        title: str(parsed.title),
+        title: recoveredSessionTitle(parsed.title, parsed.messages),
         model: str(parsed.model),
         provider: str(parsed.provider),
         updatedMs: typeof parsed.updated_ms === "number" ? parsed.updated_ms : Math.round(st.mtimeMs),

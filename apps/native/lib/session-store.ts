@@ -1,6 +1,7 @@
-import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { withoutGuiSkillContext } from "./gui-skills";
 
 /** Same layout `src/session_index.zig` owns. Header fields land before
  *  `messages`, so a list peeks the prefix instead of parsing whole files. */
@@ -86,6 +87,31 @@ export function homeDir(override?: string | null): string {
 
 type HeaderPeek = Header | null;
 
+/** Only repair the historical placeholder; explicit names are authoritative. */
+export function recoveredSessionTitle(title: unknown, messages: unknown): string | null {
+  if (title !== "Untitled session" || !Array.isArray(messages)) return str(title);
+  for (const item of messages) {
+    if (!item || typeof item !== "object" || item.role !== "user") continue;
+    const content = typeof item.content === "string" ? item.content : Array.isArray(item.content)
+      ? item.content.filter((part: any) => part && (part.type === "text" || part.type === "input_text") && typeof part.text === "string")
+        .map((part: any) => part.text).join("\n") : "";
+    const text = withoutGuiSkillContext(content.trim()).trim();
+    if (!text || ["[peer]", "[peer message", "[presence]", "[#469 presence]", "[#469 channel", "[#469 device room", "[peer channel"].some(prefix => text.startsWith(prefix))) continue;
+    // Match the engine's 80-byte, UTF-8-safe title limit.
+    let result = "";
+    for (const char of text) {
+      if (Buffer.byteLength(result + char) > 80) break;
+      result += char;
+    }
+    return result || str(title);
+  }
+  return str(title);
+}
+
+// Reuse recovery only for an unchanged file. A prompt beyond the header peek
+// can be rewritten without changing that prefix (or the file's size).
+const legacyTitles = new Map<string, { version: string; title: string }>();
+
 export function peekHeader(file: string, size: number): HeaderPeek {
   const fd = openSync(file, "r");
   try {
@@ -97,7 +123,36 @@ export function peekHeader(file: string, size: number): HeaderPeek {
     if (idx < 0) return null;
     let head = text.slice(0, idx).trimEnd();
     if (head.endsWith(",")) head = head.slice(0, -1);
-    return JSON.parse(`${head}}`) as Header;
+    const header = JSON.parse(`${head}}`) as Header;
+    if (header.title !== "Untitled session" || size > MAX_FULL_BYTES) return header;
+    const stat = fstatSync(fd, { bigint: true });
+    const version = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+    const cached = legacyTitles.get(file);
+    if (cached?.version === version) return { ...header, title: cached.title };
+    try {
+      let body = text;
+      if (size > n) {
+        // Reuse the prefix and cap the allocation/read even if the file grows.
+        const full = Buffer.alloc(size);
+        buf.copy(full, 0, 0, n);
+        let offset = n;
+        while (offset < size) {
+          const count = readSync(fd, full, offset, size - offset, offset);
+          if (!count) break;
+          offset += count;
+        }
+        body = full.toString("utf8", 0, offset);
+      }
+      const title = recoveredSessionTitle(header.title, JSON.parse(body).messages);
+      if (title && title !== "Untitled session") {
+        if (legacyTitles.size >= 128) legacyTitles.delete(legacyTitles.keys().next().value!);
+        legacyTitles.set(file, { version, title });
+        header.title = title;
+      }
+    } catch {
+      // Partial autosaves and malformed legacy files keep their header title.
+    }
+    return header;
   } catch {
     return null;
   } finally {
