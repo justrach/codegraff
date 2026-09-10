@@ -168,7 +168,7 @@ test "#830 title preserves UTF-8 at the 80-byte boundary" {
     inline for (cases) |case| {
         root.messages = (try std.json.parseFromSliceLeaky(Value, a, "[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"  " ++ case[0] ++ "  \"}]}]", .{})).array;
         const title = session.sessionTitle(&root);
-        try std.testing.expectEqualStrings(case[1], title);
+        try std.testing.expectEqualStrings(case[1][0..], title);
         try std.testing.expect(std.unicode.utf8ValidateSlice(title));
     }
 }
