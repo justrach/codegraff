@@ -27,6 +27,10 @@ without interfering with concurrent runs or normal desktop use. They do not test
 the operating system's clipboard service. Direct invocation of the individual
 probe scripts retains that integration path when it is explicitly wanted.
 
+A private `xclip` that treats every non-pbpaste invocation as a write blocks on
+stdin. Hover (and any probe that only finds `xclip` on PATH) never finishes a
+paint sweep. Read when stdin stays quiet; keep `-i`/`pbcopy` as writes.
+
 The pool integrity suite covers copy/paste, independent environments, cleanup,
-and environment inheritance. The real-binary pool covers the complete selection
-path with these commands in place.
+quiet-stdin reads, and environment inheritance. The real-binary pool covers the
+complete selection path with these commands in place.

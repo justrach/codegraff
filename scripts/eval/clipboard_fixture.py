@@ -20,9 +20,12 @@ def private_clipboard():
         clipboard.write_bytes(b"")
         handler = root / "clipboard.py"
         handler.write_text(
-            "import os, pathlib, sys\n"
+            "import os, pathlib, select, sys\n"
             "path = pathlib.Path(__file__).with_name('clipboard')\n"
-            "if sys.argv[1] in ('pbpaste',) or '-o' in sys.argv[2:] or '-out' in sys.argv[2:]:\n"
+            "args = sys.argv[1:]\n"
+            "reading = args[:1] == ['pbpaste'] or '-o' in args or '-out' in args\n"
+            "writing = '-i' in args or '-in' in args or args[:1] == ['pbcopy']\n"
+            "if reading or (not writing and not select.select([sys.stdin], [], [], 0.05)[0]):\n"
             "    sys.stdout.buffer.write(path.read_bytes())\n"
             "else:\n"
             "    temporary = path.with_name('write-' + str(os.getpid()))\n"

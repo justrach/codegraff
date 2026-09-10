@@ -128,6 +128,29 @@ class ClipboardTests(unittest.TestCase):
                         self.clipboard(env, copy, data)
                         self.assertEqual(self.clipboard(env, paste), data)
 
+    def test_xclip_quiet_stdin_reads_instead_of_blocking(self) -> None:
+        # Hover (and any probe that only finds xclip) invokes it with a quiet
+        # stdin. Treat that as a read; blocking on stdin hung the paint sweep.
+        with tuiguard.private_clipboard() as env:
+            self.clipboard(env, ["pbcopy"], b"seeded")
+            read_end, write_end = os.pipe()
+            try:
+                started = time.monotonic()
+                out = subprocess.run(
+                    ["xclip", "-selection", "clipboard"],
+                    stdin=read_end,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=env,
+                    check=True,
+                    timeout=2,
+                ).stdout
+                self.assertLess(time.monotonic() - started, 1.0)
+                self.assertEqual(out, b"seeded")
+            finally:
+                os.close(read_end)
+                os.close(write_end)
+
     def test_concurrent_contexts_do_not_interfere(self) -> None:
         barrier = Barrier(2)
 
