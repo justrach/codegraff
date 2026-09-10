@@ -25,7 +25,7 @@ def private_clipboard():
             "args = sys.argv[1:]\n"
             "reading = args[:1] == ['pbpaste'] or '-o' in args or '-out' in args\n"
             "writing = '-i' in args or '-in' in args or args[:1] == ['pbcopy']\n"
-            "if reading or (not writing and not select.select([sys.stdin], [], [], 0.05)[0]):\n"
+            "if reading or (not writing and not select.select([sys.stdin], [], [], 0)[0]):\n"
             "    sys.stdout.buffer.write(path.read_bytes())\n"
             "else:\n"
             "    temporary = path.with_name('write-' + str(os.getpid()))\n"

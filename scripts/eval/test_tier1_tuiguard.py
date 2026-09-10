@@ -145,7 +145,7 @@ class ClipboardTests(unittest.TestCase):
                     check=True,
                     timeout=2,
                 ).stdout
-                self.assertLess(time.monotonic() - started, 1.0)
+                self.assertLess(time.monotonic() - started, 0.5)
                 self.assertEqual(out, b"seeded")
             finally:
                 os.close(read_end)
