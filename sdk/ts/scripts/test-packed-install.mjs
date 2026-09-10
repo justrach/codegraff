@@ -66,12 +66,15 @@ try {
     await chmod(sourceBinary, 0o755);
   }
 
+  const sdkManifest = JSON.parse(await readFile(join(SDK_ROOT, "package.json"), "utf8"));
   const nativeTarballs = {};
   for (const [target, packageName] of ALL_TARGETS) {
     const output = run(process.execPath, [
       join(HERE, "package-platform.mjs"),
       "--target", target,
       "--binary", sourceBinary,
+      // Match the SDK's pin so npm uses the fixture instead of a registry binary.
+      "--version", sdkManifest.optionalDependencies[packageName],
       "--out", packages,
     ], SDK_ROOT);
     const { packageDir } = JSON.parse(output);
@@ -104,6 +107,7 @@ console.log("packed SDK resolved and ran its optional native package with no gra
   const output = run(process.execPath, [join(consumer, "smoke.mjs")], consumer, {
     ...process.env,
     CLEAN_PATH: emptyPath,
+    GRAFF_NO_TELEMETRY: "1",
   });
   process.stdout.write(output);
 
@@ -127,6 +131,7 @@ console.log("packed SDK rejects an incompatible optional native package");
   process.stdout.write(run(process.execPath, [join(consumer, "mismatch.mjs")], consumer, {
     ...process.env,
     CLEAN_PATH: emptyPath,
+    GRAFF_NO_TELEMETRY: "1",
   }));
 } finally {
   await rm(temp, { recursive: true, force: true });

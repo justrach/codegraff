@@ -86,11 +86,17 @@ async function runComposerInteractions({ win, origin, output }) {
     await key('2', { metaKey: true });
     assert.equal(await draft(second), 'Second unsent draft', 'An older upload must not reset another chat');
     assert.equal(await js(`!!document.querySelector('[aria-label="Remove composer-image.png"]')`), false, 'Attachments never move between chats');
-    await key('1', { metaKey: true });
-
+    // Delay the first shortcut's focus frame until a newer navigation has won.
+    await js(`(()=>{const raf=window.requestAnimationFrame,frames=[];window.requestAnimationFrame=callback=>{frames.push(callback);return 0;};
+      try{document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'1',metaKey:true,bubbles:true,cancelable:true}));}
+      finally{window.requestAnimationFrame=raf;}window.flushOldFocus=()=>frames.forEach(callback=>callback(performance.now()));})()`);
+    await wait(`document.querySelector('[data-chat][data-focused="true"]')?.dataset.chat==='${first}'`);
     await key('d', { metaKey: true });
     await wait(`document.querySelectorAll('[data-chat]').length===2`);
     const split = await focused();
+    assert.notEqual(split, first, 'A new split becomes active');
+    await js('window.flushOldFocus()');
+    assert.equal(await focused(), split, 'An older shortcut focus frame must not steal the new split');
     await input('Keep this split draft');
     await pointer(`[data-chat="${first}"] textarea`);
     // Use a native key event so an accidental textarea newline is observable.
