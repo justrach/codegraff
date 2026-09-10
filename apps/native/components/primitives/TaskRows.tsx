@@ -188,11 +188,13 @@ export default function TaskRows({
       }`}
     >
       {rows.map((row, i) => {
-        const open = manualOpen[row.key] ?? (row.key === "index" && tick === 2);
+        const expandable = row.details.length > 0;
+        const open = expandable && (manualOpen[row.key] ?? (row.key === "index" && tick === 2));
+        const Header = expandable ? "button" : "div";
         return (
           <div
             key={row.key}
-            className={`self-stretch overflow-hidden transition-[border-radius,background-color] duration-300 hover:bg-inset ${
+            className={`self-stretch overflow-hidden transition-[border-radius,background-color] duration-300 ${expandable ? "hover:bg-inset" : ""} ${
               list ? "border-b border-line last:border-0" : "bg-surface shadow-card"
             }`}
             style={{
@@ -200,10 +202,10 @@ export default function TaskRows({
               animation: `fade-up 450ms cubic-bezier(0.23,1,0.32,1) ${i * 80}ms both`,
             }}
           >
-            <button
-              type="button"
-              aria-expanded={open}
-              onClick={() => setManualOpen((current) => ({ ...current, [row.key]: !open }))}
+            <Header
+              type={expandable ? "button" : undefined}
+              aria-expanded={expandable ? open : undefined}
+              onClick={expandable ? () => setManualOpen((current) => ({ ...current, [row.key]: !open })) : undefined}
               className="flex h-11 w-full items-center gap-2.5 px-2.5 text-left"
             >
               <span className="flex size-6 shrink-0 items-center justify-center">
@@ -214,7 +216,7 @@ export default function TaskRows({
               </span>
               <span className="text-[12.5px] text-ink-2 tabular-nums">{row.amount}</span>
               {row.pill}
-              <span
+              {expandable && <span
                 aria-hidden="true"
                 className="-ml-2 flex size-7 shrink-0 items-center justify-center rounded-full text-ink-3"
               >
@@ -225,11 +227,11 @@ export default function TaskRows({
                 >
                   <path d="M6 9l6 6 6-6" />
                 </svg>
-              </span>
-            </button>
+              </span>}
+            </Header>
 
             {/* dropdown detail — same expandable grammar as Chain of Thought */}
-            <div
+            {expandable && <div
               className="grid transition-[grid-template-rows,opacity] duration-300"
                 style={{
                   gridTemplateRows: open ? "1fr" : "0fr",
@@ -260,7 +262,7 @@ export default function TaskRows({
                     </div>
                   </div>
                 </div>
-              </div>
+              </div>}
           </div>
         );
       })}
