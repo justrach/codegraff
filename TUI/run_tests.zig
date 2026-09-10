@@ -113,3 +113,8 @@ test "the loop self-heals: a resize EVENT and a periodic sweep force a repaint" 
     // canvas — /theme and the startup OSC-11 flip both force a full paint.
     try std.testing.expect(std.mem.indexOf(u8, src, "m.theme_id != prev_theme") != null);
 }
+
+test "the TUI binds the inherited clipboard override at start (#836)" {
+    const src = @embedFile("run.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "clipboard.bind(io, environ_map)") != null);
+}

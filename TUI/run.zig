@@ -6,6 +6,7 @@ const Io = std.Io;
 
 const app = @import("app.zig");
 const bgop = @import("bgop.zig");
+const clipboard = @import("clipboard.zig");
 const engine = @import("engine.zig");
 const key_mod = @import("key.zig");
 const keys = @import("keys.zig");
@@ -45,6 +46,8 @@ pub fn run(
     // the pty storm test needs a way to count frames from outside the process.
     pacing.stats_on = environ_map.get("GRAFF_TUI_PAINT_STATS") != null;
     pacing.resetStats();
+    // #836: private copy command from the probe env; spawn on this Io.
+    clipboard.bind(io, environ_map);
     engine.g_turn_ctx = opts.turn_ctx;
     engine.g_turn_fn = opts.turn_fn;
     engine.g_model_fn = opts.model_fn;

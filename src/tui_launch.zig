@@ -375,8 +375,9 @@ fn filesCb(ctx: ?*anyopaque, gpa: Allocator) ?[]const u8 {
     return run_res.stdout;
 }
 
-fn copyCb(_: ?*anyopaque, text: []const u8) bool {
-    return tui.clipboard.writeText(text);
+fn copyCb(ctx: ?*anyopaque, text: []const u8) bool {
+    const c: *repl_glue.ReplCtx = @ptrCast(@alignCast(ctx orelse return false));
+    return tui.clipboard.writeTextIo(c.io, text);
 }
 
 fn writeDoctor(w: *Io.Writer) void {
