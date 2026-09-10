@@ -109,8 +109,8 @@ export default function GraffHarness() {
   // The sidecar browser: one Chrome tab per chat, and the pins the user
   // drops on it, which ride ahead of the chat's next prompt.
   const [browserOpen, setBrowserOpen] = useBrowserVisibility(BROWSER_OPEN_KEY, (chat) => {
-    const target = chats.find(c => chatHandle(pageRef.current, c.id) === chat);
-    if (target) { focusChat(target.id); setFilesOpen(false); } return !!target;
+    const target = chats.find(c => chat ? chatHandle(pageRef.current, c.id) === chat : c.id === activeId);
+    if (target) { focusChat(target.id); setFilesOpen(false); } return target ? chatHandle(pageRef.current, target.id) : false;
   });
   // The conversation library: every saved chat, paged and searchable. It takes
   // the whole chat area, so opening it leaves the other side panes.

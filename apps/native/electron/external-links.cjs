@@ -4,9 +4,14 @@ function externalURL(raw) {
   catch { return null; }
 }
 function installExternalLinks(contents, origin, open = url => require('electron').shell.openExternal(url)) {
-  const launch = raw => { const url = externalURL(raw); if (url) void Promise.resolve(open(url)).catch(() => {}); };
+  const internal = raw => { try { return new URL(raw).origin === origin; } catch { return false; } };
+  const launch = raw => {
+    const url = externalURL(raw);
+    if (!url || internal(url)) return;
+    try { void Promise.resolve(open(url)).catch(() => {}); } catch { /* A failed destination must not navigate the app. */ }
+  };
   contents.on('will-navigate', (event, url) => {
-    if (new URL(url).origin === origin) return;
+    if (externalURL(url) && internal(url)) return;
     event.preventDefault(); launch(url);
   });
   contents.setWindowOpenHandler(({ url }) => { launch(url); return { action: 'deny' }; });

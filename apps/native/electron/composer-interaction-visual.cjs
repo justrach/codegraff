@@ -19,7 +19,7 @@ async function runComposerInteractions({ win, origin, output }) {
     await pause();
   };
   const pointer = async selector => {
-    const point = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.scrollIntoView({block:'nearest'});const r=e.getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
+    const point = await js(`(async()=>{const e=document.querySelector(${JSON.stringify(selector)});e.scrollIntoView({block:'nearest'});await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));const r=e.getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
     wc.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...point });
     wc.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...point });
     await pause();

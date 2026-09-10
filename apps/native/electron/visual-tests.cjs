@@ -31,6 +31,12 @@ app.whenReady().then(async () => {
     if (url.origin === origin && url.pathname.startsWith('/api/')) apiRequests.push(url.pathname);
     callback({ cancel: !details.url.startsWith(origin) && !details.url.startsWith('data:') || url.pathname.startsWith('/api/') });
   });
+  if (process.env.GRAFF_VISUAL_SUITE === 'links') {
+    win.hide();
+    await require('./link-destination-visual.cjs').runLinkDestinationVisuals({ origin, output });
+    assert.deepEqual(apiRequests, [], 'Link fixtures never call engine or model APIs');
+    return;
+  }
   if (process.env.GRAFF_VISUAL_SUITE === 'updates') {
     await require('./updates-visual.cjs').runUpdateVisuals({ origin, output });
     await require('./updates-transport.cjs').runUpdateTransport();
@@ -43,6 +49,7 @@ app.whenReady().then(async () => {
     if (process.env.GRAFF_VISUAL_SUITE !== 'interactions') {
       await require('./browser-visual.cjs').runBrowserVisuals({ win, origin, output });
       await require('./dev-preview-visual.cjs').runDevPreview({ output });
+      await require('./link-destination-visual.cjs').runLinkDestinationVisuals({ origin, output });
     }
     assert.deepEqual(apiRequests, [], 'Project fixtures never call engine or model APIs');
     fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: process.env.GRAFF_VISUAL_SUITE === 'interactions' ? ['keyboard, composer, files and reading'] : ['projects and navigation', 'browser'], apiRequests }, null, 2));
@@ -95,6 +102,7 @@ app.whenReady().then(async () => {
   await require('./agents-visual.cjs').runAgentVisuals({ win, origin, output });
   await require('./updates-visual.cjs').runUpdateVisuals({ origin, output });
   await require('./updates-transport.cjs').runUpdateTransport();
+  await require('./link-destination-visual.cjs').runLinkDestinationVisuals({ origin, output });
   if (process.env.GRAFF_PERFORMANCE_TESTS) await require('./performance-scenarios.cjs').runPerformance({ win, origin, output });
   assert.deepEqual(apiRequests, [], 'Visual fixtures must not call the engine or model APIs');
   fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: results, apiRequests }, null, 2));
