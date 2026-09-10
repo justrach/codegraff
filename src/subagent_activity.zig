@@ -208,7 +208,7 @@ test "cancel file marks a working child interrupted even if it later finishes" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const io = std.testing.io;
-    var r: Recorder = .{ .a = std.testing.allocator, .io = io, .dir = try tmp.dir.openDir(io, ".", .{}), .meta = .{ .id = "child", .label = "test", .task = "test" } };
+    var r: Recorder = .{ .a = std.testing.allocator, .io = io, .dir = try tmp.dir.openDir(io, ".", .{ .iterate = true }), .meta = .{ .id = "child", .label = "test", .task = "test" } };
     defer r.deinit();
     try requestInterrupt(io, r.dir, "child");
     try std.testing.expect(interruptRequested(io, r.dir, "child"));
