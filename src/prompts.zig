@@ -9,7 +9,6 @@
 //! variants are pre-built strings exactly like sys_normal/sys_strict, so
 //! this is the one place that derives all four from a base, next to the
 //! constants it composes them from.
-//!
 //! #421: the root prompt is no longer one frozen wall of text. It is a list of
 //! capability-scoped SEGMENTS whose full-capability concatenation is still the
 //! comptime `main_system_prompt` (an Agent struct default, so it has to stay

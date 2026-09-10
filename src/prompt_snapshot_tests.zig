@@ -1,17 +1,7 @@
-//! #421 + #410: prompt-snapshot tests. The root system prompt is now assembled
-//! from capability-scoped segments (prompts.zig), which makes two things
-//! testable that never were:
-//!
-//!   1. an absent capability contributes ZERO instruction text — not "less"
-//!      text, none, asserted by exact length AND by the dropped segment's own
-//!      bytes being unfindable in the result;
-//!   2. the full-capability prompt is pinned to an inline golden below, so the
-//!      next person who changes the wording has to change this file too. Prompt
-//!      drift becomes a conscious choice instead of a diff nobody reviewed.
-//!
-//! The golden is the WHOLE prompt on purpose. A hash would catch drift just as
-//! well and teach a reviewer nothing; this way the diff of a prompt change is
-//! readable in review, right next to the assertion that it was intended.
+//! #421 + #410: prompt-snapshot tests. Absent capabilities contribute zero
+//! instruction text (exact length + dropped-segment bytes unfindable). The
+//! full-capability prompt is the inline golden below so wording drift is a
+//! reviewed choice, not a hash nobody reads.
 
 const std = @import("std");
 const prompts = @import("prompts.zig");
