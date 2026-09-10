@@ -188,11 +188,15 @@ def run_chain_reanchor_scenario(
             first.connection_id != rejected.connection_id
             or rejected.connection_id == rebuilt.connection_id
             or rejected.body.get("previous_response_id") != "resp_chain_1"
-            or "previous_response_id" in rebuilt.body
+            # A fresh socket may chain only from its observed prewarm,
+            # never from the rejected inference response or another socket.
+            or not mock.has_fresh_parent(rebuilt)
         ):
             raise AssertionError(
                 "chain-error: rejected delta was not rebuilt as full input on a fresh WS: "
-                f"{requests!r}"
+                f"connections={(first.connection_id, rejected.connection_id, rebuilt.connection_id)!r}, "
+                f"rejected_parent={rejected.body.get('previous_response_id')!r}, "
+                f"rebuilt_parent={rebuilt.body.get('previous_response_id')!r}"
             )
         rebuilt_types = [
             item.get("type")
