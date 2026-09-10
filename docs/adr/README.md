@@ -108,6 +108,7 @@ record only when you need the evidence or the edge cases.
 | [0095](0095-live-evals-are-gated-prs.md) | Live evals are gated PRs with no SPEC.md; score pass @ n=3 and list$ on passing reps only. |
 | [0096](0096-orphan-listeners-are-not-stop-authority.md) | Legacy listener discovery is read-only; stop authority requires verified ownership, port preflight checks both families, and unknown browser visibility protects listening jobs. |
 | [0097](0097-isolate-probe-clipboards.md) | Offline PTY probes get private clipboard commands per process; direct probe runs retain OS clipboard integration. |
+| [0098](0098-desktop-link-destination.md) | Persist the desktop link destination outside origin-scoped storage; validate once and reveal the focused chat's Browser without navigating the app. |
 
 ## When to write one
 

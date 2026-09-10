@@ -24,6 +24,7 @@ jobs:
       - run: bun run build
       - run: bun run test:overflow
       - run: bun run test:tasks
+      - run: bun run test:links
       - run: bun run test:projects
       - run: bun run test:stress
       - run: bun run test:agents

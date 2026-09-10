@@ -270,6 +270,11 @@ class CodexMock:
         with self._lock:
             return list(self.requests)
 
+    def assert_fresh_anchor(self, request: RecordedRequest) -> None:
+        """A full replay may chain only to this socket's empty-input prewarm."""
+        if not self.has_fresh_parent(request):
+            raise AssertionError("full replay used a stale or unexpected chain anchor")
+
     # ── internals ─────────────────────────────────────────────────────────
 
     def _log(self, message: str) -> None:

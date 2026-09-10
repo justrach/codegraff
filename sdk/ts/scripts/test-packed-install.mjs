@@ -111,6 +111,7 @@ console.log("packed SDK resolved and ran its optional native package with no gra
   const output = run(process.execPath, [join(consumer, "smoke.mjs")], consumer, {
     ...process.env,
     CLEAN_PATH: emptyPath,
+    GRAFF_NO_TELEMETRY: "1",
   });
   process.stdout.write(output);
 
@@ -134,6 +135,7 @@ console.log("packed SDK rejects an incompatible optional native package");
   process.stdout.write(run(process.execPath, [join(consumer, "mismatch.mjs")], consumer, {
     ...process.env,
     CLEAN_PATH: emptyPath,
+    GRAFF_NO_TELEMETRY: "1",
   }));
 } finally {
   await rm(temp, { recursive: true, force: true });
