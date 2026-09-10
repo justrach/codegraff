@@ -91,7 +91,7 @@ try {
     ),
   };
   await writeFile(join(consumer, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-  npmRun(["install", "--ignore-scripts", "--no-audit", "--no-fund"], consumer);
+  npmRun(["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund"], consumer);
 
   const smoke = `
 import { Harness } from "@codegraff/sdk";
