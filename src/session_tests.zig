@@ -146,10 +146,17 @@ test "#830 title preserves UTF-8 at the 80-byte boundary" {
     const a = arena_state.allocator();
     var root: Agent = undefined;
     root.session_title = null;
-    const a76 = "a" ** 76;
-    const a77 = "a" ** 77;
-    const a78 = "a" ** 78;
-    const a79 = "a" ** 79;
+    const As = struct {
+        fn get(comptime n: usize) [n]u8 {
+            var buf: [n]u8 = undefined;
+            @memset(&buf, 'a');
+            return buf;
+        }
+    };
+    const a76 = As.get(76);
+    const a77 = As.get(77);
+    const a78 = As.get(78);
+    const a79 = As.get(79);
     const cases = .{
         .{ a78 ++ "é" ++ "suffix", a78 ++ "é" },
         .{ a79 ++ "é" ++ "suffix", a79 },
