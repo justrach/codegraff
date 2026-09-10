@@ -9,8 +9,9 @@ const { chromiumSample } = require('./hardware-profile.cjs');
 const { installGalleryFixture } = require('./gallery-fixture.cjs');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function runPerformance({ win: fixtureWindow, origin, output }) {
-  const win = new BrowserWindow({ width: 1440, height: 920, show: true, titleBarStyle: 'hiddenInset',
-    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
+  const { presentWindow, testWindowOptions } = require('./test-window.cjs');
+  const win = new BrowserWindow(testWindowOptions({ width: 1440, height: 920, titleBarStyle: 'hiddenInset',
+    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false } }));
   fixtureWindow.destroy();
   await win.loadURL('about:blank');
   ipcMain.handle('browser', () => null);
@@ -22,7 +23,7 @@ async function runPerformance({ win: fixtureWindow, origin, output }) {
   wc.debugger.attach('1.3');
   await wc.debugger.sendCommand('Page.enable');
   await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: `(${installGalleryFixture.toString()})()` });
-  win.setSize(1440, 920); win.show(); win.focus();
+  win.setSize(1440, 920); presentWindow(win);
   const sampleTree = intervalSampler(process.pid, () => 0);
   const profiler = new Profiler(async () => ({ ...await sampleTree(), ...await rendererSample(wc), ...chromiumSample(app.getAppMetrics()) }), enabled => { wc.send('profile-enabled', enabled); }, () => app.getGPUFeatureStatus());
   const longTask = (event, duration) => { if (event.sender === wc && Number.isFinite(duration)) profiler.record('renderer-long-task', duration); };

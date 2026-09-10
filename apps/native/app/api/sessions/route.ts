@@ -70,6 +70,10 @@ export async function GET(req: NextRequest) {
         size: st.size,
         workspace: str(parsed.workspace) ?? str(header?.workspace) ?? found.workspace,
         local: found.local,
+        // Saved file only — not a live REPL attach. The GUI must treat the
+        // payload as a snapshot with unknown execution (#839).
+        view: "snapshot",
+        execution: "unknown",
         // The desktop never displayed raw provider history. Avoid allocating
         // its tool bodies and image payloads again in Chromium just to drop them.
         ...(req.nextUrl.searchParams.get("view") === "transcript"

@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
+const { presentWindow, testWindowOptions } = require('./test-window.cjs');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -23,8 +24,8 @@ app.whenReady().then(async () => {
   server = spawn(process.env.GRAFF_TEST_BUN || 'bun', ['node_modules/next/dist/bin/next', 'start', '--port', String(port), '--hostname', '127.0.0.1'], { cwd: root, env: { ...process.env, GRAFF_VISUAL_TESTS: '1', GRAFF_DESKTOP_TOKEN: '', NEXT_TELEMETRY_DISABLED: '1' }, detached: true, stdio: ['ignore', log, log] });
   fs.closeSync(log);
   for (let i = 0; i < 100; i++) { try { if ((await fetch(`${origin}/visual-tests`)).ok) break; } catch {} if (i === 99) throw Error('Visual fixture server did not start'); await sleep(100); }
-  win = new BrowserWindow({ width: 900, height: 600, show: true, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
-  app.focus({ steal: true }); win.show(); win.focus();
+  win = new BrowserWindow(testWindowOptions({ width: 900, height: 600, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } }));
+  presentWindow(win, app);
   const apiRequests = [];
   win.webContents.session.webRequest.onBeforeRequest((details, callback) => {
     const url = new URL(details.url);

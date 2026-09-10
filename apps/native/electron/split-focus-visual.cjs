@@ -11,7 +11,7 @@ async function runSplitFocus({win,origin,output}) {
     wc.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...point});wc.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...point});
     await new Promise(r=>setTimeout(r,100));
   };
-  await wc.loadURL(origin);win.setSize(1440,900);win.show();win.focus();
+  await wc.loadURL(origin);win.setSize(1440,900);require('./test-window.cjs').presentWindow(win);
   await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
   await key('d',{metaKey:true});await key('d',{metaKey:true});
   await wait(`document.querySelectorAll('[data-chat]').length===3`);

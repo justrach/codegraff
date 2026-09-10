@@ -22,9 +22,10 @@ app.whenReady().then(async()=>{
  const log=fs.openSync(path.join(temp,'server.log'),'w');
  server=spawn(process.env.GRAFF_TEST_BUN||'bun',['node_modules/next/dist/bin/next','start','--port',String(port),'--hostname','127.0.0.1'],{cwd:ui,detached:true,stdio:['ignore',log,log],env:{...process.env,GRAFF_CWD:root,GRAFF_BIN:path.resolve(ui,'../../zig-out/bin/graff'),GRAFF_DESKTOP_TOKEN:'',GRAFF_MCP_CONFIG:path.join(temp,'mcp.json'),GRAFF_THEMES_DIR:path.join(temp,'themes'),NEXT_TELEMETRY_DISABLED:'1'}});fs.closeSync(log);
  for(let n=0;n<100;n++){try{if((await fetch(origin)).ok)break;}catch{}await sleep(100);}
- win=new BrowserWindow({width:1440,height:920,show:true,titleBarStyle:'hiddenInset',webPreferences:{preload:path.join(__dirname,'preload.cjs'),sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});installWindowState(win);ipcMain.handle('browser',()=>null);
+ const {presentWindow,testWindowOptions}=require('./test-window.cjs');
+ win=new BrowserWindow(testWindowOptions({width:1440,height:920,titleBarStyle:'hiddenInset',webPreferences:{preload:path.join(__dirname,'preload.cjs'),sandbox:true,contextIsolation:true,nodeIntegration:false}}));installWindowState(win);ipcMain.handle('browser',()=>null);
  const js=c=>win.webContents.executeJavaScript(c);const wait=async(c,ms=30000)=>{const end=Date.now()+ms;while(Date.now()<end){if(await js(c))return;await sleep(100);}throw Error(`GUI condition timed out: ${c}`);};
- await win.loadURL(origin);win.focus();await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+ await win.loadURL(origin);presentWindow(win);await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
  const input=async text=>js(`(()=>{const e=document.querySelector('textarea[aria-label="Prompt"]');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,${JSON.stringify(text)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
  const send=async text=>{await input(text);await wait(`!document.querySelector('[aria-label="Send"]').disabled`);await js(`document.querySelector('[aria-label="Send"]').click()`);await wait(`!!document.querySelector('article[aria-busy="true"]')`);await wait(`!document.querySelector('article[aria-busy="true"]')`,240000);};
  await send('Fix median.ts so every existing test passes. Preserve the tests. Use Bun to run them and report the result. Work only in this disposable workspace; do not use MCP or spawn subagents.');

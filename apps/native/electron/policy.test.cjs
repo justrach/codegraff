@@ -6,6 +6,11 @@ test('browser navigation permits web pages and local development, never executab
   assert.equal(pageURL('localhost:8080/demo'), 'http://localhost:8080/demo');
   for (const url of ['file:///etc/passwd', 'javascript:alert(1)', 'data:text/html,hi', 'https://name:secret@example.com']) assert.throws(() => pageURL(url));
 });
+test('ordinary words become a search instead of Invalid URL (#823)', () => {
+  assert.equal(pageURL('zig comptime'), 'https://www.google.com/search?q=zig%20comptime');
+  assert.equal(pageURL('hello'), 'https://www.google.com/search?q=hello');
+  assert.match(pageURL('what is https'), /^https:\/\/www\.google\.com\/search\?q=/);
+});
 test('browser automation requires its bearer token and rejects web origins', () => {
   assert.equal(authorized({ headers: { authorization: 'Bearer secret' } }, 'secret'), true);
   for (const headers of [{}, { authorization: 'Bearer wrong' }, { authorization: 'Bearer secret', origin: 'https://example.com' }]) assert.equal(authorized({ headers }, 'secret'), false);

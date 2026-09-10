@@ -46,7 +46,7 @@ async function smokeDesktop({ automation, computer, win, browser }) {
       computer.enabled = true;
       try {
         const wc = browser.tabs.get('smoke').view.webContents;
-        win.show(); win.focus(); wc.focus();
+        require('./test-window.cjs').presentWindow(win);
         await wc.executeJavaScript("document.querySelector('#name').focus();document.querySelector('#name').select()");
         await new Promise(resolve => setTimeout(resolve, 300));
         const tree = await computer.command('snapshot', { pid: process.pid });
