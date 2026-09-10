@@ -1,5 +1,13 @@
 //! Policy reachability, not a claim that a scripted model exercises judgment.
 const std = @import("std");
+
+test {
+    _ = @import("artifact_claim.zig");
+    _ = @import("pr_publish.zig");
+    _ = @import("publish_gate.zig");
+    _ = @import("goal_verify.zig");
+    _ = @import("goal_verify_kind.zig");
+}
 const prompts = @import("prompts.zig");
 const text = @import("prompt_text.zig");
 const no_local = @import("no_local_tools.zig");
