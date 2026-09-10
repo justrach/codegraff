@@ -23,7 +23,8 @@
     "test:code": "GRAFF_VISUAL_SUITE=code bun scripts/test-visual.mjs",
     "test:agents": "GRAFF_VISUAL_SUITE=agents bun scripts/test-visual.mjs",
     "test:performance": "GRAFF_PERFORMANCE_TESTS=1 bun scripts/test-visual.mjs",
-    "benchmark:desktop": "bun scripts/benchmark-desktop.mjs"
+    "benchmark:desktop": "bun scripts/benchmark-desktop.mjs",
+    "test:mcp-apps": "bun test lib/mcp-apps.test.ts && playwright test -c playwright.mcp.config.ts"
   },
   "dependencies": {
     "@streamdown/code": "^1.1.1",
@@ -43,6 +44,7 @@
   },
   "devDependencies": {
     "@electron/osx-sign": "2.7.0",
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "^4.1.8",
     "@types/node": "^22",
     "@types/react": "^19",

@@ -70,7 +70,7 @@ pub fn negotiatedProtocol(response: Value, transport: Transport) ![]const u8 {
 /// advertises form elicitation so Computer Use `node_repl` can confirm
 /// (`elicitation/create`) instead of crashing (#768).
 pub const modern_meta =
-    \\"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"codegraff","version":"1"},"io.modelcontextprotocol/clientCapabilities":{"elicitation":{"form":{}}}}
+    \\"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"codegraff","version":"1"},"io.modelcontextprotocol/clientCapabilities":{"elicitation":{"form":{}},"extensions":{"io.modelcontextprotocol/ui":{"mimeTypes":["text/html;profile=mcp-app"]}}}}
 ;
 
 /// Build a JSON-RPC request line. Modern era splices the `_meta` envelope

@@ -43,6 +43,7 @@ export type GraffEvent =
 export type ToolIcon = "think" | "write" | "run" | "read";
 
 export type ToolRow = {
+  mcpAppId?: string;
   id: string;
   name: string;
   icon: ToolIcon;

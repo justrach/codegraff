@@ -346,7 +346,6 @@ pub fn main(init: std.process.Init) !void {
         traj.deinit();
     }
     traj.node(.{ .kind = "session", .version = harness_version, .unix_ms = unixMs(io) });
-
     var telem = session_start.initTelemetry(io, gpa, client, init.environ_map, flags, default_telemetry_endpoint);
     telemetry.g_telem = &telem;
     if (init.environ_map.get("GRAFF_FLEET")) |fv| {
@@ -564,6 +563,7 @@ const agentJobsReap = subagent.agentJobsReap; // #276 P0-3: background subagents
 const workflow = @import("workflow_test.zig"); // the engine's tests live here (workflow.zig hit the 600-line cap)
 const exec = @import("exec.zig");
 test { // ── Unit tests (`zig build test`): pull in tests from imported modules (mcp.zig)
+    _ = @import("mcp_apps.zig");
     _ = @import("main_test.zig");
     _ = @import("http_client.zig");
     _ = @import("http_client_tests.zig");
