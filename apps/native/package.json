@@ -23,6 +23,7 @@
     "test:code": "GRAFF_VISUAL_SUITE=code bun scripts/test-visual.mjs",
     "test:overflow": "GRAFF_VISUAL_SUITE=overflow node scripts/test-visual.mjs",
     "test:agents": "GRAFF_VISUAL_SUITE=agents bun scripts/test-visual.mjs",
+    "test:tasks": "GRAFF_VISUAL_SUITE=tasks node scripts/test-visual.mjs",
     "test:performance": "GRAFF_PERFORMANCE_TESTS=1 bun scripts/test-visual.mjs",
     "benchmark:desktop": "bun scripts/benchmark-desktop.mjs"
   },
