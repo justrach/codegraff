@@ -17,13 +17,13 @@
 curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh
 ```
 
-<p align="center"><a href="https://github.com/justrach/codegraff/releases/download/v0.0.291/Codegraff-macos-arm64.dmg"><strong>Download CodeGraff for Mac</strong></a><br><sub>Apple Silicon · macOS 14+ · signed and notarized · everything included</sub></p>
+<p align="center"><a href="https://github.com/justrach/codegraff/releases/latest/download/Codegraff-macos-arm64.dmg"><strong>Download CodeGraff for Mac</strong></a><br><sub>Apple Silicon · macOS 14+ · signed and notarized · everything included</sub></p>
 
-**Evaluated on FrontierHarness tasks.** Graff includes a reproducible
-[FrontierHarness evaluation runner](graff-evals/frontier-harness/README.md),
-with recorded outcomes and explicit protocol differences. See
-[how we measure it](#how-we-measure-it) for the public task suite, grading,
-and the limits of comparisons with the published board.
+****Live evals: 12 gated PRs, same grok-4.6 SuperGrok seat, no SPEC.md.**
+Graff **12/12** at **$21.48** honest list$ vs Pi 12/12 / $18.47, OpenCode 12/12 /
+$25.71, grok 11/12 / $33.69, exo **9/12** / $16.01. See
+[how we measure it](#how-we-measure-it). FrontierHarness remains a separate,
+protocol-different layer.
 
 ## The desktop app
 
@@ -41,13 +41,14 @@ palette. Mention `$gui-theme` or `@gui-theme` in the GUI to create a custom them
 
 [![CodeGraff Agents panel with local peers and a handoff request, framed in coral with the workshop crew](docs/images/desktop-agents-studio.png)](docs/images/desktop-agents-codegraff.png)
 
-**Agents** brings Graff-to-Graff coordination into the GUI. See sessions in the
-current workspace or across the laptop, their published tasks and activity,
-and recent messages. Select a peer in the panel's composer to send a message
-or handoff request. Delivery is queued to the recipient's next step; browsing
-history does not consume their inbox. The optional profiler records anonymous
-per-agent resource measurements, with identities and message contents excluded
-from feedback exports. See the [Agents guide](docs/agents-panel.md).
+**Agents** shows who is working without a permanent three-column rail.
+Occupancy, RSS/CPU, peer talk, and Stop live in the pane. Select a peer to send
+a message or handoff; delivery waits for their next step. Queued follow-ups can
+be steered. The optional profiler records anonymous per-agent resource
+measurements (no identities or message contents). See the
+[Agents guide](docs/agents-panel.md).
+
+[![Agents occupancy, RSS/CPU, and peer talk](docs/images/desktop-occupancy.png)](docs/images/desktop-occupancy.png)
 
 [![CodeGraff's dark Changes panel beside the conversation, framed in cobalt with a rat reviewing a proof](docs/images/desktop-review-studio.png)](docs/images/desktop-review-dark.png)
 
@@ -72,8 +73,15 @@ The development bundle contains the production UI, Chromium, Bun, graff and the
 native bridge, and starts its own local server. It does not need a separate dev
 server or Kuri. Source builds use local development signing. The downloadable
 release is Developer ID signed and notarized. Installed releases from v0.0.291
-download updates in the background and wait for **Restart to update**. Earlier
-versions need one manual replacement in Applications to enable the updater.
+download updates in the background. **Check for Updates** and a six-hour
+auto-download switch sit in Updates settings above every split pane; **Restart
+to update** stays explicit. Earlier versions need one manual replacement in
+Applications to enable the updater.
+
+Closed mermaid fences render as diagrams. Muse Spark accepts pasted, dropped,
+and GUI image attachments on the Meta/Muse vision path.
+
+[![Update-ready restart](docs/images/desktop-update-ready.png)](docs/images/desktop-update-ready.png)
 
 **Profile and test without a model.** The Performance menu and desktop profiler
 tool record bounded, local measurement reports. Startup paint timing, streaming
@@ -108,11 +116,30 @@ it can spin up a team of sub-agents in parallel.
 
 ## Same model, fewer tokens
 
-Same grok-4.6, same SuperGrok seat, same tasks. graff vs grok-build vs OpenCode.
-Lower is better on every named axis. Full tables:
-[graff-evals/hillclimb/baseline.md](graff-evals/hillclimb/baseline.md).
+Same grok-4.6 SuperGrok seat. Two boards: **live gated PRs** (no SPEC.md) and
+the older distilled in-house fixtures. Live is the headline. In-house is a
+cheap A/B, not the live repo.
 
-**12 shipped-PR fixtures** (`run-20260901-121759-composite` on 284, `--suite inhouse`):
+<p align="center">
+  <img src="docs/images/live-evals-board.png" alt="Live 12-PR board: graff 12/12 at $21.48 honest list$ vs Pi, OpenCode, grok, exo" width="960">
+</p>
+
+****Live 12 gated PRs** (2026-09-09, n=3, pass ≥2/3). Honest list$ is the official
+low band on passing reps of passing tasks. SuperGrok cash is $0. Only graff-195
+is G1–G6 certified. A check-green with no tokens does not count (exo’s last two
+turbos died in &lt;1s). Receipt: [artifacts/graff-evals-live/RECEIPT.md](artifacts/graff-evals-live/RECEIPT.md).
+
+| harness | tasks | reps | honest list$ | mean wall |
+|---|---:|---:|---:|---:|
+| **graff** | **12/12** | 35/36 | **$21.48** | 264s |
+| Pi | 12/12 | 35/36 | $18.47 | 334s |
+| OpenCode | 12/12 | 36/36 | $25.71 | 309s |
+| grok | 11/12 | 33/36 | $33.69 | 362s |
+| exo | **9/12** | 25/36 | $16.01 | 281s |
+
+Grok drops `#727` (graff still 2/3). exo drops gemini-ix plus two no-token turbos.
+
+**Distilled in-house fixtures** (`--suite inhouse`, cheap remasure, not live):
 
 | harness | pass | wall | calls | tokens | list$ | RSS |
 |---|---:|---:|---:|---:|---:|---:|
@@ -160,11 +187,11 @@ next step supplied with useful information while reducing repeated input.
 ## Install
 
 **Desktop (Apple Silicon, macOS 14+).**
-[Download CodeGraff v0.0.291](https://github.com/justrach/codegraff/releases/download/v0.0.291/Codegraff-macos-arm64.dmg),
+[Download CodeGraff](https://github.com/justrach/codegraff/releases/latest/download/Codegraff-macos-arm64.dmg),
 quit any running Codegraff copies, open the disk image, and drag **Codegraff.app** onto **Applications**. Eject the disk image and open Codegraff from Applications.
 The notarized bundle includes Graff, Chromium, Bun and the native macOS components;
 you do not need a separate CLI, runtime, developer tools or local server.
-[Verify the download checksum](https://github.com/justrach/codegraff/releases/download/v0.0.291/Codegraff-DMG-SHA256SUMS).
+[Verify the download checksum](https://github.com/justrach/codegraff/releases/latest/download/Codegraff-DMG-SHA256SUMS).
 For a `graff` command in your terminal, use the CLI installer below.
 
 Desktop builds from v0.0.291 check for updates online and download them in the
@@ -282,6 +309,10 @@ catalogs. Claude-subscription OAuth is deliberately not supported.
 Two layers, under `graff-evals/`. They answer different questions and neither
 of them is a leaderboard claim.
 
+**Layer 0 — live gated PRs** (`--suite live`). Sparse-checkouts the real
+package, pins the test that was red on the parent, holds out a follow-up the
+public check does not name. No SPEC.md. Score pass @ n=3. ADR 0095.
+
 **Layer 1 — the in-house runner** (`run.py`, `harnesses.json`, `tasks/`). Every
 task is one JSON file: fixture files, a prompt, and a deterministic shell
 `check` that decides pass/fail inside a materialized sandbox. Held-out checks
@@ -385,6 +416,21 @@ subscription path copies an existing local credentials file into the task
 container.
 
 ## Working on codegraff
+
+Load-bearing roots stay where CI and `zig build` expect them. Everything else
+is already grouped:
+
+| path | what it is |
+|---|---|
+| `src/`, `TUI/` | harness + terminal |
+| `apps/` | desktop (Electron) and iOS |
+| `graff-evals/` | live, in-house, FrontierHarness |
+| `docs/` | ADRs, images, install, embedding |
+| `sdk/` | generated TypeScript / Python |
+| `scripts/` | tier-1/2, PTY probes, release |
+
+Do not invent a second `gui/` or `evals/` tree for new work — desktop is
+`apps/native`, measurements are `graff-evals/`.
 
 ```bash
 scripts/install-hooks.sh          # once
