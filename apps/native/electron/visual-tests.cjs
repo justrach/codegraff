@@ -66,6 +66,11 @@ app.whenReady().then(async () => {
     assert.deepEqual(apiRequests, [], 'Stress fixtures never call engine or model APIs');
     return;
   }
+  if (process.env.GRAFF_VISUAL_SUITE === 'tasks') {
+    await require('./task-rows-visual.cjs').testTaskRows({ win, origin });
+    assert.deepEqual(apiRequests, [], 'Task fixtures never call engine or model APIs');
+    return;
+  }
   if (process.env.GRAFF_VISUAL_SUITE === 'code') {
     await require('./streaming-code-visual.cjs').runStreamingCodeVisuals({ win, origin, output });
     assert.deepEqual(apiRequests, [], 'Code fixtures never call engine or model APIs');
@@ -108,6 +113,7 @@ app.whenReady().then(async () => {
   await require('./navigation-visual.cjs').runNavigationVisuals({ win, origin, output });
   await require('./browser-visual.cjs').runBrowserVisuals({ win, origin, output });
   await require('./agents-visual.cjs').runAgentVisuals({ win, origin, output });
+  await require('./task-rows-visual.cjs').testTaskRows({ win, origin });
   await require('./updates-visual.cjs').runUpdateVisuals({ origin, output });
   await require('./updates-transport.cjs').runUpdateTransport();
   await require('./link-destination-visual.cjs').runLinkDestinationVisuals({ origin, output });
