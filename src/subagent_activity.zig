@@ -208,7 +208,7 @@ test "cancel file marks a working child interrupted even if it later finishes" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const io = std.testing.io;
-    var r: Recorder = .{ .a = std.testing.allocator, .io = io, .dir = try tmp.dir.openDir(io, ".", .{}), .meta = .{ .id = "child", .label = "test", .task = "test" } };
+    var r: Recorder = .{ .a = std.testing.allocator, .io = io, .dir = try tmp.dir.openDir(io, ".", .{ .iterate = true }), .meta = .{ .id = "child", .label = "test", .task = "test" } };
     defer r.deinit();
     try requestInterrupt(io, r.dir, "child");
     try std.testing.expect(interruptRequested(io, r.dir, "child"));
@@ -219,7 +219,7 @@ test "cancel file marks a working child interrupted even if it later finishes" {
 test "child activity coalesces deltas and bounds retained events and text" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    var r: Recorder = .{ .a = std.testing.allocator, .io = std.testing.io, .dir = try tmp.dir.openDir(std.testing.io, ".", .{}), .meta = .{ .id = "child", .label = "test", .task = "test", .status = "completed" } };
+    var r: Recorder = .{ .a = std.testing.allocator, .io = std.testing.io, .dir = try tmp.dir.openDir(std.testing.io, ".", .{ .iterate = true }), .meta = .{ .id = "child", .label = "test", .task = "test", .status = "completed" } };
     defer r.deinit();
     try r.append(.{ .type = "text", .text = "one" });
     try r.append(.{ .type = "text", .text = "two" });
