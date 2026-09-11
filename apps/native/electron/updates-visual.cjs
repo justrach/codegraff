@@ -37,6 +37,9 @@ async function runUpdateVisuals({ origin, output }) {
     await js(`window.__update({status:'ready',version:'1.0.1'})`);
     await wait(`document.querySelector('[data-desktop-update]')?.textContent.includes('Restart to update')`);
     assert.equal(await js('window.__restarts'), 0);
+    testDesktop.present(win);
+    await testDesktop.focusTestPage(wc);
+    await wait('document.hasFocus()');
     await js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
     await new Promise(resolve => setTimeout(resolve, 100));
     const target = await js(`(()=>{
@@ -45,6 +48,7 @@ async function runUpdateVisuals({ origin, output }) {
     })()`);
     assert.equal(target.visible, true, 'restart action is visible and receives pointer input');
     fs.writeFileSync(path.join(output, 'update-ready.png'), (await wc.capturePage(undefined, { stayAwake: true })).toPNG());
+    await testDesktop.testInput(wc, { type: 'mouseMove', x: Math.round(target.x), y: Math.round(target.y) });
     await testDesktop.testInput(wc, { type: 'mouseDown', x: Math.round(target.x), y: Math.round(target.y), button: 'left', clickCount: 1 });
     await testDesktop.testInput(wc, { type: 'mouseUp', x: Math.round(target.x), y: Math.round(target.y), button: 'left', clickCount: 1 });
     await wait(`window.__restarts===1`);
