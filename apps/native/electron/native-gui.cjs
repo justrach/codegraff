@@ -39,10 +39,17 @@ app.whenReady().then(async () => {
   report.passed.push('graphical session and native window focus');
   for (let n = 0; n < 2; n++) {
     native.show(handle, JSON.stringify({ rssMiB: 64, cpuPercent: 0, processes: 1, browsers: 0 }));
-    await wait(() => { const state = inspect(); return state.sheetAttached && state.sheetVisible && state.sheetKey; }, 'The production Activity sheet did not become visible and key');
-    const state = inspect();
+    let state;
+    try {
+      await wait(() => {
+        state = inspect();
+        return state.sheetAttached && state.sheetVisible && state.sheetKey && state.sheetWidth >= 400 && state.sheetHeight > 200;
+      }, 'The production Activity sheet did not finish presentation and layout');
+    } catch (error) {
+      report.sheet = state;
+      throw error;
+    }
     assert.equal(state.sheetTitle, 'Activity');
-    assert.ok(state.sheetWidth >= 400 && state.sheetHeight > 200, 'The SwiftUI sheet has no usable content area');
     probe.pressReturn(handle);
     await wait(() => !inspect().sheetAttached, 'Return did not activate the Activity sheet Done button');
   }
