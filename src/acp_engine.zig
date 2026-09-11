@@ -33,7 +33,7 @@ pub const SlashFn = *const fn (ctx: *anyopaque, arena: Allocator, text: []const 
 pub const AfterUserFn = *const fn (ctx: *anyopaque, arena: Allocator, text: []const u8) void;
 pub const BindSessionFn = *const fn (ctx: *anyopaque, session_id: []const u8) void;
 /// Optional per-turn context meter: used and window tokens for the
-/// `gui_context_meter` update the client renders as a remaining-context ring.
+/// `gui_context_meter` update available to clients.
 /// Null when the embed has no live agent (pure in-process loop, tests).
 pub const Meter = struct { used: u64, window: u64 };
 pub const MeterFn = *const fn (ctx: *anyopaque) Meter;
@@ -100,14 +100,11 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
             return respond(w, req, .{ .stopReason = "cancelled" });
         if (err == error.RunBudgetExhausted)
             return respond(w, req, .{ .stopReason = "max_turn_requests" });
-        if (err == error.ApiError)
-            return respond(w, req, .{ .stopReason = "failed" });
         return respondError(w, req, err_internal, @errorName(err));
     };
     if (final.len > 0) try writeSessionUpdate(w, sid, final);
     if (d.meter) |meter| {
-        // The context ring reads this, not the model catalog: used is the
-        // live occupancy estimate, window the model's wall. No text, no PII.
+        // Report live occupancy independently of the model catalog.
         const m = meter(d.ctx);
         if (m.window > 0) try proto.writeNotification(w, "session/update", .{
             .sessionId = sid,

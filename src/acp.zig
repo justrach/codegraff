@@ -506,7 +506,7 @@ test "handleLine: turn failures map to a stopReason or a -32603" {
     w = .fixed(&buf);
     var failing: Dispatch = .{ .turn = failTurn, .ctx = undefined };
     try handleLine(&failing, a, &w, prompt);
-    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"stopReason\":\"failed\"}}\n", w.buffered());
+    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32603,\"message\":\"ApiError\"}}\n", w.buffered());
 }
 
 test "isAcpSubcommand claims only `acp`, and arms the stdout discipline" {
@@ -536,6 +536,11 @@ test "ACP advertises the complete REPL command catalog including compact" {
 }
 
 test "handleLine: live context occupancy precedes the terminal prompt reply" {
+    const was_cancelled = engine.cancel_flag.swap(false, .acq_rel);
+    defer engine.cancel_flag.store(was_cancelled, .release);
+    const extra = engine.extra_cancelled;
+    engine.extra_cancelled = null;
+    defer engine.extra_cancelled = extra;
     var state = std.heap.ArenaAllocator.init(testing.allocator);
     defer state.deinit();
     const a = state.allocator();

@@ -38,7 +38,7 @@ import { useChatScroll } from "./useChatScroll";
 import { enqueuePrompt } from "@/lib/prompt-queue";
 import { usePromptQueue } from "./usePromptQueue";
 import { removeSession, type StoredSession } from "@/lib/sessions";
-import { loadHistory } from "@/lib/prompt-history";
+import { loadHistory, mergeHistory } from "@/lib/prompt-history";
 import WorkspaceDialog from "@/components/site/WorkspaceDialog";
 import {
   basename,

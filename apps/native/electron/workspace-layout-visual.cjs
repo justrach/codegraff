@@ -39,6 +39,8 @@ app.whenReady().then(async () => {
     sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false,
   } });
   const wc = win.webContents;
+  // Start the hidden renderer before sending commands to its Page domain.
+  await wc.loadURL('about:blank');
   const unexpected = [];
   wc.session.webRequest.onBeforeRequest((details, callback) => {
     const url = new URL(details.url);
@@ -82,12 +84,14 @@ app.whenReady().then(async () => {
   await click('[aria-label="Show tasks"]');
   await wait(`!!document.querySelector('[aria-label="Close tasks"]')`);
   await click('[aria-label="Close tasks"]');
+  await js(`(()=>{const e=document.querySelector('textarea[aria-label="Prompt"]');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,'Unsent follow-up');e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
   await click('[aria-label="Show agents"]');
   await wait(`!!document.querySelector('[aria-label="Agents panel"]')`);
   assert.equal(await js(`document.querySelector('[data-chat-layout]').parentElement.style.display`), 'none');
   const geometry = await js(`(()=>{const t=document.querySelector('[data-workspace-toolbar]').getBoundingClientRect(),a=document.querySelector('[aria-label="Agents panel"]').getBoundingClientRect();return {toolbar:t.width,agents:a.width,below:a.top>=t.bottom}})()`);
   assert.ok(geometry.below && Math.abs(geometry.toolbar - geometry.agents) < 4, JSON.stringify(geometry));
   await click('[aria-label="Close agents"]');
+  assert.equal(await js(`document.querySelector('textarea[aria-label="Prompt"]').value`), 'Unsent follow-up', 'Switching to Agents preserves chat drafts');
   assert.equal(await js(`!!document.querySelector('[data-tasks-sidebar]')`), false, 'Tasks remains dismissed after navigation');
   await key('d', { metaKey: true });
   await wait(`document.querySelectorAll('[data-chat]').length===2`);
