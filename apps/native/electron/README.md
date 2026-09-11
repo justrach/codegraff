@@ -114,9 +114,10 @@ harness workspace. The native GUI's ACP bridge uses one stdout reader and
 routes replies by request ID so catalog refreshes cannot steal assistant text.
 
 The macOS window keeps native close/minimize/full-screen controls in a reserved
-draggable titlebar. For smoke runs while using another app, set
-`GRAFF_SMOKE_SKIP_INPUT=1` to skip native keyboard injection; the report records
-that omission.
+draggable titlebar. Smoke runs stay hidden by default and require
+`GRAFF_TEST_FOREGROUND=1` before presenting native sheets or injecting native
+keyboard input. Reports record omitted foreground checks. In an explicitly
+foreground run, `GRAFF_SMOKE_SKIP_INPUT=1` still skips native keyboard injection.
 
 The v2 profiler adds document LCP/FCP, maximum observed interaction duration,
 recording-period layout shift, renderer heap and DOM size, GPU-process CPU/RSS

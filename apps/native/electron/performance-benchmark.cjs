@@ -1,4 +1,5 @@
-// Same workload for both builds. Runs a visible production renderer in an isolated profile.
+const testDesktop = require('./test-desktop.cjs');
+// Same workload for both builds. Hidden by default; display measurements opt in.
 // Usage: electron electron/performance-benchmark.cjs /absolute/app/root /absolute/output
 const { app, BrowserWindow, ipcMain, screen, contentTracing } = require('electron');
 const { spawn } = require('node:child_process');
@@ -12,6 +13,7 @@ const { installPerformanceWorkload, frameRecorder, summarizeFrames } = require('
 const { treeSample } = require('./process-metrics.cjs');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const root = path.resolve(process.argv[2] || path.join(__dirname, '..'));
+const dist = process.env.GRAFF_NEXT_DIST_DIR || '.next';
 const output = path.resolve(process.argv[3] || path.join(root, '../../zig-out/performance/current'));
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'graff-benchmark-'));
 app.setPath('userData', path.join(temporary, 'profile'));
@@ -21,7 +23,7 @@ const deadline = setTimeout(() => { console.error('Benchmark exceeded 180 second
 app.whenReady().then(async () => {
   console.log('Benchmark: launching isolated production app');
   fs.mkdirSync(output, { recursive: true });
-  assert.ok(fs.existsSync(path.join(root, '.next/BUILD_ID')), 'Build the selected app first');
+  assert.ok(fs.existsSync(path.join(root, dist, 'BUILD_ID')), 'Build the selected app first');
   // Match production accessibility policy; never disable assistive technology.
   if (fs.readFileSync(path.join(root, 'electron/main.cjs'), 'utf8').includes('app.setAccessibilitySupportEnabled(true)')) app.setAccessibilitySupportEnabled(true);
   for (const [channel, result] of [['updates', { status: 'unavailable', currentVersion: '1.0.0', automatic: false, interactive: false }], ['projects', null], ['browser', null]]) ipcMain.handle(channel, () => result);
@@ -40,9 +42,9 @@ app.whenReady().then(async () => {
     if (i === 199) throw Error('Benchmark server did not start');
     await sleep(100);
   }
-  win = new BrowserWindow(require('./test-window.cjs').testWindowOptions({ width: 1440, height: 920, titleBarStyle: 'hiddenInset',
-    webPreferences: { preload: path.join(root, 'electron/preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: true } }));
-  require('./test-window.cjs').presentWindow(win, app);
+  win = testDesktop.createWindow({ width: 1440, height: 920, titleBarStyle: 'hiddenInset',
+    webPreferences: { preload: path.join(root, 'electron/preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: true } });
+  testDesktop.present(win);
   const wc = win.webContents, js = code => wc.executeJavaScript(code);
   await wc.loadURL('about:blank');
   wc.on('console-message', event => { if (/Error|error|Illegal/.test(event.message || '')) console.error('Benchmark renderer:', event.message); });
@@ -57,7 +59,7 @@ app.whenReady().then(async () => {
     if (url.origin === origin && url.pathname.startsWith('/api/')) unexpected.push(url.pathname);
     callback({ cancel: blocked });
   });
-  wc.debugger.attach('1.3');
+  testDesktop.attachTestDebugger(wc);
   await wc.debugger.sendCommand('Page.enable');
   await wc.debugger.sendCommand('Performance.enable');
   await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: `(${installGalleryFixture.toString()})();(${installPerformanceWorkload.toString()})()` });
@@ -103,7 +105,7 @@ app.whenReady().then(async () => {
   };
   console.log('Benchmark: warmup');
   await send('warmup'); await sleep(1500);
-  const report = { workloadVersion: 2, build: fs.readFileSync(path.join(root, '.next/BUILD_ID'), 'utf8').trim(),
+  const report = { workloadVersion: 2, testDesktop: testDesktop.assertSafe(), build: fs.readFileSync(path.join(root, dist, 'BUILD_ID'), 'utf8').trim(),
     runtime: { electron: process.versions.electron, chrome: process.versions.chrome },
     display: (() => { const display = screen.getDisplayMatching(win.getBounds()); return { frequencyHz: display.displayFrequency, scaleFactor: display.scaleFactor, window: win.getBounds() }; })(),
     acceleration: app.getGPUFeatureStatus(), accessibility: app.accessibilitySupportEnabled,
@@ -126,7 +128,7 @@ app.whenReady().then(async () => {
     // Real wheel input exercises Chromium's scroll path, including main-thread listeners.
     const point = await js(`(()=>{const r=document.querySelector('[data-chat-transcript]').getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
     for (let i = 0; i < 360; i++) {
-      wc.sendInputEvent({ type: 'mouseWheel', ...point, deltaY: i % 180 < 90 ? -24 : 24, deltaX: 0, canScroll: true });
+      await testDesktop.testInput(wc, { type: 'mouseWheel', ...point, deltaY: i % 180 < 90 ? -24 : 24, deltaX: 0, canScroll: true });
       await sleep(8);
     }
   };
@@ -148,7 +150,9 @@ app.whenReady().then(async () => {
 
 function finish(code) {
   clearTimeout(deadline);
-  if (win && !win.isDestroyed()) win.destroy();
+  try { console.log('Test desktop:', JSON.stringify(testDesktop.assertSafe())); }
+  catch (error) { console.error(error); code = 1; }
+  testDesktop.cleanup();
   if (server?.pid) try { process.kill(-server.pid, 'SIGTERM'); } catch {}
   fs.rmSync(temporary, { recursive: true, force: true });
   app.exit(code);

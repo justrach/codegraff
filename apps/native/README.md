@@ -225,9 +225,10 @@ bun run test:desktop
 bun run test:visual
 ```
 
-The visual runner uses isolated synthetic data and makes no engine or model API
+The visual runner keeps all windows hidden by default, preserves desktop focus,
+uses isolated synthetic data and makes no engine or model API
 calls. It checks turn progress, interruption states, large tool groups and output,
-long history, reading position during streaming, fullscreen transitions, command
+long history, reading position during streaming, command
 menus, keyboard splits, workspace search and the Agents panel. Tool groups start
 collapsed; expanded groups page their rows, and large output previews preserve
 the beginning and end with an explicit omission marker. Older messages load on
@@ -241,8 +242,11 @@ and review recovery, navigation, terminals, and browser previews. `bun run test:
 checks native close routing, stable pane order, draft preservation while visiting
 Projects, and mouse resizing in both directions. `bun run test:stress`
 covers long transcripts and tool output without changing macOS
-Spaces. The full `test:visual` suite additionally checks native fullscreen
-transitions; the stress results explicitly report fullscreen as not run.
+Spaces. Native fullscreen transitions in the full `test:visual` suite require
+`GRAFF_TEST_FOREGROUND=1`; default reports explicitly mark them as not run.
+`bun run test:background` checks hidden-window creation, trusted page input and
+cleanup without a UI build. On macOS an OS observer watches the entire visual
+run, including Electron startup, and fails it on activation or visible windows.
 `bun run test:agents` covers live, completed and failed children, tool disclosure,
 late replies after selection changes, and inspection without sending messages.
 

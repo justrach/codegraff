@@ -1,3 +1,4 @@
+const testDesktop = require('./test-desktop.cjs');
 const { BrowserWindow, ipcMain } = require('electron');
 const { BrowserTabs } = require('./browser-tabs.cjs');
 const { installExternalLinks } = require('./external-links.cjs');
@@ -19,7 +20,7 @@ async function runLinkDestinationVisuals({ origin, output }) {
   });
   await new Promise(resolve => fixture.listen(0, '127.0.0.1', resolve));
   const destination = `http://127.0.0.1:${fixture.address().port}`;
-  const win = new BrowserWindow({ width: 1440, height: 900, show: true, webPreferences: {
+  const win = testDesktop.createWindow({ width: 1440, height: 900, webPreferences: {
     preload: path.join(__dirname, 'preload.cjs'), partition: `link-destination-${path.basename(directory)}`,
     sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false,
   } });
@@ -121,7 +122,7 @@ async function runLinkDestinationVisuals({ origin, output }) {
   try {
     await wc.loadURL('about:blank'); wc.debugger.attach('1.3'); await wc.debugger.sendCommand('Page.enable');
     await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: `(${installGalleryFixture.toString()})();` });
-    await wc.loadURL(origin); win.focus(); await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+    await wc.loadURL(origin); testDesktop.present(win); await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
     assert.equal(await js(`typeof window.graffDesktop.linkSettings`), 'function', 'real preload exposes linkSettings');
     await openSettings(); await selected('system');
     assert.equal(await store.load(), 'system');
@@ -167,8 +168,8 @@ async function runLinkDestinationVisuals({ origin, output }) {
     for (const id of panes) {
       const selector = `[data-chat="${id}"] textarea`;
       const point = await js(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
-      wc.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...point });
-      wc.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...point });
+      await testDesktop.testInput(wc, { type: 'mouseDown', button: 'left', clickCount: 1, ...point });
+      await testDesktop.testInput(wc, { type: 'mouseUp', button: 'left', clickCount: 1, ...point });
       await wait(`document.querySelector('[data-chat][data-focused="true"]')?.dataset.chat===${JSON.stringify(id)}`);
       await route('graff', '', `split-${id}`); handles.push(browser.visible);
       assert.equal(await js(`document.querySelector('[data-chat][data-focused="true"]').dataset.chat`), id);

@@ -56,7 +56,7 @@ export function sessionFromResponse(body: SessionResponse): { meta: StoredSessio
     // that commentary or a successful load means the other surface finished (#839).
     snapshot: true,
     messages: presentation === "transcript-v1" && Array.isArray(transcript)
-      ? transcript : transcriptFromMessages(messages ?? [], meta.model ?? undefined),
+      ? transcript.map(message => message.role === "assistant" ? { ...message, turn: { ...message.turn, status: "snapshot" } } : message) : transcriptFromMessages(messages ?? [], meta.model ?? undefined),
   };
 }
 
@@ -237,11 +237,10 @@ export function transcriptFromMessages(raw: unknown[], model?: string): Transcri
   let turn: AssistantTurn | null = null;
   const flush = () => {
     if (!turn) return;
-    const pending = turn.tools.some((row) => row.status === "running");
-    out.push({ role: "assistant", turn: { ...turn, status: pending ? "thinking" : "done" } });
+    out.push({ role: "assistant", turn: { ...turn, status: "snapshot" } });
     turn = null;
   };
-  const current = (): AssistantTurn => (turn ??= { ...emptyTurn(), model, status: "thinking" });
+  const current = (): AssistantTurn => (turn ??= { ...emptyTurn(), model, status: "snapshot" });
 
   for (const item of raw) {
     if (!item || typeof item !== "object") continue;

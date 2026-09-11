@@ -25,5 +25,11 @@ can still show in-progress work. That is display state, not a live attach.
 
 ## Consequences
 
+Opening and refreshing history never bootstrap an ACP session. The composer
+is replaced by Refresh snapshot and Continue here controls, including for empty
+histories. Continue here enables composing; the first prompt resumes the saved
+session. Saved turns keep unknown execution status after refresh, including
+when reading older projected responses.
+
 Continuation ownership is explicit before the user sends. Live attach, if
 added later, needs a different endpoint than the saved-file GET.

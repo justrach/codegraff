@@ -1,3 +1,4 @@
+const testDesktop = require('./test-desktop.cjs');
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
 const readline = require('node:readline');
@@ -38,15 +39,17 @@ async function smokeDesktop({ automation, computer, win, browser }) {
     assert.equal((await invoke('computer', { action: 'requestPermissions' })).isError, true);
     // Native discovery is read-only; never request OS permission from an automated test.
     const apps = computer.native('apps');
-    assert.ok(apps.apps.some(app => app.pid === process.pid));
+    assert.ok(Array.isArray(apps.apps));
+    if (testDesktop.foreground) assert.ok(apps.apps.some(app => app.pid === process.pid));
     assert.equal(await win.webContents.executeJavaScript(`fetch('/api/browser').then(r=>r.status)`), 410);
     const permissions = computer.status();
-    let nativeInput = process.env.GRAFF_SMOKE_SKIP_INPUT ? 'Skipped interactive input for this run' : 'OS permission unavailable';
-    if (!process.env.GRAFF_SMOKE_SKIP_INPUT && permissions.accessibility && permissions.screenRecording) {
+    let nativeInput = !testDesktop.foreground ? 'Native input requires GRAFF_TEST_FOREGROUND=1'
+      : process.env.GRAFF_SMOKE_SKIP_INPUT ? 'Skipped interactive input for this run' : 'OS permission unavailable';
+    if (testDesktop.foreground && !process.env.GRAFF_SMOKE_SKIP_INPUT && permissions.accessibility && permissions.screenRecording) {
       computer.enabled = true;
       try {
         const wc = browser.tabs.get('smoke').view.webContents;
-        require('./test-window.cjs').presentWindow(win);
+        testDesktop.present(win); await testDesktop.focusTestPage(wc);
         await wc.executeJavaScript("document.querySelector('#name').focus();document.querySelector('#name').select()");
         await new Promise(resolve => setTimeout(resolve, 300));
         const tree = await computer.command('snapshot', { pid: process.pid });

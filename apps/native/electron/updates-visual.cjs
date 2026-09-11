@@ -1,13 +1,13 @@
+const testDesktop = require('./test-desktop.cjs');
 const { BrowserWindow } = require('electron');
 const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path');
 async function runUpdateVisuals({ origin, output }) {
-  const { presentWindow, testWindowOptions } = require('./test-window.cjs');
-  const win = new BrowserWindow(testWindowOptions({ width: 900, height: 650, webPreferences: { sandbox: true, contextIsolation: true } }));
+  const win = testDesktop.createWindow({ width: 900, height: 650, webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } });
   const wc = win.webContents, js = source => wc.executeJavaScript(source);
   const wait = async source => { for (let i = 0; i < 100; i++) { if (await js(source)) return; await new Promise(r => setTimeout(r, 30)); } throw Error(source); };
   try {
     await wc.loadURL('about:blank');
-    wc.debugger.attach('1.3');
+    testDesktop.attachTestDebugger(wc);
     await wc.debugger.sendCommand('Page.enable');
     await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: `
       window.__restarts=0;window.__automatic=true;let listener;
@@ -20,7 +20,7 @@ async function runUpdateVisuals({ origin, output }) {
         return {...base(),status:'idle'};
       }};` });
     await win.loadURL(`${origin}/visual-tests`);
-    presentWindow(win);
+    testDesktop.present(win);
     console.log('Update visual fixture loaded.');
     await wait(`!!document.querySelector('[data-case="waiting"]')`);
     for (const status of ['checking', 'error', 'current']) {
@@ -45,8 +45,8 @@ async function runUpdateVisuals({ origin, output }) {
     })()`);
     assert.equal(target.visible, true, 'restart action is visible and receives pointer input');
     fs.writeFileSync(path.join(output, 'update-ready.png'), (await wc.capturePage(undefined, { stayAwake: true })).toPNG());
-    wc.sendInputEvent({ type: 'mouseDown', x: Math.round(target.x), y: Math.round(target.y), button: 'left', clickCount: 1 });
-    wc.sendInputEvent({ type: 'mouseUp', x: Math.round(target.x), y: Math.round(target.y), button: 'left', clickCount: 1 });
+    await testDesktop.testInput(wc, { type: 'mouseDown', x: Math.round(target.x), y: Math.round(target.y), button: 'left', clickCount: 1 });
+    await testDesktop.testInput(wc, { type: 'mouseUp', x: Math.round(target.x), y: Math.round(target.y), button: 'left', clickCount: 1 });
     await wait(`window.__restarts===1`);
     await wait(`document.querySelector('[data-desktop-update]')?.textContent.includes('Preparing to restart')`);
     await js(`document.querySelector('[data-desktop-update-settings]').click()`);

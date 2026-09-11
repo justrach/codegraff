@@ -1,3 +1,4 @@
+const testDesktop = require('./test-desktop.cjs');
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const fs = require('node:fs');
@@ -52,10 +53,10 @@ async function run({ win, browser, automation, backend, metrics, activity, compu
     await browser.command('smoke', 'pick', { enabled: true });
     const wc = browser.tabs.get('smoke').view.webContents;
     const point = await wc.executeJavaScript('(()=>{const r=document.querySelector("#button").getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()');
-    require('./test-window.cjs').presentWindow(win); await sleep(300);
-    wc.sendInputEvent({type:'mouseMove', ...point});
-    wc.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
-    wc.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 });
+    testDesktop.present(win); await testDesktop.focusTestPage(wc); await sleep(300);
+    await testDesktop.testInput(wc, {type:'mouseMove', ...point});
+    await testDesktop.testInput(wc, { type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
+    await testDesktop.testInput(wc, { type: 'mouseUp', ...point, button: 'left', clickCount: 1 });
     assert.equal((await pinReceived).element.selector, '#button');
     report.desktop = await require('./smoke-desktop.cjs').smokeDesktop({ automation, computer, win, browser });
     await request('zoom', { factor: 1.2 });
@@ -97,11 +98,14 @@ async function run({ win, browser, automation, backend, metrics, activity, compu
     report.settings = 'real ACP effort and fast commands updated harness state';
 
     await win.webContents.executeJavaScript(`fetch('/api/acp',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({chat:'electron-smoke',method:'dispose'})})`);
-    await activity(); report.swiftUI = 'native module loaded and sheet presented';
+    if (testDesktop.foreground) {
+      await activity(); report.swiftUI = 'native module loaded and sheet presented';
+    } else report.swiftUI = 'Native sheet requires GRAFF_TEST_FOREGROUND=1';
+    report.testDesktop = testDesktop.assertSafe();
     await sleep(500);
     const output = process.env.GRAFF_ELECTRON_SMOKE;
     fs.writeFileSync(output, JSON.stringify(report, null, 2));
-    console.log('Electron smoke passed: navigation, isolation, pins, automation, suspension, real ACP, SwiftUI.');
+    console.log('Electron smoke passed: navigation, isolation, pins, automation, suspension, real ACP. Native sheet:', report.swiftUI);
   } finally { fixture.close(); fs.rmSync(cwd, { recursive: true, force: true }); }
 }
 module.exports = { run };

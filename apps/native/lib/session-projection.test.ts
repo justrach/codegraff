@@ -6,6 +6,7 @@ import { NextRequest } from "next/server";
 import { GET } from "../app/api/sessions/route";
 import { loadSession, sessionFromResponse, transcriptFromMessages } from "./sessions";
 import { withGuiSkillContext } from "./gui-skills";
+import { turnActivity } from "./turn-activity";
 
 const raw = [
   { role: "system", content: "Not conversation text" },
@@ -122,4 +123,22 @@ test("the projected client keeps empty legacy histories and server failures read
     globalThis.fetch = (async () => new Response("Temporarily unavailable", { status: 503 })) as typeof fetch;
     await expect(loadSession("example")).rejects.toThrow("503: Temporarily unavailable");
   } finally { globalThis.fetch = previous; }
+});
+
+test("#839: intermediate and final-looking saved prose cannot establish live completion", () => {
+  const meta = { name: "active", title: null, model: null, provider: null, updatedMs: 100, size: 100 };
+  for (const content of ["I am checking the remaining files.", "All files checked."]) {
+    const messages = [{ role: "user", content: "Check the files" }, { role: "assistant", content }];
+    const projected = transcriptFromMessages(messages);
+    // Older projection servers claimed completion; the client must not trust it.
+    const oldProjection = projected.map(m => m.role === "assistant" ? { ...m, turn: { ...m.turn, status: "done" as const } } : m);
+    for (const body of [{ ...meta, messages }, { ...meta, presentation: "transcript-v1" as const, transcript: oldProjection }]) {
+      const loaded = sessionFromResponse(body);
+      const answer = loaded.messages[1];
+      expect(answer.role).toBe("assistant");
+      if (answer.role !== "assistant") throw Error("Missing assistant");
+      expect(answer.turn.status).toBe("snapshot");
+      expect(turnActivity(answer.turn, 100_000)).toEqual({ state: "snapshot", label: "Saved snapshot", detail: "Live status unknown", live: false });
+    }
+  }
 });

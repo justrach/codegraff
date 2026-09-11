@@ -1,5 +1,5 @@
+const testDesktop = require('./test-desktop.cjs');
 const { app, BrowserWindow, ipcMain } = require('electron');
-const { presentWindow, testWindowOptions } = require('./test-window.cjs');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -12,11 +12,12 @@ app.setPath('userData', path.join(temporary, 'profile'));
 let server, win;
 const deadline = setTimeout(() => { console.error('Visual run exceeded 240 seconds'); finish(1); }, 240000);
 app.whenReady().then(async () => {
+  const savedOnly = process.env.GRAFF_VISUAL_SUITE === 'sessions';
   ipcMain.handle('updates', () => ({ status: 'unavailable', currentVersion: '1.0.0', automatic: false, interactive: false }));
   ipcMain.handle('projects', () => null);
   const root = path.resolve(__dirname, '..'), output = process.env.GRAFF_VISUAL_OUTPUT || path.resolve(root, '../../zig-out/visual-tests');
   fs.mkdirSync(output, { recursive: true });
-  assert.ok(fs.existsSync(path.join(root, '.next/BUILD_ID')), 'Run bun run build before visual tests.');
+  assert.ok(fs.existsSync(path.join(root, process.env.GRAFF_NEXT_DIST_DIR || '.next', 'BUILD_ID')), 'Run bun run build before visual tests.');
   const socket = net.createServer(); await new Promise(resolve => socket.listen(0, '127.0.0.1', resolve));
   const port = socket.address().port; await new Promise(resolve => socket.close(resolve));
   const origin = `http://127.0.0.1:${port}`;
@@ -24,8 +25,8 @@ app.whenReady().then(async () => {
   server = spawn(process.env.GRAFF_TEST_BUN || 'bun', ['node_modules/next/dist/bin/next', 'start', '--port', String(port), '--hostname', '127.0.0.1'], { cwd: root, env: { ...process.env, GRAFF_VISUAL_TESTS: '1', GRAFF_DESKTOP_TOKEN: '', NEXT_TELEMETRY_DISABLED: '1' }, detached: true, stdio: ['ignore', log, log] });
   fs.closeSync(log);
   for (let i = 0; i < 100; i++) { try { if ((await fetch(`${origin}/visual-tests`)).ok) break; } catch {} if (i === 99) throw Error('Visual fixture server did not start'); await sleep(100); }
-  win = new BrowserWindow(testWindowOptions({ width: 900, height: 600, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } }));
-  presentWindow(win, app);
+  win = testDesktop.createWindow({ width: 900, height: 600, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
+  testDesktop.present(win);
   const apiRequests = [];
   win.webContents.session.webRequest.onBeforeRequest((details, callback) => {
     const url = new URL(details.url);
@@ -49,6 +50,18 @@ app.whenReady().then(async () => {
     await require('./updates-transport.cjs').runUpdateTransport();
     assert.deepEqual(apiRequests, [], 'Update fixtures never call engine or model APIs');
     fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: ['update UI', 'update transport'], apiRequests }, null, 2));
+    return;
+  }
+  if (savedOnly) {
+    await require('./saved-session-visual.cjs').runSavedSessionVisuals({ win, origin, output });
+    assert.deepEqual(apiRequests, [], 'Saved session fixtures never call engine or model APIs');
+    testDesktop.assertSafe();
+    return;
+  }
+  if (process.env.GRAFF_VISUAL_SUITE === 'browser') {
+    await require('./browser-visual.cjs').runBrowserVisuals({ win, origin, output });
+    await require('./dev-preview-visual.cjs').runDevPreview({ output });
+    assert.deepEqual(apiRequests, [], 'Browser fixtures never call engine or model APIs');
     return;
   }
   if (['projects', 'splits', 'interactions'].includes(process.env.GRAFF_VISUAL_SUITE)) {
@@ -111,6 +124,7 @@ app.whenReady().then(async () => {
   await require('./chat-overflow-visual.cjs').runChatOverflow({ win, origin, output });
   await require('./chat-overflow-edge-visual.cjs').runOverflowEdges({ win, origin });
   await require('./stress-visual.cjs').runStressVisuals({ win, origin, output });
+  await require('./saved-session-visual.cjs').runSavedSessionVisuals({ win, origin, output });
   await require('./navigation-visual.cjs').runNavigationVisuals({ win, origin, output });
   await require('./browser-visual.cjs').runBrowserVisuals({ win, origin, output });
   await require('./agents-visual.cjs').runAgentVisuals({ win, origin, output });
@@ -125,8 +139,13 @@ app.whenReady().then(async () => {
 }).then(() => finish(0)).catch(error => { console.error(error); finish(1); });
 function finish(code) {
   clearTimeout(deadline);
-  if (win && !win.isDestroyed()) win.destroy();
+  try {
+    console.log('Test desktop:', JSON.stringify(testDesktop.assertSafe()));
+  } catch (error) { console.error(error); code = 1; }
+  testDesktop.cleanup();
   if (server?.pid) try { process.kill(-server.pid, 'SIGTERM'); } catch {}
   app.once('quit', () => { fs.rmSync(temporary, { recursive: true, force: true }); });
   app.exit(code);
 }
+process.on('SIGTERM', () => finish(1));
+process.on('SIGINT', () => finish(1));

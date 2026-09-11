@@ -1,5 +1,6 @@
 import type { AssistantTurn } from "./graff-events";
 export function turnActivity(turn: AssistantTurn, now: number, opts?: { snapshot?: boolean }) {
+  if (turn.status === "snapshot" || opts?.snapshot) return { state: "snapshot", label: "Saved snapshot", detail: "Live status unknown", live: false };
   const live = turn.status === "thinking" || turn.status === "streaming";
   const elapsed = Math.max(0, Math.floor((now - (turn.startedAt ?? now)) / 1000));
   const idle = Math.max(0, Math.floor((now - (turn.lastUpdateAt ?? turn.startedAt ?? now)) / 1000));

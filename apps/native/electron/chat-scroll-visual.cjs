@@ -1,3 +1,4 @@
+const testDesktop = require('./test-desktop.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -11,7 +12,7 @@ async function runChatScroll({ win, origin, output }) {
     }
     throw Error(`Chat scroll timed out: ${code}`);
   };
-  await wc.loadURL(origin); win.setSize(1100, 760); require('./test-window.cjs').presentWindow(win);
+  await wc.loadURL(origin); win.setSize(1100, 760); testDesktop.present(win);
   await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
   await js(`(() => {
     const previous = window.fetch;

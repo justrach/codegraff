@@ -1,10 +1,30 @@
 # Desktop visual tests
 
 From `apps/native`, run `bun run build`, then `bun run test:visual`.
-This opens an isolated Electron window, renders scripted turn states, and
+This renders scripted turn states in hidden, isolated Electron windows and
 checks visible progress, layout, disclosure state, completion and interruption
 in White, Black and CodeGraff themes. PNGs and results go to
 `zig-out/visual-tests`; set `GRAFF_VISUAL_OUTPUT` to use another directory.
+
+All visual suites, standalone GUI coding trials, packaged smoke checks and
+benchmarks use the shared background window policy. Tests keep the user's active
+application focused; creating, switching or cleaning up fixtures does not show
+or activate windows. Page input uses Chromium's trusted input path, including
+real Tab navigation, without sending keyboard or mouse events to the desktop.
+
+On macOS the visual and benchmark launchers start a read-only OS observer before
+Electron. Any activation or visible test window fails the run. The observer needs
+the Xcode command-line tools and requests no Accessibility or screen-capture
+permission. `bun run test:background` exercises the policy without a UI build:
+repeated windows, trusted input, screenshots, rejected activation and cleanup.
+The same background regression runs automatically before default visual suites.
+`bun run test:desktop` checks that future fixtures use the shared policy.
+
+Native fullscreen, native computer input and native sheets require explicit
+opt-in: `GRAFF_TEST_FOREGROUND=1 bun run test:visual`. These checks may activate
+windows and change macOS Spaces. Default reports identify them as not run.
+The foreground option also applies to packaged smoke checks and benchmarks;
+`GRAFF_SMOKE_SKIP_INPUT=1` still disables native computer input in foreground mode.
 
 No engine binary, model account, MCP server or model request is used. Requests
 to API routes are blocked and fail the test. The fixture page is unavailable
@@ -33,10 +53,13 @@ bun run benchmark:desktop /absolute/candidate/apps/native /absolute/local-result
 ```
 
 The runner creates a fresh profile and uses synthetic code fences, mermaid diagrams, long prose,
-and native wheel input. It measures renderer heap after collection, summed
+and trusted wheel input. It measures renderer heap after collection, summed
 process RSS, script/layout work and frame callback intervals. Repeat both runs
-and compare matching scenarios. Keep the window visible on the same display;
-the runner retains production background throttling and hardware acceleration.
+and compare matching scenarios in the same window mode. The default background
+mode disables throttling so hidden pages keep rendering. Reports record the mode.
+For display/presentation measurements, explicitly use `GRAFF_TEST_FOREGROUND=1`
+for both runs and keep the windows on the same display; that mode retains
+production throttling. Both modes retain Chromium hardware acceleration.
 RSS includes shared pages and is not an exclusive physical-memory measurement.
 
 Set `GRAFF_BENCHMARK_TRACE=scroll`, `code`, or `mermaid` for a separate local Chromium trace.

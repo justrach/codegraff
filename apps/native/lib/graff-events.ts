@@ -75,7 +75,7 @@ export type AskPrompt = {
   question: string;
 };
 
-export type TurnStatus = "thinking" | "streaming" | "ask" | "done" | "error";
+export type TurnStatus = "thinking" | "streaming" | "ask" | "done" | "error" | "snapshot";
 
 export type AssistantTurn = {
   startedAt?: number;

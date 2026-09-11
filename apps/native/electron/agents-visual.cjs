@@ -1,3 +1,4 @@
+const testDesktop = require('./test-desktop.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -6,7 +7,7 @@ async function runAgentVisuals({ win, origin, output }) {
   const selectChild = id => js(`(()=>{const id=${JSON.stringify(id)}, button=document.querySelector('[data-child-agent="'+id+'"]');if(button){button.click();return;}const select=document.querySelector('[aria-label="Select sub-agent"]');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(select,id);select.dispatchEvent(new Event('change',{bubbles:true}));})()`);
   const wait = async source => { for (let i = 0; i < 200; i++) { if (await js(source)) return; await new Promise(r => setTimeout(r, 40)); } console.error(await js('document.body.innerText')); fs.writeFileSync(path.join(output, 'agents-failed.png'), (await win.webContents.capturePage()).toPNG()); throw Error(`Agent visual timeout: ${source}`); };
   win.webContents.on('console-message', (_e, level, message) => { if (level >= 2) console.error('Agent fixture:', message); });
-  require('./test-window.cjs').presentWindow(win);
+  testDesktop.present(win);
   await win.loadURL(`${origin}/visual-tests/agents`);
   await wait(`document.body.textContent.includes('Implement navigation')`);
   assert.equal(await js(`document.querySelector('button[type="submit"]').disabled`), true);

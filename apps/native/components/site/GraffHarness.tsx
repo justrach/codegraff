@@ -15,14 +15,14 @@ import { newPageToken, newSessionName, type Chat, type Msg } from "./harness-typ
 import ChangesPane from "./ChangesPane";
 import { useBrowserVisibility } from "./useBrowserVisibility";
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import PromptBar, { type PromptModel } from "@/components/primitives/PromptBar";
+import { type PromptModel } from "@/components/primitives/PromptBar";
 import SidebarNav from "@/components/primitives/SidebarNav";
 import ConversationsPane from "@/components/site/ConversationsPane";
 import FilesPane from "@/components/site/FilesPane";
 import BrowserPane from "@/components/site/DesktopBrowserPane";
 import { annotationsBlock, type BrowserPin } from "@/lib/browser/annotations";
 import { browserClose, browserHandle, browserNav } from "@/lib/browser-client";
-import ChatTranscript from "./ChatTranscript";
+import ChatColumn from "./ChatColumn";
 import TasksSidebar from "./TasksSidebar";
 import { MAX_COLUMNS, SPLIT_LIMIT_MESSAGE, splitLimitReached } from "./harness-split";
 import { useDesktopShortcuts } from "./useDesktopShortcuts";
@@ -41,7 +41,6 @@ import {
 import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AcpCommand, type AssistantTurn } from "@/lib/acp";
 import { useChatScroll } from "./useChatScroll";
 import { enqueuePrompt, shiftQueuedPrompt } from "@/lib/prompt-queue";
-import PromptQueue from "./PromptQueue";
 import { usePromptQueue } from "./usePromptQueue";
 import { dateGroup, listSessionsPage, relativeTime, removeSession, type StoredSession } from "@/lib/sessions";
 import { loadHistory, mergeHistory, pushHistory, saveHistory } from "@/lib/prompt-history";
@@ -209,6 +208,7 @@ export default function GraffHarness() {
   }, []);
 
   const requireSession = async (chatId: number, reset = false, key?: string): Promise<string> => {
+    if (chatsRef.current.find(c => c.id === chatId)?.snapshot) throw new Error("Continue here before resuming this saved snapshot.");
     const live = sessionsRef.current.get(chatId);
     if (!reset && live) return live;
     const chat = chatsRef.current.find((c) => c.id === chatId);
@@ -441,7 +441,7 @@ export default function GraffHarness() {
   const send = async (text: string, forChat?: number) => {
     const trimmed = text.trim();
     const chatId = forChat ?? chatThread.id;
-    if (!trimmed) return;
+    if (!trimmed || chatsRef.current.find(c => c.id === chatId)?.snapshot) return;
     await settings.wait(chatId);
     if (runningRef.current.has(chatId) || busyIds.has(chatId)) {
       setQueue(chatId, enqueuePrompt(queuesRef.current[chatId] ?? [], trimmed, (queueIdRef.current += 1)));
@@ -481,7 +481,6 @@ export default function GraffHarness() {
       const next = [...chatsRef.current, { id, title: loaded.meta.title ?? name, messages, model: loaded.meta.model ?? undefined, session: name, cwd, snapshot: loaded.snapshot }];
       chatsRef.current = next; setChats(next);
       selectStored(id, cwd);
-      void requireSession(id, false, loaded.meta.model ?? undefined).catch(() => undefined);
     },
   });
   const openStored = (name: string, cwd = activePathRef.current ?? undefined) => savedConversation.open(name, cwd);
@@ -624,110 +623,41 @@ export default function GraffHarness() {
   const sidebarWorkspace = activeWorkspace ?? (activePath ? { path: activePath, name: basename(activePath) } : undefined);
   const footerTitle = sessionFooterTitle(chatThread.session, sessionId, chatCwd);
 
-  /** One chat column: its transcript (or the empty state) and its composer.
-   * A plain function, not a component, so the split view can render two of
-   * them without React remounting either on every parent render. */
-  const columnBody = (thread: Chat) => {
-    const isFollowing = tailing[thread.id] ?? true;
-    const hasMessages = thread.messages.length > 0;
-    const compactPane = columnIds.length > 1;
-    const threadBusy = busyIds.has(thread.id);
-    const threadModel = thread.model ?? model ?? undefined;
-    const threadQueued = queues[thread.id] ?? [];
-    const threadPins = (pinsByChat[thread.id] ?? []).length;
-    const threadHistory = mergeHistory(history, thread.messages.flatMap((m) => (m.role === "user" ? [m.text] : [])));
-    return (
-      <>
-
-            {hasMessages ? (
-              <div className="flex min-h-0 flex-1 flex-col">
-                <ChatTranscript key={thread.id} messages={thread.messages} register={paneRef(thread.id)} following={isFollowing} onOpenPath={openPath} onReview={openChanges} snapshot={thread.snapshot} />
-                <div className={`shrink-0 bg-page px-4 ${compactPane ? "py-2" : "pt-3 pb-6 sm:px-8"}`}>
-                  <div className="mx-auto max-w-[720px]">
-                    {threadPins > 0 && (
-                      <div className="mb-2 flex items-center gap-2 rounded-[8px] bg-surface px-2.5 py-1.5 text-[12.5px] text-ink-2 shadow-hairline">
-                        <span className="shrink-0 text-[11px] font-medium tracking-wide text-ink-3 uppercase">Pinned</span>
-                        <span className="min-w-0 flex-1 truncate text-ink">
-                          {threadPins} element{threadPins === 1 ? "" : "s"} in the browser go with your next message
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            focusChat(thread.id);
-                            setFilesOpen(false);
-                            setBrowserOpen(true);
-                          }}
-                          className="shrink-0 rounded px-1.5 text-[11.5px] font-medium text-ink-2 hover:bg-hover hover:text-ink"
-                        >
-                          Show
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="Clear pins"
-                          onClick={() => setPins(thread.id, [])}
-                          className="flex size-5 shrink-0 items-center justify-center rounded-[5px] text-ink-3 hover:bg-hover hover:text-ink"
-                        >
-                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
-                            <path d="M18 6L6 18M6 6l12 12" />
-                          </svg>
-                        </button>
-                      </div>
-                    )}
-                    <PromptQueue items={threadQueued} busy={threadBusy} status={steerStatus[thread.id]}
-                      error={cancelError[thread.id]}
-                      onRemove={item => removeQueued(thread.id, item)}
-                      onSteer={item => steerer.steer(thread.id, item, () => {
-                        const session = sessionsRef.current.get(thread.id);
-                        if (!session) return Promise.reject(new Error("Session unavailable"));
-                        return cancel(handleOf(thread.id), session);
-                      })} />
-                    <PromptBar
-                      demo={false}
-                      tall={!compactPane}
-                      placeholder={threadBusy ? "Queue a follow-up…" : thread.snapshot ? "Continue here (starts a GUI session)" : "Follow up"}
-                      models={models}
-                      commands={commands[thread.id] ?? catalogCommands}
-                      root={cwdOf(thread)}
-                      modelKey={threadModel}
-                      onModelChange={(key: string) => changeModel(key, thread.id)}
-                      onSend={(text: string) => void send(text, thread.id)} onSetting={text => settings.change(thread.id, text)}
-                      history={threadHistory}
-                      busy={threadBusy}
-                      onStop={() => {
-                        const live = sessionsRef.current.get(thread.id);
-                        if (!live) {
-                          setCancelError(current => ({ ...current, [thread.id]: "Nothing to interrupt yet." }));
-                          return;
-                        }
-                        void cancel(handleOf(thread.id), live).catch(err => {
-                          setCancelError(current => ({ ...current, [thread.id]: err instanceof Error ? err.message : "Could not interrupt the current turn" }));
-                        });
-                      }}
-                    />
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="min-h-0 flex-1 overflow-y-auto">
-                <EmptyState compact={compactPane}
-                  onOpenProject={() => setDialog({ mode: "new" })}
-                  onProjects={() => setProjectsOpen(true)}
-                  onContinue={openConversations} onReview={openChanges}
-                  onSend={(text: string) => void send(text, thread.id)} onSetting={text => settings.change(thread.id, text)}
-                  health={health}
-                  history={threadHistory}
-                  cwd={cwdOf(thread)}
-                  models={models}
-                  modelKey={threadModel}
-                  onModelChange={(key: string) => changeModel(key, thread.id)}
-                  commands={commands[thread.id] ?? catalogCommands}
-                />
-              </div>
-            )}
-      </>
-    );
-  };
-
+  const columnBody = (thread: Chat) => <ChatColumn key={thread.id} thread={thread}
+    compact={columnIds.length > 1} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
+    onOpenPath={openPath} onReview={openChanges}
+    onRefresh={loaded => {
+      const messages: Msg[] = loaded.messages.map(m => ({ id: ++msgIdRef.current, ...m }));
+      setChats(current => current.map(c => c.id === thread.id && c.snapshot ? { ...c, messages } : c));
+    }}
+    onContinue={() => {
+      const next = chatsRef.current.map(c => c.id === thread.id ? { ...c, snapshot: false } : c);
+      chatsRef.current = next; setChats(next);
+    }}
+    prompt={{ demo: false, models, commands: commands[thread.id] ?? catalogCommands,
+      root: cwdOf(thread), modelKey: thread.model ?? model ?? undefined,
+      onModelChange: key => changeModel(key, thread.id), onSend: text => void send(text, thread.id),
+      onSetting: text => settings.change(thread.id, text),
+      history: mergeHistory(history, thread.messages.flatMap(m => m.role === "user" ? [m.text] : [])),
+      busy: busyIds.has(thread.id), onStop: () => {
+        const live = sessionsRef.current.get(thread.id);
+        if (!live) { setCancelError(current => ({ ...current, [thread.id]: "Nothing to interrupt yet." })); return; }
+        void cancel(handleOf(thread.id), live).catch(err => {
+          setCancelError(current => ({ ...current, [thread.id]: err instanceof Error ? err.message : "Could not interrupt the current turn" }));
+        });
+      },
+    }}
+    queue={{ items: queues[thread.id] ?? [], busy: busyIds.has(thread.id), status: steerStatus[thread.id], error: cancelError[thread.id],
+      onRemove: item => removeQueued(thread.id, item), onSteer: item => steerer.steer(thread.id, item, () => {
+        const session = sessionsRef.current.get(thread.id);
+        if (!session) return Promise.reject(new Error("Session unavailable"));
+        return cancel(handleOf(thread.id), session);
+      }),
+    }}
+    pins={(pinsByChat[thread.id] ?? []).length}
+    onShowPins={() => { focusChat(thread.id); setFilesOpen(false); setBrowserOpen(true); }}
+    onClearPins={() => setPins(thread.id, [])} health={health}
+    onOpenProject={() => setDialog({ mode: "new" })} onProjects={() => setProjectsOpen(true)} onConversations={openConversations} />;
 
   useDesktopShortcuts({ closeChat, newChat, reopenClosed, toggleSplit, focusChat, chats, activeId, columns: columnIds,
     split: direction => { setSplitDirection(direction); setZoomedPane(null); addPane(); },

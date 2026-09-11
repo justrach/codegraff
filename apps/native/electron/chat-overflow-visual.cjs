@@ -1,3 +1,4 @@
+const testDesktop = require('./test-desktop.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -79,8 +80,8 @@ async function runChatOverflow({ win, origin, output }) {
     return result.width;
   };
   const wheel = async (point, deltaX, deltaY) => {
-    wc.sendInputEvent({ type: 'mouseMove', ...point });
-    wc.sendInputEvent({ type: 'mouseWheel', ...point, deltaX, deltaY, canScroll: true });
+    await testDesktop.testInput(wc, { type: 'mouseMove', ...point });
+    await testDesktop.testInput(wc, { type: 'mouseWheel', ...point, deltaX, deltaY, canScroll: true });
     await sleep(200);
   };
   const viewportWheels = async label => {

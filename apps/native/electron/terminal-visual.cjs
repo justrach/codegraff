@@ -1,3 +1,4 @@
+const testDesktop = require('./test-desktop.cjs');
 const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function runTerminalVisual({win,output}) {
@@ -8,7 +9,7 @@ async function runTerminalVisual({win,output}) {
   await wait(`document.querySelector('[data-workspace-terminal]').textContent.includes('Shell ready')`);
   await js(`document.querySelector('.xterm-helper-textarea').focus()`);
   await wc.insertText("printf '\\n%s\\n' TERMINAL_GUI_READY");
-  wc.sendInputEvent({type:"keyDown",keyCode:"Return"});wc.sendInputEvent({type:"keyUp",keyCode:"Return"});
+  await testDesktop.testInput(wc, {type:"keyDown",keyCode:"Return"});await testDesktop.testInput(wc, {type:"keyUp",keyCode:"Return"});
   await wait(`Array.from(document.querySelectorAll('.xterm-rows > div')).some(row=>row.textContent.trim()==='TERMINAL_GUI_READY')`);
   const before=await js(`document.querySelector('[data-workspace-terminal]').getBoundingClientRect().height`);
   await js(`document.querySelector('[aria-label="Resize terminal"]').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowUp',bubbles:true}))`);

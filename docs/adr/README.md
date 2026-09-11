@@ -111,6 +111,7 @@ record only when you need the evidence or the edge cases.
 | [0099](0099-gui-saved-sessions-are-snapshots.md) | A saved-session GET is a snapshot with unknown live status; the GUI must not infer the REPL finished. |
 | [0100](0100-publication-claims-and-verified-completion.md) | Non-draft PRs fail closed on CI/Verification/helper-only claims; artifact presence ACK is not ownership; recipe success is verified task success. |
 
+| [0101](0101-gui-tests-preserve-desktop-focus.md) | GUI tests stay hidden with trusted page input; native foreground checks require explicit opt-in. |
 
 ## When to write one
 

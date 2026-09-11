@@ -1,3 +1,4 @@
+const testDesktop = require('./test-desktop.cjs');
 const assert = require('node:assert/strict');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -14,11 +15,12 @@ async function testTaskRows({ win, origin }) {
   const row = index => `document.querySelector('[data-task-rows]').firstElementChild.children[${index}]`;
   const expanded = index => `${row(index)}.querySelector('button')?.getAttribute('aria-expanded')`;
   const key = async keyCode => {
-    win.webContents.sendInputEvent({ type: 'keyDown', keyCode });
-    if (keyCode === 'Enter' || keyCode === 'Space') {
-      win.webContents.sendInputEvent({ type: 'char', keyCode: keyCode === 'Enter' ? '\r' : ' ' });
+    await testDesktop.testInput(win.webContents, { type: 'keyDown', keyCode });
+    // Chromium's background Enter already carries its character event.
+    if ((keyCode === 'Enter' && testDesktop.foreground) || keyCode === 'Space') {
+      await testDesktop.testInput(win.webContents, { type: 'char', keyCode: keyCode === 'Enter' ? '\r' : ' ' });
     }
-    win.webContents.sendInputEvent({ type: 'keyUp', keyCode });
+    await testDesktop.testInput(win.webContents, { type: 'keyUp', keyCode });
     await sleep(40);
   };
   let revision = 0;
@@ -44,7 +46,7 @@ async function testTaskRows({ win, origin }) {
   };
   await win.loadURL(`${origin}/visual-tests/tasks`);
   await wait(`document.querySelector('[data-tasks-fixture]')?.dataset.ready==='true'`);
-  win.show(); win.focus();
+  testDesktop.present(win);
   await js('document.fonts.ready.then(()=>true)');
   for (const variant of ['Capsules', 'List']) {
     const items = [

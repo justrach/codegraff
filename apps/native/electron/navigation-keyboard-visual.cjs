@@ -1,3 +1,4 @@
+const testDesktop = require('./test-desktop.cjs');
 const assert = require('node:assert/strict');
 
 async function runNavigationKeyboard({win, origin}) {
@@ -9,8 +10,8 @@ async function runNavigationKeyboard({win, origin}) {
   };
   // Real input is essential: synthetic KeyboardEvents do not move Tab focus.
   const key = async (keyCode, modifiers = []) => {
-    wc.sendInputEvent({type: 'keyDown', keyCode, modifiers});
-    wc.sendInputEvent({type: 'keyUp', keyCode, modifiers});
+    await testDesktop.testInput(wc, {type: 'keyDown', keyCode, modifiers});
+    await testDesktop.testInput(wc, {type: 'keyUp', keyCode, modifiers});
     await pause();
   };
   const click = selector => js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.focus();e.click();})()`);
@@ -18,7 +19,7 @@ async function runNavigationKeyboard({win, origin}) {
   const modalContainsFocus = () => js(`document.querySelector('[aria-modal="true"]')?.contains(document.activeElement)`);
   const focusDiagnostic = () => js(`JSON.stringify({hasFocus:document.hasFocus(),active:document.activeElement?.outerHTML.slice(0,2500),modal:document.querySelector('[aria-modal="true"]')?.getAttribute('aria-label')})`);
 
-  await wc.loadURL(origin); require('./test-window.cjs').presentWindow(win);
+  await wc.loadURL(origin); testDesktop.present(win);
   await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
   wc.send('desktop-action', 'new');
   await wait(`document.querySelectorAll('[aria-label="Close tab"]').length===2`);

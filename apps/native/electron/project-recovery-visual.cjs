@@ -1,3 +1,4 @@
+const testDesktop = require('./test-desktop.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -135,7 +136,7 @@ async function runProjectRecovery({ win, origin, output }) {
   assert.ok(await js(`document.querySelector('[data-project-context]').textContent.includes('/demo/recovered')`),'A late folder listing cannot replace the chosen folder');
   await wc.loadURL(origin);
   await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
-  require('./test-window.cjs').presentWindow(win);
+  testDesktop.present(win);
   console.log('Project recovery passed: initial/paged retry, stale searches, resume retry/cancel, navigation races, and typed folder validation.');
 }
 module.exports={runProjectRecovery};
