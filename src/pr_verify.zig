@@ -6,16 +6,22 @@ const Agent = @import("agent.zig").Agent;
 const A = std.mem.Allocator;
 pub const State = enum { unused, pending, draft, passed };
 const Record = struct { session: []const u8 = "", target: evidence.Target, match_local: bool = true };
-const rel = ".graff/pr-verification.json";
-
-fn path(a: A, cwd: []const u8) ![]const u8 {
-    return std.fs.path.join(a, &.{ cwd, rel });
+fn ledgerPath(a: A, cwd: []const u8, session: []const u8) ![]const u8 {
+    // Independent conversations cannot fill each other's bounded ledger.
+    // Hash even a restored ID so malformed saved data cannot become a path.
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(session, &digest, .{});
+    const file = try std.fmt.allocPrint(a, "{s}.json", .{std.fmt.bytesToHex(digest, .lower)});
+    return std.fs.path.join(a, &.{ cwd, ".graff/pr-verification", file });
+}
+fn path(agent: *const Agent) ![]const u8 {
+    return ledgerPath(agent.arena, agent.agent_cwd orelse ".", @import("http_headers.zig").sessionId(agent.io));
 }
 
 /// Written before the command is allowed. A failed publication remains
 /// unresolved until a real PR is found or the user explicitly changes scope.
 pub fn arm(agent: *Agent, target: evidence.Target, match_local: bool) !void {
-    const file = try path(agent.arena, agent.agent_cwd orelse ".");
+    const file = try path(agent);
     const tx = try @import("repo_transaction.zig").Transaction.begin(agent.io, agent.arena, file);
     defer tx.end();
     var records: std.ArrayList(Record) = .empty;
@@ -45,8 +51,7 @@ pub fn decision(receipt: evidence.Receipt, local: ?[]const u8) State {
 
 pub fn completionGate(agent: *Agent) ?[]const u8 {
     if (agent.review_mode) return null;
-    const cwd = agent.agent_cwd orelse ".";
-    const file = path(agent.arena, cwd) catch return "completion deferred: unable to read PR verification obligation";
+    const file = path(agent) catch return "completion deferred: unable to read PR verification obligation";
     const json = std.Io.Dir.cwd().readFileAlloc(agent.io, file, agent.arena, .limited(64 * 1024)) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return "completion deferred: PR verification obligation is unreadable",
@@ -78,7 +83,7 @@ test "#853 a changed head or a second completion attempt cannot reuse a passing 
 }
 
 pub fn hasObligation(agent: *const Agent) bool {
-    const file = path(agent.arena, agent.agent_cwd orelse ".") catch return true;
+    const file = path(agent) catch return true;
     const json = std.Io.Dir.cwd().readFileAlloc(agent.io, file, agent.arena, .limited(64 * 1024)) catch |err| return err != error.FileNotFound;
     const records = std.json.parseFromSliceLeaky([]Record, agent.arena, json, .{}) catch return true;
     for (records) |record| if (std.mem.eql(u8, record.session, @import("http_headers.zig").sessionId(agent.io))) return true;
@@ -89,4 +94,17 @@ pub fn taskVerified(agent: *const Agent) bool {
     if (!hasObligation(agent)) return true;
     if (agent.pr_verification != .passed) return false;
     return completionGate(@constCast(agent)) == null and agent.pr_verification == .passed;
+}
+
+test "PR obligations isolate conversations and cannot use restored IDs as paths" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const first = try ledgerPath(a, "/workspace", "conversation-a");
+    const second = try ledgerPath(a, "/workspace", "conversation-b");
+    try std.testing.expect(!std.mem.eql(u8, first, second));
+    try std.testing.expectEqualStrings(first, try ledgerPath(a, "/workspace", "conversation-a"));
+    const hostile = try ledgerPath(a, "/workspace", "../../elsewhere/../record");
+    try std.testing.expect(std.mem.indexOf(u8, hostile, "..") == null);
+    try std.testing.expectEqualStrings(std.fs.path.dirname(first).?, std.fs.path.dirname(hostile).?);
 }
