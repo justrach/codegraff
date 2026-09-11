@@ -48,18 +48,25 @@ async function runBrowserVisuals({ win: fixtureWindow, origin, output }) {
     await wait(() => page.executeJavaScript(`document.querySelector('[data-graff-pins]')?.textContent==='1'`), 'pin marker');
     assert.equal(await page.executeJavaScript('document.body.dataset.activated || document.body.dataset.clicked || null'), null, 'pinning must not activate the target');
     assert.equal(await js(`document.activeElement.getAttribute('aria-label')`), 'Note for pin 1');
-    for (const zoom of [1, 1.25]) {
-      wc.setZoomFactor(zoom); await sleep(200);
-      const rect = await js(`(()=>{const r=document.querySelector('aside .bg-canvas').getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})()`);
-      browser.setBounds('browser-test', rect);
-      assert.equal(browser.tabs.get('browser-test').view.getBounds().x, Math.round(rect.x * zoom));
-      const shot = await browserAction(browser, 'browser-test', 'screenshot');
-      const image = nativeImage.createFromBuffer(Buffer.from(shot.data, 'base64'));
-      assert.ok(!image.isEmpty() && image.getSize().width > 100);
-      assert.ok(shot.viewport.width > 100 && shot.imageSize.height > 100);
-      // The known blue background distinguishes an actual page grab from an empty frame.
-      const pixel = image.toBitmap(); assert.ok(pixel[0] > 220 && pixel[1] > 220 && pixel[2] > 200);
-      fs.writeFileSync(path.join(output, `browser-capture-${zoom}.png`), image.toPNG());
+    const initialZoom = wc.getZoomFactor();
+    try {
+      for (const zoom of [1, 1.25]) {
+        wc.setZoomFactor(zoom); await sleep(200);
+        const rect = await js(`(()=>{const r=document.querySelector('aside .bg-canvas').getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})()`);
+        browser.setBounds('browser-test', rect);
+        assert.equal(browser.tabs.get('browser-test').view.getBounds().x, Math.round(rect.x * zoom));
+        const shot = await browserAction(browser, 'browser-test', 'screenshot');
+        const image = nativeImage.createFromBuffer(Buffer.from(shot.data, 'base64'));
+        assert.ok(!image.isEmpty() && image.getSize().width > 100);
+        assert.ok(shot.viewport.width > 100 && shot.imageSize.height > 100);
+        // The known blue background distinguishes an actual page grab from an empty frame.
+        const pixel = image.toBitmap(); assert.ok(pixel[0] > 220 && pixel[1] > 220 && pixel[2] > 200);
+        fs.writeFileSync(path.join(output, `browser-capture-${zoom}.png`), image.toPNG());
+      }
+    } finally {
+      // Chromium shares origin zoom across windows, including later fixtures.
+      // Restore it before navigating away from this origin or destroying wc.
+      wc.setZoomFactor(initialZoom);
     }
     fs.writeFileSync(path.join(output, 'browser-pin.png'), (await wc.capturePage()).toPNG());
     await js(`document.querySelector('[aria-label="Remove pin 1"]').click()`);

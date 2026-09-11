@@ -20,6 +20,7 @@ async function runUpdateVisuals({ origin, output }) {
         return {...base(),status:'idle'};
       }};` });
     await win.loadURL(`${origin}/visual-tests`);
+    assert.equal(wc.getZoomFactor(), 1, 'Earlier GUI fixtures must restore shared-origin zoom before native pointer checks');
     testDesktop.present(win);
     console.log('Update visual fixture loaded.');
     await wait(`!!document.querySelector('[data-case="waiting"]')`);
