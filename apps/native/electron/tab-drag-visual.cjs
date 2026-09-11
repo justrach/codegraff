@@ -102,6 +102,7 @@ async function runTabDrag({win, origin, output}) {
   const [first,second]=await tabs();
   const bottom=await js(`(()=>{const r=document.querySelector('[data-chat]').getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.bottom-22)}})()`);
   const stopRecording = await require('./tab-motion-capture.cjs').recordTabMotion(wc, output);
+  const motion = await require('./pane-motion-observer.cjs').observePaneMotion(wc);
   try {
     const from = await down(first);
     for (let i=1;i<=36;i++) {
@@ -112,10 +113,10 @@ async function runTabDrag({win, origin, output}) {
     await new Promise(resolve=>setTimeout(resolve,220));
     fs.writeFileSync(path.join(output,'tabs-drop-below-preview.png'),(await wc.capturePage()).toPNG());
     await up(bottom);await wait(`document.querySelectorAll('[data-chat]').length===2`);
-    assert.ok(await js(`Array.from(document.querySelectorAll('[data-chat]')).some(p=>p.getAnimations().some(a=>a.playState==='running'))`), 'The downward drop should animate into its committed layout');
     await wait(`!Array.from(document.querySelectorAll('[data-chat]')).some(p=>p.getAnimations().some(a=>a.playState==='running'))`);
+    await motion.assertStarted(); // Start evidence remains valid after playback ends.
     await new Promise(resolve=>setTimeout(resolve,300));
-  } finally { await stopRecording(); }
+  } finally { await motion.stop(); await stopRecording(); }
   assert.deepEqual(await panes(),[second,first]);
   assert.equal(await js(`document.querySelector('[data-chat="${first}"] textarea').value`),'Plan the next release');
   assert.equal(await js(`getComputedStyle(document.querySelector('[data-chat-layout]')).flexDirection`),'column');
