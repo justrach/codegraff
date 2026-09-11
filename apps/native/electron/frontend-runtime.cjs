@@ -39,7 +39,16 @@ async function finish(error) {
   finished = true; clearTimeout(deadline);
   if (error) {
     report.error = error.stack; console.error(error);
-    try { fs.writeFileSync(path.join(output, 'failure.png'), (await win.webContents.capturePage()).toPNG()); } catch {}
+    try {
+      report.layout = await win.webContents.executeJavaScript(`(() => ({
+        viewport: { width: innerWidth, height: innerHeight },
+        prompts: Array.from(document.querySelectorAll('textarea[aria-label="Prompt"]')).map(e => {
+          const r = e.getBoundingClientRect(), hit = document.elementFromPoint(r.x+r.width/2, r.y+r.height/2);
+          return { rect: r.toJSON(), hit: hit?.tagName, hitClass: hit?.className, hitLabel: hit?.getAttribute('aria-label'), visible: e.checkVisibility() };
+        })
+      }))()`);
+      fs.writeFileSync(path.join(output, 'failure.png'), (await win.webContents.capturePage()).toPNG());
+    } catch {}
   }
   try { report.desktop = desktop.assertSafe(); } catch (e) { error ||= e; report.error ||= e.message; }
   report.status = error ? 'failed' : report.skipped.length ? 'passed-with-skips' : 'passed';

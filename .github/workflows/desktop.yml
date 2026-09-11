@@ -102,7 +102,7 @@ jobs:
           name: native-gui-results
           path: |
             zig-out/html-tool-test/results.json
-            zig-out/cli-test/results.json
+            zig-out/cli-test/
             zig-out/native-tests/native-results.json
             zig-out/frontend-tests/
             zig-out/split-stress/
