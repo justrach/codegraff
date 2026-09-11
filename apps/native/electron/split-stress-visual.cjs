@@ -5,22 +5,31 @@ const {treeSample} = require('./process-metrics.cjs');
 async function runSplitStress({win,output,mixed=true}) {
   const wc=win.webContents, js=code=>wc.executeJavaScript(code), sleep=ms=>new Promise(r=>setTimeout(r,ms));
   const wait=async code=>{for(let i=0;i<100;i++){if(await js(code))return;await sleep(30);}throw Error(`Split stress timeout: ${code}`);};
-  const point=selector=>js(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()`);
+  const point=async selector=>{await settle();return js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});const r=e.getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()`);};
   const input=event=>desktop.testInput(wc,event);
   const click=async selector=>{const p=await point(selector);for(const type of ['mouseDown','mouseUp'])await input({type,button:'left',clickCount:1,...p});};
   const key=async(keyCode,modifiers=[])=>{for(const type of ['keyDown','keyUp'])await input({type,keyCode,modifiers});};
   const ids=()=>js(`Array.from(document.querySelectorAll('[data-chat]')).map(p=>Number(p.dataset.chat))`);
-  const settle=()=>wait(`!Array.from(document.querySelectorAll('[data-chat], [data-tab-id]')).some(p=>p.getAnimations().some(a=>a.playState==='running'))`);
-  const geometry=()=>js(`Array.from(document.querySelectorAll('[data-chat]')).map(p=>{const r=p.getBoundingClientRect();return {id:Number(p.dataset.chat),x:r.x,y:r.y,width:r.width,height:r.height}})`);
+  const settle=async()=>{
+    await js(`new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>reject(Error('Split layout did not produce a frame')),3000);
+      requestAnimationFrame(()=>requestAnimationFrame(()=>{clearTimeout(timer);resolve(true)}));
+    })`);
+    await wait(`!Array.from(document.querySelectorAll('[data-chat], [data-tab-id]')).some(p=>p.getAnimations().some(a=>a.playState==='running'))`);
+  };
+  const geometry=()=>js(`Array.from(document.querySelectorAll('[data-chat]')).map(p=>{const r=p.getBoundingClientRect();return {id:Number(p.dataset.chat),x:r.x,y:r.y,width:r.width,height:r.height,style:p.style.cssText,transform:getComputedStyle(p).transform}})`);
   const valid=async()=>{
+    await settle();
     const boxes=await geometry();
     for(let i=0;i<boxes.length;i++) {
       const a=boxes[i];assert.ok(a.width>30&&a.height>30,'Pane must remain usable');
-      for(const b of boxes.slice(i+1))assert.ok(a.x+a.width<=b.x+1||b.x+b.width<=a.x+1||a.y+a.height<=b.y+1||b.y+b.height<=a.y+1,'Panes must not overlap');
+      for(const b of boxes.slice(i+1))assert.ok(a.x+a.width<=b.x+1||b.x+b.width<=a.x+1||a.y+a.height<=b.y+1||b.y+b.height<=a.y+1,'Panes must not overlap: '+JSON.stringify(boxes));
     }
     assert.equal(await js(`document.querySelectorAll('[data-tab-drag-ghost], [data-tab-drop]').length`),0,'No stale drag overlay');
   };
   desktop.attachTestDebugger(wc);
+  // Stress the animated layout even when the host requests reduced motion.
+  await wc.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
   await wc.debugger.sendCommand('Performance.enable');
   const samples=[];
   const sample=async label=>{

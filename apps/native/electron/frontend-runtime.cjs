@@ -99,7 +99,7 @@ app.whenReady().then(async () => {
   const area = screen.getPrimaryDisplay().workArea;
   // Exercise the handoff with Browser open on a small desktop: the initial
   // project context can put the composer below the scroll viewport.
-  const size = process.env.GRAFF_CLI_TEST ? { width: 1024, height: 664 } : { width: 1320, height: 900 };
+  const size = process.env.GRAFF_CLI_TEST || process.env.GRAFF_SPLIT_STRESS ? { width: 1024, height: 664 } : { width: 1320, height: 900 };
   const bounds = desktop.foreground ? { x: area.x+10, y: area.y+10, width: Math.min(size.width, area.width-20), height: Math.min(size.height, area.height-20) } : size;
   win = desktop.createWindow({ ...bounds, webPreferences: {
     preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, backgroundThrottling: false,
