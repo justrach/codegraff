@@ -7,7 +7,14 @@ const { installGalleryFixture } = require('./gallery-fixture.cjs');
 // Exercise the real conversation picker, decoder, transcript and composer.
 // Only transport is synthetic; no provider calls or real session files.
 async function runSavedSessionVisuals({ win, origin, output }) {
-  const wc = win.webContents, js = source => wc.executeJavaScript(source);
+  const wc = win.webContents, js = async source => {
+    try { return await wc.executeJavaScript(source); }
+    catch (error) {
+      console.error('Saved session expression:', source);
+      fs.writeFileSync(path.join(output, 'saved-session-failed.png'), (await wc.capturePage()).toPNG());
+      throw error;
+    }
+  };
   const wait = async source => {
     for (let i = 0; i < 150; i++) {
       if (await js(source)) return;

@@ -8,7 +8,20 @@ async function runTabDrag({win, origin, output}) {
   const tabs=()=>js(`Array.from(document.querySelectorAll('[data-tab-id]')).map(t=>Number(t.dataset.tabId))`);
   const panes=()=>js(`Array.from(document.querySelectorAll('[data-chat]')).map(t=>Number(t.dataset.chat))`);
   const point=selector=>js(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()`);
-  const click=async selector=>{const p=await point(selector);for(const type of ['mouseDown','mouseUp'])await desktop.testInput(wc,{type,button:'left',clickCount:1,...p});};
+  const click=async selector=>{
+    // Hydration and workspace discovery move the tab strip after loadURL.
+    // Hit-test settled coordinates before sending one real pointer click.
+    for(let i=0;i<50;i++) {
+      const before=await point(selector);
+      await new Promise(resolve=>setTimeout(resolve,100));
+      const p=await point(selector);
+      if(before.x!==p.x||before.y!==p.y)continue;
+      if(!await js(`document.querySelector(${JSON.stringify(selector)})?.contains(document.elementFromPoint(${p.x},${p.y}))`))continue;
+      for(const type of ['mouseDown','mouseUp'])await desktop.testInput(wc,{type,button:'left',clickCount:1,...p});
+      return;
+    }
+    throw Error(`Pointer target did not settle: ${selector}`);
+  };
   const focusComposer=async()=>{
     // The landing composer moves when the browser closes and workspace health arrives.
     // Wait for its layout, then retry only the harmless focus click if it moved again.
