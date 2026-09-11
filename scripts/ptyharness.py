@@ -48,6 +48,7 @@ import sys
 import termios
 import time
 import unicodedata
+from pty_cleanup import close_pty
 
 # DEC private modes whose TERMINAL DEFAULT is enabled: autowrap and cursor
 # visible. For those the restore direction is `h`, so "balanced" means "final
@@ -702,11 +703,7 @@ class PtyHarness:
             if self.poll() is not None:
                 break
         if self.poll() is None:
-            os.kill(self.pid, signal.SIGKILL)
-            try:
-                os.waitpid(self.pid, 0)
-            except ChildProcessError:
-                pass
+            self.close()
             self.exit_status = None
             return None
         self.pump(0.3)  # the restore tail can land after the exit is reaped
@@ -722,29 +719,18 @@ class PtyHarness:
         while time.time() < end and self.poll() is None:
             self.pump(0.1)
         if self.poll() is None:
-            os.kill(self.pid, signal.SIGKILL)
-            try:
-                os.waitpid(self.pid, 0)
-            except ChildProcessError:
-                pass
+            self.close()
 
     def close(self) -> None:
         if self._closed:
             return
-        if self.poll() is None:
-            try:
-                os.kill(self.pid, signal.SIGKILL)
-                os.waitpid(self.pid, 0)
-            except OSError:
-                pass
-            except ChildProcessError:
-                pass
-        for fd in (self.master, self.slave):
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        self._closed = True
+        pending = self.pid if self.poll() is None else None
+        try:
+            status = close_pty(pending, (self.master, self.slave))
+            if status is not None:
+                self.exit_status = status
+        finally:
+            self._closed = True
 
     def __enter__(self):
         return self

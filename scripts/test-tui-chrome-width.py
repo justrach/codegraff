@@ -25,6 +25,7 @@ import sys
 import tempfile
 import time
 import unicodedata
+from pty_cleanup import close_pty
 
 # Absolutized BEFORE the fork: the child chdirs into its scratch workspace.
 BIN = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "zig-out/bin/graff")
@@ -93,7 +94,6 @@ def fresh_ws():
 
 
 def reap(pid, fd):
-    import signal
     try:
         os.write(fd, b"\x1b")  # cancel the background op first
         drain(fd, 0.5)
@@ -101,15 +101,7 @@ def reap(pid, fd):
         drain(fd, 2.0)
     except OSError:
         pass
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.kill(pid, sig)
-        except OSError:
-            pass
-    try:
-        os.waitpid(pid, 0)
-    except OSError:
-        pass
+    close_pty(pid, (fd,))
 
 
 def plain(b):

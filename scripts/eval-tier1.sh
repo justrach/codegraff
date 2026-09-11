@@ -252,7 +252,7 @@ if wanted tuiguard; then
     # Original 17 plus the ESC-split and line-REPL prompt-reflow regressions.
     # Each owns its pty/tmp/mock; the pool is the wall-time win. Deadlines
     # (#704) are checked first so a wedged probe cannot hang pre-push.
-    if python3 scripts/eval/test_tier1_tuiguard.py && python3 scripts/eval/tier1_tuiguard.py zig-out/bin/graff; then :; else
+    if python3 scripts/eval/test_pty_cleanup.py && python3 scripts/eval/test_tier1_tuiguard.py && python3 scripts/eval/tier1_tuiguard.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
   fi
