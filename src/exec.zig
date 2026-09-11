@@ -67,6 +67,7 @@ const native_fold = @import("native_fold.zig"); // folded native power tools: la
 const stageReadFileImage = @import("read_image.zig").stage;
 const input_util = @import("input_util.zig");
 const imagegen = @import("imagegen.zig"); // #352: the codex-gated image tool (advertising lives in schema.zig/tool_gates.zig)
+const html_view = @import("html_view.zig"); // the model's own drawing surface: one HTML page, rendered inline in the desktop transcript
 const local_tools = @import("local_tools.zig");
 
 fn learningArgv(argv: *[10][]const u8, exe_path: []const u8, contribute: bool) usize {
@@ -368,6 +369,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     }
     // Loads one SKILL.md body (or lists them). Rescans on every call, so a
     // skill written this session is loadable without a restart.
+    if (std.mem.eql(u8, call.name, html_view.tool_name)) return html_view.exec(ctx, input);
     if (std.mem.eql(u8, call.name, "skill")) return skill_docs.execSkill(gpa, io, input);
     // #352: codex-gated. execImagegen answers a call that was never advertised
     // (an unavailable session) with the same honest error it gives the model.

@@ -12,7 +12,8 @@
       "webfetch",
       "skill",
       "codedb",
-      "read_tool_result"
+      "read_tool_result",
+      "render_html"
     ],
     "meta": [
       "todo_write",
@@ -46,6 +47,7 @@
       "write_file",
       "codedb",
       "read_tool_result",
+      "render_html",
       "imagegen"
     ],
     "lean": [
@@ -81,6 +83,7 @@
         "skill",
         "codedb",
         "read_tool_result",
+        "render_html",
         "todo_write",
         "todo_read",
         "eval",
@@ -120,7 +123,8 @@
         "webfetch",
         "skill",
         "codedb",
-        "read_tool_result"
+        "read_tool_result",
+        "render_html"
       ],
       "blocked": [
         "imagegen"
@@ -147,6 +151,7 @@
         "skill",
         "codedb",
         "read_tool_result",
+        "render_html",
         "todo_write",
         "todo_read",
         "eval",
@@ -187,7 +192,8 @@
         "webfetch",
         "skill",
         "codedb",
-        "read_tool_result"
+        "read_tool_result",
+        "render_html"
       ],
       "blocked": [
         "imagegen"
@@ -214,6 +220,7 @@
         "skill",
         "codedb",
         "read_tool_result",
+        "render_html",
         "todo_write",
         "todo_read",
         "eval",
@@ -254,7 +261,8 @@
         "webfetch",
         "skill",
         "codedb",
-        "read_tool_result"
+        "read_tool_result",
+        "render_html"
       ],
       "blocked": [
         "imagegen"
@@ -281,6 +289,7 @@
         "skill",
         "codedb",
         "read_tool_result",
+        "render_html",
         "todo_write",
         "todo_read",
         "eval",
@@ -322,7 +331,8 @@
         "webfetch",
         "skill",
         "codedb",
-        "read_tool_result"
+        "read_tool_result",
+        "render_html"
       ],
       "blocked": [
         "imagegen"
@@ -349,6 +359,7 @@
         "skill",
         "codedb",
         "read_tool_result",
+        "render_html",
         "todo_write",
         "todo_read",
         "eval",
@@ -388,6 +399,7 @@
         "skill",
         "codedb",
         "read_tool_result",
+        "render_html",
         "imagegen"
       ],
       "blocked": []
@@ -413,6 +425,7 @@
         "skill",
         "codedb",
         "read_tool_result",
+        "render_html",
         "todo_write",
         "todo_read",
         "eval",
@@ -453,6 +466,7 @@
         "skill",
         "codedb",
         "read_tool_result",
+        "render_html",
         "imagegen"
       ],
       "blocked": []
@@ -478,6 +492,7 @@
         "skill",
         "codedb",
         "read_tool_result",
+        "render_html",
         "todo_write",
         "todo_read",
         "eval",
@@ -518,6 +533,7 @@
         "skill",
         "codedb",
         "read_tool_result",
+        "render_html",
         "imagegen"
       ],
       "blocked": []
@@ -543,6 +559,7 @@
         "skill",
         "codedb",
         "read_tool_result",
+        "render_html",
         "todo_write",
         "todo_read",
         "eval",
@@ -584,6 +601,7 @@
         "skill",
         "codedb",
         "read_tool_result",
+        "render_html",
         "imagegen"
       ],
       "blocked": []
@@ -632,7 +650,8 @@
         "webfetch",
         "skill",
         "codedb",
-        "read_tool_result"
+        "read_tool_result",
+        "render_html"
       ],
       "blocked": [
         "imagegen"
@@ -682,7 +701,8 @@
         "webfetch",
         "skill",
         "codedb",
-        "read_tool_result"
+        "read_tool_result",
+        "render_html"
       ],
       "blocked": [
         "imagegen"
@@ -732,7 +752,8 @@
         "webfetch",
         "skill",
         "codedb",
-        "read_tool_result"
+        "read_tool_result",
+        "render_html"
       ],
       "blocked": [
         "imagegen"
@@ -782,7 +803,8 @@
         "webfetch",
         "skill",
         "codedb",
-        "read_tool_result"
+        "read_tool_result",
+        "render_html"
       ],
       "blocked": [
         "imagegen"
@@ -831,6 +853,7 @@
         "skill",
         "codedb",
         "read_tool_result",
+        "render_html",
         "imagegen"
       ],
       "blocked": []
@@ -878,6 +901,7 @@
         "skill",
         "codedb",
         "read_tool_result",
+        "render_html",
         "imagegen"
       ],
       "blocked": []
@@ -925,6 +949,7 @@
         "skill",
         "codedb",
         "read_tool_result",
+        "render_html",
         "imagegen"
       ],
       "blocked": []
@@ -972,6 +997,7 @@
         "skill",
         "codedb",
         "read_tool_result",
+        "render_html",
         "imagegen"
       ],
       "blocked": []
@@ -1013,6 +1039,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1039,6 +1066,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1080,6 +1108,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1106,6 +1135,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1147,6 +1177,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1173,6 +1204,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1215,6 +1247,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1241,6 +1274,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1281,6 +1315,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1307,6 +1342,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1348,6 +1384,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1374,6 +1411,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1415,6 +1453,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1441,6 +1480,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1483,6 +1523,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1509,6 +1550,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1536,6 +1578,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1562,6 +1605,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1589,6 +1633,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1615,6 +1660,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1642,6 +1688,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1668,6 +1715,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1695,6 +1743,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1721,6 +1770,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1748,6 +1798,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1774,6 +1825,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1801,6 +1853,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1827,6 +1880,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1854,6 +1908,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1880,6 +1935,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1907,6 +1963,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     },
@@ -1933,6 +1990,7 @@
         "imagegen",
         "read_file",
         "read_tool_result",
+        "render_html",
         "write_file"
       ]
     }

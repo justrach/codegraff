@@ -1,6 +1,6 @@
 import { boundToolDetail } from "./tool-detail";
 import { stripCiteMarkup } from "./cite-markup";
-import { mcpAppId } from "./mcp-apps";
+import { mcpAppId, viewSnapshotId } from "./mcp-apps";
 /** ACP v1 session/update shapes the native harness renders. */
 
 export type AcpContent = { type: "text"; text: string };
@@ -197,6 +197,7 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
     status,
     detail: boundToolDetail(detail),
     mcpAppId: mcpAppId(contentText) ?? prev?.mcpAppId,
+    viewSnapshotId: viewSnapshotId(contentText) ?? prev?.viewSnapshotId,
     path,
     startedAt: prev?.startedAt ?? Date.now(),
     atChars: prev?.atChars ?? turn.text.length,

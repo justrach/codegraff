@@ -44,6 +44,8 @@ export type ToolIcon = "think" | "write" | "run" | "read";
 
 export type ToolRow = {
   mcpAppId?: string;
+  /** A `render_html` page the model drew: rendered inline, like an app result. */
+  viewSnapshotId?: string;
   id: string;
   name: string;
   icon: ToolIcon;

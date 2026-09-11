@@ -114,6 +114,7 @@ record only when you need the evidence or the edge cases.
 | [0101](0101-gui-tests-preserve-desktop-focus.md) | GUI tests stay hidden by default; visible opt-in can overlap other apps, and native foreground checks require separate opt-in. |
 | [0102](0102-workspace-agents-and-cancel-recovery.md) | Agents uses the workspace area, Tasks visibility is explicit and persisted, and timed-out cancellation retires the worker before session recovery. |
 | [0103](0103-mcp-apps-are-isolated-result-views.md) | MCP Apps are private saved result views in isolated GUI/browser sandboxes; app tool calls require a future approval path. |
+| [0104](0104-model-drawn-pages-render-in-an-opaque-frame.md) | A page the model draws (`render_html`) is a private snapshot served under a CSP sandbox; the model picks the presentation, never the privilege. |
 
 ## When to write one
 

@@ -111,6 +111,7 @@ pub const base_specs = [_]ToolSpec{
         ,
     },
     .{ .name = result_read.tool_name, .desc = result_read.tool_desc, .schema = result_read.tool_schema },
+    @import("html_view.zig").spec,
 };
 
 // Meta tools act on the agent's own state, not the outside world; the
