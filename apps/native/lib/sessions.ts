@@ -1,3 +1,4 @@
+import { viewSnapshotId } from "./mcp-apps";
 import { htmlArtifactId } from "./html-artifacts";
 import { withoutGuiSkillContext } from "./gui-skills";
 import {
@@ -305,7 +306,7 @@ export function transcriptFromMessages(raw: unknown[], model?: string): Transcri
       const failed = /^(error|failed|denied)\b/i.test(text);
       t.tools = t.tools.map((row, i) =>
         i === idx
-          ? { ...row, htmlArtifactId: htmlArtifactId(text), status: failed ? "error" : "ok", detail: text ? [...row.detail, { text: firstLine(text) }] : row.detail }
+          ? { ...row, htmlArtifactId: htmlArtifactId(text), viewSnapshotId: viewSnapshotId(text), status: failed ? "error" : "ok", detail: text ? [...row.detail, { text: firstLine(text) }] : row.detail }
           : row,
       );
     }

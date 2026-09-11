@@ -19,6 +19,7 @@ LOCAL_TOOLS = (
     "write_file",
     "codedb",
     "read_tool_result",
+    "render_html",
     "imagegen",
 )
 LEAN_TOOLS = (
@@ -43,6 +44,7 @@ BASE_TOOLS = (
     "skill",
     "codedb",
     "read_tool_result",
+    "render_html",
 )
 META_TOOLS = (
     "todo_write",

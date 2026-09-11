@@ -1,4 +1,4 @@
-import {readMcpApp} from "@/lib/mcp-app-store";
+import {readMcpApp} from "@/lib/snapshot-store";
 import {validAppId} from "@/lib/mcp-apps";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

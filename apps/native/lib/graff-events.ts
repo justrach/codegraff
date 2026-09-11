@@ -1,3 +1,4 @@
+import { viewSnapshotId } from "./mcp-apps";
 import { htmlArtifactId } from "./html-artifacts";
 /** Graff `--json` / `graff serve` events that the native harness renders.
  *  Mirrors `sdk/ts/remote.ts` Event, kept local so the UI does not import
@@ -47,6 +48,8 @@ export type ToolRow = {
   mcpAppId?: string;
   htmlArtifactId?: string;
   htmlArtifactTool?: boolean;
+  /** A `render_html` page the model drew: rendered inline, like an app result. */
+  viewSnapshotId?: string;
   id: string;
   name: string;
   icon: ToolIcon;
@@ -212,7 +215,7 @@ function finishTool(turn: AssistantTurn, name: string, isError: boolean, text?: 
           chip: name,
           status: isError ? "error" : "ok",
           detail: text ? [{ text: firstLine(text) }] : [],
-          htmlArtifactId: htmlArtifactId(text),
+          htmlArtifactId: htmlArtifactId(text), viewSnapshotId: viewSnapshotId(text),
         },
       ],
     };
@@ -222,7 +225,7 @@ function finishTool(turn: AssistantTurn, name: string, isError: boolean, text?: 
     ? [...prev.detail, { text: firstLine(text), tone: isError ? undefined : undefined }]
     : prev.detail;
   const tools = turn.tools.slice();
-  tools[idx] = { ...prev, status: isError ? "error" : "ok", detail, htmlArtifactId: text ? htmlArtifactId(text) ?? prev.htmlArtifactId : prev.htmlArtifactId };
+  tools[idx] = { ...prev, status: isError ? "error" : "ok", detail, htmlArtifactId: text ? htmlArtifactId(text) ?? prev.htmlArtifactId : prev.htmlArtifactId, viewSnapshotId: text ? viewSnapshotId(text) ?? prev.viewSnapshotId : prev.viewSnapshotId };
   const diffs = name === "edit_file" || name === "write_file" ? mergeDiff(turn.diffs, prev, text) : turn.diffs;
   return { ...turn, tools, diffs };
 }

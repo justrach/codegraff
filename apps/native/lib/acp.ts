@@ -1,7 +1,7 @@
 import { htmlArtifactId } from "./html-artifacts";
 import { boundToolDetail } from "./tool-detail";
 import { stripCiteMarkup } from "./cite-markup";
-import { mcpAppId } from "./mcp-apps";
+import { mcpAppId, viewSnapshotId } from "./mcp-apps";
 /** ACP v1 session/update shapes the native harness renders. */
 
 export type AcpContent = { type: "text"; text: string };
@@ -155,7 +155,7 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
   const idx = turn.tools.findIndex((t) => t.id === id);
   const prev = idx >= 0 ? turn.tools[idx] : undefined;
   const title = typeof update.title === "string" ? update.title : prev?.chip ?? id;
-  const htmlPreview = title === "mcp__codegraff_desktop__create_html" || prev?.htmlArtifactTool;
+  const htmlPreview = title === "mcp__codegraff_desktop__create_html" || title === "render_html" || prev?.htmlArtifactTool;
   const kind = htmlPreview ? "other" : typeof update.kind === "string" ? update.kind : prev ? undefined : "other";
   const statusRaw = typeof update.status === "string" ? update.status : prev ? undefined : "pending";
   const status: ToolRow["status"] = statusRaw
@@ -201,6 +201,7 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
     mcpAppId: mcpAppId(contentText) ?? prev?.mcpAppId,
     htmlArtifactId: htmlArtifactId(contentText) ?? prev?.htmlArtifactId,
     htmlArtifactTool: !!htmlPreview,
+    viewSnapshotId: viewSnapshotId(contentText) ?? prev?.viewSnapshotId,
     path,
     startedAt: prev?.startedAt ?? Date.now(),
     atChars: prev?.atChars ?? turn.text.length,

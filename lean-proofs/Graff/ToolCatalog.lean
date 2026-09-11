@@ -23,7 +23,7 @@ deriving Repr, BEq
 
 def localTools : List String :=
   ["bash", "bash_output", "bash_kill", "read_file", "edit_file",
-   "write_file", "codedb", "read_tool_result", "imagegen"]
+   "write_file", "codedb", "read_tool_result", "render_html", "imagegen"]
 
 def leanTools : List String :=
   ["bash", "read_file", "edit_file", "write_file", "codedb",
@@ -34,7 +34,8 @@ def optionalTools : List String :=
 
 def baseTools : List String :=
   ["bash", "bash_output", "bash_kill", "read_file", "edit_file",
-   "write_file", "webfetch", "skill", "codedb", "read_tool_result"]
+   "write_file", "webfetch", "skill", "codedb", "read_tool_result",
+   "render_html"]
 
 def metaTools : List String :=
   ["todo_write", "todo_read", "eval", "note_constraint", "ask_user",

@@ -49,6 +49,10 @@ pub const gated_tools = [_][]const u8{
     // write_file would otherwise still be handed a way to run a process and
     // land bytes on disk.
     "imagegen",
+    // render_html lands model-authored bytes under the user's own ~/.graff
+    // views directory on THIS host: not a workspace write, but still a host
+    // write an embedder removed bash and write_file to be rid of.
+    "render_html",
 };
 
 /// A name test only, independent of whether the gate is on, so the comptime
@@ -200,8 +204,9 @@ test "#330: the gated set is exactly the host-touching built-ins; webfetch, meta
     defer enabled = saved;
 
     for (gated_tools) |tool| try std.testing.expect(isLocalTool(tool));
-    try std.testing.expectEqual(@as(usize, 9), gated_tools.len);
+    try std.testing.expectEqual(@as(usize, 10), gated_tools.len);
     try std.testing.expect(isLocalTool("imagegen")); // #352: optional, but still a local spawn+write
+    try std.testing.expect(isLocalTool("render_html")); // writes the snapshot under the host's own $HOME
     for ([_][]const u8{ "webfetch", "skill", "subagent", "workflow", "todo_write", "eval", "mcp__sandbox__exec", "mcp__sandbox__bash" }) |tool|
         try std.testing.expect(!isLocalTool(tool));
 

@@ -27,3 +27,11 @@ test('HTML preview creation and failure are not workspace file edits',()=>{
   expect(turn.tools[0].icon).toBe('think');
  }
 });
+
+ test('render_html survives live and saved projection without inventing a workspace edit', () => {
+  const text=`[Rendered view](/home/test/.graff/views/${id}.html)`;
+  const turn=applyAcpUpdate(emptyTurn(),{sessionUpdate:'tool_call_update',toolCallId:'v1',title:'render_html',kind:'edit',status:'completed',content:[{type:'content',content:{type:'text',text}}]});
+  expect(turn.tools[0].viewSnapshotId).toBe(id); expect(turn.diffs).toEqual([]);
+  const saved=transcriptFromMessages([{role:'assistant',tool_calls:[{id:'v1',type:'function',function:{name:'render_html',arguments:'{}'}}]},{role:'tool',tool_call_id:'v1',content:text}]);
+  expect(saved[0].role==='assistant' && saved[0].turn.tools[0].viewSnapshotId).toBe(id);
+ });
