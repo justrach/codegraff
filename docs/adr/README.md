@@ -118,6 +118,7 @@ record only when you need the evidence or the edge cases.
 | [0105](0105-explicit-legacy-listener-stop.md) | Only an explicit identity-bound stop-suspect action may terminate an unrecorded legacy listener; automatic cleanup stays conservative. |
 | [0106](0106-desktop-html-explanations.md) | Desktop HTML explanations are private saved results in static, opaque sandboxes with bounded source and offscreen teardown. |
 | [0107](0107-model-drawn-pages-render-in-an-opaque-frame.md) | A page the model draws (`render_html`) is a private snapshot served under a CSP sandbox; the model picks the presentation, never the privilege. |
+| [0108](0108-browser-events-outrank-pending-snapshots.md) | Browser page-info events invalidate older pending IPC snapshots; a loaded page must not revert to loading. |
 
 ## When to write one
 

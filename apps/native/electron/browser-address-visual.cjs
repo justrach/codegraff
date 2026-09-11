@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-async function runBrowserAddress({ wc, browser, destination, guard, wait }) {
+async function runBrowserAddress({ wc, browser, destination, guard, wait, delayOpenReply, openReplySent }) {
   const js = code => wc.executeJavaScript(code);
   const searches = [];
   const safe = guard(destination);
@@ -19,12 +19,15 @@ async function runBrowserAddress({ wc, browser, destination, guard, wait }) {
     await js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))');
     await js(`document.querySelector('input[aria-label="Address"]').form.requestSubmit()`);
   };
+  delayOpenReply();
   await submit(query);
   await wait(() => searches.length === 1, 'ordinary words reach the search URL');
   await wait(() => {
     const page = browser.tabs.get(browser.visible)?.view?.webContents;
     return page && !page.isLoading() && page.getURL() === destination + '/';
   }, 'search fixture finished loading');
+  await wait(openReplySent, 'delayed navigation reply delivered');
+  await js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   // Navigation completion publishes several info updates and the open result.
   // Let the address consume those before editing it for the rejection case.
   await wait(`(()=>{const address=document.querySelector('input[aria-label="Address"]');return address.value===${JSON.stringify(destination + '/')} && address.closest('aside').querySelector('header')?.textContent.includes('Link destination fixture')})()`);

@@ -17,6 +17,7 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
   const [zoom, setZoom] = useState(1);
   const frame = useRef<HTMLDivElement>(null);
   const address = useRef<HTMLInputElement>(null);
+  const infoRevision = useRef(0);
   const callbacks = useRef({ pins, onPinsChange }); callbacks.current = { pins, onPinsChange };
   const storageKey = `graff.electron.browser.url:${memoryKey || chat}`;
   const layout = () => {
@@ -26,9 +27,11 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
   };
   const layoutRef = useRef(layout); layoutRef.current = layout;
   const command = async (method: string, params?: Record<string, unknown>) => {
+    const revision = ++infoRevision.current;
     try {
       setError(""); const next = await desktop()!.browser(chat, method, params);
-      if (next?.url !== undefined) { setInfo(next); setUrl(next.url === "about:blank" ? "" : next.url); localStorage.setItem(storageKey, next.url); }
+      // Navigation events may be newer than the snapshot returned over IPC.
+      if (revision === infoRevision.current && next?.url !== undefined) { setInfo(next); setUrl(next.url === "about:blank" ? "" : next.url); localStorage.setItem(storageKey, next.url); }
       layoutRef.current();
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
@@ -42,6 +45,7 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
       if (event.type === "released") { setInfo(null); setPicking(false); }
       if (event.chat !== chat) return;
       if (event.type === "info" && event.info) {
+        infoRevision.current++;
         if (event.info.ready === "loading") setPicking(false);
         setInfo(event.info); setUrl(event.info.url === "about:blank" ? "" : event.info.url);
         localStorage.setItem(storageKey, event.info.url);
@@ -53,8 +57,9 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
       }
     });
     let alive = true;
+    const revision = ++infoRevision.current;
     void bridge.browser(chat, "info").then(current => {
-      if (!alive) return;
+      if (!alive || revision !== infoRevision.current) return;
       if (current) { setInfo(current); setUrl(current.url); }
       else setUrl(initialUrl || localStorage.getItem(storageKey) || "");
       // A blank pane is just UI; it creates no browser renderer.
@@ -64,7 +69,7 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
     if (frame.current) observer.observe(frame.current);
     const changed = () => layoutRef.current();
     window.addEventListener("resize", changed);
-    return () => { alive = false; observer.disconnect(); unsubscribe(); window.removeEventListener("resize", changed);
+    return () => { alive = false; infoRevision.current++; observer.disconnect(); unsubscribe(); window.removeEventListener("resize", changed);
       void bridge.browser(chat, "hide"); };
     // A browser view belongs to its chat, not a render of the composer.
     // eslint-disable-next-line react-hooks/exhaustive-deps
