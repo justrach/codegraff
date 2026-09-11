@@ -38,12 +38,14 @@ async function runSplitFocus({win,origin,output}) {
   await js(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Back to chat').click()`);
   assert.equal(await js(`document.querySelector('[data-chat="${original[0]}"] textarea').value`),'Draft 0','Projects navigation preserves drafts');
   const drag=async(direction,delta)=>{
-    const before=await js(`document.querySelector('[data-chat]').getBoundingClientRect().${direction==='row'?'width':'height'}`);
-    const start=await js(`(()=>{const r=document.querySelector('[data-chat-divider]').getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
+    const selector=`[data-chat-divider][aria-orientation="${direction==='row'?'vertical':'horizontal'}"]`;
+    const pane=await js(`document.querySelector(${JSON.stringify(selector)}).dataset.resizeFirst`);
+    const before=await js(`document.querySelector('[data-chat="${pane}"]').getBoundingClientRect().${direction==='row'?'width':'height'}`);
+    const start=await js(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
     const end={...start,[direction==='row'?'x':'y']:start[direction==='row'?'x':'y']+delta};
     await testDesktop.testInput(wc, {type:'mouseDown',button:'left',clickCount:1,...start});await testDesktop.testInput(wc, {type:'mouseMove',button:'left',...end});await testDesktop.testInput(wc, {type:'mouseUp',button:'left',clickCount:1,...end});
     await new Promise(r=>setTimeout(r,100));
-    const after=await js(`document.querySelector('[data-chat]').getBoundingClientRect().${direction==='row'?'width':'height'}`);
+    const after=await js(`document.querySelector('[data-chat="${pane}"]').getBoundingClientRect().${direction==='row'?'width':'height'}`);
     assert.ok(after>before+20,`Mouse divider must resize ${direction} panes: ${before} -> ${after}`);
   };
   await drag('row',80);

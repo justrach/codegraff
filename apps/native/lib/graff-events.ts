@@ -1,3 +1,4 @@
+import { htmlArtifactId } from "./html-artifacts";
 /** Graff `--json` / `graff serve` events that the native harness renders.
  *  Mirrors `sdk/ts/remote.ts` Event, kept local so the UI does not import
  *  Node-only SDK code. Unknown types are ignored (forward compatible). */
@@ -44,6 +45,8 @@ export type ToolIcon = "think" | "write" | "run" | "read";
 
 export type ToolRow = {
   mcpAppId?: string;
+  htmlArtifactId?: string;
+  htmlArtifactTool?: boolean;
   id: string;
   name: string;
   icon: ToolIcon;
@@ -79,6 +82,7 @@ export type AskPrompt = {
 export type TurnStatus = "thinking" | "streaming" | "ask" | "done" | "error" | "snapshot";
 
 export type AssistantTurn = {
+  endedAt?: number;
   startedAt?: number;
   lastUpdateAt?: number;
   activityKind?: string;
@@ -208,6 +212,7 @@ function finishTool(turn: AssistantTurn, name: string, isError: boolean, text?: 
           chip: name,
           status: isError ? "error" : "ok",
           detail: text ? [{ text: firstLine(text) }] : [],
+          htmlArtifactId: htmlArtifactId(text),
         },
       ],
     };
@@ -217,7 +222,7 @@ function finishTool(turn: AssistantTurn, name: string, isError: boolean, text?: 
     ? [...prev.detail, { text: firstLine(text), tone: isError ? undefined : undefined }]
     : prev.detail;
   const tools = turn.tools.slice();
-  tools[idx] = { ...prev, status: isError ? "error" : "ok", detail };
+  tools[idx] = { ...prev, status: isError ? "error" : "ok", detail, htmlArtifactId: text ? htmlArtifactId(text) ?? prev.htmlArtifactId : prev.htmlArtifactId };
   const diffs = name === "edit_file" || name === "write_file" ? mergeDiff(turn.diffs, prev, text) : turn.diffs;
   return { ...turn, tools, diffs };
 }

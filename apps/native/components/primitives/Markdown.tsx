@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState, type JSX, type ReactNode } from "react";
+import { useMemo, type JSX, type ReactNode } from "react";
 import { Streamdown, type Components, type ControlsConfig, type ExtraProps } from "streamdown";
 import { mermaid } from "@streamdown/mermaid";
 import { code } from "@/lib/code-highlighter";
 import StreamingCode from "./StreamingCode";
+import { useDarkTheme } from "./useDarkTheme";
 import { stripCiteMarkup } from "@/lib/cite-markup";
 
 /* ─────────────────────────────────────────────────────────
@@ -59,7 +60,6 @@ function heading(level: 1 | 2 | 3 | 4 | 5 | 6) {
 /** Everything but inline code, which needs the files-pane callback. The
  * `node` prop is Streamdown's hast handle and must not reach the DOM. */
 const STATIC_COMPONENTS: Components = {
-  code: StreamingCode,
   h1: heading(1),
   h2: heading(2),
   h3: heading(3),
@@ -121,18 +121,6 @@ function inlineCode(onOpen?: (path: string) => void) {
   };
 }
 
-function useMermaidTheme(): "dark" | "default" {
-  const [theme, setTheme] = useState<"dark" | "default">("default");
-  useEffect(() => {
-    const sync = () => setTheme(document.documentElement.classList.contains("dark") ? "dark" : "default");
-    sync();
-    const obs = new MutationObserver(sync);
-    obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
-    return () => obs.disconnect();
-  }, []);
-  return theme;
-}
-
 export default function Markdown({
   text,
   streaming = false,
@@ -150,11 +138,11 @@ export default function Markdown({
 }) {
   // Streamdown is memoized on its props; a fresh components object per
   // render would defeat that, so it changes only with the callback.
-  const mermaidTheme = useMermaidTheme();
+  const mermaidTheme = useDarkTheme() ? "dark" : "default";
   const mermaidOptions = useMemo(() => ({ config: { theme: mermaidTheme, securityLevel: "strict" as const, fontFamily: "inherit" } }), [mermaidTheme]);
   const components = useMemo<Components>(
-    () => ({ ...STATIC_COMPONENTS, inlineCode: inlineCode(onOpenPath) }),
-    [onOpenPath],
+    () => ({ ...STATIC_COMPONENTS, code: props => <StreamingCode {...props} collapseLongCode={!asDocument} />, inlineCode: inlineCode(onOpenPath) }),
+    [onOpenPath, asDocument],
   );
   return (
     <div className="min-w-0 [overflow-wrap:anywhere] text-[13.5px] leading-[1.7] text-ink [&_pre]:text-[12px] [&_pre]:leading-[1.65]">

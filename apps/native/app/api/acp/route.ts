@@ -6,6 +6,7 @@ import type { Readable, Writable } from "node:stream";
 import { NextRequest } from "next/server";
 import type { AcpCommand } from "@/lib/acp";
 import { AcpTransport } from "@/lib/acp-transport";
+import { createPromptStream } from "@/lib/acp-prompt-stream";
 import { defaultRoot, resolveRoot } from "@/lib/server-root";
 import { prepareGuiPrompt } from "@/lib/gui-skill-context";
 
@@ -302,25 +303,15 @@ export async function POST(req: NextRequest) {
       const promptParams = await prepareGuiPrompt(body.params);
       if (slot.streaming) return Response.json({ error: "A turn is already active" }, { status: 409 });
       slot.streaming = true;
-      const encoder = new TextEncoder();
-      let cancelled = false;
-      const stream = new ReadableStream({
-        start(controller) {
-          const pending = slot.transport.request("session/prompt", { ...promptParams, sessionId: slot.sessionId }, 24 * 60 * 60 * 1000,
-            line => { if (!cancelled) controller.enqueue(encoder.encode(`${line}\n`)); });
-          slot.pendingPrompt = pending;
-          void pending
-            .then(() => { if (!cancelled) { cancelled = true; controller.close(); } })
-            .catch(error => { if (!cancelled) { cancelled = true; controller.error(error); } })
-            .finally(() => { if (slot.pendingPrompt === pending) { slot.pendingPrompt = null; slot.streaming = false; } });
-        },
-        cancel() {
-          if (cancelled) return; // Completed streams must not cancel a later turn.
-          cancelled = true;
+      const { stream, pending } = createPromptStream(slot.transport,
+        { ...promptParams, sessionId: slot.sessionId }, () => {
           try { slot.transport.notify("session/cancel", { sessionId: slot.sessionId }); } catch {}
           void endTurn(slot);
-        },
-      });
+        });
+      slot.pendingPrompt = pending;
+      // Both rejection and success settle the gate without changing the wire outcome.
+      const settled = () => { if (slot.pendingPrompt === pending) { slot.pendingPrompt = null; slot.streaming = false; } };
+      void pending.then(settled, settled);
       return new Response(stream, { headers: { "content-type": "application/x-ndjson", "cache-control": "no-store" } });
     }
     const result = await rpc(slot, method, body.params);

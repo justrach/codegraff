@@ -1,11 +1,15 @@
+import SplitLayoutIcon from "./SplitLayoutIcon";
+import type {SplitTree} from "@/lib/split-tree";
 import { IconChat, IconFolder, IconGlobe } from "@/lib/icons";
 import { useEffect, useRef } from "react";
 import { ThemeToggle } from "./ThemeToggle";
 import DesktopSettings from "./DesktopSettings";
+import type { PointerEvent, MouseEvent } from "react";
 import type { Chat } from "./harness-types";
 import reviewStyles from "./ChangesPane.module.css";
 type Props = {
-  chats: Chat[]; activeId: number; busyIds: ReadonlySet<number>;
+  onTabPointerDown?(event: PointerEvent, id: number): void; onTabClickCapture?(event: MouseEvent): void;
+  chats: (Pick<Chat, "id" | "title"> & { paneIds?: number[]; direction?: "row" | "column"; tree?: SplitTree })[]; activeId: number; busyIds: ReadonlySet<number>;
   focusChat(id: number): void; closeChat(id: number): void; newChat(): void;
   conversationsOpen: boolean; openConversations(): void; split: boolean; toggleSplit(): void;
   filesOpen: boolean; onFiles(): void; chatCwd?: string; workspaceName: string; onFolder(): void;
@@ -16,7 +20,7 @@ type Props = {
 export default function HarnessChrome({chats, activeId, busyIds, focusChat, closeChat, newChat,
   conversationsOpen, openConversations, split, toggleSplit, filesOpen, onFiles, chatCwd,
   workspaceName, onFolder, openChanges, browserOpen, onBrowser, pinCount, terminalVisible,
-  toggleTerminal, agentsOpen, onAgents, workingAgents = 0, tasksOpen = false, taskCount = 0, onTasks, splitNotice}: Props) {
+  toggleTerminal, agentsOpen, onAgents, workingAgents = 0, tasksOpen = false, taskCount = 0, onTasks, splitNotice, onTabPointerDown, onTabClickCapture}: Props) {
   const frame = useRef<HTMLDivElement>(null);
   useEffect(() => { frame.current?.querySelector(`[data-tab-id="${activeId}"]`)?.scrollIntoView({block: "nearest", inline: "nearest"}); }, [activeId]);
   return (
@@ -29,11 +33,18 @@ export default function HarnessChrome({chats, activeId, busyIds, focusChat, clos
         {chats.map((c) => (
           <div
             data-tab-id={c.id}
+            data-tab-members={(c.paneIds ?? [c.id]).join(",")}
+            onPointerDown={event => onTabPointerDown?.(event, c.id)}
+            onClickCapture={onTabClickCapture}
+            onDragStart={event => event.preventDefault()}
+            title={c.title ?? "Drag to reorder or to a chat edge to split"}
             key={c.id}
-            className={`group/tab flex h-7 w-36 shrink-0 items-center gap-0.5 rounded-[7px] pl-2.5 pr-1 text-[12.5px] font-medium transition-colors duration-100 ${
+            style={{ width: (c.paneIds?.length ?? 1) > 1 ? 230 : 144 }}
+            className={`group/tab select-none touch-none flex h-7 shrink-0 items-center gap-0.5 rounded-[7px] pl-2.5 pr-1 text-[12.5px] font-medium transition-colors duration-100 ${
               c.id === activeId && !agentsOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
             }`}
           >
+            {c.tree && (c.paneIds?.length ?? 1) > 1 && <SplitLayoutIcon tree={c.tree} />}
             {busyIds.has(c.id) && (
               <span
                 className="mr-1 size-1.5 shrink-0 animate-pulse rounded-full"
@@ -55,7 +66,7 @@ export default function HarnessChrome({chats, activeId, busyIds, focusChat, clos
             <button
               type="button"
               aria-label="Close tab"
-              title={c.id === activeId ? "Close tab (⌘W) — ⇧⌘T brings it back" : "Close tab"}
+              title={(c.paneIds?.length ?? 1) > 1 ? "Close all chats in this split tab" : "Close tab"}
               onClick={() => closeChat(c.id)}
               className="-my-1 flex size-6 shrink-0 items-center justify-center rounded-[5px] text-ink-3 transition-[background-color,color] duration-100 hover:bg-hover-2 hover:text-ink"
             >

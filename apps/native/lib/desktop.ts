@@ -6,6 +6,7 @@ export type LinkDestination = 'system' | 'graff';
 export type TerminalEvent = { id: string; seq: number; data?: string; exit?: number };
 export type UpdateState = { status: 'idle' | 'unavailable' | 'checking' | 'current' | 'downloading' | 'ready' | 'installing' | 'error'; currentVersion: string; version?: string; percent?: number; automatic: boolean; interactive: boolean; message?: string };
 export type DesktopBridge = {
+  workspaceSubscribe?(callback: (target: { cwd: string; file?: string }) => void): () => void;
   linkSettings?(action: 'load' | 'save', value?: LinkDestination): Promise<LinkDestination>;
   projects?(action: 'load' | 'save', value?: { list: import('./workspaces').Workspace[]; active: string | null }): Promise<{ list: import('./workspaces').Workspace[]; active: string | null } | null | void>;
   updates?(action: 'state' | 'check' | 'restart' | 'automatic', value?: boolean): Promise<UpdateState>;

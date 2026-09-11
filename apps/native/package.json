@@ -14,6 +14,8 @@
     "electron:build": "bash electron/build.sh",
     "test:electron": "bun test electron/policy.test.cjs",
     "test:desktop": "bun test lib ./electron/*.test.cjs",
+    "test:tab-drag": "GRAFF_VISUAL_SUITE=tab-drag bun scripts/test-visual.mjs",
+    "test:turns": "GRAFF_VISUAL_SUITE=turns bun scripts/test-visual.mjs",
     "test:visual": "bun scripts/test-visual.mjs",
     "test:updates": "GRAFF_VISUAL_SUITE=updates bun scripts/test-visual.mjs",
     "test:links": "GRAFF_VISUAL_SUITE=links bun scripts/test-visual.mjs",
@@ -34,7 +36,16 @@
     "test:focus": "bun scripts/test-desktop-focus.mjs",
     "test:tagged": "GRAFF_VISUAL_SUITE=tagged bun scripts/test-visual.mjs",
     "test:browser": "GRAFF_VISUAL_SUITE=browser bun scripts/test-visual.mjs",
-    "test:workspace": "bun scripts/test-workspace.mjs"
+    "test:workspace": "bun scripts/test-workspace.mjs",
+    "test:frontend": "bun scripts/test-frontend.mjs",
+    "test:split-stress": "GRAFF_SPLIT_STRESS=1 bun scripts/test-frontend.mjs",
+    "test:browser-resources": "bun scripts/test-browser-resources.mjs",
+    "test:history-performance": "GRAFF_BENCHMARK_CASES=history GRAFF_BENCHMARK_REQUIRE_BOUNDED_HISTORY=1 bun scripts/benchmark-desktop.mjs",
+    "test:stream-performance": "GRAFF_BENCHMARK_REQUIRE_BOUNDED_HISTORY=1 bun scripts/benchmark-desktop.mjs",
+    "test:html-tool": "GRAFF_HTML_TOOL_TEST=1 bun scripts/test-frontend.mjs",
+    "test:cli": "GRAFF_CLI_TEST=1 bun scripts/test-frontend.mjs",
+    "install:cli": "bun scripts/install-cli.mjs",
+    "test:packaged-html": "bun scripts/test-packaged-html.mjs"
   },
   "dependencies": {
     "@streamdown/code": "^1.1.1",

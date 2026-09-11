@@ -2,8 +2,9 @@
 
 import { useContext, type JSX, type ReactNode } from "react";
 import MermaidDiagram from "./MermaidDiagram";
+import CompletedCode from "./CompletedCode";
 import {
-  CodeBlock, CodeBlockContainer, CodeBlockCopyButton, CodeBlockDownloadButton, CodeBlockHeader,
+  CodeBlockContainer, CodeBlockCopyButton, CodeBlockDownloadButton, CodeBlockHeader,
   StreamdownContext, useIsCodeFenceIncomplete, type ExtraProps,
 } from "streamdown";
 
@@ -14,7 +15,7 @@ function textOf(value: ReactNode): string {
 
 /** A growing fence is one text node. Highlight once it closes or the turn
  * settles; tokenizing and reconciling every previous line cannot fit a frame. */
-export default function StreamingCode({ node: _node, className, children }: JSX.IntrinsicElements["code"] & ExtraProps) {
+export default function StreamingCode({ node: _node, className, children, collapseLongCode = true }: JSX.IntrinsicElements["code"] & ExtraProps & { collapseLongCode?: boolean }) {
   const incomplete = useIsCodeFenceIncomplete();
   const { controls, codeBlockMaxHeight, lineNumbers } = useContext(StreamdownContext);
   const code = textOf(children), language = className?.match(/language-([^\s]+)/)?.[1] ?? "";
@@ -23,9 +24,9 @@ export default function StreamingCode({ node: _node, className, children }: JSX.
   const download = options !== false && (typeof options !== "object" || options.download !== false);
   const actions = <>{download && <CodeBlockDownloadButton code={code} language={language} />}{copy && <CodeBlockCopyButton code={code} />}</>;
   if (!incomplete && (language === "mermaid" || language === "mmd")) return <MermaidDiagram code={code} />;
-  if (!incomplete) return <CodeBlock code={code} language={language} className={className} lineNumbers={lineNumbers}>
+  if (!incomplete) return <CompletedCode collapseLongCode={collapseLongCode} code={code} language={language} className={className} lineNumbers={lineNumbers}>
     {(copy || download) && actions}
-  </CodeBlock>;
+  </CompletedCode>;
   const bounded = typeof codeBlockMaxHeight === "number" ? codeBlockMaxHeight > 0 && Number.isFinite(codeBlockMaxHeight)
     : !["0", "none", "Infinity", ""].includes(codeBlockMaxHeight);
   return <CodeBlockContainer dir="ltr" language={language} isIncomplete data-code-streaming>

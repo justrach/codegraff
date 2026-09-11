@@ -40,7 +40,10 @@ from __future__ import annotations
 import argparse
 import pathlib
 import re
+import os
+import time
 import subprocess
+from process_guard import run as bounded_run
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -96,13 +99,16 @@ def foreign_tests(declared: dict[str, str]) -> dict[str, str]:
     whatever the filters were, so it settles that tie the other way.
     """
     out: dict[str, str] = {}
-    for path in sorted(ROOT.rglob("*.zig")):
-        rel = path.relative_to(ROOT)
-        if rel.parts[0] in ("src", "vendor", ".zig-cache", "zig-out"):
-            continue
-        for name in _names_in(path):
-            if name not in declared:
-                out[name] = path.name
+    excluded = {"src", "vendor", ".zig-cache", "zig-out", "node_modules", ".git"}
+    for directory, children, files in os.walk(ROOT):
+        children[:] = [name for name in children if name not in excluded]
+        for filename in files:
+            if not filename.endswith(".zig"):
+                continue
+            path = pathlib.Path(directory) / filename
+            for name in _names_in(path):
+                if name not in declared:
+                    out[name] = path.name
     return out
 
 
@@ -161,21 +167,27 @@ def names_in_blob(blob: bytes, names: dict[str, str] | set[str] | list[str]) -> 
     # Zig 0.17 may pool adjacent test-name strings into one NUL-delimited blob:
     # `module.test.firstmodule.test.second`. The exact-part pass above then
     # sees neither. A fully-qualified fallback avoids false positives from a
-    # name merely mentioned elsewhere in the binary, while one compiled regex
-    # scans the artifact once instead of doing N names × 130 MiB (#641).
+    # name merely mentioned elsewhere in the binary, while a literal-marker scan
+    # avoids doing N names × artifact size (#641).
     if isinstance(names, dict) and len(present) < len(names):
-        qualified: dict[bytes, str] = {}
+        modules: dict[bytes, list[tuple[bytes, str]]] = {}
         for name, source in names.items():
-            if name in present:
-                continue
-            module = pathlib.Path(source).stem
-            qualified[f"{module}.test.{name}".encode("utf-8")] = name
-        if qualified:
-            pooled = re.compile(
-                b"(?:" + b"|".join(re.escape(p) for p in sorted(qualified, key=len, reverse=True)) + b")"
-            )
-            for match in pooled.finditer(blob):
-                present.add(qualified[match.group(0)])
+            if name not in present:
+                modules.setdefault(pathlib.Path(source).stem.encode(), []).append((name.encode("utf-8"), name))
+        for entries in modules.values():
+            entries.sort(key=lambda pair: len(pair[0]), reverse=True)
+        # Search one literal marker, then inspect only its small neighborhood.
+        # A giant alternation scans each binary byte against hundreds of
+        # module prefixes and can take minutes on a healthy full artifact.
+        for marker in re.finditer(rb"\.test\.", blob):
+            start, end = marker.span()
+            for module, entries in modules.items():
+                if start < len(module) or blob[start - len(module):start] != module:
+                    continue
+                for encoded, name in entries:
+                    if blob.startswith(encoded, end):
+                        present.add(name)
+                        break
     return present
 
 
@@ -200,14 +212,17 @@ def select(filters: list[str], declared: dict[str, str] | None = None) -> Select
     if declared is None:
         declared = declared_tests()
     expected = {n for n in declared if not filters or any(f in n for f in filters)}
-    outsiders = foreign_tests(declared)
+    outsiders = foreign_tests(declared) if not expected else {}
 
     ranked: list[Selection] = []
     newest: pathlib.Path | None = None
     # candidates() is newest first. A perfect match (no missing, no foreign,
     # no extras the filters did not ask for) is the answer — stop there
     # instead of reading every stale filtered artifact (#641).
+    deadline = time.monotonic() + 60
     for path in candidates():
+        if time.monotonic() >= deadline:
+            raise ArtifactError("test artifact discovery exceeded 60s; rebuild the unfiltered suite and remove stale test artifacts")
         if newest is None:
             newest = path
         blob = path.read_bytes()
@@ -291,9 +306,10 @@ def suite_count_from_summary(text: str) -> int | None:
 
 def artifact_count(path: pathlib.Path) -> tuple[int, str]:
     """Run the artifact and read its own tally. Raises if it does not pass."""
-    proc = subprocess.run(
-        [str(path)], cwd=ROOT, capture_output=True, text=True, errors="replace"
-    )
+    try:
+        proc = bounded_run([str(path)], cwd=ROOT, capture_output=True, text=True, errors="replace", timeout=300)
+    except subprocess.TimeoutExpired as error:
+        raise ArtifactError("compiled test suite exceeded 300s; owned processes stopped") from error
     blob = proc.stdout + proc.stderr
     passed = ALL_PASSED.search(blob)
     if passed and proc.returncode == 0:

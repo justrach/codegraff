@@ -24,9 +24,10 @@ async function runNavigationVisuals({win:fixtureWindow,origin,output}) {
     await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument',{source:`(${installGalleryFixture.toString()})();
       localStorage.setItem('graff.native.workspaces',JSON.stringify(Array.from({length:50},(_,i)=>({name:'Project '+(i%10),path:'/demo/folder-'+i}))));
       const commands=[{name:'compact',description:'Compact conversation context'},...Array.from({length:100},(_,i)=>({name:'command-'+i,description:'Command '+i}))];
-      const galleryFetch=window.fetch;window.fetch=async(input,options)=>{const response=await galleryFetch(input,options);if(options?.body&&JSON.parse(options.body).method==='bootstrap')return new Response(JSON.stringify({sessionId:'demo',commands}),{headers:{'content-type':'application/json'}});if(String(input).includes('/api/models')){const data=await response.json();data.result.commands=commands;data.result.current.model='example-model-with-a-long-name';data.result.models[0].name=data.result.current.model;return new Response(JSON.stringify(data),{headers:{'content-type':'application/json'}});}return response;};`});
+      const galleryFetch=window.fetch;window.fetch=async(input,options)=>{const response=await galleryFetch(input,options);if(options?.body&&JSON.parse(options.body).method==='bootstrap')return new Response(JSON.stringify({sessionId:'demo',commands}),{headers:{'content-type':'application/json'}});if(String(input).includes('/api/models')){const data=await response.json();data.result.commands=commands;data.result.current.model='${process.env.GRAFF_VISUAL_SUITE === 'tab-drag' ? 'Graff' : 'example-model-with-a-long-name'}';data.result.models[0].name=data.result.current.model;return new Response(JSON.stringify(data),{headers:{'content-type':'application/json'}});}return response;};`});
     await wc.loadURL(origin);testDesktop.present(win);await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
     if(process.env.GRAFF_VISUAL_SUITE==='tagged'){await require('./yxlyx-regressions-visual.cjs').runYxlyxRegressions({win,origin});return;}
+    if(process.env.GRAFF_VISUAL_SUITE==='tab-drag'){await require('./tab-drag-visual.cjs').runTabDrag({win,origin,output});return;}
     if(process.env.GRAFF_VISUAL_SUITE==='splits'){await require('./split-focus-visual.cjs').runSplitFocus({win,origin,output});return;}
     const interactions = async () => {
       await require('./navigation-keyboard-visual.cjs').runNavigationKeyboard({win,origin});
@@ -55,9 +56,9 @@ async function runNavigationVisuals({win:fixtureWindow,origin,output}) {
     await key('d',{metaKey:true});await wait(`document.querySelectorAll('[data-chat]').length===2`);
     assert.equal(await js(`getComputedStyle(document.querySelector('[data-chat]').parentElement).flexDirection`),'row');
     await key('Enter',{metaKey:true,shiftKey:true});assert.equal(await js(`document.querySelectorAll('[data-chat]').length`),1);await key('Enter',{metaKey:true,shiftKey:true});
-    await key('d',{metaKey:true,shiftKey:true});assert.equal(await js(`getComputedStyle(document.querySelector('[data-chat]').parentElement).flexDirection`),'column');
-    await key('ArrowUp',{metaKey:true,ctrlKey:true});assert.ok(await js(`Array.from(document.querySelectorAll('[data-chat]')).some(e=>e.style.flexGrow!=='1')`));
-    await key('=',{metaKey:true,ctrlKey:true});assert.ok(await js(`Array.from(document.querySelectorAll('[data-chat]')).every(e=>e.style.flexGrow==='1')`));
+    await key('d',{metaKey:true,shiftKey:true});assert.ok(await js(`!!document.querySelector('[data-chat-divider][aria-orientation="horizontal"]')`));
+    await key('ArrowUp',{metaKey:true,ctrlKey:true});assert.ok(await js(`Array.from(document.querySelectorAll('[data-chat-divider]')).some(e=>e.getAttribute('aria-valuenow')!=='50')`));
+    await key('=',{metaKey:true,ctrlKey:true});assert.ok(await js(`Array.from(document.querySelectorAll('[data-chat-divider]')).every(e=>e.getAttribute('aria-valuenow')==='50')`));
     assert.ok(await js(`Array.from(document.querySelectorAll('[data-chat]')).every(p=>{const r=p.getBoundingClientRect(),c=p.querySelector('[data-promptbar]').getBoundingClientRect();return c.top>=r.top&&c.bottom<=r.bottom})`),'stacked panes keep their composers visible');
     await key('o',{metaKey:true});await wait(`!!document.querySelector('[role="dialog"]')`);await key('Escape');
     await js(`document.querySelector('[aria-label="Workspace navigation"] button').click()`);await wait(`!!document.querySelector('[aria-label="Search workspaces"]')`);

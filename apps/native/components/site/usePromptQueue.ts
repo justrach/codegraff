@@ -10,13 +10,17 @@ export function usePromptQueue() {
   const [steerStatus, setSteerStatus] = useState<Record<number, SteerStatus>>({});
   const queueIdRef = useRef(0);
   const setQueue = (chat: number, queue: QueuedPrompt[]) => {
-    queuesRef.current = { ...queuesRef.current, [chat]: queue };
+    const { [chat]: _previous, ...rest } = queuesRef.current;
+    queuesRef.current = queue.length ? { ...rest, [chat]: queue } : rest;
     setQueues(queuesRef.current);
   };
   const [steerer] = useState(() => createQueueSteerer({
     getQueue: chat => queuesRef.current[chat] ?? [],
     setQueue,
-    status: (chat, status) => setSteerStatus(current => ({ ...current, [chat]: status })),
+    status: (chat, status) => setSteerStatus(current => {
+      const { [chat]: _previous, ...rest } = current;
+      return status.pending !== undefined || status.error ? { ...rest, [chat]: status } : rest;
+    }),
   }));
   return {
     queuesRef, queues, queueIdRef, setQueue, steerer, steerStatus,

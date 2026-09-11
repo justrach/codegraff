@@ -27,7 +27,7 @@ app.whenReady().then(async () => {
   delete env.__NEXT_PRIVATE_STANDALONE_CONFIG;
   const log = fs.openSync(path.join(output, 'server.log'), 'w');
   server = spawn(process.env.GRAFF_TEST_BUN || 'bun', ['node_modules/next/dist/bin/next', 'start', '--port', String(port), '--hostname', '127.0.0.1'],
-    { cwd: root, env, detached: true, stdio: ['ignore', log, log] });
+    { cwd: root, env, detached: process.env.GRAFF_TEST_MANAGED_GROUP !== '1', stdio: ['ignore', log, log] });
   fs.closeSync(log);
   for (let i = 0; ; i++) {
     try { if ((await fetch(origin)).ok) break; } catch {}
@@ -120,7 +120,7 @@ function finish(code) {
   clearTimeout(deadline);
   try { testDesktop.assertSafe(); } catch (error) { console.error(error); code = 1; }
   testDesktop.cleanup();
-  if (server?.pid) try { process.kill(-server.pid, 'SIGTERM'); } catch {}
+  if (server?.pid) try { process.env.GRAFF_TEST_MANAGED_GROUP === '1' ? server.kill('SIGTERM') : process.kill(-server.pid, 'SIGTERM'); } catch {}
   fs.rmSync(temporary, { recursive: true, force: true });
   app.exit(code);
 }

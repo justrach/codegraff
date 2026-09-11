@@ -19,6 +19,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "eval"))
 from mock_model import ScriptedModel
+from process_guard import run as bounded_run
 
 GH = r'''
 import json, pathlib, subprocess, sys
@@ -66,8 +67,8 @@ def run_case(graff, name, script, state=None, expected_mutations=0, refused=0, e
         gh = work / "bin" / "gh"
         gh.write_text(f"#!{sys.executable}\n" + GH.replace("GIT_EXE", shutil.which("git")))
         gh.chmod(0o755)
-        subprocess.run(["git", "init", "-q", "-b", "fixture"], cwd=work, check=True)
-        subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "fixture"], cwd=work, check=True)
+        bounded_run(["git", "init", "-q", "-b", "fixture"], cwd=work, check=True)
+        bounded_run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "fixture"], cwd=work, check=True)
         head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=work, text=True).strip()
         fixture = dict(initial_head=head, **(state or {}))
         if fixture.get("remote_head") == "initial": fixture["remote_head"] = head
@@ -80,7 +81,7 @@ def run_case(graff, name, script, state=None, expected_mutations=0, refused=0, e
         model = ScriptedModel(script)
         model.start(1234)
         try:
-            done = subprocess.run([str(graff), "--json", "--yolo", "--old", "--model", "lmstudio"],
+            done = bounded_run([str(graff), "--json", "--yolo", "--old", "--model", "lmstudio"],
                                   cwd=work, env=env, text=True, capture_output=True, timeout=100,
                                   input=json.dumps({"type": "user", "text": "Run the scripted publication regression in this fixture repository."}) + "\n")
             assert done.returncode == 0, (name, done.stderr[-2000:])
@@ -97,7 +98,7 @@ def run_case(graff, name, script, state=None, expected_mutations=0, refused=0, e
                 assert sessions, "fixture session was not persisted"
                 saved = next((p for p in sessions if p.name != "last.session.json"), sessions[0])
                 model.script.extend([completion("Resumed verification complete."), {"text": "CI is still pending after resume."}])
-                resumed = subprocess.run([str(graff), "--json", "--yolo", "--old", "--model", "lmstudio", "--resume", saved.name.removesuffix(".session.json")],
+                resumed = bounded_run([str(graff), "--json", "--yolo", "--old", "--model", "lmstudio", "--resume", saved.name.removesuffix(".session.json")],
                                          cwd=work, env=env, text=True, capture_output=True, timeout=100,
                                          input=json.dumps({"type": "user", "text": "Resume the PR task and check completion."}) + "\n")
                 assert resumed.returncode == 0, resumed.stderr[-2000:]
@@ -137,7 +138,7 @@ for line in sys.stdin:
         model.times = []
         model.start(1234)
         try:
-            done = subprocess.run([str(graff), "--yolo", "--old", "--model", "lmstudio", "-p", "Run the scripted native tool fixture."],
+            done = bounded_run([str(graff), "--yolo", "--old", "--model", "lmstudio", "-p", "Run the scripted native tool fixture."],
                                   cwd=work, env=env, text=True, capture_output=True, timeout=45)
             assert done.returncode == 0, done.stderr[-3000:]
             assert (work / "first-native").exists() and (work / "second-native").exists(), done.stderr[-3000:]
@@ -157,8 +158,8 @@ def handoff(graff):
         gh = work / "bin/gh"
         gh.write_text(f"#!{sys.executable}\n" + GH.replace("GIT_EXE", shutil.which("git")))
         gh.chmod(0o755)
-        subprocess.run(["git", "init", "-q", "-b", "fixture"], cwd=work, check=True)
-        subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "fixture"], cwd=work, check=True)
+        bounded_run(["git", "init", "-q", "-b", "fixture"], cwd=work, check=True)
+        bounded_run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "fixture"], cwd=work, check=True)
         head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=work, text=True).strip()
         (work / "gh-state.json").write_text(json.dumps({"initial_head": head, "checks": "SUCCESS"}))
         (work / "notes.md").write_text("## Verification\nFixture checks passed.\n")
@@ -201,7 +202,7 @@ def handoff(graff):
         model.counts = {"A": 0, "B": 0}
         model.start(1234)
         def actor(name):
-            return subprocess.run([str(graff), "--json", "--yolo", "--old", "--model", "lmstudio"], cwd=work,
+            return bounded_run([str(graff), "--json", "--yolo", "--old", "--model", "lmstudio"], cwd=work,
                                   env=env, text=True, capture_output=True, timeout=100,
                                   input=json.dumps({"type": "user", "text": "Run fixture-actor-" + name}) + "\n")
         try:
@@ -232,20 +233,20 @@ pathlib.Path('listener.json').write_text(json.dumps({'pid':os.getpid(),'port':s.
 while True: time.sleep(1)
 """)
         env = dict(os.environ, HOME=temp, GRAFF_FIXTURE="legacy-listener", GRAFF_NO_TELEMETRY="1")
-        subprocess.run([sys.executable, "-c", "import subprocess,sys;subprocess.Popen([sys.executable,'listener.py'],start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)"], cwd=work, env=env, check=True)
+        bounded_run([sys.executable, "-c", "import subprocess,sys;subprocess.Popen([sys.executable,'listener.py'],start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)"], cwd=work, env=env, check=True)
         info = work / "listener.json"
         deadline = time.monotonic() + 10
         while not info.exists() and time.monotonic() < deadline: time.sleep(.05)
         state = json.loads(info.read_text())
         pid, port = state['pid'], state['port']
         try:
-            listing = subprocess.run([str(graff), "servers", "list"], cwd=work, env=env, text=True, capture_output=True, timeout=30)
+            listing = bounded_run([str(graff), "servers", "list"], cwd=work, env=env, text=True, capture_output=True, timeout=30)
             token = re.search(rf"stop-suspect {pid} ([0-9a-f]+-[0-9a-f]+)", listing.stdout)
             assert token, listing.stdout[-3000:]
-            bad = subprocess.run([str(graff), "servers", "stop-suspect", str(pid), "stale-token"], cwd=work, env=env, text=True, capture_output=True, timeout=30)
+            bad = bounded_run([str(graff), "servers", "stop-suspect", str(pid), "stale-token"], cwd=work, env=env, text=True, capture_output=True, timeout=30)
             assert "unverifiable" in bad.stdout, bad.stdout
             with socket.create_connection(('127.0.0.1', port), timeout=2): pass
-            stopped = subprocess.run([str(graff), "servers", "stop-suspect", str(pid), token.group(1)], cwd=work, env=env, text=True, capture_output=True, timeout=30)
+            stopped = bounded_run([str(graff), "servers", "stop-suspect", str(pid), token.group(1)], cwd=work, env=env, text=True, capture_output=True, timeout=30)
             assert "legacy listener stop: stopped" in stopped.stdout, stopped.stdout
             try:
                 socket.create_connection(('127.0.0.1', port), timeout=.5).close()

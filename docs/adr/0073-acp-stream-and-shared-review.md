@@ -15,6 +15,17 @@ Use one ACP stdout reader with request-ID routing and explicit notification
 subscriptions. Reject overlapping prompt streams, settle pending requests on
 process exit, and stop writing to cancelled HTTP streams.
 
+Terminal ACP errors travel as NDJSON replies followed by a normal HTTP close.
+Never error the HTTP controller for an agent error: that discards queued output
+and replaces the actual reason with a browser network error. Close immediately
+on the terminal reply so reader cleanup cannot cancel a completed prompt. A
+worker exit without a reply produces an explicit error envelope, never success.
+Provider failures remain errors through the harness dispatch, including slash
+commands. Session saving retains completed tool work before returning failure.
+
+Regression coverage: `apps/native/lib/acp-prompt-stream.test.ts` and
+`scripts/test-acp-failure.py`.
+
 Expose read-only `graff/changes` status and diff requests. The GUI reviews Git
 working trees, refreshes only while visible, and offers staged/unstaged scopes,
 worktree selection and recent commits. Uncommitted authorship is not inferred.

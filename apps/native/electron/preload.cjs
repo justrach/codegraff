@@ -1,5 +1,11 @@
 const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('graffDesktop', {
+  workspaceSubscribe: callback => {
+    const listener = (_event, target) => callback(target);
+    ipcRenderer.on('workspace-open', listener);
+    ipcRenderer.send('workspace-ready');
+    return () => ipcRenderer.removeListener('workspace-open', listener);
+  },
   projects: (action, value) => ipcRenderer.invoke('projects', { action, value }),
   linkSettings: (action, value) => ipcRenderer.invoke('link-settings', action, value),
   updates: (action, value) => ipcRenderer.invoke('updates', action, value),

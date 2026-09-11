@@ -116,6 +116,7 @@ record only when you need the evidence or the edge cases.
 | [0103](0103-mcp-apps-are-isolated-result-views.md) | MCP Apps are private saved result views in isolated GUI/browser sandboxes; app tool calls require a future approval path. |
 | [0104](0104-live-publication-and-deferred-tool-evidence.md) | Requests merge only ready MCP tasks; publication and completion use fresh head evidence; claim transactions serialize handoffs. |
 | [0105](0105-explicit-legacy-listener-stop.md) | Only an explicit identity-bound stop-suspect action may terminate an unrecorded legacy listener; automatic cleanup stays conservative. |
+| [0106](0106-desktop-html-explanations.md) | Desktop HTML explanations are private saved results in static, opaque sandboxes with bounded source and offscreen teardown. |
 
 ## When to write one
 

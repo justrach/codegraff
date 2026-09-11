@@ -34,6 +34,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from process_guard import run as bounded_run
 import tier1_test_binary  # noqa: E402  (sibling module, not an installed package)
 from tier1_test_binary import ArtifactError, declared_tests, select  # noqa: E402
 
@@ -46,9 +47,11 @@ def main() -> int:
     # A stale binary would give a false verdict in either direction, so build
     # first - unfiltered, which is also what makes the artifact we want exist -
     # and let a compile failure surface as a compile failure.
-    build = subprocess.run(
-        ["zig", "build", "test"], cwd=ROOT, capture_output=True, text=True
-    )
+    try:
+        build = bounded_run(["zig", "build", "test"], cwd=ROOT, capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        print("reachability: Zig test deadline exceeded after 600s; owned processes stopped", file=sys.stderr)
+        return 1
     if build.returncode != 0:
         sys.stderr.write("zig build test failed; reachability not checked\n")
         sys.stderr.write(build.stderr[-2000:])

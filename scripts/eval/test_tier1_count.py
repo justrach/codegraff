@@ -17,6 +17,19 @@ SPEC.loader.exec_module(binary)
 
 
 class SuiteCountTests(unittest.TestCase):
+    def test_pooled_and_unicode_names_are_reachable(self) -> None:
+        names = {"first — α": "one.zig", "second": "two.zig", "missing": "three.zig"}
+        blob = "one.test.first — αtwo.test.second\0merely mentions missing\0".encode()
+        self.assertEqual({"first — α", "second"}, binary.names_in_blob(blob, names))
+
+    def test_plain_and_prefixed_c_strings_remain_reachable(self) -> None:
+        self.assertEqual({"first", "second"}, binary.names_in_blob(b"first\0test.second\0", {"first", "second", "absent"}))
+
+    def test_many_missing_names_do_not_need_a_binary_wide_alternation(self) -> None:
+        names = {f"case {i}": f"fixture{i}.zig" for i in range(1000)}
+        blob = b"unrelated printable binary data " * 200000 + b"fixture987.test.case 987\0"
+        self.assertEqual({"case 987"}, binary.names_in_blob(blob, names))
+
     def test_skipped_tests_are_in_the_suite(self) -> None:
         text = (
             "Build Summary: 6/6 steps succeeded; 2079/2080 tests passed (1 skipped)\n"

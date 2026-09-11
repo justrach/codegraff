@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { distanceFromTail, isFollowingTail, pinScrollerTail, TAIL_SLACK_PX } from "./follow-scroll.ts";
+import { distanceFromTail, isFollowingTail, pinScrollerTail, TAIL_SLACK_PX, followsAfterScroll } from "./follow-scroll.ts";
 
 function box(scrollTop: number, scrollHeight = 1000, clientHeight = 400) {
   return { scrollTop, scrollHeight, clientHeight };
@@ -24,4 +24,12 @@ describe("follow-scroll", () => {
     pinScrollerTail(el as HTMLElement, true);
     assert.equal(el.scrollTop, 1000);
   });
+});
+
+
+it("content growth does not impersonate a reader scrolling away", () => {
+  assert.equal(followsAfterScroll(box(600, 2000), 600, true), true);
+  assert.equal(followsAfterScroll(box(500, 2000), 600, true), false);
+  assert.equal(followsAfterScroll(box(700, 2000), 600, false), false);
+  assert.equal(followsAfterScroll(box(1600, 2000), 600, false), true);
 });

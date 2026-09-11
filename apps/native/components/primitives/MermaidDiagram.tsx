@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useState } from "react";
+import { useDarkTheme } from "./useDarkTheme";
 
 let mermaidModule: Promise<typeof import("mermaid").default> | null = null;
 function loadMermaid() {
@@ -8,21 +9,9 @@ function loadMermaid() {
   return mermaidModule;
 }
 
-function useDark() {
-  const [dark, setDark] = useState(false);
-  useEffect(() => {
-    const sync = () => setDark(document.documentElement.classList.contains("dark"));
-    sync();
-    const obs = new MutationObserver(sync);
-    obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
-    return () => obs.disconnect();
-  }, []);
-  return dark;
-}
-
 /** Renders a closed mermaid fence as SVG. Invalid source falls back to the text. */
 export default function MermaidDiagram({ code }: { code: string }) {
-  const dark = useDark();
+  const dark = useDarkTheme();
   const reactId = useId().replace(/:/g, "");
   const [svg, setSvg] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);

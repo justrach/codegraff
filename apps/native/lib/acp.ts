@@ -1,3 +1,4 @@
+import { htmlArtifactId } from "./html-artifacts";
 import { boundToolDetail } from "./tool-detail";
 import { stripCiteMarkup } from "./cite-markup";
 import { mcpAppId } from "./mcp-apps";
@@ -154,7 +155,8 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
   const idx = turn.tools.findIndex((t) => t.id === id);
   const prev = idx >= 0 ? turn.tools[idx] : undefined;
   const title = typeof update.title === "string" ? update.title : prev?.chip ?? id;
-  const kind = typeof update.kind === "string" ? update.kind : prev ? undefined : "other";
+  const htmlPreview = title === "mcp__codegraff_desktop__create_html" || prev?.htmlArtifactTool;
+  const kind = htmlPreview ? "other" : typeof update.kind === "string" ? update.kind : prev ? undefined : "other";
   const statusRaw = typeof update.status === "string" ? update.status : prev ? undefined : "pending";
   const status: ToolRow["status"] = statusRaw
     ? statusRaw === "completed"
@@ -197,6 +199,8 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
     status,
     detail: boundToolDetail(detail),
     mcpAppId: mcpAppId(contentText) ?? prev?.mcpAppId,
+    htmlArtifactId: htmlArtifactId(contentText) ?? prev?.htmlArtifactId,
+    htmlArtifactTool: !!htmlPreview,
     path,
     startedAt: prev?.startedAt ?? Date.now(),
     atChars: prev?.atChars ?? turn.text.length,
@@ -225,9 +229,10 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
   return next;
 }
 
-export function finishAcpTurn(turn: AssistantTurn): AssistantTurn {
+export function finishAcpTurn(turn: AssistantTurn, now = Date.now()): AssistantTurn {
   return {
     ...turn,
+    endedAt: turn.endedAt ?? now,
     tools: turn.tools.map((t) => (t.status === "running" ? { ...t, status: "interrupted" as const, detail: [...t.detail, { text: "Turn ended before a result was received." }] } : t)),
     status: turn.status === "error" ? "error" : "done",
   };

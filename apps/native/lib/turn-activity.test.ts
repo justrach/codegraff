@@ -1,22 +1,22 @@
 import { test, expect } from "bun:test";
 import { emptyTurn, applyAcpUpdate, finishAcpTurn } from "./acp";
-import { turnActivity } from "./turn-activity";
+import { turnActivity, workDuration } from "./turn-activity";
 import { createTurnPainter } from "./turn-painter";
 test("a saved snapshot does not claim the turn finished here (#839)", () => {
   const turn = { ...emptyTurn(), status: "done" as const, startedAt: 1000 };
-  expect(turnActivity(turn, 2000).label).toBe("Turn finished");
+  expect(turnActivity(turn, 2000).label).toBe("Worked for 0s");
   expect(turnActivity(turn, 2000, { snapshot: true }).label).toBe("Saved snapshot");
 });
 test("commentary followed by silence stays visibly waiting", () => {
   const turn = { ...emptyTurn(), status: "streaming" as const, text: "Preparing the change.", connected: true, startedAt: 1000, lastUpdateAt: 4000, activityKind: "agent_message_chunk" };
-  expect(turnActivity(turn, 25000)).toMatchObject({ live: true, label: "Waiting for Graff…", state: "waiting" });
+  expect(turnActivity(turn, 25000)).toMatchObject({ live: true, label: "Working for 24s", state: "waiting" });
   expect(turnActivity(turn, 25000).detail).toContain("21s");
 });
 test("active tools remain visible after commentary, with completed details collapsed separately", () => {
   let turn = applyAcpUpdate({ ...emptyTurn(), text: "Preparing the change." }, { sessionUpdate: "tool_call", toolCallId: "fixture", kind: "execute", status: "pending" });
-  expect(turnActivity(turn, Date.now()).label).toBe("Running 1 tool…");
+  expect(turnActivity(turn, Date.now()).detail).toBe("Running 1 tool…");
   turn = applyAcpUpdate(turn, { sessionUpdate: "tool_call_update", toolCallId: "fixture", status: "completed" });
-  expect(turnActivity(turn, Date.now()).label).toBe("Waiting for Graff…");
+  expect(turnActivity(turn, Date.now()).label).toMatch(/^Working for /);
 });
 test("cancel and stream error settle pending tools without claiming success", () => {
   const pending = applyAcpUpdate(emptyTurn(), { sessionUpdate: "tool_call", toolCallId: "fixture", status: "pending" });
@@ -58,6 +58,14 @@ test("parallel completions settle the right rows without a stale running count",
   expect(turn.tools.map(t=>t.status)).toEqual(['ok','running']);
   turn = applyAcpUpdate(turn,{sessionUpdate:'tool_call_update',toolCallId:'second',status:'completed'});
   expect(turn.tools.map(t=>t.status)).toEqual(['ok','ok']);
-  expect(turnActivity(turn,Date.now()).label).toBe('Waiting for Graff…');
+  expect(turnActivity(turn,Date.now()).label).toMatch(/^Working for /);
   expect(turnActivity({...turn,lastUpdateAt:1000},25000).detail).not.toContain('stop this turn');
+});
+test("elapsed work freezes at completion across remounts and repeated finalization", () => {
+  const turn = finishAcpTurn({ ...emptyTurn(), startedAt: 1000 }, 560000);
+  expect(turnActivity(turn, 900000).label).toBe("Worked for 9m 19s");
+  expect(turnActivity(finishAcpTurn(turn, 1800000), 1800000).label).toBe("Worked for 9m 19s");
+  expect(workDuration(59)).toBe("59s");
+  expect(workDuration(60)).toBe("1m 0s");
+  expect(workDuration(3601)).toBe("1h 0m");
 });

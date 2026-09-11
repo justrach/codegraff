@@ -17,6 +17,11 @@ export function isFollowingTail(
   return distanceFromTail(el) <= slack;
 }
 
+/** Content growth can move the tail without the reader scrolling away. */
+export function followsAfterScroll(el: { scrollHeight: number; scrollTop: number; clientHeight: number }, previousTop: number, wasFollowing: boolean): boolean {
+  return isFollowingTail(el) || wasFollowing && el.scrollTop >= previousTop;
+}
+
 /** Pin only while the reader is following. WKWebView treats scrollIntoView
  * on a tall article as a viewport realignment every frame. */
 export function pinScrollerTail(el: HTMLElement | null, following: boolean): void {

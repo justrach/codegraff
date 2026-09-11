@@ -22,6 +22,6 @@ test('desktop tools transport chat context, report errors, and preserve native i
     assert.match(image.content[1].text, /imageSize/);
     await assert.rejects(callTool('computer', { action: 'click' }, env), /Disabled/);
     await assert.rejects(callTool('computer', { action: 'requestPermissions' }, env), /Unknown/);
-    assert.equal(tools.length, 3);
+    assert.equal(tools.length, 4);
   } finally { server.close(); }
 });

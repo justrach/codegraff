@@ -22,12 +22,15 @@ const { installWindowState } = require('./window-state.cjs');
 const root = process.env.GRAFF_CWD || app.getPath('home');
 const resources = process.env.GRAFF_ELECTRON_RESOURCES || process.resourcesPath;
 app.setName('Codegraff');
-app.setPath('userData', process.env.GRAFF_ELECTRON_SMOKE ? path.join(require('node:os').tmpdir(), `codegraff-smoke-${process.pid}`) : path.join(app.getPath('appData'), 'Codegraff Electron'));
+app.setPath('userData', process.env.GRAFF_ELECTRON_SMOKE ? (process.env.GRAFF_SMOKE_PROFILE || path.join(require('node:os').tmpdir(), `codegraff-smoke-${process.pid}`)) : path.join(app.getPath('appData'), 'Codegraff Electron'));
 if (process.env.GRAFF_ELECTRON_SMOKE) process.env.GRAFF_THEMES_DIR = path.join(app.getPath('userData'), 'themes');
 let win, browser, backend, automation, computer, profiler;
 let terminals;
 let quitting = false;
-if (!require('./single-instance.cjs').claimDesktopInstance(app, () => win)) {
+const workspaceRequests = require('./workspace-open.cjs').workspaceOpen(target => {
+  if (win && !win.isDestroyed()) win.webContents.send('workspace-open', target);
+});
+if (!require('./single-instance.cjs').claimDesktopInstance(app, () => win, workspaceRequests.open)) {
   app.quit();
   return;
 }
@@ -71,6 +74,7 @@ app.whenReady().then(async () => {
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), partition: 'persist:app',
       contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: !process.env.GRAFF_ELECTRON_SMOKE } });
   const projects = require('./project-store.cjs').projectStore(app.getPath('userData'));
+  ipcMain.on('workspace-ready', event => { trusted(event); workspaceRequests.ready(); });
   ipcMain.handle('projects', (event, { action, value }) => { trusted(event); if (action === 'load') return projects.load(); if (action === 'save') return projects.save(value); throw Error('Unknown project action'); });
   installWindowState(win);
   terminals = new Terminals(path.join(resources, 'native/graff-terminal'), event => { if (!win.isDestroyed()) win.webContents.send('terminal-event', event); });
@@ -78,7 +82,7 @@ app.whenReady().then(async () => {
   browser = new BrowserTabs(win, message => { if (!win.isDestroyed()) win.webContents.send('browser-event', message); });
   win.on('close', () => browser.closeAll());
   win.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => {
-    if (mainFrame && !inPlace) { browser.closeAll(); terminals.closeAll(); }
+    if (mainFrame && !inPlace) { workspaceRequests.loading(); browser.closeAll(); terminals.closeAll(); }
   });
   computer = new ComputerUse(resources, win);
   const sampleTree = intervalSampler(process.pid, () => browser.liveCount);
@@ -161,6 +165,12 @@ app.whenReady().then(async () => {
       ['Toggle terminal', 'CmdOrCtrl+J', 'terminal'], ['Open workspace…', 'CmdOrCtrl+O', 'workspace'], ['Split right', 'CmdOrCtrl+D', 'split-right'],
       ['Split down', 'CmdOrCtrl+Shift+D', 'split-down'], ['Zoom split', 'CmdOrCtrl+Shift+Enter', 'split-zoom'],
     ].map(([label, accelerator, action]) => ({ label, accelerator, click: () => win.webContents.send('desktop-action', action) })) },
+    { label: 'Tools', submenu: [{ label: 'Install codegraff terminal command…', enabled: app.isPackaged && process.platform === 'darwin', click: async () => {
+      try {
+        const installed = await require('./cli-launcher.cjs').installLauncher(path.resolve(app.getPath('exe'), '../../..'), app.getPath('home'));
+        await dialog.showMessageBox(win, { message: 'Terminal command installed', detail: `Run codegraff . to open a project here. Ensure ${path.dirname(installed)} is on your PATH.` });
+      } catch (error) { dialog.showErrorBox('Terminal command', error.message); }
+    } }] },
     { role: 'editMenu' }, { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { role: 'togglefullscreen' }, { label: 'Release browser pages', click: () => { browser.closeAll(); win.webContents.send('browser-event', { type: 'released' }); } }] },
     { label: 'Performance', submenu: [
       { label: 'Start recording', click: () => void profiler.start() },
@@ -177,5 +187,5 @@ app.whenReady().then(async () => {
   await win.loadURL(backend.origin); win.setWindowButtonVisibility(true);
   if (testDesktop) testDesktop.present(win); else win.show();
   profiler.record('ui-ready');
-  if (process.env.GRAFF_ELECTRON_SMOKE) require(process.env.GRAFF_SMOKE_LAUNCH_ONLY ? './smoke-launch.cjs' : './smoke.cjs').run({ win, browser, automation, backend, metrics, activity, computer, profiler }).then(() => app.quit()).catch(error => { console.error(error); stop(); app.exit(1); });
+  if (process.env.GRAFF_ELECTRON_SMOKE) require(process.env.GRAFF_SMOKE_LAUNCH_ONLY ? './smoke-launch.cjs' : './smoke.cjs').run({ win, browser, automation, backend, metrics, activity, computer, profiler, token }).then(() => app.quit()).catch(error => { console.error(error); stop(); app.exit(1); });
 }).catch(error => { console.error(error); stop(); app.exit(1); });

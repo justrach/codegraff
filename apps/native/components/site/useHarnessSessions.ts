@@ -1,4 +1,4 @@
-import { useEffect, useRef, type MutableRefObject, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useRef, useState, type MutableRefObject, type Dispatch, type SetStateAction } from "react";
 import { checkHealth, disposePage, ensureSession, fetchModels, type Health } from "@/lib/acp-client";
 import type { AcpCommand } from "@/lib/acp";
 import type { PromptModel } from "@/components/primitives/PromptBar";
@@ -21,6 +21,7 @@ type Props = {
 };
 const SIDEBAR_PAGE = 12;
 export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal}: Props) {
+  const [projectsReady, setProjectsReady] = useState(false);
   const adoptCatalog = async (chatId: number) => {
     // Use the provider and model actually resolved by graff.
     try {
@@ -107,6 +108,7 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
         const session = newSessionName();
         sessionNamesRef.current.set(1, session);
         setChats((current) => current.map((c) => (c.id === 1 ? { ...c, session } : c)));
+        setProjectsReady(true);
         if (window.graffDesktop) { await adoptCatalog(1); return; } // No coding session needed.
         await requireSession(1);
         if (cancelled) return;
@@ -152,5 +154,5 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
   };
 
   catalogRef.current = { adopt: (id: number) => { if (!runningRef.current.has(id)) void adoptCatalog(id).catch(() => undefined); }, activeId };
-  return { adoptCatalog, requireSession, refreshStored };
+  return { adoptCatalog, requireSession, refreshStored, projectsReady };
 }

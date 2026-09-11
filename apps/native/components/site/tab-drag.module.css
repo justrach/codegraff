@@ -1,0 +1,61 @@
+.target {
+  pointer-events: none;
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--accent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--accent) 7%, transparent);
+  transition: left 180ms cubic-bezier(.22,1,.36,1), top 180ms cubic-bezier(.22,1,.36,1), width 180ms cubic-bezier(.22,1,.36,1), height 180ms cubic-bezier(.22,1,.36,1);
+  animation: arrive 150ms ease-out;
+}
+.label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 6px 22px #00000012;
+}
+.icon { display: flex; gap: 3px; width: 19px; height: 18px; }
+.icon[data-vertical="true"] { flex-direction: column; }
+.icon > span { flex: 1; border: 1px solid var(--accent); border-radius: 2px; }
+.icon > span:last-child { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+.ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 51;
+  pointer-events: none;
+  will-change: transform;
+}
+.card {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: 230px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: 11px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 12px 30px #00000024, 0 2px 6px #00000012;
+  font-size: 13px;
+  font-weight: 500;
+  animation: lift 160ms cubic-bezier(.22,1,.36,1);
+}
+.title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grip { color: var(--accent); font-size: 17px; }
+@keyframes arrive { from { opacity: 0; } to { opacity: 1; } }
+@keyframes lift { from { opacity: 0; transform: translateY(4px) scale(.96); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .target, .card { animation: none; transition: none; }
+}

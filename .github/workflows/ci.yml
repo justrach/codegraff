@@ -72,6 +72,9 @@ jobs:
       - name: Publication, handoff, deferred MCP and legacy listener regressions
         run: |
           command -v lsof || (sudo apt-get update && sudo apt-get install -y lsof)
+          python3 scripts/eval/test_tier1_count.py
+          python3 scripts/eval/test_process_guard.py
+          python3 scripts/test-acp-failure.py
           python3 scripts/regression-release-297.py
 
       - name: Local learning lifecycle and security regression

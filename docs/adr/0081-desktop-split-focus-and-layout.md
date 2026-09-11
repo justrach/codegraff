@@ -13,17 +13,33 @@ unsent drafts.
 ## Decision
 
 Keep the ordered visible chat IDs separate from the active chat ID. Pointer and
-keyboard focus update the active ID without reordering visible panes. Selecting
-a hidden tab replaces only the focused slot. Closing a chat removes its tab and
-pane, then focuses an adjacent visible chat.
+keyboard focus update the active ID without reordering visible panes. Each
+workspace tab contains one chat or a split group. Selecting another tab restores
+that group's pane order, split tree and last focused chat. New tabs leave existing
+groups intact. Closing a pane removes that member; closing the top tab removes
+the whole group. The split toggle returns group members to individual tabs.
 
-Tabs and workspace controls live in a shared toolbar above all panes. Each split
+Tabs and workspace controls live in a shared toolbar above all panes. A combined
+tab shows its member names and a miniature layout icon. Each split
 has a compact, consistent header identifying its chat and folder. Adjacent panes
 can be resized by dragging their separator or using its arrow keys; double-click
 balances the pair. The active pane has an accent border.
 
 Projects and Conversations hide the chat layout while keeping it mounted, so
 visiting either surface preserves visible composers and transcript positions.
+
+Tab pointer drags reorder the shared strip or move an existing chat to a pane
+edge. Each branch has its own axis and ratio, so left/right and above/below
+splits can coexist within the four-pane cap. Flat keyed pane elements keep
+conversation components mounted when the tree changes. Dividers update geometry
+on animation frames and commit one tree change at the end of a drag. These moves retain chat IDs, workers and
+drafts; they never clone a conversation. Escape cancels without a layout change.
+
+Dragging lifts a small tab preview that follows the pointer on animation frames;
+the conversation does not rerender for each pointer position. Drop targets ease
+between edges, and the committed pane layout settles with a short transform
+animation. Reduced motion disables target transitions and settling animations.
+Motion is presentation only: IDs and drafts remain the source of truth.
 
 ## Consequences
 
@@ -36,3 +52,9 @@ changes or the chats close.
 The offline desktop suite exercises actual mouse clicks and divider drags,
 native menu close delivery, keyboard pane navigation, draft preservation, and
 toolbar geometry in both split directions.
+
+The bounded split stress case exercises repeated tab creation, closure, cancelled
+drags, divider movement, mixed four-pane layouts and restored groups. It checks
+settled geometry and retained renderer memory after warm-up. Finished animation
+references and closed-chat UI records are released rather than kept until the
+next interaction.

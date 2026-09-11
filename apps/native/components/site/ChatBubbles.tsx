@@ -5,6 +5,7 @@ import Markdown from "@/components/primitives/Markdown";
 import ThinkingState from "@/components/primitives/ThinkingState";
 import ToolChips, { type LiveDiff } from "@/components/primitives/ToolChips";
 import TurnActivity from "./TurnActivity";
+import HtmlArtifact from "./HtmlArtifact";
 import McpAppResult from "./McpAppResult";
 import { pinScrollerTail } from "@/lib/follow-scroll";
 import { turnBlocks, type AssistantTurn } from "@/lib/acp";
@@ -54,6 +55,7 @@ const ToolGroup = memo(function ToolGroup({ tools, diffs, onOpenPath }: {
     path: tool.path, status: tool.status, startedAt: tool.startedAt, elapsedMs: tool.elapsedMs,
   }));
   return <><ToolChips rows={rows} diffs={diffs} onOpenPath={onOpenPath} />
+    {tools.filter(tool=>tool.htmlArtifactId).map(tool=><HtmlArtifact key={tool.id} id={tool.htmlArtifactId!} />)}
     {tools.filter(tool=>tool.mcpAppId).map(tool=><McpAppResult key={tool.id} id={tool.mcpAppId!} />)}</>;
 }, (previous, next) => previous.diffs === next.diffs && previous.onOpenPath === next.onOpenPath &&
   previous.tools.length === next.tools.length && previous.tools.every((tool, index) => tool === next.tools[index]));

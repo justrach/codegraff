@@ -176,6 +176,11 @@ const LiveTurn = struct {
     saw_text: bool = false,
     inbox: ?*@import("acp_inbox.zig").Inbox = null,
 
+    fn errorMessage(ctx: *anyopaque, err: anyerror) []const u8 {
+        const self: *LiveTurn = @ptrCast(@alignCast(ctx));
+        return if (err == error.ApiError) self.root.last_api_error orelse "Provider request failed" else @errorName(err);
+    }
+
     fn run(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const u8 {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
         agent_mod.Agent.prepareRootTurn(); // #753: a prior stream cancel must not steal the continuation
@@ -203,10 +208,6 @@ const LiveTurn = struct {
             // process. Save so the next prompt (and a respawn --resume) still
             // sees the tool results and the background-agent ledger.
             session.saveSession(self.root, self.root.arena, self.root.session_name) catch {};
-            if (err == error.ApiError) {
-                const msg = self.root.last_api_error orelse "provider API error";
-                return std.fmt.allocPrint(arena, "{s}", .{msg});
-            }
             return err;
         };
         // The REPL checkpoints after every turn (mainloop); an ACP host's
@@ -246,6 +247,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     var live: LiveTurn = .{ .root = root, .keys = keys, .out = out, .inbox = &inbox };
     var d: Dispatch = .{
         .turn = LiveTurn.run,
+        .error_message = LiveTurn.errorMessage,
         .ctx = &live,
         .seed = @bitCast(util.unixMs(io)),
         .slash = liveSlash,

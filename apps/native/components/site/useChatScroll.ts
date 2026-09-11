@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { isFollowingTail, pinScrollerTail } from "@/lib/follow-scroll";
+import { followsAfterScroll, pinScrollerTail } from "@/lib/follow-scroll";
 
 /** Register when the transcript mounts, including the first reply in an empty chat. */
 export function useChatScroll(chats: { id: number }[], columnKey: string) {
@@ -17,7 +17,7 @@ export function useChatScroll(chats: { id: number }[], columnKey: string) {
       const onScroll = () => {
         const element = elements.current.get(id);
         if (!element) return;
-        const next = isFollowingTail(element);
+        const next = followsAfterScroll(element, positions.current.get(id) ?? element.scrollTop, following.current.get(id) ?? true);
         following.current.set(id, next);
         positions.current.set(id, element.scrollTop);
         setTailing(current => current[id] === next ? current : { ...current, [id]: next });
@@ -33,6 +33,7 @@ export function useChatScroll(chats: { id: number }[], columnKey: string) {
           const follow = following.current.get(id) ?? true;
           if (follow) pinScrollerTail(element, true);
           else element.scrollTop = positions.current.get(id) ?? 0;
+          positions.current.set(id, element.scrollTop); following.current.set(id, follow);
           setTailing(current => current[id] === follow ? current : { ...current, [id]: follow });
         }
         element.addEventListener("scroll", onScroll, { passive: true });
@@ -42,15 +43,17 @@ export function useChatScroll(chats: { id: number }[], columnKey: string) {
     return callback;
   };
 
+  const chatKey = chats.map(chat => chat.id).join(',');
   useEffect(() => {
-    const live = new Set(chats.map(chat => chat.id));
+    const live = new Set(chatKey.split(',').map(Number));
+    setTailing(current => Object.keys(current).every(id => live.has(Number(id))) ? current : Object.fromEntries(Object.entries(current).filter(([id]) => live.has(Number(id)))));
     for (const id of callbacks.current.keys()) {
       if (live.has(id)) continue;
       callbacks.current.delete(id); positions.current.delete(id); following.current.delete(id);
     }
     // Each mounted transcript follows its own content and size changes. A
     // token arriving in one split must not read/write every other scroller.
-  }, [chats, columnKey]);
+  }, [chatKey, columnKey]);
 
   return { paneRef, tailing };
 }
