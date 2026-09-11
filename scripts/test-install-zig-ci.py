@@ -23,6 +23,14 @@ SPEC.loader.exec_module(installer)
 
 
 class ToolchainIntegrityTests(unittest.TestCase):
+    def test_macos_arm_runner_resolves_a_pinned_archive(self) -> None:
+        for machine in ("arm64", "ARM64", "aarch64"):
+            with self.subTest(machine=machine), mock.patch.object(installer.platform, "machine", return_value=machine):
+                asset = installer.ASSETS[("Darwin", installer.normalized_arch())]
+                self.assertEqual(asset[0], "zig-aarch64-macos-{version}.tar.xz")
+                for checksum in asset[1:]:
+                    self.assertRegex(checksum, r"^[0-9a-f]{64}$")
+
     def setUp(self) -> None:
         self.scratch = tempfile.TemporaryDirectory(prefix="codegraff-installer-test-")
         self.root = Path(self.scratch.name) / "toolchain"
