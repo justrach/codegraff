@@ -118,7 +118,11 @@ def open_picker(h, query=b""):
 
 def close_picker(h):
     h.inject_keys(b"\x1b")
-    h.pump(0.6)
+    # Escape decoding and the next paint are asynchronous under runner load.
+    # Wait for the visible transition, with a hard bound, rather than one frame.
+    deadline = time.monotonic() + 2.0
+    while "Model \u203a" in h.screen_contents() and time.monotonic() < deadline:
+        h.pump(0.05)
 
 
 def sgr(btn, col, row, press=True):
