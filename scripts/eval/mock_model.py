@@ -25,8 +25,17 @@ from __future__ import annotations
 
 import http.server
 import json
+import socketserver
 import threading
 from typing import Any
+
+
+class LoopbackHTTPServer(http.server.ThreadingHTTPServer):
+    def server_bind(self) -> None:
+        # HTTPServer resolves its own hostname during bind. This offline fixture
+        # needs only the numeric loopback address; DNS can stall runner startup.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 class ScriptedModel:
@@ -149,7 +158,7 @@ class ScriptedModel:
             def log_message(self, *_args) -> None:
                 pass
 
-        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        self._server = LoopbackHTTPServer(("127.0.0.1", port), Handler)
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
         return self._server.server_address[1]
 

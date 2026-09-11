@@ -2,10 +2,10 @@ name: desktop
 on:
   workflow_dispatch:
   pull_request:
-    paths: ['apps/native/**', 'src/**', 'scripts/eval/frontend_model.py', 'scripts/eval/mock_model.py', 'scripts/*zig-ci.py', '.github/actions/setup-codegraff-zig/**', '.github/workflows/desktop.yml']
+    paths: ['apps/native/**', 'src/**', 'scripts/eval/frontend_model.py', 'scripts/eval/mock_model.py', 'scripts/eval/test_mock_model.py', 'scripts/*zig-ci.py', '.github/actions/setup-codegraff-zig/**', '.github/workflows/desktop.yml']
   push:
     branches: [main, 'release/**']
-    paths: ['apps/native/**', 'src/**', 'scripts/eval/frontend_model.py', 'scripts/eval/mock_model.py', 'scripts/*zig-ci.py', '.github/actions/setup-codegraff-zig/**', '.github/workflows/desktop.yml']
+    paths: ['apps/native/**', 'src/**', 'scripts/eval/frontend_model.py', 'scripts/eval/mock_model.py', 'scripts/eval/test_mock_model.py', 'scripts/*zig-ci.py', '.github/actions/setup-codegraff-zig/**', '.github/workflows/desktop.yml']
 permissions:
   contents: read
 jobs:
@@ -49,6 +49,9 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+      - name: Offline model fixture without hostname resolution
+        run: python3 scripts/eval/test_mock_model.py
+        working-directory: .
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.4.2'
