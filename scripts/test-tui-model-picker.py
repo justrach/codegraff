@@ -26,6 +26,7 @@ Exit 0 = pass, or a skip when there is no pty.
 
 from __future__ import annotations
 
+import faulthandler
 import json
 import os
 import sys
@@ -313,6 +314,7 @@ def main():
         print("tui-model-picker: no pty support here — skipping")
         return 0
     started = time.time()
+    faulthandler.dump_traceback_later(45)
     try:
         err = run()
     except OSError as e:
@@ -321,6 +323,8 @@ def main():
         else:
             print(f"tui-model-picker: pty unavailable ({e}) — skipping")
             return 0
+    finally:
+        faulthandler.cancel_dump_traceback_later()
     if err:
         print(f"  ✗ model-picker: {err}")
         return 1
