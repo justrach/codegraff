@@ -21,7 +21,14 @@ async function runBrowserAddress({ wc, browser, destination, guard, wait }) {
   };
   await submit(query);
   await wait(() => searches.length === 1, 'ordinary words reach the search URL');
-  await wait(() => browser.tabs.get(browser.visible)?.view?.webContents.getURL() === destination + '/', 'search fixture loaded');
+  await wait(() => {
+    const page = browser.tabs.get(browser.visible)?.view?.webContents;
+    return page && !page.isLoading() && page.getURL() === destination + '/';
+  }, 'search fixture finished loading');
+  // Navigation completion publishes several info updates and the open result.
+  // Let the address consume those before editing it for the rejection case.
+  await wait(`(()=>{const address=document.querySelector('input[aria-label="Address"]');return address.value===${JSON.stringify(destination + '/')} && address.closest('aside').querySelector('header')?.textContent.includes('Link destination fixture')})()`);
+  await js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   assert.deepEqual(searches, [expected]);
   assert.equal(await js(`!!document.querySelector('aside [role="alert"]')`), false, 'Search terms do not show Invalid URL');
   // Check scheme rejection in the real IPC path without treating it as a search.
