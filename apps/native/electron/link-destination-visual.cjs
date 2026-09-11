@@ -183,6 +183,7 @@ async function runLinkDestinationVisuals({ origin, output }) {
     assert.equal(routed.length, before, 'same-origin links bypass external routing');
     assert.ok(await js(`!!document.querySelector('textarea[aria-label="Prompt"]')`));
     assert.deepEqual(errors, [], 'browser IPC completes without errors');
+    await require('./browser-address-visual.cjs').runBrowserAddress({ wc, browser, destination, guard, wait });
     assert.deepEqual(blocked, [], 'no external network or engine/model requests attempted');
     console.log('Link destination visuals passed: default/save/switch, reload and fresh-store persistence, normal/blank links, closed-browser reveal, overlays, unsafe/same-origin links, split focus and preserved app.');
   } finally {

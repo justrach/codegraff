@@ -50,7 +50,7 @@ async function runStressVisuals({win: fixtureWindow, origin, output, fullscreen 
     await click('[data-stream]');
     const titleHeight=()=>js(`document.querySelector('[data-desktop-titlebar]').getBoundingClientRect().height`);
     assert.equal(await titleHeight(),36);
-    const checkedFullscreen = fullscreen && process.platform === 'darwin' && testDesktop.foreground;
+    const checkedFullscreen = fullscreen && process.platform === 'darwin' && require('./test-window.cjs').foregroundCheck('native fullscreen and reload');
     if(checkedFullscreen) {
       testDesktop.present(win); await testDesktop.focusTestPage(win.webContents);
       win.setFullScreen(true);await wait(`document.documentElement.dataset.desktopFullscreen==='true'`);

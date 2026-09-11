@@ -58,6 +58,14 @@ async function runUpdateVisuals({ origin, output }) {
     await wait(`document.querySelector('[data-desktop-update-automatic]')?.getAttribute('aria-checked')==='false'`);
     assert.equal(await js('window.__automatic'), false, 'settings toggle persists automatic downloads');
     fs.writeFileSync(path.join(output, 'update-settings.png'), (await wc.capturePage(undefined, { stayAwake: true })).toPNG());
+    for (const reason of ['smoke', 'platform', 'unpackaged', 'volume', 'config']) {
+      const message = require('./updates.cjs').unavailableMessage(reason);
+      await js(`window.__update({status:'unavailable',automatic:false,interactive:true,message:${JSON.stringify(message)}})`);
+      await wait(`document.querySelector('[data-desktop-update-panel]').textContent.includes(${JSON.stringify(message)})`);
+      assert.equal(await js(`document.querySelector('[data-desktop-update-check]').disabled`), true);
+      assert.equal(await js(`document.querySelector('[data-desktop-update-automatic]').disabled`), true);
+    }
+    console.log('#829 update settings passed: exact unavailable reason and disabled check/automatic controls for all five build conditions.');
     console.log('Update UI passed: quiet checks/errors, download progress, explicit restart, in-app settings.');
   } finally { win.destroy(); }
 }

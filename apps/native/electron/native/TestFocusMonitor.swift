@@ -2,6 +2,7 @@
 import AppKit
 import CoreGraphics
 
+let allowVisible = ProcessInfo.processInfo.environment["GRAFF_ELECTRON_VISIBLE"] == "1"
 var target: pid_t?
 var activations: [pid_t] = []
 var visibleSamples: [pid_t: Int] = [:]
@@ -26,7 +27,7 @@ func finish() {
     let report: [String: Any] = ["foregroundActivations": activated, "visibleWindowSamples": visible, "observed": target != nil]
     let data = try! JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
     print(String(data: data, encoding: .utf8)!); fflush(stdout)
-    exit(target != nil && activated == 0 && visible == 0 ? 0 : 1)
+    exit(target != nil && activated == 0 && (allowVisible || visible == 0) ? 0 : 1)
 }
 let token = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { notification in
     if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {

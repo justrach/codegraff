@@ -1,6 +1,7 @@
 const testDesktop = require('./test-desktop.cjs');
 // Opt-in: a real GUI coding turn in a disposable workspace. Uses configured credentials.
 const {app,BrowserWindow,ipcMain}=require('electron');
+require('./test-window.cjs').installTestWindowPolicy(app);
 const {spawn,spawnSync}=require('node:child_process');
 const fs=require('node:fs');const path=require('node:path');const os=require('node:os');const net=require('node:net');const assert=require('node:assert/strict');
 const {installWindowState}=require('./window-state.cjs');

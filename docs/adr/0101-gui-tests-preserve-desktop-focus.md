@@ -1,40 +1,44 @@
-# 0101. GUI tests preserve desktop focus by default
+# 0101. GUI tests preserve desktop focus and report native coverage gaps
 
-Status: accepted 2026-09-10
+Status: accepted 2026-09-11
 
 ## Context
 
-Independent GUI suites created visible windows and repeatedly called native
-show/focus methods, including while restoring fixture windows during cleanup.
-Making one suite hidden did not protect other suites or launch-time activation
-(#832). Native input injection also coupled tests to the user's focused app.
+#832 persisted after adding a window helper: individual visual suites still
+called `show()`/`focus()`, a browser fixture implicitly displayed its host,
+and packaged smoke tests could present native UI or inject OS input.
+A hidden-window helper test could pass while those entry points took focus.
 
 ## Decision
 
-All Electron test windows use one test-only policy. Background is the default:
-windows start hidden and unfocusable, macOS application activation is prohibited,
-and later native show/focus operations fail before executing. Cleanup destroys
-every test window, including windows left by nested suites or failed steps.
+Automated Electron entry points install a process policy before readiness.
+Default windows are hidden and non-focusable; both hidden and visible-inactive
+modes use macOS [prohibited activation policy](https://www.electronjs.org/docs/latest/api/app#appsetactivationpolicypolicy-macos). Unexpected show/focus/fullscreen calls fail
+instead of silently activating a test window. Constructor overrides cannot
+turn presentation on. Packaged smoke tests use the same policy, including
+reopen events. Normal interactive app launches retain their usual behavior.
 
-Page-level tests send trusted Chromium protocol input and emulate page focus.
-This keeps pointer routing and real Tab navigation testable without activating
-the operating-system window. Background fixtures disable renderer throttling.
-
-Only `GRAFF_TEST_FOREGROUND=1` opts into visible windows and native interaction.
-Fullscreen, native computer input and native sheets require that opt-in. Reports
-identify omitted native checks and benchmark window mode; background frame
-timing must not be presented as foreground display timing.
-
-The visual and benchmark launchers start a read-only macOS focus/window observer
-before Electron. Activation or visible test windows fail the run. User switching
-between other apps is allowed. A standalone background regression exercises
-repeated windows, trusted input, screenshots, rejected activation and cleanup.
-Unit and source-policy tests keep new fixtures from bypassing the shared helpers.
+`GRAFF_ELECTRON_VISIBLE=1` allows visible, non-focusable windows without app
+activation, and enables embedded-browser pin input and captures. It can still
+overlap the current application: no activation does not mean no obstruction.
+Only the default hidden mode keeps test windows off the desktop.
+`GRAFF_ELECTRON_FOREGROUND=1` explicitly permits activation. Native fullscreen,
+Activity sheets, and OS input checks still need that foreground opt-in.
+Skipped checks are printed and visual runs record them in `test-run.json`; they must not be described as passed.
 
 ## Consequences
 
-Ordinary GUI verification can run while the user works elsewhere. Foreground
-native checks remain separately opt-in. The OS observer requires the macOS
-command-line developer tools; other platforms use native-window assertions.
-Production application window behavior is unchanged; packaged smoke mode alone
-uses the test policy.
+The hidden renderer can exercise composer input, Tab traversal, split resizing,
+link routing and screenshots. Embedded WebContentsView pin input did not pass
+while hidden, including a page-targeted DevTools input experiment. Showing the
+host inactive allows those checks to pass without activation. Accessory policy
+was insufficient: embedded-page focus activated the app despite non-focusable
+windows. Prohibited activation policy preserved both visibility and the active
+application in an OS-observed browser run. Hidden tests do not establish native
+presentation or real desktop input correctness.
+
+`test:focus` observes actual macOS app activation and visible windows around the
+runner. `test-window-probe.cjs` covers repeated windows, reopen events, input,
+capture and cleanup. The observer reports other-app switches without causing
+them; zero observed switches does not verify a manual app-switch scenario.
+The native observer currently verifies macOS only.

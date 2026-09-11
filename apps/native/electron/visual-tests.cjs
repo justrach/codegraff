@@ -10,12 +10,13 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'graff-visual-'));
 app.setPath('userData', path.join(temporary, 'profile'));
 let server, win;
+const output = process.env.GRAFF_VISUAL_OUTPUT || path.resolve(__dirname, '../../../zig-out/visual-tests');
 const deadline = setTimeout(() => { console.error('Visual run exceeded 240 seconds'); finish(1); }, 240000);
 app.whenReady().then(async () => {
   const savedOnly = process.env.GRAFF_VISUAL_SUITE === 'sessions';
   ipcMain.handle('updates', () => ({ status: 'unavailable', currentVersion: '1.0.0', automatic: false, interactive: false }));
   ipcMain.handle('projects', () => null);
-  const root = path.resolve(__dirname, '..'), output = process.env.GRAFF_VISUAL_OUTPUT || path.resolve(root, '../../zig-out/visual-tests');
+  const root = path.resolve(__dirname, '..');
   fs.mkdirSync(output, { recursive: true });
   assert.ok(fs.existsSync(path.join(root, process.env.GRAFF_NEXT_DIST_DIR || '.next', 'BUILD_ID')), 'Run bun run build before visual tests.');
   const socket = net.createServer(); await new Promise(resolve => socket.listen(0, '127.0.0.1', resolve));
@@ -64,15 +65,15 @@ app.whenReady().then(async () => {
     assert.deepEqual(apiRequests, [], 'Browser fixtures never call engine or model APIs');
     return;
   }
-  if (['projects', 'splits', 'interactions'].includes(process.env.GRAFF_VISUAL_SUITE)) {
+  if (['projects', 'splits', 'interactions', 'tagged'].includes(process.env.GRAFF_VISUAL_SUITE)) {
     await require('./navigation-visual.cjs').runNavigationVisuals({ win, origin, output });
-    if (process.env.GRAFF_VISUAL_SUITE !== 'interactions') {
+    if (!['interactions', 'tagged'].includes(process.env.GRAFF_VISUAL_SUITE)) {
       await require('./browser-visual.cjs').runBrowserVisuals({ win, origin, output });
       await require('./dev-preview-visual.cjs').runDevPreview({ output });
       await require('./link-destination-visual.cjs').runLinkDestinationVisuals({ origin, output });
     }
     assert.deepEqual(apiRequests, [], 'Project fixtures never call engine or model APIs');
-    fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: process.env.GRAFF_VISUAL_SUITE === 'interactions' ? ['keyboard, composer, files and reading'] : ['projects and navigation', 'browser'], apiRequests }, null, 2));
+    fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: [process.env.GRAFF_VISUAL_SUITE === 'tagged' ? 'saved snapshots, optional Tasks and split limit' : process.env.GRAFF_VISUAL_SUITE === 'interactions' ? 'keyboard, composer, files and reading' : 'projects and navigation'], skipped: [...require('./test-window.cjs').skippedChecks], apiRequests }, null, 2));
     return;
   }
   if (process.env.GRAFF_VISUAL_SUITE === 'stress') {
@@ -143,6 +144,10 @@ function finish(code) {
     console.log('Test desktop:', JSON.stringify(testDesktop.assertSafe()));
   } catch (error) { console.error(error); code = 1; }
   testDesktop.cleanup();
+  const { testWindowMode, skippedChecks } = require('./test-window.cjs');
+  fs.mkdirSync(output, { recursive: true });
+  fs.writeFileSync(path.join(output, 'test-run.json'), JSON.stringify({ suite: process.env.GRAFF_VISUAL_SUITE || 'all', status: code !== 0 ? 'failed' : skippedChecks.size ? 'passed-with-skips' : 'passed', mode: testWindowMode(), skipped: [...skippedChecks] }, null, 2));
+  if (skippedChecks.size) console.log(`Coverage limits: ${[...skippedChecks].join('; ')}. See test-run.json.`);
   if (server?.pid) try { process.kill(-server.pid, 'SIGTERM'); } catch {}
   app.once('quit', () => { fs.rmSync(temporary, { recursive: true, force: true }); });
   app.exit(code);

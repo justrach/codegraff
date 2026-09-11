@@ -2,6 +2,7 @@ const testDesktop = require('./test-desktop.cjs');
 // Same workload for both builds. Hidden by default; display measurements opt in.
 // Usage: electron electron/performance-benchmark.cjs /absolute/app/root /absolute/output
 const { app, BrowserWindow, ipcMain, screen, contentTracing } = require('electron');
+require('./test-window.cjs').installTestWindowPolicy(app);
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');

@@ -8,6 +8,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function runBrowserVisuals({ win: fixtureWindow, origin, output }) {
+  if (!require('./test-window.cjs').visibleWindowCheck('embedded browser native pin input and captures')) return;
   const fixture = http.createServer((_req, res) => {
     res.setHeader('content-type', 'text/html');
     res.end('<!doctype html><title>Pin fixture</title><style>body{margin:0;background:#e5f3ff}button{margin:50px;width:180px;height:80px}article{height:1600px}</style><button id="target" onpointerdown="document.body.dataset.activated=1" onclick="document.body.dataset.clicked=1">Choose this element</button><article>Scroll fixture</article>');

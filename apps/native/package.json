@@ -29,7 +29,10 @@
     "test:background": "bun scripts/test-background.mjs",
     "test:performance": "GRAFF_PERFORMANCE_TESTS=1 bun scripts/test-visual.mjs",
     "benchmark:desktop": "bun scripts/benchmark-desktop.mjs",
-    "test:mcp-apps": "bun test lib/mcp-apps.test.ts && playwright test -c playwright.mcp.config.ts"
+    "test:mcp-apps": "bun test lib/mcp-apps.test.ts && playwright test -c playwright.mcp.config.ts",
+    "test:focus": "bun scripts/test-desktop-focus.mjs",
+    "test:tagged": "GRAFF_VISUAL_SUITE=tagged bun scripts/test-visual.mjs",
+    "test:browser": "GRAFF_VISUAL_SUITE=browser bun scripts/test-visual.mjs"
   },
   "dependencies": {
     "@streamdown/code": "^1.1.1",

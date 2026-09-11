@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
+const { testWindowMode } = require('../electron/test-window.cjs');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 async function focusMonitor() {
@@ -41,7 +42,7 @@ async function focusMonitor() {
       child.stdin.end('stop\n');
       const timer = setTimeout(() => child.kill(), 5000);
       const code = await exited; clearTimeout(timer); lines.close();
-      if (code !== 0 || !report?.observed || report.foregroundActivations || report.visibleWindowSamples) {
+      if (code !== 0 || !report?.observed || report.foregroundActivations || (testWindowMode() === 'hidden' && report.visibleWindowSamples)) {
         throw Error(`Desktop isolation failed: ${JSON.stringify(report ?? { observerExit: code })}`);
       }
       return report;
@@ -52,7 +53,7 @@ async function focusMonitor() {
 // The observer starts before Electron, so it catches launch activation as well
 // as later test steps. Switching to a different user app is allowed throughout.
 export async function runElectron(entry, args = []) {
-  const foreground = process.env.GRAFF_TEST_FOREGROUND === '1';
+  const foreground = testWindowMode() === 'foreground';
   const monitor = process.platform === 'darwin' && !foreground ? await focusMonitor() : null;
   const child = spawn(require('electron'), [path.resolve(root, entry), ...args], {
     cwd: root, stdio: 'inherit', env: { ...process.env, GRAFF_TEST_BUN: process.execPath },

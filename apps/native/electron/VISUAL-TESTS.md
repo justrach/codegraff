@@ -1,30 +1,30 @@
 # Desktop visual tests
 
-From `apps/native`, run `bun run build`, then `bun run test:visual`.
-This renders scripted turn states in hidden, isolated Electron windows and
+For a fresh checkout, run these from `apps/native`:
+
+```sh
+bun install --frozen-lockfile
+bun node_modules/electron/install.js
+bun run build
+bun run test:visual
+```
+
+The explicit Electron install also works when Bun skips dependency postinstall scripts.
+This renders scripted turn states in hidden, non-focusable Electron windows and
 checks visible progress, layout, disclosure state, completion and interruption
 in White, Black and CodeGraff themes. PNGs and results go to
-`zig-out/visual-tests`; set `GRAFF_VISUAL_OUTPUT` to use another directory.
+`zig-out/visual-tests`; `test-run.json` records the mode, result and skipped checks. Set `GRAFF_VISUAL_OUTPUT` to use another directory.
 
 All visual suites, standalone GUI coding trials, packaged smoke checks and
-benchmarks use the shared background window policy. Tests keep the user's active
-application focused; creating, switching or cleaning up fixtures does not show
-or activate windows. Page input uses Chromium's trusted input path, including
-real Tab navigation, without sending keyboard or mouse events to the desktop.
+benchmarks share the window policy. Page input uses Chromium's trusted input
+path without sending keyboard or mouse events to the desktop.
 
-On macOS the visual and benchmark launchers start a read-only OS observer before
-Electron. Any activation or visible test window fails the run. The observer needs
-the Xcode command-line tools and requests no Accessibility or screen-capture
-permission. `bun run test:background` exercises the policy without a UI build:
-repeated windows, trusted input, screenshots, rejected activation and cleanup.
-The same background regression runs automatically before default visual suites.
-`bun run test:desktop` checks that future fixtures use the shared policy.
-
-Native fullscreen, native computer input and native sheets require explicit
-opt-in: `GRAFF_TEST_FOREGROUND=1 bun run test:visual`. These checks may activate
-windows and change macOS Spaces. Default reports identify them as not run.
-The foreground option also applies to packaged smoke checks and benchmarks;
-`GRAFF_SMOKE_SKIP_INPUT=1` still disables native computer input in foreground mode.
+On macOS visual and benchmark launchers start a read-only OS observer before
+Electron. Unexpected activation fails the run; hidden mode also rejects visible
+windows. The observer requires the Xcode command-line tools.
+`bun run test:background` checks repeated hidden windows, trusted input,
+screenshots and cleanup without a UI build. It also runs before hidden visual suites.
+`GRAFF_TEST_FOREGROUND=1` remains an alias for the explicit foreground mode below.
 
 No engine binary, model account, MCP server or model request is used. Requests
 to API routes are blocked and fail the test. The fixture page is unavailable
@@ -40,6 +40,58 @@ scrolling regressions on their own. It exercises actual mouse and Tab input,
 per-chat drafts, delayed uploads, request failures and late responses. These
 checks also run in the full visual suite and the Projects suite.
 
+## Desktop focus and native coverage (#832)
+
+The visual, benchmark, coding-smoke and packaged-smoke entry points install the
+same hidden-window policy before Electron becomes ready. Default runs never
+request foreground activation. No environment flag is needed for this default.
+Test constructor overrides cannot enable showing/focus, and unexpected native
+activation calls fail the run. Errors never retry by bringing a window forward.
+
+On macOS, verify the real process while continuing to use another application:
+
+```sh
+bun run test:focus
+bun run test:focus node_modules/.bin/electron electron/test-window-probe.cjs
+bun run test:tagged
+```
+
+The focus observer requires Xcode command-line tools. It observes activation,
+visible windows and cleanup; it neither switches applications nor injects input.
+Switching applications during a run is allowed. The output reports how many
+such switches were observed; zero means that particular scenario was not tested.
+The observer currently supports macOS only.
+
+Some checks need a visible window. Default hidden runs explicitly skip embedded
+browser pin input/captures and native fullscreen. Packaged smoke tests
+also skip OS keyboard injection/screen capture and the native Activity sheet.
+These skips are coverage limits, not passes. A hidden WebContentsView did not
+accept the pin-input sequence reliably, including through DevTools input. A
+visible inactive host does support those browser checks without taking focus.
+**Visible windows can still cover your current app.** Keep the default hidden
+mode when tests must stay out of the way; visible mode is for watching tests:
+
+```sh
+GRAFF_ELECTRON_VISIBLE=1 bun run test:browser
+GRAFF_ELECTRON_VISIBLE=1 bun run test:focus
+```
+
+This mode prohibits macOS app activation as well as window focus. A window-only
+restriction was insufficient because focusing embedded web contents could still
+activate the app. The observer allows visible windows in this mode but still
+fails on any app activation or leftover test app.
+
+These commands **can take desktop focus** and are explicit opt-ins:
+
+```sh
+GRAFF_ELECTRON_FOREGROUND=1 bun run test:visual
+```
+
+`GRAFF_ELECTRON_VISIBLE=1` does not enable OS keyboard injection, native
+fullscreen or Activity sheets. For packaged smoke runs the same foreground
+flag is required before any OS input; `GRAFF_SMOKE_SKIP_INPUT=1` still disables
+that input even in foreground mode. OS permissions alone never opt in.
+
 ## Repeatable performance and README captures
 
 ### Comparing production builds
@@ -53,13 +105,11 @@ bun run benchmark:desktop /absolute/candidate/apps/native /absolute/local-result
 ```
 
 The runner creates a fresh profile and uses synthetic code fences, mermaid diagrams, long prose,
-and trusted wheel input. It measures renderer heap after collection, summed
+and Chromium wheel input. It measures renderer heap after collection, summed
 process RSS, script/layout work and frame callback intervals. Repeat both runs
-and compare matching scenarios in the same window mode. The default background
-mode disables throttling so hidden pages keep rendering. Reports record the mode.
-For display/presentation measurements, explicitly use `GRAFF_TEST_FOREGROUND=1`
-for both runs and keep the windows on the same display; that mode retains
-production throttling. Both modes retain Chromium hardware acceleration.
+and compare matching scenarios. Hidden runs disable background throttling and retain hardware acceleration.
+For presentation measurements explicitly opt into foreground mode on the same
+display; hidden results do not establish on-screen refresh or native focus behavior.
 RSS includes shared pages and is not an exclusive physical-memory measurement.
 
 Set `GRAFF_BENCHMARK_TRACE=scroll`, `code`, or `mermaid` for a separate local Chromium trace.

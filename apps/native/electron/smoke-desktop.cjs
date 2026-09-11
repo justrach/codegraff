@@ -30,22 +30,25 @@ async function smokeDesktop({ automation, computer, win, browser }) {
     const invoke = (name, args) => rpc('tools/call', { name, arguments: args });
     const snapshot = await invoke('browser', { action: 'snapshot' });
     assert.match(snapshot.content[0].text, /Browser fixture/);
-    const screenshot = await invoke('browser', { action: 'screenshot' });
-    assert.equal(screenshot.content[0].type, 'image');
-    assert.ok(screenshot.content[0].data.length > 100);
+    let pageCapture = 'Skipped: embedded browser capture requires visible-window opt-in';
+    if (require('./test-window.cjs').visibleWindowCheck('embedded browser page capture')) {
+      const screenshot = await invoke('browser', { action: 'screenshot' });
+      assert.equal(screenshot.content[0].type, 'image');
+      assert.ok(screenshot.content[0].data.length > 100);
+      pageCapture = 'browser image response passed';
+    }
     const status = await invoke('computer', { action: 'status' });
     assert.equal(JSON.parse(status.content[0].text).enabled, false);
     assert.equal((await invoke('computer', { action: 'apps' })).isError, true);
     assert.equal((await invoke('computer', { action: 'requestPermissions' })).isError, true);
     // Native discovery is read-only; never request OS permission from an automated test.
     const apps = computer.native('apps');
-    assert.ok(Array.isArray(apps.apps));
-    if (testDesktop.foreground) assert.ok(apps.apps.some(app => app.pid === process.pid));
+    assert.equal(apps.apps.some(app => app.pid === process.pid), require('./test-window.cjs').testWindowMode() === 'foreground', 'Only regular foreground apps appear in native app discovery');
     assert.equal(await win.webContents.executeJavaScript(`fetch('/api/browser').then(r=>r.status)`), 410);
     const permissions = computer.status();
-    let nativeInput = !testDesktop.foreground ? 'Native input requires GRAFF_TEST_FOREGROUND=1'
-      : process.env.GRAFF_SMOKE_SKIP_INPUT ? 'Skipped interactive input for this run' : 'OS permission unavailable';
-    if (testDesktop.foreground && !process.env.GRAFF_SMOKE_SKIP_INPUT && permissions.accessibility && permissions.screenRecording) {
+    const foreground = require('./test-window.cjs').foregroundCheck('native keyboard injection and screen capture');
+    let nativeInput = !foreground || process.env.GRAFF_SMOKE_SKIP_INPUT ? 'Skipped: native input requires foreground opt-in and OS permissions' : 'OS permission unavailable';
+    if (foreground && !process.env.GRAFF_SMOKE_SKIP_INPUT && permissions.accessibility && permissions.screenRecording) {
       computer.enabled = true;
       try {
         const wc = browser.tabs.get('smoke').view.webContents;
@@ -62,7 +65,7 @@ async function smokeDesktop({ automation, computer, win, browser }) {
         nativeInput = 'native AX snapshot, CGEvent typing into test page, and screen capture passed';
       } finally { computer.enabled = false; }
     }
-    return { mcp: 'stdio discovery, browser snapshot/image, disabled computer gate passed', permissions, nativeApps: apps.apps.length, nativeInput };
+    return { mcp: 'stdio discovery, browser snapshot, disabled computer gate passed', pageCapture, permissions, nativeApps: apps.apps.length, nativeInput };
   } finally { child.stdin.end(); child.kill(); for (const waiter of waiters.values()) clearTimeout(waiter.timer); }
 }
 module.exports = { smokeDesktop };

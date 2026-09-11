@@ -12,6 +12,7 @@ function fixture(env = {}) {
     constructor(options) { super(); this.options = options; windows.add(this); app.emit('browser-window-created', {}, this); }
     static getAllWindows() { return [...windows]; }
     show() { this.visible = true; this.emit('show'); }
+    showInactive() { this.visible = true; this.emit('show'); }
     focus() { this.focused = true; this.emit('focus'); }
     isVisible() { return !!this.visible; }
     isFocused() { return !!this.focused; }
@@ -41,7 +42,7 @@ test('#832: one exact opt-in enables foreground checks; unrelated flags never en
   }
   const { policy, calls } = fixture({ GRAFF_TEST_FOREGROUND: '1' });
   const win = policy.createWindow({}); policy.present(win);
-  expect(calls).toEqual([]); expect(win.isVisible()).toBe(true); expect(win.isFocused()).toBe(true);
+  expect(calls).toEqual(['app.focus']); expect(win.isVisible()).toBe(true); expect(win.isFocused()).toBe(true);
   expect(policy.assertSafe().mode).toBe('foreground'); policy.cleanup();
 });
 test('#832: unsolicited show/focus events fail verification and all failed-suite windows are cleaned up', () => {
@@ -62,7 +63,7 @@ test('#832: all GUI test modules use the shared window and input policy', () => 
   for (const name of files) {
     const source = ts.createSourceFile(name, fs.readFileSync(path.join(__dirname, name), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
     const visit = node => {
-      if (ts.isNewExpression(node) && /BrowserWindow$/.test(node.expression.getText(source))) bypasses.push(`${name}: direct BrowserWindow`);
+      if (ts.isNewExpression(node) && /BrowserWindow$/.test(node.expression.getText(source)) && !/^testWindowOptions\(/.test(node.arguments?.[0]?.getText(source) ?? '')) bypasses.push(`${name}: direct BrowserWindow`);
       if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
         const owner = node.expression.expression.getText(source), method = node.expression.name.text;
         if (method === 'sendInputEvent' || (['show', 'showInactive', 'focus', 'restore', 'maximize'].includes(method) && /^(win|fixtureWindow|app)$/.test(owner))) {
@@ -71,7 +72,7 @@ test('#832: all GUI test modules use the shared window and input policy', () => 
         if (method === 'setFullScreen' || (owner === 'computer' && method === 'command' && node.arguments[0]?.text === 'type')) {
           let parent = node.parent, guarded = false;
           while (parent) {
-            if (ts.isIfStatement(parent) && /testDesktop.foreground|checkedFullscreen/.test(parent.expression.getText(source))) guarded = true;
+            if (ts.isIfStatement(parent) && /testDesktop.foreground|checkedFullscreen|^foreground &&/.test(parent.expression.getText(source))) guarded = true;
             parent = parent.parent;
           }
           if (!guarded) bypasses.push(`${name}: unguarded native ${method}`);
@@ -82,4 +83,17 @@ test('#832: all GUI test modules use the shared window and input policy', () => 
     visit(source);
   }
   expect(bypasses).toEqual([]);
+});
+
+test('#832: visible fixtures retain prohibited activation and pass cleanup assertions', () => {
+  const { policy, app, calls } = fixture({ GRAFF_ELECTRON_VISIBLE: '1' });
+  const win = policy.createWindow({ show: true, focusable: true });
+  require('./test-window.cjs').installTestWindowPolicy(app);
+  policy.present(win);
+  expect(calls).toEqual(['prohibited']);
+  expect(win.isVisible()).toBe(true);
+  expect(win.isFocused()).toBe(false);
+  expect(() => win.focus()).toThrow('GRAFF_ELECTRON_FOREGROUND');
+  expect(policy.assertSafe()).toMatchObject({ mode: 'visible', windows: 1, violations: [] });
+  policy.cleanup();
 });
