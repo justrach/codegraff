@@ -371,11 +371,12 @@ pub fn replCancelCb(ctx_ptr: ?*anyopaque) void {
 
 pub const SteerEntry = struct { text: []const u8, force: bool };
 
-/// Spin-lock guarding g_steer_buf/g_steer_queue mutations. The concurrent steer
-/// drainers (the main reader + pool esc-watch/watchdog arms, #129) hold it only
-/// for the tiny queue/buffer critical sections — never across a stdin read/poll
-/// — so it stays uncontended and needs no Io handle (unlike the Io.Mutex used
-/// elsewhere, which the io-less escPressed cannot reach).
+/// Spin-lock guarding g_steer_buf/g_steer_queue mutations and the stdout
+/// bytes that share a line with the thinking spinner (#845). The concurrent
+/// steer drainers (the main reader + pool esc-watch/watchdog arms, #129) hold
+/// it only for the tiny queue/buffer critical sections — never across a stdin
+/// read/poll — so it stays uncontended and needs no Io handle (unlike the
+/// Io.Mutex used elsewhere, which the io-less escPressed cannot reach).
 pub fn steerLock() void {
     while (main_mod.g_steer_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
 }
@@ -427,7 +428,14 @@ pub fn resetSteerPartial() void {
 /// Writes steering echo to the stdout writer (the same buffered writer the
 /// streaming text uses, already flushed before escPressed runs, so ordering
 /// stays correct) and flushes so the user sees queued keystrokes live.
+/// Serialized with spinner frames so a hop-up redraw cannot land mid-echo (#845).
 pub fn steerEcho(bytes: []const u8) void {
+    steerLock();
+    defer steerUnlock();
+    steerEchoUnlocked(bytes);
+}
+
+pub fn steerEchoUnlocked(bytes: []const u8) void {
     if (main_mod.g_out) |w| {
         w.writeAll(bytes) catch {};
         w.flush() catch {};

@@ -1,3 +1,4 @@
+const testDesktop = require('./test-desktop.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -32,8 +33,8 @@ async function smokeModelPicker({ win }) {
     assert.equal(await js(`document.activeElement.getAttribute('aria-activedescendant')===document.querySelectorAll('[role=option]')[1].id`), true);
     // Click the current choice through real mouse events; it must stay clickable in the portal.
     const point = await js(`(()=>{const r=document.querySelector('[role=option]').getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
-    win.webContents.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
-    win.webContents.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 });
+    await testDesktop.testInput(win.webContents, { type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
+    await testDesktop.testInput(win.webContents, { type: 'mouseUp', ...point, button: 'left', clickCount: 1 });
     await wait(`!document.querySelector('[aria-label="Choose a model"]')`);
     await click('[aria-label="Choose model"]');
     await wait(`!!document.querySelector('[aria-label="Choose a model"]')`);

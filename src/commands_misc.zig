@@ -225,6 +225,14 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.startsWith(u8, line, "/mcp")) {
         const arg = std.mem.trim(u8, line["/mcp".len..], " \t");
         const reg = root.registry.?; // always present now
+        if (std.mem.eql(u8, arg, "apps")) {
+            if (reg.last_app_path) |path| {
+                @import("oauth_helpers.zig").openBrowser(root.io, path);
+                try out.print("MCP app: {s}\n", .{path});
+            } else try out.writeAll("No MCP app result yet. Call a tool that declares an MCP Apps view first.\n");
+            try out.flush();
+            return true;
+        }
         if (@import("mcp_boot.zig").joinPending(reg)) {
             root.invalidateRootTools();
             try root.ensureRootTools(root.provider.kind);

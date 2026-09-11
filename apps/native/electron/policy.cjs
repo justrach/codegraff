@@ -1,10 +1,26 @@
 const { timingSafeEqual } = require('node:crypto');
 
+function looksLikeWebAddress(text) {
+  if (!text || /\s/.test(text)) return false;
+  if (/^(file|javascript|data|blob):/i.test(text) || /^[a-z][\w+.-]*:\/\//i.test(text)) return true;
+  if (/^(about|data|blob|file|javascript):/i.test(text)) return true;
+  if (/^(localhost|127\.0\.0\.1|\[::1\]|\d+\.\d+\.\d+\.\d+)(:|\/|$)/.test(text)) return true;
+  if (/^[\w-]+(\.[\w-]+)+(:\d+)?([/?#]|$)/i.test(text)) return true;
+  if (/^[\w.-]+:\d+([/?#]|$)/.test(text)) return true;
+  return false;
+}
+
 function pageURL(raw) {
   const text = String(raw || '').trim();
   if (!text || text === 'about:blank') return 'about:blank';
+  if (/^(file|javascript|data|blob):/i.test(text)) throw new Error('Only HTTP and HTTPS pages are supported');
   const local = /^(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(text);
-  const url = new URL(/^[a-z][\w+.-]*:/i.test(text) && !local ? text : `${local ? 'http' : 'https'}://${text}`);
+  const candidate = looksLikeWebAddress(text)
+    ? (/^[a-z][\w+.-]*:/i.test(text) && !local ? text : `${local ? 'http' : 'https'}://${text}`)
+    : `https://www.google.com/search?q=${encodeURIComponent(text)}`;
+  let url;
+  try { url = new URL(candidate); }
+  catch { throw new Error('Enter a web address or a search.'); }
   if (!['https:', 'http:'].includes(url.protocol)) throw new Error('Only HTTP and HTTPS pages are supported');
   if (url.username || url.password) throw new Error('Use the page sign-in form');
   return url.href;

@@ -477,6 +477,9 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         return true;
     }
 
+    if (!main_mod.json_mode and flags.oneshot_prompt == null)
+        @import("server_diagnostics.zig").warnStartup(arena, io);
+
     // ADR 0042: claim the pager before keys / MCP / prompt so `graff tui`
     // (and TTY `graff repl`) do not sit on a blank shell. No-op off a TTY.
     if (!main_mod.json_mode and flags.oneshot_prompt == null and flags.isPager()) {

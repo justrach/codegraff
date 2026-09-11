@@ -1,3 +1,4 @@
+const testDesktop = require('./test-desktop.cjs');
 const { BrowserWindow } = require('electron');
 const { BrowserTabs } = require('./browser-tabs.cjs');
 const { startAutomation } = require('./automation.cjs');
@@ -14,7 +15,7 @@ async function runDevPreview({ output }) {
   fs.writeFileSync(path.join(root, 'index.html'), html('Initial preview'));
   const bun = process.env.GRAFF_TEST_BUN || 'bun';
   const child = spawn(bun, ['run', 'dev'], { cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PATH: `${path.dirname(bun)}:${process.env.PATH}` } });
-  const win = new BrowserWindow({ width: 900, height: 600, show: true });
+  const win = testDesktop.createWindow({ width: 900, height: 600 });
   const events = [], browser = new BrowserTabs(win, event => events.push(event));
   let bridge;
   try {

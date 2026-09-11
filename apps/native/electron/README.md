@@ -43,7 +43,7 @@ After packaging, a real Electron smoke test needs no paid model calls:
 
 ```sh
 GRAFF_CWD="$PWD" GRAFF_ELECTRON_SMOKE=/tmp/graff-electron-smoke.json \
-  zig-out/electron/Codegraff.app/Contents/MacOS/Electron
+  zig-out/electron/Codegraff.app/Contents/MacOS/Codegraff
 ```
 
 The existing AppKit/Kuri shell remains a fallback through
@@ -114,9 +114,11 @@ harness workspace. The native GUI's ACP bridge uses one stdout reader and
 routes replies by request ID so catalog refreshes cannot steal assistant text.
 
 The macOS window keeps native close/minimize/full-screen controls in a reserved
-draggable titlebar. For smoke runs while using another app, set
-`GRAFF_SMOKE_SKIP_INPUT=1` to skip native keyboard injection; the report records
-that omission.
+draggable titlebar. Automated smoke runs stay hidden and non-focusable by default.
+Native Activity sheets and OS keyboard/screen checks require explicit
+`GRAFF_ELECTRON_FOREGROUND=1`, which can take desktop focus. The report records
+skipped native checks. `GRAFF_SMOKE_SKIP_INPUT=1` disables native keyboard input
+even when foreground mode is requested. See [visual test modes](VISUAL-TESTS.md).
 
 The v2 profiler adds document LCP/FCP, maximum observed interaction duration,
 recording-period layout shift, renderer heap and DOM size, GPU-process CPU/RSS

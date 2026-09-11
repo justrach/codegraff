@@ -1,9 +1,10 @@
 name: desktop
 on:
+  workflow_dispatch:
   pull_request:
     paths: ['apps/native/**', '.github/workflows/desktop.yml']
   push:
-    branches: [main]
+    branches: [main, 'release/**']
     paths: ['apps/native/**', '.github/workflows/desktop.yml']
 permissions:
   contents: read
@@ -22,7 +23,50 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run test:desktop
       - run: bun run build
+      - run: bun run test:overflow
+      - run: bun run test:tasks
+      - run: bun run test:links
       - run: bun run test:projects
+      - run: bun run test:workspace
       - run: bun run test:stress
       - run: bun run test:agents
+      - run: bun run test:sessions
       - run: bun build electron/updater-runtime.cjs --target=node --format=cjs --external electron --outfile /tmp/updater-runtime.cjs
+  native:
+    name: native macOS GUI
+    runs-on: macos-26
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/native
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - run: bun install --frozen-lockfile
+      - name: Native graphical session, Activity sheet and OS capabilities
+        run: bun run test:native
+        env:
+          GRAFF_ELECTRON_FOREGROUND: '1'
+      - run: bun run build
+      - name: Foreground GUI suite including native fullscreen
+        run: bun run test:visual
+        env:
+          GRAFF_ELECTRON_FOREGROUND: '1'
+      - name: Require native fullscreen coverage
+        run: bun scripts/check-native-ci.mjs
+      - name: Native coverage report
+        if: always()
+        run: bun scripts/check-native-ci.mjs --summary
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: native-gui-results
+          path: |
+            zig-out/native-tests/native-results.json
+            zig-out/visual-tests/test-run.json
+            zig-out/visual-tests/stress-results.json
+            zig-out/visual-tests/stress-fullscreen.png
+          if-no-files-found: warn
+          retention-days: 7

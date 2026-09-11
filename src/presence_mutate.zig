@@ -70,6 +70,48 @@ pub fn isSharedTreeShell(cmd: []const u8) bool {
     return false;
 }
 
+/// Directory a mutating command actually touches, when we can resolve it
+/// without a shell. `git -C PATH` wins; a leading `cd PATH` is next.
+/// Quoted, globbed, or otherwise ambiguous forms return null so the caller
+/// stays conservative and still checkpoints the session worktree (#851).
+pub fn mutationTarget(cmd: []const u8) ?[]const u8 {
+    if (gitDashC(cmd)) |p| return p;
+    return leadingCd(cmd);
+}
+
+fn gitDashC(cmd: []const u8) ?[]const u8 {
+    var it = std.mem.tokenizeAny(u8, cmd, " \t\r\n;&|\"'`()");
+    while (it.next()) |tok| {
+        if (!std.mem.eql(u8, tok, "git")) continue;
+        while (it.next()) |arg| {
+            if (std.mem.eql(u8, arg, "-C")) return nonemptyPath(it.next() orelse return null);
+            if (std.mem.startsWith(u8, arg, "-C") and arg.len > 2) return nonemptyPath(arg[2..]);
+            if (arg[0] == '-') {
+                if (std.mem.eql(u8, arg, "-c")) _ = it.next();
+                continue;
+            }
+            break;
+        }
+    }
+    return null;
+}
+
+fn leadingCd(cmd: []const u8) ?[]const u8 {
+    const t = std.mem.trim(u8, cmd, " \t");
+    if (!std.mem.startsWith(u8, t, "cd")) return null;
+    if (t.len < 4 or (t[2] != ' ' and t[2] != '\t')) return null;
+    const rest = std.mem.trimStart(u8, t[2..], " \t");
+    if (rest.len == 0 or std.mem.indexOfScalar(u8, "-$\"'`", rest[0]) != null) return null;
+    var i: usize = 0;
+    while (i < rest.len and std.mem.indexOfScalar(u8, " \t;&|", rest[i]) == null) : (i += 1) {}
+    return nonemptyPath(rest[0..i]);
+}
+
+fn nonemptyPath(p: []const u8) ?[]const u8 {
+    if (p.len == 0 or std.mem.indexOfAny(u8, p, "*?{}") != null) return null;
+    return p;
+}
+
 test "isSharedTreeGit: flags index/tree-mutating git, ignores read-only git" {
     try std.testing.expect(isSharedTreeGit("git add -A"));
     try std.testing.expect(isSharedTreeGit("git commit -m \"wip\""));
@@ -101,4 +143,15 @@ test "isSharedTreeShell: flags mv and recursive rm, leaves everyday commands alo
     try std.testing.expect(!isSharedTreeShell("mv")); // no operands: a usage error, not a tree event
     try std.testing.expect(!isSharedTreeShell("ls -la"));
     try std.testing.expect(!isSharedTreeShell("echo moved"));
+}
+
+test "#851 mutationTarget reads git -C and a leading cd, ignores ambiguous forms" {
+    try std.testing.expectEqualStrings("/tmp/wt", mutationTarget("git -C /tmp/wt cherry-pick abc").?);
+    try std.testing.expectEqualStrings("/tmp/wt", mutationTarget("git -C/tmp/wt reset HEAD~1").?);
+    try std.testing.expectEqualStrings("/tmp/wt", mutationTarget("cd /tmp/wt && git stash").?);
+    try std.testing.expectEqualStrings("sub", mutationTarget("cd sub && git commit -m x").?);
+    try std.testing.expect(mutationTarget("git cherry-pick abc") == null);
+    try std.testing.expect(mutationTarget("git -c user.name=x commit") == null);
+    try std.testing.expect(mutationTarget("cd \"$wt\" && git stash") == null);
+    try std.testing.expect(mutationTarget("cd /tmp/wt*") == null);
 }

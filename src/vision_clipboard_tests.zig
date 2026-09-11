@@ -252,6 +252,16 @@ test "fmtMb: the size in the error line is the size the user sees" {
     try testing.expectEqualStrings("1.4 MB", fmtMb(&buf, 1_470_878));
 }
 
+test "pasteboardHintFromInfo: image flavors vs text-only (#843)" {
+    const hint = clip.pasteboardHintFromInfo;
+    try testing.expectEqual(.image, hint("«class PNGf», 18432"));
+    try testing.expectEqual(.image, hint("TIFF, 2048, furl"));
+    try testing.expectEqual(.image, hint("«class PDF », 880"));
+    try testing.expectEqual(.none, hint("«class utf8», 12"));
+    try testing.expectEqual(.none, hint(""));
+    try testing.expectEqual(.none, hint("missing value"));
+}
+
 test "max_staged_image_bytes: base64 of a full-budget image stays under the 5 MB wire cap" {
     const encoded = std.base64.standard.Encoder.calcSize(@intCast(max_staged_image_bytes));
     try testing.expect(encoded < 5_000_000);

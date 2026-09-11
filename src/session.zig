@@ -105,12 +105,18 @@ pub fn sessionTitle(root: *Agent) []const u8 {
         if (m != .object) continue;
         if (!session_peer.isHumanUserTurn(m)) continue;
         if (m.object.get("content")) |c| switch (c) {
-            .string => |text| return utf8Prefix(std.mem.trim(u8, text, " \t\r\n"), 80),
+            .string => |text| {
+                const trimmed = std.mem.trim(u8, text, " \t\r\n");
+                if (trimmed.len > 0) return utf8Prefix(trimmed, 80);
+            },
             .array => |arr| for (arr.items) |part| {
                 if (part == .object) {
                     const typ = if (part.object.get("type")) |v| (if (v == .string) v.string else "") else "";
-                    if (std.mem.eql(u8, typ, "text")) {
-                        if (part.object.get("text")) |tv| if (tv == .string) return utf8Prefix(std.mem.trim(u8, tv.string, " \t\r\n"), 80);
+                    if (std.mem.eql(u8, typ, "text") or std.mem.eql(u8, typ, "input_text")) {
+                        if (part.object.get("text")) |tv| if (tv == .string) {
+                            const trimmed = std.mem.trim(u8, tv.string, " \t\r\n");
+                            if (trimmed.len > 0) return utf8Prefix(trimmed, 80);
+                        };
                     }
                 }
             },
@@ -461,7 +467,8 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     const ultracode_mode = if (obj.get("ultracode_mode")) |v| (v == .bool and v.bool) else false;
     const goal: ?agent_mod.Goal = if (obj.get("goal")) |v| goalFromValue(v, unixMs(root.io)) else null;
     const parent = if (obj.get("parent")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null;
-    const title = if (obj.get("title")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null;
+    // Older builds missed Responses input_text and persisted the placeholder.
+    const title = if (obj.get("title")) |v| (if (v == .string and v.string.len > 0 and !std.mem.eql(u8, v.string, "Untitled session")) v.string else null) else null;
     // Optional for backward compatibility with sessions written before context
     // metering was persisted. JSON integers are signed; ignore negative/wrong-type
     // values instead of turning a corrupt session into an enormous unsigned count.

@@ -1,3 +1,4 @@
+const testDesktop = require('./test-desktop.cjs');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
@@ -8,10 +9,10 @@ async function runSplitFocus({win,origin,output}) {
   const ids=()=>js(`Array.from(document.querySelectorAll('[data-chat]')).map(e=>Number(e.dataset.chat))`);
   const pointer=async selector=>{
     const point=await js(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
-    wc.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...point});wc.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...point});
+    await testDesktop.testInput(wc, {type:'mouseDown',button:'left',clickCount:1,...point});await testDesktop.testInput(wc, {type:'mouseUp',button:'left',clickCount:1,...point});
     await new Promise(r=>setTimeout(r,100));
   };
-  await wc.loadURL(origin);win.setSize(1440,900);win.show();win.focus();
+  await wc.loadURL(origin);win.setSize(1440,900);testDesktop.present(win);
   await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
   await key('d',{metaKey:true});await key('d',{metaKey:true});
   await wait(`document.querySelectorAll('[data-chat]').length===3`);
@@ -40,7 +41,7 @@ async function runSplitFocus({win,origin,output}) {
     const before=await js(`document.querySelector('[data-chat]').getBoundingClientRect().${direction==='row'?'width':'height'}`);
     const start=await js(`(()=>{const r=document.querySelector('[data-chat-divider]').getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
     const end={...start,[direction==='row'?'x':'y']:start[direction==='row'?'x':'y']+delta};
-    wc.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...start});wc.sendInputEvent({type:'mouseMove',button:'left',...end});wc.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...end});
+    await testDesktop.testInput(wc, {type:'mouseDown',button:'left',clickCount:1,...start});await testDesktop.testInput(wc, {type:'mouseMove',button:'left',...end});await testDesktop.testInput(wc, {type:'mouseUp',button:'left',clickCount:1,...end});
     await new Promise(r=>setTimeout(r,100));
     const after=await js(`document.querySelector('[data-chat]').getBoundingClientRect().${direction==='row'?'width':'height'}`);
     assert.ok(after>before+20,`Mouse divider must resize ${direction} panes: ${before} -> ${after}`);

@@ -327,7 +327,11 @@ fn pasteCb(ctx: ?*anyopaque, dest: []u8) isize {
     if (!vision.visionCapable(c.provider)) return pasteErr(dest, vision.no_vision_message);
     if (builtin.os.tag != .macos) return pasteErr(dest, "clipboard image paste is macOS-only — use /image <path>");
     const gpa = std.heap.page_allocator;
-    const grab = vision.grabClipboardImage(c.io, gpa) orelse return 0;
+    const grab = switch (vision.grabClipboardImage(c.io, gpa)) {
+        .ok => |g| g,
+        .empty => return 0,
+        .failed => |kind| return pasteErr(dest, vision.pasteFailMessage(kind)),
+    };
     const n = @min(grab.path.len, dest.len);
     @memcpy(dest[0..n], grab.path[0..n]);
     if (grab.owned) {

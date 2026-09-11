@@ -6,6 +6,7 @@ function claimDesktopInstance(app, window) {
   const focus = () => {
     const win = window();
     if (!win || win.isDestroyed()) return;
+    if (process.env.GRAFF_ELECTRON_SMOKE) { require('./test-window.cjs').presentWindow(win, app); return; }
     if (win.isMinimized()) win.restore();
     win.show();
     win.focus();

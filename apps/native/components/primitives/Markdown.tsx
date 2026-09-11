@@ -157,7 +157,7 @@ export default function Markdown({
     [onOpenPath],
   );
   return (
-    <div className="min-w-0 text-[13.5px] leading-[1.7] text-ink [&_pre]:text-[12px] [&_pre]:leading-[1.65]">
+    <div className="min-w-0 [overflow-wrap:anywhere] text-[13.5px] leading-[1.7] text-ink [&_pre]:text-[12px] [&_pre]:leading-[1.65]">
       <Streamdown
         mode={asDocument ? "static" : "streaming"}
         isAnimating={streaming}

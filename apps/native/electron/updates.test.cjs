@@ -28,11 +28,23 @@ test('downloads in the background but never interrupts a running task automatica
   expect(f.updates.state().status).toBe('installing');
 });
 test('development and disk-image builds do not make update requests', async () => {
-  const f = fixture({ available: false });
+  const f = fixture({ available: false, unavailableReason: 'unpackaged' });
   await f.updates.check(true);
   expect(f.checks()).toBe(0);
   expect(f.updates.state().status).toBe('unavailable');
+  expect(f.updates.state().automatic).toBe(false);
+  expect(f.updates.state().message).toMatch(/not a packaged Codegraff app/);
   expect(() => f.updates.restart()).toThrow('No downloaded update');
+});
+
+test('availability names the blocking condition instead of a signing warning (#829)', () => {
+  const { updateAvailability, unavailableMessage } = require('./updates.cjs');
+  expect(updateAvailability({ app: { isPackaged: false }, resources: '/tmp', env: {}, platform: 'darwin', execPath: '/Apps/Codegraff' }).reason).toBe('unpackaged');
+  expect(updateAvailability({ app: { isPackaged: true }, resources: '/tmp', env: {}, platform: 'linux', execPath: '/usr/bin/codegraff' }).reason).toBe('platform');
+  expect(updateAvailability({ app: { isPackaged: true }, resources: '/tmp', env: {}, platform: 'darwin', execPath: '/Volumes/Codegraff/Codegraff' }).reason).toBe('volume');
+  expect(updateAvailability({ app: { isPackaged: true }, resources: '/tmp', env: { GRAFF_ELECTRON_SMOKE: '1' }, platform: 'darwin', execPath: '/Apps/Codegraff' }).reason).toBe('smoke');
+  expect(unavailableMessage('volume')).toMatch(/disk image/);
+  expect(unavailableMessage('config')).toMatch(/update configuration/);
 });
 test('offline checks recover and do not expose raw request details in the UI', async () => {
   const f = fixture();

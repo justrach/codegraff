@@ -112,6 +112,7 @@ test {
     _ = @import("layout_cache.zig");
     _ = @import("selection.zig");
     _ = @import("selection_tests.zig");
+    _ = @import("issue_845_tests.zig");
     _ = @import("theme_tint.zig");
     _ = @import("hover.zig");
     _ = @import("hover_tests.zig");

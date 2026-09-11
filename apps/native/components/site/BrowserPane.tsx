@@ -674,7 +674,7 @@ export default function BrowserPane({
           onChange={(e) => setUrl(e.target.value)}
           onFocus={(e) => e.currentTarget.select()}
           spellCheck={false}
-          placeholder="URL"
+          placeholder="Search or enter a URL"
           aria-label="Address"
           title="Address (Cmd/Ctrl+L from the page)"
           className="h-7 min-w-0 flex-1 rounded-[7px] bg-field px-2 font-mono text-[12px] text-ink shadow-hairline outline-none placeholder:text-ink-3 focus:bg-hover"

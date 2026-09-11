@@ -1,3 +1,4 @@
+const testDesktop = require('./test-desktop.cjs');
 const { BrowserWindow } = require('electron');
 const { installWindowState } = require('./window-state.cjs');
 const assert = require('node:assert/strict');
@@ -5,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function runStressVisuals({win: fixtureWindow, origin, output, fullscreen = true}) {
-  const win = new BrowserWindow({width:1000,height:760,show:true,titleBarStyle:'hiddenInset',webPreferences:{preload:path.join(__dirname,'preload.cjs'),sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});
+  const win = testDesktop.createWindow({width:1000,height:760,titleBarStyle:'hiddenInset',webPreferences:{preload:path.join(__dirname,'preload.cjs'),sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});
   installWindowState(win);
   const js = code => win.webContents.executeJavaScript(code);
   const wait = async expression => {for(let i=0;i<200;i++){if(await js(expression))return;await sleep(50);}throw Error(`Stress timeout: ${expression}`);};
@@ -17,7 +18,7 @@ async function runStressVisuals({win: fixtureWindow, origin, output, fullscreen 
     assert.equal(r.overflow,false);assert.ok(r.top>=0&&r.bottom<=r.height,JSON.stringify(r));
   };
   try {
-    fixtureWindow.hide();win.show();win.focus();await win.loadURL(`${origin}/visual-tests/stress`);
+    fixtureWindow.hide();testDesktop.present(win);await win.loadURL(`${origin}/visual-tests/stress`);
     await wait(`!!document.querySelector('[data-tool-summary]')`);
     for(const theme of ['light','dark','codegraff']) {
       await click(`[data-stress-theme="${theme}"]`);await select('tools');
@@ -49,9 +50,9 @@ async function runStressVisuals({win: fixtureWindow, origin, output, fullscreen 
     await click('[data-stream]');
     const titleHeight=()=>js(`document.querySelector('[data-desktop-titlebar]').getBoundingClientRect().height`);
     assert.equal(await titleHeight(),36);
-    const checkedFullscreen = fullscreen && process.platform === 'darwin';
+    const checkedFullscreen = fullscreen && process.platform === 'darwin' && require('./test-window.cjs').foregroundCheck('native fullscreen and reload');
     if(checkedFullscreen) {
-      win.show(); win.focus(); win.webContents.focus();
+      testDesktop.present(win); await testDesktop.focusTestPage(win.webContents);
       win.setFullScreen(true);await wait(`document.documentElement.dataset.desktopFullscreen==='true'`);
       assert.equal(await titleHeight(),0);await bounds();
       fs.writeFileSync(path.join(output,'stress-fullscreen.png'),(await win.webContents.capturePage()).toPNG());
@@ -59,7 +60,7 @@ async function runStressVisuals({win: fixtureWindow, origin, output, fullscreen 
       win.setFullScreen(false);await wait(`document.documentElement.dataset.desktopFullscreen==='false'`);assert.equal(await titleHeight(),36);
     }
     fs.writeFileSync(path.join(output,'stress-results.json'),JSON.stringify({passed:['5000 tools','bounded output','1000 messages','unbroken input','long markdown','stream reading position',...(checkedFullscreen?['fullscreen and reload']:[])],fullscreen:checkedFullscreen?'passed':'not run',metrics},null,2));
-    console.log('Stress visual checks passed: long tools/output/history/text, reading position. Fullscreen:', checkedFullscreen?'passed':'not run in this suite');
-  } finally {win.destroy();fixtureWindow.show();fixtureWindow.focus();}
+    console.log('Stress visual checks passed: long tools/output/history/text, reading position. Fullscreen:', checkedFullscreen?'passed':'requires GRAFF_TEST_FOREGROUND=1');
+  } finally {win.destroy();testDesktop.present(fixtureWindow);}
 }
 module.exports={runStressVisuals};

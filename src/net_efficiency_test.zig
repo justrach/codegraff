@@ -105,9 +105,7 @@ test "MCP modern connect + next list reuse one TCP connection" {
     var done: std.atomic.Value(bool) = .init(false);
     var srv: ListSrv = .{ .accepts = &accepts, .posts = &posts, .done = &done };
     var fut = io.async(ListSrv.run, .{ &srv, io, &listener });
-    defer fut.await(io);
-    defer done.store(true, .release);
-    defer if (std.Io.net.IpAddress.connect(&listener.socket.address, io, .{ .mode = .stream })) |s| s.close(io) else |_| {};
+    defer joinReuseServer(io, &listener, &done, &fut);
 
     var url_buf: [64]u8 = undefined;
     const url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/mcp", .{listener.socket.address.getPort()});
@@ -228,6 +226,61 @@ test "MCP HTTP no longer omits Accept-Encoding" {
     const omit = "accept_encoding = " ++ ".omit";
     try std.testing.expect(std.mem.indexOf(u8, src, omit) == null);
     try std.testing.expect(std.mem.indexOf(u8, src, "readerDecompressing") != null);
+}
+
+/// #849: Zig runs `defer` in reverse source order. Stop the accept loop
+/// before the wake connect, then join. A wake-before-stop leaves the
+/// server blocked on `accept` with no further connection. Extra wakes
+/// after 2s keep a failed cleanup from stalling `zig build test`.
+fn joinReuseServer(io: Io, listener: *std.Io.net.Server, done: *std.atomic.Value(bool), fut: anytype) void {
+    done.store(true, .release);
+    if (std.Io.net.IpAddress.connect(&listener.socket.address, io, .{ .mode = .stream })) |s| {
+        s.close(io);
+    } else |_| {}
+    const watchdog = struct {
+        fn run(io_: Io, finished: *std.atomic.Value(bool), listener_: *std.Io.net.Server) void {
+            var i: u32 = 0;
+            while (i < 40) : (i += 1) {
+                if (finished.load(.acquire)) return;
+                io_.sleep(.fromMilliseconds(50), .awake) catch return;
+            }
+            if (std.Io.net.IpAddress.connect(&listener_.socket.address, io_, .{ .mode = .stream })) |s| {
+                s.close(io_);
+            } else |_| {}
+        }
+    };
+    var finished: std.atomic.Value(bool) = .init(false);
+    var wd = io.async(watchdog.run, .{ io, &finished, listener });
+    fut.await(io);
+    finished.store(true, .release);
+    wd.await(io);
+}
+
+test "MCP reuse teardown stops the listener before the wake accept" {
+    const src = @embedFile("net_efficiency_test.zig");
+    const helper = std.mem.indexOf(u8, src, "fn joinReuseServer(").?;
+    const stop = std.mem.indexOfPos(u8, src, helper, "done.store(true, .release)").?;
+    const wake = std.mem.indexOfPos(u8, src, stop, "IpAddress.connect(&listener.socket.address").?;
+    const join = std.mem.indexOfPos(u8, src, wake, "fut.await(io)").?;
+    try std.testing.expect(stop < wake);
+    try std.testing.expect(wake < join);
+}
+
+test "#849: blocked accept loop joins within a bound after stop-then-wake" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    var addr = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:0");
+    var listener = try std.Io.net.IpAddress.listen(&addr, io, .{});
+    defer listener.deinit(io);
+    var accepts: std.atomic.Value(u8) = .init(0);
+    var posts: std.atomic.Value(u8) = .init(2);
+    var done: std.atomic.Value(bool) = .init(false);
+    var srv: ListSrv = .{ .accepts = &accepts, .posts = &posts, .done = &done };
+    var fut = io.async(ListSrv.run, .{ &srv, io, &listener });
+    const t0 = std.Io.Timestamp.now(io, .awake).nanoseconds;
+    joinReuseServer(io, &listener, &done, &fut);
+    const ms = @divTrunc(std.Io.Timestamp.now(io, .awake).nanoseconds - t0, std.time.ns_per_ms);
+    try std.testing.expect(ms < 2000);
 }
 
 fn gzipAlloc(gpa: std.mem.Allocator, plain: []const u8) ![]u8 {

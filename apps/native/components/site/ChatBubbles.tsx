@@ -5,6 +5,7 @@ import Markdown from "@/components/primitives/Markdown";
 import ThinkingState from "@/components/primitives/ThinkingState";
 import ToolChips, { type LiveDiff } from "@/components/primitives/ToolChips";
 import TurnActivity from "./TurnActivity";
+import McpAppResult from "./McpAppResult";
 import { pinScrollerTail } from "@/lib/follow-scroll";
 import { turnBlocks, type AssistantTurn } from "@/lib/acp";
 import { createSmoothStream } from "@/lib/smooth-stream";
@@ -52,18 +53,36 @@ const ToolGroup = memo(function ToolGroup({ tools, diffs, onOpenPath }: {
     detailMono: tool.icon === "run" || tool.icon === "write", detail: tool.detail,
     path: tool.path, status: tool.status, startedAt: tool.startedAt, elapsedMs: tool.elapsedMs,
   }));
-  return <ToolChips rows={rows} diffs={diffs} onOpenPath={onOpenPath} />;
+  return <><ToolChips rows={rows} diffs={diffs} onOpenPath={onOpenPath} />
+    {tools.filter(tool=>tool.mcpAppId).map(tool=><McpAppResult key={tool.id} id={tool.mcpAppId!} />)}</>;
 }, (previous, next) => previous.diffs === next.diffs && previous.onOpenPath === next.onOpenPath &&
   previous.tools.length === next.tools.length && previous.tools.every((tool, index) => tool === next.tools[index]));
 
+function PastedImage({ name }: { name: string }) {
+  const [failed, setFailed] = useState(false);
+  const src = `/api/attach?name=${encodeURIComponent(name)}`;
+  if (failed) return <span className="block text-xs text-ink-3">Image no longer available</span>;
+  return (
+    <a href={src} target="_blank" rel="noreferrer" aria-label="Open pasted image" className="block my-2">
+      {/* Local staged pixels: no remote image optimizer or expiring object URL. */}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={src} alt="Pasted image" loading="lazy" onError={() => setFailed(true)}
+        className="block max-h-80 max-w-full rounded-lg object-contain" />
+    </a>
+  );
+}
+
 export const UserBubble = memo(function UserBubble({ text }: { text: string }) {
+  const parts = text.split(/(@\[[^\]\n]*\/graff-native-attachments\/[^/\]\n]+\.(?:png|jpe?g|gif|webp|avif|bmp)\])/gi);
   return (
     <div className="flex justify-end pl-10 sm:pl-24" style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
       <div
         className="rounded-xl px-3.5 py-2 min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[13px] leading-relaxed text-ink shadow-hairline"
         style={{ background: "color-mix(in oklab, var(--accent) 12%, var(--surface))" }}
       >
-        {text}
+        {parts.map((part, index) => index % 2 === 1
+          ? <PastedImage key={`${index}-${part}`} name={part.slice(part.lastIndexOf("/") + 1, -1)} />
+          : part)}
       </div>
     </div>
   );
@@ -76,6 +95,7 @@ export const AssistantBody = memo(function AssistantBody({
   scroller,
   following,
   reasoningLabel,
+  snapshot,
 }: {
   turn: AssistantTurn;
   onOpenPath?: (path: string) => void;
@@ -83,6 +103,7 @@ export const AssistantBody = memo(function AssistantBody({
   scroller?: RefObject<HTMLDivElement | null>;
   following: boolean;
   reasoningLabel?: string;
+  snapshot?: boolean;
 }) {
   const thinking = turn.status === "thinking";
   const live = thinking || turn.status === "streaming";
@@ -111,7 +132,7 @@ export const AssistantBody = memo(function AssistantBody({
   const lastBlock = blocks[blocks.length - 1];
 
   return (
-    <article data-turn-status={turn.status} aria-busy={live} className="min-w-0" style={{ overflowAnchor: "none", animation: "fade-in 280ms ease both" }}>
+    <article data-turn-status={turn.status} aria-busy={live} className="min-w-0 [overflow-wrap:anywhere]" style={{ overflowAnchor: "none", animation: "fade-in 280ms ease both" }}>
       {((thinking && turn.activityKind === "agent_thought_chunk") || reasoningRows.length > 0 || (turn.thoughtMs ?? 0) >= 1500) && (
         <Reasoning
           variant="Reasoning"
@@ -137,7 +158,7 @@ export const AssistantBody = memo(function AssistantBody({
           </div>
         ),
       )}
-      <TurnActivity turn={turn} />
+      <TurnActivity turn={turn} snapshot={snapshot} />
       {turn.error && (
         <p role="alert" className="mt-4 max-w-[620px] text-[13.5px] leading-[1.65] text-red">{turn.error}</p>
       )}

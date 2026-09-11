@@ -1,4 +1,6 @@
 const { app, BrowserWindow, ipcMain, Menu, dialog } = require('electron');
+const testDesktop = process.env.GRAFF_ELECTRON_SMOKE ? require('./test-desktop.cjs') : null;
+const createWindow = testDesktop?.createWindow ?? (options => new BrowserWindow(options));
 const path = require('node:path');
 const { randomBytes } = require('node:crypto');
 const { treeSample, intervalSampler } = require('./process-metrics.cjs');
@@ -35,6 +37,7 @@ async function metrics() {
   return { rssMiB, cpuPercent, processes, browsers: browser.liveCount };
 }
 async function activity() {
+  if (testDesktop && !testDesktop.foreground) throw Error('Native activity checks require GRAFF_TEST_FOREGROUND=1');
   const snapshot = await metrics();
   if (process.platform === 'darwin') {
     const native = require(path.join(resources, 'native/activity.node'));
@@ -48,8 +51,12 @@ function trusted(event) {
 }
 function stop() {
   if (quitting) return; quitting = true;
+  let unsafe = false;
+  try { testDesktop?.assertSafe(); } catch (error) { console.error(error); unsafe = true; }
   terminals?.closeAll();
   profiler?.stop(); browser?.closeAll(); automation?.server.close(); backend?.stop();
+  testDesktop?.cleanup();
+  if (unsafe) app.exit(1);
 }
 app.on('before-quit', stop);
 app.on('window-all-closed', () => app.quit());
@@ -59,7 +66,7 @@ process.on('SIGINT', () => app.quit());
 app.whenReady().then(async () => {
   app.setAccessibilitySupportEnabled(true);
   const token = randomBytes(32).toString('hex');
-  win = new BrowserWindow({ width: 1440, height: 920, minWidth: 900, minHeight: 600,
+  win = createWindow({ width: 1440, height: 920, minWidth: 900, minHeight: 600,
     title: 'Codegraff', titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 11 }, backgroundColor: '#fafaf9', show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), partition: 'persist:app',
       contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: !process.env.GRAFF_ELECTRON_SMOKE } });
@@ -131,7 +138,18 @@ app.whenReady().then(async () => {
     win.webContents.focus();
     win.webContents.send('browser-event', { chat: tab.chat, type: 'pin', pin });
   });
-  installExternalLinks(win.webContents, backend.origin);
+  const linkSettings = require('./link-settings.cjs').linkSettings(app.getPath('userData'));
+  ipcMain.handle('link-settings', (event, action, value) => {
+    trusted(event);
+    if (action === 'load') return linkSettings.load();
+    if (action === 'save') return linkSettings.save(value);
+    throw new Error('Unknown link settings action');
+  });
+  installExternalLinks(win.webContents, backend.origin, async url => {
+    if (await linkSettings.load() === 'graff') {
+      if (!win.isDestroyed()) win.webContents.send('browser-event', { type: 'open-link', url });
+    } else await require('electron').shell.openExternal(url);
+  });
   win.on('minimize', () => { if (browser.visible) browser.hide(browser.visible); });
   win.on('restore', () => win.webContents.send('browser-event', { type: 'layout' }));
   const updateMenu = require('./updates.cjs').installUpdates({ app, win, ipcMain, trusted, resources });
@@ -156,6 +174,8 @@ app.whenReady().then(async () => {
     ] },
     { role: 'windowMenu' },
   ]));
-  await win.loadURL(backend.origin); win.setWindowButtonVisibility(true); win.show(); profiler.record('ui-ready');
+  await win.loadURL(backend.origin); win.setWindowButtonVisibility(true);
+  if (testDesktop) testDesktop.present(win); else win.show();
+  profiler.record('ui-ready');
   if (process.env.GRAFF_ELECTRON_SMOKE) require(process.env.GRAFF_SMOKE_LAUNCH_ONLY ? './smoke-launch.cjs' : './smoke.cjs').run({ win, browser, automation, backend, metrics, activity, computer, profiler }).then(() => app.quit()).catch(error => { console.error(error); stop(); app.exit(1); });
 }).catch(error => { console.error(error); stop(); app.exit(1); });

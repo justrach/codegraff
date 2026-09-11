@@ -37,14 +37,27 @@ export type TranscriptMsg =
   | { role: "user"; text: string }
   | { role: "assistant"; turn: AssistantTurn };
 
-export type SessionResponse = StoredSession & { messages?: unknown[]; presentation?: "transcript-v1"; transcript?: TranscriptMsg[] };
+export type SessionResponse = StoredSession & {
+  messages?: unknown[];
+  presentation?: "transcript-v1";
+  transcript?: TranscriptMsg[];
+  /** Saved file only — not a live REPL attach (#839). */
+  view?: "snapshot";
+  execution?: "unknown";
+};
 
 /** New servers project the existing GUI transcript before crossing into the
  * renderer. Keep raw responses readable for older servers and local fixtures. */
-export function sessionFromResponse(body: SessionResponse): { meta: StoredSession; messages: TranscriptMsg[] } {
-  const { messages, presentation, transcript, ...meta } = body;
-  return { meta, messages: presentation === "transcript-v1" && Array.isArray(transcript)
-    ? transcript : transcriptFromMessages(messages ?? [], meta.model ?? undefined) };
+export function sessionFromResponse(body: SessionResponse): { meta: StoredSession; messages: TranscriptMsg[]; snapshot: boolean } {
+  const { messages, presentation, transcript, view: _view, execution: _execution, ...meta } = body;
+  return {
+    meta,
+    // A saved file is never a live REPL attach. The GUI must not infer
+    // that commentary or a successful load means the other surface finished (#839).
+    snapshot: true,
+    messages: presentation === "transcript-v1" && Array.isArray(transcript)
+      ? transcript.map(message => message.role === "assistant" ? { ...message, turn: { ...message.turn, status: "snapshot" } } : message) : transcriptFromMessages(messages ?? [], meta.model ?? undefined),
+  };
 }
 
 const BASE = "/api/sessions";
@@ -102,7 +115,7 @@ export async function listSessions(root?: string): Promise<StoredSession[]> {
   return page.sessions;
 }
 
-export async function loadSession(name: string, root?: string, signal?: AbortSignal): Promise<{ meta: StoredSession; messages: TranscriptMsg[] }> {
+export async function loadSession(name: string, root?: string, signal?: AbortSignal): Promise<{ meta: StoredSession; messages: TranscriptMsg[]; snapshot: boolean }> {
   const res = await fetch(`${BASE}${withRoot({ name, root, view: "transcript" })}`, { cache: "no-store", signal });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
@@ -223,10 +236,11 @@ export function transcriptFromMessages(raw: unknown[], model?: string): Transcri
   const out: TranscriptMsg[] = [];
   let turn: AssistantTurn | null = null;
   const flush = () => {
-    if (turn) out.push({ role: "assistant", turn: { ...turn, status: "done" } });
+    if (!turn) return;
+    out.push({ role: "assistant", turn: { ...turn, status: "snapshot" } });
     turn = null;
   };
-  const current = (): AssistantTurn => (turn ??= { ...emptyTurn(), model, status: "done" });
+  const current = (): AssistantTurn => (turn ??= { ...emptyTurn(), model, status: "snapshot" });
 
   for (const item of raw) {
     if (!item || typeof item !== "object") continue;
@@ -274,7 +288,7 @@ export function transcriptFromMessages(raw: unknown[], model?: string): Transcri
           name: label,
           icon: iconFor(name),
           chip: chip === name ? "" : chip,
-          status: "ok",
+          status: "running",
           detail: summarizeInput(name, input),
           path,
         };
@@ -290,7 +304,7 @@ export function transcriptFromMessages(raw: unknown[], model?: string): Transcri
       const failed = /^(error|failed|denied)\b/i.test(text);
       t.tools = t.tools.map((row, i) =>
         i === idx
-          ? { ...row, status: failed ? "error" : row.status, detail: text ? [...row.detail, { text: firstLine(text) }] : row.detail }
+          ? { ...row, status: failed ? "error" : "ok", detail: text ? [...row.detail, { text: firstLine(text) }] : row.detail }
           : row,
       );
     }

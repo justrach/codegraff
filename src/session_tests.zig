@@ -88,6 +88,126 @@ test "slugifyTitle makes a filesystem-safe slug from an AI title" {
     try std.testing.expectEqualStrings("", session.slugifyTitle(a, "🎉 ✨")); // symbol-only → "" (keeps the session-<ts> name)
 }
 
+test "sessionTitle reads user text on both wires and skips empty or peer turns" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var root: Agent = undefined;
+    root.session_title = null;
+    const cases = [_][]const u8{
+        \\[{"role":"user","content":"  Fix the sidebar title  "}]
+        ,
+        \\[{"role":"user","content":[{"type":"text","text":"Fix the sidebar title"}]}]
+        ,
+        \\[{"role":"user","type":"message","content":[{"type":"input_image","image_url":"data:image/png;base64,AA=="},{"type":"input_text","text":"  "},{"type":"input_text","text":"Fix the sidebar title"}]}]
+        ,
+        \\[{"role":"user","content":[{"type":"input_text","text":"[peer] 1 unread"}]},{"role":"user","content":" \n "},{"role":"user","content":[{"type":"input_text","text":"Fix the sidebar title"}]}]
+        ,
+    };
+    for (cases) |raw| {
+        root.messages = (try std.json.parseFromSliceLeaky(Value, a, raw, .{})).array;
+        try std.testing.expectEqualStrings("Fix the sidebar title", session.sessionTitle(&root));
+    }
+    root.session_title = "Chosen title";
+    try std.testing.expectEqualStrings("Chosen title", session.sessionTitle(&root));
+    root.session_title = null;
+    root.messages = std.json.Array.init(a);
+    try std.testing.expectEqualStrings("Untitled session", session.sessionTitle(&root));
+}
+
+test "#830 title skips image-only blank malformed and nonhuman turns" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var root: Agent = undefined;
+    root.session_title = null;
+    root.messages = (try std.json.parseFromSliceLeaky(Value, a,
+        \\[null,7,{}, {"role":4,"content":"bad role"},
+        \\{"role":"assistant","content":"not human"},
+        \\{"role":"tool","content":"tool output"},
+        \\{"role":"user","content":[{"type":"input_text","text":"[peer] 1 unread"}]},
+        \\{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AA=="}]},
+        \\{"role":"user","content":" \t\r\n "},
+        \\{"role":"user","content":false},
+        \\{"role":"user","content":[null,3,{}, {"type":7,"text":"wrong type"},
+        \\{"type":"input_text","text":42},{"type":"input_text"},
+        \\{"type":"input_text","text":" \n "},{"type":"output_text","text":"wrong wire"}]},
+        \\{"role":"user","content":[{"type":"input_text","text":"  Human request  "}]},
+        \\{"role":"user","content":"later request"}]
+    , .{})).array;
+    try std.testing.expectEqualStrings("Human request", session.sessionTitle(&root));
+    root.messages.items.len -= 2;
+    try std.testing.expectEqualStrings("Untitled session", session.sessionTitle(&root));
+}
+
+test "#830 title preserves UTF-8 at the 80-byte boundary" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var root: Agent = undefined;
+    root.session_title = null;
+    const As = struct {
+        fn get(comptime n: usize) [n]u8 {
+            var buf: [n]u8 = undefined;
+            @memset(&buf, 'a');
+            return buf;
+        }
+    };
+    const a76 = As.get(76);
+    const a77 = As.get(77);
+    const a78 = As.get(78);
+    const a79 = As.get(79);
+    const cases = .{
+        .{ a78 ++ "é" ++ "suffix", a78 ++ "é" },
+        .{ a79 ++ "é" ++ "suffix", a79 },
+        .{ a77 ++ "界" ++ "suffix", a77 ++ "界" },
+        .{ a78 ++ "界" ++ "suffix", a78 },
+        .{ a76 ++ "🎉" ++ "suffix", a76 ++ "🎉" },
+        .{ a79 ++ "🎉" ++ "suffix", a79 },
+    };
+    inline for (cases) |case| {
+        root.messages = (try std.json.parseFromSliceLeaky(Value, a, "[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"  " ++ case[0] ++ "  \"}]}]", .{})).array;
+        const title = session.sessionTitle(&root);
+        try std.testing.expectEqualStrings(case[1][0..], title);
+        try std.testing.expect(std.unicode.utf8ValidateSlice(title));
+    }
+}
+
+test "#830 save serializes fallback and chosen titles without losing chat" {
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    session_writer.resetForTest();
+    defer session_writer.resetForTest();
+    session_transcript.resetForTest();
+    defer session_transcript.resetForTest();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try fixture(gpa, a, std.testing.io);
+    defer gpa.destroy(f);
+    f.root.session_title = null;
+    f.root.messages = (try std.json.parseFromSliceLeaky(Value, a,
+        \\[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AA=="}]},
+        \\{"role":"user","content":[{"type":"input_text","text":"  Preserve the conversation  "}]},
+        \\{"role":"assistant","content":"The complete reply"}]
+    , .{})).array;
+    for ([_]?[]const u8{ null, "Explicit chosen title" }) |chosen| {
+        f.root.session_title = chosen;
+        try session.saveSessionTo(&f.root, a, tmp.dir, "wf");
+        session.flushSaves();
+        const bytes = try readSaved(tmp.dir, gpa);
+        defer gpa.free(bytes);
+        const saved = try std.json.parseFromSliceLeaky(Value, a, bytes, .{ .allocate = .alloc_always });
+        try std.testing.expectEqualStrings(chosen orelse "Preserve the conversation", saved.object.get("title").?.string);
+        const messages = saved.object.get("messages").?.array.items;
+        try std.testing.expectEqual(@as(usize, 3), messages.len);
+        try std.testing.expectEqualStrings("input_image", messages[0].object.get("content").?.array.items[0].object.get("type").?.string);
+        try std.testing.expectEqualStrings("  Preserve the conversation  ", messages[1].object.get("content").?.array.items[0].object.get("text").?.string);
+        try std.testing.expectEqualStrings("The complete reply", messages[2].object.get("content").?.string);
+    }
+}
+
 test "hasMeaningfulState gates the blank-draft write (#184)" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();

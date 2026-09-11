@@ -66,13 +66,19 @@ try {
     await chmod(sourceBinary, 0o755);
   }
 
+  const sdkManifest = JSON.parse(await readFile(join(SDK_ROOT, "package.json"), "utf8"));
   const nativeTarballs = {};
   for (const [target, packageName] of ALL_TARGETS) {
+    // #834: fixtures must use the SDK's optionalDependency pin, not the
+    // SDK package version. A mismatch lets npm resolve a released binary.
+    const version = sdkManifest.optionalDependencies?.[packageName];
+    if (!version) throw new Error(`#834: SDK optionalDependencies missing ${packageName}`);
     const output = run(process.execPath, [
       join(HERE, "package-platform.mjs"),
       "--target", target,
       "--binary", sourceBinary,
       "--out", packages,
+      "--version", version,
     ], SDK_ROOT);
     const { packageDir } = JSON.parse(output);
     nativeTarballs[packageName] = pack(packageDir, tarballs);
@@ -88,7 +94,8 @@ try {
     ),
   };
   await writeFile(join(consumer, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-  npmRun(["install", "--ignore-scripts", "--no-audit", "--no-fund"], consumer);
+  // --offline: a version miss must fail, not pull a released native package.
+  npmRun(["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund"], consumer);
 
   const smoke = `
 import { Harness } from "@codegraff/sdk";
@@ -104,6 +111,7 @@ console.log("packed SDK resolved and ran its optional native package with no gra
   const output = run(process.execPath, [join(consumer, "smoke.mjs")], consumer, {
     ...process.env,
     CLEAN_PATH: emptyPath,
+    GRAFF_NO_TELEMETRY: "1",
   });
   process.stdout.write(output);
 
@@ -127,6 +135,7 @@ console.log("packed SDK rejects an incompatible optional native package");
   process.stdout.write(run(process.execPath, [join(consumer, "mismatch.mjs")], consumer, {
     ...process.env,
     CLEAN_PATH: emptyPath,
+    GRAFF_NO_TELEMETRY: "1",
   }));
 } finally {
   await rm(temp, { recursive: true, force: true });

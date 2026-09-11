@@ -6,10 +6,14 @@ from __future__ import annotations
 import importlib.util
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from unittest import mock
 
 
@@ -95,6 +99,136 @@ time.sleep(60)
             str(call.args[0]) for call in printer.call_args_list if call.args
         )
         self.assertIn("still running: test-tui-hover.py", joined)
+
+
+@unittest.skipUnless(os.name == "posix", "POSIX clipboard wrappers")
+class ClipboardTests(unittest.TestCase):
+    def clipboard(self, env, command, data=None):
+        fixture_dir = Path(env["PATH"].split(os.pathsep)[0])
+        executable = shutil.which(command[0], path=env["PATH"])
+        self.assertIsNotNone(executable)
+        self.assertEqual(Path(executable).parent, fixture_dir)
+        return subprocess.run(
+            command, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env, check=True, timeout=5,
+        ).stdout
+
+    def test_copy_paste_preserves_exact_bytes(self) -> None:
+        payload = b"\x00\xffclipboard\r\nUTF-8: \xe2\x98\x83\n\n"
+        with tuiguard.private_clipboard() as env:
+            for copy, paste in (
+                (["pbcopy"], ["pbpaste"]),
+                (["xclip", "-selection", "clipboard"],
+                 ["xclip", "-selection", "clipboard", "-o"]),
+                (["pbcopy"], ["xclip", "-selection", "clipboard", "-o"]),
+                (["xclip", "-selection", "clipboard"], ["pbpaste"]),
+            ):
+                for data in (payload, b""):
+                    with self.subTest(copy=copy, paste=paste, data=data):
+                        self.clipboard(env, copy, data)
+                        self.assertEqual(self.clipboard(env, paste), data)
+
+    def test_xclip_quiet_stdin_reads_instead_of_blocking(self) -> None:
+        # Hover (and any probe that only finds xclip) invokes it with a quiet
+        # stdin. Treat that as a read; blocking on stdin hung the paint sweep.
+        with tuiguard.private_clipboard() as env:
+            self.clipboard(env, ["pbcopy"], b"seeded")
+            read_end, write_end = os.pipe()
+            try:
+                started = time.monotonic()
+                out = subprocess.run(
+                    ["xclip", "-selection", "clipboard"],
+                    stdin=read_end,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=env,
+                    check=True,
+                    timeout=2,
+                ).stdout
+                self.assertLess(time.monotonic() - started, 0.5)
+                self.assertEqual(out, b"seeded")
+            finally:
+                os.close(read_end)
+                os.close(write_end)
+
+    def test_concurrent_contexts_do_not_interfere(self) -> None:
+        barrier = Barrier(2)
+
+        def roundtrip(payload):
+            with tuiguard.private_clipboard() as env:
+                self.clipboard(env, ["pbcopy"], payload)
+                barrier.wait(timeout=10)
+                self.assertEqual(self.clipboard(env, ["pbpaste"]), payload)
+                return env["PATH"]
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(roundtrip, data) for data in (b"first", b"second")]
+            paths = [future.result(timeout=20) for future in futures]
+        self.assertNotEqual(*paths)
+
+    def test_context_cleanup_and_process_path_unchanged(self) -> None:
+        original_path = os.environ.get("PATH")
+        for exceptional in (False, True):
+            with self.subTest(exceptional=exceptional):
+                try:
+                    with tuiguard.private_clipboard() as env:
+                        fixture_dir = Path(env["PATH"].split(os.pathsep)[0])
+                        self.assertTrue(fixture_dir.is_dir())
+                        self.assertEqual(os.environ.get("PATH"), original_path)
+                        self.clipboard(env, ["pbcopy"], b"cleanup")
+                        if exceptional:
+                            raise RuntimeError("context exit")
+                except RuntimeError as exc:
+                    self.assertEqual(str(exc), "context exit")
+                self.assertFalse(fixture_dir.exists())
+                self.assertEqual(os.environ.get("PATH"), original_path)
+
+    def test_nested_run_probe_environments_remain_separate(self) -> None:
+        original_path = os.environ.get("PATH")
+        environments = []
+
+        def run_command(argv, timeout, *, env):
+            environments.append(env)
+            payload = Path(argv[1]).name.encode()
+            self.clipboard(env, ["pbcopy"], payload)
+            if len(environments) == 1:
+                tuiguard.run_probe("inner.py", "/nonexistent/graff", timeout)
+                self.assertIsNot(env, environments[1])
+                self.assertNotEqual(env["PATH"], environments[1]["PATH"])
+            self.assertEqual(self.clipboard(env, ["pbpaste"]), payload)
+            self.assertEqual(os.environ.get("PATH"), original_path)
+            return 0, "", 0.0, False
+
+        with mock.patch.object(tuiguard, "run_command", side_effect=run_command):
+            tuiguard.run_probe("outer.py", "/nonexistent/graff", 1.0)
+        self.assertEqual(len(environments), 2)
+        for env in environments:
+            self.assertFalse(Path(env["PATH"].split(os.pathsep)[0]).exists())
+        self.assertEqual(os.environ.get("PATH"), original_path)
+
+    def test_parallel_run_probe_environments_remain_separate(self) -> None:
+        original_path = os.environ.get("PATH")
+        barrier = Barrier(2)
+
+        def run_command(argv, timeout, *, env):
+            payload = Path(argv[1]).name.encode()
+            self.clipboard(env, ["pbcopy"], payload)
+            barrier.wait(timeout=10)
+            self.assertEqual(self.clipboard(env, ["pbpaste"]), payload)
+            self.assertEqual(os.environ.get("PATH"), original_path)
+            return 0, env["PATH"], 0.0, False
+
+        with mock.patch.object(tuiguard, "run_command", side_effect=run_command):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [
+                    pool.submit(tuiguard.run_probe, name, "/nonexistent/graff", 1.0)
+                    for name in ("first.py", "second.py")
+                ]
+                results = [future.result(timeout=20) for future in futures]
+        self.assertNotEqual(results[0][2], results[1][2])
+        for result in results:
+            self.assertFalse(Path(result[2].split(os.pathsep)[0]).exists())
+        self.assertEqual(os.environ.get("PATH"), original_path)
 
 
 if __name__ == "__main__":

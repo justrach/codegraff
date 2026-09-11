@@ -437,11 +437,12 @@ def assert_midturn_requests(mock: CodexMock) -> None:
     if first.connection_id == final.connection_id:
         raise AssertionError("midturn: final request reused the pre-compaction WS")
     for request in requests:
-        if "previous_response_id" in request.body:
+        if not mock.has_fresh_parent(request):
             raise AssertionError(
                 f"midturn: request {request.ordinal} carried stale previous_response_id: "
                 f"{request.body['previous_response_id']!r}"
             )
+        mock.assert_fresh_anchor(request)
 
     # The note turn is a bounded, tool-less auxiliary call on its own persona —
     # never the root prompt, which would hand it the whole tool catalog and its
@@ -580,11 +581,12 @@ def assert_transactional_requests(mock: CodexMock) -> None:
             "transactional: final request reused the pre-compaction WS"
         )
     for request in requests:
-        if "previous_response_id" in request.body:
+        if not mock.has_fresh_parent(request):
             raise AssertionError(
                 f"transactional: request {request.ordinal} carried stale "
                 f"previous_response_id: {request.body['previous_response_id']!r}"
             )
+        mock.assert_fresh_anchor(request)
 
     first_input = first.body.get("input")
     if (
