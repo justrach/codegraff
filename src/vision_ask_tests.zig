@@ -28,6 +28,13 @@ fn codex() Provider {
     return .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-5.6-sol", .context = 270_000 };
 }
 
+/// A provider with no vision model at any rung and none in the catalog —
+/// deepseek used to be this fixture's stand-in, until its flash seat became
+/// multimodal.
+fn mistral() Provider {
+    return .{ .id = "mistral", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "mistral-medium-latest", .context = 131_072 };
+}
+
 /// A Keys table with `logged_in` providers holding a token, installed as the
 /// global bench_priors.g_keys the routing code reads. Returns the previous
 /// value so the caller can restore it.
@@ -120,11 +127,11 @@ test "#380 re-route: an explicit pin and a persona pin keep priority, and are fl
     // The call names a text-only model for a task that needs eyes. The pin is
     // HONORED (a human outranks a capability heuristic) and the run is marked
     // so both the trace and the report say what happened.
-    const pinned = va.forSpawn(deepseek(), obj(a, "{\"model\":\"deepseek-v4-flash\"}"), false, .{}, "read assets/palette.png");
+    const pinned = va.forSpawn(deepseek(), obj(a, "{\"model\":\"deepseek-chat\"}"), false, .{}, "read assets/palette.png");
     try std.testing.expect(pinned.pinned_blind);
     try std.testing.expect(!pinned.rerouted);
     try std.testing.expect(!pinned.blocked);
-    try std.testing.expectEqualStrings("deepseek-v4-flash", pinned.pin.provider.?.model); // not overridden
+    try std.testing.expectEqualStrings("deepseek-chat", pinned.pin.provider.?.model); // not overridden
     try std.testing.expectEqual(policy.Source.explicit_pin, pinned.source); // the trace still credits the human
     try std.testing.expect(std.mem.indexOf(u8, pinned.note().?, "pin was kept") != null);
 
@@ -161,9 +168,9 @@ test "#380 fast fail: no vision-capable model anywhere refuses the spawn, action
     const saved = bench.g_keys;
     defer bench.g_keys = saved;
     var keys: provider_mod.Keys = undefined;
-    withKeys(&keys, &.{"deepseek"}); // no sub logged in, and deepseek serves no vision model
+    withKeys(&keys, &.{"mistral"}); // no sub logged in, and mistral serves no vision model
 
-    const ask = va.forSpawn(deepseek(), obj(a, "{}"), false, .{}, "extract the hexes from assets/palette.png");
+    const ask = va.forSpawn(mistral(), obj(a, "{}"), false, .{}, "extract the hexes from assets/palette.png");
     try std.testing.expect(ask.blocked);
     try std.testing.expect(!ask.rerouted);
     try std.testing.expect(ask.pin.provider == null);
@@ -175,10 +182,10 @@ test "#380 fast fail: no vision-capable model anywhere refuses the spawn, action
     try std.testing.expect(std.mem.indexOf(u8, msg, "API_KEY") != null); // …and the other fix
     try std.testing.expect(std.mem.indexOf(u8, msg, "not spawned") != null); // and says nothing ran
 
-    try std.testing.expect(ask.pricier.len == 0); // deepseek serves NO vision model, at any price
+    try std.testing.expect(ask.pricier.len == 0); // mistral serves NO vision model, at any price
 
     // A task with no image on the same credential-starved session still runs.
-    try std.testing.expect(!va.forSpawn(deepseek(), obj(a, "{}"), false, .{}, "refactor util.zig").blocked);
+    try std.testing.expect(!va.forSpawn(mistral(), obj(a, "{}"), false, .{}, "refactor util.zig").blocked);
 
     // The OTHER refusal: a vision model exists on this provider but the cost
     // ceiling refuses it, because an automatic route never escalates spend.
@@ -205,15 +212,18 @@ test "#380 candidate search: sub-first, then provider-local under the cost ceili
     // the frontier model.
     try std.testing.expectEqualStrings("gpt-5.6-luna", va.visionModelFor("codex").?);
     try std.testing.expectEqualStrings("claude-sonnet-5", va.visionModelFor("anthropic").?);
-    try std.testing.expect(va.visionModelFor("deepseek") == null); // no vision model at any rung
+    try std.testing.expectEqualStrings("deepseek-v4-flash", va.visionModelFor("deepseek").?); // the small rung sees images
 
     const saved = bench.g_keys;
     defer bench.g_keys = saved;
     var keys: provider_mod.Keys = undefined;
 
-    // Nothing logged in: no sub candidate, and deepseek has nothing local.
+    // Nothing logged in: no sub candidate, so the seat stays provider-local —
+    // flash is both the cheaper rung and the one that can see.
     bench.g_keys = null;
-    try std.testing.expect(va.visionSeat(deepseek()) == null);
+    const solo = va.visionSeat(deepseek()).?;
+    try std.testing.expectEqualStrings("deepseek", solo.id);
+    try std.testing.expectEqualStrings("deepseek-v4-flash", solo.model);
 
     // codex logged in: the flat-rate sub wins, cross-provider, exactly like
     // subagent_pin.subscriptionRung — the login IS the consent.

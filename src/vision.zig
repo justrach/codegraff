@@ -1,7 +1,8 @@
-//! Image/vision support: staged-image type, capability check, media type,
-//! anthropic/openai/responses/interactions builders, and /image·paste stagers.
-//! Split out of main.zig. Back-imports main as main_mod. Pasteboard cascade
-//! lives in vision_clipboard.zig and is re-exported here.
+//! Image/vision support: capability check, media type, and /image·paste
+//! stagers. Split out of main.zig. Back-imports main as main_mod. The
+//! staged-image type and the anthropic/openai/responses/interactions builders
+//! live in vision_wire.zig; the pasteboard cascade in vision_clipboard.zig —
+//! both re-exported here.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -27,15 +28,13 @@ pub const grabClipboardImage = clip.grabClipboardImage;
 pub const max_staged_image_bytes = clip.max_staged_image_bytes;
 pub const fmtBytes = clip.fmtMb;
 
-pub const PendingImage = struct {
-    media_type: []const u8,
-    b64: []const u8,
-    url: []const u8 = "",
-    label: []const u8,
-    /// Ctrl-V / drop inserted a composer chip. Submit keeps the payload only
-    /// while that chip (or an `@[path]`) is still in the prompt (#634).
-    from_composer: bool = false,
-};
+/// The staged-image payload and the provider wire shapes that carry it
+/// (vision_wire.zig, 600-line goal). Re-exported so agent/mcp/queue/repl code
+/// keeps importing only `vision`.
+const wire = @import("vision_wire.zig");
+pub const PendingImage = wire.PendingImage;
+pub const imageMessage = wire.imageMessage;
+pub const imageMessages = wire.imageMessages;
 
 /// Conservative vision check: only known image-capable models are allowed;
 /// `/image` rejects everything else before it can trigger a provider 400.
@@ -54,6 +53,8 @@ pub fn visionModel(m_full: []const u8) bool {
         std.mem.startsWith(u8, m, "grok-4") or
         std.mem.startsWith(u8, m, "glm-5v") or // glm-5v-turbo & co: explicit vision variants
         std.mem.startsWith(u8, m, "glm-5.3") or // glm-5.3 / glm-5.3-flash accept images on codegraff
+        std.mem.startsWith(u8, m, "deepseek-flash") or // deepseek-flash (V4.1-Flash) takes image_url on api.deepseek.com
+        std.mem.startsWith(u8, m, "deepseek-v4-flash") or // …the pre-rename id a catalog may still carry
         std.mem.startsWith(u8, m, "kimi") or
         (m.len > 1 and m[0] == 'k' and std.ascii.isDigit(m[1])) or // Kimi Code k3+
         std.mem.startsWith(u8, m, "gemini") or
@@ -75,59 +76,6 @@ pub fn imageMediaType(path: []const u8) []const u8 {
     if (std.ascii.endsWithIgnoreCase(path, ".gif")) return "image/gif";
     if (std.ascii.endsWithIgnoreCase(path, ".webp")) return "image/webp";
     return "image/png";
-}
-
-/// A user message carrying text + one image, in the provider's wire format.
-pub fn imageMessage(arena: Allocator, kind: Provider.Kind, text: []const u8, img: PendingImage) !Value {
-    return imageMessages(arena, kind, text, &.{img});
-}
-
-/// A user message carrying text + every staged image, in the provider's wire
-/// format. Used by the main prompt and by ask_user follow-ups (#580).
-pub fn imageMessages(arena: Allocator, kind: Provider.Kind, text: []const u8, imgs: []const PendingImage) !Value {
-    var msg: std.json.ObjectMap = .empty;
-    try msg.put(arena, "role", .{ .string = "user" });
-    var content = std.json.Array.init(arena);
-
-    var tb: std.json.ObjectMap = .empty;
-    try tb.put(arena, "type", .{ .string = if (kind == .responses) "input_text" else "text" });
-    try tb.put(arena, "text", .{ .string = try arena.dupe(u8, text) });
-    try content.append(.{ .object = tb });
-
-    for (imgs) |img| {
-        var ib: std.json.ObjectMap = .empty;
-        switch (kind) {
-            .anthropic => {
-                try ib.put(arena, "type", .{ .string = "image" });
-                var src: std.json.ObjectMap = .empty;
-                if (img.url.len > 0) {
-                    try src.put(arena, "type", .{ .string = "url" });
-                    try src.put(arena, "url", .{ .string = img.url });
-                } else {
-                    try src.put(arena, "type", .{ .string = "base64" });
-                    try src.put(arena, "media_type", .{ .string = img.media_type });
-                    try src.put(arena, "data", .{ .string = img.b64 });
-                }
-                try ib.put(arena, "source", .{ .object = src });
-            },
-            .interactions => try @import("interactions_steps.zig").imagePart(arena, &ib, img),
-            .openai => {
-                try ib.put(arena, "type", .{ .string = "image_url" });
-                var iu: std.json.ObjectMap = .empty;
-                const url = if (img.url.len > 0) img.url else try std.fmt.allocPrint(arena, "data:{s};base64,{s}", .{ img.media_type, img.b64 });
-                try iu.put(arena, "url", .{ .string = url });
-                try ib.put(arena, "image_url", .{ .object = iu });
-            },
-            .responses => {
-                try ib.put(arena, "type", .{ .string = "input_image" });
-                const url = if (img.url.len > 0) img.url else try std.fmt.allocPrint(arena, "data:{s};base64,{s}", .{ img.media_type, img.b64 });
-                try ib.put(arena, "image_url", .{ .string = url });
-            },
-        }
-        try content.append(.{ .object = ib });
-    }
-    try msg.put(arena, "content", .{ .array = content });
-    return .{ .object = msg };
 }
 
 /// Why an image did or did not reach the provider.
@@ -387,6 +335,8 @@ test "visionCapable allowlist" {
     try std.testing.expect(visionCapable(mk("claude-opus-4-8")));
     try std.testing.expect(visionCapable(mk("gpt-5.5")));
     try std.testing.expect(visionCapable(mk("gpt-6-astra")));
+    try std.testing.expect(visionCapable(mk("deepseek-flash"))); // V4.1-Flash sees images; only the flash seat does
+    try std.testing.expect(visionCapable(mk("deepseek-v4-flash")));
     try std.testing.expect(!visionCapable(mk("deepseek-v4-pro")));
     try std.testing.expect(visionCapable(mk("k3"))); // Kimi for Coding sees images
     try std.testing.expect(visionCapable(mk("glm-5.3-flash"))); // codegraff backend accepts images
@@ -412,7 +362,9 @@ test "visionModel: vision-capable model families only" {
     try std.testing.expect(visionModel("pixtral-12b"));
     try std.testing.expect(visionModel("qwen2.5-vl-7b"));
     try std.testing.expect(visionModel("llama-3.2-11b-vision"));
-    try std.testing.expect(!visionModel("deepseek-v4-pro"));
+    try std.testing.expect(visionModel("deepseek-flash"));
+    try std.testing.expect(visionModel("accounts/fireworks/models/deepseek-v4-flash")); // org-prefixed id
+    try std.testing.expect(!visionModel("deepseek-v4-pro")); // the pro seat is still text-only
     try std.testing.expect(!visionModel("mimo-v2.5"));
     try std.testing.expect(!visionModel("grok-build")); // grok-4 prefix only, not all grok
     try std.testing.expect(!visionModel("qwen2.5-coder-7b")); // text-only local model

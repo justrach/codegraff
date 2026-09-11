@@ -400,7 +400,7 @@ pub fn blockMessage(gpa: Allocator, ask: Ask) ![]u8 {
     );
     return std.fmt.allocPrint(
         gpa,
-        "subagent not spawned: this task references an image ({s}) and no vision-capable model is reachable with the current credentials. A text-only worker would have to infer the pixels rather than see them, so this spawn is refused instead of returning a confident guess. Fix it with `graff login codex`, `graff login kimi`, `graff login anthropic`, or by setting OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY, then retry. Vision-capable families: claude-*, gpt-5*/gpt-4*, gemini-*, grok-4*, kimi/k*. If the image is incidental, drop the path from the task and re-spawn.",
+        "subagent not spawned: this task references an image ({s}) and no vision-capable model is reachable with the current credentials. A text-only worker would have to infer the pixels rather than see them, so this spawn is refused instead of returning a confident guess. Fix it with `graff login codex`, `graff login kimi`, `graff login anthropic`, or by setting OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY, then retry. Vision-capable families: claude-*, gpt-5*/gpt-4*, gemini-*, grok-4*, kimi/k*, deepseek-flash. If the image is incidental, drop the path from the task and re-spawn.",
         .{ask.path},
     );
 }
