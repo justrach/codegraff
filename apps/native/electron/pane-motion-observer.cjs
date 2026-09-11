@@ -1,31 +1,32 @@
-const { attachTestDebugger } = require('./test-desktop.cjs');
-
-// Observe native animation starts, including animations that finish before the
-// test process gets its next IPC turn. Do not alter playback or the app's code.
+// Retain evidence from the real Web Animations API in the renderer. Hidden
+// compositors do not consistently forward CDP animation lifecycle events.
 async function observePaneMotion(wc) {
-  attachTestDebugger(wc);
-  const started = [];
-  const listener = (_event, method, params) => {
-    if (method === 'Animation.animationStarted' && params.animation.type === 'WebAnimation')
-      started.push(params.animation);
-  };
-  wc.debugger.on('message', listener);
-  await wc.debugger.sendCommand('Animation.enable');
+  await wc.executeJavaScript(`(()=>{
+    const original = Element.prototype.animate;
+    const state = { started: 0, finished: 0, original };
+    window.__paneMotionObservation = state;
+    Element.prototype.animate = function(...args) {
+      const animation = original.apply(this, args);
+      if (this.matches('[data-chat]') && Number(animation.effect.getTiming().duration) > 1) {
+        animation.ready.then(() => { state.started++; }, () => {});
+        animation.finished.then(() => { state.finished++; }, () => {});
+      }
+      return animation;
+    };
+  })()`);
   return {
     async assertStarted() {
       for (let attempt = 0; attempt < 100; attempt++) {
-        for (const animation of started.splice(0)) {
-          if (!(animation.source?.duration > 1) || !animation.source.backendNodeId) continue;
-          const { node } = await wc.debugger.sendCommand('DOM.describeNode', { backendNodeId: animation.source.backendNodeId });
-          if (node.attributes?.some((value, i) => i % 2 === 0 && value === 'data-chat')) return;
-        }
+        if (await wc.executeJavaScript('window.__paneMotionObservation.started > 0 && window.__paneMotionObservation.finished > 0')) return;
         await new Promise(resolve => setTimeout(resolve, 50));
       }
-      throw Error('The downward drop did not start a native pane animation');
+      throw Error('The downward drop did not run a native pane animation to completion');
     },
     async stop() {
-      wc.debugger.removeListener('message', listener);
-      await wc.debugger.sendCommand('Animation.disable');
+      await wc.executeJavaScript(`(()=>{
+        Element.prototype.animate = window.__paneMotionObservation.original;
+        delete window.__paneMotionObservation;
+      })()`);
     },
   };
 }

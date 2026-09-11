@@ -13,8 +13,10 @@ async function runSplitFocus({win,origin,output}) {
     await new Promise(r=>setTimeout(r,100));
   };
   await wc.loadURL(origin);win.setSize(1440,900);testDesktop.present(win);
-  await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
-  await key('d',{metaKey:true});await key('d',{metaKey:true});
+  await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
+  await key('d',{metaKey:true});
+  await wait(`document.querySelectorAll('[data-chat]').length===2`);
+  await key('d',{metaKey:true});
   await wait(`document.querySelectorAll('[data-chat]').length===3`);
   const original=await ids();
   await js(`document.querySelectorAll('[data-chat] textarea').forEach((e,i)=>{Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,'Draft '+i);e.dispatchEvent(new Event('input',{bubbles:true}));})`);
@@ -70,7 +72,7 @@ async function runSplitFocus({win,origin,output}) {
   wc.send('desktop-action','close');
   await wait(`document.querySelectorAll('[data-chat]').length===2`);
   assert.deepEqual(await ids(),[finalPanes[0],finalPanes[2]],'Native close follows keyboard pane focus even when the text cursor was in another pane');
-  await wc.loadURL(origin);await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+  await wc.loadURL(origin);await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   console.log('Split interaction passed: native/DOM close routing, stable pointer/keyboard focus, preserved drafts, mouse resizing in both directions, shared toolbar.');
 }
 module.exports={runSplitFocus};
