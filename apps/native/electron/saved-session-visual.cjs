@@ -51,10 +51,10 @@ async function runSavedSessionVisuals({ win, origin, output }) {
   ` });
   try {
     await wc.loadURL(origin);
-    await wait(`!!document.querySelector('[aria-label="Conversations"]')`);
+    await wait(`!!document.querySelector('[data-workspace-ready="true"] [aria-label="Conversations"]')`);
     await js(`document.querySelector('[aria-label="Conversations"]').click()`);
-    await wait(`document.querySelector('[data-conversation-library]')?.textContent.includes('active-repl')`);
-    await js(`Array.from(document.querySelectorAll('[data-conversation-library] li button')).find(e=>e.textContent.includes('active-repl')).click()`);
+    // Resolve and click in one renderer turn: workspace refresh may replace rows.
+    await wait(`(()=>{const row=Array.from(document.querySelectorAll('[data-conversation-library] li button')).find(e=>e.textContent.includes('active-repl'));if(!row)return false;row.click();return true;})()`);
     await wait(`document.body.textContent.includes('I am checking the remaining files.')`);
     await wait(`!!document.querySelector('[data-saved-snapshot]')`);
     assert.match(await js(`document.querySelector('[data-saved-snapshot]').textContent`), /Live status unknown/);
@@ -84,8 +84,8 @@ async function runSavedSessionVisuals({ win, origin, output }) {
     assert.equal(await resumed(), 1);
     await wait(`!!document.querySelector('[data-turn-activity="done"]')`);
     await js(`document.querySelector('[aria-label="Conversations"]').click()`);
-    await wait(`document.querySelector('[data-conversation-library]')?.textContent.includes('empty-repl')`);
-    await js(`Array.from(document.querySelectorAll('[data-conversation-library] li button')).find(e=>e.textContent.includes('empty-repl')).click()`);
+    // Resolve and click in one renderer turn: workspace refresh may replace rows.
+    await wait(`(()=>{const row=Array.from(document.querySelectorAll('[data-conversation-library] li button')).find(e=>e.textContent.includes('empty-repl'));if(!row)return false;row.click();return true;})()`);
     await wait(`!!document.querySelector('[data-saved-snapshot]')`);
     assert.equal(await js(`document.querySelector('[data-chat] textarea')`), null, 'Empty saved sessions also require explicit continuation');
     console.log('Saved session GUI checks passed: intermediate commentary, read-only ownership, failed/completed refresh, explicit continuation, empty history.');

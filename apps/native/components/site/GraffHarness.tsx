@@ -448,7 +448,7 @@ export default function GraffHarness() {
 
 
   return (
-    <main data-graff-main className="flex h-[100dvh] gap-0 bg-canvas p-2.5 text-ink lg:pl-0">
+    <main data-graff-main data-workspace-ready={projectsReady} className="flex h-[100dvh] gap-0 bg-canvas p-2.5 text-ink lg:pl-0">
       <SidebarNav
         fill
         className="hidden lg:flex"

@@ -5,6 +5,7 @@ const path = require('node:path');
 async function runTabDrag({win, origin, output}) {
   const wc=win.webContents, js=code=>wc.executeJavaScript(code);
   const wait=async code=>{for(let i=0;i<100;i++){if(await js(code))return;await new Promise(r=>setTimeout(r,50));}throw Error(`Tab drag condition failed: ${code}`);};
+  const ready=()=>wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   const tabs=()=>js(`Array.from(document.querySelectorAll('[data-tab-id]')).map(t=>Number(t.dataset.tabId))`);
   const panes=()=>js(`Array.from(document.querySelectorAll('[data-chat]')).map(t=>Number(t.dataset.chat))`);
   const point=selector=>js(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()`);
@@ -40,7 +41,7 @@ async function runTabDrag({win, origin, output}) {
   const up=to=>desktop.testInput(wc,{type:'mouseUp',button:'left',clickCount:1,...to});
   const drag=async(id,to)=>{await move(await down(id),to);await up(to);};
   await wc.loadURL(origin);win.setSize(1320,850);
-  await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+  await ready();
   await click('[aria-label="New chat"]');
   await wait(`document.querySelectorAll('[data-tab-id]').length===2`);
   const [one,two]=await tabs();
@@ -89,7 +90,7 @@ async function runTabDrag({win, origin, output}) {
   await wait(`!!document.querySelector('[data-split-limit]')`);
   assert.deepEqual(await panes(),before);
   // A fresh single pane can split vertically; mixed trees have separate stress coverage.
-  await wc.loadURL(origin);await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+  await wc.loadURL(origin);await ready();
   if(await js(`document.querySelector('button[title^="Sidecar browser"]')?.getAttribute('aria-pressed')==='true'`))await click('button[title^="Sidecar browser"]');
   await wait(`document.querySelector('button[title^="Sidecar browser"]')?.getAttribute('aria-pressed')==='false'`);
   await focusComposer();
@@ -127,7 +128,7 @@ async function runTabDrag({win, origin, output}) {
   desktop.attachTestDebugger(wc);
   await wc.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
   try {
-    await wc.loadURL(origin);await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+    await wc.loadURL(origin);await ready();
     await click('[aria-label="New chat"]');await wait(`document.querySelectorAll('[data-tab-id]').length===2`);
     const [source]=await tabs();
     await move(await down(source),bottom);await wait(`!!document.querySelector('[data-tab-drop="split"]')`);
