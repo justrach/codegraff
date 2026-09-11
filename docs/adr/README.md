@@ -113,6 +113,7 @@ record only when you need the evidence or the edge cases.
 | [0100](0100-publication-claims-and-verified-completion.md) | Non-draft PRs fail closed on CI/Verification/helper-only claims; artifact presence ACK is not ownership; recipe success is verified task success. |
 
 | [0101](0101-gui-tests-preserve-desktop-focus.md) | GUI tests stay hidden by default; visible opt-in can overlap other apps, and native foreground checks require separate opt-in. |
+| [0102](0102-workspace-agents-and-cancel-recovery.md) | Agents uses the workspace area, Tasks visibility is explicit and persisted, and timed-out cancellation retires the worker before session recovery. |
 
 ## When to write one
 

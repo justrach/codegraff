@@ -33,7 +33,8 @@
     "test:mcp-apps": "bun test lib/mcp-apps.test.ts && playwright test -c playwright.mcp.config.ts",
     "test:focus": "bun scripts/test-desktop-focus.mjs",
     "test:tagged": "GRAFF_VISUAL_SUITE=tagged bun scripts/test-visual.mjs",
-    "test:browser": "GRAFF_VISUAL_SUITE=browser bun scripts/test-visual.mjs"
+    "test:browser": "GRAFF_VISUAL_SUITE=browser bun scripts/test-visual.mjs",
+    "test:workspace": "bun scripts/test-workspace.mjs"
   },
   "dependencies": {
     "@streamdown/code": "^1.1.1",

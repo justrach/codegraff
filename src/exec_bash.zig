@@ -7,6 +7,7 @@
 //! id. Subagents stay on the #93 kill-at-120s path (no TTY, no /jobs UI).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
@@ -121,6 +122,34 @@ test "#850: a large explicit timeout cannot extend the foreground bound" {
     try std.testing.expect(rootWaitMs(huge.value) < job_wait.wait_cap_ms);
     const schema = @embedFile("schema.zig");
     try std.testing.expect(std.mem.indexOf(u8, schema, "max 36000000") == null);
+}
+
+// The behavior half of #850: a wait bounded at the default promotes rather than
+// parking the turn, the child is NOT killed, and it stays reachable through the
+// same bash_output/bash_kill the auto-background result points the model at.
+// The bound itself is the pure-function assertion above; 200ms stands in for
+// the expiry so the test does not sleep for the real one.
+test "#850: promotion at the bound leaves the child alive and reachable" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+    jobs.g_jobs = .{};
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const id = (try jobs.spawnJob(gpa, io, "sleep 5; printf never")).id;
+    defer jobs.jobsReap(gpa, io);
+    const waited = try jobs.waitForeground(gpa, io, id, 200);
+    defer switch (waited) {
+        .running => |r| gpa.free(r.output),
+        .done => |d| gpa.free(d.output),
+        .cancelled => |c| gpa.free(c.output),
+    };
+    try std.testing.expect(waited == .running);
+    try std.testing.expectEqual(id, waited.running.id);
+    const snap = try jobs.jobOutput(gpa, io, id, 0);
+    defer gpa.free(snap.text);
+    try std.testing.expect(std.mem.indexOf(u8, snap.text, "running") != null);
+    const killed = try jobs.jobKill(gpa, io, id);
+    defer gpa.free(killed.text);
+    try std.testing.expect(std.mem.indexOf(u8, killed.text, "killed") != null);
 }
 
 test "rootWaitMs: lean unattended oneshot defaults to 15s; shorter timeout still wins" {

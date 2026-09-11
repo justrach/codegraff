@@ -46,3 +46,13 @@ test("an oversized protocol line marks its session unusable so bootstrap can rep
   await assert.rejects(pending, /exceeds limit/); assert.equal(transport.usable, false);
   await assert.rejects(transport.request("session/prompt"), /exceeds limit/);
 });
+
+test("retiring a stuck transport rejects the old prompt and discards late updates", async () => {
+  const { child, transport } = fixture(); const lines: string[] = [];
+  const pending = transport.request("session/prompt", {}, 1000, line => lines.push(line));
+  transport.abort(new Error("worker retired"));
+  await assert.rejects(pending, /worker retired/);
+  child.stdout.write(JSON.stringify({ method: "session/update", params: { text: "late" } }) + "\n");
+  assert.deepEqual(lines, []);
+  await assert.rejects(transport.request("session/prompt"), /worker retired/);
+});

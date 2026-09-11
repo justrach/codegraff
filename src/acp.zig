@@ -93,6 +93,14 @@ fn liveBind(ctx: *anyopaque, session_id: []const u8) void {
     live.session_id = session_id;
 }
 
+/// Per-turn context meter: the live occupancy estimate against the model's
+/// wall, so the client can render remaining context without reading history.
+fn liveMeter(ctx: *anyopaque) engine.Meter {
+    const live: *LiveTurn = @ptrCast(@alignCast(ctx));
+    const root = live.root;
+    return .{ .used = root.effectiveContextTokens(), .window = root.provider.context };
+}
+
 /// The ACP user message: GUI `@[image]` attachments become native vision
 /// blocks — the same promotion mainloop and the REPL do — instead of the
 /// pixels never leaving the client and the model reading literal marker text.
@@ -243,6 +251,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
         .slash = liveSlash,
         .after_user = liveAfter,
         .bind_session = liveBind,
+        .meter = liveMeter,
         .extra = liveModels,
     };
     while (true) {
@@ -497,7 +506,7 @@ test "handleLine: turn failures map to a stopReason or a -32603" {
     w = .fixed(&buf);
     var failing: Dispatch = .{ .turn = failTurn, .ctx = undefined };
     try handleLine(&failing, a, &w, prompt);
-    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32603,\"message\":\"ApiError\"}}\n", w.buffered());
+    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"stopReason\":\"failed\"}}\n", w.buffered());
 }
 
 test "isAcpSubcommand claims only `acp`, and arms the stdout discipline" {
@@ -524,4 +533,25 @@ test "ACP advertises the complete REPL command catalog including compact" {
     for (catalog, advertised) |command, exposed| {
         try std.testing.expectEqualStrings(command.name[1..], exposed.name);
     }
+}
+
+test "handleLine: live context occupancy precedes the terminal prompt reply" {
+    var state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer state.deinit();
+    const a = state.allocator();
+    var buf: [16384]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    const meter = struct {
+        fn read(_: *anyopaque) engine.Meter {
+            return .{ .used = 123, .window = 1000 };
+        }
+    }.read;
+    var d: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .meter = meter };
+    try handleLine(&d, a, &w, "{\"id\":1,\"method\":\"session/new\"}");
+    w = .fixed(&buf);
+    try handleLine(&d, a, &w, "{\"id\":2,\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"hi\"}]}}");
+    const output = w.buffered();
+    const occupancy = std.mem.indexOf(u8, output, "\"gui_context_meter\",\"used\":123,\"window\":1000") orelse return error.MissingMeter;
+    const terminal = std.mem.indexOf(u8, output, "\"stopReason\":\"end_turn\"") orelse return error.MissingTerminalReply;
+    try testing.expect(occupancy < terminal);
 }

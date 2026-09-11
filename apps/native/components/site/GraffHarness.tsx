@@ -1,10 +1,10 @@
 "use client";
+import { useHarnessSessions } from "./useHarnessSessions";
+import { createPromptRunner } from "./harness-prompt-runner";
 
 import { workspaceActions } from "./harness-workspace-actions";
 import ProjectsPane from "./ProjectsPane";
 import { useSavedConversation, ConversationOpenNotice } from "./useSavedConversation";
-import { restoreProjects, persistProjects } from "@/lib/project-preferences";
-import { createTurnPainter } from "@/lib/turn-painter";
 import { useQuietSettings } from "./useQuietSettings";
 import HarnessChrome from "./HarnessChrome";
 import ChatSplitLayout from "./ChatSplitLayout";
@@ -14,50 +14,41 @@ import AgentsPane from "./AgentsPane";
 import { newPageToken, newSessionName, type Chat, type Msg } from "./harness-types";
 import ChangesPane from "./ChangesPane";
 import { useBrowserVisibility } from "./useBrowserVisibility";
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type PromptModel } from "@/components/primitives/PromptBar";
 import SidebarNav from "@/components/primitives/SidebarNav";
 import ConversationsPane from "@/components/site/ConversationsPane";
 import FilesPane from "@/components/site/FilesPane";
 import BrowserPane from "@/components/site/DesktopBrowserPane";
-import { annotationsBlock, type BrowserPin } from "@/lib/browser/annotations";
-import { browserClose, browserHandle, browserNav } from "@/lib/browser-client";
+import { type BrowserPin } from "@/lib/browser/annotations";
+import { browserClose } from "@/lib/browser-client";
 import ChatColumn from "./ChatColumn";
 import TasksSidebar from "./TasksSidebar";
+import { useTasksVisibility } from "./useTasksVisibility";
 import { MAX_COLUMNS, SPLIT_LIMIT_MESSAGE, splitLimitReached } from "./harness-split";
 import { useDesktopShortcuts } from "./useDesktopShortcuts";
-import EmptyState from "@/components/site/ChatEmpty";
 import {
   cancel,
   chatHandle,
-  checkHealth,
-  disposePage,
   disposeSession,
-  ensureSession,
-  fetchModels,
-  prompt,
   type Health,
 } from "@/lib/acp-client";
-import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AcpCommand, type AssistantTurn } from "@/lib/acp";
+import { type AcpCommand } from "@/lib/acp";
 import { useChatScroll } from "./useChatScroll";
-import { enqueuePrompt, shiftQueuedPrompt } from "@/lib/prompt-queue";
+import { enqueuePrompt } from "@/lib/prompt-queue";
 import { usePromptQueue } from "./usePromptQueue";
-import { dateGroup, listSessionsPage, relativeTime, removeSession, type StoredSession } from "@/lib/sessions";
-import { loadHistory, mergeHistory, pushHistory, saveHistory } from "@/lib/prompt-history";
+import { removeSession, type StoredSession } from "@/lib/sessions";
+import { loadHistory } from "@/lib/prompt-history";
 import WorkspaceDialog from "@/components/site/WorkspaceDialog";
 import {
   basename,
   findWorkspace,
   shellQuote,
-  upsertWorkspace,
   type Workspace,
 } from "@/lib/workspaces";
 
 /** Whether the sidecar browser pane was open, restored after a reload. */
 const BROWSER_OPEN_KEY = "graff.native.browser.open";
-
-/** Rows the sidebar previews; the library pages the rest. */
-const SIDEBAR_PAGE = 12;
 
 export default function GraffHarness() {
   const [chats, setChats] = useState<Chat[]>([{ id: 1, title: null, messages: [] }]);
@@ -84,6 +75,8 @@ export default function GraffHarness() {
   const [models, setModels] = useState<PromptModel[]>([{ key: "", name: "Loading graff models…" }]);
   const [model, setModelKey] = useState<string | null>(process.env.NEXT_PUBLIC_GRAFF_MODEL || null);
   const [agentsOpen, setAgentsOpen] = useState(false);
+  const [workingAgents, setWorkingAgents] = useState(0);
+  const [tasksOpen, setTasksOpen] = useTasksVisibility();
   const [filesOpen, setFilesOpen] = useState(false);
   const [fileRequest, setFileRequest] = useState<{ path: string; n: number; changes?: boolean } | null>(null);
   const fileReqRef = useRef(0);
@@ -113,7 +106,6 @@ export default function GraffHarness() {
   // the whole chat area, so opening it leaves the other side panes.
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [conversationsOpen, setConversationsOpen] = useState(false);
-  const [tasksOpen, setTasksOpen] = useState(false);
   const [splitNotice, setSplitNotice] = useState<string | null>(null);
   const openConversations = () => {
     setProjectsOpen(false);
@@ -136,9 +128,8 @@ export default function GraffHarness() {
   chatsRef.current = chats;
   const panesRef = useRef<number[]>([]);
   panesRef.current = panes;
-  const [following, setFollowing] = useState(true);
+  const [, setFollowing] = useState(true);
   const { queuesRef, queues, queueIdRef, setQueue, steerer, steerStatus, remove: removeQueued } = usePromptQueue();
-  const [workingAgents, setWorkingAgents] = useState(0);
   const [cancelError, setCancelError] = useState<Record<number, string>>({});
   const runningRef = useRef(new Set<number>());
   // Closed tabs, oldest first, for the reopen shortcut.
@@ -164,146 +155,14 @@ export default function GraffHarness() {
   const setChatModel = (chatId: number, key: string) =>
     setChats((current) => current.map((c) => (c.id === chatId ? { ...c, model: key } : c)));
   const lastAssistant = [...chatThread.messages].reverse().find((m): m is Extract<Msg, { role: "assistant" }> => m.role === "assistant");
-  // A resumed session's prompts came from its file, not this browser; fold
-  // them in so ArrowUp walks the conversation on screen first.
-  const composerHistory = useMemo(
-    () => mergeHistory(history, chatThread.messages.flatMap((m) => (m.role === "user" ? [m.text] : []))),
-    [history, chatThread.messages],
-  );
   const setPins = (chatId: number, list: BrowserPin[]) => {
     pinsRef.current = { ...pinsRef.current, [chatId]: list };
     setPinsByChat(pinsRef.current);
   };
 
-  const adoptCatalog = async (chatId: number) => {
-    // Use the provider and model actually resolved by graff.
-    try {
-      const { models: live, current, commands: available } = await fetchModels(sessionsRef.current.has(chatId) ? handleOf(chatId) : undefined, activePathRef.current ?? undefined);
-      if (live.length > 0) setModels(live);
-      if (available?.length) { setCatalogCommands(available); setCommands(old => ({ ...old, [chatId]: available })); }
-      if (current) {
-        setChatModel(chatId, current);
-        setModelKey((fallback) => fallback ?? current);
-      }
-    } catch {
-      // Do not invent a selected model when the catalog is unavailable.
-    }
-  };
-
-  // Refresh the catalog on focus. If its agent was
-  // not up yet, or the page outlived a restart — would show the fallback
-  // for good, so ask again whenever the window comes back to the front.
-  const catalogRef = useRef({ adopt: (_: number) => {}, activeId: 1 });
-  useEffect(() => {
-    const again = () => {
-      if (document.visibilityState === "hidden") return;
-      catalogRef.current.adopt(catalogRef.current.activeId);
-    };
-    window.addEventListener("focus", again);
-    document.addEventListener("visibilitychange", again);
-    return () => {
-      window.removeEventListener("focus", again);
-      document.removeEventListener("visibilitychange", again);
-    };
-  }, []);
-
-  const requireSession = async (chatId: number, reset = false, key?: string): Promise<string> => {
-    if (chatsRef.current.find(c => c.id === chatId)?.snapshot) throw new Error("Continue here before resuming this saved snapshot.");
-    const live = sessionsRef.current.get(chatId);
-    if (!reset && live) return live;
-    const chat = chatsRef.current.find((c) => c.id === chatId);
-    // A tab spawns where it was opened; the first tab, opened before the
-    // workspace list loaded, takes the active workspace.
-    const cwd = chat?.cwd ?? activePathRef.current ?? undefined;
-    const ws = findWorkspace(workspacesRef.current, cwd);
-    const spawnModel = key ?? chat?.model ?? ws?.model ?? model ?? undefined;
-    const { sessionId: id, commands } = await ensureSession(handleOf(chatId), {
-      model: spawnModel,
-      reset,
-      resume: sessionNamesRef.current.get(chatId),
-      cwd,
-      yolo: ws?.yolo,
-      mcp: ws?.mcp,
-    });
-    sessionsRef.current.set(chatId, id);
-    setSessionIds((current) => ({ ...current, [chatId]: id }));
-    // Populate the command menu from this agent's advertisement.
-    if (commands.length > 0) setCommands((current) => ({ ...current, [chatId]: commands }));
-    setHealth({ ok: true });
-    await adoptCatalog(chatId);
-    return id;
-  };
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const h = await checkHealth();
-      if (cancelled) return;
-      setHealth(h);
-      if (!h.ok) return;
-      // The server's default workspace is always a row; the remembered pick
-      // wins when it is still listed, else the default is active.
-      const root = h.cwd ?? "";
-      const savedProjects = await restoreProjects(window.localStorage);
-      if (cancelled) return;
-      let list = savedProjects.list;
-      if (root && !findWorkspace(list, root)) list = upsertWorkspace(list, { path: root, name: basename(root) });
-      const remembered = savedProjects.active;
-      const active = findWorkspace(list, remembered)?.path ?? findWorkspace(list, root)?.path ?? list[0]?.path ?? null;
-      workspacesRef.current = list;
-      activePathRef.current = active;
-      setWorkspaces(list);
-      setActivePath(active);
-      persistProjects(window.localStorage, list, active);
-      if (active) setChats((current) => current.map((c) => (c.id === 1 && !c.cwd ? { ...c, cwd: active } : c)));
-      void refreshStored();
-      try {
-        const session = newSessionName();
-        sessionNamesRef.current.set(1, session);
-        setChats((current) => current.map((c) => (c.id === 1 ? { ...c, session } : c)));
-        if (window.graffDesktop) { await adoptCatalog(1); return; } // No coding session needed.
-        await requireSession(1);
-        if (cancelled) return;
-        await adoptCatalog(1);
-      } catch (err) {
-        if (!cancelled) {
-          setHealth({ ok: false, detail: err instanceof Error ? err.message : String(err) });
-        }
-      }
-    })();
-    void refreshStored();
-    // Reap this page's agents when it goes away — without this every reload
-    // leaves a `graff acp` (and its MCP children) running under the dev server.
-    const page = pageRef.current;
-    const reap = () => disposePage(page);
-    window.addEventListener("pagehide", reap);
-    return () => {
-      cancelled = true;
-      window.removeEventListener("pagehide", reap);
-    };
-    // The first tab's agent is spawned once per mount; later tabs spawn their
-    // own on creation, and a model change respawns only the active tab's.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  /** Re-read the active workspace's session directory; tabs adopt the
-   * titles graff saved. */
-  const refreshStored = async () => {
-    try {
-      const page = await listSessionsPage({ root: activePathRef.current ?? undefined, limit: SIDEBAR_PAGE });
-      setStored(page.sessions);
-      setStoredTotal(page.total);
-      setChats((current) =>
-        current.map((c) => {
-          if (c.titledByModel) return c;
-          const saved = c.session ? page.sessions.find((s) => s.name === c.session) : undefined;
-          return saved?.title && saved.title !== c.title ? { ...c, title: saved.title } : c;
-        }),
-      );
-    } catch {
-      // the sidebar keeps its last list
-    }
-  };
+  const { adoptCatalog, requireSession, refreshStored } = useHarnessSessions({
+    sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal
+  });
 
   const openPath = useCallback((path: string) => {
     setProjectsOpen(false); setAgentsOpen(false); setBrowserOpen(false);
@@ -331,111 +190,9 @@ export default function GraffHarness() {
       .catch(() => undefined);
   };
 
-  const patchAssistant = (chatId: number, msgId: number, next: AssistantTurn) => {
-    setChats((current) =>
-      current.map((c) =>
-        c.id !== chatId
-          ? c
-          : {
-              ...c,
-              messages: c.messages.map((m) => (m.role === "assistant" && m.id === msgId ? { ...m, turn: next } : m)),
-            },
-      ),
-    );
-  };
-
-  const runPrompt = async (chatId: number, trimmed: string) => {
-    runningRef.current.add(chatId);
-    setFollowing(true);
-    const thread = chatsRef.current.find((c) => c.id === chatId);
-    const spawnModel = thread?.model ?? model ?? undefined;
-    const userId = (msgIdRef.current += 1);
-    const asstId = (msgIdRef.current += 1);
-    const title = thread?.title ?? (trimmed.length > 30 ? `${trimmed.slice(0, 30).trimEnd()}…` : trimmed);
-    // The first prompt of a tab names it, in the model's words.
-    if (!thread?.title) nameChat(chatId, trimmed, thread?.cwd);
-    setChats((current) =>
-      current.map((c) =>
-        c.id !== chatId
-          ? c
-          : {
-              ...c,
-              title,
-              snapshot: undefined,
-              messages: [
-                ...c.messages,
-                { id: userId, role: "user", text: trimmed },
-                { id: asstId, role: "assistant", turn: { ...emptyTurn(), model: spawnModel, startedAt: Date.now() } },
-              ],
-            },
-      ),
-    );
-    setBusyFor(chatId, true);
-    setCancelError((current) => {
-      if (!current[chatId]) return current;
-      const next = { ...current };
-      delete next[chatId];
-      return next;
-    });
-    steerer.begin(chatId);
-    setHistory((current) => {
-      const next = pushHistory(current, trimmed);
-      saveHistory(window.localStorage, next);
-      return next;
-    });
-    // Pins from the sidecar ride behind the prompt, with the tab's handle
-    // so the agent can drive the same page; they are spent on send. Behind,
-    // not ahead: graff titles the session from the message's first line.
-    let wire = trimmed;
-    const pins = /^\/(effort|reasoning|fast)(?:\s|$)/.test(trimmed) ? [] : pinsRef.current[chatId] ?? [];
-    if (pins.length > 0) {
-      const handle = await browserHandle(handleOf(chatId)).catch(() => null);
-      wire = `${trimmed}\n\n${annotationsBlock(pins, handle)}`;
-      setPins(chatId, []);
-    }
-    let turn: AssistantTurn = { ...emptyTurn(), model: spawnModel, startedAt: Date.now() };
-    const painter = createTurnPainter<AssistantTurn>(next => patchAssistant(chatId, asstId, next));
-    const startedAt = Date.now();
-    try {
-      const id = await requireSession(chatId);
-      turn = { ...turn, connected: true, lastUpdateAt: Date.now() };
-      painter.update(turn);
-      for await (const update of prompt(handleOf(chatId), id, wire)) {
-        if (update.sessionUpdate === "gui_turn_end") steerer.finish(chatId);
-        else steerer.ready(chatId);
-        turn = applyAcpUpdate(turn, update);
-        if (turn.thoughtMs === undefined && turn.status !== "thinking") turn = { ...turn, thoughtMs: Date.now() - startedAt };
-        painter.update(turn);
-      }
-      // The turn carried pins, so the agent most likely changed the page:
-      // reload the chat's tab so the pane shows the result without a click.
-      if (pins.length > 0) void browserNav(handleOf(chatId), "reload").catch(() => undefined);
-      if (/^\/(effort|reasoning|fast)(?:\s|$)/.test(trimmed)) void adoptCatalog(chatId);
-      turn = finishAcpTurn(turn);
-      painter.finish(turn);
-    } catch (err) {
-      turn = finishAcpTurn({ ...turn, error: err instanceof Error ? err.message : String(err), status: "error" });
-      painter.finish(turn);
-    } finally {
-      painter.dispose();
-      steerer.finish(chatId);
-      runningRef.current.delete(chatId);
-      setBusyFor(chatId, false);
-      void refreshStored();
-      setTimeout(() => void refreshStored(), 2500);
-      const { next, rest } = shiftQueuedPrompt(queuesRef.current[chatId] ?? []);
-      setQueue(chatId, rest);
-      if (next) void runPrompt(chatId, next.text);
-    }
-  };
-
-  const nameChat = (chatId: number, prompt: string, cwd: string | undefined) => {
-    void fetch("/api/title", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, cwd }) })
-      .then(res => res.ok ? res.json() : null).then(body => {
-        const title = body?.title?.trim();
-        if (title) setChats(current => current.map(c => c.id === chatId ? { ...c, title, titledByModel: true } : c));
-      }).catch(() => undefined);
-  };
+  const runPrompt = createPromptRunner({
+    runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, queuesRef, setQueue, setCancelError
+  });
   const settings = useQuietSettings({ requireSession, handleOf, running: runningRef.current, apply: (catalog) => setModels(catalog.models) });
 
   const send = async (text: string, forChat?: number) => {
@@ -451,7 +208,7 @@ export default function GraffHarness() {
   };
 
   const openChat = (id: number) => {
-    setProjectsOpen(false);
+    setProjectsOpen(false); setAgentsOpen(false);
     const session = newSessionName();
     sessionNamesRef.current.set(id, session);
     const cwd = activePathRef.current ?? undefined;
@@ -489,7 +246,7 @@ export default function GraffHarness() {
 
   /** Focus a visible chat in place, or replace only the focused split. */
   const focusChat = (id: number) => {
-    setProjectsOpen(false);
+    setProjectsOpen(false); setAgentsOpen(false);
     setConversationsOpen(false);
     const folder = chatsRef.current.find(chat => chat.id === id)?.cwd;
     if (folder && folder !== activePathRef.current) activateWorkspace(folder);
@@ -533,6 +290,7 @@ export default function GraffHarness() {
     sessionsRef.current.delete(id);
     sessionNamesRef.current.delete(id);
     runningRef.current.delete(id);
+    steerer.finish(id);
     setQueue(id, []);
     setSessionIds((current) => {
       const { [id]: _gone, ...rest } = current;
@@ -666,7 +424,6 @@ export default function GraffHarness() {
     toggleTerminal, equalize: () => setPaneWeights({}), openWorkspace: () => setDialog({ mode: "new" }),
   });
 
-  catalogRef.current = { adopt: (id: number) => { if (!runningRef.current.has(id)) void adoptCatalog(id).catch(() => undefined); }, activeId };
 
   const paneTodos = lastAssistant?.turn.todos ?? [];
   // Zoom only changes visibility; the split order is retained.
@@ -715,7 +472,7 @@ export default function GraffHarness() {
           browserOpen={browserOpen} onBrowser={() => { setAgentsOpen(false); setProjectsOpen(false); setConversationsOpen(false); setFilesOpen(false); setBrowserOpen(open => !open); }} pinCount={pinCount}
           terminalVisible={terminalVisible} toggleTerminal={toggleTerminal} agentsOpen={agentsOpen}
           workingAgents={workingAgents}
-          tasksOpen={tasksOpen} taskCount={paneTodos.length} onTasks={() => setTasksOpen(open => !open)}
+          tasksOpen={tasksOpen} taskCount={paneTodos.length} onTasks={() => { setAgentsOpen(false); setTasksOpen(!tasksOpen); }}
           splitNotice={splitNotice}
           onAgents={() => { setProjectsOpen(false); setAgentsOpen(!agentsOpen); setFilesOpen(false); setBrowserOpen(false); setConversationsOpen(false); }} />
         <ConversationOpenNotice request={savedConversation.request} onCancel={savedConversation.cancel} onRetry={savedConversation.retry} />
@@ -738,13 +495,13 @@ export default function GraffHarness() {
               />
             </section>
           ) : null}
-          <div className="min-h-0 min-w-0 flex-1" style={{ display: projectsOpen || conversationsOpen ? "none" : "flex" }}>
+          <div className="min-h-0 min-w-0 flex-1" style={{ display: projectsOpen || conversationsOpen || agentsOpen ? "none" : "flex" }}>
             <ChatSplitLayout threads={columns} liveChatIds={chats.map(chat => chat.id)} activeId={activeId} direction={splitDirection} weights={paneWeights} setWeights={setPaneWeights}
               onFocus={focusChat} onClose={closeChat} folder={thread => ({name: workspaceNameOf(thread), path: cwdOf(thread)})}
               body={columnBody} split={columnIds.length > 1} />
           </div>
 
-          {agentsOpen && !projectsOpen && !filesOpen && !browserOpen && !conversationsOpen && <AgentsPane key={chatCwd} root={chatCwd} onClose={() => setAgentsOpen(false)} onOccupancy={setWorkingAgents} />}
+          {agentsOpen && !projectsOpen && !filesOpen && !browserOpen && !conversationsOpen && <AgentsPane key={chatCwd} root={chatCwd} fullWidth onOccupancy={setWorkingAgents} onClose={() => setAgentsOpen(false)} />}
           {filesOpen && !projectsOpen && !conversationsOpen && (fileRequest?.changes ? <ChangesPane root={chatThread.cwd} onClose={() => setFilesOpen(false)} /> : <FilesPane root={chatThread.cwd} requested={fileRequest} onClose={() => setFilesOpen(false)} />)}
 
           {browserOpen && !projectsOpen && !conversationsOpen && (
@@ -759,7 +516,7 @@ export default function GraffHarness() {
             />
           )}
 
-          {!projectsOpen && !filesOpen && !browserOpen && !conversationsOpen && tasksOpen && (
+          {!agentsOpen && !projectsOpen && !filesOpen && !browserOpen && !conversationsOpen && tasksOpen && (
             <TasksSidebar items={paneTodos} onClose={() => setTasksOpen(false)} />
           )}
         </div>

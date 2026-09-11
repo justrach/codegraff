@@ -32,6 +32,11 @@ pub const TurnFn = *const fn (ctx: *anyopaque, arena: Allocator, text: []const u
 pub const SlashFn = *const fn (ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror!?[]const u8;
 pub const AfterUserFn = *const fn (ctx: *anyopaque, arena: Allocator, text: []const u8) void;
 pub const BindSessionFn = *const fn (ctx: *anyopaque, session_id: []const u8) void;
+/// Optional per-turn context meter: used and window tokens for the
+/// `gui_context_meter` update the client renders as a remaining-context ring.
+/// Null when the embed has no live agent (pure in-process loop, tests).
+pub const Meter = struct { used: u64, window: u64 };
+pub const MeterFn = *const fn (ctx: *anyopaque) Meter;
 /// Vendor-method escape hatch: gets every request the core loop does not
 /// claim; returns true when it answered (false falls through to -32601).
 pub const ExtraFn = *const fn (ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request) anyerror!bool;
@@ -45,6 +50,7 @@ pub const Dispatch = struct {
     slash: ?SlashFn = null,
     after_user: ?AfterUserFn = null,
     bind_session: ?BindSessionFn = null,
+    meter: ?MeterFn = null,
     extra: ?ExtraFn = null,
 };
 
@@ -94,9 +100,24 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
             return respond(w, req, .{ .stopReason = "cancelled" });
         if (err == error.RunBudgetExhausted)
             return respond(w, req, .{ .stopReason = "max_turn_requests" });
+        if (err == error.ApiError)
+            return respond(w, req, .{ .stopReason = "failed" });
         return respondError(w, req, err_internal, @errorName(err));
     };
     if (final.len > 0) try writeSessionUpdate(w, sid, final);
+    if (d.meter) |meter| {
+        // The context ring reads this, not the model catalog: used is the
+        // live occupancy estimate, window the model's wall. No text, no PII.
+        const m = meter(d.ctx);
+        if (m.window > 0) try proto.writeNotification(w, "session/update", .{
+            .sessionId = sid,
+            .update = .{
+                .sessionUpdate = "gui_context_meter",
+                .used = m.used,
+                .window = m.window,
+            },
+        });
+    }
     const extra = if (extra_cancelled) |f| f() else false;
     const stop: []const u8 = if (cancel_flag.load(.acquire) or extra) "cancelled" else "end_turn";
     try respond(w, req, .{ .stopReason = stop });
