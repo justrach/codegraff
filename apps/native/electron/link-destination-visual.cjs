@@ -134,7 +134,7 @@ async function runLinkDestinationVisuals({ origin, output }) {
   try {
     await wc.loadURL('about:blank'); wc.debugger.attach('1.3'); await wc.debugger.sendCommand('Page.enable');
     await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: `(${installGalleryFixture.toString()})();` });
-    await wc.loadURL(origin); testDesktop.present(win); await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+    await wc.loadURL(origin); testDesktop.present(win); await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
     assert.equal(await js(`typeof window.graffDesktop.linkSettings`), 'function', 'real preload exposes linkSettings');
     await openSettings(); await selected('system');
     assert.equal(await store.load(), 'system');
@@ -150,11 +150,11 @@ async function runLinkDestinationVisuals({ origin, output }) {
     await screenshot('link-destination-graff.png');
     await closeBrowser();
     await new Promise(resolve => { wc.once('did-finish-load', resolve); wc.reload(); });
-    await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+    await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
     await openSettings(); await selected('graff'); await closeSettings();
     store = linkSettings(directory);
     await new Promise(resolve => { wc.once('did-finish-load', resolve); wc.reload(); });
-    await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+    await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
     await openSettings(); await selected('graff'); await closeSettings();
     await route('graff', '', 'persisted'); await closeBrowser();
     await openSettings(); await choose('system'); await closeSettings();

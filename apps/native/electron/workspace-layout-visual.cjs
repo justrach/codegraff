@@ -75,7 +75,7 @@ app.whenReady().then(async () => {
   };
   stage = "load production GUI";
   await wc.loadURL(origin);
-  await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+  await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   await js(`(()=>{const e=document.querySelector('textarea[aria-label="Prompt"]');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,'Check the layout');e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
   await wait(`!document.querySelector('[aria-label="Send"]').disabled`);
   await click('[aria-label="Send"]');

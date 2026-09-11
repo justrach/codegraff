@@ -51,7 +51,7 @@ async function runReviewRecovery({ win, origin, output }) {
   await wait(`!!document.querySelector('[aria-label="Workspace changes"] [role="alert"]')`);
   assert.ok(await js(`document.querySelector('[aria-label="File diff"]').textContent.includes('Changes unavailable')`),'Diff failures must not masquerade as binary files');
   await wc.loadURL(origin);
-  await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+  await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   testDesktop.present(win);
   console.log('Review recovery passed: unavailable vs clean, explicit retry, stale filters/worktrees, and diff failures.');
 }

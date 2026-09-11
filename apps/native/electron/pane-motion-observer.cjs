@@ -3,13 +3,13 @@
 async function observePaneMotion(wc) {
   await wc.executeJavaScript(`(()=>{
     const original = Element.prototype.animate;
-    const state = { started: 0, finished: 0, original };
+    const state = { started: 0, finished: 0, cancelled: 0, original };
     window.__paneMotionObservation = state;
     Element.prototype.animate = function(...args) {
       const animation = original.apply(this, args);
       if (this.matches('[data-chat]') && Number(animation.effect.getTiming().duration) > 1) {
         animation.ready.then(() => { state.started++; }, () => {});
-        animation.finished.then(() => { state.finished++; }, () => {});
+        animation.finished.then(() => { state.finished++; }, () => { state.cancelled++; });
       }
       return animation;
     };
@@ -20,7 +20,8 @@ async function observePaneMotion(wc) {
         if (await wc.executeJavaScript('window.__paneMotionObservation.started > 0 && window.__paneMotionObservation.finished > 0')) return;
         await new Promise(resolve => setTimeout(resolve, 50));
       }
-      throw Error('The downward drop did not run a native pane animation to completion');
+      const state = await wc.executeJavaScript('JSON.stringify(window.__paneMotionObservation)');
+      throw Error('The downward drop did not run a native pane animation to completion: ' + state);
     },
     async stop() {
       await wc.executeJavaScript(`(()=>{

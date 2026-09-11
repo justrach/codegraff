@@ -151,7 +151,7 @@ async function runChatOverflow({ win, origin, output }) {
       source: `(${require('./gallery-fixture.cjs').installGalleryFixture.toString()})()`,
     });
     await wc.loadURL(origin); win.setSize(1100, 760);
-    await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+    await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
     await js(`(() => {
       const previous = window.fetch;
       window.fetch = async (input, options) => {

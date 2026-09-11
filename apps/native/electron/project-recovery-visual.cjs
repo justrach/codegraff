@@ -135,7 +135,7 @@ async function runProjectRecovery({ win, origin, output }) {
   await js(`new Promise(r=>setTimeout(r,100))`);
   assert.ok(await js(`document.querySelector('[data-project-context]').textContent.includes('/demo/recovered')`),'A late folder listing cannot replace the chosen folder');
   await wc.loadURL(origin);
-  await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+  await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   testDesktop.present(win);
   console.log('Project recovery passed: initial/paged retry, stale searches, resume retry/cancel, navigation races, and typed folder validation.');
 }

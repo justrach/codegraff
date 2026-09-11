@@ -154,7 +154,7 @@ async function runFilesRecovery({ win, origin, output }) {
   assert.equal(await js(`!!document.querySelector('${pane} [role="alert"]')`), false, 'Old project failure cannot replace the current root');
 
   await wc.loadURL(origin);
-  await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+  await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   console.log('Files recovery passed: loading, directory/diff/action retry, stale navigation and errors, and workspace isolation.');
 }
 module.exports = { runFilesRecovery };

@@ -4,6 +4,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 async function runTabDrag({win, origin, output}) {
   const wc=win.webContents, js=code=>wc.executeJavaScript(code);
+  desktop.attachTestDebugger(wc);
+  console.log('Host reduced motion:', await js(`matchMedia('(prefers-reduced-motion: reduce)').matches`));
+  // Both motion modes are explicit test inputs, independent of runner settings.
+  await wc.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'no-preference'}]});
   const wait=async code=>{for(let i=0;i<100;i++){if(await js(code))return;await new Promise(r=>setTimeout(r,50));}throw Error(`Tab drag condition failed: ${code}`);};
   const ready=()=>wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   const tabs=()=>js(`Array.from(document.querySelectorAll('[data-tab-id]')).map(t=>Number(t.dataset.tabId))`);

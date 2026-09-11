@@ -12,7 +12,7 @@ async function runYxlyxRegressions({ win, origin }) {
     throw Error(`Tagged regression timed out: ${code}`);
   };
   await wc.loadURL(origin);
-  await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+  await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   await js(`(() => {
     const previous = window.fetch;
     const json = body => new Response(JSON.stringify(body), {headers:{'content-type':'application/json'}});
@@ -65,7 +65,7 @@ async function runYxlyxRegressions({ win, origin }) {
   assert.match(await js(`document.querySelector('[data-split-limit]').textContent`), /four|4/i);
   assert.match(await js(`document.querySelector('[data-split-limit]').textContent`), /read/i);
   await wc.loadURL(origin);
-  await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+  await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   console.log('Tagged GUI checks passed: #839 saved snapshot disclosure and no false completion; #825 optional Tasks, close/navigation, four-pane limit explanation.');
 }
 module.exports = { runYxlyxRegressions };
