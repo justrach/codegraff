@@ -179,6 +179,16 @@ pub fn gitCommonDir(gpa: Allocator, io: Io, arena: Allocator) []const u8 {
     return revParse(gpa, io, arena, "--git-common-dir");
 }
 
+fn revParseAt(gpa: Allocator, io: Io, arena: Allocator, dir: []const u8, flag: []const u8) []const u8 {
+    const r = runCapped(gpa, io, &.{ "git", "-C", dir, "rev-parse", "--path-format=absolute", flag }, 8192, 8192, 15_000) catch return "";
+    defer {
+        gpa.free(r.stdout);
+        gpa.free(r.stderr);
+    }
+    if (!ranOk(r)) return "";
+    return arena.dupe(u8, std.mem.trim(u8, r.stdout, " \t\r\n")) catch "";
+}
+
 /// Live canonical identity for this process's working directory.
 pub fn currentIdentity(gpa: Allocator, io: Io, arena: Allocator) Identity {
     const git_dir = revParse(gpa, io, arena, "--git-dir");
@@ -187,6 +197,19 @@ pub fn currentIdentity(gpa: Allocator, io: Io, arena: Allocator) Identity {
     const cwd = blk: {
         const n = Io.Dir.cwd().realPathFile(io, ".", &buf) catch break :blk "";
         break :blk arena.dupe(u8, buf[0..n]) catch "";
+    };
+    return canonicalIdentity(git_dir, common, cwd);
+}
+
+/// Identity of an explicit path (`git -C` / `cd` target), not the caller cwd.
+pub fn identityAt(gpa: Allocator, io: Io, arena: Allocator, path: []const u8) Identity {
+    if (path.len == 0) return .{};
+    const git_dir = revParseAt(gpa, io, arena, path, "--git-dir");
+    const common = revParseAt(gpa, io, arena, path, "--git-common-dir");
+    var buf: [4096]u8 = undefined;
+    const cwd = blk: {
+        const n = Io.Dir.cwd().realPathFile(io, path, &buf) catch break :blk path;
+        break :blk arena.dupe(u8, buf[0..n]) catch path;
     };
     return canonicalIdentity(git_dir, common, cwd);
 }
@@ -309,4 +332,38 @@ test "identityLine: says which kind of checkout, and stays honest when unknown" 
     try std.testing.expect(std.mem.indexOf(u8, identityLine(a, .{ .id = "/repo/.git", .kind = .main_checkout }), "main checkout") != null);
     try std.testing.expect(std.mem.indexOf(u8, identityLine(a, .{ .id = "/repo/.git/worktrees/w", .kind = .linked_worktree }), "linked worktree") != null);
     try std.testing.expect(std.mem.indexOf(u8, identityLine(a, .{}), "unknown") != null);
+}
+
+fn initBareRepo(gpa: Allocator, io: Io, path: []const u8) !void {
+    const r = try runCapped(gpa, io, &.{ "git", "init", "-q", path }, 4096, 4096, 15_000);
+    defer {
+        gpa.free(r.stdout);
+        gpa.free(r.stderr);
+    }
+    if (!ranOk(r)) return error.GitInitFailed;
+}
+
+test "#851 identityAt distinguishes isolated checkouts and matches a subdirectory" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const path_a = try std.fmt.allocPrint(a, "{s}/a", .{root});
+    const path_b = try std.fmt.allocPrint(a, "{s}/b", .{root});
+    const path_sub = try std.fmt.allocPrint(a, "{s}/a/src", .{root});
+    try tmp.dir.createDirPath(io, "a/src");
+    try tmp.dir.createDirPath(io, "b");
+    try initBareRepo(gpa, io, path_a);
+    try initBareRepo(gpa, io, path_b);
+    const id_a = identityAt(gpa, io, a, path_a);
+    const id_b = identityAt(gpa, io, a, path_b);
+    const id_sub = identityAt(gpa, io, a, path_sub);
+    try std.testing.expect(id_a.id.len > 0);
+    try std.testing.expect(id_b.id.len > 0);
+    try std.testing.expect(!std.mem.eql(u8, id_a.id, id_b.id));
+    try std.testing.expectEqualStrings(id_a.id, id_sub.id);
 }

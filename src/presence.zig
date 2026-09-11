@@ -26,6 +26,19 @@ pub const parseRecord = presence_record.parseRecord;
 
 pub const isSharedTreeGit = presence_mutate.isSharedTreeGit;
 pub const isSharedTreeShell = presence_mutate.isSharedTreeShell;
+pub const mutationTarget = presence_mutate.mutationTarget;
+
+/// #851: checkpoint the worktree the command mutates. An isolated `git -C`
+/// / leading `cd` target that resolves to a different identity is not the
+/// caller's shared tree. Unresolved or in-tree paths stay gated.
+pub fn sharedTreeGateApplies(gpa: Allocator, io: Io, arena: Allocator, cmd: []const u8) bool {
+    const mine = g_identity;
+    if (mine.len == 0) return true;
+    const target = presence_mutate.mutationTarget(cmd) orelse return true;
+    const at = worktree_lease.identityAt(gpa, io, arena, target);
+    if (at.id.len == 0) return true;
+    return std.mem.eql(u8, mine, at.id);
+}
 
 /// Per-user registry: <home>/.graff/live. Deliberately NOT the per-project .graff/sessions of session_index.zig — presence is device-local and keyed by worktree identity so two checkouts of one repo stay distinct (#320).
 pub const registry_subdir = ".graff/live";

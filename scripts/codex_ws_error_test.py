@@ -198,6 +198,7 @@ def run_chain_reanchor_scenario(
                 f"rejected_parent={rejected.body.get('previous_response_id')!r}, "
                 f"rebuilt_parent={rebuilt.body.get('previous_response_id')!r}"
             )
+        mock.assert_fresh_anchor(rebuilt)
         rebuilt_types = [
             item.get("type")
             for item in rebuilt.body.get("input", [])
