@@ -16,9 +16,9 @@ async function testTaskRows({ win, origin }) {
   const expanded = index => `${row(index)}.querySelector('button')?.getAttribute('aria-expanded')`;
   const key = async keyCode => {
     await testDesktop.testInput(win.webContents, { type: 'keyDown', keyCode });
-    // Chromium's background Enter already carries its character event.
-    if ((keyCode === 'Enter' && testDesktop.foreground) || keyCode === 'Space') {
-      await testDesktop.testInput(win.webContents, { type: 'char', keyCode: keyCode === 'Enter' ? '\r' : ' ' });
+    // The shared Chromium driver carries Enter's character in both modes.
+    if (keyCode === 'Space') {
+      await testDesktop.testInput(win.webContents, { type: 'char', keyCode: ' ' });
     }
     await testDesktop.testInput(win.webContents, { type: 'keyUp', keyCode });
     await sleep(40);
