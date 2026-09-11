@@ -75,6 +75,46 @@ pub fn dupe(alloc: Allocator, text: []const u8) ![]u8 {
     return aw.toOwnedSlice();
 }
 
+/// Incremental counterpart to dupe. Hold at most two bytes while recognizing
+/// a UTF-8 control marker; suppress its payload through the matching end.
+pub const Stream = struct {
+    prefix: u2 = 0,
+    hidden: bool = false,
+
+    /// buf needs three bytes. Returned bytes are ordinary user-facing text.
+    pub fn byte(self: *Stream, c: u8, buf: *[3]u8) []const u8 {
+        var n: usize = 0;
+        if (self.prefix == 2 and c >= mark_start and c <= mark_sep) {
+            if (c == mark_start) self.hidden = true;
+            if (c == mark_end) self.hidden = false;
+            self.prefix = 0;
+            return buf[0..0];
+        }
+        if (self.prefix == 1 and c == pua_lead[1]) {
+            self.prefix = 2;
+            return buf[0..0];
+        }
+        if (!self.hidden) {
+            if (self.prefix > 0) {
+                buf[n] = pua_lead[0];
+                n += 1;
+            }
+            if (self.prefix > 1) {
+                buf[n] = pua_lead[1];
+                n += 1;
+            }
+        }
+        self.prefix = 0;
+        if (c == pua_lead[0]) {
+            self.prefix = 1;
+        } else if (!self.hidden) {
+            buf[n] = c;
+            n += 1;
+        }
+        return buf[0..n];
+    }
+};
+
 test "citation annotations strip to surrounding prose (#805, #811)" {
     const a = std.testing.allocator;
     const raw = "See the docs\u{E200}cite\u{E202}turn0view0\u{E201} for details.";

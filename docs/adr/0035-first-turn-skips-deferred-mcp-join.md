@@ -2,6 +2,8 @@
 
 Status: accepted 2026-08-26
 
+Later-request joining is updated by [ADR 0104](0104-live-publication-and-deferred-tool-evidence.md): only finished handshakes join before a model request.
+
 ## Context
 
 Interactive `--yolo` (including `graff acp`) starts MCP handshakes in the

@@ -113,12 +113,16 @@ class ScriptedModel:
                 if message["content"]:
                     deltas.append({"role": "assistant", "content": message["content"]})
                 for position, call in enumerate(message.get("tool_calls", [])):
-                    deltas.append({"tool_calls": [{
-                        "index": position,
-                        "id": call["id"],
-                        "type": "function",
-                        "function": call["function"],
-                    }]})
+                    function = call["function"]
+                    size = reply.get("argument_chunk_size", 0)
+                    arguments = function["arguments"]
+                    fragments = [arguments[i:i + size] for i in range(0, len(arguments), size)] if size else [arguments]
+                    for number, fragment in enumerate(fragments):
+                        fn = {"arguments": fragment}
+                        if number == 0: fn["name"] = function["name"]
+                        deltas.append({"tool_calls": [{
+                            "index": position, "id": call["id"], "type": "function", "function": fn,
+                        }]})
                 finish = "tool_calls" if "tool_calls" in message else "stop"
                 for delta in deltas or [{"role": "assistant", "content": ""}]:
                     self._chunk({"choices": [{"index": 0, "delta": delta, "finish_reason": None}]})

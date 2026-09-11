@@ -50,11 +50,31 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, args: []const []const u
             for (recs) |rec| {
                 if (rec.pid == candidate.pid and job_registry.state(io, rec) == .running) recorded = true;
             }
-            if (!recorded) try out.print("{d:<8} suspected orphan listener (listener pid {d}); report-only, ownership unverified\n", .{ candidate.pid, candidate.listener });
+            if (!recorded) {
+                try out.print("{d:<8} suspected orphan listener (listener pid {d}); origin unverified\n", .{ candidate.pid, candidate.listener });
+                if (@import("server_orphan.zig").capture(io, candidate.pid)) |snapshot| {
+                    var token: [80]u8 = undefined;
+                    try out.print("  After inspecting this process, explicitly stop this snapshot with: graff servers stop-suspect {d} {s}\n", .{ candidate.pid, try snapshot.token(&token) });
+                }
+            }
         }
         if (found.incomplete) try out.writeAll("orphan discovery incomplete: inspection limit or process query failed; listener status is unknown\n");
-        try out.writeAll("Suspects are never adopted or stopped: environment hints cannot prove ownership or revalidate start/executable/group identity.\n");
+        try out.writeAll("Suspects are never adopted or automatically stopped. stop-suspect requires the displayed identity token and revalidates start, executable and process group.\n");
         return out.writeAll("graff servers stop <pid> ends a verified recorded job only; graff servers prune drops dead records\n");
+    }
+
+    if (std.mem.eql(u8, action, "stop-suspect")) {
+        if (args.len != 3) return out.writeAll("usage: graff servers stop-suspect <pid> <identity-token-from-list>\n");
+        const pid = std.fmt.parseInt(i32, args[1], 10) catch return out.writeAll("invalid pid; no process stopped\n");
+        const found = discovery.scan(gpa, io, arena) catch return out.writeAll("discovery unavailable; no process stopped\n");
+        for (found.candidates) |candidate| {
+            if (candidate.pid != pid) continue;
+            const orphan = @import("server_orphan.zig");
+            const snapshot = orphan.capture(io, pid) orelse return out.writeAll("identity unavailable; no process stopped\n");
+            const result = orphan.stop(io, snapshot, args[2]);
+            return out.print("legacy listener stop: {s}; no ownership record created\n", .{@tagName(result)});
+        }
+        return out.writeAll("pid is no longer a discovered same-user orphan listener; no process stopped\n");
     }
 
     if (std.mem.eql(u8, action, "stop")) {
@@ -76,7 +96,7 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, args: []const []const u
             }
             return;
         }
-        return out.print("no record of pid {d} — suspected listeners are report-only and cannot be stopped here; exact start/executable/group identity is not available\n", .{pid});
+        return out.print("no record of pid {d} — use servers list to inspect suspected listeners and obtain an explicit stop-suspect identity token\n", .{pid});
     }
 
     if (std.mem.eql(u8, action, "prune")) {
@@ -89,5 +109,5 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, args: []const []const u
         return out.print("✓ dropped {d} record(s) of servers that are gone\n", .{dropped});
     }
 
-    try out.print("unknown servers command '{s}' — use: graff servers [list | stop <pid> | prune]\n", .{action});
+    try out.print("unknown servers command '{s}' — use: graff servers [list | stop <pid> | stop-suspect <pid> <identity-token> | prune]\n", .{action});
 }

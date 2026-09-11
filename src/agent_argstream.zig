@@ -81,6 +81,7 @@ pub const ArgLive = struct {
     hi_sur: u16 = 0, // pending UTF-16 high surrogate (0 = none)
     key: [24]u8 = undefined,
     key_len: usize = 0,
+    citations: @import("cite_markup.zig").Stream = .{},
     key_over: bool = false, // key overflowed/escaped — cannot be the target
 
     const State = enum { seek_key, key, post_key, pre_val, skip_val, val, done };
@@ -101,7 +102,7 @@ pub const ArgLive = struct {
         var out_len: usize = 0;
         for (frag) |c| {
             if (out_len > out_buf.len - 8) { // keep room for one decoded escape
-                agent.emitArgText(self.tool, out_buf[0..out_len]);
+                self.emit(agent, out_buf[0..out_len]);
                 out_len = 0;
             }
             switch (self.state) {
@@ -211,7 +212,20 @@ pub const ArgLive = struct {
                 },
             }
         }
-        if (out_len > 0) agent.emitArgText(self.tool, out_buf[0..out_len]);
+        if (out_len > 0) self.emit(agent, out_buf[0..out_len]);
+    }
+
+    fn emit(self: *ArgLive, agent: *Agent, text: []const u8) void {
+        if (self.tool == .rlm) return agent.emitArgText(self.tool, text);
+        var clean: [514]u8 = undefined;
+        var n: usize = 0;
+        for (text) |c| {
+            var buf: [3]u8 = undefined;
+            const bytes = self.citations.byte(c, &buf);
+            @memcpy(clean[n..][0..bytes.len], bytes);
+            n += bytes.len;
+        }
+        agent.emitArgText(self.tool, clean[0..n]);
     }
 
     /// Emit one literal byte, flushing any orphaned high surrogate first.
@@ -352,6 +366,10 @@ pub fn argLiveDelta(self: *Agent, obj: std.json.ObjectMap) void {
 /// never carried these moments (argLiveDelta gates --json off), so JsonSink
 /// stays silent.
 fn openLive(self: *Agent, name: []const u8, ix: i64) void {
+    if (!@import("builtin").is_test and argToolFor(name) == .attempt_completion and @import("pr_verify.zig").hasObligation(self)) {
+        self.arg_live = .{};
+        return;
+    }
     if (argToolFor(name) == .rlm) rlm_spec.resetLive(self.gpa, self.io);
     self.arg_live.open(name, ix);
 }
@@ -384,7 +402,7 @@ pub fn argStreamedFully(self: *Agent, call: ToolCall) bool {
     // fix B2 added, so it was the last unguarded deref on that path.
     if (call.input != .object) return false;
     const v = call.input.object.get(argField(at)) orelse return false;
-    return v == .string and v.string.len == self.streamed_args_len;
+    return v == .string and @import("cite_markup.zig").strippedLen(v.string) == self.streamed_args_len;
 }
 
 test "argStreamedFully: a non-object tool input is refused, not dereferenced" {

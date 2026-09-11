@@ -9,7 +9,7 @@
 //!
 //! `--yolo` (including `-p`) sets `defer_join`: tasks start immediately but
 //! the first model call is not blocked. `joinBeforeRequest` merges them on
-//! the *second* model call (ADR 0035). Lean `-p` with no project `.mcp.json`
+//! later model calls as each handshake finishes (ADR 0035). Lean `-p` with no project `.mcp.json`
 //! skips imported global/plugin handshakes (ADR 0029 is the project file).
 //! `joinPending` still blocks for `/mcp` and teardown.
 
@@ -35,15 +35,36 @@ pub const StartOutcome = struct {
     arena_state: ?std.heap.ArenaAllocator = null,
 };
 
+/// The flag has a stable address even when the pending queue grows. Only the
+/// task writes it; the request thread consumes the future after acquire.
+pub const PendingStart = struct {
+    future: Io.Future(StartOutcome) = .{ .any_future = null, .result = .{} },
+    ready: ?*std.atomic.Value(bool) = null,
+
+    fn finished(self: *const PendingStart) bool {
+        return if (self.ready) |flag| flag.load(.acquire) else true;
+    }
+
+    fn awaitResult(self: *PendingStart, reg: *Registry) StartOutcome {
+        const result = self.future.await(reg.io);
+        self.future = .{ .any_future = null, .result = .{} };
+        if (self.ready) |flag| reg.gpa.destroy(flag);
+        self.ready = null;
+        return result;
+    }
+};
+
 const StartCtx = struct {
     gpa: Allocator,
     io: Io,
     home: []const u8,
     show_diagnostics: bool,
     stdio_probe: bool,
+    ready: ?*std.atomic.Value(bool) = null,
 };
 
 fn startServerTask(ctx: StartCtx, name: []const u8, cfg: std.json.ObjectMap) StartOutcome {
+    defer if (ctx.ready) |flag| flag.store(true, .release);
     var outcome: StartOutcome = .{};
     var arena_state = std.heap.ArenaAllocator.init(ctx.gpa);
     const a = arena_state.allocator();
@@ -108,50 +129,32 @@ pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]con
         try entries.append(a, .{ .name = try a.dupe(u8, entry.key_ptr.*), .cfg = entry.value_ptr.*.object });
     }
 
-    const futures = try gpa.alloc(Io.Future(StartOutcome), entries.items.len);
+    const futures = try gpa.alloc(PendingStart, entries.items.len);
+    @memset(futures, .{});
+    reg.pending_starts = futures; // errdefer must join every launched task
     const started_names = try a.alloc([]const u8, entries.items.len);
-    // concurrent, not async: io.async may run the handshake inline, so two
-    // remote servers paid SUM(latency) instead of max(latency) at REPL start.
-    // defer_join must not take that fallback — inline handshake is the TUI hang.
-    const ctx = StartCtx{
-        .gpa = gpa,
-        .io = io,
-        .home = home,
-        .show_diagnostics = show_diagnostics,
-        .stdio_probe = reg.stdio_probe,
-    };
+    @memset(started_names, "");
+    reg.pending_names = started_names;
     var started: usize = 0;
     for (entries.items) |e| {
+        const flag = try gpa.create(std.atomic.Value(bool));
+        flag.* = .init(false);
+        var ctx = startCtx(&reg);
+        ctx.ready = flag;
         const args = .{ ctx, e.name, e.cfg };
-        if (io.concurrent(startServerTask, args)) |fut| {
-            futures[started] = fut;
-            started_names[started] = e.name;
-            started += 1;
-        } else |_| {
-            if (defer_join) continue;
-            futures[started] = io.async(startServerTask, args);
-            started_names[started] = e.name;
-            started += 1;
-        }
+        const fut = io.concurrent(startServerTask, args) catch blk: {
+            if (defer_join) {
+                gpa.destroy(flag);
+                continue;
+            }
+            break :blk io.async(startServerTask, args);
+        };
+        futures[started] = .{ .future = fut, .ready = flag };
+        started_names[started] = e.name;
+        started += 1;
     }
-    if (defer_join) {
-        if (started == 0) {
-            gpa.free(futures);
-            return reg;
-        }
-        if (started < futures.len) {
-            const slim = try gpa.alloc(Io.Future(StartOutcome), started);
-            @memcpy(slim, futures[0..started]);
-            gpa.free(futures);
-            reg.pending_starts = slim;
-        } else {
-            reg.pending_starts = futures;
-        }
-        reg.pending_names = started_names[0..started];
-        return reg;
-    }
-    defer gpa.free(futures);
-    mergeOutcomes(&reg, futures[0..started]);
+    if (defer_join) return reg;
+    _ = joinPending(&reg);
     return reg;
 }
 
@@ -184,25 +187,36 @@ pub fn queueStdio(reg: *Registry, name: []const u8, command: []const u8, args: [
     var argv = std.json.Array.init(a);
     for (args) |arg| argv.append(.{ .string = a.dupe(u8, arg) catch return }) catch return;
     cfg.put(a, "args", .{ .array = argv }) catch return;
-    const fut = reg.io.concurrent(startServerTask, .{ startCtx(reg), n, cfg }) catch return;
-    appendPending(reg, fut, n);
-}
-
-fn appendPending(reg: *Registry, fut: Io.Future(StartOutcome), name: []const u8) void {
+    // Reserve both paired arrays before spawning: allocation failure must not
+    // abandon a task that still borrows registry configuration.
     const old = reg.pending_starts;
-    const next = reg.gpa.alloc(Io.Future(StartOutcome), old.len + 1) catch return;
+    const next = reg.gpa.alloc(PendingStart, old.len + 1) catch return;
+    const names = a.alloc([]const u8, old.len + 1) catch {
+        reg.gpa.free(next);
+        return;
+    };
+    const flag = reg.gpa.create(std.atomic.Value(bool)) catch {
+        reg.gpa.free(next);
+        return;
+    };
+    flag.* = .init(false);
+    var ctx = startCtx(reg);
+    ctx.ready = flag;
+    const fut = reg.io.concurrent(startServerTask, .{ ctx, n, cfg }) catch {
+        reg.gpa.destroy(flag);
+        reg.gpa.free(next);
+        return;
+    };
     @memcpy(next[0..old.len], old);
-    next[old.len] = fut;
+    next[old.len] = .{ .future = fut, .ready = flag };
+    @memcpy(names[0..old.len], reg.pending_names);
+    names[old.len] = n;
     if (old.len > 0) reg.gpa.free(old);
     reg.pending_starts = next;
-    const a = reg.arena();
-    const names = a.alloc([]const u8, reg.pending_names.len + 1) catch return;
-    @memcpy(names[0..reg.pending_names.len], reg.pending_names);
-    names[reg.pending_names.len] = name;
     reg.pending_names = names;
 }
 
-fn mergeOutcomes(reg: *Registry, futures: []Io.Future(StartOutcome)) void {
+fn mergeOutcomes(reg: *Registry, futures: []PendingStart) void {
     const a = reg.arena();
     var servers: std.ArrayList(*mcp_rpc.Server) = .empty;
     var tools: std.ArrayList(mcp.Tool) = .empty;
@@ -211,7 +225,7 @@ fn mergeOutcomes(reg: *Registry, futures: []Io.Future(StartOutcome)) void {
     tools.appendSlice(a, reg.tools) catch {};
     task_arenas.appendSlice(a, reg.task_arenas) catch {};
     for (futures) |*fut| {
-        const outcome = fut.await(reg.io);
+        const outcome = fut.awaitResult(reg);
         const server = outcome.server orelse continue;
         // A companion (eager codedb-pro) or /mcp trust can connect this server
         // while its deferred start is still in flight. Appending the outcome
@@ -277,7 +291,7 @@ fn noteMcpDeferred(io: Io) void {
 }
 
 /// First model call: do not wait for deferred MCP handshakes (ADR 0035).
-/// Later requests, `/mcp`, and teardown still `joinPending`.
+/// Later requests only consume ready outcomes; `/mcp` and teardown may wait.
 pub fn joinBeforeRequest(reg: *Registry) bool {
     switch (firstRequestJoin(reg.pending_starts.len, &reg.first_request_join_skipped)) {
         .none => return false,
@@ -285,8 +299,36 @@ pub fn joinBeforeRequest(reg: *Registry) bool {
             noteMcpDeferred(reg.io);
             return false;
         },
-        .join => return joinPending(reg),
+        .join => return joinReady(reg),
     }
+}
+
+/// Compact unfinished tasks in place without changing their flag addresses.
+/// No unfinished handshake is ever awaited on the request path.
+pub fn joinReady(reg: *Registry) bool {
+    const pending = reg.pending_starts;
+    var merged = false;
+    for (pending, 0..) |*task, i| {
+        if (task.ready == null or !task.finished()) continue;
+        mergeOutcomes(reg, pending[i..][0..1]);
+        merged = true;
+    }
+    // Keep the allocation until every task is consumed; names for consumed
+    // slots are blanked so failed connections can be retried while others wait.
+    var waiting = false;
+    for (pending, 0..) |task, i| {
+        if (task.ready != null) {
+            waiting = true;
+        } else if (i < reg.pending_names.len) {
+            @constCast(reg.pending_names)[i] = "";
+        }
+    }
+    if (!waiting and pending.len > 0) {
+        reg.gpa.free(pending);
+        reg.pending_starts = &.{};
+        reg.pending_names = &.{};
+    }
+    return merged;
 }
 
 /// Await deferred startServer tasks and append them to the live registry
@@ -320,7 +362,7 @@ test "MCP boot fans server handshakes out with io.concurrent" {
 
 test "defer_join does not fall back to inline io.async" {
     const src = @embedFile("mcp_boot.zig");
-    try std.testing.expect(std.mem.indexOf(u8, src, "if (defer_join) continue") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "gpa.destroy(flag);") != null);
 }
 
 test "alreadyStarting sees pending names before the handshake finishes" {
@@ -364,4 +406,38 @@ test "oneshotSkipsImportedMcp is lean -p with no project .mcp.json" {
     try std.testing.expect(!oneshotSkipsImportedMcp(true, true, 1)); // ADR 0029
     try std.testing.expect(!oneshotSkipsImportedMcp(true, false, 0)); // --no-lean
     try std.testing.expect(!oneshotSkipsImportedMcp(false, true, 0)); // REPL
+}
+
+test "#860 later requests leave unfinished handshakes queued and consume ready tasks" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var reg = Registry.empty(a, io);
+    defer reg.deinit();
+    var release_task: Io.Event = .unset;
+    defer release_task.set(io);
+    const flag = try a.create(std.atomic.Value(bool));
+    flag.* = .init(false);
+    reg.pending_starts = try a.alloc(PendingStart, 2);
+    @memset(reg.pending_starts, .{});
+    reg.pending_names = try reg.arena().dupe([]const u8, &.{ "slow", "ready" });
+    const Task = struct {
+        fn run(task_io: Io, release: *Io.Event, done: *std.atomic.Value(bool)) StartOutcome {
+            defer done.store(true, .release);
+            release.waitTimeout(task_io, .{ .duration = .{ .raw = .fromSeconds(5), .clock = .awake } }) catch {};
+            return .{};
+        }
+    };
+    reg.pending_starts[0] = .{ .future = try io.concurrent(Task.run, .{ io, &release_task, flag }), .ready = flag };
+    const ready = try a.create(std.atomic.Value(bool));
+    ready.* = .init(true);
+    reg.pending_starts[1].ready = ready;
+    try std.testing.expect(!joinBeforeRequest(&reg));
+    try std.testing.expect(joinBeforeRequest(&reg));
+    try std.testing.expect(!flag.load(.acquire));
+    try std.testing.expect(alreadyStarting(&reg, "slow"));
+    try std.testing.expect(!alreadyStarting(&reg, "ready"));
+    try std.testing.expect(!joinBeforeRequest(&reg));
+    release_task.set(io);
+    try std.testing.expect(joinPending(&reg));
+    try std.testing.expectEqual(@as(usize, 0), reg.pending_starts.len);
 }

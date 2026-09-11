@@ -30,6 +30,7 @@ pub fn hasUnresolved(agent: *const Agent) bool {
 }
 
 pub fn completionGate(arena: Allocator, agent: *Agent) !?[]const u8 {
+    if (!@import("builtin").is_test) if (@import("pr_verify.zig").completionGate(agent)) |blocked| return blocked;
     if (agent.review_mode or agent.sub) return goal_state.completionGate(arena, agent);
     if (hasUnresolved(agent)) {
         const rendered = goal_state.renderTodos(agent, goal_state.currentEpoch(agent.goal));
@@ -42,6 +43,7 @@ pub fn completionGate(arena: Allocator, agent: *Agent) !?[]const u8 {
 /// goal/eval/verification obligation is vacuously verified so recipe
 /// telemetry for chat turns stays usable.
 pub fn taskVerified(agent: *const Agent) bool {
+    if (!@import("builtin").is_test and !@import("pr_verify.zig").taskVerified(agent)) return false;
     if (hasUnresolved(agent)) return false;
     if (agent.eval_cmd != null) return agent.eval_verified and !agent.eval_repair_pending;
     if (goal_state.goalActive(@constCast(agent))) {

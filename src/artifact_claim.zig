@@ -165,12 +165,12 @@ pub fn isClaimedMutation(cmd: []const u8) bool {
     var saw_gh = false;
     var saw_pr = false;
     while (it.next()) |tok| {
-        if (std.mem.eql(u8, tok, "git")) {
+        if (std.mem.eql(u8, std.fs.path.basename(tok), "git")) {
             saw_git = true;
             continue;
         }
         if (saw_git and (std.mem.eql(u8, tok, "push") or std.mem.eql(u8, tok, "commit") or std.mem.eql(u8, tok, "add"))) return true;
-        if (std.mem.eql(u8, tok, "gh")) {
+        if (std.mem.eql(u8, std.fs.path.basename(tok), "gh")) {
             saw_gh = true;
             continue;
         }
@@ -254,7 +254,7 @@ fn ownerLive(io: Io, owner: Owner) bool {
         return g_test_live;
     }
     if (owner.pid == 0) return true;
-    return proc_identity.probe(io, owner.pid) != .gone;
+    return proc_identity.ownerState(owner.start_id, proc_identity.probe(io, owner.pid)) == .held;
 }
 
 fn claimRelevant(held: Kind, mutation: Kind) bool {
@@ -269,68 +269,88 @@ fn claimRelevant(held: Kind, mutation: Kind) bool {
 
 pub fn gateCommand(arena: Allocator, io: Io, cmd: []const u8, key: []const u8) ?[]const u8 {
     if (!isClaimedMutation(cmd)) return null;
-    ensureLoaded(io);
+    var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer scratch.deinit();
+    const tx = begin(io, scratch.allocator()) catch return "artifact claim ledger unavailable or busy: action NOT performed";
+    defer if (tx) |transaction| transaction.end();
+    var local: Ledger = .{};
+    const ledger = if (tx != null) &local else &g_ledger;
+    if (tx) |transaction| loadTransaction(transaction, ledger) catch return "artifact claim ledger unreadable: action NOT performed";
     const kind = mutationKind(cmd);
-    const me = selfOwner();
+    var me = selfOwner();
+    if (!builtin.is_test) me.start_id = proc_identity.selfStartId(io);
     if (key.len == 0) {
-        for (g_ledger.slice()) |c| {
+        for (ledger.slice()) |c| {
             if (!claimRelevant(c.kind, kind)) continue;
             const live = ownerLive(io, c.owner);
-            if (verdict(g_ledger.slice(), c.kind, c.key, me, live) == .foreign_live)
+            if (verdict(ledger.slice(), c.kind, c.key, me, live) == .foreign_live)
                 return refuseText(arena, c.kind, c.key, c.owner);
         }
         return null;
     }
-    const existing = find(g_ledger.slice(), kind, key) orelse find(g_ledger.slice(), .publication, key);
-    const check_kind = if (existing) |c| c.kind else kind;
-    const check_key = if (existing) |c| c.key else key;
-    const held = find(g_ledger.slice(), check_kind, check_key) orelse return null;
-    const live = ownerLive(io, held.owner);
-    return switch (verdict(g_ledger.slice(), check_kind, check_key, me, live)) {
-        .foreign_live => refuseText(arena, check_kind, check_key, held.owner),
-        else => null,
-    };
+    for (ledger.slice()) |held| {
+        if (!claimRelevant(held.kind, kind)) continue;
+        if (held.key.len != 0 and !std.mem.eql(u8, held.key, key)) continue;
+        if (!sameOwner(held.owner, me) and ownerLive(io, held.owner)) return refuseText(arena, held.kind, held.key, held.owner);
+    }
+    return null;
 }
 
 pub fn handleTool(arena: Allocator, io: Io, action: []const u8, kind_s: []const u8, key: []const u8, to_session: []const u8) !ExecResult {
-    ensureLoaded(io);
+    var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer scratch.deinit();
+    const tx = begin(io, scratch.allocator()) catch return .{ .text = "claim ledger unavailable or busy", .is_error = true };
+    defer if (tx) |transaction| transaction.end();
+    var local: Ledger = .{};
+    const ledger = if (tx != null) &local else &g_ledger;
+    const storage = if (tx != null) scratch.allocator() else storeAlloc();
+    if (tx) |transaction| loadTransaction(transaction, ledger) catch return .{ .text = "claim ledger unreadable; no claim changed", .is_error = true };
     const kind = kindFrom(kind_s) orelse return .{
         .text = "kind must be branch, issue, commit, pull_request, or publication",
         .is_error = true,
     };
-    const me = selfOwner();
+    var me = selfOwner();
+    if (!builtin.is_test) me.start_id = proc_identity.selfStartId(io);
     const now: i64 = 0;
-    const existing = find(g_ledger.slice(), kind, key);
+    const existing = find(ledger.slice(), kind, key);
     const live = if (existing) |c| ownerLive(io, c.owner) else false;
     if (std.mem.eql(u8, action, "claim") or std.mem.eql(u8, action, "acquire")) {
-        const msg = acquire(&g_ledger, storeAlloc(), kind, key, me, now, live) catch |err| switch (err) {
+        const msg = acquire(ledger, storage, kind, key, me, now, live) catch |err| switch (err) {
             error.ClaimHeld => return .{ .text = refuseText(arena, kind, key, existing.?.owner), .is_error = true },
             else => return .{ .text = "claim acquire failed", .is_error = true },
         };
-        flush(io);
+        if (tx) |transaction| transaction.write(try persistJson(scratch.allocator(), ledger)) catch return .{ .text = "claim was NOT persisted; retry before publishing", .is_error = true };
         return .{ .text = msg, .is_error = false };
     }
     if (std.mem.eql(u8, action, "release")) {
-        const msg = release(&g_ledger, kind, key, me, live) catch return .{
+        const msg = release(ledger, kind, key, me, live) catch return .{
             .text = "cannot release a live foreign claim",
             .is_error = true,
         };
-        flush(io);
+        if (tx) |transaction| transaction.write(try persistJson(scratch.allocator(), ledger)) catch return .{ .text = "claim was NOT persisted; retry before publishing", .is_error = true };
         return .{ .text = msg, .is_error = false };
     }
     if (std.mem.eql(u8, action, "handoff")) {
         if (to_session.len == 0) return .{ .text = "handoff needs session (the receiver)", .is_error = true };
-        const msg = handoff(&g_ledger, storeAlloc(), kind, key, me, .{ .session = to_session }, now, live) catch |err| switch (err) {
+        var receiver = Owner{ .session = to_session };
+        if (!builtin.is_test) {
+            const target = @import("peer_target.zig").resolvePeer(presence.liveAllPeers(io, scratch.allocator()), to_session);
+            if (target != .one) return .{ .text = "handoff needs one identifiable live peer", .is_error = true };
+            const peer = target.one;
+            if (!std.mem.eql(u8, peer.identity, presence.ownIdentity()) or peer.start_id == 0) return .{ .text = "handoff receiver must have verified identity in this workspace", .is_error = true };
+            receiver = .{ .session = peer.session_id, .pid = peer.pid, .start_id = peer.start_id };
+        }
+        const msg = handoff(ledger, storage, kind, key, me, receiver, now, live) catch |err| switch (err) {
             error.ClaimHeld => return .{ .text = "cannot hand off a claim you do not own", .is_error = true },
             error.NoClaim => return .{ .text = "no claim to hand off", .is_error = true },
             else => return .{ .text = "handoff failed", .is_error = true },
         };
-        flush(io);
+        if (tx) |transaction| transaction.write(try persistJson(scratch.allocator(), ledger)) catch return .{ .text = "claim was NOT persisted; retry before publishing", .is_error = true };
         return .{ .text = msg, .is_error = false };
     }
     if (std.mem.eql(u8, action, "status")) {
         if (existing) |c| {
-            const v = verdict(g_ledger.slice(), kind, key, me, live);
+            const v = verdict(ledger.slice(), kind, key, me, live);
             return .{ .text = try std.fmt.allocPrint(arena, "claim {s} {s}: {s} owner=\"{s}\"", .{ @tagName(kind), key, @tagName(v), c.owner.session }), .is_error = false };
         }
         return .{ .text = "no claim", .is_error = false };
@@ -344,21 +364,28 @@ fn persistPath() ?[]const u8 {
     return persist_rel;
 }
 
-fn ensureLoaded(io: Io) void {
-    if (g_loaded) return;
-    g_loaded = true;
-    const path = persistPath() orelse return;
-    const text = Io.Dir.cwd().readFileAlloc(io, path, storeAlloc(), .limited(64 * 1024)) catch return;
-    loadJson(storeAlloc(), &g_ledger, text) catch {
-        g_ledger.len = 0;
-    };
+fn begin(io: Io, arena: Allocator) !?@import("repo_transaction.zig").Transaction {
+    const path = persistPath() orelse return null;
+    return try @import("repo_transaction.zig").Transaction.begin(io, arena, path);
 }
 
-fn flush(io: Io) void {
+fn loadTransaction(tx: @import("repo_transaction.zig").Transaction, ledger: *Ledger) !void {
+    const text = try tx.read() orelse return;
+    try loadJson(tx.arena, ledger, text);
+}
+
+fn reload(io: Io) !void {
     const path = persistPath() orelse return;
-    const json = persistJson(storeAlloc(), &g_ledger) catch return;
-    if (std.fs.path.dirname(path)) |dir| Io.Dir.cwd().createDirPath(io, dir) catch {};
-    Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = json }) catch {};
+    // Every transaction reads again under the lock. A previously cached owner
+    // must never survive a peer's acknowledged handoff.
+    g_ledger.len = 0;
+    if (g_store) |*st| st.deinit();
+    g_store = null;
+    const text = Io.Dir.cwd().readFileAlloc(io, path, storeAlloc(), .limited(64 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    try loadJson(storeAlloc(), &g_ledger, text);
 }
 
 pub fn persistJson(arena: Allocator, ledger: *const Ledger) ![]const u8 {
@@ -385,17 +412,17 @@ pub fn persistJson(arena: Allocator, ledger: *const Ledger) ![]const u8 {
 
 pub fn loadJson(arena: Allocator, ledger: *Ledger, text: []const u8) !void {
     ledger.len = 0;
-    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch return;
-    if (parsed != .array) return;
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{});
+    if (parsed != .array) return error.InvalidLedger;
     for (parsed.array.items) |item| {
-        if (item != .object) continue;
-        const kind_s = if (item.object.get("kind")) |v| (if (v == .string) v.string else continue) else continue;
-        const kind = kindFrom(kind_s) orelse continue;
+        if (item != .object) return error.InvalidLedger;
+        const kind_s = if (item.object.get("kind")) |v| (if (v == .string) v.string else return error.InvalidLedger) else return error.InvalidLedger;
+        const kind = kindFrom(kind_s) orelse return error.InvalidLedger;
         const key = if (item.object.get("key")) |v| (if (v == .string) v.string else "") else "";
         const session = if (item.object.get("session")) |v| (if (v == .string) v.string else "") else "";
-        const pid: i32 = if (item.object.get("pid")) |v| (if (v == .integer) @intCast(v.integer) else 0) else 0;
+        const pid: i32 = if (item.object.get("pid")) |v| (if (v == .integer) (std.math.cast(i32, v.integer) orelse return error.InvalidLedger) else return error.InvalidLedger) else 0;
         const start_id: u64 = if (item.object.get("start_id")) |v| (if (v == .integer and v.integer >= 0) @intCast(v.integer) else 0) else 0;
-        if (ledger.len >= max_claims) break;
+        if (ledger.len >= max_claims) return error.InvalidLedger;
         ledger.items[ledger.len] = .{
             .kind = kind,
             .key = try arena.dupe(u8, key),
@@ -521,7 +548,9 @@ test "file persist reloads after a resume-shaped reset" {
     defer arena_state.deinit();
     const ar = arena_state.allocator();
     const io = std.testing.io;
-    const file = "zig-cache/artifact-claims-persist-test.json";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file = try std.fmt.allocPrint(ar, ".zig-cache/tmp/{s}/claims.json", .{tmp.sub_path});
     Io.Dir.cwd().deleteFile(io, file) catch {};
     defer Io.Dir.cwd().deleteFile(io, file) catch {};
     resetForTest();
@@ -532,7 +561,7 @@ test "file persist reloads after a resume-shaped reset" {
     _ = try handleTool(ar, io, "claim", "publication", "feat/x", "");
     g_ledger.len = 0;
     g_loaded = false;
-    ensureLoaded(io);
+    try reload(io);
     try std.testing.expectEqual(@as(usize, 1), g_ledger.len);
     try std.testing.expectEqualStrings("feat/x", g_ledger.items[0].key);
     try std.testing.expectEqualStrings("s-persist", g_ledger.items[0].owner.session);

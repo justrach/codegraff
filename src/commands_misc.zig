@@ -490,3 +490,10 @@ pub fn handleRest(line: []const u8, out: *Io.Writer) !void {
     try @import("help.zig").render(out);
     try out.flush();
 }
+
+pub fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !void {
+    if (try @import("commands_session.zig").tryHandle(root, keys, arena, line, out)) return;
+    if (try @import("commands_model.zig").tryHandle(root, keys, arena, line, out)) return;
+    if (try tryHandle(root, keys, arena, line, out)) return;
+    try handleRest(line, out);
+}
