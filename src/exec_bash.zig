@@ -6,6 +6,7 @@
 //! job id. Subagents stay on the #93 kill-at-120s path (no TTY, no /jobs UI).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
@@ -20,7 +21,6 @@ const bash_stdout_cap = tools.bash_stdout_cap;
 const bash_stderr_cap = tools.bash_stderr_cap;
 
 const jobs = @import("jobs.zig");
-const job_wait = @import("job_wait.zig");
 const exec_bash_stream = @import("exec_bash_stream.zig");
 
 /// grok-build's default foreground wait. After this, root bash is moved to
@@ -92,13 +92,21 @@ fn defaultRootWaitMs() u64 {
     return root_wait_ms;
 }
 
+/// #850: an explicit `timeout` may promote EARLIER, never later. Letting a
+/// large value extend the wait re-opens #620 through the other door — a model
+/// that reads `timeout` as a command deadline parks the turn in the
+/// `· bash still running ·` pulse for however long it asked. The ceiling is
+/// the effective default (120s interactive, 15s on lean `-p`); the process
+/// keeps running either way, and `bash_output(id, wait_ms>0)` blocks until
+/// exit (10h cap) for a command that genuinely has to be waited on.
 fn rootWaitMs(input: Value) u64 {
-    const t = intField(input, "timeout") orelse return defaultRootWaitMs();
-    if (t <= 0) return defaultRootWaitMs();
-    return @min(@as(u64, @intCast(t)), job_wait.wait_cap_ms);
+    const def = defaultRootWaitMs();
+    const t = intField(input, "timeout") orelse return def;
+    if (t <= 0) return def;
+    return @min(@as(u64, @intCast(t)), def);
 }
 
-test "rootWaitMs: omitted/zero use 120s; positive values clamp to the 10h cap" {
+test "rootWaitMs: omitted/zero use 120s; a shorter timeout promotes earlier" {
     const empty = try std.json.parseFromSlice(Value, std.testing.allocator, "{}", .{});
     defer empty.deinit();
     try std.testing.expectEqual(root_wait_ms, rootWaitMs(empty.value));
@@ -108,9 +116,28 @@ test "rootWaitMs: omitted/zero use 120s; positive values clamp to the 10h cap" {
     const custom = try std.json.parseFromSlice(Value, std.testing.allocator, "{\"timeout\":5000}", .{});
     defer custom.deinit();
     try std.testing.expectEqual(@as(u64, 5_000), rootWaitMs(custom.value));
-    const huge = try std.json.parseFromSlice(Value, std.testing.allocator, "{\"timeout\":999999999}", .{});
-    defer huge.deinit();
-    try std.testing.expectEqual(job_wait.wait_cap_ms, rootWaitMs(huge.value));
+}
+
+// #850: `timeout` used to replace the promotion delay wholesale (capped only by
+// the 10h `wait_cap_ms`), so `{"timeout": 3600000}` parked the turn for an hour
+// — #620's failure mode, reachable through the parameter instead of a missing
+// deadline. It is a ceiling now, and the ceiling is the effective default.
+test "#850: a large explicit timeout cannot extend the foreground wait" {
+    const main_mod = @import("main.zig");
+    const nlt = @import("no_local_tools.zig");
+    const saved_u = main_mod.unattended;
+    const saved_l = nlt.lean;
+    defer {
+        main_mod.unattended = saved_u;
+        nlt.lean = saved_l;
+    }
+    main_mod.unattended = false;
+    const hour = try std.json.parseFromSlice(Value, std.testing.allocator, "{\"timeout\":3600000}", .{});
+    defer hour.deinit();
+    try std.testing.expectEqual(root_wait_ms, rootWaitMs(hour.value));
+    const absurd = try std.json.parseFromSlice(Value, std.testing.allocator, "{\"timeout\":999999999}", .{});
+    defer absurd.deinit();
+    try std.testing.expectEqual(root_wait_ms, rootWaitMs(absurd.value));
 }
 
 test "rootWaitMs: lean unattended oneshot defaults to 15s; timeout still wins" {
@@ -130,8 +157,40 @@ test "rootWaitMs: lean unattended oneshot defaults to 15s; timeout still wins" {
     const custom = try std.json.parseFromSlice(Value, std.testing.allocator, "{\"timeout\":5000}", .{});
     defer custom.deinit();
     try std.testing.expectEqual(@as(u64, 5_000), rootWaitMs(custom.value));
+    // #850: 15s is the ceiling on lean too — a longer ask still promotes at 15s.
+    const long = try std.json.parseFromSlice(Value, std.testing.allocator, "{\"timeout\":60000}", .{});
+    defer long.deinit();
+    try std.testing.expectEqual(lean_oneshot_wait_ms, rootWaitMs(long.value));
     main_mod.unattended = false;
     try std.testing.expectEqual(root_wait_ms, rootWaitMs(empty.value));
+}
+
+// The behavior half of #850: a wait bounded at the default promotes rather than
+// parking the turn, the child is NOT killed, and it stays reachable through the
+// same bash_output/bash_kill the auto-background result points the model at.
+// The 120s bound itself is the constant asserted above; 200ms stands in for the
+// expiry so the test does not sleep for the real one.
+test "#850: promotion at the bound leaves the child alive and reachable" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+    jobs.g_jobs = .{};
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const id = (try jobs.spawnJob(gpa, io, "sleep 5; printf never")).id;
+    defer jobs.jobsReap(gpa, io);
+    const waited = try jobs.waitForeground(gpa, io, id, 200);
+    defer switch (waited) {
+        .running => |r| gpa.free(r.output),
+        .done => |d| gpa.free(d.output),
+        .cancelled => |c| gpa.free(c.output),
+    };
+    try std.testing.expect(waited == .running);
+    try std.testing.expectEqual(id, waited.running.id);
+    const snap = try jobs.jobOutput(gpa, io, id, 0);
+    defer gpa.free(snap.text);
+    try std.testing.expect(std.mem.indexOf(u8, snap.text, "running") != null);
+    const killed = try jobs.jobKill(gpa, io, id);
+    defer gpa.free(killed.text);
+    try std.testing.expect(std.mem.indexOf(u8, killed.text, "killed") != null);
 }
 
 fn formatJobDone(gpa: Allocator, cmd: []const u8, wait: jobs.FgDone) !ToolOutput {
