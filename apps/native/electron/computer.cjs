@@ -14,7 +14,7 @@ class ComputerUse {
     const { response } = await dialog.showMessageBox(this.window, {
       title: 'Computer use', type: 'info', buttons: [this.enabled ? 'Disable computer use' : 'Enable computer use', 'Cancel'], cancelId: 1,
       message: this.enabled ? 'Computer use is enabled for this launch.' : 'Let graff interact with macOS apps during your tasks?',
-      detail: `Accessibility: ${status.accessibility ? 'allowed' : 'not allowed'}\nScreen Recording: ${status.screenRecording ? 'allowed' : 'not allowed'}\n\nGraff can inspect apps, take screenshots, click and type. Screenshots happen only when requested. You can disable access here at any time; macOS permissions are managed in System Settings.`,
+      detail: `Accessibility: ${status.accessibility ? 'allowed' : 'not allowed'}\nScreen Recording: ${status.screenRecording ? 'allowed' : 'not allowed'}\n\nGraff can inspect apps, take screenshots, click and type. Clicking and scrolling use the system pointer in the foreground app. Screenshots happen only when requested. You can disable access here at any time; macOS permissions are managed in System Settings.`,
     });
     if (response === 0) {
       this.enabled = !this.enabled;

@@ -61,13 +61,20 @@ app.whenReady().then(async () => {
   try {
     if (permissions.accessibility) {
       testDesktop.present(win);
-      await wc.executeJavaScript('document.querySelector("input").focus()');
+      const point = await wc.executeJavaScript(`(() => {
+        document.activeElement.blur();
+        const r = document.querySelector('input').getBoundingClientRect();
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+      })()`);
+      const bounds = win.getContentBounds();
+      await computer.command('click', { pid: process.pid, x: bounds.x + point.x, y: bounds.y + point.y });
+      await wait(() => wc.executeJavaScript('document.activeElement === document.querySelector("input")'), 'Native OS click did not focus the test input');
       const tree = await computer.command('snapshot', { pid: process.pid });
       assert.ok(tree.elements.length > 0);
       await computer.command('type', { pid: process.pid, text: 'native-input' });
       await wait(() => wc.executeJavaScript('document.querySelector("input").value === "native-input"'), 'Native OS typing did not reach the test window');
-      report.passed.push('native Accessibility snapshot and OS typing');
-    } else report.skipped.push('native Accessibility snapshot and OS typing: Accessibility permission unavailable');
+      report.passed.push('native Accessibility snapshot, OS click and typing');
+    } else report.skipped.push('native Accessibility snapshot, OS click and typing: Accessibility permission unavailable');
     if (permissions.screenRecording) {
       const capture = await computer.command('screenshot');
       assert.ok(capture.data.length > 100);
