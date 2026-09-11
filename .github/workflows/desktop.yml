@@ -61,33 +61,43 @@ jobs:
         env:
           GRAFF_ELECTRON_FOREGROUND: '1'
       - run: bun run build
+        id: gui
       - name: Foreground GUI suite including native fullscreen
         run: bun run test:visual
         env:
           GRAFF_ELECTRON_FOREGROUND: '1'
       - name: Foreground pointer tab drag and split regressions
+        if: ${{ !cancelled() && steps.gui.conclusion == 'success' }}
         run: bun run test:tab-drag
         env:
           GRAFF_ELECTRON_FOREGROUND: '1'
           GRAFF_VISUAL_OUTPUT: ../../zig-out/native-tab-drag
       - uses: ./.github/actions/setup-codegraff-zig
+        id: zig
+        if: ${{ !cancelled() && steps.gui.conclusion == 'success' }}
       - name: Build the actual ACP worker
+        id: worker
+        if: ${{ !cancelled() && steps.zig.conclusion == 'success' }}
         run: zig build
         working-directory: .
       - name: Production front-end failure and recovery with native input when permitted
+        if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
         run: bun run test:frontend
         env:
           GRAFF_ELECTRON_FOREGROUND: '1'
           GRAFF_FRONTEND_OS_INPUT: '1'
       - name: Production inline HTML tool and saved replay
+        if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
         run: bun run test:html-tool
         env:
           GRAFF_FRONTEND_OUTPUT: ../../zig-out/html-tool-test
       - name: Terminal project handoff into the production GUI
+        if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
         run: bun run test:cli
         env:
           GRAFF_FRONTEND_OUTPUT: ../../zig-out/cli-test
       - name: Bounded mixed split and memory stress
+        if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
         run: bun run test:split-stress
         env:
           GRAFF_FRONTEND_OUTPUT: ../../zig-out/split-stress
