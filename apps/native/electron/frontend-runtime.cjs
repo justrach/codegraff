@@ -97,7 +97,10 @@ app.whenReady().then(async () => {
     try { return (await fetch(origin, { signal: AbortSignal.timeout(1000) })).ok; } catch { return false; }
   }, 'production server readiness');
   const area = screen.getPrimaryDisplay().workArea;
-  const bounds = desktop.foreground ? { x: area.x+10, y: area.y+10, width: Math.min(1320, area.width-20), height: Math.min(900, area.height-20) } : { width: 1320, height: 900 };
+  // Exercise the handoff with Browser open on a small desktop: the initial
+  // project context can put the composer below the scroll viewport.
+  const size = process.env.GRAFF_CLI_TEST ? { width: 1024, height: 664 } : { width: 1320, height: 900 };
+  const bounds = desktop.foreground ? { x: area.x+10, y: area.y+10, width: Math.min(size.width, area.width-20), height: Math.min(size.height, area.height-20) } : size;
   win = desktop.createWindow({ ...bounds, webPreferences: {
     preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, backgroundThrottling: false,
   } });
@@ -129,7 +132,7 @@ app.whenReady().then(async () => {
   const click = async selector => {
     let p, previous;
     await until(async () => {
-      p = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return null;const r=e.getBoundingClientRect();const x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2);return {x,y,hit:e.contains(document.elementFromPoint(x,y))}})()`);
+      p = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return null;e.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});const r=e.getBoundingClientRect();const x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2);return {x,y,hit:e.contains(document.elementFromPoint(x,y))}})()`);
       const settled = p?.hit && previous?.x === p.x && previous?.y === p.y;
       previous = p; return settled;
     }, `stable pointer target: ${selector}`, 5000);
