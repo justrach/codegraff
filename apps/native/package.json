@@ -27,6 +27,7 @@
     "test:tasks": "GRAFF_VISUAL_SUITE=tasks node scripts/test-visual.mjs",
     "test:sessions": "GRAFF_VISUAL_SUITE=sessions bun scripts/test-visual.mjs",
     "test:background": "bun scripts/test-background.mjs",
+    "test:native": "bun scripts/test-native.mjs",
     "test:performance": "GRAFF_PERFORMANCE_TESTS=1 bun scripts/test-visual.mjs",
     "benchmark:desktop": "bun scripts/benchmark-desktop.mjs",
     "test:mcp-apps": "bun test lib/mcp-apps.test.ts && playwright test -c playwright.mcp.config.ts",

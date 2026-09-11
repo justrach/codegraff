@@ -23,7 +23,7 @@ test('every test BrowserWindow constructor uses the enforced options', () => {
 });
 
 test('standalone Electron test entry points install policy before waiting for readiness', () => {
-  for (const name of ['visual-tests.cjs', 'performance-benchmark.cjs', 'gui-coding-smoke.cjs', 'test-window-probe.cjs']) {
+  for (const name of ['visual-tests.cjs', 'performance-benchmark.cjs', 'gui-coding-smoke.cjs', 'test-window-probe.cjs', 'native-gui.cjs']) {
     const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
     const install = source.search(/installTestWindowPolicy\(app\)|require\('\.\/test-desktop\.cjs'\)/);
     expect(install, name).toBeGreaterThanOrEqual(0);

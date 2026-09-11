@@ -26,6 +26,18 @@ Only the default hidden mode keeps test windows off the desktop.
 Activity sheets, and OS input checks still need that foreground opt-in.
 Skipped checks are printed and visual runs record them in `test-run.json`; they must not be described as passed.
 
+CI runs a separate native job on a hosted macOS graphical session. That job
+explicitly enables foreground mode and requires real window focus, production
+Activity sheet presentation and default-button dismissal, plus fullscreen and
+reload coverage from the visual suite. A missing graphical session or skipped
+fullscreen check fails CI. The normal local command remains hidden.
+
+Accessibility and Screen Recording permission are checked without requesting
+consent. OS input and display capture run when permitted; otherwise the native
+report and CI summary list them as skipped. A preconfigured runner can set
+`GRAFF_NATIVE_REQUIRE_OS_INPUT=1` to make those permissions mandatory. An ordinary
+hosted-runner pass does not establish OS input coverage when permission is absent.
+
 ## Consequences
 
 The hidden renderer can exercise composer input, Tab traversal, split resizing,

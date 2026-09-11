@@ -1,5 +1,29 @@
 # Desktop visual tests
 
+## Native CI coverage
+
+The desktop workflow keeps the background suite and adds a separate `macos-26`
+job with `GRAFF_ELECTRON_FOREGROUND=1`. It runs on pull requests and pushes to
+`main` and release branches. Its windows and fullscreen transitions belong to
+the CI machine's desktop, not the developer's desktop.
+
+`bun run test:native` compiles the production Activity/Computer Use bridge and
+a test-only AppKit observer. It requires a usable display and native window
+focus, then opens, dismisses with Return, and reopens the real SwiftUI Activity
+sheet. The foreground visual suite separately verifies fullscreen entry,
+reload, titlebar state and fullscreen exit. Missing reports or skipped fullscreen
+coverage fail `check-native-ci.mjs`.
+
+Native OS typing/Accessibility inspection and display capture require macOS
+permissions. The native runner does not request or change them. It runs each
+available check and records missing permissions as skips in the job summary
+and `native-results.json`; they are never reported as passed. On a runner with
+preconfigured permissions, `GRAFF_NATIVE_REQUIRE_OS_INPUT=1` makes them required.
+
+For compilation without opening windows, run
+`bun scripts/test-native.mjs --build-only`. Running `test:native` locally without
+explicit foreground opt-in fails before Electron starts.
+
 For a fresh checkout, run these from `apps/native`:
 
 ```sh
