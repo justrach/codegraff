@@ -1,9 +1,9 @@
+const testDesktop = require('./test-desktop.cjs');
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { ipcMain } = require('electron');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function run({ win, browser, automation, backend, metrics, activity, computer, profiler }) {
@@ -44,19 +44,8 @@ async function run({ win, browser, automation, backend, metrics, activity, compu
     assert.equal(await request('evaluate', { expression: 'document.querySelector("#name").value' }), 'ACP browser');
     await request('click', { selector: '#button' });
     assert.match((await request('snapshot')).text, /Clicked/);
-    const pinReceived = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => { ipcMain.removeListener('browser-pin', listener); reject(new Error('Picker did not send a pin')); }, 3000);
-      const listener = (_event, pin) => { clearTimeout(timeout); ipcMain.removeListener('browser-pin', listener); resolve(pin); };
-      ipcMain.on('browser-pin', listener);
-    });
-    await browser.command('smoke', 'pick', { enabled: true });
     const wc = browser.tabs.get('smoke').view.webContents;
-    const point = await wc.executeJavaScript('(()=>{const r=document.querySelector("#button").getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()');
-    win.show(); win.focus(); wc.focus(); await sleep(300);
-    wc.sendInputEvent({type:'mouseMove', ...point});
-    wc.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
-    wc.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 });
-    assert.equal((await pinReceived).element.selector, '#button');
+    report.pinInput = await require('./smoke-browser-pin.cjs').smokeBrowserPin({ browser, win });
     report.desktop = await require('./smoke-desktop.cjs').smokeDesktop({ automation, computer, win, browser });
     await request('zoom', { factor: 1.2 });
     assert.equal(wc.getZoomFactor(), 1.2);
@@ -97,11 +86,15 @@ async function run({ win, browser, automation, backend, metrics, activity, compu
     report.settings = 'real ACP effort and fast commands updated harness state';
 
     await win.webContents.executeJavaScript(`fetch('/api/acp',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({chat:'electron-smoke',method:'dispose'})})`);
-    await activity(); report.swiftUI = 'native module loaded and sheet presented';
+    if (require('./test-window.cjs').foregroundCheck('native Activity sheet')) {
+      await activity(); report.swiftUI = 'native module loaded and sheet presented';
+    } else report.swiftUI = 'Skipped: native Activity sheet requires foreground opt-in';
     await sleep(500);
     const output = process.env.GRAFF_ELECTRON_SMOKE;
+    const { testWindowMode, skippedChecks } = require('./test-window.cjs');
+    report.mode = testWindowMode(); report.skipped = [...skippedChecks];
     fs.writeFileSync(output, JSON.stringify(report, null, 2));
-    console.log('Electron smoke passed: navigation, isolation, pins, automation, suspension, real ACP, SwiftUI.');
+    console.log('Electron smoke passed: navigation, isolation, automation, suspension, real ACP. Native checks are recorded separately.');
   } finally { fixture.close(); fs.rmSync(cwd, { recursive: true, force: true }); }
 }
 module.exports = { run };

@@ -1,3 +1,4 @@
+const testDesktop = require('./test-desktop.cjs');
 const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const path = require('node:path');
@@ -9,7 +10,7 @@ const { chromiumSample } = require('./hardware-profile.cjs');
 const { installGalleryFixture } = require('./gallery-fixture.cjs');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function runPerformance({ win: fixtureWindow, origin, output }) {
-  const win = new BrowserWindow({ width: 1440, height: 920, show: true, titleBarStyle: 'hiddenInset',
+  const win = testDesktop.createWindow({ width: 1440, height: 920, titleBarStyle: 'hiddenInset',
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
   fixtureWindow.destroy();
   await win.loadURL('about:blank');
@@ -19,10 +20,10 @@ async function runPerformance({ win: fixtureWindow, origin, output }) {
   const wc = win.webContents, js = code => wc.executeJavaScript(code);
   wc.on('console-message', event => { if (/Error|error|Illegal/.test(event.message || '')) console.error('Fixture renderer:', event.message); });
   const wait = async expression => { for (let n = 0; n < 300; n++) { if (await js(expression)) return; await sleep(50); } throw Error(`Scenario timeout: ${expression}; ${await js("JSON.stringify({state:document.querySelector('[data-turn-activity]')?.textContent,text:document.querySelector('article')?.textContent,visibility:document.visibilityState})")}`); };
-  wc.debugger.attach('1.3');
+  testDesktop.attachTestDebugger(wc);
   await wc.debugger.sendCommand('Page.enable');
   await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: `(${installGalleryFixture.toString()})()` });
-  win.setSize(1440, 920); win.show(); win.focus();
+  win.setSize(1440, 920); testDesktop.present(win);
   const sampleTree = intervalSampler(process.pid, () => 0);
   const profiler = new Profiler(async () => ({ ...await sampleTree(), ...await rendererSample(wc), ...chromiumSample(app.getAppMetrics()) }), enabled => { wc.send('profile-enabled', enabled); }, () => app.getGPUFeatureStatus());
   const longTask = (event, duration) => { if (event.sender === wc && Number.isFinite(duration)) profiler.record('renderer-long-task', duration); };
@@ -46,8 +47,8 @@ async function runPerformance({ win: fixtureWindow, origin, output }) {
     await js('document.fonts.ready.then(()=>true)');
     const click = async selector => {
       const point = await js(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
-      wc.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
-      wc.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 });
+      await testDesktop.testInput(wc, { type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
+      await testDesktop.testInput(wc, { type: 'mouseUp', ...point, button: 'left', clickCount: 1 });
     };
     const capture = async name => {
       console.log('Performance: capture', name);
@@ -83,6 +84,7 @@ async function runPerformance({ win: fixtureWindow, origin, output }) {
     await send('Stream the demonstration transcript.');
     await profiler.capture(0); profiler.stop();
     const report = profiler.report();
+    report.testDesktop = testDesktop.assertSafe();
     report.scenario = 'Synthetic full GUI: baseline startup and controls; candidate streamed transcript. Different workloads, not a before/after optimization claim. No engine or model calls.';
     fs.writeFileSync(path.join(output, 'performance.json'), JSON.stringify(report, null, 2));
     console.log(JSON.stringify({ baseline: report.baseline, streaming: report.candidate, acceleration: report.acceleration }));

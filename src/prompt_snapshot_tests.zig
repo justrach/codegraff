@@ -1,17 +1,7 @@
-//! #421 + #410: prompt-snapshot tests. The root system prompt is now assembled
-//! from capability-scoped segments (prompts.zig), which makes two things
-//! testable that never were:
-//!
-//!   1. an absent capability contributes ZERO instruction text — not "less"
-//!      text, none, asserted by exact length AND by the dropped segment's own
-//!      bytes being unfindable in the result;
-//!   2. the full-capability prompt is pinned to an inline golden below, so the
-//!      next person who changes the wording has to change this file too. Prompt
-//!      drift becomes a conscious choice instead of a diff nobody reviewed.
-//!
-//! The golden is the WHOLE prompt on purpose. A hash would catch drift just as
-//! well and teach a reviewer nothing; this way the diff of a prompt change is
-//! readable in review, right next to the assertion that it was intended.
+//! #421 + #410: prompt-snapshot tests. Absent capabilities contribute zero
+//! instruction text (exact length + dropped-segment bytes unfindable). The
+//! full-capability prompt is the inline golden below so wording drift is a
+//! reviewed choice, not a hash nobody reads.
 
 const std = @import("std");
 const prompts = @import("prompts.zig");
@@ -99,6 +89,17 @@ const golden_full_prompt =
     \\generic permission to file, delegate or publish is not disclosure approval.
     \\A worker unable to ask must return a sanitized draft or request approval
     \\through its orchestrator, not infer consent. Never disclose secrets.
+    \\
+    \\A non-draft GitHub PR (`gh pr create` without --draft, or `gh pr ready`)
+    \\is blocked until the exact head SHA is ready: inspect already-running
+    \\or completed branch CI, disclose a failure that reproduces on the base
+    \\branch or create a draft, and include a Verification section that lists
+    \\the commands and results you actually ran. Absolute claims (atomic,
+    \\preserved) need a regression on the changed dispatch path, not only a
+    \\helper or one-separator boundary. `gh pr checks --watch` after create
+    \\is not that gate. Publication work on a claimed branch, issue, commit,
+    \\or PR is owned by one live session — acknowledge a handoff with
+    \\peer_message action=handoff; polling for a missing PR does not transfer it.
     \\
     \\When making git commits on behalf of the user, commit as the USER's own git
     \\identity — do NOT override GIT_AUTHOR_*/GIT_COMMITTER_*; their configured

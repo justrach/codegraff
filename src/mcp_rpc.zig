@@ -162,6 +162,11 @@ pub fn initializeServer(server: *Server, response_alloc: Allocator, session_allo
     server.era = .legacy;
 }
 
+/// A broken view resource must not indefinitely delay an otherwise complete tool.
+pub fn readAppResource(server: *Server, a: Allocator, io: Io, params: []const u8) !Value {
+    return handshakeRequest(server, a, io, params, "resources/read");
+}
+
 /// JSON-RPC request/response over either transport. `params` is a raw JSON
 /// object string; `name` is the tool name for a `tools/call` (rendered as
 /// `Mcp-Name` on a modern request) and null for everything else. Result

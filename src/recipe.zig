@@ -124,6 +124,9 @@ pub fn record(
 /// scalar that a recipe might game.
 pub const Outcome = struct {
     success: bool,
+    executed: bool = false,
+    claimed: bool = false,
+    verified: bool = false,
     latency_ms: u64,
     model_calls: u64,
     tool_errors: u64,

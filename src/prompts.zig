@@ -9,7 +9,6 @@
 //! variants are pre-built strings exactly like sys_normal/sys_strict, so
 //! this is the one place that derives all four from a base, next to the
 //! constants it composes them from.
-//!
 //! #421: the root prompt is no longer one frozen wall of text. It is a list of
 //! capability-scoped SEGMENTS whose full-capability concatenation is still the
 //! comptime `main_system_prompt` (an Agent struct default, so it has to stay
@@ -63,6 +62,7 @@ pub const segments = [_]Segment{
     .{ .name = "trace", .text = text.trace_note, .gate = .local_tools },
     .{ .name = "harness_issue", .text = text.harness_issue_note, .gate = .local_tools },
     .{ .name = "public_write", .text = text.public_write_note, .gate = .always },
+    .{ .name = "publication_ready", .text = text.publication_ready_note, .gate = .always },
     .{ .name = "git_authoring", .text = text.git_authoring_note, .gate = .git_repo },
     .{ .name = "git_safety", .text = text.git_safety_note, .gate = .always },
     .{ .name = "work", .text = text.work_note, .gate = .always },
@@ -470,7 +470,7 @@ pub const sub_system_prompt =
     \\questions — make reasonable assumptions. Do not narrate tool calls.
     \\Your final message is returned verbatim to the orchestrator: a concise
     \\report of the concrete facts you found.
-++ parallel_tools_note ++ text.public_write_note ++ text.constraint_authority_note;
+++ parallel_tools_note ++ text.public_write_note ++ text.constraint_authority_note ++ text.publication_ready_note;
 
 pub const compact_instruction =
     \\Summarize this entire conversation for a context handoff. Capture: the

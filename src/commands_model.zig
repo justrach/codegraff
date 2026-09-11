@@ -4,7 +4,6 @@ const std = @import("std");
 const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
-const builtin = @import("builtin");
 
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
@@ -53,8 +52,7 @@ const reasoning_levels = [_]PickItem{
 
 const vision = @import("vision.zig");
 const stageImagePath = vision.stageImagePath;
-const visionCapable = vision.visionCapable;
-const grabClipboardImage = vision.grabClipboardImage;
+const commands_paste = @import("commands_paste.zig");
 
 fn providerKnown(id: []const u8) bool {
     return provider_mod.specFor(id) != null;
@@ -556,35 +554,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
-    if (std.mem.eql(u8, line, "/paste")) {
-        if (builtin.os.tag != .macos) {
-            try out.writeAll("clipboard image paste is macOS-only — use /image <path>\n");
-            try out.flush();
-            return true;
-        }
-        if (!visionCapable(root.provider)) {
-            try out.print("⚠ {s} can't see images — /model to a vision model (claude-*, gpt-5*) first\n", .{root.provider.model});
-            try out.flush();
-            return true;
-        }
-        const grab = grabClipboardImage(root.io, root.gpa) orelse {
-            vision.tracePaste(root, "no_image", "none", 0, ""); // #350
-            try out.writeAll("no image on the clipboard — copy an image first (text? just paste it normally)\n");
-            try out.flush();
-            return true;
-        };
-        defer grab.release(root.io, root.gpa); // temp export never outlives the command
-        var pbuf: [320]u8 = undefined;
-        const pasted = stageImagePath(root, grab.path);
-        vision.tracePasteResult(root, grab.flavor, pasted);
-        switch (pasted) {
-            .ok => |o| try out.print("📎 clipboard image attached ({s}, via {s}) — sent with your next message\n", .{ vision.fmtBytes(pbuf[0..16], o.bytes), grab.flavor.name() }),
-            .no_vision => try out.print("⚠ {s} can't see images\n", .{root.provider.model}),
-            .too_large, .not_found, .read_error => try out.print("{s}\n", .{vision.stageMessage(&pbuf, pasted, "the clipboard image")}),
-        }
-        try out.flush();
-        return true;
-    }
+    if (try commands_paste.tryHandle(root, line, out)) return true;
     if (std.mem.eql(u8, line, "/strict")) {
         root.strict = !root.strict;
         @import("prompt_cache_hud.zig").noteBust(.mode);

@@ -1,7 +1,8 @@
+const testDesktop = require('./test-desktop.cjs');
 const assert = require('node:assert/strict');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function smokeUI({ win, browser, backend }) {
-  require('electron').app.focus({ steal: true }); win.show(); win.focus();
+  testDesktop.present(win);
   const js = expression => win.webContents.executeJavaScript(expression);
   const wait = async expression => {
     for (let n = 0; n < 100; n++) { if (await js(expression)) return; await sleep(100); }

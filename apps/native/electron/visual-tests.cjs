@@ -1,3 +1,4 @@
+const testDesktop = require('./test-desktop.cjs');
 const { app, BrowserWindow, ipcMain } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
@@ -9,13 +10,15 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'graff-visual-'));
 app.setPath('userData', path.join(temporary, 'profile'));
 let server, win;
+const output = process.env.GRAFF_VISUAL_OUTPUT || path.resolve(__dirname, '../../../zig-out/visual-tests');
 const deadline = setTimeout(() => { console.error('Visual run exceeded 240 seconds'); finish(1); }, 240000);
 app.whenReady().then(async () => {
+  const savedOnly = process.env.GRAFF_VISUAL_SUITE === 'sessions';
   ipcMain.handle('updates', () => ({ status: 'unavailable', currentVersion: '1.0.0', automatic: false, interactive: false }));
   ipcMain.handle('projects', () => null);
-  const root = path.resolve(__dirname, '..'), output = process.env.GRAFF_VISUAL_OUTPUT || path.resolve(root, '../../zig-out/visual-tests');
+  const root = path.resolve(__dirname, '..');
   fs.mkdirSync(output, { recursive: true });
-  assert.ok(fs.existsSync(path.join(root, '.next/BUILD_ID')), 'Run bun run build before visual tests.');
+  assert.ok(fs.existsSync(path.join(root, process.env.GRAFF_NEXT_DIST_DIR || '.next', 'BUILD_ID')), 'Run bun run build before visual tests.');
   const socket = net.createServer(); await new Promise(resolve => socket.listen(0, '127.0.0.1', resolve));
   const port = socket.address().port; await new Promise(resolve => socket.close(resolve));
   const origin = `http://127.0.0.1:${port}`;
@@ -23,14 +26,26 @@ app.whenReady().then(async () => {
   server = spawn(process.env.GRAFF_TEST_BUN || 'bun', ['node_modules/next/dist/bin/next', 'start', '--port', String(port), '--hostname', '127.0.0.1'], { cwd: root, env: { ...process.env, GRAFF_VISUAL_TESTS: '1', GRAFF_DESKTOP_TOKEN: '', NEXT_TELEMETRY_DISABLED: '1' }, detached: true, stdio: ['ignore', log, log] });
   fs.closeSync(log);
   for (let i = 0; i < 100; i++) { try { if ((await fetch(`${origin}/visual-tests`)).ok) break; } catch {} if (i === 99) throw Error('Visual fixture server did not start'); await sleep(100); }
-  win = new BrowserWindow({ width: 900, height: 600, show: true, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
-  app.focus({ steal: true }); win.show(); win.focus();
+  win = testDesktop.createWindow({ width: 900, height: 600, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
+  testDesktop.present(win);
   const apiRequests = [];
   win.webContents.session.webRequest.onBeforeRequest((details, callback) => {
     const url = new URL(details.url);
     if (url.origin === origin && url.pathname.startsWith('/api/')) apiRequests.push(url.pathname);
     callback({ cancel: !details.url.startsWith(origin) && !details.url.startsWith('data:') || url.pathname.startsWith('/api/') });
   });
+  if (process.env.GRAFF_VISUAL_SUITE === 'overflow') {
+    await require('./chat-overflow-visual.cjs').runChatOverflow({ win, origin, output });
+    await require('./chat-overflow-edge-visual.cjs').runOverflowEdges({ win, origin });
+    assert.deepEqual(apiRequests, [], 'Overflow fixtures never call live APIs');
+    return;
+  }
+  if (process.env.GRAFF_VISUAL_SUITE === 'links') {
+    win.hide();
+    await require('./link-destination-visual.cjs').runLinkDestinationVisuals({ origin, output });
+    assert.deepEqual(apiRequests, [], 'Link fixtures never call engine or model APIs');
+    return;
+  }
   if (process.env.GRAFF_VISUAL_SUITE === 'updates') {
     await require('./updates-visual.cjs').runUpdateVisuals({ origin, output });
     await require('./updates-transport.cjs').runUpdateTransport();
@@ -38,19 +53,37 @@ app.whenReady().then(async () => {
     fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: ['update UI', 'update transport'], apiRequests }, null, 2));
     return;
   }
-  if (['projects', 'splits', 'interactions'].includes(process.env.GRAFF_VISUAL_SUITE)) {
+  if (savedOnly) {
+    await require('./saved-session-visual.cjs').runSavedSessionVisuals({ win, origin, output });
+    assert.deepEqual(apiRequests, [], 'Saved session fixtures never call engine or model APIs');
+    testDesktop.assertSafe();
+    return;
+  }
+  if (process.env.GRAFF_VISUAL_SUITE === 'browser') {
+    await require('./browser-visual.cjs').runBrowserVisuals({ win, origin, output });
+    await require('./dev-preview-visual.cjs').runDevPreview({ output });
+    assert.deepEqual(apiRequests, [], 'Browser fixtures never call engine or model APIs');
+    return;
+  }
+  if (['projects', 'splits', 'interactions', 'tagged'].includes(process.env.GRAFF_VISUAL_SUITE)) {
     await require('./navigation-visual.cjs').runNavigationVisuals({ win, origin, output });
-    if (process.env.GRAFF_VISUAL_SUITE !== 'interactions') {
+    if (!['interactions', 'tagged'].includes(process.env.GRAFF_VISUAL_SUITE)) {
       await require('./browser-visual.cjs').runBrowserVisuals({ win, origin, output });
       await require('./dev-preview-visual.cjs').runDevPreview({ output });
+      await require('./link-destination-visual.cjs').runLinkDestinationVisuals({ origin, output });
     }
     assert.deepEqual(apiRequests, [], 'Project fixtures never call engine or model APIs');
-    fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: process.env.GRAFF_VISUAL_SUITE === 'interactions' ? ['keyboard, composer, files and reading'] : ['projects and navigation', 'browser'], apiRequests }, null, 2));
+    fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: [process.env.GRAFF_VISUAL_SUITE === 'tagged' ? 'saved snapshots, optional Tasks and split limit' : process.env.GRAFF_VISUAL_SUITE === 'interactions' ? 'keyboard, composer, files and reading' : 'projects and navigation'], skipped: [...require('./test-window.cjs').skippedChecks], apiRequests }, null, 2));
     return;
   }
   if (process.env.GRAFF_VISUAL_SUITE === 'stress') {
     await require('./stress-visual.cjs').runStressVisuals({ win, origin, output, fullscreen: false });
     assert.deepEqual(apiRequests, [], 'Stress fixtures never call engine or model APIs');
+    return;
+  }
+  if (process.env.GRAFF_VISUAL_SUITE === 'tasks') {
+    await require('./task-rows-visual.cjs').testTaskRows({ win, origin });
+    assert.deepEqual(apiRequests, [], 'Task fixtures never call engine or model APIs');
     return;
   }
   if (process.env.GRAFF_VISUAL_SUITE === 'code') {
@@ -89,12 +122,17 @@ app.whenReady().then(async () => {
       results.push(`${theme}/${name}`);
     }
   }
+  await require('./chat-overflow-visual.cjs').runChatOverflow({ win, origin, output });
+  await require('./chat-overflow-edge-visual.cjs').runOverflowEdges({ win, origin });
   await require('./stress-visual.cjs').runStressVisuals({ win, origin, output });
+  await require('./saved-session-visual.cjs').runSavedSessionVisuals({ win, origin, output });
   await require('./navigation-visual.cjs').runNavigationVisuals({ win, origin, output });
   await require('./browser-visual.cjs').runBrowserVisuals({ win, origin, output });
   await require('./agents-visual.cjs').runAgentVisuals({ win, origin, output });
+  await require('./task-rows-visual.cjs').testTaskRows({ win, origin });
   await require('./updates-visual.cjs').runUpdateVisuals({ origin, output });
   await require('./updates-transport.cjs').runUpdateTransport();
+  await require('./link-destination-visual.cjs').runLinkDestinationVisuals({ origin, output });
   if (process.env.GRAFF_PERFORMANCE_TESTS) await require('./performance-scenarios.cjs').runPerformance({ win, origin, output });
   assert.deepEqual(apiRequests, [], 'Visual fixtures must not call the engine or model APIs');
   fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: results, apiRequests }, null, 2));
@@ -102,8 +140,17 @@ app.whenReady().then(async () => {
 }).then(() => finish(0)).catch(error => { console.error(error); finish(1); });
 function finish(code) {
   clearTimeout(deadline);
-  if (win && !win.isDestroyed()) win.destroy();
+  try {
+    console.log('Test desktop:', JSON.stringify(testDesktop.assertSafe()));
+  } catch (error) { console.error(error); code = 1; }
+  testDesktop.cleanup();
+  const { testWindowMode, skippedChecks } = require('./test-window.cjs');
+  fs.mkdirSync(output, { recursive: true });
+  fs.writeFileSync(path.join(output, 'test-run.json'), JSON.stringify({ suite: process.env.GRAFF_VISUAL_SUITE || 'all', status: code !== 0 ? 'failed' : skippedChecks.size ? 'passed-with-skips' : 'passed', mode: testWindowMode(), skipped: [...skippedChecks] }, null, 2));
+  if (skippedChecks.size) console.log(`Coverage limits: ${[...skippedChecks].join('; ')}. See test-run.json.`);
   if (server?.pid) try { process.kill(-server.pid, 'SIGTERM'); } catch {}
   app.once('quit', () => { fs.rmSync(temporary, { recursive: true, force: true }); });
   app.exit(code);
 }
+process.on('SIGTERM', () => finish(1));
+process.on('SIGINT', () => finish(1));

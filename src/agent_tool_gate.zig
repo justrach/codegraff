@@ -19,6 +19,7 @@ const fleet = @import("fleet.zig");
 const telemetry = @import("telemetry.zig");
 const learning_privacy = @import("learning_privacy.zig");
 const presence = @import("presence.zig");
+const publish_gate = @import("publish_gate.zig");
 
 const TemplateCandidates = struct {
     items: [16][]const u8 = undefined,
@@ -154,9 +155,12 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
             .is_error = true,
         };
         if (std.mem.eql(u8, call.name, "bash") and call.input == .object) {
-            if (call.input.object.get("command")) |cv| if (cv == .string and Approvals.isDestructiveGit(cv.string)) return .{
-                .text = try self.arena.dupe(u8, "destructive git is blocked for subagents (no one to confirm) — leave reset --hard / clean -f / force-push / branch -D to the root session"),
-                .is_error = true,
+            if (call.input.object.get("command")) |cv| if (cv == .string) {
+                if (try publish_gate.bash(self, std.mem.trim(u8, cv.string, " \t"))) |blocked| return blocked;
+                if (Approvals.isDestructiveGit(cv.string)) return .{
+                    .text = try self.arena.dupe(u8, "destructive git is blocked for subagents (no one to confirm) — leave reset --hard / clean -f / force-push / branch -D to the root session"),
+                    .is_error = true,
+                };
             };
         }
         return null;
@@ -215,6 +219,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
         const cmd_val = args.get("command") orelse return null;
         if (cmd_val != .string) return null;
         const cmd = std.mem.trim(u8, cmd_val.string, " \t");
+        if (try publish_gate.bash(self, cmd)) |blocked| return blocked;
         // #469: one deliberate checkpoint per live co-owner before this session
         // touches the shared index/tree — fires under --yolo too, where no
         // approvals prompt would ever surface the collision. The model sees

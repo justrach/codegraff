@@ -31,6 +31,7 @@ Usage: python3 scripts/test-tui-screenstate.py [path/to/graff]  (default zig-out
 Exit 0 = pass. Skips (exit 0, notice) when no pty can be allocated.
 """
 import os
+import signal
 import sys
 import tempfile
 
@@ -85,6 +86,25 @@ def scribble():
     return f"\x1b[{CORRUPT_ROW + 1};1H\x1b[7m{MARK} ".encode() + b"#" * 40 + b"\x1b[27m"
 
 
+def inject_corruption(h):
+    # feed_screen pumps the real tty; a concurrent heal can erase the marker
+    # during that read. Stop only while installing and observing the damage,
+    # then resume the painter before testing either recovery path.
+    os.kill(h.pid, signal.SIGSTOP)
+    try:
+        _, status = os.waitpid(h.pid, os.WUNTRACED)
+        if not os.WIFSTOPPED(status):
+            raise RuntimeError("TUI exited before corruption could be injected")
+        h.pump(0.1)  # drain any frame emitted before SIGSTOP took effect
+        h.feed_screen(scribble())
+        return h.screen_contents(), h.cell(0, CORRUPT_ROW).inverse
+    finally:
+        try:
+            os.kill(h.pid, signal.SIGCONT)
+        except ProcessLookupError:
+            pass
+
+
 def poke(h):
     """Make the TUI paint again without changing the resulting frame: a
     keystroke the composer then takes back. Any self-heal repaint has every
@@ -107,15 +127,14 @@ def check_corruption_and_healing(PtyHarness):
         before_row = h.screen_lines()[CORRUPT_ROW]
 
         # Out-of-band repaint: straight to the tty, graff never sees it.
-        h.feed_screen(scribble())
-        corrupted = h.screen_contents()
+        corrupted, inverse = inject_corruption(h)
         if MARK not in corrupted:
             return "feed_screen did not reach the screen (harness cannot see the damage)", False, ""
         if corrupted == before:
             return "the grid did not change under corruption", False, ""
         # Cell-level styling survives the round trip through the real pty, so a
         # test can assert on attributes and not just glyphs.
-        if not h.cell(0, CORRUPT_ROW).inverse:
+        if not inverse:
             return "the scribbled cells lost their inverse attribute", False, ""
 
         # Positive control: a resize forces graff's full repaint, and the grid
@@ -132,8 +151,8 @@ def check_corruption_and_healing(PtyHarness):
         h.pump(1.0)
         before = h.screen_contents()
         before_row = h.screen_lines()[CORRUPT_ROW]
-        h.feed_screen(scribble())
-        if MARK not in h.screen_contents():
+        corrupted, _ = inject_corruption(h)
+        if MARK not in corrupted:
             return "second corruption never landed", False, ""
         poke(h)
         after = h.screen_contents()

@@ -92,6 +92,9 @@ jobs:
           python3 scripts/test-json-controls.py zig-out/bin/graff
           python3 scripts/test-json-cancel.py zig-out/bin/graff
 
+      - name: ACP cancellation and same-session follow-up
+        run: python3 scripts/test-acp-steer.py zig-out/bin/graff
+
       - name: Isolated read-only review regression
         run: python3 scripts/test-review-mode.py zig-out/bin/graff
 

@@ -13,6 +13,7 @@ import {
   listSessionRows,
   pageSessions,
   peekHeader,
+  recoveredSessionTitle,
   type ListScope,
 } from "@/lib/session-store";
 
@@ -62,13 +63,17 @@ export async function GET(req: NextRequest) {
       const header = peekHeader(found.file, st.size);
       return Response.json({
         name,
-        title: str(parsed.title),
+        title: recoveredSessionTitle(parsed.title, parsed.messages),
         model: str(parsed.model),
         provider: str(parsed.provider),
         updatedMs: typeof parsed.updated_ms === "number" ? parsed.updated_ms : Math.round(st.mtimeMs),
         size: st.size,
         workspace: str(parsed.workspace) ?? str(header?.workspace) ?? found.workspace,
         local: found.local,
+        // Saved file only — not a live REPL attach. The GUI must treat the
+        // payload as a snapshot with unknown execution (#839).
+        view: "snapshot",
+        execution: "unknown",
         // The desktop never displayed raw provider history. Avoid allocating
         // its tool bodies and image payloads again in Chromium just to drop them.
         ...(req.nextUrl.searchParams.get("view") === "transcript"

@@ -47,6 +47,16 @@ xcrun clang -O2 -bundle -undefined dynamic_lookup -mmacosx-version-min=14.0 \
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :LSMinimumSystemVersion 14.0' "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName Codegraff' "$bundle/Contents/Info.plist" 2>/dev/null || true
+macos="$bundle/Contents/MacOS"
+if [[ -e "$macos/Electron" ]]; then
+  mv "$macos/Electron" "$macos/Codegraff"
+fi
+/usr/libexec/PlistBuddy -c 'Set :CFBundleExecutable Codegraff' "$bundle/Contents/Info.plist"
+exec_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$bundle/Contents/Info.plist")"
+if [[ "$exec_name" == "Electron" || -e "$macos/Electron" || ! -x "$macos/Codegraff" ]]; then
+  echo "Distribution builds must not retain the development executable name (Electron)." >&2
+  exit 1
+fi
 bun "$here/build-icon.cjs" "$resources/electron.icns"
 # Local development signing; production notarization remains a separate release step.
 codesign --force --deep --sign - "$bundle"

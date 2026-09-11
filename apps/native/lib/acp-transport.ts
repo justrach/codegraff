@@ -49,6 +49,7 @@ export class AcpTransport {
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
     this.pending.clear(); this.listeners.clear();
   }
+  abort(error: Error) { this.fail(error); }
   get usable(): boolean { return this.failure === null; }
   notify(method: string, params?: unknown) {
     if (this.failure) throw this.failure;

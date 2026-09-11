@@ -54,7 +54,7 @@ test { // unit_tests' root is main.zig only, so reference every split-out module
     _ = models_cache;
     _ = ansi;
     _ = serve;
-    _ = .{ @import("json_inbox.zig"), @import("acp_inbox.zig"), @import("cite_markup.zig") };
+    _ = .{ @import("json_inbox.zig"), @import("acp_inbox.zig"), @import("cite_markup.zig"), @import("server_diagnostics.zig"), @import("server_discovery.zig"), @import("job_browser_guard.zig"), @import("server_port.zig"), @import("job_registry_stop_tests.zig") };
     _ = util;
     _ = learn_store;
     _ = learn_eval;
@@ -200,12 +200,12 @@ pub var g_codedbpro_licensed: bool = false; // pub: codedbpro_report's native-to
 const anim = @import("anim.zig");
 // Steering (Codex-style): bytes typed while a turn streams are captured (not discarded), echoed live in dim emerald, and queued to run next on Enter —
 // follow-ups queue without waiting for the turn to finish. TTY-only (raw-stdin esc-watch is off in --json/GUI mode); watchdog/select arms may
-// drain/echo stdin while the stream reader is blocked, so g_steer_visible pauses spinner redraws to keep the live row intact.
+// drain/echo stdin while the stream reader is blocked. g_steer_visible: spinner hops up one line (#845).
 pub var g_steer_buf: std.ArrayList(u8) = .empty; // in-progress line (page-alloc)
 const SteerEntry = repl_glue.SteerEntry; // struct { text: []const u8, force: bool }
 pub var g_steer_queue: std.ArrayList(SteerEntry) = .empty; // completed lines
 pub var g_steer_echoed = false; // "↳ steer ›" prefix shown for the current line
-pub var g_steer_visible: std.atomic.Value(bool) = .init(false); // visible live steering row; pauses spinner redraws
+pub var g_steer_visible: std.atomic.Value(bool) = .init(false); // visible live steering row; spinner draws on the line above
 pub var g_steer_lock: std.atomic.Value(bool) = .init(false); // spin-guards g_steer_queue/g_steer_buf mutations across concurrent drainers (main reader + pool esc-watch/watchdog arms) so one submit never flushes as N entries (#129); acquire via repl_glue.steerLock
 pub var g_out: ?*Io.Writer = null; // stdout writer for steer echo (set in main)
 pub var g_gui_mu: Io.Mutex = .init; // serializes --json stdout across pool-thread subagent emits (guiEmit + printDelta)
@@ -346,7 +346,6 @@ pub fn main(init: std.process.Init) !void {
         traj.deinit();
     }
     traj.node(.{ .kind = "session", .version = harness_version, .unix_ms = unixMs(io) });
-
     var telem = session_start.initTelemetry(io, gpa, client, init.environ_map, flags, default_telemetry_endpoint);
     telemetry.g_telem = &telem;
     if (init.environ_map.get("GRAFF_FLEET")) |fv| {
@@ -564,6 +563,7 @@ const agentJobsReap = subagent.agentJobsReap; // #276 P0-3: background subagents
 const workflow = @import("workflow_test.zig"); // the engine's tests live here (workflow.zig hit the 600-line cap)
 const exec = @import("exec.zig");
 test { // ── Unit tests (`zig build test`): pull in tests from imported modules (mcp.zig)
+    _ = @import("mcp_apps.zig");
     _ = @import("main_test.zig");
     _ = @import("http_client.zig");
     _ = @import("http_client_tests.zig");

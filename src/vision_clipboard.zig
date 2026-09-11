@@ -50,6 +50,19 @@ pub const Flavor = enum {
     }
 };
 
+/// Why a clipboard extraction failed without yielding an image (#843).
+/// Categories stay privacy-safe: they never include clipboard contents.
+pub const FailKind = enum { access, extract, convert };
+
+/// Result of one pasteboard grab. Null used to mean both "nothing there"
+/// and "osascript/sips failed", which Ctrl-V then reported as an empty
+/// clipboard.
+pub const GrabAttempt = union(enum) {
+    ok: Grab,
+    empty,
+    failed: FailKind,
+};
+
 /// A clipboard image that made it to disk.
 pub const Grab = struct {
     path: []const u8,
@@ -140,7 +153,7 @@ pub fn sipsIsImage(io: Io, path: []const u8) bool {
 /// `POSIX path of …`, so a path that does not start with `/` is coercion
 /// output rather than a file. No comptime OS gate is needed — the only caller
 /// is `grabFurl`, reached solely through `grabClipboardImage`, which already
-/// returns null off macOS.
+/// returns `.empty` off macOS.
 pub fn furlLooksStageable(io: Io, path: []const u8, probe: anytype) bool {
     if (path.len == 0 or path[0] != '/') return false;
     const size = regularFileSize(io, path) orelse return false;
@@ -236,21 +249,52 @@ pub fn planStage(io: Io, gpa: Allocator, path: []const u8, budget: u64, resize: 
 
 // ── the flavor cascade ────────────────────────────────────────────────────
 
-/// macOS: export the clipboard image to a file and return its path, trying one
-/// pasteboard flavor per osascript invocation and stopping at the first that
-/// yields a real file. Null means the clipboard genuinely holds no image.
+/// Type names `clipboard info` reports for image-bearing pasteboards.
+/// The string is flavor metadata only — never clipboard contents (#843).
+pub fn pasteboardHintFromInfo(info: []const u8) enum { image, none } {
+    for ([_][]const u8{ "PNGf", "TIFF", "JPEG", "JIFf", "PDF ", "furl" }) |mark| {
+        if (std.mem.indexOf(u8, info, mark) != null) return .image;
+    }
+    return .none;
+}
+
+const FlavorTry = union(enum) {
+    ok: Grab,
+    miss,
+    failed: FailKind,
+};
+
+/// macOS: export the clipboard image to a file, trying one pasteboard flavor
+/// per osascript invocation and stopping at the first that yields a real file.
 ///
-/// The old implementation asked for `«class PNGf»` and nothing else. That
-/// covers every raster clipboard (macOS synthesizes PNGf from TIFF/JPEG/HEIC
-/// and from live data-provider promises), but it silently loses the two cases
-/// users actually hit: a copied *file* (`furl`, what Telegram/Finder put up)
-/// and a vector-only `PDF ` clipboard (Preview, Illustrator, Keynote). #350.
-pub fn grabClipboardImage(io: Io, gpa: Allocator) ?Grab {
-    if (builtin.os.tag != .macos) return null;
-    if (grabPng(io, gpa)) |g| return g;
-    if (grabFurl(io, gpa)) |g| return g;
-    if (grabPdf(io, gpa)) |g| return g;
-    return null;
+/// Distinguishes an empty clipboard from access / export / conversion failures
+/// so Ctrl-V can say something other than "copy an image first" when the
+/// pasteboard already holds one (#843). `clipboard info` is consulted only for
+/// flavor class names — never for payload bytes.
+pub fn grabClipboardImage(io: Io, gpa: Allocator) GrabAttempt {
+    if (builtin.os.tag != .macos) return .empty;
+    var saw_fail: ?FailKind = null;
+    inline for (.{ grabPng, grabFurl, grabPdf }) |step| {
+        switch (step(io, gpa)) {
+            .ok => |g| return .{ .ok = g },
+            .miss => {},
+            .failed => |k| if (saw_fail == null) {
+                saw_fail = k;
+            },
+        }
+    }
+    if (saw_fail) |k| return .{ .failed = k };
+    return switch (pasteboardImageHint(io, gpa)) {
+        .image => .{ .failed = .extract },
+        .unknown => .{ .failed = .access },
+        .none => .empty,
+    };
+}
+
+fn pasteboardImageHint(io: Io, gpa: Allocator) enum { image, none, unknown } {
+    const info = runCapture(io, gpa, &.{ "osascript", "-e", "clipboard info" }) orelse return .unknown;
+    defer gpa.free(info);
+    return if (pasteboardHintFromInfo(info) == .image) .image else .none;
 }
 
 /// `open for access` line with our per-invocation path baked in.
@@ -258,12 +302,12 @@ fn openLine(gpa: Allocator, path: []const u8) ?[]const u8 {
     return std.fmt.allocPrint(gpa, "set fp to open for access POSIX file \"{s}\" with write permission", .{path}) catch null;
 }
 
-fn grabPng(io: Io, gpa: Allocator) ?Grab {
-    const path = tempPath(io, gpa, "png") orelse return null;
+fn grabPng(io: Io, gpa: Allocator) FlavorTry {
+    const path = tempPath(io, gpa, "png") orelse return .{ .failed = .access };
     var keep = false;
     defer if (!keep) discard(io, gpa, path);
 
-    const open = openLine(gpa, path) orelse return null;
+    const open = openLine(gpa, path) orelse return .{ .failed = .access };
     defer gpa.free(open);
     const argv = [_][]const u8{
         "osascript",
@@ -286,36 +330,44 @@ fn grabPng(io: Io, gpa: Allocator) ?Grab {
         "-e",
         "end try",
     };
-    if (!runQuiet(io, &argv)) return null;
+    switch (runStatus(io, &argv)) {
+        .spawn => return .{ .failed = .access },
+        .failed => return .miss,
+        .ok => {},
+    }
     // Stat the export: osascript exiting 0 is not proof the bytes landed.
-    if ((regularFileSize(io, path) orelse 0) == 0) return null;
+    if ((regularFileSize(io, path) orelse 0) == 0) return .{ .failed = .extract };
     keep = true;
-    return .{ .path = path, .flavor = .png, .owned = true };
+    return .{ .ok = .{ .path = path, .flavor = .png, .owned = true } };
 }
 
-fn grabFurl(io: Io, gpa: Allocator) ?Grab {
-    const raw = runCapture(io, gpa, &.{ "osascript", "-e", "POSIX path of (the clipboard as «class furl»)" }) orelse return null;
+fn grabFurl(io: Io, gpa: Allocator) FlavorTry {
+    const raw = switch (runCaptureStatus(io, gpa, &.{ "osascript", "-e", "POSIX path of (the clipboard as «class furl»)" })) {
+        .ok => |s| s,
+        .failed => return .miss,
+        .spawn => return .{ .failed = .access },
+    };
     defer gpa.free(raw);
     const src = std.mem.trim(u8, raw, " \t\r\n");
-    if (!furlLooksStageable(io, src, sipsIsImage)) return null;
+    if (!furlLooksStageable(io, src, sipsIsImage)) return .miss;
     if (stageableExtension(src)) {
         // The user's own file, in place. `owned = false`: never delete it.
-        const dup = gpa.dupe(u8, src) catch return null;
-        return .{ .path = dup, .flavor = .furl, .owned = false };
+        const dup = gpa.dupe(u8, src) catch return .{ .failed = .access };
+        return .{ .ok = .{ .path = dup, .flavor = .furl, .owned = false } };
     }
     // A .heic/.tiff/.bmp/… that sips vouched for: normalize to PNG.
-    const out = tempPath(io, gpa, "png") orelse return null;
+    const out = tempPath(io, gpa, "png") orelse return .{ .failed = .access };
     if (sipsToPng(io, src, out) and (regularFileSize(io, out) orelse 0) > 0)
-        return .{ .path = out, .flavor = .furl, .owned = true };
+        return .{ .ok = .{ .path = out, .flavor = .furl, .owned = true } };
     discard(io, gpa, out);
-    return null;
+    return .{ .failed = .convert };
 }
 
-fn grabPdf(io: Io, gpa: Allocator) ?Grab {
-    const pdf = tempPath(io, gpa, "pdf") orelse return null;
+fn grabPdf(io: Io, gpa: Allocator) FlavorTry {
+    const pdf = tempPath(io, gpa, "pdf") orelse return .{ .failed = .access };
     defer discard(io, gpa, pdf); // the intermediate never outlives this call
 
-    const open = openLine(gpa, pdf) orelse return null;
+    const open = openLine(gpa, pdf) orelse return .{ .failed = .access };
     defer gpa.free(open);
     const argv = [_][]const u8{
         "osascript",
@@ -338,14 +390,18 @@ fn grabPdf(io: Io, gpa: Allocator) ?Grab {
         "-e",
         "end try",
     };
-    if (!runQuiet(io, &argv)) return null;
-    if ((regularFileSize(io, pdf) orelse 0) == 0) return null;
+    switch (runStatus(io, &argv)) {
+        .spawn => return .{ .failed = .access },
+        .failed => return .miss,
+        .ok => {},
+    }
+    if ((regularFileSize(io, pdf) orelse 0) == 0) return .{ .failed = .extract };
 
-    const out = tempPath(io, gpa, "png") orelse return null;
+    const out = tempPath(io, gpa, "png") orelse return .{ .failed = .access };
     if (sipsToPng(io, pdf, out) and (regularFileSize(io, out) orelse 0) > 0)
-        return .{ .path = out, .flavor = .pdf, .owned = true };
+        return .{ .ok = .{ .path = out, .flavor = .pdf, .owned = true } };
     discard(io, gpa, out);
-    return null;
+    return .{ .failed = .convert };
 }
 
 fn sipsToPng(io: Io, in: []const u8, out: []const u8) bool {
@@ -355,45 +411,60 @@ fn sipsToPng(io: Io, in: []const u8, out: []const u8) bool {
 
 // ── subprocess plumbing ───────────────────────────────────────────────────
 
+const RunStatus = enum { ok, failed, spawn };
+
 fn runQuiet(io: Io, argv: []const []const u8) bool {
+    return runStatus(io, argv) == .ok;
+}
+
+fn runStatus(io: Io, argv: []const []const u8) RunStatus {
     var child = std.process.spawn(io, .{
         .argv = argv,
         .stdin = .ignore,
         .stdout = .ignore,
         .stderr = .ignore,
-    }) catch return false;
-    const term = child.wait(io) catch return false;
-    return term == .exited and term.exited == 0;
+    }) catch return .spawn;
+    const term = child.wait(io) catch return .spawn;
+    return if (term == .exited and term.exited == 0) .ok else .failed;
 }
+
+const CaptureStatus = union(enum) { ok: []u8, failed, spawn };
 
 /// stdout of a successful run, gpa-owned; null on spawn/read failure or a
 /// non-zero exit.
 fn runCapture(io: Io, gpa: Allocator, argv: []const []const u8) ?[]u8 {
+    return switch (runCaptureStatus(io, gpa, argv)) {
+        .ok => |s| s,
+        .failed, .spawn => null,
+    };
+}
+
+fn runCaptureStatus(io: Io, gpa: Allocator, argv: []const []const u8) CaptureStatus {
     var child = std.process.spawn(io, .{
         .argv = argv,
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .ignore,
-    }) catch return null;
+    }) catch return .spawn;
     const f = child.stdout orelse {
         _ = child.wait(io) catch {};
-        return null;
+        return .spawn;
     };
     var rbuf: [4096]u8 = undefined;
     var fr = f.readerStreaming(io, &rbuf);
     const captured = fr.interface.allocRemaining(gpa, .limited(8 * 1024)) catch {
         _ = child.wait(io) catch {};
-        return null;
+        return .spawn;
     };
     const term = child.wait(io) catch {
         gpa.free(captured);
-        return null;
+        return .spawn;
     };
     if (term != .exited or term.exited != 0) {
         gpa.free(captured);
-        return null;
+        return .failed;
     }
-    return captured;
+    return .{ .ok = captured };
 }
 
 // ── formatting ────────────────────────────────────────────────────────────

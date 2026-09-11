@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { dateGroup, groupSessions, sessionHint, transcriptFromMessages } from "./sessions.ts";
+import { dateGroup, groupSessions, sessionFromResponse, sessionHint, transcriptFromMessages } from "./sessions.ts";
 
 describe("transcriptFromMessages", () => {
   it("restores Responses tool calls and completion answers without role fields", () => {
@@ -46,7 +46,7 @@ describe("transcriptFromMessages", () => {
     const first = out[1];
     assert.equal(first.role, "assistant");
     if (first.role !== "assistant") return;
-    assert.equal(first.turn.status, "done");
+    assert.equal(first.turn.status, "snapshot");
     assert.equal(first.turn.model, "glm-5.3-flash");
     assert.equal(first.turn.text, "Created demo.md.");
     assert.equal(first.turn.tools.length, 1);
@@ -60,6 +60,24 @@ describe("transcriptFromMessages", () => {
     const last = out[3];
     if (last.role !== "assistant") return;
     assert.equal(last.turn.text, "You're welcome.");
+    assert.equal(last.turn.status, "snapshot");
+  });
+
+  it("keeps pending tool rows in a saved snapshot when a result never arrived (#839)", () => {
+    const out = transcriptFromMessages([
+      { role: "user", content: "keep going" },
+      { role: "assistant", content: "Working.", tool_calls: [{ id: "c1", function: { name: "bash", arguments: '{"command":"sleep 30"}' } }] },
+    ]);
+    assert.equal(out.length, 2);
+    const turn = out[1];
+    if (turn.role !== "assistant") return;
+    assert.equal(turn.turn.status, "snapshot");
+    assert.equal(turn.turn.tools[0].status, "running");
+  });
+
+  it("marks every saved-file response as a snapshot (#839)", () => {
+    const loaded = sessionFromResponse({ name: "live", title: "Still running", model: null, provider: null, updatedMs: 1, size: 1 });
+    assert.equal(loaded.snapshot, true);
   });
 
   it("marks failed tool results, keeps todos, and survives junk", () => {

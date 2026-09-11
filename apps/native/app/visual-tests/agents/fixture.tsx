@@ -5,14 +5,13 @@ import { applyAppearance, type Appearance } from '@/lib/appearance';
 export default function Fixture() {
   const [scenario, setScenario] = useState('connected');
   const [sent, setSent] = useState('');
-  const [cancelled, setCancelled] = useState('');
+  const [fullWidth, setFullWidth] = useState(true);
   const scenarioRef = useRef(scenario);
   scenarioRef.current = scenario;
   const request = useCallback(async (_root: string | undefined, params: Record<string, unknown>) => {
     const scenario = scenarioRef.current;
     if (scenario === 'error') throw new Error('Observer unavailable');
     if (params.action === 'send') { setSent(JSON.stringify(params)); return { delivery: 'queued' }; }
-    if (params.action === 'cancel') { setCancelled(JSON.stringify(params)); return { status: 'interrupted' }; }
     if (params.action === 'children') return {children: [
       {id:'child-working', label:'Inspect navigation', task:'Check keyboard focus', status:'working', updatedAt:1, truncated:false},
       {id:'child-completed', label:'Review complete', task:'Review the changes', status:'completed', updatedAt:2, truncated:true},
@@ -36,7 +35,7 @@ export default function Fixture() {
     ], messages: [{ from_session: 'peer-a', to: 'peer-b', ts_ms: 1000, text: 'The navigation update is ready for review.', kind: 'handoff' }], delivery: 'Queued' };
   }, []);
   return <main className="flex h-screen flex-col bg-page text-ink">
-    <nav className="flex gap-3 p-3">{['connected', 'idle', 'empty', 'error'].map(value => <button key={value} data-agent-case={value} onClick={() => setScenario(value)}>{value}</button>)}{['light', 'dark', 'codegraff'].map(theme => <button key={theme} data-agent-theme={theme} onClick={() => applyAppearance(theme as Appearance)}>{theme}</button>)}</nav>
-    <div className="flex min-h-0 flex-1 gap-3 p-3"><div className="flex-1 min-w-0 p-5"><h1>Workspace conversation</h1><p>The agent panel keeps coordination alongside your work.</p><output data-agent-sent className="break-all">{sent}</output><output data-agent-cancelled className="break-all">{cancelled}</output></div><AgentsPane root="/demo/workspace" onClose={() => {}} request={request} /></div>
+    <nav className="flex flex-wrap gap-3 p-3"><button data-agent-layout onClick={() => setFullWidth(value => !value)}>{fullWidth ? 'Use side panel' : 'Use workspace view'}</button>{['connected', 'idle', 'empty', 'error'].map(value => <button key={value} data-agent-case={value} onClick={() => setScenario(value)}>{value}</button>)}{['light', 'dark', 'codegraff'].map(theme => <button key={theme} data-agent-theme={theme} onClick={() => applyAppearance(theme as Appearance)}>{theme}</button>)}</nav>
+    <output data-agent-sent className="sr-only">{sent}</output><div className="flex min-h-0 flex-1 gap-3 p-3">{!fullWidth && <div className="flex-1 min-w-0 p-5"><h1>Workspace conversation</h1></div>}<AgentsPane fullWidth={fullWidth} root="/demo/workspace" onClose={() => {}} request={request} /></div>
   </main>;
 }

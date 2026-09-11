@@ -1,3 +1,4 @@
+const testDesktop = require('./test-desktop.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -51,7 +52,7 @@ async function runReviewRecovery({ win, origin, output }) {
   assert.ok(await js(`document.querySelector('[aria-label="File diff"]').textContent.includes('Changes unavailable')`),'Diff failures must not masquerade as binary files');
   await wc.loadURL(origin);
   await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
-  win.focus();
+  testDesktop.present(win);
   console.log('Review recovery passed: unavailable vs clean, explicit retry, stale filters/worktrees, and diff failures.');
 }
 module.exports={runReviewRecovery};

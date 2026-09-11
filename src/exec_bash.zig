@@ -1,11 +1,13 @@
 //! Root and subagent `bash` dispatch. Split out of exec.zig so the grok-build
 //! auto-background path (#620) has room without growing exec.zig.
 //!
-//! Root foreground: spawn a job, wait up to 120s (or `timeout` ms), then
-//! promote rather than kill — the process keeps running and the model gets a
-//! job id. Subagents stay on the #93 kill-at-120s path (no TTY, no /jobs UI).
+//! Root foreground: spawn a job, wait up to 120s (a shorter `timeout` may
+//! promote earlier; a larger one cannot extend the wait), then promote
+//! rather than kill — the process keeps running and the model gets a job
+//! id. Subagents stay on the #93 kill-at-120s path (no TTY, no /jobs UI).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
@@ -93,12 +95,15 @@ fn defaultRootWaitMs() u64 {
 }
 
 fn rootWaitMs(input: Value) u64 {
-    const t = intField(input, "timeout") orelse return defaultRootWaitMs();
-    if (t <= 0) return defaultRootWaitMs();
-    return @min(@as(u64, @intCast(t)), job_wait.wait_cap_ms);
+    const bound = defaultRootWaitMs();
+    const t = intField(input, "timeout") orelse return bound;
+    if (t <= 0) return bound;
+    // #850: timeout may shorten the foreground wait; it must not recreate the
+    // #620 hang by stretching it toward the 10h job-wait cap.
+    return @min(@as(u64, @intCast(t)), bound);
 }
 
-test "rootWaitMs: omitted/zero use 120s; positive values clamp to the 10h cap" {
+test "rootWaitMs: omitted/zero use 120s; a shorter timeout may promote earlier" {
     const empty = try std.json.parseFromSlice(Value, std.testing.allocator, "{}", .{});
     defer empty.deinit();
     try std.testing.expectEqual(root_wait_ms, rootWaitMs(empty.value));
@@ -108,12 +113,46 @@ test "rootWaitMs: omitted/zero use 120s; positive values clamp to the 10h cap" {
     const custom = try std.json.parseFromSlice(Value, std.testing.allocator, "{\"timeout\":5000}", .{});
     defer custom.deinit();
     try std.testing.expectEqual(@as(u64, 5_000), rootWaitMs(custom.value));
-    const huge = try std.json.parseFromSlice(Value, std.testing.allocator, "{\"timeout\":999999999}", .{});
-    defer huge.deinit();
-    try std.testing.expectEqual(job_wait.wait_cap_ms, rootWaitMs(huge.value));
 }
 
-test "rootWaitMs: lean unattended oneshot defaults to 15s; timeout still wins" {
+test "#850: a large explicit timeout cannot extend the foreground bound" {
+    const huge = try std.json.parseFromSlice(Value, std.testing.allocator, "{\"timeout\":999999999}", .{});
+    defer huge.deinit();
+    try std.testing.expectEqual(root_wait_ms, rootWaitMs(huge.value));
+    try std.testing.expect(rootWaitMs(huge.value) < job_wait.wait_cap_ms);
+    const schema = @embedFile("schema.zig");
+    try std.testing.expect(std.mem.indexOf(u8, schema, "max 36000000") == null);
+}
+
+// The behavior half of #850: a wait bounded at the default promotes rather than
+// parking the turn, the child is NOT killed, and it stays reachable through the
+// same bash_output/bash_kill the auto-background result points the model at.
+// The bound itself is the pure-function assertion above; 200ms stands in for
+// the expiry so the test does not sleep for the real one.
+test "#850: promotion at the bound leaves the child alive and reachable" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+    jobs.g_jobs = .{};
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const id = (try jobs.spawnJob(gpa, io, "sleep 5; printf never")).id;
+    defer jobs.jobsReap(gpa, io);
+    const waited = try jobs.waitForeground(gpa, io, id, 200);
+    defer switch (waited) {
+        .running => |r| gpa.free(r.output),
+        .done => |d| gpa.free(d.output),
+        .cancelled => |c| gpa.free(c.output),
+    };
+    try std.testing.expect(waited == .running);
+    try std.testing.expectEqual(id, waited.running.id);
+    const snap = try jobs.jobOutput(gpa, io, id, 0);
+    defer gpa.free(snap.text);
+    try std.testing.expect(std.mem.indexOf(u8, snap.text, "running") != null);
+    const killed = try jobs.jobKill(gpa, io, id);
+    defer gpa.free(killed.text);
+    try std.testing.expect(std.mem.indexOf(u8, killed.text, "killed") != null);
+}
+
+test "rootWaitMs: lean unattended oneshot defaults to 15s; shorter timeout still wins" {
     const main_mod = @import("main.zig");
     const nlt = @import("no_local_tools.zig");
     const saved_u = main_mod.unattended;
@@ -130,6 +169,9 @@ test "rootWaitMs: lean unattended oneshot defaults to 15s; timeout still wins" {
     const custom = try std.json.parseFromSlice(Value, std.testing.allocator, "{\"timeout\":5000}", .{});
     defer custom.deinit();
     try std.testing.expectEqual(@as(u64, 5_000), rootWaitMs(custom.value));
+    const huge = try std.json.parseFromSlice(Value, std.testing.allocator, "{\"timeout\":60000}", .{});
+    defer huge.deinit();
+    try std.testing.expectEqual(lean_oneshot_wait_ms, rootWaitMs(huge.value));
     main_mod.unattended = false;
     try std.testing.expectEqual(root_wait_ms, rootWaitMs(empty.value));
 }
@@ -202,7 +244,37 @@ fn formatCapped(gpa: Allocator, cmd: []const u8, run: jobs.CappedRun) !ToolOutpu
     return .{ .text = try aw.toOwnedSlice(), .is_error = exit_code == null or exit_code.? != 0, .cancelled = run.cancelled };
 }
 
+const server_port = @import("server_port.zig");
+
+test {
+    _ = server_port;
+}
+
 pub fn exec(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
+    const cmd = strField(call.input, "command") orelse return missingArg(ctx.gpa, "command");
+    // Respect the subagent gate before running even a read-only probe.
+    const approved = if (ctx.from_sub) (if (ctx.approvals) |ap| ap.allowed(ctx.io, cmd) else true) else true;
+    var warning = false;
+    if (approved) if (server_port.requested(cmd)) |port| {
+        switch (server_port.probe(ctx.gpa, ctx.io, port)) {
+            .conflict => return .{
+                .text = try std.fmt.allocPrint(ctx.gpa, "server launch refused: TCP port {d} already has a listener (IPv4 or IPv6). No process was stopped. Reuse the intended server or choose another port after checking ownership.", .{port}),
+                .is_error = true,
+            },
+            .unknown => warning = true,
+            .clear => {},
+        }
+    };
+    var result = try execUnchecked(ctx, call);
+    if (warning) {
+        const text = try std.mem.concat(ctx.gpa, u8, &.{ server_port.unknown_warning, result.text });
+        ctx.gpa.free(result.text);
+        result.text = text;
+    }
+    return result;
+}
+
+fn execUnchecked(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
     const gpa = ctx.gpa;
     const io = ctx.io;
     const input = call.input;

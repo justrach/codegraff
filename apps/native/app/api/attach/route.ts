@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { NextRequest } from "next/server";
@@ -50,6 +50,31 @@ function safeName(raw: string, type: string): string {
   if (base) return base.slice(0, 80);
   const sub = type.startsWith("image/") ? type.slice(6).split("+")[0] : "";
   return sub ? `pasted.${sub === "jpeg" ? "jpg" : sub}` : "pasted";
+}
+
+const IMAGE_TYPES: Record<string, string> = {
+  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+  ".gif": "image/gif", ".webp": "image/webp", ".avif": "image/avif", ".bmp": "image/bmp",
+};
+
+/** Serve only staged raster images, never arbitrary paths or active SVG content. */
+export async function GET(req: NextRequest) {
+  const name = req.nextUrl.searchParams.get("name") ?? "";
+  const type = IMAGE_TYPES[path.extname(name).toLowerCase()];
+  if (!name || path.basename(name) !== name || !type) {
+    return new Response("Invalid image", { status: 400 });
+  }
+  try {
+    const target = realpathSync(path.join(DIR, name));
+    if (path.dirname(target) !== realpathSync(DIR)) return new Response("Not found", { status: 404 });
+    if (statSync(target).size > MAX_BYTES) return new Response("Image too large", { status: 413 });
+    return new Response(readFileSync(target), { headers: {
+      "Content-Type": type, "Cache-Control": "private, max-age=3600",
+      "X-Content-Type-Options": "nosniff",
+    } });
+  } catch {
+    return new Response("Image no longer available", { status: 404 });
+  }
 }
 
 export async function POST(req: NextRequest) {
