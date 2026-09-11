@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Offline GUI fixture: title generation cannot consume agent turn replies."""
+if __name__ == '__main__':
+    print('Starting scripted model fixture', flush=True)
+
 import argparse
 import json
 from pathlib import Path
@@ -26,6 +29,7 @@ if __name__ == '__main__':
     parser.add_argument('--requests', required=True)
     args = parser.parse_args()
     model = FrontendModel(json.loads(Path(args.script).read_text()), args.requests)
+    print('Binding scripted model fixture', flush=True)
     model.start(1234)
     print('scripted model on 127.0.0.1:1234', flush=True)
     try:
