@@ -46,7 +46,7 @@ async function finish(error) {
   fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify(report, null, 2));
   for (const proc of children) proc.kill('SIGTERM');
   desktop.cleanup(); fs.rmSync(temp, { force: true, recursive: true });
-  console.log(JSON.stringify(report)); app.exit(error ? 1 : 0);
+  console.log(JSON.stringify(report)); process.exit(error ? 1 : 0);
 }
 const deadline = setTimeout(() => finish(Error('Front-end suite exceeded 90 seconds')), 90000);
 app.whenReady().then(async () => {
@@ -106,7 +106,7 @@ app.whenReady().then(async () => {
   const wc = win.webContents, js = code => wc.executeJavaScript(code);
   await wc.loadURL(origin); desktop.present(win);
   if (desktop.foreground) await until(() => win.isFocused(), 'foreground window focus');
-  await until(() => js(`!!document.querySelector('textarea[aria-label="Prompt"]')`), 'composer');
+  await until(() => js(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`), 'workspace and composer ready');
   if (process.env.GRAFF_CLI_TEST) await until(async () => (await projects.load())?.active === fs.realpathSync(workspace), 'startup CLI folder after project restoration');
   let computer;
   if (process.env.GRAFF_FRONTEND_OS_INPUT === '1') {
@@ -118,7 +118,12 @@ app.whenReady().then(async () => {
     if (process.env.GRAFF_NATIVE_REQUIRE_OS_INPUT === '1') assert.ok(computer, 'Native OS input is required on this runner');
   }
   const click = async selector => {
-    const p = await js(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()`);
+    let p, previous;
+    await until(async () => {
+      p = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return null;const r=e.getBoundingClientRect();const x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2);return {x,y,hit:e.contains(document.elementFromPoint(x,y))}})()`);
+      const settled = p?.hit && previous?.x === p.x && previous?.y === p.y;
+      previous = p; return settled;
+    }, `stable pointer target: ${selector}`, 5000);
     if (computer) {
       const bounds = win.getContentBounds();
       await computer.command('click', { pid: process.pid, x: bounds.x+p.x, y: bounds.y+p.y });
@@ -126,6 +131,7 @@ app.whenReady().then(async () => {
   };
   const send = async text => {
     await click('textarea[aria-label="Prompt"]');
+    await until(() => js(`document.activeElement === document.querySelector('textarea[aria-label="Prompt"]')`), 'native composer focus before typing', 5000);
     if (computer) await computer.command('type', { pid: process.pid, text });
     else for (const keyCode of text) await desktop.testInput(wc, { type: 'char', keyCode });
     await until(() => js(`document.querySelector('textarea[aria-label="Prompt"]').value === ${JSON.stringify(text)} && !document.querySelector('[aria-label="Send"]').disabled`), 'typed prompt ready');
