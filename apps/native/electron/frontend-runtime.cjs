@@ -138,7 +138,23 @@ app.whenReady().then(async () => {
     }, `stable pointer target: ${selector}`, 5000);
     if (computer) {
       const bounds = win.getContentBounds();
-      await computer.command('click', { pid: process.pid, x: bounds.x+p.x, y: bounds.y+p.y });
+      await js(`(()=>{
+        window.__nativeClickCleanup?.();
+        const target=document.querySelector(${JSON.stringify(selector)});
+        const trace=window.__nativeClickTrace={expected:${JSON.stringify(p)},events:[]};
+        const record=event=>trace.events.push({type:event.type,x:event.clientX,y:event.clientY,
+          target:event.target.tagName,label:event.target.getAttribute('aria-label'),matches:target.contains(event.target)});
+        const types=['pointerdown','pointerup','click'];
+        types.forEach(type=>document.addEventListener(type,record,true));
+        window.__nativeClickCleanup=()=>types.forEach(type=>document.removeEventListener(type,record,true));
+      })()`);
+      try {
+        await computer.command('click', { pid: process.pid, x: bounds.x+p.x, y: bounds.y+p.y });
+        await until(()=>js(`window.__nativeClickTrace.events.some(event=>event.type==='click'&&event.matches)`), `native click delivery: ${selector}`, 3000);
+      } finally {
+        report.nativePointer={bounds,trace:await js('window.__nativeClickTrace')};
+        await js('window.__nativeClickCleanup()');
+      }
     } else for (const type of ['mouseDown', 'mouseUp']) await desktop.testInput(wc, { type, button: 'left', clickCount: 1, ...p });
   };
   const send = async text => {
