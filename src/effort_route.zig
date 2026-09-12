@@ -70,15 +70,34 @@ pub fn hidesMax(provider_id: []const u8, model: []const u8) bool {
     return std.mem.eql(u8, provider_id, "xai") or grokFamily(model);
 }
 
+fn openaiFamily(provider_id: []const u8, model: []const u8) bool {
+    return std.mem.eql(u8, provider_id, "openai") or std.mem.eql(u8, provider_id, "codex") or
+        std.mem.startsWith(u8, model, "gpt-") or std.mem.startsWith(u8, model, "openai/gpt-");
+}
+
+/// Picker tags, not API values: OpenAI's maximum is exposed as Ultra.
+/// Keep xAI's stricter allow-list ahead of model-family detection.
+pub fn levels(provider_id: []const u8, model: []const u8) []const []const u8 {
+    if (hidesMax(provider_id, model)) return &.{ "low", "medium", "high", "xhigh" };
+    if (openaiFamily(provider_id, model)) return &.{ "low", "medium", "high", "xhigh", "ultra" };
+    return &.{ "low", "medium", "high", "xhigh", "max", "ultra" };
+}
+
+/// Accept old saved/typed Max settings without putting Max back in the UI.
+/// Ultra keeps its existing wire mapping to `max` and delegation guidance.
+pub fn normalize(provider_id: []const u8, model: []const u8, requested: []const u8) []const u8 {
+    if (!hidesMax(provider_id, model) and openaiFamily(provider_id, model) and std.mem.eql(u8, requested, "max")) return "ultra";
+    return requested;
+}
+
 pub fn allows(provider_id: []const u8, model: []const u8, tag: []const u8) bool {
-    if (!hidesMax(provider_id, model)) return true;
-    return std.mem.eql(u8, tag, "low") or std.mem.eql(u8, tag, "medium") or
-        std.mem.eql(u8, tag, "high") or std.mem.eql(u8, tag, "xhigh");
+    for (levels(provider_id, model)) |level| if (std.mem.eql(u8, tag, level)) return true;
+    return false;
 }
 
 /// Wire `reasoning_effort` for an effort-capable provider. Flash / Gemini
 /// default `medium` becomes `low`. grok maps max/ultra → high (xAI rejects
-/// `max`). Other seats still send ultra as `max` (Z.AI / Kimi).
+/// `max`). Other seats still send ultra as `max` (including OpenAI).
 pub fn wireEffort(model: []const u8, requested: []const u8) []const u8 {
     if (std.mem.eql(u8, requested, "medium") and omitsDefaultFlashEffort(model)) return "low";
     if (grokFamily(model)) {

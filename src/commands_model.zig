@@ -29,7 +29,6 @@ const pickers = @import("pickers.zig");
 const modelPicker = pickers.modelPicker;
 const PickItem = pickers.PickItem;
 const listPicker = pickers.listPicker;
-const listPickerAt = pickers.listPickerAt;
 const pickUltracodeMode = pickers.pickUltracodeMode;
 const reloadLoginKey = pickers.reloadLoginKey;
 const offerProviderAuth = pickers.offerProviderAuth;
@@ -41,14 +40,6 @@ const serde = @import("serde.zig");
 const oauth = @import("oauth.zig");
 const images_command = @import("images_command.zig");
 const images = @import("images.zig");
-const reasoning_levels = [_]PickItem{
-    .{ .name = "Low", .desc = "Fast responses with lighter reasoning" },
-    .{ .name = "Medium", .desc = "Balances speed and reasoning depth for everyday tasks" },
-    .{ .name = "High", .desc = "Greater reasoning depth for complex problems" },
-    .{ .name = "Extra high", .desc = "Extra high reasoning depth for complex problems" },
-    .{ .name = "Max", .desc = "Maximum reasoning depth for the hardest problems" },
-    .{ .name = "Ultra", .desc = "Maximum reasoning with automatic task delegation" },
-};
 
 const vision = @import("vision.zig");
 const stageImagePath = vision.stageImagePath;
@@ -351,41 +342,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
-    if (std.mem.startsWith(u8, line, "/effort") or std.mem.startsWith(u8, line, "/reasoning")) {
-        const prefix: []const u8 = if (std.mem.startsWith(u8, line, "/effort")) "/effort" else "/reasoning";
-        const arg = std.mem.trim(u8, line[prefix.len..], " \t");
-        if (arg.len == 0 and main_mod.use_color and root.in != null) {
-            const title = try std.fmt.allocPrint(arena, "Reasoning level for {s} ›", .{root.provider.model});
-            const er = @import("effort_route.zig");
-            const levels: []const PickItem = if (er.hidesMax(root.provider.id, root.provider.model)) reasoning_levels[0..4] else &reasoning_levels;
-            const cur = @min(@intFromEnum(root.reasoning), levels.len - 1);
-            const idx = listPickerAt(root, arena, out, title, levels, cur) orelse return true;
-            root.reasoning = @enumFromInt(idx);
-        } else if (std.mem.eql(u8, arg, "med")) {
-            root.reasoning = .medium;
-        } else if (std.mem.eql(u8, arg, "extra") or std.mem.eql(u8, arg, "extra-high") or std.mem.eql(u8, arg, "extra high")) {
-            root.reasoning = .xhigh;
-        } else if (arg.len != 0) {
-            root.reasoning = std.meta.stringToEnum(main_mod.ReasoningEffort, arg) orelse {
-                try out.writeAll("usage: /effort low|medium|high|xhigh|max|ultra\n");
-                try out.flush();
-                return true;
-            };
-            if (!@import("effort_route.zig").allows(root.provider.id, root.provider.model, @tagName(root.reasoning)))
-                root.reasoning = .high;
-        } else {
-            try out.print("reasoning effort: {s}\n", .{reasoning_levels[@intFromEnum(root.reasoning)].name});
-            try out.flush();
-            return true;
-        }
-        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
-        try out.print("reasoning effort: {s}{s}\n", .{
-            reasoning_levels[@intFromEnum(root.reasoning)].name,
-            if (!root.effortApplies()) " (current model ignores it — applies to xai, codex, deepseek, codegraff)" else "",
-        });
-        try out.flush();
-        return true;
-    }
+    if (try @import("commands_effort.zig").handle(root, arena, line, out)) return true;
     if (std.mem.startsWith(u8, line, "/keepcontext")) {
         const arg = std.mem.trim(u8, line["/keepcontext".len..], " \t");
         if (std.mem.eql(u8, arg, "on")) {
