@@ -120,6 +120,7 @@ pub const Agent = struct {
     depth: u8 = 0, // root/auxiliary = 0; delegated child = 1
     call_kind: run_budget_mod.CallKind = .root,
     last_cache_read: u64 = 0, // KV-cache read tokens from the latest response
+    repo_map_snapshot: ?[]const u8 = null, // the resumed layout only; current instructions stay live
     sys_normal: []const u8 = prompts.main_system_prompt, // root system prompt (+ project instructions)
     sys_override: ?[]const u8 = null, // per-child custom prompt or transient isolated-review base
     task_prompt: ?[]const u8 = null, // a subagent's mandate, pinned once before the first history rewrite so compaction can restate it verbatim (recentContextStart can keep no verbatim suffix for a child - its only clean user turn is index 0)
@@ -289,16 +290,7 @@ pub const Agent = struct {
         return @import("agent_catalog.zig").ensureRootTools(self, kind);
     }
 
-    /// A live MCP registry change invalidates provider-specific catalogs. The
-    /// active format is immediately rebuilt; inactive formats remain lazy.
-    pub fn invalidateRootTools(self: *Agent) void {
-        if (self.sub) return;
-        @import("prompt_cache_hud.zig").noteBust(.tools);
-        self.tools_anthropic = "";
-        self.tools_openai = "";
-        self.tools_responses = "";
-        self.tools_interactions = "";
-    }
+    pub const invalidateRootTools = @import("agent_catalog.zig").invalidateRootTools;
 
     pub noinline fn ensureModelCatalog(self: *Agent, keys: provider_mod.Keys) void {
         if (self.model_catalog) |*catalog|

@@ -119,6 +119,7 @@ record only when you need the evidence or the edge cases.
 | [0106](0106-desktop-html-explanations.md) | Desktop HTML explanations are private saved results in static, opaque sandboxes with bounded source and offscreen teardown. |
 | [0107](0107-model-drawn-pages-render-in-an-opaque-frame.md) | A page the model draws (`render_html`) is a private snapshot served under a CSP sandbox; the model picks the presentation, never the privilege. |
 | [0108](0108-browser-events-outrank-pending-snapshots.md) | Browser page-info events invalidate older pending IPC snapshots; a loaded page must not revert to loading. |
+| [0109](0109-resume-retains-catalog-and-layout-snapshots.md) | Resume restores loaded tool selections and the same-workspace layout snapshot, without freezing current instructions or granting permissions. |
 
 ## When to write one
 
