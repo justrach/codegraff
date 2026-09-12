@@ -565,8 +565,8 @@ const exec = @import("exec.zig");
 test { // ── Unit tests (`zig build test`): pull in tests from imported modules (mcp.zig)
     _ = @import("mcp_apps.zig");
     _ = @import("main_test.zig");
-    _ = @import("http_client.zig");
-    _ = @import("http_client_tests.zig");
+    _ = @import("session_catalog.zig");
+    _ = @import("session_prompt.zig");
     _ = @import("prompt_astra.zig");
     _ = @import("agent_empty_completion.zig"); // #745: plain-final reconciliation
     _ = @import("agent_model_loop.zig");

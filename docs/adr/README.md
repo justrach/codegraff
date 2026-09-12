@@ -114,6 +114,7 @@ record only when you need the evidence or the edge cases.
 | [0101](0101-gui-tests-preserve-desktop-focus.md) | GUI tests stay hidden by default; visible opt-in can overlap other apps, and native foreground checks require separate opt-in. |
 | [0102](0102-workspace-agents-and-cancel-recovery.md) | Agents uses the workspace area, Tasks visibility is explicit and persisted, and timed-out cancellation retires the worker before session recovery. |
 | [0103](0103-mcp-apps-are-isolated-result-views.md) | MCP Apps are private saved result views in isolated GUI/browser sandboxes; app tool calls require a future approval path. |
+| [0104](0104-resume-retains-catalog-and-layout-snapshots.md) | Resume restores loaded tool selections and the same-workspace layout snapshot, without freezing current instructions or granting permissions. |
 
 ## When to write one
 

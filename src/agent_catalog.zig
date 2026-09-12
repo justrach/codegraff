@@ -40,6 +40,17 @@ fn slot(self: *const Agent) []const u8 {
     };
 }
 
+/// A registry or restored selection change invalidates every provider format.
+/// The active format is rebuilt immediately; inactive formats remain lazy.
+pub fn invalidateRootTools(self: *Agent) void {
+    if (self.sub) return;
+    @import("prompt_cache_hud.zig").noteBust(.tools);
+    self.tools_anthropic = "";
+    self.tools_openai = "";
+    self.tools_responses = "";
+    self.tools_interactions = "";
+}
+
 pub fn ensureRootTools(self: *Agent, kind: Provider.Kind) !void {
     if (self.sub and !main_mod.g_codedbpro_licensed) return;
     const dest = switch (kind) {

@@ -92,6 +92,9 @@ jobs:
           python3 scripts/test-json-controls.py zig-out/bin/graff
           python3 scripts/test-json-cancel.py zig-out/bin/graff
 
+      - name: Fresh-process session catalog and layout restoration
+        run: python3 scripts/test-resume-cache.py --graff zig-out/bin/graff --mode offline --out "$RUNNER_TEMP/resume-cache"
+
       - name: ACP cancellation and same-session follow-up
         run: python3 scripts/test-acp-steer.py zig-out/bin/graff
 

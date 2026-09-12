@@ -268,6 +268,8 @@ test {
     _ = serve_create;
     _ = scoring_slot_test;
     _ = session_tests;
+    _ = @import("http_client.zig");
+    _ = @import("http_client_tests.zig");
     _ = help;
     _ = session_transcript_tests;
     _ = session_settings_tests;

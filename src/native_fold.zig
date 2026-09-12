@@ -248,6 +248,13 @@ pub fn blocked(name: []const u8) bool {
     return enabled and isFolded(name) and !isLoaded(name);
 }
 
+/// Replace session selections while retaining an explicit CLI RLM request.
+pub fn clearLoadedSession() void {
+    g_loaded_len = 0;
+    g_showcased = g_cli_forced;
+    if (g_cli_forced) markLoaded("rlm");
+}
+
 /// The session's loaded folded natives, in load order (schema.zig's stable
 /// tail appends them after the stable head — load order keeps it append-only).
 pub fn loadedNames() []const []const u8 {
