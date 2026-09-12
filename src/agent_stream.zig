@@ -503,6 +503,15 @@ pub fn printDelta(self: *Agent, raw_line: []const u8) void {
     const reasoning = reasoningDelta(self.provider.kind, obj);
     if (reasoning.len != 0 or text.len != 0) self.traceFirstToken();
     if (reasoning.len != 0) sink.emit(self.io, .{ .reasoning_delta = .{ .text = reasoning } });
+    // Summary chunks are contiguous; completed summaries are paragraphs, even
+    // across reasoning items / responses. Never replay the done event's text.
+    if (self.provider.kind == .responses) {
+        const t = obj.get("type");
+        const done_text = obj.get("text");
+        if (t != null and t.? == .string and std.mem.eql(u8, t.?.string, "response.reasoning_summary_text.done") and
+            done_text != null and done_text.? == .string and done_text.?.string.len != 0)
+            sink.emit(self.io, .{ .reasoning_delta = .{ .text = "\n\n" } });
+    }
     if (text.len == 0) return;
     self.streamed_text = true;
     sink.emit(self.io, .{ .text_delta = .{ .text = text } });
@@ -563,6 +572,10 @@ test "first-token signal ignores envelopes and sees prose, reasoning, and tool b
 /// TTFT, not the end-of-turn print. Reasoning stays off stdout.
 pub fn oneshotShouldPaint(unattended: bool, json_mode: bool, text_len: usize) bool {
     return unattended and !json_mode and text_len != 0;
+}
+
+test "Responses summary boundaries stream through the REPL and headless TUI" {
+    try stream_tests.reasoningBoundaries();
 }
 
 test "oneshot paints answer tokens, never --json or empty deltas" {
