@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import tempfile
 import unittest
+from unittest import mock
 
 
 MODULE = Path(__file__).with_name("tier1_test_binary.py")
@@ -53,6 +55,46 @@ class SuiteCountTests(unittest.TestCase):
         # The old sed took 2079 from 2079/2080. That is the bug.
         text = "Build Summary: 6/6 steps succeeded; 2079/2080 tests passed (1 skipped)\n"
         self.assertNotEqual(2079, binary.suite_count_from_summary(text))
+
+
+class ArtifactNameTests(unittest.TestCase):
+    def test_empty_and_unrelated_binary_data_have_no_names(self) -> None:
+        names = {"known heading": "owner.zig"}
+        for blob in (b"", b" \n\t", b"noise known heading noise\0other.test.known heading\0"):
+            with self.subTest(blob=blob):
+                self.assertEqual(set(), binary.names_in_blob(blob, names))
+
+    def test_exact_and_pooled_names_keep_unicode_and_prefixes(self) -> None:
+        names = {name: "owner.zig" for name in ("bare", "short", "shorter", 'résumé — "quoted"')}
+        blob = (
+            b"test.bare\0owner.test.shortowner.test.shorter\0"
+            + 'owner.test.résumé — "quoted"'.encode("utf-8")
+            + b"\0"
+        )
+        self.assertEqual(set(names), binary.names_in_blob(blob, names))
+        # A longer test name does not also prove its shorter prefix exists.
+        self.assertEqual({"shorter"}, binary.names_in_blob(b"owner.test.shorter\0", names))
+
+    def test_absent_names_in_large_unrelated_regions_stay_absent(self) -> None:
+        names = {f"case {i}": "owner.zig" for i in range(1000)}
+        noise = b"ordinary binary data " * 50_000
+        blob = noise + b"\0owner.test.case 10owner.test.case 999\0" + noise
+        self.assertEqual({"case 10", "case 999"}, binary.names_in_blob(blob, names))
+
+    def test_selection_ignores_newer_filtered_artifact(self) -> None:
+        names = {"first": "owner.zig", "second": "owner.zig"}
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            filtered, full = root / "filtered", root / "full"
+            filtered.write_bytes(b"owner.test.first\0")
+            full.write_bytes(b"owner.test.firstowner.test.second\0")
+            with mock.patch.object(binary, "candidates", return_value=[filtered, full]):
+                chosen = binary.select([], names)
+                self.assertEqual(full, chosen.path)
+                self.assertFalse(chosen.missing)
+                self.assertFalse(chosen.was_newest)
+                self.assertEqual(2, chosen.considered)
+                self.assertEqual(filtered, binary.select(["first"], names).path)
 
 
 if __name__ == "__main__":
