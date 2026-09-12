@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type CSSProperties } from "react";
+import { useState } from "react";
 import PromptBar, { type PromptModel } from "@/components/primitives/PromptBar";
 import type { AcpCommand } from "@/lib/acp";
 import { STARTER_PROMPTS, type Health } from "@/lib/acp-client";
@@ -12,24 +12,6 @@ function greeting(): string {
   if (hour < 12) return "Good morning";
   if (hour < 18) return "Good afternoon";
   return "Good evening";
-}
-
-const HOME_REVEAL = {
-  offsetY: 23,
-  blur: 17,
-  duration: 800,
-  easing: "cubic-bezier(0.16, 1, 0.3, 1)",
-};
-
-function homeRevealStyle(visible: boolean): CSSProperties {
-  return {
-    opacity: visible ? 1 : 0,
-    transform: visible ? "translate3d(0, 0, 0)" : `translate3d(0, ${HOME_REVEAL.offsetY}px, 0)`,
-    filter: visible ? "blur(0px)" : `blur(${HOME_REVEAL.blur}px)`,
-    transition: ["opacity", "transform", "filter"]
-      .map((property) => `${property} ${HOME_REVEAL.duration}ms ${HOME_REVEAL.easing}`)
-      .join(", "),
-  };
 }
 
 export default function EmptyState({
@@ -64,24 +46,14 @@ export default function EmptyState({
   const [offset, setOffset] = useState(0);
   const shown = [0, 1, 2].map((i) => STARTER_PROMPTS[(offset + i) % STARTER_PROMPTS.length]);
   const shuffle = () => setOffset((current) => (current + 3) % STARTER_PROMPTS.length);
-  const [stage, setStage] = useState(0);
-  useEffect(() => {
-    const timers = [
-      setTimeout(() => setStage(1), 170),
-      setTimeout(() => setStage(2), 330),
-      setTimeout(() => setStage(3), 400),
-      setTimeout(() => setStage(4), 550),
-    ];
-    return () => timers.forEach(clearTimeout);
-  }, []);
 
   return (
     <div className={`mx-auto flex min-h-full w-full min-w-0 max-w-[720px] flex-col justify-center px-4 ${compact ? "py-2" : "py-10 sm:px-8"}`}>
       {!compact && <h1 className="text-[26px] font-normal tracking-[-0.02em] text-ink">
-        <span className="home-reveal block text-ink-3" style={homeRevealStyle(stage >= 1)}>
+        <span className="home-reveal block text-ink-3">
           {greeting()}
         </span>
-        <span className="home-reveal block" style={homeRevealStyle(stage >= 2)}>
+        <span className="home-reveal home-reveal-title block">
           What should graff work on?
         </span>
       </h1>}
@@ -96,7 +68,7 @@ export default function EmptyState({
         </div>
       </div>}
 
-      <div className={`relative ${compact ? "" : "home-reveal mt-7"}`} style={compact ? undefined : homeRevealStyle(stage >= 3)}>
+      <div className={`relative ${compact ? "" : "home-reveal home-reveal-composer mt-7"}`}>
         <PromptBar
           demo={false}
           tall={!compact}
@@ -119,7 +91,7 @@ export default function EmptyState({
         )}
       </div>
 
-      {!compact && <div className="home-reveal mt-6 flex flex-col" style={homeRevealStyle(stage >= 4)}>
+      {!compact && <div className="home-reveal home-reveal-suggestions mt-6 flex flex-col">
         {shown.map((item) => (
           <button
             key={item.id}

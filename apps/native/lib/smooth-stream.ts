@@ -37,10 +37,10 @@ export function createSmoothStream(initial: string, paint: (text: string) => voi
     });
   };
   return {
-    update(next: string, live: boolean) {
+    update(next: string, animated: boolean) {
       if (closed) return;
       target = next;
-      if (!live || !target.startsWith(shown)) {
+      if (!animated || !target.startsWith(shown)) {
         cancel();
         if (shown !== target) { shown = target; paint(shown); }
         return;

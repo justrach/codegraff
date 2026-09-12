@@ -1,22 +1,38 @@
 "use client";
 import { useEffect, useRef } from "react";
-import { createShader, playSweep, accentChain, ACCENTS } from "glimm";
-const RAINBOW = accentChain([ACCENTS.red, ACCENTS.orange, ACCENTS.yellow, ACCENTS.green, ACCENTS.cyan, ACCENTS.blue, ACCENTS.purple]);
 
-/** Allocate a GPU context only while the optional model celebration is visible. */
+/** One short compositor sweep; no canvas, render loop or retained GPU context. */
 export function useComposerSweep() {
-  const glimmRef = useRef<HTMLCanvasElement>(null);
-  const shaderRef = useRef<ReturnType<typeof createShader> | null>(null);
-  useEffect(() => () => { shaderRef.current?.destroy(); shaderRef.current = null; }, []);
-  const celebrate = () => {
-    if (shaderRef.current || !glimmRef.current || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const shader = createShader({ canvas: glimmRef.current, palette: RAINBOW, direction: "ltr", bandTight: 10, swellAmount: 0.85 });
-    if (!shader) return;
-    shaderRef.current = shader;
-    const sweep = playSweep(shader, { palette: RAINBOW, direction: "ltr", sweepMs: 570, outroMs: 80,
-      peakAlpha: 1.3, bandTight: 10, brightness: 1.4, swellAmount: 1, waveSpeed: 1.8, easing: "easeOutExpo" });
-    const finish = () => { if (shaderRef.current === shader) { shader.destroy(); shaderRef.current = null; } };
-    void sweep.done.then(finish, finish);
+  const sweepRef = useRef<HTMLSpanElement>(null);
+  const animationRef = useRef<Animation | null>(null);
+  const cancel = () => {
+    const animation = animationRef.current;
+    animationRef.current = null;
+    if (animation) { animation.onfinish = null; animation.cancel(); }
   };
-  return { glimmRef, celebrate };
+  useEffect(() => {
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const stopIfUnavailable = () => { if (document.hidden || reduced.matches) cancel(); };
+    document.addEventListener("visibilitychange", stopIfUnavailable);
+    reduced.addEventListener("change", stopIfUnavailable);
+    return () => {
+      document.removeEventListener("visibilitychange", stopIfUnavailable);
+      reduced.removeEventListener("change", stopIfUnavailable);
+      cancel();
+    };
+  }, []);
+  const celebrate = () => {
+    cancel();
+    const element = sweepRef.current;
+    if (!element || !element.animate || document.hidden || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const animation = element.animate([
+      { transform: "translateX(-105%)", opacity: 0 },
+      { transform: "translateX(-45%)", opacity: 0.8, offset: 0.2 },
+      { transform: "translateX(55%)", opacity: 0.55, offset: 0.8 },
+      { transform: "translateX(105%)", opacity: 0 },
+    ], { duration: 480, easing: "cubic-bezier(0.22, 1, 0.36, 1)" });
+    animationRef.current = animation;
+    animation.onfinish = () => { if (animationRef.current === animation) cancel(); };
+  };
+  return { sweepRef, celebrate };
 }

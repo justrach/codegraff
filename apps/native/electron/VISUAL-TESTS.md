@@ -275,3 +275,23 @@ the content budget, and verifies that revealing older history keeps newer replie
 and the reading anchor. `bun run test:browser-resources` opens local fixture pages
 through the real BrowserTabs implementation, checks the live-view cap and release,
 and accelerates only the suspension grace period. Both have external watchdogs.
+
+## Motion preview and lifecycle checks
+
+After building the app, run the motion checks from `apps/native`:
+
+```sh
+node scripts/test-motion.mjs
+```
+
+The motion runner uses headless Chromium with synthetic responses and does not
+open a desktop window or take mouse or keyboard focus. It exercises the actual
+welcome screen, sidebar highlights, composer menus and model feedback without
+starting an agent. It checks keyboard focus within the page, repeated interactions,
+reduced motion, motion lifecycle handling and settled animations. Screenshots,
+a recording when available, and results stay in the local motion output directory.
+Headless visibility checks exercise page lifecycle handlers; they do not validate
+macOS window occlusion or presented frames.
+
+Compare resource use with the same production benchmark described above; motion
+checks verify behavior and cleanup, not an overall desktop memory budget.

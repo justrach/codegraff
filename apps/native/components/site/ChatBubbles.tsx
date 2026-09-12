@@ -10,26 +10,7 @@ import McpAppResult from "./McpAppResult";
 import SnapshotView from "./SnapshotView";
 import { pinScrollerTail } from "@/lib/follow-scroll";
 import { turnBlocks, type AssistantTurn } from "@/lib/acp";
-import { createSmoothStream } from "@/lib/smooth-stream";
-
-/** Typewriter reveal over the ACP text. Catch-up lands on whitespace so
- * markdown chips/lists don't reflow every mid-token character. */
-function useSmoothStream(target: string, live: boolean): string {
-  const [shown, setShown] = useState(target);
-  const stream = useRef<ReturnType<typeof createSmoothStream> | null>(null);
-  useEffect(() => {
-    if (!live) return;
-    stream.current = createSmoothStream(target, setShown);
-    return () => { stream.current?.dispose(); stream.current = null; };
-    // The controller owns subsequent targets without restarting its frame.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [live]);
-  useEffect(() => {
-    if (live) stream.current?.update(target, true);
-    else setShown(target);
-  }, [target, live]);
-  return live && target.startsWith(shown) ? shown : target;
-}
+import { useSmoothStream } from "./useSmoothStream";
 
 /** Reveal updates belong to this text block, not the entire tool/reasoning tree. */
 const StreamingMarkdown = memo(function StreamingMarkdown({ text, live, onOpenPath, scroller, following }: {

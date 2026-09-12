@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import "./appearance.css";
+import "./motion.css";
+import { MotionLifecycle } from "@/components/site/MotionLifecycle";
 import { appearanceScript } from "@/lib/appearance";
 import { ThemeSync } from "@/components/site/ThemeSync";
 import DesktopTitlebar from "@/components/site/DesktopTitlebar";
@@ -34,6 +36,7 @@ export default function RootLayout({
       </head>
       <body className={`${inter.variable} ${mono.variable} font-sans`}>
         <ThemeSync />
+        <MotionLifecycle />
         <BrowserWarm />
         <DesktopTitlebar />
         <DesktopUpdates />

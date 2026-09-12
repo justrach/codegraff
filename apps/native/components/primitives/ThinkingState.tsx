@@ -257,21 +257,21 @@ export default function ThinkingState({
                       <path d="M20 6L9 17l-5-5" />
                     </svg>
                   ) : (
-                    <span className="size-3 shrink-0 rounded-full border-[1.5px] border-line-strong border-t-ink-2" style={{ animation: "spin 700ms linear infinite" }} />
+                    <span className="size-3 shrink-0 rounded-full border-[1.5px] border-line-strong border-t-ink-2" style={{ animation: expanded ? "spin 700ms linear infinite" : undefined }} />
                   )
                 )}
                 {row.shimmer ? (
                   <>
                     <span
                       className="size-3 shrink-0 rounded-full border-[1.5px] border-line-strong border-t-ink-2"
-                      style={{ animation: "spin 700ms linear infinite" }}
+                      style={{ animation: working && expanded ? "spin 700ms linear infinite" : undefined }}
                     />
                     <span
                       className="min-w-0 truncate bg-clip-text text-[12.5px] leading-relaxed text-transparent"
                       style={{
                         backgroundImage: "linear-gradient(90deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%)",
                         backgroundSize: "200% 100%",
-                        animation: "shimmer-text 1.4s linear infinite",
+                        animation: working && expanded ? "shimmer-text 1.4s linear infinite" : undefined,
                       }}
                     >
                       {row.primary}
@@ -296,7 +296,7 @@ export default function ThinkingState({
                 </>
               );
               const rowClass = "flex min-h-7 w-full items-center gap-2 rounded-[6px] px-1.5 py-0.5 text-left";
-              const key = `${i}:${row.primary}`;
+              const key = live ? i : `${i}:${row.primary}`;
               const animation =
                 i >= firstNewRow
                   ? { animation: `fade-up 320ms cubic-bezier(0.23,1,0.32,1) ${live ? 0 : i * 120}ms both` }
