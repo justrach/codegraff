@@ -113,6 +113,18 @@ pub const Stream = struct {
         }
         return buf[0..n];
     }
+
+    pub fn write(self: *Stream, w: *std.Io.Writer, text: []const u8) !void {
+        var out: [3]u8 = undefined;
+        for (text) |b| try w.writeAll(self.byte(b, &out));
+    }
+
+    /// Drop an unfinished annotation, but preserve any non-annotation tail.
+    pub fn finish(self: *Stream) []const u8 {
+        const tail = if (self.hidden) "" else pua_lead[0..self.prefix];
+        self.* = .{};
+        return tail;
+    }
 };
 
 test "citation annotations strip to surrounding prose (#805, #811)" {

@@ -71,6 +71,8 @@ pub fn writeFields(s: *std.json.Stringify) !void {
     try s.write(cur.device);
     try s.objectField("peer_inbox");
     try peer_inbox.writeJson(s);
+    try s.objectField("peer_inbox_dropped");
+    try s.write(peer_inbox.dropped());
 }
 
 fn u64Field(obj: std.json.ObjectMap, name: []const u8) ?u64 {
@@ -111,7 +113,8 @@ pub fn restore(root: *Agent, obj: std.json.ObjectMap) void {
         presence.seekRoomsToTail(root.io, root.arena);
     }
     if (obj.get("peer_inbox")) |v| peer_inbox.restoreJson(v);
-    if (peer_inbox.unread() > 0) injectWake(root);
+    peer_inbox.restoreDropped(u64Field(obj, "peer_inbox_dropped") orelse 0);
+    if (peer_inbox.unread() > 0 or peer_inbox.dropped() > 0) injectWake(root);
 }
 
 const testing = std.testing;
@@ -180,6 +183,49 @@ test "writeFields / restoreJson: inbox bodies survive a process restart" {
     const body = peer_inbox.takeAll(a);
     try testing.expect(std.mem.indexOf(u8, body, "hold gui/src") != null);
     try testing.expect(std.mem.indexOf(u8, body, "your turn") != null);
+}
+
+test "inbox resume and tool dispatch retain full bodies and overflow notice" {
+    peer_inbox.clear();
+    defer peer_inbox.clear();
+    const unattended = main_mod.unattended;
+    main_mod.unattended = false;
+    defer main_mod.unattended = unattended;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const prefix = try a.alloc(u8, 220);
+    @memset(prefix, 'x');
+    const text = try std.fmt.allocPrint(a, "{s} — wait for my handoff", .{prefix});
+    for (0..peer_inbox.inbox_cap + 2) |_| {
+        _ = peer_inbox.parkHeard(&.{.{ .from_session = "sender", .text = text }}, &.{});
+    }
+    var aw: std.Io.Writer.Allocating = .init(a);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    try s.beginObject();
+    try writeFields(&s);
+    try s.endObject();
+    const saved = try std.json.parseFromSliceLeaky(Value, a, aw.writer.buffered(), .{});
+    peer_inbox.clear();
+    var root: Agent = undefined;
+    root.arena = a;
+    root.io = testing.io;
+    root.messages = std.json.Array.init(a);
+    restore(&root, saved.object);
+    try testing.expectEqual(@as(usize, 2), peer_inbox.dropped());
+    try testing.expectEqual(@as(usize, 1), root.messages.items.len);
+    try testing.expect(std.mem.indexOf(u8, root.messages.items[0].object.get("content").?.string, "2 not retained") != null);
+    const call = @import("tools.zig").ToolCall{
+        .id = "inbox",
+        .name = "peer_message",
+        .input = try std.json.parseFromSliceLeaky(Value, a, "{\"action\":\"inbox\"}", .{}),
+    };
+    const result = try peer_channel.handleMessage(&root, call);
+    try testing.expect(!result.is_error);
+    try testing.expect(std.mem.indexOf(u8, result.text, text) != null);
+    try testing.expect(std.mem.indexOf(u8, result.text, "2 messages not retained") != null);
+    try testing.expectEqual(@as(usize, 0), peer_inbox.dropped());
+    try testing.expectEqual(@as(usize, 0), peer_inbox.unread());
 }
 
 test "legacy session without cursor fields seeks rather than replaying (restore path)" {

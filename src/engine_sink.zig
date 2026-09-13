@@ -208,9 +208,19 @@ fn lifecycleEmit(ctx: *anyopaque, ev: Stamped) void {
 /// text now shares the Markdown renderer so link targets exclude delimiters (#729).
 fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
     const a: *Agent = @ptrCast(@alignCast(ctx));
+    // Compaction uses the live transport too, but its reply is bookkeeping,
+    // not a new answer. Gate presentation, including the hosted fallback.
+    if (a.stream_quiet) switch (ev.event) {
+        .reasoning_delta, .text_delta, .tool_arg_delta, .stream_complete => return,
+        else => {},
+    };
     if (hosted_frontend) return hostedEmit(a, ev.event);
     switch (ev.event) {
-        .stream_begin => render.spinnerStart(a),
+        .stream_begin => {
+            a.md_cite = .{};
+            a.thinking_cite = .{};
+            render.spinnerStart(a);
+        },
         // Reasoning streams into the live dimmed "Thinking" block when
         // /thinking is on for a live, colored root turn; otherwise the
         // spinner stands in for it. TRANSITIONAL (slice-1 debt, see header):
@@ -236,7 +246,7 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
             if (main_mod.use_color) {
                 a.streamMarkdown(d.text);
             } else if (a.out) |w| {
-                w.writeAll(d.text) catch return;
+                a.md_cite.write(w, d.text) catch return;
                 w.flush() catch return;
             }
         },
@@ -262,7 +272,7 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
             notice(a, line);
         },
         .stream_aborted => |reason| {
-            a.flushStreamTail(); // render any held partial markdown line
+            if (!a.stream_quiet) a.flushStreamTail(); // quiet requests must not replay a held tail
             switch (reason) {
                 .interrupted => {}, // a deliberate Esc needs no notice
                 .stalled => notice(a, "\n⚠ stream stalled — ending turn\n"),
