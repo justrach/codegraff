@@ -63,13 +63,17 @@ def drain(fd, seconds):
 
 
 def boot(fd):
+    # ADR 0042 claims the alt-screen BEFORE constructing the engine. Wait for
+    # run.zig's input modes and a completed first paint before sending commands;
+    # otherwise the first command's deadline also includes unfinished boot.
     out = b""
-    end = time.time() + BOOT_MAX
-    while time.time() < end:
-        out += drain(fd, 0.3)
-        if b"\x1b[?1049h" in out:
-            return out + drain(fd, 1.5)
-    return out
+    end = time.monotonic() + BOOT_MAX
+    while time.monotonic() < end:
+        out += drain(fd, min(0.1, max(0, end - time.monotonic())))
+        frame = out.rfind(b"\x1b[2J\x1b[H")
+        if b"\x1b[?2004h" in out and frame >= 0 and b"\x1b[?2026l" in out[frame:]:
+            return True
+    return False
 
 
 def resize(fd, rows, cols):
@@ -181,7 +185,8 @@ def run():
     ws, env = fresh_ws()
     pid, fd = spawn(ws, env)
     try:
-        boot(fd)
+        if not boot(fd):
+            return "the TUI never completed its first interactive frame"
         def command(cmd, needle, budget=1.5):
             # A bang command is asynchronous. Wait for its actual output before
             # sending the next, rather than silently losing setup under load.
