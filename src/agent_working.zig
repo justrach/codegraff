@@ -44,6 +44,9 @@ pub fn write(w: *Io.Writer, title: []const u8, items: []const Item) void {
 }
 
 pub fn writeFromStanding(w: *Io.Writer, st: engine_events.StandingWork) void {
+    // Keep completed history, but do not redraw it as WORKING at every prompt.
+    // Use the full counts: an open item may be beyond the displayed slice.
+    if (st.goal.len == 0 and st.todos_total > 0 and st.todos_done == st.todos_total) return;
     var buf: [max_items]Item = undefined;
     const n = @min(st.todos.len, buf.len);
     for (st.todos[0..n], 0..) |t, i| {
@@ -77,6 +80,24 @@ pub fn writeFromTodoText(w: *Io.Writer, title: []const u8, text: []const u8) voi
     }
     if (n == 0) return;
     write(w, title, buf[0..n]);
+}
+
+test "completed checklist stays out of idle prompt redraws" {
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const todos = [_]engine_events.StandingTodo{.{ .content = "finished", .done = true }};
+    var st: engine_events.StandingWork = .{ .todos = &todos, .todos_done = 1, .todos_total = 1 };
+    writeFromStanding(&aw.writer, st);
+    try std.testing.expectEqualStrings("", aw.written());
+    // A live goal or an open item beyond the displayed slice is still work.
+    st.goal = "continue the goal";
+    writeFromStanding(&aw.writer, st);
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "WORKING") != null);
+    aw.clearRetainingCapacity();
+    st.goal = "";
+    st.todos_total = 2;
+    writeFromStanding(&aw.writer, st);
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "WORKING") != null);
 }
 
 test "empty standing work draws nothing" {

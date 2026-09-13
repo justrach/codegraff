@@ -52,8 +52,8 @@ pub fn kindFrom(text: []const u8) ?Kind {
 }
 
 pub fn sameOwner(a: Owner, b: Owner) bool {
-    if (a.session.len > 0 and b.session.len > 0 and std.mem.eql(u8, a.session, b.session)) return true;
-    return a.pid != 0 and a.pid == b.pid and a.start_id == b.start_id;
+    if (a.pid == 0 and b.pid == 0) return a.session.len > 0 and std.mem.eql(u8, a.session, b.session);
+    return a.pid != 0 and a.pid == b.pid and a.start_id == b.start_id and std.mem.eql(u8, a.session, b.session);
 }
 
 fn sameKey(a: Claim, kind: Kind, key: []const u8) bool {
@@ -174,16 +174,17 @@ pub fn isClaimedMutation(cmd: []const u8) bool {
             saw_gh = true;
             continue;
         }
-        if (saw_gh and std.mem.eql(u8, tok, "pr")) {
+        if (saw_gh and (std.mem.eql(u8, tok, "pr") or std.mem.eql(u8, tok, "issue"))) {
             saw_pr = true;
             continue;
         }
-        if (saw_pr and (std.mem.eql(u8, tok, "create") or std.mem.eql(u8, tok, "edit") or std.mem.eql(u8, tok, "ready"))) return true;
+        if (saw_pr and (std.mem.eql(u8, tok, "create") or std.mem.eql(u8, tok, "edit") or std.mem.eql(u8, tok, "ready") or std.mem.eql(u8, tok, "close") or std.mem.eql(u8, tok, "reopen") or std.mem.eql(u8, tok, "comment"))) return true;
     }
     return false;
 }
 
 pub fn mutationKind(cmd: []const u8) Kind {
+    if (std.mem.indexOf(u8, cmd, "gh issue ") != null) return .issue;
     if (std.mem.indexOf(u8, cmd, "gh pr") != null) return .pull_request;
     if (std.mem.indexOf(u8, cmd, "git push") != null) return .publication;
     if (std.mem.indexOf(u8, cmd, "git commit") != null or std.mem.indexOf(u8, cmd, "git add") != null) return .commit;
@@ -200,7 +201,7 @@ var g_ledger: Ledger = .{};
 var g_test_owner: Owner = .{};
 var g_test_live: bool = true;
 var g_persist_path: ?[]const u8 = null;
-var g_loaded: bool = false;
+var g_test_peers: ?[]const @import("worktree_lease.zig").Owner = null;
 var g_store: ?std.heap.ArenaAllocator = null;
 
 pub const persist_rel = ".graff/artifact-claims.json";
@@ -215,7 +216,7 @@ pub fn resetForTest() void {
     g_test_owner = .{};
     g_test_live = true;
     g_persist_path = null;
-    g_loaded = true; // tests start with an empty in-memory ledger
+    g_test_peers = null;
     if (g_store) |*st| {
         st.deinit();
         g_store = null;
@@ -224,7 +225,6 @@ pub fn resetForTest() void {
 
 pub fn setPersistPath(path: []const u8) void {
     g_persist_path = path;
-    g_loaded = false;
 }
 
 pub fn setTestOwner(owner: Owner) void {
@@ -239,12 +239,12 @@ pub fn testLedger() *Ledger {
     return &g_ledger;
 }
 
-pub fn selfOwner() Owner {
+pub fn selfOwner(io: Io) Owner {
     if (g_test_owner.session.len > 0 or g_test_owner.pid != 0) return g_test_owner;
     return .{
         .session = presence.ownSession(),
         .pid = proc_identity.selfPid(),
-        .start_id = 0,
+        .start_id = proc_identity.selfStartId(io),
     };
 }
 
@@ -277,21 +277,15 @@ pub fn gateCommand(arena: Allocator, io: Io, cmd: []const u8, key: []const u8) ?
     const ledger = if (tx != null) &local else &g_ledger;
     if (tx) |transaction| loadTransaction(transaction, ledger) catch return "artifact claim ledger unreadable: action NOT performed";
     const kind = mutationKind(cmd);
-    var me = selfOwner();
-    if (!builtin.is_test) me.start_id = proc_identity.selfStartId(io);
-    if (key.len == 0) {
-        for (ledger.slice()) |c| {
-            if (!claimRelevant(c.kind, kind)) continue;
-            const live = ownerLive(io, c.owner);
-            if (verdict(ledger.slice(), c.kind, c.key, me, live) == .foreign_live)
-                return refuseText(arena, c.kind, c.key, c.owner);
-        }
-        return null;
-    }
-    for (ledger.slice()) |held| {
-        if (!claimRelevant(held.kind, kind)) continue;
-        if (held.key.len != 0 and !std.mem.eql(u8, held.key, key)) continue;
-        if (!sameOwner(held.owner, me) and ownerLive(io, held.owner)) return refuseText(arena, held.kind, held.key, held.owner);
+    const compound = std.mem.indexOfAny(u8, cmd, ";|&`$\n") != null;
+    const me = selfOwner(io);
+    const target: @import("artifact_claim_target.zig").Target = @import("artifact_claim_target.zig").explicit(cmd, kind) orelse .{ .kind = if (kind == .issue) Kind.issue else Kind.branch, .key = key };
+    for (ledger.slice()) |c| {
+        if (!compound and !claimRelevant(c.kind, kind)) continue;
+        const comparable = c.kind == target.kind or (c.kind == .publication and target.kind == .branch);
+        if (!compound and comparable and target.key.len > 0 and c.key.len > 0 and !std.mem.eql(u8, c.key, target.key)) continue;
+        if (verdict(ledger.slice(), c.kind, c.key, me, ownerLive(io, c.owner)) == .foreign_live)
+            return refuseText(arena, c.kind, c.key, c.owner);
     }
     return null;
 }
@@ -309,8 +303,7 @@ pub fn handleTool(arena: Allocator, io: Io, action: []const u8, kind_s: []const 
         .text = "kind must be branch, issue, commit, pull_request, or publication",
         .is_error = true,
     };
-    var me = selfOwner();
-    if (!builtin.is_test) me.start_id = proc_identity.selfStartId(io);
+    const me = selfOwner(io);
     const now: i64 = 0;
     const existing = find(ledger.slice(), kind, key);
     const live = if (existing) |c| ownerLive(io, c.owner) else false;
@@ -332,15 +325,21 @@ pub fn handleTool(arena: Allocator, io: Io, action: []const u8, kind_s: []const 
     }
     if (std.mem.eql(u8, action, "handoff")) {
         if (to_session.len == 0) return .{ .text = "handoff needs session (the receiver)", .is_error = true };
-        var receiver = Owner{ .session = to_session };
-        if (!builtin.is_test) {
-            const target = @import("peer_target.zig").resolvePeer(presence.liveAllPeers(io, scratch.allocator()), to_session);
-            if (target != .one) return .{ .text = "handoff needs one identifiable live peer", .is_error = true };
-            const peer = target.one;
-            if (!std.mem.eql(u8, peer.identity, presence.ownIdentity()) or peer.start_id == 0) return .{ .text = "handoff receiver must have verified identity in this workspace", .is_error = true };
-            receiver = .{ .session = peer.session_id, .pid = peer.pid, .start_id = peer.start_id };
-        }
-        const msg = handoff(ledger, storage, kind, key, me, receiver, now, live) catch |err| switch (err) {
+        const receiver = switch (@import("peer_target.zig").resolvePeer(if (builtin.is_test) g_test_peers orelse presence.liveAllPeers(io, arena) else presence.liveAllPeers(io, arena), to_session)) {
+            .one => |p| p,
+            .none => return .{ .text = "handoff receiver is not a live peer", .is_error = true },
+            .ambiguous => return .{ .text = "handoff receiver is ambiguous", .is_error = true },
+        };
+        if (!builtin.is_test and (!std.mem.eql(u8, receiver.identity, presence.ownIdentity()) or receiver.start_id == 0))
+            return .{ .text = "handoff receiver must have verified identity in this workspace", .is_error = true };
+        const probe = proc_identity.probe(io, receiver.pid);
+        if (receiver.pid <= 0 or receiver.session_id.len == 0 or proc_identity.ownerState(receiver.start_id, probe) != .held)
+            return .{ .text = "handoff receiver is gone", .is_error = true };
+        const start_id = switch (probe) {
+            .id => |id| id,
+            else => receiver.start_id,
+        };
+        const msg = handoff(ledger, storage, kind, key, me, .{ .session = receiver.session_id, .pid = receiver.pid, .start_id = start_id }, now, live) catch |err| switch (err) {
             error.ClaimHeld => return .{ .text = "cannot hand off a claim you do not own", .is_error = true },
             error.NoClaim => return .{ .text = "no claim to hand off", .is_error = true },
             else => return .{ .text = "handoff failed", .is_error = true },
@@ -388,49 +387,8 @@ fn reload(io: Io) !void {
     try loadJson(storeAlloc(), &g_ledger, text);
 }
 
-pub fn persistJson(arena: Allocator, ledger: *const Ledger) ![]const u8 {
-    var aw: Io.Writer.Allocating = .init(arena);
-    var s: std.json.Stringify = .{ .writer = &aw.writer };
-    try s.beginArray();
-    for (ledger.slice()) |c| {
-        try s.beginObject();
-        try s.objectField("kind");
-        try s.write(@tagName(c.kind));
-        try s.objectField("key");
-        try s.write(c.key);
-        try s.objectField("session");
-        try s.write(c.owner.session);
-        try s.objectField("pid");
-        try s.write(c.owner.pid);
-        try s.objectField("start_id");
-        try s.write(c.owner.start_id);
-        try s.endObject();
-    }
-    try s.endArray();
-    return aw.writer.buffered();
-}
-
-pub fn loadJson(arena: Allocator, ledger: *Ledger, text: []const u8) !void {
-    ledger.len = 0;
-    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{});
-    if (parsed != .array) return error.InvalidLedger;
-    for (parsed.array.items) |item| {
-        if (item != .object) return error.InvalidLedger;
-        const kind_s = if (item.object.get("kind")) |v| (if (v == .string) v.string else return error.InvalidLedger) else return error.InvalidLedger;
-        const kind = kindFrom(kind_s) orelse return error.InvalidLedger;
-        const key = if (item.object.get("key")) |v| (if (v == .string) v.string else "") else "";
-        const session = if (item.object.get("session")) |v| (if (v == .string) v.string else "") else "";
-        const pid: i32 = if (item.object.get("pid")) |v| (if (v == .integer) (std.math.cast(i32, v.integer) orelse return error.InvalidLedger) else return error.InvalidLedger) else 0;
-        const start_id: u64 = if (item.object.get("start_id")) |v| (if (v == .integer and v.integer >= 0) @intCast(v.integer) else 0) else 0;
-        if (ledger.len >= max_claims) return error.InvalidLedger;
-        ledger.items[ledger.len] = .{
-            .kind = kind,
-            .key = try arena.dupe(u8, key),
-            .owner = .{ .session = try arena.dupe(u8, session), .pid = pid, .start_id = start_id },
-        };
-        ledger.len += 1;
-    }
-}
+pub const persistJson = @import("artifact_claim_store.zig").persistJson;
+pub const loadJson = @import("artifact_claim_store.zig").loadJson;
 
 test "acquire / handoff / release are atomic and session-scoped" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -510,6 +468,9 @@ test "#840 acknowledged handoff does not let the other session create the PR" {
     const ar = arena_state.allocator();
     resetForTest();
     defer resetForTest();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    setPersistPath(try std.fmt.allocPrint(ar, ".zig-cache/tmp/{s}/claims.json", .{tmp.sub_path}));
     setTestOwner(.{ .session = "s-owner", .pid = 11, .start_id = 1 });
     const got = try handleTool(ar, std.testing.io, "claim", "publication", "feat/x", "");
     try std.testing.expect(!got.is_error);
@@ -521,9 +482,12 @@ test "#840 acknowledged handoff does not let the other session create the PR" {
     try std.testing.expect(std.mem.indexOf(u8, blocked, "handoff") != null);
     // Explicit handoff atomically enables the receiver.
     setTestOwner(.{ .session = "s-owner", .pid = 11, .start_id = 1 });
-    const ho = try handleTool(ar, std.testing.io, "handoff", "publication", "feat/x", "s-other");
+    const rec = proc_identity.selfRecord(std.testing.io);
+    const peers = [_]@import("worktree_lease.zig").Owner{.{ .session_id = "s-other", .title = "Receiver title", .pid = rec.pid, .start_id = rec.start_id }};
+    g_test_peers = &peers;
+    const ho = try handleTool(ar, std.testing.io, "handoff", "publication", "feat/x", "Receiver title");
     try std.testing.expect(!ho.is_error);
-    setTestOwner(.{ .session = "s-other", .pid = 12, .start_id = 2 });
+    setTestOwner(.{ .session = "s-other", .pid = rec.pid, .start_id = rec.start_id });
     try std.testing.expect(gateCommand(ar, std.testing.io, "gh pr create --title x --body y", "feat/x") == null);
     setTestOwner(.{ .session = "s-owner", .pid = 11, .start_id = 1 });
     try std.testing.expect(gateCommand(ar, std.testing.io, "gh pr create --title x --body y", "feat/x") != null);
@@ -556,15 +520,39 @@ test "file persist reloads after a resume-shaped reset" {
     resetForTest();
     defer resetForTest();
     setPersistPath(file);
-    g_loaded = true;
     setTestOwner(.{ .session = "s-persist", .pid = 4, .start_id = 9 });
     _ = try handleTool(ar, io, "claim", "publication", "feat/x", "");
     g_ledger.len = 0;
-    g_loaded = false;
     try reload(io);
     try std.testing.expectEqual(@as(usize, 1), g_ledger.len);
     try std.testing.expectEqualStrings("feat/x", g_ledger.items[0].key);
     try std.testing.expectEqualStrings("s-persist", g_ledger.items[0].owner.session);
+}
+
+test "#840 malformed ledger and recycled identity never authorize ownership" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var ledger: Ledger = .{};
+    const invalid = [_][]const u8{
+        "{}",                                                                         "[{}]",                                                                    "[1]",
+        "[{\"kind\":\"branch\",\"key\":\"x\",\"session\":\"s\",\"pid\":2147483648}]", "[{\"kind\":\"branch\",\"key\":\"x\",\"session\":\"s\",\"start_id\":-1}]", "[{\"kind\":\"branch\",\"key\":\"x\",\"session\":\"s\"},{\"kind\":\"branch\",\"key\":\"x\",\"session\":\"t\"}]",
+    };
+    for (invalid) |text| try std.testing.expectError(error.InvalidClaimLedger, loadJson(ar, &ledger, text));
+    resetForTest();
+    defer resetForTest();
+    const me = selfOwner(std.testing.io);
+    var reused = me;
+    reused.start_id +%= 1;
+    try std.testing.expect(!sameOwner(me, reused));
+    if (me.start_id != 0) try std.testing.expect(!ownerLive(std.testing.io, reused));
+    reused = me;
+    reused.pid += 1;
+    try std.testing.expect(!sameOwner(me, reused));
+    setTestOwner(.{ .session = "owner" });
+    _ = try handleTool(ar, std.testing.io, "claim", "issue", "840", "");
+    try std.testing.expect((try handleTool(ar, std.testing.io, "handoff", "issue", "840", "unresolved")).is_error);
+    try std.testing.expectEqualStrings("owner", testLedger().items[0].owner.session);
 }
 
 test "shared-tree ACK is not a claim release" {

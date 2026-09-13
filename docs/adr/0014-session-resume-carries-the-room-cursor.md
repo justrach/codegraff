@@ -23,8 +23,9 @@ session.
 
 ## Decision
 
-- `.session.json` stores `chan_off`, `device_off`, and `peer_inbox`. Save
-  strips `[peer]` / `[presence]` injects from `messages`. Resume restores the
+- `.session.json` stores `chan_off`, `device_off`, `peer_inbox`, and
+  `peer_inbox_dropped` (zero for older files). The mailbox holds full bodies;
+  resume also restores any unread overflow notice. Save strips `[peer]` / `[presence]` injects from `messages`. Resume restores the
   cursor and mailbox, then injects at most one wake if something is still
   unread.
 - A legacy file with no cursor fields seeks both rooms to the tail (same as

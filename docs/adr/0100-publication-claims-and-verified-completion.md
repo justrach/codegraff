@@ -27,6 +27,13 @@ pass. Drafts and PR-only workflows (no pre-PR run) remain allowed.
 Claims are structured (`peer_message` action=claim|release|handoff|status).
 ACK, polling, and a missing PR do not transfer ownership. A gone owner is
 stale and may be acquired. The ledger persists in `.graff/artifact-claims.json`.
+Every claim operation and publication check reads fresh state under a stable
+sibling file lock. Mutations replace the ledger while holding that lock; lock,
+parse, and persistence failures are errors, never evidence that work is free.
+Handoffs resolve the receiver through live peer addressing and store its
+canonical session, PID, and process-start identity. Unknown liveness remains
+held. Explicit targets narrow a check only within comparable key namespaces;
+compound or unrecognized commands retain conservative checks.
 
 Verification checklist items survive a replace. `completionGate` will not
 accept while they are open, including on the armed second call. Recipe

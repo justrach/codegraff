@@ -547,3 +547,44 @@ test "correlated meta tools finish without duplicating their result body" {
     try std.testing.expectEqualStrings("tool_call_finished", parsed.value.object.get("type").?.string);
     try std.testing.expect(parsed.value.object.get("text") == null);
 }
+
+test "quiet compaction deltas and tails stay off terminal outputs" {
+    const saved_color = main_mod.use_color;
+    const saved_json = main_mod.json_mode;
+    const saved_hosted = engine_sink.hosted_frontend;
+    const saved_unattended = main_mod.unattended;
+    const saved_out = main_mod.g_out;
+    defer main_mod.use_color = saved_color;
+    defer main_mod.json_mode = saved_json;
+    defer engine_sink.hosted_frontend = saved_hosted;
+    defer main_mod.unattended = saved_unattended;
+    defer main_mod.g_out = saved_out;
+    main_mod.json_mode = false;
+    for ([_]bool{ false, true }) |color| {
+        main_mod.use_color = color;
+        for ([_]bool{ false, true }) |hosted| {
+            engine_sink.hosted_frontend = hosted;
+            var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+            defer aw.deinit();
+            var a = testAgent(&aw.writer);
+            defer deinitMarkdown(&a);
+            a.stream_quiet = true;
+            a.show_thinking = true;
+            const sink = tuiSink(&a);
+            sink.emit(std.testing.io, .{ .reasoning_delta = .{ .text = "internal reasoning" } });
+            sink.emit(std.testing.io, .{ .text_delta = .{ .text = "internal answer" } });
+            sink.emit(std.testing.io, .{ .tool_arg_delta = .{ .text = "internal argument" } });
+            try a.md_buf.appendSlice(a.gpa, "held tail");
+            sink.emit(std.testing.io, .{ .stream_complete = .{ .streamed_text = true } });
+            sink.emit(std.testing.io, .{ .stream_aborted = .interrupted });
+            try std.testing.expectEqualStrings("", aw.written());
+            // A frontendless oneshot has a separate stdout fast path.
+            a.out = null;
+            a.provider = .{ .id = "test", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "test", .context = 0 };
+            main_mod.g_out = &aw.writer;
+            main_mod.unattended = true;
+            a.printDelta("data: {\"type\":\"response.output_text.delta\",\"delta\":\"internal prose\"}");
+            try std.testing.expectEqualStrings("", aw.written());
+        }
+    }
+}

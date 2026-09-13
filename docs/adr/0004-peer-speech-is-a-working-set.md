@@ -28,6 +28,10 @@ tiny bottleneck, not J-space.
   process-local ring (`peer_inbox.zig`). The model pulls with
   `peer_message action=inbox` and `action=list`. No roster essay, no
   full text, no footer paragraph in history.
+- The ring retains complete bodies, not clipped previews. Its eight-message
+  limit still applies; overflow is reported in the wake and inbox result, and
+  the count survives resume. A failed inbox read does not clear the messages.
+  Wake sender counts count distinct senders, not messages from another sender.
 - Peer injects (wakes and leftover `[peer message]` / `[presence]` lines
   in old transcripts) are not a human user turn. `cleanUserTurn`,
   `recentContextStart`, `emergencyCutIndex`, and `dropPriorTurnReasoning`

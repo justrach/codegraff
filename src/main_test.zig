@@ -375,3 +375,200 @@ test "failure (#253): fd-quota errors carry actionable advice, system-wide says 
     defer gpa.free(g.text);
     try std.testing.expectEqualStrings("error: AccessDenied", g.text);
 }
+
+fn citationAgent(w: *Io.Writer) Agent {
+    return .{
+        .gpa = std.testing.allocator,
+        .arena = std.testing.allocator,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = undefined,
+        .messages = undefined,
+        .sub = false,
+        .label = "test",
+        .out = w,
+    };
+}
+
+const citation_prose = "before\u{E200}cite\u{E202}turn0view0\u{E202}turn0search1\u{E201} after \u{E203}✓";
+const citation_clean = "before after \u{E203}✓";
+
+test "citation annotations never reach streamed terminal prose" {
+    const main = @import("main.zig");
+    const sinks = @import("engine_sink.zig");
+    const saved_color = main.use_color;
+    const saved_json = main.json_mode;
+    const saved_hosted = sinks.hosted_frontend;
+    defer main.use_color = saved_color;
+    defer main.json_mode = saved_json;
+    defer sinks.hosted_frontend = saved_hosted;
+    main.json_mode = false;
+    sinks.hosted_frontend = false;
+    for ([_]bool{ false, true }) |color| {
+        main.use_color = color;
+        for ([_]bool{ false, true }) |argument| {
+            // Every chunk width, including one-byte chunks, exercises split
+            // UTF-8 glyphs as well as split annotation names and references.
+            for (1..citation_prose.len + 1) |width| {
+                var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+                defer aw.deinit();
+                var a = citationAgent(&aw.writer);
+                defer @import("agent_render.zig").deinitMarkdown(&a);
+                const sink = sinks.tuiSink(&a);
+                var i: usize = 0;
+                while (i < citation_prose.len) : (i += width) {
+                    const text = citation_prose[i..@min(i + width, citation_prose.len)];
+                    sink.emit(std.testing.io, if (argument) .{ .tool_arg_delta = .{ .text = text } } else .{ .text_delta = .{ .text = text } });
+                }
+                sink.emit(std.testing.io, .{ .stream_complete = .{ .streamed_text = false } });
+                try std.testing.expectEqualStrings(citation_clean, aw.writer.buffered());
+                aw.clearRetainingCapacity();
+                // An interrupted/open annotation cannot swallow the next turn.
+                sink.emit(std.testing.io, .{ .text_delta = .{ .text = "tail\u{E200}cite\u{E202}unfinished" } });
+                sink.emit(std.testing.io, .{ .stream_aborted = .interrupted });
+                sink.emit(std.testing.io, .{ .text_delta = .{ .text = " next" } });
+                sink.emit(std.testing.io, .{ .stream_complete = .{ .streamed_text = false } });
+                try std.testing.expectEqualStrings("tail next", aw.writer.buffered());
+            }
+        }
+    }
+}
+
+test "citation annotations stay out of reasoning and fold replay" {
+    const main = @import("main.zig");
+    const sinks = @import("engine_sink.zig");
+    const saved_color = main.use_color;
+    const saved_json = main.json_mode;
+    const saved_hosted = sinks.hosted_frontend;
+    defer main.use_color = saved_color;
+    defer main.json_mode = saved_json;
+    defer sinks.hosted_frontend = saved_hosted;
+    main.use_color = true;
+    main.json_mode = false;
+    sinks.hosted_frontend = false;
+    for (1..citation_prose.len + 1) |width| {
+        var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+        defer aw.deinit();
+        var a = citationAgent(&aw.writer);
+        a.show_thinking = true;
+        defer a.thinking_text.deinit(std.testing.allocator);
+        const sink = sinks.tuiSink(&a);
+        defer sink.emit(std.testing.io, .stream_finished);
+        var i: usize = 0;
+        while (i < citation_prose.len) : (i += width) {
+            sink.emit(std.testing.io, .{ .reasoning_delta = .{ .text = citation_prose[i..@min(i + width, citation_prose.len)] } });
+        }
+        try std.testing.expectEqualStrings(citation_clean, a.thinking_text.items);
+        sink.emit(std.testing.io, .thinking_fold_toggle);
+        sink.emit(std.testing.io, .thinking_fold_toggle);
+        const output = aw.writer.buffered();
+        try std.testing.expect(!@import("cite_markup.zig").contains(output));
+        try std.testing.expect(std.mem.indexOf(u8, output, "turn0") == null);
+        try std.testing.expect(std.mem.indexOf(u8, output, citation_clean) != null);
+    }
+}
+
+test "citation annotations remain intact on the structured wire" {
+    const main = @import("main.zig");
+    const saved_json = main.json_mode;
+    main.json_mode = false;
+    defer main.json_mode = saved_json;
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = citationAgent(&aw.writer);
+    const sink = @import("engine_sink.zig").jsonSink(&a);
+    sink.emit(std.testing.io, .{ .reasoning_delta = .{ .text = citation_prose } });
+    sink.emit(std.testing.io, .{ .text_delta = .{ .text = citation_prose } });
+    var lines = std.mem.tokenizeScalar(u8, aw.writer.buffered(), '\n');
+    var count: usize = 0;
+    while (lines.next()) |line| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, line, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings(citation_prose, parsed.value.object.get("text").?.string);
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), count);
+}
+
+const CompactDisplayServer = struct {
+    fn run(io: Io, server: *Io.net.Server) void {
+        const conn = server.accept(io) catch return;
+        defer conn.close(io);
+        var rbuf: [8192]u8 = undefined;
+        var reader = Io.net.Stream.Reader.init(conn, io, &rbuf);
+        var remaining: usize = 0;
+        while (true) {
+            const line = (reader.interface.takeDelimiter('\n') catch return) orelse return;
+            if (std.mem.trim(u8, line, "\r").len == 0) break;
+            if (std.ascii.startsWithIgnoreCase(line, "content-length:"))
+                remaining = std.fmt.parseInt(usize, std.mem.trim(u8, line[15..], " \r"), 10) catch return;
+        }
+        while (remaining > 0) : (remaining -= 1) _ = reader.interface.takeByte() catch return;
+        var wbuf: [4096]u8 = undefined;
+        var writer = Io.net.Stream.Writer.init(conn, io, &wbuf);
+        writer.interface.writeAll("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n" ++
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction\",\"encrypted_content\":\"opaque\"}}\n\n" ++
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Previous \"}\n\n" ++
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer.\"}\n\n" ++
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Previous answer.\"}]}}\n\n" ++
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n") catch return;
+        writer.interface.flush() catch {};
+    }
+};
+
+test "manual compaction never paints the quiet post-compaction answer" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    // The live spinner owns stdout, which is Zig's test-control stream.
+    const animation = @import("anim.zig");
+    const saved_animation = animation.g_anim_off;
+    animation.g_anim_off = true;
+    defer animation.g_anim_off = saved_animation;
+    const main = @import("main.zig");
+    const sinks = @import("engine_sink.zig");
+    const saved_color = main.use_color;
+    const saved_json = main.json_mode;
+    const saved_hosted = sinks.hosted_frontend;
+    defer main.use_color = saved_color;
+    defer main.json_mode = saved_json;
+    defer sinks.hosted_frontend = saved_hosted;
+    main.json_mode = false;
+    sinks.hosted_frontend = false;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]bool{ false, true }) |color| {
+        main.use_color = color;
+        var arena_state = std.heap.ArenaAllocator.init(gpa);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        var addr = try Io.net.IpAddress.parseLiteral("127.0.0.1:0");
+        var server = try Io.net.IpAddress.listen(&addr, io, .{});
+        defer server.deinit(io);
+        var fut = io.async(CompactDisplayServer.run, .{ io, &server });
+        defer _ = fut.cancel(io);
+        var client: std.http.Client = .{ .allocator = gpa, .io = io };
+        defer client.deinit();
+        var aw: Io.Writer.Allocating = .init(gpa);
+        defer aw.deinit();
+        var a = citationAgent(&aw.writer);
+        a.arena = arena;
+        a.client = &client;
+        a.sys_normal = "";
+        a.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = try std.fmt.allocPrint(arena, "http://127.0.0.1:{d}/responses", .{server.socket.address.getPort()}), .api_key = "test", .model = "test", .context = 100_000 };
+        a.messages = try @import("agent_compact_test_support.zig").msg1(arena, "user", "Earlier task");
+        defer @import("agent_render.zig").deinitMarkdown(&a);
+        const sink = sinks.tuiSink(&a);
+        sink.emit(io, .{ .text_delta = .{ .text = "Previous answer." } });
+        sink.emit(io, .{ .stream_complete = .{ .streamed_text = false } });
+        aw.clearRetainingCapacity();
+        var keys: Keys = .{ .values = @splat("test") };
+        try handleCommand(&a, &keys, arena, "/compact", &aw.writer);
+        try std.testing.expect(std.mem.indexOf(u8, aw.written(), "Previous answer.") == null);
+        try std.testing.expectEqual(@as(usize, 1), a.messages.items.len);
+        try std.testing.expectEqualStrings("compaction", a.messages.items[0].object.get("type").?.string);
+        try std.testing.expect(!a.stream_quiet and !a.compaction_request and !a.server_compaction_request);
+        aw.clearRetainingCapacity();
+        sink.emit(io, .{ .text_delta = .{ .text = "Next answer." } });
+        sink.emit(io, .{ .stream_complete = .{ .streamed_text = false } });
+        try std.testing.expectEqualStrings("Next answer.", aw.written());
+    }
+}
