@@ -23,7 +23,7 @@ app.whenReady().then(async () => {
   const port = socket.address().port; await new Promise(resolve => socket.close(resolve));
   const origin = `http://127.0.0.1:${port}`;
   const log = fs.openSync(path.join(output, 'server.log'), 'w');
-  server = spawn(process.env.GRAFF_TEST_BUN || 'bun', ['node_modules/next/dist/bin/next', 'start', '--port', String(port), '--hostname', '127.0.0.1'], { cwd: root, env: { ...process.env, GRAFF_VISUAL_TESTS: '1', GRAFF_DESKTOP_TOKEN: '', NEXT_TELEMETRY_DISABLED: '1' }, detached: true, stdio: ['ignore', log, log] });
+  server = spawn(process.env.GRAFF_TEST_BUN || 'bun', ['node_modules/next/dist/bin/next', 'start', '--port', String(port), '--hostname', '127.0.0.1'], { cwd: root, env: { ...process.env, GRAFF_VISUAL_TESTS: '1', GRAFF_DESKTOP_TOKEN: '', NEXT_TELEMETRY_DISABLED: '1' }, detached: process.env.GRAFF_TEST_MANAGED_GROUP !== '1', stdio: ['ignore', log, log] });
   fs.closeSync(log);
   for (let i = 0; i < 100; i++) { try { if ((await fetch(`${origin}/visual-tests`)).ok) break; } catch {} if (i === 99) throw Error('Visual fixture server did not start'); await sleep(100); }
   win = testDesktop.createWindow({ width: 900, height: 600, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
@@ -65,9 +65,9 @@ app.whenReady().then(async () => {
     assert.deepEqual(apiRequests, [], 'Browser fixtures never call engine or model APIs');
     return;
   }
-  if (['projects', 'splits', 'interactions', 'tagged'].includes(process.env.GRAFF_VISUAL_SUITE)) {
+  if (['projects', 'splits', 'interactions', 'tagged', 'tab-drag'].includes(process.env.GRAFF_VISUAL_SUITE)) {
     await require('./navigation-visual.cjs').runNavigationVisuals({ win, origin, output });
-    if (!['interactions', 'tagged'].includes(process.env.GRAFF_VISUAL_SUITE)) {
+    if (!['interactions', 'tagged', 'tab-drag'].includes(process.env.GRAFF_VISUAL_SUITE)) {
       await require('./browser-visual.cjs').runBrowserVisuals({ win, origin, output });
       await require('./dev-preview-visual.cjs').runDevPreview({ output });
       await require('./link-destination-visual.cjs').runLinkDestinationVisuals({ origin, output });
@@ -86,6 +86,11 @@ app.whenReady().then(async () => {
     assert.deepEqual(apiRequests, [], 'Task fixtures never call engine or model APIs');
     return;
   }
+  if (process.env.GRAFF_VISUAL_SUITE === 'ideas') {
+    await require('./ideas-visual.cjs').runIdeasVisuals({ win, origin, output });
+    assert.deepEqual(apiRequests, [], 'Ideas fixtures never call engine, telemetry or model APIs');
+    return;
+  }
   if (process.env.GRAFF_VISUAL_SUITE === 'code') {
     await require('./streaming-code-visual.cjs').runStreamingCodeVisuals({ win, origin, output });
     assert.deepEqual(apiRequests, [], 'Code fixtures never call engine or model APIs');
@@ -101,7 +106,7 @@ app.whenReady().then(async () => {
   const wait = async source => { for (let i = 0; i < 100; i++) { if (await js(source)) return; await sleep(50); } throw Error(`Visual check timed out: ${source}`); };
   await wait(`!!document.querySelector('[data-case="waiting"]')`);
   await js('document.fonts.ready.then(()=>true)');
-  const cases = { starting: 'Starting Graff…', thinking: 'Thinking…', writing: 'Writing response…', running: 'Running 1 tool…', waiting: 'Waiting for Graff…', done: 'Turn finished', stopped: 'Stopped', error: 'Response interrupted', 'missing-result': 'Turn finished' };
+  const cases = { starting: 'Working for ', thinking: 'Working for ', writing: 'Working for ', running: 'Working for ', waiting: 'Working for ', done: 'Worked for ', stopped: 'Stopped', error: 'Response interrupted', 'partial-error': 'Response interrupted', 'missing-result': 'Worked for ' };
   const results = [];
   for (const theme of ['light', 'dark', 'codegraff']) {
     await js(`document.querySelector('[data-theme-choice="${theme}"]').click()`);
@@ -114,13 +119,22 @@ app.whenReady().then(async () => {
       assert.equal(await js(`getComputedStyle(document.querySelector('article')).opacity`), '1');
       const rect = await js(`(()=>{const a=document.querySelector('[data-turn-activity]').getBoundingClientRect(),b=document.querySelector('[data-fixture-composer]').getBoundingClientRect();return {top:a.top,bottom:a.bottom,width:a.width,composer:b.top,viewport:innerHeight}})()`);
       assert.ok(rect.width > 100 && rect.top > 0 && rect.bottom < rect.composer && rect.composer < rect.viewport, JSON.stringify(rect));
-      if (name === 'waiting') assert.match(await js(`document.querySelector('[data-activity-detail]').textContent`), /since the last event/);
+      if (name === 'waiting') assert.match(await js(`document.querySelector('[data-activity-detail]').textContent`), /No update for/);
+      if (name === 'partial-error') {
+        assert.match(await js(`document.querySelector('[data-activity-detail]').textContent`), /Completed tool results are kept/);
+        assert.match(await js(`document.querySelector('article').textContent`), /updated layout and keyboard shortcut checks passed/);
+      }
       const summary = await js(`document.querySelector('[data-tool-summary]')?.getAttribute('aria-expanded')`);
       if (summary !== undefined) assert.equal(summary, 'false', 'progress never auto-expands tool details');
-      if (['done', 'stopped', 'error', 'missing-result'].includes(name)) assert.equal(await js(`document.querySelector('article').getAttribute('aria-busy')`), 'false');
+      if (['done', 'stopped', 'error', 'partial-error', 'missing-result'].includes(name)) assert.equal(await js(`document.querySelector('article').getAttribute('aria-busy')`), 'false');
       fs.writeFileSync(path.join(output, `${theme}-${name}.png`), (await win.webContents.capturePage()).toPNG());
       results.push(`${theme}/${name}`);
     }
+  }
+  if (process.env.GRAFF_VISUAL_SUITE === 'turns') {
+    assert.deepEqual(apiRequests, []);
+    fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: results, apiRequests }, null, 2));
+    return;
   }
   await require('./chat-overflow-visual.cjs').runChatOverflow({ win, origin, output });
   await require('./chat-overflow-edge-visual.cjs').runOverflowEdges({ win, origin });
@@ -148,7 +162,7 @@ function finish(code) {
   fs.mkdirSync(output, { recursive: true });
   fs.writeFileSync(path.join(output, 'test-run.json'), JSON.stringify({ suite: process.env.GRAFF_VISUAL_SUITE || 'all', status: code !== 0 ? 'failed' : skippedChecks.size ? 'passed-with-skips' : 'passed', mode: testWindowMode(), skipped: [...skippedChecks] }, null, 2));
   if (skippedChecks.size) console.log(`Coverage limits: ${[...skippedChecks].join('; ')}. See test-run.json.`);
-  if (server?.pid) try { process.kill(-server.pid, 'SIGTERM'); } catch {}
+  if (server?.pid) try { process.env.GRAFF_TEST_MANAGED_GROUP === '1' ? server.kill('SIGTERM') : process.kill(-server.pid, 'SIGTERM'); } catch {}
   app.once('quit', () => { fs.rmSync(temporary, { recursive: true, force: true }); });
   app.exit(code);
 }

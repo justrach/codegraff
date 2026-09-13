@@ -51,7 +51,7 @@ export function createQueueSteerer(options: {
       const turn = turns.get(chat);
       if (!turn || turn.selected !== undefined) return;
       const queue = options.getQueue(chat);
-      if (!queue.some(entry => entry.id === item)) return;
+      if (queue.some(entry => entry.editing) || !queue.some(entry => entry.id === item)) return;
       turn.selected = item;
       turn.cancel = cancel;
       options.setQueue(chat, prioritizeQueuedPrompt(queue, item));

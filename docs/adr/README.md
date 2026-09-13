@@ -114,6 +114,13 @@ record only when you need the evidence or the edge cases.
 | [0101](0101-gui-tests-preserve-desktop-focus.md) | GUI tests stay hidden by default; visible opt-in can overlap other apps, and native foreground checks require separate opt-in. |
 | [0102](0102-workspace-agents-and-cancel-recovery.md) | Agents uses the workspace area, Tasks visibility is explicit and persisted, and timed-out cancellation retires the worker before session recovery. |
 | [0103](0103-mcp-apps-are-isolated-result-views.md) | MCP Apps are private saved result views in isolated GUI/browser sandboxes; app tool calls require a future approval path. |
+| [0104](0104-live-publication-and-deferred-tool-evidence.md) | Requests merge only ready MCP tasks; publication and completion use fresh head evidence; claim transactions serialize handoffs. |
+| [0105](0105-explicit-legacy-listener-stop.md) | Only an explicit identity-bound stop-suspect action may terminate an unrecorded legacy listener; automatic cleanup stays conservative. |
+| [0106](0106-desktop-html-explanations.md) | Desktop HTML explanations are private saved results in static, opaque sandboxes with bounded source and offscreen teardown. |
+| [0107](0107-model-drawn-pages-render-in-an-opaque-frame.md) | A page the model draws (`render_html`) is a private snapshot served under a CSP sandbox; the model picks the presentation, never the privilege. |
+| [0108](0108-browser-events-outrank-pending-snapshots.md) | Browser page-info events invalidate older pending IPC snapshots; a loaded page must not revert to loading. |
+| [0109](0109-resume-retains-catalog-and-layout-snapshots.md) | Resume restores loaded tool selections and the same-workspace layout snapshot, without freezing current instructions or granting permissions. |
+| [0110](0110-project-mcp-listing-opts-in-optional-servers.md) | Project MCP entries opt in optional servers; inherited extras still require opt-in, and startup consent applies to both. |
 
 ## When to write one
 

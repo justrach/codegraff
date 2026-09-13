@@ -58,7 +58,7 @@ export default function ModelPicker({ models, selected, anchor, onSelect, onClos
     else if (row.offsetTop + row.offsetHeight > viewport.scrollTop + viewport.clientHeight) viewport.scrollTop = row.offsetTop + row.offsetHeight - viewport.clientHeight;
   }, [active]);
   const close = () => { callbacks.current.onClose(); anchor.current?.focus({ preventScroll: true }); };
-  return createPortal(<div ref={panel} role="dialog" aria-label="Choose a model" className="fixed z-[200] flex flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-overlay"
+  return createPortal(<div ref={panel} role="dialog" aria-label="Choose a model" className="motion-surface fixed z-[200] flex flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-overlay"
     style={{ ...position, visibility: position ? "visible" : "hidden" }} onKeyDown={event => {
       event.stopPropagation();
       if (event.key === "Escape") { event.preventDefault(); close(); }

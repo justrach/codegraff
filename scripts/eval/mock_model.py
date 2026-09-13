@@ -25,8 +25,17 @@ from __future__ import annotations
 
 import http.server
 import json
+import socketserver
 import threading
 from typing import Any
+
+
+class LoopbackHTTPServer(http.server.ThreadingHTTPServer):
+    def server_bind(self) -> None:
+        # HTTPServer resolves its own hostname during bind. This offline fixture
+        # needs only the numeric loopback address; DNS can stall runner startup.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 class ScriptedModel:
@@ -75,6 +84,14 @@ class ScriptedModel:
                 body = self._body()
                 model.request_headers.append({k.lower(): v for k, v in self.headers.items()})
                 reply = model.next_reply(body)
+                if reply.get("http_status"):
+                    payload = json.dumps({"error": {"message": reply.get("error", "Scripted request failure")}}).encode()
+                    self.send_response(reply["http_status"])
+                    self.send_header("content-type", "application/json")
+                    self.send_header("content-length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
                 if body.get("stream"):
                     self._stream(reply)
                 else:
@@ -113,12 +130,16 @@ class ScriptedModel:
                 if message["content"]:
                     deltas.append({"role": "assistant", "content": message["content"]})
                 for position, call in enumerate(message.get("tool_calls", [])):
-                    deltas.append({"tool_calls": [{
-                        "index": position,
-                        "id": call["id"],
-                        "type": "function",
-                        "function": call["function"],
-                    }]})
+                    function = call["function"]
+                    size = reply.get("argument_chunk_size", 0)
+                    arguments = function["arguments"]
+                    fragments = [arguments[i:i + size] for i in range(0, len(arguments), size)] if size else [arguments]
+                    for number, fragment in enumerate(fragments):
+                        fn = {"arguments": fragment}
+                        if number == 0: fn["name"] = function["name"]
+                        deltas.append({"tool_calls": [{
+                            "index": position, "id": call["id"], "type": "function", "function": fn,
+                        }]})
                 finish = "tool_calls" if "tool_calls" in message else "stop"
                 for delta in deltas or [{"role": "assistant", "content": ""}]:
                     self._chunk({"choices": [{"index": 0, "delta": delta, "finish_reason": None}]})
@@ -137,7 +158,7 @@ class ScriptedModel:
             def log_message(self, *_args) -> None:
                 pass
 
-        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        self._server = LoopbackHTTPServer(("127.0.0.1", port), Handler)
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
         return self._server.server_address[1]
 

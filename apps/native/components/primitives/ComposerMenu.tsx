@@ -35,7 +35,7 @@ export default function ComposerMenu({ anchor, panel, id, menu, rows, query, act
     if (row.offsetTop < viewport.scrollTop) viewport.scrollTop = row.offsetTop;
     else if (row.offsetTop + row.offsetHeight > viewport.scrollTop + viewport.clientHeight) viewport.scrollTop = row.offsetTop + row.offsetHeight - viewport.clientHeight;
   }, [active, query, position]);
-  return createPortal(<div ref={panel} data-composer-menu className="fixed z-[200] flex flex-col overflow-hidden rounded-xl border border-line bg-surface p-1 shadow-raised"
+  return createPortal(<div ref={panel} data-composer-menu className="motion-surface fixed z-[200] flex flex-col overflow-hidden rounded-xl border border-line bg-surface p-1 shadow-raised"
     style={{ ...position, visibility: position ? "visible" : "hidden" }} onMouseLeave={() => setEngaged(false)}>
     <div ref={list} id={id} role="listbox" aria-label={menu === "slash" ? "Commands" : menu === "skill" ? "GUI skills" : "Sources and files"} className="relative min-h-0 overflow-y-auto overscroll-contain">
       {rows.map((row, i) => {
@@ -43,7 +43,10 @@ export default function ComposerMenu({ anchor, panel, id, menu, rows, query, act
         const mark = source ? source.brand ? BRANDS[source.brand] : <Icon size={15}>{GLYPHS[source.glyph ?? "clip"]}</Icon>
           : row.key.startsWith("file:") ? <Icon size={15}>{GLYPHS.file}</Icon> : null;
         return <button key={row.key} id={`${id}-${i}`} type="button" role="option" aria-selected={i === active} title={`${row.name} — ${row.desc}`}
-          onPointerDown={event => { event.preventDefault(); onPick(row); }} onMouseEnter={() => { setActive(i); setEngaged(true); }}
+          onPointerDown={event => { event.preventDefault(); onPick(row); }} onPointerMove={() => {
+            if (active !== i) setActive(i);
+            if (!engaged) setEngaged(true);
+          }}
           onClick={event => { if (event.detail === 0) onPick(row); }}
           className={`flex h-9 w-full items-center gap-2.5 rounded-md px-2 text-left ${engaged && i === active ? "bg-hover" : "hover:bg-hover"}`}>
           {mark && <span className="flex size-5 shrink-0 items-center justify-center text-ink-2">{mark}</span>}

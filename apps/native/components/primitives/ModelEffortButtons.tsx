@@ -63,7 +63,7 @@ export default function ModelEffortButtons({ model, buttonRef, modelOpen, openMo
     {levels.length > 0 && <button ref={effortButton} type="button" aria-label="Select effort" aria-expanded={open} onClick={show}
       className="flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2 text-xs text-ink-3 hover:bg-hover">{labels[model.effort ?? ""] ?? "Effort"}<Chevron /></button>}
     {open && createPortal(<div ref={panel} role="dialog" aria-label="Reasoning effort" style={position}
-      className="fixed z-[100] w-80 max-w-[calc(100vw-24px)] rounded-[22px] border border-line bg-page px-4 pb-4 pt-3 text-ink shadow-[0_8px_24px_-8px_rgb(0_0_0/18%)]">
+      className="motion-surface fixed z-[100] w-80 max-w-[calc(100vw-24px)] rounded-[22px] border border-line bg-page px-4 pb-4 pt-3 text-ink shadow-[0_8px_24px_-8px_rgb(0_0_0/18%)]">
       <div className="flex items-center justify-between gap-3">
         <button type="button" aria-label="Fast mode" aria-pressed={!!model.fast} disabled={blocked || !model.fastSupported}
           title={model.fastSupported ? "Priority service for lower latency; may use more of your allowance" : "Fast mode is available for Codex models"}

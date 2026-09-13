@@ -183,6 +183,8 @@ fn fingerprint(root: *Agent, name: []const u8) u64 {
     f.num(root.context_local_tokens);
     f.num(protocol_seq.current());
     f.json(Value{ .array = root.messages });
+    @import("session_catalog.zig").mixFingerprint(root, &f);
+    f.text(@import("session_prompt.zig").snapshot(root) orelse "");
     session_peer.mixFingerprint(&f);
     subagent_ledger.mixFingerprint(&f);
     return f.final();
@@ -264,6 +266,8 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
     defer aw.deinit();
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     try s.beginObject();
+    try @import("session_catalog.zig").write(root, &s);
+    try @import("session_prompt.zig").write(root, &s);
     try s.objectField("provider");
     try s.write(root.provider.id);
     try s.objectField("model");
@@ -486,6 +490,8 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     // A resumed session may use a different wire format than the startup
     // default. Materialize that catalog before rebasing its saved context
     // meter, and keep every still-unused format lazy.
+    try @import("session_prompt.zig").restore(root, obj);
+    try @import("session_catalog.zig").restore(root, obj);
     try root.ensureRootTools(root.provider.kind);
     const compaction_window = try @import("compaction_window.zig").State.restore(arena, obj, msgs.items);
     root.messages = msgs;

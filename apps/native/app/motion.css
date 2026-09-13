@@ -1,0 +1,176 @@
+/* Short, event-driven motion. Finished entrances release their transform layer. */
+:root {
+  --motion-fast: 120ms;
+  --motion-enter: 180ms;
+  --motion-settle: 240ms;
+  --motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Existing activity labels use a static gradient; only opacity changes. */
+@keyframes shimmer-text {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.home-reveal {
+  animation: fade-up 320ms var(--motion-ease) backwards;
+}
+.home-reveal-title { animation-delay: 35ms; }
+.home-reveal-composer { animation-delay: 65ms; }
+.home-reveal-suggestions { animation-delay: 95ms; }
+
+.motion-surface {
+  /* Placement and visibility are immediate, including under reduced motion. */
+  transition-property: none;
+  animation: surface-in var(--motion-enter) var(--motion-ease) backwards;
+}
+@keyframes surface-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.99); }
+  to { opacity: 1; transform: none; }
+}
+
+/* One small hover layer, no animated layout geometry or persistent promotion. */
+.motion-glide {
+  transition: transform var(--motion-settle) var(--motion-ease), opacity var(--motion-fast) ease-out;
+}
+
+[data-workspace-toolbar] button {
+  transition: background-color var(--motion-fast) ease-out, color var(--motion-fast) ease-out,
+    scale var(--motion-fast) var(--motion-ease);
+}
+[data-workspace-toolbar] button:enabled:active { scale: 0.96; }
+[data-tab-id] > span.bg-accent {
+  animation: tab-marker-in var(--motion-enter) var(--motion-ease) backwards;
+}
+@keyframes tab-marker-in {
+  from { opacity: 0; transform: scaleX(0.7); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Visibility changes are event-driven: no poller or animation-frame loop. */
+html[data-motion-hidden="true"] *,
+html[data-motion-hidden="true"] *::before,
+html[data-motion-hidden="true"] *::after {
+  animation-play-state: paused !important;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes eq-bounce {
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+/* ── StreamText primitive ─────────────────────────────────
+ * Fast character reveal: the newest few characters carry a
+ * soft, masked blur so the leading edge resolves smoothly as
+ * text flows in. The caret holds solid while streaming, then
+ * blinks once the string settles. */
+.stream-tail {
+  filter: blur(1.6px);
+  -webkit-mask-image: linear-gradient(to right, oklch(0 0 0) 20%, oklch(0 0 0 / 0.2));
+  mask-image: linear-gradient(to right, oklch(0 0 0) 20%, oklch(0 0 0 / 0.2));
+}
+
+.stream-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 1.5px;
+  translate: 0 -0.5px;
+  border-radius: 1px;
+  background: var(--ink);
+  vertical-align: text-bottom;
+  animation: caret-blink 1s step-end infinite;
+}
+
+.stream-caret.is-streaming {
+  animation: none;
+}
+
+@keyframes caret-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stream-caret {
+    animation: none;
+  }
+  .stream-tail {
+    filter: none;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* pixel-grid loader — brighten plateau, staggered per cell */
+@keyframes pixel-on {
+  0%, 100% {
+    opacity: 0.15;
+  }
+  18%, 42% {
+    opacity: 1;
+  }
+  62% {
+    opacity: 0.15;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    /* Zero also prevents transient inherited visibility from rejecting focus. */
+    transition-duration: 0s !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-reveal, .motion-surface { animation: none !important; }
+  [data-workspace-toolbar] button:enabled:active { scale: none; }
+}

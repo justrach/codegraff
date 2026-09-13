@@ -16,8 +16,11 @@ async function focusTestPage(wc) {
 }
 const modifierBits = list => (list ?? []).reduce((bits, name) => bits | ({ alt: 1, control: 2, ctrl: 2, meta: 4, shift: 8 }[name] ?? 0), 0);
 async function testInput(wc, event) {
-  if (policy.foreground) { wc.sendInputEvent(event); return; }
   await focusTestPage(wc);
+  // Await Chromium dispatch in both window modes. sendInputEvent returns before
+  // the renderer has handled it, letting subsequent layout assertions race it.
+  // Real macOS pointer/keyboard coverage uses ComputerUse in the native suite.
+  attachTestDebugger(wc);
   const modifiers = modifierBits(event.modifiers);
   if (event.type === 'char') return wc.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'char', text: event.keyCode, modifiers });
   if (event.type.startsWith('key')) {

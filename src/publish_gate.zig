@@ -10,41 +10,81 @@ const tools_mod = @import("tools.zig");
 const ExecResult = tools_mod.ExecResult;
 const artifact_claim = @import("artifact_claim.zig");
 const pr_publish = @import("pr_publish.zig");
-const process_runner = @import("process_runner.zig");
 
-fn primeHead(self: *Agent) void {
-    if (builtin.is_test or pr_publish.testEvidence() != null) return;
-    const sha_run = process_runner.runCapped(self.gpa, self.io, &.{ "git", "rev-parse", "HEAD" }, 128, 256, 5_000) catch return;
-    defer self.gpa.free(sha_run.stdout);
-    defer self.gpa.free(sha_run.stderr);
-    if (!process_runner.ranOk(sha_run)) return;
-    const sha = std.mem.trim(u8, sha_run.stdout, " \t\r\n");
-    if (sha.len < 7) return;
-    const sha_owned = self.arena.dupe(u8, sha) catch return;
-    const list_run = process_runner.runCapped(self.gpa, self.io, &.{
-        "gh",                "run",     "list",
-        "--commit",          sha_owned, "--json",
-        "conclusion,status", "--limit", "20",
-    }, 16 * 1024, 1024, 15_000) catch {
-        pr_publish.setTestEvidence(.{ .head_sha = sha_owned, .head_status = .none });
-        return;
-    };
-    defer self.gpa.free(list_run.stdout);
-    defer self.gpa.free(list_run.stderr);
-    const status = if (process_runner.ranOk(list_run)) pr_publish.headStatusFromRunList(list_run.stdout) else .none;
-    pr_publish.setTestEvidence(.{ .head_sha = sha_owned, .head_status = status });
+fn observe(self: *Agent, cmd: []const u8) !?ExecResult {
+    const command = @import("pr_command.zig").parse(self.arena, cmd) catch return .{ .text = "PR publication preflight: the write was NOT performed. Use a separate literal gh pr command so its repository, head, draft flag and body can be verified.", .is_error = true };
+    const evmod = @import("pr_evidence.zig");
+    var target = evmod.Target{ .cwd = command.cwd orelse self.agent_cwd orelse ".", .repo = command.flag("--repo", "-R"), .selector = command.flag("--head", "-H") orelse "" };
+    if (command.cwd != null and self.agent_cwd != null and !std.fs.path.isAbsolute(target.cwd)) target.cwd = try std.fs.path.join(self.arena, &.{ self.agent_cwd.?, target.cwd });
+    var dir = try std.Io.Dir.cwd().openDir(self.io, target.cwd, .{});
+    defer dir.close(self.io);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    target.cwd = try self.arena.dupe(u8, path_buf[0..try dir.realPath(self.io, &path_buf)]);
+    const creating = std.mem.eql(u8, command.verb, "create");
+    if (!creating) target.selector = command.selector() orelse "";
+    if (target.selector.len == 0) target.selector = evmod.capture(self.gpa, self.io, self.arena, target, &.{ "git", "branch", "--show-current" }) catch "";
+    if (target.selector.len == 0) return .{ .text = "PR publication preflight: cannot resolve the target branch or PR; write NOT performed", .is_error = true };
+    var ev: pr_publish.Evidence = .{};
+    const draft = creating and command.draft();
+    if (!draft) {
+        if (creating) {
+            ev.head_sha = evmod.localHead(self.gpa, self.io, self.arena, target) catch "";
+            // An explicit alternate head must be resolved independently of HEAD.
+            if (command.flag("--head", "-H")) |head| {
+                ev.head_sha = evmod.remoteHead(self.gpa, self.io, self.arena, target, head) catch "";
+            }
+            if (evmod.validSha(ev.head_sha)) {
+                const json = evmod.capture(self.gpa, self.io, self.arena, target, &.{ "gh", "run", "list", "--commit", ev.head_sha, "--json", "conclusion,status", "--limit", "1000" }) catch "";
+                ev.head_status = pr_publish.headStatusFromRunList(json);
+                // This cap must not silently hide a failing/pending older run.
+                const parsed = std.json.parseFromSliceLeaky(std.json.Value, self.arena, json, .{}) catch .null;
+                if (parsed == .array and parsed.array.items.len >= 1000) ev.head_status = .unknown;
+            }
+            ev.body = command.flag("--body", "-b") orelse "";
+            if (command.flag("--body-file", "-F")) |body_file| {
+                const file = if (std.fs.path.isAbsolute(body_file)) body_file else try std.fs.path.join(self.arena, &.{ target.cwd, body_file });
+                ev.body = std.Io.Dir.cwd().readFileAlloc(self.io, file, self.arena, .limited(64 * 1024)) catch "";
+            }
+        } else {
+            const receipt = evmod.pr(self.gpa, self.io, self.arena, target) catch evmod.Receipt{};
+            ev = .{ .head_sha = receipt.head, .head_status = receipt.status, .body = receipt.body };
+        }
+    }
+    if (pr_publish.decide(draft, ev) != .allow) return .{ .text = pr_publish.refuseText(self.arena, cmd, ev), .is_error = true };
+    @import("pr_verify.zig").arm(self, target, creating and command.flag("--head", "-H") == null) catch return .{ .text = "PR publication preflight: could not persist the CI verification obligation; write NOT performed", .is_error = true };
+    return null;
 }
 
 pub fn bash(self: *Agent, cmd: []const u8) !?ExecResult {
-    if (artifact_claim.gateCommand(self.arena, self.io, cmd, "")) |blocked| return .{
-        .text = blocked,
-        .is_error = true,
-    };
-    if (!builtin.is_test and (pr_publish.isPrCreate(cmd) or pr_publish.isPrReady(cmd))) primeHead(self);
-    if (pr_publish.gateCommand(self.arena, cmd)) |blocked| return .{
-        .text = blocked,
-        .is_error = true,
-    };
+    const key = if (builtin.is_test) "" else mutationKey(self, cmd);
+    if (artifact_claim.gateCommand(self.arena, self.io, cmd, key)) |blocked| return .{ .text = blocked, .is_error = true };
+    if (!pr_publish.isPrCreate(cmd) and !pr_publish.isPrReady(cmd)) return null;
+    if (!builtin.is_test) return observe(self, cmd);
+    if (pr_publish.gateCommand(self.arena, cmd)) |blocked| return .{ .text = blocked, .is_error = true };
+    return null;
+}
+
+fn mutationKey(self: *Agent, cmd: []const u8) []const u8 {
+    if (!artifact_claim.isClaimedMutation(cmd)) return "";
+    const ev = @import("pr_evidence.zig");
+    const c = @import("pr_command.zig").parse(self.arena, cmd) catch null;
+    if (c) |command| {
+        if (command.flag("--head", "-H")) |head| return head;
+        if (!std.mem.eql(u8, command.verb, "create") and command.selector() != null) return "";
+    }
+    const cwd = if (c) |command| command.cwd orelse self.agent_cwd orelse "." else self.agent_cwd orelse ".";
+    return ev.capture(self.gpa, self.io, self.arena, .{ .cwd = cwd, .selector = "" }, &.{ "git", "branch", "--show-current" }) catch "";
+}
+
+/// Recheck at the common bash execution boundary, including RLM host calls.
+/// A permission checkpoint earlier in the turn is not a fresh handoff check.
+pub fn beforeExec(ctx: tools_mod.ToolCtx, cmd: []const u8) !?tools_mod.ToolOutput {
+    if (builtin.is_test) return null;
+    if (!artifact_claim.isClaimedMutation(cmd)) return null;
+    var scratch = std.heap.ArenaAllocator.init(ctx.gpa);
+    defer scratch.deinit();
+    var agent: Agent = .{ .gpa = ctx.gpa, .arena = scratch.allocator(), .io = ctx.io, .client = ctx.client, .provider = ctx.provider, .messages = undefined, .sub = ctx.from_sub, .label = "", .out = null, .agent_cwd = ctx.agent_cwd };
+    if (try bash(&agent, cmd)) |denied| return .{ .text = try ctx.gpa.dupe(u8, denied.text), .is_error = true };
     return null;
 }
 

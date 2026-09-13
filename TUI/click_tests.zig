@@ -436,11 +436,19 @@ test "the click map names the rows the model picker drew" {
 }
 
 test "the click map names the rows the effort picker drew" {
+    const saved_p = engine.g_model_provider;
+    const saved_m = engine.g_model_name;
+    defer {
+        engine.g_model_provider = saved_p;
+        engine.g_model_name = saved_m;
+    }
+    engine.g_model_provider = "openai";
+    engine.g_model_name = "gpt-6-astra";
     var m: Model = undefined;
     m.setup(alloc);
     defer m.deinit();
     m.openOverlay(.effort);
-    try checkSpan(&m, 80, &.{ "low", "medium", "high", "xhigh", "max", "ultra" });
+    try checkSpan(&m, 80, &.{ "low", "medium", "high", "xhigh", "ultra" });
 }
 
 test "the click map names the rows the file picker drew, however long the path" {

@@ -177,13 +177,15 @@ test "server port: all listener families and exact numeric ports" {
 
 test "server port: loopback listener preflight does not stop listener" {
     const io = std.testing.io;
-    var addr = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:0");
-    var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
-    defer server.deinit(io);
-    const status = probe(std.testing.allocator, io, server.socket.address.getPort());
-    if (status == .unknown) return error.SkipZigTest; // lsof is optional
-    try std.testing.expectEqual(Status.conflict, status);
-    var target = server.socket.address;
-    const stream = try std.Io.net.IpAddress.connect(&target, io, .{ .mode = .stream });
-    defer stream.close(io);
+    for ([_][]const u8{ "127.0.0.1:0", "[::1]:0" }) |address| {
+        var addr = try std.Io.net.IpAddress.parseLiteral(address);
+        var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
+        defer server.deinit(io);
+        const status = probe(std.testing.allocator, io, server.socket.address.getPort());
+        if (status == .unknown) return error.SkipZigTest; // lsof is optional
+        try std.testing.expectEqual(Status.conflict, status);
+        var target = server.socket.address;
+        const stream = try std.Io.net.IpAddress.connect(&target, io, .{ .mode = .stream });
+        defer stream.close(io);
+    }
 }

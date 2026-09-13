@@ -397,32 +397,6 @@ a:focus-visible .animated-underline::after {
   border-radius: var(--radius-control);
 }
 
-/* ── shared keyframes ─────────────────────────────────── */
-
-@keyframes shimmer-text {
-  from {
-    background-position: 150% center;
-  }
-  to {
-    background-position: -50% center;
-  }
-}
-
-@keyframes fade-up {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.home-reveal {
-  will-change: opacity, transform, filter;
-}
-
 /* The sidebar is one persistent 224px tree clipped by a 52px shell.
  * Every rail glyph remains centered at x=26 in both states. */
 .sidebar-row {
@@ -484,14 +458,6 @@ a:focus-visible .animated-underline::after {
 [data-sidebar-collapsed="true"] .sidebar-glide-highlight {
   right: auto;
   width: 36px;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .home-reveal {
-    opacity: 1 !important;
-    transform: none !important;
-    filter: none !important;
-  }
 }
 
 /* ── records table ────────────────────────────────────────
@@ -1408,111 +1374,4 @@ th.is-colsel .records-header-icon {
   color: color-mix(in srgb, var(--tag-base) 86%, white);
   background: color-mix(in srgb, var(--tag-base) 34%, var(--surface));
   border-color: color-mix(in srgb, var(--tag-base) 34%, var(--surface));
-}
-
-@keyframes fade-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@keyframes eq-bounce {
-  0%,
-  100% {
-    transform: scaleY(0.35);
-  }
-  50% {
-    transform: scaleY(1);
-  }
-}
-
-/* ── StreamText primitive ─────────────────────────────────
- * Fast character reveal: the newest few characters carry a
- * soft, masked blur so the leading edge resolves smoothly as
- * text flows in. The caret holds solid while streaming, then
- * blinks once the string settles. */
-.stream-tail {
-  filter: blur(1.6px);
-  -webkit-mask-image: linear-gradient(to right, oklch(0 0 0) 20%, oklch(0 0 0 / 0.2));
-  mask-image: linear-gradient(to right, oklch(0 0 0) 20%, oklch(0 0 0 / 0.2));
-}
-
-.stream-caret {
-  display: inline-block;
-  width: 2px;
-  height: 1.05em;
-  margin-left: 1.5px;
-  translate: 0 -0.5px;
-  border-radius: 1px;
-  background: var(--ink);
-  vertical-align: text-bottom;
-  animation: caret-blink 1s step-end infinite;
-}
-
-.stream-caret.is-streaming {
-  animation: none;
-}
-
-@keyframes caret-blink {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .stream-caret {
-    animation: none;
-  }
-  .stream-tail {
-    filter: none;
-    -webkit-mask-image: none;
-    mask-image: none;
-  }
-}
-
-@keyframes pop-in {
-  from {
-    opacity: 0;
-    transform: scale(0.95);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-/* pixel-grid loader — brighten plateau, staggered per cell */
-@keyframes pixel-on {
-  0%, 100% {
-    opacity: 0.15;
-  }
-  18%, 42% {
-    opacity: 1;
-  }
-  62% {
-    opacity: 0.15;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
 }

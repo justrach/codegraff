@@ -13,6 +13,16 @@ test('the native CI launcher cannot activate a local desktop without explicit op
   }
 });
 
+test('the production front-end OS input launcher rejects missing foreground opt-in before launch', () => {
+  const result = spawnSync(process.execPath, [path.join(__dirname, '../scripts/test-frontend.mjs')], {
+    env: { ...process.env, GRAFF_FRONTEND_OS_INPUT: '1', GRAFF_TEST_FOREGROUND: '', GRAFF_ELECTRON_FOREGROUND: '', GRAFF_ELECTRON_VISIBLE: '' },
+    encoding: 'utf8', timeout: 5000,
+  });
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain('Native front-end input requires GRAFF_ELECTRON_FOREGROUND=1');
+  expect(result.stdout).not.toContain('Electron tests:');
+});
+
 test('native CI rejects missing reports, background passes and skipped fullscreen checks', () => {
   const native = { status: 'passed' }, visual = { mode: 'foreground', status: 'passed' }, stress = { fullscreen: 'passed' };
   expect(() => validateCoverage(native, visual, stress)).not.toThrow();

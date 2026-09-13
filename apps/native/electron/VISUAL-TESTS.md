@@ -1,5 +1,87 @@
 # Desktop visual tests
 
+## Packaged launcher and HTML tool
+
+`bun run test:packaged-html /path/to/Codegraff.app` verifies the complete
+installed-bundle path: real shell launcher, second-process project handoff,
+bundled engine and desktop MCP discovery, inline HTML controls and saved replay.
+It uses a private home/profile and scripted offline model. The external watchdog
+owns the server process group as well as Electron. Reports and screenshots are
+local; the test never changes the installed app or the user's coding settings.
+
+## Terminal project handoff
+
+After building the GUI and Graff, run `bun run test:cli`. It uses the production
+GUI and a scripted offline model, proves the launch folder overrides a saved
+project by checking a real worker file write, then starts a second Electron
+process against the same isolated profile. It checks file display, same-folder
+tab reuse and preservation of the original conversation. The normal watchdog
+and hidden desktop policy apply. Launcher unit tests separately exercise real
+shell argument handling, invalid paths and preservation of unrelated commands.
+
+## Production HTML tool
+
+After building the GUI and Graff, run `bun run test:html-tool`. The bounded offline
+suite searches and selects the real desktop MCP tool, executes it through ACP,
+and verifies the production result with trusted Chromium input. It checks full
+source Copy, native HTML disclosure, opaque origin, frame teardown, saved replay
+after reload and missing-result fallback. The Browser pane must remain closed.
+
+## Inline HTML and diagnostics concept
+
+After building the GUI, run `GRAFF_VISUAL_SUITE=ideas bun scripts/test-visual.mjs`
+from the native app directory. This isolated, test-gated prototype uses trusted
+Chromium input for Preview/HTML, Copy, Hide, native HTML disclosure and the local
+diagnostics switch. Source mode and hiding release the iframe. Restrictive markup
+and opaque-origin checks cover the static preview boundary. The debugger inspects
+the out-of-process iframe without enabling scripts in its sandbox; replacing
+srcdoc reconnects within a bounded wait. This is a concept fixture, not a live
+agent tool or telemetry uploader.
+
+## Completed code previews
+
+After `bun run build`, `bun run test:code` checks the production renderer's
+streaming and completed code blocks. Trusted Chromium mouse and keyboard input
+expand and collapse long fences; assertions verify the rendered source and
+full-source Copy while collapsed. Cancellation, errors, oversized plain-text
+fallbacks, document views and light/dark diagram updates are covered. Pointer
+actions wait for actual hit-testable layout. Screenshots capture the painted
+preview after its content settles. Clipboard writes stay inside the fixture.
+
+## Production front-end regression tests
+
+Build the engine with `zig build` at the repository root, then run `bun run build`
+and `bun run test:frontend` from `apps/native`. This suite uses the built GUI,
+real HTTP routes, real ACP worker, real file writes and saved sessions. Only
+model replies are scripted locally; no account is required. Port 1234 must be
+free, and each run owns a temporary home, workspace and application profile.
+
+Trusted mouse and keyboard input submit a prompt, preserve a completed tool
+after a request failure, and send a successful follow-up. Assertions inspect
+the actual file, saved history and frozen completion duration. Tabs are clicked,
+typed into and dragged to verify reordering, both split directions, retained
+drafts, Escape cancellation and the four-pane limit. No DOM clicks, synthetic
+keyboard events or direct value assignments drive these interactions. Browser
+embedding and updates are outside this suite. Screenshots and `results.json`
+are written to `zig-out/frontend-tests`.
+
+The same pointer suite checks combined split tabs: separate groups restore their
+orientation and focused pane, retain drafts, reorder and merge as a unit, and
+distinguish closing a pane from closing its group. The split toggle restores
+individual tabs. Reduced-motion checks exclude perceptible settling animations.
+
+Local runs remain hidden. The native CI job also runs this suite in foreground
+mode with `GRAFF_FRONTEND_OS_INPUT=1`: composer clicks and typing use the macOS
+bridge when Accessibility is available. The report identifies the input path;
+missing OS permission is an explicit skip, with trusted Chromium input still
+checking the application. `GRAFF_NATIVE_REQUIRE_OS_INPUT=1` makes that skip fail.
+Tab dragging uses Chromium input in both modes. Hidden input does not prove
+native desktop behavior, and adding a CI job does not establish a CI pass.
+
+Per-condition deadlines and a 90-second suite deadline bound this test; the
+external Electron watchdog also kills its process group if Electron stalls.
+Native bridge compilation has a two-minute limit per compiler command.
+
 ## Native CI coverage
 
 The desktop workflow keeps the background suite and adds a separate `macos-26`
@@ -178,3 +260,38 @@ menu when a local feedback artifact is wanted.
 To refresh the README, inspect the synthetic `desktop-*.png` files, then copy
 selected captures into `docs/images`. Keep test reports and real-user screenshots
 out of public documentation.
+
+`bun run test:split-stress` uses the production GUI and real ACP worker with a
+scripted local model. It performs bounded chat churn, trusted pointer resizing
+and cancellation, then builds a mixed four-pane layout. Late garbage-collected
+heap and DOM checkpoints guard retention after warm-up. The external watchdog
+owns every child process; results and the four-pane screenshot are written to
+`zig-out/frontend-tests` (override with `GRAFF_FRONTEND_OUTPUT`). It stays hidden
+by default and observes OS focus. Build the GUI and worker before running it.
+
+`bun run test:history-performance` opens a synthetic saved conversation with
+large code replies in the production GUI. It measures initial rendering, checks
+the content budget, and verifies that revealing older history keeps newer replies
+and the reading anchor. `bun run test:browser-resources` opens local fixture pages
+through the real BrowserTabs implementation, checks the live-view cap and release,
+and accelerates only the suspension grace period. Both have external watchdogs.
+
+## Motion preview and lifecycle checks
+
+After building the app, run the motion checks from `apps/native`:
+
+```sh
+node scripts/test-motion.mjs
+```
+
+The motion runner uses headless Chromium with synthetic responses and does not
+open a desktop window or take mouse or keyboard focus. It exercises the actual
+welcome screen, sidebar highlights, composer menus and model feedback without
+starting an agent. It checks keyboard focus within the page, repeated interactions,
+reduced motion, motion lifecycle handling and settled animations. Screenshots,
+a recording when available, and results stay in the local motion output directory.
+Headless visibility checks exercise page lifecycle handlers; they do not validate
+macOS window occlusion or presented frames.
+
+Compare resource use with the same production benchmark described above; motion
+checks verify behavior and cleanup, not an overall desktop memory budget.

@@ -52,6 +52,7 @@ pub const Dispatch = struct {
     bind_session: ?BindSessionFn = null,
     meter: ?MeterFn = null,
     extra: ?ExtraFn = null,
+    error_message: ?*const fn (ctx: *anyopaque, err: anyerror) []const u8 = null,
 };
 
 fn respond(w: *Io.Writer, req: proto.Request, result: anytype) !void {
@@ -80,6 +81,14 @@ pub fn stripSgr(arena: Allocator, s: []const u8) ![]const u8 {
     return buf.items;
 }
 
+fn turnError(d: *Dispatch, w: *Io.Writer, req: proto.Request, err: anyerror) !void {
+    if (err == error.Interrupted or err == error.Canceled)
+        return respond(w, req, .{ .stopReason = "cancelled" });
+    if (err == error.RunBudgetExhausted)
+        return respond(w, req, .{ .stopReason = "max_turn_requests" });
+    return respondError(w, req, err_internal, if (d.error_message) |message| message(d.ctx, err) else @errorName(err));
+}
+
 fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request) !void {
     const obj: ?std.json.ObjectMap = if (req.params) |p| (if (p == .object) p.object else null) else null;
     const sid = blk: {
@@ -89,19 +98,14 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
     if (d.bind_session) |bind| bind(d.ctx, sid);
     const text = try flattenPrompt(arena, if (obj) |o| o.get("prompt") else null);
     if (d.slash) |slash| {
-        if (try slash(d.ctx, arena, text)) |plain| {
+        const reply = slash(d.ctx, arena, text) catch |err| return turnError(d, w, req, err);
+        if (reply) |plain| {
             if (plain.len > 0) try writeSessionUpdate(w, sid, plain);
             return respond(w, req, .{ .stopReason = "end_turn" });
         }
     }
     if (d.after_user) |after| after(d.ctx, arena, text);
-    const final = d.turn(d.ctx, arena, text) catch |err| {
-        if (err == error.Interrupted or err == error.Canceled)
-            return respond(w, req, .{ .stopReason = "cancelled" });
-        if (err == error.RunBudgetExhausted)
-            return respond(w, req, .{ .stopReason = "max_turn_requests" });
-        return respondError(w, req, err_internal, @errorName(err));
-    };
+    const final = d.turn(d.ctx, arena, text) catch |err| return turnError(d, w, req, err);
     if (final.len > 0) try writeSessionUpdate(w, sid, final);
     if (d.meter) |meter| {
         // Report live occupancy independently of the model catalog.
@@ -212,4 +216,44 @@ test "stripSgr drops CSI sequences" {
     var state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer state.deinit();
     try std.testing.expectEqualStrings("ok", try stripSgr(state.allocator(), "\x1b[2mok\x1b[0m"));
+}
+
+test "ACP failure carries its reason without claiming completion and the next prompt still works" {
+    const Fixture = struct {
+        fn fail(_: *anyopaque, _: Allocator, _: []const u8) anyerror![]const u8 {
+            return error.ApiError;
+        }
+        fn message(_: *anyopaque, _: anyerror) []const u8 {
+            return "Connection closed after tool results";
+        }
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [2048]u8 = undefined;
+    var writer: Io.Writer = .fixed(&buf);
+    var dispatch: Dispatch = .{ .turn = Fixture.fail, .ctx = undefined, .error_message = Fixture.message };
+    const request = "{\"id\":1,\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"check\"}]}}";
+    try handleLine(&dispatch, arena.allocator(), &writer, request);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "Connection closed after tool results") != null);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "stopReason") == null);
+    writer = .fixed(&buf);
+    dispatch.turn = echoTurn;
+    try handleLine(&dispatch, arena.allocator(), &writer, request);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "end_turn") != null);
+}
+
+test "failed slash command returns an ACP error instead of killing the worker loop" {
+    const Fixture = struct {
+        fn slash(_: *anyopaque, _: Allocator, _: []const u8) anyerror!?[]const u8 {
+            return error.ApiError;
+        }
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [2048]u8 = undefined;
+    var writer: Io.Writer = .fixed(&buf);
+    var dispatch: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .slash = Fixture.slash };
+    try handleLine(&dispatch, arena.allocator(), &writer, "{\"id\":1,\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"/compact\"}]}}");
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "ApiError") != null);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "end_turn") == null);
 }

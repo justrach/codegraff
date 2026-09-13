@@ -50,10 +50,10 @@ export function workspaceActions({workspacesRef, activePathRef, chatsRef, chatId
    * yet — picking a folder should change the folder you are looking at.
    * A tab with a conversation keeps its own folder, and says which. */
   const switchWorkspace = (path: string) => {
-    if (path === activePathRef.current) return;
+    const here = chatsRef.current.find((c) => c.id === activeId);
+    if (path === activePathRef.current && (here?.cwd ?? activePathRef.current) === path) return;
     activate(path);
     setFilesOpen(false);
-    const here = chatsRef.current.find((c) => c.id === activeId);
     if (here && here.messages.length === 0) {
       moveChatTo(here.id, path);
       return;

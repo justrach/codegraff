@@ -29,8 +29,9 @@ Dropped:
   here, so SidebarNav uses the free stroke set in `lib/icons.tsx`
 - Ice-cream `SCENARIOS` / `matchScenario` demo data
 
-Kept (free): `tailwindcss` v4, `shadow-plugin`, `glimm` (prompt-bar sweep),
-`iconoir-react`, `liveline`.
+Kept (free): `tailwindcss` v4, `shadow-plugin`, `iconoir-react`, `liveline`.
+The prompt-bar feedback uses a short native browser animation; it does not
+allocate a shader canvas.
 
 ## How the harness talks to graff
 

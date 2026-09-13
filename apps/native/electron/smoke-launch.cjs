@@ -5,7 +5,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-async function run({ win, backend, browser }) {
+async function run({ win, backend, browser, token }) {
   const js = source => win.webContents.executeJavaScript(source);
   let ready = false;
   for (let n = 0; n < 200; n++) {
@@ -23,10 +23,11 @@ async function run({ win, backend, browser }) {
   const resources = process.env.GRAFF_ELECTRON_RESOURCES || process.resourcesPath;
   const native = require(path.join(resources, 'native/activity.node'));
   assert.equal(typeof native.show, 'function');
-  const version = execFileSync(path.join(resources, 'graff'), ['--version'], { encoding: 'utf8', timeout: 10000 }).trim();
+  const version = execFileSync(path.join(resources, 'graff'), ['--version'], { encoding: 'utf8', timeout: 10000 }).trim().split('\n')[0];
   assert.match(version, /graff/i);
+  if (process.env.GRAFF_SMOKE_HTML_TOOL) await require('./smoke-html.cjs').run({ win, backend, token });
   const report = { passed: ['bundled server', 'production composer', 'empty browser lifecycle', 'request authentication', 'native module ABI', 'bundled engine executable', 'packaged executable'], version };
   fs.writeFileSync(process.env.GRAFF_ELECTRON_SMOKE, JSON.stringify(report, null, 2));
-  console.log('Packaged launch checks passed. No prompt sent or coding setting changed.');
+  console.log(process.env.GRAFF_SMOKE_HTML_TOOL ? 'Packaged launch and offline HTML tool checks passed.' : 'Packaged launch checks passed. No prompt sent or coding setting changed.');
 }
 module.exports = { run };

@@ -15,6 +15,20 @@ separate preferences. An old Next
 server on port 3000 is irrelevant. Opening the bundle directly uses the home
 directory as its initial workspace; the Run action selects this checkout.
 
+Install the shell launcher with **Tools → Install codegraff terminal command…**
+in the packaged app, or `bun run install:cli` from `apps/native` for an app in
+Applications. Ensure `$HOME/.local/bin` is on your shell's `PATH`.
+
+- `codegraff` opens or activates the GUI.
+- `codegraff .` opens the current directory as a project.
+- `codegraff "/path/to/project"` selects that project even when the app is running.
+- `codegraff "/path/to/file"` selects the parent project and opens the file in Files.
+
+One existing path is accepted; missing paths and unsupported options produce a
+terminal error. Existing conversations keep their original folders. The launcher
+does not replace the `graff` engine command or unrelated user executables.
+An older running app must be upgraded and restarted to support path handoff.
+
 Coding remains in `graff acp`. The browser is a sandboxed `WebContentsView`:
 normal typing, selection, scrolling, and navigation use Chromium directly.
 Use **Pin element**, click the page, add a note, and **Ask graff**. The pinned

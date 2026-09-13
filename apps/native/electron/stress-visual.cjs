@@ -8,9 +8,15 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function runStressVisuals({win: fixtureWindow, origin, output, fullscreen = true}) {
   const win = testDesktop.createWindow({width:1000,height:760,titleBarStyle:'hiddenInset',webPreferences:{preload:path.join(__dirname,'preload.cjs'),sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});
   installWindowState(win);
-  const js = code => win.webContents.executeJavaScript(code);
+  const js = async code => {
+    try { return await win.webContents.executeJavaScript(code); }
+    catch (error) { console.error('Stress expression:', code); throw error; }
+  };
   const wait = async expression => {for(let i=0;i<200;i++){if(await js(expression))return;await sleep(50);}throw Error(`Stress timeout: ${expression}`);};
-  const click = async selector => {await js(`document.querySelector(${JSON.stringify(selector)}).click()`);await sleep(60);};
+  const click = async selector => {
+    await wait(`!!document.querySelector(${JSON.stringify(selector)})`);
+    await js(`document.querySelector(${JSON.stringify(selector)}).click()`);await sleep(60);
+  };
   const select = async name => {await click(`[data-stress-case="${name}"]`); await js('document.fonts.ready.then(()=>true)');};
   const metrics=[];
   const bounds=async()=>{

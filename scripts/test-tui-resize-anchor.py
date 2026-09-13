@@ -182,26 +182,40 @@ def run():
     pid, fd = spawn(ws, env)
     try:
         boot(fd)
+        def command(cmd, needle, budget=1.5):
+            # A bang command is asynchronous. Wait for its actual output before
+            # sending the next, rather than silently losing setup under load.
+            # Keep the old per-command settle budget; a missing output is now
+            # reported at its source, not as a scroll-anchor failure later.
+            os.write(fd, (cmd + "\r").encode())
+            out = b""
+            end = time.monotonic() + budget
+            while time.monotonic() < end:
+                out += drain(fd, min(0.1, max(0, end - time.monotonic())))
+                if needle.encode() in out:
+                    return True
+            return False
+
         # Transcript content with no model call: `!` lines run in-session. Long
         # lines so every width below genuinely rewraps them.
         def block(tag):
             body = "filler line %s-%d padded out so that it rewraps at every width this probe drives"
-            lines = "".join((body % (tag, k)) + r"\n" for k in range(3))
-            os.write(fd, (r"!printf '" + lines + r"'" + "\r").encode())
-            drain(fd, 1.5)
+            # The final marker exists only in output, never the echoed command.
+            args = " ".join(f"{tag} {k}" for k in range(3))
+            return command(r"!printf '" + body + r"\n' " + args, f"filler line {tag}-2")
 
         for i in range(3):
-            block(f"A{i}")
-        os.write(fd, (MARK_CMD + "\r").encode())
-        drain(fd, 1.5)
+            if not block(f"A{i}"):
+                return f"setup block A{i} never printed its final output line"
+        if not command(MARK_CMD, MARK):
+            return f"the anchor command never printed {MARK}"
         # Enough transcript AFTER the marker that it starts off the top of the
         # viewport: the parking loop below then walks it in from the top edge,
         # which is the only way to put it near the anchored row from outside.
         for i in range(5):
-            block(f"B{i}")
-        os.write(fd, (r"!printf '" + TAIL + r"\n'" + "\r").encode())
-        out = drain(fd, 2.5)
-        if TAIL.encode() not in out:
+            if not block(f"B{i}"):
+                return f"setup block B{i} never printed its final output line"
+        if not command(r"!printf 'TAIL%sOMEGA\n' ROW", TAIL, budget=2.5):
             return "the transcript never showed the tail row (no `!` output)"
 
         # --- vertical only, while tailing: bottom-follow must hold -----------

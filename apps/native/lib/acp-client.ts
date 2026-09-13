@@ -30,7 +30,9 @@ async function* ndjson(res: Response): AsyncGenerator<JsonRpcLine> {
   let buf = "";
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await reader.read().catch((cause: unknown) => {
+        throw new Error("The connection to Graff ended before the turn finished.", { cause });
+      });
       if (done) break;
       buf += dec.decode(value, { stream: true });
       let i: number;

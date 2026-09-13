@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createQueueSteerer, type SteerStatus } from "./prompt-queue-steer.ts";
-import { enqueuePrompt, dropQueuedPrompt, prioritizeQueuedPrompt, shiftQueuedPrompt } from "./prompt-queue.ts";
+import { enqueuePrompt, dropQueuedPrompt, prioritizeQueuedPrompt, setQueuedPromptEditing, shiftQueuedPrompt } from "./prompt-queue.ts";
 
 function fixture(timeoutMs = 1000) {
   let queue = [1, 2, 3].map(id => ({ id, text: `message ${id}` }));
@@ -98,4 +98,22 @@ describe("queue force steer", () => {
     assert.deepEqual(f.status(), {});
     f.steerer.finish(1);
   });
+});
+
+
+it("steering cannot bypass an open queue editor", () => {
+  const f = fixture();
+  f.steerer.ready(1);
+  f.setQueue(setQueuedPromptEditing(f.queue(), 2, true));
+  let cancelled = 0;
+  f.steerer.steer(1, 3, async () => { cancelled++; });
+  f.steerer.steer(1, 2, async () => { cancelled++; });
+  assert.equal(cancelled, 0);
+  assert.deepEqual(f.queue().map(item => item.id), [1, 2, 3]);
+  assert.equal(f.status().pending, undefined);
+  assert.equal(shiftQueuedPrompt(f.queue()).next, undefined);
+  f.setQueue(setQueuedPromptEditing(f.queue(), 2, false));
+  f.steerer.steer(1, 3, async () => { cancelled++; });
+  assert.equal(cancelled, 1);
+  f.steerer.finish(1);
 });

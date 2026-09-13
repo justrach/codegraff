@@ -20,16 +20,21 @@ fn blurb(e: engine.Effort) []const u8 {
     };
 }
 
-fn hidesMax() bool {
+fn hides(e: engine.Effort) bool {
     const p = engine.g_model_provider;
     const m = engine.g_model_name;
-    return std.mem.eql(u8, p, "xai") or std.mem.startsWith(u8, m, "grok");
+    if (std.mem.eql(u8, p, "xai") or std.mem.startsWith(u8, m, "grok"))
+        return e == .max or e == .ultra;
+    if (std.mem.eql(u8, p, "openai") or std.mem.eql(u8, p, "codex") or
+        std.mem.startsWith(u8, m, "gpt-") or std.mem.startsWith(u8, m, "openai/gpt-"))
+        return e == .max;
+    return false;
 }
 
 pub fn filter(query: []const u8, out: []engine.Effort) usize {
     var n: usize = 0;
     for (all) |e| {
-        if (hidesMax() and (e == .max or e == .ultra)) continue;
+        if (hides(e)) continue;
         const name = @tagName(e);
         if (query.len > 0 and std.mem.indexOf(u8, name, query) == null) continue;
         if (n >= out.len) break;
@@ -85,19 +90,41 @@ test "filter matches effort names" {
     try std.testing.expectEqual(@as(usize, all.len), filter("", &buf));
 }
 
-test "grok seat hides max and ultra" {
+test "seat effort lists and last-row keyboard selection" {
     const saved_p = engine.g_model_provider;
     const saved_m = engine.g_model_name;
     defer {
         engine.g_model_provider = saved_p;
         engine.g_model_name = saved_m;
     }
-    engine.g_model_provider = "xai";
-    engine.g_model_name = "grok-4.6";
-    var buf: [8]engine.Effort = undefined;
-    const n = filter("", &buf);
-    try std.testing.expectEqual(@as(usize, 4), n);
-    for (buf[0..n]) |e| try std.testing.expect(e != .max and e != .ultra);
+    const openai_levels = [_]engine.Effort{ .low, .medium, .high, .xhigh, .ultra };
+    const grok_levels = [_]engine.Effort{ .low, .medium, .high, .xhigh };
+    const cases = [_]struct { provider: []const u8, model: []const u8, levels: []const engine.Effort }{
+        .{ .provider = "openai", .model = "o3", .levels = &openai_levels },
+        .{ .provider = "codex", .model = "codex", .levels = &openai_levels },
+        .{ .provider = "proxy", .model = "gpt-5", .levels = &openai_levels },
+        .{ .provider = "proxy", .model = "openai/gpt-5", .levels = &openai_levels },
+        .{ .provider = "xai", .model = "gpt-5", .levels = &grok_levels },
+        .{ .provider = "openai", .model = "grok-4.6", .levels = &grok_levels },
+        .{ .provider = "other", .model = "other", .levels = all },
+    };
+    for (cases) |case| {
+        engine.g_model_provider = case.provider;
+        engine.g_model_name = case.model;
+        var buf: [8]engine.Effort = undefined;
+        const n = filter("", &buf);
+        try std.testing.expectEqualSlices(engine.Effort, case.levels, buf[0..n]);
+
+        var term: @import("sim.zig").Term = undefined;
+        term.init(std.testing.allocator, 80, 24);
+        defer term.deinit();
+        term.model.openOverlay(.effort);
+        term.model.overlay_sel = 0;
+        for (1..n) |_| _ = term.feed("\x1b[B");
+        try std.testing.expectEqual(case.levels[n - 1], pick(&term.model).?);
+        _ = term.enter();
+        try std.testing.expectEqual(case.levels[n - 1], term.model.effort);
+    }
 }
 
 test "effort overlay lists levels and marks current" {

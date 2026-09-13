@@ -112,7 +112,7 @@ export default function PromptBar({
   const menuAnchor = useRef<HTMLDivElement>(null);
   const menuPanel = useRef<HTMLDivElement>(null);
   const menuId = useId();
-  const { glimmRef, celebrate } = useComposerSweep();
+  const { sweepRef, celebrate } = useComposerSweep();
 
   /* hand control to the user: stop the demo loop, and when they aim at
    * the input itself, clear the demo's leftover draft for a clean start */
@@ -385,14 +385,13 @@ export default function PromptBar({
             event.target.value = "";
           }}
         />
-        {/* rainbow glimm sweep — plays across the interior on model change.
-            explicit w/h: a <canvas> is a replaced element and won't stretch
-            to inset-0 alone, which feeds back into the shader's ResizeObserver. */}
-        <canvas
-          ref={glimmRef}
+        {/* A brief accent sweep, released as soon as the model feedback ends. */}
+        <span
+          ref={sweepRef}
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 -z-10 h-full w-full"
-          style={{ borderRadius: "inherit" }}
+          data-composer-sweep
+          className="pointer-events-none absolute inset-0 -z-10 opacity-0"
+          style={{ background: "linear-gradient(110deg, transparent 15%, color-mix(in srgb, var(--accent) 18%, transparent) 48%, transparent 80%)" }}
         />
         <span
           ref={measureRef}

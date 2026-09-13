@@ -70,13 +70,13 @@ async function runProjectVisuals({ win, origin, output }) {
   await js(`document.querySelector('[role="dialog"] button[aria-label="Close"]').click()`);
   await wait(`!document.querySelector('[role="dialog"]')`);
   await wc.loadURL(origin);
-  await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+  await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   win.setSize(900, 680);
   await js(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='All projects').click()`);
   await wait(`!!document.querySelector('[aria-label="Search projects"]')`);
   assert.ok(await js(`(()=>{const r=document.querySelector('section[aria-label="Projects"]').getBoundingClientRect();return r.left>=0&&r.right<=innerWidth})()`));
   await js(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Back to chat').click()`);
-  await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+  await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   win.setSize(1100, 760);
   console.log('Projects passed: search, folder identity, scoped resume, exactly one new tab, visible Changes/Files, open folder.');
 }

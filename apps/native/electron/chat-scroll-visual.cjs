@@ -13,7 +13,7 @@ async function runChatScroll({ win, origin, output }) {
     throw Error(`Chat scroll timed out: ${code}`);
   };
   await wc.loadURL(origin); win.setSize(1100, 760); testDesktop.present(win);
-  await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+  await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   await js(`(() => {
     const previous = window.fetch;
     window.fetch = async (input, options) => {
@@ -58,6 +58,6 @@ async function runChatScroll({ win, origin, output }) {
   await wait(`(()=>{const e=document.querySelector('[data-chat-transcript]');return e.scrollHeight-e.scrollTop-e.clientHeight<50})()`);
   console.log('Chat reading passed: first reply preserves scroll position and resumes following at the tail.');
   await wc.loadURL(origin);
-  await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+  await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
 }
 module.exports = { runChatScroll };

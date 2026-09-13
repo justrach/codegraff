@@ -1,11 +1,15 @@
 "use client";
 import { useHarnessSessions } from "./useHarnessSessions";
+import { resumeQueuedPrompt } from "@/lib/prompt-queue-resume";
 import { createPromptRunner } from "./harness-prompt-runner";
 
 import { workspaceActions } from "./harness-workspace-actions";
 import ProjectsPane from "./ProjectsPane";
 import { useSavedConversation, ConversationOpenNotice } from "./useSavedConversation";
 import { useQuietSettings } from "./useQuietSettings";
+import { useTabDrag } from "./useTabDrag";
+import { mergeChatGroups, reorderChatGroups } from "@/lib/chat-groups";
+import { useChatGroups } from "./useChatGroups";
 import HarnessChrome from "./HarnessChrome";
 import ChatSplitLayout from "./ChatSplitLayout";
 import TerminalPane from "./TerminalPane";
@@ -27,6 +31,7 @@ import TasksSidebar from "./TasksSidebar";
 import { useTasksVisibility } from "./useTasksVisibility";
 import { MAX_COLUMNS, SPLIT_LIMIT_MESSAGE, splitLimitReached } from "./harness-split";
 import { useDesktopShortcuts } from "./useDesktopShortcuts";
+import { useDesktopWorkspace } from "./useDesktopWorkspace";
 import {
   cancel,
   chatHandle,
@@ -54,7 +59,7 @@ export default function GraffHarness() {
   const [chats, setChats] = useState<Chat[]>([{ id: 1, title: null, messages: [] }]);
   const [activeId, setActiveId] = useState(1);
   const [health, setHealth] = useState<Health | null>(null);
-  // Every tab owns a `graff acp` child (the agent keeps one session per
+  // Every chat owns a `graff acp` child (the agent keeps one session per
   // process), so sessions, busy state and the spawned model are all per chat.
   const pageRef = useRef<string>(newPageToken());
   const sessionsRef = useRef(new Map<number, string>());
@@ -120,18 +125,18 @@ export default function GraffHarness() {
   const msgIdRef = useRef(0);
   // Split view: ordered visible chats, independent of focus. Each keeps its
   // own scroller and its own place in its transcript.
-  const [panes, setPanes] = useState<number[]>([]);
-  const [splitDirection, setSplitDirection] = useState<"row" | "column">("row");
+  const groups = useChatGroups(chats, activeId);
+  const { panes, setPanes, direction: splitDirection } = groups;
   const [zoomedPane, setZoomedPane] = useState<number | null>(null);
-  const [paneWeights, setPaneWeights] = useState<Record<number, number>>({});
   const chatsRef = useRef(chats);
   chatsRef.current = chats;
   const panesRef = useRef<number[]>([]);
   panesRef.current = panes;
   const [, setFollowing] = useState(true);
-  const { queuesRef, queues, queueIdRef, setQueue, steerer, steerStatus, remove: removeQueued } = usePromptQueue();
+  const { queuesRef, queues, queueIdRef, setQueue, steerer, steerStatus, remove: removeQueued, edit: editQueued, beginEdit, cancelEdit, changeEdit, take: takeQueuedPrompt } = usePromptQueue();
   const [cancelError, setCancelError] = useState<Record<number, string>>({});
   const runningRef = useRef(new Set<number>());
+  const queueResumesRef = useRef(new Set<number>());
   // Closed tabs, oldest first, for the reopen shortcut.
   const closedRef = useRef<{ session: string | null; cwd?: string; resumable: boolean }[]>([]);
 
@@ -160,7 +165,7 @@ export default function GraffHarness() {
     setPinsByChat(pinsRef.current);
   };
 
-  const { adoptCatalog, requireSession, refreshStored } = useHarnessSessions({
+  const { adoptCatalog, requireSession, refreshStored, projectsReady } = useHarnessSessions({
     sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal
   });
 
@@ -191,7 +196,7 @@ export default function GraffHarness() {
   };
 
   const runPrompt = createPromptRunner({
-    runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, queuesRef, setQueue, setCancelError
+    runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError
   });
   const settings = useQuietSettings({ requireSession, handleOf, running: runningRef.current, apply: (catalog) => setModels(catalog.models) });
 
@@ -215,7 +220,7 @@ export default function GraffHarness() {
     const ws = findWorkspace(workspacesRef.current, cwd);
     const next = [...chatsRef.current, { id, title: null, messages: [], model: ws?.model ?? model ?? undefined, session, cwd }];
     chatsRef.current = next; setChats(next);
-    setPanes(current => current.map(pane => pane === activeId ? id : pane));
+    setZoomedPane(null);
     setActiveId(id);
     setFilesOpen(false);
     setConversationsOpen(false);
@@ -244,15 +249,27 @@ export default function GraffHarness() {
 
   const newChat = () => openChat((chatIdRef.current += 1));
 
-  /** Focus a visible chat in place, or replace only the focused split. */
+  /** Focus a pane in place, or restore the selected workspace tab’s layout. */
   const focusChat = (id: number) => {
     setProjectsOpen(false); setAgentsOpen(false);
     setConversationsOpen(false);
     const folder = chatsRef.current.find(chat => chat.id === id)?.cwd;
     if (folder && folder !== activePathRef.current) activateWorkspace(folder);
-    setPanes(current => current.includes(id) ? current : current.map(pane => pane === activeId ? id : pane));
+    if (!columnIds.includes(id)) setZoomedPane(null);
     setActiveId(id);
   };
+
+  const tabDrag = useTabDrag((id, drop) => {
+    if (drop.kind === "tab") { setChats(current => reorderChatGroups(current, groups.groups, id, drop.id, drop.after)); return; }
+    if (!chatsRef.current.some(chat => chat.id === id)) return;
+    const source = groups.groups.find(group => group.ids.includes(id))?.ids ?? [id];
+    const next = mergeChatGroups(columnIds, source, drop.id, drop.edge === "right" || drop.edge === "bottom");
+    if (!next) { if (!source.some(id => columnIds.includes(id)) && columnIds.length + source.length > MAX_COLUMNS) setSplitNotice(SPLIT_LIMIT_MESSAGE); return; }
+    setSplitNotice(null); setZoomedPane(null);
+    groups.split(id,drop.id,drop.edge); setActiveId(id);
+    const folder = chatsRef.current.find(chat => chat.id === id)?.cwd;
+    if (folder && folder !== activePathRef.current) activateWorkspace(folder);
+  });
 
   /** Bring back the tab that was closed last, resuming its graff session so
    * the conversation comes back with it. A tab that never got a message has
@@ -268,7 +285,7 @@ export default function GraffHarness() {
 
   /** Another chat beside the ones on screen, in the workspace the active
    * chat is in. Up to four columns; past that they are too narrow to read. */
-  const addPane = () => {
+  const addPane = (direction: "row" | "column" = splitDirection) => {
     if (splitLimitReached(columnIds.length)) {
       setSplitNotice(SPLIT_LIMIT_MESSAGE);
       return;
@@ -276,7 +293,7 @@ export default function GraffHarness() {
     setSplitNotice(null);
     const id = (chatIdRef.current += 1);
     openChat(id);
-    setPanes([...columnIds, id]);
+    groups.split(id,activeId,direction === "row" ? "right" : "bottom");
   };
 
   /** The toolbar button: split when there is one column, close the split
@@ -297,34 +314,31 @@ export default function GraffHarness() {
       return rest;
     });
     setBusyFor(id, false);
-    setPins(id, []);
+    const { [id]: _pins, ...remainingPins } = pinsRef.current;
+    pinsRef.current = remainingPins; setPinsByChat(remainingPins);
+    setCommands(current => { const { [id]: _commands, ...rest } = current; return rest; });
+    setCancelError(current => { const { [id]: _error, ...rest } = current; return rest; });
     void disposeSession(handleOf(id));
     void browserClose(handleOf(id)).catch(() => undefined);
   };
 
-  const closeChat = (id: number) => {
-    const visible = columnIds.filter(pane => pane !== id);
-    setPanes(visible.length > 1 ? visible : []);
-    const going = chatsRef.current.find((c) => c.id === id);
-    if (going) {
-      // Keep the last few closed tabs; a tab that got as far as a message
-      // has a graff session on disk to resume, an empty one has nothing.
-      closedRef.current = [
-        ...closedRef.current.slice(-9),
-        { session: going.session ?? null, cwd: going.cwd, resumable: going.messages.length > 0 },
-      ];
+  const closeChats = (ids: number[]) => {
+    const visible = columnIds.filter(pane => !ids.includes(pane));
+    groups.remove(ids); setZoomedPane(null);
+    for (const id of ids) {
+      const going = chatsRef.current.find(c => c.id === id);
+      if (going) closedRef.current = [...closedRef.current.slice(-9), {
+        session: going.session ?? null, cwd: going.cwd, resumable: going.messages.length > 0,
+      }];
+      dropChat(id);
     }
-    dropChat(id);
-    const remaining = chatsRef.current.filter((c) => c.id !== id);
-    chatsRef.current = remaining;
-    if (remaining.length === 0) {
-      setChats([]);
-      openChat((chatIdRef.current += 1));
-      return;
-    }
-    setChats(remaining);
-    if (id === activeId) focusChat(visible[Math.min(columnIds.indexOf(id), visible.length - 1)] ?? remaining[remaining.length - 1].id);
+    const remaining = chatsRef.current.filter(c => !ids.includes(c.id));
+    chatsRef.current = remaining; setChats(remaining);
+    if (!remaining.length) { openChat(++chatIdRef.current); return; }
+    if (ids.includes(activeId)) focusChat(visible[0] ?? remaining[remaining.length - 1].id);
   };
+  const closeChat = (id: number) => closeChats([id]);
+  const closeTab = (id: number) => closeChats(groups.groups.find(group => group.ids.includes(id))?.ids ?? [id]);
 
   const pickRecent = (id: string) => {
     void openStored(id);
@@ -346,6 +360,11 @@ export default function GraffHarness() {
     workspacesRef, activePathRef, chatsRef, chatIdRef, activeId, root: health?.cwd,
     setWorkspaces, setActivePath, setChats, setActiveId: focusChat, setFilesOpen, setDialog,
     refreshStored, requireSession, adoptCatalog, openChat,
+  });
+  useDesktopWorkspace(projectsReady, ({ cwd, file }) => {
+    setProjectsOpen(false); setAgentsOpen(false); setConversationsOpen(false);
+    addWorkspace(cwd);
+    if (file) openPath(file);
   });
 
   /** The footer names the tab's own graff session; clicking it copies the
@@ -381,6 +400,12 @@ export default function GraffHarness() {
   const sidebarWorkspace = activeWorkspace ?? (activePath ? { path: activePath, name: basename(activePath) } : undefined);
   const footerTitle = sessionFooterTitle(chatThread.session, sessionId, chatCwd);
 
+  const resumeQueue = (chatId: number) => void resumeQueuedPrompt(chatId, {
+    pending: queueResumesRef.current,
+    canStart: id => !runningRef.current.has(id) && chatsRef.current.some(chat => chat.id === id),
+    wait: settings.wait, take: takeQueuedPrompt, run: runPrompt,
+  });
+
   const columnBody = (thread: Chat) => <ChatColumn key={thread.id} thread={thread}
     compact={columnIds.length > 1} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
     onOpenPath={openPath} onReview={openChanges}
@@ -406,7 +431,11 @@ export default function GraffHarness() {
       },
     }}
     queue={{ items: queues[thread.id] ?? [], busy: busyIds.has(thread.id), status: steerStatus[thread.id], error: cancelError[thread.id],
-      onRemove: item => removeQueued(thread.id, item), onSteer: item => steerer.steer(thread.id, item, () => {
+      onBeginEdit: item => beginEdit(thread.id, item),
+      onChangeEdit: (item, draft) => changeEdit(thread.id, item, draft),
+      onEdit: (item, text) => { editQueued(thread.id, item, text); resumeQueue(thread.id); },
+      onCancelEdit: item => { cancelEdit(thread.id, item); resumeQueue(thread.id); },
+      onRemove: item => { removeQueued(thread.id, item); resumeQueue(thread.id); }, onSteer: item => steerer.steer(thread.id, item, () => {
         const session = sessionsRef.current.get(thread.id);
         if (!session) return Promise.reject(new Error("Session unavailable"));
         return cancel(handleOf(thread.id), session);
@@ -417,11 +446,11 @@ export default function GraffHarness() {
     onClearPins={() => setPins(thread.id, [])} health={health}
     onOpenProject={() => setDialog({ mode: "new" })} onProjects={() => setProjectsOpen(true)} onConversations={openConversations} />;
 
-  useDesktopShortcuts({ closeChat, newChat, reopenClosed, toggleSplit, focusChat, chats, activeId, columns: columnIds,
-    split: direction => { setSplitDirection(direction); setZoomedPane(null); addPane(); },
+  useDesktopShortcuts({ closeChat, newChat, reopenClosed, toggleSplit, focusChat, chats: groups.tabs.map(tab => ({ id: groups.focusOf(tab.id) })), activeId, columns: columnIds,
+    split: direction => { setZoomedPane(null); addPane(direction); },
     zoomPane: () => setZoomedPane(value => value === null ? activeId : null),
-    resizePane: delta => setPaneWeights(old => ({ ...old, [activeId]: Math.max(0.4, Math.min(3, (old[activeId] ?? 1) + delta)) })),
-    toggleTerminal, equalize: () => setPaneWeights({}), openWorkspace: () => setDialog({ mode: "new" }),
+    resizePane: delta => groups.resize(delta/4),
+    toggleTerminal, equalize: groups.balance, openWorkspace: () => setDialog({ mode: "new" }),
   });
 
 
@@ -431,7 +460,7 @@ export default function GraffHarness() {
 
 
   return (
-    <main data-graff-main className="flex h-[100dvh] gap-0 bg-canvas p-2.5 text-ink lg:pl-0">
+    <main data-graff-main data-workspace-ready={projectsReady} className="flex h-[100dvh] gap-0 bg-canvas p-2.5 text-ink lg:pl-0">
       <SidebarNav
         fill
         className="hidden lg:flex"
@@ -465,7 +494,8 @@ export default function GraffHarness() {
       />
 
       <div className="flex min-w-0 flex-1 flex-col gap-2.5">
-        <HarnessChrome chats={chats} activeId={activeId} busyIds={busyIds} focusChat={focusChat} closeChat={closeChat} newChat={newChat}
+        {tabDrag.overlay}
+        <HarnessChrome onTabPointerDown={tabDrag.begin} onTabClickCapture={tabDrag.suppressClick} chats={groups.tabs} activeId={groups.activeTab} busyIds={new Set(groups.groups.filter(group => group.ids.some(id => busyIds.has(id))).map(group => group.ids[0]))} focusChat={id => focusChat(groups.focusOf(id))} closeChat={closeTab} newChat={newChat}
           conversationsOpen={conversationsOpen} openConversations={openConversations} split={panes.length > 0} toggleSplit={toggleSplit}
           filesOpen={filesOpen} onFiles={() => { setAgentsOpen(false); setFileRequest(null); setProjectsOpen(false); setBrowserOpen(false); setConversationsOpen(false); setFilesOpen(fileRequest?.changes ? true : !filesOpen); }}
           chatCwd={chatCwd} workspaceName={workspaceName} onFolder={() => setDialog({ mode: "new" })} openChanges={openChanges}
@@ -496,7 +526,7 @@ export default function GraffHarness() {
             </section>
           ) : null}
           <div className="min-h-0 min-w-0 flex-1" style={{ display: projectsOpen || conversationsOpen || agentsOpen ? "none" : "flex" }}>
-            <ChatSplitLayout threads={columns} liveChatIds={chats.map(chat => chat.id)} activeId={activeId} direction={splitDirection} weights={paneWeights} setWeights={setPaneWeights}
+            <ChatSplitLayout threads={columns} liveChatIds={chats.map(chat => chat.id)} activeId={activeId} direction={splitDirection} layout={groups.tree} onLayoutChange={groups.setTree}
               onFocus={focusChat} onClose={closeChat} folder={thread => ({name: workspaceNameOf(thread), path: cwdOf(thread)})}
               body={columnBody} split={columnIds.length > 1} />
           </div>

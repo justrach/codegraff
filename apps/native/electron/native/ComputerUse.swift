@@ -103,15 +103,17 @@ private func nativeCommand(_ p: [String: Any]) -> [String: Any] {
         var hitPID: pid_t = 0
         AXUIElementGetPid(hit, &hitPID)
         guard hitPID == pid else { return fail("Coordinates belong to a different app; inspect the target again") }
-        CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?.postToPid(pid)
+        // Pointer events need WindowServer hit-testing to associate the native window.
+        // This foreground-only path moves the system pointer; it is not background input.
+        CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
         if method == "click" {
             let right = (p["button"] as? String) == "right"
             for type in right ? [CGEventType.rightMouseDown, .rightMouseUp] : [.leftMouseDown, .leftMouseUp] {
-                CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: right ? .right : .left)?.postToPid(pid)
+                CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: right ? .right : .left)?.post(tap: .cghidEventTap)
             }
         } else {
             let dy = Int32(max(-2000, min(2000, p["dy"] as? Int ?? 0)))
-            CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: dy, wheel2: 0, wheel3: 0)?.postToPid(pid)
+            CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: dy, wheel2: 0, wheel3: 0)?.post(tap: .cghidEventTap)
         }
         return ["ok": true]
     }

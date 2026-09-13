@@ -151,12 +151,12 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
             .current = std.mem.eql(u8, m.name, root.provider.model) and std.mem.eql(u8, m.provider, root.provider.id),
         };
     }
-    const all_efforts = [_][]const u8{ "low", "medium", "high", "xhigh", "max", "ultra" };
-    const levels: []const []const u8 = if (!root.effortApplies()) &.{} else if (@import("effort_route.zig").hidesMax(root.provider.id, root.provider.model)) all_efforts[0..4] else &all_efforts;
+    const er = @import("effort_route.zig");
+    const levels: []const []const u8 = if (!root.effortApplies()) &.{} else er.levels(root.provider.id, root.provider.model);
     try proto.writeResult(w, req.id, .{
         .models = rows,
         .commands = proto.slashCommands(),
-        .current = .{ .model = root.provider.model, .provider = root.provider.id, .effort = @tagName(root.reasoning), .fast = root.fast, .effortLevels = levels, .fastSupported = std.mem.eql(u8, root.provider.id, "codex") },
+        .current = .{ .model = root.provider.model, .provider = root.provider.id, .effort = er.normalize(root.provider.id, root.provider.model, @tagName(root.reasoning)), .fast = root.fast, .effortLevels = levels, .fastSupported = std.mem.eql(u8, root.provider.id, "codex") },
     });
     return true;
 }
@@ -175,6 +175,11 @@ const LiveTurn = struct {
     session_id: []const u8 = "",
     saw_text: bool = false,
     inbox: ?*@import("acp_inbox.zig").Inbox = null,
+
+    fn errorMessage(ctx: *anyopaque, err: anyerror) []const u8 {
+        const self: *LiveTurn = @ptrCast(@alignCast(ctx));
+        return if (err == error.ApiError) self.root.last_api_error orelse "Provider request failed" else @errorName(err);
+    }
 
     fn run(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const u8 {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
@@ -203,10 +208,6 @@ const LiveTurn = struct {
             // process. Save so the next prompt (and a respawn --resume) still
             // sees the tool results and the background-agent ledger.
             session.saveSession(self.root, self.root.arena, self.root.session_name) catch {};
-            if (err == error.ApiError) {
-                const msg = self.root.last_api_error orelse "provider API error";
-                return std.fmt.allocPrint(arena, "{s}", .{msg});
-            }
             return err;
         };
         // The REPL checkpoints after every turn (mainloop); an ACP host's
@@ -246,6 +247,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     var live: LiveTurn = .{ .root = root, .keys = keys, .out = out, .inbox = &inbox };
     var d: Dispatch = .{
         .turn = LiveTurn.run,
+        .error_message = LiveTurn.errorMessage,
         .ctx = &live,
         .seed = @bitCast(util.unixMs(io)),
         .slash = liveSlash,
@@ -532,6 +534,41 @@ test "ACP advertises the complete REPL command catalog including compact" {
     try std.testing.expectEqual(catalog.len, advertised.len);
     for (catalog, advertised) |command, exposed| {
         try std.testing.expectEqualStrings(command.name[1..], exposed.name);
+    }
+}
+
+test "OpenAI effort menu omits Max and keeps Ultra on the Responses wire" {
+    var state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer state.deinit();
+    const a = state.allocator();
+    var root = try @import("agent_request_body_responses.zig").testAgentFor(a, "openai", .responses, "gpt-6-astra");
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    var aw: Io.Writer.Allocating = .init(a);
+    var live: LiveTurn = .{ .root = &root, .keys = &keys, .out = &aw.writer };
+    var d: Dispatch = .{ .turn = echoTurn, .ctx = &live, .extra = liveModels };
+    const expected = [_][]const u8{ "low", "medium", "high", "xhigh", "ultra" };
+    for ([_][]const u8{ "openai", "codex", "codegraff" }) |pid| {
+        root.provider.id = pid;
+        root.reasoning = .max; // saved Max remains a valid, visible selection
+        aw.clearRetainingCapacity();
+        try handleLine(&d, a, &aw.writer, "{\"id\":1,\"method\":\"graff/models\"}");
+        const result = try std.json.parseFromSliceLeaky(Value, a, aw.writer.buffered(), .{});
+        const current = result.object.get("result").?.object.get("current").?.object;
+        try testing.expectEqualStrings("ultra", current.get("effort").?.string);
+        const levels = current.get("effortLevels").?.array.items;
+        try testing.expectEqual(expected.len, levels.len);
+        for (expected, levels) |tag, level| try testing.expectEqualStrings(tag, level.string);
+        // The last advertised choice must serialize as API max, never ultra.
+        root.reasoning = std.meta.stringToEnum(main_mod.ReasoningEffort, levels[levels.len - 1].string).?;
+        const body = try root.buildBody(null, false, true, true);
+        defer testing.allocator.free(body);
+        const request = try std.json.parseFromSliceLeaky(Value, a, body, .{});
+        try testing.expectEqualStrings("max", request.object.get("reasoning").?.object.get("effort").?.string);
+        root.reasoning = .xhigh;
+        const extra = try root.buildBody(null, false, true, true);
+        defer testing.allocator.free(extra);
+        const extra_request = try std.json.parseFromSliceLeaky(Value, a, extra, .{});
+        try testing.expectEqualStrings("xhigh", extra_request.object.get("reasoning").?.object.get("effort").?.string);
     }
 }
 

@@ -48,7 +48,12 @@ const util = @import("util.zig"); // shared JSON ObjectMap getters (strFieldObj/
 const learn_store = @import("learn_store.zig");
 const learn_eval = @import("learn_eval.zig");
 const learn_cli = @import("learn_cli.zig");
-test { // unit_tests' root is main.zig only, so reference every split-out module or its tests silently never run
+test {
+    _ = @import("clipboard_native.zig");
+    _ = @import("server_orphan.zig");
+    _ = @import("repo_transaction.zig");
+    _ = .{ @import("pr_command.zig"), @import("pr_evidence.zig"), @import("pr_verify.zig") };
+    _ = @import("argstream_citation_tests.zig"); // unit_tests' root is main.zig only, so reference every split-out module or its tests silently never run
     _ = @import("codex_node_repl.zig");
     _ = pricing;
     _ = models_cache;
@@ -521,12 +526,7 @@ const pickers = @import("pickers.zig");
 const commands_session = @import("commands_session.zig");
 const commands_model = @import("commands_model.zig");
 const commands_misc = @import("commands_misc.zig");
-pub fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !void {
-    if (try commands_session.tryHandle(root, keys, arena, line, out)) return;
-    if (try commands_model.tryHandle(root, keys, arena, line, out)) return;
-    if (try commands_misc.tryHandle(root, keys, arena, line, out)) return;
-    try commands_misc.handleRest(line, out);
-}
+pub const handleCommand = commands_misc.handleCommand;
 // Session persistence lives in session.zig (kept here for its test{} block).
 const session = @import("session.zig");
 // Provider login/credential flows live in oauth.zig.
@@ -563,10 +563,10 @@ const agentJobsReap = subagent.agentJobsReap; // #276 P0-3: background subagents
 const workflow = @import("workflow_test.zig"); // the engine's tests live here (workflow.zig hit the 600-line cap)
 const exec = @import("exec.zig");
 test { // ── Unit tests (`zig build test`): pull in tests from imported modules (mcp.zig)
-    _ = @import("mcp_apps.zig");
+    _ = .{ @import("mcp_apps.zig"), @import("html_view.zig") };
     _ = @import("main_test.zig");
-    _ = @import("http_client.zig");
-    _ = @import("http_client_tests.zig");
+    _ = @import("session_catalog.zig");
+    _ = @import("session_prompt.zig");
     _ = @import("prompt_astra.zig");
     _ = @import("agent_empty_completion.zig"); // #745: plain-final reconciliation
     _ = @import("agent_model_loop.zig");

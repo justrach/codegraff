@@ -17,6 +17,7 @@ const read = file => {
 const native = read('native-tests/native-results.json');
 const visual = read('visual-tests/test-run.json');
 const stress = read('visual-tests/stress-results.json');
+const frontend = read('frontend-tests/results.json');
 if (process.argv[2] === '--summary') {
   const lines = ['## Native macOS GUI coverage', '',
     `- Native checks: ${native?.status ?? 'no report'}`,
@@ -24,11 +25,14 @@ if (process.argv[2] === '--summary') {
     ...(native?.skipped ?? []).map(name => `- **Skipped:** ${name}`),
     `- Foreground GUI suite: ${visual?.status ?? 'no report'}`,
     `- Fullscreen transition and reload: ${stress?.fullscreen ?? 'no report'}`, '',
+    `- Production front-end: ${frontend?.status ?? 'no report'} (${frontend?.input ?? 'input unverified'})`,
+    ...(frontend?.skipped ?? []).map(name => `- **Skipped:** ${name}`),
     'OS input and display capture require permissions granted to the runner. Missing permissions do not count as passed.', ''];
   if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n'));
   else console.log(lines.join('\n'));
 } else {
   validateCoverage(native, visual, stress);
+  assert.ok(['passed', 'passed-with-skips'].includes(frontend?.status), 'Production front-end checks did not pass');
   console.log('Required native GUI and fullscreen checks passed.');
 }
 }

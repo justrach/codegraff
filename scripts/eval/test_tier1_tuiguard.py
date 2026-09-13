@@ -135,7 +135,9 @@ class ClipboardTests(unittest.TestCase):
             self.clipboard(env, ["pbcopy"], b"seeded")
             read_end, write_end = os.pipe()
             try:
-                started = time.monotonic()
+                # Keep the writer open: a blocking stdin read cannot complete.
+                # The subprocess deadline proves bounded completion without
+                # treating interpreter startup on a busy host as a benchmark.
                 out = subprocess.run(
                     ["xclip", "-selection", "clipboard"],
                     stdin=read_end,
@@ -145,7 +147,6 @@ class ClipboardTests(unittest.TestCase):
                     check=True,
                     timeout=2,
                 ).stdout
-                self.assertLess(time.monotonic() - started, 0.5)
                 self.assertEqual(out, b"seeded")
             finally:
                 os.close(read_end)

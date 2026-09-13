@@ -69,6 +69,14 @@ jobs:
       - name: zig build test
         run: zig build test --summary all
 
+      - name: Publication, handoff, deferred MCP and legacy listener regressions
+        run: |
+          command -v lsof || (sudo apt-get update && sudo apt-get install -y lsof)
+          python3 scripts/eval/test_tier1_count.py
+          python3 scripts/eval/test_process_guard.py
+          python3 scripts/test-acp-failure.py
+          python3 scripts/regression-release-297.py
+
       - name: Local learning lifecycle and security regression
         run: python3 tests/learn_e2e.py --graff zig-out/bin/graff
 
@@ -92,6 +100,9 @@ jobs:
           python3 scripts/test-json-controls.py zig-out/bin/graff
           python3 scripts/test-json-cancel.py zig-out/bin/graff
 
+      - name: Fresh-process session catalog and layout restoration
+        run: python3 scripts/test-resume-cache.py --graff zig-out/bin/graff --mode offline --out "$RUNNER_TEMP/resume-cache"
+
       - name: ACP cancellation and same-session follow-up
         run: python3 scripts/test-acp-steer.py zig-out/bin/graff
 
@@ -103,6 +114,9 @@ jobs:
 
       - name: Streamable HTTP MCP handshake and session regression
         run: python3 scripts/test-mcp-streamable-http.py --graff zig-out/bin/graff
+
+      - name: Optional MCP project opt-in and startup consent
+        run: python3 scripts/test-mcp-optional.py zig-out/bin/graff
 
       - name: Embedder mode --no-local-tools gate (#330)
         run: python3 scripts/test-no-local-tools.py --graff zig-out/bin/graff

@@ -31,6 +31,7 @@ async function runLinkDestinationVisuals({ origin, output }) {
   wc.on('console-message', event => { if (event.level >= 2) console.error('Link renderer:', event.message); });
   const browser = new BrowserTabs(win, event => wc.send('browser-event', event));
   const system = [], routed = [], settings = [], blocked = [], errors = [];
+  let delayNextOpen = false, delayedReplySent = false;
   // Neither session may reach the network or an engine endpoint. Only the app's
   // static assets and our loopback HTML fixture are allowed through.
   const guard = allowed => (details, callback) => {
@@ -47,7 +48,18 @@ async function runLinkDestinationVisuals({ origin, output }) {
     settings.push({ action, value, result }); return result;
   });
   ipcMain.handle('browser', async (_event, { chat, method, params }) => {
-    try { return await browser.command(chat, method, params); }
+    try {
+      const delayed = delayNextOpen && method === 'open';
+      if (delayed) delayNextOpen = false;
+      const result = await browser.command(chat, method, params);
+      if (delayed) {
+        // An IPC reply captured during navigation can arrive after newer events.
+        await wait(`document.querySelector('input[aria-label="Address"]')?.closest('aside').querySelector('header')?.textContent.includes('Link destination fixture')`);
+        delayedReplySent = true;
+        return { ...result, ready: 'loading', title: 'Earlier loading snapshot' };
+      }
+      return result;
+    }
     catch (error) { errors.push(error.message); throw error; }
   });
   const overlay = (event, value) => { if (event.sender === wc) browser.setOverlay(value); };
@@ -122,7 +134,7 @@ async function runLinkDestinationVisuals({ origin, output }) {
   try {
     await wc.loadURL('about:blank'); wc.debugger.attach('1.3'); await wc.debugger.sendCommand('Page.enable');
     await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: `(${installGalleryFixture.toString()})();` });
-    await wc.loadURL(origin); testDesktop.present(win); await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+    await wc.loadURL(origin); testDesktop.present(win); await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
     assert.equal(await js(`typeof window.graffDesktop.linkSettings`), 'function', 'real preload exposes linkSettings');
     await openSettings(); await selected('system');
     assert.equal(await store.load(), 'system');
@@ -138,11 +150,11 @@ async function runLinkDestinationVisuals({ origin, output }) {
     await screenshot('link-destination-graff.png');
     await closeBrowser();
     await new Promise(resolve => { wc.once('did-finish-load', resolve); wc.reload(); });
-    await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+    await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
     await openSettings(); await selected('graff'); await closeSettings();
     store = linkSettings(directory);
     await new Promise(resolve => { wc.once('did-finish-load', resolve); wc.reload(); });
-    await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+    await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
     await openSettings(); await selected('graff'); await closeSettings();
     await route('graff', '', 'persisted'); await closeBrowser();
     await openSettings(); await choose('system'); await closeSettings();
@@ -183,7 +195,7 @@ async function runLinkDestinationVisuals({ origin, output }) {
     assert.equal(routed.length, before, 'same-origin links bypass external routing');
     assert.ok(await js(`!!document.querySelector('textarea[aria-label="Prompt"]')`));
     assert.deepEqual(errors, [], 'browser IPC completes without errors');
-    await require('./browser-address-visual.cjs').runBrowserAddress({ wc, browser, destination, guard, wait });
+    await require('./browser-address-visual.cjs').runBrowserAddress({ wc, browser, destination, guard, wait, delayOpenReply: () => { delayNextOpen = true; }, openReplySent: () => delayedReplySent });
     assert.deepEqual(blocked, [], 'no external network or engine/model requests attempted');
     console.log('Link destination visuals passed: default/save/switch, reload and fresh-store persistence, normal/blank links, closed-browser reveal, overlays, unsafe/same-origin links, split focus and preserved app.');
   } finally {

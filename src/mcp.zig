@@ -96,7 +96,7 @@ pub const Registry = struct {
     /// Freed in deinit AFTER the transports referencing them are torn down.
     task_arenas: []std.heap.ArenaAllocator = &.{},
     /// Unjoined startServer futures from a deferred --yolo boot.
-    pending_starts: []Io.Future(mcp_boot.StartOutcome) = &.{},
+    pending_starts: []mcp_boot.PendingStart = &.{},
     /// Names paired with `pending_starts` so companion auto-connect can skip
     /// a second spawn of a server the deferred fan-out already queued.
     pending_names: []const []const u8 = &.{},

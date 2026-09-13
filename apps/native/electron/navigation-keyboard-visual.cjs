@@ -20,7 +20,7 @@ async function runNavigationKeyboard({win, origin}) {
   const focusDiagnostic = () => js(`JSON.stringify({hasFocus:document.hasFocus(),active:document.activeElement?.outerHTML.slice(0,2500),modal:document.querySelector('[aria-modal="true"]')?.getAttribute('aria-label')})`);
 
   await wc.loadURL(origin); testDesktop.present(win);
-  await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+  await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   wc.send('desktop-action', 'new');
   await wait(`document.querySelectorAll('[aria-label="Close tab"]').length===2`);
   const originalTabs = await tabs();
@@ -86,7 +86,7 @@ async function runNavigationKeyboard({win, origin}) {
   await click('button[aria-label="Expand sidebar"]');
   await wait(`document.activeElement.matches('[aria-label="Collapse sidebar"]')`);
   await wc.loadURL(origin);
-  await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+  await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   console.log('Keyboard navigation passed: modal Tab boundaries, focus restoration, native menu guards, reveal errors, and hidden sidebar controls.');
 }
 

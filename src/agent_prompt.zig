@@ -125,10 +125,8 @@ fn effortTier(effort: main_mod.ReasoningEffort) engine_events.ReasoningEffort {
     };
 }
 
-/// The badge names the effort that will actually go on the wire. Kimi
-/// normalizes the session knob against the catalog's allow-list (k3 allows
-/// low/high/max with default max, so a Medium session sends "max"); showing
-/// the raw knob would badge "Medium" over a request that runs at "max".
+/// The badge names the effective wire effort using the provider's UI tags.
+/// Kimi normalizes against its catalog; OpenAI displays API max as Ultra.
 fn effectiveEffort(self: *Agent) ?engine_events.ReasoningEffort {
     if (std.mem.eql(u8, self.provider.id, "kimi")) {
         const wire = pricing.kimiThinkingEffort(self.provider.model, @tagName(self.reasoning)) orelse
@@ -139,9 +137,11 @@ fn effectiveEffort(self: *Agent) ?engine_events.ReasoningEffort {
         return null;
     }
     if (!self.effortApplies()) return null;
-    const wire = @import("effort_route.zig").wireEffort(self.provider.model, @tagName(self.reasoning));
+    const er = @import("effort_route.zig");
+    const wire = er.wireEffort(self.provider.model, @tagName(self.reasoning));
+    const display = er.normalize(self.provider.id, self.provider.model, wire);
     inline for (std.meta.tags(main_mod.ReasoningEffort)) |tag| {
-        if (std.mem.eql(u8, @tagName(tag), wire)) return effortTier(tag);
+        if (std.mem.eql(u8, @tagName(tag), display)) return effortTier(tag);
     }
     return effortTier(self.reasoning);
 }
@@ -202,6 +202,16 @@ test "kimi effort badge names the normalized wire effort, not the raw knob" {
     // No catalog row, no wire effort, no badge.
     agent.provider.model = "unknown-xyz";
     try std.testing.expectEqual(@as(?engine_events.ReasoningEffort, null), effectiveEffort(&agent));
+
+    // OpenAI presents API max as Ultra, including old saved Max settings.
+    agent.provider.id = "openai";
+    agent.provider.kind = .responses;
+    agent.provider.model = "gpt-6-astra";
+    try std.testing.expectEqual(engine_events.ReasoningEffort.ultra, effectiveEffort(&agent).?);
+    agent.reasoning = .ultra;
+    try std.testing.expectEqual(engine_events.ReasoningEffort.ultra, effectiveEffort(&agent).?);
+    agent.reasoning = .xhigh;
+    try std.testing.expectEqual(engine_events.ReasoningEffort.xhigh, effectiveEffort(&agent).?);
 }
 
 test "standing work snapshots goal, checklist, session, and a staged image" {

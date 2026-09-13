@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { runBounded } from './process-deadline.mjs';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { existsSync, readFileSync } from 'node:fs';
@@ -14,13 +15,11 @@ async function focusMonitor() {
   const source = path.join(root, 'electron/native/TestFocusMonitor.swift');
   const hash = createHash('sha256').update(readFileSync(source)).digest('hex').slice(0, 16);
   const binary = path.join(tmpdir(), `graff-test-focus-${process.arch}-${hash}`);
-  if (!existsSync(binary)) await new Promise((resolve, reject) => {
-    const compiler = spawn('xcrun', ['swiftc', source, '-o', binary], { stdio: ['ignore', 'ignore', 'pipe'] });
-    let errors = '';
-    compiler.stderr.on('data', data => { errors += data; });
-    compiler.once('error', reject);
-    compiler.once('exit', code => code === 0 ? resolve() : reject(Error(`Could not build desktop focus observer: ${errors}`)));
-  });
+  if (!existsSync(binary)) {
+    const result = await runBounded('xcrun', ['swiftc', source, '-o', binary],
+      { stdio: ['ignore', 'ignore', 'inherit'] }, { timeoutMs: 120000 });
+    if (result.code !== 0 || result.timedOut) throw Error('Could not build desktop focus observer within its deadline');
+  }
   const child = spawn(binary, [], { stdio: ['pipe', 'pipe', 'inherit'] });
   const lines = createInterface({ input: child.stdout });
   let report;
@@ -40,7 +39,7 @@ async function focusMonitor() {
     watch(pid) { child.stdin.write(`${pid}\n`); },
     async stop() {
       child.stdin.end('stop\n');
-      const timer = setTimeout(() => child.kill(), 5000);
+      const timer = setTimeout(() => child.kill('SIGKILL'), 5000);
       const code = await exited; clearTimeout(timer); lines.close();
       if (code !== 0 || !report?.observed || report.foregroundActivations || (testWindowMode() === 'hidden' && report.visibleWindowSamples)) {
         throw Error(`Desktop isolation failed: ${JSON.stringify(report ?? { observerExit: code })}`);
@@ -53,23 +52,21 @@ async function focusMonitor() {
 // The observer starts before Electron, so it catches launch activation as well
 // as later test steps. Switching to a different user app is allowed throughout.
 export async function runElectron(entry, args = []) {
+  return runDesktopProcess(require('electron'), [path.resolve(root, entry), ...args]);
+}
+
+export async function runDesktopProcess(command, args = [], env = process.env) {
   const foreground = testWindowMode() === 'foreground';
   const monitor = process.platform === 'darwin' && !foreground ? await focusMonitor() : null;
-  const child = spawn(require('electron'), [path.resolve(root, entry), ...args], {
-    cwd: root, stdio: 'inherit', env: { ...process.env, GRAFF_TEST_BUN: process.execPath },
-  });
-  if (child.pid) monitor?.watch(child.pid);
-  const interrupt = signal => { child.kill(signal); };
-  const term = () => interrupt('SIGTERM'), sigint = () => interrupt('SIGINT');
-  process.once('SIGTERM', term); process.once('SIGINT', sigint);
   let code = 1;
   try {
-    code = await new Promise((resolve, reject) => {
-      child.once('error', reject);
-      child.once('exit', exit => resolve(exit ?? 1));
-    });
+    const configured = Number(process.env.GRAFF_TEST_TIMEOUT_MS ?? 300000);
+    if (!Number.isFinite(configured) || configured < 1000 || configured > 900000) throw Error('GRAFF_TEST_TIMEOUT_MS must be between 1000 and 900000');
+    const result = await runBounded(command, args, {
+      cwd: root, stdio: 'inherit', env: { ...env, GRAFF_TEST_BUN: process.execPath, GRAFF_TEST_MANAGED_GROUP: process.platform === 'win32' ? '' : '1' },
+    }, { timeoutMs: configured, onSpawn(child) { if (child.pid) monitor?.watch(child.pid); } });
+    code = result.timedOut ? 1 : result.code;
   } finally {
-    process.removeListener('SIGTERM', term); process.removeListener('SIGINT', sigint);
     if (monitor) console.log('Desktop isolation:', JSON.stringify(await monitor.stop()));
     else console.log(`Desktop isolation: ${foreground ? 'foreground opt-in' : 'native window policy (OS observer is macOS-only)'}`);
   }

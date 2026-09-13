@@ -18,6 +18,12 @@ import zipfile
 
 PINNED_VERSION = "0.17.0-dev.813+2153f8143"
 ASSETS = {
+    ("Darwin", "aarch64"): (
+        "zig-aarch64-macos-{version}.tar.xz",
+        "36673d2513afa4a96c86780648ba504beedd7f0451389091cf9d53e38d5b4840",
+        "08abf236d78c05b8520431fbca99903ff98653b2f1cd1c3665a7f8c91247421c",
+        "14a2d724c45db74ba6ef33c5d6c467dde1f6689349009b78d086df426866db09",
+    ),
     ("Linux", "x86_64"): (
         "zig-x86_64-linux-{version}.tar.xz",
         "b0d46ffc4587b9e8dd0b524ee5bc4da1e67f28bba55e7c534cec64af2f2d7a74",
@@ -42,6 +48,8 @@ def normalized_arch() -> str:
     machine = platform.machine().lower()
     if machine in {"x86_64", "amd64"}:
         return "x86_64"
+    if machine in {"arm64", "aarch64"}:
+        return "aarch64"
     return machine
 
 

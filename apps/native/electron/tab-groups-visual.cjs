@@ -1,0 +1,54 @@
+const desktop = require('./test-desktop.cjs');
+const assert = require('node:assert/strict');
+const fs = require('node:fs'), path = require('node:path');
+async function runTabGroups({wc, click, wait, js, panes, tabs, drag, point, output, group}) {
+  const key = async (keyCode, modifiers) => { for (const type of ['keyDown','keyUp']) await desktop.testInput(wc,{type,keyCode,modifiers}); };
+  // A new tab must leave the existing layout and drafts intact.
+  await click('[aria-label="New chat"]');
+  await wait(`document.querySelectorAll('[data-tab-id]').length===2 && document.querySelectorAll('[data-chat]').length===1`);
+  const independent = (await panes())[0];
+  await key('d',['meta']); await wait(`document.querySelectorAll('[data-chat]').length===2`);
+  const other = await panes();
+  assert.equal((await tabs()).length,2, 'Two split groups should have two tabs');
+  assert.equal(await js(`getComputedStyle(document.querySelector('[data-chat-layout]')).flexDirection`),'row');
+  await click(`[data-tab-id="${group[0]}"] button[aria-pressed]`);
+  await wait(`Number(document.querySelector('[data-chat]').dataset.chat)===${group[0]}`);
+  assert.deepEqual(await panes(),group);
+  assert.equal(await js(`getComputedStyle(document.querySelector('[data-chat-layout]')).flexDirection`),'column');
+  assert.equal(await js(`document.querySelector('[data-chat="${group[1]}"] textarea').value`),'Plan the next release');
+  assert.equal(await js(`document.querySelector('[data-chat="${group[0]}"] textarea').value`),'Review the changes side by side');
+  fs.writeFileSync(path.join(output,'split-groups.png'),(await wc.capturePage()).toPNG());
+  const destination = await point(`[data-tab-id="${group[0]}"]`); destination.x -= 100;
+  await drag(independent,destination);
+  await wait(`Number(document.querySelector('[data-tab-id]').dataset.tabId)===${independent}`);
+  assert.deepEqual(await panes(),group, 'Reordering a whole group must not replace the active layout');
+  await wait(`!Array.from(document.querySelectorAll('[data-tab-id]')).some(tab=>tab.getAnimations().some(a=>a.playState==='running'))`);
+  await click(`[data-chat="${group[0]}"] header button[title="Focus this chat"]`);
+  await click(`[data-tab-id="${independent}"] button[aria-pressed]`);
+  await wait(`Number(document.querySelector('[data-chat]').dataset.chat)===${other[0]}`);
+  await click(`[data-tab-id="${group[0]}"] button[aria-pressed]`);
+  await wait(`Number(document.querySelector('[data-chat][data-focused="true"]').dataset.chat)===${group[0]}`);
+  // Pane close removes one member; the inactive combined tab closes its whole group.
+  await click(`[data-chat="${group[1]}"] [aria-label="Close this split"]`);
+  await wait(`document.querySelectorAll('[data-chat]').length===1`);
+  assert.equal((await tabs()).length,2);
+  assert.equal(await js(`document.querySelector('textarea').value`),'Review the changes side by side');
+  await click(`[data-tab-id="${independent}"] [aria-label="Close tab"]`);
+  await wait(`document.querySelectorAll('[data-tab-id]').length===1`);
+  assert.deepEqual(await panes(),[group[0]]);
+  await key('d',['meta']); await wait(`document.querySelectorAll('[data-chat]').length===2`);
+  await key('\\',['meta']); await wait(`document.querySelectorAll('[data-tab-id]').length===2 && document.querySelectorAll('[data-chat]').length===1`);
+  await key('d',['meta']); await wait(`document.querySelectorAll('[data-chat]').length===2`);
+  const pair = await panes();
+  await click('[aria-label="New chat"]'); await wait(`document.querySelectorAll('[data-chat]').length===1`);
+  await key('d',['meta']); await wait(`document.querySelectorAll('[data-chat]').length===2`);
+  const source = await panes();
+  await click(`[data-tab-id="${pair[0]}"] button[aria-pressed]`);
+  await wait(`Number(document.querySelector('[data-chat]').dataset.chat)===${pair[0]}`);
+  const edge = await js(`(()=>{const r=document.querySelector('[data-chat]').getBoundingClientRect();return {x:Math.round(r.right-20),y:Math.round(r.top+r.height/2)}})()`);
+  await drag(source[0],edge); await wait(`document.querySelectorAll('[data-chat]').length===4`);
+  assert.deepEqual(await panes(),[pair[0],...source,pair[1]], 'Dragging a group must carry all its panes');
+  assert.equal((await tabs()).length,2, 'The merged group and unrelated single chat each retain one tab');
+  console.log('PASS grouped tabs: independent layouts, remembered focus, draft retention, group reorder/merge, member close, group close and ungroup');
+}
+module.exports = {runTabGroups};

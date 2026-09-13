@@ -16,7 +16,7 @@ pub const Coverage = struct {
 
 pub const Evidence = struct {
     head_sha: []const u8 = "",
-    head_status: HeadStatus = .none,
+    head_status: HeadStatus = .unknown,
     base_reproduced: bool = false,
     known_failures_disclosed: bool = false,
     body: []const u8 = "",
@@ -37,12 +37,15 @@ fn seqAfter(cmd: []const u8, first: []const u8, second: []const u8, third: []con
     var it = std.mem.tokenizeAny(u8, cmd, " \t\r\n;&|\"'`()");
     var state: u8 = 0;
     while (it.next()) |tok| {
-        if (state == 0 and std.mem.eql(u8, tok, first)) {
+        if (state == 0 and std.mem.eql(u8, std.fs.path.basename(tok), first)) {
             state = 1;
             continue;
         }
         if (state == 1) {
-            if (tok[0] == '-') continue;
+            if (tok[0] == '-') {
+                if (std.mem.eql(u8, tok, "-R") or std.mem.eql(u8, tok, "--repo")) _ = it.next();
+                continue;
+            }
             if (std.mem.eql(u8, tok, second)) {
                 state = 2;
                 continue;
@@ -51,8 +54,12 @@ fn seqAfter(cmd: []const u8, first: []const u8, second: []const u8, third: []con
             continue;
         }
         if (state == 2) {
-            if (tok[0] == '-') continue;
-            return std.mem.eql(u8, tok, third);
+            if (tok[0] == '-') {
+                if (std.mem.eql(u8, tok, "-R") or std.mem.eql(u8, tok, "--repo")) _ = it.next();
+                continue;
+            }
+            if (std.mem.eql(u8, tok, third)) return true;
+            state = 0;
         }
     }
     return false;
@@ -63,7 +70,12 @@ pub fn isPrCreate(cmd: []const u8) bool {
 }
 
 pub fn isPrReady(cmd: []const u8) bool {
-    if (seqAfter(cmd, "gh", "pr", "ready")) return true;
+    if (seqAfter(cmd, "gh", "pr", "ready")) {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const parsed = @import("pr_command.zig").parse(arena.allocator(), cmd) catch return true;
+        return !parsed.has("--undo");
+    }
     if (!seqAfter(cmd, "gh", "pr", "edit")) return false;
     return std.mem.indexOf(u8, cmd, "--draft=false") != null or std.mem.indexOf(u8, cmd, "--draft false") != null;
 }
@@ -73,37 +85,31 @@ pub fn isPrChecksWatch(cmd: []const u8) bool {
 }
 
 pub fn isDraftFlag(cmd: []const u8) bool {
-    if (std.mem.indexOf(u8, cmd, "--draft=false") != null) return false;
-    var it = std.mem.tokenizeAny(u8, cmd, " \t\r\n;&|\"'`()");
-    while (it.next()) |tok| {
-        if (std.mem.eql(u8, tok, "--draft") or std.mem.eql(u8, tok, "--draft=true")) return true;
-    }
-    return false;
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const parsed = @import("pr_command.zig").parse(arena.allocator(), cmd) catch return false;
+    return parsed.draft();
 }
 
 pub fn isNonDraftPublish(cmd: []const u8) bool {
-    if (isPrChecksWatch(cmd)) return false;
     if (isPrCreate(cmd)) return !isDraftFlag(cmd);
     return isPrReady(cmd);
 }
 
-fn flagValue(cmd: []const u8, flag: []const u8) []const u8 {
-    const idx = std.mem.indexOf(u8, cmd, flag) orelse return "";
-    var rest = std.mem.trimStart(u8, cmd[idx + flag.len ..], " \t=");
-    if (rest.len == 0) return "";
-    if (rest[0] == '"' or rest[0] == '\'') {
-        const q = rest[0];
-        const end = std.mem.indexOfScalar(u8, rest[1..], q) orelse return rest[1..];
-        return rest[1 .. 1 + end];
-    }
-    const end = std.mem.indexOfAny(u8, rest, " \t") orelse rest.len;
-    return rest[0..end];
-}
-
 pub fn extractBody(cmd: []const u8) []const u8 {
-    const from_body = flagValue(cmd, "--body");
-    if (from_body.len > 0) return from_body;
-    return flagValue(cmd, "-b");
+    // Keep this legacy pure helper for tests; production uses pr_command and
+    // reads --body-file through the bounded evidence gatherer.
+    for ([_][]const u8{ "--body ", "-b " }) |flag| {
+        const index = std.mem.indexOf(u8, cmd, flag) orelse continue;
+        const rest = std.mem.trimStart(u8, cmd[index + flag.len ..], " ");
+        if (rest.len == 0) return "";
+        if (rest[0] == '"' or rest[0] == '\'') {
+            const end = std.mem.indexOfScalar(u8, rest[1..], rest[0]) orelse return "";
+            return rest[1..][0..end];
+        }
+        return rest[0 .. std.mem.indexOfAny(u8, rest, " \t") orelse rest.len];
+    }
+    return "";
 }
 
 pub fn hasVerificationSection(body: []const u8) bool {
@@ -189,30 +195,45 @@ pub fn reason(decision: Decision, ev: Evidence) []const u8 {
     };
 }
 
-/// Classify `gh run list --json conclusion,status` output. Empty / unreadable
-/// JSON is `none` so PR-only workflows stay allowed.
+/// Only a successfully parsed empty array means no pre-PR runs.
 pub fn headStatusFromRunList(json: []const u8) HeadStatus {
-    const trimmed = std.mem.trim(u8, json, " \t\r\n");
-    if (trimmed.len == 0 or trimmed[0] != '[') return .none;
-    const parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, trimmed, .{}) catch return .none;
+    const parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, json, .{}) catch return .unknown;
     defer parsed.deinit();
-    if (parsed.value != .array) return .none;
+    if (parsed.value != .array) return .unknown;
     if (parsed.value.array.items.len == 0) return .none;
     var pending = false;
     var passed = false;
+    var unknown = false;
     for (parsed.value.array.items) |item| {
-        if (item != .object) continue;
-        const status = if (item.object.get("status")) |v| (if (v == .string) v.string else "") else "";
-        const conclusion = if (item.object.get("conclusion")) |v| (if (v == .string) v.string else "") else "";
-        if (std.mem.eql(u8, status, "in_progress") or std.mem.eql(u8, status, "queued") or std.mem.eql(u8, status, "waiting") or std.mem.eql(u8, status, "pending"))
-            pending = true;
-        if (std.mem.eql(u8, conclusion, "failure") or std.mem.eql(u8, conclusion, "cancelled") or std.mem.eql(u8, conclusion, "timed_out") or std.mem.eql(u8, conclusion, "startup_failure"))
-            return .failed;
-        if (std.mem.eql(u8, conclusion, "success")) passed = true;
+        if (item != .object) {
+            unknown = true;
+            continue;
+        }
+        const sv = item.object.get("status") orelse {
+            unknown = true;
+            continue;
+        };
+        const cv = item.object.get("conclusion") orelse {
+            unknown = true;
+            continue;
+        };
+        if (sv != .string or (cv != .string and cv != .null)) {
+            unknown = true;
+            continue;
+        }
+        const status = sv.string;
+        const conclusion = if (cv == .string) cv.string else "";
+        for ([_][]const u8{ "failure", "cancelled", "timed_out", "startup_failure", "action_required", "stale" }) |failure|
+            if (std.mem.eql(u8, conclusion, failure)) return .failed;
+        if (!std.mem.eql(u8, status, "completed")) {
+            if (std.mem.eql(u8, status, "in_progress") or std.mem.eql(u8, status, "queued") or std.mem.eql(u8, status, "waiting") or std.mem.eql(u8, status, "pending") or std.mem.eql(u8, status, "requested")) pending = true else unknown = true;
+        } else if (std.mem.eql(u8, conclusion, "success")) {
+            passed = true;
+        } else if (!std.mem.eql(u8, conclusion, "skipped") and !std.mem.eql(u8, conclusion, "neutral")) unknown = true;
     }
+    if (unknown) return .unknown;
     if (pending) return .pending;
-    if (passed) return .passed;
-    return .unknown;
+    return if (passed) .passed else .unknown;
 }
 
 pub fn refuseText(arena: Allocator, cmd: []const u8, ev: Evidence) []const u8 {
@@ -247,7 +268,6 @@ pub fn evidenceFor(cmd: []const u8) Evidence {
 }
 
 pub fn gateCommand(arena: Allocator, cmd: []const u8) ?[]const u8 {
-    if (isPrChecksWatch(cmd)) return null;
     if (!isPrCreate(cmd) and !isPrReady(cmd)) return null;
     const ev = evidenceFor(cmd);
     const draft = isDraftFlag(cmd) and !isPrReady(cmd);
@@ -344,11 +364,19 @@ test "#847 run-list JSON maps failed, pending, passed, and empty" {
         \\[{"conclusion":"success","status":"completed"}]
     ));
     try std.testing.expectEqual(HeadStatus.none, headStatusFromRunList("[]"));
-    try std.testing.expectEqual(HeadStatus.none, headStatusFromRunList(""));
+    try std.testing.expectEqual(HeadStatus.unknown, headStatusFromRunList(""));
 }
 
 test "extractBody reads --body quoted text" {
     try std.testing.expectEqualStrings("hello", extractBody("gh pr create --body \"hello\" --title x"));
     try std.testing.expect(hasVerificationSection("## Verification\nran zig build test"));
     try std.testing.expect(hasAbsoluteClaim("atomic delete is preserved"));
+}
+
+test "#847 compound checks cannot hide a later publication and ready undo stays available" {
+    try std.testing.expect(isPrCreate("gh pr checks --watch && gh pr create --title t --body b"));
+    try std.testing.expect(isNonDraftPublish("gh pr checks --watch && gh pr create --title t --body b"));
+    try std.testing.expect(isPrCreate("/usr/local/bin/gh -R owner/repo pr create --body x"));
+    try std.testing.expect(!isPrReady("gh pr ready --undo"));
+    try std.testing.expect(!isDraftFlag("gh pr create --body '--draft'"));
 }

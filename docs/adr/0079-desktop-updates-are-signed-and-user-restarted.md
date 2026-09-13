@@ -18,6 +18,11 @@ terminal cleanup. Development and smoke builds never use the online feed.
 
 One desktop process owns each profile. A second launch focuses it instead of
 starting another server with a different origin and separate UI preferences.
+The terminal launcher passes its explicit folder or file through Electron's
+single-instance additional data. The primary process validates the path and
+holds the latest request until the GUI has restored projects and subscribed.
+A file selects its parent project and opens in Files. Existing conversations
+keep their original workspace. A bare launch only activates the desktop.
 
 ## Validation
 
@@ -26,3 +31,5 @@ preferences, development builds and explicit restart. Visual tests exercise
 progress, quiet background checks and the restart action without a model.
 Distribution validation checks the signed app and DMG; the archive manifest
 identifies the exact stapled ZIP bytes.
+`bun run test:cli` checks startup precedence, a real secondary Electron process,
+file display, tab reuse and conversation preservation in the production GUI.

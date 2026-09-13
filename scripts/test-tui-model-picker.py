@@ -26,6 +26,7 @@ Exit 0 = pass, or a skip when there is no pty.
 
 from __future__ import annotations
 
+import faulthandler
 import json
 import os
 import sys
@@ -118,7 +119,11 @@ def open_picker(h, query=b""):
 
 def close_picker(h):
     h.inject_keys(b"\x1b")
-    h.pump(0.6)
+    # Escape decoding and the next paint are asynchronous under runner load.
+    # Wait for the visible transition, with a hard bound, rather than one frame.
+    deadline = time.monotonic() + 2.0
+    while "Model \u203a" in h.screen_contents() and time.monotonic() < deadline:
+        h.pump(0.05)
 
 
 def sgr(btn, col, row, press=True):
@@ -309,6 +314,7 @@ def main():
         print("tui-model-picker: no pty support here — skipping")
         return 0
     started = time.time()
+    faulthandler.dump_traceback_later(45)
     try:
         err = run()
     except OSError as e:
@@ -317,6 +323,8 @@ def main():
         else:
             print(f"tui-model-picker: pty unavailable ({e}) — skipping")
             return 0
+    finally:
+        faulthandler.cancel_dump_traceback_later()
     if err:
         print(f"  ✗ model-picker: {err}")
         return 1

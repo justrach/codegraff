@@ -48,6 +48,12 @@ const Budget = struct {
 
 var cached: ?[]const u8 = null; // built once per process (see module doc)
 
+/// The startup snapshot, without scanning or replacing a restored session map.
+pub fn cachedSegment() ?[]const u8 {
+    const value = cached orelse return null;
+    return if (value.len == 0) null else value;
+}
+
 fn skipped(name: []const u8) bool {
     if (name.len == 0 or name[0] == '.') return true;
     for (skip_dirs) |d| if (std.mem.eql(u8, name, d)) return true;

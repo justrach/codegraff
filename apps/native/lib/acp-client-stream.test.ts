@@ -25,3 +25,35 @@ test('a bridge error is surfaced after any already delivered text',async()=>{
     assert.equal(received.length,1);
   });
 });
+test('an actual connection loss names the interrupted response and preserves delivered text', async () => {
+  const original = globalThis.fetch;
+  let reads = 0;
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    pull(controller) {
+      if (reads++ === 0) controller.enqueue(new TextEncoder().encode(JSON.stringify(chunk) + '\n'));
+      else controller.error(new TypeError('network error'));
+    },
+  }));
+  const received: unknown[] = [];
+  try {
+    await assert.rejects(async () => {
+      for await (const update of prompt('test', 'test', 'hello')) received.push(update);
+    }, /connection to Graff ended before the turn finished/);
+    assert.deepEqual(received, [chunk.params.update]);
+  } finally { globalThis.fetch = original; }
+});
+test('a terminal reply is authoritative even if the connection fails immediately afterward', async () => {
+  const original = globalThis.fetch;
+  let reads = 0;
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    pull(controller) {
+      if (reads++ === 0) controller.enqueue(new TextEncoder().encode(JSON.stringify({id:1,result:{stopReason:'end_turn'}}) + '\n'));
+      else controller.error(new TypeError('network error'));
+    },
+  }));
+  try {
+    const received: unknown[] = [];
+    for await (const update of prompt('test', 'test', 'hello')) received.push(update);
+    assert.deepEqual(received, [{sessionUpdate:'gui_turn_end',stopReason:'end_turn'}]);
+  } finally { globalThis.fetch = original; }
+});

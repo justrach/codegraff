@@ -5,29 +5,13 @@ import Markdown from "@/components/primitives/Markdown";
 import ThinkingState from "@/components/primitives/ThinkingState";
 import ToolChips, { type LiveDiff } from "@/components/primitives/ToolChips";
 import TurnActivity from "./TurnActivity";
+import HtmlArtifact from "./HtmlArtifact";
 import McpAppResult from "./McpAppResult";
+import SnapshotView from "./SnapshotView";
+import { markerName, splitImageMarkers } from "@/lib/attachments";
 import { pinScrollerTail } from "@/lib/follow-scroll";
 import { turnBlocks, type AssistantTurn } from "@/lib/acp";
-import { createSmoothStream } from "@/lib/smooth-stream";
-
-/** Typewriter reveal over the ACP text. Catch-up lands on whitespace so
- * markdown chips/lists don't reflow every mid-token character. */
-function useSmoothStream(target: string, live: boolean): string {
-  const [shown, setShown] = useState(target);
-  const stream = useRef<ReturnType<typeof createSmoothStream> | null>(null);
-  useEffect(() => {
-    if (!live) return;
-    stream.current = createSmoothStream(target, setShown);
-    return () => { stream.current?.dispose(); stream.current = null; };
-    // The controller owns subsequent targets without restarting its frame.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [live]);
-  useEffect(() => {
-    if (live) stream.current?.update(target, true);
-    else setShown(target);
-  }, [target, live]);
-  return live && target.startsWith(shown) ? shown : target;
-}
+import { useSmoothStream } from "./useSmoothStream";
 
 /** Reveal updates belong to this text block, not the entire tool/reasoning tree. */
 const StreamingMarkdown = memo(function StreamingMarkdown({ text, live, onOpenPath, scroller, following }: {
@@ -54,7 +38,9 @@ const ToolGroup = memo(function ToolGroup({ tools, diffs, onOpenPath }: {
     path: tool.path, status: tool.status, startedAt: tool.startedAt, elapsedMs: tool.elapsedMs,
   }));
   return <><ToolChips rows={rows} diffs={diffs} onOpenPath={onOpenPath} />
-    {tools.filter(tool=>tool.mcpAppId).map(tool=><McpAppResult key={tool.id} id={tool.mcpAppId!} />)}</>;
+    {tools.filter(tool=>tool.htmlArtifactId).map(tool=><HtmlArtifact key={tool.id} id={tool.htmlArtifactId!} />)}
+    {tools.filter(tool=>tool.mcpAppId).map(tool=><McpAppResult key={tool.id} id={tool.mcpAppId!} />)}
+    {tools.filter(tool=>tool.viewSnapshotId).map(tool=><SnapshotView key={`view-${tool.id}`} kind="view" id={tool.viewSnapshotId!} />)}</>;
 }, (previous, next) => previous.diffs === next.diffs && previous.onOpenPath === next.onOpenPath &&
   previous.tools.length === next.tools.length && previous.tools.every((tool, index) => tool === next.tools[index]));
 
@@ -73,7 +59,7 @@ function PastedImage({ name }: { name: string }) {
 }
 
 export const UserBubble = memo(function UserBubble({ text }: { text: string }) {
-  const parts = text.split(/(@\[[^\]\n]*\/graff-native-attachments\/[^/\]\n]+\.(?:png|jpe?g|gif|webp|avif|bmp)\])/gi);
+  const parts = splitImageMarkers(text);
   return (
     <div className="flex justify-end pl-10 sm:pl-24" style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
       <div
@@ -81,7 +67,7 @@ export const UserBubble = memo(function UserBubble({ text }: { text: string }) {
         style={{ background: "color-mix(in oklab, var(--accent) 12%, var(--surface))" }}
       >
         {parts.map((part, index) => index % 2 === 1
-          ? <PastedImage key={`${index}-${part}`} name={part.slice(part.lastIndexOf("/") + 1, -1)} />
+          ? <PastedImage key={`${index}-${part}`} name={markerName(part)} />
           : part)}
       </div>
     </div>

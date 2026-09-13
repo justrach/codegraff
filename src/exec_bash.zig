@@ -252,6 +252,7 @@ test {
 
 pub fn exec(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
     const cmd = strField(call.input, "command") orelse return missingArg(ctx.gpa, "command");
+    if (try @import("publish_gate.zig").beforeExec(ctx, cmd)) |denied| return denied;
     // Respect the subagent gate before running even a read-only probe.
     const approved = if (ctx.from_sub) (if (ctx.approvals) |ap| ap.allowed(ctx.io, cmd) else true) else true;
     var warning = false;

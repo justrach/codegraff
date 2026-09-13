@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { runBounded } from './process-deadline.mjs';
 import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -16,11 +16,10 @@ if (process.platform !== 'darwin') throw Error('Native GUI tests require macOS.'
 const resources = path.resolve(process.env.GRAFF_NATIVE_TEST_RESOURCES || path.join(root, '../../zig-out/native-tests/build'));
 const native = path.join(resources, 'native');
 mkdirSync(native, { recursive: true });
-const run = (command, args) => new Promise((resolve, reject) => {
-  const child = spawn(command, args, { cwd: root, stdio: 'inherit' });
-  child.once('error', reject);
-  child.once('exit', code => code === 0 ? resolve() : reject(Error(`${command} exited ${code}`)));
-});
+const run = async (command, args) => {
+  const result = await runBounded(command, args, { cwd: root, stdio: 'inherit' }, { timeoutMs: 120000 });
+  if (result.code !== 0 || result.timedOut) throw Error(`${command} ${result.timedOut ? 'timed out' : `exited ${result.code}`}`);
+};
 const target = `${process.arch === 'arm64' ? 'arm64' : 'x86_64'}-apple-macosx14.0`;
 await run('xcrun', ['swiftc', '-O', '-emit-library', '-module-name', 'GraffActivity', '-target', target,
   'electron/native/Activity.swift', 'electron/native/ComputerUse.swift', '-o', path.join(native, 'libGraffActivity.dylib'),

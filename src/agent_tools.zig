@@ -351,7 +351,8 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
             return .{ .text = refusal, .is_error = true };
         }
         const raw = if (tools_mod.json_args.object(call.input)) |o| (tools_mod.json_args.str(o, "result") orelse "") else "";
-        const result = try cite_markup.dupe(self.arena, raw);
+        const cleaned = try cite_markup.dupe(self.arena, raw);
+        const result = if (!@import("builtin").is_test and self.pr_verification == .draft) try std.fmt.allocPrint(self.arena, "Draft handoff — CI is not verified.\n\n{s}", .{cleaned}) else cleaned;
         self.completed = result;
         if (!self.sub) task_outcome.noteGoalCompleted(self);
         // .complete retires the epoch (goal_state.currentEpoch) and the checklist parks - readable, no longer current, never deleted (#318).

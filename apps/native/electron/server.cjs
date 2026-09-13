@@ -16,15 +16,16 @@ async function startServer(resources, root, token, logDirectory, desktopEnv = {}
   const port = probe.address().port; await new Promise(resolve => probe.close(resolve));
   fs.mkdirSync(logDirectory, { recursive: true });
   const log = fs.openSync(path.join(logDirectory, 'server.log'), 'a');
+  const managed = process.env.GRAFF_TEST_MANAGED_GROUP === '1';
   const child = spawn(path.join(resources, 'bun'), [path.join(resources, 'ui/server.js')], {
-    cwd: path.join(resources, 'ui'), detached: true, stdio: ['ignore', log, log],
+    cwd: path.join(resources, 'ui'), detached: !managed, stdio: ['ignore', log, log],
     env: { ...process.env, ...desktopEnv, NODE_ENV: 'production', PORT: String(port), HOSTNAME: '127.0.0.1',
       GRAFF_BIN: path.join(resources, 'graff'), GRAFF_CWD: root, GRAFF_DESKTOP_TOKEN: token },
   });
   fs.closeSync(log);
   let spawnError; child.on('error', error => { spawnError = error; });
   const origin = `http://127.0.0.1:${port}`;
-  const stop = () => { if (child.pid) { try { process.kill(-child.pid, 'SIGTERM'); } catch {} } };
+  const stop = () => { if (child.pid) { try { managed ? child.kill('SIGTERM') : process.kill(-child.pid, 'SIGTERM'); } catch {} } };
   try {
     for (let attempt = 0; attempt < 120; attempt++) {
       if (spawnError) throw spawnError;

@@ -34,13 +34,19 @@ app.whenReady().then(async () => {
   await new Promise(resolve => socket.close(resolve));
   const origin = `http://127.0.0.1:${port}`;
   const log = fs.openSync(path.join(output, 'server.log'), 'w');
-  server = spawn(process.env.GRAFF_TEST_BUN || 'bun', ['node_modules/next/dist/bin/next', 'start', '--port', String(port), '--hostname', '127.0.0.1'], {
-    cwd: root, env: { ...process.env, GRAFF_VISUAL_TESTS: '1', GRAFF_DESKTOP_TOKEN: '', NEXT_TELEMETRY_DISABLED: '1' }, detached: true, stdio: ['ignore', log, log]
+  const standalone = !fs.existsSync(path.join(root, 'node_modules/next/dist/bin/next'));
+  server = spawn(process.env.GRAFF_TEST_BUN || 'bun', standalone ? ['server.js'] : ['node_modules/next/dist/bin/next', 'start', '--port', String(port), '--hostname', '127.0.0.1'], {
+    cwd: root, env: { ...process.env, PORT: String(port), HOSTNAME: '127.0.0.1', GRAFF_VISUAL_TESTS: '1', GRAFF_DESKTOP_TOKEN: '', NEXT_TELEMETRY_DISABLED: '1' }, detached: process.env.GRAFF_TEST_MANAGED_GROUP !== '1', stdio: ['ignore', log, log]
   });
   fs.closeSync(log);
-  for (let i = 0; i < 200; i++) {
-    try { if ((await fetch(origin, { signal: AbortSignal.timeout(1000) })).ok) break; } catch {}
-    if (i === 199) throw Error('Benchmark server did not start');
+  let spawnError;
+  server.on('error', error => { spawnError = error; });
+  const readyDeadline = Date.now() + 20000;
+  for (;;) {
+    if (spawnError) throw spawnError;
+    if (server.exitCode !== null || server.signalCode) throw Error('Benchmark server exited before becoming ready; see server.log');
+    try { if ((await fetch(origin, { signal: AbortSignal.timeout(500) })).ok) break; } catch {}
+    if (Date.now() >= readyDeadline) throw Error('Benchmark server did not start within 20 seconds');
     await sleep(100);
   }
   win = testDesktop.createWindow({ width: 1440, height: 920, titleBarStyle: 'hiddenInset',
@@ -99,7 +105,7 @@ app.whenReady().then(async () => {
       scriptMs: 1000 * (after.ScriptDuration - before.ScriptDuration),
       layoutMs: 1000 * (after.LayoutDuration - before.LayoutDuration),
       styleMs: 1000 * (after.RecalcStyleDuration - before.RecalcStyleDuration),
-      memory: await memory() };
+      memory: await memory(), transcript: await js(`(()=>{const e=document.querySelector('[data-chat-transcript]');return e?{following:e.dataset.following,tailDistance:e.scrollHeight-e.clientHeight-e.scrollTop,articles:e.querySelectorAll('article').length}:null})()`) };
     fs.writeFileSync(path.join(output, `${name}-frames.json`), JSON.stringify(raw));
     console.log(JSON.stringify(result));
     return result;
@@ -113,10 +119,17 @@ app.whenReady().then(async () => {
     note: 'Identical synthetic workload, fresh app profile, production build, no engine calls. RSS is summed process RSS (shared pages can be double counted). Heap checkpoints follow explicit GC. rAF measures callback scheduling, not presentation. Trace is separate from memory workloads.',
     idle: await memory(), scenarios: [] };
   const startTrace = () => contentTracing.startRecording({ recording_mode: 'record-until-full', included_categories: ['cc', 'benchmark', 'viz', 'gpu', 'input', 'devtools.timeline', 'disabled-by-default-devtools.timeline.frame'], trace_buffer_size_in_kb: 32768 });
+  if (process.env.GRAFF_BENCHMARK_CASES === 'history') {
+    report.scenarios.push(await require('./history-performance.cjs').historyPerformance({wc,run,wait,output}));
+  } else {
   for (let i = 1; i <= 3; i++) {
     if (i === 1 && process.env.GRAFF_BENCHMARK_TRACE === 'code') await startTrace();
     report.scenarios.push(await run(`code-${i}`, () => send('code')));
     if (i === 1 && process.env.GRAFF_BENCHMARK_TRACE === 'code') await contentTracing.stopRecording(path.join(output, 'code-trace.json'));
+  }
+  if (process.env.GRAFF_BENCHMARK_REQUIRE_BOUNDED_HISTORY === '1') {
+    assert.ok(await js(`document.querySelectorAll('article').length <= 2`), 'Long live tails should retire older rendered code replies');
+    assert.ok(await js(`Array.from(document.querySelectorAll('button')).some(b=>b.textContent.startsWith('Show earlier messages'))`), 'Older live replies must remain available');
   }
   if (process.env.GRAFF_BENCHMARK_TRACE === 'mermaid') await startTrace();
   report.scenarios.push(await run('mermaid', async () => {
@@ -139,8 +152,12 @@ app.whenReady().then(async () => {
     await scroll();
     await contentTracing.stopRecording(path.join(output, 'scroll-trace.json'));
   }
+  }
   // Closing the only chat must release renderer content; global caches remain observable.
-  wc.send('desktop-action', 'close');
+  // Saved history opens a second tab; release it and the warm-up conversation.
+  for (let i = 0; i < 10 && await js(`!!document.querySelector('article')`); i++) {
+    wc.send('desktop-action', 'close'); await sleep(150);
+  }
   await wait(`!document.querySelector('article')`); await sleep(1500);
   report.afterClose = await memory();
   report.unexpectedApiRequests = unexpected;
@@ -154,7 +171,7 @@ function finish(code) {
   try { console.log('Test desktop:', JSON.stringify(testDesktop.assertSafe())); }
   catch (error) { console.error(error); code = 1; }
   testDesktop.cleanup();
-  if (server?.pid) try { process.kill(-server.pid, 'SIGTERM'); } catch {}
+  if (server?.pid) try { if (process.env.GRAFF_TEST_MANAGED_GROUP === '1') server.kill('SIGTERM'); else process.kill(-server.pid, 'SIGTERM'); } catch {}
   fs.rmSync(temporary, { recursive: true, force: true });
   app.exit(code);
 }

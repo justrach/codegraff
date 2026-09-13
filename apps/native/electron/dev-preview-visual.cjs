@@ -14,7 +14,7 @@ async function runDevPreview({ output }) {
   const html = title => `<!doctype html><title>${title}</title><h1>${title}</h1><input id="name" aria-label="Name"><button id="go" onclick="document.querySelector('h1').textContent='Hello '+document.querySelector('input').value">Greet</button>`;
   fs.writeFileSync(path.join(root, 'index.html'), html('Initial preview'));
   const bun = process.env.GRAFF_TEST_BUN || 'bun';
-  const child = spawn(bun, ['run', 'dev'], { cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PATH: `${path.dirname(bun)}:${process.env.PATH}` } });
+  const child = spawn(bun, ['run', 'dev'], { cwd: root, detached: process.env.GRAFF_TEST_MANAGED_GROUP !== '1', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PATH: `${path.dirname(bun)}:${process.env.PATH}` } });
   const win = testDesktop.createWindow({ width: 900, height: 600 });
   const events = [], browser = new BrowserTabs(win, event => events.push(event));
   let bridge;
@@ -45,7 +45,7 @@ async function runDevPreview({ output }) {
     console.log('Bun dev preview passed through desktop tool transport: open, snapshot, fill, click, edit/reload, screenshot.');
   } finally {
     browser.closeAll(); bridge?.server.close(); win.destroy();
-    if (child.pid) try { process.kill(-child.pid, 'SIGTERM'); } catch {}
+    if (child.pid) try { process.env.GRAFF_TEST_MANAGED_GROUP === '1' ? child.kill('SIGTERM') : process.kill(-child.pid, 'SIGTERM'); } catch {}
   }
 }
 module.exports = { runDevPreview };
