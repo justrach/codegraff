@@ -8,6 +8,7 @@ import TurnActivity from "./TurnActivity";
 import HtmlArtifact from "./HtmlArtifact";
 import McpAppResult from "./McpAppResult";
 import SnapshotView from "./SnapshotView";
+import { markerName, splitImageMarkers } from "@/lib/attachments";
 import { pinScrollerTail } from "@/lib/follow-scroll";
 import { turnBlocks, type AssistantTurn } from "@/lib/acp";
 import { useSmoothStream } from "./useSmoothStream";
@@ -58,7 +59,7 @@ function PastedImage({ name }: { name: string }) {
 }
 
 export const UserBubble = memo(function UserBubble({ text }: { text: string }) {
-  const parts = text.split(/(@\[[^\]\n]*\/graff-native-attachments\/[^/\]\n]+\.(?:png|jpe?g|gif|webp|avif|bmp)\])/gi);
+  const parts = splitImageMarkers(text);
   return (
     <div className="flex justify-end pl-10 sm:pl-24" style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
       <div
@@ -66,7 +67,7 @@ export const UserBubble = memo(function UserBubble({ text }: { text: string }) {
         style={{ background: "color-mix(in oklab, var(--accent) 12%, var(--surface))" }}
       >
         {parts.map((part, index) => index % 2 === 1
-          ? <PastedImage key={`${index}-${part}`} name={part.slice(part.lastIndexOf("/") + 1, -1)} />
+          ? <PastedImage key={`${index}-${part}`} name={markerName(part)} />
           : part)}
       </div>
     </div>

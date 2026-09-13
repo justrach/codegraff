@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { filesFrom, isImageFile, marker, withAttachmentMarkers, type Attachment } from "./attachments.ts";
+import { filesFrom, isImageFile, marker, markerName, splitImageMarkers, withAttachmentMarkers, type Attachment } from "./attachments.ts";
 
 const shot: Attachment = { id: "/tmp/a/shot.png", name: "shot.png", path: "/tmp/a/shot.png" };
 const notes: Attachment = { id: "/tmp/a/notes.md", name: "notes.md", path: "/tmp/a/notes.md" };
@@ -25,6 +25,22 @@ test("a draft with no attachments, and attachments with no draft, both survive",
   assert.equal(withAttachmentMarkers("just words", []), "just words");
   assert.equal(withAttachmentMarkers("", [shot]), "@[/tmp/a/shot.png]");
   assert.equal(withAttachmentMarkers("   ", []), "   ");
+});
+
+test("splitImageMarkers lifts a staged image out of the words around it", () => {
+  const staged = "@[/tmp/x/graff-native-attachments/shot.png]";
+  assert.deepEqual(splitImageMarkers(`look at this ${staged} please`), ["look at this ", staged, " please"]);
+  assert.deepEqual(splitImageMarkers("no images here"), ["no images here"]);
+  assert.deepEqual(splitImageMarkers(staged), ["", staged, ""]);
+});
+
+test("only the staged attachment directory previews; any other path stays text", () => {
+  assert.deepEqual(splitImageMarkers("@[/tmp/a/shot.png]"), ["@[/tmp/a/shot.png]"]);
+  assert.deepEqual(splitImageMarkers("@[/tmp/x/graff-native-attachments/notes.md]"), ["@[/tmp/x/graff-native-attachments/notes.md]"]);
+});
+
+test("markerName is the basename /api/attach answers to", () => {
+  assert.equal(markerName("@[/tmp/x/graff-native-attachments/shot.png]"), "shot.png");
 });
 
 test("isImageFile follows the media type, which is what decides the chip", () => {

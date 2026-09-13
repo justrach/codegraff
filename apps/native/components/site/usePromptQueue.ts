@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { dropQueuedPrompt, type QueuedPrompt } from "@/lib/prompt-queue";
+import { dropQueuedPrompt, editQueuedPrompt, setQueuedPromptEditing, shiftQueuedPrompt, type QueuedPrompt } from "@/lib/prompt-queue";
 import { createQueueSteerer, type SteerStatus } from "@/lib/prompt-queue-steer";
 
 export function usePromptQueue() {
@@ -24,6 +24,16 @@ export function usePromptQueue() {
   }));
   return {
     queuesRef, queues, queueIdRef, setQueue, steerer, steerStatus,
+    take: (chat: number) => {
+      const { next, rest } = shiftQueuedPrompt(queuesRef.current[chat] ?? []);
+      if (next) setQueue(chat, rest);
+      return next;
+    },
+    beginEdit: (chat: number, item: number) => setQueue(chat, setQueuedPromptEditing(queuesRef.current[chat] ?? [], item, true)),
+    changeEdit: (chat: number, item: number, draft: string) => setQueue(chat, (queuesRef.current[chat] ?? []).map(entry =>
+      entry.id === item && entry.editing ? { ...entry, draft } : entry)),
+    cancelEdit: (chat: number, item: number) => setQueue(chat, setQueuedPromptEditing(queuesRef.current[chat] ?? [], item, false)),
+    edit: (chat: number, item: number, text: string) => setQueue(chat, editQueuedPrompt(queuesRef.current[chat] ?? [], item, text)),
     remove: (chat: number, item: number) => setQueue(chat, dropQueuedPrompt(queuesRef.current[chat] ?? [], item)),
   };
 }
