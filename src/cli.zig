@@ -21,6 +21,13 @@ const version_status = @import("version_status.zig");
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.297
+    \\  • native tools keep moving while MCP connects; project MCP setup is clearer
+    \\  • desktop turns preserve completed work; tabs combine and restore split layouts
+    \\  • queued prompts support edits and attachment previews; drafts pause sending
+    \\  • inline HTML explanations persist; codegraff opens projects from the terminal
+    \\  • clipboard image reads and current-head PR verification are more reliable
+    \\
     \\0.0.295
     \\  • GLM image follow-ups keep a caption so Chat Completions does not 400 (#812)
     \\  • codedb context is local by default; project layout listing stays broad

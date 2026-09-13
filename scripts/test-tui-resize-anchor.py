@@ -63,13 +63,17 @@ def drain(fd, seconds):
 
 
 def boot(fd):
+    # ADR 0042 claims the alt-screen BEFORE constructing the engine. Wait for
+    # run.zig's input modes and a completed first paint before sending commands;
+    # otherwise the first command's deadline also includes unfinished boot.
     out = b""
-    end = time.time() + BOOT_MAX
-    while time.time() < end:
-        out += drain(fd, 0.3)
-        if b"\x1b[?1049h" in out:
-            return out + drain(fd, 1.5)
-    return out
+    end = time.monotonic() + BOOT_MAX
+    while time.monotonic() < end:
+        out += drain(fd, min(0.1, max(0, end - time.monotonic())))
+        frame = out.rfind(b"\x1b[2J\x1b[H")
+        if b"\x1b[?2004h" in out and frame >= 0 and b"\x1b[?2026l" in out[frame:]:
+            return True
+    return False
 
 
 def resize(fd, rows, cols):
@@ -181,27 +185,42 @@ def run():
     ws, env = fresh_ws()
     pid, fd = spawn(ws, env)
     try:
-        boot(fd)
+        if not boot(fd):
+            return "the TUI never completed its first interactive frame"
+        def command(cmd, needle, budget=1.5):
+            # A bang command is asynchronous. Wait for its actual output before
+            # sending the next, rather than silently losing setup under load.
+            # Keep the old per-command settle budget; a missing output is now
+            # reported at its source, not as a scroll-anchor failure later.
+            os.write(fd, (cmd + "\r").encode())
+            out = b""
+            end = time.monotonic() + budget
+            while time.monotonic() < end:
+                out += drain(fd, min(0.1, max(0, end - time.monotonic())))
+                if needle.encode() in out:
+                    return True
+            return False
+
         # Transcript content with no model call: `!` lines run in-session. Long
         # lines so every width below genuinely rewraps them.
         def block(tag):
             body = "filler line %s-%d padded out so that it rewraps at every width this probe drives"
-            lines = "".join((body % (tag, k)) + r"\n" for k in range(3))
-            os.write(fd, (r"!printf '" + lines + r"'" + "\r").encode())
-            drain(fd, 1.5)
+            # The final marker exists only in output, never the echoed command.
+            args = " ".join(f"{tag} {k}" for k in range(3))
+            return command(r"!printf '" + body + r"\n' " + args, f"filler line {tag}-2")
 
         for i in range(3):
-            block(f"A{i}")
-        os.write(fd, (MARK_CMD + "\r").encode())
-        drain(fd, 1.5)
+            if not block(f"A{i}"):
+                return f"setup block A{i} never printed its final output line"
+        if not command(MARK_CMD, MARK):
+            return f"the anchor command never printed {MARK}"
         # Enough transcript AFTER the marker that it starts off the top of the
         # viewport: the parking loop below then walks it in from the top edge,
         # which is the only way to put it near the anchored row from outside.
         for i in range(5):
-            block(f"B{i}")
-        os.write(fd, (r"!printf '" + TAIL + r"\n'" + "\r").encode())
-        out = drain(fd, 2.5)
-        if TAIL.encode() not in out:
+            if not block(f"B{i}"):
+                return f"setup block B{i} never printed its final output line"
+        if not command(r"!printf 'TAIL%sOMEGA\n' ROW", TAIL, budget=2.5):
             return "the transcript never showed the tail row (no `!` output)"
 
         # --- vertical only, while tailing: bottom-follow must hold -----------

@@ -30,6 +30,25 @@ current is part of cutting a release.
   unattended session unless the machine was started with `--yolo`.
   `docs/remote-control.md`, `docs/remote-control-security.md`.
 
+## v0.0.297
+
+- Native tools continue while MCP connections finish; explicitly configured
+  optional project servers participate after the normal trust checks.
+- Desktop turns retain final replies and completed tool results after errors.
+- Chat tabs support combined split layouts, saved layout restoration and
+  improved motion; large conversations render a bounded recent section.
+- Queued prompts can be edited with attachment previews. Draft edits pause
+  sending and survive navigation until saved or cancelled.
+- Inline HTML explanations persist with saved conversations, and the terminal
+  launcher opens projects in the desktop app.
+- Clipboard image reads are more reliable; completion text removes fragmented
+  citation control markers.
+- PR completion checks retain current-head verification obligations, and peer
+  handoffs update publication ownership atomically.
+- Desktop regression checks use bounded execution and verified input targets.
+
+See [the release notes](docs/releases/v0.0.297.md) for details.
+
 ## v0.0.295
 
 - `#812`: a mid-turn native image follow-up no longer sends empty `text` with

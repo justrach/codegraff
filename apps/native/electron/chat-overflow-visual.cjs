@@ -127,13 +127,33 @@ async function runChatOverflow({ win, origin, output }) {
     })()`);
     assert.ok(point, `${label}: wide content needs its own horizontal scroller`);
     await settle();
-    const geometry = await js(`(() => {
-      const e = ${transcript}, local = window.overflowLocal, r = local.getBoundingClientRect(), b = e.getBoundingClientRect();
-      return { x: Math.round(r.left + Math.min(r.width / 2, 100)), y: Math.round(Math.max(r.top, b.top) + Math.min(r.height / 2, 45)),
+    const readGeometry = () => js(`(() => {
+      const e = ${transcript}, local = window.overflowLocal;
+      if (!local?.isConnected) return null;
+      const r = local.getBoundingClientRect(), b = e.getBoundingClientRect();
+      const left = Math.max(r.left + local.clientLeft, b.left, 0), right = Math.min(r.left + local.clientLeft + local.clientWidth, b.left + e.clientWidth, innerWidth);
+      const top = Math.max(r.top + local.clientTop, b.top, 0), bottom = Math.min(r.top + local.clientTop + local.clientHeight, b.top + e.clientHeight, innerHeight);
+      const x = Math.floor((left + right) / 2), y = Math.floor((top + bottom) / 2);
+      return { x, y, hit: right - left > 2 && bottom - top > 2 && local.contains(document.elementFromPoint(x, y)),
         contained: r.left >= b.left - 1 && r.right <= b.left + e.clientWidth + 1, top: e.scrollTop };
     })()`);
+    // Streaming and entry animations may move a block after it first appears.
+    // Choose its visible intersection and require the same real hit target on
+    // consecutive frames before dispatching trusted input into Chromium.
+    let geometry, previous;
+    for (let i = 0; i < 120; i++) {
+      geometry = await readGeometry();
+      if (geometry?.hit && JSON.stringify(geometry) === JSON.stringify(previous)) break;
+      previous = geometry;
+      await js(`new Promise(resolve => requestAnimationFrame(() => resolve(true)))`);
+      if (i === 119) throw Error(`${label}: no stable visible wheel target ${JSON.stringify(geometry)}`);
+    }
     assert.ok(geometry.contained, `${label}: local scroller fits transcript`);
+    await js(`window.overflowWheel = null; window.overflowLocal.addEventListener('wheel', event => {
+      window.overflowWheel = { trusted: event.isTrusted, deltaX: event.deltaX, deltaY: event.deltaY };
+    }, { once: true, passive: true })`);
     await wheel({ x: geometry.x, y: geometry.y }, -240, 0);
+    assert.deepEqual(await js(`window.overflowWheel`), { trusted: true, deltaX: 240, deltaY: 0 }, `${label}: trusted horizontal wheel reaches local scroller`);
     assert.ok(await js(`window.overflowLocal.scrollLeft > 10`), `${label}: horizontal wheel reveals wide content`);
     assert.equal(await js(`${transcript}.scrollLeft`), 0, `${label}: local scrolling never pans transcript`);
     assert.ok(Math.abs(await js(`${transcript}.scrollTop`) - geometry.top) < 2, `${label}: local horizontal wheel preserves vertical position`);

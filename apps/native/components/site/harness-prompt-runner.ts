@@ -5,7 +5,7 @@ import { prompt } from "@/lib/acp-client";
 import { annotationsBlock, type BrowserPin } from "@/lib/browser/annotations";
 import { browserHandle, browserNav } from "@/lib/browser-client";
 import { pushHistory, saveHistory } from "@/lib/prompt-history";
-import { shiftQueuedPrompt, type QueuedPrompt } from "@/lib/prompt-queue";
+import type { QueuedPrompt } from "@/lib/prompt-queue";
 import type { createQueueSteerer } from "@/lib/prompt-queue-steer";
 import type { Chat } from "./harness-types";
 type Ref<T> = MutableRefObject<T>;
@@ -18,9 +18,9 @@ type Props = {
   pinsRef: Ref<Record<number, BrowserPin[]>>; handleOf(id: number): string;
   setPins(id: number, pins: BrowserPin[]): void; requireSession(id: number): Promise<string>;
   adoptCatalog(id: number): Promise<void>; refreshStored(): Promise<void>;
-  queuesRef: Ref<Record<number, QueuedPrompt[]>>; setQueue(id: number, queue: QueuedPrompt[]): void;
+  takeQueuedPrompt(id: number): QueuedPrompt | undefined;
 };
-export function createPromptRunner({runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, queuesRef, setQueue, setCancelError}: Props) {
+export function createPromptRunner({runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError}: Props) {
   const patchAssistant = (chatId: number, msgId: number, next: AssistantTurn) => {
     setChats((current) =>
       current.map((c) =>
@@ -109,8 +109,7 @@ export function createPromptRunner({runningRef, steerer, setFollowing, chatsRef,
       setBusyFor(chatId, false);
       void refreshStored();
       setTimeout(() => void refreshStored(), 2500);
-      const { next, rest } = shiftQueuedPrompt(queuesRef.current[chatId] ?? []);
-      setQueue(chatId, rest);
+      const next = takeQueuedPrompt(chatId);
       if (next) void runPrompt(chatId, next.text);
     }
   };

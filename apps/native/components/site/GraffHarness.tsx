@@ -1,5 +1,6 @@
 "use client";
 import { useHarnessSessions } from "./useHarnessSessions";
+import { resumeQueuedPrompt } from "@/lib/prompt-queue-resume";
 import { createPromptRunner } from "./harness-prompt-runner";
 
 import { workspaceActions } from "./harness-workspace-actions";
@@ -132,9 +133,10 @@ export default function GraffHarness() {
   const panesRef = useRef<number[]>([]);
   panesRef.current = panes;
   const [, setFollowing] = useState(true);
-  const { queuesRef, queues, queueIdRef, setQueue, steerer, steerStatus, remove: removeQueued } = usePromptQueue();
+  const { queuesRef, queues, queueIdRef, setQueue, steerer, steerStatus, remove: removeQueued, edit: editQueued, beginEdit, cancelEdit, changeEdit, take: takeQueuedPrompt } = usePromptQueue();
   const [cancelError, setCancelError] = useState<Record<number, string>>({});
   const runningRef = useRef(new Set<number>());
+  const queueResumesRef = useRef(new Set<number>());
   // Closed tabs, oldest first, for the reopen shortcut.
   const closedRef = useRef<{ session: string | null; cwd?: string; resumable: boolean }[]>([]);
 
@@ -194,7 +196,7 @@ export default function GraffHarness() {
   };
 
   const runPrompt = createPromptRunner({
-    runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, queuesRef, setQueue, setCancelError
+    runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError
   });
   const settings = useQuietSettings({ requireSession, handleOf, running: runningRef.current, apply: (catalog) => setModels(catalog.models) });
 
@@ -398,6 +400,12 @@ export default function GraffHarness() {
   const sidebarWorkspace = activeWorkspace ?? (activePath ? { path: activePath, name: basename(activePath) } : undefined);
   const footerTitle = sessionFooterTitle(chatThread.session, sessionId, chatCwd);
 
+  const resumeQueue = (chatId: number) => void resumeQueuedPrompt(chatId, {
+    pending: queueResumesRef.current,
+    canStart: id => !runningRef.current.has(id) && chatsRef.current.some(chat => chat.id === id),
+    wait: settings.wait, take: takeQueuedPrompt, run: runPrompt,
+  });
+
   const columnBody = (thread: Chat) => <ChatColumn key={thread.id} thread={thread}
     compact={columnIds.length > 1} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
     onOpenPath={openPath} onReview={openChanges}
@@ -423,7 +431,11 @@ export default function GraffHarness() {
       },
     }}
     queue={{ items: queues[thread.id] ?? [], busy: busyIds.has(thread.id), status: steerStatus[thread.id], error: cancelError[thread.id],
-      onRemove: item => removeQueued(thread.id, item), onSteer: item => steerer.steer(thread.id, item, () => {
+      onBeginEdit: item => beginEdit(thread.id, item),
+      onChangeEdit: (item, draft) => changeEdit(thread.id, item, draft),
+      onEdit: (item, text) => { editQueued(thread.id, item, text); resumeQueue(thread.id); },
+      onCancelEdit: item => { cancelEdit(thread.id, item); resumeQueue(thread.id); },
+      onRemove: item => { removeQueued(thread.id, item); resumeQueue(thread.id); }, onSteer: item => steerer.steer(thread.id, item, () => {
         const session = sessionsRef.current.get(thread.id);
         if (!session) return Promise.reject(new Error("Session unavailable"));
         return cancel(handleOf(thread.id), session);

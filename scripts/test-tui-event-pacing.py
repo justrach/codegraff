@@ -11,12 +11,11 @@ Everything else about that lives in unit tests over pure functions. This probe
 puts a real `graff tui` under a pty and measures the loop from OUTSIDE, using
 the local-only counters GRAFF_TUI_PAINT_STATS=1 prints on exit:
 
-  A. control      A session that is never scrolled at all. Its paint count is
-                  the floor everything else is measured against, so booting,
-                  the transcript fill and the idle self-heal cannot be
-                  mistaken for storm work.
+  A. baseline     The completed paints before the storm in that same session,
+                  counted from synchronized-update boundaries on the wire.
+                  Independently booted sessions can have different paint totals.
   B. storm        500 SGR wheel reports pushed in under a second. The paint
-                  count above the control floor must be BUDGETED (~one per
+                  count above its own baseline must be BUDGETED (~one per
                   8ms of storm), not one per report, and the 500 reports must
                   collapse into a handful of applied scroll deltas.
   C. responsive   A marker typed straight after the storm must echo within
@@ -33,6 +32,7 @@ import select
 import sys
 import tempfile
 import time
+from ptyharness import Screen
 
 # Absolutized BEFORE the fork: the child chdirs into its scratch workspace.
 BIN = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "zig-out/bin/graff")
@@ -57,6 +57,20 @@ SINGLE_BUDGET_MS = 50.0
 FRAME_BUDGET_MS = 8.0
 
 STATS = re.compile(rb"tui-paint-stats:((?: \w+=\d+)+)")
+PAINT_START = b"\x1b[?2026h"
+OUTPUT = bytearray()
+
+
+def read_output(fd):
+    chunk = os.read(fd, 65536)
+    OUTPUT.extend(chunk)
+    return chunk
+
+
+def visible_lines():
+    screen = Screen(ROWS, COLS)
+    screen.feed(bytes(OUTPUT))
+    return tuple(int(n) for n in re.findall(r"PACELINE(\d{3})", screen.screen_contents()))
 
 
 def drain(fd, seconds):
@@ -69,7 +83,7 @@ def drain(fd, seconds):
         if not r:
             continue
         try:
-            chunk = os.read(fd, 65536)
+            chunk = read_output(fd)
         except OSError:
             break
         if not chunk:
@@ -80,12 +94,14 @@ def drain(fd, seconds):
 
 def boot(fd):
     out = b""
-    end = time.time() + BOOT_MAX
-    while time.time() < end:
-        out += drain(fd, 0.3)
-        if b"\x1b[?1049h" in out:
-            return out + drain(fd, 1.5)
-    return out
+    end = time.monotonic() + BOOT_MAX
+    while time.monotonic() < end:
+        out += drain(fd, min(0.1, max(0, end - time.monotonic())))
+        frame = out.rfind(b"\x1b[2J\x1b[H")
+        # ADR 0042: the early alt-screen claim precedes engine construction.
+        if b"\x1b[?2004h" in out and frame >= 0 and b"\x1b[?2026l" in out[frame:]:
+            return True
+    return False
 
 
 def resize(fd, rows, cols):
@@ -156,10 +172,16 @@ def fill_transcript(fd):
     """A transcript tall enough that scrolling always changes the frame — a
     storm over an empty screen would compose the same bytes every time and
     prove nothing about paints."""
-    for _ in range(5):
-        os.write(fd, b"!seq 1 40\r")
-        drain(fd, 1.6)
-    return drain(fd, 0.5)
+    for block in range(5):
+        first, last = block * 40, block * 40 + 39
+        args = " ".join(str(i) for i in range(first, last + 1))
+        os.write(fd, (r"!printf 'PACELINE%03d\n' " + args + "\r").encode())
+        # Only the output carries the formatted marker. Keep the old 1.6s
+        # setup budget, but never send another command while this one is busy.
+        if wait_for(fd, f"PACELINE{last:03d}".encode(), 1.6) is None:
+            return f"setup block {block} never printed its final output line"
+    drain(fd, 0.5)
+    return None
 
 
 def push_paced(fd, data_units, total_s):
@@ -183,7 +205,7 @@ def push_paced(fd, data_units, total_s):
                 r, _, _ = select.select([fd], [], [], min(left, 0.002))
                 if r:
                     try:
-                        os.read(fd, 65536)
+                        read_output(fd)
                     except (BlockingIOError, OSError):
                         pass
             for _ in range(200):
@@ -215,7 +237,7 @@ def push(fd, data, deadline=5.0):
             r, wl, _ = select.select([fd], [fd], [], 0.1)
             if fd in r:
                 try:
-                    out += os.read(fd, 65536)
+                    out += read_output(fd)
                 except BlockingIOError:
                     pass
                 except OSError:
@@ -241,7 +263,7 @@ def wait_for(fd, needle, budget_s):
         if not r:
             continue
         try:
-            out += os.read(fd, 65536)
+            out += read_output(fd)
         except OSError:
             break
         if needle in out:
@@ -250,16 +272,28 @@ def wait_for(fd, needle, budget_s):
 
 
 def session(mode):
-    """One pty session: "control", "burst" or "paced". Returns (stats, err, extras)."""
+    """One measured pty session: "burst" or "paced". Returns (stats, err, extras)."""
     ws, env = fresh_ws()
+    OUTPUT.clear()
     pid, fd = spawn(ws, env)
     extras = {}
+    stopped = False
     try:
-        boot(fd)
-        fill_transcript(fd)
+        if not boot(fd):
+            return None, "the TUI never completed its first interactive frame", extras
+        error = fill_transcript(fd)
+        if error:
+            return None, error, extras
+        before = visible_lines()
+        if not before or before[-1] != 199:
+            return None, "the setup transcript is not following its final output line", extras
+        extras[f"{mode}_baseline"] = OUTPUT.count(PAINT_START)
         reports = []
         for f in range(FLINGS):
             reports += [UP if f % 2 == 0 else DOWN] * PER_FLING
+        # Equal opposing flings can legitimately coalesce to no movement.
+        # Keep 500 reports, with a net upward displacement and room for one flick.
+        reports[-1] = UP
         if mode == "burst":
             secs, _ = push(fd, b"".join(reports))
             extras["burst_s"] = secs
@@ -270,7 +304,7 @@ def session(mode):
             extras["paced_s"] = secs
             if sent < STORM_N:
                 return None, f"only {sent}/{STORM_N} paced reports were written", extras
-        if mode != "control":
+        if mode in ("burst", "paced"):
             # C: typing straight after the storm, while the loop is still
             # settling. A key must never sit behind the flood.
             os.write(fd, MARK)
@@ -278,6 +312,8 @@ def session(mode):
             extras["echo_ms"] = None if echo is None else echo * 1000.0
             os.write(fd, b"\x15")  # Ctrl+U: leave the composer empty again
             drain(fd, 0.4)
+            after = visible_lines()
+            extras[f"{mode}_moved"] = bool(after and after[0] < before[0])
             # D: one lone report on a quiet loop must paint on the spot — the
             # budget exists for storms and may not tax a single flick.
             t0 = time.time()
@@ -285,28 +321,34 @@ def session(mode):
             r, _, _ = select.select([fd], [], [], SINGLE_BUDGET_MS / 1000.0 * 4)
             extras["single_ms"] = (time.time() - t0) * 1000.0 if r else None
             if r:
-                os.read(fd, 65536)
+                read_output(fd)
         drain(fd, 0.4)
-        return quit_and_stats(pid, fd), None, extras
+        stats = quit_and_stats(pid, fd)
+        stopped = True
+        if stats and stats["paints"] != OUTPUT.count(PAINT_START):
+            return None, "observed paint boundaries do not match the session's paint counter", extras
+        return stats, None, extras
     finally:
+        if not stopped:
+            quit_and_stats(pid, fd)
         try:
             os.close(fd)
         except OSError:
             pass
 
 
-def check_storm(name, control, stats, extras, elapsed_s, min_batches, max_batches):
+def check_storm(name, stats, extras, elapsed_s, min_batches, max_batches):
     seen = stats["wheel_events"]
     batches = stats["wheel_batches"]
-    extra_paints = stats["paints"] - control["paints"]
+    extra_paints = stats["paints"] - extras[f"{name}_baseline"]
     extras[f"{name}_events"] = seen
     extras[f"{name}_deltas"] = batches
     extras[f"{name}_paints"] = extra_paints
     if seen < STORM_N * 0.95:
         return f"{name}: only {seen}/{STORM_N} wheel reports reached the loop — lost, not paced"
     # A storm that moved nothing would make "few paints" the trivial answer.
-    if extra_paints < 2:
-        return f"{name}: the storm changed the frame {extra_paints} times — it never scrolled anything"
+    if not extras[f"{name}_moved"]:
+        return f"{name}: the storm did not move the visible transcript toward older lines"
     # THE claim: paints are budgeted by the clock, not by the report count.
     ceiling = max(20, int(elapsed_s * 1000.0 / FRAME_BUDGET_MS) + 25)
     if extra_paints > ceiling:
@@ -326,15 +368,6 @@ def check_storm(name, control, stats, extras, elapsed_s, min_batches, max_batche
 
 def run():
     extras = {}
-    control, err, _ = session("control")
-    if err:
-        return err, extras
-    if control is None:
-        return "the control session printed no tui-paint-stats line", extras
-    if control["wheel_events"] != 0:
-        return f"the control session saw {control['wheel_events']} wheel events; it must see none", extras
-    extras["control_paints"] = control["paints"]
-
     # A: all at once. The tty hands the loop a backlog, so the reports fold
     # into a handful of deltas and cost a handful of paints.
     stats, err, ex = session("burst")
@@ -344,7 +377,7 @@ def run():
     if stats is None:
         return "the burst session printed no tui-paint-stats line", extras
     # +1 delta for the single-flick probe at the end of the session.
-    err = check_storm("burst", control, stats, extras, extras["burst_s"], 2, 40)
+    err = check_storm("burst", stats, extras, extras["burst_s"], 2, 40)
     if err:
         return err, extras
 
@@ -360,7 +393,7 @@ def run():
     # Nothing to fold when the reports arrive further apart than the loop takes
     # to service one, so the delta count is not the claim here — the paint count
     # is. The window only rules out an implementation that dropped reports.
-    return check_storm("paced", control, stats, extras, extras["paced_s"], 2, STORM_N + 5), extras
+    return check_storm("paced", stats, extras, extras["paced_s"], 2, STORM_N + 5), extras
 
 
 def main():

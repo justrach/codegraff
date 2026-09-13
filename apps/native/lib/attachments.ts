@@ -65,6 +65,23 @@ export function marker(attachment: Attachment): string {
   return `@[${attachment.path}]`;
 }
 
+/** A staged-image marker inside prompt text. One pattern for every reader: the
+ *  transcript bubble and a queued chip must not disagree about what counts as
+ *  an image. A marker naming anywhere else stays literal text — only files
+ *  under the attachment directory can be served back by `/api/attach`. */
+const IMAGE_MARKER_RE = /(@\[[^\]\n]*\/graff-native-attachments\/[^/\]\n]+\.(?:png|jpe?g|gif|webp|avif|bmp)\])/gi;
+
+/** Prompt text split into literal runs and image markers; odd indexes are the
+ *  markers, which is why every reader tests `index % 2`. */
+export function splitImageMarkers(text: string): string[] {
+  return text.split(IMAGE_MARKER_RE);
+}
+
+/** The staged file's basename — the name `/api/attach?name=` answers to. */
+export function markerName(marker: string): string {
+  return marker.slice(marker.lastIndexOf("/") + 1, -1);
+}
+
 /** The prompt text as it goes on the wire: the draft, then a marker for every
  *  attachment the draft has not already named. Someone who typed the path by
  *  hand and also dropped the file should not send it twice. */

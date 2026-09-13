@@ -23,6 +23,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run test:desktop
       - run: bun run build
+      - run: bunx playwright install chromium
+      - run: bun run test:queue
       - run: bun run test:turns
       - run: bun run test:tab-drag
       - run: bun run test:stream-performance
