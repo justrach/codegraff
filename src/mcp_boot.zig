@@ -124,7 +124,7 @@ pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]con
     var entries: std.ArrayList(Entry) = .empty;
     var it = merged.servers.iterator();
     while (it.next()) |entry| {
-        if (@import("tool_surface.zig").skipOptionalServer(entry.key_ptr.*, environ_map)) continue;
+        if (@import("tool_surface.zig").skipOptionalAtBoot(entry.key_ptr.*, environ_map, merged.isGlobalOnly(entry.key_ptr.*))) continue;
         if (entry.value_ptr.* != .object) continue;
         try entries.append(a, .{ .name = try a.dupe(u8, entry.key_ptr.*), .cfg = entry.value_ptr.*.object });
     }

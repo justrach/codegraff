@@ -148,6 +148,7 @@ pub fn build(b: *std.Build) void {
     for ([_]struct { import: []const u8, path: []const u8 }{
         .{ .import = "skill_doc_creator", .path = "assets/skills/skill-creator.md" },
         .{ .import = "skill_doc_mcp_config", .path = "assets/skills/mcp-config.md" },
+        .{ .import = "skill_doc_mcp", .path = "assets/skills/mcp.md" },
         .{ .import = "skill_doc_jspace", .path = "assets/skills/jspace.md" },
         .{ .import = "skill_doc_workspace", .path = "assets/skills/workspace.md" },
     }) |asset| {

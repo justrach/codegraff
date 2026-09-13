@@ -115,6 +115,9 @@ jobs:
       - name: Streamable HTTP MCP handshake and session regression
         run: python3 scripts/test-mcp-streamable-http.py --graff zig-out/bin/graff
 
+      - name: Optional MCP project opt-in and startup consent
+        run: python3 scripts/test-mcp-optional.py zig-out/bin/graff
+
       - name: Embedder mode --no-local-tools gate (#330)
         run: python3 scripts/test-no-local-tools.py --graff zig-out/bin/graff
 

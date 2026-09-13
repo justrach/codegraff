@@ -114,6 +114,12 @@ pub fn skipOptionalServer(name: []const u8, environ_map: anytype) bool {
     return false;
 }
 
+/// Extras inherited from global/plugin config stay opt-in. A workspace
+/// `.mcp.json` listing opts in that server; startup consent still applies.
+pub fn skipOptionalAtBoot(name: []const u8, environ_map: anytype, global_only: bool) bool {
+    return global_only and skipOptionalServer(name, environ_map);
+}
+
 fn optionalAllowed(name: []const u8, environ_map: anytype) bool {
     if (environ_map.get("GRAFF_MCP_OPTIONAL")) |v| {
         var it = std.mem.tokenizeAny(u8, v, ", ");
@@ -240,6 +246,14 @@ test "skipOptionalServer keeps deepwiki/mobbin opt-in" {
     try env.put("GRAFF_MCP_OPTIONAL", "deepwiki,mobbin");
     try std.testing.expect(!skipOptionalServer("deepwiki", env));
     try std.testing.expect(!skipOptionalServer("mobbin", env));
+}
+
+test "skipOptionalAtBoot lets a workspace listing connect" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try std.testing.expect(skipOptionalAtBoot("deepwiki", env, true));
+    try std.testing.expect(!skipOptionalAtBoot("deepwiki", env, false));
+    try std.testing.expect(!skipOptionalAtBoot("codedbpro", env, true));
 }
 
 test "worker specs keep read_file and codedb; worker MCP keeps pro reads not writes" {
