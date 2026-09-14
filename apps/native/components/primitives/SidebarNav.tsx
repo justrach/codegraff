@@ -71,6 +71,7 @@ type SidebarNavProps = {
   /** footer call-to-action — defaults to the demo "Upgrade" button */
   footerLabel?: string;
   footerIcon?: ReactNode;
+  footerControls?: ReactNode;
   onFooterClick?: () => void;
   /** Tooltip on the footer control. */
   footerTitle?: string;
@@ -178,6 +179,7 @@ export default function SidebarNav({
   onNavigate,
   footerLabel = "Upgrade",
   footerIcon,
+  footerControls,
   onFooterClick,
   footerTitle,
   recents = DEFAULT_RECENTS,
@@ -333,7 +335,7 @@ export default function SidebarNav({
               onNewChat?.();
             }}
           />
-          {NAV_ITEMS.map((item) => (
+          {NAV_ITEMS.filter(item => !footerControls || !["workspace", "changes", "browser"].includes(item.key)).map((item) => (
             <RailButton
               key={item.key}
               icon={item.icon}
@@ -457,7 +459,7 @@ export default function SidebarNav({
                   </span>
                 </button>
                 {!collapsed && (onArchiveRecent || onDeleteRecent) && (
-                  <ActionMenu label={`Actions for ${item.label}`} className="absolute right-3 top-2 z-20 opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100">
+                  <ActionMenu label={`Actions for ${item.label}`} className="absolute right-3 top-2 z-20 opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100 [@media(hover:none)]:opacity-100">
                     {onArchiveRecent && <button type="button" aria-label={`Archive ${item.label}`} onClick={() => onArchiveRecent(item.id)}>Archive chat</button>}
                     {onDeleteRecent && <button type="button" aria-label={`Delete ${item.label}`} className="text-red" onClick={() => onDeleteRecent(item.id)}>Delete chat…</button>}
                   </ActionMenu>
@@ -488,12 +490,13 @@ export default function SidebarNav({
           </div>
         </div>
 
+        {footerControls}
         <div inert={collapsed} aria-hidden={collapsed} className="sidebar-copy mx-2 mt-3 w-[232px] border-t border-line pt-3">
           <button
             type="button"
             onClick={onFooterClick ?? onNewChat}
             title={footerTitle}
-            className="flex h-8 w-full items-center justify-center gap-1.5 rounded-control bg-hover-2 px-2 text-[12.5px] font-medium text-ink transition-[background-color,transform] duration-150 hover:bg-line-strong active:scale-[0.98]"
+            className="flex h-8 w-full items-center justify-center gap-1.5 rounded-control px-2 text-[11px] font-medium text-ink-3 transition-[background-color,transform] duration-150 hover:bg-line-strong active:scale-[0.98]"
           >
             {footerIcon}
             <span className="min-w-0 flex-1 truncate text-center">{footerLabel}</span>

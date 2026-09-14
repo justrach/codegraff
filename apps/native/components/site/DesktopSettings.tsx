@@ -41,9 +41,9 @@ export default function DesktopSettings({ labeled = false }: { labeled?: boolean
   };
   if (!available) return null;
   return <>
-    <button ref={trigger} aria-label="Settings" title="Settings" aria-haspopup="dialog" aria-expanded={open}
+    <button ref={trigger} aria-label={labeled ? "Link settings" : "Settings"} title="Settings" aria-haspopup="dialog" aria-expanded={open}
       onClick={() => setOpen(value => !value)} className="flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-3 hover:bg-hover hover:text-ink">
-      {labeled ? "Settings" : <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="m9 3-1 3-3 1 1 3-2 2 2 2-1 3 3 1 1 3h6l1-3 3-1-1-3 2-2-2-2 1-3-3-1-1-3Z"/><circle cx="12" cy="12" r="3"/></svg>}
+      {labeled ? "Link settings" : <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="m9 3-1 3-3 1 1 3-2 2 2 2-1 3 3 1 1 3h6l1-3 3-1-1-3 2-2-2-2 1-3-3-1-1-3Z"/><circle cx="12" cy="12" r="3"/></svg>}
     </button>
     {open && createPortal(<div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/20 p-4" onPointerDown={event => {
       if (event.target === event.currentTarget) { setOpen(false); restoreActionFocus(trigger.current); }

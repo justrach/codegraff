@@ -2,8 +2,7 @@ import SplitLayoutIcon from "./SplitLayoutIcon";
 import type {SplitTree} from "@/lib/split-tree";
 import ActionMenu from "@/components/primitives/ActionMenu";
 import { useEffect, useRef } from "react";
-import { ThemeToggle } from "./ThemeToggle";
-import DesktopSettings from "./DesktopSettings";
+import AppSettings from "./AppSettings";
 import type { PointerEvent, MouseEvent } from "react";
 import type { Chat } from "./harness-types";
 import reviewStyles from "./ChangesPane.module.css";
@@ -93,15 +92,19 @@ export default function HarnessChrome({chats, activeId, busyIds, focusChat, clos
           className="max-w-48 truncate rounded-md px-2 py-1 text-xs font-medium text-ink-2 hover:bg-hover">{workspaceName}</button>
         <button type="button" onClick={openChanges} aria-label="Review workspace changes" className="rounded-md px-2 py-1 text-xs text-ink-2 hover:bg-hover">Changes</button>
         {(taskCount > 0 || tasksOpen) && onTasks && <button type="button" aria-label="Show tasks" aria-pressed={tasksOpen} onClick={onTasks} className="rounded-md px-2 py-1 text-xs text-ink-2 hover:bg-hover">Tasks{taskCount ? ` (${taskCount})` : ""}</button>}
-        <ActionMenu label="More workspace actions" text="More" className="ml-auto shrink-0">
-          <button type="button" aria-pressed={conversationsOpen} onClick={openConversations} title="All conversations">Conversations</button>
-          <button type="button" aria-pressed={split} onClick={toggleSplit}>{split ? "Close splits" : "Split view"} <span className="ml-auto text-ink-3">⌘\</span></button>
-          <button type="button" onClick={onFolder}>Open a folder…</button>
-          <button type="button" aria-pressed={browserOpen} onClick={onBrowser} title="Sidecar browser — a Chrome tab this chat and its agent share">Browser{pinCount > 0 ? ` (${pinCount} pins)` : ""}</button>
-          <button type="button" aria-label="Toggle terminal" aria-pressed={terminalVisible} onClick={toggleTerminal}>Terminal <span className="ml-auto text-ink-3">⌘J</span></button>
-          <ThemeToggle labeled />
-          <DesktopSettings labeled />
+        <ActionMenu label="Workspace tools" text="Workspace tools" wide className="ml-auto shrink-0">
+          <p className="px-3 py-2 text-[11px] font-medium text-ink-3">Tools for this workspace</p>
+          <button type="button" aria-label="Files" aria-pressed={filesOpen} onClick={onFiles}><span>Files<span className="mt-1 block text-ink-3">Explore the current project folder</span></span></button>
+          <button type="button" aria-label="Browser" aria-pressed={browserOpen} onClick={onBrowser}><span>Browser{pinCount > 0 ? ` (${pinCount} pins)` : ""}<span className="mt-1 block text-ink-3">Keep a web page beside your conversation</span></span></button>
+          <button type="button" aria-label="Toggle terminal" aria-pressed={terminalVisible} onClick={toggleTerminal}><span>Terminal<span className="mt-1 block text-ink-3">Run commands in this workspace · ⌘J</span></span></button>
+          <button type="button" onClick={onFolder}><span>Open a folder…<span className="mt-1 block text-ink-3">Choose another workspace</span></span></button>
         </ActionMenu>
+        <ActionMenu label="Chat actions" text="More" className="shrink-0">
+          <button type="button" onClick={newChat}>New chat <span className="ml-auto text-ink-3">⌘T</span></button>
+          <button type="button" aria-pressed={split} onClick={toggleSplit}>{split ? "Close splits" : "Split view"} <span className="ml-auto text-ink-3">⌘\</span></button>
+          <button type="button" aria-pressed={conversationsOpen} onClick={openConversations}>All conversations</button>
+        </ActionMenu>
+        <span className="lg:hidden"><AppSettings /></span>
       </div>
       {splitNotice && <p role="status" data-split-limit className="border-t border-line px-3 py-1.5 text-[12px] text-ink-2">{splitNotice}</p>}
     </div>

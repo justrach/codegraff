@@ -11,6 +11,7 @@ import { useQuietSettings } from "./useQuietSettings";
 import { useTabDrag } from "./useTabDrag";
 import { mergeChatGroups, reorderChatGroups } from "@/lib/chat-groups";
 import { useChatGroups } from "./useChatGroups";
+import AppSettings from "./AppSettings";
 import HarnessChrome from "./HarnessChrome";
 import ChatSplitLayout from "./ChatSplitLayout";
 import TerminalPane from "./TerminalPane";
@@ -498,7 +499,8 @@ export default function GraffHarness() {
         onDeleteRecent={(id) => dropStored(id, false)}
         onNewWorkspace={() => setDialog({ mode: "new" })}
         onWorkspaceSettings={() => setDialog(sidebarWorkspace ? { mode: "settings" } : { mode: "new" })}
-        footerLabel={copiedResume ? "Copied resume command" : (chatThread.session ?? "Connecting…")}
+        footerLabel={copiedResume ? "Copied resume command" : "Copy terminal resume command"}
+        footerControls={<AppSettings sidebar />}
         footerTitle={footerTitle}
         onFooterClick={copyResume}
       />

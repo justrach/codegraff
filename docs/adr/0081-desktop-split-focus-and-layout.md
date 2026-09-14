@@ -21,6 +21,10 @@ the whole group. The split toggle returns group members to individual tabs.
 
 Pane content responds to its own container width: narrow splits reduce
 transcript padding and user-message indentation even on a wide desktop.
+Short panes also reduce spacing and omit the optional home project card; input,
+errors and saved-session ownership controls stay available. App Settings lives
+in the sidebar footer (toolbar on small windows); Workspace tools groups file,
+browser and terminal access, while More holds conversation actions.
 Empty split composers sit at the bottom, matching populated panes.
 
 Tabs and workspace controls live in a shared toolbar above all panes. A combined

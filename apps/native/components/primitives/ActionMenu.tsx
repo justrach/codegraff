@@ -2,8 +2,8 @@
 import { useId, useRef, useState, type ReactNode } from "react";
 
 /** Native popover: top-layer placement, outside dismissal, Escape and focus return. */
-export default function ActionMenu({ label, text = "…", children, className = "" }: {
-  label: string; text?: string; children: ReactNode; className?: string;
+export default function ActionMenu({ label, text = "…", children, className = "", wide = false }: {
+  label: string; text?: ReactNode; wide?: boolean; children: ReactNode; className?: string;
 }) {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
@@ -19,10 +19,10 @@ export default function ActionMenu({ label, text = "…", children, className = 
   return <span className={className}>
     <button ref={trigger} type="button" popoverTarget={id} aria-label={label} aria-expanded={open} aria-haspopup="dialog"
       className="flex h-7 min-w-7 items-center justify-center rounded-md px-2 text-xs text-ink-2 hover:bg-hover focus-visible:outline-auto">{text}</button>
-    <div ref={panel} id={id} popover="auto" role="dialog" aria-label={label}
+    <div ref={panel} id={id} popover="auto" role={open ? "dialog" : undefined} aria-label={label}
       onToggle={event => { const opened = event.newState === "open"; setOpen(opened); if (opened) { position(); panel.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus(); } }}
       onClick={event => { if ((event.target as Element).closest("button:not(:disabled)")) panel.current?.hidePopover(); }}
-      className="fixed m-0 max-h-[calc(100dvh-16px)] w-52 overflow-y-auto rounded-lg border border-line bg-surface p-1.5 text-ink shadow-overlay [&>button]:flex [&>button]:w-full [&>button]:justify-start [&>button]:rounded-md [&>button]:px-3 [&>button]:py-2 [&>button]:text-left [&>button]:text-xs [&>button:hover]:bg-hover">
+      className={`fixed m-0 max-h-[calc(100dvh-16px)] ${wide ? "w-80 max-w-[calc(100vw-16px)]" : "w-52"} overflow-y-auto rounded-lg border border-line bg-surface p-1.5 text-ink shadow-overlay [&>button]:flex [&>button]:w-full [&>button]:justify-start [&>button]:rounded-md [&>button]:px-3 [&>button]:py-2 [&>button]:text-left [&>button]:text-xs [&>button:hover]:bg-hover`}>
       {children}
     </div>
   </span>;
