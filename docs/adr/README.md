@@ -122,6 +122,7 @@ record only when you need the evidence or the edge cases.
 | [0109](0109-resume-retains-catalog-and-layout-snapshots.md) | Resume restores loaded tool selections and the same-workspace layout snapshot, without freezing current instructions or granting permissions. |
 | [0110](0110-project-mcp-listing-opts-in-optional-servers.md) | Project MCP entries opt in optional servers; inherited extras still require opt-in, and startup consent applies to both. |
 | [0112](0112-mcp-wire-names-preserve-raw-routing.md) | MCP wire names are escaped and bounded; raw server/tool identities control policy and dispatch. |
+| [0111](0111-peer-inbox-retains-bodies-and-reports-loss.md) | Peer inbox owns complete bodies, reports and persists loss, and clears only after a complete read result is allocated. |
 
 ## When to write one
 

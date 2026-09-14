@@ -80,7 +80,11 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
         return .{ .text = peer_inbox.formatList(self.arena, everyone, presence.ownIdentity()), .is_error = false };
     }
     if (std.mem.eql(u8, action, "inbox")) {
-        return .{ .text = peer_inbox.takeAll(self.arena), .is_error = false };
+        const text = peer_inbox.takeAll(self.arena) catch return .{
+            .text = "peer_message: inbox read failed; messages and dropped count retained — retry action=inbox",
+            .is_error = true,
+        };
+        return .{ .text = text, .is_error = false };
     }
     if (!std.mem.eql(u8, action, "send")) return .{
         .text = "peer_message action must be send, list, inbox, claim, release, handoff, or status",
