@@ -1,9 +1,10 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import SavedCacheCheck from "./SavedCacheCheck";
 import { loadSession } from "@/lib/sessions";
 
-export default function SavedSnapshot({ name, cwd, onRefresh, onContinue }: {
-  name: string; cwd?: string;
+export default function SavedSnapshot({ name, cwd, model, onRefresh, onContinue }: {
+  name: string; cwd?: string; model?: string;
   onRefresh: (loaded: Awaited<ReturnType<typeof loadSession>>) => void;
   onContinue: () => void;
 }) {
@@ -31,7 +32,7 @@ export default function SavedSnapshot({ name, cwd, onRefresh, onContinue }: {
     {error && <p role="alert" className="mt-2 text-red">Could not refresh the snapshot. Try again.</p>}
     <div className="mt-3 flex flex-wrap gap-2">
       <button type="button" data-refresh-snapshot disabled={refreshing} onClick={() => void refresh()} className="rounded-control px-3 py-1.5 hover:bg-hover disabled:opacity-50">{refreshing ? "Refreshing…" : "Refresh snapshot"}</button>
-      <button type="button" data-continue-snapshot disabled={refreshing} onClick={onContinue} className="rounded-control bg-hover-2 px-3 py-1.5 text-ink disabled:opacity-50">Continue here</button>
     </div>
+    <SavedCacheCheck name={name} cwd={cwd} model={model} disabled={refreshing} onContinue={onContinue} />
   </section>;
 }

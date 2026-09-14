@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { NextRequest } from "next/server";
@@ -183,6 +183,35 @@ test("#912: generated notices survive raw and projected loads without claiming m
       expect(loaded.messages[0]).toEqual({ role: "user", text, origin: "notification" });
       expect(loaded.messages[1]).toEqual({ role: "user", text });
       expect(loaded.meta.title).toBe(text.slice(0, 80));
+    }
+  } finally { file.cleanup(); }
+});
+
+
+test("cache preflight metadata reads omit the transcript without changing raw session responses", async () => {
+  const file = fixture();
+  try {
+    const response = await GET(new NextRequest(file.url("metadata")));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.model).toBe("demo");
+    expect(body.workspace).toBe(file.root);
+    expect(body.messages).toBeUndefined();
+    expect(body.transcript).toBeUndefined();
+    expect(body.execution).toBe("unknown");
+  } finally { file.cleanup(); }
+});
+
+
+test("cache workspace comparison resolves aliases and leaves missing saved paths unknown", async () => {
+  const file = fixture();
+  try {
+    const alias = path.join(file.root, "alias");
+    symlinkSync(file.root, alias);
+    for (const [workspace, expected] of [[alias, true], [undefined, null], [path.join(file.root, "missing"), null]] as const) {
+      writeFileSync(path.join(file.root, ".graff/sessions/example.session.json"), JSON.stringify({ model: "demo", messages: raw, workspace }));
+      const body = await (await GET(new NextRequest(file.url("metadata")))).json();
+      expect(body.cacheWorkspaceMatches).toBe(expected);
     }
   } finally { file.cleanup(); }
 });

@@ -32,7 +32,7 @@ export default function ChatColumn({ thread, compact, following, register, onOpe
       onOpenPath={onOpenPath} onReview={onReview} snapshot={thread.snapshot} />
     <div data-chat-composer className={`shrink-0 bg-page px-4 ${compact ? "py-2" : "pt-3 pb-6 sm:px-8"}`}>
       <div className="mx-auto max-w-[720px]">
-        {thread.snapshot && thread.session ? <SavedSnapshot name={thread.session} cwd={thread.cwd}
+        {thread.snapshot && thread.session ? <SavedSnapshot name={thread.session} cwd={thread.cwd} model={prompt.modelKey}
           onRefresh={onRefresh} onContinue={onContinue} /> : <>
           {pins > 0 && <div className="mb-2 flex items-center gap-2 rounded-[8px] bg-surface px-2.5 py-1.5 text-[12.5px] text-ink-2 shadow-hairline">
             <span className="shrink-0 text-[11px] font-medium tracking-wide text-ink-3 uppercase">Pinned</span>

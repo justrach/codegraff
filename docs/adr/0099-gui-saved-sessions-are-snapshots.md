@@ -35,6 +35,11 @@ The GUI renders these as expandable session notices and excludes them from promp
 recall and title recovery. Text prefixes are not evidence of notification origin;
 older unmarked job notices retain their historical presentation.
 
+Before enabling continuation, the GUI reads fresh saved metadata and compares
+the selected model and workspace. Changes flag cache reuse as at risk; matching
+metadata remains unverified. No agent or model request is started by this check.
+Saved settings cannot establish prefix equality or provider cache retention.
+
 ## Consequences
 
 Opening and refreshing history never bootstrap an ACP session. The composer
