@@ -1,4 +1,4 @@
-const { WebContentsView, session } = require('electron');
+const { WebContentsView, session, webContents, dialog } = require('electron');
 const path = require('node:path');
 const { pageURL, bounds } = require('./policy.cjs');
 
@@ -8,6 +8,12 @@ class BrowserTabs {
     this.visible = null; this.suspendMs = 60_000;
     // One persistent browser session shares network/cache processes, separate from the app.
     this.session = session.fromPartition('persist:browser');
+    require('./webauthn.cjs').installAccountSelection(this.session, { dialog, ownerForFrame: frame => {
+      if (!frame || frame.detached || this.window.isDestroyed()) return null;
+      const contents = webContents.fromFrame(frame);
+      const tab = this.tabs.get(this.visible);
+      return tab?.view?.webContents === contents ? { window: this.window, contents } : null;
+    } });
     this.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
     this.session.setPermissionCheckHandler(() => false);
     this.session.on('will-download', (_event, item) => { item.setSaveDialogOptions({ title: 'Save download', defaultPath: item.getFilename() }); });
@@ -78,6 +84,7 @@ class BrowserTabs {
   }
   hide(chat) {
     const tab = this.tabs.get(chat); if (!tab) return;
+    tab.view?.webContents.emit('graff-webauthn-cancel');
     tab.view?.setVisible(false); if (this.visible === chat) this.visible = null;
     clearTimeout(tab.timer);
     tab.timer = setTimeout(() => { this.release(tab); this.notify(tab); }, this.suspendMs);

@@ -27,6 +27,7 @@ async function run({ win, backend, browser, token }) {
   assert.match(version, /graff/i);
   if (process.env.GRAFF_SMOKE_HTML_TOOL) await require('./smoke-html.cjs').run({ win, backend, token });
   const report = { passed: ['bundled server', 'production composer', 'empty browser lifecycle', 'request authentication', 'native module ABI', 'bundled engine executable', 'packaged executable'], version };
+  if (process.env.GRAFF_SMOKE_WEBAUTHN) report.passed.push(await require('./smoke-webauthn.cjs').run({ browser, backend, resources }));
   fs.writeFileSync(process.env.GRAFF_ELECTRON_SMOKE, JSON.stringify(report, null, 2));
   console.log(process.env.GRAFF_SMOKE_HTML_TOOL ? 'Packaged launch and offline HTML tool checks passed.' : 'Packaged launch checks passed. No prompt sent or coding setting changed.');
 }

@@ -13,6 +13,7 @@
     "test": "node --experimental-strip-types --test lib/cite-markup.test.ts lib/graff-events.test.ts lib/acp.test.ts lib/sessions.test.ts lib/session-store.test.ts lib/follow-scroll.test.ts lib/prompt-queue.test.ts lib/prompt-queue-steer.test.ts lib/prompt-queue-resume.test.ts lib/agents.test.ts lib/mermaid-plugin.test.ts lib/prompt-history.test.ts lib/attachments.test.ts lib/workspaces.test.ts lib/fuzzy.test.ts lib/folder-picker.test.ts lib/browser/annotations.test.ts lib/browser/url.test.ts components/site/harness-split.test.ts",
     "electron:build": "bash electron/build.sh",
     "test:electron": "bun test electron/policy.test.cjs",
+    "test:webauthn": "node scripts/test-webauthn.mjs",
     "test:desktop": "bun test lib ./electron/*.test.cjs",
     "test:tab-drag": "GRAFF_VISUAL_SUITE=tab-drag bun scripts/test-visual.mjs",
     "test:turns": "GRAFF_VISUAL_SUITE=turns bun scripts/test-visual.mjs",
