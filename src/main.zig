@@ -49,7 +49,7 @@ const learn_store = @import("learn_store.zig");
 const learn_eval = @import("learn_eval.zig");
 const learn_cli = @import("learn_cli.zig");
 test {
-    _ = @import("clipboard_native.zig");
+    _ = .{ @import("clipboard_native.zig"), @import("clipboard_edge_tests.zig"), @import("clipboard_failure_tests.zig"), @import("process_runner_clipboard_tests.zig") };
     _ = @import("server_orphan.zig");
     _ = @import("repo_transaction.zig");
     _ = .{ @import("pr_command.zig"), @import("pr_evidence.zig"), @import("pr_verify.zig") };
