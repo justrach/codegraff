@@ -67,6 +67,7 @@ process.on('SIGTERM', () => app.quit());
 process.on('SIGINT', () => app.quit());
 
 app.whenReady().then(async () => {
+  await require('./shell-path.cjs').restoreShellPath();
   app.setAccessibilitySupportEnabled(true);
   const token = randomBytes(32).toString('hex');
   win = createWindow({ width: 1440, height: 920, minWidth: 900, minHeight: 600,
