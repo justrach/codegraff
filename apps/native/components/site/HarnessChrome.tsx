@@ -46,8 +46,8 @@ export default function HarnessChrome({chats, activeId, busyIds, focusChat, clos
             {c.tree && (c.paneIds?.length ?? 1) > 1 && <SplitLayoutIcon tree={c.tree} />}
             {busyIds.has(c.id) && (
               <span
-                className="mr-1 size-1.5 shrink-0 animate-pulse rounded-full"
-                style={{ background: "var(--accent)" }}
+                className="mr-1 size-3 shrink-0 animate-spin rounded-full border-[1.5px] border-current border-r-transparent text-ink-2 motion-reduce:animate-none"
+                role="img"
                 aria-label="Working"
               />
             )}
