@@ -142,3 +142,26 @@ test("#839: intermediate and final-looking saved prose cannot establish live com
     }
   }
 });
+
+test('#912: snapshot uses saved todos over stale historical writes, and honors clearing', async () => {
+  const file = fixture();
+  try {
+    const messages = [{ role: 'assistant', content: 'Earlier work', tool_calls: [
+      { id: 'old-todo', function: { name: 'todo_write', arguments: JSON.stringify({ todos: [{ content: 'Review', status: 'in_progress' }] }) } },
+    ] }];
+    for (const todos of [[{ content: 'Review', status: 'completed', epoch: 1 }], []]) {
+      writeFileSync(path.join(file.root, '.graff/sessions/example.session.json'), JSON.stringify({ messages, todos }));
+      for (const view of [undefined, 'transcript']) {
+        const loaded = sessionFromResponse(await (await GET(new NextRequest(file.url(view)))).json());
+        const last = loaded.messages.at(-1);
+        expect(last?.role).toBe('assistant');
+        if (last?.role === 'assistant') {
+          expect(last.turn.todos).toEqual(todos.map(({content, status}, i) => ({id: `todo-${i}`, content, status})));
+          expect(last.turn.status).toBe('snapshot');
+        }
+      }
+    }
+    const legacy = transcriptFromMessages(messages).at(-1);
+    if (legacy?.role === 'assistant') expect(legacy.turn.todos[0].status).toBe('in_progress');
+  } finally { file.cleanup(); }
+});

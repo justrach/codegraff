@@ -23,6 +23,12 @@ claim the REPL turn.
 Unmatched tool calls in the last restored turn stay running so the snapshot
 can still show in-progress work. That is display state, not a live attach.
 
+The checklist comes from the saved session’s top-level `todos` field when
+present, including an empty list. Historical `todo_write` arguments may be
+stale or rejected proposals and must not override that saved state. Older
+files without the field retain history-based reconstruction. This does not
+turn a saved checklist into live execution status.
+
 ## Consequences
 
 Opening and refreshing history never bootstrap an ACP session. The composer
