@@ -208,6 +208,11 @@ fn lifecycleEmit(ctx: *anyopaque, ev: Stamped) void {
 /// text now shares the Markdown renderer so link targets exclude delimiters (#729).
 fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
     const a: *Agent = @ptrCast(@alignCast(ctx));
+    const citations = @import("terminal_citations.zig");
+    switch (ev.event) {
+        .stream_begin, .stream_complete, .stream_aborted, .stream_finished, .transport_aborted => a.cite_stream = .{},
+        else => {},
+    }
     if (hosted_frontend) return hostedEmit(a, ev.event);
     switch (ev.event) {
         .stream_begin => render.spinnerStart(a),
@@ -218,28 +223,14 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
         // wire-split sink cannot, so it must move into the event payload or
         // become a sink-owned preference before Phase 2.
         .reasoning_delta => |d| if (a.show_thinking and !a.sub and !a.stream_quiet and main_mod.use_color)
-            render.streamThinking(a, d.text),
-        .text_delta => |d| {
-            if (a.thinking_open) render.closeThinkingBlock(a); // reasoning -> answer transition
-            render.spinnerStop(a); // first visible byte: clear the thinking line
-            // Empty style strings make this plain text when color is off, but
-            // Markdown delimiters still stay out of terminal link targets (#729).
-            a.streamMarkdown(d.text);
-        },
+            citations.emit(a, .reasoning, d.text),
+        .text_delta => |d| citations.emit(a, .answer, d.text),
         // Meta-tool argument prose renders like answer text — spinner handoff
         // included — with two deliberate differences from .text_delta, both
         // the old inline emitArgText behavior verbatim: the reasoning block
         // stays as-is (the model is still mid-call), and the no-color branch
         // never marks a tick-gate line start.
-        .tool_arg_delta => |d| {
-            render.spinnerStop(a); // first visible byte: clear the thinking line
-            if (main_mod.use_color) {
-                a.streamMarkdown(d.text);
-            } else if (a.out) |w| {
-                w.writeAll(d.text) catch return;
-                w.flush() catch return;
-            }
-        },
+        .tool_arg_delta => |d| citations.emit(a, .arguments, d.text),
         // grok-build RawTerminal/Append: live bash bytes, not markdown.
         // Line REPL keeps them off the transcript unless /debug (ADR 0020).
         .tool_output_delta => |d| tool_render.liveOutput(a, d.text),
@@ -340,10 +331,8 @@ fn notice(a: *Agent, text: []const u8) void {
 fn hostedEmit(a: *Agent, ev: EngineEvent) void {
     const w = a.out orelse return;
     switch (ev) {
-        .text_delta, .tool_arg_delta => |d| {
-            w.writeAll(d.text) catch {};
-            w.flush() catch {};
-        },
+        .text_delta => |d| @import("terminal_citations.zig").plain(&a.cite_stream.answer, w, d.text),
+        .tool_arg_delta => |d| @import("terminal_citations.zig").plain(&a.cite_stream.arguments, w, d.text),
         .tool_output_delta => |d| {
             w.writeAll(d.text) catch {};
             w.flush() catch {};
