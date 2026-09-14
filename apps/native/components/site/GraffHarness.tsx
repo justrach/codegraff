@@ -1,4 +1,5 @@
 "use client";
+import { useNavigationPromptFocus } from "./useNavigationPromptFocus";
 import { useHarnessSessions } from "./useHarnessSessions";
 import { resumeQueuedPrompt } from "@/lib/prompt-queue-resume";
 import { createPromptRunner } from "./harness-prompt-runner";
@@ -121,6 +122,7 @@ export default function GraffHarness() {
   };
   const [pinsByChat, setPinsByChat] = useState<Record<number, BrowserPin[]>>({});
   const pinsRef = useRef<Record<number, BrowserPin[]>>({});
+  const { promptFocusRoot, requestPromptFocus } = useNavigationPromptFocus();
   const chatIdRef = useRef(1);
   const msgIdRef = useRef(0);
   // Split view: ordered visible chats, independent of focus. Each keeps its
@@ -221,7 +223,7 @@ export default function GraffHarness() {
     const next = [...chatsRef.current, { id, title: null, messages: [], model: ws?.model ?? model ?? undefined, session, cwd }];
     chatsRef.current = next; setChats(next);
     setZoomedPane(null);
-    setActiveId(id);
+    setActiveId(id); requestPromptFocus(id);
     setFilesOpen(false);
     setConversationsOpen(false);
     setFollowing(true);
@@ -250,13 +252,14 @@ export default function GraffHarness() {
   const newChat = () => openChat((chatIdRef.current += 1));
 
   /** Focus a pane in place, or restore the selected workspace tab’s layout. */
-  const focusChat = (id: number) => {
+  const focusChat = (id: number, focusPrompt = true) => {
     setProjectsOpen(false); setAgentsOpen(false);
     setConversationsOpen(false);
     const folder = chatsRef.current.find(chat => chat.id === id)?.cwd;
     if (folder && folder !== activePathRef.current) activateWorkspace(folder);
-    if (!columnIds.includes(id)) setZoomedPane(null);
+    if (!columnIds.includes(id) || (zoomedPane !== null && zoomedPane !== id)) setZoomedPane(null);
     setActiveId(id);
+    if (focusPrompt) requestPromptFocus(id);
   };
 
   const tabDrag = useTabDrag((id, drop) => {
@@ -442,7 +445,7 @@ export default function GraffHarness() {
       }),
     }}
     pins={(pinsByChat[thread.id] ?? []).length}
-    onShowPins={() => { focusChat(thread.id); setFilesOpen(false); setBrowserOpen(true); }}
+    onShowPins={() => { focusChat(thread.id, false); setFilesOpen(false); setBrowserOpen(true); }}
     onClearPins={() => setPins(thread.id, [])} health={health}
     onOpenProject={() => setDialog({ mode: "new" })} onProjects={() => setProjectsOpen(true)} onConversations={openConversations} />;
 
@@ -460,7 +463,7 @@ export default function GraffHarness() {
 
 
   return (
-    <main data-graff-main data-workspace-ready={projectsReady} className="flex h-[100dvh] gap-0 bg-canvas p-2.5 text-ink lg:pl-0">
+    <main ref={promptFocusRoot} data-graff-main data-workspace-ready={projectsReady} className="flex h-[100dvh] gap-0 bg-canvas p-2.5 text-ink lg:pl-0">
       <SidebarNav
         fill
         className="hidden lg:flex"
@@ -473,6 +476,7 @@ export default function GraffHarness() {
         onSeeAll={openConversations}
         activeNav={projectsOpen ? "projects" : filesOpen ? (fileRequest?.changes ? "changes" : "workspace") : browserOpen ? "browser" : conversationsOpen ? "conversations" : "home"}
         onNavigate={(key) => {
+          if (key === "home") requestPromptFocus(activeId);
           setAgentsOpen(false);
           setProjectsOpen(key === "projects");
           if (key === "changes") { openChanges(); return; }
@@ -527,7 +531,7 @@ export default function GraffHarness() {
           ) : null}
           <div className="min-h-0 min-w-0 flex-1" style={{ display: projectsOpen || conversationsOpen || agentsOpen ? "none" : "flex" }}>
             <ChatSplitLayout threads={columns} liveChatIds={chats.map(chat => chat.id)} activeId={activeId} direction={splitDirection} layout={groups.tree} onLayoutChange={groups.setTree}
-              onFocus={focusChat} onClose={closeChat} folder={thread => ({name: workspaceNameOf(thread), path: cwdOf(thread)})}
+              onFocus={id => focusChat(id, false)} onClose={closeChat} folder={thread => ({name: workspaceNameOf(thread), path: cwdOf(thread)})}
               body={columnBody} split={columnIds.length > 1} />
           </div>
 
