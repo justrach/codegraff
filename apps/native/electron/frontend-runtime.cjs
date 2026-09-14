@@ -99,7 +99,7 @@ app.whenReady().then(async () => {
   const area = screen.getPrimaryDisplay().workArea;
   // Exercise the handoff with Browser open on a small desktop: the initial
   // project context can put the composer below the scroll viewport.
-  const size = process.env.GRAFF_CLI_TEST || process.env.GRAFF_SPLIT_STRESS ? { width: 1024, height: 664 } : { width: 1320, height: 900 };
+  const size = process.env.GRAFF_NARROW_NAV_TEST ? { width: 1004, height: 657 } : process.env.GRAFF_CLI_TEST || process.env.GRAFF_SPLIT_STRESS ? { width: 1024, height: 664 } : { width: 1320, height: 900 };
   const bounds = desktop.foreground ? { x: area.x+10, y: area.y+10, width: Math.min(size.width, area.width-20), height: Math.min(size.height, area.height-20) } : size;
   win = desktop.createWindow({ ...bounds, webPreferences: {
     preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, backgroundThrottling: false,
@@ -130,6 +130,13 @@ app.whenReady().then(async () => {
     if (process.env.GRAFF_NATIVE_REQUIRE_OS_INPUT === '1') assert.ok(computer, 'Native OS input is required on this runner');
   }
   const click = async selector => {
+    // Follow the same visible navigation entry point on small desktops.
+    if (selector !== '[aria-label="Open navigation"]' && await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)}), panel=e?.closest('[data-navigation-panel]');return !!panel && !panel.matches(':popover-open') && !!document.querySelector('[aria-label="Open navigation"]')?.checkVisibility();})()`)) {
+      await click('[aria-label="Open navigation"]');
+    }
+    if (selector !== '[aria-label="Open navigation"]' && await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)}), panel=document.querySelector('[data-navigation-panel]:popover-open');if(!e||!panel||panel.contains(e))return false;const r=e.getBoundingClientRect();return panel.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));})()`)) {
+      await click('[aria-label="Close navigation"]');
+    }
     let p, previous;
     await until(async () => {
       p = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return null;e.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});const r=e.getBoundingClientRect();const x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2);return {x,y,hit:e.contains(document.elementFromPoint(x,y))}})()`);
@@ -195,6 +202,7 @@ app.whenReady().then(async () => {
     report.passed.push('bounded split churn, resize, cancellation and memory checks');
     return;
   }
+  if (process.env.GRAFF_NARROW_NAV_TEST) await require('./narrow-navigation-frontend.cjs').runNarrowNavigation({ win, output, click, until, report });
   await require('./browser-focus-frontend.cjs').runBrowserFocus({ win, output, click, until, report });
   await require('./tab-drag-visual.cjs').runTabDrag({ win, origin, output });
   report.passed.push('trusted pointer and keyboard: tab reorder, horizontal/vertical splits, draft retention, Escape and four-pane limit');
