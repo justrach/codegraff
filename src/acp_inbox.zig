@@ -18,8 +18,10 @@ pub const Inbox = struct {
     active: bool = false,
     future: ?Io.Future(void) = null,
 
-    pub fn start(self: *Inbox) void {
-        self.future = self.io.async(pump, .{self});
+    pub fn start(self: *Inbox) !void {
+        // async may run the endless reader inline when its worker quota is
+        // busy, preventing the dispatcher from ever answering initialize.
+        self.future = try self.io.concurrent(pump, .{self});
     }
 
     pub fn deinit(self: *Inbox) void {

@@ -24,9 +24,14 @@ def main():
         security.write_text("#!/bin/sh\nexit 44\n")
         security.chmod(0o700)
         slow = root / "slow.py"
-        slow.write_text("import os,pathlib,sys,time\npathlib.Path('started').write_text(str(os.getpid()))\nfor line in sys.stdin: time.sleep(30)\n")
+        slow.write_text("import os,pathlib,sys,time\npathlib.Path('started-'+str(os.getpid())).touch()\nfor line in sys.stdin: time.sleep(30)\n")
         config = root / "mcp.json"
-        config.write_text(json.dumps({"mcpServers": {"slow-fixture": {"command": sys.executable, "args": [str(slow)]}}}))
+        # Exceed the opportunistic async quota as well as testing deferred MCP.
+        # The ACP stdin pump must stay concurrent when that quota is busy.
+        config.write_text(json.dumps({"mcpServers": {
+            f"slow-{i}": {"command": sys.executable, "args": [str(slow)]}
+            for i in range((os.cpu_count() or 2) + 2)
+        }}))
         env = {"HOME": str(root), "PATH": str(shim) + ":/usr/bin:/bin", "TERM": "dumb",
                "LMSTUDIO_API_KEY": "fixture", "GRAFF_MCP_CONFIG": str(config),
                "GRAFF_BOOT_DEBUG": "1", "GRAFF_NO_ADOPT": "1", "GRAFF_NO_TELEMETRY": "1", "GRAFF_FLEET": "off"}
@@ -38,11 +43,11 @@ def main():
             poll.register(child.stdout, selectors.EVENT_READ)
             try:
                 deadline = time.monotonic() + 5
-                while not (root / "started").exists() and time.monotonic() < deadline:
+                while not list(root.glob("started-*")) and time.monotonic() < deadline:
                     if child.poll() is not None:
                         raise AssertionError("ACP exited before the optional server started")
                     time.sleep(.01)
-                assert (root / "started").exists(), "optional server did not start"
+                assert list(root.glob("started-*")), "optional server did not start"
                 child.stdin.write(b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n')
                 child.stdin.flush()
                 deadline = time.monotonic() + 5
@@ -59,7 +64,7 @@ def main():
                         message = json.loads(line)  # stdout must stay protocol-clean.
                         ready |= message.get("id") == 1 and "result" in message
                 assert ready, "ACP initialize blocked on the optional MCP handshake\n" + (root / "stderr").read_text()[-4096:]
-                os.kill(int((root / "started").read_text()), 0)
+                os.kill(int(next(root.glob("started-*")).name.removeprefix("started-")), 0)
             finally:
                 poll.close()
                 try:

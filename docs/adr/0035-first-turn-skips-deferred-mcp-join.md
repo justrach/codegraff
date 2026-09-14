@@ -30,6 +30,10 @@ Interactive boots print a dim receipt after `plugins:` (`mcp: N server(s)
 in background`, `companion: codedb-pro (background)`) and name any boot
 phase ≥80ms, so a hang is visible without `GRAFF_BOOT_DEBUG`.
 
+ACP’s stdin pump must use `io.concurrent`, never `io.async`: a busy async
+quota can otherwise run the endless reader inline and prevent dispatch.
+The subprocess startup regression includes enough silent servers to cover this.
+
 ## Consequences
 
 A one-shot first turn that *only* has MCP tools will not see them until
