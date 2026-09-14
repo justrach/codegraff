@@ -147,7 +147,7 @@ export default function GraffHarness() {
   const columnIds = (panes.length ? panes : [chatThread.id])
     .filter((id, i, all) => all.indexOf(id) === i && chats.some((c) => c.id === id))
     .slice(0, MAX_COLUMNS);
-  const { unread, completed } = useUnreadChats(chats.map(c => c.id), projectsOpen || conversationsOpen || agentsOpen || filesOpen ? [] : zoomedPane !== null ? [zoomedPane] : columnIds);
+  const { unread, started, completed } = useUnreadChats(chats.map(c => c.id), projectsOpen || conversationsOpen || agentsOpen || filesOpen ? [] : zoomedPane !== null ? [zoomedPane] : columnIds);
   const columnKey = columnIds.join(",");
   const { paneRef, tailing } = useChatScroll(chats, columnKey);
   const sessionId = sessionIds[chatThread.id] ?? null;
@@ -198,7 +198,7 @@ export default function GraffHarness() {
       .catch(() => undefined);
   };
 
-  const runPrompt = createPromptRunner({ onCompleted: completed,
+  const runPrompt = createPromptRunner({ onStarted: started, onCompleted: completed,
     runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError
   });
   const settings = useQuietSettings({ requireSession, handleOf, running: runningRef.current, apply: (catalog) => setModels(catalog.models) });

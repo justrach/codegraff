@@ -12,6 +12,9 @@ export function useUnreadChats(present: number[], visible: number[]) {
   const [unread, setUnread] = useState<ReadonlySet<number>>(new Set());
   const state = useRef({ present, visible });
   state.current = { present, visible };
+  const started = useCallback((id: number) => {
+    setUnread(current => { if (!current.has(id)) return current; const next = new Set(current); next.delete(id); return next; });
+  }, []);
   const completed = useCallback((id: number) => {
     const viewed = document.visibilityState === "hidden" ? [] : state.current.visible;
     setUnread(current => completedUnread(current, id, viewed, state.current.present));
@@ -30,5 +33,5 @@ export function useUnreadChats(present: number[], visible: number[]) {
     window.addEventListener("focus", viewed);
     return () => { document.removeEventListener("visibilitychange", viewed); window.removeEventListener("focus", viewed); };
   }, [visibleKey, presentKey]);
-  return { unread, completed };
+  return { unread, started, completed };
 }

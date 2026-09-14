@@ -11,6 +11,7 @@ import type { Chat } from "./harness-types";
 type Ref<T> = MutableRefObject<T>;
 type Setter<T> = Dispatch<SetStateAction<T>>;
 type Props = {
+  onStarted(id: number): void;
   onCompleted(id: number): void;
   runningRef: Ref<Set<number>>; steerer: ReturnType<typeof createQueueSteerer>; setFollowing: Setter<boolean>;
   chatsRef: Ref<Chat[]>; model: string | null; msgIdRef: Ref<number>; setChats: Setter<Chat[]>;
@@ -21,7 +22,7 @@ type Props = {
   adoptCatalog(id: number): Promise<void>; refreshStored(): Promise<void>;
   takeQueuedPrompt(id: number): QueuedPrompt | undefined;
 };
-export function createPromptRunner({onCompleted, runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError}: Props) {
+export function createPromptRunner({onStarted, onCompleted, runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError}: Props) {
   const patchAssistant = (chatId: number, msgId: number, next: AssistantTurn) => {
     setChats((current) =>
       current.map((c) =>
@@ -38,6 +39,7 @@ export function createPromptRunner({onCompleted, runningRef, steerer, setFollowi
   const runPrompt = async (chatId: number, trimmed: string) => {
     setCancelError(current => { const next = { ...current }; delete next[chatId]; return next; });
     runningRef.current.add(chatId);
+    onStarted(chatId);
     steerer.begin(chatId);
     setFollowing(true);
     const thread = chatsRef.current.find((c) => c.id === chatId);
