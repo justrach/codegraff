@@ -114,6 +114,7 @@ pub const Agent = struct {
     /// process mode (engine_sink.forAgent); set to inject a custom frontend.
     sink: ?@import("engine_sink.zig").EngineSink = null,
     registry: ?*mcp.Registry = null,
+    mcp_context: @import("mcp_turn_context.zig").State = .{},
     approvals: ?*approvals_mod.Approvals = null, // shared bash-approval state, set by main()
     tracer: ?*trace.Tracer = null, // shared JSONL event trace, set by main()
     run_budget: ?*run_budget_mod.RunBudget = null, // shared invocation-wide call/concurrency ceiling
@@ -333,6 +334,7 @@ pub const Agent = struct {
         try self.ensureRootTools(self.provider.kind);
         var pending_work: empty_completion.PendingWork = .{};
         self.completed = null;
+        self.mcp_context.begin(self.io);
         @import("named_work.zig").beginTurn(self);
         var task_scope = @import("task_intent.zig").State.begin(self);
         if (!self.sub and !root_turn_prepared.swap(false, .acq_rel)) @import("cancel_source.zig").clear();

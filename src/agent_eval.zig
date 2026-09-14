@@ -348,6 +348,7 @@ pub fn runJudge(self: *Agent, rubric: []const u8, eval_output: []const u8, note:
         .provider = self.provider,
         .subagent_provider = self.subagent_provider,
         .subagent_cross_provider = self.subagent_cross_provider,
+        .mcp_context = self.mcp_context.value,
         .registry = if (self.sub) null else self.registry,
         .from_sub = self.sub,
         .has_eval = self.eval_cmd != null,

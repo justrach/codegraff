@@ -137,6 +137,7 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             .provider = self.provider,
             .subagent_provider = self.subagent_provider,
             .subagent_cross_provider = self.subagent_cross_provider,
+            .mcp_context = self.mcp_context.value,
             .registry = self.registry, // workers get licensed codedb-pro reads too (#627)
             .from_sub = self.sub,
             .has_eval = self.eval_cmd != null,
