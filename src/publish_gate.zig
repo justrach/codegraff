@@ -107,6 +107,23 @@ test "#840 conflicting gh pr create never reaches execution after an acknowledge
     try std.testing.expect(std.mem.indexOf(u8, denied.text, "NOT performed") != null);
 }
 
+test "#879 read-only heredoc with publication text bypasses the claim gate" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    artifact_claim.resetForTest();
+    defer artifact_claim.resetForTest();
+    artifact_claim.setTestOwner(.{ .session = "s-owner", .pid = 1, .start_id = 1 });
+    _ = try artifact_claim.handleTool(ar, std.testing.io, "claim", "publication", "feat/x", "");
+    artifact_claim.setTestOwner(.{ .session = "s-reader", .pid = 2, .start_id = 2 });
+    artifact_claim.setTestOwnerLive(true);
+    var agent: Agent = undefined;
+    agent.arena = ar;
+    agent.io = std.testing.io;
+    const probe = "python3 - <<'PY'\nneedle = 'gh pr create --title x'\nprint(needle)\nPY";
+    try std.testing.expect(try bash(&agent, probe) == null);
+}
+
 test "#847 non-draft create with failed head is stopped before bash" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
