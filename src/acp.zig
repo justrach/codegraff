@@ -242,7 +242,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     engine.cancel_flag.store(false, .release);
     engine.on_cancel = syncEscCancel;
     var inbox: @import("acp_inbox.zig").Inbox = .{ .gpa = gpa, .io = io, .reader = in };
-    inbox.start();
+    try inbox.start();
     defer inbox.deinit();
     var live: LiveTurn = .{ .root = root, .keys = keys, .out = out, .inbox = &inbox };
     var d: Dispatch = .{

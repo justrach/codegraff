@@ -19,9 +19,9 @@ const mcp_boot = @import("mcp_boot.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig");
 const skills = @import("skills.zig");
 
-/// Same gate as MCP `defer_join`: interactive yolo, not `--json` / `-p`.
+/// Same gate as MCP `defer_join`: interactive yolo, including ACP, not CLI `--json` / `-p`.
 pub fn deferCompanion(flags: args.Flags, json_mode: bool) bool {
-    return flags.effectiveYolo() and flags.oneshot_prompt == null and !json_mode;
+    return flags.oneshot_prompt == null and mcp_boot.deferMcpJoin(flags.effectiveYolo(), json_mode, mcp_boot.isAcp(flags.positionals.items));
 }
 
 pub fn probeLicensed(gpa: Allocator, io: Io) bool {
@@ -105,4 +105,10 @@ test "a licensed companion is pinned eager, once, so no discovery round-trip is 
     try std.testing.expect(mcp_schema_gate.pinnedEager("codedbpro"));
     pinCompanionEager(arena);
     try std.testing.expectEqual(@as(usize, 1), mcp_schema_gate.g_policy.eager.len);
+}
+
+test "ACP companion startup stays deferred despite JSON stdout discipline" {
+    const positionals = [_][]const u8{"acp"};
+    const flags: args.Flags = .{ .yolo_flag = true, .positionals = .{ .items = @constCast(&positionals), .capacity = 0 } };
+    try std.testing.expect(deferCompanion(flags, true));
 }
