@@ -145,6 +145,14 @@ def execute(case: dict[str, Any], graff: str, port: int,
                 dest = pathlib.Path(workspace) / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_text(content, encoding="utf-8")
+            # Real linked-worktree topology for ownership/checkpoint cases.
+            if case.get("nested_worktree"):
+                for command in [
+                    ["git", "init", "-q"],
+                    ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"],
+                    ["git", "worktree", "add", "--detach", "nested"],
+                ]:
+                    subprocess.run(command, cwd=workspace, env=env, check=True, capture_output=True)
             # A genuinely live second graff in the same workspace, for #469
             # presence cases: the checkpoint only exists while a co-resident
             # session does, and a real peer announces (and probes) better than
@@ -152,7 +160,7 @@ def execute(case: dict[str, Any], graff: str, port: int,
             if case.get("live_peer"):
                 peer = subprocess.Popen(
                     [graff, "--json", "--yolo", "--model", model or "lmstudio"],
-                    cwd=workspace, env=env, stdin=subprocess.PIPE,
+                    cwd=str(pathlib.Path(workspace) / "nested") if case.get("peer_in_nested_worktree") else workspace, env=env, stdin=subprocess.PIPE,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
                 live_dir = pathlib.Path(workspace) / ".graff" / "live"
                 deadline = time.time() + 30
@@ -162,6 +170,8 @@ def execute(case: dict[str, Any], graff: str, port: int,
                     if peer.poll() is not None:
                         break
                     time.sleep(0.1)
+                if peer.poll() is not None or not live_dir.is_dir() or not any(live_dir.glob("*.json")):
+                    raise RuntimeError("Live-peer fixture did not announce before the deadline")
             argv = [graff, "--json", "--yolo", "--model", model or "lmstudio"]
             if provider:
                 argv += ["--subagent-provider", provider]
