@@ -479,7 +479,7 @@ export default function GraffHarness() {
           setConversationsOpen(key === "conversations");
         }}
         workspace={sidebarWorkspace}
-        workspaces={workspaces.map((w) => ({ path: w.path, name: w.name }))}
+        workspaces={workspaces}
         onSwitchWorkspace={switchWorkspace}
         onArchiveRecent={(id) => dropStored(id, true)}
         onDeleteRecent={(id) => dropStored(id, false)}
