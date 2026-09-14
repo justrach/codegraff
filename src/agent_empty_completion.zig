@@ -26,7 +26,7 @@ pub fn shouldRetry(final_text: []const u8, retries: u8) bool {
 }
 
 /// Lean `-p` described a fix and never called a tool. One bounce.
-pub const bounce_note = "You described a change but did not call any tool. Inspect and edit the files with read_file / edit_file / write_file; do not claim the tree is already updated.";
+pub const bounce_note = "If the user requested a change, a description alone is not completion: inspect and edit the files with read_file / edit_file / write_file; do not claim the tree is already updated. If the request is informational, answer it from sufficient evidence without making unrequested changes.";
 
 pub fn shouldBounce(unattended: bool, lean: bool, text_only: bool, review: bool, sub: bool, tool_calls: u64, model_calls: u64, final_text: []const u8) bool {
     if (!unattended or !lean or text_only or review or sub) return false;
@@ -44,6 +44,7 @@ pub fn handle(self: *Agent, final_text: []const u8, hist_len: usize) !bool {
         try self.say("[model returned an empty completion — retrying ({d}/{d})]\n", .{ self.empty_completion_retries, max_consecutive });
         return true;
     }
+    if (@import("task_intent.zig").current(self) == .informational) return false;
     if (!shouldBounce(main_mod.unattended, no_local_tools.lean, self.text_only, self.review_mode, self.sub, self.tool_calls_this_turn, self.model_calls_this_turn, final_text))
         return false;
     try self.messages.append(try messages.userNote(self.arena, self.provider.kind, bounce_note));
@@ -222,4 +223,25 @@ test "lean -p text-only first completion bounces once" {
 test "bounce note names the file tools" {
     try std.testing.expect(std.mem.indexOf(u8, bounce_note, "edit_file") != null);
     try std.testing.expect(std.mem.indexOf(u8, bounce_note, "write_file") != null);
+}
+
+test "completed informational answer is not an edit-oriented fake_done retry" {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    var self = pendingFixture(state.allocator());
+    self.empty_completion_retries = 0;
+    const old_unattended = main_mod.unattended;
+    const old_lean = no_local_tools.lean;
+    main_mod.unattended = true;
+    no_local_tools.lean = true;
+    defer {
+        main_mod.unattended = old_unattended;
+        no_local_tools.lean = old_lean;
+    }
+    self.tool_calls_this_turn = 0;
+    self.model_calls_this_turn = 1;
+    try self.messages.append(try messages.textMessage(self.arena, "user", "Summarize the architecture"));
+    const before = self.messages.items.len;
+    try std.testing.expect(!try handle(&self, "The app separates its UI, parser, and storage.", before));
+    try std.testing.expectEqual(before, self.messages.items.len);
 }
