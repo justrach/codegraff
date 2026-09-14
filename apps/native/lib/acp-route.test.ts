@@ -131,3 +131,57 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     rmSync(temp, { recursive: true, force: true });
   }
 }, 10000);
+
+test("an older failed bootstrap cannot retire a newer chat worker", async () => {
+  const temp = mkdtempSync(path.join(os.tmpdir(), "graff-acp-replacement-"));
+  const binary = path.join(temp, "agent.cjs");
+  const oldBin = process.env.GRAFF_BIN;
+  writeFileSync(binary, `#!/usr/bin/env node
+const fs=require('node:fs');
+const stalled=process.argv.includes('stalled');
+fs.appendFileSync('starts',String(process.pid)+'\\n');
+const send=value=>console.log(JSON.stringify(value));
+require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
+ const req=JSON.parse(line);
+ if(req.method==='initialize') {
+  if(stalled) fs.writeFileSync('stalled',String(process.pid));
+  else send({id:req.id,result:{}});
+ }
+ if(req.method==='session/new') {
+  send({id:req.id,result:{sessionId:'replacement'}});
+  send({method:'session/update',params:{update:{sessionUpdate:'available_commands_update',availableCommands:[{name:'help'}]}}});
+ }
+}).on('close',()=>process.exit(0));
+`, {mode:0o700});
+  const chat = `replacement-test-${path.basename(temp)}`;
+  const call = (method: string, params = {}) => deadline(POST(new NextRequest("http://localhost/api/acp", {
+    method:"POST",body:JSON.stringify({chat,method,params}),
+  })), method);
+  try {
+    process.env.GRAFF_BIN = binary;
+    const older = call("bootstrap", {cwd:temp,model:"stalled",mcp:true});
+    await deadline((async()=>{
+      for(;;) {
+        try { readFileSync(path.join(temp,"stalled")); return; } catch {}
+        await new Promise(resolve=>setTimeout(resolve,10));
+      }
+    })(),"stalled child ready");
+    const newer = await call("bootstrap", {cwd:temp,model:"replacement",mcp:true});
+    expect(newer.status).toBe(200);
+    const failed = await older;
+    expect(failed.status).toBe(502);
+    expect((await failed.json()).error).toContain("ACP startup failed during initialize");
+    const reused = await call("bootstrap", {cwd:temp,model:"replacement",mcp:true});
+    expect(reused.status).toBe(200);
+    expect((await reused.json()).sessionId).toBe("replacement");
+    expect((await call("initialize")).status).toBe(200);
+    const started = readFileSync(path.join(temp,"starts"),"utf8").trim().split("\n").map(Number);
+    expect(started.length).toBe(2);
+    expect(()=>process.kill(started[0],0)).toThrow();
+    expect(()=>process.kill(started[1],0)).not.toThrow();
+  } finally {
+    await call("dispose");
+    if(oldBin===undefined)delete process.env.GRAFF_BIN;else process.env.GRAFF_BIN=oldBin;
+    rmSync(temp,{recursive:true,force:true});
+  }
+},10000);

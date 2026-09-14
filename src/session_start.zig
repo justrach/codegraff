@@ -452,7 +452,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
             sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "ignoring ~/" ++ mcp_config.unsupported_rel_path ++ ": unsupported path — use ~/" ++ mcp_config.global_rel_path ++ " (global) or {s} (project)", .{mcp_config_path})));
     }
     const mcp_count = mcp_cli.countMcpServers(merged);
-    const defer_join = mcp_boot.deferMcpJoin(flags.effectiveYolo(), json_mode);
+    const defer_join = mcp_boot.deferMcpJoin(flags.effectiveYolo(), json_mode, mcp_boot.isAcp(flags.positionals.items));
     const skip_imported = mcp_boot.oneshotSkipsImportedMcp(
         flags.oneshot_prompt != null,
         leanMode(flags.effectiveLean(), environ_map),

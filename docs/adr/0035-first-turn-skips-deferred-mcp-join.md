@@ -7,7 +7,9 @@ Later-request joining is updated by [ADR 0104](0104-live-publication-and-deferre
 ## Context
 
 Interactive `--yolo` (including `graff acp`) starts MCP handshakes in the
-background so the prompt can paint. The first `request()` still called
+background so the prompt can paint. ACP’s JSON stdout discipline does not
+select the blocking CLI `--json` startup path; the explicit subcommand
+distinguishes them. Both configured MCP servers and companions use this gate. The first `request()` still called
 `joinPending`, so a silent stdio probe (default 5s) or a 15s handshake cap
 blocked every native tool on the first turn. The chips looked late; the
 model had not even been called.

@@ -11,6 +11,7 @@ import { defaultRoot, resolveRoot } from "@/lib/server-root";
 import { prepareGuiPrompt } from "@/lib/gui-skill-context";
 
 import { retireWorker } from "@/lib/acp-retire";
+import { initializeWorker } from "@/lib/acp-bootstrap";
 import { finishCancelledPrompt } from "@/lib/acp-cancel";
 
 export const runtime = "nodejs";
@@ -222,12 +223,12 @@ async function bootstrap(chat: string, opts: BootstrapOpts): Promise<Slot> {
     yolo: opts.yolo ?? recovering?.yolo ?? defaultYolo(),
     mcp: opts.mcp ?? recovering?.mcp ?? true,
   });
-  await rpc(slot, "initialize", { protocolVersion: 1, clientCapabilities: { fs: {} } }, HANDSHAKE_MS);
-  const created = (await rpc(slot, "session/new", { cwd: slot.cwd }, HANDSHAKE_MS)) as {
-    sessionId?: string;
-  };
-  if (!created?.sessionId) throw new Error("session/new returned no sessionId");
-  slot.sessionId = created.sessionId;
+  slot.sessionId = await initializeWorker(slot.transport, slot.cwd, async () => {
+    slot.restart = true;
+    slot.restartReady = retireWorker(slot.child);
+    try { await slot.restartReady; }
+    finally { if (slots.get(chat) === slot) slots.delete(chat); }
+  }, HANDSHAKE_MS);
   await drainCommands(slot);
   return slot;
 }

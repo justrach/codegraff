@@ -125,6 +125,9 @@ pub fn build(b: *std.Build) void {
     const acp_preauth_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-preauth.py" });
     acp_preauth_test.addArtifactArg(exe);
     test_step.dependOn(&acp_preauth_test.step);
+    const acp_startup_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-startup.py" });
+    acp_startup_test.addArtifactArg(exe);
+    test_step.dependOn(&acp_startup_test.step);
 
     // Learning kit: the adapter/suite files `graff learn init` materializes
     // into a workspace so zero-configuration learning needs no repo checkout.
