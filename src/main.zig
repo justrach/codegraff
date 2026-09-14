@@ -124,7 +124,7 @@ test {
     _ = @import("obs_cost_test.zig");
     _ = @import("tui_launch.zig");
     _ = provider_mod;
-    _ = @import("named_work.zig");
+    _ = .{ @import("named_work.zig"), @import("task_intent.zig") };
 }
 const prompts = @import("prompts.zig");
 const schema = @import("schema.zig");

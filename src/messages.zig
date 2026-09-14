@@ -43,7 +43,14 @@ pub fn trailingUserIs(messages: []const Value, text: []const u8) bool {
 }
 
 fn userPromptText(msg: Value) ?[]const u8 {
+    if (@import("session_wake.zig").isNotice(msg)) return null;
     if (msg != .object) return null;
+    if (msg.object.get("type")) |kind| {
+        if (kind == .string and std.mem.eql(u8, kind.string, "user_input")) {
+            const content = msg.object.get("content") orelse return null;
+            if (content == .string and content.string.len > 0) return content.string;
+        }
+    }
     const role = msg.object.get("role") orelse return null;
     if (role != .string or !std.mem.eql(u8, role.string, "user")) return null;
     const content = msg.object.get("content") orelse return null;

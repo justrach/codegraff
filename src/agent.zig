@@ -334,8 +334,10 @@ pub const Agent = struct {
         var pending_work: empty_completion.PendingWork = .{};
         self.completed = null;
         @import("named_work.zig").beginTurn(self);
+        var task_scope = @import("task_intent.zig").State.begin(self);
         if (!self.sub and !root_turn_prepared.swap(false, .acq_rel)) @import("cancel_source.zig").clear();
         while (true) {
+            try task_scope.beforeRequest(self);
             if (try @import("turn_chrome.zig").beforeRequest(self)) |paused| return paused;
             // Esc during a tool join lands here; root consumes, subagents bail.
             if (esc_cancel.load(.acquire)) {
