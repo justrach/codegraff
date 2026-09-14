@@ -68,7 +68,9 @@ pub const TurnFn = repl_types.TurnFn;
 pub var g_turn_fn: ?TurnFn = null;
 pub var g_turn_ctx: ?*anyopaque = null;
 pub var g_model_name: []const u8 = "";
-pub const ModelFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, name: []const u8) ?[]const u8;
+/// The backend compares provider AND model; a model-only display cannot detect a seat change.
+pub const ModelPick = struct { model: []const u8, changed: bool };
+pub const ModelFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, name: []const u8) ?ModelPick;
 pub var g_models: []const u8 = ""; // comma-joined model names (for /models)
 pub var g_model_fn: ?ModelFn = null; // switch the active model by name
 pub const CancelFn = *const fn (turn_ctx: ?*anyopaque) void;

@@ -311,9 +311,11 @@ test {
 /// using the same model-routing rules as /model, then persist that
 /// explicit choice for the next launch. Automatic turn fallback updates only
 /// `c.provider`, never this preference file.
-pub fn replModelCb(ctx_ptr: ?*anyopaque, gpa: Allocator, name: []const u8) ?[]const u8 {
+pub fn replModelCb(ctx_ptr: ?*anyopaque, gpa: Allocator, name: []const u8) ?repl.ModelPick {
+    const c: *ReplCtx = @ptrCast(@alignCast(ctx_ptr orelse return null));
+    const previous = c.provider;
     const picked = replModelPick(ctx_ptr, gpa, "", name) orelse return null;
-    return picked.model;
+    return .{ .model = picked.model, .changed = !std.mem.eql(u8, previous.id, picked.provider) or !std.mem.eql(u8, previous.model, picked.model) };
 }
 
 /// What a model switch settled on. The provider id travels back because the
@@ -339,12 +341,14 @@ fn catalogName(provider_id: []const u8, name: []const u8) ?[]const u8 {
 /// job.
 pub fn replModelPick(ctx_ptr: ?*anyopaque, gpa: Allocator, provider_id: []const u8, name: []const u8) ?Picked {
     const c: *ReplCtx = @ptrCast(@alignCast(ctx_ptr orelse return null));
+    var selected: Provider = undefined;
+    var owned = false;
     if (provider_id.len > 0 and provider_mod.specFor(provider_id) != null) {
         // Off-catalog names (a live LM Studio id) have no table slice to
         // borrow, so those — and only those — are copied.
-        const owned = catalogName(provider_id, name) == null;
+        owned = catalogName(provider_id, name) == null;
         const model = if (owned) (gpa.dupe(u8, name) catch return null) else catalogName(provider_id, name).?;
-        c.provider = c.keys.providerById(provider_id, model) catch {
+        selected = c.keys.providerById(provider_id, model) catch {
             if (owned) gpa.free(model);
             return null;
         };
@@ -352,12 +356,17 @@ pub fn replModelPick(ctx_ptr: ?*anyopaque, gpa: Allocator, provider_id: []const 
         // `resolveModelName` answers with the catalog's own slice, never with
         // a piece of the query, so there is nothing to copy here either.
         const resolved = pricing.resolveModelName(c.keys, name) orelse return null;
-        c.provider = c.keys.providerFor(resolved) catch return null;
+        selected = c.keys.providerFor(resolved) catch return null;
     }
+    const display = gpa.dupe(u8, selected.model) catch {
+        if (owned) gpa.free(selected.model);
+        return null;
+    };
+    c.provider = selected;
     c.fallback_active = false;
     c.fallback_blocked = false;
     serde.saveModel(c.io, c.home, c.provider.id, c.provider.model);
-    return .{ .model = gpa.dupe(u8, c.provider.model) catch return null, .provider = c.provider.id };
+    return .{ .model = display, .provider = c.provider.id };
 }
 
 /// repl.CancelFn adapter — force-interrupt the running repl turn. Sets the
