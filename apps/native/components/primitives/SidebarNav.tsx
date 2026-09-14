@@ -41,6 +41,7 @@ const NAV_ITEMS: { key: string; label: string; icon: ReactNode; count?: string }
 ];
 
 export type SidebarRecent = {
+  unread?: boolean;
   id: string;
   label: string;
   prompt?: string;
@@ -451,6 +452,7 @@ export default function SidebarNav({
                 >
                   <span className={`sidebar-copy flex min-w-0 flex-1 flex-col ${onArchiveRecent || onDeleteRecent ? "pr-6" : ""}`}>
                     <span className={`truncate text-[13.5px] font-medium ${active ? "text-ink" : "text-ink-2"}`}>
+                      {item.unread && <span role="img" aria-label="Unread response" className="mr-1.5 inline-block size-1.5 rounded-full bg-blue-500" />}
                       {item.label}
                     </span>
                     {item.hint && (

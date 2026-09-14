@@ -119,7 +119,7 @@ export const AssistantBody = memo(function AssistantBody({
 
   return (
     <article data-turn-status={turn.status} aria-busy={live} className="min-w-0 [overflow-wrap:anywhere]" style={{ overflowAnchor: "none", animation: "fade-in 280ms ease both" }}>
-      {((thinking && turn.activityKind === "agent_thought_chunk") || reasoningRows.length > 0 || (turn.thoughtMs ?? 0) >= 1500) && (
+      {((thinking && turn.activityKind === "agent_thought_chunk") || reasoningRows.length > 0) && (
         <Reasoning
           variant="Reasoning"
           rows={reasoningRows.length ? reasoningRows : WAITING_ROWS}

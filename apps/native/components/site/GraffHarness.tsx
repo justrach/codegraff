@@ -1,5 +1,6 @@
 "use client";
 import { useNavigationPromptFocus } from "./useNavigationPromptFocus";
+import { useUnreadChats } from "./useUnreadChats";
 import { useHarnessSessions } from "./useHarnessSessions";
 import { resumeQueuedPrompt } from "@/lib/prompt-queue-resume";
 import { createPromptRunner } from "./harness-prompt-runner";
@@ -146,6 +147,7 @@ export default function GraffHarness() {
   const columnIds = (panes.length ? panes : [chatThread.id])
     .filter((id, i, all) => all.indexOf(id) === i && chats.some((c) => c.id === id))
     .slice(0, MAX_COLUMNS);
+  const { unread, completed } = useUnreadChats(chats.map(c => c.id), projectsOpen || conversationsOpen || agentsOpen || filesOpen ? [] : zoomedPane !== null ? [zoomedPane] : columnIds);
   const columnKey = columnIds.join(",");
   const { paneRef, tailing } = useChatScroll(chats, columnKey);
   const sessionId = sessionIds[chatThread.id] ?? null;
@@ -196,7 +198,7 @@ export default function GraffHarness() {
       .catch(() => undefined);
   };
 
-  const runPrompt = createPromptRunner({
+  const runPrompt = createPromptRunner({ onCompleted: completed,
     runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError
   });
   const settings = useQuietSettings({ requireSession, handleOf, running: runningRef.current, apply: (catalog) => setModels(catalog.models) });
@@ -369,7 +371,7 @@ export default function GraffHarness() {
     if (file) openPath(file);
   });
 
-  const recents = sidebarRecents(stored, chats);
+  const recents = sidebarRecents(stored, chats, unread);
 
   // The tab bar's folder chip is the *tab's* workspace; the sidebar's
   // switcher is the *active* one (where new tabs open). They differ only
@@ -486,7 +488,7 @@ export default function GraffHarness() {
 
       <div className="flex min-w-0 flex-1 flex-col gap-2.5">
         {tabDrag.overlay}
-        <HarnessChrome onTabPointerDown={tabDrag.begin} onTabClickCapture={tabDrag.suppressClick} chats={groups.tabs} activeId={groups.activeTab} busyIds={new Set(groups.groups.filter(group => group.ids.some(id => busyIds.has(id))).map(group => group.ids[0]))} focusChat={id => focusChat(groups.focusOf(id))} closeChat={closeTab} newChat={newChat}
+        <HarnessChrome unreadIds={unread} onTabPointerDown={tabDrag.begin} onTabClickCapture={tabDrag.suppressClick} chats={groups.tabs} activeId={groups.activeTab} busyIds={new Set(groups.groups.filter(group => group.ids.some(id => busyIds.has(id))).map(group => group.ids[0]))} focusChat={id => focusChat(groups.focusOf(id))} closeChat={closeTab} newChat={newChat}
           conversationsOpen={conversationsOpen} openConversations={openConversations} split={panes.length > 0} toggleSplit={toggleSplit}
           filesOpen={filesOpen} onFiles={() => { setAgentsOpen(false); setFileRequest(null); setProjectsOpen(false); setBrowserOpen(false); setConversationsOpen(false); setFilesOpen(fileRequest?.changes ? true : !filesOpen); }}
           chatCwd={chatCwd} workspaceName={workspaceName} onFolder={() => setDialog({ mode: "new" })} openChanges={openChanges}

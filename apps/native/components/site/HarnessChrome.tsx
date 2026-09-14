@@ -7,6 +7,7 @@ import type { PointerEvent, MouseEvent } from "react";
 import type { Chat } from "./harness-types";
 import reviewStyles from "./ChangesPane.module.css";
 type Props = {
+  unreadIds?: ReadonlySet<number>;
   onTabPointerDown?(event: PointerEvent, id: number): void; onTabClickCapture?(event: MouseEvent): void;
   chats: (Pick<Chat, "id" | "title"> & { paneIds?: number[]; direction?: "row" | "column"; tree?: SplitTree })[]; activeId: number; busyIds: ReadonlySet<number>;
   focusChat(id: number): void; closeChat(id: number): void; newChat(): void;
@@ -16,7 +17,7 @@ type Props = {
   terminalVisible: boolean; toggleTerminal(): void; agentsOpen: boolean; onAgents(): void; workingAgents?: number;
   tasksOpen?: boolean; taskCount?: number; onTasks?: () => void; splitNotice?: string | null;
 };
-export default function HarnessChrome({chats, activeId, busyIds, focusChat, closeChat, newChat,
+export default function HarnessChrome({unreadIds, chats, activeId, busyIds, focusChat, closeChat, newChat,
   conversationsOpen, openConversations, split, toggleSplit, filesOpen, onFiles, chatCwd,
   workspaceName, onFolder, openChanges, browserOpen, onBrowser, pinCount, terminalVisible,
   toggleTerminal, agentsOpen, onAgents, workingAgents = 0, tasksOpen = false, taskCount = 0, onTasks, splitNotice, onTabPointerDown, onTabClickCapture}: Props) {
@@ -51,6 +52,7 @@ export default function HarnessChrome({chats, activeId, busyIds, focusChat, clos
                 aria-label="Working"
               />
             )}
+            {!busyIds.has(c.id) && (c.paneIds ?? [c.id]).some(id => unreadIds?.has(id)) && <span role="img" aria-label="Unread response" className="mr-1 size-1.5 shrink-0 rounded-full bg-blue-500" />}
             <button
               type="button"
               aria-pressed={c.id === activeId && !agentsOpen}

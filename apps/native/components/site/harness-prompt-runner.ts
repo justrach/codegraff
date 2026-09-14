@@ -11,6 +11,7 @@ import type { Chat } from "./harness-types";
 type Ref<T> = MutableRefObject<T>;
 type Setter<T> = Dispatch<SetStateAction<T>>;
 type Props = {
+  onCompleted(id: number): void;
   runningRef: Ref<Set<number>>; steerer: ReturnType<typeof createQueueSteerer>; setFollowing: Setter<boolean>;
   chatsRef: Ref<Chat[]>; model: string | null; msgIdRef: Ref<number>; setChats: Setter<Chat[]>;
   setCancelError: Setter<Record<number, string>>;
@@ -20,7 +21,7 @@ type Props = {
   adoptCatalog(id: number): Promise<void>; refreshStored(): Promise<void>;
   takeQueuedPrompt(id: number): QueuedPrompt | undefined;
 };
-export function createPromptRunner({runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError}: Props) {
+export function createPromptRunner({onCompleted, runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError}: Props) {
   const patchAssistant = (chatId: number, msgId: number, next: AssistantTurn) => {
     setChats((current) =>
       current.map((c) =>
@@ -99,6 +100,7 @@ export function createPromptRunner({runningRef, steerer, setFollowing, chatsRef,
       if (/^\/(effort|reasoning|fast)(?:\s|$)/.test(trimmed)) void adoptCatalog(chatId);
       turn = finishAcpTurn(turn);
       painter.finish(turn);
+      if (turn.status === "done" && !turn.error) onCompleted(chatId);
     } catch (err) {
       turn = finishAcpTurn({ ...turn, error: err instanceof Error ? err.message : String(err), status: "error" });
       painter.finish(turn);
