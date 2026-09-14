@@ -250,18 +250,13 @@ pub(crate) async fn set_fast(
 /// harness reads image attachments by path). Used by Cmd/Ctrl+V in the composer.
 #[tauri::command]
 pub(crate) async fn save_pasted_image(data: Vec<u8>, ext: String) -> Result<String, String> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let safe_ext = match ext.to_lowercase().as_str() {
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "avif" => ext.to_lowercase(),
-        _ => "png".to_string(),
-    };
-    let dir = std::env::temp_dir().join("codegraff-pasted");
-    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-    let path = dir.join(format!("paste-{}-{n}.{safe_ext}", std::process::id()));
-    std::fs::write(&path, &data).map_err(|error| error.to_string())?;
-    Ok(path.to_string_lossy().into_owned())
+    crate::clipboard_files::save(&data, &ext).map_err(|error| error.to_string())
+}
+
+/// Release only an application-owned image with no accepted prompt consumer.
+#[tauri::command]
+pub(crate) async fn discard_pasted_image(path: String) -> Result<(), String> {
+    crate::clipboard_files::discard(&path).map_err(|error| error.to_string())
 }
 
 /// Decodes an image, downscales it to fit `max_dim` (default 96px, aspect

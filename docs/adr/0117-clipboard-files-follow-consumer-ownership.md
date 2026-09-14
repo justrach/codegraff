@@ -24,6 +24,14 @@ pending files only when their known desktop owner has exited. The desktop owns
 drafts independently of route-server restarts. Unknown owners and unrecorded or
 replaced files do not grant deletion authority. Age alone never grants it.
 
+The legacy desktop keeps clipboard exports in a private owner directory with
+an operating-system file lease. Recovery takes a nonblocking exclusive lease
+before removing recorded unsent exports from a stopped owner. Its prompt
+dispatcher retains attachments before either queuing or staging them. Removing
+a chip releases it only after other draft trays stop referencing it; uploads
+that finish after their composer is disposed are discarded. Cleanup requires a
+durable file identity, and remains conservative on platforms without one.
+
 ## Consequences
 
 Conservative retention can keep files when their last consumer cannot be proved
