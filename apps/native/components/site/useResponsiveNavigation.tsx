@@ -21,6 +21,9 @@ export function useResponsiveNavigation() {
       className: styles.panel, "data-navigation-panel": true,
       role: narrow ? "dialog" : undefined, "aria-label": narrow ? "Navigation" : undefined,
       onToggle: (event: React.ToggleEvent<HTMLDivElement>) => {
+        // React also delivers descendant popover toggles here. They own their
+        // focus; opening an action menu must not refocus the sidebar close button.
+        if (event.target !== event.currentTarget) return;
         const shown = event.newState === "open"; setOpen(shown);
         if (shown) panel.current?.querySelector<HTMLButtonElement>('[aria-label="Close navigation"]')?.focus();
       },

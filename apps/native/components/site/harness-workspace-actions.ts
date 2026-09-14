@@ -67,7 +67,7 @@ export function workspaceActions({workspacesRef, activePathRef, chatsRef, chatId
   };
 
   const addWorkspace = (path: string) => {
-    const list = upsertWorkspace(workspacesRef.current, { path, name: basename(path) });
+    const list = upsertWorkspace(workspacesRef.current, { path, name: basename(path), source: "saved" });
     persistWorkspaces(list);
     setDialog(null);
     const added = findWorkspace(list, path);
@@ -75,7 +75,7 @@ export function workspaceActions({workspacesRef, activePathRef, chatsRef, chatId
   };
 
   const saveWorkspace = (ws: Workspace) => {
-    persistWorkspaces(upsertWorkspace(workspacesRef.current, ws));
+    persistWorkspaces(upsertWorkspace(workspacesRef.current, { ...ws, source: "saved" }));
     setDialog(null);
   };
 

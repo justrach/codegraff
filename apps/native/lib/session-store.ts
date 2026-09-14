@@ -112,7 +112,7 @@ export function recoveredSessionTitle(title: unknown, messages: unknown): string
 // can be rewritten without changing that prefix (or the file's size).
 const legacyTitles = new Map<string, { version: string; title: string }>();
 
-export function peekHeader(file: string, size: number): HeaderPeek {
+export function peekHeader(file: string, size: number, recoverTitle = true): HeaderPeek {
   const fd = openSync(file, "r");
   try {
     const want = Math.min(size, PEEK_BYTES);
@@ -124,7 +124,7 @@ export function peekHeader(file: string, size: number): HeaderPeek {
     let head = text.slice(0, idx).trimEnd();
     if (head.endsWith(",")) head = head.slice(0, -1);
     const header = JSON.parse(`${head}}`) as Header;
-    if (header.title !== "Untitled session" || size > MAX_FULL_BYTES) return header;
+    if (!recoverTitle || header.title !== "Untitled session" || size > MAX_FULL_BYTES) return header;
     const stat = fstatSync(fd, { bigint: true });
     const version = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
     const cached = legacyTitles.get(file);

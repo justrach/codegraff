@@ -360,7 +360,7 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
     // #273: it does that on its own thread, and owns these bytes from here.
     const path = try root.gpa.dupe(u8, rel);
     errdefer root.gpa.free(path); // only reachable if toOwnedSlice fails: submit owns both
-    return session_writer.submit(root.gpa, root.io, dir, path, try aw.toOwnedSlice(), fp);
+    return session_writer.submitInHome(root.gpa, root.io, dir, path, try aw.toOwnedSlice(), fp, root.home);
 }
 
 /// Parse the persisted `goal` field into a structured Goal (#223). A bare string
