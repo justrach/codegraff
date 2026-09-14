@@ -19,6 +19,10 @@ that group's pane order, split tree and last focused chat. New tabs leave existi
 groups intact. Closing a pane removes that member; closing the top tab removes
 the whole group. The split toggle returns group members to individual tabs.
 
+Pane content responds to its own container width: narrow splits reduce
+transcript padding and user-message indentation even on a wide desktop.
+Empty split composers sit at the bottom, matching populated panes.
+
 Tabs and workspace controls live in a shared toolbar above all panes. A combined
 tab shows its member names and a miniature layout icon. Each split
 has a compact, consistent header identifying its chat and folder. Adjacent panes

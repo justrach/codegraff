@@ -30,7 +30,7 @@ export default function ChatColumn({ thread, compact, following, register, onOpe
   return <div className="flex min-h-0 flex-1 flex-col">
     <ChatTranscript messages={thread.messages} register={register} following={following}
       onOpenPath={onOpenPath} onReview={onReview} snapshot={thread.snapshot} />
-    <div className={`shrink-0 bg-page px-4 ${compact ? "py-2" : "pt-3 pb-6 sm:px-8"}`}>
+    <div data-chat-composer className={`shrink-0 bg-page px-4 ${compact ? "py-2" : "pt-3 pb-6 sm:px-8"}`}>
       <div className="mx-auto max-w-[720px]">
         {thread.snapshot && thread.session ? <SavedSnapshot name={thread.session} cwd={thread.cwd}
           onRefresh={onRefresh} onContinue={onContinue} /> : <>

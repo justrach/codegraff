@@ -1,0 +1,25 @@
+.pane {
+  container: chat-pane / inline-size;
+}
+
+/* A split is measured by its own width, not by the desktop window. */
+@container chat-pane (max-width: 540px) {
+  .pane [data-transcript-content] {
+    padding: 16px 12px;
+    gap: 20px;
+  }
+  .pane [data-session-snapshot] {
+    padding: 12px 12px 0;
+  }
+  .pane [data-user-bubble] {
+    padding-left: 12px;
+  }
+  .pane [data-chat-composer],
+  .pane [data-chat-empty] {
+    padding: 8px;
+  }
+  .pane [data-saved-snapshot] {
+    padding: 10px;
+    font-size: 12px;
+  }
+}

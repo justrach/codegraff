@@ -44,7 +44,7 @@ export default function EmptyState({
   const where = cwd ?? health?.cwd;
 
   return (
-    <div className={`mx-auto flex min-h-full w-full min-w-0 max-w-[720px] flex-col justify-center px-4 ${compact ? "py-2" : "py-10 sm:px-8"}`}>
+    <div data-chat-empty className={`mx-auto flex min-h-full w-full min-w-0 max-w-[720px] flex-col px-4 ${compact ? "justify-end py-2" : "justify-center py-10 sm:px-8"}`}>
       {!compact && <h1 className="text-[26px] font-normal tracking-[-0.02em] text-ink">
         <span className="home-reveal block text-ink-3">
           {greeting()}
@@ -68,7 +68,7 @@ export default function EmptyState({
         <PromptBar
           demo={false}
           tall={!compact}
-          placeholder="Ask graff to read, edit, or review this workspace…"
+          placeholder={compact ? "Ask graff…" : "Ask graff to read, edit, or review this workspace…"}
           models={models}
           modelKey={modelKey}
           onModelChange={onModelChange}
