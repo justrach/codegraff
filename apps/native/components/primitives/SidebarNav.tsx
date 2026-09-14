@@ -59,6 +59,7 @@ const DEFAULT_RECENTS: SidebarRecent[] = [
 ];
 
 type SidebarNavProps = {
+  onCloseNavigation?: () => void;
   activeTitle?: string | null;
   /** When set, rows highlight by id instead of by label (titles can repeat). */
   activeId?: string | null;
@@ -170,6 +171,7 @@ function RailButton({
 }
 
 export default function SidebarNav({
+  onCloseNavigation,
   activeTitle,
   activeId,
   className = "",
@@ -195,6 +197,7 @@ export default function SidebarNav({
   onSeeAll,
 }: SidebarNavProps) {
   const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => { if (onCloseNavigation) setCollapsed(false); }, [!!onCloseNavigation]);
   const [internalNav, setInternalNav] = useState("chats");
   const currentNav = activeNav ?? internalNav;
   const selectNav = (key: string) => {
@@ -234,6 +237,7 @@ export default function SidebarNav({
   }, [searchOpen]);
 
   const collapse = () => {
+    if (onCloseNavigation) { setWorkspaceOpen(false); onCloseNavigation(); return; }
     setCollapsed(true);
     setWorkspaceOpen(false);
     setSearchOpen(false);
@@ -304,7 +308,7 @@ export default function SidebarNav({
           <button
             ref={collapseButtonRef}
             type="button"
-            aria-label="Collapse sidebar"
+            aria-label={onCloseNavigation ? "Close navigation" : "Collapse sidebar"}
             aria-hidden={collapsed}
             tabIndex={collapsed ? -1 : 0}
             onClick={collapse}

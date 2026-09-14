@@ -88,6 +88,11 @@ jobs:
         env:
           GRAFF_ELECTRON_FOREGROUND: '1'
           GRAFF_FRONTEND_OS_INPUT: '1'
+      - name: Narrow-window navigation and saved chat actions
+        if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
+        run: bun run test:narrow-navigation
+        env:
+          GRAFF_FRONTEND_OUTPUT: ../../zig-out/narrow-navigation
       - name: Production inline HTML tool and saved replay
         if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
         run: bun run test:html-tool
@@ -117,6 +122,7 @@ jobs:
             zig-out/cli-test/
             zig-out/native-tests/native-results.json
             zig-out/frontend-tests/
+            zig-out/narrow-navigation/
             zig-out/split-stress/
             zig-out/native-tab-drag/
             zig-out/visual-tests/test-run.json

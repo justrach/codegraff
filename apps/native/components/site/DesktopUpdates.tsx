@@ -1,4 +1,5 @@
 "use client";
+import { createPortal } from "react-dom";
 import { useEffect, useRef, useState } from "react";
 import { desktop, type UpdateState } from "@/lib/desktop";
 
@@ -20,7 +21,10 @@ export default function DesktopUpdates() {
   const [dismissed, setDismissed] = useState(false);
   const [open, setOpen] = useState(false);
   const previous = useRef<UpdateState["status"] | null>(null);
-  const panel = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement>(null);
+  const [placement, setPlacement] = useState({ top: 0, right: 12 });
+  const [slot, setSlot] = useState<Element | null>(null);
+  useEffect(() => { setSlot(document.querySelector("[data-desktop-update-slot]")); }, []);
   useEffect(() => {
     const bridge = desktop();
     if (!bridge?.updates || !bridge.updateSubscribe) return;
@@ -41,7 +45,7 @@ export default function DesktopUpdates() {
   useEffect(() => {
     if (!open) return;
     const outside = (event: PointerEvent) => {
-      if (!panel.current?.contains(event.target as Node)) setOpen(false);
+      if (!panel.current?.contains(event.target as Node) && !trigger.current?.contains(event.target as Node)) setOpen(false);
     };
     const keys = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpen(false);
@@ -69,26 +73,33 @@ export default function DesktopUpdates() {
     state.status !== "idle" &&
     (state.interactive || !["current", "checking", "error", "unavailable"].includes(state.status));
 
-  return (
-    <>
-      <div className="pointer-events-none fixed top-[calc(var(--desktop-title-height,0px)+10px)] right-3 z-[110]">
+  const control = (
+      <div className={slot ? "relative z-[110]" : "pointer-events-none fixed top-[calc(var(--desktop-title-height,0px)+10px)] right-3 z-[110]"}>
         <button
           type="button"
+          ref={trigger}
           data-desktop-update-settings
           aria-expanded={open}
           aria-haspopup="dialog"
           className="pointer-events-auto flex h-8 items-center gap-1.5 rounded-[8px] border border-line bg-page px-2.5 text-[12px] font-medium text-ink-2 shadow-hairline hover:bg-hover hover:text-ink"
-          onClick={() => setOpen((value) => !value)}
+          onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); setPlacement({ top: rect.bottom + 8, right: Math.max(12, window.innerWidth - rect.right) }); setOpen(value => !value); }}
         >
           Updates
         </button>
-        {open && (
+
+      </div>
+  );
+  return (
+    <>
+      {slot ? createPortal(control, slot) : control}
+      {open && createPortal(
           <div
             ref={panel}
             role="dialog"
             aria-label="Update settings"
             data-desktop-update-panel
-            className="pointer-events-auto absolute right-0 mt-2 w-80 max-w-[calc(100vw-24px)] rounded-xl border border-line bg-page p-3 text-sm text-ink shadow-card"
+            style={placement}
+            className="pointer-events-auto fixed z-[110] w-80 max-w-[calc(100vw-24px)] rounded-xl border border-line bg-page p-3 text-sm text-ink shadow-card"
           >
             <p className="text-[11px] font-medium tracking-wide text-ink-3 uppercase">App updates</p>
             <p className="mt-1 text-[13px] text-ink">Codegraff {state.currentVersion}</p>
@@ -139,8 +150,7 @@ export default function DesktopUpdates() {
               </p>
             </div>
           </div>
-        )}
-      </div>
+      , document.body)}
       {toast && (
         <div data-desktop-update className="fixed bottom-4 left-4 z-[110] w-80 max-w-[calc(100vw-32px)] rounded-xl border border-line bg-page p-3 text-sm text-ink shadow-card">
           <div className="flex items-center gap-3">
