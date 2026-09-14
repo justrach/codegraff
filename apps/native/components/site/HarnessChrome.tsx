@@ -1,6 +1,6 @@
 import SplitLayoutIcon from "./SplitLayoutIcon";
 import type {SplitTree} from "@/lib/split-tree";
-import { IconChat, IconFolder, IconGlobe } from "@/lib/icons";
+import ActionMenu from "@/components/primitives/ActionMenu";
 import { useEffect, useRef } from "react";
 import { ThemeToggle } from "./ThemeToggle";
 import DesktopSettings from "./DesktopSettings";
@@ -88,81 +88,20 @@ export default function HarnessChrome({chats, activeId, busyIds, focusChat, clos
           </svg>
         </button>
       </div>
-      <div className={`${reviewStyles.actions} flex min-h-10 shrink-0 items-center gap-2 overflow-x-auto border-t border-line px-2 py-1`}>
-        <button
-          type="button"
-          aria-pressed={conversationsOpen}
-          onClick={openConversations}
-          title="All conversations"
-          className={`flex h-7 items-center gap-1.5 rounded-[7px] px-2 text-[12px] font-medium transition-colors duration-100 ${
-            conversationsOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
-          }`}
-        >
-          <IconChat size={14} />
-          <span data-toolbar-label className="hidden sm:inline">Chats</span>
-        </button>
-        <button
-          type="button"
-          aria-pressed={split}
-          onClick={toggleSplit}
-          title={split ? "Close the splits (⌘\\)" : "Split the view: another chat beside this one (⌘D adds one)"}
-          className={`flex size-7 items-center justify-center rounded-[7px] transition-colors duration-100 ${
-            split ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
-          }`}
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <rect x="3" y="4" width="18" height="16" rx="2" />
-            <path d="M12 4v16" />
-          </svg>
-        </button>
-        <button
-          type="button"
-          aria-pressed={filesOpen}
-          onClick={onFiles}
-          title={`${chatCwd ?? "Workspace"}\nShow this chat's files`}
-          className={`flex h-7 items-center gap-1.5 rounded-l-[7px] pl-2 pr-1.5 text-[12px] font-medium transition-colors duration-100 ${
-            filesOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
-          }`}
-        >
-          <IconFolder size={14} />
-          <span data-toolbar-label className="max-w-40 truncate font-mono text-[11.5px]">{workspaceName}</span>
-        </button>
-        <button
-          type="button"
-          aria-label="Open a folder"
-          onClick={onFolder}
-          title="Open another folder to work in"
-          className="-ml-2 flex h-7 items-center rounded-r-[7px] pl-0.5 pr-1.5 text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <path d="M6 9l6 6 6-6" />
-          </svg>
-        </button>
-        <button type="button" onClick={openChanges} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover" aria-label="Review workspace changes" title="Review workspace changes"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M5 5h14v14H5zM8 9h8M8 12h8M8 15h4" /></svg><span data-toolbar-label>Changes</span></button>
-        <button
-          type="button"
-          aria-pressed={browserOpen}
-          onClick={onBrowser}
-          title="Sidecar browser — a Chrome tab this chat and its agent share"
-          className={`flex h-7 items-center gap-1.5 rounded-[7px] px-2 text-[12px] font-medium transition-colors duration-100 ${
-            browserOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
-          }`}
-        >
-          <IconGlobe size={14} />
-          <span data-toolbar-label className="text-[11.5px]">Browser</span>
-          {pinCount > 0 && (
-            <span className="rounded-full bg-accent px-1.5 text-[10px] font-semibold text-white tabular-nums">{pinCount}</span>
-          )}
-        </button>
-        <button aria-label="Toggle terminal" aria-pressed={terminalVisible} title="Terminal (⌘J)" onClick={toggleTerminal} className="rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></svg></button>
-        {onTasks && (
-          <button type="button" aria-pressed={tasksOpen} aria-label="Show tasks" title="Tasks — open on demand, not when a chat has a list" disabled={taskCount === 0 && !tasksOpen} onClick={onTasks}
-            className={`flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs hover:bg-hover disabled:opacity-40 ${tasksOpen ? "bg-hover-2 text-ink" : "text-ink-2"}`}>
-            <span data-toolbar-label>Tasks{taskCount > 0 ? ` (${taskCount})` : ""}</span>
-          </button>
-        )}
-        <ThemeToggle />
-        <DesktopSettings />
+      <div className={`${reviewStyles.actions} flex min-h-10 shrink-0 items-center gap-2 border-t border-line px-3 py-1`}>
+        <button type="button" aria-pressed={filesOpen} onClick={onFiles} title={`${chatCwd ?? "Workspace"}\nShow this chat's files`}
+          className="max-w-48 truncate rounded-md px-2 py-1 text-xs font-medium text-ink-2 hover:bg-hover">{workspaceName}</button>
+        <button type="button" onClick={openChanges} aria-label="Review workspace changes" className="rounded-md px-2 py-1 text-xs text-ink-2 hover:bg-hover">Changes</button>
+        {(taskCount > 0 || tasksOpen) && onTasks && <button type="button" aria-label="Show tasks" aria-pressed={tasksOpen} onClick={onTasks} className="rounded-md px-2 py-1 text-xs text-ink-2 hover:bg-hover">Tasks{taskCount ? ` (${taskCount})` : ""}</button>}
+        <ActionMenu label="More workspace actions" text="More" className="ml-auto shrink-0">
+          <button type="button" aria-pressed={conversationsOpen} onClick={openConversations} title="All conversations">Conversations</button>
+          <button type="button" aria-pressed={split} onClick={toggleSplit}>{split ? "Close splits" : "Split view"} <span className="ml-auto text-ink-3">⌘\</span></button>
+          <button type="button" onClick={onFolder}>Open a folder…</button>
+          <button type="button" aria-pressed={browserOpen} onClick={onBrowser} title="Sidecar browser — a Chrome tab this chat and its agent share">Browser{pinCount > 0 ? ` (${pinCount} pins)` : ""}</button>
+          <button type="button" aria-label="Toggle terminal" aria-pressed={terminalVisible} onClick={toggleTerminal}>Terminal <span className="ml-auto text-ink-3">⌘J</span></button>
+          <ThemeToggle labeled />
+          <DesktopSettings labeled />
+        </ActionMenu>
       </div>
       {splitNotice && <p role="status" data-split-limit className="border-t border-line px-3 py-1.5 text-[12px] text-ink-2">{splitNotice}</p>}
     </div>

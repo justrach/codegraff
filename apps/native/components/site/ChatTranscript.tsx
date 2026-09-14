@@ -51,11 +51,6 @@ export default memo(function ChatTranscript({ messages, register, following, onO
   }, []);
   return <div ref={registerScroller} data-chat-transcript data-following={following}
     className="min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain" style={{ overflowAnchor: "none" }}>
-    {snapshot && (
-      <p role="status" data-session-snapshot className="mx-auto max-w-[720px] px-4 pt-4 text-[12.5px] leading-relaxed text-ink-2 sm:px-8">
-        Saved snapshot — this view is not attached to a live REPL run. A follow-up continues here in the GUI.
-      </p>
-    )}
     <div data-transcript-content className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-4 py-8 sm:px-8">
       {start > 0 && <button type="button" className="self-center rounded-lg bg-field px-3 py-2 text-xs text-ink-2 hover:bg-hover" onClick={() => {
         const el = scroller.current;

@@ -40,6 +40,10 @@ the selected model and workspace. Changes flag cache reuse as at risk; matching
 metadata remains unverified. No agent or model request is started by this check.
 Saved settings cannot establish prefix equality or provider cache retention.
 
+The saved view shows one compact status notice beside its continuation controls;
+transcript headers and individual turns do not repeat it. Saved turn status remains
+unknown after continuation.
+
 ## Consequences
 
 Opening and refreshing history never bootstrap an ACP session. The composer

@@ -144,7 +144,7 @@ export const AssistantBody = memo(function AssistantBody({
           </div>
         ),
       )}
-      <TurnActivity turn={turn} snapshot={snapshot} />
+      {!snapshot && <TurnActivity turn={turn} />}
       {turn.error && (
         <p role="alert" className="mt-4 max-w-[620px] text-[13.5px] leading-[1.65] text-red">{turn.error}</p>
       )}

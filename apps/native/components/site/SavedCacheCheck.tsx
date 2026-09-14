@@ -28,7 +28,7 @@ export default function SavedCacheCheck({ name, cwd, model, disabled, onContinue
     return () => pending.current?.abort();
   }, [key]);
   const current = state.key === key ? state : { key, busy: true };
-  return <div data-saved-cache-check className="mt-3 border-t border-line pt-3">
+  return <div data-saved-cache-check className="mt-1">
     <p role="status" className="font-medium text-ink">{current.busy ? "Checking saved cache compatibility…" : current.error ? "Prompt cache check unavailable" : current.result?.summary}</p>
     {current.result && <details className="mt-1">
       <summary className="cursor-pointer">Check details</summary>
