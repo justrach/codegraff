@@ -361,7 +361,6 @@ pub fn main(init: std.process.Init) !void {
         telem.flush();
         telem.deinit();
     }
-
     // MCP servers from .mcp.json. SECURITY: a workspace .mcp.json launches arbitrary local commands, so opening an untrusted repo could run them —
     // auto-connect only with --yolo (trusted) or explicit per-session consent; otherwise start with an empty (but live) registry so `/mcp add`
     // still works.
@@ -597,4 +596,5 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("subagent_recovery.zig");
     _ = @import("acp_agent_activity.zig");
     _ = @import("read_image.zig");
+    _ = @import("mcp_names.zig");
 }

@@ -40,12 +40,16 @@ const initializeServer = mcp_rpc.initializeServer;
 const request = mcp_rpc.request;
 
 pub const Tool = struct {
+    server_name: ?[]const u8 = null, // raw configuration identity; null for legacy fixtures
     ui_resource_uri: ?[]const u8 = null,
     server_index: usize,
     original_name: []const u8, // name as the server knows it
     qualified_name: []const u8, // "mcp__<server>__<tool>" shown to the model
     description: []const u8,
     input_schema: Value, // arena-owned parsed JSON Schema
+    pub fn serverName(tool: Tool) []const u8 {
+        return tool.server_name orelse @import("mcp_names.zig").serverOf(tool.qualified_name);
+    }
 };
 
 pub const Registry = struct {
@@ -414,7 +418,7 @@ pub const Registry = struct {
             const name_v = t.object.get("name") orelse continue;
             if (name_v != .string) continue;
             const orig = try a.dupe(u8, name_v.string);
-            const qualified = try std.fmt.allocPrint(a, "mcp__{s}__{s}", .{ name, orig });
+            const qualified = try @import("mcp_names.zig").qualify(a, name, orig);
             // Prefer description; fall back to the 2025-06-18+ human-readable
             // title so a metadata-only tool isn't blank to the model.
             const desc = if (t.object.get("description")) |d| (if (d == .string) d.string else "") else if (t.object.get("title")) |ti| (if (ti == .string) ti.string else "") else "";
@@ -426,6 +430,7 @@ pub const Registry = struct {
             try mcp_protocol.flattenTopLevel(a, &schema);
             try tools.append(a, .{
                 .server_index = server_index,
+                .server_name = server.name,
                 .original_name = orig,
                 .qualified_name = qualified,
                 .description = try a.dupe(u8, desc),

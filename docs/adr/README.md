@@ -121,6 +121,7 @@ record only when you need the evidence or the edge cases.
 | [0108](0108-browser-events-outrank-pending-snapshots.md) | Browser page-info events invalidate older pending IPC snapshots; a loaded page must not revert to loading. |
 | [0109](0109-resume-retains-catalog-and-layout-snapshots.md) | Resume restores loaded tool selections and the same-workspace layout snapshot, without freezing current instructions or granting permissions. |
 | [0110](0110-project-mcp-listing-opts-in-optional-servers.md) | Project MCP entries opt in optional servers; inherited extras still require opt-in, and startup consent applies to both. |
+| [0112](0112-mcp-wire-names-preserve-raw-routing.md) | MCP wire names are escaped and bounded; raw server/tool identities control policy and dispatch. |
 
 ## When to write one
 
