@@ -3,10 +3,11 @@ import type {SplitTree} from "@/lib/split-tree";
 import ActionMenu from "@/components/primitives/ActionMenu";
 import { useEffect, useRef } from "react";
 import AppSettings from "./AppSettings";
-import type { PointerEvent, MouseEvent } from "react";
+import type { PointerEvent, MouseEvent, ReactNode } from "react";
 import type { Chat } from "./harness-types";
 import reviewStyles from "./ChangesPane.module.css";
 type Props = {
+  navigationToggle?: ReactNode;
   unreadIds?: ReadonlySet<number>;
   onTabPointerDown?(event: PointerEvent, id: number): void; onTabClickCapture?(event: MouseEvent): void;
   chats: (Pick<Chat, "id" | "title"> & { paneIds?: number[]; direction?: "row" | "column"; tree?: SplitTree })[]; activeId: number; busyIds: ReadonlySet<number>;
@@ -17,7 +18,7 @@ type Props = {
   terminalVisible: boolean; toggleTerminal(): void; agentsOpen: boolean; onAgents(): void; workingAgents?: number;
   tasksOpen?: boolean; taskCount?: number; onTasks?: () => void; splitNotice?: string | null;
 };
-export default function HarnessChrome({unreadIds, chats, activeId, busyIds, focusChat, closeChat, newChat,
+export default function HarnessChrome({navigationToggle, unreadIds, chats, activeId, busyIds, focusChat, closeChat, newChat,
   conversationsOpen, openConversations, split, toggleSplit, filesOpen, onFiles, chatCwd,
   workspaceName, onFolder, openChanges, browserOpen, onBrowser, pinCount, terminalVisible,
   toggleTerminal, agentsOpen, onAgents, workingAgents = 0, tasksOpen = false, taskCount = 0, onTasks, splitNotice, onTabPointerDown, onTabClickCapture}: Props) {
@@ -26,7 +27,9 @@ export default function HarnessChrome({unreadIds, chats, activeId, busyIds, focu
   return (
     <div ref={frame} data-workspace-toolbar className={`${reviewStyles.chatbar} flex shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-page`}>
       {/* One workspace-level tab strip above every split; never owned by a pane. */}
-      <div className="flex h-10 min-w-0 shrink-0 items-center gap-1 overflow-x-auto px-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="flex h-10 min-w-0 shrink-0 items-center gap-1 px-2">
+        {navigationToggle}
+        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <button type="button" aria-label="Show agents" aria-pressed={agentsOpen} onClick={onAgents}
           className={`h-7 shrink-0 rounded-[7px] px-3 text-[12.5px] font-medium ${agentsOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover"}`}>Agents{workingAgents > 0 ? ` (${workingAgents})` : ""}</button>
         <span aria-hidden="true" className="mx-1 h-4 w-px shrink-0 bg-line" />
@@ -88,6 +91,8 @@ export default function HarnessChrome({unreadIds, chats, activeId, busyIds, focu
             <path d="M12 5v14M5 12h14" />
           </svg>
         </button>
+        </div>
+        <div data-desktop-update-slot className="shrink-0" />
       </div>
       <div className={`${reviewStyles.actions} flex min-h-10 shrink-0 items-center gap-2 border-t border-line px-3 py-1`}>
         <button type="button" aria-pressed={filesOpen} onClick={onFiles} title={`${chatCwd ?? "Workspace"}\nShow this chat's files`}
