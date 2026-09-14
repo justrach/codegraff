@@ -591,7 +591,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("goal_flow.zig");
     _ = @import("goal_todo.zig");
     _ = @import("goal_pacing.zig");
-    _ = @import("presence_record.zig");
+    _ = .{ @import("presence_record.zig"), @import("peer_inbox_content_test.zig"), @import("peer_inbox_failure_test.zig") };
     _ = @import("acp_agents.zig");
     _ = @import("subagent_activity.zig");
     _ = @import("subagent_recovery.zig");
