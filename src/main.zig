@@ -49,7 +49,6 @@ const learn_store = @import("learn_store.zig");
 const learn_eval = @import("learn_eval.zig");
 const learn_cli = @import("learn_cli.zig");
 test {
-    _ = @import("task_intent.zig");
     _ = .{ @import("clipboard_native.zig"), @import("clipboard_edge_tests.zig"), @import("clipboard_failure_tests.zig"), @import("process_runner_clipboard_tests.zig") };
     _ = @import("server_orphan.zig");
     _ = @import("repo_transaction.zig");
@@ -125,7 +124,7 @@ test {
     _ = @import("obs_cost_test.zig");
     _ = @import("tui_launch.zig");
     _ = provider_mod;
-    _ = @import("named_work.zig");
+    _ = .{ @import("named_work.zig"), @import("task_intent.zig") };
 }
 const prompts = @import("prompts.zig");
 const schema = @import("schema.zig");
