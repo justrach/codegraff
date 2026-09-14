@@ -4,7 +4,7 @@ import type { AcpCommand } from "@/lib/acp";
 import type { PromptModel } from "@/components/primitives/PromptBar";
 import { listSessionsPage, type StoredSession } from "@/lib/sessions";
 import { restoreProjects, persistProjects } from "@/lib/project-preferences";
-import { findWorkspace, restoreWorkspaceSelection, type Workspace } from "@/lib/workspaces";
+import { findWorkspace, mergeWorkspaceActivity, restoreWorkspaceSelection, type Workspace } from "@/lib/workspaces";
 import { newSessionName, type Chat } from "./harness-types";
 type Ref<T> = MutableRefObject<T>;
 type Setter<T> = Dispatch<SetStateAction<T>>;
@@ -92,7 +92,17 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
       const root = h.cwd ?? "";
       const savedProjects = await restoreProjects(window.localStorage);
       if (cancelled) return;
-      const { list, active } = restoreWorkspaceSelection(savedProjects.list, savedProjects.active, root);
+      let { list, active } = restoreWorkspaceSelection(savedProjects.list, savedProjects.active, root);
+      try {
+        const query = new URLSearchParams();
+        for (const row of savedProjects.list) query.append("root", row.path);
+        const response = await fetch(`/api/workspace-history?${query}`, { signal: AbortSignal.timeout(5000) });
+        if (response.ok) {
+          const data = await response.json();
+          if (Array.isArray(data.workspaces)) list = mergeWorkspaceActivity(list, data.workspaces);
+        }
+      } catch { /* Saved folder choices still work while history is unavailable. */ }
+      if (cancelled) return;
       workspacesRef.current = list;
       activePathRef.current = active;
       setWorkspaces(list);
