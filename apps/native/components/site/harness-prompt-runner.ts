@@ -89,7 +89,8 @@ export function createPromptRunner({onStarted, onCompleted, runningRef, steerer,
       turn = { ...turn, connected: true, lastUpdateAt: Date.now() };
       painter.update(turn);
       for await (const update of prompt(handleOf(chatId), id, wire)) {
-        // An update proves the prompt reached the agent; don't cancel during session startup.
+        // The bridge acknowledges prompt dispatch before model output, so
+        // queued steering can cancel even during a slow first response.
         if (update.sessionUpdate === "gui_turn_end") steerer.finish(chatId);
         else steerer.ready(chatId);
         turn = applyAcpUpdate(turn, update);
