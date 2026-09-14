@@ -5,8 +5,8 @@
 
 const std = @import("std");
 
-pub const Kind = enum { commit, pull_request, publication };
-pub const Action = enum { commit, push, pr_create, pr_edit, pr_ready };
+pub const Kind = enum { commit, pull_request, publication, issue };
+pub const Action = enum { commit, push, pr_create, pr_edit, pr_ready, pr_mutation, issue_mutation };
 
 const Token = union(enum) {
     word: []const u8,
@@ -91,9 +91,13 @@ const Lexer = struct {
     }
 };
 
-const State = enum { command, ignore, git, git_value, gh, gh_value, gh_pr, shell, shell_script };
+const State = enum { command, ignore, git, git_value, gh, gh_value, gh_pr, gh_issue, shell, shell_script };
 
 pub fn action(input: []const u8) ?Action {
+    return scan(input, null);
+}
+
+fn scan(input: []const u8, wanted: ?Action) ?Action {
     var lexer = Lexer{ .input = input };
     var state: State = .command;
     while (lexer.next()) |token| switch (token) {
@@ -115,9 +119,11 @@ pub fn action(input: []const u8) ?Action {
                     } else if (word[0] == '-') {
                         continue;
                     } else if (std.mem.eql(u8, word, "push")) {
-                        return .push;
+                        if (wanted == null or wanted == .push) return .push;
+                        state = .ignore;
                     } else if (isSharedTreeGit(word)) {
-                        return .commit;
+                        if (wanted == null or wanted == .commit) return .commit;
+                        state = .ignore;
                     } else {
                         state = .ignore;
                     }
@@ -130,22 +136,30 @@ pub fn action(input: []const u8) ?Action {
                         continue;
                     } else if (std.mem.eql(u8, word, "pr")) {
                         state = .gh_pr;
+                    } else if (std.mem.eql(u8, word, "issue")) {
+                        state = .gh_issue;
                     } else {
                         state = .ignore;
                     }
                 },
                 .gh_pr => {
                     if (word[0] == '-') continue;
-                    if (std.mem.eql(u8, word, "create")) return .pr_create;
-                    if (std.mem.eql(u8, word, "edit")) return .pr_edit;
-                    if (std.mem.eql(u8, word, "ready")) return .pr_ready;
+                    if (std.mem.eql(u8, word, "create") and (wanted == null or wanted == .pr_create)) return .pr_create;
+                    if (std.mem.eql(u8, word, "edit") and (wanted == null or wanted == .pr_edit)) return .pr_edit;
+                    if (std.mem.eql(u8, word, "ready") and (wanted == null or wanted == .pr_ready)) return .pr_ready;
+                    if (isDiscussionMutation(word) and (wanted == null or wanted == .pr_mutation)) return .pr_mutation;
+                    state = .ignore;
+                },
+                .gh_issue => {
+                    if (word[0] == '-') continue;
+                    if ((isDiscussionMutation(word) or std.mem.eql(u8, word, "create") or std.mem.eql(u8, word, "edit")) and (wanted == null or wanted == .issue_mutation)) return .issue_mutation;
                     state = .ignore;
                 },
                 .shell => {
                     if (hasCommandFlag(word)) state = .shell_script;
                 },
                 .shell_script => {
-                    if (action(tokenText(raw))) |nested| return nested;
+                    if (scan(tokenText(raw), wanted)) |nested| return nested;
                     state = .ignore;
                 },
             }
@@ -158,20 +172,21 @@ pub fn classify(input: []const u8) ?Kind {
     return switch (action(input) orelse return null) {
         .commit => .commit,
         .push => .publication,
-        .pr_create, .pr_edit, .pr_ready => .pull_request,
+        .pr_create, .pr_edit, .pr_ready, .pr_mutation => .pull_request,
+        .issue_mutation => .issue,
     };
 }
 
 pub fn isPrCreate(input: []const u8) bool {
-    return action(input) == .pr_create;
+    return scan(input, .pr_create) != null;
 }
 
 pub fn isPrReady(input: []const u8) bool {
-    return action(input) == .pr_ready;
+    return scan(input, .pr_ready) != null;
 }
 
 pub fn isPrEdit(input: []const u8) bool {
-    return action(input) == .pr_edit;
+    return scan(input, .pr_edit) != null;
 }
 
 fn tokenText(raw: []const u8) []const u8 {
@@ -222,4 +237,21 @@ test "#879 quoted arguments and read-only heredocs are not executable publicatio
     try std.testing.expect(classify("grep -n 'git commit -m nope' notes.txt") == null);
     try std.testing.expect(classify("python3 - <<'PY'\nneedle = 'gh pr create --title x'\nprint(needle)\nPY") == null);
     try std.testing.expectEqual(Kind.pull_request, classify("python3 - <<'PY'\nprint('gh pr create')\nPY\ngh pr edit 42 --body fixed").?);
+}
+
+fn isDiscussionMutation(word: []const u8) bool {
+    for ([_][]const u8{ "close", "reopen", "comment" }) |verb| if (std.mem.eql(u8, word, verb)) return true;
+    return false;
+}
+
+test "publication predicates inspect later command positions" {
+    try std.testing.expect(isPrCreate("git add file && gh pr create"));
+    try std.testing.expect(isPrReady("git commit -m message && gh pr ready 12"));
+    try std.testing.expect(isPrEdit("git push && gh pr edit 12"));
+}
+
+test "release issue and discussion claim coverage is preserved" {
+    try std.testing.expectEqual(Kind.issue, classify("gh issue comment 12 --body note").?);
+    try std.testing.expectEqual(Kind.pull_request, classify("gh pr close 12").?);
+    try std.testing.expect(classify("echo 'gh issue close 12'") == null);
 }

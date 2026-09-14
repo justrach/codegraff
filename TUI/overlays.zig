@@ -246,10 +246,12 @@ pub fn activate(self: *Model) Effect {
             // openai row for a model codex also serves landed on codex.
             const pick = rows[sel];
             if (engine.g_model_fn) |f| {
+                const previous: engine.Picked = .{ .model = engine.g_model_name, .provider = engine.g_model_provider };
                 if (f(engine.g_turn_ctx, self.alloc, pick.provider, pick.name)) |got| {
+                    const same = std.mem.eql(u8, previous.model, got.model) and std.mem.eql(u8, previous.provider, got.provider);
                     self.adoptModel(got);
-                    self.setToast(got.model);
-                    self.pushFmt(.system, "model → {s} · {s}", .{ got.model, got.provider }) catch {};
+                    self.setToast(if (same) "already using this model" else got.model);
+                    self.pushFmt(.system, "{s} {s} · {s}", .{ if (same) "already using" else "model →", got.model, got.provider }) catch {};
                 } else self.setToast("couldn't switch");
             } else {
                 engine.g_model_name = pick.name;

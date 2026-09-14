@@ -49,7 +49,7 @@ const learn_store = @import("learn_store.zig");
 const learn_eval = @import("learn_eval.zig");
 const learn_cli = @import("learn_cli.zig");
 test {
-    _ = @import("clipboard_native.zig");
+    _ = .{ @import("clipboard_native.zig"), @import("clipboard_edge_tests.zig"), @import("clipboard_failure_tests.zig"), @import("process_runner_clipboard_tests.zig") };
     _ = @import("server_orphan.zig");
     _ = @import("repo_transaction.zig");
     _ = .{ @import("pr_command.zig"), @import("pr_evidence.zig"), @import("pr_verify.zig") };
@@ -361,7 +361,6 @@ pub fn main(init: std.process.Init) !void {
         telem.flush();
         telem.deinit();
     }
-
     // MCP servers from .mcp.json. SECURITY: a workspace .mcp.json launches arbitrary local commands, so opening an untrusted repo could run them —
     // auto-connect only with --yolo (trusted) or explicit per-session consent; otherwise start with an empty (but live) registry so `/mcp add`
     // still works.
@@ -563,8 +562,9 @@ const agentJobsReap = subagent.agentJobsReap; // #276 P0-3: background subagents
 const workflow = @import("workflow_test.zig"); // the engine's tests live here (workflow.zig hit the 600-line cap)
 const exec = @import("exec.zig");
 test { // ── Unit tests (`zig build test`): pull in tests from imported modules (mcp.zig)
-    _ = .{ @import("mcp_apps.zig"), @import("html_view.zig") };
+    _ = .{ @import("mcp_apps.zig"), @import("html_view.zig"), @import("providers_confirmation_tests.zig"), @import("repl_model_confirmation_tests.zig"), @import("repl_model_pick_tests.zig"), @import("engine_sink_citation_tests.zig"), @import("cite_markup_stream_tests.zig"), @import("oneshot_citation_tests.zig"), @import("tui_acp.zig") };
     _ = @import("main_test.zig");
+    _ = @import("artifact_claim_command.zig");
     _ = @import("session_catalog.zig");
     _ = @import("session_prompt.zig");
     _ = @import("prompt_astra.zig");
@@ -591,10 +591,11 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("goal_flow.zig");
     _ = @import("goal_todo.zig");
     _ = @import("goal_pacing.zig");
-    _ = @import("presence_record.zig");
+    _ = .{ @import("presence_record.zig"), @import("peer_inbox_content_test.zig"), @import("peer_inbox_failure_test.zig"), @import("peer_inbox_storage_test.zig"), @import("peer_inbox_sequence_test.zig"), @import("peer_inbox_snapshot_test.zig") };
     _ = @import("acp_agents.zig");
     _ = @import("subagent_activity.zig");
     _ = @import("subagent_recovery.zig");
     _ = @import("acp_agent_activity.zig");
     _ = @import("read_image.zig");
+    _ = @import("mcp_names.zig");
 }

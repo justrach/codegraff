@@ -6,6 +6,7 @@ const tui = @import("tui");
 const repl = @import("repl.zig");
 const util = @import("util.zig");
 const label = @import("agent_tool_label.zig");
+const citations = @import("cite_markup.zig");
 
 /// Maps one ACP `session/update` line onto the TUI stream / event queue.
 pub const Apply = struct {
@@ -13,8 +14,16 @@ pub const Apply = struct {
     stream: *repl.StreamBuf,
     show_thinking: bool = false,
     reasoning_open: bool = false,
+    reasoning_citations: citations.Stream = .{},
+    answer_citations: citations.Stream = .{},
     last_title: [160]u8 = undefined,
     last_title_len: usize = 0,
+
+    pub fn reset(self: *Apply) void {
+        self.reasoning_citations = .{};
+        self.answer_citations = .{};
+        self.reasoning_open = false;
+    }
 };
 
 pub fn applyBuffered(a: *Apply, gpa: Allocator, bytes: []const u8) void {
@@ -92,13 +101,28 @@ fn cap(s: []const u8, n: usize) []const u8 {
 /// The in-process transport can pass text directly; wire clients decode into this same path.
 pub fn applyChunk(a: *Apply, thinking: bool, text: []const u8) void {
     if (text.len == 0 or (thinking and !a.show_thinking)) return;
-    if (thinking) {
-        a.reasoning_open = true;
-    } else if (a.reasoning_open) {
-        a.reasoning_open = false;
-        a.stream.appendBytes("\n");
+    const filter = if (thinking) &a.reasoning_citations else &a.answer_citations;
+    // Batch visible bytes: the live tail publishes atomically on each append.
+    var visible: [1024]u8 = undefined;
+    var len: usize = 0;
+    for (text) |c| {
+        var scratch: [3]u8 = undefined;
+        const clean = filter.byte(c, &scratch);
+        if (clean.len == 0) continue;
+        if (thinking) {
+            a.reasoning_open = true;
+        } else if (a.reasoning_open) {
+            a.reasoning_open = false;
+            a.stream.appendBytes("\n");
+        }
+        if (len + clean.len > visible.len) {
+            a.stream.appendBytes(visible[0..len]);
+            len = 0;
+        }
+        @memcpy(visible[len..][0..clean.len], clean);
+        len += clean.len;
     }
-    a.stream.appendBytes(text);
+    if (len != 0) a.stream.appendBytes(visible[0..len]);
 }
 
 test "applyLine: thought then text land on the live tail" {
@@ -159,4 +183,34 @@ test "hidden reasoning and empty chunks do not alter transcript" {
     applyChunk(&a, false, "visible");
     try std.testing.expectEqualStrings("visible", stream.buf[0..stream.len.load(.acquire)]);
     try std.testing.expect(!a.reasoning_open);
+}
+
+test "ACP citation display filters every byte split and independent channels (#874)" {
+    const raw = "before日\u{E200}cite\u{E202}turn0view0\u{E201}after\u{E202}🚀\u{E201}";
+    for (0..raw.len + 1) |split| {
+        var q: tui.EventQueue = .{};
+        var buf: [256]u8 = undefined;
+        var stream: repl.StreamBuf = .{ .buf = &buf };
+        var a: Apply = .{ .queue = &q, .stream = &stream, .show_thinking = true };
+        applyChunk(&a, true, "why\u{E200}cite");
+        applyChunk(&a, false, raw[0..split]);
+        applyChunk(&a, false, raw[split..]);
+        applyChunk(&a, true, "hidden\u{E201}done");
+        try std.testing.expectEqualStrings("why\nbefore日after🚀done", buf[0..stream.len.load(.acquire)]);
+    }
+}
+
+test "ACP citation-only chunks do not add reasoning separators and reset drops partial spans (#874)" {
+    var q: tui.EventQueue = .{};
+    var buf: [128]u8 = undefined;
+    var stream: repl.StreamBuf = .{ .buf = &buf };
+    var a: Apply = .{ .queue = &q, .stream = &stream, .show_thinking = true };
+    applyLine(&a, std.testing.allocator, "{\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_thought_chunk\",\"content\":{\"text\":\"\\ue200cite\\ue202turn0view0\\ue201\"}}}}");
+    applyChunk(&a, false, "ok");
+    applyChunk(&a, true, "\xee\x88");
+    applyChunk(&a, false, "\u{E200}unterminated");
+    a.reset();
+    applyChunk(&a, true, "fresh");
+    applyChunk(&a, false, "answer");
+    try std.testing.expectEqualStrings("okfresh\nanswer", buf[0..stream.len.load(.acquire)]);
 }

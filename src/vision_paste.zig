@@ -43,7 +43,11 @@ pub fn clipboardPasteSource(io: Io, gpa: Allocator, supports_vision: bool, is_ma
 
 pub fn pasteFailMessage(kind: FailKind) []const u8 {
     return switch (kind) {
-        .access => "couldn't read the clipboard — grant Automation access for osascript, then try again",
+        .access => "clipboard read failed — retry Copy; use Edit > Paste for text or /image <path>",
+        .denied => "macOS denied clipboard access — use Edit > Paste for text or /image <path>",
+        .unavailable => "clipboard helper unavailable — use Edit > Paste for text or /image <path>",
+        .timeout => "clipboard read timed out — copy again, or save it and use /image <path>",
+        .changed => "clipboard changed while reading — copy again and retry, or use /image <path>",
         .extract => "the clipboard image could not be exported — try Copy again, or save it and /image <path>",
         .convert => "the clipboard image could not be converted — try a PNG or JPEG",
     };
@@ -103,6 +107,10 @@ test "pasteMessage: empty clipboard and extraction failure are distinct (#843)" 
         .unsupported_platform,
         .no_image,
         .{ .failed = .access },
+        .{ .failed = .denied },
+        .{ .failed = .unavailable },
+        .{ .failed = .timeout },
+        .{ .failed = .changed },
         .{ .failed = .extract },
         .{ .failed = .convert },
     };

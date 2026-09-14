@@ -22,7 +22,6 @@
 }
 .home-reveal-title { animation-delay: 35ms; }
 .home-reveal-composer { animation-delay: 65ms; }
-.home-reveal-suggestions { animation-delay: 95ms; }
 
 .motion-surface {
   /* Placement and visibility are immediate, including under reduced motion. */

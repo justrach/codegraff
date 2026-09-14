@@ -31,7 +31,7 @@ export function useDesktopShortcuts(actions: Actions) {
     const native=(event:Event)=>dispatch((event as CustomEvent<string>).detail);
     const onKey=(e:KeyboardEvent)=>{
       // Dialogs own their typing and navigation. Escape and Tab remain local.
-      if(e.isComposing)return;
+      if(e.isComposing||e.keyCode===229)return;
       if(e.target instanceof Element&&e.target.closest('[data-workspace-terminal]')&&!e.metaKey)return;
       if(document.querySelector('[role="dialog"]'))return;
       const a=ref.current,k=e.key.toLowerCase();let handled=false;
