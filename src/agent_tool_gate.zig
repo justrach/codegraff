@@ -243,16 +243,15 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
     } else if (std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file")) {
         // #469: the same once-per-peer checkpoint guards the files themselves —
         // the incident's other vector was editing a file a live peer had open.
-        if (presence.gateCheck(self.io, self.arena)) |checkpoint| return .{
-            .text = checkpoint,
-            .is_error = true,
-        };
-        if (approvals.allowedExact(self.io, call.name)) return null;
-        key = call.name;
         const path = if (call.input == .object)
             (if (call.input.object.get("path")) |p| (if (p == .string) p.string else "?") else "?")
         else
             "?";
+        const target = if (presence.hasCheckpointContext()) @import("file_worktree.zig").identity(self.gpa, self.io, self.arena, self.agent_cwd, path) else null;
+        const checkpoint = if (target) |id| presence.gateCheckIdentity(self.io, self.arena, id) else presence.gateCheck(self.io, self.arena);
+        if (checkpoint) |text| return .{ .text = text, .is_error = true };
+        if (approvals.allowedExact(self.io, call.name)) return null;
+        key = call.name;
         prompt_line = std.fmt.bufPrint(&line_buf, "{s} {s}", .{ call.name, path }) catch call.name;
     } else if (std.mem.eql(u8, call.name, "learn_candidate")) {
         if (!learning_privacy.allowsAggregate()) {
