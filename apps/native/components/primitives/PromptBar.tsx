@@ -35,7 +35,7 @@ export default function PromptBar({
   demo = true,
   tall = false,
   placeholder,
-  onSend, onSetting,
+  onSend, onSetting, onSteerQueued,
   models,
   commands,
   modelKey,
@@ -53,6 +53,8 @@ export default function PromptBar({
   tall?: boolean;
   placeholder?: string;
   onSend?: (text: string) => void; onSetting?: (text: string) => Promise<void>;
+  /** Steer the next queued message without consuming the current draft. */
+  onSteerQueued?: () => void;
   models?: PromptModel[];
   /** The slash commands the agent advertised. Empty until it answers —
    * an empty menu beats inventing commands this build may not service. */
@@ -482,9 +484,16 @@ export default function PromptBar({
               void attachFiles(files);
             }}
             onKeyDown={(event) => {
-              // IME candidate keys belong to the input method. Modified keys
-              // belong to desktop shortcuts, never completion or submission.
-              if (event.nativeEvent.isComposing || event.keyCode === 229 || event.metaKey || event.ctrlKey || event.altKey) return;
+              // IME candidate keys always belong to the input method.
+              if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && busy && !disabled && onSteerQueued) {
+                event.preventDefault();
+                event.stopPropagation();
+                if (!event.repeat) onSteerQueued();
+                return;
+              }
+              // Other modified keys belong to desktop shortcuts.
+              if (event.metaKey || event.ctrlKey || event.altKey) return;
               if (menu && rows.length > 0) {
                 if (!event.shiftKey && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
                   event.preventDefault();

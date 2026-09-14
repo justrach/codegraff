@@ -406,6 +406,12 @@ export default function GraffHarness() {
     wait: settings.wait, take: takeQueuedPrompt, run: runPrompt,
   });
 
+  const steerQueued = (chat: number, item: number) => steerer.steer(chat, item, () => {
+    const session = sessionsRef.current.get(chat);
+    if (!session) return Promise.reject(new Error("Session unavailable"));
+    return cancel(handleOf(chat), session);
+  });
+
   const columnBody = (thread: Chat) => <ChatColumn key={thread.id} thread={thread}
     compact={columnIds.length > 1} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
     onOpenPath={openPath} onReview={openChanges}
@@ -421,6 +427,10 @@ export default function GraffHarness() {
       root: cwdOf(thread), modelKey: thread.model ?? model ?? undefined,
       onModelChange: key => changeModel(key, thread.id), onSend: text => void send(text, thread.id),
       onSetting: text => settings.change(thread.id, text),
+      onSteerQueued: queues[thread.id]?.length ? () => {
+        const next = queuesRef.current[thread.id]?.[0];
+        if (runningRef.current.has(thread.id) && next) steerQueued(thread.id, next.id);
+      } : undefined,
       history: mergeHistory(history, thread.messages.flatMap(m => m.role === "user" ? [m.text] : [])),
       busy: busyIds.has(thread.id), onStop: () => {
         const live = sessionsRef.current.get(thread.id);
@@ -435,11 +445,7 @@ export default function GraffHarness() {
       onChangeEdit: (item, draft) => changeEdit(thread.id, item, draft),
       onEdit: (item, text) => { editQueued(thread.id, item, text); resumeQueue(thread.id); },
       onCancelEdit: item => { cancelEdit(thread.id, item); resumeQueue(thread.id); },
-      onRemove: item => { removeQueued(thread.id, item); resumeQueue(thread.id); }, onSteer: item => steerer.steer(thread.id, item, () => {
-        const session = sessionsRef.current.get(thread.id);
-        if (!session) return Promise.reject(new Error("Session unavailable"));
-        return cancel(handleOf(thread.id), session);
-      }),
+      onRemove: item => { removeQueued(thread.id, item); resumeQueue(thread.id); }, onSteer: item => steerQueued(thread.id, item),
     }}
     pins={(pinsByChat[thread.id] ?? []).length}
     onShowPins={() => { focusChat(thread.id); setFilesOpen(false); setBrowserOpen(true); }}
