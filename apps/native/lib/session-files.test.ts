@@ -80,6 +80,35 @@ test("a symlinked companion never grants authority to remove a user original", (
   } finally { f.dispose(); }
 });
 
+test("both transcript generations follow their checkpoint through archive and deletion", () => {
+  const f = fixture();
+  try {
+    const rotated = path.join(f.root, "saved.transcript.1.jsonl");
+    writeFileSync(rotated, '{"content":"oldest image reference"}\n');
+    const archived = archiveSavedSession(f.file);
+    const archivedRotated = archived.replace(/\.session\.json$/, ".transcript.1.jsonl");
+    expect(readFileSync(archivedRotated, "utf8")).toContain("oldest image reference");
+    expect(existsSync(rotated)).toBe(false);
+    deleteSavedSession(archived);
+    expect(existsSync(archivedRotated)).toBe(false);
+    expect(existsSync(archived.replace(/\.session\.json$/, ".transcript.jsonl"))).toBe(false);
+    expect(existsSync(archived)).toBe(false);
+  } finally { f.dispose(); }
+});
+
+test("a rotated-only archive reserves the whole stem and cannot be overwritten", () => {
+  const f = fixture(false);
+  try {
+    const directory = path.join(f.root, "archived"); mkdirSync(directory);
+    const previous = path.join(directory, "saved.transcript.1.jsonl");
+    writeFileSync(previous, "previous archive");
+    const archived = archiveSavedSession(f.file);
+    expect(path.basename(archived)).not.toBe("saved.session.json");
+    expect(readFileSync(previous, "utf8")).toBe("previous archive");
+    expect(existsSync(archived.replace(/\.session\.json$/, ".transcript.1.jsonl"))).toBe(false);
+  } finally { f.dispose(); }
+});
+
 
 test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("an unwritable archive preserves the checkpoint and its transcript", () => {
   const f = fixture(), archive = path.join(f.root, "archived");

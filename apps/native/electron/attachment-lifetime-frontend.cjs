@@ -58,12 +58,19 @@ async function runAttachments({win,origin,temp,output,requests,workspace,send,cl
   const savedFile=path.join(savedDirectory,savedName);
   const transcriptFile=savedFile.replace(/\.session\.json$/,'.transcript.jsonl');
   assert.ok(fs.existsSync(transcriptFile),'The real harness must have written its companion transcript');
+  // Seed a rotated generation from the real transcript; rotation itself is covered by harness tests.
+  const rotatedFile=savedFile.replace(/\.session\.json$/,'.transcript.1.jsonl');
+  fs.copyFileSync(transcriptFile,rotatedFile);
   const archiveName='attachment-archive-check';
   fs.copyFileSync(savedFile,path.join(savedDirectory,archiveName+'.session.json'));
   fs.copyFileSync(transcriptFile,path.join(savedDirectory,archiveName+'.transcript.jsonl'));
+  fs.copyFileSync(rotatedFile,path.join(savedDirectory,archiveName+'.transcript.1.jsonl'));
   const archiveResponse=await fetch(origin+'/api/sessions?'+new URLSearchParams({root:workspace,name:archiveName}),{method:'DELETE'});
   assert.equal(archiveResponse.status,200,'Archive the copied real checkpoint through the production route');
   assert.equal(fs.existsSync(path.join(savedDirectory,archiveName+'.transcript.jsonl')),false);
+  assert.equal(fs.existsSync(path.join(savedDirectory,archiveName+'.transcript.1.jsonl')),false);
+  const archivedRotated=path.join(savedDirectory,'archived',archiveName+'.transcript.1.jsonl');
+  assert.ok(fs.readFileSync(archivedRotated,'utf8').includes(path.basename(aged)));
   const archivedTranscript=path.join(savedDirectory,'archived',archiveName+'.transcript.jsonl');
   assert.ok(fs.readFileSync(archivedTranscript,'utf8').includes(path.basename(aged)),'Archived replay must retain its image reference');
   assert.ok(fs.existsSync(path.join(savedDirectory,'archived',archiveName+'.session.json')));
@@ -74,12 +81,14 @@ async function runAttachments({win,origin,temp,output,requests,workspace,send,cl
   await click('button[aria-label^="Delete "]');
   await until(()=>!fs.existsSync(savedFile),'session removed after its writer exits');
   assert.equal(fs.existsSync(transcriptFile),false,'Deleting a saved chat must also remove its full transcript');
+  assert.equal(fs.existsSync(rotatedFile),false,'Deleting a saved chat must remove its rotated transcript');
   await new Promise(resolve=>setTimeout(resolve,250));
   assert.equal(fs.existsSync(savedFile),false,'An exiting chat worker must not recreate its deleted session');
   fs.writeFileSync(path.join(output,'attachment-session-deleted.png'),(await wc.capturePage()).toPNG());
   assert.ok(fs.existsSync(archivedTranscript),'Deleting the original chat must preserve its independent archive');
+  assert.ok(fs.existsSync(archivedRotated),'Deleting the original must preserve the archived rotated transcript');
   assert.ok(fs.existsSync(aged),'An independent archived replay still needs the original image pixels');
-  report.passed.push('real sidebar delete retires its writer and removes checkpoint plus transcript; production archive preserves both replay files');
+  report.passed.push('real sidebar delete retires its writer and removes checkpoint plus both transcript generations; production archive preserves all replay files');
   report.passed.push('synthetic clipboard event through real GUI paste/upload/ACP: aged draft survives, removed and closed drafts release files, sent PNG reaches model and stays available for replay');
   fs.writeFileSync(path.join(output,'attachment-requests.json'),JSON.stringify(calls,null,2));
 }

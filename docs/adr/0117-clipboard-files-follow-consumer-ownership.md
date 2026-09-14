@@ -37,9 +37,9 @@ including writers already closing after tab disposal. EOF gives the worker its
 final save; a mutation gate prevents replacement writers until the file operation
 finishes. Otherwise exit autosave can recreate a deleted reference and invalidate
 the evidence used to decide that an attachment has no remaining consumers.
-The resumable checkpoint and its full companion transcript are one saved-chat
-lifetime: deleting removes both, while archiving moves both under a shared
-archive name without overwriting an older pair. An independent archive remains
+The resumable checkpoint and both current and rotated companion transcripts are
+one saved-chat lifetime: deleting removes all, while archiving moves them under
+a shared archive name without overwriting or mixing with an older bundle. An independent archive remains
 a consumer of its image references.
 
 ## Consequences
