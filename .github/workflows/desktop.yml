@@ -103,6 +103,13 @@ jobs:
         run: bun run test:cli
         env:
           GRAFF_FRONTEND_OUTPUT: ../../zig-out/cli-test
+      - name: Packaged conversation title creation and recovery
+        if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
+        run: |
+          GRAFF_REUSE_ENGINE=1 bun run electron:build
+          bun run test:packaged-titles
+        env:
+          GRAFF_PACKAGED_OUTPUT: ../../zig-out/packaged-titles
       - name: Bounded mixed split and memory stress
         if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
         run: bun run test:split-stress
@@ -123,6 +130,7 @@ jobs:
             zig-out/native-tests/native-results.json
             zig-out/frontend-tests/
             zig-out/narrow-navigation/
+            zig-out/packaged-titles/
             zig-out/split-stress/
             zig-out/native-tab-drag/
             zig-out/visual-tests/test-run.json
