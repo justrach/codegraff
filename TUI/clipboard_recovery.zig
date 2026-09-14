@@ -8,7 +8,8 @@ const private_file: Io.File.Permissions = if (Io.File.Permissions.has_executable
 const Record = struct {
     version: u8 = 1,
     path: []const u8,
-    inode: u128,
+    // File identifiers are signed on Windows and unsigned on POSIX.
+    inode: i128,
     size: u64,
     mtime: i96,
     ctime: i96,
