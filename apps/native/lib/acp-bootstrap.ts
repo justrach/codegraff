@@ -23,3 +23,16 @@ export async function initializeWorker(
     throw error;
   }
 }
+
+/** Serialize a chat's handshakes, then re-evaluate its live slot/options.
+ * A failed or disposed startup rejects its already queued callers too; only
+ * a later explicit request retries. Different chats remain independent. */
+export async function serializeBootstrap<T>(
+  pending: Map<string, Promise<T>>, chat: string, start: () => Promise<T>,
+): Promise<T> {
+  const previous = pending.get(chat);
+  const next = previous ? previous.then(start) : Promise.resolve().then(start);
+  pending.set(chat, next);
+  try { return await next; }
+  finally { if (pending.get(chat) === next) pending.delete(chat); }
+}
