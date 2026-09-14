@@ -151,7 +151,7 @@ pub fn compactBody(self: *const Agent) ![]u8 {
     try s.objectField("model");
     try s.write(self.provider.model);
     try s.objectField("input");
-    try s.write(std.json.Value{ .array = self.messages });
+    try @import("session_wake.zig").writeWireArray(&s, self.messages.items);
     try s.objectField("instructions");
     try s.write(self.systemPrompt());
     try s.endObject();
@@ -437,7 +437,7 @@ fn buildCompactBody(self: *Agent) ![]u8 {
     try s.objectField("model");
     try s.write(self.provider.model);
     try s.objectField("input");
-    try s.write(std.json.Value{ .array = self.messages });
+    try @import("session_wake.zig").writeWireArray(&s, self.messages.items);
     try s.endObject();
     return aw.toOwnedSlice();
 }

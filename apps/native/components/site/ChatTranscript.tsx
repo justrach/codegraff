@@ -1,6 +1,7 @@
 "use client";
 import { memo, useCallback, useLayoutEffect, useRef, useState } from "react";
 import { AssistantBody, UserBubble } from "./ChatBubbles";
+import SessionNotice from "./SessionNotice";
 import type { Msg } from "./harness-types";
 import { pinScrollerTail } from "@/lib/follow-scroll";
 import { transcriptPageStart } from "@/lib/transcript-window";
@@ -63,7 +64,9 @@ export default memo(function ChatTranscript({ messages, register, following, onO
         setStart(transcriptPageStart(messages, start)); setShown(shown + 1);
       }}>Show earlier messages ({start})</button>}
       {messages.slice(start).map((message, index) => message.role === "user"
-        ? <UserBubble key={message.id} text={message.text} />
+        ? message.origin === "notification"
+          ? <SessionNotice key={message.id} text={message.text} />
+          : <UserBubble key={message.id} text={message.text} />
         : <AssistantBody key={message.id} turn={message.turn} onOpenPath={onOpenPath} onReview={onReview}
             scroller={scroller} following={following && start + index === messages.length - 1} snapshot={snapshot} />)}
     </div>

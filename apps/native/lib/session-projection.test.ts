@@ -165,3 +165,24 @@ test('#912: snapshot uses saved todos over stale historical writes, and honors c
     if (legacy?.role === 'assistant') expect(legacy.turn.todos[0].status).toBe('in_progress');
   } finally { file.cleanup(); }
 });
+
+
+test("#912: generated notices survive raw and projected loads without claiming matching user text", async () => {
+  const file = fixture();
+  const text = "[job 1 exited 0: check]";
+  const messages = [
+    { role: "user", content: text, _graff_origin: "notification" },
+    { role: "user", content: text },
+    { role: "assistant", content: "Read the output." },
+  ];
+  try {
+    writeFileSync(path.join(file.root, ".graff/sessions/example.session.json"), JSON.stringify({ title: "Untitled session", messages }));
+    for (const view of [undefined, "transcript"]) {
+      const body = await (await GET(new NextRequest(file.url(view)))).json();
+      const loaded = sessionFromResponse(body);
+      expect(loaded.messages[0]).toEqual({ role: "user", text, origin: "notification" });
+      expect(loaded.messages[1]).toEqual({ role: "user", text });
+      expect(loaded.meta.title).toBe(text.slice(0, 80));
+    }
+  } finally { file.cleanup(); }
+});

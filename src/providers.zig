@@ -68,7 +68,7 @@ fn translateHistory(arena: Allocator, msgs: *std.json.Array, to_kind: Provider.K
         if (!std.mem.eql(u8, role, "user") and !std.mem.eql(u8, role, "assistant")) continue;
         const text = std.mem.trim(u8, extractText(arena, m), " \t\r\n");
         if (text.len == 0) continue;
-        out.append(textMessage(arena, role, text) catch continue) catch {};
+        out.append(@import("session_wake.zig").copyOrigin(arena, m, textMessage(arena, role, text) catch continue) catch continue) catch {};
     }
     msgs.* = out;
 }

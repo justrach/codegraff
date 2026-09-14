@@ -36,7 +36,7 @@ export type SessionPage = {
 export type SessionScope = "all" | "local" | "elsewhere";
 
 export type TranscriptMsg =
-  | { role: "user"; text: string }
+  | { role: "user"; text: string; origin?: "notification" }
   | { role: "assistant"; turn: AssistantTurn };
 
 export type SessionResponse = StoredSession & {
@@ -194,7 +194,7 @@ export function groupSessions(rows: StoredSession[], now = Date.now()): { group:
 }
 
 type RawCall = { id?: unknown; function?: { name?: unknown; arguments?: unknown } };
-type RawMsg = { role?: unknown; content?: unknown; tool_calls?: unknown; tool_call_id?: unknown };
+type RawMsg = { _graff_origin?: unknown; role?: unknown; content?: unknown; tool_calls?: unknown; tool_call_id?: unknown };
 
 function textOf(content: unknown): string {
   if (typeof content === "string") return content;
@@ -270,7 +270,7 @@ export function transcriptFromMessages(raw: unknown[], model?: string, savedTodo
       const text = withoutGuiSkillContext(textOf(msg.content).trim());
       if (!text) continue;
       flush();
-      out.push({ role: "user", text });
+      out.push({ role: "user", text, ...(msg._graff_origin === "notification" ? { origin: "notification" as const } : {}) });
       continue;
     }
     if (msg.role === "assistant") {

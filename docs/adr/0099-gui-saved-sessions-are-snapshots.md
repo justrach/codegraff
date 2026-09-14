@@ -29,6 +29,12 @@ stale or rejected proposals and must not override that saved state. Older
 files without the field retain history-based reconstruction. This does not
 turn a saved checklist into live execution status.
 
+Generated wakes retain `_graff_origin: "notification"` in saved message objects.
+Their provider role remains `user`, but wire serializers omit this internal field.
+The GUI renders these as expandable session notices and excludes them from prompt
+recall and title recovery. Text prefixes are not evidence of notification origin;
+older unmarked job notices retain their historical presentation.
+
 ## Consequences
 
 Opening and refreshing history never bootstrap an ACP session. The composer

@@ -131,6 +131,8 @@ test "idle wake spawn failure is reapable without a thread or model work (#537)"
     try std.testing.expectEqual(@as(usize, 1), Fake.wake_calls);
     try expectFailedStart(&term);
     try std.testing.expectEqualStrings("automatic follow-up", term.model.history.items[0].text);
+    try std.testing.expectEqual(app.EntryKind.system, term.model.history.items[0].kind);
+    try std.testing.expect(term.model.pending.?.history[0].notification);
 
     // Model.deinit's alternate cleanup path also sees threaded=false: the
     // undefined thread handle is never joined, and all Job ownership is freed.

@@ -434,7 +434,7 @@ export default function GraffHarness() {
         const next = queuesRef.current[thread.id]?.[0];
         if (runningRef.current.has(thread.id) && next) steerQueued(thread.id, next.id);
       } : undefined,
-      history: mergeHistory(history, thread.messages.flatMap(m => m.role === "user" ? [m.text] : [])),
+      history: mergeHistory(history, thread.messages.flatMap(m => m.role === "user" && m.origin !== "notification" ? [m.text] : [])),
       busy: busyIds.has(thread.id), onStop: () => {
         const live = sessionsRef.current.get(thread.id);
         if (!live) { setCancelError(current => ({ ...current, [thread.id]: "Nothing to interrupt yet." })); return; }

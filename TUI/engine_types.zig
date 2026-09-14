@@ -14,6 +14,7 @@ pub const Mode = enum { normal, plan, always_approve };
 pub const Turn = struct {
     role: Role,
     text: []const u8,
+    notification: bool = false,
     pub const Role = enum { user, assistant };
 };
 

@@ -42,6 +42,7 @@ pub const ToolInfo = struct {
 
 pub const Entry = struct {
     kind: EntryKind,
+    notification: bool = false,
     text: []const u8,
     folded: bool = false,
     /// Non-null on every `.tool` row a live turn produces. Null on a legacy

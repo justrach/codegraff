@@ -236,10 +236,7 @@ pub fn deliverInbound(root: *Agent) void {
     }
     if (peer_inbox.parkHeard(local_msgs, device_msgs) == 0) return;
     // History gets the wake only (ADR 0004). Bodies wait in the ring.
-    var obj: std.json.ObjectMap = .empty;
-    obj.put(root.arena, "role", .{ .string = "user" }) catch return;
-    obj.put(root.arena, "content", .{ .string = peer_context.capInject(peer_inbox.formatWake(root.arena)) }) catch return;
-    root.messages.append(.{ .object = obj }) catch {};
+    root.messages.append(@import("session_wake.zig").message(root.arena, peer_context.capInject(peer_inbox.formatWake(root.arena))) catch return) catch {};
 }
 
 /// Emit the drain's visible half as one bracketed unit: a blank notice, the
