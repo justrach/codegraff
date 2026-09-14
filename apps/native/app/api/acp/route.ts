@@ -1,3 +1,4 @@
+import { assertSessionWritable, closeSessionWriter, registerSessionWriter, sessionFile } from "@/lib/session-writers";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -93,40 +94,23 @@ function defaultYolo(): boolean {
   return true;
 }
 
-// A closed tab's agent gets stdin EOF first: `graff acp` leaves its read loop
-// on EOF and writes the session's exit save on the way out, which a SIGTERM
-// would skip. The signal is the fallback for an agent that does not wind down.
-const EXIT_GRACE_MS = 5_000;
-
-function killSlot(chat: string) {
+function killSlot(chat: string): Promise<void> {
   const slot = slots.get(chat);
-  if (!slot) return;
+  if (!slot) return Promise.resolve();
   slots.delete(chat);
-  try {
-    slot.child.stdin.end();
-  } catch {
-    // already closed
-  }
-  const timer = setTimeout(() => {
-    try {
-      slot.child.kill("SIGTERM");
-    } catch {
-      // already gone
-    }
-  }, EXIT_GRACE_MS);
-  timer.unref();
-  slot.child.once("exit", () => clearTimeout(timer));
+  return closeSessionWriter(slot.child);
 }
 
 function killPage(page: string) {
   const prefix = `${page}:`;
   for (const chat of [...slots.keys()]) {
-    if (chat.startsWith(prefix)) killSlot(chat);
+    if (chat.startsWith(prefix)) void killSlot(chat).catch(() => undefined);
   }
 }
 
 function spawnAgent(chat: string, opts: SpawnOpts): Slot {
-  killSlot(chat);
+  if (opts.resume) assertSessionWritable(sessionFile(opts.cwd, opts.resume));
+  void killSlot(chat).catch(() => undefined);
   const args = ["acp"];
   if (opts.yolo) args.push("--yolo");
   if (opts.model) args.push("--model", opts.model);
@@ -164,6 +148,9 @@ function spawnAgent(chat: string, opts: SpawnOpts): Slot {
     if (slots.get(chat) === slot && !slot.restart) slots.delete(chat);
   });
   slots.set(chat, slot);
+  if (slot.resume) registerSessionWriter(sessionFile(slot.cwd, slot.resume), child, () => {
+    if (slots.get(chat) === slot) slots.delete(chat);
+  });
   return slot;
 }
 
@@ -230,6 +217,9 @@ async function bootstrap(chat: string, opts: BootstrapOpts): Promise<Slot> {
     try { await slot.restartReady; }
     finally { if (slots.get(chat) === slot) slots.delete(chat); }
   }, HANDSHAKE_MS);
+  if (!slot.resume) registerSessionWriter(sessionFile(slot.cwd, slot.sessionId), slot.child, () => {
+    if (slots.get(chat) === slot) slots.delete(chat);
+  });
   await drainCommands(slot);
   return slot;
 }
@@ -265,7 +255,7 @@ export async function POST(req: NextRequest) {
   const model = typeof body.params?.model === "string" ? body.params.model : undefined;
   try {
     if (method === "dispose") {
-      killSlot(chat);
+      await killSlot(chat);
       return Response.json({ ok: true });
     }
     if (method === "dispose-page") {

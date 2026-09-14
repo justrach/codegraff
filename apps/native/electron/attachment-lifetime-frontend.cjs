@@ -52,6 +52,20 @@ async function runAttachments({win,origin,temp,output,requests,workspace,send,cl
     const source=path.join(workspace,'.graff',name);
     if(fs.existsSync(source))fs.cpSync(source,path.join(output,'attachment-'+name),{recursive:true});
   }
+  const savedDirectory=path.join(workspace,'.graff','sessions');
+  const savedName=fs.readdirSync(savedDirectory).find(name=>name.endsWith('.session.json') && fs.readFileSync(path.join(savedDirectory,name),'utf8').includes(path.basename(aged)));
+  assert.ok(savedName,'Find the actual saved image conversation before deleting it');
+  const savedFile=path.join(savedDirectory,savedName);
+  await until(()=>js(`!!document.querySelector('#sidebar-chat-list button[data-row].bg-hover-2')`),'selected saved sidebar row');
+  await js(`document.querySelector('#sidebar-chat-list button[data-row].bg-hover-2').parentElement.querySelector('button[aria-label^="Actions for "]').setAttribute('data-audit-delete-menu','true')`);
+  await click('[data-audit-delete-menu="true"]');
+  await until(()=>js(`!!document.querySelector('button[aria-label^="Delete "]')`),'saved conversation delete action');
+  await click('button[aria-label^="Delete "]');
+  await until(()=>!fs.existsSync(savedFile),'session removed after its writer exits');
+  await new Promise(resolve=>setTimeout(resolve,250));
+  assert.equal(fs.existsSync(savedFile),false,'An exiting chat worker must not recreate its deleted session');
+  fs.writeFileSync(path.join(output,'attachment-session-deleted.png'),(await wc.capturePage()).toPNG());
+  report.passed.push('real sidebar delete retires the saved conversation writer before removing its session file');
   report.passed.push('synthetic clipboard event through real GUI paste/upload/ACP: aged draft survives, removed and closed drafts release files, sent PNG reaches model and stays available for replay');
   fs.writeFileSync(path.join(output,'attachment-requests.json'),JSON.stringify(calls,null,2));
 }

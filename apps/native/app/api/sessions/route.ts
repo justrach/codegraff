@@ -1,3 +1,4 @@
+import { withSessionWritersStopped } from "@/lib/session-writers";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { NextRequest } from "next/server";
@@ -117,17 +118,19 @@ export async function DELETE(req: NextRequest) {
   if (!found) return Response.json({ error: "no such session" }, { status: 404 });
   const archive = req.nextUrl.searchParams.get("archive") !== "0";
   try {
-    if (!archive) {
-      unlinkSync(found.file);
-      return Response.json({ ok: true, name, archived: false });
-    }
-    const target = path.join(path.dirname(found.file), ARCHIVE_SUBDIR);
-    mkdirSync(target, { recursive: true });
-    let dest = path.join(target, `${name}${SESSION_EXT}`);
-    // Never overwrite an earlier archive of the same name.
-    if (existsSync(dest)) dest = path.join(target, `${name}.${Date.now()}${SESSION_EXT}`);
-    renameSync(found.file, dest);
-    return Response.json({ ok: true, name, archived: true });
+    return await withSessionWritersStopped(found.file, () => {
+      if (!archive) {
+        unlinkSync(found.file);
+        return Response.json({ ok: true, name, archived: false });
+      }
+      const target = path.join(path.dirname(found.file), ARCHIVE_SUBDIR);
+      mkdirSync(target, { recursive: true });
+      let dest = path.join(target, `${name}${SESSION_EXT}`);
+      // Never overwrite an earlier archive of the same name.
+      if (existsSync(dest)) dest = path.join(target, `${name}.${Date.now()}${SESSION_EXT}`);
+      renameSync(found.file, dest);
+      return Response.json({ ok: true, name, archived: true });
+    });
   } catch (err) {
     return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
   }

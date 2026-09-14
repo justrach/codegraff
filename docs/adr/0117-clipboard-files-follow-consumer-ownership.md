@@ -32,6 +32,12 @@ a chip releases it only after other draft trays stop referencing it; uploads
 that finish after their composer is disposed are discarded. Cleanup requires a
 durable file identity, and remains conservative on platforms without one.
 
+Saved-session deletion or archiving waits for every registered writer to exit,
+including writers already closing after tab disposal. EOF gives the worker its
+final save; a mutation gate prevents replacement writers until the file operation
+finishes. Otherwise exit autosave can recreate a deleted reference and invalidate
+the evidence used to decide that an attachment has no remaining consumers.
+
 ## Consequences
 
 Conservative retention can keep files when their last consumer cannot be proved
