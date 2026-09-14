@@ -131,6 +131,7 @@ pub const Agent = struct {
     model_calls_this_turn: u64 = 0,
     handle_note_shown: bool = false, // #541: the handle-protocol lesson rides this agent's FIRST handle, once
     seen_tool_keys: std.ArrayList([]const u8) = .empty, // root-only per-turn dedupe keys
+    cite_stream: @import("terminal_citations.zig").State = .{}, // display-only, independent prose channels
     md_buf: std.ArrayList(u8) = .empty, // current incomplete streamed line (markdown rendering)
     md_cite: @import("cite_markup.zig").Stream = .{}, // display-only, survives split citation markers
     md_fence: bool = false, // inside a ``` code fence while streaming

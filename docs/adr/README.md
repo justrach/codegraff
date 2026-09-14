@@ -124,6 +124,7 @@ record only when you need the evidence or the edge cases.
 | [0111](0111-peer-inbox-retains-bodies-and-reports-loss.md) | Peer inbox owns complete bodies, reports and persists loss, and clears only after a complete read result is allocated. |
 | [0112](0112-mcp-wire-names-preserve-raw-routing.md) | MCP wire names are escaped and bounded; raw server/tool identities control policy and dispatch. |
 | [0113](0113-clipboard-errors-need-evidence.md) | Direct AppKit clipboard failures need typed evidence; generic helper failures never imply Automation permission. |
+| [0114](0114-live-citations-are-terminal-presentation.md) | Live terminal citations use per-stream display filters with independent reasoning state; structured JSON/ACP output stays unchanged. |
 
 ## When to write one
 
