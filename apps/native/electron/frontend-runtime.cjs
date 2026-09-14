@@ -165,6 +165,16 @@ app.whenReady().then(async () => {
     await until(() => js(`document.querySelector('textarea[aria-label="Prompt"]').value === ${JSON.stringify(text)} && !document.querySelector('[aria-label="Send"]').disabled`), 'typed prompt ready');
     await click('[aria-label="Send"]');
   };
+  if (!process.env.GRAFF_CLI_TEST) {
+    assert.equal((await projects.load())?.list.some(row => row.path === workspace), false, 'Startup alone must not save a project');
+    await click('[data-workspace-trigger]');
+    await until(() => js(`!!document.querySelector('[data-workspace-menu]') && document.querySelector('[data-workspace-menu]').textContent.includes('Startup folder')`), 'startup folder provenance');
+    await js(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+    await sleep(150);
+    fs.writeFileSync(path.join(output, 'workspace-startup-source.png'), (await wc.capturePage()).toPNG());
+    await click('[data-workspace-trigger]');
+    report.passed.push('startup workspace stays available with explicit provenance and is absent from durable project preferences');
+  }
   if(htmlTool) return require('./html-tool-frontend.cjs').runHtmlTool({win,origin,output,temp,workspace,requests,send,click,until,report});
   await send('Write the fixture file, then finish.');
   await until(() => js(`document.body.textContent.includes('Scripted final request rejected') && !document.querySelector('article[aria-busy="true"]')`), 'real failure displayed', 25000);

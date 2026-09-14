@@ -93,7 +93,7 @@ type SidebarNavProps = {
   onWorkspaceSettings?: () => void;
 };
 
-export type SidebarWorkspace = { path: string; name: string };
+export type SidebarWorkspace = { path: string; name: string; source?: "saved" | "startup" };
 
 const SIDEBAR_MOTION = {
   expandedWidth: 248,

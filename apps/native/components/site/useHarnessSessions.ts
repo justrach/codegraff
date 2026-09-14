@@ -4,7 +4,7 @@ import type { AcpCommand } from "@/lib/acp";
 import type { PromptModel } from "@/components/primitives/PromptBar";
 import { listSessionsPage, type StoredSession } from "@/lib/sessions";
 import { restoreProjects, persistProjects } from "@/lib/project-preferences";
-import { basename, findWorkspace, upsertWorkspace, type Workspace } from "@/lib/workspaces";
+import { findWorkspace, restoreWorkspaceSelection, type Workspace } from "@/lib/workspaces";
 import { newSessionName, type Chat } from "./harness-types";
 type Ref<T> = MutableRefObject<T>;
 type Setter<T> = Dispatch<SetStateAction<T>>;
@@ -88,15 +88,11 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
       if (cancelled) return;
       setHealth(h);
       if (!h.ok) return;
-      // The server's default workspace is always a row; the remembered pick
-      // wins when it is still listed, else the default is active.
+      // Keep startup context visible without persisting it as a folder choice.
       const root = h.cwd ?? "";
       const savedProjects = await restoreProjects(window.localStorage);
       if (cancelled) return;
-      let list = savedProjects.list;
-      if (root && !findWorkspace(list, root)) list = upsertWorkspace(list, { path: root, name: basename(root) });
-      const remembered = savedProjects.active;
-      const active = findWorkspace(list, remembered)?.path ?? findWorkspace(list, root)?.path ?? list[0]?.path ?? null;
+      const { list, active } = restoreWorkspaceSelection(savedProjects.list, savedProjects.active, root);
       workspacesRef.current = list;
       activePathRef.current = active;
       setWorkspaces(list);
