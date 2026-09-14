@@ -66,17 +66,18 @@ fn seqAfter(cmd: []const u8, first: []const u8, second: []const u8, third: []con
 }
 
 pub fn isPrCreate(cmd: []const u8) bool {
-    return seqAfter(cmd, "gh", "pr", "create");
+    return @import("artifact_claim_command.zig").isPrCreate(cmd);
 }
 
 pub fn isPrReady(cmd: []const u8) bool {
-    if (seqAfter(cmd, "gh", "pr", "ready")) {
+    const command = @import("artifact_claim_command.zig");
+    if (command.isPrReady(cmd)) {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const parsed = @import("pr_command.zig").parse(arena.allocator(), cmd) catch return true;
         return !parsed.has("--undo");
     }
-    if (!seqAfter(cmd, "gh", "pr", "edit")) return false;
+    if (!command.isPrEdit(cmd)) return false;
     return std.mem.indexOf(u8, cmd, "--draft=false") != null or std.mem.indexOf(u8, cmd, "--draft false") != null;
 }
 

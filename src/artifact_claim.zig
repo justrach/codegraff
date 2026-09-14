@@ -159,36 +159,16 @@ pub fn handoff(ledger: *Ledger, arena: Allocator, kind: Kind, key: []const u8, f
 
 /// Git / GitHub writes that must not proceed under a foreign live claim.
 pub fn isClaimedMutation(cmd: []const u8) bool {
-    if (@import("presence_mutate.zig").isSharedTreeGit(cmd)) return true;
-    var it = std.mem.tokenizeAny(u8, cmd, " \t\r\n;&|\"'`()");
-    var saw_git = false;
-    var saw_gh = false;
-    var saw_pr = false;
-    while (it.next()) |tok| {
-        if (std.mem.eql(u8, std.fs.path.basename(tok), "git")) {
-            saw_git = true;
-            continue;
-        }
-        if (saw_git and (std.mem.eql(u8, tok, "push") or std.mem.eql(u8, tok, "commit") or std.mem.eql(u8, tok, "add"))) return true;
-        if (std.mem.eql(u8, std.fs.path.basename(tok), "gh")) {
-            saw_gh = true;
-            continue;
-        }
-        if (saw_gh and (std.mem.eql(u8, tok, "pr") or std.mem.eql(u8, tok, "issue"))) {
-            saw_pr = true;
-            continue;
-        }
-        if (saw_pr and (std.mem.eql(u8, tok, "create") or std.mem.eql(u8, tok, "edit") or std.mem.eql(u8, tok, "ready") or std.mem.eql(u8, tok, "close") or std.mem.eql(u8, tok, "reopen") or std.mem.eql(u8, tok, "comment"))) return true;
-    }
-    return false;
+    return @import("artifact_claim_command.zig").classify(cmd) != null;
 }
 
 pub fn mutationKind(cmd: []const u8) Kind {
-    if (std.mem.indexOf(u8, cmd, "gh issue ") != null) return .issue;
-    if (std.mem.indexOf(u8, cmd, "gh pr") != null) return .pull_request;
-    if (std.mem.indexOf(u8, cmd, "git push") != null) return .publication;
-    if (std.mem.indexOf(u8, cmd, "git commit") != null or std.mem.indexOf(u8, cmd, "git add") != null) return .commit;
-    return .publication;
+    return switch (@import("artifact_claim_command.zig").classify(cmd) orelse return .publication) {
+        .issue => .issue,
+        .commit => .commit,
+        .pull_request => .pull_request,
+        .publication => .publication,
+    };
 }
 
 pub fn refuseText(arena: Allocator, kind: Kind, key: []const u8, owner: Owner) []const u8 {
