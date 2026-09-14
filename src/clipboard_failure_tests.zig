@@ -61,9 +61,12 @@ fn check(comptime replies: []const Reply, expected: clip.GrabAttempt) !void {
     Mock.path_len = 0;
     const io = std.testing.io;
     const gpa = std.testing.allocator;
-    // Remove a leaked fixture even when a cleanup assertion fails.
-    defer if (Mock.path_len != 0) std.Io.Dir.cwd().deleteFile(io, Mock.path_buf[0..Mock.path_len]) catch {};
-    const got = native.grabWithRunner(io, gpa, "clipboard-failure-test", Mock.run);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buf: [4096]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buf);
+    const path = try std.fs.path.join(gpa, &.{ root_buf[0..root_len], "clipboard.png" });
+    const got = native.grabWithRunner(io, gpa, "clipboard-failure-test", path, Mock.run);
     defer if (got == .ok) got.ok.release(io, gpa);
     try std.testing.expectEqual(replies.len, Mock.calls);
     try std.testing.expectEqual(std.meta.activeTag(expected), std.meta.activeTag(got));

@@ -6,12 +6,13 @@ pub const script = @embedFile("clipboard_export.js");
 
 pub fn grab(io: std.Io, gpa: std.mem.Allocator, board: []const u8) clip.GrabAttempt {
     if (@import("builtin").os.tag != .macos) return .empty;
-    return grabWithRunner(io, gpa, board, runner.runCapped);
+    const path = clip.tempPath(io, gpa, "png") orelse return .{ .failed = .extract };
+    return grabWithRunner(io, gpa, board, path, runner.runCapped);
 }
 
 /// Same extraction path with an injected process boundary for failure tests.
-pub fn grabWithRunner(io: std.Io, gpa: std.mem.Allocator, board: []const u8, run: anytype) clip.GrabAttempt {
-    const path = clip.tempPath(io, gpa, "png") orelse return .{ .failed = .extract };
+/// Takes ownership of the gpa-allocated destination, including on failure.
+pub fn grabWithRunner(io: std.Io, gpa: std.mem.Allocator, board: []const u8, path: []const u8, run: anytype) clip.GrabAttempt {
     var keep = false;
     defer if (!keep) clip.discard(io, gpa, path);
     // Retry only when the clipboard changed during the read. Promised flavors
