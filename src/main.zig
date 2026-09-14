@@ -563,8 +563,7 @@ const workflow = @import("workflow_test.zig"); // the engine's tests live here (
 const exec = @import("exec.zig");
 test { // ── Unit tests (`zig build test`): pull in tests from imported modules (mcp.zig)
     _ = .{ @import("mcp_apps.zig"), @import("html_view.zig"), @import("providers_confirmation_tests.zig"), @import("repl_model_confirmation_tests.zig"), @import("repl_model_pick_tests.zig"), @import("engine_sink_citation_tests.zig"), @import("cite_markup_stream_tests.zig"), @import("oneshot_citation_tests.zig"), @import("tui_acp.zig") };
-    _ = @import("main_test.zig");
-    _ = @import("artifact_claim_command.zig");
+    _ = .{ @import("main_test.zig"), @import("artifact_claim_command.zig") };
     _ = @import("session_catalog.zig");
     _ = @import("session_prompt.zig");
     _ = @import("prompt_astra.zig");
