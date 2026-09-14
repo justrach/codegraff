@@ -95,8 +95,8 @@ async function runTabDrag({win, origin, output}) {
   assert.deepEqual(await panes(),before);
   // A fresh single pane can split vertically; mixed trees have separate stress coverage.
   await wc.loadURL(origin);await ready();
-  if(await js(`document.querySelector('button[title^="Sidecar browser"]')?.getAttribute('aria-pressed')==='true'`))await click('button[title^="Sidecar browser"]');
-  await wait(`document.querySelector('button[title^="Sidecar browser"]')?.getAttribute('aria-pressed')==='false'`);
+  if(await js(`!!document.querySelector('[aria-label="Close browser"]')`))await click('[aria-label="Close browser"]');
+  await wait(`!document.querySelector('[aria-label="Close browser"]')`);
   await focusComposer();
   for(const keyCode of 'Plan the next release')await desktop.testInput(wc,{type:'char',keyCode});
   await wait(`document.querySelector('textarea[aria-label="Prompt"]').value==='Plan the next release'`);

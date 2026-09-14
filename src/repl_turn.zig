@@ -165,13 +165,14 @@ fn borrowHistory(c: *ReplCtx, agent: *Agent, history: []const repl.Turn, arena: 
 /// A recalled TUI prompt carries `@[path]` markers. Stage the files so the
 /// model gets pixels, not the literal marker (#577).
 fn userOrText(agent: *Agent, arena: Allocator, t: repl.Turn) !std.json.Value {
+    if (t.notification) return @import("session_wake.zig").message(arena, t.text);
     if (t.role != .user) return textMessage(arena, "assistant", t.text);
     vision.stageGuiImageAttachment(agent, t.text);
     return vision_queue.consumePromptImages(arena, agent, t.text);
 }
 
 fn promoteTailImages(agent: *Agent, cv: anytype, history: []const repl.Turn) !void {
-    if (history.len == 0 or history[history.len - 1].role != .user) return;
+    if (history.len == 0 or history[history.len - 1].role != .user or history[history.len - 1].notification) return;
     const text = history[history.len - 1].text;
     vision.stageGuiImageAttachment(agent, text);
     if (agent.pending_image_len == 0) return;

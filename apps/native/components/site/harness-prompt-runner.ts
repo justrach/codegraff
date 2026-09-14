@@ -11,6 +11,8 @@ import type { Chat } from "./harness-types";
 type Ref<T> = MutableRefObject<T>;
 type Setter<T> = Dispatch<SetStateAction<T>>;
 type Props = {
+  onStarted(id: number): void;
+  onCompleted(id: number): void;
   runningRef: Ref<Set<number>>; steerer: ReturnType<typeof createQueueSteerer>; setFollowing: Setter<boolean>;
   chatsRef: Ref<Chat[]>; model: string | null; msgIdRef: Ref<number>; setChats: Setter<Chat[]>;
   setCancelError: Setter<Record<number, string>>;
@@ -20,7 +22,7 @@ type Props = {
   adoptCatalog(id: number): Promise<void>; refreshStored(): Promise<void>;
   takeQueuedPrompt(id: number): QueuedPrompt | undefined;
 };
-export function createPromptRunner({runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError}: Props) {
+export function createPromptRunner({onStarted, onCompleted, runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError}: Props) {
   const patchAssistant = (chatId: number, msgId: number, next: AssistantTurn) => {
     setChats((current) =>
       current.map((c) =>
@@ -37,6 +39,7 @@ export function createPromptRunner({runningRef, steerer, setFollowing, chatsRef,
   const runPrompt = async (chatId: number, trimmed: string) => {
     setCancelError(current => { const next = { ...current }; delete next[chatId]; return next; });
     runningRef.current.add(chatId);
+    onStarted(chatId);
     steerer.begin(chatId);
     setFollowing(true);
     const thread = chatsRef.current.find((c) => c.id === chatId);
@@ -86,7 +89,8 @@ export function createPromptRunner({runningRef, steerer, setFollowing, chatsRef,
       turn = { ...turn, connected: true, lastUpdateAt: Date.now() };
       painter.update(turn);
       for await (const update of prompt(handleOf(chatId), id, wire)) {
-        // An update proves the prompt reached the agent; don't cancel during session startup.
+        // The bridge acknowledges prompt dispatch before model output, so
+        // queued steering can cancel even during a slow first response.
         if (update.sessionUpdate === "gui_turn_end") steerer.finish(chatId);
         else steerer.ready(chatId);
         turn = applyAcpUpdate(turn, update);
@@ -99,6 +103,7 @@ export function createPromptRunner({runningRef, steerer, setFollowing, chatsRef,
       if (/^\/(effort|reasoning|fast)(?:\s|$)/.test(trimmed)) void adoptCatalog(chatId);
       turn = finishAcpTurn(turn);
       painter.finish(turn);
+      if (turn.status === "done" && !turn.error) onCompleted(chatId);
     } catch (err) {
       turn = finishAcpTurn({ ...turn, error: err instanceof Error ? err.message : String(err), status: "error" });
       painter.finish(turn);

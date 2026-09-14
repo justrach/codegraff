@@ -61,7 +61,7 @@ function PastedImage({ name }: { name: string }) {
 export const UserBubble = memo(function UserBubble({ text }: { text: string }) {
   const parts = splitImageMarkers(text);
   return (
-    <div className="flex justify-end pl-10 sm:pl-24" style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
+    <div data-user-bubble className="flex justify-end pl-10 sm:pl-24" style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
       <div
         className="rounded-xl px-3.5 py-2 min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[13px] leading-relaxed text-ink shadow-hairline"
         style={{ background: "color-mix(in oklab, var(--accent) 12%, var(--surface))" }}
@@ -119,7 +119,7 @@ export const AssistantBody = memo(function AssistantBody({
 
   return (
     <article data-turn-status={turn.status} aria-busy={live} className="min-w-0 [overflow-wrap:anywhere]" style={{ overflowAnchor: "none", animation: "fade-in 280ms ease both" }}>
-      {((thinking && turn.activityKind === "agent_thought_chunk") || reasoningRows.length > 0 || (turn.thoughtMs ?? 0) >= 1500) && (
+      {((thinking && turn.activityKind === "agent_thought_chunk") || reasoningRows.length > 0) && (
         <Reasoning
           variant="Reasoning"
           rows={reasoningRows.length ? reasoningRows : WAITING_ROWS}
@@ -144,7 +144,7 @@ export const AssistantBody = memo(function AssistantBody({
           </div>
         ),
       )}
-      <TurnActivity turn={turn} snapshot={snapshot} />
+      {!snapshot && <TurnActivity turn={turn} />}
       {turn.error && (
         <p role="alert" className="mt-4 max-w-[620px] text-[13.5px] leading-[1.65] text-red">{turn.error}</p>
       )}

@@ -19,6 +19,7 @@ import {
 } from "@/lib/icons";
 import CodeGraffMark from "./CodeGraffMark";
 import GlideMenu from "@/components/primitives/GlideMenu";
+import ActionMenu from "./ActionMenu";
 import WorkspaceMenu from "./WorkspaceMenu";
 
 /* ─────────────────────────────────────────────────────────
@@ -40,6 +41,7 @@ const NAV_ITEMS: { key: string; label: string; icon: ReactNode; count?: string }
 ];
 
 export type SidebarRecent = {
+  unread?: boolean;
   id: string;
   label: string;
   prompt?: string;
@@ -70,6 +72,7 @@ type SidebarNavProps = {
   /** footer call-to-action — defaults to the demo "Upgrade" button */
   footerLabel?: string;
   footerIcon?: ReactNode;
+  footerControls?: ReactNode;
   onFooterClick?: () => void;
   /** Tooltip on the footer control. */
   footerTitle?: string;
@@ -177,6 +180,7 @@ export default function SidebarNav({
   onNavigate,
   footerLabel = "Upgrade",
   footerIcon,
+  footerControls,
   onFooterClick,
   footerTitle,
   recents = DEFAULT_RECENTS,
@@ -332,7 +336,7 @@ export default function SidebarNav({
               onNewChat?.();
             }}
           />
-          {NAV_ITEMS.map((item) => (
+          {NAV_ITEMS.filter(item => !footerControls || !["workspace", "changes", "browser"].includes(item.key)).map((item) => (
             <RailButton
               key={item.key}
               icon={item.icon}
@@ -446,8 +450,9 @@ export default function SidebarNav({
                     active ? "bg-hover-2 group-hover/glide:bg-transparent" : ""
                   }`}
                 >
-                  <span className={`sidebar-copy flex min-w-0 flex-1 flex-col ${onArchiveRecent || onDeleteRecent ? "pr-14" : ""}`}>
+                  <span className={`sidebar-copy flex min-w-0 flex-1 flex-col ${onArchiveRecent || onDeleteRecent ? "pr-6" : ""}`}>
                     <span className={`truncate text-[13.5px] font-medium ${active ? "text-ink" : "text-ink-2"}`}>
+                      {item.unread && <span role="img" aria-label="Unread response" className="mr-1.5 inline-block size-1.5 rounded-full bg-blue-500" />}
                       {item.label}
                     </span>
                     {item.hint && (
@@ -455,42 +460,11 @@ export default function SidebarNav({
                     )}
                   </span>
                 </button>
-                {(onArchiveRecent || onDeleteRecent) && (
-                  <span className="sidebar-copy absolute inset-y-0 right-3 z-20 flex items-center gap-0.5 opacity-0 transition-opacity group-focus-within/row:opacity-100 group-hover/row:opacity-100">
-                    {onArchiveRecent && (
-                      <button
-                        type="button"
-                        aria-label={`Archive ${item.label}`}
-                        title="Archive this chat — it leaves the list but stays on disk"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onArchiveRecent(item.id);
-                        }}
-                        className="flex size-6 items-center justify-center rounded-[6px] text-ink-3 transition-colors hover:bg-hover-2 hover:text-ink"
-                      >
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                          <rect x="3" y="4" width="18" height="4" rx="1" />
-                          <path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M10 12h4" />
-                        </svg>
-                      </button>
-                    )}
-                    {onDeleteRecent && (
-                      <button
-                        type="button"
-                        aria-label={`Delete ${item.label}`}
-                        title="Delete this chat for good"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onDeleteRecent(item.id);
-                        }}
-                        className="flex size-6 items-center justify-center rounded-[6px] text-ink-3 transition-colors hover:bg-hover-2 hover:text-red"
-                      >
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                          <path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" />
-                        </svg>
-                      </button>
-                    )}
-                  </span>
+                {!collapsed && (onArchiveRecent || onDeleteRecent) && (
+                  <ActionMenu label={`Actions for ${item.label}`} className="absolute right-3 top-2 z-20 opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100 [@media(hover:none)]:opacity-100">
+                    {onArchiveRecent && <button type="button" aria-label={`Archive ${item.label}`} onClick={() => onArchiveRecent(item.id)}>Archive chat</button>}
+                    {onDeleteRecent && <button type="button" aria-label={`Delete ${item.label}`} className="text-red" onClick={() => onDeleteRecent(item.id)}>Delete chat…</button>}
+                  </ActionMenu>
                 )}
                 </div>
                 </Fragment>
@@ -518,17 +492,17 @@ export default function SidebarNav({
           </div>
         </div>
 
-        <div inert={collapsed} aria-hidden={collapsed} className="sidebar-copy mx-2 mt-3 w-[232px] border-t border-line pt-3">
+        {footerControls ? <div inert={collapsed} aria-hidden={collapsed}>{footerControls}</div> : <div inert={collapsed} aria-hidden={collapsed} className="sidebar-copy mx-2 mt-3 w-[232px] border-t border-line pt-3">
           <button
             type="button"
             onClick={onFooterClick ?? onNewChat}
             title={footerTitle}
-            className="flex h-8 w-full items-center justify-center gap-1.5 rounded-control bg-hover-2 px-2 text-[12.5px] font-medium text-ink transition-[background-color,transform] duration-150 hover:bg-line-strong active:scale-[0.98]"
+            className="flex h-8 w-full items-center justify-center gap-1.5 rounded-control px-2 text-[11px] font-medium text-ink-3 transition-[background-color,transform] duration-150 hover:bg-line-strong active:scale-[0.98]"
           >
             {footerIcon}
             <span className="min-w-0 flex-1 truncate text-center">{footerLabel}</span>
           </button>
-        </div>
+        </div>}
       </div>
     </aside>
   );

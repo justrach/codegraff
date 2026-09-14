@@ -58,6 +58,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     expect(initial.status).toBe(200);
     const first = await call("session/prompt", { prompt: [{ type: "text", text: "start" }] });
     const reader = first.body!.getReader();
+    expect(new TextDecoder().decode((await deadline(reader.read(), "prompt readiness")).value)).toContain("gui_prompt_ready");
     expect(new TextDecoder().decode((await deadline(reader.read(), "response chunk")).value)).toContain("started");
     const ended = deadline(reader.read(), "cancel result", 12000);
     const cancelled = await call("session/cancel", { sessionId: "saved-conversation" });

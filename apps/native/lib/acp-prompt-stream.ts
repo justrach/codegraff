@@ -20,6 +20,12 @@ export function createPromptStream(transport: Pick<AcpTransport, "request">, par
         }
       };
       pending = transport.request("session/prompt", params, 24 * 60 * 60 * 1000, send);
+      // The prompt is now written before any subsequent cancel on this
+      // transport. Flush readiness immediately: waiting for model output
+      // makes steering unavailable throughout a slow first response.
+      if (!closed) send(JSON.stringify({ method: "session/update", params: {
+        update: { sessionUpdate: "gui_prompt_ready" },
+      } }));
       void pending.then(() => {
         if (closed) return;
         // Missing terminal evidence must never become an inferred success.

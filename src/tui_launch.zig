@@ -292,7 +292,7 @@ fn compactCb(ctx: ?*anyopaque, gpa: Allocator, history: []const tui.Turn, out: *
         turns.append(.{ .role = switch (t.role) {
             .user => .user,
             .assistant => .assistant,
-        }, .text = text }) catch gpa.free(text);
+        }, .text = text, .notification = t.notification }) catch gpa.free(text);
     }
     var raw: @import("repl_compact.zig").CompactOut = .{};
     const ok = @import("repl_compact.zig").replCompactCb(ctx, gpa, turns.items, &raw);
@@ -310,7 +310,7 @@ fn compactCb(ctx: ?*anyopaque, gpa: Allocator, history: []const tui.Turn, out: *
         converted[i] = .{ .role = switch (t.role) {
             .user => .user,
             .assistant => .assistant,
-        }, .text = t.text };
+        }, .text = t.text, .notification = t.notification };
     }
     gpa.free(raw.turns);
     out.turns = converted;

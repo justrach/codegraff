@@ -91,7 +91,7 @@ type HeaderPeek = Header | null;
 export function recoveredSessionTitle(title: unknown, messages: unknown): string | null {
   if (title !== "Untitled session" || !Array.isArray(messages)) return str(title);
   for (const item of messages) {
-    if (!item || typeof item !== "object" || item.role !== "user") continue;
+    if (!item || typeof item !== "object" || item.role !== "user" || item._graff_origin === "notification") continue;
     const content = typeof item.content === "string" ? item.content : Array.isArray(item.content)
       ? item.content.filter((part: any) => part && (part.type === "text" || part.type === "input_text") && typeof part.text === "string")
         .map((part: any) => part.text).join("\n") : "";
