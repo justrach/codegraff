@@ -162,13 +162,6 @@ export function disposePage(page: string): void {
   }).catch(() => {});
 }
 
-export const STARTER_PROMPTS = [
-  { id: "files", label: "What files are here?", prompt: "What files are in this workspace? Be brief." },
-  { id: "readme", label: "Summarize README.md", prompt: "Read README.md and summarize it in a short paragraph." },
-  { id: "review", label: "Review the last commit", prompt: "Review HEAD against the previous commit. Stay read-only." },
-  { id: "todos", label: "What's on the checklist?", prompt: "Read the current todo list and tell me what's open." },
-] as const;
-
 export type ModelChoice = {
   key: string;
   name: string;
