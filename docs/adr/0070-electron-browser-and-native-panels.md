@@ -22,6 +22,13 @@ Closed views are destroyed. Hidden views release their renderers after one
 minute and retain their URL; rapid switching retains at most three live views.
 Reopening a suspended page reloads it, so unsaved page forms are not preserved.
 
+Agent browser navigation updates its own chat's page without attaching its
+native view or requesting a GUI reveal. Popups from hidden pages stay hidden;
+explicit user navigation may reveal the page. Background navigation schedules
+inactive-page cleanup even when loading fails. The native front-end regression
+checks preserve the selected chat, composer draft, and browser view across these
+operations, and fail against the former unconditional reveal behavior (#916).
+
 The renderer's IPC surface permits browser navigation, geometry, picking,
 and Activity only. External pages never receive that surface or the desktop
 API token. Graff can act on a pinned page through an authenticated loopback

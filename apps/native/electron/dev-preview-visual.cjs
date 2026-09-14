@@ -31,7 +31,7 @@ async function runDevPreview({ output }) {
     const tool = args => callTool('browser', args, env);
     await tool({ action: 'open', url });
     browser.setBounds('preview-test', { x: 0, y: 0, width: 900, height: 550 });
-    assert.ok(events.some(e => e.type === 'show'), 'Opening a preview requests the shared browser pane');
+    assert.ok(!events.some(e => e.type === 'show'), 'Agent preview navigation does not request foreground UI');
     assert.match(JSON.stringify(await tool({ action: 'snapshot' })), /Initial preview/);
     await tool({ action: 'fill', selector: '#name', text: 'Codegraff' });
     await tool({ action: 'click', selector: '#go' });
