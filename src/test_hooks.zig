@@ -378,4 +378,5 @@ test {
     _ = @import("edit_worktree_tests.zig"); // #747: edit lands on the selected worktree
     _ = @import("mcp.zig");
     _ = @import("mcp_rpc.zig");
+    _ = @import("task_intent.zig"); // #884: informational vs mutation intent
 }

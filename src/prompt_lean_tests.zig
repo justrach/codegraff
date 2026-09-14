@@ -66,3 +66,19 @@ test "lean prefix hash is stable and does not name a sandbox path" {
     try std.testing.expect(std.mem.indexOf(u8, first, ".sandboxes") == null);
     try std.testing.expect(std.mem.indexOf(u8, first, "/tmp/") == null);
 }
+
+test "#884 default and lean prompts gate mutation completion on intent" {
+    try std.testing.expect(std.mem.indexOf(u8, prompts.main_system_prompt, "summarize, explain, map, or inspect") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompts.main_system_prompt, "Do not fan out solely to summarize or inspect") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompts.main_system_prompt, "multi-step mutation work, not a read-only summary") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompts.main_system_prompt, "its OWN environment") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompts.main_system_prompt, "from reads you already made") != null);
+    const saved = no_local_tools.lean;
+    defer no_local_tools.lean = saved;
+    no_local_tools.lean = true;
+    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a_state.deinit();
+    const lean_prompt = try prompts.composeBase(a_state.allocator(), prompts.detectCaps());
+    try std.testing.expect(std.mem.indexOf(u8, lean_prompt, "answer from a bounded set of reads") != null);
+    try std.testing.expect(std.mem.indexOf(u8, lean_prompt, "its OWN environment") != null);
+}

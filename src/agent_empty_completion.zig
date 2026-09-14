@@ -13,6 +13,7 @@ const Agent = @import("agent.zig").Agent;
 const main_mod = @import("main.zig");
 const no_local_tools = @import("no_local_tools.zig");
 const messages = @import("messages.zig");
+const task_intent = @import("task_intent.zig");
 
 /// Retries allowed per turn for consecutive degenerate completions.
 pub const max_consecutive: u8 = 2;
@@ -46,6 +47,7 @@ pub fn handle(self: *Agent, final_text: []const u8, hist_len: usize) !bool {
     }
     if (!shouldBounce(main_mod.unattended, no_local_tools.lean, self.text_only, self.review_mode, self.sub, self.tool_calls_this_turn, self.model_calls_this_turn, final_text))
         return false;
+    if (task_intent.isInformational(self.named_work_task)) return false;
     try self.messages.append(try messages.userNote(self.arena, self.provider.kind, bounce_note));
     try self.say("[described a change with no tool call — asking once more]\n", .{});
     if (self.tracer) |tr| tr.note("fake_done", "lean -p text-only; bounced");
@@ -222,4 +224,12 @@ test "lean -p text-only first completion bounces once" {
 test "bounce note names the file tools" {
     try std.testing.expect(std.mem.indexOf(u8, bounce_note, "edit_file") != null);
     try std.testing.expect(std.mem.indexOf(u8, bounce_note, "write_file") != null);
+}
+
+test "#884 informational lean -p prose is not an edit-oriented fake_done bounce" {
+    const summarize = "go through the codebase and summarize what it does";
+    try std.testing.expect(task_intent.isInformational(summarize));
+    try std.testing.expect(shouldBounce(true, true, false, false, false, 0, 1, "This repo is a notes app."));
+    // handle() additionally gates on intent; a completed summary must not bounce.
+    try std.testing.expect(!task_intent.isInformational("fix the failing test in parser.py"));
 }

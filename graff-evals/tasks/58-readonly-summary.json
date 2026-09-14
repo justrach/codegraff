@@ -1,0 +1,10 @@
+{
+  "id": "readonly-summary",
+  "suite": "inhouse",
+  "category": "inhouse",
+  "source": "codegraff #884 — read-only codebase summary must not plan, fan out, test, or citation-hunt (distilled)",
+  "files_dir": "fixtures/readonly-summary",
+  "prompt": "go through the codebase and summarize what it does",
+  "check": "test ! -f tests/ran.marker && python3 \"$TASK_ROOT/hidden/readonly-summary.py\"",
+  "timeout_s": 180
+}

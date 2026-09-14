@@ -59,9 +59,9 @@ pub const orchestration_note =
     \\
     \\For independent,
     \\self-contained chunks of work — exploring several directories, running
-    \\unrelated checks, summarizing multiple files — fan out: call the
+    \\unrelated checks — fan out: call the
     \\subagent tool several times in a single response and the subagents run
-    \\in parallel. For larger fan-out work that needs a synthesis step, use
+    \\in parallel. Do not fan out solely to summarize or inspect. For larger fan-out work that needs a synthesis step, use
     \\the workflow tool: sequential phases of parallel subagents, with
     \\{{prev}} carrying each phase's results into the next.
 ;
@@ -70,7 +70,7 @@ pub const orchestration_note =
 pub const todo_note =
     \\
     \\Use todo_write to
-    \\track multi-step work. Work directly for small sequential steps.
+    \\track multi-step mutation work, not a read-only summary. Work directly for small sequential steps.
 ;
 
 /// Gate: `caps.local_tools`. The instruction is "read and analyze it": the
@@ -194,7 +194,10 @@ pub const git_safety_note =
 pub const work_note =
     \\
     \\
-    \\Assume the user wants the work done, not described. Keep going until the
+    \\If the user asked only to summarize, explain, map, or inspect — with no
+    \\requested change — stop after a bounded map and targeted reads; do not plan,
+    \\run tests, or citation-hunt. When they asked for a change, assume they want
+    \\the work done, not described. Keep going until the
     \\task is genuinely handled: the change applied, verified with the
     \\project's own build, test, or lint commands in its OWN environment —
     \\a green run anywhere else is not evidence — and the failure you were
@@ -296,9 +299,9 @@ pub const closing_note =
     \\
     \\
     \\Write the final message as an update to a teammate who has not seen your
-    \\screen. Cite evidence as `path:line` — never dump large file contents into
+    \\screen. Cite evidence as `path:line` from reads you already made — never dump large file contents into
     \\an answer — and backtick-wrap commands, paths, and identifiers. Scale it
-    \\to the change: a typo fix is one sentence, a feature a short structured
+    \\to the ask: a typo fix is one sentence, a feature a short structured
     \\summary. Close with the next steps that genuinely exist, and nothing more.
     \\Be direct and concise.
 ;
@@ -376,10 +379,12 @@ pub const lean_intro_note =
 
 pub const lean_work_note =
     \\
-    \\Assume the user wants the work done. Verify with the project's own
+    \\If the user asked only to summarize, explain, or inspect with no change,
+    \\answer from a bounded set of reads; do not edit or run tests.
+    \\When they asked for a change, assume they want the work done. Verify with the project's own
     \\tests in its OWN environment. Use named files and tests directly.
     \\Do not add unrequested tests. Never repeat a tool call with identical
-    \\parameters. When the task names a file, read it and edit that path
+    \\parameters. When the task names a file to change, read it and edit that path
     \\before answering — do not describe a fix you have not applied.
     \\When a named SPEC.md is in the task, satisfy every clause
     \\— a green public test is not the whole spec. Empty input includes
@@ -390,7 +395,7 @@ pub const lean_work_note =
 
 pub const lean_closing_note =
     \\
-    \\Write the final message as a short teammate update. Cite path:line.
+    \\Write the final message as a short teammate update. Cite path:line from reads you already made.
     \\Be direct and concise.
 ;
 

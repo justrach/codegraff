@@ -44,13 +44,13 @@ const golden_full_prompt =
     \\this exception to an inferred path or to a subagent.
     \\For independent,
     \\self-contained chunks of work — exploring several directories, running
-    \\unrelated checks, summarizing multiple files — fan out: call the
+    \\unrelated checks — fan out: call the
     \\subagent tool several times in a single response and the subagents run
-    \\in parallel. For larger fan-out work that needs a synthesis step, use
+    \\in parallel. Do not fan out solely to summarize or inspect. For larger fan-out work that needs a synthesis step, use
     \\the workflow tool: sequential phases of parallel subagents, with
     \\{{prev}} carrying each phase's results into the next.
     \\Use todo_write to
-    \\track multi-step work. Work directly for small sequential steps.
+    \\track multi-step mutation work, not a read-only summary. Work directly for small sequential steps.
     \\
     \\The harness writes this run's JSONL event trace beneath .graff/traces
     \\(`/trace` shows its exact path): one object per line, "ev" of "api" (ms
@@ -125,7 +125,10 @@ const golden_full_prompt =
     \\explicitly asks. Their existing commits and any -w worktree
     \\auto-checkpoints are the user's safety net; do not blow them away.
     \\
-    \\Assume the user wants the work done, not described. Keep going until the
+    \\If the user asked only to summarize, explain, map, or inspect — with no
+    \\requested change — stop after a bounded map and targeted reads; do not plan,
+    \\run tests, or citation-hunt. When they asked for a change, assume they want
+    \\the work done, not described. Keep going until the
     \\task is genuinely handled: the change applied, verified with the
     \\project's own build, test, or lint commands in its OWN environment —
     \\a green run anywhere else is not evidence — and the failure you were
@@ -169,9 +172,9 @@ const golden_full_prompt =
     \\
     \\
     \\Write the final message as an update to a teammate who has not seen your
-    \\screen. Cite evidence as `path:line` — never dump large file contents into
+    \\screen. Cite evidence as `path:line` from reads you already made — never dump large file contents into
     \\an answer — and backtick-wrap commands, paths, and identifiers. Scale it
-    \\to the change: a typo fix is one sentence, a feature a short structured
+    \\to the ask: a typo fix is one sentence, a feature a short structured
     \\summary. Close with the next steps that genuinely exist, and nothing more.
     \\Be direct and concise.
     \\
