@@ -20,6 +20,8 @@ at a real provider to run the same cases against one.
 
 A case can send structured setup controls with `controls_before_prompt`, such
 as selecting a local vision model before its first user message.
+`prompt_options` supplies explicit user-request fields; `github_fixture` installs
+a local-only GitHub CLI with scripted head/check evidence.
 
 Assertions a case can make:
 
@@ -63,6 +65,7 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 CASES = REPO / "evals" / "harness_behavior.jsonl"
 sys.path.insert(0, str(REPO / "scripts" / "eval"))
 from mock_model import ScriptedModel  # noqa: E402
+from github_fixture import prepare as prepare_github
 
 
 def load_cases() -> list[dict[str, Any]]:
@@ -153,6 +156,8 @@ def execute(case: dict[str, Any], graff: str, port: int,
                     ["git", "worktree", "add", "--detach", "nested"],
                 ]:
                     subprocess.run(command, cwd=workspace, env=env, check=True, capture_output=True)
+            if "github_fixture" in case:
+                prepare_github(pathlib.Path(workspace), env, case["github_fixture"])
             # A genuinely live second graff in the same workspace, for #469
             # presence cases: the checkpoint only exists while a co-resident
             # session does, and a real peer announces (and probes) better than
@@ -178,7 +183,7 @@ def execute(case: dict[str, Any], graff: str, port: int,
             argv += list(case.get("args", []))
 
             stdin_lines = [json.dumps(control) for control in case.get("controls_before_prompt", [])]
-            stdin_lines.append(json.dumps({"type": "user", "text": case["prompt"]}))
+            stdin_lines.append(json.dumps({"type": "user", "text": case["prompt"], **case.get("prompt_options", {})}))
             for control in case.get("controls_after_turn", []):
                 stdin_lines.append(json.dumps(control))
             if case.get("second_prompt"):

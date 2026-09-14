@@ -494,6 +494,7 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     try @import("session_catalog.zig").restore(root, obj);
     try root.ensureRootTools(root.provider.kind);
     const compaction_window = try @import("compaction_window.zig").State.restore(arena, obj, msgs.items);
+    root.pr_draft_scope = null; // draft-only scope must be authorized again after resume
     root.messages = msgs;
     root.compaction_window = compaction_window;
     // Repair histories written by older builds where a Responses
