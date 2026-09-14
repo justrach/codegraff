@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { AcpTransport } from "./acp-transport";
-import { initializeWorker } from "./acp-bootstrap";
+import { initializeWorker, serializeBootstrap } from "./acp-bootstrap";
 import { retireWorker } from "./acp-retire";
 
 async function worker(mode: string) {
@@ -43,3 +43,59 @@ for (const mode of ["initialize", "session/new", "invalid"]) {
     } finally { await retireWorker(fresh.child, 50); }
   });
 }
+
+
+test("overlapping startup and first prompt share a completed worker", async () => {
+  const pending = new Map<string, Promise<string>>();
+  let live: Awaited<ReturnType<typeof worker>> | undefined;
+  let session: string | undefined;
+  let starts = 0;
+  const start = async () => {
+    if (session) return session;
+    starts++;
+    live = await worker("okay");
+    session = await initializeWorker(live.transport, process.cwd(), async () => {
+      await retireWorker(live!.child, 50);
+    }, 1000);
+    return session;
+  };
+  try {
+    expect(await Promise.all([
+      serializeBootstrap(pending, "chat", start),
+      serializeBootstrap(pending, "chat", start),
+      serializeBootstrap(pending, "chat", start),
+    ])).toEqual(["ready", "ready", "ready"]);
+    expect(starts).toBe(1);
+    expect(live?.transport.usable).toBe(true);
+    expect(pending.size).toBe(0);
+  } finally { if (live) await retireWorker(live.child, 50); }
+});
+
+test("a failed startup rejects queued callers without resurrecting it", async () => {
+  const pending = new Map<string, Promise<string>>();
+  let fail!: (error: Error) => void;
+  let queuedStarts = 0;
+  const first = serializeBootstrap(pending, "chat", () => new Promise<string>((_, reject) => { fail = reject; }));
+  const second = serializeBootstrap(pending, "chat", async () => { queuedStarts++; return "unexpected"; });
+  const results = Promise.allSettled([first, second]);
+  await Promise.resolve();
+  fail(new Error("startup disposed"));
+  expect((await results).map(result => result.status)).toEqual(["rejected", "rejected"]);
+  expect(queuedStarts).toBe(0);
+  expect(pending.size).toBe(0);
+  expect(await serializeBootstrap(pending, "chat", async () => "retry")).toBe("retry");
+});
+
+test("queued option changes wait while other chats stay independent", async () => {
+  const pending = new Map<string, Promise<string>>();
+  let ready!: (value: string) => void;
+  let current = "first workspace";
+  const first = serializeBootstrap(pending, "chat", () => new Promise<string>(resolve => { ready = resolve; }));
+  const moved = serializeBootstrap(pending, "chat", async () => { current = "second workspace"; return current; });
+  expect(await serializeBootstrap(pending, "other", async () => "independent")).toBe("independent");
+  expect(current).toBe("first workspace");
+  ready(current);
+  expect(await first).toBe("first workspace");
+  expect(await moved).toBe("second workspace");
+  expect(pending.size).toBe(0);
+});

@@ -13,7 +13,7 @@ import { prepareGuiPrompt } from "@/lib/gui-skill-context";
 import { attachmentStore } from "@/lib/attachment-store";
 
 import { retireWorker } from "@/lib/acp-retire";
-import { initializeWorker } from "@/lib/acp-bootstrap";
+import { initializeWorker, serializeBootstrap } from "@/lib/acp-bootstrap";
 import { finishCancelledPrompt } from "@/lib/acp-cancel";
 
 export const runtime = "nodejs";
@@ -73,8 +73,9 @@ function mcpOffPath(): string {
 // child's history; `dispose`/`dispose-page` reap children on tab close and
 // page unload. Kept on globalThis so dev-server module reloads don't orphan
 // running agents.
-const g = globalThis as typeof globalThis & { __graffAcpSlots?: Map<string, Slot> };
+const g = globalThis as typeof globalThis & { __graffAcpSlots?: Map<string, Slot>; __graffAcpBootstraps?: Map<string, Promise<Slot>> };
 const slots = (g.__graffAcpSlots ??= new Map<string, Slot>());
+const bootstraps = (g.__graffAcpBootstraps ??= new Map<string, Promise<Slot>>());
 const DEFAULT_CHAT = "default";
 // Session names become a CLI argument and a filename under .graff/sessions.
 const SESSION_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -188,21 +189,31 @@ async function endTurn(slot: Slot): Promise<void> {
 /** The tab's live agent when it still matches what was asked for (model,
  * session file, workspace, approval mode); otherwise a fresh spawn. A
  * request that leaves a field out accepts whatever the live agent has. */
-async function bootstrap(chat: string, opts: BootstrapOpts): Promise<Slot> {
-  const live = slots.get(chat);
-  const same =
-    live !== undefined &&
-    live.sessionId !== null && live.transport.usable &&
-    (!opts.model || live.model === opts.model) &&
+function matchesBootstrap(live: Slot, opts: BootstrapOpts): boolean {
+  return (!opts.model || live.model === opts.model) &&
     (!opts.resume || live.resume === opts.resume) &&
     (!opts.cwd || live.cwd === opts.cwd) &&
     (opts.yolo === undefined || live.yolo === opts.yolo) &&
     (opts.mcp === undefined || live.mcp === opts.mcp);
+}
+
+function bootstrap(chat: string, opts: BootstrapOpts): Promise<Slot> {
+  const live = slots.get(chat);
+  // Explicit changes can replace a stalled handshake. Ordinary concurrent
+  // requests must wait instead of killing the worker they are about to use.
+  if (opts.reset || (live && !matchesBootstrap(live, opts))) bootstraps.delete(chat);
+  return serializeBootstrap(bootstraps, chat, () => bootstrapNow(chat, opts));
+}
+
+async function bootstrapNow(chat: string, opts: BootstrapOpts): Promise<Slot> {
+  const live = slots.get(chat);
+  const same = live !== undefined && live.sessionId !== null &&
+    live.transport.usable && matchesBootstrap(live, opts);
   if (!opts.reset && same) return live;
   const recovering = live?.restart ? live : undefined;
   if (recovering?.restartReady) {
     await recovering.restartReady;
-    if (slots.get(chat) !== live) return bootstrap(chat, opts);
+    if (slots.get(chat) !== live) return bootstrapNow(chat, opts);
   }
   const slot = spawnAgent(chat, {
     model: opts.model ?? recovering?.model ?? undefined,
@@ -221,6 +232,7 @@ async function bootstrap(chat: string, opts: BootstrapOpts): Promise<Slot> {
     if (slots.get(chat) === slot) slots.delete(chat);
   });
   await drainCommands(slot);
+  if (slots.get(chat) !== slot) throw new Error("ACP startup was disposed. Retry to start a new worker.");
   return slot;
 }
 
