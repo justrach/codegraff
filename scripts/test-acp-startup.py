@@ -29,7 +29,7 @@ def main():
         config.write_text(json.dumps({"mcpServers": {"slow-fixture": {"command": sys.executable, "args": [str(slow)]}}}))
         env = {"HOME": str(root), "PATH": str(shim) + ":/usr/bin:/bin", "TERM": "dumb",
                "LMSTUDIO_API_KEY": "fixture", "GRAFF_MCP_CONFIG": str(config),
-               "GRAFF_NO_ADOPT": "1", "GRAFF_NO_TELEMETRY": "1", "GRAFF_FLEET": "off"}
+               "GRAFF_BOOT_DEBUG": "1", "GRAFF_NO_ADOPT": "1", "GRAFF_NO_TELEMETRY": "1", "GRAFF_FLEET": "off"}
         with (root / "stderr").open("w") as stderr:
             child = subprocess.Popen([str(binary), "acp", "--yolo", "--model", "lmstudio"],
                                      cwd=root, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -58,7 +58,7 @@ def main():
                         line, buffer = buffer.split(b"\n", 1)
                         message = json.loads(line)  # stdout must stay protocol-clean.
                         ready |= message.get("id") == 1 and "result" in message
-                assert ready, "ACP initialize blocked on the optional MCP handshake"
+                assert ready, "ACP initialize blocked on the optional MCP handshake\n" + (root / "stderr").read_text()[-4096:]
                 os.kill(int((root / "started").read_text()), 0)
             finally:
                 poll.close()
