@@ -29,6 +29,10 @@ stale or rejected proposals and must not override that saved state. Older
 files without the field retain history-based reconstruction. This does not
 turn a saved checklist into live execution status.
 
+Harness-authored budget, compaction, and completion reminders use the same
+notification provenance as generated wakes; they never become the latest human
+request. Actual one-shot prompts retain their human provenance.
+
 Generated wakes retain `_graff_origin: "notification"` in saved message objects.
 Their provider role remains `user`, but wire serializers omit this internal field.
 The GUI renders these as expandable session notices and excludes them from prompt
