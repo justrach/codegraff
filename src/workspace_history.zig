@@ -13,10 +13,11 @@ pub fn record(io: Io, workspace: Io.Dir, home: []const u8) !void {
     var home_dir = try Io.Dir.cwd().openDir(io, home, .{});
     defer home_dir.close(io);
     try home_dir.createDirPath(io, directory);
-    var records = try home_dir.openDir(io, directory, .{ .follow_symlinks = false });
+    var records = try home_dir.openDir(io, directory, .{ .follow_symlinks = false, .iterate = true });
     defer records.close(io);
-    const private_dir: Io.File.Permissions = if (Io.File.Permissions.has_executable_bit) .fromMode(0o700) else .default_dir;
-    try records.setPermissions(io, private_dir);
+    // Linux needs a readable descriptor (not O_PATH) for fchmod. Windows
+    // inherits home ACLs; its directory chmod operation is unimplemented.
+    if (Io.File.Permissions.has_executable_bit) try records.setPermissions(io, .fromMode(0o700));
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(root, &digest, .{});
     const hex = std.fmt.bytesToHex(digest, .lower);
