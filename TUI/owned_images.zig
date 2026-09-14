@@ -1,8 +1,28 @@
 //! Owned clipboard exports outlive every live draft/history consumer.
 const std = @import("std");
+const recovery = @import("clipboard_recovery.zig");
 const Model = @import("app.zig").Model;
 
-pub const Owned = struct { path: []const u8, identity: std.Io.File.Stat, retained: bool = false };
+pub const Owned = struct {
+    path: []const u8,
+    identity: std.Io.File.Stat,
+    retained: bool = false,
+    store: ?*recovery.Store = null,
+    lease: ?recovery.Lease = null,
+};
+var default_store: ?recovery.Store = null;
+pub var test_store: ?*recovery.Store = null;
+fn storeForPaste() ?*recovery.Store {
+    if (@import("builtin").is_test) return test_store;
+    if (default_store == null) {
+        const temp = std.c.getenv("TMPDIR") orelse return null;
+        if (!std.fs.path.isAbsolute(std.mem.span(temp))) return null;
+        const root = std.fs.path.join(std.heap.page_allocator, &.{ std.mem.span(temp), "graff-tui-clipboard" }) catch return null;
+        defer std.heap.page_allocator.free(root);
+        default_store = recovery.Store.init(std.Io.Threaded.global_single_threaded.io(), std.heap.page_allocator, root) catch return null;
+    }
+    return &default_store.?;
+}
 
 fn identity(path: []const u8) ?std.Io.File.Stat {
     const stat = std.Io.Dir.cwd().statFile(std.Io.Threaded.global_single_threaded.io(), path, .{ .follow_symlinks = false }) catch return null;
@@ -21,6 +41,12 @@ pub fn attach(self: *Model, path: []const u8, owned: bool) void {
         remove(.{ .path = path, .identity = original });
         return;
     };
+    const entry = &self.owned_images.items[self.owned_images.items.len - 1];
+    if (storeForPaste()) |store| {
+        _ = store.sweep(64);
+        entry.store = store;
+        entry.lease = store.record(path, original) catch null;
+    }
     const before = self.images.items.len;
     self.attachImage(path);
     if (self.images.items.len == before) collect(self);
@@ -51,9 +77,11 @@ fn referenced(self: *const Model, path: []const u8) bool {
 }
 
 /// A submitted turn may be persisted independently of visible TUI history.
-pub fn retain(self: *Model, text: []const u8) void {
+pub fn retain(self: *Model, text: []const u8) !void {
     for (self.owned_images.items) |*owned| {
-        if (std.mem.indexOf(u8, text, owned.path) != null) owned.retained = true;
+        if (std.mem.indexOf(u8, text, owned.path) == null) continue;
+        if (owned.store) |store| try store.retain(&owned.lease);
+        owned.retained = true;
     }
 }
 
@@ -62,13 +90,14 @@ pub fn collect(self: *Model) void {
     if (self.pending != null or self.bg != null) return;
     var i: usize = 0;
     while (i < self.owned_images.items.len) {
-        const owned = self.owned_images.items[i];
+        var owned = self.owned_images.items[i];
         const path = owned.path;
         if (owned.retained or referenced(self, path)) {
             i += 1;
             continue;
         }
         remove(owned);
+        if (owned.store) |store| store.release(&owned.lease);
         self.alloc.free(self.owned_images.orderedRemove(i).path);
     }
 }
@@ -81,11 +110,12 @@ fn replayReferenced(self: *const Model, path: []const u8) bool {
 }
 
 pub fn deinit(self: *Model, settled: bool) void {
-    for (self.owned_images.items) |owned| {
+    for (self.owned_images.items) |*owned| {
         const path = owned.path;
         // Saved turns retain path markers. UI teardown is not proof that
         // those replay consumers (or an abandoned worker) have released them.
-        if (settled and !owned.retained and !replayReferenced(self, path)) remove(owned);
+        if (settled and !owned.retained and !replayReferenced(self, path)) remove(owned.*);
+        if (settled) if (owned.store) |store| store.release(&owned.lease);
         self.alloc.free(path);
     }
     self.owned_images.deinit();

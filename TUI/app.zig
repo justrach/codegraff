@@ -291,8 +291,8 @@ pub const Model = struct {
     pub fn push(self: *Model, kind: EntryKind, text: []const u8) !void {
         const owned = try sanitize.sanitized(self.alloc, text);
         errdefer self.alloc.free(owned);
+        if (kind == .user) try @import("owned_images.zig").retain(self, owned);
         try self.history.append(.{ .kind = kind, .text = owned, .folded = kind == .tool, .at_ms = self.now_ms });
-        if (kind == .user) @import("owned_images.zig").retain(self, owned);
         if (kind == .user or kind == .assistant) {
             self.screen = .agent;
             self.follow = true;
@@ -352,6 +352,7 @@ pub const Model = struct {
         defer self.alloc.free(raw);
         const text = try sanitize.sanitized(self.alloc, raw);
         errdefer self.alloc.free(text);
+        if (kind == .user) try @import("owned_images.zig").retain(self, text);
         try self.history.append(.{ .kind = kind, .text = text });
     }
 

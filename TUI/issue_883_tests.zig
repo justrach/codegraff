@@ -326,3 +326,104 @@ fn workerReleasesDraft(background: bool) !void {
     }
     try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "paste.png", .{}));
 }
+
+test "clipboard recovery skips live leases and reclaims exports after owner exit" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const Recovery = @import("clipboard_recovery.zig").Store;
+    var store = try Recovery.init(io, std.testing.allocator, root);
+    defer store.deinit();
+    try tmp.dir.writeFile(io, .{ .sub_path = "paste.png", .data = "pixels" });
+    const file_path = try tmp.dir.realPathFileAlloc(io, "paste.png", std.testing.allocator);
+    defer std.testing.allocator.free(file_path);
+    const lease = try store.record(file_path, try tmp.dir.statFile(io, "paste.png", .{}));
+    try std.testing.expectEqual(@as(usize, 0), store.sweep(64));
+    // Closing the descriptor models the kernel releasing it at process exit.
+    lease.file.close(io);
+    try std.testing.expectEqual(@as(usize, 1), store.sweep(64));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "paste.png", .{}));
+}
+
+test "clipboard recovery excludes submitted images and respects its scan bound" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    var store = try @import("clipboard_recovery.zig").Store.init(io, std.testing.allocator, root);
+    defer store.deinit();
+    for ([_][]const u8{ "sent.png", "draft1.png", "draft2.png" }) |name| {
+        try tmp.dir.writeFile(io, .{ .sub_path = name, .data = "pixels" });
+        const file_path = try tmp.dir.realPathFileAlloc(io, name, std.testing.allocator);
+        defer std.testing.allocator.free(file_path);
+        var lease: ?@import("clipboard_recovery.zig").Lease = try store.record(file_path, try tmp.dir.statFile(io, name, .{}));
+        if (std.mem.eql(u8, name, "sent.png")) try store.retain(&lease) else lease.?.file.close(io);
+    }
+    var removed: usize = 0;
+    for (0..16) |_| {
+        const n = store.sweep(1);
+        try std.testing.expect(n <= 1);
+        removed += n;
+    }
+    try std.testing.expectEqual(@as(usize, 2), removed);
+    _ = try tmp.dir.statFile(io, "sent.png", .{});
+}
+
+test "clipboard recovery preserves changed exports and malformed records" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    var store = try @import("clipboard_recovery.zig").Store.init(io, std.testing.allocator, root);
+    defer store.deinit();
+    try tmp.dir.writeFile(io, .{ .sub_path = "paste.png", .data = "pixels" });
+    const file_path = try tmp.dir.realPathFileAlloc(io, "paste.png", std.testing.allocator);
+    defer std.testing.allocator.free(file_path);
+    const lease = try store.record(file_path, try tmp.dir.statFile(io, "paste.png", .{}));
+    lease.file.close(io);
+    try tmp.dir.writeFile(io, .{ .sub_path = "paste.png", .data = "edited pixels" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "00000000000000000000000000000000.pending", .data = "invalid" });
+    try std.testing.expectEqual(@as(usize, 0), store.sweep(64));
+    _ = try tmp.dir.statFile(io, "paste.png", .{});
+}
+
+test "TUI submission retires recovery authority before accepting image history" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    var store = try @import("clipboard_recovery.zig").Store.init(io, std.testing.allocator, root);
+    defer store.deinit();
+    const owned = @import("owned_images.zig");
+    owned.test_store = &store;
+    defer owned.test_store = null;
+    try tmp.dir.writeFile(io, .{ .sub_path = "paste.png", .data = "pixels" });
+    const file_path = try tmp.dir.realPathFileAlloc(io, "paste.png", std.testing.allocator);
+    defer std.testing.allocator.free(file_path);
+    var term: Term = undefined;
+    term.init(std.testing.allocator, 100, 24);
+    defer term.deinit();
+    owned.attach(&term.model, file_path, true);
+    const record_name = term.model.owned_images.items[0].lease.?.name;
+    // Force retirement failure without deleting the still-locked record.
+    try tmp.dir.rename(&record_name, tmp.dir, "held-record", io);
+    try tmp.dir.createDir(io, &record_name, .default_dir);
+    _ = term.typeText("describe this");
+    _ = term.enter();
+    try std.testing.expectEqual(@as(usize, 0), term.model.userTurnCount());
+    try expectVisible(&term, "could not preserve the submitted attachment");
+    _ = try tmp.dir.statFile(io, "paste.png", .{});
+    try tmp.dir.deleteDir(io, &record_name);
+    try tmp.dir.rename("held-record", tmp.dir, &record_name, io);
+    @import("prompt_history.zig").recallPrev(&term.model);
+    _ = term.enter();
+    try std.testing.expectEqual(@as(usize, 1), term.model.userTurnCount());
+    try std.testing.expect(term.model.owned_images.items[0].retained);
+    try std.testing.expect(term.model.owned_images.items[0].lease == null);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, &record_name, .{}));
+}

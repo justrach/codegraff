@@ -42,8 +42,11 @@ pub fn applyLine(self: *Model, raw: []const u8) Effect {
         return .stay;
     }
     const payload = withImages(self, line);
-    self.push(.user, payload) catch {};
-    if (payload.ptr != line.ptr) self.alloc.free(payload);
+    defer if (payload.ptr != line.ptr) self.alloc.free(payload);
+    self.push(.user, payload) catch {
+        self.push(.err, "could not preserve the submitted attachment; recall the prompt and retry") catch {};
+        return .stay;
+    };
     if (self.chat) {
         self.turns += 1;
         turn.startJob(self);

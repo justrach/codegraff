@@ -20,6 +20,15 @@ user history entry retains its owned image paths independently of later visible
 history or recall clearing, because saved replay can still need those files. Preview
 conversion uses an exclusively claimed output and removes it on every outcome.
 
+On supported temporary storage, TUI pending exports have private recovery records
+held under exclusive file locks. Each paste scans a bounded number of records
+using a rolling cursor. Recovery can reclaim a matching, unchanged export only
+when its record can be locked, so live drafts remain protected. Submission must
+remove recovery authority before accepting the user history entry; failure stops
+the handoff and allows prompt recall/retry. Unknown or malformed records and
+changed exports are preserved. Unsupported locking or unavailable temporary
+storage disables recovery registration rather than granting deletion authority.
+
 The native desktop records upload ownership and file identity. Discarding an
 unsent draft releases its recorded upload; accepting a prompt retains referenced
 uploads before dispatching to ACP. Sent files remain available for replay.
