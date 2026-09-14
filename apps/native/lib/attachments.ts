@@ -95,3 +95,14 @@ export function withAttachmentMarkers(text: string, attachments: readonly Attach
 export function releaseAttachments(attachments: readonly Attachment[]): void {
   for (const a of attachments) if (a.preview) URL.revokeObjectURL(a.preview);
 }
+
+
+/** Dropped drafts release their owned files; sent attachments only release URLs. */
+export function discardAttachments(attachments: readonly Attachment[]): void {
+  releaseAttachments(attachments);
+  if (!attachments.length) return;
+  for (let i = 0; i < attachments.length; i += 32) {
+    void fetch("/api/attach", { method: "DELETE", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ paths: attachments.slice(i, i + 32).map(a => a.path) }), keepalive: true }).catch(() => {});
+  }
+}

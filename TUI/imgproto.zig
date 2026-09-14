@@ -177,15 +177,31 @@ fn loadPng(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
 fn convertToPng(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
     if (builtin.os.tag != .macos) return null;
     const io = ioHandle();
-    var dst_buf: [80]u8 = undefined;
-    const dst = std.fmt.bufPrint(&dst_buf, "/tmp/graff-img-{d}.png", .{std.c.getpid()}) catch return null;
+    var random: [16]u8 = undefined;
+    io.random(&random);
+    const hex = std.fmt.bytesToHex(random, .lower);
+    var dst_buf: [100]u8 = undefined;
+    const dst = std.fmt.bufPrint(&dst_buf, "/tmp/graff-img-{d}-{s}.png", .{ std.c.getpid(), hex }) catch return null;
+    return convertToPngAt(alloc, path, dst);
+}
+
+fn convertToPngAt(alloc: std.mem.Allocator, path: []const u8, dst: []const u8) ?[]u8 {
+    var threaded = Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    // Claim our output before the converter runs; never overwrite or clean up
+    // an existing file, including one belonging to another conversion.
+    const claim = Io.Dir.cwd().createFile(io, dst, .{ .exclusive = true, .permissions = .fromMode(0o600) }) catch return null;
+    claim.close(io);
+    defer Io.Dir.cwd().deleteFile(io, dst) catch {};
     var child = std.process.spawn(io, .{
-        .argv = &.{ "sips", "-s", "format", "png", path, "--out", dst },
+        .argv = &.{ "/usr/bin/sips", "-s", "format", "png", path, "--out", dst },
         .stdin = .ignore,
         .stdout = .ignore,
         .stderr = .ignore,
     }) catch return null;
-    _ = child.wait(io) catch return null;
+    const term = child.wait(io) catch return null;
+    if (term != .exited or term.exited != 0) return null;
     const file = std.Io.Dir.cwd().openFile(io, dst, .{}) catch return null;
     defer file.close(io);
     const info = file.stat(io) catch return null;
@@ -393,4 +409,58 @@ test "fitImageToCells matches Grok cell-aspect 0.5" {
     const sq = fitImageToCells(100, 100, 40, 10);
     try std.testing.expectEqual(@as(usize, 20), sq.cols);
     try std.testing.expectEqual(@as(usize, 10), sq.rows);
+}
+
+test "preview conversion removes its scratch output after reading valid pixels" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    const alloc = std.testing.allocator;
+    const io = ioHandle();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // A one-pixel 24-bit BMP, so the real converter must produce PNG bytes.
+    var bmp: [58]u8 = @splat(0);
+    @memcpy(bmp[0..2], "BM");
+    std.mem.writeInt(u32, bmp[2..6], 58, .little);
+    std.mem.writeInt(u32, bmp[10..14], 54, .little);
+    std.mem.writeInt(u32, bmp[14..18], 40, .little);
+    std.mem.writeInt(u32, bmp[18..22], 1, .little);
+    std.mem.writeInt(u32, bmp[22..26], 1, .little);
+    std.mem.writeInt(u16, bmp[26..28], 1, .little);
+    std.mem.writeInt(u16, bmp[28..30], 24, .little);
+    std.mem.writeInt(u32, bmp[34..38], 4, .little);
+    bmp[56] = 255;
+    try tmp.dir.writeFile(io, .{ .sub_path = "input.bmp", .data = &bmp });
+    const root = try tmp.dir.realPathFileAlloc(io, ".", alloc);
+    defer alloc.free(root);
+    const input = try std.fs.path.join(alloc, &.{ root, "input.bmp" });
+    defer alloc.free(input);
+    const output = try std.fs.path.join(alloc, &.{ root, "scratch.png" });
+    defer alloc.free(output);
+    const bytes = convertToPngAt(alloc, input, output) orelse return error.ConversionFailed;
+    defer alloc.free(bytes);
+    try std.testing.expect(isPng(bytes));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "scratch.png", .{}));
+    const original = try tmp.dir.openFile(io, "input.bmp", .{});
+    original.close(io);
+}
+
+test "failed preview conversion removes only its claimed scratch output" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    const alloc = std.testing.allocator;
+    const io = ioHandle();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", alloc);
+    defer alloc.free(root);
+    const output = try std.fs.path.join(alloc, &.{ root, "scratch.png" });
+    defer alloc.free(output);
+    try std.testing.expect(convertToPngAt(alloc, "/missing-preview-input", output) == null);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "scratch.png", .{}));
+    try tmp.dir.writeFile(io, .{ .sub_path = "scratch.png", .data = "existing original" });
+    try std.testing.expect(convertToPngAt(alloc, "/missing-preview-input", output) == null);
+    const original = try tmp.dir.openFile(io, "scratch.png", .{});
+    defer original.close(io);
+    var bytes: [32]u8 = undefined;
+    const count = try original.readPositionalAll(io, &bytes, 0);
+    try std.testing.expectEqualStrings("existing original", bytes[0..count]);
 }

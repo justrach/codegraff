@@ -9,6 +9,7 @@ import { AcpTransport } from "@/lib/acp-transport";
 import { createPromptStream } from "@/lib/acp-prompt-stream";
 import { defaultRoot, resolveRoot } from "@/lib/server-root";
 import { prepareGuiPrompt } from "@/lib/gui-skill-context";
+import { attachmentStore } from "@/lib/attachment-store";
 
 import { retireWorker } from "@/lib/acp-retire";
 import { initializeWorker } from "@/lib/acp-bootstrap";
@@ -303,6 +304,7 @@ export async function POST(req: NextRequest) {
       if (slot.streaming) return Response.json({ error: "A turn is already active" }, { status: 409 });
       const promptParams = await prepareGuiPrompt(body.params);
       if (slot.streaming) return Response.json({ error: "A turn is already active" }, { status: 409 });
+      attachmentStore().retainPrompt(promptParams);
       slot.streaming = true;
       const { stream, pending } = createPromptStream(slot.transport,
         { ...promptParams, sessionId: slot.sessionId }, () => {

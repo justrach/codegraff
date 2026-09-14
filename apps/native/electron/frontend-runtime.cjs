@@ -63,7 +63,7 @@ app.whenReady().then(async () => {
   assert.ok(fs.existsSync(binary), 'Build graff before running test:frontend');
   assert.ok(fs.existsSync(path.join(ui, '.next/BUILD_ID')), 'Build the production GUI before running test:frontend');
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.endsWith('_API_KEY')));
-  Object.assign(env, { HOME: temp, LMSTUDIO_API_KEY: 'local', GRAFF_CWD: workspace, GRAFF_DESKTOP_TOKEN: '',
+  Object.assign(env, { HOME: temp, TMPDIR: temp, GRAFF_ATTACHMENT_OWNER_PID: String(process.pid), LMSTUDIO_API_KEY: 'local', GRAFF_CWD: workspace, GRAFF_DESKTOP_TOKEN: '',
     GRAFF_NO_TELEMETRY: '1', GRAFF_FLEET: 'off', GRAFF_NO_SMOLIFY: '1', GRAFF_NO_CODEDB_GUARD: '1', NEXT_TELEMETRY_DISABLED: '1' });
   const mcp = path.join(temp, 'mcp.json'); fs.writeFileSync(mcp, JSON.stringify({mcpServers:htmlTool ? {codegraff_desktop:{command:process.env.GRAFF_TEST_BUN || 'bun',args:[path.join(__dirname,'desktop-mcp.cjs')]}} : {}})); env.GRAFF_MCP_CONFIG = mcp;
   const wrapper = path.join(temp, 'graff');
@@ -80,6 +80,7 @@ app.whenReady().then(async () => {
     { http_status: 400, error: 'Scripted final request rejected' },
     { tool: 'bash', arguments: { command: 'cat proof.txt' } },
     { text: 'The earlier result is still present.' },
+    { text: 'The pasted image was received.' },
   ]));
   const requests = path.join(temp, 'requests.json');
   const model = child('python3', [path.join(repo, 'scripts/eval/frontend_model.py'), '--script', script, '--requests', requests], env, 'model');
@@ -195,6 +196,7 @@ app.whenReady().then(async () => {
     report.passed.push('bounded split churn, resize, cancellation and memory checks');
     return;
   }
+  await require('./attachment-lifetime-frontend.cjs').runAttachments({win,origin,temp,output,requests,workspace,send,click,until,report});
   await require('./browser-focus-frontend.cjs').runBrowserFocus({ win, output, click, until, report });
   await require('./tab-drag-visual.cjs').runTabDrag({ win, origin, output });
   report.passed.push('trusted pointer and keyboard: tab reorder, horizontal/vertical splits, draft retention, Escape and four-pane limit');

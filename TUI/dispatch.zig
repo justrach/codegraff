@@ -441,9 +441,10 @@ pub fn recallNext(self: *Model) void {
 pub fn pasteClipboard(self: *Model) void {
     if (engine.g_paste_fn) |f| {
         var buf: [1024]u8 = undefined;
-        const n = f(engine.g_turn_ctx, &buf);
+        var owned = false;
+        const n = f(engine.g_turn_ctx, &buf, &owned);
         if (n > 0) {
-            self.attachImage(buf[0..@intCast(n)]);
+            @import("owned_images.zig").attach(self, buf[0..@intCast(n)], owned);
         } else if (n < 0) {
             self.setToast(buf[0..@intCast(-n)]);
         } else self.setToast("no image on the clipboard — Ctrl+V (⌘V can't be captured)");

@@ -10,11 +10,13 @@ const Term = @import("sim.zig").Term;
 const Paste = struct {
     payload: []const u8,
     failed: bool = false,
+    owned: bool = false,
     calls: usize = 0,
 
-    fn call(ctx: ?*anyopaque, dest: []u8) isize {
+    fn call(ctx: ?*anyopaque, dest: []u8, owned: *bool) isize {
         const self: *Paste = @ptrCast(@alignCast(ctx.?));
         self.calls += 1;
+        owned.* = self.owned;
         const n = @min(self.payload.len, dest.len);
         @memcpy(dest[0..n], self.payload[0..n]);
         const result: isize = @intCast(n);
@@ -110,4 +112,111 @@ test "#883 Ctrl-V empty callback result is visible without changing the prompt" 
     try std.testing.expectEqual(cursor, term.model.input.cursor);
     try std.testing.expectEqual(@as(usize, 0), term.model.images.items.len);
     try expectVisible(&term, "no image on the clipboard");
+}
+
+test "clipboard-owned attachment removal deletes the export but preserves an original" {
+    const saved_fn = engine.g_paste_fn;
+    const saved_ctx = engine.g_turn_ctx;
+    defer {
+        engine.g_paste_fn = saved_fn;
+        engine.g_turn_ctx = saved_ctx;
+    }
+    engine.g_paste_fn = Paste.call;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const path = try std.fs.path.join(std.testing.allocator, &.{ root, "paste.png" });
+    defer std.testing.allocator.free(path);
+    for ([_]bool{ true, false }) |owned| {
+        try tmp.dir.writeFile(io, .{ .sub_path = "paste.png", .data = "pixels" });
+        var paste = Paste{ .payload = path, .owned = owned };
+        engine.g_turn_ctx = &paste;
+        var term: Term = undefined;
+        term.init(std.testing.allocator, 100, 24);
+        defer term.deinit();
+        _ = term.feed("\x16");
+        try std.testing.expectEqual(@as(usize, 1), term.model.images.items.len);
+        _ = term.feed("\x7f");
+        try std.testing.expectEqual(@as(usize, 0), term.model.images.items.len);
+        if (owned) {
+            try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "paste.png", .{}));
+        } else {
+            const original = try tmp.dir.openFile(io, "paste.png", .{});
+            original.close(io);
+        }
+    }
+}
+
+test "sent clipboard export survives prompt recall and remains available for saved replay" {
+    const saved_fn = engine.g_paste_fn;
+    const saved_ctx = engine.g_turn_ctx;
+    defer {
+        engine.g_paste_fn = saved_fn;
+        engine.g_turn_ctx = saved_ctx;
+    }
+    engine.g_paste_fn = Paste.call;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "paste.png", .data = "pixels" });
+    const path = try tmp.dir.realPathFileAlloc(io, "paste.png", std.testing.allocator);
+    defer std.testing.allocator.free(path);
+    var paste = Paste{ .payload = path, .owned = true };
+    engine.g_turn_ctx = &paste;
+    {
+        var term: Term = undefined;
+        term.init(std.testing.allocator, 100, 24);
+        defer term.deinit();
+        _ = term.feed("\x16");
+        _ = term.typeText("describe this");
+        _ = term.enter();
+        @import("owned_images.zig").collect(&term.model);
+        const retained = try tmp.dir.openFile(io, "paste.png", .{});
+        retained.close(io);
+        @import("prompt_history.zig").recallPrev(&term.model);
+        try std.testing.expectEqualStrings(path, term.model.images.items[0]);
+        @import("image.zig").clearAll(&term.model);
+        const history = try tmp.dir.openFile(io, "paste.png", .{});
+        history.close(io);
+    }
+    const replay = try tmp.dir.openFile(io, "paste.png", .{});
+    replay.close(io);
+}
+
+test "queued clipboard exports remain readable until the queue releases them" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "paste.png", .data = "pixels" });
+    const path = try tmp.dir.realPathFileAlloc(io, "paste.png", std.testing.allocator);
+    defer std.testing.allocator.free(path);
+    var term: Term = undefined;
+    term.init(std.testing.allocator, 100, 24);
+    defer term.deinit();
+    @import("owned_images.zig").attach(&term.model, path, true);
+    @import("dispatch.zig").queueSteerLine(&term.model, "describe this");
+    @import("owned_images.zig").collect(&term.model);
+    const retained = try tmp.dir.openFile(io, "paste.png", .{});
+    retained.close(io);
+    term.model.alloc.free(term.model.steer_queue.pop().?);
+    @import("owned_images.zig").collect(&term.model);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "paste.png", .{}));
+}
+
+test "closing an unsent clipboard draft releases only its owned export" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "paste.png", .data = "pixels" });
+    const path = try tmp.dir.realPathFileAlloc(io, "paste.png", std.testing.allocator);
+    defer std.testing.allocator.free(path);
+    {
+        var term: Term = undefined;
+        term.init(std.testing.allocator, 100, 24);
+        defer term.deinit();
+        @import("owned_images.zig").attach(&term.model, path, true);
+    }
+    try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "paste.png", .{}));
 }
