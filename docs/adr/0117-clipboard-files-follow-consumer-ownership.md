@@ -15,7 +15,9 @@ The TUI transfers clipboard ownership explicitly across its callback boundary.
 Only owned files without live consumers are released. The TUI captures file
 identity without following symlinks and preserves replaced or edited exports
 before attachment removal or teardown. Pending workers protect
-staging inputs, and sent path markers preserve files for saved replay. Preview
+staging inputs; worker completion retries deferred draft cleanup. Accepting a
+user history entry retains its owned image paths independently of later visible
+history or recall clearing, because saved replay can still need those files. Preview
 conversion uses an exclusively claimed output and removes it on every outcome.
 
 The native desktop records upload ownership and file identity. Discarding an

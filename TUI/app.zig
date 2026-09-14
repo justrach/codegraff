@@ -292,6 +292,7 @@ pub const Model = struct {
         const owned = try sanitize.sanitized(self.alloc, text);
         errdefer self.alloc.free(owned);
         try self.history.append(.{ .kind = kind, .text = owned, .folded = kind == .tool, .at_ms = self.now_ms });
+        if (kind == .user) @import("owned_images.zig").retain(self, owned);
         if (kind == .user or kind == .assistant) {
             self.screen = .agent;
             self.follow = true;

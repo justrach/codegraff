@@ -2,7 +2,7 @@
 const std = @import("std");
 const Model = @import("app.zig").Model;
 
-pub const Owned = struct { path: []const u8, identity: std.Io.File.Stat };
+pub const Owned = struct { path: []const u8, identity: std.Io.File.Stat, retained: bool = false };
 
 fn identity(path: []const u8) ?std.Io.File.Stat {
     const stat = std.Io.Dir.cwd().statFile(std.Io.Threaded.global_single_threaded.io(), path, .{ .follow_symlinks = false }) catch return null;
@@ -50,6 +50,13 @@ fn referenced(self: *const Model, path: []const u8) bool {
     return false;
 }
 
+/// A submitted turn may be persisted independently of visible TUI history.
+pub fn retain(self: *Model, text: []const u8) void {
+    for (self.owned_images.items) |*owned| {
+        if (std.mem.indexOf(u8, text, owned.path) != null) owned.retained = true;
+    }
+}
+
 pub fn collect(self: *Model) void {
     // Pending consumers may already hold a snapshot outside the model arrays.
     if (self.pending != null or self.bg != null) return;
@@ -57,7 +64,7 @@ pub fn collect(self: *Model) void {
     while (i < self.owned_images.items.len) {
         const owned = self.owned_images.items[i];
         const path = owned.path;
-        if (referenced(self, path)) {
+        if (owned.retained or referenced(self, path)) {
             i += 1;
             continue;
         }
@@ -78,7 +85,7 @@ pub fn deinit(self: *Model, settled: bool) void {
         const path = owned.path;
         // Saved turns retain path markers. UI teardown is not proof that
         // those replay consumers (or an abandoned worker) have released them.
-        if (settled and !replayReferenced(self, path)) remove(owned);
+        if (settled and !owned.retained and !replayReferenced(self, path)) remove(owned);
         self.alloc.free(path);
     }
     self.owned_images.deinit();

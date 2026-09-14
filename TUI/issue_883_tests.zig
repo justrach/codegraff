@@ -259,3 +259,70 @@ fn changedExport(edited: bool, symlink: bool) !void {
     const n = try preserved.readPositionalAll(io, &bytes, 0);
     try std.testing.expectEqualStrings(if (symlink) "pixels" else "user replacement pixels", bytes[0..n]);
 }
+
+test "sent clipboard exports survive clearing visible history and prompt recall" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "paste.png", .data = "pixels" });
+    const file_path = try tmp.dir.realPathFileAlloc(io, "paste.png", std.testing.allocator);
+    defer std.testing.allocator.free(file_path);
+    {
+        var term: Term = undefined;
+        term.init(std.testing.allocator, 100, 24);
+        defer term.deinit();
+        @import("owned_images.zig").attach(&term.model, file_path, true);
+        _ = term.typeText("describe this");
+        _ = term.enter();
+        term.model.clearHistory();
+        @import("prompt_history.zig").deinit(&term.model);
+        term.model.prompt_hist_images = std.array_list.Managed([]const []const u8).init(term.alloc);
+        @import("owned_images.zig").collect(&term.model);
+        const retained = try tmp.dir.openFile(io, "paste.png", .{});
+        retained.close(io);
+    }
+    const replay = try tmp.dir.openFile(io, "paste.png", .{});
+    replay.close(io);
+}
+
+test "completed model worker releases a removed unsent clipboard draft" {
+    try workerReleasesDraft(false);
+}
+
+test "completed background worker releases a removed unsent clipboard draft" {
+    try workerReleasesDraft(true);
+}
+
+fn workerReleasesDraft(background: bool) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "paste.png", .data = "pixels" });
+    const file_path = try tmp.dir.realPathFileAlloc(io, "paste.png", gpa);
+    defer gpa.free(file_path);
+    var term: Term = undefined;
+    term.init(gpa, 100, 24);
+    defer term.deinit();
+    @import("owned_images.zig").attach(&term.model, file_path, true);
+    if (background) {
+        const op = try gpa.create(engine.BgOp);
+        op.* = .{ .kind = .files, .gpa = gpa, .threaded = false };
+        term.model.bg = op;
+    } else {
+        const job = try gpa.create(engine.Job);
+        job.* = .{ .gpa = gpa, .threaded = false, .history = try gpa.alloc(engine.Turn, 0), .params = .{}, .stream = .{} };
+        term.model.pending = job;
+    }
+    @import("image.zig").clearAll(&term.model);
+    const pending = try tmp.dir.openFile(io, "paste.png", .{});
+    pending.close(io);
+    if (background) {
+        term.model.bg.?.done.store(true, .release);
+        @import("bgop.zig").finish(&term.model);
+    } else {
+        term.model.pending.?.done.store(true, .release);
+        @import("turn.zig").finishJob(&term.model);
+    }
+    try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "paste.png", .{}));
+}
