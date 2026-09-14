@@ -21,7 +21,15 @@ const Owner = worktree_lease.Owner;
 pub const inbox_cap: usize = 8;
 
 // Owned independently of the delivery arena, which resets between steps.
-const storage = std.heap.page_allocator;
+var test_storage: Allocator = std.heap.page_allocator;
+const storage = if (@import("builtin").is_test) &test_storage else &std.heap.page_allocator;
+
+/// Clear with the previous allocator before changing ownership domains.
+pub fn setStorageAllocatorForTest(allocator: Allocator) void {
+    if (!@import("builtin").is_test) @compileError("test-only inbox allocator override");
+    clear();
+    test_storage = allocator;
+}
 const Parked = struct {
     from: []const u8,
     text: []const u8,
