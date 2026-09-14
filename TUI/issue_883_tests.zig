@@ -220,3 +220,42 @@ test "closing an unsent clipboard draft releases only its owned export" {
     }
     try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "paste.png", .{}));
 }
+
+test "clipboard removal preserves a replacement file at the exported path" {
+    try changedExport(false, false);
+}
+
+test "clipboard teardown preserves edited exports" {
+    try changedExport(true, false);
+}
+
+test "clipboard removal preserves a symlink substituted for the export" {
+    try changedExport(false, true);
+}
+
+fn changedExport(edited: bool, symlink: bool) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "paste.png", .data = "pixels" });
+    const file_path = try tmp.dir.realPathFileAlloc(io, "paste.png", std.testing.allocator);
+    defer std.testing.allocator.free(file_path);
+    {
+        var term: Term = undefined;
+        term.init(std.testing.allocator, 100, 24);
+        defer term.deinit();
+        @import("owned_images.zig").attach(&term.model, file_path, true);
+        if (!edited) try tmp.dir.rename("paste.png", tmp.dir, "old.png", io);
+        if (symlink) {
+            try tmp.dir.symLink(io, "old.png", "paste.png", .{});
+        } else {
+            try tmp.dir.writeFile(io, .{ .sub_path = "paste.png", .data = "user replacement pixels" });
+        }
+        if (!edited) _ = term.feed("\x7f");
+    }
+    const preserved = try tmp.dir.openFile(io, "paste.png", .{});
+    defer preserved.close(io);
+    var bytes: [64]u8 = undefined;
+    const n = try preserved.readPositionalAll(io, &bytes, 0);
+    try std.testing.expectEqualStrings(if (symlink) "pixels" else "user replacement pixels", bytes[0..n]);
+}

@@ -12,7 +12,9 @@ An age-only attachment sweep can remove a live draft when another file uploads.
 ## Decision
 
 The TUI transfers clipboard ownership explicitly across its callback boundary.
-Only owned files without live consumers are released. Pending workers protect
+Only owned files without live consumers are released. The TUI captures file
+identity without following symlinks and preserves replaced or edited exports
+before attachment removal or teardown. Pending workers protect
 staging inputs, and sent path markers preserve files for saved replay. Preview
 conversion uses an exclusively claimed output and removes it on every outcome.
 

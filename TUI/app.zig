@@ -90,7 +90,7 @@ pub const Model = struct {
     draft_images: ?[]const []const u8 = null,
     steer_queue: std.array_list.Managed([]const u8),
     images: std.array_list.Managed([]const u8),
-    owned_images: std.array_list.Managed([]const u8),
+    owned_images: std.array_list.Managed(@import("owned_images.zig").Owned),
     pending: ?*engine.Job = null,
     /// A background engine op (/compact, !cmd, @-file list) — same thread +
     /// done-flag contract as `pending`, so neither can freeze the loop (#533).
@@ -222,7 +222,7 @@ pub const Model = struct {
             .prompt_hist_images = std.array_list.Managed([]const []const u8).init(alloc),
             .steer_queue = std.array_list.Managed([]const u8).init(alloc),
             .images = std.array_list.Managed([]const u8).init(alloc),
-            .owned_images = std.array_list.Managed([]const u8).init(alloc),
+            .owned_images = std.array_list.Managed(@import("owned_images.zig").Owned).init(alloc),
             .chat = engine.g_turn_fn != null,
         };
         self.input.setPlaceholder("");

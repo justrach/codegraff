@@ -2,15 +2,23 @@
 const std = @import("std");
 const Model = @import("app.zig").Model;
 
+pub const Owned = struct { path: []const u8, identity: std.Io.File.Stat };
+
+fn identity(path: []const u8) ?std.Io.File.Stat {
+    const stat = std.Io.Dir.cwd().statFile(std.Io.Threaded.global_single_threaded.io(), path, .{ .follow_symlinks = false }) catch return null;
+    return if (stat.kind == .file) stat else null;
+}
+
 pub fn attach(self: *Model, path: []const u8, owned: bool) void {
     if (!owned) return self.attachImage(path);
+    const original = identity(path) orelse return self.attachImage(path);
     const copy = self.alloc.dupe(u8, path) catch {
-        remove(path);
+        remove(.{ .path = path, .identity = original });
         return;
     };
-    self.owned_images.append(copy) catch {
+    self.owned_images.append(.{ .path = copy, .identity = original }) catch {
         self.alloc.free(copy);
-        remove(path);
+        remove(.{ .path = path, .identity = original });
         return;
     };
     const before = self.images.items.len;
@@ -18,8 +26,14 @@ pub fn attach(self: *Model, path: []const u8, owned: bool) void {
     if (self.images.items.len == before) collect(self);
 }
 
-fn remove(path: []const u8) void {
-    std.Io.Dir.cwd().deleteFile(std.Io.Threaded.global_single_threaded.io(), path) catch {};
+fn remove(owned: Owned) void {
+    const current = identity(owned.path) orelse return;
+    const original = owned.identity;
+    // A pathname is not deletion authority after another file replaces it.
+    // Also preserve edits made in place; reading a preview only changes atime.
+    if (current.inode != original.inode or current.size != original.size or
+        !std.meta.eql(current.mtime, original.mtime) or !std.meta.eql(current.ctime, original.ctime)) return;
+    std.Io.Dir.cwd().deleteFile(std.Io.Threaded.global_single_threaded.io(), owned.path) catch {};
 }
 
 fn contains(paths: []const []const u8, path: []const u8) bool {
@@ -41,13 +55,14 @@ pub fn collect(self: *Model) void {
     if (self.pending != null or self.bg != null) return;
     var i: usize = 0;
     while (i < self.owned_images.items.len) {
-        const path = self.owned_images.items[i];
+        const owned = self.owned_images.items[i];
+        const path = owned.path;
         if (referenced(self, path)) {
             i += 1;
             continue;
         }
-        remove(path);
-        self.alloc.free(self.owned_images.orderedRemove(i));
+        remove(owned);
+        self.alloc.free(self.owned_images.orderedRemove(i).path);
     }
 }
 
@@ -59,10 +74,11 @@ fn replayReferenced(self: *const Model, path: []const u8) bool {
 }
 
 pub fn deinit(self: *Model, settled: bool) void {
-    for (self.owned_images.items) |path| {
+    for (self.owned_images.items) |owned| {
+        const path = owned.path;
         // Saved turns retain path markers. UI teardown is not proof that
         // those replay consumers (or an abandoned worker) have released them.
-        if (settled and !replayReferenced(self, path)) remove(path);
+        if (settled and !replayReferenced(self, path)) remove(owned);
         self.alloc.free(path);
     }
     self.owned_images.deinit();
