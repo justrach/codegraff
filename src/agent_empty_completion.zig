@@ -88,7 +88,7 @@ pub const PendingWork = struct {
             state.nudged = true;
             const goals = @import("goal_state.zig");
             const body = try std.fmt.allocPrint(self.arena, "{s}\n\n{s}", .{ note, goals.renderTodos(self, goals.currentEpoch(self.goal)) });
-            try self.messages.append(try @import("named_work.zig").userNudge(self.arena, self.provider.kind, body));
+            try self.messages.append(try @import("session_wake.zig").mark(self.arena, try @import("named_work.zig").userNudge(self.arena, self.provider.kind, body)));
             if (self.tracer) |tr| tr.note("pending_work", "plain final reconciled; one retry granted");
             return null;
         }
@@ -129,7 +129,9 @@ test "#745 plain final retries once after tools, then explicitly stops without c
     var state: PendingWork = .{};
     try std.testing.expect((try state.finish(&self, "I will keep working")) == null);
     try std.testing.expectEqual(@as(usize, 1), self.messages.items.len);
-    try std.testing.expect(std.mem.indexOf(u8, messages.latestUserText(self.messages.items), "finish") != null);
+    try std.testing.expect(@import("session_wake.zig").isNotice(self.messages.items[0]));
+    const reminder = try std.json.Stringify.valueAlloc(self.arena, self.messages.items[0], .{});
+    try std.testing.expect(std.mem.indexOf(u8, reminder, "finish") != null);
     self.tool_calls_this_turn += 1; // tool progress must not refill the allowance
     const final = (try state.finish(&self, "I will keep working")).?;
     try std.testing.expect(std.mem.indexOf(u8, final, "Root execution has stopped with 1 open checklist items") != null);
@@ -188,7 +190,10 @@ test "#745 reconciliation supports every wire without coercing status requests i
         try self.todos.append(self.arena, .{ .content = "finish", .status = "pending" });
         var state: PendingWork = .{};
         try std.testing.expect((try state.finish(&self, "status")) == null);
-        const body = messages.latestUserText(self.messages.items);
+        const notice = self.messages.items[self.messages.items.len - 1];
+        try std.testing.expect(@import("session_wake.zig").isNotice(notice));
+        try std.testing.expectEqualStrings("", messages.latestUserText(self.messages.items));
+        const body = try std.json.Stringify.valueAlloc(self.arena, notice, .{});
         try std.testing.expect(std.mem.indexOf(u8, body, "status-only question") != null);
         try std.testing.expect(std.mem.indexOf(u8, body, "wait_ms>0") != null);
         if (kind == .responses) try std.testing.expectEqualStrings("message", self.messages.items[0].object.get("type").?.string);
