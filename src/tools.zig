@@ -103,6 +103,7 @@ pub const ToolCtx = struct {
     subagent_provider: ?Provider = null,
     subagent_cross_provider: bool = false,
     registry: ?*mcp.Registry,
+    mcp_context: ?@import("mcp_turn_context.zig").Snapshot = null,
     from_sub: bool,
     has_eval: bool = false, // the root's --eval loop: escalation's strongest verifier
     approvals: ?*Approvals,
