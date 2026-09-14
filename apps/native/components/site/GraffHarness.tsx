@@ -15,7 +15,7 @@ import AppSettings from "./AppSettings";
 import HarnessChrome from "./HarnessChrome";
 import ChatSplitLayout from "./ChatSplitLayout";
 import TerminalPane from "./TerminalPane";
-import { sidebarRecents, sessionFooterTitle } from "./harness-sidebar";
+import { sidebarRecents } from "./harness-sidebar";
 import AgentsPane from "./AgentsPane";
 import { newPageToken, newSessionName, type Chat, type Msg } from "./harness-types";
 import ChangesPane from "./ChangesPane";
@@ -50,7 +50,6 @@ import WorkspaceDialog from "@/components/site/WorkspaceDialog";
 import {
   basename,
   findWorkspace,
-  shellQuote,
   type Workspace,
 } from "@/lib/workspaces";
 
@@ -102,7 +101,6 @@ export default function GraffHarness() {
   const workspacesRef = useRef<Workspace[]>([]);
   const activePathRef = useRef<string | null>(null);
   const [dialog, setDialog] = useState<null | { mode: "new" } | { mode: "settings" }>(null);
-  const [copiedResume, setCopiedResume] = useState(false);
   // The sidecar browser: one Chrome tab per chat, and the pins the user
   // drops on it, which ride ahead of the chat's next prompt.
   const [browserOpen, setBrowserOpen] = useBrowserVisibility(BROWSER_OPEN_KEY, (chat) => {
@@ -371,21 +369,6 @@ export default function GraffHarness() {
     if (file) openPath(file);
   });
 
-  /** The footer names the tab's own graff session; clicking it copies the
-   * command that continues the same conversation in a terminal. */
-  const copyResume = () => {
-    const name = chatThread.session;
-    if (!name || typeof navigator === "undefined" || !navigator.clipboard) return;
-    const cmd = chatThread.cwd ? `cd ${shellQuote(chatThread.cwd)} && graff --resume ${name}` : `graff --resume ${name}`;
-    void navigator.clipboard
-      .writeText(cmd)
-      .then(() => {
-        setCopiedResume(true);
-        window.setTimeout(() => setCopiedResume(false), 1400);
-      })
-      .catch(() => undefined);
-  };
-
   const recents = sidebarRecents(stored, chats);
 
   // The tab bar's folder chip is the *tab's* workspace; the sidebar's
@@ -402,7 +385,6 @@ export default function GraffHarness() {
   const pinCount = (pinsByChat[chatThread.id] ?? []).length;
   const activeWorkspace = findWorkspace(workspaces, activePath);
   const sidebarWorkspace = activeWorkspace ?? (activePath ? { path: activePath, name: basename(activePath) } : undefined);
-  const footerTitle = sessionFooterTitle(chatThread.session, sessionId, chatCwd);
 
   const resumeQueue = (chatId: number) => void resumeQueuedPrompt(chatId, {
     pending: queueResumesRef.current,
@@ -499,10 +481,7 @@ export default function GraffHarness() {
         onDeleteRecent={(id) => dropStored(id, false)}
         onNewWorkspace={() => setDialog({ mode: "new" })}
         onWorkspaceSettings={() => setDialog(sidebarWorkspace ? { mode: "settings" } : { mode: "new" })}
-        footerLabel={copiedResume ? "Copied resume command" : "Copy terminal resume command"}
         footerControls={<AppSettings sidebar />}
-        footerTitle={footerTitle}
-        onFooterClick={copyResume}
       />
 
       <div className="flex min-w-0 flex-1 flex-col gap-2.5">

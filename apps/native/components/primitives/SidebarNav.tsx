@@ -490,8 +490,7 @@ export default function SidebarNav({
           </div>
         </div>
 
-        {footerControls}
-        <div inert={collapsed} aria-hidden={collapsed} className="sidebar-copy mx-2 mt-3 w-[232px] border-t border-line pt-3">
+        {footerControls ?? <div inert={collapsed} aria-hidden={collapsed} className="sidebar-copy mx-2 mt-3 w-[232px] border-t border-line pt-3">
           <button
             type="button"
             onClick={onFooterClick ?? onNewChat}
@@ -501,7 +500,7 @@ export default function SidebarNav({
             {footerIcon}
             <span className="min-w-0 flex-1 truncate text-center">{footerLabel}</span>
           </button>
-        </div>
+        </div>}
       </div>
     </aside>
   );
