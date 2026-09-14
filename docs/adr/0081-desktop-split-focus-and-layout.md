@@ -21,7 +21,9 @@ the whole group. The split toggle returns group members to individual tabs.
 
 Pane content responds to its own container width: narrow splits reduce
 transcript padding and user-message indentation even on a wide desktop.
-Short panes also reduce spacing and omit the optional home project card; input,
+The sidebar is the workspace selector; only windows without the sidebar repeat
+it in the toolbar. Home does not repeat the selected folder in a context card.
+Short panes also reduce spacing; input,
 errors and saved-session ownership controls stay available. App Settings lives
 in the sidebar footer (toolbar on small windows); Workspace tools groups file,
 browser and terminal access, while More holds conversation actions.

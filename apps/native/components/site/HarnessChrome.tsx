@@ -89,10 +89,10 @@ export default function HarnessChrome({chats, activeId, busyIds, focusChat, clos
       </div>
       <div className={`${reviewStyles.actions} flex min-h-10 shrink-0 items-center gap-2 border-t border-line px-3 py-1`}>
         <button type="button" aria-pressed={filesOpen} onClick={onFiles} title={`${chatCwd ?? "Workspace"}\nShow this chat's files`}
-          className="max-w-48 truncate rounded-md px-2 py-1 text-xs font-medium text-ink-2 hover:bg-hover">{workspaceName}</button>
+          className="max-w-48 truncate lg:hidden rounded-md px-2 py-1 text-xs font-medium text-ink-2 hover:bg-hover">{workspaceName}</button>
         <button type="button" onClick={openChanges} aria-label="Review workspace changes" className="rounded-md px-2 py-1 text-xs text-ink-2 hover:bg-hover">Changes</button>
         {(taskCount > 0 || tasksOpen) && onTasks && <button type="button" aria-label="Show tasks" aria-pressed={tasksOpen} onClick={onTasks} className="rounded-md px-2 py-1 text-xs text-ink-2 hover:bg-hover">Tasks{taskCount ? ` (${taskCount})` : ""}</button>}
-        <ActionMenu label="Workspace tools" text="Workspace tools" wide className="ml-auto shrink-0">
+        <ActionMenu label="Workspace tools" text="Tools" wide className="ml-auto shrink-0">
           <p className="px-3 py-2 text-[11px] font-medium text-ink-3">Tools for this workspace</p>
           <button type="button" aria-label="Files" aria-pressed={filesOpen} onClick={onFiles}><span>Files<span className="mt-1 block text-ink-3">Explore the current project folder</span></span></button>
           <button type="button" aria-label="Browser" aria-pressed={browserOpen} onClick={onBrowser}><span>Browser{pinCount > 0 ? ` (${pinCount} pins)` : ""}<span className="mt-1 block text-ink-3">Keep a web page beside your conversation</span></span></button>
