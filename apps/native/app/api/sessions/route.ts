@@ -1,13 +1,12 @@
 import { withSessionWritersStopped } from "@/lib/session-writers";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync } from "node:fs";
-import path from "node:path";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { archiveSavedSession, deleteSavedSession } from "@/lib/session-files";
 import { NextRequest } from "next/server";
 import { resolveRoot } from "@/lib/server-root";
 import { transcriptFromMessages } from "@/lib/sessions";
 import {
   MAX_FULL_BYTES,
   NAME_RE,
-  SESSION_EXT,
   clampLimit,
   findSessionFile,
   homeDir,
@@ -27,7 +26,6 @@ export const dynamic = "force-dynamic";
 //
 // Archived chats leave the list but stay on disk, in an `archived/` directory
 // beside graff's own sessions, so a chat can be put away without losing it.
-const ARCHIVE_SUBDIR = "archived";
 
 function str(v: unknown): string | null {
   return typeof v === "string" && v.length > 0 ? v : null;
@@ -120,15 +118,10 @@ export async function DELETE(req: NextRequest) {
   try {
     return await withSessionWritersStopped(found.file, () => {
       if (!archive) {
-        unlinkSync(found.file);
+        deleteSavedSession(found.file);
         return Response.json({ ok: true, name, archived: false });
       }
-      const target = path.join(path.dirname(found.file), ARCHIVE_SUBDIR);
-      mkdirSync(target, { recursive: true });
-      let dest = path.join(target, `${name}${SESSION_EXT}`);
-      // Never overwrite an earlier archive of the same name.
-      if (existsSync(dest)) dest = path.join(target, `${name}.${Date.now()}${SESSION_EXT}`);
-      renameSync(found.file, dest);
+      archiveSavedSession(found.file);
       return Response.json({ ok: true, name, archived: true });
     });
   } catch (err) {
