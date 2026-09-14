@@ -51,9 +51,9 @@ pub fn runCommand(self: *Model, line: []const u8) void {
         if (arg.len == 0) {
             if (repl.g_model_name.len > 0) self.pushFmt(.info, "model: {s}", .{repl.g_model_name}) catch {} else self.push(.info, "no model configured") catch {};
         } else if (repl.g_model_fn) |f| {
-            if (f(repl.g_turn_ctx, self.alloc, arg)) |nm| {
-                repl.g_model_name = nm;
-                self.pushFmt(.info, "switched to {s}", .{nm}) catch {};
+            if (f(repl.g_turn_ctx, self.alloc, arg)) |picked| {
+                repl.g_model_name = picked.model;
+                self.pushFmt(.info, "{s} {s}", .{ if (picked.changed) "switched to" else "already using", picked.model }) catch {};
             } else self.pushFmt(.err, "couldn't switch to '{s}' — see /models (need a key/login for it)", .{arg}) catch {};
         } else self.push(.info, "model switching isn't available (offline mode)") catch {};
     } else if (std.mem.eql(u8, cmd, "/models")) {

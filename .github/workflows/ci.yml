@@ -142,6 +142,9 @@ jobs:
       - name: PTY REPL interaction test
         run: python3 scripts/test-pty-repl.py zig-out/bin/graff
 
+      - name: Terminal model-selection confirmation regression
+        run: python3 scripts/test-model-confirmation.py zig-out/bin/graff
+
       - name: PTY Markdown rendering test
         run: python3 scripts/test-pty-markdown.py zig-out/bin/graff
 

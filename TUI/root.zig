@@ -74,6 +74,7 @@ test {
     _ = app;
     _ = @import("app_tests.zig");
     _ = @import("dispatch.zig");
+    _ = @import("model_confirmation_tests.zig");
     _ = @import("resume.zig");
     _ = @import("peer_cmd.zig");
     _ = @import("peer_tests.zig");

@@ -389,9 +389,10 @@ pub fn setModelRequestLabel(arena: Allocator, provider_query: []const u8, model_
 }
 
 pub fn switchProvider(root: *Agent, arena: Allocator, p: Provider, out: *Io.Writer) !void {
+    const same = std.mem.eql(u8, root.provider.id, p.id) and std.mem.eql(u8, root.provider.model, p.model);
     const note = try applyProvider(root, arena, p);
-    try out.print("switched to {s} via {s} ({t} format, {d}k ctx) — {s} · saved for next session\n", .{
-        p.model, p.id, p.kind, p.context / 1000, note,
+    try out.print("{s} {s} via {s} ({t} format, {d}k ctx) — {s} · saved for next session\n", .{
+        if (same) "already using" else "switched to", p.model, p.id, p.kind, p.context / 1000, note,
     });
     try out.flush();
 }
