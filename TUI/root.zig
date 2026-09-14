@@ -74,6 +74,7 @@ test {
     _ = app;
     _ = @import("app_tests.zig");
     _ = @import("dispatch.zig");
+    _ = @import("model_confirmation_tests.zig");
     _ = @import("resume.zig");
     _ = @import("peer_cmd.zig");
     _ = @import("peer_tests.zig");
@@ -92,6 +93,7 @@ test {
     _ = @import("issue_789_tests.zig");
     _ = @import("issue_788_tests.zig");
     _ = @import("issue_798_tests.zig");
+    _ = @import("issue_887_tests.zig");
     _ = @import("sanitize.zig");
     _ = @import("issue_805_tests.zig");
     _ = @import("composer_links.zig");
@@ -113,6 +115,7 @@ test {
     _ = @import("selection.zig");
     _ = @import("selection_tests.zig");
     _ = @import("issue_845_tests.zig");
+    _ = @import("issue_883_tests.zig");
     _ = @import("theme_tint.zig");
     _ = @import("hover.zig");
     _ = @import("hover_tests.zig");

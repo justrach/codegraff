@@ -67,6 +67,7 @@ process.on('SIGTERM', () => app.quit());
 process.on('SIGINT', () => app.quit());
 
 app.whenReady().then(async () => {
+  await require('./shell-path.cjs').restoreShellPath();
   app.setAccessibilitySupportEnabled(true);
   const passkeysConfigured = require('./webauthn.cjs').configureWebAuthn(app, resources);
   const token = randomBytes(32).toString('hex');

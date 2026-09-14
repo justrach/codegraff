@@ -1,4 +1,4 @@
-# 0111. Desktop passkeys use signed device credentials
+# 0115. Desktop passkeys use signed device credentials
 
 Status: accepted
 

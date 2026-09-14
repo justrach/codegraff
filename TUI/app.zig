@@ -464,7 +464,7 @@ pub const Model = struct {
         return switch (self.mode) {
             .normal => "normal",
             .plan => "plan",
-            .always_approve => "always-approve",
+            .always_approve => "auto-accept",
         };
     }
 
