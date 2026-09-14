@@ -20,6 +20,7 @@ async function runNarrowNavigation({win, output, click, until, report}) {
   await js(`document.querySelector('#sidebar-chat-list button[data-row].bg-hover-2').parentElement.querySelector('button[aria-label^="Actions for "]').setAttribute('data-narrow-actions','true')`);
   await click('[data-narrow-actions="true"]');
   await until(() => js(`!!document.querySelector('button[aria-label^="Delete "]')?.checkVisibility()`), 'actual saved chat actions visible');
+  await until(() => js(`document.activeElement?.getAttribute('aria-label')?.startsWith('Archive ')`), 'nested action menu keeps keyboard focus');
   await js(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
   await new Promise(resolve=>setTimeout(resolve,150));
   fs.writeFileSync(path.join(output,'narrow-navigation-actions.png'),(await wc.capturePage()).toPNG());
