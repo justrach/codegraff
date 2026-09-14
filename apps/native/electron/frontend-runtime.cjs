@@ -195,6 +195,7 @@ app.whenReady().then(async () => {
     report.passed.push('bounded split churn, resize, cancellation and memory checks');
     return;
   }
+  await require('./browser-focus-frontend.cjs').runBrowserFocus({ win, output, click, until, report });
   await require('./tab-drag-visual.cjs').runTabDrag({ win, origin, output });
   report.passed.push('trusted pointer and keyboard: tab reorder, horizontal/vertical splits, draft retention, Escape and four-pane limit');
 }).then(() => finish()).catch(finish);
