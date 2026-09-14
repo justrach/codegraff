@@ -126,6 +126,7 @@ pub const Agent = struct {
     sys_override: ?[]const u8 = null, // per-child custom prompt or transient isolated-review base
     task_prompt: ?[]const u8 = null, // a subagent's mandate, pinned once before the first history rewrite so compaction can restate it verbatim (recentContextStart can keep no verbatim suffix for a child - its only clean user turn is index 0)
     pr_verification: @import("pr_verify.zig").State = .unused,
+    pr_draft_scope: ?@import("pr_acceptance.zig").Scope = null,
     agent_cwd: ?[]const u8 = null, // subagent-only (#276 P0-1): absolute path of this agent's isolated git worktree, threaded through ToolCtx per tool call instead of a process-wide chdir — parallel siblings each keep their own
     tools_used: trace.ToolSink = .{}, // external tool calls this agent made (per turn for the root)
     tool_calls_this_turn: u64 = 0,

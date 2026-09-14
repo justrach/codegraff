@@ -1,0 +1,54 @@
+"""Local-only GitHub CLI fixture for production dispatch regressions."""
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+GH = r'''
+import json, pathlib, subprocess, sys
+root=pathlib.Path(__file__).resolve().parent.parent
+state=json.loads((root/'gh-state.json').read_text())
+args=sys.argv[1:]
+with (root/'gh-argv.jsonl').open('a') as f:f.write(json.dumps(args)+'\n')
+head=subprocess.check_output(['GIT_EXE','rev-parse','HEAD'],cwd=root,text=True).strip()
+if args[:2]==['run','list']:
+    if state.get('unavailable'):sys.exit(1)
+    sha=args[args.index('--commit')+1]
+    status=state.get('runs','success') if sha==state['initial_head'] else state.get('new_runs','failure')
+    if status=='malformed': print('invalid');sys.exit()
+    if status=='none': print('[]');sys.exit()
+    print(json.dumps([{'status':'queued' if status=='pending' else 'completed','conclusion':None if status=='pending' else status}]))
+elif args[:1]==['api']:
+    print(state.get('remote_head', head))
+elif args[:2]==['pr','view']:
+    remote=state.get('remote_head',head)
+    status=state.get('checks','PENDING')
+    checks=[] if status=='NONE' else [{'state':status}]
+    print(json.dumps({'headRefOid':remote,'isDraft':state.get('draft',False),'body':'## Verification\nLocal tests passed.','statusCheckRollup':checks}))
+elif args[:2] in (['pr','create'],['pr','ready']):
+    with (root/'mutations.jsonl').open('a') as f:f.write(json.dumps(args)+'\n')
+    if '--draft' in args:state['draft']=True
+    if args[:2]==['pr','ready']:state['draft']=False
+    (root/'gh-state.json').write_text(json.dumps(state))
+    print('https://example.invalid/pull/1')
+else: sys.exit(88)
+'''
+
+
+def prepare(work, env, state):
+    bindir = work / "bin"
+    bindir.mkdir(exist_ok=True)
+    gh = bindir / "gh"
+    gh.write_text(f"#!{sys.executable}\n" + GH.replace("GIT_EXE", shutil.which("git")))
+    gh.chmod(0o755)
+    subprocess.run(["git", "init", "-q", "-b", "fixture"], cwd=work, check=True, timeout=10)
+    subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                    "commit", "-q", "--allow-empty", "-m", "fixture"], cwd=work, check=True, timeout=10)
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=work, text=True, timeout=10).strip()
+    fixture = dict(initial_head=head, **state)
+    if fixture.get("remote_head") == "initial":
+        fixture["remote_head"] = head
+    (work / "gh-state.json").write_text(json.dumps(fixture))
+    (work / "notes.md").write_text("## Verification\nLocal regression passed.\n")
+    env["PATH"] = str(bindir) + os.pathsep + env["PATH"]

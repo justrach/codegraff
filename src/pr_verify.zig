@@ -43,9 +43,9 @@ pub fn arm(agent: *Agent, target: evidence.Target, match_local: bool) !void {
     agent.pr_verification = .pending;
 }
 
-pub fn decision(receipt: evidence.Receipt, local: ?[]const u8) State {
+pub fn decision(receipt: evidence.Receipt, local: ?[]const u8, draft_authorized: bool) State {
     if (local) |sha| if (!std.mem.eql(u8, sha, receipt.head)) return .pending;
-    if (receipt.draft) return .draft;
+    if (receipt.draft) return if (draft_authorized) .draft else .pending;
     return if (receipt.status == .passed) .passed else .pending;
 }
 
@@ -62,10 +62,10 @@ pub fn completionGate(agent: *Agent) ?[]const u8 {
     var result: State = .passed;
     for (records) |record| {
         if (!std.mem.eql(u8, record.session, @import("http_headers.zig").sessionId(agent.io))) continue;
-        const receipt = evidence.pr(agent.gpa, agent.io, agent.arena, record.target) catch return "completion deferred: current-head PR checks could not be observed. Local tests and completed todos are not remote CI evidence; retry the lookup or leave an explicit draft handoff.";
+        const receipt = evidence.pr(agent.gpa, agent.io, agent.arena, record.target) catch return "completion deferred: current-head PR checks could not be observed. Local tests and completed todos are not remote CI evidence; retry the lookup. Draft-only completion requires explicit user authorization.";
         const local = if (record.match_local) evidence.localHead(agent.gpa, agent.io, agent.arena, record.target) catch return "completion deferred: local publication head could not be resolved" else null;
-        switch (decision(receipt, local)) {
-            .pending, .unused => return "completion deferred: current-head PR verification is pending, failed, missing, or stale. Inspect the PR checks and finish CI verification; repeating attempt_completion cannot waive it. An explicit draft PR can be handed off as unverified.",
+        switch (decision(receipt, local, @import("pr_acceptance.zig").allowsDraft(agent))) {
+            .pending, .unused => return "completion deferred: current-head PR verification is pending, failed, missing, or stale. Inspect the PR checks and finish CI verification; repeating attempt_completion cannot waive it. Draft publication and base-branch failures do not waive verification. Only the user can authorize a draft-only scope with /pr-acceptance draft.",
             .draft => result = .draft,
             .passed => {},
         }
@@ -76,10 +76,10 @@ pub fn completionGate(agent: *Agent) ?[]const u8 {
 
 test "#853 a changed head or a second completion attempt cannot reuse a passing receipt" {
     const receipt = evidence.Receipt{ .head = "new", .status = .passed };
-    try std.testing.expectEqual(State.pending, decision(receipt, "old"));
-    try std.testing.expectEqual(State.passed, decision(receipt, "new"));
-    for (0..2) |_| try std.testing.expectEqual(State.pending, decision(.{ .head = "new", .status = .pending }, "new"));
-    try std.testing.expectEqual(State.draft, decision(.{ .head = "new", .status = .failed, .draft = true }, "new"));
+    try std.testing.expectEqual(State.pending, decision(receipt, "old", false));
+    try std.testing.expectEqual(State.passed, decision(receipt, "new", false));
+    for (0..2) |_| try std.testing.expectEqual(State.pending, decision(.{ .head = "new", .status = .pending }, "new", false));
+    try std.testing.expectEqual(State.draft, decision(.{ .head = "new", .status = .failed, .draft = true }, "new", true));
 }
 
 pub fn hasObligation(agent: *const Agent) bool {
@@ -107,4 +107,14 @@ test "PR obligations isolate conversations and cannot use restored IDs as paths"
     const hostile = try ledgerPath(a, "/workspace", "../../elsewhere/../record");
     try std.testing.expect(std.mem.indexOf(u8, hostile, "..") == null);
     try std.testing.expectEqualStrings(std.fs.path.dirname(first).?, std.fs.path.dirname(hostile).?);
+}
+
+test "draft PRs require user-authorized scope even with passing or base-failing checks" {
+    for ([_]@import("pr_publish.zig").HeadStatus{ .passed, .failed, .pending, .none, .unknown }) |status| {
+        const receipt = evidence.Receipt{ .head = "new", .status = status, .draft = true };
+        try std.testing.expectEqual(State.pending, decision(receipt, "new", false));
+        try std.testing.expectEqual(State.draft, decision(receipt, "new", true));
+        try std.testing.expectEqual(State.pending, decision(receipt, "old", true));
+    }
+    try std.testing.expectEqual(State.pending, decision(.{ .head = "new", .status = .failed }, "new", true));
 }
