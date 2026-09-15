@@ -25,7 +25,8 @@ async function run({win, backend}) {
     const text=saved().find(row=>typeof row.data.title==='string' && /retained work/i.test(row.data.title));
     fs.writeFileSync(path.join(output,'text-session.json'),JSON.stringify(text.data,null,2));
     await shot('packaged-text-title.png');
-    await click('[title="New chat (⌘T)"]');
+    await js(`Array.from(document.querySelectorAll('button[aria-label="New chat"]')).find(e=>e.checkVisibility()).setAttribute('data-packaged-new-chat','true')`);
+    await click('[data-packaged-new-chat="true"]');
     await send('/model lmstudio mock-vision');
     await until(()=>js(`document.body.textContent.includes('mock-vision') && !document.querySelector('article[aria-busy="true"]')`),'image model selected');
     const png=nativeImage.createFromBitmap(Buffer.alloc(48*32*4,180),{width:48,height:32}).toPNG().toString('base64');

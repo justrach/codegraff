@@ -131,6 +131,8 @@ record only when you need the evidence or the edge cases.
 | [0120](0120-draft-publication-does-not-complete-verification.md) | Draft PRs cannot satisfy verified completion; only a user control scoped to this conversation and goal permits an unverified draft handoff. |
 | [0121](0121-claims-include-repository-identity.md) | Claims include repository identity; literal PR mutations compare the observed repository, PR number and branch, while unknown scopes stay conservative. |
 
+| [0122](0122-one-session-navigation-surface.md) | Open chats use the expanded sidebar or collapsed top tabs, preserving drafts and groups; focused mode keeps a compact composer and accessible settings. |
+
 ## When to write one
 
 Write an ADR when a decision is load-bearing and non-obvious: it was reached

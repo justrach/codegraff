@@ -44,7 +44,10 @@ export function useTabDrag(onDrop: (id: number, drop: TabDrop) => void) {
       const element = document.elementFromPoint(x, y);
       const tab = element?.closest<HTMLElement>('[data-tab-id]');
       if (tab && Number(tab.dataset.tabId) !== id) {
-        const r = tab.getBoundingClientRect(), after = x > r.left + r.width / 2;
+        const r = tab.getBoundingClientRect();
+        const vertical = tab.closest('[data-session-navigation="sidebar"]') !== null;
+        const after = vertical ? y > r.top + r.height / 2 : x > r.left + r.width / 2;
+        if (vertical) return { drop: { kind: "tab", id: Number(tab.dataset.tabId), after }, left: r.left, top: after ? r.bottom - 2 : r.top, width: r.width, height: 3, label: "Move chat" };
         return { drop: { kind: "tab", id: Number(tab.dataset.tabId), after }, left: after ? r.right - 2 : r.left, top: r.top, width: 3, height: r.height, label: "Move tab" };
       }
       const pane = element?.closest<HTMLElement>('[data-chat]');

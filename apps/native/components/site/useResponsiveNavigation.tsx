@@ -7,6 +7,7 @@ import styles from "./ResponsiveNavigation.module.css";
 export function useResponsiveNavigation() {
   const id = useId(), panel = useRef<HTMLDivElement>(null);
   const [narrow, setNarrow] = useState(false), [open, setOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
   const close = () => { if (panel.current?.matches(":popover-open")) panel.current.hidePopover(); };
   useEffect(() => {
     const query = matchMedia("(width < 64rem)");
@@ -15,6 +16,9 @@ export function useResponsiveNavigation() {
     return () => query.removeEventListener("change", update);
   }, []);
   return {
+    sidebarVisible: narrow ? open : !collapsed,
+    focusedMode: narrow || collapsed,
+    onCollapsedChange: setCollapsed,
     close: narrow ? close : undefined,
     panelProps: {
       id, ref: panel, popover: narrow ? "auto" as const : undefined,
@@ -24,8 +28,11 @@ export function useResponsiveNavigation() {
         // React also delivers descendant popover toggles here. They own their
         // focus; opening an action menu must not refocus the sidebar close button.
         if (event.target !== event.currentTarget) return;
-        const shown = event.newState === "open"; setOpen(shown);
-        if (shown) panel.current?.querySelector<HTMLButtonElement>('[aria-label="Close navigation"]')?.focus();
+        const shown = panel.current?.matches(":popover-open") ?? false; setOpen(shown);
+        // Native toggle delivery can follow an outside click. Do not take focus
+        // back from the input or another control the user has already selected.
+        if (shown && document.activeElement?.getAttribute("popovertarget") === id)
+          panel.current?.querySelector<HTMLButtonElement>('[aria-label="Close navigation"]')?.focus();
       },
     },
     trigger: <button type="button" aria-label="Open navigation" title="Projects and conversations"

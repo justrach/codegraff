@@ -65,9 +65,9 @@ app.whenReady().then(async () => {
     assert.deepEqual(apiRequests, [], 'Browser fixtures never call engine or model APIs');
     return;
   }
-  if (['projects', 'splits', 'interactions', 'tagged', 'tab-drag'].includes(process.env.GRAFF_VISUAL_SUITE)) {
+  if (['projects', 'splits', 'interactions', 'tagged', 'tab-drag', 'session-navigation'].includes(process.env.GRAFF_VISUAL_SUITE)) {
     await require('./navigation-visual.cjs').runNavigationVisuals({ win, origin, output });
-    if (!['interactions', 'tagged', 'tab-drag'].includes(process.env.GRAFF_VISUAL_SUITE)) {
+    if (!['interactions', 'tagged', 'tab-drag', 'session-navigation'].includes(process.env.GRAFF_VISUAL_SUITE)) {
       await require('./browser-visual.cjs').runBrowserVisuals({ win, origin, output });
       await require('./dev-preview-visual.cjs').runDevPreview({ output });
       await require('./link-destination-visual.cjs').runLinkDestinationVisuals({ origin, output });
