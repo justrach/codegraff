@@ -328,6 +328,8 @@ pub const usage_text =
     \\  graff mcp add <name> --url <url>  add a Streamable HTTP MCP server
     \\  graff mcp login <name>            OAuth login for a remote MCP server
     \\  graff mcp                         list configured MCP servers
+    \\  graff mcp install                configure local HTTP service and MCP clients
+    \\  graff mcp serve [--http] [--port N] expose run_task to MCP clients
     \\  graff plugins [load <name>]       list Claude/Cursor/Grok/Codex plugin trees (in place)
     \\  graff learn [help]                local mutate/evaluate/promote/rollback engine
     \\  graff worktree list              list -w tabs and experiment-pool trees (tagged)

@@ -101,12 +101,20 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
         const reply = slash(d.ctx, arena, text) catch |err| return turnError(d, w, req, err);
         if (reply) |plain| {
             if (plain.len > 0) try writeSessionUpdate(w, sid, plain);
+            try emitMeter(d, w, sid);
             return respond(w, req, .{ .stopReason = "end_turn" });
         }
     }
     if (d.after_user) |after| after(d.ctx, arena, text);
     const final = d.turn(d.ctx, arena, text) catch |err| return turnError(d, w, req, err);
     if (final.len > 0) try writeSessionUpdate(w, sid, final);
+    try emitMeter(d, w, sid);
+    const extra = if (extra_cancelled) |f| f() else false;
+    const stop: []const u8 = if (cancel_flag.load(.acquire) or extra) "cancelled" else "end_turn";
+    try respond(w, req, .{ .stopReason = stop });
+}
+
+fn emitMeter(d: *Dispatch, w: *Io.Writer, sid: []const u8) !void {
     if (d.meter) |meter| {
         // Report live occupancy independently of the model catalog.
         const m = meter(d.ctx);
@@ -119,9 +127,27 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
             },
         });
     }
-    const extra = if (extra_cancelled) |f| f() else false;
-    const stop: []const u8 = if (cancel_flag.load(.acquire) or extra) "cancelled" else "end_turn";
-    try respond(w, req, .{ .stopReason = stop });
+}
+
+test "slash commands refresh occupancy before their terminal response" {
+    const Fixture = struct {
+        fn slash(_: *anyopaque, _: Allocator, _: []const u8) anyerror!?[]const u8 {
+            return "compacted";
+        }
+        fn meter(_: *anyopaque) Meter {
+            return .{ .used = 20, .window = 100 };
+        }
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var buffer: [2048]u8 = undefined;
+    var writer: Io.Writer = .fixed(&buffer);
+    var dispatch: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .slash = Fixture.slash, .meter = Fixture.meter };
+    try handleLine(&dispatch, arena.allocator(), &writer, "{\"id\":1,\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"/compact\"}]}}");
+    const output = writer.buffered();
+    const meter_pos = std.mem.indexOf(u8, output, "\"used\":20,\"window\":100") orelse return error.MissingMeter;
+    const end_pos = std.mem.indexOf(u8, output, "stopReason") orelse return error.MissingResponse;
+    try std.testing.expect(meter_pos < end_pos);
 }
 
 fn respondInitialize(w: *Io.Writer, req: proto.Request) !void {

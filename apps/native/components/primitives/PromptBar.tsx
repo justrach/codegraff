@@ -47,6 +47,7 @@ export default function PromptBar({
   onStop,
   history,
   root,
+  contextMeter,
 }: {
   variant?: string;
   /** the self-running walkthrough; turn off when embedding in a real surface */
@@ -73,6 +74,7 @@ export default function PromptBar({
   /** The workspace this composer sends into. The @ picker searches it, and a
    * picked file is mentioned by its path relative to it. */
   root?: string;
+  contextMeter?: import("@/lib/context-meter").ContextMeter;
 }) {
   const pill = variant === "Pill";
   const catalog = models && models.length > 0 ? models : MODELS;
@@ -503,6 +505,7 @@ export default function PromptBar({
           />
 
           <ModelEffortButtons model={model} buttonRef={modelRef} modelOpen={modelOpen} wide={wide} pill={pill} busy={busy}
+            contextMeter={contextMeter} showContextMeter={!demo}
             onCommand={onSetting} openModel={() => { setPlusOpen(false); setModelOpen(current => !current); }} />
 
           {/* Keep cancellation available while a follow-up is being drafted. */}

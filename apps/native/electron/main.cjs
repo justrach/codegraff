@@ -75,7 +75,13 @@ process.on('SIGINT', () => app.quit());
 
 app.whenReady().then(async () => {
   await require('./shell-path.cjs').restoreShellPath();
+  if (app.isPackaged && !process.env.GRAFF_ELECTRON_SMOKE) {
+    void require('./engine-launcher.cjs').installEngine(path.join(resources, 'graff'), app.getPath('home'))
+      .then(() => require('./mcp-install.cjs').installMcp(path.join(resources, 'graff'), app.getPath('home'), { once: true, version: app.getVersion() }))
+      .catch(error => dialog.showErrorBox('Command setup incomplete', `${error.message}\nRetry from Tools → Install codegraff terminal command.`));
+  }
   app.setAccessibilitySupportEnabled(true);
+  const passkeysConfigured = require('./webauthn.cjs').configureWebAuthn(app, resources);
   const token = randomBytes(32).toString('hex');
   win = createWindow({ width: 1440, height: 920, minWidth: 900, minHeight: 600,
     title: 'Codegraff', titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 11 }, backgroundColor: '#fafaf9', show: false,
@@ -173,12 +179,20 @@ app.whenReady().then(async () => {
       ['Toggle terminal', 'CmdOrCtrl+J', 'terminal'], ['Open workspace…', 'CmdOrCtrl+O', 'workspace'], ['Split right', 'CmdOrCtrl+D', 'split-right'],
       ['Split down', 'CmdOrCtrl+Shift+D', 'split-down'], ['Zoom split', 'CmdOrCtrl+Shift+Enter', 'split-zoom'],
     ].map(([label, accelerator, action]) => ({ label, accelerator, click: () => win.webContents.send('desktop-action', action) })) },
-    { label: 'Tools', submenu: [{ label: 'Install codegraff terminal command…', enabled: app.isPackaged && process.platform === 'darwin', click: async () => {
+    { label: 'Tools', submenu: [{ label: 'Configure MCP clients…', enabled: app.isPackaged, click: async () => {
       try {
+        const detail = await require('./mcp-install.cjs').installMcp(path.join(resources, 'graff'), app.getPath('home'));
+        await dialog.showMessageBox(win, { message: 'MCP clients configured', detail });
+      } catch (error) { dialog.showErrorBox('MCP setup', error.message); }
+    } }, { label: 'Install codegraff terminal command…', enabled: app.isPackaged && process.platform === 'darwin', click: async () => {
+      try {
+        await require('./engine-launcher.cjs').installEngine(path.join(resources, 'graff'), app.getPath('home'));
         const installed = await require('./cli-launcher.cjs').installLauncher(path.resolve(app.getPath('exe'), '../../..'), app.getPath('home'));
-        await dialog.showMessageBox(win, { message: 'Terminal command installed', detail: `Run codegraff . to open a project here. Ensure ${path.dirname(installed)} is on your PATH.` });
+        await dialog.showMessageBox(win, { message: 'Terminal command installed', detail: `Run graff for the CLI or codegraff . for the GUI. Open a new terminal to load the PATH update (${path.dirname(installed)}).` });
       } catch (error) { dialog.showErrorBox('Terminal command', error.message); }
-    } }] },
+    } }, { label: 'Browser passkey help…', click: () => void require('./webauthn.cjs').showPasskeyHelp({
+      window: win, browser, dialog, shell: require('electron').shell, configured: passkeysConfigured,
+    }).catch(() => dialog.showErrorBox('Browser passkeys', 'Could not open the default browser. Use another sign-in method on the site.')) }] },
     { role: 'editMenu' }, { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { role: 'togglefullscreen' }, { label: 'Release browser pages', click: () => { browser.closeAll(); win.webContents.send('browser-event', { type: 'released' }); } }] },
     { label: 'Performance', submenu: [
       { label: 'Start recording', click: () => void profiler.start() },

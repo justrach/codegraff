@@ -22,6 +22,10 @@ jobs:
           bun-version: '1.4.2'
       - run: bun install --frozen-lockfile
       - run: bun run test:desktop
+      - name: Embedded browser WebAuthn dispatch (virtual authenticator)
+        run: |
+          if [ ! -f node_modules/electron/path.txt ]; then bun node_modules/electron/install.js; fi
+          bun run test:webauthn
       - run: bun run build
       - run: bunx playwright install chromium
       - run: bun run test:queue
@@ -99,6 +103,11 @@ jobs:
         env:
           GRAFF_ELECTRON_FOREGROUND: '1'
           GRAFF_FRONTEND_OS_INPUT: '1'
+      - name: Title failure fallback and successful recovery
+        if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
+        run: GRAFF_TITLE_RESULT_TEST=1 bun scripts/test-frontend.mjs
+        env:
+          GRAFF_FRONTEND_OUTPUT: ../../zig-out/title-result
       - name: Narrow-window navigation and saved chat actions
         if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
         run: bun run test:narrow-navigation

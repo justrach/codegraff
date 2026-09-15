@@ -143,6 +143,15 @@ record only when you need the evidence or the edge cases.
 | [0126](0126-publication-retains-observed-check-failures.md) | Observed failed checks survive resumes; non-draft publication waits for successful reruns and occupies its own tool batch. |
 
 
+| [0127](0127-title-generation-is-an-explicit-result.md) | GUI titles require one explicit result and successful process exit; diagnostics never become chat names. |
+
+| [0128](0128-gui-context-meter-uses-harness-occupancy.md) | The GUI context ring uses last-reported harness occupancy; missing usage stays unknown. |
+
+| [0129](0129-mcp-server-delegates-bounded-cli-tasks.md) | `graff mcp serve` exposes bounded fresh CLI tasks over stdio; launch-time permissions and workspace stay outside tool arguments. |
+| [0130](0130-mcp-task-app-is-an-optional-result-view.md) | MCP task apps negotiate presentation only; structured results and text fallback share the same bounded task execution. |
+| [0131](0131-mcp-http-and-managed-client-registration.md) | HTTP MCP shares bounded task execution; CLI and GUI installs register detected clients additively through a private local service. |
+| [0132](0132-desktop-passkeys-use-signed-device-credentials.md) | Desktop Touch ID uses matching signed keychain configuration; account choice is explicit and existing iCloud credentials need a fallback. |
+
 ## When to write one
 
 Write an ADR when a decision is load-bearing and non-obvious: it was reached

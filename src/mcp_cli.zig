@@ -141,6 +141,8 @@ pub fn persistMcpUrl(io: Io, arena: Allocator, name: []const u8, url: []const u8
 fn mcpCliUsage(w: *Io.Writer) !void {
     try w.writeAll(
         \\usage:
+        \\  graff mcp install [--directory PATH] [--port N]   install HTTP service and client entries
+        \\  graff mcp serve [--http] [--port N] [--model NAME] [--yolo]   expose run_task over stdio or HTTP
         \\  graff mcp                      list servers in .mcp.json + ~/.codegraff/mcp.json
         \\  graff mcp import               copy Claude/Cursor MCP + skills into graff folders
         \\  graff mcp add <name> --url <https://...> [--header KEY=VALUE ...]
@@ -159,6 +161,24 @@ fn mcpCliUsage(w: *Io.Writer) !void {
 }
 
 pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, environ_map: anytype, args: []const []const u8) !void {
+    if (args.len > 0 and std.mem.eql(u8, args[0], "install")) {
+        const exe = try std.process.executablePathAlloc(io, arena);
+        var argv: std.ArrayList([]const u8) = .empty;
+        try argv.appendSlice(arena, &.{ "python3", "-c", @embedFile("mcp_installer"), "--binary", exe });
+        try argv.appendSlice(arena, args[1..]);
+        const result = try @import("process_runner.zig").runCappedWithOptions(arena, io, argv.items, 16384, 4096, 30000, .{ .environ_map = environ_map });
+        var buffer: [4096]u8 = undefined;
+        var writer = Io.File.stderr().writer(io, &buffer);
+        try writer.interface.writeAll(result.stdout);
+        try writer.interface.writeAll(result.stderr);
+        try writer.interface.flush();
+        if (!@import("process_runner.zig").ranOk(result)) return error.McpInstallFailed;
+        return;
+    }
+    if (args.len > 0 and std.mem.eql(u8, args[0], "serve")) {
+        try @import("mcp_server.zig").run(io, gpa, environ_map, args[1..]);
+        return;
+    }
     var obuf: [4096]u8 = undefined;
     var out = Io.File.stdout().writer(io, &obuf);
     // Reads (list/login) see project + global; writes stay project-local.

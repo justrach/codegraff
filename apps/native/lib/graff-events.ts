@@ -85,6 +85,7 @@ export type AskPrompt = {
 export type TurnStatus = "thinking" | "streaming" | "ask" | "done" | "error" | "snapshot";
 
 export type AssistantTurn = {
+  contextMeter?: import("./context-meter").ContextMeter;
   endedAt?: number;
   startedAt?: number;
   lastUpdateAt?: number;
