@@ -11,9 +11,10 @@ not establish that runtime publication consumed actual local results.
 ## Decision
 
 The root records failures and incomplete background starts from recognized test
-commands after tool execution. Records use canonical workspace paths and survive
+commands after tool execution. Literal `cd` prefixes are resolved. Records retain the canonical execution
+directory and Git worktree root, and survive
 session saves and resumes. Only a successful foreground rerun of the same command
-clears its record; unrelated successful commands and rewritten prose do not.
+in the same execution directory clears its record; unrelated successful commands and rewritten prose do not.
 Non-draft publication is refused while an applicable record remains unresolved.
 Draft creation remains available.
 

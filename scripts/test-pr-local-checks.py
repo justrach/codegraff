@@ -29,7 +29,7 @@ def main():
     check = bash("python3 -m unittest test_observed -v")
     publish = bash("gh pr create --title fixture --body-file notes.md")
     final = {"text": "Fixture finished."}
-    for case in ("failed", "rerun", "draft", "resume", "batch"):
+    for case in ("failed", "rerun", "draft", "resume", "batch", "nested"):
         with tempfile.TemporaryDirectory(prefix="graff-pr-local-checks-") as temp:
             work = Path(temp)
             env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")}
@@ -47,7 +47,16 @@ def main():
             (work / "notes.md").write_text(
                 "Verification: local checks passed. Dispatch is covered."
             )
-            if case == "rerun":
+            if case == "nested":
+                nested = work / "checks space"
+                nested.mkdir()
+                (nested / "test_observed.py").write_text(failing)
+                script = [
+                    bash("cd 'checks space' && python3 -m unittest test_observed -v"),
+                    publish,
+                    final,
+                ]
+            elif case == "rerun":
                 script = [
                     check,
                     {
@@ -127,7 +136,7 @@ def main():
                     mutations,
                     events,
                 )
-                if case in ("failed", "resume"):
+                if case in ("failed", "resume", "nested"):
                     assert (
                         "observed local check has no successful completion"
                         in json.dumps(events)

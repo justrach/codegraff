@@ -26,15 +26,25 @@ pub fn isCheck(command: []const u8) bool {
     return false;
 }
 
+pub fn repositoryRoot(root: anytype, cwd: []const u8) ![]const u8 {
+    const ev = @import("pr_evidence.zig");
+    const found = ev.capture(root.gpa, root.io, root.arena, .{ .cwd = cwd, .selector = "" }, &.{ "git", "rev-parse", "--show-toplevel" }) catch return cwd;
+    return if (std.fs.path.isAbsolute(found)) found else cwd;
+}
+
 pub fn record(root: anytype, call: ToolCall, result: ExecResult) !void {
     if (root.sub or !std.mem.eql(u8, call.name, "bash") or call.input != .object) return;
     const command = call.input.object.get("command") orelse return;
-    if (command != .string or !isCheck(command.string)) return;
-    var dir = try std.Io.Dir.cwd().openDir(root.io, root.agent_cwd orelse ".", .{});
+    if (command != .string) return;
+    const parsed = @import("pr_command.zig").literal(root.arena, command.string) catch return;
+    if (!isCheck(try std.mem.join(root.arena, " ", parsed.argv))) return;
+    const base = root.agent_cwd orelse ".";
+    const path = if (parsed.cwd) |cwd| if (std.fs.path.isAbsolute(cwd)) cwd else try std.fs.path.join(root.arena, &.{ base, cwd }) else base;
+    var dir = std.Io.Dir.cwd().openDir(root.io, path, .{}) catch try std.Io.Dir.cwd().openDir(root.io, base, .{});
     defer dir.close(root.io);
     var buffer: [std.fs.max_path_bytes]u8 = undefined;
     const cwd = buffer[0..try dir.realPath(root.io, &buffer)];
-    try root.publication_checks.observe(root.arena, cwd, call, result);
+    try root.publication_checks.observeKnown(root.arena, cwd, try repositoryRoot(root, cwd), command.string, result);
 }
 
 pub fn batchGate(root: anytype, calls: []const ToolCall, call: ToolCall) !?ExecResult {
@@ -50,14 +60,18 @@ pub fn batchGate(root: anytype, calls: []const ToolCall, call: ToolCall) !?ExecR
 }
 
 pub const State = struct {
-    const Entry = struct { cwd: []const u8, command: []const u8 };
+    const Entry = struct { cwd: []const u8, command: []const u8, repository: ?[]const u8 = null };
     failed: std.ArrayList(Entry) = .empty,
 
     pub fn observe(self: *State, arena: Allocator, cwd: []const u8, call: ToolCall, result: ExecResult) !void {
         if (!std.mem.eql(u8, call.name, "bash") or call.input != .object) return;
         const raw = call.input.object.get("command") orelse return;
         if (raw != .string or !isCheck(raw.string)) return;
-        const command = std.mem.trim(u8, raw.string, " \t\r\n");
+        try self.observeKnown(arena, cwd, cwd, raw.string, result);
+    }
+
+    fn observeKnown(self: *State, arena: Allocator, cwd: []const u8, repository: []const u8, raw: []const u8, result: ExecResult) !void {
+        const command = std.mem.trim(u8, raw, " \t\r\n");
         for (self.failed.items, 0..) |entry, i| {
             if (!std.mem.eql(u8, entry.cwd, cwd) or !std.mem.eql(u8, entry.command, command)) continue;
             if (!result.is_error and !result.cancelled and std.mem.indexOf(u8, result.text, "[job ") == null)
@@ -65,7 +79,7 @@ pub const State = struct {
             return;
         }
         if (!result.is_error and !result.cancelled and std.mem.indexOf(u8, result.text, "[job ") == null) return;
-        try self.failed.append(arena, .{ .cwd = try arena.dupe(u8, cwd), .command = try arena.dupe(u8, command) });
+        try self.failed.append(arena, .{ .cwd = try arena.dupe(u8, cwd), .command = try arena.dupe(u8, command), .repository = try arena.dupe(u8, repository) });
     }
 
     pub fn write(self: *const State, writer: anytype) !void {
@@ -78,6 +92,7 @@ pub const State = struct {
         for (self.failed.items) |entry| {
             fingerprint.text(entry.cwd);
             fingerprint.text(entry.command);
+            fingerprint.text(entry.repository orelse entry.cwd);
         }
     }
 
@@ -94,13 +109,16 @@ pub const State = struct {
             const command = item.object.get("command") orelse return error.InvalidPublicationChecks;
             if (cwd != .string or command != .string or !std.fs.path.isAbsolute(cwd.string) or command.string.len == 0)
                 return error.InvalidPublicationChecks;
-            try restored.failed.append(arena, .{ .cwd = try arena.dupe(u8, cwd.string), .command = try arena.dupe(u8, command.string) });
+            const repository = item.object.get("repository") orelse .null;
+            if (repository != .null and (repository != .string or !std.fs.path.isAbsolute(repository.string)))
+                return error.InvalidPublicationChecks;
+            try restored.failed.append(arena, .{ .cwd = try arena.dupe(u8, cwd.string), .command = try arena.dupe(u8, command.string), .repository = if (repository == .string) try arena.dupe(u8, repository.string) else null });
         }
         self.* = restored;
     }
 
     pub fn unresolved(self: *const State, cwd: []const u8) ?[]const u8 {
-        for (self.failed.items) |entry| if (std.mem.eql(u8, entry.cwd, cwd)) return entry.command;
+        for (self.failed.items) |entry| if (std.mem.eql(u8, entry.repository orelse entry.cwd, cwd)) return entry.command;
         return null;
     }
 };
@@ -149,4 +167,17 @@ test "failed checks survive serialization and malformed state is not a clean res
     const malformed = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"publication_failed_checks\":false}", .{});
     try std.testing.expectError(error.InvalidPublicationChecks, resumed.restore(a, malformed.object));
     try std.testing.expect(resumed.unresolved("/fixture") != null);
+}
+
+test "a sibling directory success cannot clear a failed worktree check" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var state: State = .{};
+    try state.observeKnown(a, "/repo/one", "/repo", "pytest", .{ .text = "FAIL", .is_error = true });
+    try state.observeKnown(a, "/repo/two", "/repo", "pytest", .{ .text = "OK", .is_error = false });
+    try std.testing.expect(state.unresolved("/repo") != null);
+    try std.testing.expect(state.unresolved("/another-repo") == null);
+    try state.observeKnown(a, "/repo/one", "/repo", "pytest", .{ .text = "OK", .is_error = false });
+    try std.testing.expect(state.unresolved("/repo") == null);
 }

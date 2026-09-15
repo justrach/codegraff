@@ -27,7 +27,7 @@ fn observe(self: *Agent, cmd: []const u8) !?ExecResult {
     var ev: pr_publish.Evidence = .{};
     const draft = creating and command.draft();
     if (!draft) {
-        if (self.publication_checks.unresolved(target.cwd)) |command_text|
+        if (self.publication_checks.unresolved(try @import("pr_local_checks.zig").repositoryRoot(self, target.cwd))) |command_text|
             return .{ .text = try std.fmt.allocPrint(self.arena, "PR publication preflight: observed local check has no successful completion: {s}. Rerun it successfully or publish a draft; write NOT performed.", .{command_text}), .is_error = true };
         if (creating) {
             ev.head_sha = evmod.localHead(self.gpa, self.io, self.arena, target) catch "";

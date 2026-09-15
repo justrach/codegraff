@@ -79,7 +79,9 @@ fn takesValue(arg: []const u8) bool {
     return false;
 }
 
-pub fn parse(a: A, input: []const u8) !Command {
+pub const Literal = struct { argv: []const []const u8, cwd: ?[]const u8 = null };
+
+pub fn literal(a: A, input: []const u8) !Literal {
     var args: std.ArrayList([]const u8) = .empty;
     var i: usize = 0;
     while (i < input.len) {
@@ -120,7 +122,16 @@ pub fn parse(a: A, input: []const u8) !Command {
         cwd = t[1];
         t = t[3..];
     }
-    if (t.len == 0 or !std.mem.eql(u8, std.fs.path.basename(t[0]), "gh")) return error.UnsupportedCommand;
+    if (t.len == 0) return error.UnsupportedCommand;
+    for (t) |arg| if (std.mem.eql(u8, arg, "&&") or std.mem.eql(u8, arg, "&")) return error.CompoundCommand;
+    return .{ .argv = t, .cwd = cwd };
+}
+
+pub fn parse(a: A, input: []const u8) !Command {
+    const parsed = try literal(a, input);
+    const t = parsed.argv;
+    const cwd = parsed.cwd;
+    if (!std.mem.eql(u8, std.fs.path.basename(t[0]), "gh")) return error.UnsupportedCommand;
     for (t) |arg| if (std.mem.eql(u8, arg, "&&") or std.mem.eql(u8, arg, "&")) return error.CompoundCommand;
     var j: usize = 1;
     while (j < t.len) : (j += 1) {
