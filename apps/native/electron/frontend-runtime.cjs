@@ -214,6 +214,12 @@ app.whenReady().then(async () => {
   assert.equal(await js(`Array.from(document.querySelectorAll('[data-tool-summary]')).some(e=>/\\b(?:running|interrupted)\\b/.test(e.textContent))`), false, 'Completed tools must not become interrupted');
   fs.writeFileSync(path.join(output, 'error-keeps-result.png'), (await wc.capturePage()).toPNG());
   report.passed.push('typed prompt, real file write, explicit error and retained completed tool');
+  if (!process.env.GRAFF_NARROW_NAV_TEST && !process.env.GRAFF_CLI_TEST && !process.env.GRAFF_SPLIT_STRESS) {
+    await click('[aria-label="Collapse sidebar"]');
+    await until(() => js(`!!document.querySelector('[data-session-navigation="tabs"]')`), 'completed session moves to top tabs');
+    assert.ok(await js(`document.body.textContent.includes('Scripted final request rejected')`));
+    report.passed.push('same real failed session survives sidebar-to-tabs navigation change');
+  }
   await send('Read the fixture file and report its state.');
   await until(() => js(`document.body.textContent.includes('The earlier result is still present.') && !document.querySelector('article[aria-busy="true"]')`), 'successful follow-up', 25000);
   const status = () => js(`Array.from(document.querySelectorAll('article')).at(-1)?.textContent.match(/Worked for [^·]+/)?.[0]`);
@@ -224,6 +230,8 @@ app.whenReady().then(async () => {
   const calls = JSON.parse(fs.readFileSync(requests, 'utf8'));
   assert.equal(calls.length, historyTest ? 6 : 4, 'Both turns must execute the scripted tool and terminal reply');
   assert.ok(JSON.stringify(calls.at(-1)).includes('kept'), 'Follow-up must receive retained tool output');
+  fs.copyFileSync(requests, path.join(output, 'model-requests.json'));
+  fs.cpSync(path.join(workspace, '.graff'), path.join(output, 'harness-evidence'), {recursive:true});
   fs.writeFileSync(path.join(output, 'follow-up-finished.png'), (await wc.capturePage()).toPNG());
   report.passed.push('typed follow-up, real saved history, finished status and frozen elapsed time');
   if (process.env.GRAFF_CLI_TEST) {

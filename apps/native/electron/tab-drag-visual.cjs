@@ -9,7 +9,11 @@ async function runTabDrag({win, origin, output}) {
   // Both motion modes are explicit test inputs, independent of runner settings.
   await wc.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'no-preference'}]});
   const wait=async code=>{for(let i=0;i<100;i++){if(await js(code))return;await new Promise(r=>setTimeout(r,50));}throw Error(`Tab drag condition failed: ${code}`);};
-  const ready=()=>wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
+  const ready=async()=>{
+    await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
+    if(await js(`!!document.querySelector('[aria-label="Collapse sidebar"]')?.checkVisibility()`))await click('[aria-label="Collapse sidebar"]');
+    await wait(`!!document.querySelector('[data-session-navigation="tabs"]')`);
+  };
   const tabs=()=>js(`Array.from(document.querySelectorAll('[data-tab-id]')).map(t=>Number(t.dataset.tabId))`);
   const panes=()=>js(`Array.from(document.querySelectorAll('[data-chat]')).map(t=>Number(t.dataset.chat))`);
   const point=selector=>js(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()`);

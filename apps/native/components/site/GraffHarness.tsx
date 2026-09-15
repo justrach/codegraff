@@ -1,4 +1,5 @@
 "use client";
+import SessionTabs from "./SessionTabs";
 import { useResponsiveNavigation } from "./useResponsiveNavigation";
 import { useNavigationPromptFocus } from "./useNavigationPromptFocus";
 import { useUnreadChats } from "./useUnreadChats";
@@ -403,7 +404,7 @@ export default function GraffHarness() {
   });
 
   const columnBody = (thread: Chat) => <ChatColumn key={thread.id} thread={thread}
-    compact={columnIds.length > 1} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
+    compact={columnIds.length > 1 || !navigation.sidebarVisible} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
     onOpenPath={openPath} onReview={openChanges}
     onRefresh={loaded => {
       const messages: Msg[] = loaded.messages.map(m => ({ id: ++msgIdRef.current, ...m }));
@@ -458,9 +459,17 @@ export default function GraffHarness() {
   return (
     <main ref={promptFocusRoot} data-graff-main data-workspace-ready={projectsReady} className="flex h-[100dvh] gap-0 bg-canvas p-2.5 text-ink lg:pl-0">
       <div {...navigation.panelProps}><SidebarNav
-        onCloseNavigation={navigation.close}
+        onCloseNavigation={navigation.close} onCollapsedChange={navigation.onCollapsedChange}
+        openSessions={navigation.sidebarVisible && <div className="mb-4">
+          <button type="button" aria-label="Show agents" aria-pressed={agentsOpen} onClick={() => { setProjectsOpen(false); setAgentsOpen(!agentsOpen); setFilesOpen(false); setBrowserOpen(false); setConversationsOpen(false); }} className="mx-3 mb-2 rounded-md px-2 py-1 text-[13px] text-ink-2 hover:bg-hover">Agents{workingAgents ? ` (${workingAgents})` : ""}</button>
+          <p className="mb-1 px-4 text-[11px] font-medium text-ink-3">Open chats</p>
+          <SessionTabs vertical chats={groups.tabs} activeId={groups.activeTab} agentsOpen={agentsOpen}
+            busyIds={new Set(groups.groups.filter(group => group.ids.some(id => busyIds.has(id))).map(group => group.ids[0]))} unreadIds={unread}
+            focusChat={id => focusChat(groups.focusOf(id))} closeChat={closeTab}
+            onTabPointerDown={tabDrag.begin} onTabClickCapture={tabDrag.suppressClick} />
+        </div>}
         fill
-        recents={recents}
+        recents={recents.filter(recent => !chats.some(chat => chat.session === recent.id))}
         recentsTotal={storedTotal}
         activeTitle={chatThread.title}
         activeId={chatThread.session ?? null}
@@ -490,7 +499,7 @@ export default function GraffHarness() {
 
       <div className="flex min-w-0 flex-1 flex-col gap-2.5">
         {tabDrag.overlay}
-        <HarnessChrome navigationToggle={navigation.trigger} unreadIds={unread} onTabPointerDown={tabDrag.begin} onTabClickCapture={tabDrag.suppressClick} chats={groups.tabs} activeId={groups.activeTab} busyIds={new Set(groups.groups.filter(group => group.ids.some(id => busyIds.has(id))).map(group => group.ids[0]))} focusChat={id => focusChat(groups.focusOf(id))} closeChat={closeTab} newChat={newChat}
+        <HarnessChrome sidebarVisible={navigation.sidebarVisible} navigationToggle={navigation.trigger} unreadIds={unread} onTabPointerDown={tabDrag.begin} onTabClickCapture={tabDrag.suppressClick} chats={groups.tabs} activeId={groups.activeTab} busyIds={new Set(groups.groups.filter(group => group.ids.some(id => busyIds.has(id))).map(group => group.ids[0]))} focusChat={id => focusChat(groups.focusOf(id))} closeChat={closeTab} newChat={newChat}
           conversationsOpen={conversationsOpen} openConversations={openConversations} split={panes.length > 0} toggleSplit={toggleSplit}
           filesOpen={filesOpen} onFiles={() => { setAgentsOpen(false); setFileRequest(null); setProjectsOpen(false); setBrowserOpen(false); setConversationsOpen(false); setFilesOpen(fileRequest?.changes ? true : !filesOpen); }}
           chatCwd={chatCwd} workspaceName={workspaceName} onFolder={() => setDialog({ mode: "new" })} openChanges={openChanges}

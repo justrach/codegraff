@@ -27,6 +27,7 @@ jobs:
       - run: bun run test:queue
       - run: bun run test:turns
       - run: bun run test:tab-drag
+      - run: bun run test:session-navigation
       - run: bun run test:stream-performance
       - run: bun run test:history-performance
       - run: bun run test:browser-resources
@@ -74,6 +75,12 @@ jobs:
         env:
           GRAFF_ELECTRON_FOREGROUND: '1'
           GRAFF_VISUAL_OUTPUT: ../../zig-out/native-tab-drag
+      - name: Session navigation modes and sidebar drag
+        if: ${{ !cancelled() && steps.gui.conclusion == 'success' }}
+        run: bun run test:session-navigation
+        env:
+          GRAFF_ELECTRON_FOREGROUND: '1'
+          GRAFF_VISUAL_OUTPUT: ../../zig-out/session-navigation
       - uses: ./.github/actions/setup-codegraff-zig
         id: zig
         if: ${{ !cancelled() && steps.gui.conclusion == 'success' }}
@@ -133,6 +140,7 @@ jobs:
             zig-out/packaged-titles/
             zig-out/split-stress/
             zig-out/native-tab-drag/
+            zig-out/session-navigation/
             zig-out/visual-tests/test-run.json
             zig-out/visual-tests/stress-results.json
             zig-out/visual-tests/stress-fullscreen.png

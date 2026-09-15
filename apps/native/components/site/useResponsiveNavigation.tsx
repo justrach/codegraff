@@ -7,6 +7,7 @@ import styles from "./ResponsiveNavigation.module.css";
 export function useResponsiveNavigation() {
   const id = useId(), panel = useRef<HTMLDivElement>(null);
   const [narrow, setNarrow] = useState(false), [open, setOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
   const close = () => { if (panel.current?.matches(":popover-open")) panel.current.hidePopover(); };
   useEffect(() => {
     const query = matchMedia("(width < 64rem)");
@@ -15,6 +16,8 @@ export function useResponsiveNavigation() {
     return () => query.removeEventListener("change", update);
   }, []);
   return {
+    sidebarVisible: narrow ? open : !collapsed,
+    onCollapsedChange: setCollapsed,
     close: narrow ? close : undefined,
     panelProps: {
       id, ref: panel, popover: narrow ? "auto" as const : undefined,

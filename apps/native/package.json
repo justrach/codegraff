@@ -14,6 +14,7 @@
     "electron:build": "bash electron/build.sh",
     "test:electron": "bun test electron/policy.test.cjs",
     "test:desktop": "bun test lib ./electron/*.test.cjs",
+    "test:session-navigation": "GRAFF_VISUAL_SUITE=session-navigation bun scripts/test-visual.mjs",
     "test:tab-drag": "GRAFF_VISUAL_SUITE=tab-drag bun scripts/test-visual.mjs",
     "test:turns": "GRAFF_VISUAL_SUITE=turns bun scripts/test-visual.mjs",
     "test:visual": "bun scripts/test-visual.mjs",
