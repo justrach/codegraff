@@ -144,6 +144,8 @@ record only when you need the evidence or the edge cases.
 
 | [0127](0127-title-generation-is-an-explicit-result.md) | GUI titles require one explicit result and successful process exit; diagnostics never become chat names. |
 
+| [0128](0128-gui-context-meter-uses-harness-occupancy.md) | The GUI context ring uses last-reported harness occupancy; missing usage stays unknown. |
+
 ## When to write one
 
 Write an ADR when a decision is load-bearing and non-obvious: it was reached

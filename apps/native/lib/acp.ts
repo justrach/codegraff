@@ -1,4 +1,5 @@
 import { htmlArtifactId } from "./html-artifacts";
+import { parseContextMeter } from "./context-meter";
 import { boundToolDetail } from "./tool-detail";
 import { stripCiteMarkup } from "./cite-markup";
 import { mcpAppId, viewSnapshotId } from "./mcp-apps";
@@ -270,6 +271,7 @@ export function turnBlocks(text: string, tools: ToolRow[]): TurnBlock[] {
 export function applyAcpUpdate(turn: AssistantTurn, update: AcpUpdate): AssistantTurn {
   turn = { ...turn, lastUpdateAt: Date.now(), activityKind: update.sessionUpdate, connected: true };
   switch (update.sessionUpdate) {
+    case "gui_context_meter": return { ...turn, contextMeter: parseContextMeter(update) };
     case "gui_turn_end": return { ...turn, stopReason: typeof update.stopReason === "string" ? update.stopReason : "end_turn" };
     case "agent_thought_chunk": {
       const text = stripCiteMarkup((update as { content?: AcpContent }).content?.text ?? "");
