@@ -255,7 +255,8 @@ for await (const ev of runAgent({ prompt: "summarize README.md", yolo: true })) 
 ```
 
 `graff --json` / `graff --schema` generate the SDKs ([`sdk/`](sdk/)). Remote:
-`graff serve`. Embedders: `--no-local-tools` + a sandbox MCP —
+`graff serve`. MCP clients can delegate small tasks with
+[`graff mcp serve`](docs/mcp-server.md). Embedders: `--no-local-tools` + a sandbox MCP —
 [Embedding graff](docs/embedding.md).
 
 <details>
