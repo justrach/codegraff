@@ -121,6 +121,7 @@ jobs:
         run: |
           python3 scripts/test-review-mode.py zig-out/bin/graff
           python3 scripts/test-review-deadline.py zig-out/bin/graff
+          python3 scripts/test-review-acp.py zig-out/bin/graff
 
       - name: Automatic learning bootstrap and its idle-workspace guard
         run: python3 scripts/test-learn-auto-init.py zig-out/bin/graff

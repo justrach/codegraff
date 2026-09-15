@@ -1,6 +1,6 @@
 # Review guardrails
 
-Use `/review <target>` in a supported interactive client or the JSON request
+Use `/review <target>` in ACP clients or the interactive REPL or the JSON request
 `{"type":"review","text":"Review the current diff"}` for the dedicated read-only
 review mode. Ordinary chat text is not a request to enter this mode automatically.
 Review mode rejects mutation, workflow expansion and delegation. A later user
@@ -24,10 +24,11 @@ Run the offline production regressions locally:
 zig build
 python3 scripts/test-review-mode.py zig-out/bin/graff
 python3 scripts/test-review-deadline.py zig-out/bin/graff
+python3 scripts/test-review-acp.py zig-out/bin/graff
 python3 scripts/eval-tier2.py --only review-checkpoint-preserves-unfinished-scope
 ```
 
-The first two also run in CI. Set `GRAFF_REVIEW_EVIDENCE` to a private directory
+The three process regressions also run in CI. Set `GRAFF_REVIEW_EVIDENCE` to a private directory
 when running the deadline test to retain its protocol events and harness traces.
 These are scripted-model regressions of the actual harness, not a claim about
 an unscripted model's review quality.
