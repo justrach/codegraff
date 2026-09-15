@@ -18,7 +18,8 @@ async function runTerminalVisual({win,output}) {
   await toggle();await wait(`document.querySelector('[data-workspace-terminal]').hidden`);
   assert.equal(await js(`document.querySelector('[data-workspace-terminal]').hidden`),true);
   await toggle();await wait(`!document.querySelector('[data-workspace-terminal]').hidden`);
-  assert.ok(await js(`Array.from(document.querySelectorAll('.xterm-rows > div')).some(row=>row.textContent.trim()==='TERMINAL_GUI_READY')`));
+  // Revealing the panel and repainting xterm happen in separate frames.
+  await wait(`Array.from(document.querySelectorAll('.xterm-rows > div')).some(row=>row.textContent.trim()==='TERMINAL_GUI_READY')`);
   await js(`new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
   if(output)fs.writeFileSync(path.join(output,'terminal.png'),(await wc.capturePage()).toPNG());
   await js(`Array.from(document.querySelectorAll('[data-workspace-terminal] button')).find(b=>b.textContent==='End session').click()`);
