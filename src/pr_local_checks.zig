@@ -44,7 +44,13 @@ pub fn record(root: anytype, call: ToolCall, result: ExecResult) !void {
     defer dir.close(root.io);
     var buffer: [std.fs.max_path_bytes]u8 = undefined;
     const cwd = buffer[0..try dir.realPath(root.io, &buffer)];
-    try root.publication_checks.observeKnown(root.arena, cwd, try repositoryRoot(root, cwd), command.string, result);
+    const repository = try repositoryRoot(root, cwd);
+    try root.publication_checks.observeKnown(root.arena, cwd, repository, command.string, result);
+    const ev = @import("pr_evidence.zig");
+    const target = ev.Target{ .cwd = cwd, .selector = "" };
+    const head = ev.localHead(root.gpa, root.io, root.arena, target) catch "";
+    const dirty = ev.capture(root.gpa, root.io, root.arena, target, &.{ "git", "status", "--porcelain", "--untracked-files=no" }) catch "unknown";
+    try root.publication_checks.recordReceipt(root.arena, .{ .repository = repository, .command = command.string, .head_after = head, .tracked_tree_clean_after = dirty.len == 0, .output = result.text, .failed = result.is_error or result.cancelled, .completed = std.mem.indexOf(u8, result.text, "[job ") == null });
 }
 
 pub fn batchGate(root: anytype, calls: []const ToolCall, call: ToolCall) !?ExecResult {
@@ -61,7 +67,23 @@ pub fn batchGate(root: anytype, calls: []const ToolCall, call: ToolCall) !?ExecR
 
 pub const State = struct {
     const Entry = struct { cwd: []const u8, command: []const u8, repository: ?[]const u8 = null };
+    pub const Receipt = struct { repository: []const u8, command: []const u8, head_after: []const u8, tracked_tree_clean_after: bool, output: []const u8, failed: bool, completed: bool, output_truncated: bool = false };
     failed: std.ArrayList(Entry) = .empty,
+    recent: std.ArrayList(Receipt) = .empty,
+
+    pub fn recordReceipt(self: *State, arena: Allocator, receipt: Receipt) !void {
+        var owned = receipt;
+        owned.repository = try arena.dupe(u8, receipt.repository);
+        owned.command = try arena.dupe(u8, receipt.command);
+        owned.head_after = try arena.dupe(u8, receipt.head_after);
+        owned.output_truncated = receipt.output.len > 4096;
+        var end = @min(receipt.output.len, 4096);
+        while (end > 0 and !std.unicode.utf8ValidateSlice(receipt.output[0..end])) end -= 1;
+        owned.output_truncated = end < receipt.output.len;
+        owned.output = try arena.dupe(u8, receipt.output[0..end]);
+        if (self.recent.items.len == 8) _ = self.recent.orderedRemove(0);
+        try self.recent.append(arena, owned);
+    }
 
     pub fn observe(self: *State, arena: Allocator, cwd: []const u8, call: ToolCall, result: ExecResult) !void {
         if (!std.mem.eql(u8, call.name, "bash") or call.input != .object) return;
@@ -180,4 +202,19 @@ test "a sibling directory success cannot clear a failed worktree check" {
     try std.testing.expect(state.unresolved("/another-repo") == null);
     try state.observeKnown(a, "/repo/one", "/repo", "pytest", .{ .text = "OK", .is_error = false });
     try std.testing.expect(state.unresolved("/repo") == null);
+}
+
+test "claim review local receipts retain bounded owned output and explicit limits" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var state: State = .{};
+    var text: [4100]u8 = @splat('x');
+    for (0..10) |_| try state.recordReceipt(arena.allocator(), .{ .repository = "/repo", .command = "pytest", .head_after = "head", .tracked_tree_clean_after = false, .output = &text, .failed = false, .completed = false });
+    text[0] = 'y';
+    try std.testing.expectEqual(@as(usize, 8), state.recent.items.len);
+    const last = state.recent.items[7];
+    try std.testing.expectEqual(@as(u8, 'x'), last.output[0]);
+    try std.testing.expectEqual(@as(usize, 4096), last.output.len);
+    try std.testing.expect(last.output_truncated);
+    try std.testing.expect(!last.completed and !last.tracked_tree_clean_after);
 }

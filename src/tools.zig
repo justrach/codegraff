@@ -109,6 +109,7 @@ pub const ToolCtx = struct {
     approvals: ?*Approvals,
     tracer: ?*Tracer,
     run_budget: ?*run_budget_mod.RunBudget = null,
+    publication_checks: @import("pr_local_checks.zig").State = .{},
     depth: u8 = 0,
     snapshots: ?*Snapshots = null,
     tools_used: ?*ToolSink = null, // the calling agent's tool log (trajectory/process mining)

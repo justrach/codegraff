@@ -53,6 +53,11 @@ fn observe(self: *Agent, cmd: []const u8) !?ExecResult {
         }
     }
     if (pr_publish.decide(draft, ev) != .allow) return .{ .text = pr_publish.refuseText(self.arena, cmd, ev), .is_error = true };
+    if (!draft) {
+        const review = @import("pr_claim_review.zig").review(self, target, command.flag("--base", "-B"), creating, ev.head_sha, ev.body, ev.head_status) catch
+            return .{ .text = "PR publication preflight: claim review could not establish readiness from the committed source and tests; write NOT performed. Keep a draft while evidence is unresolved.", .is_error = true };
+        if (review.verdict != .supported) return .{ .text = try std.fmt.allocPrint(self.arena, "PR publication preflight: claim review is {s}: {s}. Write NOT performed; keep a draft or fix the unsupported claim and coverage.", .{ @tagName(review.verdict), review.reason }), .is_error = true };
+    }
     @import("pr_verify.zig").arm(self, target, creating and command.flag("--head", "-H") == null) catch return .{ .text = "PR publication preflight: could not persist the CI verification obligation; write NOT performed", .is_error = true };
     return null;
 }
@@ -88,7 +93,7 @@ pub fn beforeExec(ctx: tools_mod.ToolCtx, cmd: []const u8) !?tools_mod.ToolOutpu
     if (!artifact_claim.isClaimedMutation(cmd)) return null;
     var scratch = std.heap.ArenaAllocator.init(ctx.gpa);
     defer scratch.deinit();
-    var agent: Agent = .{ .gpa = ctx.gpa, .arena = scratch.allocator(), .io = ctx.io, .client = ctx.client, .provider = ctx.provider, .messages = undefined, .sub = ctx.from_sub, .label = "", .out = null, .agent_cwd = ctx.agent_cwd };
+    var agent: Agent = .{ .gpa = ctx.gpa, .arena = scratch.allocator(), .io = ctx.io, .client = ctx.client, .provider = ctx.provider, .messages = undefined, .sub = ctx.from_sub, .label = "", .out = null, .agent_cwd = ctx.agent_cwd, .run_budget = ctx.run_budget, .depth = ctx.depth, .tracer = ctx.tracer, .publication_checks = ctx.publication_checks, .loop_deadline_ms = ctx.loop_deadline_ms };
     if (try bash(&agent, cmd)) |denied| return .{ .text = try ctx.gpa.dupe(u8, denied.text), .is_error = true };
     return null;
 }

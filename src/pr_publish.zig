@@ -158,11 +158,7 @@ pub fn hasVerificationSection(body: []const u8) bool {
 }
 
 pub fn hasAbsoluteClaim(body: []const u8) bool {
-    var buf: [2048]u8 = undefined;
-    const n = @min(body.len, buf.len);
-    for (body[0..n], 0..) |c, i| buf[i] = std.ascii.toLower(c);
-    const slice = buf[0..n];
-    for (absolute_words) |w| if (std.mem.indexOf(u8, slice, w) != null) return true;
+    for (absolute_words) |word| if (containsInsensitive(body, word)) return true;
     return false;
 }
 

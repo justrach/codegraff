@@ -150,6 +150,8 @@ record only when you need the evidence or the edge cases.
 | [0130](0130-mcp-task-app-is-an-optional-result-view.md) | MCP task apps negotiate presentation only; structured results and text fallback share the same bounded task execution. |
 | [0131](0131-mcp-http-and-managed-client-registration.md) | HTTP MCP shares bounded task execution; CLI and GUI installs register detected clients additively through a private local service. |
 
+| [0132](0132-publication-review-binds-committed-inputs.md) | Proposed: non-draft publication reviews immutable source and observed checks; changed inputs invalidate earlier assessments. |
+
 ## When to write one
 
 Write an ADR when a decision is load-bearing and non-obvious: it was reached
