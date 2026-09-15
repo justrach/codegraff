@@ -60,3 +60,12 @@ test("a failed ownership-record write removes its newly created upload", () => {
     expect(existsSync(existing)).toBe(true);
   } finally { chmodSync(records, 0o700); }
 });
+
+test("an in-place edit is preserved even when the inode and byte count match", () => {
+  const {store} = fixture(12345, () => false);
+  const edited = store.create("edited.png", new Uint8Array([1,2,3]));
+  writeFileSync(edited, new Uint8Array([4,5,6]));
+  expect(store.discard(edited)).toBe(false);
+  expect(store.sweep()).toBe(0);
+  expect(existsSync(edited)).toBe(true);
+});

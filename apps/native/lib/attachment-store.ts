@@ -1,9 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, openSync, closeSync, fstatSync, writeFileSync, readFileSync, renameSync, unlinkSync, lstatSync, opendirSync, type Dir } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-type Record = { version: 1; name: string; owner: number; retained: boolean; dev: number; ino: number };
+type Record = { version: 1; name: string; owner: number; retained: boolean; dev: number; ino: number; size?: number; sha256?: string };
 export const attachmentDirectory = path.join(os.tmpdir(), "graff-native-attachments");
 function ownerAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; }
@@ -34,7 +34,8 @@ export class AttachmentStore {
       const record = JSON.parse(readFileSync(this.recordPath(name), "utf8")) as Record;
       const file = lstatSync(path.join(this.directory, name));
       return record.version === 1 && record.name === name && typeof record.retained === "boolean" && file.isFile() &&
-        file.dev === record.dev && file.ino === record.ino ? record : null;
+        file.dev === record.dev && file.ino === record.ino && file.size === record.size &&
+        typeof record.sha256 === "string" ? record : null;
     } catch { return null; }
   }
   create(label: string, bytes: Uint8Array): string {
@@ -46,7 +47,7 @@ export class AttachmentStore {
       const file = fstatSync(descriptor);
       try {
         writeFileSync(descriptor, bytes);
-        this.save({ version: 1, name, owner: this.owner, retained: false, dev: file.dev, ino: file.ino });
+        this.save({ version: 1, name, owner: this.owner, retained: false, dev: file.dev, ino: file.ino, size: bytes.byteLength, sha256: createHash("sha256").update(bytes).digest("hex") });
       } catch (error) {
         try {
           const current = lstatSync(target);
@@ -73,6 +74,7 @@ export class AttachmentStore {
     if (path.dirname(target) !== this.directory) return false;
     const record = this.read(path.basename(target));
     if (!record || record.retained) return false;
+    if (createHash("sha256").update(readFileSync(target)).digest("hex") !== record.sha256) return false;
     unlinkSync(target);
     try { unlinkSync(this.recordPath(record.name)); } catch {}
     return true;

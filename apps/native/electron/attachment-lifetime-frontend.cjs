@@ -32,6 +32,12 @@ async function runAttachments({win,origin,temp,output,requests,workspace,send,cl
   await click('[aria-label="Close image preview"]');
   await click('[aria-label="Remove remove.png"]');
   await until(()=>!fs.existsSync(removed),'discarded paste file cleanup');
+  const edited=await paste('edited.png');
+  const changed=fs.readFileSync(edited);changed[changed.length-1]^=1;fs.writeFileSync(edited,changed);
+  await click('[aria-label="Remove edited.png"]');
+  await until(()=>js(`!document.querySelector('[aria-label="Remove edited.png"]')`),'edited attachment removed from draft');
+  await fetch(origin+'/api/attach',{method:'DELETE',headers:{'content-type':'application/json'},body:JSON.stringify({paths:[edited]})});
+  assert.deepEqual(fs.readFileSync(edited),changed,'Discard must preserve an in-place edit to exported pixels');
   await send('Describe the pasted image in one sentence.');
   await until(()=>js(`document.body.textContent.includes('The pasted image was received.') && !document.querySelector('article[aria-busy="true"]')`),'real image turn completion',25000);
   const calls=JSON.parse(fs.readFileSync(requests,'utf8'));
@@ -92,6 +98,7 @@ async function runAttachments({win,origin,temp,output,requests,workspace,send,cl
   assert.ok(fs.existsSync(archivedRotated),'Deleting the original must preserve the archived rotated transcript');
   assert.ok(fs.existsSync(aged),'An independent archived replay still needs the original image pixels');
   report.passed.push('real sidebar delete retires its writer and removes checkpoint plus both transcript generations; production archive preserves all replay files');
+  report.passed.push('edited clipboard export remains on disk after its draft chip is removed');
   report.passed.push('synthetic clipboard event through real GUI paste/upload/ACP: aged draft survives, removed and closed drafts release files, sent PNG reaches model and stays available for replay');
   fs.writeFileSync(path.join(output,'attachment-requests.json'),JSON.stringify(calls,null,2));
 }

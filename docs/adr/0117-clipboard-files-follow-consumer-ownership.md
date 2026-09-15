@@ -29,7 +29,9 @@ the handoff and allows prompt recall/retry. Unknown or malformed records and
 changed exports are preserved. Unsupported locking or unavailable temporary
 storage disables recovery registration rather than granting deletion authority.
 
-The native desktop records upload ownership and file identity. Discarding an
+The native desktop records upload ownership, file identity, size and a content digest.
+Deletion verifies unchanged bytes; replacing or editing an export never grants
+cleanup authority. Older records without content identity remain preserved. Discarding an
 unsent draft releases its recorded upload; accepting a prompt retains referenced
 uploads before dispatching to ACP. Sent files remain available for replay.
 Recovery examines a bounded number of ownership records per upload and removes
