@@ -48,6 +48,14 @@ archives, decoding JSON before checking names. Missing, malformed, symlinked,
 changed or over-budget data is unknown. This evidence is scoped: it does not
 by itself authorize deletion or exclude active consumers.
 
+Native prompt handoff also appends a worker process record before dispatch.
+The originating desktop and every enrolled worker protect in-memory consumers
+across route-server restarts. Process termination, rather than completed output
+or tab disposal, releases that evidence; unknown records and reused live process
+identifiers preserve files. Older exports cannot gain complete consumer knowledge
+retroactively. This process inventory still requires cross-surface enrollment
+and collection serialization before it can authorize submitted-file cleanup.
+
 The legacy desktop keeps clipboard exports in a private owner directory with
 an operating-system file lease. Recovery takes a nonblocking exclusive lease
 before removing recorded unsent exports from a stopped owner. Its prompt

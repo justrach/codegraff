@@ -48,6 +48,12 @@ async function runAttachments({win,origin,temp,output,requests,workspace,send,cl
   const referenceDir=path.join(directory,'.ownership','references',path.basename(aged));
   const scopes=fs.readdirSync(referenceDir).map(name=>JSON.parse(fs.readFileSync(path.join(referenceDir,name),'utf8')).directory);
   assert.deepEqual(scopes,[path.join(fs.realpathSync(workspace),'.graff','sessions')],'ACP must enroll the actual saved-session scope');
+  const consumerDir=path.join(directory,'.ownership','consumers',path.basename(aged));
+  const consumers=fs.readdirSync(consumerDir).map(name=>JSON.parse(fs.readFileSync(path.join(consumerDir,name),'utf8')).pid);
+  assert.equal(consumers.length,1,'The image handoff must enroll its actual ACP worker');
+  assert.ok(Number.isSafeInteger(consumers[0]) && consumers[0]>1);
+  process.kill(consumers[0],0); // Completed output does not mean the worker released its history.
+  fs.writeFileSync(path.join(output,'attachment-consumers.json'),JSON.stringify({worker:consumers[0],aliveAfterTurn:true},null,2));
   await fetch(origin+'/api/attach',{method:'DELETE',headers:{'content-type':'application/json'},body:JSON.stringify({paths:[aged]})});
   assert.ok(fs.existsSync(aged),'Discard cannot delete pixels retained by an accepted message');
   assert.equal((await fetch(origin+'/api/attach?name='+encodeURIComponent(path.basename(aged)))).status,200);
@@ -92,6 +98,8 @@ async function runAttachments({win,origin,temp,output,requests,workspace,send,cl
   await until(()=>js(`!!document.querySelector('button[aria-label^="Delete "]')`),'saved conversation delete action');
   await click('button[aria-label^="Delete "]');
   await until(()=>!fs.existsSync(savedFile),'session removed after its writer exits');
+  await until(()=>{try{process.kill(consumers[0],0);return false;}catch(error){return error.code==='ESRCH';}},'image consumer process exited');
+  fs.writeFileSync(path.join(output,'attachment-consumers.json'),JSON.stringify({worker:consumers[0],aliveAfterTurn:true,exitedAfterDelete:true},null,2));
   assert.equal(fs.existsSync(transcriptFile),false,'Deleting a saved chat must also remove its full transcript');
   assert.equal(fs.existsSync(rotatedFile),false,'Deleting a saved chat must remove its rotated transcript');
   await new Promise(resolve=>setTimeout(resolve,250));
