@@ -20,6 +20,21 @@ validated main-process IPC and serialized atomic writes. Existing browser values
 are migrated on first use and retained as a fallback. Preferences contain folder
 choices, not conversation history. The web client continues using browser storage.
 
+Startup context is shown separately from saved folder choices. Merely launching
+in a directory does not save it as a project or evict a deliberate choice from
+the saved-list limit. Opening a folder or saving its settings records a choice.
+Existing preferences without source metadata remain saved entries; their
+presence alone is not evidence of earlier session activity.
+
+Successful session saves also register their exact canonical working folder in
+an atomic, private device-local lookup record. The GUI verifies readable session
+headers before offering a folder as Session history, ordered by saved activity.
+Hints neither promote parent repositories nor authorize deleting any files.
+History suggestions and derived activity timestamps do not enter saved choices.
+Existing sessions in known folders are checked without a registry record; an
+older terminal-only folder outside known roots becomes discoverable on its next
+successful save. We do not recursively scan the user's filesystem at startup.
+
 ## Validation
 
 The project-store test covers restart persistence and ordered writes. The offline

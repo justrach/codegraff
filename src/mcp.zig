@@ -472,23 +472,19 @@ pub const Registry = struct {
     /// Invoke a tool by its qualified name. `input` is the model-supplied
     /// argument object. Returns result text (caller-owned, allocated with
     /// `out_alloc`) and whether the server reported an error.
-    pub fn call(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value) !struct { text: []u8, is_error: bool } {
+    const CallResult = struct { text: []u8, is_error: bool };
+    pub fn call(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value) !CallResult {
+        return reg.callWithContext(out_alloc, qualified, input, null);
+    }
+    pub fn callWithContext(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value, context: ?@import("mcp_turn_context.zig").Snapshot) !CallResult {
         const tool = for (reg.tools) |t| {
             if (std.mem.eql(u8, t.qualified_name, qualified)) break t;
         } else return .{ .text = try out_alloc.dupe(u8, "unknown MCP tool"), .is_error = true };
 
         const server = reg.servers[tool.server_index];
 
-        // Build the tools/call params: {"name":..., "arguments":{...}}.
-        var pw: Io.Writer.Allocating = .init(reg.gpa);
-        defer pw.deinit();
-        var s: std.json.Stringify = .{ .writer = &pw.writer };
-        try s.beginObject();
-        try s.objectField("name");
-        try s.write(tool.original_name);
-        try s.objectField("arguments");
-        try s.write(input);
-        try s.endObject();
+        const params = try @import("mcp_turn_context.zig").params(reg.gpa, server.name, tool.original_name, input, context);
+        defer reg.gpa.free(params);
 
         reg.mutex.lockUncancelable(reg.io);
         defer reg.mutex.unlock(reg.io);
@@ -499,9 +495,9 @@ pub const Registry = struct {
         defer response_arena_state.deinit();
         const response_alloc = response_arena_state.allocator();
         if (!server.initialized) try initializeServer(server, response_alloc, reg.arena(), null);
-        server.elicit_source = pw.writer.buffered();
+        server.elicit_source = params;
         defer server.elicit_source = "";
-        const resp = request(server, response_alloc, pw.writer.buffered(), "tools/call", tool.original_name) catch |err| switch (err) {
+        const resp = request(server, response_alloc, params, "tools/call", tool.original_name) catch |err| switch (err) {
             // Streamable HTTP servers use 404 to expire a session. Re-run the
             // MCP handshake once, then retry the call without the stale ID.
             // A modern-era server never carries a session id in the first
@@ -512,7 +508,7 @@ pub const Registry = struct {
             error.McpSessionExpired => retry: {
                 if (server.era != .legacy) return err;
                 try initializeServer(server, response_alloc, reg.arena(), null);
-                break :retry try request(server, response_alloc, pw.writer.buffered(), "tools/call", tool.original_name);
+                break :retry try request(server, response_alloc, params, "tools/call", tool.original_name);
             },
             else => return err,
         };

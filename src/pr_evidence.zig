@@ -5,7 +5,7 @@ const runner = @import("process_runner.zig");
 const publish = @import("pr_publish.zig");
 const A = std.mem.Allocator;
 pub const Target = struct { cwd: []const u8 = ".", repo: ?[]const u8 = null, selector: []const u8 };
-pub const Receipt = struct { head: []const u8 = "", status: publish.HeadStatus = .unknown, draft: bool = false, body: []const u8 = "" };
+pub const Receipt = struct { head: []const u8 = "", status: publish.HeadStatus = .unknown, draft: bool = false, body: []const u8 = "", checks_json: []const u8 = "null" };
 
 pub fn capture(gpa: A, io: std.Io, a: A, target: Target, argv: []const []const u8) ![]const u8 {
     var args: std.ArrayList([]const u8) = .empty;
@@ -54,7 +54,7 @@ pub fn parsePr(a: A, json: []const u8) !Receipt {
     const body = v.object.get("body") orelse return error.InvalidReceipt;
     const checks = v.object.get("statusCheckRollup") orelse return error.InvalidReceipt;
     if (head != .string or !validSha(head.string) or draft != .bool or body != .string) return error.InvalidReceipt;
-    return .{ .head = head.string, .draft = draft.bool, .body = body.string, .status = checkStatus(checks) };
+    return .{ .head = head.string, .draft = draft.bool, .body = body.string, .status = checkStatus(checks), .checks_json = try std.json.Stringify.valueAlloc(a, checks, .{}) };
 }
 
 pub fn checkStatus(checks: std.json.Value) publish.HeadStatus {
@@ -110,4 +110,14 @@ test "#853 remote receipt cannot turn missing, pending, failed or partial checks
         const v = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), c[0], .{});
         try std.testing.expectEqual(c[1], checkStatus(v));
     }
+}
+
+test "PR receipt preserves check identities and outcomes instead of substituting aggregate green" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const checks = "[{\"name\":\"schema drift\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"name\":\"packed SDK\",\"status\":\"COMPLETED\",\"conclusion\":\"FAILURE\"},{\"context\":\"platform contract\",\"state\":\"PENDING\"}]";
+    const json = try std.fmt.allocPrint(arena.allocator(), "{{\"headRefOid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"isDraft\":false,\"body\":\"\",\"statusCheckRollup\":{s}}}", .{checks});
+    const receipt = try parsePr(arena.allocator(), json);
+    try std.testing.expectEqual(publish.HeadStatus.failed, receipt.status);
+    try std.testing.expectEqualStrings(checks, receipt.checks_json);
 }

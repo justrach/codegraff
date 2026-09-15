@@ -73,9 +73,10 @@ function mcpOffPath(): string {
 // child's history; `dispose`/`dispose-page` reap children on tab close and
 // page unload. Kept on globalThis so dev-server module reloads don't orphan
 // running agents.
-const g = globalThis as typeof globalThis & { __graffAcpSlots?: Map<string, Slot>; __graffAcpBootstraps?: Map<string, Promise<Slot>> };
+const g = globalThis as typeof globalThis & { __graffAcpSlots?: Map<string, Slot>; __graffAcpBootstraps?: Map<string, Promise<Slot>>; __graffAcpRetirements?: Map<string, Promise<void>>; __graffAcpShuttingDown?: boolean };
 const slots = (g.__graffAcpSlots ??= new Map<string, Slot>());
 const bootstraps = (g.__graffAcpBootstraps ??= new Map<string, Promise<Slot>>());
+const retirements = (g.__graffAcpRetirements ??= new Map<string, Promise<void>>());
 const DEFAULT_CHAT = "default";
 // Session names become a CLI argument and a filename under .graff/sessions.
 const SESSION_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -95,23 +96,29 @@ function defaultYolo(): boolean {
   return true;
 }
 
+// A closed tab's agent gets stdin EOF first: `graff acp` leaves its read loop
+// on EOF and writes the session's exit save on the way out, which a SIGTERM
+// would skip. The signal is the fallback for an agent that does not wind down.
+const EXIT_GRACE_MS = 5_000;
+
 function killSlot(chat: string): Promise<void> {
   const slot = slots.get(chat);
-  if (!slot) return Promise.resolve();
+  if (!slot) return retirements.get(chat) ?? Promise.resolve();
   slots.delete(chat);
-  return closeSessionWriter(slot.child);
+  const pending = closeSessionWriter(slot.child, EXIT_GRACE_MS);
+  retirements.set(chat, pending);
+  const forget = () => { if (retirements.get(chat) === pending) retirements.delete(chat); };
+  void pending.then(forget, forget);
+  return pending;
 }
 
-function killPage(page: string) {
+async function killPage(page: string) {
   const prefix = `${page}:`;
-  for (const chat of [...slots.keys()]) {
-    if (chat.startsWith(prefix)) void killSlot(chat).catch(() => undefined);
-  }
+  await Promise.all([...new Set([...slots.keys(), ...retirements.keys()])].filter(chat => chat.startsWith(prefix)).map(killSlot));
 }
 
 function spawnAgent(chat: string, opts: SpawnOpts): Slot {
   if (opts.resume) assertSessionWritable(sessionFile(opts.cwd, opts.resume));
-  void killSlot(chat).catch(() => undefined);
   const args = ["acp"];
   if (opts.yolo) args.push("--yolo");
   if (opts.model) args.push("--model", opts.model);
@@ -150,7 +157,7 @@ function spawnAgent(chat: string, opts: SpawnOpts): Slot {
   });
   slots.set(chat, slot);
   if (slot.resume) registerSessionWriter(sessionFile(slot.cwd, slot.resume), child, () => {
-    if (slots.get(chat) === slot) slots.delete(chat);
+    if (slots.get(chat) === slot) void killSlot(chat).catch(() => undefined);
   });
   return slot;
 }
@@ -198,6 +205,7 @@ function matchesBootstrap(live: Slot, opts: BootstrapOpts): boolean {
 }
 
 function bootstrap(chat: string, opts: BootstrapOpts): Promise<Slot> {
+  if (g.__graffAcpShuttingDown) return Promise.reject(new Error("Desktop is shutting down"));
   const live = slots.get(chat);
   // Explicit changes can replace a stalled handshake. Ordinary concurrent
   // requests must wait instead of killing the worker they are about to use.
@@ -206,6 +214,8 @@ function bootstrap(chat: string, opts: BootstrapOpts): Promise<Slot> {
 }
 
 async function bootstrapNow(chat: string, opts: BootstrapOpts): Promise<Slot> {
+  await retirements.get(chat);
+  if (g.__graffAcpShuttingDown) throw new Error("Desktop is shutting down");
   const live = slots.get(chat);
   const same = live !== undefined && live.sessionId !== null &&
     live.transport.usable && matchesBootstrap(live, opts);
@@ -215,6 +225,9 @@ async function bootstrapNow(chat: string, opts: BootstrapOpts): Promise<Slot> {
     await recovering.restartReady;
     if (slots.get(chat) !== live) return bootstrapNow(chat, opts);
   }
+  await killSlot(chat);
+  if (g.__graffAcpShuttingDown) throw new Error("Desktop is shutting down");
+  if (slots.has(chat)) return bootstrapNow(chat, opts);
   const slot = spawnAgent(chat, {
     model: opts.model ?? recovering?.model ?? undefined,
     resume: opts.resume ?? recovering?.resume ?? recovering?.sessionId ?? undefined,
@@ -229,7 +242,7 @@ async function bootstrapNow(chat: string, opts: BootstrapOpts): Promise<Slot> {
     finally { if (slots.get(chat) === slot) slots.delete(chat); }
   }, HANDSHAKE_MS);
   if (!slot.resume) registerSessionWriter(sessionFile(slot.cwd, slot.sessionId), slot.child, () => {
-    if (slots.get(chat) === slot) slots.delete(chat);
+    if (slots.get(chat) === slot) void killSlot(chat).catch(() => undefined);
   });
   await drainCommands(slot);
   if (slots.get(chat) !== slot) throw new Error("ACP startup was disposed. Retry to start a new worker.");
@@ -266,12 +279,17 @@ export async function POST(req: NextRequest) {
   const chat = typeof body.chat === "string" && body.chat ? body.chat : DEFAULT_CHAT;
   const model = typeof body.params?.model === "string" ? body.params.model : undefined;
   try {
+    if (method === "shutdown") {
+      g.__graffAcpShuttingDown = true;
+      await Promise.all([...new Set([...slots.keys(), ...retirements.keys()])].map(killSlot));
+      return Response.json({ ok: true });
+    }
     if (method === "dispose") {
       await killSlot(chat);
       return Response.json({ ok: true });
     }
     if (method === "dispose-page") {
-      if (typeof body.params?.page === "string" && body.params.page) killPage(body.params.page);
+      if (typeof body.params?.page === "string" && body.params.page) await killPage(body.params.page);
       return Response.json({ ok: true });
     }
     if (method === "bootstrap") {

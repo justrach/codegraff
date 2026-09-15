@@ -127,6 +127,21 @@ record only when you need the evidence or the edge cases.
 | [0114](0114-live-citations-are-terminal-presentation.md) | Live terminal citations use per-stream display filters with independent reasoning state; structured JSON/ACP output stays unchanged. |
 | [0116](0116-informational-turns-have-bounded-scope.md) | Summary turns gather bounded evidence; coding completion requirements apply to requested changes. |
 | [0117](0117-clipboard-files-follow-consumer-ownership.md) | Clipboard cleanup requires file ownership and released consumers; age alone never deletes active or saved attachments. |
+| [0118](0118-file-edits-check-target-worktree.md) | File edits checkpoint the target Git worktree; unresolved paths retain the caller checkpoint. |
+| [0119](0119-computer-tools-receive-caller-context.md) | Computer-use MCP requests receive opaque caller-owned session and turn context. |
+| [0120](0120-draft-publication-does-not-complete-verification.md) | Draft PRs cannot satisfy verified completion; only a user control scoped to this conversation and goal permits an unverified draft handoff. |
+| [0121](0121-claims-include-repository-identity.md) | Claims include repository identity; literal PR mutations compare the observed repository, PR number and branch, while unknown scopes stay conservative. |
+
+| [0122](0122-one-session-navigation-surface.md) | Open chats use the expanded sidebar or collapsed top tabs, preserving drafts and groups; focused mode keeps a compact composer and accessible settings. |
+
+| [0123](0123-pr-check-observations-retain-the-rollup.md) | PR completion retains named current-head check observations locally; diagnostic receipts never replace fresh verification. |
+
+| [0124](0124-review-checkpoints-preserve-unfinished-scope.md) | Explicit reviews request a findings checkpoint every twenty calls without forcing completion or changing authority. |
+
+| [0125](0125-review-deadlines-belong-to-one-turn.md) | Opt-in review deadlines use joined turn-owned watchers, preserve user cancellation, and cannot validate late results. |
+
+| [0126](0126-publication-retains-observed-check-failures.md) | Observed failed checks survive resumes; non-draft publication waits for successful reruns and occupies its own tool batch. |
+
 
 ## When to write one
 

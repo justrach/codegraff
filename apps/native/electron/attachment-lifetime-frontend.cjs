@@ -74,8 +74,11 @@ async function runAttachments({win,origin,temp,output,requests,workspace,send,cl
   const archivedTranscript=path.join(savedDirectory,'archived',archiveName+'.transcript.jsonl');
   assert.ok(fs.readFileSync(archivedTranscript,'utf8').includes(path.basename(aged)),'Archived replay must retain its image reference');
   assert.ok(fs.existsSync(path.join(savedDirectory,'archived',archiveName+'.session.json')));
-  await until(()=>js(`!!document.querySelector('#sidebar-chat-list button[data-row].bg-hover-2')`),'selected saved sidebar row');
-  await js(`document.querySelector('#sidebar-chat-list button[data-row].bg-hover-2').parentElement.querySelector('button[aria-label^="Actions for "]').setAttribute('data-audit-delete-menu','true')`);
+  await click('[data-tab-id]:has(button[aria-pressed="true"]) [aria-label="Close tab"]');
+  if(await js(`!!document.querySelector('[aria-label="Expand sidebar"]')?.checkVisibility()`))await click('[aria-label="Expand sidebar"]');
+  else if(await js(`!!document.querySelector('[aria-label="Open navigation"]')?.checkVisibility()`))await click('[aria-label="Open navigation"]');
+  await until(()=>js(`!!document.querySelector('#sidebar-chat-list button[data-row]')`),'closed image conversation in History');
+  await js(`document.querySelector('#sidebar-chat-list button[data-row]').parentElement.querySelector('button[aria-label^="Actions for "]').setAttribute('data-audit-delete-menu','true')`);
   await click('[data-audit-delete-menu="true"]');
   await until(()=>js(`!!document.querySelector('button[aria-label^="Delete "]')`),'saved conversation delete action');
   await click('button[aria-label^="Delete "]');

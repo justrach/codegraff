@@ -8,6 +8,7 @@ const { installWindowState } = require('./window-state.cjs');
 const ui = path.resolve(__dirname, '..'), repo = path.resolve(ui, '../..');
 const output = path.resolve(process.env.GRAFF_FRONTEND_OUTPUT || path.join(repo, 'zig-out/frontend-tests'));
 const temp = process.argv[2];
+const historyTest = process.env.GRAFF_WORKSPACE_HISTORY_TEST === '1';
 const htmlTool = process.env.GRAFF_HTML_TOOL_TEST === '1';
 assert.ok(temp, 'Launch through scripts/test-frontend.mjs for watchdog and cleanup');
 const workspace = path.join(temp, 'workspace');
@@ -76,6 +77,7 @@ app.whenReady().then(async () => {
     {tool:'mcp__codegraff_desktop__create_html',arguments:{title:require('./html-tool-frontend.cjs').title,html:require('./html-tool-frontend.cjs').html}},
     {text:'Your inline explanation is ready.'},
   ] : [
+    ...(historyTest ? [{tool:'bash',arguments:{command:'printf history > terminal-proof.txt'}},{text:'Created terminal-proof.txt.'}] : []),
     { tool: 'bash', arguments: { command: 'printf kept > proof.txt' } },
     { http_status: 400, error: 'Scripted final request rejected' },
     { tool: 'bash', arguments: { command: 'cat proof.txt' } },
@@ -88,6 +90,17 @@ app.whenReady().then(async () => {
     assert.equal(model.exitCode, null, 'Scripted model could not start; port 1234 must be free');
     return fs.readFileSync(path.join(output, 'model.log'), 'utf8').includes('scripted model on');
   }, 'scripted model readiness');
+  const terminalRoot = path.join(temp, 'terminal-project');
+  if (historyTest) {
+    fs.mkdirSync(terminalRoot);
+    const fd = fs.openSync(path.join(output, 'terminal-session.log'), 'w');
+    const terminal = spawn(binary, ['--model', 'lmstudio', '--new', '-p', 'Write history to terminal-proof.txt.'], { cwd: terminalRoot, env, stdio: ['ignore', fd, fd] });
+    fs.closeSync(fd); children.push(terminal);
+    await until(() => terminal.exitCode !== null, 'real terminal session completion', 25000);
+    assert.equal(terminal.exitCode, 0);
+    assert.ok(fs.readdirSync(path.join(temp, '.graff/workspace-history')).some(name => JSON.parse(fs.readFileSync(path.join(temp, '.graff/workspace-history', name), 'utf8')).path === fs.realpathSync(terminalRoot)), 'Actual successful terminal save registers its folder');
+    fs.cpSync(path.join(terminalRoot, '.graff'), path.join(output, 'terminal-history-evidence'), { recursive: true });
+  }
   const net = require('node:net'), probe = net.createServer();
   await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
   const port = probe.address().port; await new Promise(resolve => probe.close(resolve));
@@ -100,7 +113,7 @@ app.whenReady().then(async () => {
   const area = screen.getPrimaryDisplay().workArea;
   // Exercise the handoff with Browser open on a small desktop: the initial
   // project context can put the composer below the scroll viewport.
-  const size = (process.env.GRAFF_NARROW_NAV_TEST || process.env.GRAFF_FRONTEND_NARROW) ? { width: 1004, height: 657 } : process.env.GRAFF_CLI_TEST || process.env.GRAFF_SPLIT_STRESS ? { width: 1024, height: 664 } : { width: 1320, height: 900 };
+  const size = process.env.GRAFF_NARROW_NAV_TEST || process.env.GRAFF_SMALL_DESKTOP_TEST || process.env.GRAFF_FRONTEND_NARROW ? { width: 1004, height: 657 } : process.env.GRAFF_CLI_TEST || process.env.GRAFF_SPLIT_STRESS ? { width: 1024, height: 664 } : { width: 1320, height: 900 };
   const bounds = desktop.foreground ? { x: area.x+10, y: area.y+10, width: Math.min(size.width, area.width-20), height: Math.min(size.height, area.height-20) } : size;
   win = desktop.createWindow({ ...bounds, webPreferences: {
     preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, backgroundThrottling: false,
@@ -173,6 +186,26 @@ app.whenReady().then(async () => {
     await until(() => js(`document.querySelector('textarea[aria-label="Prompt"]').value === ${JSON.stringify(text)} && !document.querySelector('[aria-label="Send"]').disabled`), 'typed prompt ready');
     await click('[aria-label="Send"]');
   };
+  if (!process.env.GRAFF_CLI_TEST) {
+    assert.equal((await projects.load())?.list.some(row => row.path === workspace), false, 'Startup alone must not save a project');
+    await click('[data-workspace-trigger]');
+    await until(() => js(`!!document.querySelector('[data-workspace-menu]') && document.querySelector('[data-workspace-menu]').textContent.includes('Startup folder')`), 'startup folder provenance');
+    await js(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+    await sleep(150);
+    fs.writeFileSync(path.join(output, 'workspace-startup-source.png'), (await wc.capturePage()).toPNG());
+    await click('[data-workspace-trigger]');
+    if (historyTest) {
+      await click('[data-workspace-trigger]');
+      await until(() => js(`document.querySelector('[data-workspace-menu]')?.textContent.includes('terminal-project') && document.querySelector('[data-workspace-menu]')?.textContent.includes('Session history')`), 'terminal project discovered from actual save');
+      await js(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+      await sleep(150);
+      fs.writeFileSync(path.join(output, 'workspace-terminal-history.png'), (await wc.capturePage()).toPNG());
+      await click('[data-workspace-trigger]');
+      assert.equal((await projects.load())?.list.some(row => row.path === terminalRoot), false, 'History suggestion is not a saved folder choice');
+      report.passed.push('actual terminal prompt saves and registers its exact folder; GUI discovers it as session history without persisting a folder choice');
+    }
+    report.passed.push('startup workspace stays available with explicit provenance and is absent from durable project preferences');
+  }
   if(htmlTool) return require('./html-tool-frontend.cjs').runHtmlTool({win,origin,output,temp,workspace,requests,send,click,until,report});
   await send('Write the fixture file, then finish.');
   await until(() => js(`document.body.textContent.includes('Scripted final request rejected') && !document.querySelector('article[aria-busy="true"]')`), 'real failure displayed', 25000);
@@ -182,6 +215,16 @@ app.whenReady().then(async () => {
   assert.equal(await js(`Array.from(document.querySelectorAll('[data-tool-summary]')).some(e=>/\\b(?:running|interrupted)\\b/.test(e.textContent))`), false, 'Completed tools must not become interrupted');
   fs.writeFileSync(path.join(output, 'error-keeps-result.png'), (await wc.capturePage()).toPNG());
   report.passed.push('typed prompt, real file write, explicit error and retained completed tool');
+  if (!process.env.GRAFF_NARROW_NAV_TEST && !process.env.GRAFF_CLI_TEST && !process.env.GRAFF_SPLIT_STRESS) {
+    if (await js(`innerWidth < 1024`)) {
+      await click('[aria-label="Open navigation"]');
+      await until(() => js(`!!document.querySelector('[data-session-navigation="sidebar"]')`), 'completed session appears in narrow navigation');
+      await click('[aria-label="Close navigation"]');
+    } else await click('[aria-label="Collapse sidebar"]');
+    await until(() => js(`!!document.querySelector('[data-session-navigation="tabs"]')`), 'completed session moves to top tabs');
+    assert.ok(await js(`document.body.textContent.includes('Scripted final request rejected')`));
+    report.passed.push('same real failed session survives sidebar-to-tabs navigation change');
+  }
   await send('Read the fixture file and report its state.');
   await until(() => js(`document.body.textContent.includes('The earlier result is still present.') && !document.querySelector('article[aria-busy="true"]')`), 'successful follow-up', 25000);
   const status = () => js(`Array.from(document.querySelectorAll('article')).at(-1)?.textContent.match(/Worked for [^·]+/)?.[0]`);
@@ -190,8 +233,10 @@ app.whenReady().then(async () => {
   const saved = fs.readdirSync(path.join(workspace, '.graff/sessions')).filter(name => name.endsWith('.session.json'));
   assert.ok(saved.some(name => fs.readFileSync(path.join(workspace, '.graff/sessions', name), 'utf8').includes('kept')), 'Real session must preserve tool output');
   const calls = JSON.parse(fs.readFileSync(requests, 'utf8'));
-  assert.equal(calls.length, 4, 'Both turns must execute the scripted tool and terminal reply');
+  assert.equal(calls.length, historyTest ? 6 : 4, 'Both turns must execute the scripted tool and terminal reply');
   assert.ok(JSON.stringify(calls.at(-1)).includes('kept'), 'Follow-up must receive retained tool output');
+  fs.copyFileSync(requests, path.join(output, 'model-requests.json'));
+  fs.cpSync(path.join(workspace, '.graff'), path.join(output, 'harness-evidence'), {recursive:true});
   fs.writeFileSync(path.join(output, 'follow-up-finished.png'), (await wc.capturePage()).toPNG());
   report.passed.push('typed follow-up, real saved history, finished status and frozen elapsed time');
   if (process.env.GRAFF_CLI_TEST) {

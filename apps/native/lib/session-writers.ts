@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import { retireWorker } from "./acp-retire";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 
@@ -41,23 +42,7 @@ export function closeSessionWriter(child: ChildProcess, graceMs = 5000): Promise
   const pending = registry.closing.get(child);
   if (pending) return pending;
   if (!child.pid || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
-  const promise = new Promise<void>((resolve, reject) => {
-    let killTimer: ReturnType<typeof setTimeout> | undefined;
-    const cleanup = () => {
-      clearTimeout(termTimer); clearTimeout(killTimer);
-      child.off("exit", exited); child.off("error", failed);
-    };
-    const exited = () => { cleanup(); resolve(); };
-    const failed = (error: Error) => { cleanup(); reject(error); };
-    const termTimer = setTimeout(() => {
-      child.kill("SIGTERM");
-      killTimer = setTimeout(() => child.kill("SIGKILL"), 1000);
-      killTimer.unref();
-    }, graceMs);
-    termTimer.unref();
-    child.once("exit", exited); child.once("error", failed);
-    try { child.stdin?.end(); } catch { /* Exit remains the completion signal. */ }
-  });
+  const promise = retireWorker(child, graceMs, "eof");
   registry.closing.set(child, promise);
   return promise;
 }

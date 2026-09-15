@@ -60,6 +60,8 @@ const DEFAULT_RECENTS: SidebarRecent[] = [
 
 type SidebarNavProps = {
   onCloseNavigation?: () => void;
+  onCollapsedChange?: (collapsed: boolean) => void;
+  openSessions?: ReactNode;
   activeTitle?: string | null;
   /** When set, rows highlight by id instead of by label (titles can repeat). */
   activeId?: string | null;
@@ -94,7 +96,7 @@ type SidebarNavProps = {
   onWorkspaceSettings?: () => void;
 };
 
-export type SidebarWorkspace = { path: string; name: string };
+export type SidebarWorkspace = { path: string; name: string; source?: "saved" | "startup" | "history" };
 
 const SIDEBAR_MOTION = {
   expandedWidth: 248,
@@ -171,7 +173,7 @@ function RailButton({
 }
 
 export default function SidebarNav({
-  onCloseNavigation,
+  onCloseNavigation, onCollapsedChange, openSessions,
   activeTitle,
   activeId,
   className = "",
@@ -197,6 +199,7 @@ export default function SidebarNav({
   onSeeAll,
 }: SidebarNavProps) {
   const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => { onCollapsedChange?.(collapsed); }, [collapsed, onCollapsedChange]);
   useEffect(() => { if (onCloseNavigation) setCollapsed(false); }, [!!onCloseNavigation]);
   const [internalNav, setInternalNav] = useState("chats");
   const currentNav = activeNav ?? internalNav;
@@ -353,6 +356,7 @@ export default function SidebarNav({
         </GlideGroup>
 
         <div inert={collapsed} aria-hidden={collapsed} className="mt-3 min-h-0 flex-1 overflow-y-auto">
+          {openSessions}
           <div className="sidebar-copy relative mx-2 mb-1 h-8">
             <button
               type="button"
@@ -368,7 +372,7 @@ export default function SidebarNav({
               <span className={`flex transition-transform duration-150 ${chatsOpen ? "" : "-rotate-90"}`}>
                 <IconChevronDownSmall size={16} />
               </span>
-              <span>Chats</span>
+              <span>{openSessions ? "History" : "Chats"}</span>
               {visibleRecents.length > 0 && <span className="tabular-nums text-ink-3">{visibleRecents.length}</span>}
             </button>
 
@@ -476,7 +480,7 @@ export default function SidebarNav({
             })}
             {visibleRecents.length === 0 && (
               <div className="sidebar-copy mx-2 px-2 py-2 text-[12.5px] text-ink-3">
-                {query ? "No chats found" : "No chats yet — start one and it appears here."}
+                {query ? "No chats found" : openSessions ? "No saved conversations yet." : "No chats yet — start one and it appears here."}
               </div>
             )}
             {!query && onSeeAll && (recentsTotal ?? recents.length) > recents.length && (

@@ -14,6 +14,7 @@
     "electron:build": "bash electron/build.sh",
     "test:electron": "bun test electron/policy.test.cjs",
     "test:desktop": "bun test lib ./electron/*.test.cjs",
+    "test:session-navigation": "GRAFF_VISUAL_SUITE=session-navigation bun scripts/test-visual.mjs",
     "test:tab-drag": "GRAFF_VISUAL_SUITE=tab-drag bun scripts/test-visual.mjs",
     "test:turns": "GRAFF_VISUAL_SUITE=turns bun scripts/test-visual.mjs",
     "test:visual": "bun scripts/test-visual.mjs",
@@ -48,7 +49,9 @@
     "test:cli": "GRAFF_CLI_TEST=1 bun scripts/test-frontend.mjs",
     "install:cli": "bun scripts/install-cli.mjs",
     "test:packaged-html": "bun scripts/test-packaged-html.mjs",
+    "test:workspace-history": "GRAFF_WORKSPACE_HISTORY_TEST=1 bun scripts/test-frontend.mjs",
     "test:narrow-navigation": "GRAFF_NARROW_NAV_TEST=1 bun scripts/test-frontend.mjs",
+    "test:packaged-titles": "bun scripts/test-packaged-titles.mjs",
     "test:clipboard-narrow": "GRAFF_FRONTEND_NARROW=1 bun scripts/test-frontend.mjs"
   },
   "dependencies": {

@@ -27,6 +27,8 @@ fn observe(self: *Agent, cmd: []const u8) !?ExecResult {
     var ev: pr_publish.Evidence = .{};
     const draft = creating and command.draft();
     if (!draft) {
+        if (self.publication_checks.unresolved(try @import("pr_local_checks.zig").repositoryRoot(self, target.cwd))) |command_text|
+            return .{ .text = try std.fmt.allocPrint(self.arena, "PR publication preflight: observed local check has no successful completion: {s}. Rerun it successfully or publish a draft; write NOT performed.", .{command_text}), .is_error = true };
         if (creating) {
             ev.head_sha = evmod.localHead(self.gpa, self.io, self.arena, target) catch "";
             // An explicit alternate head must be resolved independently of HEAD.
@@ -57,7 +59,7 @@ fn observe(self: *Agent, cmd: []const u8) !?ExecResult {
 
 pub fn bash(self: *Agent, cmd: []const u8) !?ExecResult {
     const key = if (builtin.is_test) "" else mutationKey(self, cmd);
-    if (artifact_claim.gateCommand(self.arena, self.io, cmd, key)) |blocked| return .{ .text = blocked, .is_error = true };
+    if (artifact_claim.gateCommandIn(self.arena, self.io, cmd, key, self.agent_cwd orelse ".")) |blocked| return .{ .text = blocked, .is_error = true };
     if (!pr_publish.isPrCreate(cmd) and !pr_publish.isPrReady(cmd)) return null;
     if (!builtin.is_test) return observe(self, cmd);
     if (pr_publish.gateCommand(self.arena, cmd)) |blocked| return .{ .text = blocked, .is_error = true };
