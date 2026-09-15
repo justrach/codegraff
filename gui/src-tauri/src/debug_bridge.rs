@@ -88,14 +88,18 @@ pub fn cg_debug_eval_result(
 
 #[cfg(debug_assertions)]
 fn run_server(bridge: DebugBridge) {
-    let server = match tiny_http::Server::http(format!("127.0.0.1:{PORT}")) {
+    let port = std::env::var("CODEGRAFF_GUI_DEBUG_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(PORT);
+    let server = match tiny_http::Server::http(format!("127.0.0.1:{port}")) {
         Ok(s) => s,
         Err(error) => {
-            log::error!("debug bridge failed to bind 127.0.0.1:{PORT}: {error}");
+            log::error!("debug bridge failed to bind 127.0.0.1:{port}: {error}");
             return;
         }
     };
-    log::info!("debug bridge listening on http://127.0.0.1:{PORT}");
+    log::info!("debug bridge listening on http://{}", server.server_addr());
 
     for mut request in server.incoming_requests() {
         let method = request.method().as_str().to_string();

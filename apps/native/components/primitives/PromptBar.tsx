@@ -16,6 +16,7 @@ import type { AcpCommand } from "@/lib/acp";
 import {
   filesFrom,
   releaseAttachments,
+  discardAttachments,
   uploadAttachment,
   withAttachmentMarkers,
 } from "@/lib/attachments";
@@ -294,7 +295,7 @@ export default function PromptBar({
 
   const removeAttachment = (id: string) => {
     setAttachments((current) => {
-      releaseAttachments(current.filter((a) => a.id === id));
+      discardAttachments(current.filter((a) => a.id === id));
       return current.filter((a) => a.id !== id);
     });
   };

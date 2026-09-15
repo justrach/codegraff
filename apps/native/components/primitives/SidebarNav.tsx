@@ -447,6 +447,7 @@ export default function SidebarNav({
                 <div className="group/row relative">
                 <button
                   data-row
+                  data-session-name={item.id}
                   type="button"
                   title={item.hint ? `${item.label} — ${item.hint}` : item.label}
                   onClick={() => {

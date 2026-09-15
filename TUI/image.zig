@@ -312,6 +312,7 @@ pub fn dropLast(self: *Model) bool {
     const last = self.images.pop() orelse return false;
     forgetPreview(self, last);
     self.alloc.free(last);
+    @import("owned_images.zig").collect(self);
     return true;
 }
 
@@ -321,6 +322,7 @@ pub fn clearAll(self: *Model) void {
         self.alloc.free(p);
     }
     self.images.clearRetainingCapacity();
+    @import("owned_images.zig").collect(self);
 }
 
 pub fn dropPreviewed(self: *Model) bool {
@@ -328,6 +330,7 @@ pub fn dropPreviewed(self: *Model) bool {
     const path = self.images.orderedRemove(self.preview_n - 1);
     forgetPreview(self, path);
     self.alloc.free(path);
+    @import("owned_images.zig").collect(self);
     return true;
 }
 

@@ -1,10 +1,10 @@
-import { releaseAttachments, type Attachment } from "./attachments";
+import { discardAttachments, type Attachment } from "./attachments";
 
 type Update<T> = T | ((current: T) => T);
 export type ComposerDraft = { draft: string; attachments: Attachment[]; uploads: number; attachError: string | null };
 
 /** A chat owns its unsent text and uploads even while its pane is hidden. */
-export function createComposerDraft(release = releaseAttachments) {
+export function createComposerDraft(release = discardAttachments) {
   let snapshot: ComposerDraft = { draft: "", attachments: [], uploads: 0, attachError: null };
   const listeners = new Set<() => void>();
   let disposed = false;

@@ -23,6 +23,7 @@ import type {
 import type { WorkspaceBoardSelection } from "../app/types/sessionContext";
 import type { Attachment } from "../components/attachments/attachmentTypes";
 import { getWorkspaceBoardSelectionKey } from "../components/workspace-board/workspaceBoardUtils";
+import { discardPastedImage } from "../services/desktop/clipboard";
 import type { ChatBinding } from "../services/desktop/types/contracts";
 
 const EMPTY_REQUEST_TIMINGS = {};
@@ -270,7 +271,16 @@ export function useAttachments(binding?: ChatBinding | null) {
   );
   const removeAttachment = useCallback(
     (id: string) => {
-      sessionStore.getState().removeAttachment(promptDraftKey, id);
+      const state = sessionStore.getState();
+      const removed = promptDraftKey == null ? undefined
+        : state.attachmentsByKey[promptDraftKey]?.find((item) => item.id === id);
+      state.removeAttachment(promptDraftKey, id);
+      if (removed && !Object.values(sessionStore.getState().attachmentsByKey)
+        .some((items) => items.some((item) => item.path === removed.path))) {
+        void discardPastedImage(removed.path).catch((error) => {
+          console.error("Failed to release pasted image", error);
+        });
+      }
     },
     [promptDraftKey],
   );

@@ -53,6 +53,7 @@
     "test:workspace-history": "GRAFF_WORKSPACE_HISTORY_TEST=1 bun scripts/test-frontend.mjs",
     "test:narrow-navigation": "GRAFF_NARROW_NAV_TEST=1 bun scripts/test-frontend.mjs",
     "test:packaged-titles": "bun scripts/test-packaged-titles.mjs",
+    "test:clipboard-narrow": "GRAFF_FRONTEND_NARROW=1 bun scripts/test-frontend.mjs",
     "test:context-meter": "GRAFF_CONTEXT_METER_TEST=1 bun scripts/test-frontend.mjs"
   },
   "dependencies": {
