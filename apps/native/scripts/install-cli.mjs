@@ -4,3 +4,9 @@ import path from 'node:path';
 const { installLauncher } = createRequire(import.meta.url)('../electron/cli-launcher.cjs');
 const file = await installLauncher(path.resolve(process.argv[2] || '/Applications/Codegraff.app'), homedir());
 console.log(`Installed ${file}. Ensure its directory is on your PATH.`);
+
+const { installEngine } = createRequire(import.meta.url)('../electron/engine-launcher.cjs');
+console.log(await installEngine(path.resolve(process.argv[2] || '/Applications/Codegraff.app', 'Contents/Resources/graff'), homedir()));
+
+const { installMcp } = createRequire(import.meta.url)('../electron/mcp-install.cjs');
+console.log(await installMcp(path.resolve(process.argv[2] || '/Applications/Codegraff.app', 'Contents/Resources/graff'), homedir()));

@@ -1,5 +1,8 @@
 "use client";
+import SessionTabs from "./SessionTabs";
+import { useResponsiveNavigation } from "./useResponsiveNavigation";
 import { useNavigationPromptFocus } from "./useNavigationPromptFocus";
+import { useUnreadChats } from "./useUnreadChats";
 import { useHarnessSessions } from "./useHarnessSessions";
 import { resumeQueuedPrompt } from "@/lib/prompt-queue-resume";
 import { createPromptRunner } from "./harness-prompt-runner";
@@ -11,10 +14,11 @@ import { useQuietSettings } from "./useQuietSettings";
 import { useTabDrag } from "./useTabDrag";
 import { mergeChatGroups, reorderChatGroups } from "@/lib/chat-groups";
 import { useChatGroups } from "./useChatGroups";
+import AppSettings from "./AppSettings";
 import HarnessChrome from "./HarnessChrome";
 import ChatSplitLayout from "./ChatSplitLayout";
 import TerminalPane from "./TerminalPane";
-import { sidebarRecents, sessionFooterTitle } from "./harness-sidebar";
+import { sidebarRecents } from "./harness-sidebar";
 import AgentsPane from "./AgentsPane";
 import { newPageToken, newSessionName, type Chat, type Msg } from "./harness-types";
 import ChangesPane from "./ChangesPane";
@@ -49,7 +53,6 @@ import WorkspaceDialog from "@/components/site/WorkspaceDialog";
 import {
   basename,
   findWorkspace,
-  shellQuote,
   type Workspace,
 } from "@/lib/workspaces";
 
@@ -57,6 +60,7 @@ import {
 const BROWSER_OPEN_KEY = "graff.native.browser.open";
 
 export default function GraffHarness() {
+  const navigation = useResponsiveNavigation();
   const [chats, setChats] = useState<Chat[]>([{ id: 1, title: null, messages: [] }]);
   const [activeId, setActiveId] = useState(1);
   const [health, setHealth] = useState<Health | null>(null);
@@ -101,7 +105,6 @@ export default function GraffHarness() {
   const workspacesRef = useRef<Workspace[]>([]);
   const activePathRef = useRef<string | null>(null);
   const [dialog, setDialog] = useState<null | { mode: "new" } | { mode: "settings" }>(null);
-  const [copiedResume, setCopiedResume] = useState(false);
   // The sidecar browser: one Chrome tab per chat, and the pins the user
   // drops on it, which ride ahead of the chat's next prompt.
   const [browserOpen, setBrowserOpen] = useBrowserVisibility(BROWSER_OPEN_KEY, (chat) => {
@@ -147,6 +150,7 @@ export default function GraffHarness() {
   const columnIds = (panes.length ? panes : [chatThread.id])
     .filter((id, i, all) => all.indexOf(id) === i && chats.some((c) => c.id === id))
     .slice(0, MAX_COLUMNS);
+  const { unread, started, completed } = useUnreadChats(chats.map(c => c.id), projectsOpen || conversationsOpen || agentsOpen || filesOpen ? [] : zoomedPane !== null ? [zoomedPane] : columnIds);
   const columnKey = columnIds.join(",");
   const { paneRef, tailing } = useChatScroll(chats, columnKey);
   const sessionId = sessionIds[chatThread.id] ?? null;
@@ -197,7 +201,7 @@ export default function GraffHarness() {
       .catch(() => undefined);
   };
 
-  const runPrompt = createPromptRunner({
+  const runPrompt = createPromptRunner({ onStarted: started, onCompleted: completed,
     runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError
   });
   const settings = useQuietSettings({ requireSession, handleOf, running: runningRef.current, apply: (catalog) => setModels(catalog.models) });
@@ -370,22 +374,7 @@ export default function GraffHarness() {
     if (file) openPath(file);
   });
 
-  /** The footer names the tab's own graff session; clicking it copies the
-   * command that continues the same conversation in a terminal. */
-  const copyResume = () => {
-    const name = chatThread.session;
-    if (!name || typeof navigator === "undefined" || !navigator.clipboard) return;
-    const cmd = chatThread.cwd ? `cd ${shellQuote(chatThread.cwd)} && graff --resume ${name}` : `graff --resume ${name}`;
-    void navigator.clipboard
-      .writeText(cmd)
-      .then(() => {
-        setCopiedResume(true);
-        window.setTimeout(() => setCopiedResume(false), 1400);
-      })
-      .catch(() => undefined);
-  };
-
-  const recents = sidebarRecents(stored, chats);
+  const recents = sidebarRecents(stored, chats, unread);
 
   // The tab bar's folder chip is the *tab's* workspace; the sidebar's
   // switcher is the *active* one (where new tabs open). They differ only
@@ -401,7 +390,6 @@ export default function GraffHarness() {
   const pinCount = (pinsByChat[chatThread.id] ?? []).length;
   const activeWorkspace = findWorkspace(workspaces, activePath);
   const sidebarWorkspace = activeWorkspace ?? (activePath ? { path: activePath, name: basename(activePath) } : undefined);
-  const footerTitle = sessionFooterTitle(chatThread.session, sessionId, chatCwd);
 
   const resumeQueue = (chatId: number) => void resumeQueuedPrompt(chatId, {
     pending: queueResumesRef.current,
@@ -416,7 +404,7 @@ export default function GraffHarness() {
   });
 
   const columnBody = (thread: Chat) => <ChatColumn key={thread.id} thread={thread}
-    compact={columnIds.length > 1} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
+    compact={columnIds.length > 1 || navigation.focusedMode} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
     onOpenPath={openPath} onReview={openChanges}
     onRefresh={loaded => {
       const messages: Msg[] = loaded.messages.map(m => ({ id: ++msgIdRef.current, ...m }));
@@ -434,7 +422,7 @@ export default function GraffHarness() {
         const next = queuesRef.current[thread.id]?.[0];
         if (runningRef.current.has(thread.id) && next) steerQueued(thread.id, next.id);
       } : undefined,
-      history: mergeHistory(history, thread.messages.flatMap(m => m.role === "user" ? [m.text] : [])),
+      history: mergeHistory(history, thread.messages.flatMap(m => m.role === "user" && m.origin !== "notification" ? [m.text] : [])),
       busy: busyIds.has(thread.id), onStop: () => {
         const live = sessionsRef.current.get(thread.id);
         if (!live) { setCancelError(current => ({ ...current, [thread.id]: "Nothing to interrupt yet." })); return; }
@@ -470,10 +458,18 @@ export default function GraffHarness() {
 
   return (
     <main ref={promptFocusRoot} data-graff-main data-workspace-ready={projectsReady} className="flex h-[100dvh] gap-0 bg-canvas p-2.5 text-ink lg:pl-0">
-      <SidebarNav
+      <div {...navigation.panelProps}><SidebarNav
+        onCloseNavigation={navigation.close} onCollapsedChange={navigation.onCollapsedChange}
+        openSessions={navigation.sidebarVisible && <div className="mb-4">
+          <button type="button" aria-label="Show agents" aria-pressed={agentsOpen} onClick={() => { setProjectsOpen(false); setAgentsOpen(!agentsOpen); setFilesOpen(false); setBrowserOpen(false); setConversationsOpen(false); }} className="mx-3 mb-2 rounded-md px-2 py-1 text-[13px] text-ink-2 hover:bg-hover">Agents{workingAgents ? ` (${workingAgents})` : ""}</button>
+          <p className="mb-1 px-4 text-[11px] font-medium text-ink-3">Open chats</p>
+          <SessionTabs vertical chats={groups.tabs} activeId={groups.activeTab} agentsOpen={agentsOpen}
+            busyIds={new Set(groups.groups.filter(group => group.ids.some(id => busyIds.has(id))).map(group => group.ids[0]))} unreadIds={unread}
+            focusChat={id => focusChat(groups.focusOf(id))} closeChat={closeTab}
+            onTabPointerDown={tabDrag.begin} onTabClickCapture={tabDrag.suppressClick} />
+        </div>}
         fill
-        className="hidden lg:flex"
-        recents={recents}
+        recents={recents.filter(recent => !chats.some(chat => chat.session === recent.id))}
         recentsTotal={storedTotal}
         activeTitle={chatThread.title}
         activeId={chatThread.session ?? null}
@@ -492,20 +488,18 @@ export default function GraffHarness() {
           setConversationsOpen(key === "conversations");
         }}
         workspace={sidebarWorkspace}
-        workspaces={workspaces.map((w) => ({ path: w.path, name: w.name }))}
+        workspaces={workspaces}
         onSwitchWorkspace={switchWorkspace}
         onArchiveRecent={(id) => dropStored(id, true)}
         onDeleteRecent={(id) => dropStored(id, false)}
         onNewWorkspace={() => setDialog({ mode: "new" })}
         onWorkspaceSettings={() => setDialog(sidebarWorkspace ? { mode: "settings" } : { mode: "new" })}
-        footerLabel={copiedResume ? "Copied resume command" : (chatThread.session ?? "Connecting…")}
-        footerTitle={footerTitle}
-        onFooterClick={copyResume}
-      />
+        footerControls={<AppSettings sidebar />}
+      /></div>
 
       <div className="flex min-w-0 flex-1 flex-col gap-2.5">
         {tabDrag.overlay}
-        <HarnessChrome onTabPointerDown={tabDrag.begin} onTabClickCapture={tabDrag.suppressClick} chats={groups.tabs} activeId={groups.activeTab} busyIds={new Set(groups.groups.filter(group => group.ids.some(id => busyIds.has(id))).map(group => group.ids[0]))} focusChat={id => focusChat(groups.focusOf(id))} closeChat={closeTab} newChat={newChat}
+        <HarnessChrome sidebarVisible={navigation.sidebarVisible} navigationToggle={navigation.trigger} unreadIds={unread} onTabPointerDown={tabDrag.begin} onTabClickCapture={tabDrag.suppressClick} chats={groups.tabs} activeId={groups.activeTab} busyIds={new Set(groups.groups.filter(group => group.ids.some(id => busyIds.has(id))).map(group => group.ids[0]))} focusChat={id => focusChat(groups.focusOf(id))} closeChat={closeTab} newChat={newChat}
           conversationsOpen={conversationsOpen} openConversations={openConversations} split={panes.length > 0} toggleSplit={toggleSplit}
           filesOpen={filesOpen} onFiles={() => { setAgentsOpen(false); setFileRequest(null); setProjectsOpen(false); setBrowserOpen(false); setConversationsOpen(false); setFilesOpen(fileRequest?.changes ? true : !filesOpen); }}
           chatCwd={chatCwd} workspaceName={workspaceName} onFolder={() => setDialog({ mode: "new" })} openChanges={openChanges}

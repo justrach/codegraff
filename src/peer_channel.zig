@@ -36,7 +36,7 @@ const Owner = worktree_lease.Owner;
 pub const tool_name = "peer_message";
 pub const tool_desc = "Ping a co-resident session, list who is live, read parked inbound, or transfer an artifact claim. action=list | inbox | send (default) | claim | release | handoff | status. session is a DM (visible title, saved-session base, id/pid/name/goal); omit for this folder's room. Presence is device-local. Not \"all\".";
 pub const tool_schema =
-    \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["send", "list", "inbox", "claim", "release", "handoff", "status"], "description": "send (default): ping a peer. list: who is live. inbox: read+clear parked inbound. claim/release/handoff/status: repository-scoped artifact ownership (kind+key)."}, "session": {"type": "string", "description": "who to ping or hand a claim to: exact visible title, exact saved-session base, unique normalized title/slug, id, pid, unique name fragment, or unique goal fragment (omit = this folder's room). Named targets are DMs. Presence is device-local. Not \"all\"."}, "text": {"type": "string", "description": "one or two sentences of coordination intent (required for send)"}, "kind": {"type": "string", "enum": ["branch", "issue", "commit", "pull_request", "publication"], "description": "artifact kind for claim/release/handoff/status"}, "key": {"type": "string", "description": "artifact key: branch name, issue number, commit SHA, or PR number"}}}
+    \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["send", "list", "inbox", "claim", "release", "handoff", "status"], "description": "send (default): ping a peer. list: who is live. inbox: read+clear parked inbound. claim/release/handoff/status: repository-scoped artifact ownership (kind+key)."}, "session": {"type": "string", "description": "who to ping or hand a claim to: exact visible title, exact saved-session base, unique normalized title/slug, id, pid, unique name fragment, or unique goal fragment (omit = this folder's room). Named targets are DMs. Presence is device-local. Not \"all\"."}, "text": {"type": "string", "description": "one or two sentences of coordination intent (required for send)"}, "kind": {"type": "string", "enum": ["branch", "issue", "commit", "pull_request", "publication"], "description": "artifact kind for claim/release/handoff/status"}, "key": {"type": "string", "description": "artifact key: branch name, issue number, commit SHA, or PR number"}, "repo": {"type": "string", "description": "GitHub repository for claim/release/handoff/status, as owner/name or host/owner/name; defaults to the workspace CLI repository. Use the same repository for release or handoff."}}}
 ;
 
 /// Whether the named session sits in MY worktree (routes the post: worktree
@@ -66,13 +66,16 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
     };
     const action = tools_mod.json_args.str(obj, "action") orelse "send";
     if (std.mem.eql(u8, action, "claim") or std.mem.eql(u8, action, "release") or std.mem.eql(u8, action, "handoff") or std.mem.eql(u8, action, "status")) {
-        return @import("artifact_claim.zig").handleTool(
+        if (obj.get("repo")) |repo| if (repo != .string) return .{ .text = "claim repo must be a repository name", .is_error = true };
+        return @import("artifact_claim.zig").handleToolIn(
             self.arena,
             self.io,
             action,
             tools_mod.json_args.str(obj, "kind") orelse "publication",
             tools_mod.json_args.str(obj, "key") orelse "",
             tools_mod.json_args.str(obj, "session") orelse "",
+            self.agent_cwd orelse ".",
+            tools_mod.json_args.str(obj, "repo"),
         );
     }
     if (std.mem.eql(u8, action, "list")) {
@@ -236,10 +239,7 @@ pub fn deliverInbound(root: *Agent) void {
     }
     if (peer_inbox.parkHeard(local_msgs, device_msgs) == 0) return;
     // History gets the wake only (ADR 0004). Bodies wait in the ring.
-    var obj: std.json.ObjectMap = .empty;
-    obj.put(root.arena, "role", .{ .string = "user" }) catch return;
-    obj.put(root.arena, "content", .{ .string = peer_context.capInject(peer_inbox.formatWake(root.arena)) }) catch return;
-    root.messages.append(.{ .object = obj }) catch {};
+    root.messages.append(@import("session_wake.zig").message(root.arena, peer_context.capInject(peer_inbox.formatWake(root.arena))) catch return) catch {};
 }
 
 /// Emit the drain's visible half as one bracketed unit: a blank notice, the

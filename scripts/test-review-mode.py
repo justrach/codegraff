@@ -275,6 +275,17 @@ def main() -> None:
         if long_events[-1].get("type") != "turn" or long_events[-1].get("text") != LONG_REPLY:
             raise AssertionError(f"long review did not terminate naturally: {long_events[-1]!r}")
 
+        checkpoints = [event for event in long_events if event.get("type") == "review_checkpoint"]
+        if len(checkpoints) != 2 or any(event.get("complete") is not False for event in checkpoints):
+            raise AssertionError(f"long review did not emit two incomplete checkpoints: {checkpoints!r}")
+        requests = long_mock.recorded_requests()
+        for index in (20, 40):
+            body = json.dumps(requests[index].body)
+            if "Review checkpoint:" not in body or "next inspection tool call" not in body:
+                raise AssertionError(f"review request {index} lost its checkpoint instructions")
+        if any(event.get("type") == "review_checkpoint" for event in events):
+            raise AssertionError("short review received an unnecessary checkpoint")
+
         global_mock = CodexMock(events_for_request=loop_events)
         global_port = global_mock.start()
         try:

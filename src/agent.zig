@@ -14,9 +14,7 @@ const ReasoningEffort = main_mod.ReasoningEffort;
 const ws = @import("ws.zig"); // codex Responses WS transport (delta continuation held across a turn)
 const mcp = @import("mcp.zig");
 const approvals_mod = @import("approvals.zig");
-/// The shared approval state, re-exported: a module that only passes one
-/// through (session_run's startup helpers) can name the type off the Agent
-/// that owns it instead of importing approvals.zig itself (#429).
+/// Shared approval state, re-exported for startup helpers (#429).
 pub const Approvals = approvals_mod.Approvals;
 const trace = @import("trace.zig");
 const tools_mod = @import("tools.zig");
@@ -71,6 +69,7 @@ pub const Goal = struct {
 /// agent prints to stdout; subagents (sub = true) run on pool threads and
 /// log through std.debug.print, which locks stderr and is thread-safe.
 pub const Agent = struct {
+    publication_checks: @import("pr_local_checks.zig").State = .{},
     gpa: Allocator,
     arena: Allocator,
     /// #124: per-turn parse garbage (SSE envelopes, isStreamEnd) lives here and
@@ -114,6 +113,7 @@ pub const Agent = struct {
     /// process mode (engine_sink.forAgent); set to inject a custom frontend.
     sink: ?@import("engine_sink.zig").EngineSink = null,
     registry: ?*mcp.Registry = null,
+    mcp_context: @import("mcp_turn_context.zig").State = .{},
     approvals: ?*approvals_mod.Approvals = null, // shared bash-approval state, set by main()
     tracer: ?*trace.Tracer = null, // shared JSONL event trace, set by main()
     run_budget: ?*run_budget_mod.RunBudget = null, // shared invocation-wide call/concurrency ceiling
@@ -125,6 +125,7 @@ pub const Agent = struct {
     sys_override: ?[]const u8 = null, // per-child custom prompt or transient isolated-review base
     task_prompt: ?[]const u8 = null, // a subagent's mandate, pinned once before the first history rewrite so compaction can restate it verbatim (recentContextStart can keep no verbatim suffix for a child - its only clean user turn is index 0)
     pr_verification: @import("pr_verify.zig").State = .unused,
+    pr_draft_scope: ?@import("pr_acceptance.zig").Scope = null,
     agent_cwd: ?[]const u8 = null, // subagent-only (#276 P0-1): absolute path of this agent's isolated git worktree, threaded through ToolCtx per tool call instead of a process-wide chdir — parallel siblings each keep their own
     tools_used: trace.ToolSink = .{}, // external tool calls this agent made (per turn for the root)
     tool_calls_this_turn: u64 = 0,
@@ -328,15 +329,19 @@ pub const Agent = struct {
     }
 
     pub fn runTurn(self: *Agent) anyerror![]const u8 {
-        // Defensive for restored/embedded agents whose provider was assigned
-        // directly instead of going through providers.applyProvider.
+        // Restore catalog invariants before starting the turn.
         try self.ensureRootTools(self.provider.kind);
         var pending_work: empty_completion.PendingWork = .{};
         self.completed = null;
+        self.mcp_context.begin(self.io);
         @import("named_work.zig").beginTurn(self);
+        var task_scope = @import("task_intent.zig").State.begin(self);
         if (!self.sub and !root_turn_prepared.swap(false, .acq_rel)) @import("cancel_source.zig").clear();
+        var review_deadline = try @import("review_deadline.zig").start(self);
+        defer review_deadline.stop();
         while (true) {
-            if (try @import("turn_chrome.zig").beforeRequest(self)) |paused| return paused;
+            try task_scope.beforeRequest(self);
+            if (try @import("turn_chrome.zig").beforeRequest(self)) |paused| return review_deadline.finish(paused);
             // Esc during a tool join lands here; root consumes, subagents bail.
             if (esc_cancel.load(.acquire)) {
                 if (!self.sub) esc_cancel.store(false, .release);
@@ -387,13 +392,13 @@ pub const Agent = struct {
                 }
             }
             const hist_len = self.messages.items.len;
-            const root = self.request(if (self.text_only) null else self.toolsJson()) catch |err| return @import("agent_model_loop.zig").finishError(self, err);
+            const root = self.request(if (self.text_only) null else self.toolsJson()) catch |err| return review_deadline.finish(try @import("agent_model_loop.zig").finishError(self, err));
             const done = try @import("agent_steps.zig").stepForWire(self, root);
             if (done) |final_text| {
                 // Retry empty replies; reconcile plain finals with live work (#745).
                 if (try empty_completion.handle(self, final_text, hist_len)) continue;
                 if (try @import("named_work.zig").handle(self, final_text)) continue;
-                if (try pending_work.finish(self, final_text)) |text| return text;
+                if (try pending_work.finish(self, final_text)) |text| return review_deadline.finish(text);
                 continue;
             }
             self.empty_completion_retries = 0;

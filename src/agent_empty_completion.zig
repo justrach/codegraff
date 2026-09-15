@@ -26,7 +26,7 @@ pub fn shouldRetry(final_text: []const u8, retries: u8) bool {
 }
 
 /// Lean `-p` described a fix and never called a tool. One bounce.
-pub const bounce_note = "You described a change but did not call any tool. Inspect and edit the files with read_file / edit_file / write_file; do not claim the tree is already updated.";
+pub const bounce_note = "If the user requested a change, a description alone is not completion: inspect and edit the files with read_file / edit_file / write_file; do not claim the tree is already updated. If the request is informational, answer it from sufficient evidence without making unrequested changes.";
 
 pub fn shouldBounce(unattended: bool, lean: bool, text_only: bool, review: bool, sub: bool, tool_calls: u64, model_calls: u64, final_text: []const u8) bool {
     if (!unattended or !lean or text_only or review or sub) return false;
@@ -44,6 +44,7 @@ pub fn handle(self: *Agent, final_text: []const u8, hist_len: usize) !bool {
         try self.say("[model returned an empty completion — retrying ({d}/{d})]\n", .{ self.empty_completion_retries, max_consecutive });
         return true;
     }
+    if (@import("task_intent.zig").current(self) == .informational) return false;
     if (!shouldBounce(main_mod.unattended, no_local_tools.lean, self.text_only, self.review_mode, self.sub, self.tool_calls_this_turn, self.model_calls_this_turn, final_text))
         return false;
     try self.messages.append(try messages.userNote(self.arena, self.provider.kind, bounce_note));
@@ -87,7 +88,7 @@ pub const PendingWork = struct {
             state.nudged = true;
             const goals = @import("goal_state.zig");
             const body = try std.fmt.allocPrint(self.arena, "{s}\n\n{s}", .{ note, goals.renderTodos(self, goals.currentEpoch(self.goal)) });
-            try self.messages.append(try @import("named_work.zig").userNudge(self.arena, self.provider.kind, body));
+            try self.messages.append(try @import("session_wake.zig").mark(self.arena, try @import("named_work.zig").userNudge(self.arena, self.provider.kind, body)));
             if (self.tracer) |tr| tr.note("pending_work", "plain final reconciled; one retry granted");
             return null;
         }
@@ -128,7 +129,9 @@ test "#745 plain final retries once after tools, then explicitly stops without c
     var state: PendingWork = .{};
     try std.testing.expect((try state.finish(&self, "I will keep working")) == null);
     try std.testing.expectEqual(@as(usize, 1), self.messages.items.len);
-    try std.testing.expect(std.mem.indexOf(u8, messages.latestUserText(self.messages.items), "finish") != null);
+    try std.testing.expect(@import("session_wake.zig").isNotice(self.messages.items[0]));
+    const reminder = try std.json.Stringify.valueAlloc(self.arena, self.messages.items[0], .{});
+    try std.testing.expect(std.mem.indexOf(u8, reminder, "finish") != null);
     self.tool_calls_this_turn += 1; // tool progress must not refill the allowance
     const final = (try state.finish(&self, "I will keep working")).?;
     try std.testing.expect(std.mem.indexOf(u8, final, "Root execution has stopped with 1 open checklist items") != null);
@@ -187,7 +190,10 @@ test "#745 reconciliation supports every wire without coercing status requests i
         try self.todos.append(self.arena, .{ .content = "finish", .status = "pending" });
         var state: PendingWork = .{};
         try std.testing.expect((try state.finish(&self, "status")) == null);
-        const body = messages.latestUserText(self.messages.items);
+        const notice = self.messages.items[self.messages.items.len - 1];
+        try std.testing.expect(@import("session_wake.zig").isNotice(notice));
+        try std.testing.expectEqualStrings("", messages.latestUserText(self.messages.items));
+        const body = try std.json.Stringify.valueAlloc(self.arena, notice, .{});
         try std.testing.expect(std.mem.indexOf(u8, body, "status-only question") != null);
         try std.testing.expect(std.mem.indexOf(u8, body, "wait_ms>0") != null);
         if (kind == .responses) try std.testing.expectEqualStrings("message", self.messages.items[0].object.get("type").?.string);
@@ -222,4 +228,25 @@ test "lean -p text-only first completion bounces once" {
 test "bounce note names the file tools" {
     try std.testing.expect(std.mem.indexOf(u8, bounce_note, "edit_file") != null);
     try std.testing.expect(std.mem.indexOf(u8, bounce_note, "write_file") != null);
+}
+
+test "completed informational answer is not an edit-oriented fake_done retry" {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    var self = pendingFixture(state.allocator());
+    self.empty_completion_retries = 0;
+    const old_unattended = main_mod.unattended;
+    const old_lean = no_local_tools.lean;
+    main_mod.unattended = true;
+    no_local_tools.lean = true;
+    defer {
+        main_mod.unattended = old_unattended;
+        no_local_tools.lean = old_lean;
+    }
+    self.tool_calls_this_turn = 0;
+    self.model_calls_this_turn = 1;
+    try self.messages.append(try messages.textMessage(self.arena, "user", "Summarize the architecture"));
+    const before = self.messages.items.len;
+    try std.testing.expect(!try handle(&self, "The app separates its UI, parser, and storage.", before));
+    try std.testing.expectEqual(before, self.messages.items.len);
 }

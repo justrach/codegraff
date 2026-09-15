@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
-const { ipcMain } = require('electron');
 async function smokeBrowserPin({ browser, win }) {
   if (!require('./test-window.cjs').visibleWindowCheck('embedded browser native pin input')) return 'Skipped: requires visible-window opt-in';
+  const { ipcMain } = require('electron');
   const testDesktop = require('./test-desktop.cjs');
   const wc = browser.tabs.get('smoke').view.webContents;
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));

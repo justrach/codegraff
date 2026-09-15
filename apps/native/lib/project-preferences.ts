@@ -1,5 +1,5 @@
 import { desktop } from './desktop';
-import { loadWorkspaces, loadActiveWorkspace, saveWorkspaces, saveActiveWorkspace, type Workspace } from './workspaces';
+import { loadWorkspaces, loadActiveWorkspace, saveWorkspaces, saveActiveWorkspace, savedWorkspaceChoices, findWorkspace, type Workspace } from './workspaces';
 export async function restoreProjects(storage: Storage) {
   try {
     const saved = await desktop()?.projects?.('load');
@@ -8,8 +8,10 @@ export async function restoreProjects(storage: Storage) {
   return { list: loadWorkspaces(storage), active: loadActiveWorkspace(storage) };
 }
 export function persistProjects(storage: Storage, list: Workspace[], active: string | null) {
-  saveWorkspaces(storage, list); saveActiveWorkspace(storage, active);
-  void desktop()?.projects?.('save', { list, active }).catch(() => {
+  const choices = savedWorkspaceChoices(list);
+  const savedActive = findWorkspace(choices, active)?.path ?? null;
+  saveWorkspaces(storage, choices); saveActiveWorkspace(storage, savedActive);
+  void desktop()?.projects?.('save', { list: choices, active: savedActive }).catch(() => {
     // The browser copy remains available if the settings volume is unavailable.
   });
 }

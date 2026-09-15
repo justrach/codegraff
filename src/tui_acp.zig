@@ -245,7 +245,7 @@ pub fn turn(
         turns.append(.{ .role = switch (t.role) {
             .user => .user,
             .assistant => .assistant,
-        }, .text = text }) catch gpa.free(text);
+        }, .text = text, .notification = t.notification }) catch gpa.free(text);
     }
     var last_len: u32 = 0;
     const user_text: []const u8 = if (history.len > 0 and history[history.len - 1].role == .user) blk: {

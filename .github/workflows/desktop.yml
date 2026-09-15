@@ -2,10 +2,10 @@ name: desktop
 on:
   workflow_dispatch:
   pull_request:
-    paths: ['apps/native/**', 'src/**', 'scripts/eval/frontend_model.py', 'scripts/eval/mock_model.py', 'scripts/eval/test_mock_model.py', 'scripts/*zig-ci.py', '.github/actions/setup-codegraff-zig/**', '.github/workflows/desktop.yml']
+    paths: ['apps/native/**', 'src/**', 'scripts/test-server-retention.py', 'scripts/eval/frontend_model.py', 'scripts/eval/mock_model.py', 'scripts/eval/test_mock_model.py', 'scripts/*zig-ci.py', '.github/actions/setup-codegraff-zig/**', '.github/workflows/desktop.yml']
   push:
     branches: [main, 'release/**']
-    paths: ['apps/native/**', 'src/**', 'scripts/eval/frontend_model.py', 'scripts/eval/mock_model.py', 'scripts/eval/test_mock_model.py', 'scripts/*zig-ci.py', '.github/actions/setup-codegraff-zig/**', '.github/workflows/desktop.yml']
+    paths: ['apps/native/**', 'src/**', 'scripts/test-server-retention.py', 'scripts/eval/frontend_model.py', 'scripts/eval/mock_model.py', 'scripts/eval/test_mock_model.py', 'scripts/*zig-ci.py', '.github/actions/setup-codegraff-zig/**', '.github/workflows/desktop.yml']
 permissions:
   contents: read
 jobs:
@@ -31,6 +31,7 @@ jobs:
       - run: bun run test:queue
       - run: bun run test:turns
       - run: bun run test:tab-drag
+      - run: bun run test:session-navigation
       - run: bun run test:stream-performance
       - run: bun run test:history-performance
       - run: bun run test:browser-resources
@@ -78,6 +79,12 @@ jobs:
         env:
           GRAFF_ELECTRON_FOREGROUND: '1'
           GRAFF_VISUAL_OUTPUT: ../../zig-out/native-tab-drag
+      - name: Session navigation modes and sidebar drag
+        if: ${{ !cancelled() && steps.gui.conclusion == 'success' }}
+        run: bun run test:session-navigation
+        env:
+          GRAFF_ELECTRON_FOREGROUND: '1'
+          GRAFF_VISUAL_OUTPUT: ../../zig-out/session-navigation
       - uses: ./.github/actions/setup-codegraff-zig
         id: zig
         if: ${{ !cancelled() && steps.gui.conclusion == 'success' }}
@@ -86,12 +93,26 @@ jobs:
         if: ${{ !cancelled() && steps.zig.conclusion == 'success' }}
         run: zig build
         working-directory: .
+      - name: Worker replacement and retained listener lifecycle
+        if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
+        run: python3 scripts/test-server-retention.py --gui --evidence "$RUNNER_TEMP/server-retention-gui"
+        working-directory: .
       - name: Production front-end failure and recovery with native input when permitted
         if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
         run: bun run test:frontend
         env:
           GRAFF_ELECTRON_FOREGROUND: '1'
           GRAFF_FRONTEND_OS_INPUT: '1'
+      - name: Title failure fallback and successful recovery
+        if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
+        run: GRAFF_TITLE_RESULT_TEST=1 bun scripts/test-frontend.mjs
+        env:
+          GRAFF_FRONTEND_OUTPUT: ../../zig-out/title-result
+      - name: Narrow-window navigation and saved chat actions
+        if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
+        run: bun run test:narrow-navigation
+        env:
+          GRAFF_FRONTEND_OUTPUT: ../../zig-out/narrow-navigation
       - name: Production inline HTML tool and saved replay
         if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
         run: bun run test:html-tool
@@ -102,6 +123,17 @@ jobs:
         run: bun run test:cli
         env:
           GRAFF_FRONTEND_OUTPUT: ../../zig-out/cli-test
+      - name: Packaged conversation title creation and recovery
+        id: packaged
+        if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
+        run: |
+          GRAFF_REUSE_ENGINE=1 bun run electron:build
+          bun run test:packaged-titles
+        env:
+          GRAFF_PACKAGED_OUTPUT: ../../zig-out/packaged-titles
+      - name: Production desktop shutdown preserves retained servers
+        if: ${{ !cancelled() && steps.packaged.conclusion == 'success' }}
+        run: bun scripts/test-server-desktop.mjs
       - name: Bounded mixed split and memory stress
         if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
         run: bun run test:split-stress
@@ -121,8 +153,11 @@ jobs:
             zig-out/cli-test/
             zig-out/native-tests/native-results.json
             zig-out/frontend-tests/
+            zig-out/narrow-navigation/
+            zig-out/packaged-titles/
             zig-out/split-stress/
             zig-out/native-tab-drag/
+            zig-out/session-navigation/
             zig-out/visual-tests/test-run.json
             zig-out/visual-tests/stress-results.json
             zig-out/visual-tests/stress-fullscreen.png

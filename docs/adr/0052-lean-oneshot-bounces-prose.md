@@ -61,3 +61,9 @@ the backstop when the model writes "I fixed it" with zero tools. No
   first call; do not restore a global force.
 - Follow-up `-j 6` flakes and the OpenCode A/B are ADR 0053 (graff
   5/6 in 362s after the retry).
+
+## Scope refinement (#884, ADR 0116)
+
+Explicit informational turns are exempt from the edit-oriented bounce. The
+generic fallback now conditions edits on the actual request. Mixed change
+requests retain the coding completion policy.

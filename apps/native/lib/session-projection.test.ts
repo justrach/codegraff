@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { NextRequest } from "next/server";
@@ -141,4 +141,77 @@ test("#839: intermediate and final-looking saved prose cannot establish live com
       expect(turnActivity(answer.turn, 100_000)).toEqual({ state: "snapshot", label: "Saved snapshot", detail: "Live status unknown", live: false });
     }
   }
+});
+
+test('#912: snapshot uses saved todos over stale historical writes, and honors clearing', async () => {
+  const file = fixture();
+  try {
+    const messages = [{ role: 'assistant', content: 'Earlier work', tool_calls: [
+      { id: 'old-todo', function: { name: 'todo_write', arguments: JSON.stringify({ todos: [{ content: 'Review', status: 'in_progress' }] }) } },
+    ] }];
+    for (const todos of [[{ content: 'Review', status: 'completed', epoch: 1 }], []]) {
+      writeFileSync(path.join(file.root, '.graff/sessions/example.session.json'), JSON.stringify({ messages, todos }));
+      for (const view of [undefined, 'transcript']) {
+        const loaded = sessionFromResponse(await (await GET(new NextRequest(file.url(view)))).json());
+        const last = loaded.messages.at(-1);
+        expect(last?.role).toBe('assistant');
+        if (last?.role === 'assistant') {
+          expect(last.turn.todos).toEqual(todos.map(({content, status}, i) => ({id: `todo-${i}`, content, status})));
+          expect(last.turn.status).toBe('snapshot');
+        }
+      }
+    }
+    const legacy = transcriptFromMessages(messages).at(-1);
+    if (legacy?.role === 'assistant') expect(legacy.turn.todos[0].status).toBe('in_progress');
+  } finally { file.cleanup(); }
+});
+
+
+test("#912: generated notices survive raw and projected loads without claiming matching user text", async () => {
+  const file = fixture();
+  const text = "[job 1 exited 0: check]";
+  const messages = [
+    { role: "user", content: text, _graff_origin: "notification" },
+    { role: "user", content: text },
+    { role: "assistant", content: "Read the output." },
+  ];
+  try {
+    writeFileSync(path.join(file.root, ".graff/sessions/example.session.json"), JSON.stringify({ title: "Untitled session", messages }));
+    for (const view of [undefined, "transcript"]) {
+      const body = await (await GET(new NextRequest(file.url(view)))).json();
+      const loaded = sessionFromResponse(body);
+      expect(loaded.messages[0]).toEqual({ role: "user", text, origin: "notification" });
+      expect(loaded.messages[1]).toEqual({ role: "user", text });
+      expect(loaded.meta.title).toBe(text.slice(0, 80));
+    }
+  } finally { file.cleanup(); }
+});
+
+
+test("cache preflight metadata reads omit the transcript without changing raw session responses", async () => {
+  const file = fixture();
+  try {
+    const response = await GET(new NextRequest(file.url("metadata")));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.model).toBe("demo");
+    expect(body.workspace).toBe(file.root);
+    expect(body.messages).toBeUndefined();
+    expect(body.transcript).toBeUndefined();
+    expect(body.execution).toBe("unknown");
+  } finally { file.cleanup(); }
+});
+
+
+test("cache workspace comparison resolves aliases and leaves missing saved paths unknown", async () => {
+  const file = fixture();
+  try {
+    const alias = path.join(file.root, "alias");
+    symlinkSync(file.root, alias);
+    for (const [workspace, expected] of [[alias, true], [undefined, null], [path.join(file.root, "missing"), null]] as const) {
+      writeFileSync(path.join(file.root, ".graff/sessions/example.session.json"), JSON.stringify({ model: "demo", messages: raw, workspace }));
+      const body = await (await GET(new NextRequest(file.url("metadata")))).json();
+      expect(body.cacheWorkspaceMatches).toBe(expected);
+    }
+  } finally { file.cleanup(); }
 });

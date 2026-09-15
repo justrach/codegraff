@@ -49,26 +49,29 @@ function PastedImage({ name }: { name: string }) {
   const src = `/api/attach?name=${encodeURIComponent(name)}`;
   if (failed) return <span className="block text-xs text-ink-3">Image no longer available</span>;
   return (
-    <a href={src} target="_blank" rel="noreferrer" aria-label="Open pasted image" className="block my-2">
+    <a href={src} target="_blank" rel="noreferrer" aria-label="Open pasted image" className="block min-w-0 max-w-full">
       {/* Local staged pixels: no remote image optimizer or expiring object URL. */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={src} alt="Pasted image" loading="lazy" onError={() => setFailed(true)}
-        className="block max-h-80 max-w-full rounded-lg object-contain" />
+        className="block h-32 max-w-full rounded-lg object-contain" />
     </a>
   );
 }
 
 export const UserBubble = memo(function UserBubble({ text }: { text: string }) {
   const parts = splitImageMarkers(text);
+  const images = parts.filter((_, index) => index % 2 === 1);
+  const words = parts.filter((_, index) => index % 2 === 0).join("");
   return (
-    <div className="flex justify-end pl-10 sm:pl-24" style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
-      <div
-        className="rounded-xl px-3.5 py-2 min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[13px] leading-relaxed text-ink shadow-hairline"
-        style={{ background: "color-mix(in oklab, var(--accent) 12%, var(--surface))" }}
-      >
-        {parts.map((part, index) => index % 2 === 1
-          ? <PastedImage key={`${index}-${part}`} name={markerName(part)} />
-          : part)}
+    <div data-user-bubble className="flex justify-end pl-10 sm:pl-24" style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
+      <div className="flex min-w-0 max-w-full flex-col items-end gap-2">
+        {images.length > 0 && <div aria-label="Attached images" className="flex max-w-full flex-wrap justify-end gap-2">
+          {images.map((part, index) => <PastedImage key={`${index}-${part}`} name={markerName(part)} />)}
+        </div>}
+        {words.trim() && <div
+          className="min-w-0 max-w-full whitespace-pre-wrap break-words rounded-xl px-3.5 py-2 text-[13px] leading-relaxed text-ink shadow-hairline [overflow-wrap:anywhere]"
+          style={{ background: "color-mix(in oklab, var(--accent) 12%, var(--surface))" }}
+        >{words}</div>}
       </div>
     </div>
   );
@@ -119,7 +122,7 @@ export const AssistantBody = memo(function AssistantBody({
 
   return (
     <article data-turn-status={turn.status} aria-busy={live} className="min-w-0 [overflow-wrap:anywhere]" style={{ overflowAnchor: "none", animation: "fade-in 280ms ease both" }}>
-      {((thinking && turn.activityKind === "agent_thought_chunk") || reasoningRows.length > 0 || (turn.thoughtMs ?? 0) >= 1500) && (
+      {((thinking && turn.activityKind === "agent_thought_chunk") || reasoningRows.length > 0) && (
         <Reasoning
           variant="Reasoning"
           rows={reasoningRows.length ? reasoningRows : WAITING_ROWS}
@@ -144,7 +147,7 @@ export const AssistantBody = memo(function AssistantBody({
           </div>
         ),
       )}
-      <TurnActivity turn={turn} snapshot={snapshot} />
+      {!snapshot && <TurnActivity turn={turn} />}
       {turn.error && (
         <p role="alert" className="mt-4 max-w-[620px] text-[13.5px] leading-[1.65] text-red">{turn.error}</p>
       )}

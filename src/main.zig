@@ -52,7 +52,7 @@ test {
     _ = .{ @import("clipboard_native.zig"), @import("clipboard_edge_tests.zig"), @import("clipboard_failure_tests.zig"), @import("process_runner_clipboard_tests.zig") };
     _ = @import("server_orphan.zig");
     _ = @import("repo_transaction.zig");
-    _ = .{ @import("pr_command.zig"), @import("pr_evidence.zig"), @import("pr_verify.zig") };
+    _ = .{ @import("pr_command.zig"), @import("pr_evidence.zig"), @import("pr_verify.zig"), @import("pr_acceptance.zig"), @import("artifact_repository.zig"), @import("artifact_claim_ledger.zig"), @import("artifact_claim_store.zig") };
     _ = @import("argstream_citation_tests.zig"); // unit_tests' root is main.zig only, so reference every split-out module or its tests silently never run
     _ = @import("codex_node_repl.zig");
     _ = pricing;
@@ -124,7 +124,7 @@ test {
     _ = @import("obs_cost_test.zig");
     _ = @import("tui_launch.zig");
     _ = provider_mod;
-    _ = @import("named_work.zig");
+    _ = .{ @import("named_work.zig"), @import("task_intent.zig") };
 }
 const prompts = @import("prompts.zig");
 const schema = @import("schema.zig");
@@ -563,7 +563,7 @@ const workflow = @import("workflow_test.zig"); // the engine's tests live here (
 const exec = @import("exec.zig");
 test { // ── Unit tests (`zig build test`): pull in tests from imported modules (mcp.zig)
     _ = .{ @import("mcp_apps.zig"), @import("html_view.zig"), @import("providers_confirmation_tests.zig"), @import("repl_model_confirmation_tests.zig"), @import("repl_model_pick_tests.zig"), @import("engine_sink_citation_tests.zig"), @import("cite_markup_stream_tests.zig"), @import("oneshot_citation_tests.zig"), @import("tui_acp.zig") };
-    _ = @import("main_test.zig");
+    _ = .{ @import("mcp_server_tests.zig"), @import("main_test.zig"), @import("artifact_claim_command.zig"), @import("cli_path_hint.zig"), @import("run_budget.zig") };
     _ = @import("session_catalog.zig");
     _ = @import("session_prompt.zig");
     _ = @import("prompt_astra.zig");
@@ -596,5 +596,5 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("subagent_recovery.zig");
     _ = @import("acp_agent_activity.zig");
     _ = @import("read_image.zig");
-    _ = @import("mcp_names.zig");
+    _ = .{ @import("pr_local_checks.zig"), @import("mcp_names.zig"), @import("workspace_history.zig"), @import("file_worktree.zig"), @import("mcp_turn_context.zig"), @import("review_deadline.zig") };
 }

@@ -27,6 +27,8 @@ fn observe(self: *Agent, cmd: []const u8) !?ExecResult {
     var ev: pr_publish.Evidence = .{};
     const draft = creating and command.draft();
     if (!draft) {
+        if (self.publication_checks.unresolved(try @import("pr_local_checks.zig").repositoryRoot(self, target.cwd))) |command_text|
+            return .{ .text = try std.fmt.allocPrint(self.arena, "PR publication preflight: observed local check has no successful completion: {s}. Rerun it successfully or publish a draft; write NOT performed.", .{command_text}), .is_error = true };
         if (creating) {
             ev.head_sha = evmod.localHead(self.gpa, self.io, self.arena, target) catch "";
             // An explicit alternate head must be resolved independently of HEAD.
@@ -57,7 +59,7 @@ fn observe(self: *Agent, cmd: []const u8) !?ExecResult {
 
 pub fn bash(self: *Agent, cmd: []const u8) !?ExecResult {
     const key = if (builtin.is_test) "" else mutationKey(self, cmd);
-    if (artifact_claim.gateCommand(self.arena, self.io, cmd, key)) |blocked| return .{ .text = blocked, .is_error = true };
+    if (artifact_claim.gateCommandIn(self.arena, self.io, cmd, key, self.agent_cwd orelse ".")) |blocked| return .{ .text = blocked, .is_error = true };
     if (!pr_publish.isPrCreate(cmd) and !pr_publish.isPrReady(cmd)) return null;
     if (!builtin.is_test) return observe(self, cmd);
     if (pr_publish.gateCommand(self.arena, cmd)) |blocked| return .{ .text = blocked, .is_error = true };
@@ -108,6 +110,23 @@ test "#840 conflicting gh pr create never reaches execution after an acknowledge
     const denied = (try bash(&agent, "gh pr create --title x --body '## Verification\\nzig build test'")).?;
     try std.testing.expect(denied.is_error);
     try std.testing.expect(std.mem.indexOf(u8, denied.text, "NOT performed") != null);
+}
+
+test "#879 read-only heredoc with publication text bypasses the claim gate" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    artifact_claim.resetForTest();
+    defer artifact_claim.resetForTest();
+    artifact_claim.setTestOwner(.{ .session = "s-owner", .pid = 1, .start_id = 1 });
+    _ = try artifact_claim.handleTool(ar, std.testing.io, "claim", "publication", "feat/x", "");
+    artifact_claim.setTestOwner(.{ .session = "s-reader", .pid = 2, .start_id = 2 });
+    artifact_claim.setTestOwnerLive(true);
+    var agent: Agent = undefined;
+    agent.arena = ar;
+    agent.io = std.testing.io;
+    const probe = "python3 - <<'PY'\nneedle = 'gh pr create --title x'\nprint(needle)\nPY";
+    try std.testing.expect(try bash(&agent, probe) == null);
 }
 
 test "#840 warm dispatch observes late claims, lock contention and corrupt storage" {

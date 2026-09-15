@@ -14,7 +14,7 @@ async function runProjectRecovery({ win, origin, output }) {
   const input = (label, value) => js(`(()=>{const e=document.querySelector('[aria-label="${label}"]');e.focus();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
   const library = '[data-conversation-library]';
   await wc.loadURL(origin);
-  await wait(`document.readyState==='complete'&&!!document.querySelector('[data-project-context]')`);
+  await wait(`document.readyState==='complete'&&!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   await js(String.raw`(() => {
     const previous = window.fetch;
     const json = (value, status=200) => new Response(JSON.stringify(value), {status,headers:{'content-type':'application/json'}});
@@ -130,10 +130,10 @@ async function runProjectRecovery({ win, origin, output }) {
   await wait(`!!window.recovery.holds.folder`);
   await input('Folder path','/demo/recovered');
   await click('[role="dialog"] button','Open folder');
-  await wait(`!document.querySelector('[role="dialog"]')&&document.querySelector('[data-project-context]')?.textContent.includes('/demo/recovered')`);
+  await wait(`!document.querySelector('[role="dialog"]')&&document.querySelector('[data-workspace-trigger] [title]')?.title.includes('/demo/recovered')`);
   await js(`window.recovery.holds.folder()`);
   await js(`new Promise(r=>setTimeout(r,100))`);
-  assert.ok(await js(`document.querySelector('[data-project-context]').textContent.includes('/demo/recovered')`),'A late folder listing cannot replace the chosen folder');
+  assert.ok(await js(`document.querySelector('[data-workspace-trigger] [title]').title.includes('/demo/recovered')`),'A late folder listing cannot replace the chosen folder');
   await wc.loadURL(origin);
   await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   testDesktop.present(win);

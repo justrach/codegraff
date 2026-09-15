@@ -17,6 +17,7 @@ pub const Effort = enum { low, medium, high, xhigh, max, ultra };
 pub const Turn = struct {
     role: Role,
     text: []const u8,
+    notification: bool = false,
     pub const Role = enum { user, assistant };
 };
 

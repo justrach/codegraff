@@ -78,7 +78,7 @@ pub fn replCompactCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl
             .user => "user",
             .assistant => "assistant",
         };
-        agent.messages.append(textMessage(arena, role, t.text) catch {
+        agent.messages.append((if (t.notification) @import("session_wake.zig").message(arena, t.text) else textMessage(arena, role, t.text)) catch {
             out.note = gpa.dupe(u8, "compaction failed: out of memory") catch "";
             return false;
         }) catch {

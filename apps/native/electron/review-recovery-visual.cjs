@@ -7,7 +7,7 @@ async function runReviewRecovery({ win, origin, output }) {
   const wc=win.webContents, js=code=>wc.executeJavaScript(code);
   const wait=async code=>{for(let i=0;i<120;i++){if(await js(code))return;await new Promise(r=>setTimeout(r,50));}throw Error(`Review recovery timed out: ${code}`);};
   await wc.loadURL(origin);
-  await wait(`!!document.querySelector('button[aria-label="Changes"]')`);
+  await wait(`!!document.querySelector('button[aria-label="Review workspace changes"]')`);
   await js(`(()=>{
     const previous=window.fetch,json=value=>new Response(JSON.stringify(value),{headers:{'content-type':'application/json'}});
     window.reviewRecovery={mode:'fail',holds:[]};
@@ -26,7 +26,7 @@ async function runReviewRecovery({ win, origin, output }) {
       return json({root,branch:root==='/demo/other-tree'?'other-branch':'main',files:[{path:scope+'.txt',add:1,del:1,untracked:false,status:' M'}],totalAdd:1,totalDel:1,commits:[],worktrees:[{path:r.base,branch:'main'},{path:'/demo/other-tree',branch:'other-branch'}]});
     };
   })()`);
-  await js(`document.querySelector('button[aria-label="Changes"]').click()`);
+  await js(`document.querySelector('button[aria-label="Review workspace changes"]').click()`);
   await wait(`!!document.querySelector('[aria-label="Workspace changes"] [role="alert"]')`);
   assert.equal(await js(`document.querySelector('[aria-label="File diff"]').textContent.includes('Working tree is clean')`),false,'Failed Git reads are not clean worktrees');
   assert.ok(await js(`!!document.querySelector('[aria-label="Updates unavailable"]')`),'Live indicator reflects failure');

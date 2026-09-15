@@ -107,6 +107,8 @@ pub fn build(b: *std.Build) void {
     unit_tests.root_module.addImport("tui", tui_mod);
     // spec/ fixtures live outside src/; importing them here makes @embedFile
     // legal and rebuilds the suite when the exported semantics change.
+    exe.root_module.addAnonymousImport("ui_theme", .{ .root_source_file = b.path("apps/native/app/ui-theme.css") });
+    unit_tests.root_module.addAnonymousImport("ui_theme", .{ .root_source_file = b.path("apps/native/app/ui-theme.css") });
     unit_tests.root_module.addAnonymousImport("spec_tool_catalog", .{ .root_source_file = b.path("spec/kernels/tool_catalog.json") });
     unit_tests.root_module.addAnonymousImport("spec_transport", .{ .root_source_file = b.path("spec/kernels/transport.json") });
     unit_tests.root_module.addAnonymousImport("spec_providers", .{ .root_source_file = b.path("spec/kernels/providers.json") });
@@ -125,11 +127,15 @@ pub fn build(b: *std.Build) void {
     const acp_preauth_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-preauth.py" });
     acp_preauth_test.addArtifactArg(exe);
     test_step.dependOn(&acp_preauth_test.step);
+    const acp_startup_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-startup.py" });
+    acp_startup_test.addArtifactArg(exe);
+    test_step.dependOn(&acp_startup_test.step);
 
     // Learning kit: the adapter/suite files `graff learn init` materializes
     // into a workspace so zero-configuration learning needs no repo checkout.
     // Embedded by name (src/learn_assets.zig `@embedFile`s these imports).
     for ([_]struct { import: []const u8, path: []const u8 }{
+        .{ .import = "mcp_installer", .path = "scripts/install-mcp.py" },
         .{ .import = "learn_kit_mutator", .path = "examples/learn_graff_mutator.py" },
         .{ .import = "learn_kit_evaluator", .path = "examples/learn_graff_evaluator.py" },
         .{ .import = "learn_kit_case", .path = "examples/learn_graff_case.py" },

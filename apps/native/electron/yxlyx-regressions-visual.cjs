@@ -41,7 +41,7 @@ async function runYxlyxRegressions({ win, origin }) {
   assert.match(await js(`document.querySelector('[data-session-snapshot]').textContent`), /not attached to a live REPL/);
   await wait(`!!document.querySelector('[data-saved-snapshot]')`);
   assert.equal(await js(`document.querySelector('[data-chat][data-focused="true"] textarea')`), null, 'A saved snapshot cannot accept input before explicit continuation');
-  assert.match(await js(`document.querySelector('[data-saved-snapshot]').textContent`), /Live status unknown/);
+  assert.match(await js(`document.querySelector('[data-saved-snapshot]').textContent`), /Live (?:REPL )?status unknown/);
   assert.equal(await js(`document.querySelector('[data-chat][data-focused="true"]').textContent.includes('Turn finished')`), false);
   assert.equal(await js(`window.snapshotPrompts.some(r=>r.method==='session/prompt')`), false, 'Opening a snapshot never sends a prompt');
 

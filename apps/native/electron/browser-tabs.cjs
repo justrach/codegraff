@@ -46,7 +46,7 @@ class BrowserTabs {
     wc.on('did-start-loading', () => { navigationStarted = performance.now(); this.profiler?.record('page-navigation'); this.notify(tab); });
     wc.on('did-finish-load', () => { this.profiler?.record('page-loaded', performance.now() - navigationStarted); wc.send('profile-enabled', !!this.profiler?.active); wc.send('pins-sync', tab.pins || []); });
     wc.setWindowOpenHandler(({ url }) => {
-      void this.navigate(chat, url).catch(() => {}); return { action: 'deny' };
+      void this.navigate(chat, url, { background: this.visible !== chat }).catch(() => {}); return { action: 'deny' };
     });
     wc.on('will-navigate', (event, url) => { try { pageURL(url); } catch { event.preventDefault(); } });
     wc.on('will-redirect', (event, url) => { try { pageURL(url); } catch { event.preventDefault(); } });
@@ -62,10 +62,11 @@ class BrowserTabs {
     this.window.contentView.addChildView(view); view.setVisible(false);
     return tab;
   }
-  async navigate(chat, raw) {
+  async navigate(chat, raw, { background = false } = {}) {
     const url = pageURL(raw), tab = this.create(chat); tab.url = url;
-    this.attach(tab); this.emit({ chat, type: 'show' });
-    await tab.view.webContents.loadURL(url);
+    if (!background) { this.attach(tab); this.emit({ chat, type: 'show' }); }
+    try { await tab.view.webContents.loadURL(url); }
+    finally { if (background && this.visible !== chat) this.hide(chat); }
     this.notify(tab); return this.info(tab);
   }
   attach(tab) {

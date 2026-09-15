@@ -41,19 +41,23 @@ async function runNavigationPromptFocus({ win, origin }) {
     await click(`${sidebar} button[aria-label="Home"]`); await focused(first);
     await click(`${sidebar} button[aria-label="New chat"]`);
     const second = await active(); assert.notEqual(second, first); await focused(second);
+    await click('[aria-label="Collapse sidebar"]');
+    await wait(`!!document.querySelector('[data-session-navigation="tabs"]')`);
     await click('[data-workspace-toolbar] button[aria-label="New chat"]');
     const third = await active(); assert.notEqual(third, second); await focused(third);
     await click(tab(first)); await focused(first);
     await click(tab(first)); await focused(first);
 
-    // A saved row already open in the renderer follows the same-current path.
+    await click('[aria-label="Expand sidebar"]');
+    await wait(`!!document.querySelector('[data-session-navigation="sidebar"]')`);
+    // A saved conversation moves into the open-chat list once selected.
     await click(`${sidebar} button[title^="Focus history"]`);
     await wait(`!!document.querySelector('[data-continue-snapshot]') || document.querySelectorAll('[data-tab-id]').length===4`);
     if (await js(`!!document.querySelector('[data-continue-snapshot]')`)) await click('[data-continue-snapshot]');
     const saved = await active();
     await click(tab(first));
-    await click(`${sidebar} button[title^="Focus history"]`); await focused(saved);
-    await click(`${sidebar} button[title^="Focus history"]`); await focused(saved);
+    await click(tab(saved)); await focused(saved);
+    await click(tab(saved)); await focused(saved);
 
     wc.send('desktop-action', 'split-right');
     await wait(`document.querySelectorAll('[data-chat]').length===2`);

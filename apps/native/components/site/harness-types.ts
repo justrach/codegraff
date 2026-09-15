@@ -1,6 +1,6 @@
 import type { AssistantTurn } from "@/lib/acp";
 export type Msg =
-  | { id: number; role: "user"; text: string }
+  | { id: number; role: "user"; text: string; origin?: "notification" }
   | { id: number; role: "assistant"; turn: AssistantTurn };
 
 /** `model` is what this tab's own agent was spawned with; the harness-level

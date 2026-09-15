@@ -120,7 +120,11 @@ pub fn run(self: *app.Model, spec: []const u8) void {
     }
     self.clearHistory();
     for (out.turns) |turn| {
-        self.push(if (turn.role == .user) .user else .assistant, turn.text) catch {};
+        self.push(if (turn.notification) .system else if (turn.role == .user) .user else .assistant, turn.text) catch {
+            self.alloc.free(turn.text);
+            continue;
+        };
+        self.history.items[self.history.items.len - 1].notification = turn.notification;
         self.alloc.free(turn.text);
     }
     if (out.turns.len > 0) self.alloc.free(out.turns);

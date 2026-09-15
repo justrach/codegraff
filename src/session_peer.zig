@@ -30,7 +30,7 @@ pub fn isHumanUserTurn(m: Value) bool {
     if (m != .object) return false;
     const role = m.object.get("role") orelse return false;
     if (role != .string or !std.mem.eql(u8, role.string, "user")) return false;
-    return !peer_context.isPeerInject(m);
+    return !@import("session_wake.zig").isNotice(m) and !peer_context.isPeerInject(m);
 }
 
 /// Messages written to `.session.json`: wakes stay out. The transcript still

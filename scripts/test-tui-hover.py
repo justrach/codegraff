@@ -180,11 +180,42 @@ def workspace(tmp, port):
     return env
 
 
+def wait_for_resting_row(h, timeout=3.0, clock=None):
+    """Observe the end of the completion flash, not a guessed wall delay.
+
+    The untouched row below supplies the canvas color independently of the
+    header. A uniform flash must not become the baseline either. Require a
+    short stable interval and retain a bounded failure for permanent styling.
+    """
+    clock = clock or time.monotonic
+    deadline = clock() + timeout
+    previous, stable_since = None, None
+    detail = "no folded tool summary on screen"
+    while clock() < deadline:
+        y = summary_row(h)
+        if y is not None and y + 1 < h.rows:
+            colors, canvas = row_bgs(h, y), row_bgs(h, y + 1)
+            detail = f"resting row backgrounds {colors}, canvas {canvas}"
+            frame = (y, tuple(c.tuple() for c in row_cells(h, y)))
+            if len(canvas) == 1 and colors == canvas and EXPAND_MARK in h.screen_lines()[y]:
+                if frame != previous:
+                    previous, stable_since = frame, clock()
+                elif clock() - stable_since >= 0.1:
+                    return y
+            else:
+                previous, stable_since = None, None
+        else:
+            previous, stable_since = None, None
+        h.pump(min(0.05, max(0, deadline - clock())))
+    raise TimeoutError(f"hover baseline did not settle within {timeout:g}s: {detail}")
+
+
 def check_affordance(h):
     """(2)-(6): the tint, the mark swap, the neighbour, and the two gestures."""
-    y = summary_row(h)
-    if y is None:
-        return f"no folded tool summary on screen\n{h.screen_contents()}"
+    try:
+        y = wait_for_resting_row(h)
+    except TimeoutError as error:
+        return f"{error}\n{h.screen_contents()}"
     line = h.screen_lines()[y]
     if EXPAND_MARK not in line:
         return f"the folded header carries no disclosure chevron: {line!r}"

@@ -268,11 +268,16 @@ pub fn firstRequestJoin(pending_len: usize, already_skipped: *bool) enum { none,
     return .join;
 }
 
+pub fn isAcp(positionals: []const []const u8) bool {
+    return positionals.len > 0 and std.mem.eql(u8, positionals[0], "acp");
+}
+
 /// ADR 0035: `--yolo` (including `-p`, which implies yolo) starts MCP in the
 /// background. `--json` keeps a blocking connect so the protocol stream does
-/// not race a late catalog merge.
-pub fn deferMcpJoin(yolo: bool, json_mode: bool) bool {
-    return yolo and !json_mode;
+/// not race a late catalog merge. ACP shares stdout discipline, but its
+/// interactive protocol must remain responsive while optional servers connect.
+pub fn deferMcpJoin(yolo: bool, json_mode: bool, acp: bool) bool {
+    return yolo and (!json_mode or acp);
 }
 
 /// Lean `-p` connects workspace `.mcp.json` (ADR 0029). It does not handshake
@@ -396,9 +401,9 @@ test "firstRequestJoin skips once, then joins" {
 }
 
 test "deferMcpJoin covers -p yolo and leaves --json blocking" {
-    try std.testing.expect(deferMcpJoin(true, false));
-    try std.testing.expect(!deferMcpJoin(true, true));
-    try std.testing.expect(!deferMcpJoin(false, false));
+    try std.testing.expect(deferMcpJoin(true, false, false));
+    try std.testing.expect(!deferMcpJoin(true, true, false));
+    try std.testing.expect(!deferMcpJoin(false, false, false));
 }
 
 test "oneshotSkipsImportedMcp is lean -p with no project .mcp.json" {
@@ -440,4 +445,13 @@ test "#860 later requests leave unfinished handshakes queued and consume ready t
     release_task.set(io);
     try std.testing.expect(joinPending(&reg));
     try std.testing.expectEqual(@as(usize, 0), reg.pending_starts.len);
+}
+
+test "ACP stdout discipline does not block optional startup handshakes" {
+    try std.testing.expect(isAcp(&.{"acp"}));
+    try std.testing.expect(!isAcp(&.{}));
+    try std.testing.expect(!isAcp(&.{ "repl", "acp" }));
+    try std.testing.expect(deferMcpJoin(true, true, isAcp(&.{"acp"})));
+    try std.testing.expect(!deferMcpJoin(false, true, true));
+    try std.testing.expect(!deferMcpJoin(true, true, isAcp(&.{"repl"})));
 }
