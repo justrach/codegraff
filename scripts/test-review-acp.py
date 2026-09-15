@@ -172,6 +172,22 @@ with tempfile.TemporaryDirectory(prefix="graff-review-acp-probe-") as tmp:
         assert len(requests) == 7, len(requests)
         assert "parent-only-context" in json.dumps(requests[6])
         assert "findings are incomplete" in json.dumps(requests[6])
+        trajectory_rows = []
+        for path in pathlib.Path(tmp, ".graff", "trajectories").glob("*.jsonl"):
+            trajectory_rows.extend(
+                json.loads(line) for line in path.read_text().splitlines()
+            )
+        live_turns = [
+            row
+            for row in trajectory_rows
+            if row.get("kind") == "turn" and row.get("live")
+        ]
+        closed_turns = [
+            row for row in trajectory_rows if row.get("kind") == "turn" and "ok" in row
+        ]
+        assert len(live_turns) == len(closed_turns) == 5, (live_turns, closed_turns)
+        assert [row["id"] for row in live_turns] == [row["id"] for row in closed_turns]
+        assert [row["ok"] for row in closed_turns] == [True, True, True, False, True]
         result = dict(
             response=response,
             model_calls=len(requests),

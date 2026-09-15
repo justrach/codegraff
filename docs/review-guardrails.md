@@ -32,3 +32,9 @@ The three process regressions also run in CI. Set `GRAFF_REVIEW_EVIDENCE` to a p
 when running the deadline test to retain its protocol events and harness traces.
 These are scripted-model regressions of the actual harness, not a claim about
 an unscripted model's review quality.
+
+ACP review turns use the same trajectory recorder as the CLI. Each turn has a
+matching start and finish record; failed or cancelled reviews remain failed in
+the record. Recording happens before the isolated review context is restored.
+The ACP regression checks these records alongside read-only enforcement and
+normal follow-up recovery.

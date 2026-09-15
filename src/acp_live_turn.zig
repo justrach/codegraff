@@ -11,6 +11,8 @@ const stream = @import("acp_stream.zig");
 const review = @import("review.zig");
 const messages = @import("messages.zig");
 const cancel_source = @import("cancel_source.zig");
+const trace = @import("trace.zig");
+const turn_trace = @import("mainloop_trace.zig");
 const proto = @import("acp_protocol.zig");
 
 pub const LiveTurn = struct {
@@ -19,6 +21,8 @@ pub const LiveTurn = struct {
     out: *Io.Writer,
     session_id: []const u8 = "",
     saw_text: bool = false,
+    prev_turn_id: u64 = 0,
+    prev_prompt_fp: [16]u8 = @splat(0),
     inbox: ?*@import("acp_inbox.zig").Inbox = null,
 
     pub fn errorMessage(ctx: *anyopaque, err: anyerror) []const u8 {
@@ -60,7 +64,19 @@ pub const LiveTurn = struct {
             self.root.out = null;
             main_mod.g_out = null;
         }
+        const turn_id: u64 = if (trace.g_traj) |trajectory| blk: {
+            const id = trajectory.nextId();
+            trajectory.setTurn(id);
+            break :blk id;
+        } else 0;
+        self.root.tools_used.clear(self.root.io);
+        self.root.tool_calls_this_turn = 0;
+        self.root.model_calls_this_turn = 0;
+        const before = turn_trace.begin(self.root, self.root.io);
+        turn_trace.recordLive(self.root, text, turn_id, self.prev_turn_id);
+        const started = Io.Timestamp.now(self.root.io, .awake);
         const result = providers.runTurnWithFallback(self.root, self.keys, arena, null);
+        turn_trace.record(self.root, self.root.io, arena, text, turn_id, started, result, self.root.effectiveContextTokens(), before, &self.prev_turn_id, &self.prev_prompt_fp);
         const isolated = context.restore(self.root);
         if (isolated) {
             self.root.review_mode = parent_review_mode;
