@@ -493,6 +493,16 @@ pub fn emitSchema(w: *Io.Writer) !void {
         try s.print("{s}", .{t.schema});
         try s.endObject();
     }
+    // #868: rlm is a default-on host tool (hidden only under --old). The SDK
+    // dump must name it like other always-documented optionals.
+    try s.beginObject();
+    try s.objectField("name");
+    try s.write(rlm.tool_name);
+    try s.objectField("description");
+    try s.write(rlm.tool_desc);
+    try s.objectField("parameters");
+    try s.print("{s}", .{rlm.tool_schema});
+    try s.endObject();
     try s.endArray();
     try s.objectField("flags");
     try s.print("{s}", .{schema_flags_json});

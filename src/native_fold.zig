@@ -291,6 +291,9 @@ pub fn renderLoadedTail(s: *std.json.Stringify, kind: @import("provider.zig").Pr
 /// cache the mode exists to protect, #476).
 pub fn catalogSkips(name: []const u8) bool {
     if (!enabled) return false;
+    // #868: when rlm is on, keep it on the catalog so lean/explicit tasks can
+    // discover it without waiting for a 4-wide batch or --rlm. --old still hides.
+    if (std.mem.eql(u8, name, "rlm") and @import("rlm_spec.zig").available) return false;
     if (mcp_schema_gate.g_stable_catalog) return isFolded(name);
     return blocked(name);
 }

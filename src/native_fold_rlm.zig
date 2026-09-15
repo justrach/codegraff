@@ -36,7 +36,7 @@ test "rlm joins the fold only while available (off under --old)" {
     try std.testing.expect(!fold.blocked("rlm"));
 }
 
-test "folded rlm stays off the listing until showcase; off stays off" {
+test "folded rlm stays off the catalog when rlm is off; on lists it" {
     const saved_avail = rlm.available;
     const saved_spec = rlm_spec.available;
     const saved_enabled = fold.enabled;
@@ -70,26 +70,14 @@ test "folded rlm stays off the listing until showcase; off stays off" {
     rlm.available = true;
     rlm.sync();
     try std.testing.expect(fold.isFolded("rlm"));
-    try std.testing.expect(!fold.listed());
-    const hidden = try schema_mod.renderRootTools(arena, .openai, &with_rlm, &.{});
-    try std.testing.expect(std.mem.indexOf(u8, hidden, "rlm") == null);
-    try std.testing.expect(std.mem.indexOf(u8, hidden, "llm_query") == null);
-
-    fold.showcaseRlm();
-    try std.testing.expect(fold.listed());
-    // Name stays off the meta listing (that would rewrite the tools head).
-    const still = try schema_mod.renderRootTools(arena, .openai, &with_rlm, &.{});
-    try std.testing.expect(std.mem.indexOf(u8, still, "rlm") == null);
-    try std.testing.expect(std.mem.indexOf(u8, still, "llm_query") == null);
-
-    fold.markLoaded("rlm");
+    try std.testing.expect(!fold.catalogSkips("rlm"));
     const shown = try schema_mod.renderRootTools(arena, .openai, &with_rlm, &.{});
     try std.testing.expect(std.mem.indexOf(u8, shown, "rlm") != null);
     try std.testing.expect(std.mem.indexOf(u8, shown, "llm_query") != null);
     try std.testing.expect(std.mem.indexOf(u8, shown, rlm.tool_schema) != null);
 }
 
-test "lean keeps rlm folded until showcase; --rlm puts the schema on" {
+test "lean still lists rlm when it is available" {
     const saved_avail = rlm.available;
     const saved_spec = rlm_spec.available;
     const saved_enabled = fold.enabled;
@@ -107,8 +95,7 @@ test "lean keeps rlm folded until showcase; --rlm puts the schema on" {
     rlm.available = true;
     rlm.sync();
     try std.testing.expect(fold.isFolded("rlm"));
-    try std.testing.expect(fold.catalogSkips("rlm"));
-    try std.testing.expect(!fold.listed());
+    try std.testing.expect(!fold.catalogSkips("rlm"));
 
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -116,14 +103,6 @@ test "lean keeps rlm folded until showcase; --rlm puts the schema on" {
     const specs = [_]schema_mod.ToolSpec{
         .{ .name = rlm.tool_name, .desc = rlm.tool_desc, .schema = rlm.tool_schema },
     };
-    const hidden = try schema_mod.renderRootTools(arena, .openai, &specs, &.{});
-    try std.testing.expect(std.mem.indexOf(u8, hidden, "llm_query") == null);
-    try std.testing.expect(std.mem.indexOf(u8, hidden, rlm.tool_schema) == null);
-
-    fold.showcaseFromCli();
-    try std.testing.expect(fold.listed());
-    try std.testing.expect(fold.isLoaded("rlm"));
-    // Stable catalog still skips the mid-array slot; the schema rides the tail.
     const shown = try schema_mod.renderRootTools(arena, .openai, &specs, &.{});
     try std.testing.expect(std.mem.indexOf(u8, shown, "llm_query") != null);
     try std.testing.expect(std.mem.indexOf(u8, shown, rlm.tool_schema) != null);
