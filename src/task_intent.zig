@@ -57,6 +57,7 @@ pub const checkpoint = "Summary scope checkpoint: review the map and targeted ev
 
 pub const State = struct {
     nudged: bool = false,
+    review_progress: @import("review.zig").Progress = .{},
 
     pub fn begin(self: *Agent) State {
         if (self.tracer) |tr| tr.note("task_intent", @tagName(current(self)));
@@ -64,6 +65,7 @@ pub const State = struct {
     }
 
     pub fn beforeRequest(state: *State, self: *Agent) !void {
+        try state.review_progress.beforeRequest(self);
         if (state.nudged or self.sub or current(self) != .informational) return;
         if (self.model_calls_this_turn < 4 and self.tool_calls_this_turn < 6) return;
         var note = try @import("named_work.zig").userNudge(self.arena, self.provider.kind, checkpoint);
@@ -105,6 +107,7 @@ test "summary checkpoint is once, preserves the human request, and respects a ne
     agent.arena = a;
     agent.messages = .init(a);
     agent.sub = false;
+    agent.review_mode = false;
     agent.tracer = null;
     agent.provider.kind = .openai;
     agent.model_calls_this_turn = 3;
