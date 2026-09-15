@@ -5,7 +5,6 @@ import sys
 
 MARKER = pathlib.Path("tests/ran.marker")
 IGNORED = {pathlib.Path(".eval-answer.txt")}
-IGNORED_ROOTS = {".git", ".graff"}
 
 
 def fixture_files(root):
@@ -14,7 +13,7 @@ def fixture_files(root):
         if not path.is_file():
             continue
         rel = path.relative_to(root)
-        if rel in IGNORED or (rel.parts and rel.parts[0] in IGNORED_ROOTS):
+        if rel in IGNORED or (rel.parts and rel.parts[0].startswith(".")):
             continue
         files[rel] = path.read_bytes()
     return files
