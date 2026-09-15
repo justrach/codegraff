@@ -404,7 +404,7 @@ export default function GraffHarness() {
   });
 
   const columnBody = (thread: Chat) => <ChatColumn key={thread.id} thread={thread}
-    compact={columnIds.length > 1 || !navigation.sidebarVisible} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
+    compact={columnIds.length > 1 || navigation.focusedMode} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
     onOpenPath={openPath} onReview={openChanges}
     onRefresh={loaded => {
       const messages: Msg[] = loaded.messages.map(m => ({ id: ++msgIdRef.current, ...m }));

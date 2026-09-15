@@ -22,6 +22,8 @@ horizontal midpoint. Moving the navigation never remounts conversation drafts.
 
 Expanded navigation keeps the welcome screen. Collapsed navigation uses a
 compact composer at the bottom of an empty chat, supporting focused work.
+Narrow windows keep that composer layout while the navigation drawer overlays it,
+so outside clicks cannot move the input between mouse-down and mouse-up.
 Settings is available in the sidebar when expanded and the toolbar when
 collapsed. Workspace actions and update controls stay available in both modes.
 

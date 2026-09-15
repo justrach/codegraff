@@ -112,7 +112,7 @@ app.whenReady().then(async () => {
   const area = screen.getPrimaryDisplay().workArea;
   // Exercise the handoff with Browser open on a small desktop: the initial
   // project context can put the composer below the scroll viewport.
-  const size = process.env.GRAFF_NARROW_NAV_TEST ? { width: 1004, height: 657 } : process.env.GRAFF_CLI_TEST || process.env.GRAFF_SPLIT_STRESS ? { width: 1024, height: 664 } : { width: 1320, height: 900 };
+  const size = process.env.GRAFF_NARROW_NAV_TEST || process.env.GRAFF_SMALL_DESKTOP_TEST ? { width: 1004, height: 657 } : process.env.GRAFF_CLI_TEST || process.env.GRAFF_SPLIT_STRESS ? { width: 1024, height: 664 } : { width: 1320, height: 900 };
   const bounds = desktop.foreground ? { x: area.x+10, y: area.y+10, width: Math.min(size.width, area.width-20), height: Math.min(size.height, area.height-20) } : size;
   win = desktop.createWindow({ ...bounds, webPreferences: {
     preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, backgroundThrottling: false,
@@ -215,7 +215,11 @@ app.whenReady().then(async () => {
   fs.writeFileSync(path.join(output, 'error-keeps-result.png'), (await wc.capturePage()).toPNG());
   report.passed.push('typed prompt, real file write, explicit error and retained completed tool');
   if (!process.env.GRAFF_NARROW_NAV_TEST && !process.env.GRAFF_CLI_TEST && !process.env.GRAFF_SPLIT_STRESS) {
-    await click('[aria-label="Collapse sidebar"]');
+    if (await js(`innerWidth < 1024`)) {
+      await click('[aria-label="Open navigation"]');
+      await until(() => js(`!!document.querySelector('[data-session-navigation="sidebar"]')`), 'completed session appears in narrow navigation');
+      await click('[aria-label="Close navigation"]');
+    } else await click('[aria-label="Collapse sidebar"]');
     await until(() => js(`!!document.querySelector('[data-session-navigation="tabs"]')`), 'completed session moves to top tabs');
     assert.ok(await js(`document.body.textContent.includes('Scripted final request rejected')`));
     report.passed.push('same real failed session survives sidebar-to-tabs navigation change');
