@@ -48,7 +48,7 @@ be steered. The optional profiler records anonymous per-agent resource
 measurements (no identities or message contents). See the
 [Agents guide](docs/agents-panel.md).
 
-[![Agents occupancy, RSS/CPU, and peer talk](docs/images/desktop-occupancy.png)](docs/images/desktop-occupancy.png)
+[![Agents occupancy, RSS/CPU, and peer talk in a rice-paper workshop frame](docs/images/desktop-occupancy-studio.png)](docs/images/desktop-occupancy.png)
 
 [![CodeGraff's dark Changes panel beside the conversation, framed in cobalt with a rat reviewing a proof](docs/images/desktop-review-studio.png)](docs/images/desktop-review-dark.png)
 
@@ -90,9 +90,9 @@ sessions are snapshots. Background browser work does not steal the focused
 chat. MCP tools that declare an App UI render in an isolated result frame;
 `graff mcp install` registers a local HTTP task service for other clients.
 
-[![Pinned browser follow-up](docs/images/native-browser-annotate.jpg)](docs/images/native-browser-annotate.jpg)
+[![Pinned browser follow-up in a rice-paper workshop frame](docs/images/desktop-browser-studio.png)](docs/images/native-browser-annotate.jpg)
 
-[![Update-ready restart](docs/images/desktop-update-ready.png)](docs/images/desktop-update-ready.png)
+[![Update-ready restart in a rice-paper workshop frame](docs/images/desktop-update-studio.png)](docs/images/desktop-update-ready.png)
 
 **Profile and test without a model.** The Performance menu and desktop profiler
 tool record bounded, local measurement reports. Startup paint timing, streaming

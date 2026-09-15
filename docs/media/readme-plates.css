@@ -38,3 +38,7 @@ footer { position: absolute; left: 84px; right: 84px; bottom: 43px; display: fle
 .loop-copy li:not(:last-child)::after { content:''; position:absolute; left:23px; top:76px; bottom:-12px; width:1px; background:#d9caba; }
 .loop-copy li b { color:#ad4937; background:#ecdfce; border-radius:50%; width:48px; height:48px; display:grid; place-items:center; flex-shrink:0; font:16px ui-monospace,monospace; }
 .loop-copy strong { font:32px Display,sans-serif; }.loop-copy p { font-size:24px; color:#736557; margin:12px 0 0; line-height:1.4; }
+
+.occupancy { height:1660px; }
+.browser { height:1460px; }
+.update { height:1760px; }

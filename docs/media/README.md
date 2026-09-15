@@ -34,3 +34,16 @@ For the official typography, set `GRAFF_DESIGN_FONTS` to a local directory
 containing licensed `SinarGrotesk-SemiBold.woff2` and `Gramatika-Regular.woff2`.
 Font files are not redistributed here. Without that variable, the layouts use
 system fonts. Review the rendered images after changing typography or copy.
+
+Browser, Agents occupancy, and Update-ready use the same rice-paper frame and
+workshop stamps. Their heights follow the source aspect ratios so the complete
+captures fit above the footer. Each README thumbnail still links to its original.
+To regenerate just these plates:
+
+```sh
+apps/native/node_modules/.bin/electron docs/media/render-readme.cjs desktop-browser-studio desktop-occupancy-studio desktop-update-studio
+```
+
+The renderer also checks that screenshot frames clear the footer and headings
+clear the artwork stamps. `art/workshop-update.png` is the companion update
+illustration; UI content always comes from the unchanged source captures.
