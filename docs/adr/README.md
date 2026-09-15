@@ -142,6 +142,8 @@ record only when you need the evidence or the edge cases.
 | [0126](0126-publication-retains-observed-check-failures.md) | Observed failed checks survive resumes; non-draft publication waits for successful reruns and occupies its own tool batch. |
 
 
+| [0127](0127-title-generation-is-an-explicit-result.md) | GUI titles require one explicit result and successful process exit; diagnostics never become chat names. |
+
 ## When to write one
 
 Write an ADR when a decision is load-bearing and non-obvious: it was reached

@@ -84,7 +84,7 @@ app.whenReady().then(async () => {
     { text: 'The earlier result is still present.' },
   ]));
   const requests = path.join(temp, 'requests.json');
-  const model = child('python3', [path.join(repo, 'scripts/eval/frontend_model.py'), '--script', script, '--requests', requests], env, 'model');
+  const model = child('python3', [path.join(repo, 'scripts/eval/frontend_model.py'), '--script', script, '--requests', requests, ...(process.env.GRAFF_TITLE_RESULT_TEST ? ['--title-failures','1'] : [])], env, 'model');
   await until(async () => {
     assert.equal(model.exitCode, null, 'Scripted model could not start; port 1234 must be free');
     return fs.readFileSync(path.join(output, 'model.log'), 'utf8').includes('scripted model on');
@@ -206,6 +206,7 @@ app.whenReady().then(async () => {
     report.passed.push('startup workspace stays available with explicit provenance and is absent from durable project preferences');
   }
   if(htmlTool) return require('./html-tool-frontend.cjs').runHtmlTool({win,origin,output,temp,workspace,requests,send,click,until,report});
+  if (process.env.GRAFF_TITLE_RESULT_TEST) await require('./title-result-frontend.cjs').observe(win);
   await send('Write the fixture file, then finish.');
   await until(() => js(`document.body.textContent.includes('Scripted final request rejected') && !document.querySelector('article[aria-busy="true"]')`), 'real failure displayed', 25000);
   assert.equal(fs.readFileSync(path.join(workspace, 'proof.txt'), 'utf8'), 'kept');
@@ -238,6 +239,7 @@ app.whenReady().then(async () => {
   fs.cpSync(path.join(workspace, '.graff'), path.join(output, 'harness-evidence'), {recursive:true});
   fs.writeFileSync(path.join(output, 'follow-up-finished.png'), (await wc.capturePage()).toPNG());
   report.passed.push('typed follow-up, real saved history, finished status and frozen elapsed time');
+  if (process.env.GRAFF_TITLE_RESULT_TEST) return require('./title-result-frontend.cjs').verify({win,output,workspace,send,click,until,report});
   if (process.env.GRAFF_CLI_TEST) {
     await require('./cli-frontend.cjs').runCliFrontend({ app, win, temp, workspace, output, until, report, projects });
     return;
