@@ -14,9 +14,7 @@ const ReasoningEffort = main_mod.ReasoningEffort;
 const ws = @import("ws.zig"); // codex Responses WS transport (delta continuation held across a turn)
 const mcp = @import("mcp.zig");
 const approvals_mod = @import("approvals.zig");
-/// The shared approval state, re-exported: a module that only passes one
-/// through (session_run's startup helpers) can name the type off the Agent
-/// that owns it instead of importing approvals.zig itself (#429).
+/// Shared approval state, re-exported for startup helpers (#429).
 pub const Approvals = approvals_mod.Approvals;
 const trace = @import("trace.zig");
 const tools_mod = @import("tools.zig");
@@ -331,8 +329,7 @@ pub const Agent = struct {
     }
 
     pub fn runTurn(self: *Agent) anyerror![]const u8 {
-        // Defensive for restored/embedded agents whose provider was assigned
-        // directly instead of going through providers.applyProvider.
+        // Restore catalog invariants before starting the turn.
         try self.ensureRootTools(self.provider.kind);
         var pending_work: empty_completion.PendingWork = .{};
         self.completed = null;
@@ -340,9 +337,11 @@ pub const Agent = struct {
         @import("named_work.zig").beginTurn(self);
         var task_scope = @import("task_intent.zig").State.begin(self);
         if (!self.sub and !root_turn_prepared.swap(false, .acq_rel)) @import("cancel_source.zig").clear();
+        var review_deadline = try @import("review_deadline.zig").start(self);
+        defer review_deadline.stop();
         while (true) {
             try task_scope.beforeRequest(self);
-            if (try @import("turn_chrome.zig").beforeRequest(self)) |paused| return paused;
+            if (try @import("turn_chrome.zig").beforeRequest(self)) |paused| return review_deadline.finish(paused);
             // Esc during a tool join lands here; root consumes, subagents bail.
             if (esc_cancel.load(.acquire)) {
                 if (!self.sub) esc_cancel.store(false, .release);
@@ -393,13 +392,13 @@ pub const Agent = struct {
                 }
             }
             const hist_len = self.messages.items.len;
-            const root = self.request(if (self.text_only) null else self.toolsJson()) catch |err| return @import("agent_model_loop.zig").finishError(self, err);
+            const root = self.request(if (self.text_only) null else self.toolsJson()) catch |err| return review_deadline.finish(try @import("agent_model_loop.zig").finishError(self, err));
             const done = try @import("agent_steps.zig").stepForWire(self, root);
             if (done) |final_text| {
                 // Retry empty replies; reconcile plain finals with live work (#745).
                 if (try empty_completion.handle(self, final_text, hist_len)) continue;
                 if (try @import("named_work.zig").handle(self, final_text)) continue;
-                if (try pending_work.finish(self, final_text)) |text| return text;
+                if (try pending_work.finish(self, final_text)) |text| return review_deadline.finish(text);
                 continue;
             }
             self.empty_completion_retries = 0;
