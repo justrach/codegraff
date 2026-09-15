@@ -79,6 +79,7 @@ jobs:
           python3 scripts/eval/test_process_guard.py
           python3 scripts/test-acp-failure.py
           python3 scripts/regression-release-297.py
+          python3 scripts/test-server-retention.py --evidence "$RUNNER_TEMP/server-retention"
           python3 scripts/test-pr-completion-acp.py
           python3 scripts/test-claim-repository.py
           python3 scripts/test-claim-lifecycle.py

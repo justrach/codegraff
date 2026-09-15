@@ -17,7 +17,7 @@ export default function SessionTabs({ chats, activeId, busyIds, unreadIds, agent
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => { root.current?.querySelector(`[data-tab-id="${activeId}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" }); }, [activeId]);
   return <div ref={root} data-session-navigation={vertical ? "sidebar" : "tabs"}
-    aria-label="Open chats" className={vertical ? "flex min-w-0 flex-col gap-1 px-3" : "flex min-w-0 items-center gap-1"}>
+    aria-label="Open chats" className={vertical ? "flex min-w-0 flex-col gap-1 px-3" : "flex shrink-0 items-center gap-1"}>
         {chats.map((c) => (
           <div
             data-tab-id={c.id}

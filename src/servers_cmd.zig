@@ -38,6 +38,13 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, args: []const []const u
                 .unverifiable => "unknown",
             };
             try out.print("{d:<8} {s:<9} {s:<8} {s:<6} {s:<21} {s}", .{ rec.pid, state_s, age, owner, ports, util.utf8Prefix(rec.cmd, 60) });
+            if (rec.retained) {
+                const why: []const u8 = if (rec.retention_reason) |reason| switch (reason) {
+                    .user_pin => "user pin",
+                    .unverified_consumers => "consumer visibility unknown",
+                } else "reason unknown (legacy record)";
+                try out.print(" [kept: {s}]", .{why});
+            }
             if (rec.cwd.len > 0) try out.print("  ({s})", .{rec.cwd});
             try out.writeAll("\n");
         }

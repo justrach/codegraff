@@ -2,10 +2,10 @@ name: desktop
 on:
   workflow_dispatch:
   pull_request:
-    paths: ['apps/native/**', 'src/**', 'scripts/eval/frontend_model.py', 'scripts/eval/mock_model.py', 'scripts/eval/test_mock_model.py', 'scripts/*zig-ci.py', '.github/actions/setup-codegraff-zig/**', '.github/workflows/desktop.yml']
+    paths: ['apps/native/**', 'src/**', 'scripts/test-server-retention.py', 'scripts/eval/frontend_model.py', 'scripts/eval/mock_model.py', 'scripts/eval/test_mock_model.py', 'scripts/*zig-ci.py', '.github/actions/setup-codegraff-zig/**', '.github/workflows/desktop.yml']
   push:
     branches: [main, 'release/**']
-    paths: ['apps/native/**', 'src/**', 'scripts/eval/frontend_model.py', 'scripts/eval/mock_model.py', 'scripts/eval/test_mock_model.py', 'scripts/*zig-ci.py', '.github/actions/setup-codegraff-zig/**', '.github/workflows/desktop.yml']
+    paths: ['apps/native/**', 'src/**', 'scripts/test-server-retention.py', 'scripts/eval/frontend_model.py', 'scripts/eval/mock_model.py', 'scripts/eval/test_mock_model.py', 'scripts/*zig-ci.py', '.github/actions/setup-codegraff-zig/**', '.github/workflows/desktop.yml']
 permissions:
   contents: read
 jobs:
@@ -89,6 +89,10 @@ jobs:
         if: ${{ !cancelled() && steps.zig.conclusion == 'success' }}
         run: zig build
         working-directory: .
+      - name: Worker replacement and retained listener lifecycle
+        if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
+        run: python3 scripts/test-server-retention.py --gui --evidence "$RUNNER_TEMP/server-retention-gui"
+        working-directory: .
       - name: Production front-end failure and recovery with native input when permitted
         if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
         run: bun run test:frontend
@@ -111,12 +115,16 @@ jobs:
         env:
           GRAFF_FRONTEND_OUTPUT: ../../zig-out/cli-test
       - name: Packaged conversation title creation and recovery
+        id: packaged
         if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
         run: |
           GRAFF_REUSE_ENGINE=1 bun run electron:build
           bun run test:packaged-titles
         env:
           GRAFF_PACKAGED_OUTPUT: ../../zig-out/packaged-titles
+      - name: Production desktop shutdown preserves retained servers
+        if: ${{ !cancelled() && steps.packaged.conclusion == 'success' }}
+        run: bun scripts/test-server-desktop.mjs
       - name: Bounded mixed split and memory stress
         if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
         run: bun run test:split-stress

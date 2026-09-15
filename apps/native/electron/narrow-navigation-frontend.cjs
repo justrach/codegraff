@@ -51,6 +51,9 @@ async function runNarrowNavigation({win, output, click, until, report}) {
   await click('[aria-label="Open navigation"]');
   await until(() => js(`!!document.querySelector('[data-navigation-panel]:popover-open')`), 'navigation remains reachable after tab strip scrolls');
   await click('[aria-label="Close navigation"]');
+  await until(() => js(`!!document.querySelector('[data-session-navigation="tabs"]')?.checkVisibility()`), 'overflow tabs visible after navigation closes');
+  await js(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+  fs.writeFileSync(path.join(output,'narrow-overflow-tabs.png'),(await wc.capturePage()).toPNG());
   for (let i=0;i<8;i++) await click('[data-tab-id]:has(button[aria-pressed="true"]) [aria-label="Close tab"]');
   // Resizing must not leave a popover or another copy of the sidebar behind.
   win.setContentSize(1320, 868);
