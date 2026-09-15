@@ -51,7 +51,7 @@ pub fn searchInto(arena: Allocator, all: []const mcp.Tool, input: Value) !mcp_sc
     for (all, 0..) |t, i| {
         if (!mcp_schema_gate.isDeferred(all, t)) continue;
         if (server) |sv| {
-            if (!std.mem.eql(u8, mcp_schema_gate.serverOf(t.qualified_name), sv)) continue;
+            if (!std.mem.eql(u8, t.serverName(), sv)) continue;
         }
         const score = scoreTool(t, query);
         if (score == 0) continue;

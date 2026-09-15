@@ -33,6 +33,7 @@ pub const Record = struct {
     started_ms: i64 = 0,
     pinned: bool = false,
     retained: bool = false,
+    retention_reason: ?enum { user_pin, unverified_consumers } = null,
 };
 
 pub fn dirPath(buf: []u8, base: []const u8) ?[]const u8 {
@@ -177,8 +178,8 @@ pub fn retain(io: Io, base: []const u8, rec: Record, stdout: ?Io.File, stderr: ?
         }) catch return false;
     }
     var kept = rec;
-    kept.pinned = true;
     kept.retained = true;
+    kept.retention_reason = if (rec.pinned) .user_pin else .unverified_consumers;
     write(io, base, kept);
     return true;
 }
@@ -239,4 +240,26 @@ test "stopTree never signals a pid whose start identity is not ours" {
     try std.testing.expectEqual(StopResult.gone, stopTree(io, forged));
     const real: Record = .{ .pid = me.pid, .start_id = me.start_id, .cmd = "us" };
     try std.testing.expectEqual(State.running, state(io, real));
+}
+
+test "retention preserves user pin intent and records why cleanup deferred" {
+    if (!posix) return error.SkipZigTest;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var path: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &path);
+    for ([_]bool{ false, true }) |pinned| {
+        try std.testing.expect(retain(io, path[0..n], .{ .pid = 321, .cmd = "fixture", .pinned = pinned }, null, null));
+        const records = list(io, arena, path[0..n]);
+        try std.testing.expectEqual(@as(usize, 1), records.len);
+        try std.testing.expect(records[0].retained);
+        try std.testing.expectEqual(pinned, records[0].pinned);
+        try std.testing.expectEqualStrings(if (pinned) "user_pin" else "unverified_consumers", @tagName(records[0].retention_reason.?));
+    }
+    const legacy = try std.json.parseFromSliceLeaky(Record, arena, "{\"pid\":321,\"cmd\":\"legacy\",\"pinned\":true,\"retained\":true}", .{});
+    try std.testing.expect(legacy.retention_reason == null);
 }

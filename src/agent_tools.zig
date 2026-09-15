@@ -106,7 +106,7 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
         if (std.mem.eql(u8, call.name, "attempt_completion") and defer_completion) {
             continue;
         }
-        if (try self.rejectToolCall(call)) |denied| {
+        if (try @import("pr_local_checks.zig").batchGate(self, calls, call) orelse try self.rejectToolCall(call)) |denied| {
             results[i] = denied;
             continue;
         }
@@ -137,12 +137,14 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             .provider = self.provider,
             .subagent_provider = self.subagent_provider,
             .subagent_cross_provider = self.subagent_cross_provider,
+            .mcp_context = self.mcp_context.value,
             .registry = self.registry, // workers get licensed codedb-pro reads too (#627)
             .from_sub = self.sub,
             .has_eval = self.eval_cmd != null,
             .approvals = self.approvals,
             .tracer = self.tracer,
             .run_budget = self.run_budget,
+            .publication_checks = self.publication_checks,
             .depth = self.depth,
             .snapshots = self.snapshots,
             .tools_used = &self.tools_used,
@@ -185,6 +187,7 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             .run_id = if (self.tracer) |tr| tr.identity.run_id else "untraced",
         };
         for (ext_idx.items, outputs) |i, output| {
+            try @import("pr_local_checks.zig").record(self, calls[i], .{ .text = output.text, .is_error = output.is_error, .cancelled = output.cancelled });
             // Over the threshold, the bytes go to a durable handle; the model
             // gets a bounded preview + path + byte count + shape hint.
             const handled = try tool_handle.forResult(self.gpa, self.arena, handle_target, output.text, handle_threshold);

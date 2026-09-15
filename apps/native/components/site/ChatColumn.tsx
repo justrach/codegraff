@@ -21,6 +21,8 @@ export default function ChatColumn({ thread, compact, following, register, onOpe
   health: Health | null; onOpenProject: () => void; onProjects: () => void; onConversations: () => void;
   onRefresh: (loaded: Awaited<ReturnType<typeof loadSession>>) => void; onContinue: () => void;
 }) {
+  const measured = thread.messages.findLast(message => message.role === "assistant" && message.turn.contextMeter);
+  const contextMeter = measured?.role === "assistant" ? measured.turn.contextMeter : undefined;
   if (!thread.messages.length && !thread.snapshot) return <div className="min-h-0 flex-1 overflow-y-auto">
     <EmptyState compact={compact} onOpenProject={onOpenProject} onProjects={onProjects}
       onContinue={onConversations} onReview={onReview} onSend={prompt.onSend} onSetting={prompt.onSetting}
@@ -30,9 +32,9 @@ export default function ChatColumn({ thread, compact, following, register, onOpe
   return <div className="flex min-h-0 flex-1 flex-col">
     <ChatTranscript messages={thread.messages} register={register} following={following}
       onOpenPath={onOpenPath} onReview={onReview} snapshot={thread.snapshot} />
-    <div className={`shrink-0 bg-page px-4 ${compact ? "py-2" : "pt-3 pb-6 sm:px-8"}`}>
+    <div data-chat-composer className={`shrink-0 bg-page px-4 ${compact ? "py-2" : "pt-3 pb-6 sm:px-8"}`}>
       <div className="mx-auto max-w-[720px]">
-        {thread.snapshot && thread.session ? <SavedSnapshot name={thread.session} cwd={thread.cwd}
+        {thread.snapshot && thread.session ? <SavedSnapshot name={thread.session} cwd={thread.cwd} model={prompt.modelKey}
           onRefresh={onRefresh} onContinue={onContinue} /> : <>
           {pins > 0 && <div className="mb-2 flex items-center gap-2 rounded-[8px] bg-surface px-2.5 py-1.5 text-[12.5px] text-ink-2 shadow-hairline">
             <span className="shrink-0 text-[11px] font-medium tracking-wide text-ink-3 uppercase">Pinned</span>
@@ -43,7 +45,7 @@ export default function ChatColumn({ thread, compact, following, register, onOpe
             </button>
           </div>}
           <PromptQueue {...queue} />
-          <PromptBar {...prompt} tall={!compact} placeholder={prompt.busy ? "Queue a follow-up…" : "Follow up"} />
+          <PromptBar {...prompt} contextMeter={contextMeter} tall={!compact} placeholder={prompt.busy ? "Queue a follow-up…" : "Follow up"} />
         </>}
       </div>
     </div>

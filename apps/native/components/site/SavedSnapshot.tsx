@@ -1,9 +1,10 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import SavedCacheCheck from "./SavedCacheCheck";
 import { loadSession } from "@/lib/sessions";
 
-export default function SavedSnapshot({ name, cwd, onRefresh, onContinue }: {
-  name: string; cwd?: string;
+export default function SavedSnapshot({ name, cwd, model, onRefresh, onContinue }: {
+  name: string; cwd?: string; model?: string;
   onRefresh: (loaded: Awaited<ReturnType<typeof loadSession>>) => void;
   onContinue: () => void;
 }) {
@@ -24,14 +25,13 @@ export default function SavedSnapshot({ name, cwd, onRefresh, onContinue }: {
       if (!controller.signal.aborted) setRefreshing(false);
     }
   };
-  return <section data-saved-snapshot aria-label="Saved conversation snapshot" className="rounded-[12px] border border-line bg-surface p-4 text-[13px] text-ink-2">
-    <p role="status" className="font-medium text-ink">Saved snapshot · Live status unknown</p>
-    <p className="mt-1">Work may still be running in another window. Refresh to read the latest save.</p>
-    <p className="mt-1">Stop work in the other window before choosing Continue here.</p>
+  return <section data-saved-snapshot data-session-snapshot aria-label="Saved conversation snapshot" className="border-t border-line px-1 py-2 text-[12px] text-ink-2">
+    <p role="status" className="font-medium text-ink">Saved conversation · Live REPL status unknown</p>
+    <p className="mt-1">This view is not attached to a live REPL. Continue here uses this save without stopping it.</p>
     {error && <p role="alert" className="mt-2 text-red">Could not refresh the snapshot. Try again.</p>}
-    <div className="mt-3 flex flex-wrap gap-2">
+    <div className="mt-1 flex flex-wrap gap-2">
       <button type="button" data-refresh-snapshot disabled={refreshing} onClick={() => void refresh()} className="rounded-control px-3 py-1.5 hover:bg-hover disabled:opacity-50">{refreshing ? "Refreshing…" : "Refresh snapshot"}</button>
-      <button type="button" data-continue-snapshot disabled={refreshing} onClick={onContinue} className="rounded-control bg-hover-2 px-3 py-1.5 text-ink disabled:opacity-50">Continue here</button>
     </div>
+    <SavedCacheCheck name={name} cwd={cwd} model={model} disabled={refreshing} onContinue={onContinue} />
   </section>;
 }

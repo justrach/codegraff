@@ -1,3 +1,4 @@
+import { assertSessionWritable, closeSessionWriter, registerSessionWriter, sessionFile } from "@/lib/session-writers";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -9,8 +10,10 @@ import { AcpTransport } from "@/lib/acp-transport";
 import { createPromptStream } from "@/lib/acp-prompt-stream";
 import { defaultRoot, resolveRoot } from "@/lib/server-root";
 import { prepareGuiPrompt } from "@/lib/gui-skill-context";
+import { attachmentStore } from "@/lib/attachment-store";
 
 import { retireWorker } from "@/lib/acp-retire";
+import { initializeWorker, serializeBootstrap } from "@/lib/acp-bootstrap";
 import { finishCancelledPrompt } from "@/lib/acp-cancel";
 
 export const runtime = "nodejs";
@@ -70,8 +73,10 @@ function mcpOffPath(): string {
 // child's history; `dispose`/`dispose-page` reap children on tab close and
 // page unload. Kept on globalThis so dev-server module reloads don't orphan
 // running agents.
-const g = globalThis as typeof globalThis & { __graffAcpSlots?: Map<string, Slot> };
+const g = globalThis as typeof globalThis & { __graffAcpSlots?: Map<string, Slot>; __graffAcpBootstraps?: Map<string, Promise<Slot>>; __graffAcpRetirements?: Map<string, Promise<void>>; __graffAcpShuttingDown?: boolean };
 const slots = (g.__graffAcpSlots ??= new Map<string, Slot>());
+const bootstraps = (g.__graffAcpBootstraps ??= new Map<string, Promise<Slot>>());
+const retirements = (g.__graffAcpRetirements ??= new Map<string, Promise<void>>());
 const DEFAULT_CHAT = "default";
 // Session names become a CLI argument and a filename under .graff/sessions.
 const SESSION_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -96,35 +101,26 @@ function defaultYolo(): boolean {
 // would skip. The signal is the fallback for an agent that does not wind down.
 const EXIT_GRACE_MS = 5_000;
 
-function killSlot(chat: string) {
+function killSlot(chat: string): Promise<void> {
   const slot = slots.get(chat);
-  if (!slot) return;
+  if (!slot) return retirements.get(chat) ?? Promise.resolve();
   slots.delete(chat);
-  try {
-    slot.child.stdin.end();
-  } catch {
-    // already closed
-  }
-  const timer = setTimeout(() => {
-    try {
-      slot.child.kill("SIGTERM");
-    } catch {
-      // already gone
-    }
-  }, EXIT_GRACE_MS);
-  timer.unref();
-  slot.child.once("exit", () => clearTimeout(timer));
+  const pending = closeSessionWriter(slot.child, EXIT_GRACE_MS);
+  retirements.set(chat, pending);
+  const forget = () => { if (retirements.get(chat) === pending) retirements.delete(chat); };
+  void pending.then(forget, forget);
+  return pending;
 }
 
-function killPage(page: string) {
+async function killPage(page: string) {
   const prefix = `${page}:`;
-  for (const chat of [...slots.keys()]) {
-    if (chat.startsWith(prefix)) killSlot(chat);
-  }
+  await Promise.all([...new Set([...slots.keys(), ...retirements.keys()])].filter(chat => chat.startsWith(prefix)).map(killSlot));
 }
 
 function spawnAgent(chat: string, opts: SpawnOpts): Slot {
-  killSlot(chat);
+  if (opts.resume) assertSessionWritable(sessionFile(opts.cwd, opts.resume));
+  const imageScope = path.dirname(sessionFile(opts.cwd, opts.resume ?? "pending"));
+  attachmentStore().enrollSession(imageScope, process.pid);
   const args = ["acp"];
   if (opts.yolo) args.push("--yolo");
   if (opts.model) args.push("--model", opts.model);
@@ -162,6 +158,11 @@ function spawnAgent(chat: string, opts: SpawnOpts): Slot {
     if (slots.get(chat) === slot && !slot.restart) slots.delete(chat);
   });
   slots.set(chat, slot);
+  try { attachmentStore().enrollSession(imageScope, child.pid); }
+  catch (error) { void killSlot(chat).catch(() => undefined); throw error; }
+  if (slot.resume) registerSessionWriter(sessionFile(slot.cwd, slot.resume), child, () => {
+    if (slots.get(chat) === slot) void killSlot(chat).catch(() => undefined);
+  });
   return slot;
 }
 
@@ -199,22 +200,38 @@ async function endTurn(slot: Slot): Promise<void> {
 /** The tab's live agent when it still matches what was asked for (model,
  * session file, workspace, approval mode); otherwise a fresh spawn. A
  * request that leaves a field out accepts whatever the live agent has. */
-async function bootstrap(chat: string, opts: BootstrapOpts): Promise<Slot> {
-  const live = slots.get(chat);
-  const same =
-    live !== undefined &&
-    live.sessionId !== null && live.transport.usable &&
-    (!opts.model || live.model === opts.model) &&
+function matchesBootstrap(live: Slot, opts: BootstrapOpts): boolean {
+  return (!opts.model || live.model === opts.model) &&
     (!opts.resume || live.resume === opts.resume) &&
     (!opts.cwd || live.cwd === opts.cwd) &&
     (opts.yolo === undefined || live.yolo === opts.yolo) &&
     (opts.mcp === undefined || live.mcp === opts.mcp);
+}
+
+function bootstrap(chat: string, opts: BootstrapOpts): Promise<Slot> {
+  if (g.__graffAcpShuttingDown) return Promise.reject(new Error("Desktop is shutting down"));
+  const live = slots.get(chat);
+  // Explicit changes can replace a stalled handshake. Ordinary concurrent
+  // requests must wait instead of killing the worker they are about to use.
+  if (opts.reset || (live && !matchesBootstrap(live, opts))) bootstraps.delete(chat);
+  return serializeBootstrap(bootstraps, chat, () => bootstrapNow(chat, opts));
+}
+
+async function bootstrapNow(chat: string, opts: BootstrapOpts): Promise<Slot> {
+  await retirements.get(chat);
+  if (g.__graffAcpShuttingDown) throw new Error("Desktop is shutting down");
+  const live = slots.get(chat);
+  const same = live !== undefined && live.sessionId !== null &&
+    live.transport.usable && matchesBootstrap(live, opts);
   if (!opts.reset && same) return live;
   const recovering = live?.restart ? live : undefined;
   if (recovering?.restartReady) {
     await recovering.restartReady;
-    if (slots.get(chat) !== live) return bootstrap(chat, opts);
+    if (slots.get(chat) !== live) return bootstrapNow(chat, opts);
   }
+  await killSlot(chat);
+  if (g.__graffAcpShuttingDown) throw new Error("Desktop is shutting down");
+  if (slots.has(chat)) return bootstrapNow(chat, opts);
   const slot = spawnAgent(chat, {
     model: opts.model ?? recovering?.model ?? undefined,
     resume: opts.resume ?? recovering?.resume ?? recovering?.sessionId ?? undefined,
@@ -222,13 +239,17 @@ async function bootstrap(chat: string, opts: BootstrapOpts): Promise<Slot> {
     yolo: opts.yolo ?? recovering?.yolo ?? defaultYolo(),
     mcp: opts.mcp ?? recovering?.mcp ?? true,
   });
-  await rpc(slot, "initialize", { protocolVersion: 1, clientCapabilities: { fs: {} } }, HANDSHAKE_MS);
-  const created = (await rpc(slot, "session/new", { cwd: slot.cwd }, HANDSHAKE_MS)) as {
-    sessionId?: string;
-  };
-  if (!created?.sessionId) throw new Error("session/new returned no sessionId");
-  slot.sessionId = created.sessionId;
+  slot.sessionId = await initializeWorker(slot.transport, slot.cwd, async () => {
+    slot.restart = true;
+    slot.restartReady = retireWorker(slot.child);
+    try { await slot.restartReady; }
+    finally { if (slots.get(chat) === slot) slots.delete(chat); }
+  }, HANDSHAKE_MS);
+  if (!slot.resume) registerSessionWriter(sessionFile(slot.cwd, slot.sessionId), slot.child, () => {
+    if (slots.get(chat) === slot) void killSlot(chat).catch(() => undefined);
+  });
   await drainCommands(slot);
+  if (slots.get(chat) !== slot) throw new Error("ACP startup was disposed. Retry to start a new worker.");
   return slot;
 }
 
@@ -262,12 +283,17 @@ export async function POST(req: NextRequest) {
   const chat = typeof body.chat === "string" && body.chat ? body.chat : DEFAULT_CHAT;
   const model = typeof body.params?.model === "string" ? body.params.model : undefined;
   try {
+    if (method === "shutdown") {
+      g.__graffAcpShuttingDown = true;
+      await Promise.all([...new Set([...slots.keys(), ...retirements.keys()])].map(killSlot));
+      return Response.json({ ok: true });
+    }
     if (method === "dispose") {
-      killSlot(chat);
+      await killSlot(chat);
       return Response.json({ ok: true });
     }
     if (method === "dispose-page") {
-      if (typeof body.params?.page === "string" && body.params.page) killPage(body.params.page);
+      if (typeof body.params?.page === "string" && body.params.page) await killPage(body.params.page);
       return Response.json({ ok: true });
     }
     if (method === "bootstrap") {
@@ -302,6 +328,7 @@ export async function POST(req: NextRequest) {
       if (slot.streaming) return Response.json({ error: "A turn is already active" }, { status: 409 });
       const promptParams = await prepareGuiPrompt(body.params);
       if (slot.streaming) return Response.json({ error: "A turn is already active" }, { status: 409 });
+      attachmentStore().retainPrompt(promptParams, path.dirname(sessionFile(slot.cwd, slot.resume ?? slot.sessionId!)), slot.child.pid);
       slot.streaming = true;
       const { stream, pending } = createPromptStream(slot.transport,
         { ...promptParams, sessionId: slot.sessionId }, () => {

@@ -74,8 +74,12 @@ pub fn runTitleCommand(io: Io, gpa: Allocator, arena: Allocator, client: *std.ht
     if (!(flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "title"))) return false;
     if (flags.positionals.items.len < 2) std.process.fatal("usage: graff title <prompt>", .{});
     const tprompt = try std.mem.join(arena, " ", flags.positionals.items[1..]);
-    if (title_mod.titleTask(gpa, io, client, default_provider, tprompt, run_budget, null)) |t| {
-        defer gpa.free(t);
+    const title = title_mod.titleTask(gpa, io, client, default_provider, tprompt, run_budget, null);
+    defer if (title) |t| gpa.free(t);
+    if (main_mod.json_mode) {
+        try std.json.Stringify.value(.{ .type = "title_result", .title = title }, .{}, out);
+        try out.writeByte('\n');
+    } else if (title) |t| {
         try out.print("{s}\n", .{t});
     } else try out.writeAll("(title generation failed — check your model/key)\n");
     try out.flush();
@@ -452,7 +456,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
             sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "ignoring ~/" ++ mcp_config.unsupported_rel_path ++ ": unsupported path — use ~/" ++ mcp_config.global_rel_path ++ " (global) or {s} (project)", .{mcp_config_path})));
     }
     const mcp_count = mcp_cli.countMcpServers(merged);
-    const defer_join = mcp_boot.deferMcpJoin(flags.effectiveYolo(), json_mode);
+    const defer_join = mcp_boot.deferMcpJoin(flags.effectiveYolo(), json_mode, mcp_boot.isAcp(flags.positionals.items));
     const skip_imported = mcp_boot.oneshotSkipsImportedMcp(
         flags.oneshot_prompt != null,
         leanMode(flags.effectiveLean(), environ_map),

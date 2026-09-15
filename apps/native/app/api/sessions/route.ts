@@ -1,12 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync } from "node:fs";
-import path from "node:path";
+import { withSessionWritersStopped } from "@/lib/session-writers";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { archiveSavedSession, deleteSavedSession } from "@/lib/session-files";
 import { NextRequest } from "next/server";
 import { resolveRoot } from "@/lib/server-root";
 import { transcriptFromMessages } from "@/lib/sessions";
 import {
   MAX_FULL_BYTES,
   NAME_RE,
-  SESSION_EXT,
   clampLimit,
   findSessionFile,
   homeDir,
@@ -26,7 +26,6 @@ export const dynamic = "force-dynamic";
 //
 // Archived chats leave the list but stay on disk, in an `archived/` directory
 // beside graff's own sessions, so a chat can be put away without losing it.
-const ARCHIVE_SUBDIR = "archived";
 
 function str(v: unknown): string | null {
   return typeof v === "string" && v.length > 0 ? v : null;
@@ -35,6 +34,12 @@ function str(v: unknown): string | null {
 function parseScope(raw: string | null): ListScope {
   if (raw === "local" || raw === "elsewhere") return raw;
   return "all";
+}
+
+function cacheWorkspaceMatches(saved: string | null, target: string): boolean | null {
+  if (!saved) return null;
+  try { return realpathSync(saved) === realpathSync(target); }
+  catch { return null; }
 }
 
 export async function GET(req: NextRequest) {
@@ -59,6 +64,7 @@ export async function GET(req: NextRequest) {
         provider?: unknown;
         workspace?: unknown;
         messages?: unknown;
+        todos?: unknown;
       };
       const header = peekHeader(found.file, st.size);
       return Response.json({
@@ -74,11 +80,15 @@ export async function GET(req: NextRequest) {
         // payload as a snapshot with unknown execution (#839).
         view: "snapshot",
         execution: "unknown",
+        ...(req.nextUrl.searchParams.get("view") === "metadata"
+          ? { cacheWorkspaceMatches: cacheWorkspaceMatches(str(parsed.workspace) ?? str(header?.workspace), root) } : {}),
+        ...(Array.isArray(parsed.todos) ? { todos: parsed.todos } : {}),
         // The desktop never displayed raw provider history. Avoid allocating
         // its tool bodies and image payloads again in Chromium just to drop them.
         ...(req.nextUrl.searchParams.get("view") === "transcript"
-          ? { presentation: "transcript-v1", transcript: transcriptFromMessages(Array.isArray(parsed.messages) ? parsed.messages : [], str(parsed.model) ?? undefined) }
-          : { messages: Array.isArray(parsed.messages) ? parsed.messages : [] }),
+          ? { presentation: "transcript-v1", transcript: transcriptFromMessages(Array.isArray(parsed.messages) ? parsed.messages : [], str(parsed.model) ?? undefined, parsed.todos) }
+          : req.nextUrl.searchParams.get("view") === "metadata" ? {}
+            : { messages: Array.isArray(parsed.messages) ? parsed.messages : [] }),
       });
     } catch (err) {
       return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
@@ -106,17 +116,14 @@ export async function DELETE(req: NextRequest) {
   if (!found) return Response.json({ error: "no such session" }, { status: 404 });
   const archive = req.nextUrl.searchParams.get("archive") !== "0";
   try {
-    if (!archive) {
-      unlinkSync(found.file);
-      return Response.json({ ok: true, name, archived: false });
-    }
-    const target = path.join(path.dirname(found.file), ARCHIVE_SUBDIR);
-    mkdirSync(target, { recursive: true });
-    let dest = path.join(target, `${name}${SESSION_EXT}`);
-    // Never overwrite an earlier archive of the same name.
-    if (existsSync(dest)) dest = path.join(target, `${name}.${Date.now()}${SESSION_EXT}`);
-    renameSync(found.file, dest);
-    return Response.json({ ok: true, name, archived: true });
+    return await withSessionWritersStopped(found.file, () => {
+      if (!archive) {
+        deleteSavedSession(found.file);
+        return Response.json({ ok: true, name, archived: false });
+      }
+      archiveSavedSession(found.file);
+      return Response.json({ ok: true, name, archived: true });
+    });
   } catch (err) {
     return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
   }

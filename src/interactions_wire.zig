@@ -56,7 +56,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     }
     try s.objectField("input");
     try s.beginArray();
-    for (self.messages.items) |m| try s.write(m);
+    for (self.messages.items) |m| try @import("session_wake.zig").writeWire(s, m);
     try s.endArray();
     if (stream) {
         try s.objectField("stream");

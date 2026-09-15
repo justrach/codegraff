@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import type { ModelChoice } from "@/lib/acp-client";
 import styles from "./EffortPicker.module.css";
+import ContextMeter from "./ContextMeter";
 const labels: Record<string, string> = { low: "Light", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max", ultra: "Ultra" };
 function Bolt({ filled = false }: { filled?: boolean }) {
   return <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill={filled ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="m13.3 2-9 12h7L10.7 22l9-12h-7L13.3 2Z" /></svg>;
@@ -10,9 +11,10 @@ function Bolt({ filled = false }: { filled?: boolean }) {
 function Chevron() {
   return <svg aria-hidden="true" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m4 6 4 4 4-4" /></svg>;
 }
-export default function ModelEffortButtons({ model, buttonRef, modelOpen, openModel, wide, pill, onCommand, busy }: {
+export default function ModelEffortButtons({ model, buttonRef, modelOpen, openModel, wide, pill, onCommand, busy, contextMeter, showContextMeter }: {
   model: ModelChoice; buttonRef: RefObject<HTMLButtonElement | null>; modelOpen: boolean; openModel(): void;
   wide: boolean; pill: boolean; onCommand?: (text: string) => Promise<void>; busy?: boolean;
+  contextMeter?: import("@/lib/context-meter").ContextMeter; showContextMeter?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -62,6 +64,7 @@ export default function ModelEffortButtons({ model, buttonRef, modelOpen, openMo
     </button>
     {levels.length > 0 && <button ref={effortButton} type="button" aria-label="Select effort" aria-expanded={open} onClick={show}
       className="flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2 text-xs text-ink-3 hover:bg-hover">{labels[model.effort ?? ""] ?? "Effort"}<Chevron /></button>}
+    {showContextMeter && <ContextMeter reading={contextMeter} />}
     {open && createPortal(<div ref={panel} role="dialog" aria-label="Reasoning effort" style={position}
       className="motion-surface fixed z-[100] w-80 max-w-[calc(100vw-24px)] rounded-[22px] border border-line bg-page px-4 pb-4 pt-3 text-ink shadow-[0_8px_24px_-8px_rgb(0_0_0/18%)]">
       <div className="flex items-center justify-between gap-3">

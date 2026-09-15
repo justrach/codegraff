@@ -114,7 +114,7 @@ pub var g_stable_catalog = true;
 /// and (in stable mode) the listing, which must not change as tools load.
 pub fn policyDeferred(all: []const mcp.Tool, tool: mcp.Tool) bool {
     if (!g_policy.enabled) return false;
-    const server = serverOf(tool.qualified_name);
+    const server = tool.serverName();
     if (pinnedEager(server)) return false;
     return serverCost(all, server) > g_policy.budget;
 }
@@ -244,13 +244,7 @@ pub fn deferAllRuntime() void {
 }
 
 /// The server half of `mcp__<server>__<tool>`; "" for a name that is not one.
-pub fn serverOf(qualified: []const u8) []const u8 {
-    const prefix = "mcp__";
-    if (!std.mem.startsWith(u8, qualified, prefix)) return "";
-    const rest = qualified[prefix.len..];
-    const sep = std.mem.indexOf(u8, rest, "__") orelse return rest;
-    return rest[0..sep];
-}
+pub const serverOf = @import("mcp_names.zig").serverOf;
 
 pub fn pinnedEager(server: []const u8) bool {
     for (g_policy.eager) |p| {
@@ -266,7 +260,7 @@ pub fn pinnedEager(server: []const u8) bool {
 pub fn serverCost(all: []const mcp.Tool, server: []const u8) usize {
     var total: usize = 0;
     for (all) |t| {
-        if (!std.mem.eql(u8, serverOf(t.qualified_name), server)) continue;
+        if (!std.mem.eql(u8, t.serverName(), server)) continue;
         total += t.description.len + jsonBytes(t.input_schema, 0);
     }
     return total;
@@ -278,7 +272,7 @@ pub fn serverCost(all: []const mcp.Tool, server: []const u8) usize {
 pub fn isDeferred(all: []const mcp.Tool, tool: mcp.Tool) bool {
     if (!g_policy.enabled) return false;
     if (isLoaded(tool.qualified_name)) return false;
-    const server = serverOf(tool.qualified_name);
+    const server = tool.serverName();
     if (pinnedEager(server)) return false;
     return serverCost(all, server) > g_policy.budget;
 }
@@ -381,7 +375,7 @@ pub fn loadInto(arena: Allocator, all: []const mcp.Tool, input: Value) !Loaded {
 
     const server = tools_mod.strField(input, "server");
     if (server) |want| {
-        for (all, 0..) |t, i| if (std.mem.eql(u8, serverOf(t.qualified_name), want)) try wanted.append(arena, i);
+        for (all, 0..) |t, i| if (std.mem.eql(u8, t.serverName(), want)) try wanted.append(arena, i);
         if (wanted.items.len == 0) try missing.append(arena, want);
     }
     if (input == .object) if (input.object.get("tools")) |list| if (list == .array) {
@@ -522,7 +516,7 @@ pub fn descWithListing(arena: Allocator, all: []const mcp.Tool) ![]const u8 {
     for (all) |t| {
         if (omitMcp(t.qualified_name)) continue;
         if (!deferredRule(all, t)) continue;
-        const sv = serverOf(t.qualified_name);
+        const sv = t.serverName();
         const seen = for (servers.items) |s| {
             if (std.mem.eql(u8, s, sv)) break true;
         } else false;
@@ -542,7 +536,7 @@ pub fn descWithListing(arena: Allocator, all: []const mcp.Tool) ![]const u8 {
         for (all) |t| {
             if (omitMcp(t.qualified_name)) continue;
             if (!deferredRule(all, t)) continue;
-            if (!std.mem.eql(u8, serverOf(t.qualified_name), sv)) continue;
+            if (!std.mem.eql(u8, t.serverName(), sv)) continue;
             if (!first) try aw.writer.writeAll(", ");
             try aw.writer.writeAll(shortName(t.qualified_name));
             first = false;

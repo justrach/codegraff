@@ -38,7 +38,7 @@ async function runSplitStress({win,output,mixed=true}) {
     const metrics=Object.fromEntries((await wc.debugger.sendCommand('Performance.getMetrics')).metrics.map(m=>[m.name,m.value]));
     const value={label,heapMiB:heap.usedSize/2**20,...dom,rssMiB:proc.rssMiB,scriptSeconds:metrics.ScriptDuration,layoutSeconds:metrics.LayoutDuration};samples.push(value);return value;
   };
-  if(await js(`document.querySelector('button[title^="Sidecar browser"]')?.getAttribute('aria-pressed')==='true'`))await click('button[title^="Sidecar browser"]');
+  if(await js(`!!document.querySelector('[aria-label="Close browser"]')`))await click('[aria-label="Close browser"]');
   await sleep(400);
   const base=(await ids())[0];
   await sample('before');

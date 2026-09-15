@@ -28,6 +28,7 @@ const repl = @import("repl.zig");
 const tui = @import("tui");
 const label = @import("agent_tool_label.zig");
 const working = @import("agent_working.zig");
+const citations = @import("cite_markup.zig");
 
 /// Result previews are one line, capped — the same budget hostedEmit used, so
 /// a row's body stays a body and a 20 KB tool result never reaches the queue.
@@ -78,6 +79,30 @@ pub const Bridge = struct {
     /// ADR 0041: thought / tool / text rows come from ACP `session/update`.
     /// This sink still handles meters, notices, raw bash, and failover.
     acp_owns_transcript: bool = false,
+    reasoning_citations: citations.Stream = .{},
+    answer_citations: citations.Stream = .{},
+
+    fn resetProse(self: *Bridge) void {
+        self.reasoning_citations = .{};
+        self.answer_citations = .{};
+        self.reasoning_open = false;
+    }
+
+    fn appendProse(self: *Bridge, text: []const u8, reasoning: bool) void {
+        const filter = if (reasoning) &self.reasoning_citations else &self.answer_citations;
+        for (text) |byte| {
+            var buf: [3]u8 = undefined;
+            const visible = filter.byte(byte, &buf);
+            if (visible.len == 0) continue;
+            if (reasoning) {
+                self.reasoning_open = true;
+            } else if (self.reasoning_open) {
+                self.reasoning_open = false;
+                self.stream.appendBytes("\n");
+            }
+            self.stream.appendBytes(visible);
+        }
+    }
 };
 
 const vtable: engine_sink.VTable = .{ .emit = emit, .durable = false };
@@ -91,15 +116,10 @@ fn emit(ctx: *anyopaque, ev: engine_sink.Stamped) void {
     switch (ev.event) {
         // ── prose: into the live tail ────────────────────────────────────
         .reasoning_delta => |d| if (!b.acp_owns_transcript and b.show_thinking) {
-            b.reasoning_open = true;
-            b.stream.appendBytes(d.text);
+            b.appendProse(d.text, true);
         },
         .text_delta, .tool_arg_delta => |d| if (!b.acp_owns_transcript) {
-            if (b.reasoning_open) {
-                b.reasoning_open = false;
-                b.stream.appendBytes("\n");
-            }
-            b.stream.appendBytes(d.text);
+            b.appendProse(d.text, false);
         },
         // grok-build RawTerminal: bash bytes go to the dedicated raw buf,
         // never the prose stream (that mixing is what #551 took apart).
@@ -168,6 +188,7 @@ fn emit(ctx: *anyopaque, ev: engine_sink.Stamped) void {
             b.queue.push(.{ .notice = line });
         },
         .transport_aborted => |t| {
+            b.resetProse();
             // Mid-turn cuts are the reconnect ladder (ADR 0021). The pager
             // already shows Thinking / tool rows; a ⚠ here is what made
             // people hit Esc on a turn that was still recovering.
@@ -178,10 +199,13 @@ fn emit(ctx: *anyopaque, ev: engine_sink.Stamped) void {
                 .dropped => b.queue.push(.{ .notice = "⚠ connection dropped — response ended early" }),
             }
         },
-        .stream_aborted => |reason| switch (reason) {
-            .interrupted => {},
-            .stalled => b.queue.push(.{ .notice = "⚠ stream stalled — ending turn" }),
-            .dropped => b.queue.push(.{ .notice = "⚠ connection dropped — response ended early" }),
+        .stream_aborted => |reason| {
+            b.resetProse();
+            switch (reason) {
+                .interrupted => {},
+                .stalled => b.queue.push(.{ .notice = "⚠ stream stalled — ending turn" }),
+                .dropped => b.queue.push(.{ .notice = "⚠ connection dropped — response ended early" }),
+            }
         },
         // The status bar's model name is a TUI-owned global; a mid-turn
         // failover is the one thing that can change it behind the frontend's
@@ -191,7 +215,8 @@ fn emit(ctx: *anyopaque, ev: engine_sink.Stamped) void {
         // ── consciously ignored, with the reason ─────────────────────────
         // Live-stream bookkeeping: the TUI's pending row IS the spinner, and
         // its fold state is frontend-owned, so none of these need a surface.
-        .stream_begin, .stream_complete, .stream_finished, .thinking_fold_toggle => {},
+        .stream_begin, .stream_complete, .stream_finished => b.resetProse(),
+        .thinking_fold_toggle => {},
         // The engine's own call brackets. tool_call_announced/tool_result are
         // the pair a transcript row is built from; these two are the timing
         // brackets a supervisor uses and would double every row here.
@@ -476,4 +501,89 @@ test "acp_owns_transcript leaves thought/tool/text to session/update" {
     const evs = qbuf.drain();
     defer qbuf.free(evs);
     try std.testing.expectEqual(@as(usize, 0), evs.len);
+}
+
+test "legacy bridge citations survive every pair of chunk boundaries" {
+    const raw = "a\u{E200}cite\u{E202}ref\u{E201}b\u{E202}c\u{E201}\u{E203}!";
+    for (0..raw.len + 1) |i| {
+        for (i..raw.len + 1) |j| {
+            var queue: tui.EventQueue = .{};
+            var buf: [128]u8 = undefined;
+            var stream: repl.StreamBuf = .{ .buf = &buf };
+            var bridge: Bridge = .{ .queue = &queue, .stream = &stream };
+            const sink = forBridge(&bridge);
+            sink.emit(undefined, .{ .text_delta = .{ .text = raw[0..i] } });
+            sink.emit(undefined, .{ .tool_arg_delta = .{ .text = raw[i..j] } });
+            sink.emit(undefined, .{ .text_delta = .{ .text = raw[j..] } });
+            const snap = stream.snapshot(std.testing.allocator) orelse return error.NoStream;
+            defer std.testing.allocator.free(snap);
+            try std.testing.expectEqualStrings("abc\u{E203}!", snap);
+        }
+    }
+}
+
+test "legacy bridge citation filtering leaves structured and whole tool output unchanged" {
+    var queue: tui.EventQueue = .{};
+    queue.attach(std.testing.allocator);
+    defer queue.deinit();
+    var buf: [128]u8 = undefined;
+    var stream: repl.StreamBuf = .{ .buf = &buf };
+    var bridge: Bridge = .{ .queue = &queue, .stream = &stream };
+    const sink = forBridge(&bridge);
+    const raw = "raw\u{E200}cite\u{E202}ref\u{E201}";
+    sink.emit(undefined, .{ .text_delta = .{ .text = "\u{E200}unclosed" } });
+    sink.emit(undefined, .{ .tool_result = .{ .name = "bash", .text = raw, .is_error = false } });
+    sink.emit(undefined, .{ .completion_text = .{ .text = raw } });
+    const evs = queue.drain();
+    defer queue.free(evs);
+    try std.testing.expectEqualStrings(raw, evs[0].tool_finished.detail);
+    const snap = stream.snapshot(std.testing.allocator) orelse return error.NoStream;
+    defer std.testing.allocator.free(snap);
+    try std.testing.expectEqualStrings(raw ++ "\n", snap);
+}
+
+test "legacy bridge citation channels stay independent" {
+    var queue: tui.EventQueue = .{};
+    var buf: [128]u8 = undefined;
+    var stream: repl.StreamBuf = .{ .buf = &buf };
+    var bridge: Bridge = .{ .queue = &queue, .stream = &stream, .show_thinking = true };
+    const sink = forBridge(&bridge);
+    sink.emit(undefined, .{ .reasoning_delta = .{ .text = "\u{E200}unclosed" } });
+    sink.emit(undefined, .{ .text_delta = .{ .text = "answer" } });
+    sink.emit(undefined, .{ .reasoning_delta = .{ .text = "\u{E201}thought" } });
+    sink.emit(undefined, .{ .text_delta = .{ .text = "\u{E200}hidden" } });
+    sink.emit(undefined, .{ .reasoning_delta = .{ .text = "!" } });
+    sink.emit(undefined, .{ .tool_arg_delta = .{ .text = "\u{E201}tail" } });
+    const snap = stream.snapshot(std.testing.allocator) orelse return error.NoStream;
+    defer std.testing.allocator.free(snap);
+    try std.testing.expectEqualStrings("answerthought!\ntail", snap);
+}
+
+test "legacy bridge citation lifecycle drops unclosed spans and split prefixes" {
+    const boundaries = [_]EngineEvent{
+        .stream_begin,
+        .{ .stream_complete = .{ .streamed_text = true } },
+        .stream_finished,
+        .{ .stream_aborted = .interrupted },
+        .{ .transport_aborted = .{ .reason = .interrupted, .turn_ending = false } },
+        .{ .transport_aborted = .{ .reason = .interrupted, .turn_ending = true } },
+    };
+    for (boundaries) |boundary| {
+        for ([_][]const u8{ "\u{E200}unclosed", "\xee", "\xee\x88" }) |unfinished| {
+            var queue: tui.EventQueue = .{};
+            var buf: [128]u8 = undefined;
+            var stream: repl.StreamBuf = .{ .buf = &buf };
+            var bridge: Bridge = .{ .queue = &queue, .stream = &stream, .show_thinking = true };
+            const sink = forBridge(&bridge);
+            sink.emit(undefined, .{ .reasoning_delta = .{ .text = "why" } });
+            sink.emit(undefined, .{ .reasoning_delta = .{ .text = unfinished } });
+            sink.emit(undefined, .{ .text_delta = .{ .text = unfinished } });
+            sink.emit(undefined, boundary);
+            sink.emit(undefined, .{ .text_delta = .{ .text = "next" } });
+            sink.emit(undefined, .{ .reasoning_delta = .{ .text = "thought" } });
+            const snap = stream.snapshot(std.testing.allocator) orelse return error.NoStream;
+            defer std.testing.allocator.free(snap);
+            try std.testing.expectEqualStrings("whynextthought", snap);
+        }
+    }
 }

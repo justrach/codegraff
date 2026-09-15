@@ -79,12 +79,36 @@ async function runChatOverflow({ win, origin, output }) {
     }
     return result.width;
   };
-  const wheel = async (point, deltaX, deltaY) => {
+  const wheel = async (point, deltaX, deltaY, target = transcript) => {
     await testDesktop.testInput(wc, { type: 'mouseMove', ...point });
-    await testDesktop.testInput(wc, { type: 'mouseWheel', ...point, deltaX, deltaY, canScroll: true });
-    await sleep(200);
+    // Arm the actual target before dispatch. A transport acknowledgement or a
+    // fixed sleep does not prove the renderer received this wheel event.
+    await js(`(() => {
+      const target = ${target};
+      if (!target?.isConnected || !target.contains(document.elementFromPoint(${point.x}, ${point.y}))) {
+        throw Error('Wheel target moved before dispatch');
+      }
+      window.overflowWheel = null;
+      const receive = event => { window.overflowWheel = {
+        trusted: event.isTrusted, deltaX: event.deltaX, deltaY: event.deltaY
+      }; };
+      target.addEventListener('wheel', receive, { once: true, passive: true });
+      window.cancelOverflowWheel = () => target.removeEventListener('wheel', receive);
+    })()`);
+    try {
+      await testDesktop.testInput(wc, { type: 'mouseWheel', ...point, deltaX, deltaY, canScroll: true });
+      await wait(`window.overflowWheel !== null`);
+      assert.deepEqual(await js(`window.overflowWheel`), { trusted: true, deltaX: -deltaX || 0, deltaY: -deltaY || 0 }, 'Trusted wheel reaches the intended scroller');
+      // The wheel listener runs before the default scroll action. Wait for its
+      // rendered result as well, without injecting a second wheel on failure.
+      await js(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))`);
+      await sleep(200);
+    } finally {
+      await js(`window.cancelOverflowWheel(); delete window.cancelOverflowWheel`);
+    }
   };
   const viewportWheels = async label => {
+    await testDesktop.focusTestPage(wc);
     // The blank left gutter targets the transcript, not an intentionally scrollable code block.
     const point = await js(`(() => {
       const e = ${transcript}; e.scrollTop = 0; e.dispatchEvent(new Event('scroll'));
@@ -110,6 +134,9 @@ async function runChatOverflow({ win, origin, output }) {
     await bounds(label);
   };
   const localScroll = async (selector, label) => {
+    // Establish Chromium focus before scrolling or measuring the hit target;
+    // focusing later can move the viewport to the active composer.
+    await testDesktop.focusTestPage(wc);
     const point = await js(`(() => {
       const e = ${transcript}, target = e.querySelector(${JSON.stringify(selector)});
       if (!target) return null;
@@ -149,10 +176,7 @@ async function runChatOverflow({ win, origin, output }) {
       if (i === 119) throw Error(`${label}: no stable visible wheel target ${JSON.stringify(geometry)}`);
     }
     assert.ok(geometry.contained, `${label}: local scroller fits transcript`);
-    await js(`window.overflowWheel = null; window.overflowLocal.addEventListener('wheel', event => {
-      window.overflowWheel = { trusted: event.isTrusted, deltaX: event.deltaX, deltaY: event.deltaY };
-    }, { once: true, passive: true })`);
-    await wheel({ x: geometry.x, y: geometry.y }, -240, 0);
+    await wheel({ x: geometry.x, y: geometry.y }, -240, 0, 'window.overflowLocal');
     assert.deepEqual(await js(`window.overflowWheel`), { trusted: true, deltaX: 240, deltaY: 0 }, `${label}: trusted horizontal wheel reaches local scroller`);
     assert.ok(await js(`window.overflowLocal.scrollLeft > 10`), `${label}: horizontal wheel reveals wide content`);
     assert.equal(await js(`${transcript}.scrollLeft`), 0, `${label}: local scrolling never pans transcript`);

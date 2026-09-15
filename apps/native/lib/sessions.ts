@@ -36,11 +36,13 @@ export type SessionPage = {
 export type SessionScope = "all" | "local" | "elsewhere";
 
 export type TranscriptMsg =
-  | { role: "user"; text: string }
+  | { role: "user"; text: string; origin?: "notification" }
   | { role: "assistant"; turn: AssistantTurn };
 
 export type SessionResponse = StoredSession & {
   messages?: unknown[];
+  /** Canonical checklist from the same saved file, including an explicit clear. */
+  todos?: unknown;
   presentation?: "transcript-v1";
   transcript?: TranscriptMsg[];
   /** Saved file only — not a live REPL attach (#839). */
@@ -51,15 +53,25 @@ export type SessionResponse = StoredSession & {
 /** New servers project the existing GUI transcript before crossing into the
  * renderer. Keep raw responses readable for older servers and local fixtures. */
 export function sessionFromResponse(body: SessionResponse): { meta: StoredSession; messages: TranscriptMsg[]; snapshot: boolean } {
-  const { messages, presentation, transcript, view: _view, execution: _execution, ...meta } = body;
+  const { messages, presentation, transcript, todos, view: _view, execution: _execution, ...meta } = body;
   return {
     meta,
     // A saved file is never a live REPL attach. The GUI must not infer
     // that commentary or a successful load means the other surface finished (#839).
     snapshot: true,
-    messages: presentation === "transcript-v1" && Array.isArray(transcript)
-      ? transcript.map(message => message.role === "assistant" ? { ...message, turn: { ...message.turn, status: "snapshot" } } : message) : transcriptFromMessages(messages ?? [], meta.model ?? undefined),
+    messages: withSavedTodos(presentation === "transcript-v1" && Array.isArray(transcript)
+      ? transcript.map(message => message.role === "assistant" ? { ...message, turn: { ...message.turn, status: "snapshot" } } : message) : transcriptFromMessages(messages ?? [], meta.model ?? undefined), todos),
   };
+}
+
+/** Tool arguments are historical proposals; the saved checklist is authoritative. */
+function withSavedTodos(messages: TranscriptMsg[], saved: unknown): TranscriptMsg[] {
+  if (!Array.isArray(saved)) return messages;
+  const todos = todosOf({ todos: saved });
+  const last = messages.findLastIndex(message => message.role === "assistant");
+  if (last < 0) return todos.length ? [...messages, { role: "assistant", turn: { ...emptyTurn(), status: "snapshot", todos } }] : messages;
+  return messages.map((message, index) => index === last && message.role === "assistant"
+    ? { ...message, turn: { ...message.turn, todos } } : message);
 }
 
 const BASE = "/api/sessions";
@@ -182,7 +194,7 @@ export function groupSessions(rows: StoredSession[], now = Date.now()): { group:
 }
 
 type RawCall = { id?: unknown; function?: { name?: unknown; arguments?: unknown } };
-type RawMsg = { role?: unknown; content?: unknown; tool_calls?: unknown; tool_call_id?: unknown };
+type RawMsg = { _graff_origin?: unknown; role?: unknown; content?: unknown; tool_calls?: unknown; tool_call_id?: unknown };
 
 function textOf(content: unknown): string {
   if (typeof content === "string") return content;
@@ -234,7 +246,7 @@ function appendText(turn: AssistantTurn, text: string): void {
  * the live ACP stream renders a turn; `attempt_completion` is the engine's
  * final-answer tool, so its `result` becomes prose instead of a tool row.
  */
-export function transcriptFromMessages(raw: unknown[], model?: string): TranscriptMsg[] {
+export function transcriptFromMessages(raw: unknown[], model?: string, savedTodos?: unknown): TranscriptMsg[] {
   const out: TranscriptMsg[] = [];
   let turn: AssistantTurn | null = null;
   const flush = () => {
@@ -258,7 +270,7 @@ export function transcriptFromMessages(raw: unknown[], model?: string): Transcri
       const text = withoutGuiSkillContext(textOf(msg.content).trim());
       if (!text) continue;
       flush();
-      out.push({ role: "user", text });
+      out.push({ role: "user", text, ...(msg._graff_origin === "notification" ? { origin: "notification" as const } : {}) });
       continue;
     }
     if (msg.role === "assistant") {
@@ -312,5 +324,5 @@ export function transcriptFromMessages(raw: unknown[], model?: string): Transcri
     }
   }
   flush();
-  return out;
+  return withSavedTodos(out, savedTodos);
 }

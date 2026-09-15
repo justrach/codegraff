@@ -118,6 +118,11 @@ pub fn spinnerStop(self: *Agent) void {
 /// one-line summary when the answer starts (#75).
 pub fn streamThinking(self: *Agent, chunk: []const u8) void {
     const w = self.out orelse return;
+    const start = self.thinking_text.items.len;
+    var bytes: [3]u8 = undefined;
+    for (chunk) |b| self.thinking_text.appendSlice(self.gpa, self.thinking_cite.byte(b, &bytes)) catch return;
+    const visible = self.thinking_text.items[start..];
+    if (visible.len == 0) return;
     if (!self.thinking_open) {
         self.spinnerStop();
         w.print("{s}▼ Thinking{s}\n{s}", .{ style.dim, style.reset, style.dim }) catch return;
@@ -131,11 +136,10 @@ pub fn streamThinking(self: *Agent, chunk: []const u8) void {
         // block (or shift the erase onto real output). Hold until it closes.
         tick_gate.hold();
     }
-    self.thinking_text.appendSlice(self.gpa, chunk) catch {};
     if (self.thinking_folded) return; // folded: buffer only, don't draw the live block
-    w.writeAll(chunk) catch return;
+    w.writeAll(visible) catch return;
     w.flush() catch return;
-    advanceThinkingRows(&self.thinking_rows, &self.thinking_col, termCols(), chunk);
+    advanceThinkingRows(&self.thinking_rows, &self.thinking_col, termCols(), visible);
     if (self.thinking_rows + 1 >= termRows()) self.thinking_overflow = true;
 }
 
@@ -145,7 +149,15 @@ pub fn streamThinking(self: *Agent, chunk: []const u8) void {
 /// erase the user's earlier output. Runs on the reasoning->answer transition
 /// and at stream end.
 pub fn closeThinkingBlock(self: *Agent) void {
+    const tail = self.thinking_cite.finish();
     if (!self.thinking_open) return;
+    if (tail.len != 0) {
+        self.thinking_text.appendSlice(self.gpa, tail) catch {};
+        if (!self.thinking_folded) if (self.out) |w| {
+            w.writeAll(tail) catch {};
+            advanceThinkingRows(&self.thinking_rows, &self.thinking_col, termCols(), tail);
+        };
+    }
     self.thinking_open = false;
     main_mod.g_thinking_open = false;
     self.thinking_folded = false;

@@ -80,7 +80,7 @@ async function runNavigationKeyboard({win, origin}) {
   assert.equal(await js(`document.activeElement.matches('[aria-label="Search chats"]')`), true, 'Closing chat search restores its trigger');
   await click('button[aria-label="Collapse sidebar"]');
   await wait(`document.activeElement.matches('[aria-label="Expand sidebar"]')`);
-  await js(`document.querySelector('button[aria-label="Browser"]').focus()`);
+  await js(`document.querySelector('[aria-label="Workspace navigation"] button[aria-label="Conversations"]').focus()`);
   await key('Tab');
   assert.equal(await js(`!!document.activeElement.closest('[aria-label="Workspace navigation"]')`), false, 'Collapsed chat rows and footer are skipped after the visible navigation icons');
   await click('button[aria-label="Expand sidebar"]');

@@ -67,6 +67,7 @@ const setTerminalTitle = title_mod.setTerminalTitle;
 /// after "context cleared" (#178).
 pub fn resetConversationSteering(root: *Agent) void {
     root.goal = null;
+    root.pr_draft_scope = null;
     root.completion_gate_armed = false; // a dropped goal re-arms the completion double-check (#318)
     root.todos_dirty = false; // the conversation's checklist dies with it; nothing survives as /loop evidence (#318)
     root.ultracode_mode = false;
@@ -91,6 +92,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     _ = keys; // unused in this file's command set; kept for a uniform tryHandle signature
     // #554: claims /snapshot, and /rewind ONLY when its argument is a snapshot
     // id — a numeric /rewind falls through to the conversation rewind below.
+    if (try @import("pr_acceptance.zig").slash(root, line, out)) return true;
     if (try commands_sandbox.tryHandle(root, arena, line, out)) return true;
     if (try commands_trajectory.tryHandle(root, arena, line, out)) return true;
     if (try @import("commands_experiment.zig").tryHandle(root, arena, line, out)) return true;
@@ -180,7 +182,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 return true;
             }
             const open = goal_state.openCount(root.todos.items, goal_state.currentEpoch(root.goal));
-            root.goal = null; // the checklist PARKS with the goal (#318): items keep their epoch and stay in the session, they just stop being current
+            root.goal = null; // the checklist parks with its old epoch
+            root.pr_draft_scope = null;
             goal_state.resetCompletionGate(root);
             root.goal_note_fp = 0;
             prompts.pinStandingGoal(root, arena);

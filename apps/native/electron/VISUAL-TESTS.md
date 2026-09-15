@@ -295,3 +295,16 @@ macOS window occlusion or presented frames.
 
 Compare resource use with the same production benchmark described above; motion
 checks verify behavior and cleanup, not an overall desktop memory budget.
+
+## Retained servers at desktop shutdown
+
+After building the GUI, worker, and Electron bundle, run
+`bun scripts/test-server-desktop.mjs`. The production Electron main and backend
+run with isolated profiles and hidden windows. Trusted Chromium input starts a
+real HTTP server through the worker, then optionally pins it. The test observes
+backend and worker exit before the external watchdog can clean up, requests a
+logged HTTP response after quit, and verifies fresh CLI discovery and stop.
+An unrelated listener must survive. Model replies are scripted locally; this
+is not a live-provider or native OS keyboard test. Logs, trajectories and
+screenshots stay in `zig-out/server-desktop` (or `GRAFF_SHUTDOWN_OUTPUT`).
+`GRAFF_SHUTDOWN_NATIVE` can select an already built native resources directory.

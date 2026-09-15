@@ -24,14 +24,14 @@ pub fn paramsOf(self: *const Model) engine.Params {
 pub fn startJob(self: *Model) void {
     var turns = std.array_list.Managed(engine.Turn).init(self.alloc);
     for (self.history.items) |e| {
-        const role: ?engine.Turn.Role = switch (e.kind) {
+        const role: ?engine.Turn.Role = if (e.notification) .user else switch (e.kind) {
             .user => .user,
             .assistant => .assistant,
             else => null,
         };
         if (role) |r| {
             const t = self.alloc.dupe(u8, e.text) catch continue;
-            turns.append(.{ .role = r, .text = t }) catch {
+            turns.append(.{ .role = r, .text = t, .notification = e.notification }) catch {
                 self.alloc.free(t);
                 continue;
             };
@@ -75,7 +75,8 @@ pub fn maybeJobWake(self: *Model) void {
     const f = engine.g_idle_wake_fn orelse return;
     var buf: [512]u8 = undefined;
     const text = f(engine.g_turn_ctx, &buf) orelse return;
-    self.push(.user, text) catch return;
+    self.push(.system, text) catch return;
+    self.history.items[self.history.items.len - 1].notification = true;
     startJob(self);
 }
 pub fn finishJob(self: *Model) void {
@@ -106,6 +107,7 @@ pub fn finishJob(self: *Model) void {
     job.events.deinit();
     self.alloc.destroy(job);
     self.pending = null;
+    @import("owned_images.zig").collect(self);
     self.cancel_requested = false;
     self.scroll = 0;
     self.follow = true;

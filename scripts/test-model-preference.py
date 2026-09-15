@@ -106,12 +106,13 @@ def main() -> None:
             "GRAFF_NO_TELEMETRY": "1",
         }
 
-        # An explicit picker/command selection is persisted.
+        # An explicit reselection still persists, without claiming a switch.
         with launch(str(cwd), env, codex_home=str(codex_home)) as session:
+            session.wait_for_literal("gpt-5.6-sol · Medium")
             session.wait_for_prompt()
             cursor = len(session.raw)
             session.send_line("/model codex")
-            session.wait_for_literal("switched to gpt-5.6-sol via codex", start=cursor)
+            session.wait_for_literal("already using gpt-5.6-sol via codex", start=cursor)
             session.wait_for_literal("gpt-5.6-sol · Medium", start=cursor)
             session.wait_for_prompt(start=cursor)
             clean_exit(session)

@@ -42,8 +42,11 @@ pub fn applyLine(self: *Model, raw: []const u8) Effect {
         return .stay;
     }
     const payload = withImages(self, line);
-    self.push(.user, payload) catch {};
-    if (payload.ptr != line.ptr) self.alloc.free(payload);
+    defer if (payload.ptr != line.ptr) self.alloc.free(payload);
+    self.push(.user, payload) catch {
+        self.push(.err, "could not preserve the submitted attachment; recall the prompt and retry") catch {};
+        return .stay;
+    };
     if (self.chat) {
         self.turns += 1;
         turn.startJob(self);
@@ -149,9 +152,11 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         } else if (engine.g_model_fn) |f| {
             // A hand-typed name names no provider, so the engine routes it —
             // the picker is the surface that knows which seat was meant.
+            const previous: engine.Picked = .{ .model = engine.g_model_name, .provider = engine.g_model_provider };
             if (f(engine.g_turn_ctx, self.alloc, "", arg)) |got| {
+                const same = std.mem.eql(u8, previous.model, got.model) and std.mem.eql(u8, previous.provider, got.provider);
                 self.adoptModel(got);
-                self.pushFmt(.system, "switched to {s} · {s}", .{ got.model, got.provider }) catch {};
+                self.pushFmt(.system, "{s} {s} · {s}", .{ if (same) "already using" else "switched to", got.model, got.provider }) catch {};
             } else self.pushFmt(.err, "couldn't switch to '{s}'", .{arg}) catch {};
         } else self.push(.system, "model switching isn't available (offline)") catch {};
     } else if (std.mem.eql(u8, canon, "/effort")) {
@@ -439,9 +444,10 @@ pub fn recallNext(self: *Model) void {
 pub fn pasteClipboard(self: *Model) void {
     if (engine.g_paste_fn) |f| {
         var buf: [1024]u8 = undefined;
-        const n = f(engine.g_turn_ctx, &buf);
+        var owned = false;
+        const n = f(engine.g_turn_ctx, &buf, &owned);
         if (n > 0) {
-            self.attachImage(buf[0..@intCast(n)]);
+            @import("owned_images.zig").attach(self, buf[0..@intCast(n)], owned);
         } else if (n < 0) {
             self.setToast(buf[0..@intCast(-n)]);
         } else self.setToast("no image on the clipboard — Ctrl+V (⌘V can't be captured)");

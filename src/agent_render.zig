@@ -40,7 +40,10 @@ const isTableSeparator = Agent.isTableSeparator;
 /// dropped) from renderMdLine's literal-marker fallback.
 pub fn streamMarkdown(self: *Agent, text: []const u8) void {
     const w = self.out orelse return;
-    for (text) |b| self.mdByte(w, b);
+    var visible: [3]u8 = undefined;
+    for (text) |b| {
+        for (self.md_cite.byte(b, &visible)) |clean| self.mdByte(w, clean);
+    }
     w.flush() catch {};
     // Only now, with the delta actually on the terminal, may a parallel
     // child's activity line through — and only if this delta ended a row
@@ -432,6 +435,7 @@ pub const codepointCount = markdown_url.codepointCount;
 /// caller adds the separating newline), and reset fence state.
 pub fn flushStreamTail(self: *Agent) void {
     const w = self.out orelse return;
+    for (self.md_cite.finish()) |b| self.mdByte(w, b);
     _ = self.mdFinishLine(w); // may swallow a final table row…
     if (self.md_table.items.len > 0) self.flushTable(w); // …then render it
     w.flush() catch {};
