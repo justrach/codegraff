@@ -571,7 +571,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("agent_model_loop.zig");
     _ = @import("publication_policy_tests.zig");
     _ = @import("jobs_completion_tests.zig");
-    _ = @import("test_hooks.zig"); // unreached modules; their tests were silently skipped
+    _ = .{ @import("readline_paste_number_tests.zig"), @import("test_hooks.zig") }; // unreached modules; their tests were silently skipped
     _ = @import("list_dir_nearmiss.zig");
     _ = @import("repo_map.zig");
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests
