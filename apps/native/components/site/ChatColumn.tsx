@@ -21,6 +21,8 @@ export default function ChatColumn({ thread, compact, following, register, onOpe
   health: Health | null; onOpenProject: () => void; onProjects: () => void; onConversations: () => void;
   onRefresh: (loaded: Awaited<ReturnType<typeof loadSession>>) => void; onContinue: () => void;
 }) {
+  const measured = thread.messages.findLast(message => message.role === "assistant" && message.turn.contextMeter);
+  const contextMeter = measured?.role === "assistant" ? measured.turn.contextMeter : undefined;
   if (!thread.messages.length && !thread.snapshot) return <div className="min-h-0 flex-1 overflow-y-auto">
     <EmptyState compact={compact} onOpenProject={onOpenProject} onProjects={onProjects}
       onContinue={onConversations} onReview={onReview} onSend={prompt.onSend} onSetting={prompt.onSetting}
@@ -43,7 +45,7 @@ export default function ChatColumn({ thread, compact, following, register, onOpe
             </button>
           </div>}
           <PromptQueue {...queue} />
-          <PromptBar {...prompt} tall={!compact} placeholder={prompt.busy ? "Queue a follow-up…" : "Follow up"} />
+          <PromptBar {...prompt} contextMeter={contextMeter} tall={!compact} placeholder={prompt.busy ? "Queue a follow-up…" : "Follow up"} />
         </>}
       </div>
     </div>
