@@ -271,6 +271,8 @@ pub fn renderLoadedTail(s: *std.json.Stringify, kind: @import("provider.zig").Pr
     const schema_mod = @import("schema.zig");
     const mcp = @import("mcp.zig");
     for (loadedNames()) |name| {
+        // #868: available rlm is already in the catalog head.
+        if (std.mem.eql(u8, name, "rlm") and @import("rlm_spec.zig").available) continue;
         const spec = (try findRootSpec(out, name)) orelse continue;
         try schema_mod.writeToolEntry(s, kind, spec.name, spec.desc, .{ .raw = spec.schema });
     }

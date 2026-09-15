@@ -431,6 +431,6 @@ test "lean catalog drops overflow pager and empty load_tool_schemas" {
     try std.testing.expect(std.mem.indexOf(u8, json, "write_file") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "read_tool_result") == null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"load_tool_schemas\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"rlm\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"rlm\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"read_file\"") != null);
 }

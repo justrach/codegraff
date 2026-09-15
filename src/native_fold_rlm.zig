@@ -226,17 +226,12 @@ test "showcasing rlm keeps the tools head bytes; schema rides the tail" {
     };
 
     const before = try schema_mod.renderRootTools(arena, .openai, &specs, &.{});
-    try std.testing.expect(std.mem.indexOf(u8, before, "rlm") == null);
-    try std.testing.expect(std.mem.indexOf(u8, before, rlm.tool_schema) == null);
+    try std.testing.expect(std.mem.indexOf(u8, before, "rlm") != null);
+    try std.testing.expect(std.mem.indexOf(u8, before, rlm.tool_schema) != null);
 
     try std.testing.expect(fold.noticeContext(50_000, 80_000));
     const after = try schema_mod.renderRootTools(arena, .openai, &specs, &.{});
-    try std.testing.expect(before.len >= 1 and before[before.len - 1] == ']');
-    try std.testing.expect(std.mem.startsWith(u8, after, before[0 .. before.len - 1]));
-    try std.testing.expect(after.len > before.len);
-    try std.testing.expect(after[before.len - 1] == ',');
-    try std.testing.expect(std.mem.indexOf(u8, after[before.len - 1 ..], rlm.tool_schema) != null);
-    try std.testing.expect(std.mem.indexOf(u8, after[before.len - 1 ..], "llm_query") != null);
+    try std.testing.expectEqualStrings(before, after);
 
     fold.resetSession();
     try std.testing.expect(!fold.listed());
