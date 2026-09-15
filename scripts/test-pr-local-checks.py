@@ -10,7 +10,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "eval"))
-from github_fixture import prepare
+from github_fixture import prepare, prepare_review
 from mock_model import ScriptedModel
 from process_guard import run
 
@@ -96,6 +96,14 @@ def main():
                 script = [{"tools": [check, publish]}, final]
             else:
                 script = [check, bash("git diff"), publish, final]
+            prepare_review(work, ["test_observed.py", "notes.md"])
+            if case in ("rerun", "body-valid"):
+                # The semantic verdict is a separate controlled response in
+                # this observed-failure regression, not inferred from prose.
+                if case == "rerun":
+                    at = script.index(publish)
+                    script[at:at] = [bash("git add test_observed.py && git -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm repair"), check]
+                script.insert(script.index(publish)+1, {"text": json.dumps({"verdict":"supported","reason":"Controlled review for this local-check lifecycle regression."})})
             model = ScriptedModel(script)
             model.start(1234)
             try:

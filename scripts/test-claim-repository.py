@@ -12,7 +12,7 @@ import sys
 import tempfile
 import threading
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'eval'))
-from github_fixture import prepare
+from github_fixture import prepare, prepare_review
 from mock_model import ScriptedModel
 
 
@@ -46,6 +46,9 @@ class Model(ScriptedModel):
         self.work = None
 
     def next_reply(self, body):
+        if 'committed_inputs' in json.dumps(body):
+            with self._lock: self.requests.append(body)
+            return {'text':json.dumps({'verdict':'supported','reason':'Controlled review for the committed fixture.'})}
         actor = 'owner' if 'fixture-owner-only' in json.dumps(body) else 'caller'
         with self._lock:
             self.requests.append(body)
@@ -95,6 +98,7 @@ def run_case(binary, name, case, evidence):
         state['wait_release'] = case.get('wait_release', False)
         if 'head_repo' in case: state['head_repo'] = case['head_repo']
         prepare(work, env, state)
+        prepare_review(work, ['notes.md'])
         model.start(1234)
         owner = None
         release_thread = None

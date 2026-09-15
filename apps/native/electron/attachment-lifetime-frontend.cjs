@@ -119,9 +119,12 @@ async function runAttachments({win,origin,temp,output,requests,workspace,send,cl
   const savedRow = '#sidebar-chat-list button[data-session-name=' + JSON.stringify(savedName.replace(/\.session\.json$/, '')) + ']';
   await until(()=>js(`!!document.querySelector(${JSON.stringify(savedRow)})`),'the exact saved image conversation in History');
   await js(`document.querySelector(${JSON.stringify(savedRow)}).parentElement.querySelector('button[aria-label^="Actions for "]').setAttribute('data-audit-delete-menu','true')`);
+  const menuId = await js(`document.querySelector('[data-audit-delete-menu="true"]').getAttribute('popovertarget')`);
+  assert.ok(menuId, 'The saved image conversation must own its action menu');
+  const deleteAction = '[id=' + JSON.stringify(menuId) + ']:popover-open > button[aria-label^="Delete "]';
   await click('[data-audit-delete-menu="true"]');
-  await until(()=>js(`!!document.querySelector('button[aria-label^="Delete "]')`),'saved conversation delete action');
-  await click('button[aria-label^="Delete "]');
+  await until(()=>js(`!!document.querySelector(${JSON.stringify(deleteAction)})`),'saved conversation delete action');
+  await click(deleteAction);
   await until(()=>!fs.existsSync(savedFile),'session removed after its writer exits');
   await until(()=>{try{process.kill(consumers[0],0);return false;}catch(error){return error.code==='ESRCH';}},'image consumer process exited');
   fs.writeFileSync(path.join(output,'attachment-consumers.json'),JSON.stringify({worker:consumers[0],aliveAfterTurn:true,exitedAfterDelete:true},null,2));

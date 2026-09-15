@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "eval"))
 from mock_model import ScriptedModel
 from process_guard import run as bounded_run
 
-from github_fixture import GH
+from github_fixture import GH, prepare_review
 
 
 def tool(command):
@@ -32,7 +32,7 @@ def completion(text="Verification complete."):
     return {"tool": "attempt_completion", "arguments": {"result": text}}
 
 
-def run_case(graff, name, script, state=None, expected_mutations=0, refused=0, expected_final=None, resume_check=False):
+def run_case(graff, name, script, state=None, expected_mutations=0, refused=0, expected_final=None, resume_check=False, review=False):
     with tempfile.TemporaryDirectory(prefix="graff-297-") as temp:
         work = Path(temp)
         (work / "bin").mkdir()
@@ -50,6 +50,13 @@ def run_case(graff, name, script, state=None, expected_mutations=0, refused=0, e
         env.update(HOME=temp, PATH=str(work / "bin") + os.pathsep + os.environ["PATH"],
                    LMSTUDIO_API_KEY="local", GRAFF_NO_TELEMETRY="1", GRAFF_FLEET="off",
                    GRAFF_NO_SMOLIFY="1", GRAFF_NO_CODEDB_GUARD="1", NO_COLOR="1")
+        if review:
+            prepare_review(work, ['notes.md'])
+            if (state or {}).get('remote_head') == 'initial':
+                current = json.loads((work/'gh-state.json').read_text())
+                current['remote_head'] = current['initial_head']
+                (work/'gh-state.json').write_text(json.dumps(current))
+            script = [script[0], {'text':json.dumps({'verdict':'supported','reason':'Controlled review for the committed fixture.'})}, *script[1:]]
         model = ScriptedModel(script)
         model.start(1234)
         try:
@@ -138,11 +145,15 @@ def handoff(graff):
         env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")}
         env.update(HOME=temp, PATH=str(work / "bin") + os.pathsep + os.environ["PATH"], LMSTUDIO_API_KEY="local",
                    GRAFF_NO_TELEMETRY="1", GRAFF_FLEET="off", GRAFF_NO_SMOLIFY="1", GRAFF_NO_CODEDB_GUARD="1", NO_COLOR="1")
+        prepare_review(work, ['notes.md'])
         acquired, primed, transferred = (threading.Event() for _ in range(3))
         def peer(action, kind="publication", key="fixture", **extra):
             return {"tool": "peer_message", "arguments": dict(action=action, kind=kind, key=key, **extra)}
         class Peers(ScriptedModel):
             def next_reply(self, body):
+                if 'committed_inputs' in json.dumps(body):
+                    with self._lock: self.requests.append(body)
+                    return {'text':json.dumps({'verdict':'supported','reason':'Controlled committed fixture review.'})}
                 actor = "A" if "fixture-actor-A" in json.dumps(body) else "B"
                 with self._lock:
                     self.requests.append(body)
@@ -242,12 +253,12 @@ def main():
     for bad in ({"runs": "failure"}, {"runs": "pending"}, {"unavailable": True}, {"runs": "malformed"}):
         run_case(args.graff, f"non-draft refuses {bad}", [tool(create), {"text": "Publication blocked."}], bad)
     run_case(args.graff, "body flag cannot turn non-draft into draft", [tool("gh pr create --title fixture --body '--draft'"), {"text": "Blocked."}], {"runs": "failure"})
-    run_case(args.graff, "local-only and repeated completion cannot pass PR CI", [tool(create), completion(), completion(), {"text": "CI remains unverified."}], {"runs": "none"}, expected_mutations=1, refused=2, resume_check=True)
-    run_case(args.graff, "fresh passing remote head completes", [tool(create), completion()], {"checks": "SUCCESS"}, expected_mutations=1, expected_final="Verification complete.")
+    run_case(args.graff, "local-only and repeated completion cannot pass PR CI", [tool(create), completion(), completion(), {"text": "CI remains unverified."}], {"runs": "none"}, expected_mutations=1, refused=2, resume_check=True, review=True)
+    run_case(args.graff, "fresh passing remote head completes", [tool(create), completion()], {"checks": "SUCCESS"}, expected_mutations=1, expected_final="Verification complete.", review=True)
     run_case(args.graff, "draft handoff needs explicit scope", [tool(create + " --draft"), completion("Handing off the draft."), {"text": "Draft remains unverified."}], {"runs": "failure"}, expected_mutations=1, refused=1)
     commit = "git -c user.name=Fixture -c user.email=fixture@example.invalid commit --allow-empty -m next"
-    run_case(args.graff, "ready refreshes changed head", [tool(create), tool(commit), tool("gh pr ready"), {"text": "New head needs CI."}], {"checks": "FAILURE"}, expected_mutations=1)
-    run_case(args.graff, "passing old remote head is not local new head", [tool(create), tool(commit), completion(), {"text": "Push and verify the new head."}], {"checks": "SUCCESS", "remote_head": "initial"}, expected_mutations=1, refused=1)
+    run_case(args.graff, "ready refreshes changed head", [tool(create), tool(commit), tool("gh pr ready"), {"text": "New head needs CI."}], {"checks": "FAILURE"}, expected_mutations=1, review=True)
+    run_case(args.graff, "passing old remote head is not local new head", [tool(create), tool(commit), completion(), {"text": "Push and verify the new head."}], {"checks": "SUCCESS", "remote_head": "initial"}, expected_mutations=1, refused=1, review=True)
 
 
 if __name__ == "__main__":

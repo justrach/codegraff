@@ -152,6 +152,8 @@ record only when you need the evidence or the edge cases.
 | [0132](0132-desktop-passkeys-use-signed-device-credentials.md) | Desktop Touch ID uses matching signed keychain configuration; account choice is explicit and existing iCloud credentials need a fallback. |
 | [0133](0133-clipboard-files-follow-consumer-ownership.md) | Clipboard cleanup requires file ownership and released consumers; age alone never deletes active or saved attachments. |
 
+| [0133](0133-publication-review-binds-committed-inputs.md) | Proposed: non-draft publication reviews immutable source and observed checks; changed inputs invalidate earlier assessments. |
+
 ## When to write one
 
 Write an ADR when a decision is load-bearing and non-obvious: it was reached

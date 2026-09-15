@@ -100,6 +100,20 @@ jobs:
       - name: Observed local checks before publication
         run: python3 scripts/test-pr-local-checks.py --graff zig-out/bin/graff --evidence /tmp/pr-local-checks
 
+      - name: Committed claim review before publication
+        run: |
+          for verdict in unsupported unresolved invalid supported; do
+            python3 scripts/test-pr-claim-review.py --case "$verdict"
+          done
+          python3 scripts/test-pr-claim-review.py --case unsupported --plain
+          python3 scripts/test-pr-claim-review.py --case unsupported --oneshot
+          python3 scripts/test-pr-claim-review.py --case supported --budget-exhausted
+          python3 scripts/test-pr-claim-review.py --case supported --ready --repo
+          python3 scripts/test-pr-claim-review.py --case unsupported --ready --repo
+          python3 scripts/test-pr-review-cancel.py
+          python3 scripts/test-pr-claim-review.py --case supported --url
+          python3 scripts/test-pr-claim-review.py --case supported --changed-body
+
       - name: Multi-turn clarification, editing and recovery workflows
         run: python3 scripts/eval-tier2.py --only human-workflow-clarify-edit-recover-followup --only human-workflow-missing-config-clarify-followup --evidence-dir "$RUNNER_TEMP/interactive-workflows"
 

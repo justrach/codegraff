@@ -53,6 +53,7 @@ fn toolCtx(self: *Agent) tools_mod.ToolCtx {
         .approvals = self.approvals,
         .tracer = self.tracer,
         .run_budget = self.run_budget,
+        .publication_checks = self.publication_checks,
         .depth = self.depth,
         .snapshots = self.snapshots,
         .tools_used = &self.tools_used,
