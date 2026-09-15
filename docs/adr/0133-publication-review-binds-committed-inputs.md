@@ -1,4 +1,4 @@
-# 0132. Publication review binds committed inputs
+# 0133. Publication review binds committed inputs
 
 Status: proposed
 
