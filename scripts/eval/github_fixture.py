@@ -27,6 +27,8 @@ elif args[:2]==['run','list']:
     print(json.dumps([{'status':'queued' if status=='pending' else 'completed','conclusion':None if status=='pending' else status}]))
 elif args[:1]==['api']:
     print(state.get('remote_head', head))
+elif args[:2]==['pr','list']:
+    print('[]')
 elif args[:2]==['pr','view']:
     if state.get('wait_release') and '--json' in args and args[args.index('--json')+1].startswith('number,'):
         (root/'lookup-start').touch()
@@ -43,7 +45,7 @@ elif args[:2]==['pr','view']:
     status=state.get('checks','PENDING')
     checks=[] if status=='NONE' else [{'state':status}]
     print(json.dumps({'headRefOid':remote,'isDraft':state.get('draft',False),'body':'## Verification\nLocal tests passed.','statusCheckRollup':checks,'headRefName':state.get('head_branch','fixture'),'number':1,'url':url+'/pull/1','headRepository':{'nameWithOwner':state.get('head_repo',url.split('://',1)[-1].split('/',1)[1])}}))
-elif args[:2] in (['pr','create'],['pr','ready'],['pr','edit']):
+elif args[:2] in (['pr','create'],['pr','ready'],['pr','edit'],['issue','edit']):
     with (root/'mutations.jsonl').open('a') as f:f.write(json.dumps(args)+'\n')
     if '--draft' in args:state['draft']=True
     if args[:2]==['pr','ready']:state['draft']=False
