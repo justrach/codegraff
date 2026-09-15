@@ -118,7 +118,9 @@ jobs:
         run: python3 scripts/test-acp-steer.py zig-out/bin/graff
 
       - name: Isolated read-only review regression
-        run: python3 scripts/test-review-mode.py zig-out/bin/graff
+        run: |
+          python3 scripts/test-review-mode.py zig-out/bin/graff
+          python3 scripts/test-review-deadline.py zig-out/bin/graff
 
       - name: Automatic learning bootstrap and its idle-workspace guard
         run: python3 scripts/test-learn-auto-init.py zig-out/bin/graff

@@ -137,6 +137,8 @@ record only when you need the evidence or the edge cases.
 
 | [0124](0124-review-checkpoints-preserve-unfinished-scope.md) | Explicit reviews request a findings checkpoint every twenty calls without forcing completion or changing authority. |
 
+| [0125](0125-review-deadlines-belong-to-one-turn.md) | Opt-in review deadlines use joined turn-owned watchers, preserve user cancellation, and cannot validate late results. |
+
 ## When to write one
 
 Write an ADR when a decision is load-bearing and non-obvious: it was reached
