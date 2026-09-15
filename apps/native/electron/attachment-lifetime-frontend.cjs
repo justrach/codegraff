@@ -5,7 +5,7 @@ const { nativeImage } = require('electron');
 async function runAttachments({win,origin,temp,output,requests,workspace,send,click,until,report}) {
   const wc = win.webContents, js = code => wc.executeJavaScript(code);
   if(await js(`!!document.querySelector('[aria-label="Close browser"]')`))await click('[aria-label="Close browser"]');
-  if(await js(`!!document.querySelector('[aria-label="Collapse sidebar"]')?.checkVisibility()`)) {
+  if(await js(`!document.querySelector('[data-session-navigation="tabs"]') && !!document.querySelector('[aria-label="Collapse sidebar"]')?.checkVisibility()`)) {
     await click('[aria-label="Collapse sidebar"]');
     await until(()=>js(`!!document.querySelector('[data-session-navigation="tabs"]')`),'attachment tab navigation');
   }
@@ -116,8 +116,9 @@ async function runAttachments({win,origin,temp,output,requests,workspace,send,cl
   await click('[data-tab-id]:has(button[aria-pressed="true"]) [aria-label="Close tab"]');
   if(await js(`!!document.querySelector('[aria-label="Expand sidebar"]')?.checkVisibility()`))await click('[aria-label="Expand sidebar"]');
   else if(await js(`!!document.querySelector('[aria-label="Open navigation"]')?.checkVisibility()`))await click('[aria-label="Open navigation"]');
-  await until(()=>js(`!!document.querySelector('#sidebar-chat-list button[data-row]')`),'closed image conversation in History');
-  await js(`document.querySelector('#sidebar-chat-list button[data-row]').parentElement.querySelector('button[aria-label^="Actions for "]').setAttribute('data-audit-delete-menu','true')`);
+  const savedRow = '#sidebar-chat-list button[data-session-name=' + JSON.stringify(savedName.replace(/\.session\.json$/, '')) + ']';
+  await until(()=>js(`!!document.querySelector(${JSON.stringify(savedRow)})`),'the exact saved image conversation in History');
+  await js(`document.querySelector(${JSON.stringify(savedRow)}).parentElement.querySelector('button[aria-label^="Actions for "]').setAttribute('data-audit-delete-menu','true')`);
   await click('[data-audit-delete-menu="true"]');
   await until(()=>js(`!!document.querySelector('button[aria-label^="Delete "]')`),'saved conversation delete action');
   await click('button[aria-label^="Delete "]');

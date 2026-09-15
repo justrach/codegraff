@@ -1,4 +1,4 @@
-# 0117. Clipboard files follow consumer ownership
+# 0133. Clipboard files follow consumer ownership
 
 Status: accepted 2026-09-15
 

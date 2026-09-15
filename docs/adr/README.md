@@ -126,7 +126,6 @@ record only when you need the evidence or the edge cases.
 | [0113](0113-clipboard-errors-need-evidence.md) | Direct AppKit clipboard failures need typed evidence; generic helper failures never imply Automation permission. |
 | [0114](0114-live-citations-are-terminal-presentation.md) | Live terminal citations use per-stream display filters with independent reasoning state; structured JSON/ACP output stays unchanged. |
 | [0116](0116-informational-turns-have-bounded-scope.md) | Summary turns gather bounded evidence; coding completion requirements apply to requested changes. |
-| [0117](0117-clipboard-files-follow-consumer-ownership.md) | Clipboard cleanup requires file ownership and released consumers; age alone never deletes active or saved attachments. |
 | [0118](0118-file-edits-check-target-worktree.md) | File edits checkpoint the target Git worktree; unresolved paths retain the caller checkpoint. |
 | [0119](0119-computer-tools-receive-caller-context.md) | Computer-use MCP requests receive opaque caller-owned session and turn context. |
 | [0120](0120-draft-publication-does-not-complete-verification.md) | Draft PRs cannot satisfy verified completion; only a user control scoped to this conversation and goal permits an unverified draft handoff. |
@@ -151,6 +150,7 @@ record only when you need the evidence or the edge cases.
 | [0130](0130-mcp-task-app-is-an-optional-result-view.md) | MCP task apps negotiate presentation only; structured results and text fallback share the same bounded task execution. |
 | [0131](0131-mcp-http-and-managed-client-registration.md) | HTTP MCP shares bounded task execution; CLI and GUI installs register detected clients additively through a private local service. |
 | [0132](0132-desktop-passkeys-use-signed-device-credentials.md) | Desktop Touch ID uses matching signed keychain configuration; account choice is explicit and existing iCloud credentials need a fallback. |
+| [0133](0133-clipboard-files-follow-consumer-ownership.md) | Clipboard cleanup requires file ownership and released consumers; age alone never deletes active or saved attachments. |
 
 ## When to write one
 
