@@ -31,3 +31,11 @@ session supplies no historical observations; malformed new state fails restore.
 
 The production regression exercises failing checks, successful reruns, drafts,
 resumes and batched publication with local-only external-service fixtures.
+
+The body disclosure must name a local command in backticks with its reported
+result on a `Local:` line, and give a `Remote:` or `CI:` status. An empty
+Verification heading is insufficient. No pre-PR runs remains a supported
+remote status. This checks reporting completeness, not truth or semantic test
+coverage; fresh CI observations and retained check failures still decide
+readiness independently. The dispatch regression covers empty headings,
+missing results, missing remote status, and complete disclosures.

@@ -23,13 +23,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--graff", default="zig-out/bin/graff")
     parser.add_argument("--evidence", type=Path, required=True)
+    parser.add_argument("--only", help="Run one regression case")
     args = parser.parse_args()
     binary = str(Path(args.graff).resolve())
     failing = "import unittest\nclass Check(unittest.TestCase):\n    def test_observed_failure(self):\n        self.assertEqual(1, 2)\n"
     check = bash("python3 -m unittest test_observed -v")
     publish = bash("gh pr create --title fixture --body-file notes.md")
     final = {"text": "Fixture finished."}
-    for case in ("failed", "rerun", "draft", "resume", "batch", "nested"):
+    for case in ("failed", "rerun", "draft", "resume", "batch", "nested",
+                 "body-empty", "body-missing-result", "body-missing-remote", "body-valid"):
+        if args.only and case != args.only:
+            continue
         with tempfile.TemporaryDirectory(prefix="graff-pr-local-checks-") as temp:
             work = Path(temp)
             env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")}
@@ -45,9 +49,19 @@ def main():
             prepare(work, env, {"checks": "SUCCESS"})
             (work / "test_observed.py").write_text(failing)
             (work / "notes.md").write_text(
-                "Verification: local checks passed. Dispatch is covered."
+                "## Verification\nLocal: `python3 -m unittest test_observed -v` — passed.\nRemote: passed."
             )
-            if case == "nested":
+            if case.startswith("body-"):
+                (work / "test_observed.py").write_text(failing.replace("1, 2", "2, 2"))
+                bodies = {
+                    "body-empty": "## Verification",
+                    "body-missing-result": "Local: `python3 -m unittest test_observed -v`\nRemote: passed.",
+                    "body-missing-remote": "Local: `python3 -m unittest test_observed -v` — passed.",
+                }
+                if case in bodies:
+                    (work / "notes.md").write_text(bodies[case])
+                script = [check, publish, final]
+            elif case == "nested":
                 nested = work / "checks space"
                 nested.mkdir()
                 (nested / "test_observed.py").write_text(failing)
@@ -131,7 +145,7 @@ def main():
                     if (work / "mutations.jsonl").exists()
                     else ""
                 )
-                assert bool(mutations) == (case in ("rerun", "draft")), (
+                assert bool(mutations) == (case in ("rerun", "draft", "body-valid")), (
                     case,
                     mutations,
                     events,
@@ -141,6 +155,8 @@ def main():
                         "observed local check has no successful completion"
                         in json.dumps(events)
                     )
+                if case.startswith("body-") and case != "body-valid":
+                    assert "PR body needs" in json.dumps(events)
                 if case == "batch":
                     assert "separate tool call" in json.dumps(events)
                 target = args.evidence / case

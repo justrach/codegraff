@@ -98,8 +98,8 @@ pub const full_prompt =
     \\A non-draft GitHub PR (`gh pr create` without --draft, or `gh pr ready`)
     \\is blocked until the exact head SHA is ready: inspect already-running
     \\or completed branch CI, disclose a failure that reproduces on the base
-    \\branch or create a draft, and include a Verification section that lists
-    \\the commands and results you actually ran. Absolute claims (atomic,
+    \\branch or create a draft. Include a Local: line with a backtick-quoted
+    \\command and observed result, plus Remote: CI status. Absolute claims (atomic,
     \\preserved) need a regression on the changed dispatch path, not only a
     \\helper or one-separator boundary. `gh pr checks --watch` after create
     \\is not that gate. Publication work on a claimed branch, issue, commit,

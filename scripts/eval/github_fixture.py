@@ -44,7 +44,7 @@ elif args[:2]==['pr','view']:
     remote=state.get('remote_head',head)
     status=state.get('checks','PENDING')
     checks=state.get('check_rollup', [] if status=='NONE' else [{'context':'fixture CI','state':status}])
-    print(json.dumps({'headRefOid':remote,'isDraft':state.get('draft',False),'body':'## Verification\nLocal tests passed.','statusCheckRollup':checks,'headRefName':state.get('head_branch','fixture'),'number':1,'url':url+'/pull/1','headRepository':{'nameWithOwner':state.get('head_repo',url.split('://',1)[-1].split('/',1)[1])}}))
+    print(json.dumps({'headRefOid':remote,'isDraft':state.get('draft',False),'body':'## Verification\nLocal: `python3 -m unittest` passed.\nRemote: passed.','statusCheckRollup':checks,'headRefName':state.get('head_branch','fixture'),'number':1,'url':url+'/pull/1','headRepository':{'nameWithOwner':state.get('head_repo',url.split('://',1)[-1].split('/',1)[1])}}))
     sys.exit(state.get('pr_exit',0))
 elif args[:2] in (['pr','create'],['pr','ready'],['pr','edit'],['issue','edit']):
     with (root/'mutations.jsonl').open('a') as f:f.write(json.dumps(args)+'\n')
@@ -70,5 +70,5 @@ def prepare(work, env, state):
     if fixture.get("remote_head") == "initial":
         fixture["remote_head"] = head
     (work / "gh-state.json").write_text(json.dumps(fixture))
-    (work / "notes.md").write_text("## Verification\nLocal regression passed.\n")
+    (work / "notes.md").write_text("## Verification\nLocal: `python3 -m unittest` passed.\nRemote: passed.\n")
     env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
