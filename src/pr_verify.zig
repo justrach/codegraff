@@ -49,6 +49,43 @@ pub fn decision(receipt: evidence.Receipt, local: ?[]const u8, draft_authorized:
     return if (receipt.status == .passed) .passed else .pending;
 }
 
+/// Diagnostic receipts are never read as acceptance authority. Write an
+/// unavailable observation before the lookup so old green evidence is retired.
+fn observe(agent: *Agent, record: Record, receipt: ?evidence.Receipt, local: ?[]const u8) !void {
+    const key = try std.json.Stringify.valueAlloc(agent.arena, record.target, .{});
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(key, &digest, .{});
+    const file = try std.fmt.allocPrint(agent.arena, "{s}.{s}.receipt.json", .{ try path(agent), std.fmt.bytesToHex(digest, .lower) });
+    const tx = try @import("repo_transaction.zig").Transaction.begin(agent.io, agent.arena, file);
+    defer tx.end();
+    const json = try std.json.Stringify.valueAlloc(agent.arena, .{
+        .target = record.target,
+        .observation = if (receipt != null) "observed" else "unavailable",
+        .receipt = receipt,
+        .local_head = local,
+    }, .{});
+    try tx.write(json);
+}
+
+fn deferred(a: A, receipt: evidence.Receipt, local: ?[]const u8) ![]const u8 {
+    const reason = if (local != null and !std.mem.eql(u8, local.?, receipt.head))
+        "stale: local and remote heads differ"
+    else if (receipt.draft)
+        "draft: verified readiness requires a ready PR"
+    else switch (receipt.status) {
+        .pending => "pending: CI has not finished",
+        .failed => "failed: CI reported a failure",
+        .none => "missing: no CI checks were reported",
+        .unknown => "unknown: CI evidence is incomplete",
+        .passed => "unresolved",
+    };
+    // The complete bounded rollup is retained in the local receipt; avoid
+    // flooding the model context when repositories have hundreds of checks.
+    var limit = @min(receipt.checks_json.len, 16 * 1024);
+    while (limit < receipt.checks_json.len and limit > 0 and receipt.checks_json[limit] & 0xc0 == 0x80) limit -= 1;
+    return std.fmt.allocPrint(a, "completion deferred: current-head PR verification is {s}. Remote head: {s}. Observed checks: {s}{s}. Repeating attempt_completion or completing todos cannot waive verification. Draft publication and base-branch failures do not waive verification. Only the user can authorize a draft-only scope with /pr-acceptance draft.", .{ reason, receipt.head, receipt.checks_json[0..limit], if (limit < receipt.checks_json.len) " [truncated; full checks retained in local receipt]" else "" });
+}
+
 pub fn completionGate(agent: *Agent) ?[]const u8 {
     if (agent.review_mode) return null;
     const file = path(agent) catch return "completion deferred: unable to read PR verification obligation";
@@ -62,10 +99,12 @@ pub fn completionGate(agent: *Agent) ?[]const u8 {
     var result: State = .passed;
     for (records) |record| {
         if (!std.mem.eql(u8, record.session, @import("http_headers.zig").sessionId(agent.io))) continue;
+        observe(agent, record, null, null) catch return "completion deferred: unable to retire previous PR observation";
         const receipt = evidence.pr(agent.gpa, agent.io, agent.arena, record.target) catch return "completion deferred: current-head PR checks could not be observed. Local tests and completed todos are not remote CI evidence; retry the lookup. Draft-only completion requires explicit user authorization.";
         const local = if (record.match_local) evidence.localHead(agent.gpa, agent.io, agent.arena, record.target) catch return "completion deferred: local publication head could not be resolved" else null;
+        observe(agent, record, receipt, local) catch return "completion deferred: unable to retain current PR observation";
         switch (decision(receipt, local, @import("pr_acceptance.zig").allowsDraft(agent))) {
-            .pending, .unused => return "completion deferred: current-head PR verification is pending, failed, missing, or stale. Inspect the PR checks and finish CI verification; repeating attempt_completion cannot waive it. Draft publication and base-branch failures do not waive verification. Only the user can authorize a draft-only scope with /pr-acceptance draft.",
+            .pending, .unused => return deferred(agent.arena, receipt, local) catch "completion deferred: unable to describe PR verification evidence",
             .draft => result = .draft,
             .passed => {},
         }
