@@ -4,6 +4,7 @@ import type { Chat } from "./harness-types";
 import { ComposerDraftContext } from "@/components/primitives/useComposerDraft";
 import { createComposerDraft, type ComposerDraftStore } from "@/lib/composer-draft";
 import SplitDivider from "./SplitDivider";
+import paneStyles from "./chat-pane.module.css";
 import {flatSplit,pruneSplit,splitGeometry,paneStyle,type SplitTree} from "@/lib/split-tree";
 export default function ChatSplitLayout({ threads, liveChatIds, activeId, direction, layout, onLayoutChange, onFocus, onClose, folder, body, split }: {
   threads: Chat[]; activeId: number; direction: "row" | "column"; layout?: SplitTree;
@@ -41,7 +42,7 @@ export default function ChatSplitLayout({ threads, liveChatIds, activeId, direct
         onPointerDownCapture={()=>{if(thread.id!==activeId)onFocus(thread.id);}}
         onFocusCapture={()=>{if(thread.id!==activeId)onFocus(thread.id);}}
         style={{...paneStyle(geometry.panes.find(p=>p.id===thread.id)!.box),minHeight:0,borderColor:split&&thread.id===activeId?'var(--accent)':undefined}}
-        className="absolute flex min-w-0 flex-col overflow-hidden rounded-[14px] border border-line bg-page">
+        className={`${paneStyles.pane} absolute flex min-w-0 flex-col overflow-hidden border border-line bg-page ${split ? "rounded-[6px]" : "rounded-[14px]"}`}>
         {split&&<header className="flex h-9 shrink-0 items-center gap-2 border-b border-line px-3">
           <button type="button" aria-pressed={thread.id===activeId} onClick={()=>onFocus(thread.id)} title="Focus this chat" className="min-w-0 flex-1 truncate text-left text-xs font-medium">{thread.title??`Chat ${thread.id}`}</button>
           <span title={folder(thread).path} className="flex min-w-0 max-w-[40%] items-center gap-1 text-[11px] text-ink-3"><IconFolder size={13}/><span className="truncate">{folder(thread).name}</span></span>

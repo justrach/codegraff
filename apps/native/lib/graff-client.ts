@@ -141,13 +141,6 @@ export async function closeSession(sessionId: string): Promise<void> {
   );
 }
 
-export const STARTER_PROMPTS = [
-  { id: "files", label: "What files are here?", prompt: "What files are in this workspace? Be brief." },
-  { id: "readme", label: "Summarize README.md", prompt: "Read README.md and summarize it in a short paragraph." },
-  { id: "review", label: "Review the last commit", prompt: "Review HEAD against the previous commit. Stay read-only." },
-  { id: "todos", label: "What's on the checklist?", prompt: "Read the current todo list and tell me what's open." },
-] as const;
-
 export const MODELS = [
   { key: "gpt-5.5", name: "GPT-5.5", tag: "OpenAI" },
   { key: "claude-opus-4-8", name: "Opus 4.8", tag: "Anthropic" },

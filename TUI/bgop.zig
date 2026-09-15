@@ -142,10 +142,11 @@ fn applyCompact(self: *Model, op: *Op) void {
     self.clearHistory();
     if (op.compact.note.len > 0) self.push(.system, op.compact.note) catch {};
     for (op.compact.turns) |t| {
-        self.push(switch (t.role) {
+        self.push(if (t.notification) .system else switch (t.role) {
             .user => .user,
             .assistant => .assistant,
-        }, t.text) catch {};
+        }, t.text) catch continue;
+        self.history.items[self.history.items.len - 1].notification = t.notification;
     }
 }
 

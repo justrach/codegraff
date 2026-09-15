@@ -7,6 +7,35 @@ import { createPromptStream } from "./acp-prompt-stream";
 import { prompt } from "./acp-client";
 import { applyAcpUpdate, emptyTurn, finishAcpTurn } from "./acp";
 import { turnActivity } from "./turn-activity";
+import { createQueueSteerer } from "./prompt-queue-steer";
+
+test("queued steering dispatches after prompt write without waiting for agent output", async () => {
+  const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stdin: new PassThrough() });
+  const transport = new AcpTransport(child as never);
+  const writes: string[] = [];
+  child.stdin.on("data", chunk => writes.push(chunk.toString()));
+  let queue = [{ id: 1, text: "steer" }];
+  const steerer = createQueueSteerer({ getQueue: () => queue,
+    setQueue: (_, next) => { queue = next; }, status: () => {} });
+  steerer.begin(1);
+  steerer.steer(1, 1, async () => transport.notify("session/cancel", {}));
+  const { stream, pending } = createPromptStream(transport, {}, () => {});
+  const reader = stream.getReader();
+  try {
+    const first = await reader.read();
+    const update = JSON.parse(new TextDecoder().decode(first.value));
+    assert.equal(update.params.update.sessionUpdate, "gui_prompt_ready");
+    steerer.ready(1);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const sent = writes.join("").trim().split("\n").map(line => JSON.parse(line));
+    assert.deepEqual(sent.map((item: { method: string }) => item.method), ["session/prompt", "session/cancel"]);
+    child.stdout.write(JSON.stringify({ id: 1, result: { stopReason: "cancelled" } }) + "\n");
+    await pending;
+    const terminal = JSON.parse(new TextDecoder().decode((await reader.read()).value));
+    assert.equal(terminal.result.stopReason, "cancelled");
+    assert.equal((await reader.read()).done, true);
+  } finally { steerer.finish(1); reader.releaseLock(); }
+});
 
 const updates = [
   { sessionUpdate: "tool_call", toolCallId: "write", title: "Update layout", status: "in_progress" },

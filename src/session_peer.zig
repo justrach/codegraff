@@ -30,7 +30,7 @@ pub fn isHumanUserTurn(m: Value) bool {
     if (m != .object) return false;
     const role = m.object.get("role") orelse return false;
     if (role != .string or !std.mem.eql(u8, role.string, "user")) return false;
-    return !peer_context.isPeerInject(m);
+    return !@import("session_wake.zig").isNotice(m) and !peer_context.isPeerInject(m);
 }
 
 /// Messages written to `.session.json`: wakes stay out. The transcript still
@@ -112,9 +112,11 @@ pub fn restore(root: *Agent, obj: std.json.ObjectMap) void {
         // Pre-0014 file: no cursor. Seek rather than replay the last 10 lines.
         presence.seekRoomsToTail(root.io, root.arena);
     }
-    if (obj.get("peer_inbox")) |v| peer_inbox.restoreJson(v);
-    peer_inbox.restoreDropped(u64Field(obj, "peer_inbox_dropped") orelse 0);
-    if (peer_inbox.unread() > 0 or peer_inbox.dropped() > 0) injectWake(root);
+    // restoreJson clears both bodies and loss accounting, even for a legacy
+    // session with no mailbox. Add the saved count AFTER array evictions.
+    peer_inbox.restoreJson(obj.get("peer_inbox") orelse .null);
+    if (obj.get("peer_inbox_dropped")) |v| peer_inbox.restoreDropped(v);
+    if (peer_inbox.pending()) injectWake(root);
 }
 
 const testing = std.testing;
@@ -180,7 +182,7 @@ test "writeFields / restoreJson: inbox bodies survive a process restart" {
     try testing.expectEqual(@as(usize, 0), peer_inbox.unread());
     peer_inbox.restoreJson(parsed.object.get("peer_inbox").?);
     try testing.expectEqual(@as(usize, 2), peer_inbox.unread());
-    const body = peer_inbox.takeAll(a);
+    const body = try peer_inbox.takeAll(a);
     try testing.expect(std.mem.indexOf(u8, body, "hold gui/src") != null);
     try testing.expect(std.mem.indexOf(u8, body, "your turn") != null);
 }
@@ -214,7 +216,7 @@ test "inbox resume and tool dispatch retain full bodies and overflow notice" {
     restore(&root, saved.object);
     try testing.expectEqual(@as(usize, 2), peer_inbox.dropped());
     try testing.expectEqual(@as(usize, 1), root.messages.items.len);
-    try testing.expect(std.mem.indexOf(u8, root.messages.items[0].object.get("content").?.string, "2 not retained") != null);
+    try testing.expect(std.mem.indexOf(u8, root.messages.items[0].object.get("content").?.string, "2 dropped") != null);
     const call = @import("tools.zig").ToolCall{
         .id = "inbox",
         .name = "peer_message",
@@ -223,7 +225,7 @@ test "inbox resume and tool dispatch retain full bodies and overflow notice" {
     const result = try peer_channel.handleMessage(&root, call);
     try testing.expect(!result.is_error);
     try testing.expect(std.mem.indexOf(u8, result.text, text) != null);
-    try testing.expect(std.mem.indexOf(u8, result.text, "2 messages not retained") != null);
+    try testing.expect(std.mem.indexOf(u8, result.text, "2 dropped message(s)") != null);
     try testing.expectEqual(@as(usize, 0), peer_inbox.dropped());
     try testing.expectEqual(@as(usize, 0), peer_inbox.unread());
 }
@@ -249,4 +251,103 @@ test "legacy session without cursor fields seeks rather than replaying (restore 
     restore(&root, empty.object);
     try testing.expectEqual(@as(usize, 1), root.messages.items.len);
     try testing.expect(isHumanUserTurn(root.messages.items[0]));
+}
+
+fn restoreTestRoot(a: Allocator) Agent {
+    var root: Agent = undefined;
+    root.arena = a;
+    root.io = testing.io;
+    root.messages = std.json.Array.init(a);
+    return root;
+}
+
+test "session peer restore dispatch: full body roundtrip, legacy reset, loss-only wake and one-shot" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    peer_inbox.clear();
+    defer peer_inbox.clear();
+    presence.resetRoomCursorForTest();
+    defer presence.resetRoomCursorForTest();
+    const unattended = main_mod.unattended;
+    main_mod.unattended = false;
+    defer main_mod.unattended = unattended;
+    const text = &@import("util.zig").repeatBytes("long body beyond the old clipping boundary: ", 20);
+    const sender = &@import("util.zig").repeatBytes("sender-beyond-the-old-fixed-buffer-", 3);
+    const Message = @import("presence_chan.zig").Message;
+    for (0..peer_inbox.inbox_cap + 2) |_| {
+        _ = peer_inbox.parkHeard(&.{Message{ .from_session = sender, .text = text, .to = "me" }}, &.{});
+    }
+    var aw: std.Io.Writer.Allocating = .init(a);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    try s.beginObject();
+    try writeFields(&s);
+    try s.endObject();
+    const parsed = try std.json.parseFromSliceLeaky(Value, a, aw.writer.buffered(), .{});
+    try testing.expectEqual(@as(i64, 2), parsed.object.get("peer_inbox_dropped").?.integer);
+    const saved = parsed.object.get("peer_inbox").?.array.items;
+    try testing.expectEqualStrings(text, saved[0].object.get("text").?.string);
+    try testing.expectEqualStrings(sender, saved[0].object.get("from").?.string);
+    peer_inbox.clear();
+    var root = restoreTestRoot(a);
+    restore(&root, parsed.object);
+    try testing.expectEqual(peer_inbox.inbox_cap, peer_inbox.unread());
+    try testing.expectEqual(@as(usize, 2), peer_inbox.dropped());
+    try testing.expectEqual(@as(usize, 1), root.messages.items.len);
+    const body = try peer_inbox.takeAll(a);
+    try testing.expect(std.mem.indexOf(u8, body, text) != null);
+    try testing.expect(std.mem.indexOf(u8, body, sender) != null);
+
+    // A legacy array resets previously accumulated loss accounting.
+    const legacy = try std.json.parseFromSliceLeaky(Value, a, "{\"chan_off\":0,\"peer_inbox\":[{\"from\":\"old\",\"text\":\"legacy body\"}]}", .{});
+    peer_inbox.restoreDropped(.{ .integer = 9 });
+    restore(&root, legacy.object);
+    try testing.expectEqual(@as(usize, 1), peer_inbox.unread());
+    try testing.expectEqual(@as(usize, 0), peer_inbox.dropped());
+    peer_inbox.restoreDropped(.{ .integer = 9 });
+    const empty = try std.json.parseFromSliceLeaky(Value, a, "{}", .{});
+    restore(&root, empty.object);
+    try testing.expect(!peer_inbox.pending());
+    try testing.expectEqual(@as(usize, 0), root.messages.items.len);
+
+    const loss = try std.json.parseFromSliceLeaky(Value, a, "{\"chan_off\":0,\"peer_inbox_dropped\":3}", .{});
+    var before = session_writer.Fingerprint.init();
+    mixFingerprint(&before);
+    restore(&root, loss.object);
+    try testing.expectEqual(@as(usize, 0), peer_inbox.unread());
+    try testing.expectEqual(@as(usize, 3), peer_inbox.dropped());
+    try testing.expectEqual(@as(usize, 1), root.messages.items.len);
+    try testing.expect(!isHumanUserTurn(root.messages.items[0]));
+    var after = session_writer.Fingerprint.init();
+    mixFingerprint(&after);
+    try testing.expect(before.h.final() != after.h.final());
+    restore(&root, loss.object);
+    try testing.expectEqual(@as(usize, 1), root.messages.items.len);
+    try testing.expectEqual(@as(usize, 3), peer_inbox.dropped());
+    main_mod.unattended = true;
+    restore(&root, parsed.object);
+    try testing.expect(!peer_inbox.pending());
+    try testing.expectEqual(@as(usize, 0), root.messages.items.len);
+}
+
+test "session peer restore dispatch: saved loss adds to oversized array evictions" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    peer_inbox.clear();
+    defer peer_inbox.clear();
+    presence.resetRoomCursorForTest();
+    defer presence.resetRoomCursorForTest();
+    const unattended = main_mod.unattended;
+    main_mod.unattended = false;
+    defer main_mod.unattended = unattended;
+    var parsed = try std.json.parseFromSliceLeaky(Value, a, "{\"chan_off\":0,\"peer_inbox\":[],\"peer_inbox_dropped\":5}", .{});
+    const item = try std.json.parseFromSliceLeaky(Value, a, "{\"from\":\"peer\",\"text\":\"body\"}", .{});
+    const items = parsed.object.getPtr("peer_inbox").?;
+    for (0..peer_inbox.inbox_cap + 2) |_| try items.array.append(item);
+    var root = restoreTestRoot(a);
+    restore(&root, parsed.object);
+    try testing.expectEqual(peer_inbox.inbox_cap, peer_inbox.unread());
+    try testing.expectEqual(@as(usize, 7), peer_inbox.dropped());
+    try testing.expectEqual(@as(usize, 1), root.messages.items.len);
 }

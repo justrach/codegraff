@@ -62,68 +62,7 @@ const Value = std.json.Value;
 
 const session_lock = @import("session_lock.zig");
 
-/// A digest of everything the session file records about the conversation.
-/// Content-derived, so a skip can never be wrong about "nothing changed" the
-/// way a hand-maintained dirty flag can: the history has ~25 production
-/// mutation sites (appends, compaction rewrites, in-place repairs), and one
-/// missed site would silently drop a turn from disk.
-pub const Fingerprint = struct {
-    h: std.hash.Wyhash,
-
-    pub fn init() Fingerprint {
-        return .{ .h = std.hash.Wyhash.init(0x2735e5510) };
-    }
-
-    pub fn num(self: *Fingerprint, v: u64) void {
-        var le: [8]u8 = undefined;
-        std.mem.writeInt(u64, &le, v, .little);
-        self.h.update(&le);
-    }
-
-    pub fn signed(self: *Fingerprint, v: i64) void {
-        self.num(@bitCast(v));
-    }
-
-    pub fn flag(self: *Fingerprint, v: bool) void {
-        self.h.update(&[_]u8{@intFromBool(v)});
-    }
-
-    /// Length-prefixed: "ab"+"c" must not collide with "a"+"bc".
-    pub fn text(self: *Fingerprint, s: []const u8) void {
-        self.num(s.len);
-        self.h.update(s);
-    }
-
-    /// The same tree std.json.Stringify would walk, digested instead of
-    /// formatted. Object fields are hashed in insertion order, which is the
-    /// order they are serialized in.
-    pub fn json(self: *Fingerprint, v: Value) void {
-        self.h.update(&[_]u8{@intFromEnum(std.meta.activeTag(v))});
-        switch (v) {
-            .null => {},
-            .bool => |b| self.flag(b),
-            .integer => |i| self.signed(i),
-            .float => |f| self.num(@bitCast(f)),
-            .number_string, .string => |s| self.text(s),
-            .array => |a| {
-                self.num(a.items.len);
-                for (a.items) |item| self.json(item);
-            },
-            .object => |o| {
-                self.num(o.count());
-                var it = o.iterator();
-                while (it.next()) |e| {
-                    self.text(e.key_ptr.*);
-                    self.json(e.value_ptr.*);
-                }
-            },
-        }
-    }
-
-    pub fn final(self: *Fingerprint) u64 {
-        return self.h.final();
-    }
-};
+pub const Fingerprint = @import("session_fingerprint.zig").Fingerprint;
 
 const Job = struct {
     io: Io,
@@ -131,12 +70,14 @@ const Job = struct {
     path: []u8,
     data: []u8,
     fp: u64,
+    home: ?[]u8 = null,
     /// The `submit` that queued this job — see `errorFor`.
     ticket: u64,
 
     fn deinit(job: Job, gpa: Allocator) void {
         gpa.free(job.path);
         gpa.free(job.data);
+        if (job.home) |home| gpa.free(home);
     }
 };
 
@@ -224,6 +165,12 @@ pub fn alreadySaved(io: Io, dir: Io.Dir, path: []const u8, fp: u64) bool {
 /// The returned ticket identifies THIS save. After `drain()`, `errorFor(ticket)`
 /// answers for it and for nothing else.
 pub fn submit(gpa: Allocator, io: Io, dir: Io.Dir, path: []u8, data: []u8, fp: u64) u64 {
+    return submitInHome(gpa, io, dir, path, data, fp, "");
+}
+
+/// Discovery metadata is optional; session persistence remains authoritative.
+pub fn submitInHome(gpa: Allocator, io: Io, dir: Io.Dir, path: []u8, data: []u8, fp: u64, home: []const u8) u64 {
+    const saved_home = if (home.len > 0) gpa.dupe(u8, home) catch null else null;
     writer_io = io; // set before anything can be queued; see writer_io
     mutex.lockUncancelable(io);
     if (thread == null and !stopping) thread = std.Thread.spawn(.{}, worker, .{io}) catch null;
@@ -235,7 +182,8 @@ pub fn submit(gpa: Allocator, io: Io, dir: Io.Dir, path: []u8, data: []u8, fp: u
         mutex.unlock(io);
         defer gpa.free(path);
         defer gpa.free(data);
-        writeNow(io, dir, path, data, fp, ticket);
+        defer if (saved_home) |h| gpa.free(h);
+        writeNow(io, dir, path, data, fp, ticket, saved_home);
         return ticket;
     }
     defer mutex.unlock(io);
@@ -244,17 +192,18 @@ pub fn submit(gpa: Allocator, io: Io, dir: Io.Dir, path: []u8, data: []u8, fp: u
         superseded += 1;
     }
     gpa_of_pending = gpa;
-    pending = .{ .io = io, .dir = dir, .path = path, .data = data, .fp = fp, .ticket = ticket };
+    pending = .{ .io = io, .dir = dir, .path = path, .data = data, .fp = fp, .ticket = ticket, .home = saved_home };
     work.broadcast(io);
     return ticket;
 }
 
 /// The pre-#273 write, used when threads are unavailable.
-fn writeNow(io: Io, dir: Io.Dir, path: []const u8, data: []const u8, fp: u64, ticket: u64) void {
+fn writeNow(io: Io, dir: Io.Dir, path: []const u8, data: []const u8, fp: u64, ticket: u64, home: ?[]const u8) void {
     var failed: ?anyerror = null;
     session_lock.writeSession(io, dir, path, data) catch |err| {
         failed = err;
     };
+    if (failed == null) if (home) |h| @import("workspace_history.zig").record(io, dir, h) catch {};
     const evidence: ?Mark = if (failed == null) observe(io, dir, path, fp) else null;
     mutex.lockUncancelable(io);
     defer mutex.unlock(io);
@@ -325,6 +274,7 @@ fn worker(io: Io) void {
         session_lock.writeSession(job.io, job.dir, job.path, job.data) catch |err| {
             failed = err;
         };
+        if (failed == null) if (job.home) |h| @import("workspace_history.zig").record(job.io, job.dir, h) catch {};
         const evidence: ?Mark = if (failed == null) observe(job.io, job.dir, job.path, job.fp) else null;
 
         mutex.lockUncancelable(io);

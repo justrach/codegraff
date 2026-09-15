@@ -8,6 +8,7 @@ import ModelEffortButtons from "./ModelEffortButtons";
 import type { ModelChoice } from "@/lib/acp-client";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ComposerMenu from "./ComposerMenu";
+import ComposerAttachments from "./ComposerAttachments";
 import { useComposerSweep } from "./useComposerSweep";
 import { useComposerSize } from "./useComposerSize";
 import { useComposerDraft } from "./useComposerDraft";
@@ -35,7 +36,7 @@ export default function PromptBar({
   demo = true,
   tall = false,
   placeholder,
-  onSend, onSetting,
+  onSend, onSetting, onSteerQueued,
   models,
   commands,
   modelKey,
@@ -45,6 +46,7 @@ export default function PromptBar({
   onStop,
   history,
   root,
+  contextMeter,
 }: {
   variant?: string;
   /** the self-running walkthrough; turn off when embedding in a real surface */
@@ -53,6 +55,8 @@ export default function PromptBar({
   tall?: boolean;
   placeholder?: string;
   onSend?: (text: string) => void; onSetting?: (text: string) => Promise<void>;
+  /** Steer the next queued message without consuming the current draft. */
+  onSteerQueued?: () => void;
   models?: PromptModel[];
   /** The slash commands the agent advertised. Empty until it answers —
    * an empty menu beats inventing commands this build may not service. */
@@ -69,6 +73,7 @@ export default function PromptBar({
   /** The workspace this composer sends into. The @ picker searches it, and a
    * picked file is mentioned by its path relative to it. */
   root?: string;
+  contextMeter?: import("@/lib/context-meter").ContextMeter;
 }) {
   const pill = variant === "Pill";
   const catalog = models && models.length > 0 ? models : MODELS;
@@ -401,37 +406,7 @@ export default function PromptBar({
           {draft}
         </span>
 
-        {attachments.length > 0 && (
-          <div className={`flex flex-wrap gap-1.5 pt-0.5 ${pill ? "px-1" : "px-0.5"}`}>
-            {attachments.map((file) => (
-              <span
-                key={file.id}
-                className={`flex h-6.5 items-center gap-1.5 bg-field py-1 pr-1 pl-1.5 text-[11.5px] text-ink-2 shadow-hairline ${
-                  pill ? "rounded-full" : "rounded-chip"
-                }`}
-                style={{ animation: "pop-in 200ms cubic-bezier(0.23,1,0.32,1) both" }}
-              >
-                {file.preview ? (
-                  /* eslint-disable-next-line @next/next/no-img-element */
-                  <img src={file.preview} alt="" className="-my-1 size-6 rounded-[4px] object-cover" />
-                ) : (
-                  <Icon size={12}>{GLYPHS.file}</Icon>
-                )}
-                <span className="max-w-36 truncate">{file.name}</span>
-                <button
-                  type="button"
-                  aria-label={`Remove ${file.name}`}
-                  onClick={() => removeAttachment(file.id)}
-                  className={`-my-1 flex size-6 items-center justify-center text-ink-3 transition-colors duration-100 hover:bg-line/70 hover:text-ink ${
-                    pill ? "rounded-full" : "rounded-[5px]"
-                  }`}
-                >
-                  <Icon size={10} strokeWidth={2.5}><path d="M18 6L6 18M6 6l12 12" /></Icon>
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
+        <ComposerAttachments attachments={attachments} pill={pill} onRemove={removeAttachment} />
 
         {uploads > 0 && <p role="status" className="px-2 text-xs text-ink-3">Adding {uploads} {uploads === 1 ? "file" : "files"}…</p>}
         {attachError && (
@@ -482,9 +457,16 @@ export default function PromptBar({
               void attachFiles(files);
             }}
             onKeyDown={(event) => {
-              // IME candidate keys belong to the input method. Modified keys
-              // belong to desktop shortcuts, never completion or submission.
-              if (event.nativeEvent.isComposing || event.keyCode === 229 || event.metaKey || event.ctrlKey || event.altKey) return;
+              // IME candidate keys always belong to the input method.
+              if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && busy && !disabled && onSteerQueued) {
+                event.preventDefault();
+                event.stopPropagation();
+                if (!event.repeat) onSteerQueued();
+                return;
+              }
+              // Other modified keys belong to desktop shortcuts.
+              if (event.metaKey || event.ctrlKey || event.altKey) return;
               if (menu && rows.length > 0) {
                 if (!event.shiftKey && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
                   event.preventDefault();
@@ -522,6 +504,7 @@ export default function PromptBar({
           />
 
           <ModelEffortButtons model={model} buttonRef={modelRef} modelOpen={modelOpen} wide={wide} pill={pill} busy={busy}
+            contextMeter={contextMeter} showContextMeter={!demo}
             onCommand={onSetting} openModel={() => { setPlusOpen(false); setModelOpen(current => !current); }} />
 
           {/* Keep cancellation available while a follow-up is being drafted. */}

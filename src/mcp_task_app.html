@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Codegraff · Task result</title>
+<style>/* CODEGRAFF_THEME */</style>
+<style>
+:root{color-scheme:light dark}*{box-sizing:border-box}
+body{margin:0;padding:12px;background:var(--canvas);color:var(--ink);font:13px/1.6 Inter,ui-sans-serif,system-ui,sans-serif;-webkit-font-smoothing:antialiased;letter-spacing:-.01em}
+.workspace{background:var(--page);border:1px solid var(--line-strong);border-radius:14px;overflow:hidden}
+header{height:44px;display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid var(--line);background:var(--page)}.brand{font-size:13px;font-weight:650;letter-spacing:-.3px}.brand span{color:#059669}.tab{font-size:12px;padding:3px 12px;border-radius:7px;background:var(--hover-2);color:var(--ink)}
+#status{margin-left:auto;font-size:11px;color:var(--ink-2);display:flex;align-items:center;gap:6px}#status:before{content:'';width:6px;height:6px;border-radius:50%;background:var(--green)}#status[data-error=true]{color:var(--red)}#status[data-error=true]:before{background:var(--red)}
+main{max-width:760px;margin:auto;padding:26px 24px 18px}.user-row{display:flex;justify-content:flex-end;padding-left:40px;margin-bottom:30px}.user-bubble{max-width:100%;border-radius:12px;padding:10px 14px;background:color-mix(in oklab,var(--accent) 12%,var(--surface));box-shadow:var(--shadow-hairline)}
+#prompt{white-space:pre-wrap;overflow-wrap:anywhere}summary{cursor:pointer;color:var(--ink-2);font-size:11px;margin-top:8px}.limits{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;color:var(--ink-2);font-size:11px}.limits span{border-radius:6px;background:var(--surface);padding:2px 7px}
+.assistant-label{display:flex;align-items:center;gap:8px;font-weight:600;font-size:12px;margin-bottom:10px}.mark{width:22px;height:22px;display:grid;place-items:center;border:1px solid var(--line-strong);border-radius:7px;color:#059669;background:var(--surface)}
+.toolbar{display:flex;align-items:center;gap:14px;margin:14px 0 10px}input[type=search]{flex:1;min-width:0;max-width:320px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);color:var(--ink);padding:7px 10px;font:inherit;font-size:12px}label{white-space:nowrap;color:var(--ink-2);font-size:11px}input:focus-visible,summary:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+pre{margin:0;padding:0;background:transparent;color:var(--ink);font:13px/1.8 ui-monospace,'SF Mono',monospace;max-height:420px;min-height:100px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}pre.nowrap{white-space:pre;overflow-wrap:normal}#count{font-size:11px;min-height:20px;margin:6px 0;color:var(--ink-3)}footer{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:11px;color:var(--ink-2)}
+@media(max-width:420px){body{padding:6px}main{padding:18px 14px}.toolbar{gap:8px}.tab{display:none}.user-row{padding-left:20px}}
+</style>
+</head>
+<body>
+<section class="workspace" aria-label="Codegraff task">
+<header><div class="brand">codegraff<span> /</span></div><span class="tab">Task</span><span id="status" role="status">Connecting</span></header>
+<main>
+<div class="user-row"><div class="user-bubble"><div id="prompt">Waiting for task details.</div>
+<details><summary>Task limits</summary><div class="limits"><span id="deadline">Time limit —</span><span id="budget">Model call limit —</span></div></details></div></div>
+<div class="assistant-label"><span class="mark" aria-hidden="true">/</span>Codegraff <span id="clipped" hidden>· Output truncated</span></div>
+<pre id="output" tabindex="0" aria-label="Task output">Waiting for the host to deliver a result.</pre>
+<div class="toolbar"><input id="search" type="search" aria-label="Filter output lines" placeholder="Find in response…"><label><input id="wrap" type="checkbox" checked> Wrap lines</label></div>
+<p id="count" aria-live="polite"></p>
+<footer id="note">Results appear when the task finishes. Review any changes before integrating.</footer>
+</main></section>
+<script>
+'use strict';
+const el = id => document.getElementById(id);
+let output = '', ready = false, closed = false;
+const send = message => { if (!closed) window.parent.postMessage({jsonrpc:'2.0',...message}, '*'); };
+const notify = (method, params={}) => send({method,params});
+function state(label, error=false){el('status').textContent=label;el('status').dataset.error=String(error);}
+function filter(){
+  const query=el('search').value.toLocaleLowerCase();
+  const lines=output.split('\n'), matches=query ? lines.filter(line=>line.toLocaleLowerCase().includes(query)) : lines;
+  el('output').textContent=matches.join('\n') || (query ? 'No matching lines.' : 'No text output.');
+  el('count').textContent=query ? `${matches.length} of ${lines.length} lines` : '';
+}
+function context(value){
+  if(value?.theme==='dark'||value?.theme==='light'){document.documentElement.dataset.theme=value.theme;document.documentElement.classList.toggle('dark',value.theme==='dark');}
+}
+function limits(value){
+  if(Number.isInteger(value?.timeout_seconds)) el('deadline').textContent=`Time limit ${value.timeout_seconds}s`;
+  if(Number.isInteger(value?.max_model_calls)) el('budget').textContent=`Model call limit ${value.max_model_calls}`;
+}
+function receive(event){
+  if(event.source!==window.parent || closed) return;
+  const msg=event.data;
+  if(!msg || msg.jsonrpc!=='2.0') return;
+  if(msg.id==='codegraff-init'){
+    if(msg.error){state('View unavailable',true);return;}
+    if(!msg.result || ready) return;
+    if(msg.result.protocolVersion!=='2026-01-26'){state('Unsupported app protocol',true);return;}
+    ready=true;clearTimeout(connectTimer);context(msg.result.hostContext);
+    state('Waiting for result');notify('ui/notifications/initialized');resize();return;
+  }
+  if(msg.method==='ui/resource-teardown'){
+    send({id:msg.id,result:{}});closed=true;clearTimeout(connectTimer);observer.disconnect();window.removeEventListener('message',receive);return;
+  }
+  if(!ready) return;
+  const value=msg.params||{};
+  switch(msg.method){
+    case 'ui/notifications/host-context-changed':context(value);break;
+    case 'ui/notifications/tool-input':
+      el('prompt').textContent=typeof value.arguments?.prompt==='string' ? value.arguments.prompt : 'Task brief unavailable.';
+      limits({timeout_seconds:120,max_model_calls:8,...value.arguments});state('Waiting for result');break;
+    case 'ui/notifications/tool-result':{
+      const data=value.structuredContent||{};
+      output=typeof data.text==='string' ? data.text : (Array.isArray(value.content) ? value.content.filter(item=>item.type==='text'&&typeof item.text==='string').map(item=>item.text).join('\n') : '');
+      const labels={completed:'Completed',failed:'Failed',timed_out:'Timed out',cancelled:'Cancelled'};
+      state(value.isError ? (labels[data.status]==='Completed' ? 'Failed' : labels[data.status]||'Failed') : labels[data.status]||'Completed',Boolean(value.isError)||['failed','timed_out','cancelled'].includes(data.status));
+      limits(data);el('clipped').hidden=!data.output_truncated;
+      el('note').textContent=value.isError ? 'Partial work may remain. Inspect the output and workspace before retrying.' : 'The task process finished. Review its answer and any changes before integrating.';
+      filter();break;
+    }
+    case 'ui/notifications/tool-cancelled':state('Cancelled',true);el('note').textContent='The host cancelled this call. Partial work may remain.';break;
+    case 'ping':send({id:msg.id,result:{}});break;
+    default:if(msg.id!==undefined) send({id:msg.id,error:{code:-32601,message:'Method not supported'}});
+  }
+}
+function resize(){if(ready) notify('ui/notifications/size-changed',{height:document.documentElement.scrollHeight});}
+const observer=new ResizeObserver(resize);observer.observe(document.body);
+el('search').addEventListener('input',filter);
+el('wrap').addEventListener('change',()=>el('output').classList.toggle('nowrap',!el('wrap').checked));
+window.addEventListener('message',receive);
+const connectTimer=setTimeout(()=>{if(!ready)state('Open in an MCP Apps host');},10000);
+send({id:'codegraff-init',method:'ui/initialize',params:{protocolVersion:'2026-01-26',appInfo:{name:'Codegraff task result',version:'1.0.0'},appCapabilities:{availableDisplayModes:['inline']}}});
+</script>
+</body>
+</html>

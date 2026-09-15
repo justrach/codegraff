@@ -16,6 +16,8 @@ const Tracer = @import("trace.zig").Tracer;
 pub const Source = enum(u8) {
     /// Nobody recorded one: the harness ended the turn, not the user.
     none,
+    /// An explicit review wall-time limit, never a user cancel.
+    review_deadline,
     /// A lone Esc on the line REPL's raw stdin.
     esc_key,
     /// Double Enter with a queued steer line (escPressed marks it force).
@@ -34,6 +36,12 @@ var source: std.atomic.Value(u8) = .init(0);
 pub fn cancel(s: Source) void {
     source.store(@intFromEnum(s), .release);
     Agent.esc_cancel.store(true, .release);
+}
+
+/// A deadline must not replace an already recorded user cancellation.
+pub fn cancelIfIdle(s: Source) void {
+    if (source.cmpxchgStrong(0, @intFromEnum(s), .acq_rel, .acquire) == null)
+        Agent.esc_cancel.store(true, .release);
 }
 
 /// A cancel that came off raw stdin: a double Enter with a queued steer
@@ -60,17 +68,19 @@ pub fn take(tracer: ?*Tracer) Source {
 }
 
 pub fn byUser(s: Source) bool {
-    return s != .none;
+    return s != .none and s != .review_deadline;
 }
 
 /// The transcript marker appended as the (incomplete) assistant turn.
 pub fn marker(s: Source) []const u8 {
+    if (s == .review_deadline) return "[review stopped: wall-time limit reached; findings are incomplete]";
     return if (byUser(s)) "[response interrupted by user]" else "[response ended early: cancelled by the harness, not the user]";
 }
 
 /// The yellow chrome line the line REPL prints.
 pub fn chrome(s: Source) []const u8 {
     return switch (s) {
+        .review_deadline => "✗ review stopped (wall-time limit; findings incomplete)",
         .esc_key => "✗ interrupted (esc)",
         .force_steer => "✗ interrupted (force)",
         .json_cancel, .acp_cancel, .ui_cancel => "✗ interrupted (cancel)",
@@ -80,6 +90,7 @@ pub fn chrome(s: Source) []const u8 {
 
 /// The --json error message.
 pub fn jsonMessage(s: Source) []const u8 {
+    if (s == .review_deadline) return "review wall-time limit reached; findings are incomplete";
     return if (byUser(s)) "turn cancelled" else "turn cancelled by the harness (no user cancel recorded)";
 }
 

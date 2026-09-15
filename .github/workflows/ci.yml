@@ -21,6 +21,9 @@ jobs:
       - name: Tuiguard pool deadline integrity (#704)
         run: python3 scripts/eval/test_tier1_tuiguard.py
 
+      - name: Behavioral outcome verifier integrity
+        run: python3 scripts/eval/test_tier2_outcomes.py
+
       - name: Model-shape benchmark integrity
         run: python3 benchmarks/test_model_shape.py
 
@@ -76,6 +79,21 @@ jobs:
           python3 scripts/eval/test_process_guard.py
           python3 scripts/test-acp-failure.py
           python3 scripts/regression-release-297.py
+          python3 scripts/test-server-retention.py --evidence "$RUNNER_TEMP/server-retention"
+          python3 scripts/test-pr-completion-acp.py
+          python3 scripts/test-claim-repository.py
+          python3 scripts/test-claim-lifecycle.py
+          python3 scripts/eval-tier2.py --only repository-scoped-claim-release
+          python3 scripts/eval-tier2.py --only draft-cannot-waive-pr-completion --only base-failure-cannot-waive-pr-completion --only user-authorized-draft-handoff --only draft-scope-does-not-waive-ready-pr-ci --only user-can-require-verified-pr-again --only current-head-passing-pr-completes
+
+      - name: Title command result contract
+        run: python3 scripts/test-title-result.py
+
+      - name: Observed local checks before publication
+        run: python3 scripts/test-pr-local-checks.py --graff zig-out/bin/graff --evidence /tmp/pr-local-checks
+
+      - name: Multi-turn clarification, editing and recovery workflows
+        run: python3 scripts/eval-tier2.py --only human-workflow-clarify-edit-recover-followup --only human-workflow-missing-config-clarify-followup --evidence-dir "$RUNNER_TEMP/interactive-workflows"
 
       - name: Local learning lifecycle and security regression
         run: python3 tests/learn_e2e.py --graff zig-out/bin/graff
@@ -107,7 +125,11 @@ jobs:
         run: python3 scripts/test-acp-steer.py zig-out/bin/graff
 
       - name: Isolated read-only review regression
-        run: python3 scripts/test-review-mode.py zig-out/bin/graff
+        run: |
+          python3 scripts/test-review-mode.py zig-out/bin/graff
+          python3 scripts/test-review-deadline.py zig-out/bin/graff
+          python3 scripts/test-review-acp.py zig-out/bin/graff
+          python3 scripts/test-review-acp-checkpoint.py zig-out/bin/graff
 
       - name: Automatic learning bootstrap and its idle-workspace guard
         run: python3 scripts/test-learn-auto-init.py zig-out/bin/graff
@@ -141,6 +163,9 @@ jobs:
 
       - name: PTY REPL interaction test
         run: python3 scripts/test-pty-repl.py zig-out/bin/graff
+
+      - name: Terminal model-selection confirmation regression
+        run: python3 scripts/test-model-confirmation.py zig-out/bin/graff
 
       - name: PTY Markdown rendering test
         run: python3 scripts/test-pty-markdown.py zig-out/bin/graff

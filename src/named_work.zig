@@ -12,10 +12,12 @@ const Agent = @import("agent.zig").Agent;
 const messages_mod = @import("messages.zig");
 
 pub const max_nudges: u8 = 1;
+const task_intent = @import("task_intent.zig");
 
 pub const nudge_text =
     "You named a source file and have not used a tool. Read the named path " ++
-    "and edit it before answering — do not describe a fix you have not applied.";
+    "and apply any changes the user requested before answering — do not describe a fix you have not applied. " ++
+    "For an informational request, answer from the evidence without editing.";
 
 /// Test-only fallback. Production copies onto the Agent so a scout's
 /// arena cannot leave a dangling pointer for the parent's handle (#714).
@@ -153,11 +155,14 @@ pub fn handle(self: *Agent, _: []const u8) !bool {
     // in an earlier message.
     if (!hasNamedSource(task)) return false;
     if (std.mem.eql(u8, task, self.named_work_settled)) return false;
-    if (std.mem.eql(u8, lastUserText(self), nudge_text)) return false;
+    const note = if (task_intent.classify(task) == .informational) task_intent.read_nudge else nudge_text;
+    if (std.mem.eql(u8, lastUserText(self), note)) return false;
     self.named_work_nudges += 1;
     self.named_work_settled = copyOnto(self, task);
     self.closeCodexWs();
-    try self.messages.append(try userNudge(self.arena, self.provider.kind, nudge_text));
+    var message = try userNudge(self.arena, self.provider.kind, note);
+    try message.object.put(self.arena, @import("session_wake.zig").origin_key, .{ .string = "notification" });
+    try self.messages.append(message);
     return true;
 }
 
@@ -272,6 +277,28 @@ fn testAgent(arena: std.mem.Allocator, msgs: std.json.Array) Agent {
         .label = "test",
         .out = null,
     };
+}
+
+test "informational named-file retries request evidence without demanding an edit" {
+    resetForTest();
+    defer resetForTest();
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    const a = state.allocator();
+    for ([_]@import("provider.zig").Provider.Kind{ .openai, .responses, .anthropic, .interactions }) |kind| {
+        var msgs = std.json.Array.init(a);
+        try msgs.append(try userNudge(a, kind, "Explain parser.zig"));
+        var agent = testAgent(a, msgs);
+        agent.provider.kind = kind;
+        rememberOn(&agent, "Explain parser.zig");
+        try std.testing.expect(try handle(&agent, "The parser processes input."));
+        const note = agent.messages.items[agent.messages.items.len - 1];
+        try std.testing.expect(@import("session_wake.zig").isNotice(note));
+        const encoded = try std.json.Stringify.valueAlloc(a, note, .{});
+        try std.testing.expect(std.mem.indexOf(u8, encoded, task_intent.read_nudge) != null);
+        try std.testing.expect(std.mem.indexOf(u8, encoded, nudge_text) == null);
+        try std.testing.expect(!try handle(&agent, "The parser processes input."));
+    }
 }
 
 test "#714: a later greeting does not re-fire because history still names SPEC.md" {

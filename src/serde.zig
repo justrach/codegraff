@@ -114,7 +114,7 @@ pub fn writeAnthropicMessages(s: *std.json.Stringify, messages: std.json.Array, 
     try s.beginArray();
     for (items, 0..) |m, i| {
         if (m != .object or m.object.get("content") == null) {
-            try s.write(m);
+            try @import("session_wake.zig").writeWire(s, m);
             continue;
         }
         const content = m.object.get("content").?;
@@ -122,16 +122,17 @@ pub fn writeAnthropicMessages(s: *std.json.Stringify, messages: std.json.Array, 
         const string_content = content == .string;
         const array_cache = cache_this and content == .array and content.array.items.len > 0 and anthropicCacheableBlock(content.array.items[content.array.items.len - 1]);
         if (!normalize_blocks and !cache_this) {
-            try s.write(m);
+            try @import("session_wake.zig").writeWire(s, m);
             continue;
         }
         if (!string_content and !array_cache) {
-            try s.write(m);
+            try @import("session_wake.zig").writeWire(s, m);
             continue;
         }
         try s.beginObject();
         var it = m.object.iterator();
         while (it.next()) |kv| {
+            if (std.mem.eql(u8, kv.key_ptr.*, @import("session_wake.zig").origin_key)) continue;
             if (std.mem.eql(u8, kv.key_ptr.*, "content")) continue;
             try s.objectField(kv.key_ptr.*);
             try s.write(kv.value_ptr.*);
@@ -368,16 +369,17 @@ pub fn writeOpenAITools(s: *std.json.Stringify, arena: Allocator, raw: []const u
 /// request before the server will USE the replayed reasoning; see the audit
 /// note in the ARC parity work.)
 pub fn writeOpenAIMessageNormalized(s: *std.json.Stringify, m: Value) !void {
-    if (m != .object) return s.write(m);
+    if (m != .object) return @import("session_wake.zig").writeWire(s, m);
     const role = if (m.object.get("role")) |v| (if (v == .string) v.string else "") else "";
     const is_assistant_tool_call = std.mem.eql(u8, role, "assistant") and m.object.get("tool_calls") != null;
     const null_content = if (m.object.get("content")) |v| v == .null else false;
-    if (!is_assistant_tool_call or !null_content) return s.write(m);
+    if (!is_assistant_tool_call or !null_content) return @import("session_wake.zig").writeWire(s, m);
 
     try s.beginObject();
     var it = m.object.iterator();
     var wrote_content = false;
     while (it.next()) |kv| {
+        if (std.mem.eql(u8, kv.key_ptr.*, @import("session_wake.zig").origin_key)) continue;
         try s.objectField(kv.key_ptr.*);
         if (std.mem.eql(u8, kv.key_ptr.*, "content")) {
             try s.write("");

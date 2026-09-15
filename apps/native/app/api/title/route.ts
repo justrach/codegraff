@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { generateTitle } from "@/lib/generate-title";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { NextRequest } from "next/server";
@@ -22,59 +22,7 @@ function graffBin(): string {
   return "graff";
 }
 
-const TIMEOUT_MS = 20_000;
 const MAX_PROMPT = 2_000;
-const MAX_TITLE = 60;
-
-/** graff prints the title on stdout and can print allocator warnings after
- * it; the first non-empty line is the answer. */
-function firstLine(out: string): string | null {
-  for (const raw of out.split("\n")) {
-    const line = raw.trim();
-    if (!line) continue;
-    if (line.startsWith("error(") || line.startsWith("warning:")) return null;
-    return line.replace(/^["'`]|["'`]$/g, "").slice(0, MAX_TITLE);
-  }
-  return null;
-}
-
-function titleFor(prompt: string, cwd: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    let child: ReturnType<typeof spawn>;
-    try {
-      child = spawn(graffBin(), ["title", prompt], { cwd, stdio: ["ignore", "pipe", "ignore"], env: process.env });
-    } catch {
-      resolve(null);
-      return;
-    }
-    let out = "";
-    let done = false;
-    const finish = (value: string | null) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      resolve(value);
-    };
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      finish(null);
-    }, TIMEOUT_MS);
-    child.stdout?.on("data", (chunk: Buffer) => {
-      out += chunk.toString();
-      // The title is one line: stop as soon as it is complete rather than
-      // waiting for the process to wind down.
-      if (out.includes("\n")) {
-        const line = firstLine(out);
-        if (line) {
-          child.kill("SIGKILL");
-          finish(line);
-        }
-      }
-    });
-    child.on("error", () => finish(null));
-    child.on("close", () => finish(firstLine(out)));
-  });
-}
 
 export async function POST(req: NextRequest) {
   let body: { prompt?: unknown; cwd?: unknown };
@@ -88,6 +36,6 @@ export async function POST(req: NextRequest) {
   const cwdParam = typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined;
   const resolved = resolveRoot(cwdParam);
   if ("error" in resolved) return Response.json({ error: resolved.error }, { status: resolved.status });
-  const title = await titleFor(prompt, cwdParam ? resolved.root : defaultRoot());
+  const title = await generateTitle(graffBin(), prompt, cwdParam ? resolved.root : defaultRoot());
   return Response.json({ title });
 }

@@ -110,7 +110,8 @@ pub const Conversation = struct {
         // #714: a host that re-submits the same trailing user row must not
         // inject another turn. The named-source gate then re-read the file
         // and the session looped the same Q&A.
-        if (messages_mod.trailingUserIs(msgs.items, last.text)) return;
+        if (messages_mod.trailingUserIs(msgs.items, last.text) and
+            @import("session_wake.zig").isNotice(msgs.items[msgs.items.len - 1]) == last.notification) return;
         try msgs.append(try textOf(self.alloc(), last));
     }
 
@@ -142,6 +143,7 @@ fn cloneArray(a: Allocator, source: std.json.Array) !std.json.Array {
 }
 
 fn textOf(a: Allocator, t: repl.Turn) !Value {
+    if (t.notification) return @import("session_wake.zig").message(a, t.text);
     return messages_mod.textMessage(a, switch (t.role) {
         .user => "user",
         .assistant => "assistant",
@@ -149,7 +151,7 @@ fn textOf(a: Allocator, t: repl.Turn) !Value {
 }
 
 fn isUserPrompt(v: Value) bool {
-    if (v != .object) return false;
+    if (v != .object or @import("session_wake.zig").isNotice(v)) return false;
     const role = v.object.get("role") orelse return false;
     if (role != .string or !std.mem.eql(u8, role.string, "user")) return false;
     const content = v.object.get("content") orelse return false;

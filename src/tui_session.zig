@@ -26,7 +26,7 @@ pub fn visibleTurns(arena: Allocator, messages: std.json.Array) ![]tui.Turn {
         const role = visibleRole(message) orelse continue;
         const text = try visibleText(arena, message);
         if (text.len == 0) continue;
-        try turns.append(arena, .{ .role = role, .text = text });
+        try turns.append(arena, .{ .role = role, .text = text, .notification = @import("session_wake.zig").isNotice(message) });
     }
     return try turns.toOwnedSlice(arena);
 }

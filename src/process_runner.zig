@@ -183,6 +183,53 @@ fn terminateTree(child: *std.process.Child, io: Io, job: *WindowsJobHandle, grou
     child.kill(io);
 }
 
+// A canceled POSIX wait closes the pipes and clears id without reaping.
+// Retain the id so the caller can still kill/reap after a deadline or Esc.
+fn waitForExit(child: *std.process.Child, io: Io, started: Io.Timestamp, deadline_ms: u64, cancelled: *bool, timed_out: *bool) !std.process.Child.Term {
+    const id = child.id;
+    const Event = union(enum) { term: std.process.Child.WaitError!std.process.Child.Term, tick: Io.Cancelable!void };
+    var buffer: [2]Event = undefined;
+    var select = Io.Select(Event).init(io, &buffer);
+    try select.concurrent(.term, std.process.Child.wait, .{ child, io });
+    defer {
+        while (select.cancel()) |event| switch (event) {
+            .term => |result| {
+                _ = result catch |err| {
+                    if (comptime posix_process_groups) if (err == error.Canceled) {
+                        child.id = id;
+                    };
+                };
+            },
+            .tick => {},
+        };
+    }
+    while (true) {
+        select.async(.tick, Io.sleep, .{ io, .fromMilliseconds(20), .awake });
+        switch (try select.await()) {
+            .term => |result| return result catch |err| {
+                if (comptime posix_process_groups) if (err == error.Canceled) {
+                    child.id = id;
+                };
+                return err;
+            },
+            .tick => |result| try result,
+        }
+        cancelled.* = Agent.esc_cancel.load(.acquire);
+        timed_out.* = deadline_ms > 0 and started.untilNow(io, .awake).toMilliseconds() >= deadline_ms;
+        if (cancelled.* or timed_out.*) {
+            while (select.cancel()) |event| switch (event) {
+                .term => |result| return result catch |err| {
+                    if (err != error.Canceled) return err;
+                    if (comptime posix_process_groups) child.id = id;
+                    return .{ .signal = .TERM };
+                },
+                .tick => {},
+            };
+            unreachable;
+        }
+    }
+}
+
 pub fn runCapped(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap: usize, stderr_cap: usize, deadline_ms: u64) !CappedRun {
     return runCappedWithOptions(gpa, io, argv, stdout_cap, stderr_cap, deadline_ms, .{});
 }
@@ -276,9 +323,16 @@ pub fn runCappedWithOptions(gpa: Allocator, io: Io, argv: []const []const u8, st
     }
     if (!esc_killed and !timed_out) try multi_reader.checkAnyError();
 
-    const term: std.process.Child.Term = if (esc_killed or timed_out) .{ .signal = .TERM } else try child.wait(io);
+    const term: std.process.Child.Term = if (esc_killed or timed_out) .{ .signal = .TERM } else blk: {
+        const term = try waitForExit(&child, io, started, deadline_ms, &esc_killed, &timed_out);
+        if (esc_killed or timed_out) {
+            terminateTree(&child, io, &windows_job, group_id, options.kill_process_tree);
+            cleanup_needed = false;
+        }
+        break :blk term;
+    };
     const stdout = if (saved[0]) |bytes| bytes else try gpa.dupe(u8, readers[0].buffered());
-    errdefer gpa.free(stdout);
+    errdefer if (saved[0] == null) gpa.free(stdout);
     const stderr = if (saved[1]) |bytes| bytes else try gpa.dupe(u8, readers[1].buffered());
     return .{
         .term = term,

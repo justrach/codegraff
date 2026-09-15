@@ -100,6 +100,22 @@ async function runComposerInteractions({ win, origin, output }) {
     await wait(`!!document.querySelector('[aria-label="Remove composer-image.png"]')`);
     await wait(`document.querySelector('[data-promptbar] img')?.naturalWidth===1`);
     assert.equal(await js(`!!document.querySelector('[data-promptbar] [role="status"]')`), false, 'A hidden upload completes in its own chat');
+    const imageSource = await js(`document.querySelector('[aria-label="Preview composer-image.png"] img').src`);
+    await pointer('[aria-label="Preview composer-image.png"]');
+    await wait(`!!document.querySelector('dialog[open] [aria-label="Close image preview"]')`);
+    assert.equal(await js(`document.querySelector('dialog[open] img').src`), imageSource, 'Preview shows the selected attachment');
+    await testDesktop.testInput(wc, { type: 'keyDown', keyCode: 'Escape' });
+    await testDesktop.testInput(wc, { type: 'keyUp', keyCode: 'Escape' });
+    await wait(`!document.querySelector('dialog[open]')`);
+    assert.equal(await draft(first), 'First unsent draft', 'Closing preview preserves text');
+    assert.ok(await js(`!!document.querySelector('[aria-label="Remove composer-image.png"]')`), 'Closing preview preserves the attachment');
+    assert.ok(await js(`document.activeElement.matches('[aria-label="Preview composer-image.png"]')`), 'Closing preview restores the trigger focus');
+    await pointer('[aria-label="Preview composer-image.png"]');
+    await wait(`!!document.querySelector('dialog[open]')`);
+    await pointer('[aria-label="Close image preview"]');
+    await wait(`!document.querySelector('dialog[open]')`);
+    assert.equal(await draft(first), 'First unsent draft', 'Close button also preserves the draft');
+
     await key('2', { metaKey: true });
     assert.equal(await draft(second), 'Second unsent draft', 'An older upload must not reset another chat');
     assert.equal(await js(`!!document.querySelector('[aria-label="Remove composer-image.png"]')`), false, 'Attachments never move between chats');
@@ -129,6 +145,83 @@ async function runComposerInteractions({ win, origin, output }) {
     await wait(`!!document.querySelector('[data-composer-menu]')`);
     await pointer(`[data-chat="${split}"] textarea`);
     assert.equal(await js(`!!document.querySelector('[data-composer-menu]')`), false, 'Switching composers closes the old completion portal');
+
+    // Hold real ACP response streams locally: the gallery adapter acknowledges
+    // cancellation without ending its stream, so it cannot exercise queue drain.
+    const actionsBeforeSteering = windowActions.length;
+    await js(`(()=>{
+      const original=window.fetch;
+      const state=window.composerSteering={requests:[],cancels:[],live:new Map()};
+      state.finish=(chat,stopReason='end_turn')=>{
+        const controller=state.live.get(chat);if(!controller)throw Error('No controlled prompt to finish');
+        state.live.delete(chat);
+        controller.enqueue(new TextEncoder().encode(JSON.stringify({jsonrpc:'2.0',id:1,result:{stopReason}})+'\\n'));
+        controller.close();
+      };
+      state.restore=()=>{window.fetch=original;};
+      window.fetch=async(input,options)=>{
+        if(String(input).includes('/api/acp')&&options?.body){
+          const body=JSON.parse(options.body);
+          if(body.method==='session/prompt'){
+            state.requests.push(body);
+            return new Response(new ReadableStream({start(controller){
+              state.live.set(body.chat,controller);
+              controller.enqueue(new TextEncoder().encode(JSON.stringify({jsonrpc:'2.0',method:'session/update',params:{update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Working'}}}})+'\\n'));
+            }}),{headers:{'content-type':'application/x-ndjson'}});
+          }
+          if(body.method==='session/cancel'){
+            state.cancels.push(body);state.finish(body.chat,'cancelled');
+            return new Response(JSON.stringify({result:{}}),{headers:{'content-type':'application/json'}});
+          }
+        }
+        return original(input,options);
+      };
+    })()`);
+    try {
+      const nativeEnter = async modifiers => {
+        await testDesktop.testInput(wc, { type: 'keyDown', keyCode: 'Enter', modifiers });
+        await testDesktop.testInput(wc, { type: 'keyUp', keyCode: 'Enter', modifiers });
+        await frames();
+      };
+      const queued = `[data-chat="${split}"] [data-queued-prompt]`;
+      // Exercise both platform modifiers, including an empty composer and a
+      // separate unsent draft. Each turn stays busy until explicitly finished.
+      for (const [index, modifier] of ['meta', 'control'].entries()) {
+        const payload = `Steered queued payload ${index}`;
+        const keptDraft = index ? 'Do not submit this unsent draft' : '';
+        const base = await js('window.composerSteering.requests.length');
+        await input(`Controlled active turn ${index}`);
+        await nativeEnter([]);
+        await wait(`window.composerSteering.requests.length===${base + 1} && !!document.querySelector('[data-chat="${split}"] [aria-label="Stop"]')`);
+        await input(payload);
+        await nativeEnter([]);
+        await wait(`document.querySelector(${JSON.stringify(queued)})?.textContent.includes(${JSON.stringify(payload)})`);
+        assert.equal(await draft(split), '', 'Plain Enter transfers the draft into the queue');
+        assert.equal(await js('window.composerSteering.cancels.length'), index, 'Plain Enter while busy must not cancel');
+        assert.equal(await js('window.composerSteering.requests.length'), base + 1, 'Queued text must not dispatch before steering');
+        await input(keptDraft);
+        for (const guard of [{ repeat: true }, { isComposing: true }, { keyCode: 229 }]) {
+          await key('Enter', { [modifier === 'meta' ? 'metaKey' : 'ctrlKey']: true, ...guard });
+        }
+        assert.equal(await js('window.composerSteering.cancels.length'), index, 'Repeat and IME shortcuts must not steer');
+        await nativeEnter([modifier]);
+        await wait(`window.composerSteering.requests.length===${base + 2}`);
+        assert.equal(await js('window.composerSteering.cancels.length'), index + 1, 'Steering cancels exactly once');
+        assert.equal(windowActions.length, actionsBeforeSteering, 'Busy queue shortcuts must not toggle fullscreen');
+        assert.equal(await draft(split), keptDraft, 'Steering preserves the current unsent draft');
+        assert.deepEqual(await js(`window.composerSteering.requests[${base + 1}].params.prompt`), [{ type: 'text', text: payload }], 'Queue drain dispatches the queued payload, not the draft');
+        assert.equal(await js(`window.composerSteering.cancels[${index}].chat===window.composerSteering.requests[${base + 1}].chat`), true, 'Cancellation and queue dispatch belong to the same chat');
+        assert.equal(await draft(first), '/', 'Steering must not alter another visible composer');
+        assert.equal(await js(`!!document.querySelector('[data-chat="${first}"] [data-queued-prompt]')`), false, 'Queue state must not leak into another chat');
+        await js(`window.composerSteering.finish(window.composerSteering.requests[${base + 1}].chat)`);
+        await wait(`!document.querySelector('[data-chat="${split}"] [aria-label="Stop"]') && !document.querySelector(${JSON.stringify(queued)})`);
+        await frames();
+        assert.equal(await js('window.composerSteering.requests.length'), base + 2, 'The queued payload is dispatched exactly once after completion');
+        assert.equal(await draft(split), keptDraft, 'Completing the steered turn preserves the draft');
+      }
+    } finally {
+      await js('window.composerSteering.restore()');
+    }
 
     await js('window.galleryBenchmark=true');
     await input('Start a scripted response');

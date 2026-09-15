@@ -1,0 +1,21 @@
+.panel { display: contents; }
+@media (width < 64rem) {
+  .panel {
+    display: none;
+    position: fixed;
+    inset: 8px auto 8px 8px;
+    margin: 0;
+    padding: 0;
+    width: min(248px, calc(100vw - 16px));
+    height: calc(100dvh - 16px);
+    max-height: none;
+    overflow: visible;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--canvas);
+    color: inherit;
+    box-shadow: 0 12px 40px #0004;
+  }
+  .panel:popover-open { display: block; }
+  .panel > aside { border-radius: inherit; max-width: 100%; }
+}
