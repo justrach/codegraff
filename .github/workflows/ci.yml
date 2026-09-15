@@ -21,6 +21,9 @@ jobs:
       - name: Tuiguard pool deadline integrity (#704)
         run: python3 scripts/eval/test_tier1_tuiguard.py
 
+      - name: Behavioral outcome verifier integrity
+        run: python3 scripts/eval/test_tier2_outcomes.py
+
       - name: Model-shape benchmark integrity
         run: python3 benchmarks/test_model_shape.py
 
@@ -81,6 +84,9 @@ jobs:
           python3 scripts/test-claim-lifecycle.py
           python3 scripts/eval-tier2.py --only repository-scoped-claim-release
           python3 scripts/eval-tier2.py --only draft-cannot-waive-pr-completion --only base-failure-cannot-waive-pr-completion --only user-authorized-draft-handoff --only draft-scope-does-not-waive-ready-pr-ci --only user-can-require-verified-pr-again --only current-head-passing-pr-completes
+
+      - name: Multi-turn clarification, editing and recovery workflows
+        run: python3 scripts/eval-tier2.py --only human-workflow-clarify-edit-recover-followup --only human-workflow-missing-config-clarify-followup --evidence-dir "$RUNNER_TEMP/interactive-workflows"
 
       - name: Local learning lifecycle and security regression
         run: python3 tests/learn_e2e.py --graff zig-out/bin/graff
