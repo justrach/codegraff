@@ -42,3 +42,14 @@ observer can make a server eligible after its last tab closes, but an empty or
 failed partial inventory must never stand in for that evidence.
 
 Related: #817.
+
+## Retention intent
+
+Retention does not imply a user pin. Ownership records preserve the original
+pin flag and record whether retention followed a user pin or unverified
+consumer visibility. A later `servers list` shows that reason. Legacy records
+without a reason remain unknown: older versions set the pin flag during both
+paths, so the flag cannot establish historical user intent. This changes
+observability, not the conservative cleanup rule above. The production
+retention regression verifies a surviving listener after owner exit, its
+record and CLI explanation, and an explicit verified stop.
