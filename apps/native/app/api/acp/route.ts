@@ -119,6 +119,8 @@ async function killPage(page: string) {
 
 function spawnAgent(chat: string, opts: SpawnOpts): Slot {
   if (opts.resume) assertSessionWritable(sessionFile(opts.cwd, opts.resume));
+  const imageScope = path.dirname(sessionFile(opts.cwd, opts.resume ?? "pending"));
+  attachmentStore().enrollSession(imageScope, process.pid);
   const args = ["acp"];
   if (opts.yolo) args.push("--yolo");
   if (opts.model) args.push("--model", opts.model);
@@ -156,6 +158,8 @@ function spawnAgent(chat: string, opts: SpawnOpts): Slot {
     if (slots.get(chat) === slot && !slot.restart) slots.delete(chat);
   });
   slots.set(chat, slot);
+  try { attachmentStore().enrollSession(imageScope, child.pid); }
+  catch (error) { void killSlot(chat).catch(() => undefined); throw error; }
   if (slot.resume) registerSessionWriter(sessionFile(slot.cwd, slot.resume), child, () => {
     if (slots.get(chat) === slot) void killSlot(chat).catch(() => undefined);
   });

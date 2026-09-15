@@ -5,6 +5,10 @@ const { nativeImage } = require('electron');
 async function runAttachments({win,origin,temp,output,requests,workspace,send,click,until,report}) {
   const wc = win.webContents, js = code => wc.executeJavaScript(code);
   if(await js(`!!document.querySelector('[aria-label="Close browser"]')`))await click('[aria-label="Close browser"]');
+  if(await js(`!!document.querySelector('[aria-label="Collapse sidebar"]')?.checkVisibility()`)) {
+    await click('[aria-label="Collapse sidebar"]');
+    await until(()=>js(`!!document.querySelector('[data-session-navigation="tabs"]')`),'attachment tab navigation');
+  }
   const directory = path.join(temp, 'graff-native-attachments');
   const pixels = Buffer.alloc(64*48*4);
   for(let i=0;i<pixels.length;i+=4) { pixels[i]=180;pixels[i+1]=120;pixels[i+2]=30;pixels[i+3]=255; }
@@ -80,6 +84,26 @@ async function runAttachments({win,origin,temp,output,requests,workspace,send,cl
   fs.copyFileSync(savedFile,path.join(savedDirectory,archiveName+'.session.json'));
   fs.copyFileSync(transcriptFile,path.join(savedDirectory,archiveName+'.transcript.jsonl'));
   fs.copyFileSync(rotatedFile,path.join(savedDirectory,archiveName+'.transcript.1.jsonl'));
+  const scopeKey=require('node:crypto').createHash('sha256').update(path.join(fs.realpathSync(workspace),'.graff','sessions')).digest('hex');
+  const scopeConsumers=path.join(directory,'.ownership','session-consumers',scopeKey);
+  const readConsumers=()=>fs.readdirSync(scopeConsumers).map(name=>JSON.parse(fs.readFileSync(path.join(scopeConsumers,name),'utf8')).pid);
+  const beforeResume=new Set(readConsumers());
+  const resumeChat='attachment-resume-audit';
+  try {
+    const resumed=await fetch(origin+'/api/acp',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({method:'bootstrap',chat:resumeChat,params:{cwd:workspace,resume:archiveName,mcp:false}})});
+    assert.equal(resumed.status,200,'Resume an actual saved image session without submitting a new prompt');
+    const added=readConsumers().filter(pid=>!beforeResume.has(pid));
+    assert.equal(added.length,1,'Resumed worker must enroll even without a new image prompt');
+    process.kill(added[0],0);
+    const disposed=await fetch(origin+'/api/acp',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({method:'dispose',chat:resumeChat})});
+    assert.equal(disposed.status,200);
+    await until(()=>{try{process.kill(added[0],0);return false;}catch(error){return error.code==='ESRCH';}},'resumed image worker exited');
+    process.kill(consumers[0],0); // Closing the resumed copy must not close the original consumer.
+    fs.writeFileSync(path.join(output,'attachment-resume-consumers.json'),JSON.stringify({resumedWorker:added[0],registeredWithoutPrompt:true,exitedOnDispose:true,originalStillAlive:true},null,2));
+  } finally {
+    await fetch(origin+'/api/acp',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({method:'dispose',chat:resumeChat})});
+  }
   const archiveResponse=await fetch(origin+'/api/sessions?'+new URLSearchParams({root:workspace,name:archiveName}),{method:'DELETE'});
   assert.equal(archiveResponse.status,200,'Archive the copied real checkpoint through the production route');
   assert.equal(fs.existsSync(path.join(savedDirectory,archiveName+'.transcript.jsonl')),false);
@@ -110,6 +134,7 @@ async function runAttachments({win,origin,temp,output,requests,workspace,send,cl
   assert.ok(fs.existsSync(aged),'An independent archived replay still needs the original image pixels');
   report.passed.push('real sidebar delete retires its writer and removes checkpoint plus both transcript generations; production archive preserves all replay files');
   report.passed.push('edited clipboard export remains on disk after its draft chip is removed');
+  report.passed.push('resumed saved-image worker enrolls before any new prompt; disposing it preserves the original worker');
   report.passed.push('synthetic clipboard event through real GUI paste/upload/ACP: aged draft survives, removed and closed drafts release files, sent PNG reaches model and stays available for replay');
   fs.writeFileSync(path.join(output,'attachment-requests.json'),JSON.stringify(calls,null,2));
 }

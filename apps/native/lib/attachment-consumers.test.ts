@@ -57,3 +57,32 @@ test("unknown, malformed and unenrolled consumers never prove inactivity", () =>
     expect(attachmentConsumers(root, 12345, () => false)).toBe("unknown");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("a resumed workspace worker protects old images without a new image prompt", async () => {
+  const root=mkdtempSync(path.join(os.tmpdir(),"graff-resumed-image-consumers-"));
+  const child=spawn(process.execPath,["-e","setInterval(() => {}, 1000)"]);
+  const exited=once(child,"exit");
+  const alive=(pid:number)=>{
+    if(pid===2147483647)return false;
+    try{process.kill(pid,0);return true;}catch(error){return (error as NodeJS.ErrnoException).code!=="ESRCH";}
+  };
+  const store=new AttachmentStore(root,2147483647,alive);
+  try {
+    await once(child,"spawn");
+    const scope=path.join(root,"sessions");mkdirSync(scope);
+    const image=store.create("old.png",new Uint8Array([1]));
+    store.retainPrompt({prompt:[{type:"text",text:`@[${image}]`}]},scope,2147483647);
+    expect(store.consumers(image)).toBe("inactive");
+    store.enrollSession(scope,child.pid); // Resume loads history, not a new pasted-image turn.
+    const restarted=new AttachmentStore(root,2147483647,alive);
+    try {
+      expect(restarted.references(image)).toBe("absent");
+      expect(restarted.consumers(image)).toBe("active");
+      child.kill();await exited;
+      expect(restarted.consumers(image)).toBe("inactive");
+    } finally {restarted.close();}
+  } finally {
+    if(child.exitCode===null && child.signalCode===null)child.kill();
+    await exited;store.close();rmSync(root,{recursive:true,force:true});
+  }
+});

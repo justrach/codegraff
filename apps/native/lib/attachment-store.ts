@@ -68,6 +68,27 @@ export class AttachmentStore {
     try { writeFileSync(path.join(root, key + ".json"), JSON.stringify({ directory: scope }), { flag: "wx", mode: 0o600 }); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
   }
+  /** Register before spawn as well as after it: resume can load an old image
+   * without a new prompt containing its path. Scope leases overapproximate use. */
+  enrollSession(directory: string, pid?: number) {
+    if (!path.isAbsolute(directory)) throw new Error("Attachment session scope must be absolute");
+    const key = createHash("sha256").update(path.resolve(directory)).digest("hex");
+    enrollAttachmentConsumer(path.join(this.records, "session-consumers", key), pid);
+  }
+  private scopes(name: string): string[] | null {
+    const root = path.join(this.records, "references", name), names = readdirSync(root);
+    if (!names.length || names.length > 64 || names.includes("unknown.json")) return null;
+    const scopes: string[] = [];
+    for (const name of names) {
+      const file = path.join(root, name), stat = lstatSync(file);
+      if (!stat.isFile() || stat.size > 16 * 1024) return null;
+      const { directory } = JSON.parse(readFileSync(file, "utf8"));
+      if (typeof directory !== "string" || !path.isAbsolute(directory) ||
+          name !== createHash("sha256").update(directory).digest("hex") + ".json") return null;
+      scopes.push(directory);
+    }
+    return scopes;
+  }
   /** Read-only evidence within enrolled scopes; not authorization to delete.
    * A future collector must also exclude every active consumer. */
   references(target: string): ReferenceState {
@@ -75,26 +96,28 @@ export class AttachmentStore {
     const record = this.read(path.basename(target));
     if (!record?.retained || record.referenceVersion !== 1) return "unknown";
     try {
-      const root = path.join(this.records, "references", record.name);
-      const names = readdirSync(root);
-      if (!names.length || names.length > 64 || names.includes("unknown.json")) return "unknown";
-      const scopes: string[] = [];
-      for (const name of names) {
-        const file = path.join(root, name), stat = lstatSync(file);
-        if (!stat.isFile() || stat.size > 16 * 1024) return "unknown";
-        const { directory } = JSON.parse(readFileSync(file, "utf8"));
-        if (typeof directory !== "string" || !path.isAbsolute(directory) ||
-            name !== createHash("sha256").update(directory).digest("hex") + ".json") return "unknown";
-        scopes.push(directory);
-      }
-      return attachmentReferences(scopes, target);
+      const scopes = this.scopes(record.name);
+      return scopes ? attachmentReferences(scopes, target) : "unknown";
     } catch { return "unknown"; }
   }
   consumers(target: string): ConsumerState {
     if (path.dirname(target) !== this.directory) return "unknown";
     const record = this.read(path.basename(target));
     if (!record?.retained || record.consumerVersion !== 1) return "unknown";
-    return attachmentConsumers(path.join(this.records, "consumers", record.name), record.owner, this.alive);
+    const direct = attachmentConsumers(path.join(this.records, "consumers", record.name), record.owner, this.alive);
+    if (direct === "active") return direct;
+    try {
+      const scopes = this.scopes(record.name);
+      if (!scopes) return "unknown";
+      let unknown = direct === "unknown";
+      for (const scope of scopes) {
+        const key = createHash("sha256").update(path.resolve(scope)).digest("hex");
+        const state = attachmentConsumers(path.join(this.records, "session-consumers", key), record.owner, this.alive);
+        if (state === "active") return state;
+        if (state === "unknown") unknown = true;
+      }
+      return unknown ? "unknown" : "inactive";
+    } catch { return "unknown"; }
   }
   retainPrompt(params: unknown, sessionDirectory?: string, workerPid?: number) {
     const prompt = (params as { prompt?: unknown } | undefined)?.prompt;
@@ -105,6 +128,7 @@ export class AttachmentStore {
         if (path.dirname(match[1]) !== this.directory) continue;
         const record = this.read(path.basename(match[1]));
         if (record) {
+          if (sessionDirectory) this.enrollSession(sessionDirectory, workerPid);
           enrollAttachmentConsumer(path.join(this.records, "consumers", record.name), workerPid);
           this.enroll(record.name, sessionDirectory);
           if (!record.retained) this.save({ ...record, retained: true });

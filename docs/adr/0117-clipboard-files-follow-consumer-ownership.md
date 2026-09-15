@@ -56,6 +56,13 @@ identifiers preserve files. Older exports cannot gain complete consumer knowledg
 retroactively. This process inventory still requires cross-surface enrollment
 and collection serialization before it can authorize submitted-file cleanup.
 
+Native worker startup enrolls its canonical session-directory scope, including
+resumes that load image history without submitting a new attachment. The backend
+registers before spawn and the worker registers before bootstrap completes.
+Every scoped live process conservatively protects that workspace's retained
+images; unknown or absent scope records cannot prove inactivity. This may retain
+extra images while another chat in the same workspace is open.
+
 The legacy desktop keeps clipboard exports in a private owner directory with
 an operating-system file lease. Recovery takes a nonblocking exclusive lease
 before removing recorded unsent exports from a stopped owner. Its prompt
