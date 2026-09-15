@@ -81,6 +81,17 @@ Applications to enable the updater.
 Closed mermaid fences render as diagrams. Muse Spark accepts pasted, dropped,
 and GUI image attachments on the Meta/Muse vision path.
 
+**v0.0.298 desktop.** Empty chat has no generic starter chips. Remaining
+context sits beside the composer. Sent images are compact thumbnails; drafts
+keep a preview. Queued follow-ups can be steered from the composer
+(Cmd+Enter). Running tabs show a spinner; unread is distinct from live.
+Session navigation stays in one place, including narrow windows. Saved
+sessions are snapshots. Background browser work does not steal the focused
+chat. MCP tools that declare an App UI render in an isolated result frame;
+`graff mcp install` registers a local HTTP task service for other clients.
+
+[![Pinned browser follow-up](docs/images/native-browser-annotate.jpg)](docs/images/native-browser-annotate.jpg)
+
 [![Update-ready restart](docs/images/desktop-update-ready.png)](docs/images/desktop-update-ready.png)
 
 **Profile and test without a model.** The Performance menu and desktop profiler
@@ -111,6 +122,19 @@ If you could do it at a computer, you can ask graff to do it for you:
 
 It works in your real terminal, on your real files, with the real internet, and
 it can spin up a team of sub-agents in parallel.
+
+**Sub-agents and workflows.** A sub-agent is the same harness with a fresh
+arena and a one-level tool set (no nested fan-out). Several can run in one
+turn; eight of them add about **0.4 MB** each. `workflow` is sequential
+phases of parallel children, with `{{prev}}` carrying a phase into the next.
+The desktop **Agents** pane shows occupancy, peer talk, and Stop without a
+permanent three-column rail.
+
+**Reduction.** Fat tool output becomes a 4 KB handle you page with
+`read_tool_result`. Stable setup is reused; small programs run over the
+working context and return focused results. `/compact` cuts the transcript.
+Live citation markers are stripped before you copy. Same model, fewer tokens
+on the next request — the evals below are that claim with receipts.
 
 > **Don't write code?** You don't have to. Say what you want in plain English.
 
