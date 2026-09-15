@@ -71,7 +71,7 @@ function mcpOffPath(): string {
 // child's history; `dispose`/`dispose-page` reap children on tab close and
 // page unload. Kept on globalThis so dev-server module reloads don't orphan
 // running agents.
-const g = globalThis as typeof globalThis & { __graffAcpSlots?: Map<string, Slot>; __graffAcpBootstraps?: Map<string, Promise<Slot>>; __graffAcpRetirements?: Map<string, Promise<void>> };
+const g = globalThis as typeof globalThis & { __graffAcpSlots?: Map<string, Slot>; __graffAcpBootstraps?: Map<string, Promise<Slot>>; __graffAcpRetirements?: Map<string, Promise<void>>; __graffAcpShuttingDown?: boolean };
 const slots = (g.__graffAcpSlots ??= new Map<string, Slot>());
 const bootstraps = (g.__graffAcpBootstraps ??= new Map<string, Promise<Slot>>());
 const retirements = (g.__graffAcpRetirements ??= new Map<string, Promise<void>>());
@@ -199,6 +199,7 @@ function matchesBootstrap(live: Slot, opts: BootstrapOpts): boolean {
 }
 
 function bootstrap(chat: string, opts: BootstrapOpts): Promise<Slot> {
+  if (g.__graffAcpShuttingDown) return Promise.reject(new Error("Desktop is shutting down"));
   const live = slots.get(chat);
   // Explicit changes can replace a stalled handshake. Ordinary concurrent
   // requests must wait instead of killing the worker they are about to use.
@@ -208,6 +209,7 @@ function bootstrap(chat: string, opts: BootstrapOpts): Promise<Slot> {
 
 async function bootstrapNow(chat: string, opts: BootstrapOpts): Promise<Slot> {
   await retirements.get(chat);
+  if (g.__graffAcpShuttingDown) throw new Error("Desktop is shutting down");
   const live = slots.get(chat);
   const same = live !== undefined && live.sessionId !== null &&
     live.transport.usable && matchesBootstrap(live, opts);
@@ -218,6 +220,7 @@ async function bootstrapNow(chat: string, opts: BootstrapOpts): Promise<Slot> {
     if (slots.get(chat) !== live) return bootstrapNow(chat, opts);
   }
   await killSlot(chat);
+  if (g.__graffAcpShuttingDown) throw new Error("Desktop is shutting down");
   if (slots.has(chat)) return bootstrapNow(chat, opts);
   const slot = spawnAgent(chat, {
     model: opts.model ?? recovering?.model ?? undefined,
@@ -267,6 +270,11 @@ export async function POST(req: NextRequest) {
   const chat = typeof body.chat === "string" && body.chat ? body.chat : DEFAULT_CHAT;
   const model = typeof body.params?.model === "string" ? body.params.model : undefined;
   try {
+    if (method === "shutdown") {
+      g.__graffAcpShuttingDown = true;
+      await Promise.all([...new Set([...slots.keys(), ...retirements.keys()])].map(killSlot));
+      return Response.json({ ok: true });
+    }
     if (method === "dispose") {
       await killSlot(chat);
       return Response.json({ ok: true });

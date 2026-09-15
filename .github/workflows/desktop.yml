@@ -115,12 +115,16 @@ jobs:
         env:
           GRAFF_FRONTEND_OUTPUT: ../../zig-out/cli-test
       - name: Packaged conversation title creation and recovery
+        id: packaged
         if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
         run: |
           GRAFF_REUSE_ENGINE=1 bun run electron:build
           bun run test:packaged-titles
         env:
           GRAFF_PACKAGED_OUTPUT: ../../zig-out/packaged-titles
+      - name: Production desktop shutdown preserves retained servers
+        if: ${{ !cancelled() && steps.packaged.conclusion == 'success' }}
+        run: bun scripts/test-server-desktop.mjs
       - name: Bounded mixed split and memory stress
         if: ${{ !cancelled() && steps.worker.conclusion == 'success' }}
         run: bun run test:split-stress

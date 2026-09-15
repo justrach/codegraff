@@ -47,6 +47,13 @@ try {
   await waitExit(second);
   assert.equal(first.exitCode, 0, "old worker did not exit gracefully");
   assert.equal(second.exitCode, 0, "disposed worker did not exit gracefully");
+  await request("shutdown");
+  const refused = await POST(new NextRequest("http://localhost/api/acp", {
+    method: "POST", body: JSON.stringify({chat, method:"bootstrap", params:{cwd, model:"lmstudio", mcp:false}}),
+  }));
+  assert.equal(refused.status, 502);
+  assert((await refused.text()).includes("shutting down"));
+  assert.equal(slots.size, 0, "shutdown allowed a replacement worker");
   console.log("PASS GUI API: old worker exits before replacement is ready; listener remains reachable");
 } finally {
   await request("dispose");

@@ -60,3 +60,11 @@ and kill fallbacks handle unresponsive workers. A per-chat retirement promise
 prevents a concurrent bootstrap from passing a worker still shutting down.
 The GUI API regression uses the real worker and listener to verify replacement
 ordering, continued listener access, and explicit cleanup.
+
+Desktop quit drains all ACP workers through the authenticated local backend
+before terminating its process group. The backend refuses new bootstraps once
+shutdown begins. EOF permits output-pipe handoff, so a retained server can
+still log and serve HTTP after quit; a socket alone is insufficient evidence.
+The app waits for this bounded shutdown, including repeated quit requests.
+The Electron regression checks an HTTP response after quit for both automatic
+retention and an explicit pin, then verifies discovery and stop from a new CLI.
