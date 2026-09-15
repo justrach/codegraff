@@ -90,6 +90,7 @@ pub const Model = struct {
     draft_images: ?[]const []const u8 = null,
     steer_queue: std.array_list.Managed([]const u8),
     images: std.array_list.Managed([]const u8),
+    owned_images: std.array_list.Managed(@import("owned_images.zig").Owned),
     pending: ?*engine.Job = null,
     /// A background engine op (/compact, !cmd, @-file list) — same thread +
     /// done-flag contract as `pending`, so neither can freeze the loop (#533).
@@ -221,12 +222,15 @@ pub const Model = struct {
             .prompt_hist_images = std.array_list.Managed([]const []const u8).init(alloc),
             .steer_queue = std.array_list.Managed([]const u8).init(alloc),
             .images = std.array_list.Managed([]const u8).init(alloc),
+            .owned_images = std.array_list.Managed(@import("owned_images.zig").Owned).init(alloc),
             .chat = engine.g_turn_fn != null,
         };
         self.input.setPlaceholder("");
     }
 
     pub fn deinit(self: *Model) void {
+        const settled = (if (self.pending) |job| !job.threaded or job.done.load(.acquire) else true) and
+            (if (self.bg) |op| !op.threaded or op.done.load(.acquire) else true);
         // Never an unbounded join in a destructor (#534): by the time deinit
         // runs, run.zig's terminal defers have already handed the shell back,
         // so joining a stalled provider call here hangs invisibly. run.zig
@@ -238,6 +242,7 @@ pub const Model = struct {
         if (self.bg) |op| {
             if (!op.threaded or op.done.load(.acquire)) @import("bgop.zig").reap(self) else self.bg = null;
         }
+        @import("owned_images.zig").deinit(self, settled);
         self.layout.deinit(self.alloc);
         for (self.history.items) |e| self.freeEntry(e);
         self.history.deinit();
@@ -276,6 +281,7 @@ pub const Model = struct {
         job.events.deinit();
         self.alloc.destroy(job);
         self.pending = null;
+        @import("owned_images.zig").collect(self);
     }
 
     pub fn theme(self: *const Model) theme_mod.Theme {
@@ -285,6 +291,7 @@ pub const Model = struct {
     pub fn push(self: *Model, kind: EntryKind, text: []const u8) !void {
         const owned = try sanitize.sanitized(self.alloc, text);
         errdefer self.alloc.free(owned);
+        if (kind == .user) try @import("owned_images.zig").retain(self, owned);
         try self.history.append(.{ .kind = kind, .text = owned, .folded = kind == .tool, .at_ms = self.now_ms });
         if (kind == .user or kind == .assistant) {
             self.screen = .agent;
@@ -345,6 +352,7 @@ pub const Model = struct {
         defer self.alloc.free(raw);
         const text = try sanitize.sanitized(self.alloc, raw);
         errdefer self.alloc.free(text);
+        if (kind == .user) try @import("owned_images.zig").retain(self, text);
         try self.history.append(.{ .kind = kind, .text = text });
     }
 

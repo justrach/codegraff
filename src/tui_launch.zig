@@ -322,7 +322,8 @@ fn cancelCb(ctx: ?*anyopaque) void {
     repl_glue.replCancelCb(ctx);
 }
 
-fn pasteCb(ctx: ?*anyopaque, dest: []u8) isize {
+fn pasteCb(ctx: ?*anyopaque, dest: []u8, owned: *bool) isize {
+    owned.* = false;
     const c: *repl_glue.ReplCtx = @ptrCast(@alignCast(ctx orelse return pasteErr(dest, "no session")));
     if (!vision.visionCapable(c.provider)) return pasteErr(dest, vision.no_vision_message);
     if (builtin.os.tag != .macos) return pasteErr(dest, "clipboard image paste is macOS-only — use /image <path>");
@@ -332,12 +333,10 @@ fn pasteCb(ctx: ?*anyopaque, dest: []u8) isize {
         .empty => return 0,
         .failed => |kind| return pasteErr(dest, vision.pasteFailMessage(kind)),
     };
-    const n = @min(grab.path.len, dest.len);
-    @memcpy(dest[0..n], grab.path[0..n]);
-    if (grab.owned) {
-        gpa.free(grab.path);
-    } else grab.release(c.io, gpa);
-    return @intCast(n);
+    const result = @import("tui_paste_transfer.zig").transfer(grab, c.io, gpa, dest) orelse
+        return pasteErr(dest, "clipboard image path is too long");
+    owned.* = result.owned;
+    return @intCast(result.len);
 }
 
 fn pasteErr(dest: []u8, msg: []const u8) isize {

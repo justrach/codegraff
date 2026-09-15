@@ -355,8 +355,8 @@ export default function GraffHarness() {
    * and the row goes at once rather than after the next poll. */
   const dropStored = (name: string, archive: boolean) => {
     const cwd = activePathRef.current ?? undefined;
-    const open = chatsRef.current.find((c) => c.session === name && (c.cwd ?? null) === (cwd ?? null));
-    if (open) closeChat(open.id);
+    const open = chatsRef.current.filter((c) => c.session === name && (c.cwd ?? null) === (cwd ?? null));
+    if (open.length) closeChats(open.map(chat => chat.id));
     setStored((current) => current.filter((s) => s.name !== name));
     void removeSession(name, { root: cwd, archive })
       .catch(() => undefined)

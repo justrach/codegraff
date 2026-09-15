@@ -20,7 +20,7 @@ async function startServer(resources, root, token, logDirectory, desktopEnv = {}
   const child = spawn(path.join(resources, 'bun'), [path.join(resources, 'ui/server.js')], {
     cwd: path.join(resources, 'ui'), detached: !managed, stdio: ['ignore', log, log],
     env: { ...process.env, ...desktopEnv, NODE_ENV: 'production', PORT: String(port), HOSTNAME: '127.0.0.1',
-      GRAFF_BIN: path.join(resources, 'graff'), GRAFF_CWD: root, GRAFF_DESKTOP_TOKEN: token },
+      GRAFF_BIN: path.join(resources, 'graff'), GRAFF_CWD: root, GRAFF_DESKTOP_TOKEN: token, GRAFF_ATTACHMENT_OWNER_PID: String(process.pid) },
   });
   fs.closeSync(log);
   let spawnError; child.on('error', error => { spawnError = error; });

@@ -24,6 +24,7 @@ pub fn remember(self: *Model, line: []const u8) void {
     recordImages(self);
     self.hist_idx = null;
     clearDraft(self);
+    @import("owned_images.zig").collect(self);
 }
 
 pub fn recallPrev(self: *Model) void {
@@ -112,6 +113,7 @@ fn replaceImages(self: *Model, paths: []const []const u8) void {
         const owned = self.alloc.dupe(u8, p) catch continue;
         self.images.append(owned) catch self.alloc.free(owned);
     }
+    @import("owned_images.zig").collect(self);
 }
 
 fn imagesAt(self: *const Model, idx: usize) []const []const u8 {

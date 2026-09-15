@@ -1,3 +1,4 @@
+mod clipboard_files;
 mod commands;
 mod cli_install;
 mod debug_bridge;
@@ -38,7 +39,7 @@ use commands::{
     reload_mcp_servers,
     remove_mcp_server, remove_provider, rename_saved_workspace, rename_workspace, respond_followup,
     run_slash_command, save_conversation_layout, select_conversation, send_prompt,
-    image_thumbnail, save_pasted_image, set_active_agent, set_effort, set_fast, start_new_chat, start_provider_auth, stop_prompt, terminal_close,
+    image_thumbnail, save_pasted_image, discard_pasted_image, set_active_agent, set_effort, set_fast, start_new_chat, start_provider_auth, stop_prompt, terminal_close,
     terminal_open, terminal_resize, terminal_write, update_prompt_settings,
     update_saved_workspace_layout, workspace_query, workspace_sync,
 };
@@ -132,6 +133,7 @@ pub fn run() {
             set_effort,
             set_fast,
             save_pasted_image,
+            discard_pasted_image,
             image_thumbnail,
             list_mcp_servers,
             import_mcp_config,
@@ -174,8 +176,13 @@ pub fn run() {
             drain_pending_open,
             debug_bridge::cg_debug_eval_result
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                clipboard_files::cleanup();
+            }
+        });
 }
 /// Holds a workspace path passed on the command line before the UI was ready
 /// (cold start). The frontend drains it via `drain_pending_open` once mounted.

@@ -1,3 +1,4 @@
+import { assertSessionWritable, closeSessionWriter, registerSessionWriter, sessionFile } from "@/lib/session-writers";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -9,6 +10,7 @@ import { AcpTransport } from "@/lib/acp-transport";
 import { createPromptStream } from "@/lib/acp-prompt-stream";
 import { defaultRoot, resolveRoot } from "@/lib/server-root";
 import { prepareGuiPrompt } from "@/lib/gui-skill-context";
+import { attachmentStore } from "@/lib/attachment-store";
 
 import { retireWorker } from "@/lib/acp-retire";
 import { initializeWorker, serializeBootstrap } from "@/lib/acp-bootstrap";
@@ -103,7 +105,7 @@ function killSlot(chat: string): Promise<void> {
   const slot = slots.get(chat);
   if (!slot) return retirements.get(chat) ?? Promise.resolve();
   slots.delete(chat);
-  const pending = retireWorker(slot.child, EXIT_GRACE_MS, "eof");
+  const pending = closeSessionWriter(slot.child, EXIT_GRACE_MS);
   retirements.set(chat, pending);
   const forget = () => { if (retirements.get(chat) === pending) retirements.delete(chat); };
   void pending.then(forget, forget);
@@ -116,6 +118,9 @@ async function killPage(page: string) {
 }
 
 function spawnAgent(chat: string, opts: SpawnOpts): Slot {
+  if (opts.resume) assertSessionWritable(sessionFile(opts.cwd, opts.resume));
+  const imageScope = path.dirname(sessionFile(opts.cwd, opts.resume ?? "pending"));
+  attachmentStore().enrollSession(imageScope, process.pid);
   const args = ["acp"];
   if (opts.yolo) args.push("--yolo");
   if (opts.model) args.push("--model", opts.model);
@@ -153,6 +158,11 @@ function spawnAgent(chat: string, opts: SpawnOpts): Slot {
     if (slots.get(chat) === slot && !slot.restart) slots.delete(chat);
   });
   slots.set(chat, slot);
+  try { attachmentStore().enrollSession(imageScope, child.pid); }
+  catch (error) { void killSlot(chat).catch(() => undefined); throw error; }
+  if (slot.resume) registerSessionWriter(sessionFile(slot.cwd, slot.resume), child, () => {
+    if (slots.get(chat) === slot) void killSlot(chat).catch(() => undefined);
+  });
   return slot;
 }
 
@@ -235,6 +245,9 @@ async function bootstrapNow(chat: string, opts: BootstrapOpts): Promise<Slot> {
     try { await slot.restartReady; }
     finally { if (slots.get(chat) === slot) slots.delete(chat); }
   }, HANDSHAKE_MS);
+  if (!slot.resume) registerSessionWriter(sessionFile(slot.cwd, slot.sessionId), slot.child, () => {
+    if (slots.get(chat) === slot) void killSlot(chat).catch(() => undefined);
+  });
   await drainCommands(slot);
   if (slots.get(chat) !== slot) throw new Error("ACP startup was disposed. Retry to start a new worker.");
   return slot;
@@ -315,6 +328,7 @@ export async function POST(req: NextRequest) {
       if (slot.streaming) return Response.json({ error: "A turn is already active" }, { status: 409 });
       const promptParams = await prepareGuiPrompt(body.params);
       if (slot.streaming) return Response.json({ error: "A turn is already active" }, { status: 409 });
+      attachmentStore().retainPrompt(promptParams, path.dirname(sessionFile(slot.cwd, slot.resume ?? slot.sessionId!)), slot.child.pid);
       slot.streaming = true;
       const { stream, pending } = createPromptStream(slot.transport,
         { ...promptParams, sessionId: slot.sessionId }, () => {
