@@ -74,6 +74,8 @@ def prepare(work, env, state):
     (work / "gh-state.json").write_text(json.dumps(fixture))
     (work / "notes.md").write_text("## Verification\nLocal: `python3 -m unittest` passed.\nRemote: passed.\n")
     env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
+    if fixture.get("review_files"):
+        prepare_review(work, fixture["review_files"])
 
 
 def prepare_review(work, files):

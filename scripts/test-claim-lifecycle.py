@@ -72,6 +72,8 @@ class Model(ScriptedModel):
     def next_reply(self, body):
         with self._lock:
             self.requests.append(body)
+            if 'committed_inputs' in json.dumps(body):
+                return {'text':json.dumps({'verdict':'supported','reason':'Controlled review for the committed fixture.'})}
             steps = self.owner_steps if 'fixture-lifecycle-owner' in json.dumps(body) else self.caller_steps
             return steps.pop(0) if steps else {'text':'Fixture turn finished.'}
 
@@ -90,6 +92,9 @@ def run(binary, recovery, evidence):
         subprocess.run(['git','config','user.email','fixture@example.invalid'], cwd=work, check=True, timeout=10)
         (work/'probe.txt').write_text('owned fixture\n')
         initial = subprocess.check_output(['git','rev-parse','HEAD'], cwd=work, text=True).strip()
+        state=json.loads((work/'gh-state.json').read_text())
+        state['base_sha']=initial
+        (work/'gh-state.json').write_text(json.dumps(state))
         commands = ['git add probe.txt', 'git commit -m fixture', 'git push origin HEAD',
                     'gh pr create --title fixture --body-file notes.md', 'gh pr edit 1 --title fixture']
         claim = lambda action: tool('peer_message', action=action, kind='publication', key='fixture', repo='fixture/primary')
@@ -143,7 +148,8 @@ def run(binary, recovery, evidence):
             first = len(model.requests)
             caller.prompt('Acquire ownership after recovery, then perform the writes.')
             observed = model.requests[first:]
-            assert len(observed)==len(recovery_commands)+2, len(observed)
+            assert len(observed)==len(recovery_commands)+3, len(observed)
+            assert sum('committed_inputs' in json.dumps(r) for r in observed)==1, 'Recovered publication requires its own review'
             head = subprocess.check_output(['git','rev-parse','HEAD'],cwd=work,text=True).strip()
             remote = subprocess.check_output(['git','--git-dir',str(work/'remote.git'),'rev-parse','refs/heads/fixture'],text=True).strip()
             assert head != initial and remote == head, (head, remote)
