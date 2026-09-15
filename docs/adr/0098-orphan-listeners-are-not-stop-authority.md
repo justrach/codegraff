@@ -53,3 +53,10 @@ paths, so the flag cannot establish historical user intent. This changes
 observability, not the conservative cleanup rule above. The production
 retention regression verifies a surviving listener after owner exit, its
 record and CLI explanation, and an explicit verified stop.
+
+GUI worker replacement and disposal await confirmed process exit. Graceful
+EOF allows session saving and retention bookkeeping; bounded termination
+and kill fallbacks handle unresponsive workers. A per-chat retirement promise
+prevents a concurrent bootstrap from passing a worker still shutting down.
+The GUI API regression uses the real worker and listener to verify replacement
+ordering, continued listener access, and explicit cleanup.

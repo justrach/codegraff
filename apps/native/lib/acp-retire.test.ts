@@ -12,3 +12,24 @@ test("recovery waits for an unresponsive worker to exit, escalating when it igno
     await retireWorker(child, 20); // Already exited workers need no second wait.
   } finally { child.kill("SIGKILL"); }
 });
+
+
+test("normal retirement lets EOF finish the worker's exit save", async () => {
+  const child = spawn(process.execPath, ["-e", 'process.stdin.resume(); process.stdin.on("end", () => setTimeout(() => process.exit(0), 40)); console.log("ready")'], { stdio: ["pipe", "pipe", "ignore"] });
+  try {
+    await once(child.stdout!, "data");
+    await retireWorker(child, 1000, "eof");
+    expect(child.exitCode).toBe(0);
+    expect(child.signalCode).toBeNull();
+  } finally { child.kill("SIGKILL"); }
+});
+
+
+test("EOF retirement escalates when the worker ignores EOF and termination", async () => {
+  const child = spawn(process.execPath, ["-e", 'process.stdin.resume(); process.on("SIGTERM", () => {}); console.log("ready"); setInterval(() => {}, 1000)'], { stdio: ["pipe", "pipe", "ignore"] });
+  try {
+    await once(child.stdout!, "data");
+    await retireWorker(child, 20, "eof");
+    expect(child.signalCode).toBe("SIGKILL");
+  } finally { child.kill("SIGKILL"); }
+});
