@@ -185,6 +185,7 @@ fn fingerprint(root: *Agent, name: []const u8) u64 {
     f.json(Value{ .array = root.messages });
     @import("session_catalog.zig").mixFingerprint(root, &f);
     f.text(@import("session_prompt.zig").snapshot(root) orelse "");
+    root.publication_checks.mixFingerprint(&f);
     session_peer.mixFingerprint(&f);
     subagent_ledger.mixFingerprint(&f);
     return f.final();
@@ -266,6 +267,7 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
     defer aw.deinit();
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     try s.beginObject();
+    try root.publication_checks.write(&s);
     try @import("session_catalog.zig").write(root, &s);
     try @import("session_prompt.zig").write(root, &s);
     try s.objectField("provider");
@@ -492,6 +494,7 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     // meter, and keep every still-unused format lazy.
     try @import("session_prompt.zig").restore(root, obj);
     try @import("session_catalog.zig").restore(root, obj);
+    try root.publication_checks.restore(arena, obj);
     try root.ensureRootTools(root.provider.kind);
     const compaction_window = try @import("compaction_window.zig").State.restore(arena, obj, msgs.items);
     root.pr_draft_scope = null; // draft-only scope must be authorized again after resume

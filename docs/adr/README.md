@@ -135,6 +135,8 @@ record only when you need the evidence or the edge cases.
 
 | [0123](0123-pr-check-observations-retain-the-rollup.md) | PR completion retains named current-head check observations locally; diagnostic receipts never replace fresh verification. |
 
+| [0126](0126-publication-retains-observed-check-failures.md) | Observed failed checks survive resumes; non-draft publication waits for successful reruns and occupies its own tool batch. |
+
 ## When to write one
 
 Write an ADR when a decision is load-bearing and non-obvious: it was reached

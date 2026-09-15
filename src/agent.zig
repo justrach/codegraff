@@ -71,6 +71,7 @@ pub const Goal = struct {
 /// agent prints to stdout; subagents (sub = true) run on pool threads and
 /// log through std.debug.print, which locks stderr and is thread-safe.
 pub const Agent = struct {
+    publication_checks: @import("pr_local_checks.zig").State = .{},
     gpa: Allocator,
     arena: Allocator,
     /// #124: per-turn parse garbage (SSE envelopes, isStreamEnd) lives here and
