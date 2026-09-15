@@ -2,6 +2,10 @@
   <img src="docs/images/readme-rats.png" alt="CodeGraff workshop rats in coral coats" width="280" height="280">
 </p>
 
+<h1 align="center">CodeGraff</h1>
+
+<p align="center">An AI agent for coding and computer work, in your terminal or desktop.</p>
+
 <p align="center">
   <img alt="macOS · Linux · Windows" src="https://img.shields.io/badge/macOS%20·%20Linux%20·%20Windows-555">
   <img alt="One binary, 3.7 MB" src="https://img.shields.io/badge/one%20binary-3.7%20MB-44cc11">
@@ -13,257 +17,168 @@
   <a href="https://trendshift.io/repositories/84216?utm_source=repository-badge&utm_medium=badge&utm_campaign=badge-repository-84216" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/84216" alt="justrach/codegraff | Trendshift" width="250" height="55"></a>
 </p>
 
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#the-desktop-app">Desktop</a> ·
+  <a href="#use-it-from-code">SDKs</a> ·
+  <a href="#evaluation-results">Evaluations</a> ·
+  <a href="#development">Development</a>
+</p>
+
+## Quick start
+
+### Desktop for Mac
+
+Apple Silicon · macOS 14+
+
+1. [Download CodeGraff](https://github.com/justrach/codegraff/releases/latest/download/Codegraff-macos-arm64.dmg).
+2. Quit any running copies, open the disk image, and drag **Codegraff.app** to **Applications**.
+3. Eject the disk image and open **Codegraff** from Applications.
+
+The signed and notarized app includes its runtime; no developer tools or local
+server are needed. [Verify the download checksum](https://github.com/justrach/codegraff/releases/latest/download/Codegraff-DMG-SHA256SUMS).
+For a `graff` command in your terminal, install the CLI below.
+
+### Terminal
+
+On macOS or Linux:
+
 ```sh
 curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh
 ```
 
-<p align="center"><a href="https://github.com/justrach/codegraff/releases/latest/download/Codegraff-macos-arm64.dmg"><strong>Download CodeGraff for Mac</strong></a><br><sub>Apple Silicon · macOS 14+ · signed and notarized · everything included</sub></p>
-
-****Live evals: 12 gated PRs, same grok-4.6 SuperGrok seat, no SPEC.md.**
-Graff **12/12** at **$21.48** honest list$ vs Pi 12/12 / $18.47, OpenCode 12/12 /
-$25.71, grok 11/12 / $33.69, exo **9/12** / $16.01. See
-[how we measure it](#how-we-measure-it). FrontierHarness remains a separate,
-protocol-different layer.
-
-## The desktop app
-
-The desktop app uses Electron and embedded Chromium, with native
-macOS window controls and SwiftUI Activity and computer-use panels. Coding
-continues in `graff acp`; the window is a client of the same harness used by
-the terminal.
-
-[![CodeGraff's bright desktop, framed in rice paper with workshop artwork](docs/images/desktop-chat-studio.png)](docs/images/desktop-chat-light.png)
-
-Chat tabs, searchable model selection, effort and fast controls, collapsed tool
-activity, and explicit working/finished/interrupted states keep the conversation
-readable. Appearance includes White, Black, Website and the official CodeGraff
-palette. Mention `$gui-theme` or `@gui-theme` in the GUI to create a custom theme.
-
-[![CodeGraff Agents panel with local peers and a handoff request, framed in coral with the workshop crew](docs/images/desktop-agents-studio.png)](docs/images/desktop-agents-codegraff.png)
-
-**Agents** shows who is working without a permanent three-column rail.
-Occupancy, RSS/CPU, peer talk, and Stop live in the pane. Select a peer to send
-a message or handoff; delivery waits for their next step. Queued follow-ups can
-be steered. The optional profiler records anonymous per-agent resource
-measurements (no identities or message contents). See the
-[Agents guide](docs/agents-panel.md).
-
-[![Agents occupancy, RSS/CPU, and peer talk in a rice-paper workshop frame](docs/images/desktop-occupancy-studio.png)](docs/images/desktop-occupancy.png)
-
-[![CodeGraff's dark Changes panel beside the conversation, framed in cobalt with a rat reviewing a proof](docs/images/desktop-review-studio.png)](docs/images/desktop-review-dark.png)
-
-**Changes** shows local staged, unstaged and untracked edits, diffs, worktrees
-and recent commits. Drag its divider to give the review more room. The browser
-pane renders directly in Chromium and supports navigation, find, zoom and element
-pins. Optional macOS computer use exposes native app inspection and input after
-the user enables it and grants the operating system permissions.
-
-*Presentation frames pair CodeGraff workshop artwork with unchanged GUI captures
-and scripted demonstration content. Click a desktop image for the full-size UI.
-No private conversation or workspace data is included.*
-
-**Build and launch from source** on Apple Silicon macOS 14+ with Bun, Zig and
-Xcode command-line tools installed:
-
 ```sh
-./script/build_and_run.sh
+graff login                     # sign in
+graff                           # start an interactive session
+graff -p "Explain this project"  # ask a single question
 ```
 
-The development bundle contains the production UI, Chromium, Bun, graff and the
-native bridge, and starts its own local server. It does not need a separate dev
-server or Kuri. Source builds use local development signing. The downloadable
-release is Developer ID signed and notarized. Installed releases from v0.0.291
-download updates in the background. **Check for Updates** and a six-hour
-auto-download switch sit in Updates settings above every split pane; **Restart
-to update** stays explicit. Earlier versions need one manual replacement in
-Applications to enable the updater.
-
-Closed mermaid fences render as diagrams. Muse Spark accepts pasted, dropped,
-and GUI image attachments on the Meta/Muse vision path.
-
-**v0.0.298 desktop.** Empty chat has no generic starter chips. Remaining
-context sits beside the composer. Sent images are compact thumbnails; drafts
-keep a preview. Queued follow-ups can be steered from the composer
-(Cmd+Enter). Running tabs show a spinner; unread is distinct from live.
-Session navigation stays in one place, including narrow windows. Saved
-sessions are snapshots. Background browser work does not steal the focused
-chat. MCP tools that declare an App UI render in an isolated result frame;
-`graff mcp install` registers a local HTTP task service for other clients.
-
-[![Pinned browser follow-up in a rice-paper workshop frame](docs/images/desktop-browser-studio.png)](docs/images/native-browser-annotate.jpg)
-
-[![Update-ready restart in a rice-paper workshop frame](docs/images/desktop-update-studio.png)](docs/images/desktop-update-ready.png)
-
-**Profile and test without a model.** The Performance menu and desktop profiler
-tool record bounded, local measurement reports. Startup paint timing, streaming
-responsiveness, process resources and acceleration status are measured separately.
-No reports are uploaded automatically. From `apps/native`:
+<details>
+<summary>Other login options, Windows, and editor integration</summary>
 
 ```sh
-bun run build
-bun run test:desktop
-bun run test:visual
-bun run test:performance
-```
-
-The visual and performance scenarios use production GUI components with scripted
-inputs and block engine/model API calls. See the [desktop guide](apps/native/electron/README.md)
-and [visual test guide](apps/native/electron/VISUAL-TESTS.md) for scope and limitations.
-
-## What can I ask it?
-
-If you could do it at a computer, you can ask graff to do it for you:
-
-- *"Build me a little app to track my workouts."* It writes it, runs it, and shows you.
-- *"Turn this folder of messy CSVs into one clean spreadsheet."*
-- *"Figure out why my site is slow, then fix it."*
-- *"Scrape these five pages and summarize them."*
-- *"Run an experiment: try three versions of this and tell me which scores best."*
-
-It works in your real terminal, on your real files, with the real internet, and
-it can spin up a team of sub-agents in parallel.
-
-**Sub-agents and workflows.** A sub-agent is the same harness with a fresh
-arena and a one-level tool set (no nested fan-out). Several can run in one
-turn; eight of them add about **0.4 MB** each. `workflow` is sequential
-phases of parallel children, with `{{prev}}` carrying a phase into the next.
-The desktop **Agents** pane shows occupancy, peer talk, and Stop without a
-permanent three-column rail.
-
-**Reduction.** Fat tool output becomes a 4 KB handle you page with
-`read_tool_result`. Stable setup is reused; small programs run over the
-working context and return focused results. `/compact` cuts the transcript.
-Live citation markers are stripped before you copy. Same model, fewer tokens
-on the next request — the evals below are that claim with receipts.
-
-> **Don't write code?** You don't have to. Say what you want in plain English.
-
-## Same model, fewer tokens
-
-Same grok-4.6 SuperGrok seat. Two boards: **live gated PRs** (no SPEC.md) and
-the older distilled in-house fixtures. Live is the headline. In-house is a
-cheap A/B, not the live repo.
-
-<p align="center">
-  <img src="docs/images/live-evals-board.png" alt="Live 12-PR board: graff 12/12 at $21.48 honest list$ vs Pi, OpenCode, grok, exo" width="960">
-</p>
-
-****Live 12 gated PRs** (2026-09-09, n=3, pass ≥2/3). Honest list$ is the official
-low band on passing reps of passing tasks. SuperGrok cash is $0. Only graff-195
-is G1–G6 certified. A check-green with no tokens does not count (exo’s last two
-turbos died in &lt;1s). Receipt: [artifacts/graff-evals-live/RECEIPT.md](artifacts/graff-evals-live/RECEIPT.md).
-
-| harness | tasks | reps | honest list$ | mean wall |
-|---|---:|---:|---:|---:|
-| **graff** | **12/12** | 35/36 | **$21.48** | 264s |
-| Pi | 12/12 | 35/36 | $18.47 | 334s |
-| OpenCode | 12/12 | 36/36 | $25.71 | 309s |
-| grok | 11/12 | 33/36 | $33.69 | 362s |
-| exo | **9/12** | 25/36 | $16.01 | 281s |
-
-Grok drops `#727` (graff still 2/3). exo drops gemini-ix plus two no-token turbos.
-
-**Distilled in-house fixtures** (`--suite inhouse`, cheap remasure, not live):
-
-| harness | pass | wall | calls | tokens | list$ | RSS |
-|---|---:|---:|---:|---:|---:|---:|
-| **graff** | **12/12** | **220s** | **53** | **234k** | **$0.32** | **8.7M** |
-| grok-build | 12/12 | 490s | 60 | 1.12M | $1.07 | 155M |
-| OpenCode | 12/12 | 235s | 77 | 675k | $0.68 | 1.0G |
-
-Graff is the unique frontier on pass, wall, calls, tokens, list$, and RSS
-on this remasure. (First-token is not scored — graff's `0.0s` is a boot
-mark, not first model SSE. RSS is ReleaseSafe process peak.)
-
-On the 3-task spine (exact-reply + file-ops + fix-fib) graff was **19.9s /
-8 calls / $0.048** vs grok 32.3s / 8 / $0.147 and OpenCode 31.2s / 8 / $0.101.
-
-**12 live gated PRs** (2026-09-09, no SPEC.md, grok-4.6 SuperGrok, n=3).
-Task pass ≥2/3. Honest list$ is the official low band on passing reps of
-passing tasks — not the in-house SPEC.md fixtures above. Only `#195` is
-G1–G6 certified. Receipt:
-[artifacts/graff-evals-live/RECEIPT.md](artifacts/graff-evals-live/RECEIPT.md).
-
-| harness | tasks | honest list$ | mean wall |
-|---|---:|---:|---:|
-| **graff** | **12/12** | **$21.48** | **264s** |
-| Pi | 12/12 | $18.47 | 334s |
-| OpenCode | 12/12 | $25.71 | 309s |
-| grok | 11/12 | $33.69 | 362s |
-| exo | 9/12 | $16.01 | 281s |
-
-Grok drops `#727`. exo drops `graff-gemini-ix` plus both remaining turbos
-(wrapper died in <1s, no tokens — those check-greens do not count).
-SuperGrok cash is $0.
-
-<p align="center">
-  <img src="artifacts/graff-evals-live/live-20260909.png" alt="Live eval board on the codegraff.com palette: graff 12/12 $21.48, Pi 12/12 $18.47, OpenCode 12/12 $25.71, grok 11/12 $33.69, exo 9/12 $16.01" width="960">
-</p>
-
-Graff carries context through three steps: reuse the stable setup, run small
-programs over the working context, and return focused results. That keeps the
-next step supplied with useful information while reducing repeated input.
-
-<p align="center">
-  <img src="docs/images/readme-context-workshop.png" alt="A workshop rat examines a proof: stable context, small programs, and focused results keep useful context in the harness" width="960">
-</p>
-
-## Install
-
-**Desktop (Apple Silicon, macOS 14+).**
-[Download CodeGraff](https://github.com/justrach/codegraff/releases/latest/download/Codegraff-macos-arm64.dmg),
-quit any running Codegraff copies, open the disk image, and drag **Codegraff.app** onto **Applications**. Eject the disk image and open Codegraff from Applications.
-The notarized bundle includes Graff, Chromium, Bun and the native macOS components;
-you do not need a separate CLI, runtime, developer tools or local server.
-[Verify the download checksum](https://github.com/justrach/codegraff/releases/latest/download/Codegraff-DMG-SHA256SUMS).
-For a `graff` command in your terminal, use the CLI installer below.
-
-Desktop builds from v0.0.291 check for updates online and download them in the
-background. Choose **Restart to update** when your work is finished, or use
-**Codegraff → Check for Updates…**. Automatic downloads can be disabled in that
-menu. Earlier builds need one manual installation to enable the updater.
-An app update replaces the bundled Graff engine together with the interface.
-A CLI installed separately by the command below has its own update lifecycle;
-that command downloads a CLI archive, not the notarized desktop installer.
-
-**CLI (macOS · Linux · Windows).**
-
-```sh
-curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh
+graff login kimi
+graff login codex
+graff key set deepseek sk-...
+graff --model grok-4.6
 ```
 
 From a checkout: `./install.sh` (binary in `~/bin`; `HARNESS_NO_PATH=1` skips
 PATH edits). Windows: unpack `graff-*-windows.tar.gz` from the latest release
 and put `graff.exe` on `PATH`.
 
-```sh
-graff login                     # free codegraff key
-graff login kimi                # Kimi Code OAuth
-graff login codex               # ChatGPT / Codex (or reuse ~/.codex/auth.json)
-graff key set deepseek sk-...   # any other provider
-graff                           # REPL
-graff --model grok-4.6          # pin a model
-graff -p "how many TODOs in src/?"
-```
-
 `graff acp` is the [Agent Client Protocol](docs/embedding.md) spawn (Zed
 External Agents). Recipe: [docs/acp-registry.md](docs/acp-registry.md).
 
-## Why it's small
+</details>
 
-| metric | measured |
-| --- | --- |
-| binary | **~3 MB**, zero runtime deps |
-| cold start | **~1.8 ms** |
-| full agentic turn | **~12 MB** peak RSS |
-| 8 parallel subagents | **+0.4 MB** each |
-| fat tool output | one **4 KB** handle, whatever the result's size |
+## What can it do?
 
-Same model, same endpoint, the older Rust codegraff used **4.3×** the memory
-and **~14×** the disk for a dead-heat turn. Method:
-[architecture.md](architecture.md).
+Describe a task in plain English. Graff can read and edit files, run commands,
+use browser tools, and delegate work to sub-agents.
 
-## Script it
+- **Build:** “Build a small app to track my workouts.”
+- **Investigate:** “Find out why this page is slow.”
+- **Work with data:** “Turn these CSVs into one clean spreadsheet.”
+- **Compare:** “Try three approaches and test which works best.”
+
+## The desktop app
+
+Chat, coordinate agents, review changes, and browse in one workspace.
+The desktop and terminal use the same Graff harness.
+
+### Chat and context
+
+[![CodeGraff's bright desktop, framed in rice paper with workshop artwork](docs/images/desktop-chat-studio.png)](docs/images/desktop-chat-light.png)
+
+- **Keep track of work:** tabs distinguish running, finished, interrupted, and unread conversations.
+- **Control the next step:** choose a model and effort level, or steer a queued follow-up with Cmd+Enter.
+- **See what fits:** the composer shows remaining context and attachment previews.
+- **Choose an appearance:** White, Black, Website, CodeGraff, or a custom theme through `$gui-theme`.
+
+### Agents
+
+[![CodeGraff Agents panel with local peers and a handoff request, framed in coral with the workshop crew](docs/images/desktop-agents-studio.png)](docs/images/desktop-agents-codegraff.png)
+
+See who is working, send a message, hand off a task, or stop a peer.
+Messages arrive at the recipient’s next step. The Agents pane also shows
+occupancy and resource use. [Read the Agents guide](docs/agents-panel.md).
+
+<details>
+<summary>View agent occupancy and resource use</summary>
+
+[![Agents occupancy, RSS/CPU, and peer talk in a rice-paper workshop frame](docs/images/desktop-occupancy-studio.png)](docs/images/desktop-occupancy.png)
+
+The optional profiler records anonymous resource measurements without identities
+or message contents.
+
+</details>
+
+### Changes and browser
+
+[![CodeGraff's dark Changes panel beside the conversation, framed in cobalt with a rat reviewing a proof](docs/images/desktop-review-studio.png)](docs/images/desktop-review-dark.png)
+
+Review staged, unstaged, and untracked edits alongside the conversation.
+Inspect diffs, worktrees, and recent commits; resize the pane for more room.
+The browser supports navigation, find, zoom, and pinned page elements.
+Optional macOS computer use requires enabling it and granting system permissions.
+
+<details>
+<summary>View browser annotations</summary>
+
+[![Pinned browser follow-up in a rice-paper workshop frame](docs/images/desktop-browser-studio.png)](docs/images/native-browser-annotate.jpg)
+
+Pin a page element and include it in your next message. Background browser work
+keeps the focused chat in place.
+
+</details>
+
+<details>
+<summary>Updates and restart</summary>
+
+[![Update-ready restart in a rice-paper workshop frame](docs/images/desktop-update-studio.png)](docs/images/desktop-update-ready.png)
+
+Desktop builds from v0.0.291 check for updates online and download them in the
+background. Choose **Restart to update** when your work is finished, or use
+**Codegraff → Check for Updates…**. Automatic downloads can be disabled in that
+menu. Earlier builds need one manual installation to enable the updater.
+An app update replaces the bundled Graff engine together with the interface.
+A CLI installed separately through Quick start has its own update lifecycle;
+that command downloads a CLI archive, not the notarized desktop installer.
+
+</details>
+
+<details>
+<summary>Sessions, attachments, and integrations</summary>
+
+- Saved sessions are snapshots; navigation stays accessible in narrow windows.
+- Sent images use compact thumbnails, while drafts keep a preview.
+- Closed Mermaid code blocks render as diagrams.
+- Muse Spark supports pasted, dropped, and attached images.
+- MCP tools can display an App UI in an isolated result frame.
+- `graff mcp install` registers a local HTTP task service for other clients.
+
+</details>
+
+*Images show unchanged GUI captures with scripted demonstration content.
+Click an image to open the original capture.*
+
+## How Graff handles work
+
+**Sub-agents** work in parallel with their own context. A `workflow` combines
+sequential phases of parallel children, passing results through `{{prev}}`.
+Children use a one-level tool set without nested fan-out.
+
+**Context** stays focused by reusing stable setup, running small programs over
+working data, and carrying useful results forward. Large tool outputs become
+handles you can page with `read_tool_result`. Use `/compact` to shorten the
+transcript.
+
+<p align="center">
+  <img src="docs/images/readme-context-workshop.png" alt="Context moves through three steps: reuse setup, work with context, and carry results forward" width="960">
+</p>
+
+## Use it from code
 
 ```python
 from harness_sdk import Harness
@@ -329,10 +244,80 @@ catalogs. Claude-subscription OAuth is deliberately not supported.
 
 </details>
 
-## How we measure it
+## Evaluation results
 
-Two layers, under `graff-evals/`. They answer different questions and neither
-of them is a leaderboard claim.
+The recorded live evaluation covers 12 PR tasks, with three runs per task.
+A task passes when at least two runs pass. See the
+[results receipt](artifacts/graff-evals-live/RECEIPT.md) for the recorded evidence.
+The live, in-house, and FrontierHarness evaluations use different protocols
+and should be read separately.
+
+<details>
+<summary>Recorded results and resource measurements</summary>
+
+
+The recorded comparison below uses the same grok-4.6 SuperGrok seat.
+Live PR tasks and distilled in-house fixtures are separate evaluations.
+These are historical results, not a claim about every task or model.
+
+<p align="center">
+  <img src="docs/images/live-evals-board.png" alt="Live 12-PR board: graff 12/12 at $21.48 honest list$ vs Pi, OpenCode, grok, exo" width="960">
+</p>
+
+**Live 12 gated PRs** (2026-09-09, n=3, pass ≥2/3). Honest list$ is the official
+low band on passing reps of passing tasks. SuperGrok cash is $0. Only graff-195
+is G1–G6 certified. A check-green with no tokens does not count (exo’s last two
+turbos died in &lt;1s). Receipt: [artifacts/graff-evals-live/RECEIPT.md](artifacts/graff-evals-live/RECEIPT.md).
+
+| harness | tasks | reps | honest list$ | mean wall |
+|---|---:|---:|---:|---:|
+| **graff** | **12/12** | 35/36 | **$21.48** | 264s |
+| Pi | 12/12 | 35/36 | $18.47 | 334s |
+| OpenCode | 12/12 | 36/36 | $25.71 | 309s |
+| grok | 11/12 | 33/36 | $33.69 | 362s |
+| exo | **9/12** | 25/36 | $16.01 | 281s |
+
+Grok drops `#727` (graff still 2/3). exo drops gemini-ix plus two no-token turbos.
+
+**Distilled in-house fixtures** (`--suite inhouse`, repeatable comparison, not live):
+
+| harness | pass | wall | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| **graff** | **12/12** | **220s** | **53** | **234k** | **$0.32** | **8.7M** |
+| grok-build | 12/12 | 490s | 60 | 1.12M | $1.07 | 155M |
+| OpenCode | 12/12 | 235s | 77 | 675k | $0.68 | 1.0G |
+
+Graff is the unique frontier on pass, wall, calls, tokens, list$, and RSS
+in this measurement. (First-token is not scored — graff's `0.0s` is a boot
+mark, not first model SSE. RSS is ReleaseSafe process peak.)
+
+On the 3-task spine (exact-reply + file-ops + fix-fib) graff was **19.9s /
+8 calls / $0.048** vs grok 32.3s / 8 / $0.147 and OpenCode 31.2s / 8 / $0.101.
+
+### Footprint
+
+| metric | measured |
+| --- | --- |
+| binary | **~3 MB**, zero runtime deps |
+| cold start | **~1.8 ms** |
+| full agentic turn | **~12 MB** peak RSS |
+| 8 parallel subagents | **+0.4 MB** each |
+| fat tool output | one **4 KB** handle, whatever the result's size |
+
+Same model, same endpoint, the older Rust codegraff used **4.3×** the memory
+and **~14×** the disk for a dead-heat turn. Method:
+[architecture.md](architecture.md).
+
+</details>
+
+<details>
+<summary>How we measure it: methodology, limitations, and reproduction</summary>
+
+<a id="how-we-measure-it"></a>
+
+
+Three evaluation layers, under `graff-evals/`. They answer different questions; none
+is a leaderboard claim.
 
 **Layer 0 — live gated PRs** (`--suite live`). Sparse-checkouts the real
 package, pins the test that was red on the parent, holds out a follow-up the
@@ -440,10 +425,11 @@ committed here: the metered path reads its key from the environment, and the
 subscription path copies an existing local credentials file into the task
 container.
 
-## Working on codegraff
+</details>
 
-Load-bearing roots stay where CI and `zig build` expect them. Everything else
-is already grouped:
+## Development
+
+The repository is organized as follows:
 
 | path | what it is |
 |---|---|
@@ -454,12 +440,11 @@ is already grouped:
 | `sdk/` | generated TypeScript / Python |
 | `scripts/` | tier-1/2, PTY probes, release |
 
-Do not invent a second `gui/` or `evals/` tree for new work — desktop is
-`apps/native`, measurements are `graff-evals/`.
+Desktop code lives in `apps/native`; evaluation tooling lives in `graff-evals`.
 
 ```bash
 scripts/install-hooks.sh          # once
-scripts/eval-tier1.sh             # offline, ~20s warm
+scripts/eval-tier1.sh             # offline checks
 python3 scripts/eval-tier2.py     # model-backed, opt-in
 ```
 
@@ -467,6 +452,36 @@ Tier 1 is `zig fmt`, the 600-line ceiling, test reachability, `zig build test`
 (suite count never shrinks), named goal/loop/todo invariants, and SDK drift.
 Docs-only pushes skip it. In-house PR fixtures: `graff-evals/`
 (`--suite inhouse`).
+
+<details>
+<summary>Build and test the desktop from source</summary>
+
+Build on Apple Silicon macOS 14+ with Bun, Zig, and Xcode command-line tools:
+
+```sh
+./script/build_and_run.sh
+```
+
+The development bundle starts its own local server and uses local development
+signing. Downloadable releases are signed and notarized.
+
+**Profile and test without a model.** The Performance menu and desktop profiler
+tool record bounded, local measurement reports. Startup paint timing, streaming
+responsiveness, process resources and acceleration status are measured separately.
+No reports are uploaded automatically. From `apps/native`:
+
+```sh
+bun run build
+bun run test:desktop
+bun run test:visual
+bun run test:performance
+```
+
+The visual and performance scenarios use production GUI components with scripted
+inputs and block engine/model API calls. See the [desktop guide](apps/native/electron/README.md)
+and [visual test guide](apps/native/electron/VISUAL-TESTS.md) for scope and limitations.
+
+</details>
 
 ## License
 
