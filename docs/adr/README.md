@@ -129,6 +129,7 @@ record only when you need the evidence or the edge cases.
 | [0118](0118-file-edits-check-target-worktree.md) | File edits checkpoint the target Git worktree; unresolved paths retain the caller checkpoint. |
 | [0119](0119-computer-tools-receive-caller-context.md) | Computer-use MCP requests receive opaque caller-owned session and turn context. |
 | [0120](0120-draft-publication-does-not-complete-verification.md) | Draft PRs cannot satisfy verified completion; only a user control scoped to this conversation and goal permits an unverified draft handoff. |
+| [0121](0121-claims-include-repository-identity.md) | Claims include repository identity; literal PR mutations compare the observed repository, PR number and branch, while unknown scopes stay conservative. |
 
 ## When to write one
 

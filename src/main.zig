@@ -52,7 +52,7 @@ test {
     _ = .{ @import("clipboard_native.zig"), @import("clipboard_edge_tests.zig"), @import("clipboard_failure_tests.zig"), @import("process_runner_clipboard_tests.zig") };
     _ = @import("server_orphan.zig");
     _ = @import("repo_transaction.zig");
-    _ = .{ @import("pr_command.zig"), @import("pr_evidence.zig"), @import("pr_verify.zig"), @import("pr_acceptance.zig") };
+    _ = .{ @import("pr_command.zig"), @import("pr_evidence.zig"), @import("pr_verify.zig"), @import("pr_acceptance.zig"), @import("artifact_repository.zig"), @import("artifact_claim_ledger.zig"), @import("artifact_claim_store.zig") };
     _ = @import("argstream_citation_tests.zig"); // unit_tests' root is main.zig only, so reference every split-out module or its tests silently never run
     _ = @import("codex_node_repl.zig");
     _ = pricing;

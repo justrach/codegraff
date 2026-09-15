@@ -16,6 +16,8 @@ pub fn persistJson(arena: Allocator, ledger: *const Ledger) ![]const u8 {
         try s.write(@tagName(c.kind));
         try s.objectField("key");
         try s.write(c.key);
+        try s.objectField("repo");
+        try s.write(c.repo);
         try s.objectField("session");
         try s.write(c.owner.session);
         try s.objectField("pid");
@@ -37,18 +39,40 @@ pub fn loadJson(arena: Allocator, ledger: *Ledger, text: []const u8) !void {
         const kind_s = if (item.object.get("kind")) |v| (if (v == .string) v.string else return error.InvalidClaimLedger) else return error.InvalidClaimLedger;
         const kind = kindFrom(kind_s) orelse return error.InvalidClaimLedger;
         const key = if (item.object.get("key")) |v| (if (v == .string) v.string else return error.InvalidClaimLedger) else return error.InvalidClaimLedger;
+        const repo: ?[]const u8 = if (item.object.get("repo")) |v| switch (v) {
+            .null => null,
+            .string => if (@import("artifact_repository.zig").valid(v.string)) try std.ascii.allocLowerString(arena, v.string) else return error.InvalidClaimLedger,
+            else => return error.InvalidClaimLedger,
+        } else null;
         const session = if (item.object.get("session")) |v| (if (v == .string) v.string else return error.InvalidClaimLedger) else return error.InvalidClaimLedger;
         const pid: i32 = if (item.object.get("pid")) |v| (if (v == .integer and v.integer >= 0 and v.integer <= std.math.maxInt(i32)) @intCast(v.integer) else return error.InvalidClaimLedger) else 0;
         const start_id: u64 = if (item.object.get("start_id")) |v| (if (v == .integer and v.integer >= 0) @intCast(v.integer) else return error.InvalidClaimLedger) else 0;
         if (ledger.len >= max_claims) return error.InvalidClaimLedger;
         for (ledger.slice()) |c| {
-            if (c.kind == kind and std.mem.eql(u8, c.key, key)) return error.InvalidClaimLedger;
+            if (c.kind == kind and std.mem.eql(u8, c.key, key) and !@import("artifact_claim_ledger.zig").differentRepository(c.repo, repo)) return error.InvalidClaimLedger;
         }
         ledger.items[ledger.len] = .{
             .kind = kind,
+            .repo = repo,
             .key = try arena.dupe(u8, key),
             .owner = .{ .session = try arena.dupe(u8, session), .pid = pid, .start_id = start_id },
         };
         ledger.len += 1;
     }
+}
+
+test "repository scopes survive persistence while legacy records stay unknown" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const scoped = "[{\"kind\":\"issue\",\"key\":\"1\",\"session\":\"a\",\"repo\":\"github.com/org/first\"},{\"kind\":\"issue\",\"key\":\"1\",\"session\":\"b\",\"repo\":\"github.com/org/second\"}]";
+    var ledger: Ledger = .{};
+    try loadJson(a, &ledger, scoped);
+    var restored: Ledger = .{};
+    try loadJson(a, &restored, try persistJson(a, &ledger));
+    try std.testing.expectEqual(@as(usize, 2), restored.len);
+    try std.testing.expectEqualStrings("github.com/org/second", restored.items[1].repo.?);
+    try loadJson(a, &ledger, "[{\"kind\":\"issue\",\"key\":\"1\",\"session\":\"a\"}]");
+    try std.testing.expect(ledger.items[0].repo == null);
+    try std.testing.expectError(error.InvalidClaimLedger, loadJson(a, &ledger, "[{\"kind\":\"issue\",\"key\":\"1\",\"session\":\"a\",\"repo\":\"invalid\"}]"));
 }
