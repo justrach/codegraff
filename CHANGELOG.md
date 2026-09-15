@@ -30,6 +30,18 @@ current is part of cutting a release.
   unattended session unless the machine was started with `--yolo`.
   `docs/remote-control.md`, `docs/remote-control-security.md`.
 
+## v0.0.299
+
+- The MCP `run_task` result view uses the codegraff.com paper palette (paper, rice, ink, coral, cobalt, gold) instead of the desktop emerald chrome. Host light/dark still applies. No webfonts.
+
+See [the release notes](docs/releases/v0.0.299.md) for details.
+
+## v0.0.299
+
+- The MCP `run_task` result view uses the codegraff.com paper palette (paper, rice, ink, coral, cobalt, gold) instead of the desktop emerald chrome. Host light/dark still applies. No webfonts.
+
+See [the release notes](docs/releases/v0.0.299.md) for details.
+
 ## v0.0.297
 
 - Native tools continue while MCP connections finish; explicitly configured

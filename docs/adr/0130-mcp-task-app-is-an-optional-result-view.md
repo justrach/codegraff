@@ -15,9 +15,10 @@ URI through resource reads.
 
 Return schema-described status, text, truncation and limits alongside the
 ordinary text content for every task outcome, including execution failures.
-The view shares the desktop palette from `apps/native/app/ui-theme.css`,
-embedded at compile time, and follows its conversation layout. It follows host
-theme changes, filters output lines, and toggles wrapping.
+The view overlays the codegraff.com paper palette from zigrepper `design.md`
+(paper, rice, ink, coral, cobalt, gold) on the compile-time `ui-theme.css`
+embed. It cannot fetch webfonts. It follows host light/dark, filters output
+lines, and toggles wrapping.
 It receives task input/results but grants no app-initiated execution authority.
 Host-side tool calls retain the launch-time execution contract from ADR 0129.
 

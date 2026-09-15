@@ -5,17 +5,43 @@
 <title>Codegraff · Task result</title>
 <style>/* CODEGRAFF_THEME */</style>
 <style>
-:root{color-scheme:light dark}*{box-sizing:border-box}
-body{margin:0;padding:12px;background:var(--canvas);color:var(--ink);font:13px/1.6 Inter,ui-sans-serif,system-ui,sans-serif;-webkit-font-smoothing:antialiased;letter-spacing:-.01em}
-.workspace{background:var(--page);border:1px solid var(--line-strong);border-radius:14px;overflow:hidden}
-header{height:44px;display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid var(--line);background:var(--page)}.brand{font-size:13px;font-weight:650;letter-spacing:-.3px}.brand span{color:#059669}.tab{font-size:12px;padding:3px 12px;border-radius:7px;background:var(--hover-2);color:var(--ink)}
-#status{margin-left:auto;font-size:11px;color:var(--ink-2);display:flex;align-items:center;gap:6px}#status:before{content:'';width:6px;height:6px;border-radius:50%;background:var(--green)}#status[data-error=true]{color:var(--red)}#status[data-error=true]:before{background:var(--red)}
-main{max-width:760px;margin:auto;padding:26px 24px 18px}.user-row{display:flex;justify-content:flex-end;padding-left:40px;margin-bottom:30px}.user-bubble{max-width:100%;border-radius:12px;padding:10px 14px;background:color-mix(in oklab,var(--accent) 12%,var(--surface));box-shadow:var(--shadow-hairline)}
-#prompt{white-space:pre-wrap;overflow-wrap:anywhere}summary{cursor:pointer;color:var(--ink-2);font-size:11px;margin-top:8px}.limits{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;color:var(--ink-2);font-size:11px}.limits span{border-radius:6px;background:var(--surface);padding:2px 7px}
-.assistant-label{display:flex;align-items:center;gap:8px;font-weight:600;font-size:12px;margin-bottom:10px}.mark{width:22px;height:22px;display:grid;place-items:center;border:1px solid var(--line-strong);border-radius:7px;color:#059669;background:var(--surface)}
-.toolbar{display:flex;align-items:center;gap:14px;margin:14px 0 10px}input[type=search]{flex:1;min-width:0;max-width:320px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);color:var(--ink);padding:7px 10px;font:inherit;font-size:12px}label{white-space:nowrap;color:var(--ink-2);font-size:11px}input:focus-visible,summary:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
-pre{margin:0;padding:0;background:transparent;color:var(--ink);font:13px/1.8 ui-monospace,'SF Mono',monospace;max-height:420px;min-height:100px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}pre.nowrap{white-space:pre;overflow-wrap:normal}#count{font-size:11px;min-height:20px;margin:6px 0;color:var(--ink-3)}footer{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:11px;color:var(--ink-2)}
-@media(max-width:420px){body{padding:6px}main{padding:18px 14px}.toolbar{gap:8px}.tab{display:none}.user-row{padding-left:20px}}
+/* codegraff.com tokens from zigrepper/design.md. No webfonts: MCP apps cannot fetch. */
+:root{
+  color-scheme:light dark;
+  --paper:#f6eedf;--rice:#fffaf0;--ink:#1b1714;--coral:#d45a43;--cobalt:#2654d9;--gold:#f7a63b;
+  --line:rgb(27 23 20 / .15);--paper-muted:#efe5d4;--ink-2:#51483f;--ink-3:#74685b;--ok:#486841;--bad:#a83f2d;
+}
+html[data-theme=dark],html.dark{
+  --paper:#1b1714;--rice:#2a241f;--ink:#fffaf0;--line:rgb(255 250 240 / .18);--paper-muted:#241f1a;
+  --ink-2:#c4b8a8;--ink-3:#9a8d7d;--ok:#8faf7a;--bad:#e07a66;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:16px;background:var(--paper);color:var(--ink);font:14px/1.55 ui-sans-serif,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.workspace{background:var(--paper);border:1px solid var(--line);border-radius:6px;overflow:hidden}
+header{min-height:44px;display:flex;align-items:center;gap:12px;padding:8px 16px;border-bottom:1px solid var(--line);background:var(--paper-muted)}
+.brand{font-size:13px;font-weight:650;letter-spacing:.02em}.brand span{color:var(--coral)}
+.tab{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-2)}
+#status{margin-left:auto;font-size:12px;color:var(--ink-2);display:flex;align-items:center;gap:8px}
+#status:before{content:'';width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none}
+#status[data-error=true]{color:var(--bad)}#status[data-error=true]:before{background:var(--bad)}
+main{max-width:800px;margin:auto;padding:28px 24px 20px}
+.user-row{display:flex;justify-content:flex-end;padding-left:40px;margin-bottom:28px}
+.user-bubble{max-width:100%;border:1px solid var(--line);border-radius:6px;background:var(--rice);padding:12px 14px}
+#prompt{white-space:pre-wrap;overflow-wrap:anywhere}
+summary{cursor:pointer;color:var(--cobalt);font-size:12px;margin-top:8px}
+.limits{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;color:var(--ink-2);font-size:12px}
+.limits span{border:1px solid var(--line);border-radius:4px;background:var(--paper);padding:2px 8px}
+.assistant-label{display:flex;align-items:center;gap:8px;font-weight:650;font-size:13px;margin-bottom:10px}
+.mark{width:22px;height:22px;display:grid;place-items:center;border:1px solid var(--line);border-radius:4px;color:var(--coral);background:var(--rice)}
+.toolbar{display:flex;align-items:center;gap:14px;margin:14px 0 10px}
+input[type=search]{flex:1;min-width:0;max-width:320px;min-height:44px;border:1px solid var(--line);border-radius:6px;background:var(--rice);color:var(--ink);padding:8px 12px;font:inherit;font-size:13px}
+label{white-space:nowrap;color:var(--ink-2);font-size:12px;min-height:44px;display:flex;align-items:center;gap:6px}
+input:focus-visible,summary:focus-visible,button:focus-visible{outline:3px solid var(--gold);outline-offset:3px}
+pre{margin:0;padding:0;background:transparent;color:var(--ink);font:13px/1.7 ui-monospace,'Geist Mono',SFMono-Regular,monospace;max-height:420px;min-height:100px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+pre.nowrap{white-space:pre;overflow-wrap:normal}
+#count{font-size:12px;min-height:20px;margin:6px 0;color:var(--ink-3)}
+footer{margin-top:16px;padding-top:12px;border-top:1px solid var(--line);font-size:12px;color:var(--ink-2)}
+@media(max-width:420px){body{padding:12px}main{padding:20px 14px}.toolbar{gap:8px;flex-wrap:wrap}.tab{display:none}.user-row{padding-left:12px}input[type=search]{max-width:none}}
 </style>
 </head>
 <body>
