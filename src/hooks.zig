@@ -254,7 +254,7 @@ pub fn deinitCodedbCache(gpa: Allocator, io: Io) void {
 /// (cached): returns "not indexed: <path>" when the file is too large or
 /// otherwise skipped, so the guard knows to let bash through instead of
 /// trapping the agent between a blocked grep and an empty codedb result.
-pub fn codedbFileIndexed(io: Io, gpa: Allocator, path: []const u8) bool {
+pub fn codedbFileIndexed(io: Io, gpa: Allocator, path: []const u8) error{Canceled}!bool {
     g_codedb_file_mu.lockUncancelable(io);
     for (g_codedb_file_checks.items) |e| {
         if (std.mem.eql(u8, e.path, path)) {
@@ -263,11 +263,17 @@ pub fn codedbFileIndexed(io: Io, gpa: Allocator, path: []const u8) bool {
         }
     }
     g_codedb_file_mu.unlock(io);
-    // Cache miss: probe once, then store. On error, assume indexed (safe:
-    // the guard still redirects to codedb, which is the status-quo behavior).
-    const run = jobs.runCapped(gpa, io, &.{ "codedb", "outline", path }, 512, 256, 0) catch return true;
+    // This pre-dispatch probe is outside bash's own timeout. Bound its whole
+    // process tree and let the read proceed when index status is unavailable.
+    // Incomplete probes must not poison the cache for later calls.
+    const run = jobs.runCappedWithOptions(gpa, io, &.{ "codedb", "outline", path }, 512, 256, 2000, .{ .kill_process_tree = true }) catch |err| {
+        if (err == error.Canceled) return error.Canceled;
+        return false;
+    };
     defer gpa.free(run.stdout);
     defer gpa.free(run.stderr);
+    if (run.cancelled) return error.Canceled;
+    if (run.timed_out or run.term != .exited or run.term.exited != 0) return false;
     const not_indexed = std.mem.indexOf(u8, run.stdout, "not indexed") != null or
         std.mem.indexOf(u8, run.stderr, "not indexed") != null;
     const result: bool = !not_indexed;

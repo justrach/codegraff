@@ -89,6 +89,14 @@ jobs:
       - name: Title command result contract
         run: python3 scripts/test-title-result.py
 
+      - name: Bounded codedb guard probes
+        run: |
+          for outcome in timeout failure unindexed indexed; do
+            python3 scripts/test-codedb-probe-deadline.py --first "$outcome" --output "$RUNNER_TEMP/codedb-probe-$outcome"
+          done
+          python3 scripts/test-codedb-probe-deadline.py --nested --output "$RUNNER_TEMP/codedb-probe-nested"
+          python3 scripts/test-codedb-probe-deadline.py --cancel --output "$RUNNER_TEMP/codedb-probe-cancel"
+
       - name: Observed local checks before publication
         run: python3 scripts/test-pr-local-checks.py --graff zig-out/bin/graff --evidence /tmp/pr-local-checks
 
