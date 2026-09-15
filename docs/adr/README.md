@@ -149,6 +149,7 @@ record only when you need the evidence or the edge cases.
 | [0129](0129-mcp-server-delegates-bounded-cli-tasks.md) | `graff mcp serve` exposes bounded fresh CLI tasks over stdio; launch-time permissions and workspace stay outside tool arguments. |
 | [0130](0130-mcp-task-app-is-an-optional-result-view.md) | MCP task apps negotiate presentation only; structured results and text fallback share the same bounded task execution. |
 | [0131](0131-mcp-http-and-managed-client-registration.md) | HTTP MCP shares bounded task execution; CLI and GUI installs register detected clients additively through a private local service. |
+| [0132](0132-desktop-passkeys-use-signed-device-credentials.md) | Desktop Touch ID uses matching signed keychain configuration; account choice is explicit and existing iCloud credentials need a fallback. |
 
 ## When to write one
 

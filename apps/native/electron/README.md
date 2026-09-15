@@ -65,6 +65,56 @@ The existing AppKit/Kuri shell remains a fallback through
 this local Electron trial. Browser permissions are denied by default; a
 permission UI and release updater are follow-up distribution work.
 
+## Browser passkeys
+
+Developer ID signing writes the Touch ID keychain group into both the main app's
+entitlements and `Contents/Resources/webauthn.json`. Startup configures Electron
+from that signed resource before creating browser pages. The group uses the
+signing team and bundle identifier; keep both stable across releases so existing
+credentials remain accessible. If the signing identity is a certificate hash,
+set `GRAFF_SIGN_TEAM_ID` to its ten-character Apple team identifier.
+
+Signing also requires `GRAFF_WEBAUTHN_PROFILE`: a valid macOS provisioning profile
+for that signing certificate/team and bundle identifier, authorizing the
+`keychain-access-groups` value (an authorized team wildcard is also accepted).
+The signer checks its platform, expiration, app identifier and group, then embeds
+it and supplies the matching `com.apple.application-identifier`. A bare keychain
+entitlement without an authorizing profile can pass signature verification but
+be rejected by macOS at launch. Do not omit this provisioning step.
+
+On supported Macs, this enables device-bound Touch ID credentials created in
+Codegraff's persistent browser partition. It does **not** expose existing iCloud
+Keychain passkeys or sync credentials to other devices. Development/ad-hoc builds
+without the signing configuration do not enable this authenticator. General
+browser permission policy remains deny-by-default.
+
+When a request offers accounts, choose one in the native account dialog; Cancel
+rejects the request. Navigation, hiding the tab, and closing the page cancel the
+selection. **Tools → Browser passkey help…** explains the limitations and offers
+to open the active HTTP(S) page in the default browser, only after an explicit
+click. Alternatively use the site's password or another sign-in method. A login
+in the default browser does not transfer to the embedded browser.
+
+Verification:
+
+```sh
+node --test apps/native/electron/webauthn*.test.cjs
+node apps/native/scripts/test-webauthn.mjs
+```
+
+The virtual-authenticator regression checks Chromium's real credential and
+account-selection dispatch without biometric prompts. It is **not** proof of
+Secure Enclave access. Before claiming platform support in a release, validate
+the Developer ID-signed app on a supported Mac: verify its signature and matching
+keychain group, register a new device-bound credential on a test relying party,
+complete Touch ID, quit/reopen and authenticate, select between two accounts,
+and cancel a request. Also confirm that an existing iCloud-only credential has a
+clear fallback. These hardware checks require a person; do not automate Touch ID
+or claim a virtual authenticator verifies it. For a noninteractive availability
+check on the signed bundle, run the packaged smoke test with
+`GRAFF_SMOKE_LAUNCH_ONLY=1 GRAFF_SMOKE_WEBAUTHN=1`; this checks production startup,
+not registration or biometric consent.
+
 ## macOS computer use and agent browser tools
 
 **Codegraff → Computer use…** enables or disables laptop control for this launch
@@ -145,13 +195,15 @@ See [repeatable performance scenarios](VISUAL-TESTS.md) for the model-free runne
 ## Building a distribution disk image
 
 `build.sh` produces a development app with a local signature. For public downloads,
-run `distribute.sh` with a Developer ID Application identity and a `notarytool`
+run `distribute.sh` with a Developer ID Application identity, an authorizing
+macOS provisioning profile (see Browser passkeys above), and a `notarytool`
 keychain profile. Bun installs the pinned Electron signing utility with the other
 development dependencies.
 
 ```sh
 GRAFF_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 GRAFF_NOTARY_PROFILE="notary-local" \
+GRAFF_WEBAUTHN_PROFILE="signing/Codegraff.provisionprofile" \
 bash apps/native/electron/distribute.sh zig-out/electron/Codegraff.app zig-out/distribution
 ```
 
