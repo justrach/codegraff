@@ -25,10 +25,11 @@ zig build
 python3 scripts/test-review-mode.py zig-out/bin/graff
 python3 scripts/test-review-deadline.py zig-out/bin/graff
 python3 scripts/test-review-acp.py zig-out/bin/graff
+python3 scripts/test-review-acp-checkpoint.py zig-out/bin/graff
 python3 scripts/eval-tier2.py --only review-checkpoint-preserves-unfinished-scope
 ```
 
-The three process regressions also run in CI. Set `GRAFF_REVIEW_EVIDENCE` to a private directory
+The four process regressions also run in CI. Set `GRAFF_REVIEW_EVIDENCE` to a private directory
 when running the deadline test to retain its protocol events and harness traces.
 These are scripted-model regressions of the actual harness, not a claim about
 an unscripted model's review quality.
@@ -38,3 +39,7 @@ matching start and finish record; failed or cancelled reviews remain failed in
 the record. Recording happens before the isolated review context is restored.
 The ACP regression checks these records alongside read-only enforcement and
 normal follow-up recovery.
+
+ACP forwards checkpoint notices as ongoing progress. They do not end the turn
+or replace the final answer; the long-review regression verifies additional
+inspection after the notice and delivery of the eventual report.
