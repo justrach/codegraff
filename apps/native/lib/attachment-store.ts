@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, openSync, closeSync, fstatSync, writeFileSync, readFileSync, renameSync, unlinkSync, lstatSync, opendirSync, type Dir } from "node:fs";
+import { mkdirSync, openSync, closeSync, fstatSync, writeFileSync, readFileSync, renameSync, unlinkSync, lstatSync, opendirSync, readdirSync, type Dir } from "node:fs";
 import os from "node:os";
+import { attachmentReferences, type ReferenceState } from "./attachment-references";
 import path from "node:path";
 
-type Record = { version: 1; name: string; owner: number; retained: boolean; dev: number; ino: number; size?: number; sha256?: string };
+type Record = { version: 1; name: string; owner: number; retained: boolean; dev: number; ino: number; size?: number; sha256?: string; referenceVersion?: 1 };
 export const attachmentDirectory = path.join(os.tmpdir(), "graff-native-attachments");
 function ownerAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; }
@@ -47,7 +48,7 @@ export class AttachmentStore {
       const file = fstatSync(descriptor);
       try {
         writeFileSync(descriptor, bytes);
-        this.save({ version: 1, name, owner: this.owner, retained: false, dev: file.dev, ino: file.ino, size: bytes.byteLength, sha256: createHash("sha256").update(bytes).digest("hex") });
+        this.save({ version: 1, name, owner: this.owner, retained: false, dev: file.dev, ino: file.ino, size: bytes.byteLength, sha256: createHash("sha256").update(bytes).digest("hex"), referenceVersion: 1 });
       } catch (error) {
         try {
           const current = lstatSync(target);
@@ -58,7 +59,37 @@ export class AttachmentStore {
     } finally { closeSync(descriptor); }
     return target;
   }
-  retainPrompt(params: unknown) {
+  private enroll(name: string, directory?: string) {
+    const root = path.join(this.records, "references", name);
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    const scope = directory && path.isAbsolute(directory) ? path.resolve(directory) : null;
+    const key = scope ? createHash("sha256").update(scope).digest("hex") : "unknown";
+    try { writeFileSync(path.join(root, key + ".json"), JSON.stringify({ directory: scope }), { flag: "wx", mode: 0o600 }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+  }
+  /** Read-only evidence within enrolled scopes; not authorization to delete.
+   * A future collector must also exclude every active consumer. */
+  references(target: string): ReferenceState {
+    if (path.dirname(target) !== this.directory) return "unknown";
+    const record = this.read(path.basename(target));
+    if (!record?.retained || record.referenceVersion !== 1) return "unknown";
+    try {
+      const root = path.join(this.records, "references", record.name);
+      const names = readdirSync(root);
+      if (!names.length || names.length > 64 || names.includes("unknown.json")) return "unknown";
+      const scopes: string[] = [];
+      for (const name of names) {
+        const file = path.join(root, name), stat = lstatSync(file);
+        if (!stat.isFile() || stat.size > 16 * 1024) return "unknown";
+        const { directory } = JSON.parse(readFileSync(file, "utf8"));
+        if (typeof directory !== "string" || !path.isAbsolute(directory) ||
+            name !== createHash("sha256").update(directory).digest("hex") + ".json") return "unknown";
+        scopes.push(directory);
+      }
+      return attachmentReferences(scopes, target);
+    } catch { return "unknown"; }
+  }
+  retainPrompt(params: unknown, sessionDirectory?: string) {
     const prompt = (params as { prompt?: unknown } | undefined)?.prompt;
     if (!Array.isArray(prompt)) return;
     for (const part of prompt) {
@@ -66,7 +97,10 @@ export class AttachmentStore {
       for (const match of part.text.matchAll(/@\[([^\]\n]+)\]/g)) {
         if (path.dirname(match[1]) !== this.directory) continue;
         const record = this.read(path.basename(match[1]));
-        if (record && !record.retained) this.save({ ...record, retained: true });
+        if (record) {
+          this.enroll(record.name, sessionDirectory);
+          if (!record.retained) this.save({ ...record, retained: true });
+        }
       }
     }
   }

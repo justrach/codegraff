@@ -324,7 +324,7 @@ export async function POST(req: NextRequest) {
       if (slot.streaming) return Response.json({ error: "A turn is already active" }, { status: 409 });
       const promptParams = await prepareGuiPrompt(body.params);
       if (slot.streaming) return Response.json({ error: "A turn is already active" }, { status: 409 });
-      attachmentStore().retainPrompt(promptParams);
+      attachmentStore().retainPrompt(promptParams, path.dirname(sessionFile(slot.cwd, slot.resume ?? slot.sessionId!)));
       slot.streaming = true;
       const { stream, pending } = createPromptStream(slot.transport,
         { ...promptParams, sessionId: slot.sessionId }, () => {

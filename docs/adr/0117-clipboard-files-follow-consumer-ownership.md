@@ -39,6 +39,15 @@ pending files only when their known desktop owner has exited. The desktop owns
 drafts independently of route-server restarts. Unknown owners and unrecorded or
 replaced files do not grant deletion authority. Age alone never grants it.
 
+New native submissions also enroll their canonical session directory in
+immutable per-image reference records. Multiple workspaces accumulate records
+without overwriting one another. An unscoped submission permanently records
+uncertainty; older exports cannot acquire complete scope knowledge retroactively.
+A bounded read-only scan covers checkpoints, both transcript generations and
+archives, decoding JSON before checking names. Missing, malformed, symlinked,
+changed or over-budget data is unknown. This evidence is scoped: it does not
+by itself authorize deletion or exclude active consumers.
+
 The legacy desktop keeps clipboard exports in a private owner directory with
 an operating-system file lease. Recovery takes a nonblocking exclusive lease
 before removing recorded unsent exports from a stopped owner. Its prompt

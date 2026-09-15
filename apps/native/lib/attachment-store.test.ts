@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, existsSync, utimesSync, writeFileSync, renameSync, chmodSync, readdirSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, utimesSync, writeFileSync, renameSync, chmodSync, readdirSync, mkdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { AttachmentStore } from "./attachment-store";
@@ -68,4 +68,33 @@ test("an in-place edit is preserved even when the inode and byte count match", (
   expect(store.discard(edited)).toBe(false);
   expect(store.sweep()).toBe(0);
   expect(existsSync(edited)).toBe(true);
+});
+
+test("enrolled workspace references survive restart and independent archive deletion", () => {
+  const {store,root} = fixture();
+  const first = path.join(root,"first"), second = path.join(root,"second");
+  mkdirSync(first);mkdirSync(second);
+  const sent = store.create("shared.png",new Uint8Array([1]));
+  const prompt = {prompt:[{type:"text",text:`Inspect @[${sent}]`}]};
+  store.retainPrompt(prompt,first);store.retainPrompt(prompt,second);
+  const a=path.join(first,"chat.session.json"), b=path.join(second,"chat.session.json");
+  writeFileSync(a,JSON.stringify({messages:[sent]}));writeFileSync(b,JSON.stringify({messages:[sent]}));
+  const restarted=new AttachmentStore(root,67890,()=>false);
+  try {
+    expect(restarted.references(sent)).toBe("referenced");rmSync(a);
+    const archive=path.join(second,"archived");mkdirSync(archive);
+    renameSync(b,path.join(archive,"chat.session.json"));
+    expect(restarted.references(sent)).toBe("referenced");
+    rmSync(path.join(archive,"chat.session.json"));
+    expect(restarted.references(sent)).toBe("absent");
+    expect(existsSync(sent)).toBe(true); // Absence evidence alone is not deletion authority.
+  } finally { restarted.close(); }
+});
+
+test("an unscoped submission cannot be retroactively treated as complete scope knowledge", () => {
+  const {store,root}=fixture();const scope=path.join(root,"sessions");mkdirSync(scope);
+  const sent=store.create("unknown.png",new Uint8Array([1]));
+  const prompt={prompt:[{type:"text",text:`@[${sent}]`}]};
+  store.retainPrompt(prompt);store.retainPrompt(prompt,scope);
+  expect(store.references(sent)).toBe("unknown");
 });

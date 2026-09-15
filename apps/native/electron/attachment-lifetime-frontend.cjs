@@ -45,6 +45,9 @@ async function runAttachments({win,origin,temp,output,requests,workspace,send,cl
   assert.ok(JSON.stringify(calls).includes(png),'Actual model requests must contain the pasted PNG bytes');
   const record=JSON.parse(fs.readFileSync(path.join(directory,'.ownership',path.basename(aged)+'.json'),'utf8'));
   assert.equal(record.retained,true,'ACP acceptance must retain replay pixels');
+  const referenceDir=path.join(directory,'.ownership','references',path.basename(aged));
+  const scopes=fs.readdirSync(referenceDir).map(name=>JSON.parse(fs.readFileSync(path.join(referenceDir,name),'utf8')).directory);
+  assert.deepEqual(scopes,[path.join(fs.realpathSync(workspace),'.graff','sessions')],'ACP must enroll the actual saved-session scope');
   await fetch(origin+'/api/attach',{method:'DELETE',headers:{'content-type':'application/json'},body:JSON.stringify({paths:[aged]})});
   assert.ok(fs.existsSync(aged),'Discard cannot delete pixels retained by an accepted message');
   assert.equal((await fetch(origin+'/api/attach?name='+encodeURIComponent(path.basename(aged)))).status,200);
