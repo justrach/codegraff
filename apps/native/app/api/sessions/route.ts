@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { NextRequest } from "next/server";
 import { resolveRoot } from "@/lib/server-root";
@@ -37,6 +37,12 @@ function parseScope(raw: string | null): ListScope {
   return "all";
 }
 
+function cacheWorkspaceMatches(saved: string | null, target: string): boolean | null {
+  if (!saved) return null;
+  try { return realpathSync(saved) === realpathSync(target); }
+  catch { return null; }
+}
+
 export async function GET(req: NextRequest) {
   // `?root=` is the workspace whose sessions are wanted (each workspace keeps
   // its own .graff/sessions); absent, the agent's default workspace.
@@ -59,6 +65,7 @@ export async function GET(req: NextRequest) {
         provider?: unknown;
         workspace?: unknown;
         messages?: unknown;
+        todos?: unknown;
       };
       const header = peekHeader(found.file, st.size);
       return Response.json({
@@ -74,11 +81,15 @@ export async function GET(req: NextRequest) {
         // payload as a snapshot with unknown execution (#839).
         view: "snapshot",
         execution: "unknown",
+        ...(req.nextUrl.searchParams.get("view") === "metadata"
+          ? { cacheWorkspaceMatches: cacheWorkspaceMatches(str(parsed.workspace) ?? str(header?.workspace), root) } : {}),
+        ...(Array.isArray(parsed.todos) ? { todos: parsed.todos } : {}),
         // The desktop never displayed raw provider history. Avoid allocating
         // its tool bodies and image payloads again in Chromium just to drop them.
         ...(req.nextUrl.searchParams.get("view") === "transcript"
-          ? { presentation: "transcript-v1", transcript: transcriptFromMessages(Array.isArray(parsed.messages) ? parsed.messages : [], str(parsed.model) ?? undefined) }
-          : { messages: Array.isArray(parsed.messages) ? parsed.messages : [] }),
+          ? { presentation: "transcript-v1", transcript: transcriptFromMessages(Array.isArray(parsed.messages) ? parsed.messages : [], str(parsed.model) ?? undefined, parsed.todos) }
+          : req.nextUrl.searchParams.get("view") === "metadata" ? {}
+            : { messages: Array.isArray(parsed.messages) ? parsed.messages : [] }),
       });
     } catch (err) {
       return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });

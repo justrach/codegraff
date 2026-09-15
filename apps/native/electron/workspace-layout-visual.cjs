@@ -111,8 +111,9 @@ app.whenReady().then(async () => {
   await wait(`!!document.querySelector('[aria-label="Agents panel"]')`);
   fs.writeFileSync(path.join(output, 'agents-workspace.png'), (await wc.capturePage()).toPNG());
   await wc.reload();
-  await wait(`!!document.querySelector('[aria-label="Show tasks"]')`);
-  assert.equal(await js(`document.querySelector('[aria-label="Show tasks"]').getAttribute('aria-pressed')`), 'false');
+  await wait(`!!document.querySelector('[data-workspace-ready="true"] [data-workspace-toolbar]')`);
+  assert.equal(await js(`document.querySelector('[aria-label="Show tasks"]')?.getAttribute('aria-pressed') === 'true'`), false);
+  assert.equal(await js(`!!document.querySelector('[data-tasks-sidebar]')`), false);
   assert.deepEqual(unexpected, [], 'Synthetic checks must never reach real agent APIs');
   console.log('PASS: shared toolbar above horizontal/vertical splits; full-width Agents; Tasks close persists across navigation/reload. No engine calls.');
 }).then(() => finish(0)).catch(error => { console.error(error); finish(1); });

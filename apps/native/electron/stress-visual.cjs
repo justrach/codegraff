@@ -62,7 +62,11 @@ async function runStressVisuals({win: fixtureWindow, origin, output, fullscreen 
       win.setFullScreen(true);await wait(`document.documentElement.dataset.desktopFullscreen==='true'`);
       assert.equal(await titleHeight(),0);await bounds();
       fs.writeFileSync(path.join(output,'stress-fullscreen.png'),(await win.webContents.capturePage()).toPNG());
-      await win.reload();await wait(`document.documentElement.dataset.desktopFullscreen==='true'`);assert.equal(await titleHeight(),0);
+      await win.reload();
+      // Preload restores fullscreen before React mounts the titlebar. Wait
+      // for both signals, then still require the mounted bar to have no height.
+      await wait(`document.documentElement.dataset.desktopFullscreen==='true'&&!!document.querySelector('[data-desktop-titlebar]')`);
+      assert.equal(await titleHeight(),0);
       win.setFullScreen(false);await wait(`document.documentElement.dataset.desktopFullscreen==='false'`);assert.equal(await titleHeight(),36);
     }
     fs.writeFileSync(path.join(output,'stress-results.json'),JSON.stringify({passed:['5000 tools','bounded output','1000 messages','unbroken input','long markdown','stream reading position',...(checkedFullscreen?['fullscreen and reload']:[])],fullscreen:checkedFullscreen?'passed':'not run',metrics},null,2));

@@ -16,29 +16,42 @@ const worktree_lease = @import("worktree_lease.zig");
 const Message = presence_chan.Message;
 const Owner = worktree_lease.Owner;
 
-/// How many inbound bodies the process will hold. Older ones fall out; the
-/// room still has them on disk.
+/// How many inbound bodies the process will hold. Evictions are counted;
+/// the room still has the original messages on disk.
 pub const inbox_cap: usize = 8;
 
-const from_cap: usize = 48;
-const text_cap: usize = 200;
+// Owned independently of the delivery arena, which resets between steps.
+var test_storage: Allocator = std.heap.page_allocator;
+const storage = if (@import("builtin").is_test) &test_storage else &std.heap.page_allocator;
 
+/// Clear with the previous allocator before changing ownership domains.
+pub fn setStorageAllocatorForTest(allocator: Allocator) void {
+    if (!@import("builtin").is_test) @compileError("test-only inbox allocator override");
+    clear();
+    test_storage = allocator;
+}
 const Parked = struct {
-    from: [from_cap]u8 = undefined,
-    from_len: u8 = 0,
-    text: [text_cap]u8 = undefined,
-    text_len: u8 = 0,
+    from: []const u8,
+    text: []const u8,
     dm: bool = false,
     device: bool = false,
+
+    fn deinit(self: Parked) void {
+        storage.free(self.from);
+        storage.free(self.text);
+    }
 };
 
 var g_items: [inbox_cap]Parked = undefined;
 var g_head: usize = 0;
 var g_len: usize = 0;
+var g_dropped: usize = 0;
 
 pub fn clear() void {
+    for (0..g_len) |i| itemAt(i).deinit();
     g_head = 0;
     g_len = 0;
+    g_dropped = 0;
 }
 
 pub fn resetForTest() void {
@@ -49,28 +62,49 @@ pub fn unread() usize {
     return g_len;
 }
 
-fn copyInto(dest: []u8, src: []const u8) u8 {
-    const n = @min(dest.len, src.len);
-    @memcpy(dest[0..n], src[0..n]);
-    return @intCast(n);
+pub fn dropped() usize {
+    return g_dropped;
+}
+
+pub fn pending() bool {
+    return g_len > 0 or g_dropped > 0;
+}
+
+/// Add saved loss after restoring the array, preserving any restore evictions.
+pub fn restoreDropped(v: std.json.Value) void {
+    const count = switch (v) {
+        .integer => |n| if (n >= 0) (std.math.cast(usize, n) orelse std.math.maxInt(usize)) else return,
+        // JSON stores unsigned counts above i64 as number strings.
+        .number_string => |n| std.fmt.parseInt(usize, n, 10) catch return,
+        else => return,
+    };
+    g_dropped +|= count;
 }
 
 fn parkOne(from: []const u8, text: []const u8, dm: bool, device: bool) void {
+    const owned_from = storage.dupe(u8, from) catch {
+        g_dropped +|= 1;
+        return;
+    };
+    const owned_text = storage.dupe(u8, text) catch {
+        storage.free(owned_from);
+        g_dropped +|= 1;
+        return;
+    };
+    // Allocate first: failure must not evict an otherwise readable message.
     if (g_len == inbox_cap) {
+        itemAt(0).deinit();
         g_head = (g_head + 1) % inbox_cap;
         g_len -= 1;
+        g_dropped +|= 1;
     }
     const i = (g_head + g_len) % inbox_cap;
-    var item: Parked = .{ .dm = dm, .device = device };
-    item.from_len = copyInto(&item.from, from);
-    item.text_len = copyInto(&item.text, peer_context.clip(text, text_cap));
-    g_items[i] = item;
+    g_items[i] = .{ .from = owned_from, .text = owned_text, .dm = dm, .device = device };
     g_len += 1;
 }
 
-/// Copy heard room/device lines into the ring. Returns how many we parked
-/// (overflow still counts as parked — the newest stay). Pointers are copied
-/// into static buffers because the drain's arena may reset next step.
+/// Copy heard room/device lines into the ring. Returns how many were heard
+/// (including loss), so even an allocation failure prompts a loss-aware wake.
 pub fn parkHeard(local: []const Message, device: []const Message) usize {
     var n: usize = 0;
     for (local) |m| {
@@ -89,11 +123,11 @@ fn itemAt(i: usize) *const Parked {
 }
 
 fn fromSlice(p: *const Parked) []const u8 {
-    return p.from[0..p.from_len];
+    return p.from;
 }
 
 fn textSlice(p: *const Parked) []const u8 {
-    return p.text[0..p.text_len];
+    return p.text;
 }
 
 /// One-line history wake. Cheap on purpose: the bodies wait in the ring.
@@ -104,40 +138,53 @@ pub fn formatWake(arena: Allocator) []const u8 {
     // how to read them, but must not read as a command that displaces the
     // user's actual request on a trivial turn. Prefix stays "[peer]" — every
     // compact/peek path detects injects by prefix, not by this wording.
-    if (g_len == 0) return "[peer] 0 unread — nothing waiting; no inbox read needed";
+    if (!pending()) return "[peer] 0 unread — nothing waiting; no inbox read needed";
+    if (g_dropped > 0) return std.fmt.allocPrint(arena, "[peer] {d} unread; {d} dropped — parked; peer_message action=inbox when relevant", .{ g_len, g_dropped }) catch "[peer] messages dropped — peer_message action=inbox when relevant";
     const first = fromSlice(itemAt(0));
+    // Only the wake is a preview. Keep it one line and within the history cap.
+    const line_end = std.mem.indexOfAny(u8, first, "\r\n") orelse first.len;
+    var end = @min(line_end, 48);
+    while (end > 0 and end < first.len and first[end] & 0xc0 == 0x80) end -= 1;
+    const shown = first[0..end];
     var extra: usize = 0;
-    var i: usize = 1;
-    while (i < g_len) : (i += 1) {
-        if (!std.mem.eql(u8, fromSlice(itemAt(i)), first)) extra += 1;
+    for (1..@max(g_len, 1)) |i| {
+        var seen = false;
+        for (0..i) |j| {
+            if (std.mem.eql(u8, fromSlice(itemAt(i)), fromSlice(itemAt(j)))) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) extra += 1;
     }
     const who = if (extra == 0)
-        std.fmt.allocPrint(arena, "from {s}", .{first}) catch "from a peer"
+        std.fmt.allocPrint(arena, "from {s}", .{shown}) catch "from a peer"
     else
-        std.fmt.allocPrint(arena, "from {s} + {d} more", .{ first, extra }) catch "from peers";
+        std.fmt.allocPrint(arena, "from {s} + {d} more", .{ shown, extra }) catch "from peers";
     return std.fmt.allocPrint(arena, "[peer] {d} unread {s} — parked; peer_message action=inbox when relevant", .{ g_len, who }) catch "[peer] unread — peer_message action=inbox when relevant";
 }
 
-/// Read+clear. Tool result only — does not re-enter history.
-pub fn takeAll(arena: Allocator) []const u8 {
-    if (g_len == 0) return "inbox empty";
-    var buf: std.ArrayList(u8) = .empty;
-    var i: usize = 0;
-    while (i < g_len) : (i += 1) {
+/// Read+clear only after the complete tool result is allocated successfully.
+pub fn takeAll(arena: Allocator) Allocator.Error![]const u8 {
+    if (!pending()) return "inbox empty";
+    var buf: std.Io.Writer.Allocating = .init(arena);
+    defer buf.deinit();
+    if (g_dropped > 0) buf.writer.print("[peer inbox: {d} dropped message(s) could not be retained; the room log keeps the originals]\n", .{g_dropped}) catch return error.OutOfMemory;
+    for (0..g_len) |i| {
         const p = itemAt(i);
         const flag = if (p.device and p.dm) " · device DM" else if (p.device) " · device" else if (p.dm) " · DM" else "";
-        const line = std.fmt.allocPrint(arena, "[peer message from {s}{s}]: {s}\n", .{ fromSlice(p), flag, textSlice(p) }) catch continue;
-        buf.appendSlice(arena, line) catch {};
+        buf.writer.print("[peer message from {s}{s}]: {s}\n", .{ fromSlice(p), flag, textSlice(p) }) catch return error.OutOfMemory;
     }
-    buf.appendSlice(arena, "(inbox cleared — reply with peer_message; omit session for the room, or name one peer to DM)") catch {};
-    g_head = 0;
-    g_len = 0;
-    return buf.items;
+    buf.writer.writeAll("(inbox cleared — reply with peer_message; omit session for the room, or name one peer to DM)") catch return error.OutOfMemory;
+    const result = try buf.toOwnedSlice();
+    clear();
+    return result;
 }
 
 /// Digest parked bodies so a save skips only when the mailbox is unchanged.
 pub fn mixFingerprint(f: anytype) void {
     f.num(g_len);
+    f.num(g_dropped);
     var i: usize = 0;
     while (i < g_len) : (i += 1) {
         const p = itemAt(i);
@@ -247,11 +294,11 @@ test "inbox ring: park, one-line wake, overflow drops oldest, takeAll clears" {
     try testing.expect(std.mem.indexOf(u8, wake, "parked") != null);
     try testing.expect(std.mem.indexOf(u8, wake, "when relevant") != null);
     try testing.expect(std.mem.indexOfScalar(u8, wake, '\n') == null);
-    const body = takeAll(a);
+    const body = try takeAll(a);
     try testing.expect(std.mem.indexOf(u8, body, "[peer message from session-aaa]: hold gui/src") != null);
     try testing.expect(std.mem.indexOf(u8, body, "[peer message from session-bbb · device DM]: your turn") != null);
     try testing.expectEqual(@as(usize, 0), unread());
-    try testing.expectEqualStrings("inbox empty", takeAll(a));
+    try testing.expectEqualStrings("inbox empty", try takeAll(a));
 
     var i: usize = 0;
     while (i < inbox_cap + 2) : (i += 1) {
@@ -260,10 +307,49 @@ test "inbox ring: park, one-line wake, overflow drops oldest, takeAll clears" {
         _ = parkHeard(&.{msg(from, text, "")}, &.{});
     }
     try testing.expectEqual(inbox_cap, unread());
-    const overflow = takeAll(a);
+    const overflow = try takeAll(a);
     try testing.expect(std.mem.indexOf(u8, overflow, "line 0") == null);
     try testing.expect(std.mem.indexOf(u8, overflow, "line 1") == null);
     try testing.expect(std.mem.indexOf(u8, overflow, try std.fmt.allocPrint(a, "line {d}", .{inbox_cap + 1})) != null);
+}
+
+test "inbox full UTF-8 bodies survive the channel, parking and JSON restore" {
+    resetForTest();
+    defer resetForTest();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const prefix = try a.alloc(u8, 199);
+    @memset(prefix, 'x');
+    const text = try std.fmt.allocPrint(a, "{s}🟢\nDo not publish; wait for my handoff.\n", .{prefix});
+    try testing.expect(presence_chan.postMessage(testing.io, a, tmp.dir, "room.jsonl", .{ .from_pid = 1, .from_session = "sender", .text = text }));
+    var cursor: u64 = 0;
+    _ = parkHeard(presence_chan.readNewMessages(testing.io, a, tmp.dir, "room.jsonl", &cursor), &.{});
+    var aw: std.Io.Writer.Allocating = .init(a);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    try writeJson(&s);
+    const saved = try std.json.parseFromSliceLeaky(std.json.Value, a, aw.writer.buffered(), .{});
+    restoreJson(saved);
+    try testing.expect(std.mem.indexOf(u8, try takeAll(a), text) != null);
+}
+
+test "inbox wake counts distinct senders and a failed pull does not clear" {
+    resetForTest();
+    defer resetForTest();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    _ = parkHeard(&.{ msg("first", "one", ""), msg("second", "two", ""), msg("second", "three", "") }, &.{});
+    const wake = formatWake(a);
+    try testing.expect(std.mem.indexOf(u8, wake, "+ 1 more") != null);
+    try testing.expect(wake.len <= peer_context.inject_byte_cap);
+    var tiny: [1]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&tiny);
+    try testing.expectError(error.OutOfMemory, takeAll(fba.allocator()));
+    try testing.expectEqual(@as(usize, 3), unread());
+    try testing.expect(std.mem.indexOf(u8, try takeAll(a), "three") != null);
 }
 
 test "formatList: one short line per peer; empty is honest" {
@@ -313,5 +399,5 @@ test "inbox JSON round-trip: restoreJson rebuilds the ring" {
     const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, aw.writer.buffered(), .{});
     restoreJson(parsed);
     try testing.expectEqual(@as(usize, 1), unread());
-    try testing.expect(std.mem.indexOf(u8, takeAll(a), "hold the tree") != null);
+    try testing.expect(std.mem.indexOf(u8, try takeAll(a), "hold the tree") != null);
 }

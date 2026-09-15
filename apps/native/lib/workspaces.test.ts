@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   basename,
+  restoreWorkspaceSelection,
   findWorkspace,
   loadActiveWorkspace,
   loadWorkspaces,
@@ -97,4 +98,43 @@ describe("shellQuote", () => {
     assert.equal(shellQuote("/Users/me/my repo"), "'/Users/me/my repo'");
     assert.equal(shellQuote("/it's"), "'/it'\\''s'");
   });
+});
+
+
+it("does not turn an unused startup directory into a saved project", () => {
+  const store = memoryStorage();
+  saveWorkspaces(store, [
+    { path: "/chosen", name: "Chosen", model: "test-model" },
+    { path: "/incidental/nested", name: "nested", source: "startup" } as Workspace,
+  ]);
+  assert.deepEqual(loadWorkspaces(store), [{ path: "/chosen", name: "Chosen", model: "test-model" }]);
+});
+
+
+it("startup context does not evict any of fifty deliberate folder choices", () => {
+  const saved = Array.from({ length: 50 }, (_, i) => ({ path: `/chosen/${i}`, name: String(i) }));
+  const result = restoreWorkspaceSelection(saved, "/chosen/0", "/incidental");
+  assert.equal(result.list.length, 51);
+  assert.equal(result.active, "/chosen/0");
+  const store = memoryStorage(); saveWorkspaces(store, result.list);
+  assert.deepEqual(loadWorkspaces(store), saved);
+});
+
+it("an explicitly saved startup folder stays saved with its settings", () => {
+  const saved: Workspace[] = [{ path: "/chosen", name: "Custom name", yolo: false }];
+  const result = restoreWorkspaceSelection(saved, null, "/chosen/");
+  assert.deepEqual(result, { list: saved, active: "/chosen" });
+  const store = memoryStorage(); saveWorkspaces(store, result.list);
+  assert.deepEqual(loadWorkspaces(store), saved);
+});
+
+
+it("startup context does not consume a slot when another chosen folder is added", () => {
+  const saved = Array.from({ length: 50 }, (_, i) => ({ path: `/chosen/${i}`, name: String(i) }));
+  const { list } = restoreWorkspaceSelection(saved, null, "/incidental");
+  const updated = upsertWorkspace(list, { path: "/new-choice", name: "New", source: "saved" });
+  const store = memoryStorage(); saveWorkspaces(store, updated);
+  assert.equal(loadWorkspaces(store).length, 50);
+  assert.equal(loadWorkspaces(store)[0].path, "/chosen/1");
+  assert.equal(updated.length, 51);
 });

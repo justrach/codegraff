@@ -27,6 +27,8 @@ fn observe(self: *Agent, cmd: []const u8) !?ExecResult {
     var ev: pr_publish.Evidence = .{};
     const draft = creating and command.draft();
     if (!draft) {
+        if (self.publication_checks.unresolved(try @import("pr_local_checks.zig").repositoryRoot(self, target.cwd))) |command_text|
+            return .{ .text = try std.fmt.allocPrint(self.arena, "PR publication preflight: observed local check has no successful completion: {s}. Rerun it successfully or publish a draft; write NOT performed.", .{command_text}), .is_error = true };
         if (creating) {
             ev.head_sha = evmod.localHead(self.gpa, self.io, self.arena, target) catch "";
             // An explicit alternate head must be resolved independently of HEAD.
@@ -57,7 +59,7 @@ fn observe(self: *Agent, cmd: []const u8) !?ExecResult {
 
 pub fn bash(self: *Agent, cmd: []const u8) !?ExecResult {
     const key = if (builtin.is_test) "" else mutationKey(self, cmd);
-    if (artifact_claim.gateCommand(self.arena, self.io, cmd, key)) |blocked| return .{ .text = blocked, .is_error = true };
+    if (artifact_claim.gateCommandIn(self.arena, self.io, cmd, key, self.agent_cwd orelse ".")) |blocked| return .{ .text = blocked, .is_error = true };
     if (!pr_publish.isPrCreate(cmd) and !pr_publish.isPrReady(cmd)) return null;
     if (!builtin.is_test) return observe(self, cmd);
     if (pr_publish.gateCommand(self.arena, cmd)) |blocked| return .{ .text = blocked, .is_error = true };
@@ -66,6 +68,9 @@ pub fn bash(self: *Agent, cmd: []const u8) !?ExecResult {
 
 fn mutationKey(self: *Agent, cmd: []const u8) []const u8 {
     if (!artifact_claim.isClaimedMutation(cmd)) return "";
+    // Unknown shell forms do not establish a comparable branch target.
+    if (std.mem.indexOfAny(u8, cmd, ";|&`$\n\"'\\*?{}") != null or
+        std.mem.indexOf(u8, cmd, " -R") != null or std.mem.indexOf(u8, cmd, " --repo") != null) return "";
     const ev = @import("pr_evidence.zig");
     const c = @import("pr_command.zig").parse(self.arena, cmd) catch null;
     if (c) |command| {
@@ -105,6 +110,91 @@ test "#840 conflicting gh pr create never reaches execution after an acknowledge
     const denied = (try bash(&agent, "gh pr create --title x --body '## Verification\\nzig build test'")).?;
     try std.testing.expect(denied.is_error);
     try std.testing.expect(std.mem.indexOf(u8, denied.text, "NOT performed") != null);
+}
+
+test "#879 read-only heredoc with publication text bypasses the claim gate" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    artifact_claim.resetForTest();
+    defer artifact_claim.resetForTest();
+    artifact_claim.setTestOwner(.{ .session = "s-owner", .pid = 1, .start_id = 1 });
+    _ = try artifact_claim.handleTool(ar, std.testing.io, "claim", "publication", "feat/x", "");
+    artifact_claim.setTestOwner(.{ .session = "s-reader", .pid = 2, .start_id = 2 });
+    artifact_claim.setTestOwnerLive(true);
+    var agent: Agent = undefined;
+    agent.arena = ar;
+    agent.io = std.testing.io;
+    const probe = "python3 - <<'PY'\nneedle = 'gh pr create --title x'\nprint(needle)\nPY";
+    try std.testing.expect(try bash(&agent, probe) == null);
+}
+
+test "#840 warm dispatch observes late claims, lock contention and corrupt storage" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    const io = std.testing.io;
+    const path = "zig-cache/claim-dispatch-840.json";
+    const lock_path = path ++ ".lock";
+    std.Io.Dir.cwd().deleteFile(io, path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, lock_path) catch {};
+    artifact_claim.resetForTest();
+    defer artifact_claim.resetForTest();
+    artifact_claim.setPersistPath(path);
+    artifact_claim.setTestOwner(.{ .session = "reader" });
+    _ = try artifact_claim.handleTool(ar, io, "status", "publication", "feat/a", "");
+    var agent: Agent = undefined;
+    agent.arena = ar;
+    agent.io = io;
+    // A separate writer's persisted state, without resetting the warm reader.
+    const foreign = "[{\"kind\":\"branch\",\"key\":\"feat/a\",\"session\":\"writer\",\"pid\":1,\"start_id\":0}]";
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = foreign });
+    try std.testing.expect((try bash(&agent, "gh pr create --draft --head feat/a")).?.is_error);
+    try std.testing.expect(try bash(&agent, "gh pr list") == null);
+    try std.testing.expect((try bash(&agent, "gh pr create --draft --head feat/a")).?.is_error);
+    try std.testing.expect(try bash(&agent, "gh pr create --draft --head feat/b") == null);
+    for ([_][]const u8{
+        "gh issue list && gh pr create --draft --head feat/a",
+        "gh issue list; gh pr create --draft --head feat/a",
+        "gh issue list\ngh pr create --draft --head feat/a",
+    }) |cmd| try std.testing.expect((try bash(&agent, cmd)).?.is_error);
+    const held = try std.Io.Dir.cwd().createFile(io, lock_path, .{ .truncate = false, .lock = .exclusive, .lock_nonblocking = true });
+    try std.testing.expect((try bash(&agent, "gh pr create --draft --head feat/a")).?.is_error);
+    const blocked = try artifact_claim.handleTool(ar, io, "claim", "issue", "841", "");
+    try std.testing.expect(blocked.is_error);
+    held.close(io);
+    const unchanged = try std.Io.Dir.cwd().readFileAlloc(io, path, ar, .limited(4096));
+    try std.testing.expectEqualStrings(foreign, unchanged);
+    var transferred: artifact_claim.Ledger = .{};
+    try artifact_claim.loadJson(ar, &transferred, foreign);
+    _ = try artifact_claim.handoff(&transferred, ar, .branch, "feat/a", .{ .session = "writer", .pid = 1 }, .{ .session = "reader" }, 0, true);
+    try @import("credential_store.zig").replaceFile(io, std.Io.Dir.cwd(), path, try artifact_claim.persistJson(ar, &transferred), .default_file);
+    try std.testing.expect(try bash(&agent, "gh pr create --draft --head feat/a") == null);
+    artifact_claim.setTestOwner(.{ .session = "writer", .pid = 1 });
+    try std.testing.expect((try bash(&agent, "gh pr create --draft --head feat/a")).?.is_error);
+    _ = try artifact_claim.handleTool(ar, io, "claim", "issue", "840", "");
+    artifact_claim.setTestOwner(.{ .session = "reader" });
+    try std.testing.expect((try bash(&agent, "gh issue edit 840 --title x")).?.is_error);
+    try std.testing.expect(try bash(&agent, "gh issue edit 841 --title x") == null);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "not json" });
+    try std.testing.expect((try bash(&agent, "gh pr create --draft")).?.is_error);
+    try std.testing.expect((try artifact_claim.handleTool(ar, io, "claim", "issue", "841", "")).is_error);
+}
+
+test "#840 publication branch keys are not compared with PR numbers" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    artifact_claim.resetForTest();
+    defer artifact_claim.resetForTest();
+    artifact_claim.setTestOwner(.{ .session = "owner" });
+    _ = try artifact_claim.handleTool(arena.allocator(), std.testing.io, "claim", "publication", "feat/a", "");
+    artifact_claim.setTestOwner(.{ .session = "reader" });
+    var agent: Agent = undefined;
+    agent.arena = arena.allocator();
+    agent.io = std.testing.io;
+    try std.testing.expect((try bash(&agent, "gh pr edit 123 --title x")).?.is_error);
+    try std.testing.expect(try bash(&agent, "gh pr create --draft --head feat/b") == null);
 }
 
 test "#847 non-draft create with failed head is stopped before bash" {

@@ -267,6 +267,9 @@ main() {
   fi
 
   ensure_path
+  if [ "${GRAFF_NO_MCP:-}" != "1" ]; then
+    "$INSTALL_DIR/$BIN" mcp install || printf 'MCP setup incomplete. Retry with: graff mcp install\n' >&2
+  fi
 
   printf "\n  ${W}done!${N} run ${C}$BIN${N} to start, or ${C}$BIN --help${N}\n\n"
 }

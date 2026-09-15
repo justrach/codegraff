@@ -57,10 +57,10 @@ async function runSavedSessionVisuals({ win, origin, output }) {
     await wait(`(()=>{const row=Array.from(document.querySelectorAll('[data-conversation-library] li button')).find(e=>e.textContent.includes('active-repl'));if(!row)return false;row.click();return true;})()`);
     await wait(`document.body.textContent.includes('I am checking the remaining files.')`);
     await wait(`!!document.querySelector('[data-saved-snapshot]')`);
-    assert.match(await js(`document.querySelector('[data-saved-snapshot]').textContent`), /Live status unknown/);
+    assert.match(await js(`document.querySelector('[data-saved-snapshot]').textContent`), /Live (?:REPL )?status unknown/);
     assert.equal(await js(`document.querySelector('[data-chat] textarea[aria-label="Prompt"]')`), null, 'Snapshot cannot accept follow-ups');
     assert.equal(await js(`document.querySelector('article')?.dataset.turnStatus`), 'snapshot', 'Intermediate prose is not a completed turn');
-    assert.equal(await js(`document.querySelector('[data-turn-activity]')?.textContent.includes('Turn finished')`), false);
+    assert.equal(await js(`!!document.querySelector('[data-turn-activity]')?.textContent.includes('Turn finished')`), false);
     const resumed = () => js(`window.savedFixture.requests.filter(r=>r.method==='bootstrap'&&r.params?.resume==='active-repl').length`);
     assert.equal(await resumed(), 0, 'Opening shared history must not resume its writer');
     assert.equal(await js(`window.savedFixture.requests.some(r=>r.method==='session/prompt')`), false);
@@ -69,7 +69,7 @@ async function runSavedSessionVisuals({ win, origin, output }) {
     assert.ok(await js(`document.body.textContent.includes('I am checking the remaining files.')`), 'Refresh failure preserves history');
     await js(`window.savedFixture.fail=false;window.savedFixture.completed=true;document.querySelector('[data-refresh-snapshot]').click()`);
     await wait(`document.body.textContent.includes('All files checked.')`);
-    assert.match(await js(`document.querySelector('[data-saved-snapshot]').textContent`), /Live status unknown/, 'Successful refresh is still a snapshot');
+    assert.match(await js(`document.querySelector('[data-saved-snapshot]').textContent`), /Live (?:REPL )?status unknown/, 'Successful refresh is still a snapshot');
     assert.equal(await resumed(), 0);
     await js('document.fonts.ready.then(()=>true)');
     await js(`Promise.all(document.getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{}))).then(()=>true)`);

@@ -75,43 +75,49 @@ pub fn dupe(alloc: Allocator, text: []const u8) ![]u8 {
     return aw.toOwnedSlice();
 }
 
-/// Incremental counterpart to dupe. Hold at most two bytes while recognizing
-/// a UTF-8 control marker; suppress its payload through the matching end.
+/// Display-only filter. Hold a possible marker prefix across deltas, and
+/// discard annotation bodies without buffering arbitrarily long references.
+/// Each channel owns its state; the provider payload is never rewritten.
 pub const Stream = struct {
-    prefix: u2 = 0,
-    hidden: bool = false,
+    pending: usize = 0,
+    in_annotation: bool = false,
 
-    /// buf needs three bytes. Returned bytes are ordinary user-facing text.
-    pub fn byte(self: *Stream, c: u8, buf: *[3]u8) []const u8 {
+    pub fn byte(self: *Stream, b: u8, out: *[3]u8) []const u8 {
+        if (self.pending == 1 and b == pua_lead[1]) {
+            self.pending = 2;
+            return "";
+        }
+        if (self.pending == 2 and b >= mark_start and b <= mark_sep) {
+            self.pending = 0;
+            if (b == mark_start) self.in_annotation = true;
+            if (b == mark_end) self.in_annotation = false;
+            return "";
+        }
         var n: usize = 0;
-        if (self.prefix == 2 and c >= mark_start and c <= mark_sep) {
-            if (c == mark_start) self.hidden = true;
-            if (c == mark_end) self.hidden = false;
-            self.prefix = 0;
-            return buf[0..0];
+        if (!self.in_annotation) {
+            n = self.pending;
+            @memcpy(out[0..n], pua_lead[0..n]);
         }
-        if (self.prefix == 1 and c == pua_lead[1]) {
-            self.prefix = 2;
-            return buf[0..0];
-        }
-        if (!self.hidden) {
-            if (self.prefix > 0) {
-                buf[n] = pua_lead[0];
-                n += 1;
-            }
-            if (self.prefix > 1) {
-                buf[n] = pua_lead[1];
-                n += 1;
-            }
-        }
-        self.prefix = 0;
-        if (c == pua_lead[0]) {
-            self.prefix = 1;
-        } else if (!self.hidden) {
-            buf[n] = c;
+        self.pending = 0;
+        if (b == pua_lead[0]) {
+            self.pending = 1;
+        } else if (!self.in_annotation) {
+            out[n] = b;
             n += 1;
         }
-        return buf[0..n];
+        return out[0..n];
+    }
+
+    pub fn write(self: *Stream, w: *std.Io.Writer, text: []const u8) !void {
+        var out: [3]u8 = undefined;
+        for (text) |b| try w.writeAll(self.byte(b, &out));
+    }
+
+    /// Drop an unfinished annotation, but preserve any non-annotation tail.
+    pub fn finish(self: *Stream) []const u8 {
+        const tail = if (self.in_annotation) "" else pua_lead[0..self.pending];
+        self.* = .{};
+        return tail;
     }
 };
 

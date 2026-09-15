@@ -267,6 +267,8 @@ pub fn exec(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
         }
     };
     var result = try execUnchecked(ctx, call);
+    errdefer ctx.gpa.free(result.text);
+    try @import("cli_path_hint.zig").append(ctx.gpa, ctx.io, cmd, &result);
     if (warning) {
         const text = try std.mem.concat(ctx.gpa, u8, &.{ server_port.unknown_warning, result.text });
         ctx.gpa.free(result.text);

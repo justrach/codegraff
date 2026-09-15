@@ -24,12 +24,14 @@ async function runNavigationVisuals({win:fixtureWindow,origin,output}) {
     await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument',{source:`(${installGalleryFixture.toString()})();
       localStorage.setItem('graff.native.workspaces',JSON.stringify(Array.from({length:50},(_,i)=>({name:'Project '+(i%10),path:'/demo/folder-'+i}))));
       const commands=[{name:'compact',description:'Compact conversation context'},...Array.from({length:100},(_,i)=>({name:'command-'+i,description:'Command '+i}))];
-      const galleryFetch=window.fetch;window.fetch=async(input,options)=>{const response=await galleryFetch(input,options);if(options?.body&&JSON.parse(options.body).method==='bootstrap')return new Response(JSON.stringify({sessionId:'demo',commands}),{headers:{'content-type':'application/json'}});if(String(input).includes('/api/models')){const data=await response.json();data.result.commands=commands;data.result.current.model='${process.env.GRAFF_VISUAL_SUITE === 'tab-drag' ? 'Graff' : 'example-model-with-a-long-name'}';data.result.models[0].name=data.result.current.model;return new Response(JSON.stringify(data),{headers:{'content-type':'application/json'}});}return response;};`});
+      const galleryFetch=window.fetch;window.fetch=async(input,options)=>{const response=await galleryFetch(input,options);if(options?.body&&JSON.parse(options.body).method==='bootstrap')return new Response(JSON.stringify({sessionId:'demo',commands}),{headers:{'content-type':'application/json'}});if(String(input).includes('/api/models')){const data=await response.json();data.result.commands=commands;data.result.current.model='${['tab-drag','session-navigation'].includes(process.env.GRAFF_VISUAL_SUITE) ? 'Graff' : 'example-model-with-a-long-name'}';data.result.models[0].name=data.result.current.model;return new Response(JSON.stringify(data),{headers:{'content-type':'application/json'}});}return response;};`});
     await wc.loadURL(origin);testDesktop.present(win);await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
+    if(process.env.GRAFF_VISUAL_SUITE==='session-navigation'){await require('./session-navigation-visual.cjs').runSessionNavigation({win,origin,output});return;}
     if(process.env.GRAFF_VISUAL_SUITE==='tagged'){await require('./yxlyx-regressions-visual.cjs').runYxlyxRegressions({win,origin});return;}
-    if(process.env.GRAFF_VISUAL_SUITE==='tab-drag'){await require('./tab-drag-visual.cjs').runTabDrag({win,origin,output});return;}
+    if(process.env.GRAFF_VISUAL_SUITE==='tab-drag'){await js(`document.querySelector('[aria-label="Collapse sidebar"]').click()`);await wait(`!!document.querySelector('[data-session-navigation="tabs"]')`);await require('./tab-drag-visual.cjs').runTabDrag({win,origin,output});return;}
     if(process.env.GRAFF_VISUAL_SUITE==='splits'){await require('./split-focus-visual.cjs').runSplitFocus({win,origin,output});return;}
     const interactions = async () => {
+      await require('./navigation-prompt-focus-visual.cjs').runNavigationPromptFocus({win,origin});
       await require('./navigation-keyboard-visual.cjs').runNavigationKeyboard({win,origin});
       await require('./composer-interaction-visual.cjs').runComposerInteractions({win,origin,output});
       await require('./files-recovery-visual.cjs').runFilesRecovery({win,origin,output});

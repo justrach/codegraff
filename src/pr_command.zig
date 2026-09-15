@@ -39,10 +39,38 @@ pub const Command = struct {
         return false;
     }
     pub fn selector(self: Command) ?[]const u8 {
-        for (self.argv, 0..) |arg, i| {
-            if (std.mem.eql(u8, arg, self.verb) and i + 1 < self.argv.len and !std.mem.startsWith(u8, self.argv[i + 1], "-")) return self.argv[i + 1];
+        return self.selectorChecked() catch null;
+    }
+    pub fn selectorChecked(self: Command) !?[]const u8 {
+        var i: usize = 1;
+        while (i < self.argv.len and !std.mem.eql(u8, self.argv[i], "pr")) : (i += 1) {
+            if (takesValue(self.argv[i])) i += 1;
         }
-        return null;
+        i += 2; // family and verb
+        var selected: ?[]const u8 = null;
+        while (i < self.argv.len) : (i += 1) {
+            const arg = self.argv[i];
+            if (takesValue(arg)) {
+                i += 1;
+                if (i >= self.argv.len) return error.MissingOptionValue;
+                continue;
+            }
+            if (std.mem.startsWith(u8, arg, "-")) {
+                if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
+                    if (takesValue(arg[0..eq])) continue;
+                }
+                var known = false;
+                for ([_][]const u8{ "--draft", "--draft=true", "--undo", "--help", "--web", "--force", "--delete-branch", "--squash", "--merge", "--rebase", "--auto", "--disable-auto", "--admin" }) |option| if (std.mem.eql(u8, arg, option)) {
+                    known = true;
+                    break;
+                };
+                if (!known) return error.UnsupportedOption;
+                continue;
+            }
+            if (selected != null) return error.AmbiguousSelector;
+            selected = arg;
+        }
+        return selected;
     }
 };
 
@@ -51,7 +79,9 @@ fn takesValue(arg: []const u8) bool {
     return false;
 }
 
-pub fn parse(a: A, input: []const u8) !Command {
+pub const Literal = struct { argv: []const []const u8, cwd: ?[]const u8 = null };
+
+pub fn literal(a: A, input: []const u8) !Literal {
     var args: std.ArrayList([]const u8) = .empty;
     var i: usize = 0;
     while (i < input.len) {
@@ -92,7 +122,16 @@ pub fn parse(a: A, input: []const u8) !Command {
         cwd = t[1];
         t = t[3..];
     }
-    if (t.len == 0 or !std.mem.eql(u8, std.fs.path.basename(t[0]), "gh")) return error.UnsupportedCommand;
+    if (t.len == 0) return error.UnsupportedCommand;
+    for (t) |arg| if (std.mem.eql(u8, arg, "&&") or std.mem.eql(u8, arg, "&")) return error.CompoundCommand;
+    return .{ .argv = t, .cwd = cwd };
+}
+
+pub fn parse(a: A, input: []const u8) !Command {
+    const parsed = try literal(a, input);
+    const t = parsed.argv;
+    const cwd = parsed.cwd;
+    if (!std.mem.eql(u8, std.fs.path.basename(t[0]), "gh")) return error.UnsupportedCommand;
     for (t) |arg| if (std.mem.eql(u8, arg, "&&") or std.mem.eql(u8, arg, "&")) return error.CompoundCommand;
     var j: usize = 1;
     while (j < t.len) : (j += 1) {
@@ -118,4 +157,16 @@ test "PR arguments keep body flags opaque and resolve repository and target" {
     try std.testing.expectError(error.CompoundCommand, parse(arena.allocator(), "git commit -m x; gh pr create"));
     try std.testing.expectError(error.CompoundCommand, parse(arena.allocator(), "gh pr create --body x\necho other"));
     try std.testing.expectError(error.CompoundCommand, parse(arena.allocator(), "gh pr create --body x&echo other"));
+}
+
+test "PR selectors skip known option values and refuse ambiguous options" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const flags_first = try parse(a, "gh --repo org/repo pr edit --title title 12");
+    try std.testing.expectEqualStrings("12", (try flags_first.selectorChecked()).?);
+    const body_only = try parse(a, "gh pr edit --body '12'");
+    try std.testing.expect(try body_only.selectorChecked() == null);
+    const unknown = try parse(a, "gh pr edit --unknown 12");
+    try std.testing.expectError(error.UnsupportedOption, unknown.selectorChecked());
 }

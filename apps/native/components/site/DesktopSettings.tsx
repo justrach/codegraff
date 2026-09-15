@@ -1,9 +1,10 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { restoreActionFocus } from "../primitives/ActionMenu";
 import { desktop, type LinkDestination } from "@/lib/desktop";
 
-export default function DesktopSettings() {
+export default function DesktopSettings({ labeled = false }: { labeled?: boolean }) {
   const [available, setAvailable] = useState(false);
   const [open, setOpen] = useState(false);
   const [destination, setDestination] = useState<LinkDestination | null>(null);
@@ -20,7 +21,7 @@ export default function DesktopSettings() {
       .catch(() => { if (alive) setError("Could not load link settings. Close Settings and try again."); });
     panel.current?.querySelector<HTMLButtonElement>("button")?.focus();
     const keys = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { event.stopPropagation(); setOpen(false); trigger.current?.focus(); }
+      if (event.key === "Escape") { event.stopPropagation(); setOpen(false); restoreActionFocus(trigger.current); }
       if (event.key === "Tab") {
         const buttons = Array.from(panel.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
         if (!buttons.length) return;
@@ -40,15 +41,15 @@ export default function DesktopSettings() {
   };
   if (!available) return null;
   return <>
-    <button ref={trigger} aria-label="Settings" title="Settings" aria-haspopup="dialog" aria-expanded={open}
+    <button ref={trigger} aria-label={labeled ? "Link settings" : "Settings"} title="Settings" aria-haspopup="dialog" aria-expanded={open}
       onClick={() => setOpen(value => !value)} className="flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-3 hover:bg-hover hover:text-ink">
-      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="m9 3-1 3-3 1 1 3-2 2 2 2-1 3 3 1 1 3h6l1-3 3-1-1-3 2-2-2-2 1-3-3-1-1-3Z"/><circle cx="12" cy="12" r="3"/></svg>
+      {labeled ? "Link settings" : <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="m9 3-1 3-3 1 1 3-2 2 2 2-1 3 3 1 1 3h6l1-3 3-1-1-3 2-2-2-2 1-3-3-1-1-3Z"/><circle cx="12" cy="12" r="3"/></svg>}
     </button>
     {open && createPortal(<div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/20 p-4" onPointerDown={event => {
-      if (event.target === event.currentTarget) { setOpen(false); trigger.current?.focus(); }
+      if (event.target === event.currentTarget) { setOpen(false); restoreActionFocus(trigger.current); }
     }}>
       <div ref={panel} role="dialog" aria-label="Settings" aria-modal="true" className="w-[380px] max-w-full rounded-xl border border-line bg-surface p-4 shadow-overlay">
-        <div className="mb-4 flex items-center justify-between"><strong className="text-sm font-medium">Settings</strong><button aria-label="Close settings" onClick={() => { setOpen(false); trigger.current?.focus(); }} className="rounded px-1.5 text-ink-3 hover:bg-hover">×</button></div>
+        <div className="mb-4 flex items-center justify-between"><strong className="text-sm font-medium">Settings</strong><button aria-label="Close settings" onClick={() => { setOpen(false); restoreActionFocus(trigger.current); }} className="rounded px-1.5 text-ink-3 hover:bg-hover">×</button></div>
         <fieldset disabled={destination === null || saving}>
           <legend className="mb-1 text-xs font-medium">Open web links in</legend>
           <p className="mb-3 text-xs text-ink-3">Choose where links from conversations open. Graff keeps pages beside your chat.</p>

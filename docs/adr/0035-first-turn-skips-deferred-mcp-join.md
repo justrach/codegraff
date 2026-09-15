@@ -7,7 +7,9 @@ Later-request joining is updated by [ADR 0104](0104-live-publication-and-deferre
 ## Context
 
 Interactive `--yolo` (including `graff acp`) starts MCP handshakes in the
-background so the prompt can paint. The first `request()` still called
+background so the prompt can paint. ACP’s JSON stdout discipline does not
+select the blocking CLI `--json` startup path; the explicit subcommand
+distinguishes them. Both configured MCP servers and companions use this gate. The first `request()` still called
 `joinPending`, so a silent stdio probe (default 5s) or a 15s handshake cap
 blocked every native tool on the first turn. The chips looked late; the
 model had not even been called.
@@ -27,6 +29,10 @@ rather than falling back to inline `io.async`.
 Interactive boots print a dim receipt after `plugins:` (`mcp: N server(s)
 in background`, `companion: codedb-pro (background)`) and name any boot
 phase ≥80ms, so a hang is visible without `GRAFF_BOOT_DEBUG`.
+
+ACP’s stdin pump must use `io.concurrent`, never `io.async`: a busy async
+quota can otherwise run the endless reader inline and prevent dispatch.
+The subprocess startup regression includes enough silent servers to cover this.
 
 ## Consequences
 

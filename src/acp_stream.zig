@@ -125,9 +125,17 @@ pub fn translateEvent(
     ev: Value,
     id_buf: *[64]u8,
     next_tool: *u32,
-) !enum { none, thought, text, tool } {
+) !enum { none, thought, text, tool, notice } {
     if (ev != .object) return .none;
     const typ = util.strFieldObj(ev.object, "type") orelse return .none;
+    if (std.mem.eql(u8, typ, "review_checkpoint")) {
+        const text = util.strFieldObj(ev.object, "text") orelse return .none;
+        if (text.len == 0) return .none;
+        try writeMessage(w, session_id, "\n\n");
+        try writeMessage(w, session_id, text);
+        try writeMessage(w, session_id, "\n\n");
+        return .notice;
+    }
     if (std.mem.eql(u8, typ, "reasoning")) {
         const text = util.strFieldObj(ev.object, "text") orelse return .none;
         if (text.len == 0) return .none;
@@ -241,6 +249,10 @@ pub const EventSink = struct {
         switch (kind) {
             .text => {
                 self.saw_text.* = true;
+                self.streamed_any = true;
+            },
+            .notice => {
+                self.saw_text.* = false;
                 self.streamed_any = true;
             },
             .tool => self.saw_text.* = false,
@@ -434,4 +446,20 @@ test "parallel tool results retain their own IDs including long IDs" {
         const update = parsed.value.object.get("params").?.object.get("update").?;
         try std.testing.expectEqualStrings(id, update.object.get("toolCallId").?.string);
     }
+}
+
+test "review checkpoints stream a notice without suppressing the final answer" {
+    var output: Io.Writer.Allocating = .init(testing.allocator);
+    defer output.deinit();
+    var session_id: []const u8 = "review-session";
+    var saw_text = true;
+    var sink: EventSink = undefined;
+    sink.init(testing.allocator, &output.writer, &session_id, &saw_text);
+    defer sink.deinit();
+    try sink.writer.writeAll("{\"type\":\"review_checkpoint\",\"text\":\"Review remains in progress.\",\"complete\":false}\n");
+    try sink.writer.flush();
+    try testing.expect(!saw_text);
+    try testing.expect(sink.streamed_any);
+    try testing.expect(std.mem.indexOf(u8, output.writer.buffered(), "Review remains in progress.") != null);
+    try testing.expect(std.mem.indexOf(u8, output.writer.buffered(), "stopReason") == null);
 }

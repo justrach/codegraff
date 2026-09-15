@@ -54,7 +54,6 @@ pub fn shouldPulseTurn(unattended: bool, json_mode: bool, sub: bool, call_n: u64
 /// Call 2+ used to print an inner-loop counter; that line is gone (ADR 0021).
 pub fn beforeRequest(self: *Agent) !?[]const u8 {
     self.model_calls_this_turn += 1;
-    try @import("task_intent.zig").onRequest(self);
     const cap = max_turn_model_calls;
     if (cap != 0 and self.model_calls_this_turn > cap) {
         return try std.fmt.allocPrint(

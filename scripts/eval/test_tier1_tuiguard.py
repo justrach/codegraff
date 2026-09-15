@@ -15,6 +15,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from unittest import mock
+from hover_baseline_cases import HoverBaselineTests
 
 
 RUNNER_PATH = Path(__file__).with_name("tier1_tuiguard.py")

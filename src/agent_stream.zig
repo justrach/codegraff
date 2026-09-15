@@ -486,10 +486,9 @@ pub fn printDelta(self: *Agent, raw_line: []const u8) void {
         },
     };
     if (no_ui) {
-        if (oneshotShouldPaint(main_mod.unattended, main_mod.json_mode, text.len)) {
+        if (!self.stream_quiet and oneshotShouldPaint(main_mod.unattended, main_mod.json_mode, text.len)) {
             if (main_mod.g_out) |w| {
-                w.writeAll(text) catch {};
-                w.flush() catch {};
+                @import("terminal_citations.zig").plain(&self.cite_stream.answer, w, text);
             }
             self.streamed_text = true;
             self.traceFirstToken();

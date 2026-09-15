@@ -6,27 +6,39 @@ pub const script = @embedFile("clipboard_export.js");
 
 pub fn grab(io: std.Io, gpa: std.mem.Allocator, board: []const u8) clip.GrabAttempt {
     if (@import("builtin").os.tag != .macos) return .empty;
-    const path = clip.tempPath(io, gpa, "png") orelse return .{ .failed = .access };
+    const path = clip.tempPath(io, gpa, "png") orelse return .{ .failed = .extract };
+    return grabWithRunner(io, gpa, board, path, runner.runCapped);
+}
+
+/// Same extraction path with an injected process boundary for failure tests.
+/// Takes ownership of the gpa-allocated destination, including on failure.
+pub fn grabWithRunner(io: std.Io, gpa: std.mem.Allocator, board: []const u8, path: []const u8, run: anytype) clip.GrabAttempt {
     var keep = false;
     defer if (!keep) clip.discard(io, gpa, path);
     // Retry only when the clipboard changed during the read. Promised flavors
     // can take time to materialize, but cannot block a paste indefinitely.
     for (0..2) |_| {
-        const r = runner.runCapped(gpa, io, &.{ "/usr/bin/osascript", "-l", "JavaScript", "-e", script, path, board }, 64, 1024, 5000) catch return .{ .failed = .access };
+        const r = run(gpa, io, &.{ "/usr/bin/osascript", "-l", "JavaScript", "-e", script, path, board }, 64, 1024, 5000) catch |err| return .{ .failed = switch (err) {
+            error.FileNotFound, error.AccessDenied => .unavailable,
+            else => .access,
+        } };
         defer gpa.free(r.stdout);
         defer gpa.free(r.stderr);
-        if (!runner.ranOk(r) or r.stdout_truncated) return .{ .failed = .access };
-        const status = std.mem.trim(u8, r.stdout, " \r\n");
-        if (std.mem.eql(u8, status, "changed")) continue;
-        if (std.mem.eql(u8, status, "empty")) return .empty;
-        if (std.mem.eql(u8, status, "convert")) return .{ .failed = .convert };
-        if (!std.mem.startsWith(u8, status, "ok:")) return .{ .failed = .extract };
+        const flavor = switch (@import("clipboard_result.zig").classify(r)) {
+            .changed => {
+                // A retry must export fresh bytes, not accept an earlier file.
+                std.Io.Dir.cwd().deleteFile(io, path) catch {};
+                continue;
+            },
+            .empty => return .empty,
+            .failed => |kind| return .{ .failed = kind },
+            .image => |flavor| flavor,
+        };
         if (!clip.looksLikePng(io, path)) return .{ .failed = .extract };
-        const flavor = std.meta.stringToEnum(clip.Flavor, status[3..]) orelse return .{ .failed = .extract };
         keep = true;
         return .{ .ok = .{ .path = path, .flavor = flavor, .owned = true } };
     }
-    return .{ .failed = .access };
+    return .{ .failed = .changed };
 }
 
 test "#843 real named pasteboards export PNG TIFF JPEG file URLs and distinguish invalid data" {

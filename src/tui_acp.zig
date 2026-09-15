@@ -77,6 +77,10 @@ fn transcriptEmit(ctx: *anyopaque, ev: engine_sink.Stamped) void {
     // Text carries no JSON-only fields. Use the decoder's normalized path,
     // avoiding a writer allocation + JSON parse for each in-process chunk.
     switch (ev.event) {
+        .stream_begin, .stream_complete, .stream_finished, .stream_aborted, .transport_aborted => {
+            t.apply.reset();
+            return;
+        },
         .reasoning_delta => |d| return updates.applyChunk(t.apply, true, d.text),
         .text_delta, .tool_arg_delta => |d| return updates.applyChunk(t.apply, false, d.text),
         else => {},
@@ -241,7 +245,7 @@ pub fn turn(
         turns.append(.{ .role = switch (t.role) {
             .user => .user,
             .assistant => .assistant,
-        }, .text = text }) catch gpa.free(text);
+        }, .text = text, .notification = t.notification }) catch gpa.free(text);
     }
     var last_len: u32 = 0;
     const user_text: []const u8 = if (history.len > 0 and history[history.len - 1].role == .user) blk: {
@@ -393,4 +397,31 @@ test "session/cancel latches the engine cancel flag" {
     try std.testing.expect(agent_mod.Agent.esc_cancel.load(.acquire));
     agent_mod.Agent.esc_cancel.store(false, .release);
     acp_engine.cancel_flag.store(false, .release);
+}
+
+test "transcript sink: citations in reasoning answer and completion args reset on boundaries (#874)" {
+    var q: tui.EventQueue = .{};
+    var buf: [256]u8 = undefined;
+    var stream: repl.StreamBuf = .{ .buf = &buf };
+    var a: Apply = .{ .queue = &q, .stream = &stream, .show_thinking = true };
+    var t: Transcript = .{ .gpa = std.testing.allocator, .session_id = "s1", .apply = &a };
+    const sink: engine_sink.EngineSink = .{ .ctx = @ptrCast(&t), .vt = &transcript_vt };
+    sink.emit(undefined, .stream_begin);
+    const thought = "why\u{E200}cite\u{E202}turn0view0\u{E201}";
+    for (thought) |c| sink.emit(undefined, .{ .reasoning_delta = .{ .text = &.{c} } });
+    const answer = "answer\u{E200}cite\u{E202}turn0view0\u{E201}";
+    for (answer) |c| sink.emit(undefined, .{ .text_delta = .{ .text = &.{c} } });
+    const args = " args\u{E200}cite\u{E202}turn1view0\u{E201}!";
+    for (args) |c| sink.emit(undefined, .{ .tool_arg_delta = .{ .text = &.{c} } });
+    sink.emit(undefined, .{ .text_delta = .{ .text = "\u{E200}unfinished" } });
+    sink.emit(undefined, .{ .stream_aborted = .interrupted });
+    sink.emit(undefined, .stream_begin);
+    sink.emit(undefined, .{ .text_delta = .{ .text = "\u{E200}transport tail" } });
+    sink.emit(undefined, .{ .transport_aborted = .{ .reason = .stalled, .turn_ending = true } });
+    sink.emit(undefined, .{ .text_delta = .{ .text = "fresh" } });
+    try std.testing.expectEqualStrings("why\nanswer args!fresh", buf[0..stream.len.load(.acquire)]);
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try writeUpdate(&aw.writer, "s1", .{ .text_delta = .{ .text = answer } });
+    try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "\u{E200}") != null);
 }

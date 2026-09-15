@@ -1,170 +1,138 @@
-//! #884: task intent for the current user ask.
-//!
-//! Default coding policy is mutation-complete (plan, fan-out, verify). A
-//! summarize/explain/inspect request with no requested change is informational:
-//! the harness traces that, skips the lean fake_done bounce, and after a
-//! bounded number of model rounds asks whether the model can answer now.
-//! Mutation verbs win when both are present.
-
+//! Conservative per-turn scope hints. These never grant permissions, erase
+//! goals, hide tools, or override the user's current request.
 const std = @import("std");
-
 const Agent = @import("agent.zig").Agent;
-const named_work = @import("named_work.zig");
-const messages = @import("messages.zig");
 
-pub const Kind = enum { informational, mutation };
+pub const Intent = enum { general, informational };
 
-pub const checkpoint_after: u64 = 6;
+// Both branches live in the stable prefix. Turn counters and inferred labels
+// must not rewrite it on every model request and invalidate history caching.
+pub const guidance =
+    \\
+    \\Task scope: first distinguish an informational request from a request to
+    \\change or execute something. A request to summarize, explain, or map a
+    \\codebase is complete when you have enough evidence to answer accurately.
+    \\It does not authorize edits or require coding-work completion checks.
+    \\For a summary, start with one broad map and a small set of targeted reads
+    \\covering purpose, entry points, architecture, and important constraints.
+    \\For repetitive files, inspect a representative sample and qualify what
+    \\you inferred. Do not read an entire directory to prove that every file
+    \\matches a pattern already established by the sample.
+    \\Answer once those are clear; do not exhaustively read every source/test
+    \\file, create a todo, delegate, run build/test/lint/review commands, or make
+    \\a separate citation pass just because the repository contains many files.
+    \\Run a check only when requested or needed to resolve a specific factual
+    \\inconsistency relevant to the answer. Use evidence from existing reads.
+    \\For mixed requests, preserve every requested change and verification step.
+    \\For changes, retain read-before-edit, root-cause fixes, and verification
+    \\in the project's own environment. A summary alone does not finish a fix.
+;
 
-pub const checkpoint_note =
-    "Informational turn: you have already inspected the repo for several rounds. " ++
-    "If you can write a concise summary of purpose, architecture, and important constraints, do so now. " ++
-    "Do not create a todo, fan out, run builds or tests, or do a separate citation pass unless a factual gap remains.";
-
-var g_checkpointed: bool = false;
-
-pub fn resetForTest() void {
-    g_checkpointed = false;
-}
-
-const informational_needles = [_][]const u8{
-    "summarize",
-    "summarise",
-    "explain ",
-    "go through",
-    "what does",
-    "what is this",
-    "overview",
-    "inspect ",
-    "how does this",
-    "how does it work",
-    "describe ",
-    "map the",
-    "map this",
-    "a summary",
-    "an overview",
-    "the summary",
-};
-
-const mutation_needles = [_][]const u8{
-    "fix ",
-    "fix\n",
-    "fix the",
-    "fix this",
-    "implement",
-    "refactor",
-    "patch ",
-    "commit ",
-    "add a ",
-    "add the ",
-    "edit ",
-    "change ",
-    "delete ",
-    "create ",
-    "apply ",
-    "make it ",
-    "run test",
-    "run the test",
-};
-
-fn containsInsensitive(hay: []const u8, needle: []const u8) bool {
-    if (needle.len == 0 or hay.len < needle.len) return false;
-    var i: usize = 0;
-    while (i + needle.len <= hay.len) : (i += 1) {
-        if (eqlInsensitive(hay[i..][0..needle.len], needle)) return true;
-    }
+fn oneOf(word: []const u8, choices: []const []const u8) bool {
+    for (choices) |choice| if (std.ascii.eqlIgnoreCase(word, choice)) return true;
     return false;
 }
 
-fn eqlInsensitive(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |ac, bc| {
-        if (std.ascii.toLower(ac) != std.ascii.toLower(bc)) return false;
+/// Only unambiguous informational verbs opt out of edit-oriented retries.
+/// Mixed/unknown requests retain the general policy. This is a scope hint,
+/// not a natural-language permission boundary or an enforced tool allowlist.
+pub fn classify(text: []const u8) Intent {
+    var informational = false;
+    var words = std.mem.tokenizeAny(u8, text, " \t\r\n,;:!?()[]{}\"`");
+    while (words.next()) |raw| {
+        const word = std.mem.trim(u8, raw, ".");
+        if (oneOf(word, &.{ "fix", "edit", "implement", "add", "remove", "delete", "rename", "refactor", "write", "create", "update", "patch", "build", "test", "lint", "run", "merge", "push", "deploy", "commit" })) return .general;
+        if (oneOf(word, &.{ "summarize", "summarise", "summary", "explain", "describe", "overview", "map" })) informational = true;
     }
-    return true;
+    return if (informational) .informational else .general;
 }
 
-fn hasMutation(prompt: []const u8) bool {
-    for (mutation_needles) |n| {
-        if (containsInsensitive(prompt, n)) return true;
+pub fn current(self: *const Agent) Intent {
+    return classify(@import("messages.zig").latestUserText(self.messages.items));
+}
+
+pub const read_nudge = "You named a source file but have not inspected it. Read the named path if its contents are needed, then answer the informational request. Do not edit it merely to satisfy a completion check.";
+
+pub const checkpoint = "Summary scope checkpoint: review the map and targeted evidence already gathered in this turn. A broad batch of reads also counts as exploration; do not follow it with a shell loop reading every remaining file. For repeated scaffolding, explain the sampled pattern and its limits. Can you now explain the repository's purpose, architecture, and important constraints? If so, answer concisely now. Otherwise read only the specific missing evidence. Do not start implementation, a test suite, or a separate citation pass solely to finish a summary. Respect any newer user request that changes the scope.";
+
+pub const State = struct {
+    nudged: bool = false,
+    review_progress: @import("review.zig").Progress = .{},
+
+    pub fn begin(self: *Agent) State {
+        if (self.tracer) |tr| tr.note("task_intent", @tagName(current(self)));
+        return .{};
     }
-    if (containsInsensitive(prompt, "write a summary") or containsInsensitive(prompt, "write an overview"))
-        return false;
-    return containsInsensitive(prompt, "write ");
-}
 
-fn hasInformational(prompt: []const u8) bool {
-    for (informational_needles) |n| {
-        if (containsInsensitive(prompt, n)) return true;
+    pub fn beforeRequest(state: *State, self: *Agent) !void {
+        try state.review_progress.beforeRequest(self);
+        if (state.nudged or self.sub or current(self) != .informational) return;
+        if (self.model_calls_this_turn < 4 and self.tool_calls_this_turn < 6) return;
+        var note = try @import("named_work.zig").userNudge(self.arena, self.provider.kind, checkpoint);
+        try note.object.put(self.arena, @import("session_wake.zig").origin_key, .{ .string = "notification" });
+        try self.messages.append(note);
+        state.nudged = true;
+        if (self.tracer) |tr| tr.note("summary_checkpoint", "bounded exploration reminder; no forced stop");
     }
-    return false;
+};
+
+test "informational intent recognizes summaries and keeps mixed execution requests general" {
+    for ([_][]const u8{
+        "go through the codebase and summarize what it does at /tmp/repo",
+        "Explain src/parser.zig",
+        "Give me an OVERVIEW of this application.",
+        "Summarise the tests and architecture",
+        "Describe the deployment flow",
+    }) |text| try std.testing.expectEqual(Intent.informational, classify(text));
+    for ([_][]const u8{
+        "Fix src/parser.zig and summarize the change", "Explain and then refactor the parser",
+        "Run tests and describe the results",          "Implement the plan",
+        "go on",                                       "hello",
+        "Summarize the codebase; then add logging",    "Map the project and build it",
+    }) |text| try std.testing.expectEqual(Intent.general, classify(text));
 }
 
-pub fn classify(prompt: []const u8) Kind {
-    if (hasMutation(prompt)) return .mutation;
-    if (hasInformational(prompt)) return .informational;
-    return .mutation;
+test "informational hints do not match words inside paths or longer words" {
+    try std.testing.expectEqual(Intent.general, classify("Open summary.py"));
+    try std.testing.expectEqual(Intent.general, classify("the mapper is broken"));
+    try std.testing.expectEqual(Intent.informational, classify("Explain /tmp/fix/parser.zig"));
 }
 
-pub fn isInformational(prompt: []const u8) bool {
-    return classify(prompt) == .informational;
-}
-
-pub fn shouldCheckpoint(informational: bool, model_calls: u64, already: bool, sub: bool) bool {
-    if (!informational or already or sub) return false;
-    return model_calls >= checkpoint_after;
-}
-
-fn promptOf(self: *const Agent) []const u8 {
-    if (self.named_work_task.len > 0) return self.named_work_task;
-    return messages.latestUserText(self.messages.items);
-}
-
-/// First inner-loop request of a root turn: record intent on the trace.
-/// Sixth+: one informational checkpoint, then the model may answer.
-pub fn onRequest(self: *Agent) !void {
-    if (self.sub or self.review_mode or self.text_only) return;
-    if (self.model_calls_this_turn == 1) g_checkpointed = false;
-    const informational = isInformational(promptOf(self));
-    if (self.model_calls_this_turn == 1) {
-        if (self.tracer) |tr| tr.note("task_intent", if (informational) "informational" else "mutation");
-    }
-    if (!shouldCheckpoint(informational, self.model_calls_this_turn, g_checkpointed, self.sub)) return;
-    g_checkpointed = true;
-    self.closeCodexWs();
-    try self.messages.append(try named_work.userNudge(self.arena, self.provider.kind, checkpoint_note));
-    if (self.tracer) |tr| tr.note("task_intent", "informational checkpoint");
-}
-
-test "#884 summarize/explain/inspect without a change is informational" {
-    try std.testing.expect(isInformational("go through the codebase and summarize what it does"));
-    try std.testing.expect(isInformational("Explain how the auth flow works"));
-    try std.testing.expect(isInformational("write a summary of this repo"));
-    try std.testing.expect(isInformational("map the architecture of this project"));
-    try std.testing.expect(isInformational("what does this codebase do at a high level"));
-    try std.testing.expect(isInformational("inspect the layout and describe the main constraints"));
-}
-
-test "#884 mutation verbs win, including summarize-then-fix" {
-    try std.testing.expect(!isInformational("summarize the bug then fix the leak"));
-    try std.testing.expect(!isInformational("inspect src/foo.zig and fix the failing test"));
-    try std.testing.expect(!isInformational("implement the health endpoint"));
-    try std.testing.expect(!isInformational("add a test for parser.py"));
-    try std.testing.expect(!isInformational("thanks"));
-    try std.testing.expect(!isInformational(""));
-    try std.testing.expectEqual(Kind.mutation, classify("run tests and report"));
-}
-
-test "#884 informational checkpoint fires once at the bound, never for mutation or subagents" {
-    try std.testing.expect(!shouldCheckpoint(true, 5, false, false));
-    try std.testing.expect(shouldCheckpoint(true, 6, false, false));
-    try std.testing.expect(!shouldCheckpoint(true, 6, true, false));
-    try std.testing.expect(!shouldCheckpoint(true, 6, false, true));
-    try std.testing.expect(!shouldCheckpoint(false, 12, false, false));
-}
-
-test "#884 checkpoint note asks to answer now without tests or a citation pass" {
-    try std.testing.expect(std.mem.indexOf(u8, checkpoint_note, "Informational turn:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, checkpoint_note, "do so now") != null);
-    try std.testing.expect(std.mem.indexOf(u8, checkpoint_note, "citation pass") != null);
+test "summary checkpoint is once, preserves the human request, and respects a newer change request" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const messages = @import("messages.zig");
+    var agent: Agent = undefined;
+    agent.arena = a;
+    agent.messages = .init(a);
+    agent.sub = false;
+    agent.review_mode = false;
+    agent.tracer = null;
+    agent.provider.kind = .openai;
+    agent.model_calls_this_turn = 3;
+    agent.tool_calls_this_turn = 0;
+    try agent.messages.append(try messages.textMessage(a, "user", "Summarize the codebase"));
+    var state = State.begin(&agent);
+    try state.beforeRequest(&agent);
+    try std.testing.expectEqual(@as(usize, 1), agent.messages.items.len);
+    agent.model_calls_this_turn = 4;
+    try state.beforeRequest(&agent);
+    try std.testing.expectEqual(@as(usize, 2), agent.messages.items.len);
+    try std.testing.expect(@import("session_wake.zig").isNotice(agent.messages.items[1]));
+    try std.testing.expectEqualStrings("Summarize the codebase", messages.latestUserText(agent.messages.items));
+    try state.beforeRequest(&agent);
+    try std.testing.expectEqual(@as(usize, 2), agent.messages.items.len);
+    try agent.messages.append(try messages.textMessage(a, "user", "Now fix the parser"));
+    state = State.begin(&agent);
+    try state.beforeRequest(&agent);
+    try std.testing.expectEqual(@as(usize, 3), agent.messages.items.len);
+    try std.testing.expectEqual(Intent.general, current(&agent));
+    try agent.messages.append(try messages.textMessage(a, "user", "Summarize the codebase"));
+    state = State.begin(&agent);
+    agent.model_calls_this_turn = 1;
+    agent.tool_calls_this_turn = 6;
+    try state.beforeRequest(&agent);
+    try std.testing.expect(state.nudged);
+    try std.testing.expectEqual(@as(usize, 5), agent.messages.items.len);
 }

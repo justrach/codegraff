@@ -74,7 +74,7 @@ async function runLinkDestinationVisuals({ origin, output }) {
     throw Error(`Link destination timeout: ${label || test}`);
   };
   const click = selector => js(`document.querySelector(${JSON.stringify(selector)}).click()`);
-  const dialog = '[role="dialog"][aria-label="Settings"]';
+  const dialog = '[role="dialog"][aria-label="Settings"][aria-modal="true"]';
   const labels = { system: 'System default browser', graff: 'Graff built-in Browser' };
   const option = choice => `Array.from(document.querySelectorAll('${dialog} button')).find(b=>b.textContent.trim()===${JSON.stringify(labels[choice])})`;
   const selected = async choice => {
@@ -83,7 +83,10 @@ async function runLinkDestinationVisuals({ origin, output }) {
   };
   const openSettings = async () => {
     await wait(`!!document.querySelector('[aria-label="Settings"]')`, 'Settings hydrated');
-    await click('[aria-label="Settings"]'); await wait(`!!document.querySelector('${dialog}')`);
+    await click('button[aria-label="Settings"]');
+    await wait(`!!document.querySelector('[role="dialog"] button[aria-label="Link settings"]')`);
+    await click('[role="dialog"] button[aria-label="Link settings"]');
+    await wait(`!!document.querySelector('${dialog}')`);
     await wait(() => browser.overlay === true, 'settings hide the native browser view');
   };
   const closeSettings = async () => { await click('[aria-label="Close settings"]'); await wait(`!document.querySelector('${dialog}')`); await wait(() => browser.overlay === false, 'closing settings releases the overlay'); };

@@ -71,6 +71,7 @@ fn liveCancelled() bool {
 /// and stays an ordinary prompt. Pickers here find no TTY and fall back to
 /// printing their list, so nothing waits on a keypress that cannot come.
 fn liveSlash(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror!?[]const u8 {
+    if (@import("review.zig").promptFromLine(text) != null) return null;
     const live: *LiveTurn = @ptrCast(@alignCast(ctx));
     var aw: Io.Writer.Allocating = .init(arena);
     // /never is the playbook's own, and handleCommand does not know it.
@@ -168,66 +169,7 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
     return engine.handleLine(d, arena, w, line);
 }
 
-const LiveTurn = struct {
-    root: *agent_mod.Agent,
-    keys: *provider_mod.Keys,
-    out: *Io.Writer,
-    session_id: []const u8 = "",
-    saw_text: bool = false,
-    inbox: ?*@import("acp_inbox.zig").Inbox = null,
-
-    fn errorMessage(ctx: *anyopaque, err: anyerror) []const u8 {
-        const self: *LiveTurn = @ptrCast(@alignCast(ctx));
-        return if (err == error.ApiError) self.root.last_api_error orelse "Provider request failed" else @errorName(err);
-    }
-
-    fn run(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const u8 {
-        const self: *LiveTurn = @ptrCast(@alignCast(ctx));
-        agent_mod.Agent.prepareRootTurn(); // #753: a prior stream cancel must not steal the continuation
-        if (self.inbox) |inbox| inbox.begin();
-        defer if (self.inbox) |inbox| inbox.end();
-        switch (try @import("turn_dedup.zig").enqueue(self.root, arena, self.out, text)) {
-            .started => {},
-            .skipped => return "",
-            .stuck => return @import("turn_dedup.zig").stuck_text,
-        }
-        if (telemetry.g_telem) |t| t.beginTurn(@intCast(@min(text.len, std.math.maxInt(u32))), self.root.provider.model);
-        self.saw_text = false;
-        var sink: stream.EventSink = undefined;
-        sink.init(self.root.gpa, self.out, &self.session_id, &self.saw_text);
-        defer sink.deinit();
-        self.root.out = &sink.writer;
-        main_mod.g_out = &sink.writer;
-        defer {
-            sink.writer.flush() catch {};
-            self.root.out = null;
-            main_mod.g_out = null;
-        }
-        const final = providers.runTurnWithFallback(self.root, self.keys, arena, null) catch |err| {
-            // #753: an API interruption is a failed turn, not a dead ACP
-            // process. Save so the next prompt (and a respawn --resume) still
-            // sees the tool results and the background-agent ledger.
-            session.saveSession(self.root, self.root.arena, self.root.session_name) catch {};
-            return err;
-        };
-        // The REPL checkpoints after every turn (mainloop); an ACP host's
-        // conversation deserves the same durability. Without this a text-only
-        // turn reached .graff/sessions only at stdin EOF, and a tab the host
-        // killed never did. The root arena, not this turn's: the queued write
-        // outlives the turn.
-        session.saveSessionAsync(self.root, self.root.arena, self.root.session_name) catch {};
-        // saw_text is "the LAST streamed event was answer text" (tool events
-        // reset it in the sink): a turn that ended mid-text already delivered
-        // the answer; one that ended on tools (attempt_completion flows) has
-        // its answer only in `final`, so that must still go on the wire.
-        if (self.saw_text) return "";
-        // A streamed preamble and the final answer are separate paragraphs;
-        // without the break the client renders "…answering.The three files…".
-        if (final.len > 0 and sink.streamed_any)
-            return try std.fmt.allocPrint(arena, "\n\n{s}", .{final});
-        return final;
-    }
-};
+const LiveTurn = @import("acp_live_turn.zig").LiveTurn;
 
 pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_mod.Agent, keys: *provider_mod.Keys, client: *std.http.Client, in: *Io.Reader, out: *Io.Writer, arena: Allocator, flags: args.Flags) !bool {
     if (!(flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "acp"))) return false;
@@ -242,7 +184,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     engine.cancel_flag.store(false, .release);
     engine.on_cancel = syncEscCancel;
     var inbox: @import("acp_inbox.zig").Inbox = .{ .gpa = gpa, .io = io, .reader = in };
-    inbox.start();
+    try inbox.start();
     defer inbox.deinit();
     var live: LiveTurn = .{ .root = root, .keys = keys, .out = out, .inbox = &inbox };
     var d: Dispatch = .{

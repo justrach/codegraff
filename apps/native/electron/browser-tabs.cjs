@@ -1,4 +1,4 @@
-const { WebContentsView, session } = require('electron');
+const { WebContentsView, session, webContents, dialog } = require('electron');
 const path = require('node:path');
 const { pageURL, bounds } = require('./policy.cjs');
 
@@ -8,6 +8,12 @@ class BrowserTabs {
     this.visible = null; this.suspendMs = 60_000;
     // One persistent browser session shares network/cache processes, separate from the app.
     this.session = session.fromPartition('persist:browser');
+    require('./webauthn.cjs').installAccountSelection(this.session, { dialog, ownerForFrame: frame => {
+      if (!frame || frame.detached || this.window.isDestroyed()) return null;
+      const contents = webContents.fromFrame(frame);
+      const tab = this.tabs.get(this.visible);
+      return tab?.view?.webContents === contents ? { window: this.window, contents } : null;
+    } });
     this.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
     this.session.setPermissionCheckHandler(() => false);
     this.session.on('will-download', (_event, item) => { item.setSaveDialogOptions({ title: 'Save download', defaultPath: item.getFilename() }); });
@@ -40,7 +46,7 @@ class BrowserTabs {
     wc.on('did-start-loading', () => { navigationStarted = performance.now(); this.profiler?.record('page-navigation'); this.notify(tab); });
     wc.on('did-finish-load', () => { this.profiler?.record('page-loaded', performance.now() - navigationStarted); wc.send('profile-enabled', !!this.profiler?.active); wc.send('pins-sync', tab.pins || []); });
     wc.setWindowOpenHandler(({ url }) => {
-      void this.navigate(chat, url).catch(() => {}); return { action: 'deny' };
+      void this.navigate(chat, url, { background: this.visible !== chat }).catch(() => {}); return { action: 'deny' };
     });
     wc.on('will-navigate', (event, url) => { try { pageURL(url); } catch { event.preventDefault(); } });
     wc.on('will-redirect', (event, url) => { try { pageURL(url); } catch { event.preventDefault(); } });
@@ -56,10 +62,11 @@ class BrowserTabs {
     this.window.contentView.addChildView(view); view.setVisible(false);
     return tab;
   }
-  async navigate(chat, raw) {
+  async navigate(chat, raw, { background = false } = {}) {
     const url = pageURL(raw), tab = this.create(chat); tab.url = url;
-    this.attach(tab); this.emit({ chat, type: 'show' });
-    await tab.view.webContents.loadURL(url);
+    if (!background) { this.attach(tab); this.emit({ chat, type: 'show' }); }
+    try { await tab.view.webContents.loadURL(url); }
+    finally { if (background && this.visible !== chat) this.hide(chat); }
     this.notify(tab); return this.info(tab);
   }
   attach(tab) {
@@ -78,6 +85,7 @@ class BrowserTabs {
   }
   hide(chat) {
     const tab = this.tabs.get(chat); if (!tab) return;
+    tab.view?.webContents.emit('graff-webauthn-cancel');
     tab.view?.setVisible(false); if (this.visible === chat) this.visible = null;
     clearTimeout(tab.timer);
     tab.timer = setTimeout(() => { this.release(tab); this.notify(tab); }, this.suspendMs);

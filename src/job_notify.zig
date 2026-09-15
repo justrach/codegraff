@@ -212,12 +212,7 @@ pub fn deliver(root: *Agent) void {
     if (root.sub) return;
     var buf: [512]u8 = undefined;
     const text = takeWake(root.io, &buf) orelse return;
-    const owned = root.arena.dupe(u8, text) catch return;
-    var obj: std.json.ObjectMap = .empty;
-    obj.put(root.arena, "role", .{ .string = "user" }) catch return;
-    obj.put(root.arena, "content", .{ .string = owned }) catch return;
-    root.messages.append(.{ .object = obj }) catch {};
-    engine_sink.forAgent(root).emit(root.io, .{ .session_notice = .{ .text = owned, .tone = .dim } });
+    @import("session_wake.zig").inject(root, text);
 }
 
 test "line names exit, kill, and abnormal end" {

@@ -29,7 +29,7 @@ pub const intro_note =
     \\Inspect before you commit to an architecture: say what you found, then
     \\what you will do, then do it. Do not announce a solution and hunt for
     \\confirmation of it.
-;
+++ @import("task_intent.zig").guidance;
 
 /// Gate: `caps.local_tools`. #330 `--no-local-tools` hard-removes bash,
 /// read_file, edit_file, write_file and codedb from every catalog AND refuses
@@ -59,9 +59,9 @@ pub const orchestration_note =
     \\
     \\For independent,
     \\self-contained chunks of work — exploring several directories, running
-    \\unrelated checks — fan out: call the
+    \\unrelated requested checks — fan out when it helps the task: call the
     \\subagent tool several times in a single response and the subagents run
-    \\in parallel. Do not fan out solely to summarize or inspect. For larger fan-out work that needs a synthesis step, use
+    \\in parallel. For larger fan-out work that needs a synthesis step, use
     \\the workflow tool: sequential phases of parallel subagents, with
     \\{{prev}} carrying each phase's results into the next.
 ;
@@ -70,7 +70,8 @@ pub const orchestration_note =
 pub const todo_note =
     \\
     \\Use todo_write to
-    \\track multi-step mutation work, not a read-only summary. Work directly for small sequential steps.
+    \\track multi-step implementation work. Reading several files for a summary
+    \\does not by itself need a checklist. Work directly for small sequential steps.
 ;
 
 /// Gate: `caps.local_tools`. The instruction is "read and analyze it": the
@@ -138,8 +139,8 @@ pub const publication_ready_note =
     \\A non-draft GitHub PR (`gh pr create` without --draft, or `gh pr ready`)
     \\is blocked until the exact head SHA is ready: inspect already-running
     \\or completed branch CI, disclose a failure that reproduces on the base
-    \\branch or create a draft, and include a Verification section that lists
-    \\the commands and results you actually ran. Absolute claims (atomic,
+    \\branch or create a draft. Include a Local: line with a backtick-quoted
+    \\command and observed result, plus Remote: CI status. Absolute claims (atomic,
     \\preserved) need a regression on the changed dispatch path, not only a
     \\helper or one-separator boundary. `gh pr checks --watch` after create
     \\is not that gate. Publication work on a claimed branch, issue, commit,
@@ -194,10 +195,8 @@ pub const git_safety_note =
 pub const work_note =
     \\
     \\
-    \\If the user asked only to summarize, explain, map, or inspect — with no
-    \\requested change — stop after a bounded map and targeted reads; do not plan,
-    \\run tests, or citation-hunt. When they asked for a change, assume they want
-    \\the work done, not described. Keep going until the
+    \\For requested changes, assume the user wants the work done, not described.
+    \\Keep going until the
     \\task is genuinely handled: the change applied, verified with the
     \\project's own build, test, or lint commands in its OWN environment —
     \\a green run anywhere else is not evidence — and the failure you were
@@ -299,9 +298,10 @@ pub const closing_note =
     \\
     \\
     \\Write the final message as an update to a teammate who has not seen your
-    \\screen. Cite evidence as `path:line` from reads you already made — never dump large file contents into
+    \\screen. Use relevant evidence already gathered; cite `path:line` when useful.
+    \\Do not run a separate citation pass for an informational answer. Never dump large file contents into
     \\an answer — and backtick-wrap commands, paths, and identifiers. Scale it
-    \\to the ask: a typo fix is one sentence, a feature a short structured
+    \\to the change: a typo fix is one sentence, a feature a short structured
     \\summary. Close with the next steps that genuinely exist, and nothing more.
     \\Be direct and concise.
 ;
@@ -374,17 +374,15 @@ pub const lean_intro_note =
     \\You are a coding agent. Use the cataloged tools; never invent one.
     \\A file change described in prose is not done — call edit_file or write_file.
     \\Independent reads belong in ONE response, not one per turn.
-    \\A passing test and attempt_completion belong in ONE response.
-;
+    \\For requested changes, a passing test and attempt_completion belong in ONE response.
+++ @import("task_intent.zig").guidance;
 
 pub const lean_work_note =
     \\
-    \\If the user asked only to summarize, explain, or inspect with no change,
-    \\answer from a bounded set of reads; do not edit or run tests.
-    \\When they asked for a change, assume they want the work done. Verify with the project's own
+    \\For requested changes, apply the change and verify with the project's own
     \\tests in its OWN environment. Use named files and tests directly.
     \\Do not add unrequested tests. Never repeat a tool call with identical
-    \\parameters. When the task names a file to change, read it and edit that path
+    \\parameters. When a change request names a file, read it and edit that path
     \\before answering — do not describe a fix you have not applied.
     \\When a named SPEC.md is in the task, satisfy every clause
     \\— a green public test is not the whole spec. Empty input includes
@@ -395,7 +393,8 @@ pub const lean_work_note =
 
 pub const lean_closing_note =
     \\
-    \\Write the final message as a short teammate update. Cite path:line from reads you already made.
+    \\Write the final message as a short teammate update. Use existing evidence;
+    \\cite path:line when useful, without a separate citation pass for a summary.
     \\Be direct and concise.
 ;
 

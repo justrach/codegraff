@@ -1,6 +1,7 @@
 async function browserAction(browser, chat, method, params = {}) {
   if (method === 'tabs') return [...browser.tabs.values()].map(tab => browser.info(tab));
-  if (['open', 'navigate', 'back', 'forward', 'reload', 'info', 'close'].includes(method)) return browser.command(chat, method, params);
+  if (method === 'open' || method === 'navigate') return browser.navigate(chat, params.url, { background: true });
+  if (['back', 'forward', 'reload', 'info', 'close'].includes(method)) return browser.command(chat, method, params);
   const wc = browser.tabs.get(chat)?.view?.webContents;
   if (!wc) throw new Error('The browser page is closed or suspended; open it first');
   const evaluate = expression => wc.executeJavaScript(expression);

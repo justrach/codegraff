@@ -300,6 +300,8 @@ test "#199: a pinned job is retained at session end — record kept, tree alive,
     const recs = job_registry.list(io, arena, job_registry.home);
     try std.testing.expectEqual(@as(usize, 1), recs.len);
     try std.testing.expect(recs[0].retained);
+    try std.testing.expect(recs[0].pinned);
+    try std.testing.expectEqualStrings("user_pin", @tagName(recs[0].retention_reason.?));
     try std.testing.expectEqual(pid, recs[0].pid);
     try std.testing.expectEqual(job_registry.State.running, job_registry.state(io, recs[0]));
     // A later `graff servers stop <pid>`: verified, then the whole group goes.

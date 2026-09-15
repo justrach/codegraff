@@ -23,6 +23,31 @@ claim the REPL turn.
 Unmatched tool calls in the last restored turn stay running so the snapshot
 can still show in-progress work. That is display state, not a live attach.
 
+The checklist comes from the saved session’s top-level `todos` field when
+present, including an empty list. Historical `todo_write` arguments may be
+stale or rejected proposals and must not override that saved state. Older
+files without the field retain history-based reconstruction. This does not
+turn a saved checklist into live execution status.
+
+Harness-authored budget, compaction, and completion reminders use the same
+notification provenance as generated wakes; they never become the latest human
+request. Actual one-shot prompts retain their human provenance.
+
+Generated wakes retain `_graff_origin: "notification"` in saved message objects.
+Their provider role remains `user`, but wire serializers omit this internal field.
+The GUI renders these as expandable session notices and excludes them from prompt
+recall and title recovery. Text prefixes are not evidence of notification origin;
+older unmarked job notices retain their historical presentation.
+
+Before enabling continuation, the GUI reads fresh saved metadata and compares
+the selected model and workspace. Changes flag cache reuse as at risk; matching
+metadata remains unverified. No agent or model request is started by this check.
+Saved settings cannot establish prefix equality or provider cache retention.
+
+The saved view shows one compact status notice beside its continuation controls;
+transcript headers and individual turns do not repeat it. Saved turn status remains
+unknown after continuation.
+
 ## Consequences
 
 Opening and refreshing history never bootstrap an ACP session. The composer

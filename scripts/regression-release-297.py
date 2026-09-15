@@ -21,35 +21,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "eval"))
 from mock_model import ScriptedModel
 from process_guard import run as bounded_run
 
-GH = r'''
-import json, pathlib, subprocess, sys
-root=pathlib.Path(__file__).resolve().parent.parent
-state=json.loads((root/'gh-state.json').read_text())
-args=sys.argv[1:]
-with (root/'gh-argv.jsonl').open('a') as f:f.write(json.dumps(args)+'\n')
-head=subprocess.check_output(['GIT_EXE','rev-parse','HEAD'],cwd=root,text=True).strip()
-if args[:2]==['run','list']:
-    if state.get('unavailable'):sys.exit(1)
-    sha=args[args.index('--commit')+1]
-    status=state.get('runs','success') if sha==state['initial_head'] else state.get('new_runs','failure')
-    if status=='malformed': print('invalid');sys.exit()
-    if status=='none': print('[]');sys.exit()
-    print(json.dumps([{'status':'queued' if status=='pending' else 'completed','conclusion':None if status=='pending' else status}]))
-elif args[:1]==['api']:
-    print(state.get('remote_head', head))
-elif args[:2]==['pr','view']:
-    remote=state.get('remote_head',head)
-    status=state.get('checks','PENDING')
-    checks=[] if status=='NONE' else [{'state':status}]
-    print(json.dumps({'headRefOid':remote,'isDraft':state.get('draft',False),'body':'## Verification\nLocal tests passed.','statusCheckRollup':checks}))
-elif args[:2] in (['pr','create'],['pr','ready']):
-    with (root/'mutations.jsonl').open('a') as f:f.write(json.dumps(args)+'\n')
-    if '--draft' in args:state['draft']=True
-    if args[:2]==['pr','ready']:state['draft']=False
-    (root/'gh-state.json').write_text(json.dumps(state))
-    print('https://example.invalid/pull/1')
-else: sys.exit(88)
-'''
+from github_fixture import GH
 
 
 def tool(command):
@@ -73,7 +45,7 @@ def run_case(graff, name, script, state=None, expected_mutations=0, refused=0, e
         fixture = dict(initial_head=head, **(state or {}))
         if fixture.get("remote_head") == "initial": fixture["remote_head"] = head
         (work / "gh-state.json").write_text(json.dumps(fixture))
-        (work / "notes.md").write_text("Fix the behavior.\n\n## Verification\nLocal regression passed.\n")
+        (work / "notes.md").write_text("Fix the behavior.\n\n## Verification\nLocal: `python3 -m unittest` passed.\nRemote: passed.\n")
         env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")}
         env.update(HOME=temp, PATH=str(work / "bin") + os.pathsep + os.environ["PATH"],
                    LMSTUDIO_API_KEY="local", GRAFF_NO_TELEMETRY="1", GRAFF_FLEET="off",
@@ -162,7 +134,7 @@ def handoff(graff):
         bounded_run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "fixture"], cwd=work, check=True)
         head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=work, text=True).strip()
         (work / "gh-state.json").write_text(json.dumps({"initial_head": head, "checks": "SUCCESS"}))
-        (work / "notes.md").write_text("## Verification\nFixture checks passed.\n")
+        (work / "notes.md").write_text("## Verification\nLocal: `python3 -m unittest` passed.\nRemote: passed.\n")
         env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")}
         env.update(HOME=temp, PATH=str(work / "bin") + os.pathsep + os.environ["PATH"], LMSTUDIO_API_KEY="local",
                    GRAFF_NO_TELEMETRY="1", GRAFF_FLEET="off", GRAFF_NO_SMOLIFY="1", GRAFF_NO_CODEDB_GUARD="1", NO_COLOR="1")
@@ -272,7 +244,7 @@ def main():
     run_case(args.graff, "body flag cannot turn non-draft into draft", [tool("gh pr create --title fixture --body '--draft'"), {"text": "Blocked."}], {"runs": "failure"})
     run_case(args.graff, "local-only and repeated completion cannot pass PR CI", [tool(create), completion(), completion(), {"text": "CI remains unverified."}], {"runs": "none"}, expected_mutations=1, refused=2, resume_check=True)
     run_case(args.graff, "fresh passing remote head completes", [tool(create), completion()], {"checks": "SUCCESS"}, expected_mutations=1, expected_final="Verification complete.")
-    run_case(args.graff, "draft handoff is explicitly unverified", [tool(create + " --draft"), completion("Handing off the draft.")], {"runs": "failure"}, expected_mutations=1, expected_final="Draft handoff")
+    run_case(args.graff, "draft handoff needs explicit scope", [tool(create + " --draft"), completion("Handing off the draft."), {"text": "Draft remains unverified."}], {"runs": "failure"}, expected_mutations=1, refused=1)
     commit = "git -c user.name=Fixture -c user.email=fixture@example.invalid commit --allow-empty -m next"
     run_case(args.graff, "ready refreshes changed head", [tool(create), tool(commit), tool("gh pr ready"), {"text": "New head needs CI."}], {"checks": "FAILURE"}, expected_mutations=1)
     run_case(args.graff, "passing old remote head is not local new head", [tool(create), tool(commit), completion(), {"text": "Push and verify the new head."}], {"checks": "SUCCESS", "remote_head": "initial"}, expected_mutations=1, refused=1)

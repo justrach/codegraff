@@ -72,19 +72,27 @@ pub fn promptBox(self: *const Model, a: std.mem.Allocator, width: usize) ![]cons
         try out.append('\n');
     }
     const model = if (engine.g_model_name.len > 0) engine.g_model_name else "offline";
+    const provider = if (engine.g_model_provider.len > 0)
+        engine.g_model_provider
+    else if (self.status) |st|
+        st.provider_id
+    else
+        "";
+    const seat = if (provider.len > 0)
+        try std.fmt.allocPrint(a, "{s}/{s}", .{ provider, model })
+    else
+        model;
     // The context share comes from the engine's meter and appears only once a
     // turn has reported usage — a "0%" before the first response would be the
     // char-counter's old habit of showing a number it had not measured (#551).
-    // The share is right-aligned in a THREE-column field. The footer label is
-    // centred, so a meter ticking 9% → 10% used to widen the label by one and
-    // slide every character of the footer half a cell sideways mid-turn — the
-    // same class of jitter a two-column spinner frame causes (glyphs.zig).
-    var pct_buf: [32]u8 = undefined;
+    // Both fields are labeled and right-aligned to THREE columns. The footer is
+    // centred, so a meter ticking 9% → 10% must not slide its other labels.
+    var pct_buf: [64]u8 = undefined;
     const pct: []const u8 = if (self.contextPercent()) |p| blk: {
         const cache = if (self.status) |st| st.cachePercent() else null;
-        break :blk (std.fmt.bufPrint(&pct_buf, " · {d: >3}% · {d: >3}%c", .{ p, cache orelse 0 }) catch "");
+        break :blk (std.fmt.bufPrint(&pct_buf, " · ctx {d: >3}% · cache {d: >3}%", .{ p, cache orelse 0 }) catch "");
     } else "";
-    const label = try std.fmt.allocPrint(a, " {s} ({s}) · {s}{s} ", .{ model, @tagName(self.effort), self.modeSlug(), pct });
+    const label = try std.fmt.allocPrint(a, " {s} · {s} · {s}{s} ", .{ seat, @tagName(self.effort), self.modeSlug(), pct });
     try out.appendSlice(try footer(a, border, th.muted, label, inner));
     return out.items;
 }
@@ -301,7 +309,7 @@ test "composer footer shows the live agent mode" {
     m.mode = .plan;
     try std.testing.expect(std.mem.indexOf(u8, try promptBox(&m, a, 80), "plan") != null);
     m.mode = .always_approve;
-    try std.testing.expect(std.mem.indexOf(u8, try promptBox(&m, a, 80), "always-approve") != null);
+    try std.testing.expect(std.mem.indexOf(u8, try promptBox(&m, a, 80), "auto-accept") != null);
     try std.testing.expect(std.mem.indexOf(u8, try statusBar(&m, a, 80), "Enter:send") != null);
     try std.testing.expect(std.mem.indexOf(u8, try statusBar(&m, a, 80), "Shift+Tab") != null);
 }
@@ -389,7 +397,8 @@ test "the composer footer holds its columns as the context meter ticks" {
         const start = theme_mod.visibleLen(footer_row[0..at]);
         if (col) |want| try std.testing.expectEqual(want, start) else col = start;
         try std.testing.expectEqual(@as(usize, 80), theme_mod.visibleLen(footer_row));
-        try std.testing.expect(std.mem.indexOf(u8, footer_row, "%c") != null);
+        try std.testing.expect(std.mem.indexOf(u8, footer_row, "ctx") != null);
+        try std.testing.expect(std.mem.indexOf(u8, footer_row, "cache") != null);
     }
 }
 
@@ -410,8 +419,8 @@ test "composer footer prints last-turn cache hit next to context share" {
         .cache_read = 2048,
     });
     const box = try promptBox(&m, arena.allocator(), 80);
-    try std.testing.expect(std.mem.indexOf(u8, box, "  6%") != null);
-    try std.testing.expect(std.mem.indexOf(u8, box, " 16%c") != null);
+    try std.testing.expect(std.mem.indexOf(u8, box, "ctx   6%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, box, "cache  16%") != null);
 }
 
 test "prompt box wraps a long draft onto several rows" {

@@ -43,7 +43,14 @@ pub fn trailingUserIs(messages: []const Value, text: []const u8) bool {
 }
 
 fn userPromptText(msg: Value) ?[]const u8 {
+    if (@import("session_wake.zig").isNotice(msg)) return null;
     if (msg != .object) return null;
+    if (msg.object.get("type")) |kind| {
+        if (kind == .string and std.mem.eql(u8, kind.string, "user_input")) {
+            const content = msg.object.get("content") orelse return null;
+            if (content == .string and content.string.len > 0) return content.string;
+        }
+    }
     const role = msg.object.get("role") orelse return null;
     if (role != .string or !std.mem.eql(u8, role.string, "user")) return null;
     const content = msg.object.get("content") orelse return null;
@@ -76,8 +83,7 @@ fn userPromptText(msg: Value) ?[]const u8 {
 /// Interactions rejects a bare `{"role":"user"}` — every entry on that wire is
 /// a typed step — so the shape has to follow the wire, not the caller.
 pub fn userNote(arena: Allocator, kind: Provider.Kind, text: []const u8) !Value {
-    if (kind == .interactions) return @import("interactions_steps.zig").userInput(arena, text);
-    return textMessage(arena, "user", text);
+    return @import("session_wake.zig").typedMessage(arena, kind, text);
 }
 
 pub fn toolResultMessage(arena: Allocator, kind: Provider.Kind, call_id: []const u8, raw_text: []const u8, is_error: bool) !Value {
