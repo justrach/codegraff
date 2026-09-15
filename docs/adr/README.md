@@ -133,6 +133,8 @@ record only when you need the evidence or the edge cases.
 
 | [0122](0122-one-session-navigation-surface.md) | Open chats use the expanded sidebar or collapsed top tabs, preserving drafts and groups; focused mode keeps a compact composer and accessible settings. |
 
+| [0123](0123-pr-check-observations-retain-the-rollup.md) | PR completion retains named current-head check observations locally; diagnostic receipts never replace fresh verification. |
+
 ## When to write one
 
 Write an ADR when a decision is load-bearing and non-obvious: it was reached
