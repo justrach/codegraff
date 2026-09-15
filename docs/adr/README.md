@@ -139,6 +139,9 @@ record only when you need the evidence or the edge cases.
 
 | [0125](0125-review-deadlines-belong-to-one-turn.md) | Opt-in review deadlines use joined turn-owned watchers, preserve user cancellation, and cannot validate late results. |
 
+| [0126](0126-publication-retains-observed-check-failures.md) | Observed failed checks survive resumes; non-draft publication waits for successful reruns and occupies its own tool batch. |
+
+
 ## When to write one
 
 Write an ADR when a decision is load-bearing and non-obvious: it was reached

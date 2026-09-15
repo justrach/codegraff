@@ -106,7 +106,7 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
         if (std.mem.eql(u8, call.name, "attempt_completion") and defer_completion) {
             continue;
         }
-        if (try self.rejectToolCall(call)) |denied| {
+        if (try @import("pr_local_checks.zig").batchGate(self, calls, call) orelse try self.rejectToolCall(call)) |denied| {
             results[i] = denied;
             continue;
         }
@@ -186,6 +186,7 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             .run_id = if (self.tracer) |tr| tr.identity.run_id else "untraced",
         };
         for (ext_idx.items, outputs) |i, output| {
+            try @import("pr_local_checks.zig").record(self, calls[i], .{ .text = output.text, .is_error = output.is_error, .cancelled = output.cancelled });
             // Over the threshold, the bytes go to a durable handle; the model
             // gets a bounded preview + path + byte count + shape hint.
             const handled = try tool_handle.forResult(self.gpa, self.arena, handle_target, output.text, handle_threshold);

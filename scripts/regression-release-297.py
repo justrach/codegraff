@@ -45,7 +45,7 @@ def run_case(graff, name, script, state=None, expected_mutations=0, refused=0, e
         fixture = dict(initial_head=head, **(state or {}))
         if fixture.get("remote_head") == "initial": fixture["remote_head"] = head
         (work / "gh-state.json").write_text(json.dumps(fixture))
-        (work / "notes.md").write_text("Fix the behavior.\n\n## Verification\nLocal regression passed.\n")
+        (work / "notes.md").write_text("Fix the behavior.\n\n## Verification\nLocal: `python3 -m unittest` passed.\nRemote: passed.\n")
         env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")}
         env.update(HOME=temp, PATH=str(work / "bin") + os.pathsep + os.environ["PATH"],
                    LMSTUDIO_API_KEY="local", GRAFF_NO_TELEMETRY="1", GRAFF_FLEET="off",
@@ -134,7 +134,7 @@ def handoff(graff):
         bounded_run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "fixture"], cwd=work, check=True)
         head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=work, text=True).strip()
         (work / "gh-state.json").write_text(json.dumps({"initial_head": head, "checks": "SUCCESS"}))
-        (work / "notes.md").write_text("## Verification\nFixture checks passed.\n")
+        (work / "notes.md").write_text("## Verification\nLocal: `python3 -m unittest` passed.\nRemote: passed.\n")
         env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")}
         env.update(HOME=temp, PATH=str(work / "bin") + os.pathsep + os.environ["PATH"], LMSTUDIO_API_KEY="local",
                    GRAFF_NO_TELEMETRY="1", GRAFF_FLEET="off", GRAFF_NO_SMOLIFY="1", GRAFF_NO_CODEDB_GUARD="1", NO_COLOR="1")

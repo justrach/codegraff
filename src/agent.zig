@@ -14,9 +14,7 @@ const ReasoningEffort = main_mod.ReasoningEffort;
 const ws = @import("ws.zig"); // codex Responses WS transport (delta continuation held across a turn)
 const mcp = @import("mcp.zig");
 const approvals_mod = @import("approvals.zig");
-/// The shared approval state, re-exported: a module that only passes one
-/// through (session_run's startup helpers) can name the type off the Agent
-/// that owns it instead of importing approvals.zig itself (#429).
+/// Shared approval state, re-exported for startup helpers (#429).
 pub const Approvals = approvals_mod.Approvals;
 const trace = @import("trace.zig");
 const tools_mod = @import("tools.zig");
@@ -71,6 +69,7 @@ pub const Goal = struct {
 /// agent prints to stdout; subagents (sub = true) run on pool threads and
 /// log through std.debug.print, which locks stderr and is thread-safe.
 pub const Agent = struct {
+    publication_checks: @import("pr_local_checks.zig").State = .{},
     gpa: Allocator,
     arena: Allocator,
     /// #124: per-turn parse garbage (SSE envelopes, isStreamEnd) lives here and

@@ -85,6 +85,9 @@ jobs:
           python3 scripts/eval-tier2.py --only repository-scoped-claim-release
           python3 scripts/eval-tier2.py --only draft-cannot-waive-pr-completion --only base-failure-cannot-waive-pr-completion --only user-authorized-draft-handoff --only draft-scope-does-not-waive-ready-pr-ci --only user-can-require-verified-pr-again --only current-head-passing-pr-completes
 
+      - name: Observed local checks before publication
+        run: python3 scripts/test-pr-local-checks.py --graff zig-out/bin/graff --evidence /tmp/pr-local-checks
+
       - name: Multi-turn clarification, editing and recovery workflows
         run: python3 scripts/eval-tier2.py --only human-workflow-clarify-edit-recover-followup --only human-workflow-missing-config-clarify-followup --evidence-dir "$RUNNER_TEMP/interactive-workflows"
 
