@@ -57,7 +57,7 @@ fn observe(self: *Agent, cmd: []const u8) !?ExecResult {
 
 pub fn bash(self: *Agent, cmd: []const u8) !?ExecResult {
     const key = if (builtin.is_test) "" else mutationKey(self, cmd);
-    if (artifact_claim.gateCommand(self.arena, self.io, cmd, key)) |blocked| return .{ .text = blocked, .is_error = true };
+    if (artifact_claim.gateCommandIn(self.arena, self.io, cmd, key, self.agent_cwd orelse ".")) |blocked| return .{ .text = blocked, .is_error = true };
     if (!pr_publish.isPrCreate(cmd) and !pr_publish.isPrReady(cmd)) return null;
     if (!builtin.is_test) return observe(self, cmd);
     if (pr_publish.gateCommand(self.arena, cmd)) |blocked| return .{ .text = blocked, .is_error = true };
