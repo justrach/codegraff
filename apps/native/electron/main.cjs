@@ -81,6 +81,7 @@ app.whenReady().then(async () => {
       .catch(error => dialog.showErrorBox('Command setup incomplete', `${error.message}\nRetry from Tools → Install codegraff terminal command.`));
   }
   app.setAccessibilitySupportEnabled(true);
+  const passkeysConfigured = require('./webauthn.cjs').configureWebAuthn(app, resources);
   const token = randomBytes(32).toString('hex');
   win = createWindow({ width: 1440, height: 920, minWidth: 900, minHeight: 600,
     title: 'Codegraff', titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 11 }, backgroundColor: '#fafaf9', show: false,
@@ -189,7 +190,9 @@ app.whenReady().then(async () => {
         const installed = await require('./cli-launcher.cjs').installLauncher(path.resolve(app.getPath('exe'), '../../..'), app.getPath('home'));
         await dialog.showMessageBox(win, { message: 'Terminal command installed', detail: `Run graff for the CLI or codegraff . for the GUI. Open a new terminal to load the PATH update (${path.dirname(installed)}).` });
       } catch (error) { dialog.showErrorBox('Terminal command', error.message); }
-    } }] },
+    } }, { label: 'Browser passkey help…', click: () => void require('./webauthn.cjs').showPasskeyHelp({
+      window: win, browser, dialog, shell: require('electron').shell, configured: passkeysConfigured,
+    }).catch(() => dialog.showErrorBox('Browser passkeys', 'Could not open the default browser. Use another sign-in method on the site.')) }] },
     { role: 'editMenu' }, { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { role: 'togglefullscreen' }, { label: 'Release browser pages', click: () => { browser.closeAll(); win.webContents.send('browser-event', { type: 'released' }); } }] },
     { label: 'Performance', submenu: [
       { label: 'Start recording', click: () => void profiler.start() },

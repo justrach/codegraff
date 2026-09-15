@@ -22,6 +22,10 @@ jobs:
           bun-version: '1.4.2'
       - run: bun install --frozen-lockfile
       - run: bun run test:desktop
+      - name: Embedded browser WebAuthn dispatch (virtual authenticator)
+        run: |
+          if [ ! -f node_modules/electron/path.txt ]; then bun node_modules/electron/install.js; fi
+          bun run test:webauthn
       - run: bun run build
       - run: bunx playwright install chromium
       - run: bun run test:queue
