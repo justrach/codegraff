@@ -52,8 +52,11 @@ pub const RunBudget = struct {
     model_calls: std.atomic.Value(u64) = .init(0),
     active: std.atomic.Value(u32) = .init(0),
     peak_active: std.atomic.Value(u32) = .init(0),
+    waiting: std.atomic.Value(u32) = .init(0),
 
     fn acquireConcurrency(self: *RunBudget, io: Io) !void {
+        _ = self.waiting.fetchAdd(1, .acq_rel);
+        defer _ = self.waiting.fetchSub(1, .release);
         while (true) {
             var current = self.active.load(.acquire);
             if (current < self.max_concurrency) {
@@ -70,11 +73,12 @@ pub const RunBudget = struct {
         }
     }
 
-    fn reserveCall(self: *RunBudget) !u64 {
+    fn reserveCall(self: *RunBudget, depth: u8) !u64 {
         // 0 = unlimited: keep counting for used()/telemetry, but never refuse.
         if (self.max_model_calls == 0) return self.model_calls.fetchAdd(1, .acq_rel) + 1;
+        const limit = self.max_model_calls - @as(u64, if (depth > 0) 1 else 0);
         var current = self.model_calls.load(.acquire);
-        while (current < self.max_model_calls) {
+        while (current < limit) {
             if (self.model_calls.cmpxchgWeak(current, current + 1, .acq_rel, .acquire)) |observed| {
                 current = observed;
                 continue;
@@ -92,9 +96,9 @@ pub const RunBudget = struct {
         // #390 — the landing reserve's hard half: a CHILD may not take the
         // pool's last slot. The final call is the root's landing answer; a
         // worker that consumed it would leave the run to die narrating.
-        // Racy against a concurrent sibling (remaining() is a plain load),
-        // so it is a strong bias rather than a lock — the root's own final
-        // call cannot race itself, which is the case that matters.
+        // This early check avoids waiting after exhaustion. reserveCall checks
+        // the same child ceiling atomically after the concurrency wait, so
+        // queued siblings cannot take the root's final reservation.
         if (depth > 0 and self.max_model_calls != 0 and self.remaining() <= 1)
             return error.RunBudgetExhausted;
         try self.acquireConcurrency(io);
@@ -102,7 +106,7 @@ pub const RunBudget = struct {
             const before = self.active.fetchSub(1, .release);
             std.debug.assert(before > 0);
         }
-        const call_number = try self.reserveCall();
+        const call_number = try self.reserveCall(depth);
         return .{ .budget = self, .call_number = call_number, .kind = kind };
     }
 
@@ -171,4 +175,37 @@ test "RunBudget with max_model_calls = 0 is unlimited and never exhausts" {
     }
     try std.testing.expectEqual(@as(u64, 1000), budget.used());
     try std.testing.expectEqual(std.math.maxInt(u64), budget.remaining());
+}
+
+test "queued children cannot consume the root landing reservation" {
+    const Worker = struct {
+        fn run(io: Io, budget: *RunBudget, accepted: *std.atomic.Value(u32)) void {
+            var permit = budget.acquire(io, 1, .child) catch return;
+            defer permit.release();
+            _ = accepted.fetchAdd(1, .acq_rel);
+        }
+    };
+    const io = std.testing.io;
+    var budget: RunBudget = .{ .max_model_calls = 3, .max_concurrency = 1 };
+    var held = try budget.acquire(io, 0, .root);
+    defer held.release();
+    var accepted: std.atomic.Value(u32) = .init(0);
+    var children: Io.Group = .init;
+    defer children.cancel(io);
+    try children.concurrent(io, Worker.run, .{ io, &budget, &accepted });
+    try children.concurrent(io, Worker.run, .{ io, &budget, &accepted });
+    const start = Io.Timestamp.now(io, .awake);
+    while (budget.waiting.load(.acquire) != 2) {
+        if (start.untilNow(io, .awake).toMilliseconds() > 5000) return error.ChildrenDidNotQueue;
+        try io.sleep(.fromMilliseconds(1), .awake);
+    }
+    held.release();
+    try children.await(io);
+    try std.testing.expectEqual(@as(u32, 1), accepted.load(.acquire));
+    try std.testing.expectEqual(@as(u64, 1), budget.remaining());
+    var landing = try budget.acquire(io, 0, .root);
+    landing.release();
+    try std.testing.expectEqual(@as(u64, 0), budget.remaining());
+    try std.testing.expectEqual(@as(u32, 0), budget.waiting.load(.acquire));
+    try std.testing.expectEqual(@as(u32, 0), budget.active.load(.acquire));
 }
