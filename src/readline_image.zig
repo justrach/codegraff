@@ -12,6 +12,7 @@ const Agent = @import("agent.zig").Agent;
 const vision = @import("vision.zig");
 const vision_queue = @import("vision_queue.zig");
 const input_util = @import("input_util.zig");
+const readline_keys = @import("readline_keys.zig");
 const PasteStore = @import("readline_paste.zig").Store;
 
 pub const Chip = struct { start: usize, end: usize, n: u8 };
@@ -86,6 +87,18 @@ pub fn deleteAtom(root: *Agent, gpa: Allocator, buf: *std.ArrayList(u8), cur: *u
     afterEdit(root, gpa, buf, cur);
 }
 
+pub fn deleteModified(root: *Agent, gpa: Allocator, buf: *std.ArrayList(u8), cur: *usize, pastes: *PasteStore, action: readline_keys.ModifiedDelete) bool {
+    const start = switch (action) {
+        .delete_word => prevWord(buf.items, cur.*, pastes),
+        .delete_to_start => 0,
+    };
+    if (start >= cur.*) return false;
+    const old_cur = cur.*;
+    deleteAtom(root, gpa, buf, cur, pastes, start, old_cur);
+    cur.* = start;
+    return true;
+}
+
 pub fn clearLine(root: *Agent, gpa: Allocator, buf: *std.ArrayList(u8), cur: *usize, pastes: *PasteStore) void {
     buf.clearRetainingCapacity();
     pastes.clear(gpa);
@@ -155,6 +168,74 @@ pub fn insertComposerChip(
     const at = cur.*;
     input_util.insertImageChip(gpa, buf, cur, marks, root.pending_image_len);
     if (cur.* > at) pastes.edited(gpa, at, at, cur.* - at);
+}
+
+fn testAgent(gpa: Allocator) Agent {
+    return .{
+        .gpa = gpa,
+        .arena = gpa,
+        .io = undefined,
+        .client = undefined,
+        .provider = .{ .id = "xai", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "grok-4", .context = 100_000 },
+        .messages = undefined,
+        .sub = false,
+        .label = "test",
+        .out = null,
+    };
+}
+
+test "Cmd Delete removes UTF-8 prompt prefixes and is idempotent (#981)" {
+    const gpa = std.testing.allocator;
+    var root = testAgent(gpa);
+    var pastes: PasteStore = .{};
+    defer pastes.deinit(gpa);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(gpa);
+
+    try buf.appendSlice(gpa, "é alpha beta");
+    var cur = buf.items.len;
+    try std.testing.expect(deleteModified(&root, gpa, &buf, &cur, &pastes, .delete_to_start));
+    try std.testing.expectEqualStrings("", buf.items);
+    try std.testing.expectEqual(@as(usize, 0), cur);
+    try std.testing.expect(!deleteModified(&root, gpa, &buf, &cur, &pastes, .delete_to_start));
+
+    try buf.appendSlice(gpa, "é alpha beta");
+    cur = "é alpha".len;
+    try std.testing.expect(deleteModified(&root, gpa, &buf, &cur, &pastes, .delete_to_start));
+    try std.testing.expectEqualStrings(" beta", buf.items);
+    try std.testing.expectEqual(@as(usize, 0), cur);
+}
+
+test "Option Delete still removes only the previous word (#981)" {
+    const gpa = std.testing.allocator;
+    var root = testAgent(gpa);
+    var pastes: PasteStore = .{};
+    defer pastes.deinit(gpa);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.appendSlice(gpa, "one two");
+    var cur = buf.items.len;
+
+    try std.testing.expect(deleteModified(&root, gpa, &buf, &cur, &pastes, .delete_word));
+    try std.testing.expectEqualStrings("one ", buf.items);
+    try std.testing.expectEqual(@as(usize, 4), cur);
+}
+
+test "Cmd Delete removes a composer image prefix atomically (#981)" {
+    const gpa = std.testing.allocator;
+    var root = testAgent(gpa);
+    vision_queue.stage(&root, .{ .media_type = "image/png", .b64 = "AAA", .label = "one.png", .from_composer = true });
+    var pastes: PasteStore = .{};
+    defer pastes.deinit(gpa);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.appendSlice(gpa, "[Image #1] tail");
+    var cur: usize = "[Image #1] ".len;
+
+    try std.testing.expect(deleteModified(&root, gpa, &buf, &cur, &pastes, .delete_to_start));
+    try std.testing.expectEqualStrings("tail", buf.items);
+    try std.testing.expectEqual(@as(usize, 0), cur);
+    try std.testing.expectEqual(@as(u8, 0), root.pending_image_len);
 }
 
 test "imageChipAt parses a numbered marker" {

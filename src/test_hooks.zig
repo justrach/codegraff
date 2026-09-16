@@ -353,6 +353,7 @@ test {
     _ = @import("tui_acp.zig");
     _ = @import("readline_paste.zig"); // #674: semantic paste spans (not reached via readline.zig's runtime import)
     _ = @import("readline_image.zig"); // #702: composer image chips sync on delete
+    _ = @import("readline_keys.zig"); // #981: Cmd/Option modified-Backspace decoding
     _ = @import("agent_request_scratch.zig"); // #693: split out of agent_request.zig (600-line ceiling)
     _ = @import("commands_resume.zig"); // #697: --resume SOURCE --branch DEST parser
     _ = @import("session_list.zig"); // #712: device-wide saved-session listing
