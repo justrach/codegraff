@@ -6,8 +6,8 @@ import ReviewDiff from "./ReviewDiff";
 import { reviewLines } from "@/lib/review-lines";
 import styles from "./ChangesPane.module.css";
 import ResizableReviewPane from "./ResizableReviewPane";
-function Icon({ kind }: { kind: "close" | "files" | "up" | "down" | "history" | "refresh" }) {
-  const paths = { close: "M6 6l12 12M6 18 18 6", files: "M8 6h12M8 12h12M8 18h12M3 6h.01M3 12h.01M3 18h.01", up: "m6 14 6-6 6 6", down: "m6 10 6 6 6-6", history: "M3 10a9 9 0 1 1 1 7M3 4v6h6M12 7v5l3 2", refresh: "M4 10a8 8 0 1 1 0 5M4 4v6h6" };
+function Icon({ kind }: { kind: "close" | "files" | "up" | "down" | "history" | "refresh" | "issue" }) {
+  const paths = { close: "M6 6l12 12M6 18 18 6", files: "M8 6h12M8 12h12M8 18h12M3 6h.01M3 12h.01M3 18h.01", up: "m6 14 6-6 6 6", down: "m6 10 6 6 6-6", history: "M3 10a9 9 0 1 1 1 7M3 4v6h6M12 7v5l3 2", refresh: "M4 10a8 8 0 1 1 0 5M4 4v6h6", issue: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20M12 11a1 1 0 1 1 0 2 1 1 0 0 1 0-2" };
   return <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d={paths[kind]} /></svg>;
 }
 const button = "flex size-7 shrink-0 items-center justify-center rounded-md text-ink-3 hover:bg-hover hover:text-ink disabled:opacity-30";
@@ -69,6 +69,10 @@ export default function ChangesPane({ root, onClose }: { root?: string; onClose(
       <span className="rounded-md bg-hover px-1.5 py-0.5 text-[10px] tabular-nums text-ink-3">{files.length}</span>
       <div className="min-w-0 flex-1 truncate pl-1 text-[11px] text-ink-3" title={state?.branch}>{state?.branch}</div>
       <span className={`size-1.5 shrink-0 rounded-full ${error ? "bg-orange" : "bg-green/70"}`} title={error ? "Updates unavailable; retrying every five seconds" : "Refreshes every five seconds while visible"} aria-label={error ? "Updates unavailable" : "Live updates"} />
+      {state?.github ? <>
+        <button type="button" className="flex h-7 shrink-0 items-center rounded-md px-2 text-[11px] text-ink-3 hover:bg-hover hover:text-ink" title="Open GitHub issues" aria-label="Open GitHub issues" onClick={() => window.open(state.github!.list, "_blank", "noopener")}>Issues</button>
+        <button type="button" className="flex h-7 shrink-0 items-center rounded-md px-2 text-[11px] text-ink-3 hover:bg-hover hover:text-ink" title="Create a GitHub issue" aria-label="Create a GitHub issue" onClick={() => window.open(state.github!.create, "_blank", "noopener")}><Icon kind="issue" /><span className="ml-1">New issue</span></button>
+      </> : null}
       <button className={button} title="Refresh changes" aria-label="Refresh changes" onClick={() => setRevision(value => value + 1)}><Icon kind="refresh" /></button>
       <button className={button} title="Close changes" aria-label="Close changes" onClick={onClose}><Icon kind="close" /></button>
     </header>

@@ -4,8 +4,22 @@ import path from "node:path";
 const run = promisify(execFile);
 export type ReviewScope = "all" | "staged" | "unstaged";
 export type ReviewFile = { path: string; add: number; del: number; untracked: boolean; status: string; binary: boolean };
+export type GithubIssueUrls = { list: string; create: string };
 export type ReviewState = { root: string; branch: string; files: ReviewFile[]; totalAdd: number; totalDel: number;
-  commits: { hash: string; author: string; subject: string }[]; worktrees: { path: string; branch: string }[] };
+  commits: { hash: string; author: string; subject: string }[]; worktrees: { path: string; branch: string }[];
+  github: GithubIssueUrls | null };
+/** Issue pages for a GitHub origin remote (`https`, `ssh`, or `git`). */
+export function githubIssueUrlsFromRemote(remote: string): GithubIssueUrls | null {
+  const trimmed = remote.trim().replace(/\/+$/, "").replace(/\.git$/i, "");
+  const ownerRepo =
+    trimmed.match(/^https?:\/\/(?:www\.)?github\.com\/([^/]+\/[^/]+)$/i)?.[1] ??
+    trimmed.match(/^(?:ssh:\/\/)?git@github\.com[:/]([^/]+\/[^/]+)$/i)?.[1] ??
+    trimmed.match(/^git:\/\/github\.com\/([^/]+\/[^/]+)$/i)?.[1] ??
+    null;
+  if (!ownerRepo || ownerRepo.split("/").length !== 2) return null;
+  const base = `https://github.com/${ownerRepo}`;
+  return { list: `${base}/issues`, create: `${base}/issues/new` };
+}
 async function git(root: string, args: string[], diff = false) {
   try { return (await run("git", ["--no-pager", ...args], { cwd: root, timeout: 10000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_LITERAL_PATHSPECS: "1" } })).stdout; }
   catch (error) { if (diff && (error as { code?: number }).code === 1) return (error as { stdout: string }).stdout; throw error; }
@@ -21,11 +35,12 @@ export async function reviewDiff(root: string, file: string, scope: ReviewScope 
   return git(root, [...base, ...(scope === "all" && !head ? ["--cached"] : scopeArgs(scope)), "--", file]);
 }
 export async function reviewState(root: string, scope: ReviewScope = "all"): Promise<ReviewState> {
-  const [status, branch, log, worktreeText] = await Promise.all([
+  const [status, branch, log, worktreeText, origin] = await Promise.all([
     git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
     git(root, ["branch", "--show-current"]).catch(() => ""),
     git(root, ["log", "-8", "--format=%h%x00%an%x00%s"]).catch(() => ""),
     git(root, ["worktree", "list", "--porcelain"]).catch(() => ""),
+    git(root, ["remote", "get-url", "origin"]).catch(() => ""),
   ]);
   const entries = status.split("\0"); const files: ReviewFile[] = [];
   for (let i = 0; i < entries.length; i++) {
@@ -51,5 +66,6 @@ export async function reviewState(root: string, scope: ReviewScope = "all"): Pro
   }));
   return { root, branch: branch.trim() || "detached", files: files.sort((a, b) => a.path.localeCompare(b.path)),
     totalAdd: files.reduce((n, f) => n + f.add, 0), totalDel: files.reduce((n, f) => n + f.del, 0),
-    commits: log.trim().split("\n").filter(Boolean).map(row => { const [hash, author, ...subject] = row.split("\0"); return { hash, author, subject: subject.join(" ") }; }), worktrees };
+    commits: log.trim().split("\n").filter(Boolean).map(row => { const [hash, author, ...subject] = row.split("\0"); return { hash, author, subject: subject.join(" ") }; }), worktrees,
+    github: githubIssueUrlsFromRemote(origin) };
 }
