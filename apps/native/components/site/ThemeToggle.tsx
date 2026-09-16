@@ -8,7 +8,7 @@ import { appearanceEvent, appearanceKey, applyAppearance, readAppearance, type A
 const themes = [
   { id: "codegraff", name: "CodeGraff", detail: "Official · Japanese palette", bg: "#f6eedf", surface: "#fffaf0", ink: "#1b1714", accent: "#2654d9" },
   { id: "light", name: "White", detail: "Light and minimal", bg: "#fafafa", surface: "#ffffff", ink: "#25272b", accent: "#3785fa" },
-  { id: "dark", name: "Black", detail: "Quiet charcoal", bg: "#17181b", surface: "#24262a", ink: "#f4f4f5", accent: "#5b9cf7" },
+  { id: "dark", name: "Black", detail: "Near-black olive", bg: "#0b0c09", surface: "#141712", ink: "#f3f5ef", accent: "#5dca8e" },
   { id: "website", name: "Website", detail: "CodeGraff emerald", bg: "#fafaf8", surface: "#ffffff", ink: "#18231e", accent: "#059669" },
 ] as const;
 
