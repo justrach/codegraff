@@ -1,7 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { restoreActionFocus } from "../primitives/ActionMenu";
+import { useEffect, useState } from "react";
 import { restoreProjects } from "@/lib/project-preferences";
 import { findWorkspace } from "@/lib/workspaces";
 
@@ -13,10 +11,9 @@ type Server = {
   disabled: boolean;
   active: boolean;
 };
-
 type Payload = { ok: true; servers: Server[] };
 
-export default function McpServers({ labeled = false }: { labeled?: boolean }) {
+export default function McpServers() {
   const [root, setRoot] = useState("");
   const [mcpEnabled, setMcpEnabled] = useState(true);
   const [open, setOpen] = useState(false);
@@ -28,20 +25,11 @@ export default function McpServers({ labeled = false }: { labeled?: boolean }) {
   const [command, setCommand] = useState("");
   const [url, setUrl] = useState("");
   const [scope, setScope] = useState<"user" | "local">("user");
-  const trigger = useRef<HTMLButtonElement>(null);
-  const panel = useRef<HTMLDivElement>(null);
-
-  const query = () => {
-    const params = new URLSearchParams();
-    if (root) params.set("root", root);
-    params.set("mcp", mcpEnabled ? "1" : "0");
-    return params;
-  };
 
   useEffect(() => {
     if (!open) return;
     let alive = true;
-    setBusy(true);
+    setBusy(true); setError("");
     void (async () => {
       const projects = await restoreProjects(window.localStorage);
       if (!alive) return;
@@ -58,13 +46,15 @@ export default function McpServers({ labeled = false }: { labeled?: boolean }) {
       if (alive) setServers(body.servers);
     })().catch((err: unknown) => { if (alive) setError(err instanceof Error ? err.message : "Could not list MCP servers."); })
       .finally(() => { if (alive) setBusy(false); });
-    panel.current?.querySelector<HTMLInputElement>("input")?.focus();
-    const keys = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { event.stopPropagation(); setOpen(false); restoreActionFocus(trigger.current); }
-    };
-    document.addEventListener("keydown", keys);
-    return () => { alive = false; document.removeEventListener("keydown", keys); };
+    return () => { alive = false; };
   }, [open]);
+
+  const query = () => {
+    const params = new URLSearchParams();
+    if (root) params.set("root", root);
+    params.set("mcp", mcpEnabled ? "1" : "0");
+    return params;
+  };
 
   const add = async () => {
     setBusy(true); setError("");
@@ -72,10 +62,7 @@ export default function McpServers({ labeled = false }: { labeled?: boolean }) {
       const response = await fetch("/api/mcp", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          name, scope, root: root || undefined, mcp: mcpEnabled,
-          ...(kind === "http" ? { url } : { command }),
-        }),
+        body: JSON.stringify({ name, scope, root: root || undefined, mcp: mcpEnabled, ...(kind === "http" ? { url } : { command }) }),
       });
       const body = await response.json() as Payload | { error?: string };
       if (!response.ok || !("ok" in body)) throw new Error("error" in body && body.error ? body.error : "Could not add MCP server.");
@@ -101,71 +88,36 @@ export default function McpServers({ labeled = false }: { labeled?: boolean }) {
     } finally { setBusy(false); }
   };
 
-  return <>
-    <button ref={trigger} type="button" aria-label="MCP servers" aria-haspopup="dialog" aria-expanded={open}
-      onClick={() => setOpen((value) => !value)}
-      title="MCP servers"
-      className={labeled
-        ? "flex w-full items-center justify-start rounded-md px-3 py-2 text-left text-xs text-ink-3 hover:bg-hover hover:text-ink"
-        : "flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-3 hover:bg-hover hover:text-ink"}>
-      {labeled ? "MCP servers" : <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M7 8h2v8H7zM15 8h2v8h-2z" /><path d="M9 12h6" /></svg>}
-    </button>
-    {open && createPortal(<div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/20 p-4" onPointerDown={(event) => {
-      if (event.target === event.currentTarget) { setOpen(false); restoreActionFocus(trigger.current); }
-    }}>
-      <div ref={panel} role="dialog" aria-label="MCP servers" aria-modal="true" className="flex max-h-[min(36rem,calc(100vh-2rem))] w-[440px] max-w-full flex-col rounded-xl border border-line bg-surface shadow-overlay">
-        <div className="flex items-center justify-between border-b border-line px-4 py-3">
-          <strong className="text-sm font-medium">MCP servers</strong>
-          <button type="button" aria-label="Close MCP servers" onClick={() => { setOpen(false); restoreActionFocus(trigger.current); }} className="rounded px-1.5 text-ink-3 hover:bg-hover">×</button>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-          <p className="mb-3 text-[12px] text-ink-3">
-            Servers already in <span className="font-mono text-ink-2">~/.codegraff/mcp.json</span> or this folder's <span className="font-mono text-ink-2">.mcp.json</span> show here.
-            Active means they will start with new chats (Start MCP servers is on).
-          </p>
-          {!mcpEnabled && <p className="mb-3 rounded-lg bg-inset px-3 py-2 text-[12px] text-ink-2">Start MCP servers is off for this folder, so every server is inactive until you turn it on in Project settings.</p>}
-          {servers.length === 0 && !busy ? <p className="mb-3 text-[12px] text-ink-3">No MCP servers configured yet.</p> : (
-            <ul className="mb-4 grid gap-2">
-              {servers.map((server) => (
-                <li key={`${server.scope}:${server.name}`} className="rounded-lg border border-line px-3 py-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-[13px] font-medium text-ink">{server.name}</span>
-                        <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${server.active ? "bg-accent-tint text-accent" : "bg-inset text-ink-3"}`}>
-                          {server.active ? "Active" : "Inactive"}
-                        </span>
-                        <span className="text-[10px] text-ink-3">{server.kind === "http" ? "HTTP" : "stdio"} · {server.scope}</span>
-                      </div>
-                      <p className="mt-0.5 truncate font-mono text-[11px] text-ink-3" title={server.target}>{server.target}</p>
-                    </div>
-                    <button type="button" disabled={busy} onClick={() => void remove(server)} className="shrink-0 rounded px-1.5 text-[11px] text-ink-3 hover:bg-hover hover:text-ink">Remove</button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-          <form className="grid gap-2 border-t border-line pt-3" onSubmit={(event) => { event.preventDefault(); void add(); }}>
-            <div className="text-[12px] font-medium text-ink">Add a server</div>
-            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Name" aria-label="Server name" className="h-8 rounded-[8px] bg-inset px-2.5 text-[12px] text-ink shadow-hairline" />
-            <div className="flex gap-2">
-              <button type="button" aria-pressed={kind === "stdio"} onClick={() => setKind("stdio")} className={`h-7 rounded-full px-2.5 text-[11px] ${kind === "stdio" ? "bg-accent-tint text-accent" : "bg-hover-2 text-ink-2"}`}>Command</button>
-              <button type="button" aria-pressed={kind === "http"} onClick={() => setKind("http")} className={`h-7 rounded-full px-2.5 text-[11px] ${kind === "http" ? "bg-accent-tint text-accent" : "bg-hover-2 text-ink-2"}`}>URL</button>
-              <select value={scope} onChange={(event) => setScope(event.target.value as "user" | "local")} aria-label="Save in" className="ml-auto h-7 rounded-full bg-hover-2 px-2 text-[11px] text-ink-2">
-                <option value="user">All folders</option>
-                <option value="local">This folder</option>
-              </select>
-            </div>
-            {kind === "http" ? (
-              <input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://…" aria-label="Server URL" className="h-8 rounded-[8px] bg-inset px-2.5 font-mono text-[12px] text-ink shadow-hairline" />
-            ) : (
-              <input value={command} onChange={(event) => setCommand(event.target.value)} placeholder="npx -y @modelcontextprotocol/server-filesystem ." aria-label="Server command" className="h-8 rounded-[8px] bg-inset px-2.5 font-mono text-[12px] text-ink shadow-hairline" />
-            )}
-            <button type="submit" disabled={busy || !name.trim() || (kind === "http" ? !url.trim() : !command.trim())} className="h-8 rounded-full bg-ink px-3 text-[12.5px] font-medium text-surface disabled:opacity-50">Add</button>
-          </form>
-          {error && <p role="alert" className="mt-3 text-[12px] text-red">{error}</p>}
-        </div>
+  return (
+    <details className="mt-3 border-t border-line pt-3" onToggle={(event) => setOpen((event.target as HTMLDetailsElement).open)}>
+      <summary className="cursor-pointer text-xs font-medium text-ink-2 hover:text-ink">MCP servers</summary>
+      <div className="mt-2">
+        {busy && servers.length === 0 ? <p className="text-[11px] text-ink-3">Loading…</p> : null}
+        {!mcpEnabled && <p className="mb-2 text-[11px] text-ink-3">Off for this folder — turn on in Project settings.</p>}
+        {servers.length === 0 && !busy ? <p className="text-[11px] text-ink-3">None configured.</p> : (
+          <ul className="grid gap-0.5">
+            {servers.map((server) => (
+              <li key={`${server.scope}:${server.name}`} className="flex items-center gap-2 py-0.5" title={server.target}>
+                <span className="min-w-0 flex-1 truncate text-[12px] text-ink">{server.name}</span>
+                <span className="shrink-0 text-[10px] text-ink-3">{server.active ? "On" : "Off"}</span>
+                <button type="button" disabled={busy} onClick={() => void remove(server)} className="shrink-0 rounded px-1 text-[11px] text-ink-3 hover:bg-hover hover:text-ink">Remove</button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <form className="mt-2 grid gap-1.5" onSubmit={(event) => { event.preventDefault(); void add(); }}>
+          <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Name" aria-label="Server name" className="h-7 rounded-[8px] bg-inset px-2 text-[12px] text-ink shadow-hairline" />
+          <div className="flex gap-1">
+            <button type="button" aria-pressed={kind === "stdio"} onClick={() => setKind("stdio")} className={`h-6 rounded-full px-2 text-[11px] ${kind === "stdio" ? "bg-hover-2 text-ink" : "text-ink-3"}`}>Command</button>
+            <button type="button" aria-pressed={kind === "http"} onClick={() => setKind("http")} className={`h-6 rounded-full px-2 text-[11px] ${kind === "http" ? "bg-hover-2 text-ink" : "text-ink-3"}`}>URL</button>
+          </div>
+          {kind === "http"
+            ? <input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://…" aria-label="Server URL" className="h-7 rounded-[8px] bg-inset px-2 font-mono text-[11px] text-ink shadow-hairline" />
+            : <input value={command} onChange={(event) => setCommand(event.target.value)} placeholder="command" aria-label="Server command" className="h-7 rounded-[8px] bg-inset px-2 font-mono text-[11px] text-ink shadow-hairline" />}
+          <button type="submit" disabled={busy || !name.trim() || (kind === "http" ? !url.trim() : !command.trim())} className="h-7 rounded-full bg-hover-2 px-3 text-[12px] font-medium text-ink disabled:opacity-50">Add</button>
+        </form>
+        {error && <p role="alert" className="mt-2 text-[11px] text-red">{error}</p>}
       </div>
-    </div>, document.body)}
-  </>;
+    </details>
+  );
 }
