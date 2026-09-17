@@ -10,6 +10,31 @@ function fixture() {
   return { stream, frames, painted, tick(index: number) { now += 1000 / 120; frames[index](now); } };
 }
 
+test("starting on the full string never typewrites — the live hook must start empty", () => {
+  const painted: string[] = [];
+  const frames: ((now: number) => void)[] = [];
+  let now = 0;
+  const blob = "The whole answer arrives in one chunk. ".repeat(20);
+  const stream = createSmoothStream(blob, text => painted.push(text), {
+    now: () => now, frame(callback) { frames.push(callback); return frames.length; }, cancel() {},
+  });
+  stream.update(blob, true);
+  expect(frames.length).toBe(0);
+  expect(painted).toEqual([]);
+  stream.dispose();
+});
+
+test("an empty start reveals the first live chunk instead of painting it in", () => {
+  const { stream, frames, painted, tick } = fixture();
+  const blob = "The whole answer arrives in one chunk. ".repeat(20);
+  stream.update(blob, true);
+  expect(frames.length).toBe(1);
+  tick(0);
+  expect(painted.at(-1)?.length).toBeGreaterThan(0);
+  expect(painted.at(-1)?.length).toBeLessThan(blob.length);
+  stream.dispose();
+});
+
 test("120 Hz deliveries update the pending reveal instead of cancelling it", () => {
   const { stream, frames, painted, tick } = fixture();
   let target = "";

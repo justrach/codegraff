@@ -128,7 +128,9 @@ export default function Markdown({
   onOpenPath,
 }: {
   text: string;
-  /** A turn is still arriving: heal the open tail and show the caret. */
+  /** A turn is still arriving: heal the open tail and show the caret.
+   *  Once it settles, omit the caret — the block glyph is the typing cursor,
+   *  not a settled mark (#1011). */
   streaming?: boolean;
   /** The whole text is already here (a file in the files pane): one parse,
    * no block splitting, no tail healing. */
@@ -149,7 +151,7 @@ export default function Markdown({
       <Streamdown
         mode={asDocument ? "static" : "streaming"}
         isAnimating={streaming}
-        caret="block"
+        caret={streaming ? "block" : undefined}
         plugins={PLUGINS}
         mermaid={mermaidOptions}
         components={components}
