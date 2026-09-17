@@ -6,6 +6,7 @@ test("matching saved settings never promise a cache hit", () => {
   expect(result.status).toBe("unknown");
   expect(result.summary).toContain("unverified");
   expect(result.reasons).toEqual(["The selected model matches the save.", "The workspace matches the save."]);
+  expect(result.next).toContain("Continue will send");
 });
 
 test("model and workspace changes flag risk; absent legacy metadata stays unknown", () => {

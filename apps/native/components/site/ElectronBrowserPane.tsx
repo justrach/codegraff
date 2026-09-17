@@ -13,8 +13,6 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
   const [error, setError] = useState("");
   const [picking, setPicking] = useState(false);
   const [width, setWidth] = useState(520);
-  const [find, setFind] = useState("");
-  const [zoom, setZoom] = useState(1);
   const frame = useRef<HTMLDivElement>(null);
   const address = useRef<HTMLInputElement>(null);
   const infoRevision = useRef(0);
@@ -60,10 +58,13 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
     const revision = ++infoRevision.current;
     void bridge.browser(chat, "info").then(current => {
       if (!alive || revision !== infoRevision.current) return;
-      if (current) { setInfo(current); setUrl(current.url); }
-      else setUrl(initialUrl || localStorage.getItem(storageKey) || "");
-      // A blank pane is just UI; it creates no browser renderer.
-      if (initialUrl) void command("open", { url: initialUrl });
+      if (current && current.url && current.url !== "about:blank") {
+        setInfo(current); setUrl(current.url);
+        return;
+      }
+      const remembered = initialUrl || localStorage.getItem(storageKey) || "";
+      setUrl(remembered === "about:blank" ? "" : remembered);
+      if (remembered && remembered !== "about:blank") void command("open", { url: remembered });
     });
     const observer = new ResizeObserver(() => layoutRef.current());
     if (frame.current) observer.observe(frame.current);
@@ -97,24 +98,17 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
       <input ref={address} className="h-7 min-w-0 flex-1 rounded-md bg-field px-2 text-xs outline-none" aria-label="Address" placeholder="Search or enter a URL" value={url} onChange={e => setUrl(e.target.value)} onFocus={e => e.currentTarget.select()} />
       <button className={button}>Go</button>
     </form>
-    <div className="flex h-9 items-center gap-1 border-b border-line px-2">
-      <input aria-label="Find in page" placeholder="Find in page" className="h-6 min-w-0 flex-1 rounded bg-field px-2 text-xs" value={find}
-        onChange={e => { setFind(e.target.value); if (!e.target.value && info) void command("find", { text: "" }); }} onKeyDown={e => { if (e.key === "Enter" && find) void command("find", { text: find }); }} />
-      <button className={button} disabled={!info || !find} onClick={() => void command("find", { text: find })}>Find</button>
-      <button className={button} aria-label="Zoom out" disabled={!info || zoom <= 0.5} onClick={() => { const factor = Math.max(0.5, zoom - 0.1); setZoom(factor); void command("zoom", { factor }); }}>−</button>
-      <button className={button} aria-label="Reset zoom" disabled={!info} onClick={() => { setZoom(1); void command("zoom", { factor: 1 }); }}>{Math.round(zoom * 100)}%</button>
-      <button className={button} aria-label="Zoom in" disabled={!info || zoom >= 2} onClick={() => { const factor = Math.min(2, zoom + 0.1); setZoom(factor); void command("zoom", { factor }); }}>+</button>
-    </div>
-    {picking && <p role="status" className="border-b border-line bg-accent-tint px-3 py-2 text-xs text-accent-ink">Click the part of the page you want to discuss. Press Esc to cancel.</p>}
+    {picking && <p role="status" className="border-b border-line bg-accent-tint px-3 py-2 text-xs text-accent-ink">Click the page to pin. Esc cancels.</p>}
     {error && <p role="alert" className="px-3 py-2 text-xs text-red">{error}</p>}
     <div ref={frame} className="min-h-0 flex-1 bg-canvas">
-      {(!info || info.ready === "suspended") && <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center text-sm text-ink-3">
-        <p>{info ? "Page suspended to save memory." : "Open a page to browse alongside graff."}</p>
+      {!info && !url && <div className="flex h-full items-center justify-center p-8 text-center text-sm text-ink-3">Enter an address to open a page.</div>}
+      {info?.ready === "suspended" && <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center text-sm text-ink-3">
+        <p>Page suspended.</p>
         {url && <button className={button} onClick={() => void command("open", { url })}>Open page</button>}
       </div>}
     </div>
-    <footer className="max-h-44 overflow-y-auto border-t border-line p-2 text-xs">
-      {pins.length === 0 ? <p className="p-1 text-ink-3">{picking ? "Click an element in the page to attach it to your prompt." : "Select and type directly in the page. Pin an element to discuss it with graff."}</p> : <>
+    {(pins.length > 0 || picking) && <footer className="max-h-44 overflow-y-auto border-t border-line p-2 text-xs">
+      {pins.length === 0 ? <p className="p-1 text-ink-3">Click an element to attach it to your prompt.</p> : <>
         <div className="flex items-center justify-between"><span>{pins.length} pinned {pins.length === 1 ? "element" : "elements"}</span><button className={`${button} bg-accent-tint text-accent-ink`} onClick={onAsk}>Send pins</button></div>
         {pins.map((pin, i) => <div key={pin.id} className="flex items-center gap-2 py-1">
           <span title={`${pin.element.selector} · ${pin.url}`} className="max-w-32 truncate">{i + 1}. {pin.element.name || pin.element.tag}</span>
@@ -122,6 +116,6 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
           <button className={button} aria-label={`Remove pin ${i + 1}`} onClick={() => onPinsChange(pins.filter(p => p.id !== pin.id))}>×</button>
         </div>)}
       </>}
-    </footer>
+    </footer>}
   </aside>;
 }

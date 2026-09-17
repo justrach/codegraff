@@ -27,11 +27,7 @@ export default function SavedSnapshot({ name, cwd, model, onRefresh, onContinue 
   };
   return <section data-saved-snapshot data-session-snapshot aria-label="Saved conversation snapshot" className="border-t border-line px-1 py-2 text-[12px] text-ink-2">
     <p role="status" className="font-medium text-ink">Saved conversation · Live REPL status unknown</p>
-    <p className="mt-1">This view is not attached to a live REPL. Continue here uses this save without stopping it.</p>
-    {error && <p role="alert" className="mt-2 text-red">Could not refresh the snapshot. Try again.</p>}
-    <div className="mt-1 flex flex-wrap gap-2">
-      <button type="button" data-refresh-snapshot disabled={refreshing} onClick={() => void refresh()} className="rounded-control px-3 py-1.5 hover:bg-hover disabled:opacity-50">{refreshing ? "Refreshing…" : "Refresh snapshot"}</button>
-    </div>
-    <SavedCacheCheck name={name} cwd={cwd} model={model} disabled={refreshing} onContinue={onContinue} />
+    {error && <p role="alert" className="mt-1 text-red">Could not refresh.</p>}
+    <SavedCacheCheck name={name} cwd={cwd} model={model} disabled={refreshing} onContinue={onContinue} onRefresh={() => void refresh()} refreshing={refreshing} />
   </section>;
 }

@@ -23,32 +23,10 @@ function paneBtn(pressed: boolean) {
   return `h-7 shrink-0 rounded-[7px] px-2.5 text-[12.5px] font-medium ${pressed ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover"}`;
 }
 
-function PaneGroup({ filesOpen, changesOpen, reviewsOpen, browserOpen, terminalVisible, pinCount, onFiles, openChanges, onReviews, onBrowser, toggleTerminal, taskCount, tasksOpen, onTasks }: {
-  filesOpen: boolean; changesOpen: boolean; reviewsOpen: boolean; browserOpen: boolean; terminalVisible: boolean; pinCount: number;
-  onFiles(): void; openChanges(): void; onReviews(): void; onBrowser(): void; toggleTerminal(): void;
-  taskCount: number; tasksOpen: boolean; onTasks?: () => void;
-}) {
-  return <>
-    <button type="button" aria-label="Files" aria-pressed={filesOpen && !changesOpen} onClick={onFiles} className={paneBtn(filesOpen && !changesOpen)}>Files</button>
-    <button type="button" aria-label="Review workspace changes" aria-pressed={changesOpen} onClick={openChanges} className={paneBtn(changesOpen)}>Changes</button>
-    <button type="button" aria-label="GitHub reviews" aria-pressed={reviewsOpen} onClick={onReviews} className={paneBtn(reviewsOpen)}>Reviews</button>
-    <button type="button" aria-label="Browser" aria-pressed={browserOpen} onClick={onBrowser} className={paneBtn(browserOpen)}>Browser{pinCount > 0 ? ` (${pinCount})` : ""}</button>
-    <button type="button" aria-label="Toggle terminal" aria-pressed={terminalVisible} onClick={toggleTerminal} className={paneBtn(terminalVisible)}>Terminal</button>
-    {(taskCount > 0 || tasksOpen) && onTasks && <button type="button" aria-label="Show tasks" aria-pressed={tasksOpen} onClick={onTasks} className={paneBtn(tasksOpen)}>Tasks{taskCount ? ` (${taskCount})` : ""}</button>}
-  </>;
-}
-
 export default function HarnessChrome({navigationToggle, sidebarVisible = false, unreadIds, chats, activeId, busyIds, focusChat, closeChat, newChat,
   conversationsOpen, openConversations, split, toggleSplit, filesOpen, onFiles, chatCwd,
   workspaceName, onFolder, openChanges, changesOpen = false, reviewsOpen = false, onReviews, browserOpen, onBrowser, pinCount, terminalVisible,
   toggleTerminal, agentsOpen, onAgents, workingAgents = 0, tasksOpen = false, taskCount = 0, onTasks, splitNotice, onTabPointerDown, onTabClickCapture}: Props) {
-  const panes = <PaneGroup filesOpen={filesOpen} changesOpen={changesOpen} reviewsOpen={reviewsOpen} browserOpen={browserOpen} terminalVisible={terminalVisible} pinCount={pinCount} onFiles={onFiles} openChanges={openChanges} onReviews={onReviews ?? (() => {})} onBrowser={onBrowser} toggleTerminal={toggleTerminal} taskCount={taskCount} tasksOpen={tasksOpen} onTasks={onTasks} />;
-  const more = <ActionMenu label="Chat actions" text="More" className="shrink-0">
-    {!sidebarVisible && <button type="button" onClick={newChat}>New chat <span className="ml-auto text-ink-3">⌘T</span></button>}
-    <button type="button" aria-pressed={split} onClick={toggleSplit}>{split ? "Close splits" : "Split view"} <span className="ml-auto text-ink-3">⌘\</span></button>
-    <button type="button" aria-pressed={conversationsOpen} onClick={openConversations}>All conversations</button>
-    <button type="button" onClick={onFolder}>Open a folder…</button>
-  </ActionMenu>;
   return (
     <div data-workspace-toolbar className={`${reviewStyles.chatbar} flex shrink-0 flex-col ${sidebarVisible ? "overflow-visible bg-transparent" : "overflow-hidden rounded-[14px] border border-line bg-page"}`}>
       <div data-session-tab-strip hidden={sidebarVisible} className={sidebarVisible ? "hidden" : "flex h-10 min-w-0 shrink-0 items-center gap-1 px-2"}>
@@ -71,9 +49,21 @@ export default function HarnessChrome({navigationToggle, sidebarVisible = false,
         {navigationToggle}
         <button type="button" aria-pressed={filesOpen && !changesOpen} onClick={onFiles} title={`${chatCwd ?? "Workspace"}\nShow this chat's files`}
           className={`max-w-48 truncate lg:hidden ${paneBtn(filesOpen && !changesOpen)}`}>{workspaceName}</button>
-        <div className={`flex items-center gap-1 ${sidebarVisible ? "rounded-[14px] border border-line bg-page px-2 py-0.5" : ""}`}>
-        <div role="group" aria-label="Workspace panes" className="flex flex-wrap items-center gap-1">{panes}</div>
-        {more}
+        <div className={`ml-auto flex items-center gap-1 ${sidebarVisible ? "rounded-[14px] border border-line bg-page px-2 py-0.5" : ""}`}>
+        <ActionMenu label="Workspace tools" text="Tools" className="shrink-0">
+          <button type="button" aria-label="Review workspace changes" aria-pressed={changesOpen} onClick={openChanges}>Review</button>
+          {onReviews && <button type="button" aria-label="GitHub reviews" aria-pressed={reviewsOpen} onClick={onReviews}>Reviews</button>}
+          <button type="button" aria-label="Toggle terminal" aria-pressed={terminalVisible} onClick={toggleTerminal}>Terminal <span className="ml-auto text-ink-3">⌘J</span></button>
+          <button type="button" aria-label="Browser" aria-pressed={browserOpen} onClick={onBrowser}>Browser{pinCount > 0 ? ` (${pinCount})` : ""}</button>
+          <button type="button" aria-label="Files" aria-pressed={filesOpen && !changesOpen} onClick={onFiles}>Files</button>
+        </ActionMenu>
+        {(taskCount > 0 || tasksOpen) && onTasks && <button type="button" aria-label="Show tasks" aria-pressed={tasksOpen} onClick={onTasks} className={paneBtn(tasksOpen)}>Tasks{taskCount ? ` (${taskCount})` : ""}</button>}
+        <ActionMenu label="Chat actions" text="More" className="shrink-0">
+          {!sidebarVisible && <button type="button" onClick={newChat}>New chat <span className="ml-auto text-ink-3">⌘T</span></button>}
+          <button type="button" aria-pressed={split} onClick={toggleSplit}>{split ? "Close splits" : "Split view"} <span className="ml-auto text-ink-3">⌘\</span></button>
+          <button type="button" aria-pressed={conversationsOpen} onClick={openConversations}>All conversations</button>
+          <button type="button" onClick={onFolder}>Open a folder…</button>
+        </ActionMenu>
         {!sidebarVisible && <AppSettings />}
         <div data-desktop-update-slot className="shrink-0" />
         </div>
