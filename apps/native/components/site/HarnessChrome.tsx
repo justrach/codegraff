@@ -2,6 +2,7 @@ import SessionTabs from "./SessionTabs";
 import type {SplitTree} from "@/lib/split-tree";
 import ActionMenu from "@/components/primitives/ActionMenu";
 import AppSettings from "./AppSettings";
+import WorkspacePaneMenu from "./WorkspacePaneMenu";
 import type { PointerEvent, MouseEvent, ReactNode } from "react";
 import type { Chat } from "./harness-types";
 import reviewStyles from "./ChangesPane.module.css";
@@ -50,12 +51,14 @@ export default function HarnessChrome({navigationToggle, sidebarVisible = false,
           </svg>
         </button>
         </div>
+        {!sidebarVisible && <WorkspacePaneMenu className="ml-1 shrink-0" filesOpen={filesOpen} changesOpen={changesOpen} browserOpen={browserOpen} terminalVisible={terminalVisible} pinCount={pinCount} onFiles={onFiles} openChanges={openChanges} onBrowser={onBrowser} toggleTerminal={toggleTerminal} />}
       </div>
       <div className={`${reviewStyles.actions} flex min-h-10 shrink-0 items-center gap-1 ${sidebarVisible ? "justify-end px-1" : "border-t border-line px-2"} py-1`}>
         {navigationToggle}
         <button type="button" aria-pressed={filesOpen && !changesOpen} onClick={onFiles} title={`${chatCwd ?? "Workspace"}\nShow this chat's files`}
           className={`max-w-48 truncate lg:hidden ${paneBtn(filesOpen && !changesOpen)}`}>{workspaceName}</button>
         <div className={`flex items-center gap-1 ${sidebarVisible ? "rounded-[14px] border border-line bg-page px-2 py-0.5" : ""}`}>
+        {sidebarVisible && <WorkspacePaneMenu filesOpen={filesOpen} changesOpen={changesOpen} browserOpen={browserOpen} terminalVisible={terminalVisible} pinCount={pinCount} onFiles={onFiles} openChanges={openChanges} onBrowser={onBrowser} toggleTerminal={toggleTerminal} />}
         <button type="button" aria-label="Files" aria-pressed={filesOpen && !changesOpen} onClick={onFiles} className={`hidden lg:inline-flex ${paneBtn(filesOpen && !changesOpen)}`}>Files</button>
         <button type="button" aria-label="Review workspace changes" aria-pressed={changesOpen} onClick={openChanges} className={paneBtn(changesOpen)}>Changes</button>
         <button type="button" aria-label="Browser" aria-pressed={browserOpen} onClick={onBrowser} className={paneBtn(browserOpen)}>Browser{pinCount > 0 ? ` (${pinCount})` : ""}</button>

@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { chatGroups, replaceChatGroup, mergeChatGroups, reorderChatGroups } from './chat-groups';
+import { chatGroups, replaceChatGroup, mergeChatGroups, reorderChatGroups, resumeSplitTarget } from './chat-groups';
 test('closing an entire side preserves the remaining nested split axis',()=>{
   const tree={key:'root',axis:'row' as const,ratio:.5,first:1,second:{key:'nested',axis:'column' as const,ratio:.5,first:2,second:3}};
   const [group]=chatGroups([{id:2},{id:3}],[{ids:[1,2,3],direction:'row',tree}]);
@@ -21,4 +21,12 @@ test('merging and ungrouping preserve other tabs and enforce the pane cap', () =
   expect(mergeChatGroups([1,2],[1,2],1,true)).toBeNull();
   expect(replaceChatGroup(layouts,1,[1,2,3,4])).toEqual([{ids:[1,2,3,4],direction:'column'}]);
   expect(replaceChatGroup(layouts,1,[])).toEqual([layouts[1]]);
+});
+test('resume from the same folder splits into the open tab, not a new tab', () => {
+  const chats = [{ id: 1, cwd: '/repo', messages: [{}] }, { id: 2, cwd: '/other', messages: [{}] }];
+  const groups = [{ ids: [1] }, { ids: [2] }];
+  expect(resumeSplitTarget(chats, groups, 1, '/repo', '/repo', 4)).toBe(1);
+  expect(resumeSplitTarget(chats, groups, 1, '/other', '/repo', 4)).toBeNull();
+  expect(resumeSplitTarget(chats, [{ ids: [1, 3, 4, 5] }], 1, '/repo', '/repo', 4)).toBeNull();
+  expect(resumeSplitTarget([{ id: 1, cwd: '/repo', messages: [] }], [{ ids: [1] }], 1, '/repo', '/repo', 4)).toBeNull();
 });

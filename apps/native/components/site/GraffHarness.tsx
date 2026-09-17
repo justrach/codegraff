@@ -12,7 +12,7 @@ import ProjectsPane from "./ProjectsPane";
 import { useSavedConversation, ConversationOpenNotice } from "./useSavedConversation";
 import { useQuietSettings } from "./useQuietSettings";
 import { useTabDrag } from "./useTabDrag";
-import { mergeChatGroups, reorderChatGroups } from "@/lib/chat-groups";
+import { mergeChatGroups, reorderChatGroups, resumeSplitTarget } from "@/lib/chat-groups";
 import { useChatGroups } from "./useChatGroups";
 import AppSettings from "./AppSettings";
 import HarnessChrome from "./HarnessChrome";
@@ -132,6 +132,10 @@ export default function GraffHarness() {
   // own scroller and its own place in its transcript.
   const groups = useChatGroups(chats, activeId);
   const { panes, setPanes, direction: splitDirection } = groups;
+  const groupsRef = useRef(groups);
+  groupsRef.current = groups;
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
   const [zoomedPane, setZoomedPane] = useState<number | null>(null);
   const chatsRef = useRef(chats);
   chatsRef.current = chats;
@@ -256,6 +260,8 @@ export default function GraffHarness() {
       sessionNamesRef.current.set(id, name);
       const next = [...chatsRef.current, { id, title: loaded.meta.title ?? name, messages, model: loaded.meta.model ?? undefined, session: name, cwd, snapshot: loaded.snapshot }];
       chatsRef.current = next; setChats(next);
+      const host = loaded.snapshot ? null : resumeSplitTarget(chatsRef.current, groupsRef.current.groups, activeIdRef.current, cwd, activePathRef.current, MAX_COLUMNS);
+      if (host != null) groupsRef.current.split(id, host, "right");
       selectStored(id, cwd);
     },
   });
