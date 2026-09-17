@@ -32,7 +32,7 @@ export function reorderChatGroups<T extends { id: number }>(chats: T[], groups: 
 
 /** Resume into the focused tab when it already belongs to this folder. */
 export function resumeSplitTarget(
-  chats: { id: number; cwd?: string | null }[],
+  chats: { id: number; cwd?: string | null; messages?: { length: number } }[],
   groups: { ids: number[] }[],
   focusedId: number,
   resumeCwd: string | null | undefined,
@@ -43,6 +43,9 @@ export function resumeSplitTarget(
   if (!folder) return null;
   const host = groups.find(group => group.ids.includes(focusedId));
   if (!host || host.ids.length >= cap) return null;
-  const same = host.ids.some(id => (chats.find(chat => chat.id === id)?.cwd ?? activePath ?? null) === folder);
-  return same ? focusedId : null;
+  const occupied = host.ids.some(id => {
+    const chat = chats.find(item => item.id === id);
+    return (chat?.cwd ?? activePath ?? null) === folder && (chat?.messages?.length ?? 0) > 0;
+  });
+  return occupied ? focusedId : null;
 }

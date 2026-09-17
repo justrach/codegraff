@@ -23,10 +23,10 @@ test('merging and ungrouping preserve other tabs and enforce the pane cap', () =
   expect(replaceChatGroup(layouts,1,[])).toEqual([layouts[1]]);
 });
 test('resume from the same folder splits into the open tab, not a new tab', () => {
-  const chats = [{ id: 1, cwd: '/repo' }, { id: 2, cwd: '/other' }];
+  const chats = [{ id: 1, cwd: '/repo', messages: [{}] }, { id: 2, cwd: '/other', messages: [{}] }];
   const groups = [{ ids: [1] }, { ids: [2] }];
   expect(resumeSplitTarget(chats, groups, 1, '/repo', '/repo', 4)).toBe(1);
   expect(resumeSplitTarget(chats, groups, 1, '/other', '/repo', 4)).toBeNull();
   expect(resumeSplitTarget(chats, [{ ids: [1, 3, 4, 5] }], 1, '/repo', '/repo', 4)).toBeNull();
-  expect(resumeSplitTarget([{ id: 1 }], [{ ids: [1] }], 1, '/repo', '/repo', 4)).toBe(1);
+  expect(resumeSplitTarget([{ id: 1, cwd: '/repo', messages: [] }], [{ ids: [1] }], 1, '/repo', '/repo', 4)).toBeNull();
 });
