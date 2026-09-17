@@ -11,10 +11,11 @@ Mailbox is a shape demo and cannot be the room.
 ## Decision
 
 JSONL stays the durable log. `postMessage` / `readNewMessages` remain the seam.
-On Unix, the same JSONL line is also sent live over Accord 0600 sockets in the
-presence dir (`{pid}-{start}.accord.sock`). `GRAFF_ACCORD=0` opts out. Windows
-stays JSONL-only. A live miss never fails the durable write.
-Do not replace the room with Mailbox.
+On Unix, each announced session keeps a standing Accord duplex on
+`{pid}-{start}.accord.sock` (0600). `postMessage` still appends JSONL, then
+sends the same line as `msg` on that link (progress/stop reuse the session).
+`GRAFF_ACCORD=0` opts out. Windows stays JSONL-only. A live miss never fails
+the durable write. Do not replace the room with Mailbox.
 
 ## Consequences
 

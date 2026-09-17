@@ -31,6 +31,15 @@ var g_dir_path: ?[]u8 = null;
 var g_own_name: ?[]u8 = null;
 var g_listener: ?net.Server = null;
 var g_future: ?Io.Future(void) = null;
+var g_mu: Io.Mutex = .init;
+var g_outs: std.ArrayList(OutLink) = .empty;
+var g_ins: std.ArrayList(*accord.Session) = .empty;
+var g_connects: std.atomic.Value(u32) = .init(0);
+
+const OutLink = struct {
+    path: []u8,
+    sess: *accord.Session,
+};
 
 pub fn takePing() bool {
     return g_ping.swap(false, .acq_rel);
@@ -113,6 +122,22 @@ pub fn stop(io: Io) void {
         l.deinit(io);
         g_listener = null;
     }
+    if (g_gpa) |gpa| {
+        g_mu.lockUncancelable(io);
+        for (g_outs.items) |link| {
+            link.sess.shutdown();
+            gpa.destroy(link.sess);
+            gpa.free(link.path);
+        }
+        g_outs.clearRetainingCapacity();
+        for (g_ins.items) |sess| sess.shutdown();
+        g_ins.clearRetainingCapacity();
+        g_mu.unlock(io);
+        g_outs.deinit(gpa);
+        g_ins.deinit(gpa);
+        g_outs = .empty;
+        g_ins = .empty;
+    }
     if (g_dir_path) |dir| if (g_own_name) |name| {
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
         if (std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir, name })) |path| {
@@ -126,6 +151,7 @@ pub fn stop(io: Io) void {
     g_gpa = null;
     g_io = null;
     g_ping.store(false, .release);
+    g_connects.store(0, .release);
 }
 
 fn acceptLoop() void {
@@ -134,37 +160,127 @@ fn acceptLoop() void {
     const listener = &(g_listener orelse return);
     while (true) {
         const stream = listener.accept(io) catch break;
-        serveOne(io, gpa, stream);
+        const sess = gpa.create(accord.Session) catch {
+            stream.close(io);
+            continue;
+        };
+        sess.* = .{ .io = io, .gpa = gpa, .role = .server, .stream = stream };
+        _ = io.concurrent(holdInbound, .{sess}) catch {
+            sess.shutdown();
+            gpa.destroy(sess);
+            continue;
+        };
     }
 }
 
-fn serveOne(io: Io, gpa: std.mem.Allocator, stream: net.Stream) void {
-    const sess = gpa.create(accord.Session) catch {
-        stream.close(io);
-        return;
-    };
-    sess.* = .{ .io = io, .gpa = gpa, .role = .server, .stream = stream };
-    defer {
+fn holdInbound(sess: *accord.Session) void {
+    const io = sess.io;
+    const gpa = sess.gpa;
+    sess.start() catch {
         sess.shutdown();
         gpa.destroy(sess);
+        return;
+    };
+    g_mu.lockUncancelable(io);
+    g_ins.append(gpa, sess) catch {
+        g_mu.unlock(io);
+        sess.shutdown();
+        gpa.destroy(sess);
+        return;
+    };
+    g_mu.unlock(io);
+    while (true) {
+        const got = sess.recv(1) catch break;
+        defer got.deinit(gpa);
+        switch (got.kind) {
+            .msg, .progress, .stop => g_ping.store(true, .release),
+            else => {},
+        }
     }
-    sess.start() catch return;
-    const got = sess.recv(1) catch return;
-    defer got.deinit(gpa);
-    g_ping.store(true, .release);
+    dropInbound(sess);
+}
+
+fn dropInbound(sess: *accord.Session) void {
+    const io = sess.io;
+    const gpa = sess.gpa;
+    g_mu.lockUncancelable(io);
+    for (g_ins.items, 0..) |item, i| {
+        if (item == sess) {
+            _ = g_ins.orderedRemove(i);
+            break;
+        }
+    }
+    g_mu.unlock(io);
+    sess.shutdown();
+    gpa.destroy(sess);
 }
 
 fn sendLine(io: Io, gpa: std.mem.Allocator, path: []const u8, json_line: []const u8) !void {
-    const addr = try net.UnixAddress.init(path);
-    const stream = addr.connect(io) catch return;
-    const sess = try gpa.create(accord.Session);
+    const sess = ensureOut(io, gpa, path) orelse return;
+    sess.send(1, .msg, .none, json_line) catch {
+        dropOut(io, gpa, path);
+        const retry = ensureOut(io, gpa, path) orelse return;
+        retry.send(1, .msg, .none, json_line) catch {};
+    };
+}
+
+fn ensureOut(io: Io, gpa: std.mem.Allocator, path: []const u8) ?*accord.Session {
+    g_mu.lockUncancelable(io);
+    for (g_outs.items) |link| {
+        if (std.mem.eql(u8, link.path, path)) {
+            g_mu.unlock(io);
+            return link.sess;
+        }
+    }
+    g_mu.unlock(io);
+    const addr = net.UnixAddress.init(path) catch return null;
+    const stream = addr.connect(io) catch return null;
+    const sess = gpa.create(accord.Session) catch {
+        stream.close(io);
+        return null;
+    };
     sess.* = .{ .io = io, .gpa = gpa, .role = .client, .stream = stream };
-    defer {
+    sess.start() catch {
         sess.shutdown();
         gpa.destroy(sess);
+        return null;
+    };
+    const owned = gpa.dupe(u8, path) catch {
+        sess.shutdown();
+        gpa.destroy(sess);
+        return null;
+    };
+    g_mu.lockUncancelable(io);
+    defer g_mu.unlock(io);
+    for (g_outs.items) |link| {
+        if (std.mem.eql(u8, link.path, path)) {
+            sess.shutdown();
+            gpa.destroy(sess);
+            gpa.free(owned);
+            return link.sess;
+        }
     }
-    try sess.start();
-    try sess.send(1, .msg, .none, json_line);
+    g_outs.append(gpa, .{ .path = owned, .sess = sess }) catch {
+        gpa.free(owned);
+        sess.shutdown();
+        gpa.destroy(sess);
+        return null;
+    };
+    _ = g_connects.fetchAdd(1, .monotonic);
+    return sess;
+}
+
+fn dropOut(io: Io, gpa: std.mem.Allocator, path: []const u8) void {
+    g_mu.lockUncancelable(io);
+    defer g_mu.unlock(io);
+    for (g_outs.items, 0..) |link, i| {
+        if (!std.mem.eql(u8, link.path, path)) continue;
+        link.sess.shutdown();
+        gpa.destroy(link.sess);
+        gpa.free(link.path);
+        _ = g_outs.orderedRemove(i);
+        return;
+    }
 }
 
 fn connectPath(io: Io, path: []const u8) !net.Stream {
@@ -238,11 +354,8 @@ test "listen binds a 0600 sock and stop unlinks it" {
         test_enabled = false;
     }
     const dir = "graff-accord-listen";
-    Io.Dir.cwd().makeDir(io, dir) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => return err,
-    };
-    defer Io.Dir.cwd().deleteDir(io, dir) catch {};
+    try Io.Dir.cwd().createDirPath(io, dir);
+    defer Io.Dir.cwd().deleteTree(io, dir) catch {};
     listen(io, gpa, dir);
     const name = g_own_name orelse return error.NoSock;
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -289,4 +402,30 @@ test "Unix 0600 round-trips the JSONL line" {
     const got = try pair.server.recv(1);
     defer got.deinit(gpa);
     try std.testing.expectEqualStrings(line, got.payload);
+}
+
+test "standing link carries msg, progress, and a reply on one session" {
+    if (builtin.os.tag == .windows) return;
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    const path = "graff-accord-standing.sock";
+    var pair: Pair = undefined;
+    try pair.init(io, gpa, path);
+    defer pair.deinit();
+    try pair.client.send(1, .msg, .none, "hold gui/src");
+    const first = try pair.server.recv(1);
+    defer first.deinit(gpa);
+    try std.testing.expectEqual(accord.Kind.msg, first.kind);
+    try pair.client.send(1, .progress, .none, "working");
+    const mid = try pair.server.recv(1);
+    defer mid.deinit(gpa);
+    try std.testing.expectEqual(accord.Kind.progress, mid.kind);
+    try pair.server.send(1, .msg, .none, "acked");
+    const back = try pair.client.recv(1);
+    defer back.deinit(gpa);
+    try std.testing.expectEqualStrings("acked", back.payload);
+    try pair.client.send(1, .stop, .none, &.{});
+    const halt = try pair.server.recv(1);
+    defer halt.deinit(gpa);
+    try std.testing.expectEqual(accord.Kind.stop, halt.kind);
 }
