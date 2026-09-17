@@ -10,6 +10,7 @@ import McpAppResult from "./McpAppResult";
 import SnapshotView from "./SnapshotView";
 import { markerName, splitImageMarkers } from "@/lib/attachments";
 import { pinScrollerTail } from "@/lib/follow-scroll";
+import { IconArrowUp, IconCrossSmall, IconEditBig } from "@/lib/icons";
 import { turnBlocks, type AssistantTurn } from "@/lib/acp";
 import { useSmoothStream } from "./useSmoothStream";
 
@@ -78,16 +79,25 @@ export const UserBubble = memo(function UserBubble({ text, onEdit }: { text: str
         </div>}
         {words.trim() && <div className="flex max-w-full items-end gap-1">
           {onEdit && !editing && <button type="button" data-edit-prompt aria-label="Edit prompt" onClick={() => { setDraft(words); setEditing(true); }}
-            className="mb-1 rounded-md px-1.5 py-0.5 text-[10px] text-ink-3 opacity-0 hover:text-ink group-hover:opacity-100">Edit</button>}
-          {editing ? <div className="flex min-w-[12rem] max-w-full flex-col items-end gap-1">
+            className="mb-0.5 flex size-6 shrink-0 items-center justify-center rounded-[6px] text-ink-3 opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-hover-2 hover:text-ink group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+            <IconEditBig size={13} />
+          </button>}
+          {editing ? <div className="relative min-w-[14rem] max-w-full">
             <textarea data-edit-prompt-draft value={draft} autoFocus rows={Math.min(8, Math.max(2, draft.split("\n").length))}
               onChange={e => setDraft(e.target.value)}
               onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); save(); } if (e.key === "Escape") setEditing(false); }}
-              className="min-w-0 w-full resize-y rounded-xl px-3.5 py-2 text-[13px] leading-relaxed text-ink shadow-hairline outline-none"
+              className="min-w-0 w-full resize-y rounded-xl px-3.5 pb-9 pt-2.5 text-[13px] leading-relaxed text-ink shadow-hairline outline-none ring-1 ring-transparent transition-[box-shadow,ring-color] duration-150 focus:ring-[color-mix(in_oklab,var(--accent)_40%,transparent)]"
               style={{ background: "color-mix(in oklab, var(--accent) 12%, var(--surface))" }} />
-            <div className="flex gap-1 text-[10px] text-ink-3">
-              <button type="button" onClick={() => setEditing(false)} className="rounded px-1.5 py-0.5 hover:text-ink">Cancel</button>
-              <button type="button" onClick={save} className="rounded px-1.5 py-0.5 text-ink hover:text-ink">Send</button>
+            <div className="absolute bottom-1.5 right-1.5 flex items-center gap-0.5">
+              <button type="button" aria-label="Cancel" onClick={() => setEditing(false)}
+                className="flex size-6 items-center justify-center rounded-[6px] text-ink-3 transition-[background-color,color] duration-150 hover:bg-hover-2 hover:text-ink">
+                <IconCrossSmall size={13} />
+              </button>
+              <button type="button" aria-label="Send again" onClick={save} disabled={!draft.trim()}
+                className="flex size-6 items-center justify-center rounded-[8px] transition-[opacity,transform] duration-150 enabled:active:scale-[0.94] disabled:opacity-30"
+                style={{ background: "var(--ink)", color: "var(--surface)" }}>
+                <IconArrowUp size={14} />
+              </button>
             </div>
           </div> : <div
             className="min-w-0 max-w-full whitespace-pre-wrap break-words rounded-xl px-3.5 py-2 text-[13px] leading-relaxed text-ink shadow-hairline [overflow-wrap:anywhere]"

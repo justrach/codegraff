@@ -108,6 +108,14 @@ export function IconEditBig(p: IconProps) {
   );
 }
 
+export function IconArrowUp(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M12 19V5M5 12l7-7 7 7" />
+    </Svg>
+  );
+}
+
 export function IconMagnifyingGlass(p: IconProps) {
   return (
     <Svg {...p}>
