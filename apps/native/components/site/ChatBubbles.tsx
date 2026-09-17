@@ -58,10 +58,18 @@ function PastedImage({ name }: { name: string }) {
   );
 }
 
-export const UserBubble = memo(function UserBubble({ text, onEdit }: { text: string; onEdit?: () => void }) {
+export const UserBubble = memo(function UserBubble({ text, onEdit }: { text: string; onEdit?: (next: string) => void }) {
   const parts = splitImageMarkers(text);
   const images = parts.filter((_, index) => index % 2 === 1);
   const words = parts.filter((_, index) => index % 2 === 0).join("");
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(words);
+  const save = () => {
+    const next = draft.trim();
+    setEditing(false);
+    if (!next || next === words.trim() || !onEdit) return;
+    onEdit(next);
+  };
   return (
     <div data-user-bubble className="group flex justify-end pl-10 sm:pl-24" style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
       <div className="flex min-w-0 max-w-full flex-col items-end gap-2">
@@ -69,12 +77,22 @@ export const UserBubble = memo(function UserBubble({ text, onEdit }: { text: str
           {images.map((part, index) => <PastedImage key={`${index}-${part}`} name={markerName(part)} />)}
         </div>}
         {words.trim() && <div className="flex max-w-full items-end gap-1">
-          {onEdit && <button type="button" data-edit-prompt aria-label="Edit prompt" onClick={onEdit}
+          {onEdit && !editing && <button type="button" data-edit-prompt aria-label="Edit prompt" onClick={() => { setDraft(words); setEditing(true); }}
             className="mb-1 rounded-md px-1.5 py-0.5 text-[10px] text-ink-3 opacity-0 hover:text-ink group-hover:opacity-100">Edit</button>}
-          <div
+          {editing ? <div className="flex min-w-[12rem] max-w-full flex-col items-end gap-1">
+            <textarea data-edit-prompt-draft value={draft} autoFocus rows={Math.min(8, Math.max(2, draft.split("\n").length))}
+              onChange={e => setDraft(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); save(); } if (e.key === "Escape") setEditing(false); }}
+              className="min-w-0 w-full resize-y rounded-xl px-3.5 py-2 text-[13px] leading-relaxed text-ink shadow-hairline outline-none"
+              style={{ background: "color-mix(in oklab, var(--accent) 12%, var(--surface))" }} />
+            <div className="flex gap-1 text-[10px] text-ink-3">
+              <button type="button" onClick={() => setEditing(false)} className="rounded px-1.5 py-0.5 hover:text-ink">Cancel</button>
+              <button type="button" onClick={save} className="rounded px-1.5 py-0.5 text-ink hover:text-ink">Send</button>
+            </div>
+          </div> : <div
             className="min-w-0 max-w-full whitespace-pre-wrap break-words rounded-xl px-3.5 py-2 text-[13px] leading-relaxed text-ink shadow-hairline [overflow-wrap:anywhere]"
             style={{ background: "color-mix(in oklab, var(--accent) 12%, var(--surface))" }}
-          >{words}</div>
+          >{words}</div>}
         </div>}
       </div>
     </div>

@@ -9,7 +9,7 @@ import { transcriptPageStart } from "@/lib/transcript-window";
 export default memo(function ChatTranscript({ messages, register, following, onOpenPath, onReview, snapshot, onEditPrompt }: {
   messages: Msg[]; register: (element: HTMLDivElement | null) => void; following: boolean;
   onOpenPath: (path: string) => void; onReview: () => void; snapshot?: boolean;
-  onEditPrompt?: (n: number, text: string) => void;
+  onEditPrompt?: (n: number, text: string) => void; // n is 1-based user prompt index; text is the replacement
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const registerScroller = useCallback((element: HTMLDivElement | null) => {
@@ -62,9 +62,9 @@ export default memo(function ChatTranscript({ messages, register, following, onO
       {messages.slice(start).map((message, index) => message.role === "user"
         ? message.origin === "notification"
           ? <SessionNotice key={message.id} text={message.text} />
-          : <UserBubble key={message.id} text={message.text} onEdit={snapshot || !onEditPrompt ? undefined : () => {
+          : <UserBubble key={message.id} text={message.text} onEdit={snapshot || !onEditPrompt ? undefined : (next) => {
               const n = messages.slice(0, start + index + 1).filter(m => m.role === "user" && m.origin !== "notification").length;
-              onEditPrompt(n, message.text);
+              onEditPrompt(n, next);
             }} />
         : <AssistantBody key={message.id} turn={message.turn} onOpenPath={onOpenPath} onReview={onReview}
             scroller={scroller} following={following && start + index === messages.length - 1} snapshot={snapshot} />)}
