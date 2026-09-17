@@ -13,6 +13,7 @@ current is part of cutting a release.
 ## Unreleased
 
 - Opt-in Accord Unix 0600 live path behind `presence_chan.postMessage` (`GRAFF_ACCORD=1`); JSONL stays the durable room (ADR 0134).
+- `#1001`: idle TUI starts a turn when the durable peer room has new unread mail (one auto-turn per batch; inbox consume resets).
 
 - Live 12-PR board on grok-4.6 SuperGrok (n=3, no SPEC.md): graff / Pi /
   OpenCode 12/12, grok 11/12 (`#727`), exo 9/12 (gemini + two turbos —
