@@ -11,8 +11,8 @@ The view keeps its own inline `<style>` and `<script>`, so a page can be
 animated or interactive. It sits in the transcript without a product header
 or framed well; a quiet Close view / Open view control disposes and restores
 the frame without touching the conversation. On the desktop, the live
-appearance tokens ride the turn as a note so a new page can match `--page`
-and `--surface` (ADR 0137).
+appearance tokens ride the turn as a note so a new page uses `--page`,
+`--surface`, and `--ink` unless the user already named colors (ADR 0137).
 
 ## Where the page lives
 

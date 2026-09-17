@@ -16,6 +16,8 @@ current is part of cutting a release.
 - Engine messaging (idle peer mail, #1007) is the same latch on line REPL, TUI, and `graff acp`.
 - `#1001`: idle TUI and line REPL start a turn when the durable peer room has new unread mail (one auto-turn per batch; inbox consume resets).
 - `#1007`: idle `graff acp` sessions start that same turn; `peer_message` no longer claims delivery waits for a step boundary.
+- Drawn HTML uses the live desktop palette unless the turn already names colors (ADR 0137).
+- Drawn HTML uses the live desktop palette unless the turn already names colors (ADR 0137).
 - `#1006`: rendered views sit in the transcript without product chrome; desktop appearance tokens ride the turn (ADR 0137).
 
 - Live 12-PR board on grok-4.6 SuperGrok (n=3, no SPEC.md): graff / Pi /
