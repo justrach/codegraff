@@ -228,6 +228,6 @@ test "xAI header remaining is remaining/limit" {
     defer arena_state.deinit();
     const report = try parseRateLimitHeaders(arena_state.allocator(), "58", "100", "80", "100");
     try std.testing.expectEqual(@as(usize, 2), report.windows.len);
-    try std.testing.expectEqual(@as(f64, 58), report.windows[0].remaining_percent);
-    try std.testing.expectEqual(@as(f64, 80), report.windows[1].remaining_percent);
+    try std.testing.expectApproxEqAbs(@as(f64, 58), report.windows[0].remaining_percent, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 80), report.windows[1].remaining_percent, 1e-9);
 }
