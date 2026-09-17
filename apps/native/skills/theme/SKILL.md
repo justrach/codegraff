@@ -1,6 +1,6 @@
 ---
-name: gui-theme
-description: Create or adjust a CodeGraff desktop theme when selected with @gui-theme or $gui-theme in the GUI composer.
+name: theme
+description: Create or adjust a CodeGraff desktop theme when selected with $theme or @theme in the GUI composer.
 ---
 
 # GUI theme

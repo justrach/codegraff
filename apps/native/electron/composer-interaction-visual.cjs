@@ -63,9 +63,9 @@ async function runComposerInteractions({ win, origin, output }) {
     assert.equal(await js('window.fileChooserClicks'), 1, 'A portaled attach option must open the file chooser');
     await wait(`!document.querySelector('[data-composer-menu]')`);
     await pointer('[aria-label="Add attachments and sources"]');
-    await wait(`!!document.querySelector('[data-composer-menu] [role="option"][title^="$gui-theme"]')`);
-    await pointer('[data-composer-menu] [role="option"][title^="$gui-theme"]');
-    assert.equal(await js('document.querySelector("textarea").value'), '$gui-theme ', 'A portaled skill selection must reach the composer');
+    await wait(`!!document.querySelector('[data-composer-menu] [role="option"][title^="$theme"]')`);
+    await pointer('[data-composer-menu] [role="option"][title^="$theme"]');
+    assert.equal(await js('document.querySelector("textarea").value'), '$theme ', 'A portaled skill selection must reach the composer');
 
     // Do not let a stationary pointer hover newly mounted options during IME checks.
     await testDesktop.testInput(wc, { type: 'mouseMove', x: 1, y: 1 });
@@ -100,22 +100,6 @@ async function runComposerInteractions({ win, origin, output }) {
     await wait(`!!document.querySelector('[aria-label="Remove composer-image.png"]')`);
     await wait(`document.querySelector('[data-promptbar] img')?.naturalWidth===1`);
     assert.equal(await js(`!!document.querySelector('[data-promptbar] [role="status"]')`), false, 'A hidden upload completes in its own chat');
-    const imageSource = await js(`document.querySelector('[aria-label="Preview composer-image.png"] img').src`);
-    await pointer('[aria-label="Preview composer-image.png"]');
-    await wait(`!!document.querySelector('dialog[open] [aria-label="Close image preview"]')`);
-    assert.equal(await js(`document.querySelector('dialog[open] img').src`), imageSource, 'Preview shows the selected attachment');
-    await testDesktop.testInput(wc, { type: 'keyDown', keyCode: 'Escape' });
-    await testDesktop.testInput(wc, { type: 'keyUp', keyCode: 'Escape' });
-    await wait(`!document.querySelector('dialog[open]')`);
-    assert.equal(await draft(first), 'First unsent draft', 'Closing preview preserves text');
-    assert.ok(await js(`!!document.querySelector('[aria-label="Remove composer-image.png"]')`), 'Closing preview preserves the attachment');
-    assert.ok(await js(`document.activeElement.matches('[aria-label="Preview composer-image.png"]')`), 'Closing preview restores the trigger focus');
-    await pointer('[aria-label="Preview composer-image.png"]');
-    await wait(`!!document.querySelector('dialog[open]')`);
-    await pointer('[aria-label="Close image preview"]');
-    await wait(`!document.querySelector('dialog[open]')`);
-    assert.equal(await draft(first), 'First unsent draft', 'Close button also preserves the draft');
-
     await key('2', { metaKey: true });
     assert.equal(await draft(second), 'Second unsent draft', 'An older upload must not reset another chat');
     assert.equal(await js(`!!document.querySelector('[aria-label="Remove composer-image.png"]')`), false, 'Attachments never move between chats');

@@ -21,7 +21,7 @@ export default function CustomThemes({ selected }: { selected: Appearance }) {
   }, []);
   return <section className="mt-3 border-t border-line pt-3" aria-label="Custom themes">
     <div className="flex items-center justify-between"><strong className="text-xs font-medium">My themes</strong><button className="rounded px-2 py-1 text-[11px] text-accent-ink hover:bg-hover" onClick={() => upload.current?.click()}>Import theme</button></div>
-    <p className="mt-1 text-[11px] leading-4 text-ink-3">Type <code>$gui-theme</code> or <code>@gui-theme</code> in chat to create your own with Graff.</p>
+    <p className="mt-1 text-[11px] leading-4 text-ink-3">Type <code>$theme</code> or <code>@theme</code> in chat to create your own with Graff.</p>
     <input ref={upload} type="file" accept="application/json,.json" className="hidden" aria-label="Import theme file" onChange={async event => {
       const file = event.target.files?.[0]; event.target.value = ""; if (!file) return;
       try {
