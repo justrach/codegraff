@@ -4,6 +4,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefOb
 import Markdown from "@/components/primitives/Markdown";
 import ThinkingState from "@/components/primitives/ThinkingState";
 import ToolChips, { type LiveDiff } from "@/components/primitives/ToolChips";
+import ApprovalCard from "@/components/primitives/ApprovalCard";
 import TurnActivity from "./TurnActivity";
 import HtmlArtifact from "./HtmlArtifact";
 import McpAppResult from "./McpAppResult";
@@ -113,6 +114,7 @@ export const AssistantBody = memo(function AssistantBody({
   turn,
   onOpenPath,
   onReview,
+  onAnswer,
   scroller,
   following,
   reasoningLabel,
@@ -121,6 +123,7 @@ export const AssistantBody = memo(function AssistantBody({
   turn: AssistantTurn;
   onOpenPath?: (path: string) => void;
   onReview?: () => void;
+  onAnswer?: (text: string, cancelled?: boolean) => void;
   scroller?: RefObject<HTMLDivElement | null>;
   following: boolean;
   reasoningLabel?: string;
@@ -178,6 +181,16 @@ export const AssistantBody = memo(function AssistantBody({
               onOpenPath={onOpenPath} scroller={scroller} following={i === lastTextIndex && following} />
           </div>
         ),
+      )}
+      {turn.status === "ask" && turn.ask && (
+        <div data-ask-card className="mt-4">
+          <ApprovalCard
+            questions={[{ q: turn.ask.question, type: "radio", options: turn.ask.options }]}
+            resettable={false}
+            onSubmitted={(answers) => onAnswer?.(answers?.filter(Boolean).join(", ") ?? "", false)}
+            onCancelled={() => onAnswer?.("", true)}
+          />
+        </div>
       )}
       {!snapshot && <TurnActivity turn={turn} />}
       {turn.error && (

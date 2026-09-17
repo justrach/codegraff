@@ -6,9 +6,10 @@ import type { Msg } from "./harness-types";
 import { pinScrollerTail } from "@/lib/follow-scroll";
 import { transcriptPageStart } from "@/lib/transcript-window";
 
-export default memo(function ChatTranscript({ messages, register, following, onOpenPath, onReview, snapshot, onEditPrompt }: {
+export default memo(function ChatTranscript({ messages, register, following, onOpenPath, onReview, onAnswer, snapshot, onEditPrompt }: {
   messages: Msg[]; register: (element: HTMLDivElement | null) => void; following: boolean;
-  onOpenPath: (path: string) => void; onReview: () => void; snapshot?: boolean;
+  onOpenPath: (path: string) => void; onReview: () => void;
+  onAnswer?: (text: string, cancelled?: boolean) => void; snapshot?: boolean;
   onEditPrompt?: (n: number, text: string) => void; // n is 1-based user prompt index; text is the replacement
 }) {
   const scroller = useRef<HTMLDivElement>(null);
@@ -52,7 +53,7 @@ export default memo(function ChatTranscript({ messages, register, following, onO
   }, []);
   return <div ref={registerScroller} data-chat-transcript data-following={following}
     className="min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain" style={{ overflowAnchor: "none" }}>
-    <div data-transcript-content className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-4 py-8 sm:px-8">
+    <div data-transcript-content className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-4 pt-8 pb-36 sm:px-8">
       {start > 0 && <button type="button" className="self-center rounded-lg bg-field px-3 py-2 text-xs text-ink-2 hover:bg-hover" onClick={() => {
         const el = scroller.current;
         if (el) anchor.current = { height: el.scrollHeight, top: el.scrollTop };
@@ -66,7 +67,7 @@ export default memo(function ChatTranscript({ messages, register, following, onO
               const n = messages.slice(0, start + index + 1).filter(m => m.role === "user" && m.origin !== "notification").length;
               onEditPrompt(n, next);
             }} />
-        : <AssistantBody key={message.id} turn={message.turn} onOpenPath={onOpenPath} onReview={onReview}
+        : <AssistantBody key={message.id} turn={message.turn} onOpenPath={onOpenPath} onReview={onReview} onAnswer={onAnswer}
             scroller={scroller} following={following && start + index === messages.length - 1} snapshot={snapshot} />)}
     </div>
   </div>;

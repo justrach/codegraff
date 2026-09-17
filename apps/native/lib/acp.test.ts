@@ -18,6 +18,18 @@ describe("parseRpcLine", () => {
 });
 
 describe("applyAcpUpdate", () => {
+  it("surfaces gui_ask_user as an ask with options", () => {
+    const turn = applyAcpUpdate(emptyTurn(), {
+      sessionUpdate: "gui_ask_user",
+      callId: "q1",
+      question: "Which mix?",
+      input: { options: ["Pistachio", "Mint"] },
+    });
+    assert.equal(turn.status, "ask");
+    assert.equal(turn.ask?.callId, "q1");
+    assert.equal(turn.ask?.question, "Which mix?");
+    assert.deepEqual(turn.ask?.options, ["Pistachio", "Mint"]);
+  });
   it("keeps the file chip when a completion update omits its title and input", () => {
     let turn = applyAcpUpdate(emptyTurn(), {sessionUpdate:'tool_call', toolCallId:'read-one', title:'read_file', kind:'read', rawInput:{path:'navigation.ts'}, status:'in_progress'});
     turn = applyAcpUpdate(turn, {sessionUpdate:'tool_call_update', toolCallId:'read-one', status:'completed'});

@@ -4,6 +4,7 @@ const Io = std.Io;
 const Agent = @import("agent.zig").Agent;
 const proto = @import("acp_protocol.zig");
 const cancel_source = @import("cancel_source.zig");
+const acp_ask = @import("acp_ask.zig");
 
 pub const Inbox = struct {
     gpa: std.mem.Allocator,
@@ -105,8 +106,22 @@ pub const Inbox = struct {
                     if (sid == null or std.mem.eql(u8, sid.?, current)) {
                         self.cancelled = true;
                         if (self.active) cancel_source.cancel(.acp_cancel);
+                        acp_ask.cancelIfWaiting();
                     }
                 }
+                return;
+            }
+            if (std.mem.eql(u8, r.method, "session/answer")) {
+                const obj: ?std.json.ObjectMap = if (r.params) |p| (if (p == .object) p.object else null) else null;
+                const cancelled_answer = if (obj) |o| switch (o.get("cancelled") orelse .null) {
+                    .bool => |b| b,
+                    else => false,
+                } else false;
+                const answer_text: []const u8 = if (obj) |o| blk: {
+                    const v = o.get("text") orelse break :blk "";
+                    break :blk if (v == .string) v.string else "";
+                } else "";
+                acp_ask.reply(answer_text, cancelled_answer);
                 return;
             }
             if (std.mem.eql(u8, r.method, "session/prompt") and self.session_id == null)
@@ -165,6 +180,20 @@ test "ACP cancel interrupts active turn and does not cancel its successor" {
     try inbox.accept("{\"method\":\"session/cancel\"}");
     inbox.begin();
     try std.testing.expect(!Agent.esc_cancel.load(.acquire));
+}
+
+test "session/answer fills the ask mailbox without queueing a line" {
+    acp_ask.attach(std.testing.io, std.testing.allocator);
+    defer acp_ask.detach();
+    var reader: Io.Reader = .fixed("");
+    var inbox: Inbox = .{ .gpa = std.testing.allocator, .io = std.testing.io, .reader = &reader };
+    defer inbox.deinit();
+    try inbox.accept("{\"method\":\"session/answer\",\"params\":{\"text\":\"pill\",\"cancelled\":false}}");
+    try std.testing.expectEqual(@as(usize, 0), inbox.lines.items.len);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const got = try acp_ask.wait(arena_state.allocator());
+    try std.testing.expectEqualStrings("pill", got.text);
 }
 
 test "ACP cancellation before turn setup survives the reset" {

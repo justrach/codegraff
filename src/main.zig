@@ -596,5 +596,5 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("subagent_recovery.zig");
     _ = @import("acp_agent_activity.zig");
     _ = @import("read_image.zig");
-    _ = .{ @import("pr_local_checks.zig"), @import("mcp_names.zig"), @import("workspace_history.zig"), @import("file_worktree.zig"), @import("mcp_turn_context.zig"), @import("review_deadline.zig"), @import("issue_cmd.zig"), @import("shell_tool.zig") };
+    _ = .{ @import("pr_local_checks.zig"), @import("mcp_names.zig"), @import("workspace_history.zig"), @import("file_worktree.zig"), @import("mcp_turn_context.zig"), @import("review_deadline.zig"), @import("issue_cmd.zig"), @import("shell_tool.zig"), @import("acp_ask.zig") };
 }

@@ -18,7 +18,7 @@ export function appearanceNote(tokens: Record<string, string>): string {
     .filter(token => tokens[token])
     .map(token => `--${token}: ${tokens[token]}`)
     .join("; ");
-  return `[desktop appearance] A render_html view has no product chrome; the page bleeds into the transcript. If you draw, set the page background to --page and surfaces to --surface so it matches the desktop. CSS: ${css}`;
+  return `[desktop appearance] A render_html view has no product chrome; the page bleeds into the transcript. When you draw HTML, bake in this desktop palette (--page for the page background, --surface for cards, --ink for text) unless this turn already names colors or a palette. CSS: ${css}`;
 }
 
 export function withAppearanceNote<T extends { prompt?: unknown }>(params: T, tokens: Record<string, string>): T {

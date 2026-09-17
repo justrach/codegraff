@@ -386,7 +386,7 @@ export default function PromptBar({
           setDragging(false);
           void attachFiles(files);
         }}
-        className={`relative isolate flex flex-col overflow-hidden border bg-surface shadow-card transition-[border-color,border-radius] duration-150 focus-within:border-line-strong ${
+        className={`relative isolate flex flex-col overflow-hidden border ${layout.glass} transition-[border-color,border-radius] duration-150 focus-within:border-line-strong ${
           dragging ? "border-accent-ink" : "border-line"
         } ${
           tall ? "gap-2.5 p-3.5" : "gap-1.5 p-1.5"

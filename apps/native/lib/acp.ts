@@ -45,6 +45,7 @@ export type JsonRpcLine =
 
 import {
   emptyTurn,
+  parseAskOptions,
   type AssistantTurn,
   type ToolIcon,
   type ToolRow,
@@ -223,7 +224,7 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
     todos: todos.length ? todos : turn.todos,
     // Text after a tool bracket is a new message segment, not a continuation.
     pendingBreak: turn.text.length > 0 ? true : turn.pendingBreak,
-    status: turn.status === "ask" ? "ask" : status === "running" || turn.status === "thinking" ? "streaming" : turn.status,
+    status: status === "running" || turn.status === "thinking" || turn.status === "ask" ? "streaming" : turn.status,
   };
   if ((merged.icon === "write" || kind === "edit") && (status === "ok" || status === "error")) {
     return { ...next, diffs: mergeDiff(next, merged, contentText) };
@@ -278,7 +279,7 @@ export function applyAcpUpdate(turn: AssistantTurn, update: AcpUpdate): Assistan
       return {
         ...turn,
         reasoning: `${turn.reasoning}${text}`,
-        status: turn.status === "ask" ? "ask" : turn.text ? "streaming" : "thinking",
+        status: turn.text ? "streaming" : "thinking",
       };
     }
     case "agent_message_chunk": {
@@ -288,7 +289,19 @@ export function applyAcpUpdate(turn: AssistantTurn, update: AcpUpdate): Assistan
         ...turn,
         text: `${turn.text}${needsBreak ? "\n\n" : ""}${text}`,
         pendingBreak: false,
-        status: turn.status === "ask" ? "ask" : "streaming",
+        status: "streaming",
+      };
+    }
+    case "gui_ask_user": {
+      const rec = update as { callId?: unknown; call_id?: unknown; question?: unknown; input?: unknown };
+      return {
+        ...turn,
+        ask: {
+          callId: String(rec.callId ?? rec.call_id ?? ""),
+          question: String(rec.question ?? "The agent needs a decision."),
+          options: parseAskOptions(rec.input),
+        },
+        status: "ask",
       };
     }
     case "tool_call":

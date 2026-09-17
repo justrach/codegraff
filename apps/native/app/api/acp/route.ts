@@ -324,6 +324,14 @@ export async function POST(req: NextRequest) {
       await endTurn(slot);
       return Response.json({ ok: true });
     }
+    if (method === "session/answer") {
+      try {
+        slot.transport.notify("session/answer", { ...body.params, sessionId: slot.sessionId });
+      } catch {
+        // a dead transport means the turn is over regardless
+      }
+      return Response.json({ ok: true });
+    }
     if (method === "session/idle") {
       const encoder = new TextEncoder();
       const stream = new ReadableStream<Uint8Array>({

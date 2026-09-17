@@ -12,6 +12,11 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- GUI follow-up bar is a pill over the transcript with CSS frost; working subagents sit on the dock.
+- `ask_user` round-trips over ACP so the desktop can show an ApprovalCard mid-turn.
+- `#1011`: live replies keep the typewriter and block caret; the caret hides when the turn is done, and the first chunk reveals instead of painting in as one blob.
+- `#1009`: queued follow-up row does not paint a surface bar while a turn is working.
+- Drawn HTML uses the live desktop palette unless the turn already names colors (ADR 0137).
 - Accord Unix 0600 is a standing duplex per live session (`GRAFF_ACCORD=0` opts out); JSONL stays the durable room (ADR 0134). `/debug` reports Accord session count and RSS.
 - Engine messaging (idle peer mail, #1007) is the same latch on line REPL, TUI, and `graff acp`.
 - `#1001`: idle TUI and line REPL start a turn when the durable peer room has new unread mail (one auto-turn per batch; inbox consume resets).

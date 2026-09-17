@@ -18,6 +18,7 @@ turn (#1006).
 On the desktop, resolved appearance tokens (`page`, `surface`, `ink`, and the
 rest of the existing token set) ride `session/prompt` as a small turn-local
 note. They are not written into `prompt_text` and not into the tool catalog.
+Drawn HTML uses that palette unless the user already named colors this turn.
 
 A model-drawn page has no product header and no 620px well. Close/open stays a
 quiet control. MCP app results keep their own chrome.
@@ -25,5 +26,6 @@ quiet control. MCP app results keep their own chrome.
 ## Consequences
 
 A theme switch does not bust the prefix cache. Existing snapshots still have
-whatever colors the model hardcoded; new pages can match `--page` / `--surface`.
-The opaque frame and CSP sandbox are unchanged.
+whatever colors the model hardcoded; new pages match `--page` / `--surface` /
+`--ink` unless the turn already names a palette. The opaque frame and CSP
+sandbox are unchanged.

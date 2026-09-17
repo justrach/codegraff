@@ -186,6 +186,8 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     var inbox: @import("acp_inbox.zig").Inbox = .{ .gpa = gpa, .io = io, .reader = in };
     try inbox.start();
     defer inbox.deinit();
+    @import("acp_ask.zig").attach(io, gpa);
+    defer @import("acp_ask.zig").detach();
     var live: LiveTurn = .{ .root = root, .keys = keys, .out = out, .inbox = &inbox };
     var d: Dispatch = .{
         .turn = LiveTurn.run,

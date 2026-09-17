@@ -35,8 +35,17 @@ test("desktop appearance tokens ride the prompt and leave the catalog alone", as
   expect(text).toContain("[desktop appearance]");
   expect(text).toContain("--page: #faf8f5");
   expect(text).toContain("--surface: #ffffff");
+  expect(text).toContain("unless this turn already names colors or a palette");
   expect(prepared).not.toHaveProperty("appearance");
   expect(original.prompt[0].text).toBe("Draw the burn-down");
+});
+test("named colors still receive the live tokens so unspecified ones can match", async () => {
+  const original = { prompt: [{ type: "text", text: "Draw it with #ff4d4d bars on white" }], appearance: { page: "#0b0c09", surface: "#141712", ink: "#ececec" } };
+  const prepared = await prepareGuiPrompt(original);
+  const text = (prepared?.prompt as { text: string }[])[0].text;
+  expect(text.startsWith("Draw it with #ff4d4d bars on white")).toBe(true);
+  expect(text).toContain("--page: #0b0c09");
+  expect(text).toContain("unless this turn already names colors or a palette");
 });
 test("MCP GUI skill injects config paths without the theme directory", async () => {
   const original = { prompt: [{ type: "text", text: "$mcp add a filesystem server" }] };

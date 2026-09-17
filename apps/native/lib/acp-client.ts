@@ -162,6 +162,24 @@ export async function cancel(chat: ChatHandle, sessionId: string): Promise<void>
   if (!response.ok) throw new Error("Could not interrupt the current turn");
 }
 
+/** Mid-turn reply to `ask_user`. Notification, like cancel — the prompt stream stays open. */
+export async function answer(
+  chat: ChatHandle,
+  sessionId: string,
+  opts: { callId: string; text?: string; cancelled?: boolean },
+): Promise<void> {
+  const response = await fetch(BASE, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      chat,
+      method: "session/answer",
+      params: { sessionId, callId: opts.callId, text: opts.text ?? "", cancelled: opts.cancelled === true },
+    }),
+  });
+  if (!response.ok) throw new Error("Could not send the answer");
+}
+
 /** Kill a closed tab's agent. `keepalive` so a close-then-navigate still lands. */
 export async function disposeSession(chat: ChatHandle): Promise<void> {
   await fetch(BASE, {

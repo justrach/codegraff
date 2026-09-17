@@ -60,12 +60,13 @@ function LoaderGrid({
   );
 }
 
-function useElapsed() {
+function useElapsed(paused = false) {
   const [ds, setDs] = useState(0);
   useEffect(() => {
+    if (paused) return;
     const t = setInterval(() => setDs((d) => d + 1), 100);
     return () => clearInterval(t);
-  }, []);
+  }, [paused]);
   const total = ds / 10;
   if (total < 60) return `${total.toFixed(1)}s`;
   return `${Math.floor(total / 60)}m ${(total % 60).toFixed(1)}s`;
@@ -74,14 +75,18 @@ function useElapsed() {
 export default function LoadingState({
   label,
   variant = "Drive",
+  /** When set, the live clock is skipped and this string is shown (turn activity). */
+  elapsed,
   /** the meme feed for the Surfer variant; drop the file in /public to light it up */
   videoSrc = "/subway-surfers.mp4",
 }: {
   label?: string;
   variant?: string;
+  elapsed?: string;
   videoSrc?: string;
 }) {
-  const elapsed = useElapsed();
+  const clock = useElapsed(elapsed !== undefined);
+  const timed = elapsed !== undefined ? elapsed : clock;
   const surfer = variant === "Surfer";
   const resolvedLabel = label ?? (surfer ? "Subway surfing" : "Churning");
   const [videoOk, setVideoOk] = useState(true);
@@ -100,7 +105,7 @@ export default function LoadingState({
       {resolvedLabel}
     </span>
   );
-  const elapsedEl = <span className="font-mono text-[12px] text-ink-3 tabular-nums">{elapsed}</span>;
+  const elapsedEl = timed ? <span data-activity-detail className="font-mono text-[12px] text-ink-3 tabular-nums">{timed}</span> : null;
 
   if (surfer) {
     return (

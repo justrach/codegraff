@@ -189,6 +189,18 @@ pub fn translateEvent(
         try writeToolDone(w, session_id, use_id, is_error, text);
         return .tool;
     }
+    if (std.mem.eql(u8, typ, "ask_user")) {
+        try proto.writeNotification(w, "session/update", .{
+            .sessionId = session_id,
+            .update = .{
+                .sessionUpdate = "gui_ask_user",
+                .callId = util.strFieldObj(ev.object, "call_id") orelse "",
+                .question = util.strFieldObj(ev.object, "question") orelse "",
+                .input = ev.object.get("input") orelse Value{ .object = .empty },
+            },
+        });
+        return .notice;
+    }
     return .none;
 }
 
@@ -329,6 +341,22 @@ test "translateEvent: an id-less tool_call_started updates the announced call" {
     _ = try translateEvent(&w, "s1", finished.value, &id_buf, &next);
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "completed") != null);
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "\"content\"") == null);
+}
+
+test "translateEvent: ask_user becomes a gui_ask_user update" {
+    var buf: [2048]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const ev = try std.json.parseFromSlice(Value, a, "{\"type\":\"ask_user\",\"call_id\":\"q1\",\"question\":\"Which one?\",\"input\":{\"options\":[\"A\",\"B\"]}}", .{});
+    defer ev.deinit();
+    var id_buf: [64]u8 = @splat(0);
+    var next: u32 = 0;
+    try testing.expectEqual(.notice, try translateEvent(&w, "s1", ev.value, &id_buf, &next));
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "gui_ask_user") != null);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "Which one?") != null);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "\"q1\"") != null);
 }
 
 test "translateEvent: reasoning and text become chunks" {

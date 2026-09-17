@@ -156,7 +156,7 @@ record only when you need the evidence or the edge cases.
 | [0134](0134-accord-live-jsonl-durable.md) | JSONL is the durable peer room; Accord Unix 0600 is live by default (`GRAFF_ACCORD=0` opts out). |
 | [0135](0135-one-shell-tool.md) | Advertise one `shell` tool (`run` / `output` / `kill`); bash names stay dispatch aliases. Not a PTY. |
 | [0136](0136-follow-up-promotes-a-live-shell.md) | A queued follow-up or force-steer promotes a foreground shell; Esc still kills it. |
-| [0137](0137-desktop-appearance-is-a-turn-note.md) | Desktop appearance tokens for `render_html` ride the turn, never the prefix or tool catalog. |
+| [0137](0137-desktop-appearance-is-a-turn-note.md) | Desktop appearance tokens for `render_html` ride the turn, never the prefix or tool catalog; drawn HTML uses them unless the user named colors. |
 | [0138](0138-unselected-splits-use-glass-overlay.md) | Unselected split panes keep their transcript under a light wash; the focused pane stays the working surface. |
 
 ## When to write one

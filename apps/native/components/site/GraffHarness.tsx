@@ -39,7 +39,7 @@ import { MAX_COLUMNS, SPLIT_LIMIT_MESSAGE, splitLimitReached } from "./harness-s
 import { useDesktopShortcuts } from "./useDesktopShortcuts";
 import { useDesktopWorkspace } from "./useDesktopWorkspace";
 import {
-  cancel,
+  answer, cancel,
   chatHandle,
   disposeSession,
   type Health,
@@ -437,13 +437,13 @@ export default function GraffHarness() {
 
   const steerQueued = (chat: number, item: number) => steerer.steer(chat, item, () => {
     const session = sessionsRef.current.get(chat);
-    if (!session) return Promise.reject(new Error("Session unavailable"));
-    return cancel(handleOf(chat), session);
+    return session ? cancel(handleOf(chat), session) : Promise.reject(new Error("Session unavailable"));
   });
 
   const columnBody = (thread: Chat) => <ChatColumn key={thread.id} thread={thread}
     compact={columnIds.length > 1 || navigation.focusedMode || filesOpen || browserOpen || agentsOpen || reviewsOpen || !!(fileRequest?.changes)} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
     onOpenPath={openPath} onReview={openChanges}
+    onAnswer={(text, cancelled) => { const live = sessionsRef.current.get(thread.id); const ask = thread.messages.findLast(m => m.role === "assistant")?.turn.ask; if (live && ask) void answer(handleOf(thread.id), live, { callId: ask.callId, text, cancelled }); }}
     onEditPrompt={(n, text) => {
       const live = sessionsRef.current.get(thread.id);
       if (live) void cancel(handleOf(thread.id), live).catch(() => undefined);

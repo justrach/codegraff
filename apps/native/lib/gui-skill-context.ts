@@ -31,7 +31,7 @@ export async function prepareGuiPrompt(params: Record<string, unknown> | undefin
   const first = prompt.find(block => block.type === "text" && typeof block.text === "string");
   if (!first || typeof first.text !== "string") {
     if (!tokens) return params;
-    const next = { ...params };
+    const next: Record<string, unknown> = { ...params };
     delete next.appearance;
     return next;
   }
@@ -44,7 +44,7 @@ export async function prepareGuiPrompt(params: Record<string, unknown> | undefin
     first.text = withGuiSkillContext(first.text, instructions.join("\n\n"));
   }
   if (tokens) first.text = `${first.text}\n\n${appearanceNote(tokens)}`;
-  const next = { ...params, prompt };
+  const next: Record<string, unknown> = { ...params, prompt };
   delete next.appearance;
   return next;
 }

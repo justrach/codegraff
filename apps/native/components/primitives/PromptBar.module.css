@@ -3,6 +3,40 @@
   min-width: 0;
 }
 
+/* Liquid Glass-ish shell: a distinct control layer over the transcript.
+ * Samples the chat (ADR 0138), not the desktop. Heavy blur + fill so
+ * body text underneath is a wash, not a second sentence. */
+.glass {
+  background: color-mix(in oklab, var(--surface) 94%, transparent);
+  box-shadow:
+    inset 0 1px 0 oklch(1 0 0 / 0.22),
+    inset 0 -1px 0 oklch(0 0 0 / 0.12),
+    var(--shadow-overlay);
+  backdrop-filter: blur(110px) saturate(1.85);
+  -webkit-backdrop-filter: blur(110px) saturate(1.85);
+}
+/* Short scrim above the pill — Apple's scroll-edge idea: content under
+ * the bar recedes so the control stays readable. */
+.dock {
+  background: linear-gradient(
+    to top,
+    color-mix(in oklab, var(--page) 88%, transparent) 0%,
+    color-mix(in oklab, var(--page) 48%, transparent) 50%,
+    transparent 100%
+  );
+}
+@media (prefers-reduced-transparency: reduce) {
+  .glass {
+    background: var(--surface);
+    box-shadow: var(--shadow-overlay);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .dock {
+    background: none;
+  }
+}
+
 /* Split panes can be narrow even on a large display. Keep settings legible
    on their own row and reserve separate space for attachment/send actions. */
 @container (max-width: 420px) {
