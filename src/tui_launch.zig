@@ -214,8 +214,7 @@ fn idleWakeCb(ctx: ?*anyopaque, buf: []u8) ?[]const u8 {
     if (job_notify.takeIdleWake(c.io, buf)) |t| return t; // an idle stop waits for a real step boundary (#199)
     if (schedule.takeWake(c.io, buf)) |t| return t;
     if (channel_worker.takeWake(c.io, buf)) |t| return t;
-    const root = c.root orelse return null;
-    return peer_idle.takeIdleWake(c.io, root.arena, buf);
+    return peer_idle.takeIdleWake(c.io, buf);
 }
 
 fn versionCb(ctx: ?*anyopaque, gpa: Allocator) ?[]const u8 {

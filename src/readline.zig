@@ -52,6 +52,7 @@ const session = @import("session.zig");
 const Agent = agent_mod.Agent;
 const saveSession = session.saveSession;
 const shutdown_trace = @import("shutdown_trace.zig"); // #364: the quit path's first phase stamp
+const peer_idle = @import("peer_idle.zig");
 const rl_history = @import("readline_history.zig");
 const HistoryNav = rl_history.HistoryNav;
 const PasteStore = @import("readline_paste.zig").Store;
@@ -184,6 +185,18 @@ pub fn readLine(
                 if (inputPendingTimed(140)) break; // keystroke ready — read it below
                 input_util.g_shine_phase +%= 1;
                 redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
+            }
+            // #1001: empty composer polls so peer mail can start a turn without a key.
+            if (buf.items.len == 0) {
+                while (!inputPendingTimed(200)) {
+                    var wake_buf: [512]u8 = undefined;
+                    if (peer_idle.takeIdleWake(root.io, &wake_buf)) |wake| {
+                        buf.appendSlice(gpa, wake) catch break;
+                        try out.writeAll("\r\n");
+                        try out.flush();
+                        return buf.items;
+                    }
+                }
             }
             break :blk switch (tty.promptByte(in)) {
                 .byte => |b| b,
