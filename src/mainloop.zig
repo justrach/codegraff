@@ -286,9 +286,9 @@ pub fn run(ctx: *Ctx) !void {
                 continue;
             }
             if (std.mem.eql(u8, rtype, "review")) review_prompt = text;
-            // #415: a side question is ANSWERED here and never becomes a turn —
-            // billed, parent-prefix cached, nothing added to the session.
+            // #415: side question is answered here — billed, parent-cached, not persisted.
             if (json_controls.sideQuestion(ctx.root, ctx.arena, rtype, text)) continue;
+            if (json_controls.applyEdit(ctx.root, rtype, parsed.object)) |ok| if (!ok) continue;
             if (!json_controls.beginTurn(ctx.root, parsed.object)) continue;
             break :blk text;
         } else line;

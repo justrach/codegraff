@@ -42,7 +42,7 @@ pub fn trailingUserIs(messages: []const Value, text: []const u8) bool {
     return std.mem.eql(u8, t, text);
 }
 
-fn userPromptText(msg: Value) ?[]const u8 {
+pub fn userPromptText(msg: Value) ?[]const u8 {
     if (@import("session_wake.zig").isNotice(msg)) return null;
     if (msg != .object) return null;
     if (msg.object.get("type")) |kind| {

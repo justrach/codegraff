@@ -71,6 +71,7 @@ pub const commands = [_]Item{
     .{ .name = "/btw", .usage = "/btw <question>", .desc = "ask one side question about this conversation — billed, never added, rides the parent cache prefix" },
     .{ .name = "/compact", .desc = "compact history into a fresh context (OpenAI server-side when available)" },
     .{ .name = "/rewind", .usage = "/rewind [n|<snapshot>]", .desc = "list past prompts; /rewind <n> drops prompt n+after & reverts its file edits; /rewind <snapshot id> restores a sandbox filesystem instead, never the conversation" },
+    .{ .name = "/edit", .usage = "/edit <n> <text>", .desc = "replace prompt n, drop n+after, keep the prefix so the next turn can still hit cache" },
     .{ .name = "/snapshot", .usage = "/snapshot [attach [image]|detach|list|gc [n]]", .desc = "capture the attached sandbox's filesystem under .graff/sessions/<session>/snapshots; attach puts this session in a Docker sandbox, list shows what it has captured, gc keeps the newest n (default 1)" },
     .{ .name = "/teleport", .usage = "/teleport <id> [docker|container]", .desc = "restore a docker_image_tar snapshot onto a different CLI backend (Apple Container by default); filesystem only, never the conversation" },
     .{ .name = "/image", .usage = "/image <path>", .desc = "attach an image to your next message (vision models only)" },

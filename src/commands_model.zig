@@ -20,7 +20,6 @@ const isLocalUrl = keys_cli.isLocalUrl;
 const openAiModelsUrl = keys_cli.openAiModelsUrl;
 const fetchOpenAIModels = keys_cli.fetchOpenAIModels;
 const harness_version = main_mod.harness_version;
-const Rewound = @import("tools.zig").Rewound; // what one /rewind restored/skipped
 
 const pricing = @import("pricing.zig");
 const kimi_catalog = @import("kimi_catalog.zig");
@@ -223,66 +222,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         };
         return true;
     }
-    if (std.mem.startsWith(u8, line, "/rewind")) {
-        // Conversation rewind (à la Claude Code): drop a past prompt and
-        // everything after it, so you can branch from an earlier point.
-        // Human turns are user messages whose content is a plain string
-        // (tool-result user messages carry a content array).
-        const arg = std.mem.trim(u8, line["/rewind".len..], " \t");
-        var turns: std.ArrayList(usize) = .empty;
-        defer turns.deinit(root.gpa);
-        for (root.messages.items, 0..) |m, i| {
-            if (m != .object) continue;
-            const role = if (m.object.get("role")) |r| (if (r == .string) r.string else "") else "";
-            if (!std.mem.eql(u8, role, "user")) continue;
-            if (m.object.get("content")) |c| if (c == .string) try turns.append(root.gpa, i);
-        }
-        if (turns.items.len == 0) {
-            try out.writeAll("nothing to rewind — no prompts in this conversation yet\n");
-            try out.flush();
-            return true;
-        }
-        if (arg.len == 0) {
-            try out.writeAll("rewind to before which prompt?\n");
-            for (turns.items, 1..) |idx, n| {
-                var snip = if (root.messages.items[idx].object.get("content")) |c| (if (c == .string) c.string else "[image]") else "";
-                if (std.mem.indexOfScalar(u8, snip, '\n')) |nl| snip = snip[0..nl];
-                const shown = if (snip.len > 70) snip[0..70] else snip;
-                try out.print("  {s}{d}{s}: {s}{s}\n", .{ style.accent, n, style.reset, shown, if (snip.len > 70) "…" else "" });
-            }
-            try out.print("{s}usage: /rewind <n> — drops prompt <n>+after and reverts its write_file/edit_file changes (bash edits aren't tracked){s}\n", .{ style.dim, style.reset });
-            try out.flush();
-            return true;
-        }
-        const n = std.fmt.parseInt(usize, arg, 10) catch 0;
-        if (n < 1 or n > turns.items.len) {
-            try out.print("invalid — pick 1..{d} (see /rewind)\n", .{turns.items.len});
-            try out.flush();
-            return true;
-        }
-        const cut = turns.items[n - 1];
-        const dropped = root.messages.items.len - cut;
-        root.messages.items.len = cut; // truncate (entries are arena-owned)
-        root.last_context_tokens = 0;
-        root.context_local_tokens = 0;
-        root.compact_transport_failures = 0;
-        root.goal_note_fp = 0; // the goal note may have been in the dropped turns (#318)
-        // Restore files written/edited during the rewound turns, and re-point the
-        // turn counter so the next prompt re-takes turn n.
-        var rw: Rewound = .{};
-        if (root.snapshots) |snaps| {
-            rw = snaps.restore(@intCast(n));
-            snaps.turn = @intCast(n - 1);
-        }
-        try out.print("⏪ rewound to before prompt {d} — dropped {d} message(s)", .{ n, dropped });
-        if (rw.restored > 0) try out.print(", restored {d} file(s)", .{rw.restored});
-        // Left alone rather than deleted. State the fact, never a cause: `.unreadable` is every non-FileNotFound read failure, so the reason is not knowable here.
-        if (rw.skipped > 0) try out.print(", left {d} file(s) as-is (no snapshot was captured)", .{rw.skipped});
-        if (rw.restored == 0 and rw.skipped == 0) try out.print("{s} (no tracked file changes){s}", .{ style.dim, style.reset });
-        try out.writeAll("\n");
-        try out.flush();
-        return true;
-    }
+    if (try @import("commands_edit.zig").tryHandle(root, line, out)) return true;
     if (std.mem.eql(u8, line, "/fast") or std.mem.eql(u8, line, "/fast on") or std.mem.eql(u8, line, "/fast off")) {
         root.fast = if (std.mem.eql(u8, line, "/fast on")) true else if (std.mem.eql(u8, line, "/fast off")) false else !root.fast;
         _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
@@ -524,4 +464,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     return false;
+}
+
+test {
+    _ = @import("commands_edit.zig");
 }
