@@ -26,6 +26,7 @@ const engine_sink = @import("engine_sink.zig");
 const tui_sink = @import("tui_sink.zig");
 const tui_acp = @import("tui_acp.zig");
 const job_notify = @import("job_notify.zig");
+const peer_idle = @import("peer_idle.zig");
 const schedule = @import("schedule.zig");
 const channel_worker = @import("channel_worker.zig");
 const util = @import("util.zig");
@@ -212,7 +213,9 @@ fn idleWakeCb(ctx: ?*anyopaque, buf: []u8) ?[]const u8 {
     const c: *repl_glue.ReplCtx = @ptrCast(@alignCast(ctx orelse return null));
     if (job_notify.takeIdleWake(c.io, buf)) |t| return t; // an idle stop waits for a real step boundary (#199)
     if (schedule.takeWake(c.io, buf)) |t| return t;
-    return channel_worker.takeWake(c.io, buf);
+    if (channel_worker.takeWake(c.io, buf)) |t| return t;
+    const root = c.root orelse return null;
+    return peer_idle.takeIdleWake(c.io, root.arena, buf);
 }
 
 fn versionCb(ctx: ?*anyopaque, gpa: Allocator) ?[]const u8 {

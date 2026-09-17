@@ -17,5 +17,6 @@ Do not replace the room with Mailbox.
 
 ## Consequences
 
-Idle sessions still only drain on the next `runTurn` (#1001). Flipping the
-flag on does not change history pull (ADR 0004).
+Idle TUI sessions auto-start a turn on new parked peer mail (#1001), one
+batch at a time; `action=inbox` resets the latch. Flipping GRAFF_ACCORD
+does not change history pull (ADR 0004).

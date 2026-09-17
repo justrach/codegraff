@@ -27,6 +27,7 @@ const repl = @import("repl.zig");
 const peer_context = @import("peer_context.zig");
 const peer_inbox = @import("peer_inbox.zig");
 const peer_target = @import("peer_target.zig");
+const peer_idle = @import("peer_idle.zig");
 
 const Agent = agent_mod.Agent;
 const ToolCall = tools_mod.ToolCall;
@@ -87,6 +88,7 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
             .text = "peer_message: inbox read failed; messages and dropped count retained — retry action=inbox",
             .is_error = true,
         };
+        peer_idle.noteInboxConsumed();
         return .{ .text = text, .is_error = false };
     }
     if (!std.mem.eql(u8, action, "send")) return .{
