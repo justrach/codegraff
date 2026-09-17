@@ -516,6 +516,7 @@ pub const Agent = struct {
     /// runTurn consumes the marker without erasing a cancellation arriving later.
     pub fn prepareRootTurn() void {
         @import("cancel_source.zig").clear(); // flag + source (#728)
+        @import("job_wait.zig").followup_pending.store(false, .release);
         root_turn_prepared.store(true, .release);
     }
 

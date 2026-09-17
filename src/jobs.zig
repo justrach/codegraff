@@ -529,7 +529,7 @@ pub fn waitForeground(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !FgWait {
             g_jobs.mutex.unlock(io);
             return result;
         }
-        if (waited >= deadline) {
+        if (job_wait.shouldPromote(waited >= deadline, job_wait.followup_pending.load(.acquire))) {
             const pair = takeUnread(gpa, job) catch {
                 g_jobs.mutex.unlock(io);
                 return error.OutOfMemory;
@@ -541,7 +541,7 @@ pub fn waitForeground(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !FgWait {
         }
         g_jobs.mutex.unlock(io);
         if (Agent.esc_cancel.load(.acquire)) {
-            _ = jobKill(gpa, io, id) catch {};
+            if (jobKill(gpa, io, id)) |out| gpa.free(out.text) else |_| {}
             g_jobs.mutex.lockUncancelable(io);
             if (g_jobs.find(id)) |j| {
                 const pair = takeUnread(gpa, j) catch {

@@ -64,7 +64,7 @@ fn firstToken(cmd: []const u8) []const u8 {
 pub fn classOf(call: tools.ToolCall) Class {
     const name = call.name;
     if (std.mem.eql(u8, name, "read_file") or std.mem.eql(u8, name, "codedb")) return .native_read;
-    if (std.mem.eql(u8, name, "bash")) {
+    if (std.mem.eql(u8, name, "bash") or std.mem.eql(u8, name, "shell")) {
         const cmd = tools.strField(call.input, "command") orelse return .other;
         const first = firstToken(cmd);
         if (std.mem.eql(u8, first, "zigrep")) return .zigrep;

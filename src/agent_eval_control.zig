@@ -33,7 +33,8 @@ pub fn toolInvalidatesEval(call: ToolCall) bool {
     if (std.mem.eql(u8, call.name, "read_file") or
         std.mem.eql(u8, call.name, "codedb") or
         std.mem.eql(u8, call.name, "bash_output") or
-        std.mem.eql(u8, call.name, "bash_kill"))
+        std.mem.eql(u8, call.name, "bash_kill") or
+        @import("shell_tool.zig").isJobControl(call))
     {
         return false;
     }

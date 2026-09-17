@@ -203,7 +203,7 @@ test "#352: neither the root nor the SUBAGENT catalog mentions imagegen until it
         // skill gate says yes — the two gates compose, and the subtractive one
         // always wins.
         try std.testing.expectEqual(!gated, std.mem.indexOf(u8, catalog, "\"imagegen\"") != null);
-        try std.testing.expectEqual(!gated, std.mem.indexOf(u8, catalog, "\"name\":\"bash\"") != null);
+        try std.testing.expectEqual(!gated, std.mem.indexOf(u8, catalog, "\"name\":\"shell\"") != null);
         var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, catalog, .{});
         defer parsed.deinit();
         try std.testing.expect(parsed.value.array.items.len > 1);

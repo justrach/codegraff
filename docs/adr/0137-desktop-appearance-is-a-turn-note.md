@@ -1,4 +1,4 @@
-# 0135. Desktop appearance for drawn pages is a turn-local note
+# 0137. Desktop appearance for drawn pages is a turn-local note
 
 Status: accepted 2026-09-17
 

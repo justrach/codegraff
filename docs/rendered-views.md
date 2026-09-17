@@ -12,7 +12,7 @@ animated or interactive. It sits in the transcript without a product header
 or framed well; a quiet Close view / Open view control disposes and restores
 the frame without touching the conversation. On the desktop, the live
 appearance tokens ride the turn as a note so a new page can match `--page`
-and `--surface` (ADR 0135).
+and `--surface` (ADR 0137).
 
 ## Where the page lives
 
