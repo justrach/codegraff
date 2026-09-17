@@ -29,3 +29,20 @@ export function reorderChatGroups<T extends { id: number }>(chats: T[], groups: 
   order.splice(order.indexOf(destination) + Number(after), 0, moving);
   return order.flatMap(group => group.ids.map(id => chats.find(chat => chat.id === id)!));
 }
+
+/** Resume into the focused tab when it already belongs to this folder. */
+export function resumeSplitTarget(
+  chats: { id: number; cwd?: string | null }[],
+  groups: { ids: number[] }[],
+  focusedId: number,
+  resumeCwd: string | null | undefined,
+  activePath: string | null | undefined,
+  cap: number,
+): number | null {
+  const folder = resumeCwd ?? activePath ?? null;
+  if (!folder) return null;
+  const host = groups.find(group => group.ids.includes(focusedId));
+  if (!host || host.ids.length >= cap) return null;
+  const same = host.ids.some(id => (chats.find(chat => chat.id === id)?.cwd ?? activePath ?? null) === folder);
+  return same ? focusedId : null;
+}
