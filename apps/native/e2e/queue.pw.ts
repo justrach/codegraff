@@ -11,6 +11,13 @@ test.beforeEach(async ({ page }) => {
   await page.getByRole("button", { name: "Start fixture" }).click();
 });
 
+test("a working queued row has no surface fill", async ({ page }) => {
+  const queued = page.locator('[data-queued-prompt="1"]');
+  await expect(queued).toHaveAttribute("data-queue-chrome", "working");
+  const bg = await queued.evaluate(el => getComputedStyle(el).backgroundColor);
+  expect(bg === "rgba(0, 0, 0, 0)" || bg === "transparent").toBeTruthy();
+});
+
 test("editing a non-head message pauses completion and sends the saved multiline text", async ({ page }) => {
   const queued = page.locator(row);
   await expect(queued.locator("img")).toHaveJSProperty("naturalWidth", 1);

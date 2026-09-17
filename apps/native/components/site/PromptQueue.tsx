@@ -60,7 +60,8 @@ export default function PromptQueue({ items, busy, status, error, onSteer, onRem
           // The words without their markers; a marker never renders as a path.
           const label = parts.filter((_, index) => index % 2 === 0).join("").replace(/\s+/g, " ").trim();
           return (
-          <li key={item.id} data-queued-prompt={item.id} className="flex flex-wrap items-center gap-2 rounded-[8px] bg-surface px-2.5 py-1.5 text-[12.5px] text-ink-2 shadow-hairline">
+          <li key={item.id} data-queued-prompt={item.id} data-queue-chrome={busy ? "working" : "idle"}
+            className={`flex flex-wrap items-center gap-2 rounded-[8px] px-2.5 py-1.5 text-[12.5px] text-ink-2 ${busy ? "" : "bg-surface shadow-hairline"}`}>
             <span className="shrink-0 text-[11px] font-medium tracking-wide text-ink-3 uppercase">Queued</span>
             {editing === item.id ? (
               <>
@@ -91,7 +92,7 @@ export default function PromptQueue({ items, busy, status, error, onSteer, onRem
               </>
             ) : (
               <>
-                <span className="min-w-0 flex-1 truncate text-ink" title={item.text}>{label || "Attachment only"}</span>
+                <span className={`min-w-0 flex-1 truncate ${busy ? "text-ink-3" : "text-ink"}`} title={item.text}>{label || "Attachment only"}</span>
                 {parts.map((part, index) => index % 2 === 1
                   ? <QueuedImage key={`${index}-${part}`} name={markerName(part)} />
                   : null)}
