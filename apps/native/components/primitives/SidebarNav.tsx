@@ -492,7 +492,7 @@ export default function SidebarNav({
                   selectNav("conversations");
                   onSeeAll();
                 }}
-                className="sidebar-row relative z-10 mx-2 flex h-8 items-center rounded-[8px] px-2 text-left text-[12.5px] font-medium text-ink-3 transition-[background-color,color,transform] duration-150 hover:text-ink active:scale-[0.98]"
+                className="sidebar-copy sidebar-row relative z-10 mx-2 flex h-8 items-center rounded-[8px] px-2 text-left text-[12.5px] font-medium text-ink-3 transition-[background-color,color,transform] duration-150 hover:text-ink active:scale-[0.98]"
               >
                 See all {recentsTotal?.toLocaleString()} conversations
               </button>
