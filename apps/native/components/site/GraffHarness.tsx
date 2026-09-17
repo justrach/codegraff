@@ -189,6 +189,14 @@ export default function GraffHarness() {
     setFilesOpen(true);
     setFileRequest({ path: "", n: (fileReqRef.current += 1), changes: true });
   }, []);
+  const toggleChanges = useCallback(() => {
+    if (filesOpen && fileRequest?.changes) {
+      setFilesOpen(false);
+      setFileRequest(null);
+      return;
+    }
+    openChanges();
+  }, [filesOpen, fileRequest, openChanges]);
 
   const changeModel = (key: string, forChat?: number) => {
     // New tabs inherit the pick; the tab respawns its agent with it
@@ -269,12 +277,20 @@ export default function GraffHarness() {
   const tabDrag = useTabDrag((id, drop) => {
     if (drop.kind === "tab") { setChats(current => reorderChatGroups(current, groups.groups, id, drop.id, drop.after)); return; }
     if (!chatsRef.current.some(chat => chat.id === id)) return;
-    const source = groups.groups.find(group => group.ids.includes(id))?.ids ?? [id];
+    let sourceId = id;
+    const sourceGroup = groups.groups.find(group => group.ids.includes(id));
+    const targetGroup = groups.groups.find(group => group.ids.includes(drop.id));
+    if (id === drop.id || (sourceGroup && targetGroup && sourceGroup === targetGroup)) {
+      if (splitLimitReached(columnIds.length)) { setSplitNotice(SPLIT_LIMIT_MESSAGE); return; }
+      sourceId = (chatIdRef.current += 1);
+      openChat(sourceId);
+    }
+    const source = groups.groups.find(group => group.ids.includes(sourceId))?.ids ?? [sourceId];
     const next = mergeChatGroups(columnIds, source, drop.id, drop.edge === "right" || drop.edge === "bottom");
-    if (!next) { if (!source.some(id => columnIds.includes(id)) && columnIds.length + source.length > MAX_COLUMNS) setSplitNotice(SPLIT_LIMIT_MESSAGE); return; }
+    if (!next) { if (!source.some(pane => columnIds.includes(pane)) && columnIds.length + source.length > MAX_COLUMNS) setSplitNotice(SPLIT_LIMIT_MESSAGE); return; }
     setSplitNotice(null); setZoomedPane(null);
-    groups.split(id,drop.id,drop.edge); setActiveId(id);
-    const folder = chatsRef.current.find(chat => chat.id === id)?.cwd;
+    groups.split(sourceId, drop.id, drop.edge); setActiveId(sourceId);
+    const folder = chatsRef.current.find(chat => chat.id === sourceId)?.cwd;
     if (folder && folder !== activePathRef.current) activateWorkspace(folder);
   });
 
@@ -404,7 +420,7 @@ export default function GraffHarness() {
   });
 
   const columnBody = (thread: Chat) => <ChatColumn key={thread.id} thread={thread}
-    compact={columnIds.length > 1 || navigation.focusedMode} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
+    compact={columnIds.length > 1 || navigation.focusedMode || filesOpen || browserOpen || agentsOpen} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
     onOpenPath={openPath} onReview={openChanges}
     onRefresh={loaded => {
       const messages: Msg[] = loaded.messages.map(m => ({ id: ++msgIdRef.current, ...m }));
@@ -461,7 +477,6 @@ export default function GraffHarness() {
       <div {...navigation.panelProps}><SidebarNav
         onCloseNavigation={navigation.close} onCollapsedChange={navigation.onCollapsedChange}
         openSessions={navigation.sidebarVisible && <div className="mb-4">
-          <button type="button" aria-label="Show agents" aria-pressed={agentsOpen} onClick={() => { setProjectsOpen(false); setAgentsOpen(!agentsOpen); setFilesOpen(false); setBrowserOpen(false); setConversationsOpen(false); }} className="mx-3 mb-2 rounded-md px-2 py-1 text-[13px] text-ink-2 hover:bg-hover">Agents{workingAgents ? ` (${workingAgents})` : ""}</button>
           <p className="mb-1 px-4 text-[11px] font-medium text-ink-3">Open chats</p>
           <SessionTabs vertical chats={groups.tabs} activeId={groups.activeTab} agentsOpen={agentsOpen}
             busyIds={new Set(groups.groups.filter(group => group.ids.some(id => busyIds.has(id))).map(group => group.ids[0]))} unreadIds={unread}
@@ -476,9 +491,14 @@ export default function GraffHarness() {
         onPick={pickRecent}
         onNewChat={newChat}
         onSeeAll={openConversations}
-        activeNav={projectsOpen ? "projects" : filesOpen ? (fileRequest?.changes ? "changes" : "workspace") : browserOpen ? "browser" : conversationsOpen ? "conversations" : "home"}
+        activeNav={agentsOpen ? "agents" : projectsOpen ? "projects" : filesOpen ? (fileRequest?.changes ? "changes" : "workspace") : browserOpen ? "browser" : conversationsOpen ? "conversations" : "home"}
         onNavigate={(key) => {
           if (key === "home") requestPromptFocus(activeId);
+          if (key === "agents") {
+            setProjectsOpen(false); setFilesOpen(false); setBrowserOpen(false); setConversationsOpen(false);
+            setAgentsOpen(open => !open);
+            return;
+          }
           setAgentsOpen(false);
           setProjectsOpen(key === "projects");
           if (key === "changes") { openChanges(); return; }
@@ -502,7 +522,7 @@ export default function GraffHarness() {
         <HarnessChrome sidebarVisible={navigation.sidebarVisible} navigationToggle={navigation.trigger} unreadIds={unread} onTabPointerDown={tabDrag.begin} onTabClickCapture={tabDrag.suppressClick} chats={groups.tabs} activeId={groups.activeTab} busyIds={new Set(groups.groups.filter(group => group.ids.some(id => busyIds.has(id))).map(group => group.ids[0]))} focusChat={id => focusChat(groups.focusOf(id))} closeChat={closeTab} newChat={newChat}
           conversationsOpen={conversationsOpen} openConversations={openConversations} split={panes.length > 0} toggleSplit={toggleSplit}
           filesOpen={filesOpen} onFiles={() => { setAgentsOpen(false); setFileRequest(null); setProjectsOpen(false); setBrowserOpen(false); setConversationsOpen(false); setFilesOpen(fileRequest?.changes ? true : !filesOpen); }}
-          chatCwd={chatCwd} workspaceName={workspaceName} onFolder={() => setDialog({ mode: "new" })} openChanges={openChanges}
+          chatCwd={chatCwd} workspaceName={workspaceName} onFolder={() => setDialog({ mode: "new" })} openChanges={toggleChanges} changesOpen={!!(filesOpen && fileRequest?.changes)}
           browserOpen={browserOpen} onBrowser={() => { setAgentsOpen(false); setProjectsOpen(false); setConversationsOpen(false); setFilesOpen(false); setBrowserOpen(open => !open); }} pinCount={pinCount}
           terminalVisible={terminalVisible} toggleTerminal={toggleTerminal} agentsOpen={agentsOpen}
           workingAgents={workingAgents}

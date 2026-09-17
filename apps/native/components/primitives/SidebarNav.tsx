@@ -34,6 +34,7 @@ const WORKSPACE = { key: "graff", name: "Codegraff", monogram: "G" };
 const NAV_ITEMS: { key: string; label: string; icon: ReactNode; count?: string }[] = [
   { key: "home", label: "Home", icon: <IconHome size={18} /> },
   { key: "projects", label: "Projects", icon: <IconFolder size={18} /> },
+  { key: "agents", label: "Agents", icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden><circle cx="9" cy="8" r="3"/><circle cx="16" cy="9" r="2.4"/><path d="M4 19c.5-2.6 2.6-4.5 5-4.5s4.5 1.9 5 4.5M13.5 19c.4-1.7 1.8-3 3.5-3s3.1 1.3 3.5 3"/></svg> },
   { key: "conversations", label: "Conversations", icon: <IconChat size={18} /> },
   { key: "workspace", label: "Files", icon: <IconFolder size={18} /> },
   { key: "changes", label: "Changes", icon: <IconEditBig size={18} /> },
@@ -348,7 +349,7 @@ export default function SidebarNav({
               key={item.key}
               icon={item.icon}
               label={item.label}
-              count={item.key === "conversations" && recentsTotal != null ? String(recentsTotal) : item.count}
+              count={item.key === "conversations" && recentsTotal ? String(recentsTotal) : item.count}
               active={currentNav === item.key}
               onClick={() => selectNav(item.key)}
             />
@@ -479,9 +480,9 @@ export default function SidebarNav({
                 </Fragment>
               );
             })}
-            {visibleRecents.length === 0 && (
+            {visibleRecents.length === 0 && (query || !openSessions) && (
               <div className="sidebar-copy mx-2 px-2 py-2 text-[12.5px] text-ink-3">
-                {query ? "No chats found" : openSessions ? "No saved conversations yet." : "No chats yet — start one and it appears here."}
+                {query ? "No chats found" : "No chats yet — start one and it appears here."}
               </div>
             )}
             {!query && onSeeAll && (recentsTotal ?? recents.length) > recents.length && (

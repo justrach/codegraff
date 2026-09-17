@@ -47,10 +47,10 @@ export default function SessionTabs({ chats, activeId, busyIds, unreadIds, agent
               onClick={() => {
                 focusChat(c.id);
               }}
-              title={c.title ?? (chats.length > 1 ? `Chat ${c.id}` : "New chat")}
+              title={c.title ?? (chats.length > 1 ? `Chat ${c.id}` : "Chat")}
               className="min-w-0 flex-1 text-left"
             >
-              <span className="block truncate">{c.title ?? (chats.length > 1 ? `Chat ${c.id}` : "New chat")}</span>
+              <span className="block truncate">{c.title ?? (chats.length > 1 ? `Chat ${c.id}` : "Chat")}</span>
             </button>
             <button
               type="button"

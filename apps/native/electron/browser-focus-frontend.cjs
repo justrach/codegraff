@@ -29,14 +29,14 @@ async function runBrowserFocus({ win, output, click, until, report }) {
       await until(() => browser.visible && browser.tabs.get(browser.visible)?.view?.webContents.getURL() === url, 'explicit address navigation');
     };
     const a = await focused();
-    await click('[aria-label="Workspace tools"]'); await click('[aria-label="Browser"]');
+    await click('[aria-label="Browser"]');
     await navigateUser(`${origin}/first`);
     const chatA = browser.visible;
     await js(`Array.from(document.querySelectorAll('button[aria-label="New chat"]')).find(e=>e.checkVisibility()).setAttribute('data-browser-new-chat','true')`);
     await click('[data-browser-new-chat="true"]');
     await until(async () => (await focused()) !== a && browser.visible !== chatA, 'second chat');
     if (!await js(`!!document.querySelector('[aria-label="Address"]')?.checkVisibility()`)) {
-      await click('[aria-label="Workspace tools"]'); await click('[aria-label="Browser"]');
+      await click('[aria-label="Browser"]');
     }
     await navigateUser(`${origin}/selected`);
     const b = await focused(), chatB = browser.visible;

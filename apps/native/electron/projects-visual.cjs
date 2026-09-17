@@ -60,7 +60,6 @@ async function runProjectVisuals({ win, origin, output }) {
   await js(`document.querySelector('button[aria-label="Review workspace changes"]').click()`);
   await wait(`!!document.querySelector('[aria-label="Workspace changes"]')`);
   await wait(`document.body.textContent.includes('palette.css')`);
-  await js(`document.querySelector('button[aria-label="Workspace tools"]').click()`);
   await wait(`!!document.querySelector('button[aria-label="Files"]')`);
   await js(`document.querySelector('button[aria-label="Files"]').click()`);
   await wait(`!!document.querySelector('[aria-label="Workspace files"]')`);

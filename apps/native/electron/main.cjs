@@ -176,7 +176,7 @@ app.whenReady().then(async () => {
     { label: 'File', submenu: [
       ['New chat', 'CmdOrCtrl+N', 'new'], ['New tab', 'CmdOrCtrl+T', 'new'],
       ['Close chat', 'CmdOrCtrl+W', 'close'], ['Reopen closed chat', 'CmdOrCtrl+Shift+T', 'reopen'],
-      ['Toggle terminal', 'CmdOrCtrl+J', 'terminal'], ['Open workspace…', 'CmdOrCtrl+O', 'workspace'], ['Split right', 'CmdOrCtrl+D', 'split-right'],
+      ['Toggle terminal', 'CmdOrCtrl+J', 'terminal'], ['Focus prompt', 'CmdOrCtrl+L', 'focus-prompt'], ['Open workspace…', 'CmdOrCtrl+O', 'workspace'], ['Split right', 'CmdOrCtrl+D', 'split-right'],
       ['Split down', 'CmdOrCtrl+Shift+D', 'split-down'], ['Zoom split', 'CmdOrCtrl+Shift+Enter', 'split-zoom'],
     ].map(([label, accelerator, action]) => ({ label, accelerator, click: () => win.webContents.send('desktop-action', action) })) },
     { label: 'Tools', submenu: [{ label: 'Configure MCP clients…', enabled: app.isPackaged, click: async () => {

@@ -51,7 +51,7 @@ export function useTabDrag(onDrop: (id: number, drop: TabDrop) => void) {
         return { drop: { kind: "tab", id: Number(tab.dataset.tabId), after }, left: after ? r.right - 2 : r.left, top: r.top, width: 3, height: r.height, label: "Move tab" };
       }
       const pane = element?.closest<HTMLElement>('[data-chat]');
-      if (!pane || Number(pane.dataset.chat) === id) return null;
+      if (!pane) return null;
       const r = pane.getBoundingClientRect();
       const sides = [
         { edge: "left" as const, distance: (x - r.left) / r.width, horizontal: true },

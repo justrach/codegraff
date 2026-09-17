@@ -23,6 +23,14 @@ async function runSessionNavigation({ win, output }) {
   };
   await wait(`!!document.querySelector('[data-session-navigation="sidebar"]')`);
   assert.equal(await js(`document.querySelector('[data-session-tab-strip]').getBoundingClientRect().height`),0);
+  await click('[aria-label="Workspace navigation"] button[aria-label="Appearance"]');
+  await wait(`!!document.querySelector('[role="dialog"][aria-label="Appearance"]')`);
+  const appearance = await js(`(()=>{const d=document.querySelector('[role="dialog"][aria-label="Appearance"]');const r=d.getBoundingClientRect();const h=[...d.querySelectorAll('strong')].find(el=>el.textContent==='Appearance');const hr=h.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,headingTop:hr.top,headingVisible:hr.bottom>0&&hr.top<innerHeight,vw:innerWidth};})()`);
+  assert.ok(appearance.left >= 0, 'appearance stays on-screen from the sidebar gear');
+  assert.ok(appearance.right <= appearance.vw, 'appearance does not overflow the right edge');
+  assert.ok(appearance.headingVisible && appearance.headingTop >= appearance.top, 'Appearance heading stays visible');
+  await click('[aria-label="Close appearance"]');
+  await wait(`!document.querySelector('[role="dialog"][aria-label="Appearance"]')`);
   await click('[aria-label="Workspace navigation"] button[aria-label="New chat"]');
   const drafted = await active();
   for (const keyCode of 'Keep this draft') await desktop.testInput(wc,{type:'char',keyCode});
@@ -45,10 +53,7 @@ async function runSessionNavigation({ win, output }) {
   assert.equal(await active(),drafted);
   assert.equal(await js(`document.querySelector('[data-chat="${drafted}"] textarea').value`),'Keep this draft');
   assert.equal(await js(`!!document.querySelector('[data-chat-empty] h1')`),false,'focused mode keeps the empty composer compact');
-  await click('[data-workspace-toolbar] button[aria-label="Settings"]');
-  await wait(`!!document.querySelector(':popover-open')`);
-  assert.ok(await js(`document.querySelector(':popover-open').textContent.includes('Appearance')`),'theme control remains available');
-  await click(':popover-open button[aria-label="Appearance"]');
+  await click('[data-workspace-toolbar] button[aria-label="Appearance"]');
   await wait(`!!document.querySelector('[role="dialog"][aria-label="Appearance"]')`);
   await click('[aria-label="Close appearance"]');
   await desktop.testInput(wc,{type:'keyDown',keyCode:'Escape'});

@@ -10,6 +10,12 @@ type Actions = {
 export function useDesktopShortcuts(actions: Actions) {
   const ref=useRef(actions);ref.current=actions;
   useEffect(()=>{
+    const focusPrompt=(id:number)=>{
+      const prompt=document.querySelector<HTMLTextAreaElement>(`[data-chat="${id}"] textarea[aria-label="Prompt"]`);
+      if(!prompt||!prompt.getClientRects().length)return false;
+      prompt.focus({preventScroll:true});
+      return true;
+    };
     const dispatch=(action:string)=>{
       // Native menu accelerators reach this path without a DOM keydown.
       if(document.querySelector('[role="dialog"]'))return false;
@@ -25,6 +31,7 @@ export function useDesktopShortcuts(actions: Actions) {
         case 'split-zoom':a.zoomPane();return true;
         case 'terminal':a.toggleTerminal();return true;
         case 'workspace':a.openWorkspace();return true;
+        case 'focus-prompt':return focusPrompt(a.activeId);
       }
       return false;
     };
@@ -50,6 +57,7 @@ export function useDesktopShortcuts(actions: Actions) {
         else if(e.altKey&&k.startsWith('arrow')){cycle(a.columns,k==='arrowleft'||k==='arrowup'?-1:1);handled=true;}
         else if(!e.altKey){
           if(k==='j'&&!e.shiftKey)handled=dispatch('terminal');
+          else if(k==='l'&&!e.shiftKey)handled=dispatch('focus-prompt');
           else if(k==='n'&&!e.shiftKey)handled=dispatch('new');
           else if(k==='t')handled=dispatch(e.shiftKey?'reopen':'new');
           else if(k==='w'&&!e.shiftKey)handled=dispatch('close');

@@ -4,6 +4,9 @@ import { createPortal } from "react-dom";
 import { restoreActionFocus } from "../primitives/ActionMenu";
 import CustomThemes from "./CustomThemes";
 import { appearanceEvent, appearanceKey, applyAppearance, readAppearance, type Appearance } from "@/lib/appearance";
+import { placeAnchoredPanel } from "@/lib/anchored-panel";
+import DesktopSettings from "./DesktopSettings";
+import { IconSettingsGear1 } from "@/lib/icons";
 
 const themes = [
   { id: "codegraff", name: "CodeGraff", detail: "Official · Japanese palette", bg: "#f6eedf", surface: "#fffaf0", ink: "#1b1714", accent: "#2654d9" },
@@ -12,9 +15,9 @@ const themes = [
   { id: "website", name: "Website", detail: "CodeGraff emerald", bg: "#fafaf8", surface: "#ffffff", ink: "#18231e", accent: "#059669" },
 ] as const;
 
-export function ThemeToggle({ labeled = false }: { labeled?: boolean }) {
+export function ThemeToggle({ labeled = false, gear = false }: { labeled?: boolean; gear?: boolean }) {
   const [theme, setTheme] = useState<Appearance>("dark");
-  const [position, setPosition] = useState<{ top: number; right: number } | null>(null);
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -47,19 +50,22 @@ export function ThemeToggle({ labeled = false }: { labeled?: boolean }) {
     requestAnimationFrame(() => requestAnimationFrame(() => document.documentElement.classList.remove("theme-switching")));
   };
   return <>
-    <button ref={trigger} aria-label="Appearance" title="Appearance" aria-haspopup="dialog" aria-expanded={!!position} onClick={() => {
+    <button ref={trigger} aria-label="Appearance" title={gear ? "Settings" : "Appearance"} aria-haspopup="dialog" aria-expanded={!!position} onClick={() => {
       const rect = trigger.current!.getBoundingClientRect();
-      setPosition(position ? null : { top: Math.max(48, Math.min(rect.bottom + 8, window.innerHeight - 420)), right: Math.max(8, window.innerWidth - rect.right) });
-    }} className="flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-3 hover:bg-hover hover:text-ink">
-      {labeled ? "Appearance" : <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor" stroke="none" /></svg>}
+      setPosition(position ? null : placeAnchoredPanel(rect, { width: window.innerWidth, height: window.innerHeight }));
+    }} className={labeled ? "flex w-full items-center rounded-md px-3 py-2 text-left text-xs hover:bg-hover" : "flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-3 hover:bg-hover hover:text-ink"}>
+      {labeled ? "Appearance" : gear ? <IconSettingsGear1 size={16} /> : <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor" stroke="none" /></svg>}
     </button>
-    {position && createPortal(<div ref={panel} role="dialog" aria-label="Appearance" aria-modal="true" className="fixed z-[200] w-[310px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl border border-line bg-surface p-3 shadow-overlay" style={{ ...position, maxHeight: `calc(100dvh - ${position.top + 12}px)` }}>
-      <div className="mb-3 flex items-center justify-between"><strong className="text-xs font-medium">Appearance</strong><button aria-label="Close appearance" onClick={() => { setPosition(null); restoreActionFocus(trigger.current); }} className="rounded px-1.5 text-ink-3 hover:bg-hover">×</button></div>
+    {position && createPortal(<div ref={panel} role="dialog" aria-label="Appearance" aria-modal="true" className="fixed z-[200] flex w-[310px] max-w-[calc(100vw-16px)] flex-col overflow-hidden rounded-xl border border-line bg-surface p-3 shadow-overlay" style={{ ...position, maxHeight: `calc(100dvh - ${position.top + 12}px)` }}>
+      <div className="mb-3 flex shrink-0 items-center justify-between"><strong className="text-xs font-medium">Appearance</strong><button aria-label="Close appearance" onClick={() => { setPosition(null); restoreActionFocus(trigger.current); }} className="rounded px-1.5 text-ink-3 hover:bg-hover">×</button></div>
+      <div className="min-h-0 overflow-y-auto">
       <div className="grid grid-cols-2 gap-2">{themes.map(option => <button key={option.id} aria-pressed={theme === option.id} onClick={() => choose(option.id)} className={`rounded-lg border p-1.5 text-left focus-visible:outline-2 focus-visible:outline-accent ${theme === option.id ? "border-accent bg-accent-tint" : "border-line hover:bg-hover"}`}>
         <span aria-hidden="true" className="mb-2 flex h-14 gap-1 overflow-hidden rounded p-1.5" style={{ background: option.bg }}><span className="w-3 rounded-sm" style={{ background: option.id === "codegraff" ? "#d45a43" : option.accent, opacity: .35 }} /><span className="flex flex-1 flex-col gap-1 rounded p-1" style={{ background: option.surface }}><span className="h-1 w-5 rounded" style={{ background: option.ink, opacity: .45 }} /><span className="h-1 w-8 rounded" style={{ background: option.ink, opacity: .15 }} /><span className="mt-auto h-1.5 w-4 rounded" style={{ background: option.accent }} /></span></span>
         <span className="block text-[11px] font-medium text-ink">{option.name}</span><span className="block text-[9px] leading-4 text-ink-3">{option.detail}</span>
       </button>)}</div>
       <CustomThemes selected={theme} />
+      <DesktopSettings embedded />
+      </div>
     </div>, document.body)}
   </>;
 }
