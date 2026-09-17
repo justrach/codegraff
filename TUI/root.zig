@@ -21,6 +21,9 @@ pub const StreamBuf = engine.StreamBuf;
 pub fn rawStream() ?*engine.StreamBuf {
     return engine.g_raw;
 }
+pub fn setFollowupFn(f: ?engine.FollowupFn) void {
+    engine.g_followup_fn = f;
+}
 pub const Event = engine.Event;
 pub const EventQueue = engine.EventQueue;
 pub const ToolEvent = engine.ToolEvent;

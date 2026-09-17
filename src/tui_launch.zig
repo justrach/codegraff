@@ -27,6 +27,7 @@ const tui_sink = @import("tui_sink.zig");
 const tui_acp = @import("tui_acp.zig");
 const job_notify = @import("job_notify.zig");
 const peer_idle = @import("peer_idle.zig");
+const job_wait = @import("job_wait.zig");
 const schedule = @import("schedule.zig");
 const channel_worker = @import("channel_worker.zig");
 const util = @import("util.zig");
@@ -128,6 +129,8 @@ pub fn run(
     tui_acp.attach(&acp_session);
     defer tui_acp.detach();
     acp_session.ensure();
+    tui.setFollowupFn(noteFollowupCb);
+    defer tui.setFollowupFn(null);
     try tui.run(gpa, io, environ_map, .{
         .turn_ctx = &repl_ctx,
         .turn_fn = turnCb,
@@ -317,6 +320,10 @@ fn compactCb(ctx: ?*anyopaque, gpa: Allocator, history: []const tui.Turn, out: *
     gpa.free(raw.turns);
     out.turns = converted;
     return ok;
+}
+
+fn noteFollowupCb() void {
+    job_wait.noteFollowup();
 }
 
 fn cancelCb(ctx: ?*anyopaque) void {

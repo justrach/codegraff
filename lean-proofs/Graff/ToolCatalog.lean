@@ -22,18 +22,18 @@ structure Flags where
 deriving Repr, BEq
 
 def localTools : List String :=
-  ["bash", "bash_output", "bash_kill", "read_file", "edit_file",
+  ["shell", "read_file", "edit_file",
    "write_file", "codedb", "read_tool_result", "render_html", "imagegen"]
 
 def leanTools : List String :=
-  ["bash", "read_file", "edit_file", "write_file", "codedb",
+  ["shell", "read_file", "edit_file", "write_file", "codedb",
    "subagent", "attempt_completion", "load_tool_schemas"]
 
 def optionalTools : List String :=
   ["imagegen"]
 
 def baseTools : List String :=
-  ["bash", "bash_output", "bash_kill", "read_file", "edit_file",
+  ["shell", "read_file", "edit_file",
    "write_file", "webfetch", "skill", "codedb", "read_tool_result",
    "render_html"]
 
@@ -110,9 +110,13 @@ theorem cube_imagegen_off :
     (allFlags.filter (fun f => !f.imagegen)).all
       (fun f => !advertised f "imagegen") = true := by native_decide
 
-theorem cube_no_local_drops_bash :
+theorem cube_no_local_drops_shell :
     (allFlags.filter (fun f => f.noLocal)).all
-      (fun f => !advertised f "bash") = true := by native_decide
+      (fun f => !advertised f "shell") = true := by native_decide
+
+theorem cube_never_advertises_bash_aliases :
+    allFlags.all (fun f =>
+      (!advertised f "bash" && !advertised f "bash_output" && !advertised f "bash_kill")) = true := by native_decide
 
 theorem cube_sub_never_subagent :
     (allFlags.filter (fun f => f.isSub)).all
@@ -141,7 +145,9 @@ example : catalog {} =
 example : catalog { imagegen := true } =
     catalog {} ++ ["imagegen"] := by native_decide
 
-example : advertised { noLocal := true } "bash" = false := by native_decide
+example : advertised {} "shell" = true := by native_decide
+example : advertised {} "bash" = false := by native_decide
+example : advertised { noLocal := true } "shell" = false := by native_decide
 example : advertised { noLocal := true } "webfetch" = true := by native_decide
 example : advertised { noLocal := true, imagegen := true } "imagegen" = false := by native_decide
 example : advertised { lean := true, imagegen := true } "imagegen" = false := by native_decide

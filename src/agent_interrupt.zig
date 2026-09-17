@@ -194,6 +194,7 @@ pub fn escPressedFrom(input: anytype, echo: bool) bool {
                         std.heap.page_allocator.free(dup);
                     } else {
                         main_mod.g_steer_queue.append(std.heap.page_allocator, .{ .text = dup, .force = false }) catch std.heap.page_allocator.free(dup);
+                        @import("job_wait.zig").noteFollowup();
                     }
                 } else |_| main_mod.g_steer_buf.clearRetainingCapacity();
                 repl_glue.steerUnlock();

@@ -18,6 +18,7 @@ const rlm = @import("rlm.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: load_tool_schemas strings
 const mcp_select = @import("mcp_select.zig"); // fx search-then-select
 const result_read = @import("result_read.zig"); // overflow handle pager
+const shell_tool = @import("shell_tool.zig");
 const native_fold = @import("native_fold.zig"); // folded native power tools
 const render = @import("schema_render.zig"); // the comptime provider-tool renderers moved out when #352's optional-tool catalogs doubled the number held here (600-line ceiling)
 const anthropicToolsJson = render.anthropicToolsJson;
@@ -51,27 +52,7 @@ const empty_schema =
 ;
 
 pub const base_specs = [_]ToolSpec{
-    .{
-        .name = "bash",
-        .desc = "Run a shell command via /bin/sh -c in the current working directory. Returns stdout, stderr, and the exit code. A user-cancelled command reports cancelled (its whole local process group is killed; a remote process started over ssh may survive on the remote host). Foreground commands that are still running after 120s (or a shorter timeout ms) are moved to the background and return a job id — the process keeps running. For long-running commands set run_in_background true to skip the wait. You are notified on completion — do not poll. bash_output(wait_ms>0) blocks until exit (up to 10h); omit wait_ms for a snapshot. Stop it with bash_kill. A background job that writes nothing and is read by nobody for 2 hours is stopped for inactivity and you are told; rerun it only if it is still needed (the user pins a long-lived server with /jobs keep).",
-        .schema =
-        \\{"type": "object", "properties": {"command": {"type": "string", "description": "Shell command to execute"}, "timeout": {"type": "integer", "description": "Optional foreground wait in milliseconds before auto-background. A shorter value promotes earlier; a larger value cannot extend past the 120s (lean -p: 15s) bound — to wait for a genuinely long command, set run_in_background true and use bash_output(wait_ms>0), which blocks until exit (10h cap). 0 uses the default. Ignored when run_in_background is true."}, "run_in_background": {"type": "boolean", "description": "Start as a background job and return its id immediately instead of waiting (default false)"}}, "required": ["command"]}
-        ,
-    },
-    .{
-        .name = "bash_output",
-        .desc = "Read a background bash job's unread output and status. wait_ms=0 (or omitted) is a snapshot. For a finite job, wait_ms>0 blocks until exit (10h cap). For a job started with run_in_background (a server), wait_ms is an actual millisecond timeout before a running snapshot — it will not wait for exit. Do not poll in a loop.",
-        .schema =
-        \\{"type": "object", "properties": {"id": {"type": "integer", "description": "Job id returned by bash with run_in_background"}, "wait_ms": {"type": "integer", "description": "0 = snapshot now. Finite jobs: >0 waits until exit (10h cap). Persistent servers: >0 is a millisecond timeout, then a running snapshot."}}, "required": ["id"]}
-        ,
-    },
-    .{
-        .name = "bash_kill",
-        .desc = "Terminate a background bash job. Unread output stays readable via bash_output afterwards.",
-        .schema =
-        \\{"type": "object", "properties": {"id": {"type": "integer", "description": "Job id to terminate"}}, "required": ["id"]}
-        ,
-    },
+    .{ .name = shell_tool.tool_name, .desc = shell_tool.tool_desc, .schema = shell_tool.tool_schema },
     .{
         .name = "read_file",
         .desc = "Read a UTF-8 text file or view a PNG/JPEG/GIF/WebP image up to 5 MiB. Read images one at a time; pixels reach the next model request when vision is supported. Call this before editing any text file. For a read-only exact-key lookup, pass contains to return only matching numbered lines instead of the whole file. Whole-file reads over 256 KiB return a short preview; pass start_line/end_line (1-based, inclusive) for a byte-exact window from any size file.",
@@ -248,7 +229,7 @@ pub const tools_responses_sub = responsesToolsJson(&base_specs);
 
 // #330 layer 1, subagent half: the same three catalogs with the host-touching
 // tools filtered out at compile time. agent.zig picks between the twins on
-// no_local_tools.enabled, so a child is never even told bash exists.
+// no_local_tools.enabled, so a child is never even told shell exists.
 const base_specs_remote = no_local_tools.remoteSpecs(ToolSpec, &base_specs);
 pub const tools_anthropic_sub_remote = anthropicToolsJson(base_specs_remote);
 pub const tools_openai_sub_remote = openaiToolsJson(base_specs_remote);
@@ -579,7 +560,7 @@ test "agent_output: root-only (subagent/workflow's run_in_background has nothing
         found_root = true;
     };
     try std.testing.expect(found_root);
-    try std.testing.expect(!isMetaName("agent_output")); // dispatched like bash_output, not handled inline
+    try std.testing.expect(!isMetaName("agent_output")); // dispatched like shell action=output, not handled inline
 
     // Subagents can't spawn subagents (execSubagent's from_sub gate), so they
     // can never mint an agent id to poll — keep it out of their own catalog

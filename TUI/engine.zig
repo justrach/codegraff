@@ -62,6 +62,10 @@ pub const Job = struct {
 /// The live job's raw bash tail. tui_sink writes here from the tool pool.
 pub var g_raw: ?*StreamBuf = null;
 
+/// Host sets this so a TUI steer can unstick a foreground shell wait.
+pub const FollowupFn = *const fn () void;
+pub var g_followup_fn: ?FollowupFn = null;
+
 /// Idle auto-wake: a finished background job wants a turn (grok-build notify).
 pub const IdleWakeFn = *const fn (turn_ctx: ?*anyopaque, buf: []u8) ?[]const u8;
 pub var g_idle_wake_fn: ?IdleWakeFn = null;

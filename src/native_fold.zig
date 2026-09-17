@@ -35,7 +35,7 @@ pub var enabled = true;
 /// plus the deliberate-act tools whose first use tolerates one load call —
 /// measured (GRAFF_REQ_STATS top-5) at ~9.5k bytes of every request, with
 /// subagent alone at 5,052 (26% of the tools surface).
-/// Deliberately NOT here: the every-turn loop (bash, the file tools, codedb),
+/// Deliberately NOT here: the every-turn loop (shell, the file tools, codedb),
 /// loop control (ask_user, attempt_completion), and the meta arm itself
 /// (load_tool_schemas must stay callable to unfold these). Subagents are
 /// exempt at the call gates: their catalogs are comptime-baked full surfaces,

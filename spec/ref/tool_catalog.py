@@ -11,9 +11,7 @@ from itertools import product
 from typing import Iterable
 
 LOCAL_TOOLS = (
-    "bash",
-    "bash_output",
-    "bash_kill",
+    "shell",
     "read_file",
     "edit_file",
     "write_file",
@@ -23,7 +21,7 @@ LOCAL_TOOLS = (
     "imagegen",
 )
 LEAN_TOOLS = (
-    "bash",
+    "shell",
     "read_file",
     "edit_file",
     "write_file",
@@ -34,9 +32,7 @@ LEAN_TOOLS = (
 )
 OPTIONAL_TOOLS = ("imagegen",)
 BASE_TOOLS = (
-    "bash",
-    "bash_output",
-    "bash_kill",
+    "shell",
     "read_file",
     "edit_file",
     "write_file",

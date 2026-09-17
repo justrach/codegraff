@@ -10,6 +10,19 @@
 
 const std = @import("std");
 
+/// Set when the user queues a follow-up (line-REPL steer Enter, TUI steer).
+/// `waitForeground` promotes instead of blocking the rest of the 120s wait,
+/// and does not kill the child — the next turn can talk while it runs.
+pub var followup_pending: std.atomic.Value(bool) = .init(false);
+
+pub fn noteFollowup() void {
+    followup_pending.store(true, .release);
+}
+
+pub fn shouldPromote(deadline_hit: bool, followup: bool) bool {
+    return deadline_hit or followup;
+}
+
 /// Same 10-hour ceiling grok-build uses for a foreground/background wait.
 pub const wait_cap_ms: u64 = 10 * 60 * 60 * 1000;
 
@@ -32,6 +45,12 @@ pub fn resolveDeadlineFor(wait_ms: u64, persistent: bool) u64 {
     if (wait_ms == 0) return 0;
     if (persistent) return @min(wait_ms, wait_cap_ms);
     return wait_cap_ms;
+}
+
+test "shouldPromote: follow-up unsticks; a bare wait does not" {
+    try std.testing.expect(shouldPromote(true, false));
+    try std.testing.expect(shouldPromote(false, true));
+    try std.testing.expect(!shouldPromote(false, false));
 }
 
 test "resolveDeadline: snapshot stays zero" {

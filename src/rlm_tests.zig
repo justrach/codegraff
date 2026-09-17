@@ -302,7 +302,7 @@ test "effectiveRootSpecs: default rlm keeps subagent; --old and --lean do not dr
     try std.testing.expect(catalogHas(lean_on, "subagent"));
     try std.testing.expect(catalogHas(lean_on, rlm.tool_name));
     try std.testing.expect(!catalogHas(lean_on, "workflow"));
-    try std.testing.expect(catalogHas(lean_on, "bash"));
+    try std.testing.expect(catalogHas(lean_on, "shell"));
     try std.testing.expect(no_local_tools.leanKeeps("subagent"));
     try std.testing.expect(!no_local_tools.leanKeeps(rlm.tool_name));
 }

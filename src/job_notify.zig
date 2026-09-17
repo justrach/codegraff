@@ -56,7 +56,7 @@ fn wakeLine(buf: []u8, n: Notice) []const u8 {
     var head: [96]u8 = undefined;
     const h = line(&head, n);
     if (n.idle) return std.fmt.bufPrint(buf, "{s} — silent and unread past the idle stop; rerun it only if it is still needed.", .{h}) catch h;
-    return std.fmt.bufPrint(buf, "{s} — unread output via bash_output; do not poll.", .{h}) catch h;
+    return std.fmt.bufPrint(buf, "{s} — unread output via shell action=output; do not poll.", .{h}) catch h;
 }
 
 /// Standalone notification convenience (tests). The job pump MUST split

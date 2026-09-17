@@ -36,12 +36,8 @@ current is part of cutting a release.
 ## v0.0.299
 
 - The MCP `run_task` result view uses the codegraff.com paper palette (paper, rice, ink, coral, cobalt, gold) instead of the desktop emerald chrome. Host light/dark still applies. No webfonts.
-
-See [the release notes](docs/releases/v0.0.299.md) for details.
-
-## v0.0.299
-
-- The MCP `run_task` result view uses the codegraff.com paper palette (paper, rice, ink, coral, cobalt, gold) instead of the desktop emerald chrome. Host light/dark still applies. No webfonts.
+- One catalog `shell` tool (`action=run|output|kill`) replaces advertised `bash` / `bash_output` / `bash_kill`. The old names still dispatch. Not a PTY.
+- A follow-up typed during a foreground shell wait promotes the command instead of blocking or killing it, so you can talk while it runs.
 
 See [the release notes](docs/releases/v0.0.299.md) for details.
 

@@ -81,6 +81,7 @@ pub fn queueSteerLine(self: *Model, text: []const u8) void {
         if (dup.ptr != line.ptr) self.alloc.free(dup);
         return;
     };
+    if (engine.g_followup_fn) |f| f();
     self.input.setValue("") catch {};
     self.pushFmt(.system, "↳ queued ({d} waiting)", .{self.steer_queue.items.len}) catch {};
 }

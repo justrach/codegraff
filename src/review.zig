@@ -73,12 +73,11 @@ pub fn rejectTool(arena: std.mem.Allocator, call: ToolCall) !?ExecResult {
         std.mem.eql(u8, call.name, "codedb") or
         std.mem.eql(u8, call.name, "attempt_completion")) return null;
 
-    if (std.mem.eql(u8, call.name, "bash") and call.input == .object) {
-        const command = call.input.object.get("command") orelse return denied(arena, call.name);
-        const background = call.input.object.get("run_in_background");
-        if (command == .string and
-            (background == null or background.? != .bool or !background.?.bool) and
-            policy.readOnlyAllowed(command.string)) return null;
+    const shell_tool = @import("shell_tool.zig");
+    if (shell_tool.isFamily(call.name) and call.input == .object) {
+        if (shell_tool.isJobControl(call)) return denied(arena, call.name);
+        const command = shell_tool.runCommand(call) orelse return denied(arena, call.name);
+        if (!shell_tool.isBackgroundRun(call) and policy.readOnlyAllowed(command)) return null;
     }
     return denied(arena, call.name);
 }

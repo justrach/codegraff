@@ -44,9 +44,8 @@ const confinedPath = approvals_mod.confinedPath;
 const noSymlinkEscape = approvals_mod.noSymlinkEscape;
 const jobs = @import("jobs.zig");
 const runCapped = jobs.runCapped;
-const jobOutput = jobs.jobOutput;
-const jobKill = jobs.jobKill;
 const exec_bash = @import("exec_bash.zig");
+const shell_tool = @import("shell_tool.zig");
 const skills = @import("skills.zig");
 const skill_docs = @import("skill_docs.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: refuse an MCP tool whose schema was never loaded
@@ -150,17 +149,21 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             .text = try gpa.dupe(u8, "plan mode is on — read-only; describe the change instead of making it"),
             .is_error = true,
         };
-        if (std.mem.eql(u8, call.name, "bash")) {
-            if (strField(call.input, "command")) |cmd| if (!Approvals.readOnlyAllowed(cmd)) {
-                // The root may have approved this external read-only path this
-                // session (#64); subagents (from_sub) never get the external hatch.
-                const ext_ok = !ctx.from_sub and if (ctx.approvals) |ap| ap.planReadAllowed(ctx.io, cmd) else false;
-                if (!ext_ok) return .{
-                    .text = try gpa.dupe(u8, "plan mode is on — only read-only commands run; describe this command in the plan instead"),
-                    .is_error = true,
-                };
+        if (shell_tool.isKill(call)) {
+            return .{
+                .text = try gpa.dupe(u8, "plan mode is on — only read-only commands run; describe this command in the plan instead"),
+                .is_error = true,
             };
         }
+        if (shell_tool.runCommand(call)) |cmd| if (!Approvals.readOnlyAllowed(cmd)) {
+            // The root may have approved this external read-only path this
+            // session (#64); subagents (from_sub) never get the external hatch.
+            const ext_ok = !ctx.from_sub and if (ctx.approvals) |ap| ap.planReadAllowed(ctx.io, cmd) else false;
+            if (!ext_ok) return .{
+                .text = try gpa.dupe(u8, "plan mode is on — only read-only commands run; describe this command in the plan instead"),
+                .is_error = true,
+            };
+        };
     }
 
     if (mcp.Registry.isMcp(call.name)) {
@@ -231,18 +234,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         if (run.stdout.len == 0 and run.stderr.len == 0) try aw.writer.writeAll(if (ok) "learning run completed" else "learning run failed without output");
         return .{ .text = try aw.toOwnedSlice(), .is_error = !ok };
     }
-    if (std.mem.eql(u8, call.name, "bash")) return exec_bash.exec(ctx, call);
-    if (std.mem.eql(u8, call.name, "bash_output")) {
-        const id = intField(input, "id") orelse return missingArg(gpa, "id");
-        const wait_ms = intField(input, "wait_ms") orelse 0;
-        if (id < 0 or id > std.math.maxInt(u32)) return .{ .text = try gpa.dupe(u8, "invalid job id"), .is_error = true };
-        return jobOutput(gpa, io, @intCast(id), @intCast(@max(wait_ms, 0)));
-    }
-    if (std.mem.eql(u8, call.name, "bash_kill")) {
-        const id = intField(input, "id") orelse return missingArg(gpa, "id");
-        if (id < 0 or id > std.math.maxInt(u32)) return .{ .text = try gpa.dupe(u8, "invalid job id"), .is_error = true };
-        return jobKill(gpa, io, @intCast(id));
-    }
+    if (shell_tool.isFamily(call.name)) return shell_tool.exec(ctx, call);
     if (std.mem.eql(u8, call.name, "webfetch")) {
         const url = strField(input, "url") orelse return missingArg(gpa, "url");
         if (!std.mem.startsWith(u8, url, "http://") and !std.mem.startsWith(u8, url, "https://")) return .{
@@ -418,6 +410,7 @@ test "internal learning respects the parent privacy ceiling" {
 
 test { // main.zig is at the 600-line cap; exec.zig is these modules' importer, so the compiled-in references live here (the reach check diffs the test binary, not which file holds the line)
     _ = exec_bash;
+    _ = shell_tool;
     _ = @import("codedbpro_report.zig");
     _ = @import("tool_balance.zig");
     _ = @import("codedb_exec.zig");
