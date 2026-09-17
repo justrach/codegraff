@@ -512,6 +512,7 @@ export default function GraffHarness() {
             onTabPointerDown={tabDrag.begin} onTabClickCapture={tabDrag.suppressClick} />
         </div>}
         fill
+        className="bg-canvas"
         recents={recents.filter(recent => !chats.some(chat => chat.session === recent.id))}
         recentsTotal={storedTotal}
         agentsCount={workingAgents}

@@ -27,9 +27,14 @@ static napi_value inspect(napi_env env, napi_callback_info info) {
     NSWindow *window = windowArg(env, info);
     if (!window) return NULL;
     NSWindow *sheet = window.attachedSheet;
+    BOOL paneGlass = NO;
+    for (NSView *view in window.contentView.subviews) {
+        if ([view.identifier isEqualToString:@"graff.pane-glass"]) { paneGlass = YES; break; }
+    }
     return json(env, @{
         @"active": @(NSApp.active), @"screens": @(NSScreen.screens.count),
         @"visible": @(window.visible), @"key": @(window.keyWindow),
+        @"paneGlass": @(paneGlass),
         @"sheetAttached": @(sheet != nil), @"sheetVisible": @(sheet.visible),
         @"sheetKey": @(sheet.keyWindow), @"sheetTitle": sheet.title ?: @"",
         @"sheetWidth": @(sheet.frame.size.width), @"sheetHeight": @(sheet.frame.size.height)

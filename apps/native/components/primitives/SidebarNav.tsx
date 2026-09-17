@@ -201,6 +201,11 @@ export default function SidebarNav({
 }: SidebarNavProps) {
   const [collapsed, setCollapsed] = useState(false);
   useEffect(() => { onCollapsedChange?.(collapsed); }, [collapsed, onCollapsedChange]);
+  useEffect(() => {
+    const toggle = () => setCollapsed(value => !value);
+    window.addEventListener("graff-toggle-sidebar", toggle);
+    return () => window.removeEventListener("graff-toggle-sidebar", toggle);
+  }, []);
   useEffect(() => { if (onCloseNavigation) setCollapsed(false); }, [!!onCloseNavigation]);
   const [internalNav, setInternalNav] = useState("chats");
   const currentNav = activeNav ?? internalNav;
@@ -313,6 +318,7 @@ export default function SidebarNav({
             ref={collapseButtonRef}
             type="button"
             aria-label={onCloseNavigation ? "Close navigation" : "Collapse sidebar"}
+            title={onCloseNavigation ? "Close navigation" : "Collapse sidebar (⌘B)"}
             aria-hidden={collapsed}
             tabIndex={collapsed ? -1 : 0}
             onClick={collapse}
@@ -324,6 +330,7 @@ export default function SidebarNav({
             ref={expandButtonRef}
             type="button"
             aria-label="Expand sidebar"
+            title="Expand sidebar (⌘B)"
             aria-hidden={!collapsed}
             tabIndex={collapsed ? 0 : -1}
             onClick={() => { setCollapsed(false); requestAnimationFrame(() => collapseButtonRef.current?.focus()); }}

@@ -2,6 +2,19 @@
   container: chat-pane / size;
 }
 
+/* Unselected splits keep their transcript. A light wash recedes them; the
+ * focused pane stays the working surface (accent border). */
+.pane[data-glass="true"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--canvas) 28%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface) 35%, transparent);
+}
+
 /* A split is measured by its own width, not by the desktop window. */
 @container chat-pane (max-width: 540px) {
   .pane [data-transcript-content] {

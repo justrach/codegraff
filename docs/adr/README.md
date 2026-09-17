@@ -157,6 +157,7 @@ record only when you need the evidence or the edge cases.
 | [0135](0135-one-shell-tool.md) | Advertise one `shell` tool (`run` / `output` / `kill`); bash names stay dispatch aliases. Not a PTY. |
 | [0136](0136-follow-up-promotes-a-live-shell.md) | A queued follow-up or force-steer promotes a foreground shell; Esc still kills it. |
 | [0137](0137-desktop-appearance-is-a-turn-note.md) | Desktop appearance tokens for `render_html` ride the turn, never the prefix or tool catalog. |
+| [0138](0138-unselected-splits-use-glass-overlay.md) | Unselected split panes keep their transcript under a light wash; the focused pane stays the working surface. |
 
 ## When to write one
 

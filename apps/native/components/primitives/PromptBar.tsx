@@ -12,6 +12,7 @@ import ComposerAttachments from "./ComposerAttachments";
 import { useComposerSweep } from "./useComposerSweep";
 import { useComposerSize } from "./useComposerSize";
 import { useComposerDraft } from "./useComposerDraft";
+import { useSteerArm } from "./useSteerArm";
 import type { AcpCommand } from "@/lib/acp";
 import {
   filesFrom,
@@ -310,6 +311,7 @@ export default function PromptBar({
 
   const canSend = !disabled && uploads === 0 && (draft.trim().length > 0 || attachments.length > 0);
   const showStop = busy;
+  const steerArm = useSteerArm(busy && !disabled, onSteerQueued);
   const send = () => {
     if (!canSend) return;
     if (/^\/(effort|reasoning)$/.test(draft.trim()) && model.effortLevels?.length) { modelRef.current?.dispatchEvent(new Event("graff-effort-open")); setDraft(""); return; }
@@ -359,6 +361,11 @@ export default function PromptBar({
       {modelOpen && <ModelPicker models={catalog} selected={model} anchor={modelRef} onClose={() => setModelOpen(false)}
         onSelect={next => { selectModel(next); inputRef.current?.focus({ preventScroll: true }); }} />}
 
+      {(steerArm.left > 0 || steerArm.steering) && (
+        <p role="status" className="mb-1.5 px-1 text-[12px] font-medium text-ink-2">
+          {steerArm.steering ? "Steering…" : `Enter again in ${steerArm.left} to steer`}
+        </p>
+      )}
       {/* ── composer ───────────────────────────────────── */}
       <div
         onDragOver={(event) => {
@@ -471,7 +478,7 @@ export default function PromptBar({
               if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && busy && !disabled && onSteerQueued) {
                 event.preventDefault();
                 event.stopPropagation();
-                if (!event.repeat) onSteerQueued();
+                if (!event.repeat) steerArm.fire();
                 return;
               }
               // Other modified keys belong to desktop shortcuts.
@@ -500,6 +507,7 @@ export default function PromptBar({
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
                 event.stopPropagation();
+                if (!canSend && steerArm.consumeEnter()) return;
                 send();
               }
             }}
@@ -549,9 +557,7 @@ export default function PromptBar({
             aria-label={showStop ? "Stop" : "Send"}
             disabled={showStop ? !onStop : !canSend}
             onClick={showStop ? onStop : send}
-            className={`flex size-7 shrink-0 items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed transition-[background-color,color,transform] duration-200 enabled:active:scale-[0.94] ${
-              pill ? "rounded-full" : "rounded-[8px]"
-            } ${wide ? "col-start-5 row-start-2" : "col-start-5 row-start-1"}`}
+            className={`flex size-7 shrink-0 items-center justify-center rounded-full disabled:opacity-30 disabled:cursor-not-allowed transition-[background-color,color,transform] duration-200 enabled:active:scale-[0.94] ${wide ? "col-start-5 row-start-2" : "col-start-5 row-start-1"}`}
             style={{
               background: showStop || canSend ? "var(--ink)" : "var(--line-strong)",
               color: showStop || canSend ? "var(--surface)" : "var(--ink-2)",

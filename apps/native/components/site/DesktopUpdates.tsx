@@ -81,7 +81,7 @@ export default function DesktopUpdates() {
           data-desktop-update-settings
           aria-expanded={open}
           aria-haspopup="dialog"
-          className="pointer-events-auto flex h-8 items-center gap-1.5 rounded-[8px] border border-line bg-page px-2.5 text-[12px] font-medium text-ink-2 shadow-hairline hover:bg-hover hover:text-ink"
+          className="pointer-events-auto flex h-7 items-center rounded-[7px] px-2.5 text-[12.5px] font-medium text-ink-2 hover:bg-hover hover:text-ink"
           onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); setPlacement({ top: rect.bottom + 8, right: Math.max(12, window.innerWidth - rect.right) }); setOpen(value => !value); }}
         >
           Updates

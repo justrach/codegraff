@@ -168,7 +168,7 @@ export default function ChatComposer() {
               aria-label="Send"
               disabled={!canSend}
               onClick={send}
-              className="flex size-7 items-center justify-center rounded-[8px]
+              className="flex size-7 items-center justify-center rounded-full
                 transition-[background-color,color,transform] duration-200 enabled:active:scale-[0.96]"
               style={{
                 background: canSend ? "var(--ink)" : "var(--line-strong)",

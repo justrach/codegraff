@@ -37,6 +37,12 @@ app.whenReady().then(async () => {
   testDesktop.present(win);
   await wait(() => { const state = inspect(); return state.active && state.visible && state.key && state.screens > 0; }, 'CI cannot activate a native window; a graphical login session is required');
   report.passed.push('graphical session and native window focus');
+  const glassKind = native.glass(handle);
+  if (glassKind < 0) report.skipped.push('AppKit pane glass: Reduce Transparency is on');
+  else {
+    assert.equal(inspect().paneGlass, true, 'NSGlassEffectView / NSVisualEffectView must sit behind the web contents');
+    report.passed.push(glassKind === 1 ? 'macOS 26 NSGlassEffectView behind web contents' : 'NSVisualEffectView pane-glass fallback');
+  }
   for (let n = 0; n < 2; n++) {
     native.show(handle, JSON.stringify({ rssMiB: 64, cpuPercent: 0, processes: 1, browsers: 0 }));
     let state;

@@ -4,6 +4,7 @@
 #include <string.h>
 
 extern void graff_show_activity(void *view, const char *json);
+extern int graff_install_pane_glass(void *view);
 
 static napi_value show(napi_env env, napi_callback_info info) {
     size_t argc = 2, handle_size = 0, json_size = 0;
@@ -43,11 +44,28 @@ static napi_value computer(napi_env env, napi_callback_info info) {
     if (output) { napi_create_string_utf8(env, output, NAPI_AUTO_LENGTH, &result); free(output); }
     return result;
 }
+static napi_value glass(napi_env env, napi_callback_info info) {
+    size_t argc = 1, handle_size = 0;
+    napi_value args[1], result;
+    void *handle_data = NULL, *view = NULL;
+    napi_get_undefined(env, &result);
+    if (napi_get_cb_info(env, info, &argc, args, NULL, NULL) != napi_ok || argc != 1 ||
+        napi_get_buffer_info(env, args[0], &handle_data, &handle_size) != napi_ok ||
+        handle_size != sizeof(view)) {
+        napi_throw_type_error(env, NULL, "Expected a native window handle");
+        return result;
+    }
+    memcpy(&view, handle_data, sizeof(view));
+    napi_create_int32(env, graff_install_pane_glass(view), &result);
+    return result;
+}
 NAPI_MODULE_INIT() {
     napi_value fn;
     napi_create_function(env, "show", NAPI_AUTO_LENGTH, show, NULL, &fn);
     napi_set_named_property(env, exports, "show", fn);
     napi_create_function(env, "computer", NAPI_AUTO_LENGTH, computer, NULL, &fn);
     napi_set_named_property(env, exports, "computer", fn);
+    napi_create_function(env, "glass", NAPI_AUTO_LENGTH, glass, NULL, &fn);
+    napi_set_named_property(env, exports, "glass", fn);
     return exports;
 }

@@ -22,7 +22,7 @@ const { installWindowState } = require('./window-state.cjs');
 const root = process.env.GRAFF_CWD || app.getPath('home');
 const resources = process.env.GRAFF_ELECTRON_RESOURCES || process.resourcesPath;
 app.setName('Codegraff');
-app.setPath('userData', process.env.GRAFF_ELECTRON_SMOKE ? (process.env.GRAFF_SMOKE_PROFILE || path.join(require('node:os').tmpdir(), `codegraff-smoke-${process.pid}`)) : path.join(app.getPath('appData'), 'Codegraff Electron'));
+app.setPath('userData', process.env.GRAFF_ELECTRON_PROFILE || (process.env.GRAFF_ELECTRON_SMOKE ? (process.env.GRAFF_SMOKE_PROFILE || path.join(require('node:os').tmpdir(), `codegraff-smoke-${process.pid}`)) : path.join(app.getPath('appData'), 'Codegraff Electron')));
 if (process.env.GRAFF_ELECTRON_SMOKE) process.env.GRAFF_THEMES_DIR = path.join(app.getPath('userData'), 'themes');
 let win, browser, backend, automation, computer, profiler;
 let terminals;

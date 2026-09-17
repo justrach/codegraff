@@ -36,6 +36,9 @@ const applyWindowState = () => {
   if (document.documentElement) document.documentElement.dataset.desktopFullscreen = String(fullscreen);
 };
 ipcRenderer.on('window-state', (_event, state) => { fullscreen = state.fullscreen === true; applyWindowState(); });
+ipcRenderer.on('native-glass', (_event, on) => {
+  if (document.documentElement) document.documentElement.dataset.nativeGlass = on ? 'true' : 'false';
+});
 window.addEventListener('DOMContentLoaded', applyWindowState);
 ipcRenderer.on('profile-enabled', (_event, enabled) => {
   longTasks?.disconnect();
