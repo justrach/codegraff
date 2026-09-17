@@ -19,6 +19,7 @@ const std = @import("std");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const presence_accord = @import("presence_accord.zig");
 
 pub const chan_name_max = 96;
 
@@ -65,6 +66,7 @@ pub fn postMessage(io: Io, arena: Allocator, dir: Io.Dir, name: []const u8, msg:
         break :blk st.size;
     };
     f.writePositionalAll(io, aw.writer.buffered(), end) catch return false;
+    presence_accord.livePost(io, arena, name, aw.writer.buffered());
     return true;
 }
 
@@ -158,4 +160,33 @@ test "readNewMessages: a torn trailing line waits for the next drain" {
     const second = readNewMessages(io, arena, tmp.dir, name, &off);
     try std.testing.expectEqual(1, second.len);
     try std.testing.expectEqualStrings("rest", second[0].text);
+}
+
+test "postMessage dual-writes JSONL when Accord live is on" {
+    if (@import("builtin").os.tag == .windows) return;
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    presence_accord.test_enabled = true;
+    defer presence_accord.test_enabled = false;
+    // No listener: live send is best-effort and must not fail the durable write.
+    presence_accord.test_sock = "graff-accord-missing.sock";
+    defer presence_accord.test_sock = null;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var name_buf: [chan_name_max]u8 = undefined;
+    const name = chanName(&name_buf, "/repo/.git");
+    try std.testing.expect(postMessage(io, arena, tmp.dir, name, .{
+        .from_pid = 3,
+        .from_start = 1,
+        .from_session = "s-a",
+        .ts_ms = 1,
+        .text = "durable stays",
+    }));
+    var off: u64 = 0;
+    const got = readNewMessages(io, arena, tmp.dir, name, &off);
+    try std.testing.expectEqual(@as(usize, 1), got.len);
+    try std.testing.expectEqualStrings("durable stays", got[0].text);
 }
