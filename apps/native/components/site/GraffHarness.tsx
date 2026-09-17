@@ -22,6 +22,7 @@ import { sidebarRecents } from "./harness-sidebar";
 import AgentsPane from "./AgentsPane";
 import { newPageToken, newSessionName, type Chat, type Msg } from "./harness-types";
 import ChangesPane from "./ChangesPane";
+import ReviewsPane from "./ReviewsPane";
 import { useBrowserVisibility } from "./useBrowserVisibility";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type PromptModel } from "@/components/primitives/PromptBar";
@@ -88,6 +89,8 @@ export default function GraffHarness() {
   const [workingAgents, setWorkingAgents] = useState(0);
   const [tasksOpen, setTasksOpen] = useTasksVisibility();
   const [filesOpen, setFilesOpen] = useState(false);
+  const [reviewsOpen, setReviewsOpen] = useState(false);
+  const [claims, setClaims] = useState<{ kind: string; key: string; session: string }[]>([]);
   const [fileRequest, setFileRequest] = useState<{ path: string; n: number; changes?: boolean } | null>(null);
   const fileReqRef = useRef(0);
   // Shell-style prompt recall (ArrowUp in the composer), kept per browser so
@@ -407,6 +410,19 @@ export default function GraffHarness() {
     return findWorkspace(workspaces, dir)?.name ?? (dir ? basename(dir) : "workspace");
   };
   const chatCwd = cwdOf(chatThread);
+  useEffect(() => {
+    let alive = true;
+    const tick = () => {
+      const params = new URLSearchParams();
+      if (chatCwd) params.set("root", chatCwd);
+      void fetch(`/api/claims?${params}`, { cache: "no-store" }).then((response) => response.json()).then((body: { claims?: { kind: string; key: string; session: string }[] }) => {
+        if (alive && Array.isArray(body.claims)) setClaims(body.claims);
+      }).catch(() => {});
+    };
+    tick();
+    const id = setInterval(tick, 5000);
+    return () => { alive = false; clearInterval(id); };
+  }, [chatCwd]);
   const chatWorkspace = findWorkspace(workspaces, chatCwd);
   const workspaceName = chatWorkspace?.name ?? (chatCwd ? basename(chatCwd) : "workspace");
   const pinCount = (pinsByChat[chatThread.id] ?? []).length;
@@ -426,7 +442,7 @@ export default function GraffHarness() {
   });
 
   const columnBody = (thread: Chat) => <ChatColumn key={thread.id} thread={thread}
-    compact={columnIds.length > 1 || navigation.focusedMode || filesOpen || browserOpen || agentsOpen} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
+    compact={columnIds.length > 1 || navigation.focusedMode || filesOpen || browserOpen || agentsOpen || reviewsOpen || !!(fileRequest?.changes)} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
     onOpenPath={openPath} onReview={openChanges}
     onRefresh={loaded => {
       const messages: Msg[] = loaded.messages.map(m => ({ id: ++msgIdRef.current, ...m }));
@@ -530,6 +546,7 @@ export default function GraffHarness() {
           conversationsOpen={conversationsOpen} openConversations={openConversations} split={panes.length > 0} toggleSplit={toggleSplit}
           filesOpen={filesOpen} onFiles={() => { setAgentsOpen(false); setFileRequest(null); setProjectsOpen(false); setBrowserOpen(false); setConversationsOpen(false); setFilesOpen(fileRequest?.changes ? true : !filesOpen); }}
           chatCwd={chatCwd} workspaceName={workspaceName} onFolder={() => setDialog({ mode: "new" })} openChanges={toggleChanges} changesOpen={!!(filesOpen && fileRequest?.changes)}
+          reviewsOpen={reviewsOpen} onReviews={() => { setAgentsOpen(false); setProjectsOpen(false); setBrowserOpen(false); setConversationsOpen(false); setFilesOpen(false); setReviewsOpen(open => !open); }}
           browserOpen={browserOpen} onBrowser={() => { setAgentsOpen(false); setProjectsOpen(false); setConversationsOpen(false); setFilesOpen(false); setBrowserOpen(open => !open); }} pinCount={pinCount}
           terminalVisible={terminalVisible} toggleTerminal={toggleTerminal} agentsOpen={agentsOpen}
           workingAgents={workingAgents}
@@ -559,11 +576,12 @@ export default function GraffHarness() {
           <div className="min-h-0 min-w-0 flex-1" style={{ display: projectsOpen || conversationsOpen || agentsOpen ? "none" : "flex" }}>
             <ChatSplitLayout threads={columns} liveChatIds={chats.map(chat => chat.id)} activeId={activeId} direction={splitDirection} layout={groups.tree} onLayoutChange={groups.setTree}
               onFocus={id => focusChat(id, false)} onClose={closeChat} folder={thread => ({name: workspaceNameOf(thread), path: cwdOf(thread)})}
-              body={columnBody} split={columnIds.length > 1} />
+              body={columnBody} split={columnIds.length > 1} claims={claims} />
           </div>
 
           {agentsOpen && !projectsOpen && !filesOpen && !browserOpen && !conversationsOpen && <AgentsPane key={chatCwd} root={chatCwd} fullWidth onOccupancy={setWorkingAgents} onClose={() => setAgentsOpen(false)} />}
-          {filesOpen && !projectsOpen && !conversationsOpen && (fileRequest?.changes ? <ChangesPane root={chatThread.cwd} onClose={() => setFilesOpen(false)} /> : <FilesPane root={chatThread.cwd} requested={fileRequest} onClose={() => setFilesOpen(false)} />)}
+          {filesOpen && !projectsOpen && !conversationsOpen && !reviewsOpen && (fileRequest?.changes ? <ChangesPane root={chatThread.cwd} onClose={() => setFilesOpen(false)} /> : <FilesPane root={chatThread.cwd} requested={fileRequest} onClose={() => setFilesOpen(false)} />)}
+          {reviewsOpen && !projectsOpen && !conversationsOpen && <ReviewsPane root={chatThread.cwd} onClose={() => setReviewsOpen(false)} />}
 
           {browserOpen && !projectsOpen && !conversationsOpen && (
             <BrowserPane

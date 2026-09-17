@@ -14,7 +14,7 @@ type Props = {
   focusChat(id: number): void; closeChat(id: number): void; newChat(): void;
   conversationsOpen: boolean; openConversations(): void; split: boolean; toggleSplit(): void;
   filesOpen: boolean; onFiles(): void; chatCwd?: string; workspaceName: string; onFolder(): void;
-  openChanges(): void; changesOpen?: boolean; browserOpen: boolean; onBrowser(): void; pinCount: number;
+  openChanges(): void; changesOpen?: boolean; reviewsOpen?: boolean; onReviews?: () => void; browserOpen: boolean; onBrowser(): void; pinCount: number;
   terminalVisible: boolean; toggleTerminal(): void; agentsOpen: boolean; onAgents(): void; workingAgents?: number;
   tasksOpen?: boolean; taskCount?: number; onTasks?: () => void; splitNotice?: string | null;
 };
@@ -23,14 +23,15 @@ function paneBtn(pressed: boolean) {
   return `h-7 shrink-0 rounded-[7px] px-2.5 text-[12.5px] font-medium ${pressed ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover"}`;
 }
 
-function PaneGroup({ filesOpen, changesOpen, browserOpen, terminalVisible, pinCount, onFiles, openChanges, onBrowser, toggleTerminal, taskCount, tasksOpen, onTasks }: {
-  filesOpen: boolean; changesOpen: boolean; browserOpen: boolean; terminalVisible: boolean; pinCount: number;
-  onFiles(): void; openChanges(): void; onBrowser(): void; toggleTerminal(): void;
+function PaneGroup({ filesOpen, changesOpen, reviewsOpen, browserOpen, terminalVisible, pinCount, onFiles, openChanges, onReviews, onBrowser, toggleTerminal, taskCount, tasksOpen, onTasks }: {
+  filesOpen: boolean; changesOpen: boolean; reviewsOpen: boolean; browserOpen: boolean; terminalVisible: boolean; pinCount: number;
+  onFiles(): void; openChanges(): void; onReviews(): void; onBrowser(): void; toggleTerminal(): void;
   taskCount: number; tasksOpen: boolean; onTasks?: () => void;
 }) {
   return <>
     <button type="button" aria-label="Files" aria-pressed={filesOpen && !changesOpen} onClick={onFiles} className={paneBtn(filesOpen && !changesOpen)}>Files</button>
     <button type="button" aria-label="Review workspace changes" aria-pressed={changesOpen} onClick={openChanges} className={paneBtn(changesOpen)}>Changes</button>
+    <button type="button" aria-label="GitHub reviews" aria-pressed={reviewsOpen} onClick={onReviews} className={paneBtn(reviewsOpen)}>Reviews</button>
     <button type="button" aria-label="Browser" aria-pressed={browserOpen} onClick={onBrowser} className={paneBtn(browserOpen)}>Browser{pinCount > 0 ? ` (${pinCount})` : ""}</button>
     <button type="button" aria-label="Toggle terminal" aria-pressed={terminalVisible} onClick={toggleTerminal} className={paneBtn(terminalVisible)}>Terminal</button>
     {(taskCount > 0 || tasksOpen) && onTasks && <button type="button" aria-label="Show tasks" aria-pressed={tasksOpen} onClick={onTasks} className={paneBtn(tasksOpen)}>Tasks{taskCount ? ` (${taskCount})` : ""}</button>}
@@ -39,9 +40,9 @@ function PaneGroup({ filesOpen, changesOpen, browserOpen, terminalVisible, pinCo
 
 export default function HarnessChrome({navigationToggle, sidebarVisible = false, unreadIds, chats, activeId, busyIds, focusChat, closeChat, newChat,
   conversationsOpen, openConversations, split, toggleSplit, filesOpen, onFiles, chatCwd,
-  workspaceName, onFolder, openChanges, changesOpen = false, browserOpen, onBrowser, pinCount, terminalVisible,
+  workspaceName, onFolder, openChanges, changesOpen = false, reviewsOpen = false, onReviews, browserOpen, onBrowser, pinCount, terminalVisible,
   toggleTerminal, agentsOpen, onAgents, workingAgents = 0, tasksOpen = false, taskCount = 0, onTasks, splitNotice, onTabPointerDown, onTabClickCapture}: Props) {
-  const panes = <PaneGroup filesOpen={filesOpen} changesOpen={changesOpen} browserOpen={browserOpen} terminalVisible={terminalVisible} pinCount={pinCount} onFiles={onFiles} openChanges={openChanges} onBrowser={onBrowser} toggleTerminal={toggleTerminal} taskCount={taskCount} tasksOpen={tasksOpen} onTasks={onTasks} />;
+  const panes = <PaneGroup filesOpen={filesOpen} changesOpen={changesOpen} reviewsOpen={reviewsOpen} browserOpen={browserOpen} terminalVisible={terminalVisible} pinCount={pinCount} onFiles={onFiles} openChanges={openChanges} onReviews={onReviews ?? (() => {})} onBrowser={onBrowser} toggleTerminal={toggleTerminal} taskCount={taskCount} tasksOpen={tasksOpen} onTasks={onTasks} />;
   const more = <ActionMenu label="Chat actions" text="More" className="shrink-0">
     {!sidebarVisible && <button type="button" onClick={newChat}>New chat <span className="ml-auto text-ink-3">⌘T</span></button>}
     <button type="button" aria-pressed={split} onClick={toggleSplit}>{split ? "Close splits" : "Split view"} <span className="ml-auto text-ink-3">⌘\</span></button>

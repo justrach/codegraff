@@ -6,11 +6,12 @@ import { createComposerDraft, type ComposerDraftStore } from "@/lib/composer-dra
 import SplitDivider from "./SplitDivider";
 import paneStyles from "./chat-pane.module.css";
 import {flatSplit,pruneSplit,splitGeometry,paneStyle,type SplitTree} from "@/lib/split-tree";
-export default function ChatSplitLayout({ threads, liveChatIds, activeId, direction, layout, onLayoutChange, onFocus, onClose, folder, body, split }: {
+export default function ChatSplitLayout({ threads, liveChatIds, activeId, direction, layout, onLayoutChange, onFocus, onClose, folder, body, split, claims = [] }: {
   threads: Chat[]; activeId: number; direction: "row" | "column"; layout?: SplitTree;
   liveChatIds?: number[];
   onLayoutChange(tree:SplitTree):void; onFocus(id: number): void; onClose(id: number): void;
   folder(thread: Chat): { name: string; path?: string }; body(thread: Chat): ReactNode; split: boolean;
+  claims?: { kind: string; key: string; session: string }[];
 }) {
   const drafts = useRef(new Map<number, ComposerDraftStore>());
   const liveKey = liveChatIds?.join(",");
@@ -43,10 +44,14 @@ export default function ChatSplitLayout({ threads, liveChatIds, activeId, direct
         onFocusCapture={()=>{if(thread.id!==activeId)onFocus(thread.id);}}
         style={{...paneStyle(geometry.panes.find(p=>p.id===thread.id)!.box),minHeight:0,borderColor:split&&thread.id===activeId?'var(--accent)':undefined}}
         className={`${paneStyles.pane} absolute flex min-w-0 flex-col overflow-hidden border border-line bg-page ${split ? "rounded-[6px]" : "rounded-[14px]"}`}>
-        {split&&<header className="flex h-9 shrink-0 items-center gap-2 border-b border-line px-3">
-          <button type="button" aria-pressed={thread.id===activeId} onClick={()=>onFocus(thread.id)} title="Focus this chat" className="min-w-0 flex-1 truncate text-left text-xs font-medium">{thread.title??`Chat ${thread.id}`}</button>
-          <span title={folder(thread).path} className="flex min-w-0 max-w-[40%] items-center gap-1 text-[11px] text-ink-3"><IconFolder size={13}/><span className="truncate">{folder(thread).name}</span></span>
-          <button type="button" aria-label="Close this split" title="Close this chat (⌘W)" onClick={()=>onClose(thread.id)} className="flex size-6 shrink-0 items-center justify-center rounded text-ink-3 hover:bg-hover hover:text-ink">×</button>
+        {(split || claims.some(claim => claim.session === thread.session)) && <header className="flex h-9 shrink-0 items-center gap-2 border-b border-line px-3">
+          {split && <button type="button" aria-pressed={thread.id===activeId} onClick={()=>onFocus(thread.id)} title="Focus this chat" className="min-w-0 flex-1 truncate text-left text-xs font-medium">{thread.title??`Chat ${thread.id}`}</button>}
+          {!split && <span className="min-w-0 flex-1" />}
+          {claims.filter(claim => claim.session === thread.session).slice(0, 1).map(claim =>
+            <span key={`${claim.kind}:${claim.key}`} title={`${claim.kind} ${claim.key}`} className="max-w-[45%] truncate rounded-full bg-inset px-2 py-0.5 text-[10px] text-ink-3">{claim.kind === "pull_request" ? `PR ${claim.key}` : claim.kind === "issue" ? `#${claim.key}` : claim.key}</span>
+          )}
+          {split && <span title={folder(thread).path} className="flex min-w-0 max-w-[40%] items-center gap-1 text-[11px] text-ink-3"><IconFolder size={13}/><span className="truncate">{folder(thread).name}</span></span>}
+          {split && <button type="button" aria-label="Close this split" title="Close this chat (⌘W)" onClick={()=>onClose(thread.id)} className="flex size-6 shrink-0 items-center justify-center rounded text-ink-3 hover:bg-hover hover:text-ink">×</button>}
         </header>}
         <ComposerDraftContext.Provider value={draftFor(thread.id)}>{body(thread)}</ComposerDraftContext.Provider>
       </section>
