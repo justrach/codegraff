@@ -174,7 +174,7 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
         defer self.gpa.free(futures);
         const outputs = try self.gpa.alloc(ToolOutput, ext_idx.items.len);
         defer self.gpa.free(outputs);
-        for (ext_idx.items, futures) |i, *fut| fut.* = self.io.async(execTool, .{ ctx, calls[i] });
+        for (ext_idx.items, futures) |i, *fut| fut.* = self.io.concurrent(execTool, .{ ctx, calls[i] }) catch self.io.async(execTool, .{ ctx, calls[i] });
         for (futures, outputs) |*fut, *output| output.* = fut.await(self.io);
         defer for (outputs) |output| self.gpa.free(output.text);
         // #440: one threshold for the whole batch, pinned under this model's

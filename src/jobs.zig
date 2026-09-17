@@ -126,7 +126,7 @@ fn jobDrain(job: *Job, gpa: Allocator, readers: []const *Io.Reader, now_ms: i64)
     for (readers, 0..) |r, i| {
         const b = r.buffered();
         if (b.len == 0) continue;
-        browser_guard.touch(job, now_ms); // output is activity (#199)
+        if (!job.persistent) browser_guard.touch(job, now_ms);
         if (job.stream) |emit| emit(job.stream_ctx, @intCast(i), b);
         job.buf.appendSlice(gpa, b) catch {};
         r.toss(b.len);

@@ -1,6 +1,7 @@
 const { WebContentsView, session, webContents, dialog } = require('electron');
 const path = require('node:path');
 const { pageURL, bounds } = require('./policy.cjs');
+const previewConsumers = require('./preview-consumers.cjs');
 
 class BrowserTabs {
   constructor(window, emit) {
@@ -63,7 +64,9 @@ class BrowserTabs {
     return tab;
   }
   async navigate(chat, raw, { background = false } = {}) {
-    const url = pageURL(raw), tab = this.create(chat); tab.url = url;
+    const url = pageURL(raw), tab = this.create(chat);
+    if (tab.previewUrl) previewConsumers.remove(tab.previewUrl);
+    tab.url = url; tab.previewUrl = url; previewConsumers.add(url);
     if (!background) { this.attach(tab); this.emit({ chat, type: 'show' }); }
     try { await tab.view.webContents.loadURL(url); }
     finally { if (background && this.visible !== chat) this.hide(chat); }
@@ -92,6 +95,7 @@ class BrowserTabs {
     tab.timer.unref();
   }
   release(tab) {
+    if (tab.previewUrl) { previewConsumers.remove(tab.previewUrl); tab.previewUrl = null; }
     clearTimeout(tab.timer); if (!tab.view) return;
     const view = tab.view; tab.url = view.webContents.getURL() || tab.url; tab.view = null;
     if (!this.window.isDestroyed()) this.window.contentView.removeChildView(view);

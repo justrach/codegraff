@@ -71,7 +71,18 @@ pub fn touch(job: anytype, now: i64) void {
 }
 
 pub fn mayStop(result: Probe, pinned: bool, before: i64, after: i64, still_idle: bool) bool {
-    return result == .closed and !pinned and before == after and still_idle;
+    return mayStopWith(result, pinned, before, after, still_idle, .unknown);
+}
+
+/// Listening jobs stop only after an explicit zero consumer count. Unknown
+/// visibility is never treated as "no one is using this."
+pub fn mayStopWith(result: Probe, pinned: bool, before: i64, after: i64, still_idle: bool, consumers: @import("preview_consumers.zig").Kind) bool {
+    if (pinned or before != after or !still_idle) return false;
+    return switch (result) {
+        .closed => true,
+        .listening => consumers == .none,
+        .unknown => false,
+    };
 }
 
 /// Called with the pool locked; returns locked. The bounded subprocess runs
@@ -83,8 +94,23 @@ pub fn checkIdle(pool: anytype, job: anytype, gpa: std.mem.Allocator, io: std.Io
     pool.mutex.unlock(io);
     const result = probe(gpa, io, pid);
     pool.mutex.lockUncancelable(io);
-    const still_idle = idle.verdict(@intCast(@max(now - job.last_active_ms, 0)), job.idle_warned, job.pinned) == .stop;
-    if (!job.kill_requested and !job.detach and !job.exit_cleanup and mayStop(result, job.pinned, activity, job.activity_revision, still_idle)) {
+    var consumers: @import("preview_consumers.zig").Kind = .unknown;
+    if (result == .listening) {
+        var scratch = std.heap.ArenaAllocator.init(gpa);
+        defer scratch.deinit();
+        const ports = @import("job_registry.zig").listenPorts(gpa, io, scratch.allocator(), pid);
+        if (@import("preview_consumers.zig").firstPort(ports)) |port| {
+            if (@import("preview_consumers.zig").path(scratch.allocator(), @import("job_registry.zig").home)) |file| {
+                if (@import("preview_consumers.zig").load(io, scratch.allocator(), file)) |counts| {
+                    consumers = @import("preview_consumers.zig").kindOf(counts, port);
+                }
+            }
+        }
+    }
+    const idle_ms: u64 = @intCast(@max(now - job.last_active_ms, 0));
+    const stop_ms: u64 = if (consumers == .none) @intCast(@import("preview_consumers.zig").grace_ms) else idle.policy.stop_ms;
+    const still_idle = idle.verdictUnder(.{ .warn_ms = 0, .stop_ms = stop_ms }, idle_ms, job.idle_warned, job.pinned) == .stop;
+    if (!job.kill_requested and !job.detach and !job.exit_cleanup and mayStopWith(result, job.pinned, activity, job.activity_revision, still_idle, consumers)) {
         job.kill_requested = true;
         job.stopped_idle = true;
     }
@@ -102,6 +128,9 @@ test "browser guard listeners and unknown never imply closed tabs" {
     try std.testing.expectEqual(Probe.listening, classify(true, false, "p12\nf4\ntIPv6\n", ""));
     try std.testing.expect(!mayStop(.listening, false, 1, 1, true));
     try std.testing.expect(!mayStop(.unknown, false, 1, 1, true));
+    try std.testing.expect(mayStopWith(.listening, false, 1, 1, true, .none));
+    try std.testing.expect(!mayStopWith(.listening, false, 1, 1, true, .some));
+    try std.testing.expect(!mayStopWith(.unknown, false, 1, 1, true, .none));
 }
 
 test "browser guard failures and incomplete inventory fail closed" {
