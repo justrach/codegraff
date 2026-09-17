@@ -9,12 +9,12 @@ import PromptQueue from "./PromptQueue";
 import SavedSnapshot from "./SavedSnapshot";
 import type { Chat } from "./harness-types";
 
-export default function ChatColumn({ thread, compact, following, register, onOpenPath, onReview,
+export default function ChatColumn({ thread, compact, following, register, onOpenPath, onReview, onEditPrompt,
   prompt, queue, pins, onShowPins, onClearPins, health, onOpenProject, onProjects, onConversations,
   onRefresh, onContinue }: {
   thread: Chat; compact: boolean; following: boolean;
   register: (element: HTMLDivElement | null) => void;
-  onOpenPath: (path: string) => void; onReview: () => void;
+  onOpenPath: (path: string) => void; onReview: () => void; onEditPrompt?: (n: number, text: string) => void;
   prompt: ComponentProps<typeof PromptBar> & Required<Pick<ComponentProps<typeof PromptBar>, "onSend" | "models" | "onModelChange">>;
   queue: ComponentProps<typeof PromptQueue>;
   pins: number; onShowPins: () => void; onClearPins: () => void;
@@ -31,7 +31,7 @@ export default function ChatColumn({ thread, compact, following, register, onOpe
   </div>;
   return <div className="flex min-h-0 flex-1 flex-col">
     <ChatTranscript messages={thread.messages} register={register} following={following}
-      onOpenPath={onOpenPath} onReview={onReview} snapshot={thread.snapshot} />
+      onOpenPath={onOpenPath} onReview={onReview} snapshot={thread.snapshot} onEditPrompt={onEditPrompt} />
     <div data-chat-composer className={`shrink-0 bg-page px-4 ${compact ? "py-2" : "pt-3 pb-6 sm:px-8"}`}>
       <div className="mx-auto max-w-[720px]">
         {thread.snapshot && thread.session ? <SavedSnapshot name={thread.session} cwd={thread.cwd} model={prompt.modelKey}

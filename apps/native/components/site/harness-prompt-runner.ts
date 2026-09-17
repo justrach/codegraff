@@ -36,7 +36,7 @@ export function createPromptRunner({onStarted, onCompleted, runningRef, steerer,
     );
   };
 
-  const runPrompt = async (chatId: number, trimmed: string) => {
+  const runPrompt = async (chatId: number, trimmed: string, opts?: { edit?: number }) => {
     setCancelError(current => { const next = { ...current }; delete next[chatId]; return next; });
     runningRef.current.add(chatId);
     onStarted(chatId);
@@ -49,21 +49,27 @@ export function createPromptRunner({onStarted, onCompleted, runningRef, steerer,
     const title = thread?.title ?? (trimmed.length > 30 ? `${trimmed.slice(0, 30).trimEnd()}…` : trimmed);
     // The first prompt of a tab names it, in the model's words.
     if (!thread?.title) nameChat(chatId, trimmed, thread?.cwd);
+    const editN = opts?.edit;
     setChats((current) =>
-      current.map((c) =>
-        c.id !== chatId
-          ? c
-          : {
-              ...c,
-              title,
-              snapshot: undefined,
-              messages: [
-                ...c.messages,
-                { id: userId, role: "user", text: trimmed },
-                { id: asstId, role: "assistant", turn: { ...emptyTurn(), model: spawnModel, startedAt: Date.now() } },
-              ],
-            },
-      ),
+      current.map((c) => {
+        if (c.id !== chatId) return c;
+        if (editN) {
+          let seen = 0;
+          const keep = [];
+          for (const message of c.messages) {
+            if (message.role === "user" && message.origin !== "notification") {
+              seen += 1;
+              if (seen === editN) { keep.push({ ...message, text: trimmed }); break; }
+            }
+            keep.push(message);
+          }
+          return { ...c, title, snapshot: undefined, messages: [...keep, { id: asstId, role: "assistant", turn: { ...emptyTurn(), model: spawnModel, startedAt: Date.now() } }] };
+        }
+        return {
+          ...c, title, snapshot: undefined,
+          messages: [...c.messages, { id: userId, role: "user", text: trimmed }, { id: asstId, role: "assistant", turn: { ...emptyTurn(), model: spawnModel, startedAt: Date.now() } }],
+        };
+      }),
     );
     setBusyFor(chatId, true);
     setHistory((current) => {
@@ -86,6 +92,9 @@ export function createPromptRunner({onStarted, onCompleted, runningRef, steerer,
     const startedAt = Date.now();
     try {
       const id = await requireSession(chatId);
+      if (editN) {
+        for await (const _ of prompt(handleOf(chatId), id, `/edit ${editN} ${trimmed}`)) { /* rewind only */ }
+      }
       turn = { ...turn, connected: true, lastUpdateAt: Date.now() };
       painter.update(turn);
       for await (const update of prompt(handleOf(chatId), id, wire)) {

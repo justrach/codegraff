@@ -48,6 +48,7 @@ export default function PromptBar({
   history,
   root,
   contextMeter,
+  inject,
 }: {
   variant?: string;
   /** the self-running walkthrough; turn off when embedding in a real surface */
@@ -75,10 +76,17 @@ export default function PromptBar({
    * picked file is mentioned by its path relative to it. */
   root?: string;
   contextMeter?: import("@/lib/context-meter").ContextMeter;
+  /** Load this text into the draft when `key` changes (edit-prompt). */
+  inject?: { key: number; text: string } | null;
 }) {
   const pill = variant === "Pill";
   const catalog = models && models.length > 0 ? models : MODELS;
   const { draft, setDraft, attachments, setAttachments, uploads, setUploads, attachError, setAttachError } = useComposerDraft();
+  useEffect(() => {
+    if (!inject) return;
+    setDraft(inject.text);
+    setHistoryIndex(-1);
+  }, [inject?.key]);
   /* Recall cursor: -1 is the live draft. Whatever was being typed is kept
    * aside so ArrowDown past the newest entry hands it back untouched. */
   const [historyIndex, setHistoryIndex] = useState(-1);

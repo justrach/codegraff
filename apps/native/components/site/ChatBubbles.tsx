@@ -58,20 +58,24 @@ function PastedImage({ name }: { name: string }) {
   );
 }
 
-export const UserBubble = memo(function UserBubble({ text }: { text: string }) {
+export const UserBubble = memo(function UserBubble({ text, onEdit }: { text: string; onEdit?: () => void }) {
   const parts = splitImageMarkers(text);
   const images = parts.filter((_, index) => index % 2 === 1);
   const words = parts.filter((_, index) => index % 2 === 0).join("");
   return (
-    <div data-user-bubble className="flex justify-end pl-10 sm:pl-24" style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
+    <div data-user-bubble className="group flex justify-end pl-10 sm:pl-24" style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
       <div className="flex min-w-0 max-w-full flex-col items-end gap-2">
         {images.length > 0 && <div aria-label="Attached images" className="flex max-w-full flex-wrap justify-end gap-2">
           {images.map((part, index) => <PastedImage key={`${index}-${part}`} name={markerName(part)} />)}
         </div>}
-        {words.trim() && <div
-          className="min-w-0 max-w-full whitespace-pre-wrap break-words rounded-xl px-3.5 py-2 text-[13px] leading-relaxed text-ink shadow-hairline [overflow-wrap:anywhere]"
-          style={{ background: "color-mix(in oklab, var(--accent) 12%, var(--surface))" }}
-        >{words}</div>}
+        {words.trim() && <div className="flex max-w-full items-end gap-1">
+          {onEdit && <button type="button" data-edit-prompt aria-label="Edit prompt" onClick={onEdit}
+            className="mb-1 rounded-md px-1.5 py-0.5 text-[10px] text-ink-3 opacity-0 hover:text-ink group-hover:opacity-100">Edit</button>}
+          <div
+            className="min-w-0 max-w-full whitespace-pre-wrap break-words rounded-xl px-3.5 py-2 text-[13px] leading-relaxed text-ink shadow-hairline [overflow-wrap:anywhere]"
+            style={{ background: "color-mix(in oklab, var(--accent) 12%, var(--surface))" }}
+          >{words}</div>
+        </div>}
       </div>
     </div>
   );

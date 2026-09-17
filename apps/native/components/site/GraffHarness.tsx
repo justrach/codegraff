@@ -96,6 +96,8 @@ export default function GraffHarness() {
   // Shell-style prompt recall (ArrowUp in the composer), kept per browser so
   // a new tab or a reload still has the last prompts under the cursor.
   const [history, setHistory] = useState<string[]>([]);
+  const [editInject, setEditInject] = useState<{ chat: number; key: number; n: number; text: string } | null>(null);
+  const editKeyRef = useRef(0);
   useEffect(() => {
     setHistory(loadHistory(window.localStorage));
   }, []);
@@ -230,7 +232,9 @@ export default function GraffHarness() {
       setQueue(chatId, enqueuePrompt(queuesRef.current[chatId] ?? [], trimmed, (queueIdRef.current += 1)));
       return;
     }
-    await runPrompt(chatId, trimmed);
+    const editing = editInject?.chat === chatId ? editInject.n : undefined;
+    if (editing) setEditInject(null);
+    await runPrompt(chatId, trimmed, editing ? { edit: editing } : undefined);
   };
 
   const openChat = (id: number) => {
@@ -444,6 +448,7 @@ export default function GraffHarness() {
   const columnBody = (thread: Chat) => <ChatColumn key={thread.id} thread={thread}
     compact={columnIds.length > 1 || navigation.focusedMode || filesOpen || browserOpen || agentsOpen || reviewsOpen || !!(fileRequest?.changes)} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
     onOpenPath={openPath} onReview={openChanges}
+    onEditPrompt={(n, text) => { setEditInject({ chat: thread.id, key: ++editKeyRef.current, n, text }); requestPromptFocus(thread.id); }}
     onRefresh={loaded => {
       const messages: Msg[] = loaded.messages.map(m => ({ id: ++msgIdRef.current, ...m }));
       setChats(current => current.map(c => c.id === thread.id && c.snapshot ? { ...c, messages } : c));
@@ -455,6 +460,7 @@ export default function GraffHarness() {
     prompt={{ demo: false, models, commands: commands[thread.id] ?? catalogCommands,
       root: cwdOf(thread), modelKey: thread.model ?? model ?? undefined,
       onModelChange: key => changeModel(key, thread.id), onSend: text => void send(text, thread.id),
+      inject: editInject?.chat === thread.id ? { key: editInject.key, text: editInject.text } : null,
       onSetting: text => settings.change(thread.id, text),
       onSteerQueued: queues[thread.id]?.length ? () => {
         const next = queuesRef.current[thread.id]?.[0];
