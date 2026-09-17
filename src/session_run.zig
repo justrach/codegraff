@@ -246,6 +246,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     // they reach the exit-time leak check — and our record would linger in
     // the registry until a peer's liveness probe reaps it.
     presence.retire(io);
+    @import("presence_accord.zig").stop(io);
     presence.deinit(gpa);
     @import("router_catalog.zig").shutdown(io);
     // #396: the run is over. The frontend hands the terminal back and latches
@@ -370,6 +371,7 @@ pub fn buildRootAgent(
         }
     }
     presence.noteLabelsFrom(io, gpa, arena, root.session_title, root.session_name);
+    @import("presence_accord.zig").listen(io, gpa, presence.registryPath());
     if (flags.eval_cmd_flag) |c| root.eval_cmd = try arena.dupe(u8, c);
     // #502: --output-schema (inline JSON or @file) → structured outputs.
     if (flags.output_schema_flag) |schema_arg| {
@@ -469,6 +471,7 @@ pub fn finalizeSession(gpa: Allocator, io: Io, arena: Allocator, out: *Io.Writer
     // #469: our presence record leaves the registry with us; a crashed session
     // skips this and gets reaped by the next reader's liveness probe instead.
     presence.retire(io);
+    @import("presence_accord.zig").stop(io);
     presence.deinit(gpa); // its gpa-owned globals must not reach the exit-time leak check
     @import("router_catalog.zig").shutdown(io);
     @import("workspace_switch.zig").deinitDisplay(gpa);

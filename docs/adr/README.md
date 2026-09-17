@@ -153,7 +153,7 @@ record only when you need the evidence or the edge cases.
 | [0133](0133-clipboard-files-follow-consumer-ownership.md) | Clipboard cleanup requires file ownership and released consumers; age alone never deletes active or saved attachments. |
 
 | [0133](0133-publication-review-binds-committed-inputs.md) | Proposed: non-draft publication reviews immutable source and observed checks; changed inputs invalidate earlier assessments. |
-| [0134](0134-accord-live-jsonl-durable.md) | JSONL is the durable peer room; Accord Unix 0600 is opt-in live behind postMessage. |
+| [0134](0134-accord-live-jsonl-durable.md) | JSONL is the durable peer room; Accord Unix 0600 is live by default (`GRAFF_ACCORD=0` opts out). |
 | [0135](0135-desktop-appearance-is-a-turn-note.md) | Desktop appearance tokens for `render_html` ride the turn, never the prefix or tool catalog. |
 
 ## When to write one

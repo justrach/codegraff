@@ -130,8 +130,14 @@ pub const Inbox = struct {
     }
 
     fn tickPump(self: *Inbox) void {
+        const accord = @import("presence_accord.zig");
         while (true) {
-            self.io.sleep(.fromMilliseconds(200), .awake) catch break;
+            var n: u32 = 0;
+            while (n < 4) : (n += 1) {
+                if (accord.takePing()) break;
+                self.io.sleep(.fromMilliseconds(50), .awake) catch return;
+                if (self.eof) return;
+            }
             self.mutex.lockUncancelable(self.io);
             defer self.mutex.unlock(self.io);
             if (self.eof) break;

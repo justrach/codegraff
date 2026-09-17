@@ -12,10 +12,8 @@ current is part of cutting a release.
 
 ## Unreleased
 
-- Opt-in Accord Unix 0600 live path behind `presence_chan.postMessage` (`GRAFF_ACCORD=1`); JSONL stays the durable room (ADR 0134).
+- Accord Unix 0600 live path is on by default (`GRAFF_ACCORD=0` opts out); JSONL stays the durable room (ADR 0134).
 - `#1001`: idle TUI and line REPL start a turn when the durable peer room has new unread mail (one auto-turn per batch; inbox consume resets).
-- `#1007`: idle `graff acp` sessions start that same turn; `peer_message` no longer claims delivery waits for a step boundary.
-- `#1006`: rendered views sit in the transcript without product chrome; desktop appearance tokens ride the turn (ADR 0135).
 - `#1007`: idle `graff acp` sessions start that same turn; `peer_message` no longer claims delivery waits for a step boundary.
 - `#1006`: rendered views sit in the transcript without product chrome; desktop appearance tokens ride the turn (ADR 0135).
 
