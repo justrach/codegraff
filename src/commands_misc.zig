@@ -200,18 +200,18 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const c = g_cost.snap(root.io);
         if (c.api_calls == 0) {
             try out.writeAll("no API calls yet this session\n");
-            try out.flush();
-            return true;
+        } else {
+            try out.print("{s}session usage{s}\n", .{ style.bold, style.reset });
+            try out.print("  api calls: {d}", .{c.api_calls});
+            if (c.sub_calls > 0) try out.print(" ({d} subscription, flat-rate)", .{c.sub_calls});
+            if (c.unpriced_calls > 0) try out.print(" ({d} on unpriced models)", .{c.unpriced_calls});
+            try out.print("\n  tokens:    {d} in ({d} cached) + {d} out\n", .{ c.in_tokens + c.cache_tokens, c.cache_tokens, c.out_tokens });
+            try out.print("  cost:      {s}${d:.4}{s}{s}\n", .{
+                style.green,                                                                                     c.usd, style.reset,
+                if (c.sub_calls > 0 or c.unpriced_calls > 0) " (API-key calls with a known price only)" else "",
+            });
         }
-        try out.print("{s}session usage{s}\n", .{ style.bold, style.reset });
-        try out.print("  api calls: {d}", .{c.api_calls});
-        if (c.sub_calls > 0) try out.print(" ({d} subscription, flat-rate)", .{c.sub_calls});
-        if (c.unpriced_calls > 0) try out.print(" ({d} on unpriced models)", .{c.unpriced_calls});
-        try out.print("\n  tokens:    {d} in ({d} cached) + {d} out\n", .{ c.in_tokens + c.cache_tokens, c.cache_tokens, c.out_tokens });
-        try out.print("  cost:      {s}${d:.4}{s}{s}\n", .{
-            style.green,                                                                                     c.usd, style.reset,
-            if (c.sub_calls > 0 or c.unpriced_calls > 0) " (API-key calls with a known price only)" else "",
-        });
+        @import("plan_usage.zig").appendTo(root.io, root.gpa, arena, root.home, keys.get("xai"), out);
         try out.flush();
         return true;
     }

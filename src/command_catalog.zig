@@ -85,7 +85,7 @@ pub const commands = [_]Item{
     .{ .name = "/todo", .desc = "show the current task list" },
     .{ .name = "/jobs", .usage = "/jobs [keep|unkeep|stop|restart <id>]", .desc = "list background jobs (age, port, idle stop); keep pins a server, restart reruns one" },
     .{ .name = "/cost", .desc = "session token usage and cost" },
-    .{ .name = "/usage", .desc = "alias for /cost" },
+    .{ .name = "/usage", .desc = "session cost plus remaining Codex/xAI plan percent" },
     .{ .name = "/version", .desc = "show the version in this process and compare it with the latest release" },
     .{ .name = "/update", .usage = "/update [install]", .desc = "check for a release and install it for the next launch (this session keeps running)" },
     .{ .name = "/debug", .desc = "live content-free observability HUD (turns, tokens, tools, last events)" },
