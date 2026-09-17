@@ -1,4 +1,4 @@
-import { discardAttachments, type Attachment } from "./attachments";
+import { discardAttachments, liftAttachmentMarkers, type Attachment } from "./attachments";
 
 type Update<T> = T | ((current: T) => T);
 export type ComposerDraft = { draft: string; attachments: Attachment[]; uploads: number; attachError: string | null };
@@ -22,7 +22,22 @@ export function createComposerDraft(release = discardAttachments) {
   return {
     getSnapshot: () => snapshot,
     subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
-    setDraft: (value: Update<string>) => update("draft", value),
+    setDraft: (value: Update<string>) => {
+      const raw = typeof value === "function" ? value(snapshot.draft) : value;
+      const lifted = liftAttachmentMarkers(raw);
+      const extra = lifted.attachments.filter((a) => !snapshot.attachments.some((c) => c.path === a.path));
+      if (lifted.text === snapshot.draft && extra.length === 0) return;
+      if (disposed) {
+        if (extra.length) release(extra);
+        return;
+      }
+      snapshot = {
+        ...snapshot,
+        draft: lifted.text,
+        attachments: extra.length ? [...snapshot.attachments, ...extra] : snapshot.attachments,
+      };
+      listeners.forEach((listener) => listener());
+    },
     setAttachments: (value: Update<Attachment[]>) => update("attachments", value),
     setUploads: (value: Update<number>) => update("uploads", value),
     setAttachError: (value: Update<string | null>) => update("attachError", value),

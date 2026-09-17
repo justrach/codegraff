@@ -146,6 +146,25 @@ pub fn noticeContext(tokens: u64, compact_at: u64) bool {
     return true;
 }
 
+/// Lean/small turns hide rlm until a showcase. An explicit request for the
+/// REPL or persistent bindings is a predictable discovery path without
+/// advertising it on every short task.
+pub fn noticeExplicit(text: []const u8) bool {
+    if (listed() or !@import("rlm_spec.zig").available) return false;
+    var words = std.mem.tokenizeAny(u8, text, " \t\r\n,.;:!?()[]{}\"'`");
+    var saw = false;
+    while (words.next()) |word| {
+        if (std.ascii.eqlIgnoreCase(word, "rlm")) {
+            saw = true;
+            break;
+        }
+    }
+    if (!saw) return false;
+    showcaseRlm();
+    markLoaded("rlm");
+    return true;
+}
+
 /// Folded-native listing and catalog discovery: hidden on small turns.
 pub fn listed() bool {
     return g_showcased or isLoaded("rlm");

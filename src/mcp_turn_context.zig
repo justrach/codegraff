@@ -9,6 +9,18 @@ pub const State = struct {
         self.value = .{ .session = session, .turn = uuid(io) };
     }
 };
+
+var fallback: State = .{};
+
+/// cua_repl / node_repl require host metadata. If a caller forgot to pass
+/// turn context, mint a process-local pair rather than sending a request
+/// the adapter will reject.
+pub fn effective(context: ?Snapshot, io: std.Io, server: []const u8) ?Snapshot {
+    if (context) |ctx| return ctx;
+    if (!(std.mem.eql(u8, server, "cua_repl") or std.mem.eql(u8, server, "node_repl"))) return null;
+    fallback.begin(io);
+    return fallback.value;
+}
 fn uuid(io: std.Io) [36]u8 {
     var bytes: [16]u8 = undefined;
     io.random(&bytes);
@@ -85,4 +97,20 @@ test "computer bridge metadata stays outside arguments and unrelated MCP calls" 
             try std.testing.expectEqualStrings(&state.value.?.turn, context.get("turn_id").?.string);
         }
     }
+}
+
+test "computer adapters still get turn metadata when the caller omitted it" {
+    const a = std.testing.allocator;
+    const input = try std.json.parseFromSlice(std.json.Value, a, "{}", .{});
+    defer input.deinit();
+    const ctx = effective(null, std.testing.io, "cua_repl");
+    try std.testing.expect(ctx != null);
+    const text = try params(a, "cua_repl", "js", input.value, ctx);
+    defer a.free(text);
+    const decoded = try std.json.parseFromSlice(std.json.Value, a, text, .{});
+    defer decoded.deinit();
+    const meta = decoded.value.object.get("_meta").?.object.get("x-codex-turn-metadata").?.object;
+    try std.testing.expect(meta.get("session_id").?.string.len == 36);
+    try std.testing.expect(meta.get("turn_id").?.string.len == 36);
+    try std.testing.expect(effective(null, std.testing.io, "ordinary") == null);
 }

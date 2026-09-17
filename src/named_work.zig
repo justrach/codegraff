@@ -63,6 +63,12 @@ pub fn rememberFrom(self: *Agent) void {
 pub fn beginTurn(self: *Agent) void {
     rememberFrom(self);
     if (!std.mem.eql(u8, taskOf(self), self.named_work_settled)) self.named_work_nudges = 0;
+    if (!self.sub) {
+        const fold = @import("native_fold.zig");
+        if (fold.noticeExplicit(taskOf(self))) {
+            self.invalidateRootTools();
+        }
+    }
 }
 
 /// True when `text` names a source path (not a greeting.txt-style data file).

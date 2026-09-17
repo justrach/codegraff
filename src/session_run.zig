@@ -247,6 +247,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     // the registry until a peer's liveness probe reaps it.
     presence.retire(io);
     presence.deinit(gpa);
+    @import("router_catalog.zig").shutdown(io);
     // #396: the run is over. The frontend hands the terminal back and latches
     // its reader shut before main()'s teardown — a terminal-ownership move the
     // sink owns now, in EVERY mode, exactly as the old unconditional call did.
@@ -469,6 +470,7 @@ pub fn finalizeSession(gpa: Allocator, io: Io, arena: Allocator, out: *Io.Writer
     // skips this and gets reaped by the next reader's liveness probe instead.
     presence.retire(io);
     presence.deinit(gpa); // its gpa-owned globals must not reach the exit-time leak check
+    @import("router_catalog.zig").shutdown(io);
     @import("workspace_switch.zig").deinitDisplay(gpa);
     if (!json_mode and root.messages.items.len > 0) {
         const sink = engine_sink.writerSink(out);

@@ -19,11 +19,7 @@ pub const ranOk = process_runner.ranOk;
 
 const Agent = agent_mod.Agent;
 
-/// Same as `runCapped`, but spawns the child with an explicit working
-/// directory instead of inheriting the process's (#276 P0-1: a worktree-
-/// isolated subagent's `bash` calls need their own cwd — per-spawn, via
-/// `std.process.Child.Cwd`, never a process-wide chdir, so parallel sibling
-/// agents on the same pool each keep their own).
+/// `runCapped` with an explicit cwd (#276: per-spawn, never process-wide chdir).
 pub fn runCappedCwd(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap: usize, stderr_cap: usize, deadline_ms: u64, cwd: std.process.Child.Cwd) !CappedRun {
     return runCappedWithOptions(gpa, io, argv, stdout_cap, stderr_cap, deadline_ms, .{ .cwd = cwd });
 }
@@ -116,12 +112,16 @@ const Jobs = struct {
 
 pub var g_jobs: Jobs = .{};
 
+pub fn markPersistent(io: Io, id: u32) void {
+    g_jobs.mutex.lockUncancelable(io);
+    defer g_jobs.mutex.unlock(io);
+    if (g_jobs.find(id)) |job| job.persistent = true;
+}
+
 /// Deterministic test pause after done becomes observable, before UI publish.
 pub var completion_test_hook: ?*const fn (Io, u32) void = null;
 
-/// Drain whatever the MultiReader has buffered into the job's output buffer,
-/// dropping the oldest *unread* bytes past the cap (a chatty server must not
-/// grow memory unboundedly between bash_output polls). Caller holds the mutex.
+/// Drain MultiReader bytes into the job buffer; drop oldest unread past the cap.
 fn jobDrain(job: *Job, gpa: Allocator, readers: []const *Io.Reader, now_ms: i64) void {
     for (readers, 0..) |r, i| {
         const b = r.buffered();

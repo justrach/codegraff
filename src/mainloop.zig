@@ -128,17 +128,17 @@ pub fn run(ctx: *Ctx) !void {
         const goal_objective: ?[]const u8 = if (main_mod.json_mode) null else repl_glue.goalPromptFromLine(line);
         const auto: ?goal_pacing.Autonomous = if (main_mod.json_mode) null else try goal_pacing.autonomousFromLine(ctx.arena, line, goal_objective);
         const loop_prompt: ?[]const u8 = if (auto) |a| a.prompt else null;
-        // A fresh line starts (or ends) a run: the wall clock begins here, stale todos_dirty is
-        // dropped (a checklist finished BEFORE this prompt ended the next run at iteration 1, #318),
-        // and an armed budget is echoed - a silently-eaten "5m" reads exactly like a truncated prompt.
+        // A fresh line starts (or ends) a run: wall clock begins here; stale todos_dirty is
+        // dropped, and an armed budget is echoed — a silently-eaten "5m" reads like a truncated prompt.
         if (!is_loop_continuation) try goal_pacing.armAndAnnounce(&loop_clock, ctx.root, ctx.out, ctx.arena, util.unixMs(ctx.io), if (auto) |a| a.budget() else null);
         var review_prompt: ?[]const u8 = if (!main_mod.json_mode) review.promptFromLine(line) else null;
+        const issue_report: ?[]const u8 = if (!main_mod.json_mode) @import("issue_cmd.zig").promptFromLine(line) else null;
         if (!main_mod.json_mode) {
             const l = if (line.len > 0 and line[0] == '/') line[1..] else line;
             if (std.mem.eql(u8, l, "exit") or std.mem.eql(u8, l, "quit") or std.mem.eql(u8, l, "q")) break;
         }
 
-        if (!main_mod.json_mode and repl_glue.isSlashCommandLine(line) and auto == null and review_prompt == null) {
+        if (!main_mod.json_mode and repl_glue.isSlashCommandLine(line) and auto == null and review_prompt == null and issue_report == null) {
             // Bare "/" on a TTY: open the filterable command menu.
             if (ctx.interactive and line.len == 1) {
                 if (pickers.listPicker(ctx.root, ctx.arena, ctx.out, "Command ›", &pickers.command_menu)) |idx| {
@@ -157,7 +157,7 @@ pub fn run(ctx: *Ctx) !void {
         // JSON lines may run a user turn, mutate the system prompt, or append a score.
         var json_request: ?std.json.Parsed(Value) = null;
         defer if (json_request) |*request| request.deinit();
-        const base_msg: []const u8 = if (review_prompt) |rp| rp else if (loop_prompt) |lp| lp else if (main_mod.json_mode) blk: {
+        const base_msg: []const u8 = if (review_prompt) |rp| rp else if (issue_report) |ir| try @import("issue_cmd.zig").userText(ctx.arena, ir) else if (loop_prompt) |lp| lp else if (main_mod.json_mode) blk: {
             json_request = std.json.parseFromSlice(Value, ctx.gpa, line, .{ .allocate = .alloc_if_needed }) catch {
                 ctx.root.emit(.{ .type = "error", .message = "invalid JSON (expect {\"type\":\"user\",\"text\":\"...\"})" });
                 continue;

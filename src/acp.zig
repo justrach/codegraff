@@ -72,6 +72,7 @@ fn liveCancelled() bool {
 /// printing their list, so nothing waits on a keypress that cannot come.
 fn liveSlash(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror!?[]const u8 {
     if (@import("review.zig").promptFromLine(text) != null) return null;
+    if (@import("issue_cmd.zig").promptFromLine(text) != null) return null;
     const live: *LiveTurn = @ptrCast(@alignCast(ctx));
     var aw: Io.Writer.Allocating = .init(arena);
     // /never is the playbook's own, and handleCommand does not know it.

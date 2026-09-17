@@ -35,9 +35,9 @@ export default function StreamingCode({ node: _node, className, children, collap
       <div data-streamdown="code-block-actions" className="pointer-events-auto flex shrink-0 items-center gap-2 rounded-md border border-sidebar bg-sidebar/80 px-1.5 py-1 supports-[backdrop-filter]:bg-sidebar/70 supports-[backdrop-filter]:backdrop-blur">{actions}</div>
     </div>}
     <div data-language={language} data-streamdown="code-block-body"
-      className={`overflow-x-auto rounded-md border border-border bg-background p-4 text-sm ${bounded ? "overflow-y-auto" : ""}`}
+      className={`min-w-0 rounded-md border border-border bg-background p-4 text-sm ${bounded ? "overflow-y-auto" : ""}`}
       style={bounded ? { maxHeight: codeBlockMaxHeight } : undefined}>
-      <pre><code>{code.replace(/\n+$/, "")}</code></pre>
+      <pre className="overflow-x-auto"><code className="whitespace-pre">{code.replace(/\n+$/, "")}</code></pre>
     </div>
   </CodeBlockContainer>;
 }

@@ -44,9 +44,9 @@ pub fn write(w: *Io.Writer, title: []const u8, items: []const Item) void {
 }
 
 pub fn writeFromStanding(w: *Io.Writer, st: engine_events.StandingWork) void {
-    // Keep completed history, but do not redraw it as WORKING at every prompt.
+    // Keep completed history, but do not redraw a finished checklist as WORKING.
     // Use the full counts: an open item may be beyond the displayed slice.
-    if (st.goal.len == 0 and st.todos_total > 0 and st.todos_done == st.todos_total) return;
+    if (st.todos_total > 0 and st.todos_done == st.todos_total) return;
     var buf: [max_items]Item = undefined;
     const n = @min(st.todos.len, buf.len);
     for (st.todos[0..n], 0..) |t, i| {
@@ -89,10 +89,10 @@ test "completed checklist stays out of idle prompt redraws" {
     var st: engine_events.StandingWork = .{ .todos = &todos, .todos_done = 1, .todos_total = 1 };
     writeFromStanding(&aw.writer, st);
     try std.testing.expectEqualStrings("", aw.written());
-    // A live goal or an open item beyond the displayed slice is still work.
+    // A finished checklist stays idle even when a goal title remains.
     st.goal = "continue the goal";
     writeFromStanding(&aw.writer, st);
-    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "WORKING") != null);
+    try std.testing.expectEqualStrings("", aw.written());
     aw.clearRetainingCapacity();
     st.goal = "";
     st.todos_total = 2;

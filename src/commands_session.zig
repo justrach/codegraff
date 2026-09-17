@@ -251,6 +251,11 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
+    if (std.mem.eql(u8, line, "/issue")) {
+        try out.writeAll(@import("issue_cmd.zig").usage);
+        try out.flush();
+        return true;
+    }
     if (std.mem.eql(u8, line, "/bash") or std.mem.startsWith(u8, line, "/bash ")) {
         const cmd = std.mem.trim(u8, line["/bash".len..], " \t\r\n");
         if (cmd.len == 0) {

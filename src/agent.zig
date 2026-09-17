@@ -329,12 +329,11 @@ pub const Agent = struct {
     }
 
     pub fn runTurn(self: *Agent) anyerror![]const u8 {
-        // Restore catalog invariants before starting the turn.
-        try self.ensureRootTools(self.provider.kind);
         var pending_work: empty_completion.PendingWork = .{};
         self.completed = null;
         self.mcp_context.begin(self.io);
         @import("named_work.zig").beginTurn(self);
+        try self.ensureRootTools(self.provider.kind);
         var task_scope = @import("task_intent.zig").State.begin(self);
         if (!self.sub and !root_turn_prepared.swap(false, .acq_rel)) @import("cancel_source.zig").clear();
         var review_deadline = try @import("review_deadline.zig").start(self);

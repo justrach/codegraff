@@ -45,6 +45,7 @@ pub fn handle(self: *Agent, final_text: []const u8, hist_len: usize) !bool {
         return true;
     }
     if (@import("task_intent.zig").current(self) == .informational) return false;
+    if (no_local_tools.enabled) return false;
     if (!shouldBounce(main_mod.unattended, no_local_tools.lean, self.text_only, self.review_mode, self.sub, self.tool_calls_this_turn, self.model_calls_this_turn, final_text))
         return false;
     try self.messages.append(try messages.userNote(self.arena, self.provider.kind, bounce_note));
@@ -248,5 +249,29 @@ test "completed informational answer is not an edit-oriented fake_done retry" {
     try self.messages.append(try messages.textMessage(self.arena, "user", "Summarize the architecture"));
     const before = self.messages.items.len;
     try std.testing.expect(!try handle(&self, "The app separates its UI, parser, and storage.", before));
+    try std.testing.expectEqual(before, self.messages.items.len);
+}
+
+test "no-local-tools lean critique is not an edit-oriented fake_done retry" {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    var self = pendingFixture(state.allocator());
+    self.empty_completion_retries = 0;
+    const old_unattended = main_mod.unattended;
+    const old_lean = no_local_tools.lean;
+    const old_enabled = no_local_tools.enabled;
+    main_mod.unattended = true;
+    no_local_tools.lean = true;
+    no_local_tools.enabled = true;
+    defer {
+        main_mod.unattended = old_unattended;
+        no_local_tools.lean = old_lean;
+        no_local_tools.enabled = old_enabled;
+    }
+    self.tool_calls_this_turn = 0;
+    self.model_calls_this_turn = 1;
+    try self.messages.append(try messages.textMessage(self.arena, "user", "Critique this design; do not inspect or edit files"));
+    const before = self.messages.items.len;
+    try std.testing.expect(!try handle(&self, "The design is coherent and needs no local changes.", before));
     try std.testing.expectEqual(before, self.messages.items.len);
 }

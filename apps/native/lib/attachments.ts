@@ -77,6 +77,30 @@ export function splitImageMarkers(text: string): string[] {
   return text.split(IMAGE_MARKER_RE);
 }
 
+/** Pull staged-image markers out of draft text so the composer never shows
+ *  `@[…/graff-native-attachments/….png]` as spellchecked prose. */
+export function liftAttachmentMarkers(text: string): { text: string; attachments: Attachment[] } {
+  const parts = splitImageMarkers(text);
+  if (parts.length < 2) return { text, attachments: [] };
+  const attachments: Attachment[] = [];
+  let visible = "";
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i]!;
+    if (i % 2 === 1) {
+      const path = part.slice(2, -1);
+      attachments.push({
+        id: path,
+        name: markerName(part),
+        path,
+        preview: `/api/attach?name=${encodeURIComponent(markerName(part))}`,
+      });
+    } else {
+      visible += part;
+    }
+  }
+  return { text: visible.replace(/[ \t]{2,}/g, " ").trim(), attachments };
+}
+
 /** The staged file's basename — the name `/api/attach?name=` answers to. */
 export function markerName(marker: string): string {
   return marker.slice(marker.lastIndexOf("/") + 1, -1);

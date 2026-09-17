@@ -236,3 +236,15 @@ test "showcasing rlm keeps the tools head bytes; schema rides the tail" {
     fold.resetSession();
     try std.testing.expect(!fold.listed());
 }
+
+test "explicit rlm wording showcases without a context threshold" {
+    fold.resetRlmDiscovery();
+    defer fold.resetRlmDiscovery();
+    rlm.available = true;
+    rlm.sync();
+    try std.testing.expect(!fold.noticeExplicit("summarize the architecture"));
+    try std.testing.expect(!fold.listed());
+    try std.testing.expect(fold.noticeExplicit("Keep persistent RLM bindings across two calls"));
+    try std.testing.expect(fold.listed());
+    try std.testing.expect(fold.isLoaded("rlm"));
+}

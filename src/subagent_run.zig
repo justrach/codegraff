@@ -292,7 +292,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         // §2c: the judge is text-only. It ranks handed excerpts, so a toolset
         // only buys it the chance to go re-read the repo — which is where its
         // ~3 calls per score went. One judge, one call.
-        .text_only = std.mem.eql(u8, kind, "judge_task"),
+        .text_only = std.mem.eql(u8, kind, "judge_task") or @import("task_intent.zig").classify(prompt) == .informational,
         .reasoning = effort orelse .medium, // #292 follow-up: effort pin; unpinned workers keep the default depth, not the root's /effort
     };
     const sub_start = Io.Timestamp.now(ctx.io, .awake);

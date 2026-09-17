@@ -338,10 +338,9 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
             const raw = if (task.get("prompt")) |p| (if (p == .string) p.string else "") else "";
             if (raw.len == 0) return .{ .text = try gpa.dupe(u8, "each task needs a non-empty \"prompt\""), .is_error = true };
             rawp.* = raw;
-            // §3b, stolen from codex's patch-biased delegation: a contracted
-            // worker is told to MAKE the edits and to end by listing every
-            // changed path, so verify and the root review a diff, not a claim.
-            const noted = if (contracted)
+            // Read-only analysis keeps its non-mutating brief across retries.
+            const mutating = escalation.mutatingTask(shapes.canonicalSlot(title), raw);
+            const noted = if (mutating)
                 try withContext(arena, escalation.contract_brief_note, raw)
             else if (report_phase)
                 try withContext(arena, report_anchors.anchor_brief_note, raw)
@@ -387,12 +386,13 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
             route_trace.emitSpawnProvider(ctx.io, ctx.tracer, label, seat.provider, seat.cellOf(niche), seat.sourceFor(override != null), override, niche);
             fut.* = ctx.io.async(workflowTask, .{ ctx, label, prompt, override, niche, isolation, isolation_fallback, seat.pin });
         }
-        for (futures, outputs, labels, prompts, 0..) |*fut, *out, label, prompt, i| {
+        for (futures, outputs, labels, prompts, raws, 0..) |*fut, *out, label, prompt, raw, i| {
             if (dup.rep[i] != i) continue;
             // §3b — the edit contract, post-await: a contracted phase whose
             // porcelain never moved becomes is_error, which the retry below
-            // then picks up. #380's honesty flag composes inside it.
-            out.* = escalation.contractCheck(gpa, ctx.io, ctx.agent_cwd, contracted, tree_before, report_anchors.anchorCheck(gpa, ctx.io, ctx.agent_cwd, report_phase, vision_ask.flagReport(gpa, fut.await(ctx.io), vision_ask.forPrompt(prompt))));
+            // then picks up. Informational tasks keep a non-mutating scope.
+            const mutating = escalation.mutatingTask(shapes.canonicalSlot(title), raw);
+            out.* = escalation.contractCheck(gpa, ctx.io, ctx.agent_cwd, mutating, tree_before, report_anchors.anchorCheck(gpa, ctx.io, ctx.agent_cwd, report_phase, vision_ask.flagReport(gpa, fut.await(ctx.io), vision_ask.forPrompt(prompt))));
             // #63 — terminal per task, so a UI can settle that row without
             // waiting for the phase (and before the retry pass below reruns it).
             wfp.task(ctx.io, arena, run_id, phase_no, i + 1, tasks.len, label, if (out.is_error) "failed" else "completed");

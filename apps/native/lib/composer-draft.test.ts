@@ -12,6 +12,13 @@ test("a hidden chat retains text and receives its pending upload without changin
   expect(second.getSnapshot().attachments).toEqual([]);
 });
 
+test("staged image markers leave the draft and become chips", () => {
+  const store = createComposerDraft();
+  store.setDraft("look @[/tmp/x/graff-native-attachments/shot.png] please");
+  expect(store.getSnapshot().draft).toBe("look please");
+  expect(store.getSnapshot().attachments[0]?.name).toBe("shot.png");
+});
+
 test("closing a chat releases previews including an upload that completes after disposal", () => {
   const released: string[] = [];
   const store = createComposerDraft(files => released.push(...files.map(file => file.id)));

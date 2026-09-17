@@ -105,17 +105,19 @@ fn ownerLive(io: Io, owner: Owner) bool {
         if (sameOwner(owner, g_test_owner)) return true;
         return g_test_live;
     }
-    if (owner.pid == 0) return true;
+    // A legacy handoff with no process identity is not held forever.
+    if (owner.pid == 0) return false;
     return proc_identity.ownerState(owner.start_id, proc_identity.probe(io, owner.pid)) == .held;
 }
 
 fn claimRelevant(held: Kind, mutation: Kind) bool {
-    if (held == mutation or held == .publication) return true;
+    if (held == mutation) return true;
     return switch (mutation) {
-        .pull_request => held == .branch or held == .commit,
+        .pull_request => held == .branch or held == .commit or held == .publication,
         .publication => held == .branch or held == .pull_request or held == .commit,
-        .commit => held == .branch,
-        else => false,
+        .commit => held == .branch or held == .publication,
+        .issue => false,
+        .branch => held == .publication,
     };
 }
 
@@ -201,7 +203,9 @@ pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []cons
         return .{ .text = msg, .is_error = false };
     }
     if (std.mem.eql(u8, action, "release")) {
-        const msg = claim_ledger.releaseIn(ledger, kind, key, me, live, repo) catch return .{
+        const existing_owner = if (existing) |c| c.owner else null;
+        const recoverable = if (existing_owner) |o| o.pid == 0 and (std.mem.eql(u8, o.session, me.session) or o.session.len == 0) else false;
+        const msg = claim_ledger.releaseIn(ledger, kind, key, me, live and !recoverable, repo) catch return .{
             .text = "cannot release a live foreign claim",
             .is_error = true,
         };
@@ -461,4 +465,32 @@ test "shared-tree ACK is not a claim release" {
     // Re-issuing after presence.gateCheck ACKs the peer — claim still holds.
     try std.testing.expect(gateCommand(ar, std.testing.io, "git commit -m wip", "feat/x") != null);
     try std.testing.expect(gateCommand(ar, std.testing.io, "git push origin HEAD", "feat/x") != null);
+}
+
+test "publication claims do not block unrelated issue creation" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    resetForTest();
+    defer resetForTest();
+    setTestOwner(.{ .session = "s-pub", .pid = 21, .start_id = 3 });
+    _ = try handleTool(ar, std.testing.io, "claim", "publication", "feat/x", "");
+    setTestOwner(.{ .session = "s-other", .pid = 22, .start_id = 4 });
+    setTestOwnerLive(true);
+    try std.testing.expect(gateCommand(ar, std.testing.io, "gh issue create --title x --body y", "12") == null);
+    try std.testing.expect(gateCommand(ar, std.testing.io, "gh pr create --title x --body y", "feat/x") != null);
+}
+
+test "legacy pid-zero handoff can be released by the labeled session" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    resetForTest();
+    defer resetForTest();
+    setTestOwner(.{ .session = "s-legacy", .pid = 0, .start_id = 0 });
+    _ = try handleTool(ar, std.testing.io, "claim", "publication", "feat/legacy", "");
+    setTestOwner(.{ .session = "s-legacy", .pid = 44, .start_id = 8 });
+    setTestOwnerLive(true);
+    const released = try handleTool(ar, std.testing.io, "release", "publication", "feat/legacy", "");
+    try std.testing.expect(!released.is_error);
 }

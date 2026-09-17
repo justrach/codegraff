@@ -482,8 +482,8 @@ pub const Registry = struct {
         } else return .{ .text = try out_alloc.dupe(u8, "unknown MCP tool"), .is_error = true };
 
         const server = reg.servers[tool.server_index];
-
-        const params = try @import("mcp_turn_context.zig").params(reg.gpa, server.name, tool.original_name, input, context);
+        const turn_ctx = @import("mcp_turn_context.zig").effective(context, reg.io, server.name);
+        const params = try @import("mcp_turn_context.zig").params(reg.gpa, server.name, tool.original_name, input, turn_ctx);
         defer reg.gpa.free(params);
 
         reg.mutex.lockUncancelable(reg.io);

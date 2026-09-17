@@ -58,7 +58,7 @@ fn startBackgroundRefresh(io: Io, gpa: Allocator, home: []const u8, spec: provid
     bg_refresh_live = true;
 }
 
-fn joinBackground(io: Io) void {
+pub fn shutdown(io: Io) void {
     if (!bg_refresh_live) return;
     bg_refresh.await(io);
     bg_refresh_live = false;
@@ -530,7 +530,7 @@ pub fn ensureForStartup(io: Io, gpa: Allocator, arena: Allocator, home: []const 
 /// remains the offline fallback, and each live list is re-cached for the
 /// next boot. Returns how many providers were pinged.
 pub fn refreshForListing(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys) usize {
-    joinBackground(io);
+    shutdown(io);
     pricing_db.ensure(io, gpa, arena, home, true); // the same freshness moment covers the price sheet, network and all
     var futures: [provider.provider_specs.len + 1]?Io.Future(FetchOutcome) = @splat(null);
     var pinged: usize = 0;
