@@ -104,10 +104,11 @@ export default function McpServers({ labeled = false }: { labeled?: boolean }) {
   return <>
     <button ref={trigger} type="button" aria-label="MCP servers" aria-haspopup="dialog" aria-expanded={open}
       onClick={() => setOpen((value) => !value)}
+      title="MCP servers"
       className={labeled
         ? "flex w-full items-center justify-start rounded-md px-3 py-2 text-left text-xs text-ink-3 hover:bg-hover hover:text-ink"
         : "flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-3 hover:bg-hover hover:text-ink"}>
-      MCP servers
+      {labeled ? "MCP servers" : <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M7 8h2v8H7zM15 8h2v8h-2z" /><path d="M9 12h6" /></svg>}
     </button>
     {open && createPortal(<div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/20 p-4" onPointerDown={(event) => {
       if (event.target === event.currentTarget) { setOpen(false); restoreActionFocus(trigger.current); }

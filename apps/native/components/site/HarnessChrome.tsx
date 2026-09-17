@@ -2,7 +2,6 @@ import SessionTabs from "./SessionTabs";
 import type {SplitTree} from "@/lib/split-tree";
 import ActionMenu from "@/components/primitives/ActionMenu";
 import AppSettings from "./AppSettings";
-import WorkspacePaneMenu from "./WorkspacePaneMenu";
 import type { PointerEvent, MouseEvent, ReactNode } from "react";
 import type { Chat } from "./harness-types";
 import reviewStyles from "./ChangesPane.module.css";
@@ -30,7 +29,6 @@ export default function HarnessChrome({navigationToggle, sidebarVisible = false,
   toggleTerminal, agentsOpen, onAgents, workingAgents = 0, tasksOpen = false, taskCount = 0, onTasks, splitNotice, onTabPointerDown, onTabClickCapture}: Props) {
   return (
     <div data-workspace-toolbar className={`${reviewStyles.chatbar} flex shrink-0 flex-col ${sidebarVisible ? "overflow-visible bg-transparent" : "overflow-hidden rounded-[14px] border border-line bg-page"}`}>
-      {/* One workspace-level tab strip above every split; never owned by a pane. */}
       <div data-session-tab-strip hidden={sidebarVisible} className={sidebarVisible ? "hidden" : "flex h-10 min-w-0 shrink-0 items-center gap-1 px-2"}>
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <button type="button" aria-label="Show agents" aria-pressed={agentsOpen} onClick={onAgents}
@@ -51,18 +49,18 @@ export default function HarnessChrome({navigationToggle, sidebarVisible = false,
           </svg>
         </button>
         </div>
-        {!sidebarVisible && <WorkspacePaneMenu className="ml-1 shrink-0" filesOpen={filesOpen} changesOpen={changesOpen} browserOpen={browserOpen} terminalVisible={terminalVisible} pinCount={pinCount} onFiles={onFiles} openChanges={openChanges} onBrowser={onBrowser} toggleTerminal={toggleTerminal} />}
       </div>
       <div className={`${reviewStyles.actions} flex min-h-10 shrink-0 items-center gap-1 ${sidebarVisible ? "justify-end px-1" : "border-t border-line px-2"} py-1`}>
         {navigationToggle}
         <button type="button" aria-pressed={filesOpen && !changesOpen} onClick={onFiles} title={`${chatCwd ?? "Workspace"}\nShow this chat's files`}
           className={`max-w-48 truncate lg:hidden ${paneBtn(filesOpen && !changesOpen)}`}>{workspaceName}</button>
-        <div className={`flex items-center gap-1 ${sidebarVisible ? "rounded-[14px] border border-line bg-page px-2 py-0.5" : ""}`}>
-        {sidebarVisible && <WorkspacePaneMenu filesOpen={filesOpen} changesOpen={changesOpen} browserOpen={browserOpen} terminalVisible={terminalVisible} pinCount={pinCount} onFiles={onFiles} openChanges={openChanges} onBrowser={onBrowser} toggleTerminal={toggleTerminal} />}
-        <button type="button" aria-label="Files" aria-pressed={filesOpen && !changesOpen} onClick={onFiles} className={`hidden lg:inline-flex ${paneBtn(filesOpen && !changesOpen)}`}>Files</button>
-        <button type="button" aria-label="Review workspace changes" aria-pressed={changesOpen} onClick={openChanges} className={paneBtn(changesOpen)}>Changes</button>
-        <button type="button" aria-label="Browser" aria-pressed={browserOpen} onClick={onBrowser} className={paneBtn(browserOpen)}>Browser{pinCount > 0 ? ` (${pinCount})` : ""}</button>
-        <button type="button" aria-label="Toggle terminal" aria-pressed={terminalVisible} onClick={toggleTerminal} className={paneBtn(terminalVisible)}>Terminal</button>
+        <div className={`ml-auto flex items-center gap-1 ${sidebarVisible ? "rounded-[14px] border border-line bg-page px-2 py-0.5" : ""}`}>
+        <ActionMenu label="Workspace tools" text="Tools" className="shrink-0">
+          <button type="button" aria-label="Review workspace changes" aria-pressed={changesOpen} onClick={openChanges}>Review</button>
+          <button type="button" aria-label="Toggle terminal" aria-pressed={terminalVisible} onClick={toggleTerminal}>Terminal <span className="ml-auto text-ink-3">⌘J</span></button>
+          <button type="button" aria-label="Browser" aria-pressed={browserOpen} onClick={onBrowser}>Browser{pinCount > 0 ? ` (${pinCount})` : ""}</button>
+          <button type="button" aria-label="Files" aria-pressed={filesOpen && !changesOpen} onClick={onFiles}>Files</button>
+        </ActionMenu>
         {(taskCount > 0 || tasksOpen) && onTasks && <button type="button" aria-label="Show tasks" aria-pressed={tasksOpen} onClick={onTasks} className={paneBtn(tasksOpen)}>Tasks{taskCount ? ` (${taskCount})` : ""}</button>}
         <ActionMenu label="Chat actions" text="More" className="shrink-0">
           <button type="button" onClick={newChat}>New chat <span className="ml-auto text-ink-3">⌘T</span></button>
