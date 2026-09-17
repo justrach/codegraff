@@ -106,6 +106,13 @@ Their sources are `assets/skills/*.md`, embedded through `build.zig` and parsed
 at compile time, so a bundled skill missing its description or body fails the
 build rather than going quietly absent.
 
+## Public catalog
+
+Reusable playbooks that are not tied to a harness release live in
+[standardharness/skills](https://github.com/standardharness/skills). Copy a
+skill folder into `~/.harness/skills/` or `.harness/skills/`. The loader is
+unchanged.
+
 ## Skills, agents, and project instructions
 
 - `AGENTS.md` / `CLAUDE.md` / `HARNESS.md`: always-on project instructions, in
