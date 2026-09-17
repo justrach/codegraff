@@ -11,7 +11,6 @@ import {
   IconGlobe,
   IconHome,
   IconMagnifyingGlass,
-  IconChat,
   IconPlusMedium,
   IconSettingsGear1,
   IconSidebarLeftArrow,
@@ -35,7 +34,6 @@ const NAV_ITEMS: { key: string; label: string; icon: ReactNode; count?: string }
   { key: "home", label: "Home", icon: <IconHome size={18} /> },
   { key: "projects", label: "Projects", icon: <IconFolder size={18} /> },
   { key: "agents", label: "Agents", icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden><circle cx="9" cy="8" r="3"/><circle cx="16" cy="9" r="2.4"/><path d="M4 19c.5-2.6 2.6-4.5 5-4.5s4.5 1.9 5 4.5M13.5 19c.4-1.7 1.8-3 3.5-3s3.1 1.3 3.5 3"/></svg> },
-  { key: "conversations", label: "Conversations", icon: <IconChat size={18} /> },
   { key: "workspace", label: "Files", icon: <IconFolder size={18} /> },
   { key: "changes", label: "Changes", icon: <IconEditBig size={18} /> },
   { key: "browser", label: "Browser", icon: <IconGlobe size={18} /> },
@@ -84,6 +82,7 @@ type SidebarNavProps = {
   /** How many saved sessions exist (sidebar only shows a preview). */
   recentsTotal?: number;
   onSeeAll?: () => void;
+  agentsCount?: number;
   variant?: string;
   /** The active workspace (the folder graff runs in); the demo shows a placeholder. */
   workspace?: SidebarWorkspace;
@@ -198,6 +197,7 @@ export default function SidebarNav({
   onDeleteRecent,
   recentsTotal,
   onSeeAll,
+  agentsCount = 0,
 }: SidebarNavProps) {
   const [collapsed, setCollapsed] = useState(false);
   useEffect(() => { onCollapsedChange?.(collapsed); }, [collapsed, onCollapsedChange]);
@@ -269,7 +269,7 @@ export default function SidebarNav({
       } as CSSProperties}
     >
       <div className="flex min-h-0 w-[248px] shrink-0 flex-col">
-        <div className="relative mb-2.5 h-10 shrink-0">
+        <div className="relative mb-2.5 flex h-10 shrink-0 items-center gap-1 px-2">
           <button
             ref={workspaceButtonRef}
             data-workspace-trigger
@@ -284,7 +284,7 @@ export default function SidebarNav({
               }
               setWorkspaceOpen((open) => !open);
             }}
-            className="sidebar-workspace-control absolute left-2 top-1 flex h-8 w-[188px] items-center rounded-[8px] px-2 text-left transition-[background-color,transform] duration-100 hover:bg-hover-2 active:scale-[0.99]"
+            className="sidebar-workspace-control flex h-8 min-w-0 flex-1 items-center rounded-[8px] px-2 text-left transition-[background-color,transform] duration-100 hover:bg-hover-2 active:scale-[0.99]"
           >
             <span className="sidebar-logo flex size-5 shrink-0 items-center justify-center text-ink">
               <CodeGraffMark size={20} />
@@ -316,7 +316,7 @@ export default function SidebarNav({
             aria-hidden={collapsed}
             tabIndex={collapsed ? -1 : 0}
             onClick={collapse}
-            className="sidebar-collapse-control absolute right-2 top-1 flex size-8 items-center justify-center rounded-[8px] text-ink-3 transition-[opacity,background-color,color] duration-150 hover:bg-hover-2 hover:text-ink"
+            className="sidebar-collapse-control flex size-8 shrink-0 items-center justify-center rounded-[8px] text-ink-3 transition-[opacity,background-color,color] duration-150 hover:bg-hover-2 hover:text-ink"
           >
             <IconSidebarLeftArrow size={18} />
           </button>
@@ -327,7 +327,7 @@ export default function SidebarNav({
             aria-hidden={!collapsed}
             tabIndex={collapsed ? 0 : -1}
             onClick={() => { setCollapsed(false); requestAnimationFrame(() => collapseButtonRef.current?.focus()); }}
-            className="sidebar-expand-control absolute left-2 top-0.5 flex size-9 items-center justify-center rounded-[8px] text-ink-3 transition-[opacity,background-color,color] duration-150 hover:bg-hover-2 hover:text-ink"
+            className="sidebar-expand-control absolute left-2 top-0.5 z-10 flex size-9 items-center justify-center rounded-[8px] text-ink-3 transition-[opacity,background-color,color] duration-150 hover:bg-hover-2 hover:text-ink"
           >
             <IconSidebarLeftOpen size={18} />
           </button>
@@ -349,7 +349,7 @@ export default function SidebarNav({
               key={item.key}
               icon={item.icon}
               label={item.label}
-              count={item.key === "conversations" && recentsTotal ? String(recentsTotal) : item.count}
+              count={item.key === "agents" && agentsCount > 0 ? String(agentsCount) : item.count}
               active={currentNav === item.key}
               onClick={() => selectNav(item.key)}
             />
@@ -373,7 +373,7 @@ export default function SidebarNav({
               <span className={`flex transition-transform duration-150 ${chatsOpen ? "" : "-rotate-90"}`}>
                 <IconChevronDownSmall size={16} />
               </span>
-              <span>{openSessions ? "History" : "Chats"}</span>
+              <span>History</span>
               {visibleRecents.length > 0 && <span className="tabular-nums text-ink-3">{visibleRecents.length}</span>}
             </button>
 

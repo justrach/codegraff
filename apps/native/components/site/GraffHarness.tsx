@@ -492,6 +492,7 @@ export default function GraffHarness() {
         fill
         recents={recents.filter(recent => !chats.some(chat => chat.session === recent.id))}
         recentsTotal={storedTotal}
+        agentsCount={workingAgents}
         activeTitle={chatThread.title}
         activeId={chatThread.session ?? null}
         onPick={pickRecent}
