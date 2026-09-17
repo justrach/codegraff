@@ -85,6 +85,12 @@ click missed (overlay, prompt-origin, mid-origin).
 - A new test-bearing module needs a reference in `src/main.zig`'s `test {}` block: `_ = @import("your_module.zig");`.
 - Prove it with the count, not with hope: the suite total must go up by the number of tests you added. `scripts/eval-tier1.sh --only reach` fails on any file that declares tests nothing imports.
 
+## Merging pull requests
+
+If asked to merge open PRs onto the **release branch**, merge **only** that branch. Do not merge them into `main` unless that was explicitly asked.
+
+`gh pr merge` uses the PR's base, which is usually `main`. That is not landing on `release/v…`. Cherry-pick or merge the PR head into the named release branch instead.
+
 ## Before you push
 
 Install the tracked hooks once, and the checks run themselves:
