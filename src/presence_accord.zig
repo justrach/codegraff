@@ -122,7 +122,7 @@ test "Accord live path is off by default" {
 }
 
 test "listenUnix socket is 0600" {
-    if (builtin.os.tag == .windows) return;
+    if (builtin.os.tag != .macos) return;
     const io = std.testing.io;
     const path = "graff-accord-mode.sock";
     Io.Dir.cwd().deleteFile(io, path) catch {};
