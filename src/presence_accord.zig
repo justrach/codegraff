@@ -45,6 +45,64 @@ pub fn takePing() bool {
     return g_ping.swap(false, .acq_rel);
 }
 
+pub const Stats = struct {
+    on: bool,
+    inbound: usize = 0,
+    outbound: usize = 0,
+    connects: u32 = 0,
+    session_bytes: usize = 0,
+    proc_rss_bytes: usize = 0,
+};
+
+/// Accord-held Sessions plus process RSS (for /debug). Session bytes are the
+/// standing duplex cost; proc RSS is the whole process, just in case.
+pub fn stats() Stats {
+    if (!enabled()) return .{ .on = false, .proc_rss_bytes = processRssBytes() };
+    var inbound: usize = 0;
+    var outbound: usize = 0;
+    if (g_io) |io| {
+        g_mu.lockUncancelable(io);
+        inbound = g_ins.items.len;
+        outbound = g_outs.items.len;
+        g_mu.unlock(io);
+    }
+    const n = inbound + outbound;
+    return .{
+        .on = true,
+        .inbound = inbound,
+        .outbound = outbound,
+        .connects = g_connects.load(.monotonic),
+        .session_bytes = n * @sizeOf(accord.Session),
+        .proc_rss_bytes = processRssBytes(),
+    };
+}
+
+pub fn renderLine(w: *Io.Writer) !void {
+    const s = stats();
+    if (!s.on) {
+        try w.writeAll("  accord     off\n");
+        return;
+    }
+    try w.print(
+        "  accord     {d} in · {d} out · {d} connects · ~{d} KB sessions · rss {d} KB\n",
+        .{
+            s.inbound,
+            s.outbound,
+            s.connects,
+            s.session_bytes / 1024,
+            s.proc_rss_bytes / 1024,
+        },
+    );
+}
+
+fn processRssBytes() usize {
+    if (builtin.os.tag == .windows) return 0;
+    var ru: std.c.rusage = std.mem.zeroes(std.c.rusage);
+    if (std.c.getrusage(std.c.rusage.SELF, &ru) != 0) return 0;
+    const rss: usize = @intCast(@max(ru.maxrss, 0));
+    return if (builtin.os.tag == .linux) rss * 1024 else rss;
+}
+
 fn sockPath(buf: []u8, chan_name: []const u8) ?[]const u8 {
     _ = chan_name;
     if (builtin.is_test) return test_sock;
@@ -342,6 +400,17 @@ const Pair = struct {
 test "Accord live path is off in tests unless enabled" {
     try std.testing.expect(!test_enabled);
     try std.testing.expect(!enabled());
+    const s = stats();
+    try std.testing.expect(!s.on);
+}
+
+test "Accord stats report session RSS when enabled" {
+    test_enabled = true;
+    defer test_enabled = false;
+    const s = stats();
+    try std.testing.expect(s.on);
+    try std.testing.expectEqual(@as(usize, 0), s.inbound);
+    try std.testing.expectEqual(@as(usize, 0), s.outbound);
 }
 
 test "listen binds a 0600 sock and stop unlinks it" {

@@ -12,7 +12,9 @@ current is part of cutting a release.
 
 ## Unreleased
 
-- Accord Unix 0600 is a standing duplex per live session (`GRAFF_ACCORD=0` opts out); JSONL stays the durable room (ADR 0134).
+- Accord Unix 0600 is a standing duplex per live session (`GRAFF_ACCORD=0` opts out); JSONL stays the durable room (ADR 0134). `/debug` reports Accord session count and RSS.
+- Engine messaging (idle peer mail, #1007) is the same latch on line REPL, TUI, and `graff acp`. `/debug` reports Accord session count and RSS.
+- Engine messaging (idle peer mail, #1007) is the same latch on line REPL, TUI, and `graff acp`.
 - `#1001`: idle TUI and line REPL start a turn when the durable peer room has new unread mail (one auto-turn per batch; inbox consume resets).
 - `#1007`: idle `graff acp` sessions start that same turn; `peer_message` no longer claims delivery waits for a step boundary.
 - `#1006`: rendered views sit in the transcript without product chrome; desktop appearance tokens ride the turn (ADR 0135).

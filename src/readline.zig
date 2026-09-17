@@ -186,9 +186,11 @@ pub fn readLine(
                 input_util.g_shine_phase +%= 1;
                 redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
             }
-            // #1001: empty composer polls so peer mail can start a turn without a key.
+            // #1001 / #1007: empty composer polls so peer mail can start a turn
+            // without a key — same latch as TUI idleWakeCb and graff acp.
             if (buf.items.len == 0) {
-                while (!inputPendingTimed(200)) {
+                const idle_ms: i32 = if (@import("presence_accord.zig").enabled()) 50 else 200;
+                while (!inputPendingTimed(idle_ms)) {
                     var wake_buf: [512]u8 = undefined;
                     if (peer_idle.takeIdleWake(root.io, &wake_buf)) |wake| {
                         buf.appendSlice(gpa, wake) catch break;

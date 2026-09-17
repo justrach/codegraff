@@ -334,6 +334,7 @@ pub fn renderHud(w: *Io.Writer) !void {
         }
     }
     try @import("prompt_cache_hud.zig").renderLine(w);
+    try @import("presence_accord.zig").renderLine(w);
     try w.writeAll("  last events\n");
     var recs: [ring_cap]Record = undefined;
     const n = recent(&recs);
