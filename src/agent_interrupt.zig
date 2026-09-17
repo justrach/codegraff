@@ -27,6 +27,34 @@ const style = &ansi.style;
 const terminal = @import("term.zig");
 const tty = terminal.tty;
 
+const Stdin = struct {
+    fn read(_: *Stdin, buf: []u8) usize {
+        return tty.readStdin(buf);
+    }
+
+    fn poll(_: *Stdin, timeout_ms: i32) bool {
+        return tty.poll(timeout_ms);
+    }
+};
+
+var stdin_scan_lock: std.atomic.Value(bool) = .init(false);
+
+fn lockStdinScan() void {
+    while (stdin_scan_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
+}
+
+fn unlockStdinScan() void {
+    stdin_scan_lock.store(false, .release);
+}
+
+fn popSteerCodepoint() void {
+    const items = main_mod.g_steer_buf.items;
+    if (items.len == 0) return;
+    var start = items.len - 1;
+    while (start > 0 and items[start] & 0xc0 == 0x80) start -= 1;
+    main_mod.g_steer_buf.shrinkRetainingCapacity(start);
+}
+
 pub fn escWatchTask() void {
     while (!Agent.esc_watch_done.load(.acquire)) {
         if (tty.poll(100) and escPressed(false)) {
@@ -46,13 +74,28 @@ pub fn escWatchTask() void {
 /// Enter on an empty line (double-enter) with a non-empty queue
 /// force-interrupts the current turn so the queue drains immediately.
 pub fn escPressed(echo: bool) bool {
+    lockStdinScan();
+    defer unlockStdinScan();
+    var input: Stdin = .{};
+    return escPressedFrom(&input, echo);
+}
+
+/// Testable scanner core. `input.read` must return at most `buf.len` bytes;
+/// `input.poll` reports whether another read can supply a continuation.
+pub fn escPressedFrom(input: anytype, echo: bool) bool {
     var buf: [256]u8 = undefined;
-    var n = tty.readStdin(&buf);
+    var n = input.read(&buf);
     var esc_found = false;
     var i: usize = 0;
     while (i < n) : (i += 1) {
         const c = buf[i];
         if (c == 0x1b) {
+            // A modifier-prefixed key or terminal reply may put ESC at the end
+            // of one VMIN=0 read. Pull the continuation into this same buffer
+            // so the branches below decode it instead of discarding it.
+            if (i + 1 >= n and n < buf.len and input.poll(50)) {
+                n += input.read(buf[n..]);
+            }
             if (i + 1 < n and buf[i + 1] == '[') {
                 // CSI escape sequence (arrows, Home/End, Delete, DSR reply,
                 // mouse, etc.). Consume through the final byte (0x40..0x7e) so
@@ -68,8 +111,8 @@ pub fn escPressed(echo: bool) bool {
                     while (j < n) : (j += 1) {
                         if (buf[j] >= 0x40 and buf[j] <= 0x7e) break;
                     }
-                    if (j < n or n >= buf.len or !tty.poll(50)) break;
-                    const more = tty.readStdin(buf[n..]);
+                    if (j < n or n >= buf.len or !input.poll(50)) break;
+                    const more = input.read(buf[n..]);
                     if (more == 0) break;
                     n += more;
                 }
@@ -91,36 +134,43 @@ pub fn escPressed(echo: bool) bool {
                 continue;
             } else if (i + 1 < n and buf[i + 1] == 'O') {
                 // SS3 escape sequence (common for function/cursor keys):
-                // ESC O <final>. Swallow the whole sequence.
-                i = @min(i + 2, n - 1);
+                // ESC O <final>. Its final byte may arrive in a later read.
+                while (i + 2 >= n and n < buf.len and input.poll(50)) {
+                    const more = input.read(buf[n..]);
+                    if (more == 0) break;
+                    n += more;
+                }
+                i = if (i + 2 < n) i + 2 else n - 1;
                 continue;
             } else if (i + 1 < n and buf[i + 1] == ']') {
                 // OSC — a terminal's colour/title REPLY (ESC ] … BEL, or ESC \\):
                 // never a keypress, so it must not read as Esc (#728). Swallow
                 // through the terminator, pulling a split tail in like CSI.
                 var j = i + 2;
+                var terminator: ?usize = null;
+                var trailing_esc = false;
                 while (true) {
-                    while (j < n and buf[j] != 0x07 and !(buf[j] == 0x1b and j + 1 < n and buf[j + 1] == '\\')) : (j += 1) {}
-                    if (j < n or n >= buf.len or !tty.poll(50)) break;
-                    const more = tty.readStdin(buf[n..]);
+                    while (j < n) : (j += 1) {
+                        const x = buf[j];
+                        if (x == 0x07 or (trailing_esc and x == '\\')) {
+                            terminator = j;
+                            break;
+                        }
+                        trailing_esc = x == 0x1b;
+                    }
+                    if (terminator != null or n >= buf.len or !input.poll(50)) break;
+                    const more = input.read(buf[n..]);
                     if (more == 0) break;
                     n += more;
                 }
-                i = if (j < n) (if (buf[j] == 0x1b) j + 1 else j) else n - 1;
+                i = terminator orelse n - 1;
+                continue;
+            } else if (i + 1 < n and (buf[i + 1] == 0x7f or buf[i + 1] == 0x08)) {
+                // Cmd/Option+Delete may be encoded as ESC DEL/BS. The prefix is
+                // a modifier, not an interruption; leave the deletion byte for
+                // the next loop iteration so it edits the steering buffer.
                 continue;
             } else if (i + 1 >= n) {
-                // ESC is the LAST byte of this chunk — it may be the truncated
-                // head of a split CSI/SS3/DSR sequence (e.g. a delayed
-                // `\x1b[<row>;<col>R` cursor-position reply to our `\x1b[6n`)
-                // read across two VMIN=0 reads, NOT a real Esc keypress (#94).
-                // Briefly wait for a continuation before concluding it's an Esc.
-                if (tty.poll(50)) {
-                    var more: [64]u8 = undefined;
-                    if (tty.readStdin(&more) > 0) {
-                        i = n; // a sequence/alt-chord followed — not a lone Esc
-                        continue;
-                    }
-                }
                 // Nothing followed within the grace window: a genuine lone Esc.
                 esc_found = true;
                 main_mod.g_force_interrupt = false;
@@ -172,7 +222,7 @@ pub fn escPressed(echo: bool) bool {
             continue;
         } else if (c == 0x7f or c == 0x08) { // backspace / Ctrl-H
             if (main_mod.g_steer_buf.items.len > 0) {
-                _ = main_mod.g_steer_buf.pop();
+                popSteerCodepoint();
                 if (echo) repl_glue.steerEcho("\x08 \x08");
             }
             continue;
@@ -264,4 +314,6 @@ pub fn sseIndex(obj: std.json.ObjectMap) ?usize {
 
 test { // #728: cancel_source has no other path into the test root
     _ = cancel_source;
+    _ = @import("agent_interrupt_repl_tests.zig");
+    _ = @import("agent_interrupt_escape_edges_tests.zig");
 }
