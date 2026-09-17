@@ -260,7 +260,7 @@ export default function GraffHarness() {
       sessionNamesRef.current.set(id, name);
       const next = [...chatsRef.current, { id, title: loaded.meta.title ?? name, messages, model: loaded.meta.model ?? undefined, session: name, cwd, snapshot: loaded.snapshot }];
       chatsRef.current = next; setChats(next);
-      const host = resumeSplitTarget(chatsRef.current, groupsRef.current.groups, activeIdRef.current, cwd, activePathRef.current, MAX_COLUMNS);
+      const host = loaded.snapshot ? null : resumeSplitTarget(chatsRef.current, groupsRef.current.groups, activeIdRef.current, cwd, activePathRef.current, MAX_COLUMNS);
       if (host != null) groupsRef.current.split(id, host, "right");
       selectStored(id, cwd);
     },
