@@ -199,11 +199,16 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
         .extra = liveModels,
     };
     while (true) {
-        const line = (inbox.next(arena) catch break) orelse break;
-        handleLine(&d, arena, out, line) catch |err| {
-            std.debug.print("acp: dispatch failed: {t}\n", .{err});
-            break;
-        };
+        const event = (inbox.wait(arena) catch break) orelse break;
+        switch (event) {
+            .tick => @import("acp_idle.zig").maybeWake(&d, arena, out, io) catch |err| {
+                std.debug.print("acp: idle wake failed: {t}\n", .{err});
+            },
+            .line => |line| handleLine(&d, arena, out, line) catch |err| {
+                std.debug.print("acp: dispatch failed: {t}\n", .{err});
+                break;
+            },
+        }
         out.flush() catch break;
     }
     session.saveSession(root, arena, root.session_name) catch {};

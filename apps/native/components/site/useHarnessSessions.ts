@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type MutableRefObject, type Dispatch, type SetStateAction } from "react";
 import { checkHealth, disposePage, ensureSession, fetchModels, type Health } from "@/lib/acp-client";
+import { pumpIdlePeerTurns } from "./idle-peer-turns";
 import type { AcpCommand } from "@/lib/acp";
 import type { PromptModel } from "@/components/primitives/PromptBar";
 import { listSessionsPage, type StoredSession } from "@/lib/sessions";
@@ -22,6 +23,16 @@ type Props = {
 const SIDEBAR_PAGE = 12;
 export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal}: Props) {
   const [projectsReady, setProjectsReady] = useState(false);
+  const idleCtl = useRef(new Map<number, AbortController>());
+  const watchIdle = (chatId: number, sessionId: string) => {
+    idleCtl.current.get(chatId)?.abort();
+    const ac = new AbortController();
+    idleCtl.current.set(chatId, ac);
+    void pumpIdlePeerTurns({
+      chatId, handle: handleOf(chatId), sessionId, signal: ac.signal,
+      running: () => runningRef.current.has(chatId), setChats,
+    });
+  };
   const adoptCatalog = async (chatId: number) => {
     // Use the provider and model actually resolved by graff.
     try {
@@ -74,6 +85,7 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
     });
     sessionsRef.current.set(chatId, id);
     setSessionIds((current) => ({ ...current, [chatId]: id }));
+    watchIdle(chatId, id);
     // Populate the command menu from this agent's advertisement.
     if (commands.length > 0) setCommands((current) => ({ ...current, [chatId]: commands }));
     setHealth({ ok: true });
@@ -134,6 +146,8 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
     return () => {
       cancelled = true;
       window.removeEventListener("pagehide", reap);
+      for (const ac of idleCtl.current.values()) ac.abort();
+      idleCtl.current.clear();
     };
     // The first tab's agent is spawned once per mount; later tabs spawn their
     // own on creation, and a model change respawns only the active tab's.

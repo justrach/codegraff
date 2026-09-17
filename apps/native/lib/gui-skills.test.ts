@@ -27,6 +27,17 @@ test("ordinary prompts and file attachments do not load GUI skills", async () =>
   const original = { prompt: [{ type: "text", text: "Read the project" }, { type: "resource_link", name: "$theme", uri: "file:///fixture" }] };
   expect(await prepareGuiPrompt(original)).toBe(original);
 });
+test("desktop appearance tokens ride the prompt and leave the catalog alone", async () => {
+  const original = { prompt: [{ type: "text", text: "Draw the burn-down" }], appearance: { page: "#faf8f5", surface: "#ffffff", ink: "#1a1a1a" } };
+  const prepared = await prepareGuiPrompt(original);
+  const text = (prepared?.prompt as { text: string }[])[0].text;
+  expect(text.startsWith("Draw the burn-down")).toBe(true);
+  expect(text).toContain("[desktop appearance]");
+  expect(text).toContain("--page: #faf8f5");
+  expect(text).toContain("--surface: #ffffff");
+  expect(prepared).not.toHaveProperty("appearance");
+  expect(original.prompt[0].text).toBe("Draw the burn-down");
+});
 test("MCP GUI skill injects config paths without the theme directory", async () => {
   const original = { prompt: [{ type: "text", text: "$mcp add a filesystem server" }] };
   const prepared = await prepareGuiPrompt(original);

@@ -14,6 +14,10 @@ current is part of cutting a release.
 
 - Opt-in Accord Unix 0600 live path behind `presence_chan.postMessage` (`GRAFF_ACCORD=1`); JSONL stays the durable room (ADR 0134).
 - `#1001`: idle TUI and line REPL start a turn when the durable peer room has new unread mail (one auto-turn per batch; inbox consume resets).
+- `#1007`: idle `graff acp` sessions start that same turn; `peer_message` no longer claims delivery waits for a step boundary.
+- `#1006`: rendered views sit in the transcript without product chrome; desktop appearance tokens ride the turn (ADR 0135).
+- `#1007`: idle `graff acp` sessions start that same turn; `peer_message` no longer claims delivery waits for a step boundary.
+- `#1006`: rendered views sit in the transcript without product chrome; desktop appearance tokens ride the turn (ADR 0135).
 
 - Live 12-PR board on grok-4.6 SuperGrok (n=3, no SPEC.md): graff / Pi /
   OpenCode 12/12, grok 11/12 (`#727`), exo 9/12 (gemini + two turbos —

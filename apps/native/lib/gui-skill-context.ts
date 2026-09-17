@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { selectedGuiSkills, withGuiSkillContext } from "./gui-skills";
+import { appearanceNote, parseAppearance } from "./appearance-note";
 import { themeDirectory } from "./theme-files";
 
 function mcpConfigPaths() {
@@ -21,17 +22,29 @@ function extraFor(id: string): string {
 
 export async function prepareGuiPrompt(params: Record<string, unknown> | undefined) {
   if (!Array.isArray(params?.prompt)) return params;
+  const tokens = parseAppearance(params.appearance);
   const selected = new Set<string>();
   // Explicit mentions in user text only: attachments never activate a skill.
   for (const block of params.prompt) if (block?.type === "text" && typeof block.text === "string") for (const skill of selectedGuiSkills(block.text)) selected.add(skill.id);
-  if (!selected.size) return params;
-  const instructions = await Promise.all([...selected].map(async id => {
-    const text = await readFile(path.join(process.cwd(), "skills", id, "SKILL.md"), "utf8");
-    const extra = extraFor(id);
-    return `GUI skill: ${id}\n${text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "")}${extra ? `\n${extra}` : ""}`;
-  }));
+  if (!selected.size && !tokens) return params;
   const prompt = params.prompt.map(block => ({ ...block }));
   const first = prompt.find(block => block.type === "text" && typeof block.text === "string");
-  first.text = withGuiSkillContext(first.text, instructions.join("\n\n"));
-  return { ...params, prompt };
+  if (!first || typeof first.text !== "string") {
+    if (!tokens) return params;
+    const next = { ...params };
+    delete next.appearance;
+    return next;
+  }
+  if (selected.size) {
+    const instructions = await Promise.all([...selected].map(async id => {
+      const text = await readFile(path.join(process.cwd(), "skills", id, "SKILL.md"), "utf8");
+      const extra = extraFor(id);
+      return `GUI skill: ${id}\n${text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "")}${extra ? `\n${extra}` : ""}`;
+    }));
+    first.text = withGuiSkillContext(first.text, instructions.join("\n\n"));
+  }
+  if (tokens) first.text = `${first.text}\n\n${appearanceNote(tokens)}`;
+  const next = { ...params, prompt };
+  delete next.appearance;
+  return next;
 }

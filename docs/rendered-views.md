@@ -8,8 +8,11 @@ nothing opens automatically: the model chooses to draw, and the turn is still
 the turn.
 
 The view keeps its own inline `<style>` and `<script>`, so a page can be
-animated or interactive. Close view / Open view disposes and restores the
-frame without touching the conversation.
+animated or interactive. It sits in the transcript without a product header
+or framed well; a quiet Close view / Open view control disposes and restores
+the frame without touching the conversation. On the desktop, the live
+appearance tokens ride the turn as a note so a new page can match `--page`
+and `--surface` (ADR 0135).
 
 ## Where the page lives
 

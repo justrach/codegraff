@@ -324,6 +324,21 @@ export async function POST(req: NextRequest) {
       await endTurn(slot);
       return Response.json({ ok: true });
     }
+    if (method === "session/idle") {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const send = (line: string) => {
+            if (slot.streaming) return;
+            try { controller.enqueue(encoder.encode(`${line}\n`)); } catch { /* closed */ }
+          };
+          const stop = slot.transport.subscribe(send);
+          const close = () => { stop(); try { controller.close(); } catch { /* already closed */ } };
+          req.signal.addEventListener("abort", close, { once: true });
+        },
+      });
+      return new Response(stream, { headers: { "content-type": "application/x-ndjson", "cache-control": "no-store" } });
+    }
     if (method === "session/prompt") {
       if (slot.streaming) return Response.json({ error: "A turn is already active" }, { status: 409 });
       const promptParams = await prepareGuiPrompt(body.params);
