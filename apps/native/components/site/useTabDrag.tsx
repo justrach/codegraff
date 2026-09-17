@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type MouseEvent } from "react";
-import type { TabDrop } from "@/lib/tab-drop";
+import { sidebarRowDrop, type TabDrop } from "@/lib/tab-drop";
 import { captureTabLayout, settleTabLayout } from "./tab-drag-motion";
 import styles from "./tab-drag.module.css";
 type Preview = { drop: TabDrop; left: number; top: number; width: number; height: number; label: string };
@@ -47,7 +47,15 @@ export function useTabDrag(onDrop: (id: number, drop: TabDrop) => void) {
         const r = tab.getBoundingClientRect();
         const vertical = tab.closest('[data-session-navigation="sidebar"]') !== null;
         const after = vertical ? y > r.top + r.height / 2 : x > r.left + r.width / 2;
-        if (vertical) return { drop: { kind: "tab", id: Number(tab.dataset.tabId), after }, left: r.left, top: after ? r.bottom - 2 : r.top, width: r.width, height: 3, label: "Move chat" };
+        if (vertical) {
+          const drop = sidebarRowDrop(id, Number(tab.dataset.tabId), x, y, r);
+          if (!drop) return null;
+          if (drop.kind === "split") return {
+            drop, left: drop.edge === "right" ? r.left + r.width / 2 : r.left, top: r.top,
+            width: r.width / 2, height: r.height, label: drop.edge === "left" ? "Split left" : "Split right",
+          };
+          return { drop, left: r.left, top: drop.after ? r.bottom - 2 : r.top, width: r.width, height: 3, label: "Move chat" };
+        }
         return { drop: { kind: "tab", id: Number(tab.dataset.tabId), after }, left: after ? r.right - 2 : r.left, top: r.top, width: 3, height: r.height, label: "Move tab" };
       }
       const pane = element?.closest<HTMLElement>('[data-chat]');
