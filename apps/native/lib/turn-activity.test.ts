@@ -69,3 +69,18 @@ test("elapsed work freezes at completion across remounts and repeated finalizati
   expect(workDuration(60)).toBe("1m 0s");
   expect(workDuration(3601)).toBe("1h 0m");
 });
+
+test("streaming text reports tok/s; tools and MCP Apps wait instead", () => {
+  const writing = {
+    ...emptyTurn(), status: "streaming" as const, text: "x".repeat(80), connected: true,
+    startedAt: 0, lastUpdateAt: 1000, activityKind: "agent_message_chunk",
+  };
+  expect(turnActivity(writing, 1000).detail).toMatch(/tok\/s/);
+  const tools = applyAcpUpdate({ ...writing, text: "x".repeat(80) }, { sessionUpdate: "tool_call", toolCallId: "bash", kind: "execute", status: "in_progress" });
+  expect(turnActivity(tools, 1000).detail).toBe("Running 1 tool…");
+  expect(turnActivity(tools, 1000).detail).not.toMatch(/tok\/s/);
+  const app = { ...tools, tools: [{ ...tools.tools[0], mcpAppId: "a".repeat(32) }] };
+  expect(turnActivity(app, 1000).detail).toBe("Waiting on MCP App…");
+  const done = finishAcpTurn({ ...writing, startedAt: 0 }, 1000);
+  expect(turnActivity(done, 1000).detail).toMatch(/tok\/s/);
+});

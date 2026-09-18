@@ -65,7 +65,7 @@ app.whenReady().then(async () => {
   assert.ok(fs.existsSync(path.join(ui, '.next/BUILD_ID')), 'Build the production GUI before running test:frontend');
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.endsWith('_API_KEY')));
   Object.assign(env, { HOME: temp, TMPDIR: temp, GRAFF_ATTACHMENT_OWNER_PID: String(process.pid), LMSTUDIO_API_KEY: 'local', GRAFF_CWD: workspace, GRAFF_DESKTOP_TOKEN: '',
-    GRAFF_NO_TELEMETRY: '1', GRAFF_FLEET: 'off', GRAFF_NO_SMOLIFY: '1', GRAFF_NO_CODEDB_GUARD: '1', NEXT_TELEMETRY_DISABLED: '1' });
+    GRAFF_NO_TELEMETRY: '1', GRAFF_FLEET: 'off', GRAFF_NO_SMOLIFY: '1', GRAFF_NO_CODEDB_GUARD: '1', GRAFF_ACP_IDLE_MS: '0', NEXT_TELEMETRY_DISABLED: '1' });
   const mcp = path.join(temp, 'mcp.json'); fs.writeFileSync(mcp, JSON.stringify({mcpServers:htmlTool ? {codegraff_desktop:{command:process.env.GRAFF_TEST_BUN || 'bun',args:[path.join(__dirname,'desktop-mcp.cjs')]}} : {}})); env.GRAFF_MCP_CONFIG = mcp;
   const wrapper = path.join(temp, 'graff');
   fs.writeFileSync(wrapper, '#!/usr/bin/env python3\nimport os,sys\nbinary=' + JSON.stringify(binary) + '\nargs=sys.argv[1:]\nif args and args[0]=="acp": args += ["--model","lmstudio","--yolo"]\nos.execv(binary,[binary]+args)\n', { mode: 0o755 });

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MutableRefObject, type Dispatch, type SetStateAction } from "react";
-import { checkHealth, disposePage, ensureSession, fetchModels, type Health } from "@/lib/acp-client";
+import { bindMcpAppChat, checkHealth, disposePage, ensureSession, fetchModels, type Health } from "@/lib/acp-client";
 import { pumpIdlePeerTurns } from "./idle-peer-turns";
 import type { AcpCommand } from "@/lib/acp";
 import type { PromptModel } from "@/components/primitives/PromptBar";
@@ -65,6 +65,10 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
     };
   }, []);
 
+  useEffect(() => {
+    bindMcpAppChat(sessionsRef.current.has(activeId) ? handleOf(activeId) : undefined);
+  }, [activeId, handleOf]);
+
   const requireSession = async (chatId: number, reset = false, key?: string): Promise<string> => {
     if (chatsRef.current.find(c => c.id === chatId)?.snapshot) throw new Error("Continue here before resuming this saved snapshot.");
     const live = sessionsRef.current.get(chatId);
@@ -84,6 +88,7 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
       mcp: ws?.mcp,
     });
     sessionsRef.current.set(chatId, id);
+    bindMcpAppChat(handleOf(chatId));
     setSessionIds((current) => ({ ...current, [chatId]: id }));
     watchIdle(chatId, id);
     // Populate the command menu from this agent's advertisement.

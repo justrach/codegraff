@@ -38,14 +38,20 @@ window.addEventListener('message',event=>{
     if(m.params?.protocolVersion!=='2026-01-26'){send({id:m.id,error:{code:-32602,message:'Unsupported MCP Apps protocol version'}});return;}
     reply({protocolVersion:'2026-01-26',hostInfo:{name:'Codegraff',version:'1'},hostCapabilities:{openLinks:{},sandbox:{csp:approved,permissions:{}}},hostContext:{theme:matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light',displayMode:'inline',availableDisplayModes:['inline']}});return;
   }
-  if(m.method==='ui/notifications/initialized'&&!initialized){initialized=true;send({method:'ui/notifications/tool-input',params:{arguments:snapshot.arguments}});send({method:'ui/notifications/tool-result',params:snapshot.result});status.textContent='Result view · tool execution disabled';return;}
+  if(m.method==='ui/notifications/initialized'&&!initialized){initialized=true;send({method:'ui/notifications/tool-input',params:{arguments:snapshot.arguments}});send({method:'ui/notifications/tool-result',params:snapshot.result});status.textContent='Result view · MCP tools via ACP';return;}
   if(!initialized)return;
   if(m.method==='ui/notifications/size-changed'){const h=m.params?.height;if(Number.isFinite(h))proxy.style.height=Math.min(1000,Math.max(240,h))+'px';return;}
   if(m.method==='ui/open-link'){
     try{const u=new URL(m.params.url);if(!['http:','https:'].includes(u.protocol)||u.username||u.password)throw Error('invalid');link.href=u.href;link.textContent='Open source: '+u.href;link.hidden=false;status.textContent='Click Open source to continue';reply({});}catch{reply({isError:true});}return;
   }
   if(m.method==='ping'){reply({});return;}
+  if(m.method==='tools/call'){parent.postMessage(m,'*');return;}
   if(m.id!==undefined)send({id:m.id,error:{code:-32601,message:'This saved-result host does not execute tools, read additional resources, or send agent messages.'}});
+});
+window.addEventListener('message',event=>{
+  if(event.source!==parent)return;const r=event.data;if(!r||r.jsonrpc!=='2.0'||r.id===undefined)return;
+  if(r.result!==undefined)send({id:r.id,result:r.result});
+  else if(r.error)send({id:r.id,error:r.error});
 });
 document.body.append(proxy);
 setTimeout(()=>{if(!initialized)status.textContent='This app did not connect. The ordinary tool result is still available in the transcript.';},10000);

@@ -25,6 +25,6 @@ export default function TurnActivity({ turn, snapshot }: { turn: AssistantTurn; 
   }
   return <div data-turn-activity={activity.state} className={`mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] ${activity.state === "error" ? "text-red" : "text-ink-3"}`}>
     <span aria-hidden="true">{activity.state === "snapshot" ? "○" : activity.state === "error" ? "!" : activity.label === "Stopped" ? "■" : "✓"}</span>
-    <span role="status" aria-live="polite">{activity.label}</span>{activity.detail && <><span aria-hidden="true">·</span><span data-activity-detail className="tabular-nums">{activity.detail}</span></>}
+    <span role="status" aria-live="polite">{activity.label}</span>{activity.detail && <><span aria-hidden="true">·</span><span data-activity-detail data-tok-rate={activity.detail.includes("tok/s") ? activity.detail : undefined} className="tabular-nums">{activity.detail}</span></>}
   </div>;
 }

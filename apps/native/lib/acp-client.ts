@@ -276,3 +276,20 @@ export const MODELS: ModelChoice[] = [
   { key: "grok-4.6", name: "Grok 4.6", tag: "xAI" },
   { key: "kimi-k2.6", name: "Kimi K2.6", tag: "Moonshot" },
 ];
+
+let mcpAppChat: ChatHandle | undefined;
+export function bindMcpAppChat(chat?: ChatHandle): void {
+  mcpAppChat = chat;
+}
+
+/** Host-mediated MCP App tools/call. Native engine tools are refused. */
+export async function callMcpAppTool(name: string, args: unknown): Promise<unknown> {
+  if (!name.startsWith("mcp__") || !name.slice(5).includes("__")) {
+    throw new Error("MCP Apps can only call mcp__ tools");
+  }
+  if (!mcpAppChat) throw new Error("No live ACP session for this MCP App");
+  const res = await rpc(mcpAppChat, "session/mcp_call", { name, arguments: args && typeof args === "object" ? args : {} });
+  const body = await res.json() as { result?: unknown; error?: string };
+  if (body.error) throw new Error(body.error);
+  return body.result;
+}

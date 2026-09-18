@@ -234,3 +234,93 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
     rmSync(temp,{recursive:true,force:true});
   }
 },10000);
+
+test("an idle worker is killed and the next prompt resumes the saved session", async () => {
+  const temp = mkdtempSync(path.join(os.tmpdir(), "graff-acp-idle-"));
+  const binary = path.join(temp, "agent.cjs");
+  const oldBin = process.env.GRAFF_BIN;
+  const oldIdle = process.env.GRAFF_ACP_IDLE_MS;
+  writeFileSync(binary, `#!/usr/bin/env node
+const fs=require('node:fs');
+fs.writeFileSync('pid', String(process.pid));
+fs.appendFileSync('starts', JSON.stringify(process.argv.slice(2))+'\\n');
+const resumed=process.argv.includes('--resume');
+const send=value=>console.log(JSON.stringify(value));
+require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
+  const req=JSON.parse(line);
+  if(req.method==='initialize') send({id:req.id,result:{}});
+  if(req.method==='session/new') {
+    send({id:req.id,result:{sessionId:'saved-conversation'}});
+    send({method:'session/update',params:{update:{sessionUpdate:'available_commands_update',availableCommands:[]}}});
+  }
+  if(req.method==='session/prompt') {
+    send({method:'session/update',params:{update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:resumed?'recovered':'started'}}}});
+    send({id:req.id,result:{stopReason:'end_turn'}});
+  }
+}).on('close',()=>process.exit(0));
+`, { mode: 0o700 });
+  const chat = `idle-park-${path.basename(temp)}`;
+  const call = (method: string, params = {}) => deadline(POST(new NextRequest("http://localhost/api/acp", {
+    method: "POST", body: JSON.stringify({ chat, method, params }),
+  })), method);
+  try {
+    process.env.GRAFF_BIN = binary;
+    process.env.GRAFF_ACP_IDLE_MS = "40";
+    expect((await call("bootstrap", { cwd: temp, model: "fixture", yolo: false, mcp: false })).status).toBe(200);
+    const first = await call("session/prompt", { prompt: [{ type: "text", text: "start" }] });
+    expect(await deadline(first.text(), "first turn")).toContain("started");
+    const pid = Number(readFileSync(path.join(temp, "pid"), "utf8"));
+    await new Promise(resolve => setTimeout(resolve, 120));
+    expect(() => process.kill(pid, 0)).toThrow();
+    const next = await call("session/prompt", { prompt: [{ type: "text", text: "again" }] });
+    const text = await deadline(next.text(), "resumed turn");
+    expect(text).toContain("recovered");
+    const starts = readFileSync(path.join(temp, "starts"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(starts[0]).toEqual(["acp", "--model", "fixture"]);
+    expect(starts[1]).toEqual(["acp", "--model", "fixture", "--resume", "saved-conversation"]);
+  } finally {
+    await call("dispose");
+    if (oldBin === undefined) delete process.env.GRAFF_BIN; else process.env.GRAFF_BIN = oldBin;
+    if (oldIdle === undefined) delete process.env.GRAFF_ACP_IDLE_MS; else process.env.GRAFF_ACP_IDLE_MS = oldIdle;
+    rmSync(temp, { recursive: true, force: true });
+  }
+}, 15000);
+
+test("closing a tab does not resume a parked worker", async () => {
+  const temp = mkdtempSync(path.join(os.tmpdir(), "graff-acp-dispose-park-"));
+  const binary = path.join(temp, "agent.cjs");
+  const oldBin = process.env.GRAFF_BIN;
+  const oldIdle = process.env.GRAFF_ACP_IDLE_MS;
+  writeFileSync(binary, `#!/usr/bin/env node
+const fs=require('node:fs');
+fs.appendFileSync('starts', JSON.stringify(process.argv.slice(2))+'\\n');
+const send=value=>console.log(JSON.stringify(value));
+require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
+  const req=JSON.parse(line);
+  if(req.method==='initialize') send({id:req.id,result:{}});
+  if(req.method==='session/new') {
+    send({id:req.id,result:{sessionId:'closed-tab'}});
+    send({method:'session/update',params:{update:{sessionUpdate:'available_commands_update',availableCommands:[]}}});
+  }
+}).on('close',()=>process.exit(0));
+`, { mode: 0o700 });
+  const chat = `dispose-park-${path.basename(temp)}`;
+  const call = (method: string, params = {}) => deadline(POST(new NextRequest("http://localhost/api/acp", {
+    method: "POST", body: JSON.stringify({ chat, method, params }),
+  })), method);
+  try {
+    process.env.GRAFF_BIN = binary;
+    process.env.GRAFF_ACP_IDLE_MS = "40";
+    expect((await call("bootstrap", { cwd: temp, model: "fixture", yolo: false, mcp: false })).status).toBe(200);
+    expect((await call("dispose")).status).toBe(200);
+    await new Promise(resolve => setTimeout(resolve, 80));
+    expect((await call("bootstrap", { cwd: temp, model: "fixture", yolo: false, mcp: false })).status).toBe(200);
+    const starts = readFileSync(path.join(temp, "starts"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(starts).toEqual([["acp", "--model", "fixture"], ["acp", "--model", "fixture"]]);
+  } finally {
+    await call("dispose");
+    if (oldBin === undefined) delete process.env.GRAFF_BIN; else process.env.GRAFF_BIN = oldBin;
+    if (oldIdle === undefined) delete process.env.GRAFF_ACP_IDLE_MS; else process.env.GRAFF_ACP_IDLE_MS = oldIdle;
+    rmSync(temp, { recursive: true, force: true });
+  }
+}, 15000);

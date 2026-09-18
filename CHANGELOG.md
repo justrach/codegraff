@@ -13,6 +13,9 @@ current is part of cutting a release.
 ## Unreleased
 
 - Empty Enter-Enter while a turn is running interrupts (or steers the next queued prompt). It no longer required a queue to arm.
+- Desktop ACP workers can park after a quiet period (`GRAFF_ACP_IDLE_MS`, default 30s) and `--resume` with the saved cache id. Parking is skipped while a prompt or `session/idle` subscriber is live; tab close still reaps immediately.
+- Turn chrome shows local tok/s while writing (and at settle); MCP tools/Apps wait instead of looking like slow generation (#1017).
+- MCP App frames answer `ui/initialize`; app-initiated `mcp__` `tools/call` is forwarded through ACP (`session/mcp_call`). Native tools stay refused (#1018).
 - The folder picker can sort by name or modification time, filter Git repositories, and create folders.
 - Available `rlm` tools are listed from the first turn rather than waiting for a batch or context threshold (ADR 0140).
 - Desktop fonts are bundled locally; syntax highlighting, diagrams, and secondary panes load when needed.
