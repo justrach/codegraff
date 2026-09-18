@@ -24,6 +24,7 @@ import { newPageToken, newSessionName, type Chat, type Msg } from "./harness-typ
 import ChangesPane from "./ChangesPane";
 import ReviewsPane from "./ReviewsPane";
 import { useBrowserVisibility } from "./useBrowserVisibility";
+import { useReferenceNavigation } from "./useReferenceNavigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type PromptModel } from "@/components/primitives/PromptBar";
 import SidebarNav from "@/components/primitives/SidebarNav";
@@ -182,12 +183,12 @@ export default function GraffHarness() {
     sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal
   });
 
-  const openPath = useCallback((path: string) => {
-    setProjectsOpen(false); setAgentsOpen(false); setBrowserOpen(false);
-    setConversationsOpen(false);
-    setFilesOpen(true);
-    setFileRequest({ path, n: (fileReqRef.current += 1) });
-  }, []);
+  const { openPath, openReference } = useReferenceNavigation({
+    context: (id = activeIdRef.current) => ({ root: chatsRef.current.find(c => c.id === id)?.cwd ?? activePathRef.current ?? health?.cwd, chat: handleOf(id), focus: () => focusChat(id) }),
+    hideOtherPanes: () => { setProjectsOpen(false); setAgentsOpen(false); setConversationsOpen(false); setReviewsOpen(false); },
+    files: setFilesOpen, browser: setBrowserOpen, error: setSplitNotice,
+    request: path => setFileRequest({ path, n: (fileReqRef.current += 1) }),
+  });
 
   const openChanges = useCallback(() => {
     setProjectsOpen(false);
@@ -442,7 +443,7 @@ export default function GraffHarness() {
 
   const columnBody = (thread: Chat) => <ChatColumn key={thread.id} thread={thread}
     compact={columnIds.length > 1 || navigation.focusedMode || filesOpen || browserOpen || agentsOpen || reviewsOpen || !!(fileRequest?.changes)} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
-    onOpenPath={openPath} onReview={openChanges}
+    onOpenPath={path => openReference(path, thread.id)} onReview={openChanges}
     onAnswer={(text, cancelled) => { const live = sessionsRef.current.get(thread.id); const ask = thread.messages.findLast(m => m.role === "assistant")?.turn.ask; if (live && ask) void answer(handleOf(thread.id), live, { callId: ask.callId, text, cancelled }); }}
     onEditPrompt={(n, text) => {
       const live = sessionsRef.current.get(thread.id);

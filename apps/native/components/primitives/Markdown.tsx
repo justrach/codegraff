@@ -110,7 +110,7 @@ function inlineCode(onOpen?: (path: string) => void) {
       <code
         {...rest}
         onClick={pathish ? () => onOpen(target) : undefined}
-        title={pathish ? `Open ${stripCiteMarkup(text)} in the files pane` : undefined}
+        title={pathish ? `Open ${stripCiteMarkup(text)}` : undefined}
         className={`rounded-[4px] bg-inset px-1 py-px font-mono text-[0.92em] text-ink shadow-hairline ${
           pathish ? "cursor-pointer underline decoration-line underline-offset-2 transition-colors hover:bg-hover hover:decoration-ink" : ""
         }`}

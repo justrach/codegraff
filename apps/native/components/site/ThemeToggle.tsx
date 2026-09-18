@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { restoreActionFocus } from "../primitives/ActionMenu";
 import CustomThemes from "./CustomThemes";
 import McpServers from "./McpServers";
+import DesktopSettings from "./DesktopSettings";
 import { appearanceEvent, appearanceKey, applyAppearance, readAppearance, type Appearance } from "@/lib/appearance";
 import { appearancePanelPosition, type PanelBox } from "./appearance-panel";
 
@@ -66,6 +67,7 @@ export function ThemeToggle({ labeled = false }: { labeled?: boolean }) {
         <span className="block text-[11px] font-medium text-ink">{option.name}</span><span className="block text-[9px] leading-4 text-ink-3">{option.detail}</span>
       </button>)}</div>
       <CustomThemes selected={theme} />
+      <DesktopSettings embedded />
       <McpServers />
       </div>
     </div>, document.body)}
