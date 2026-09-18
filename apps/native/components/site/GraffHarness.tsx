@@ -6,8 +6,8 @@ import { useUnreadChats } from "./useUnreadChats";
 import { useHarnessSessions } from "./useHarnessSessions";
 import { resumeQueuedPrompt } from "@/lib/prompt-queue-resume";
 import { createPromptRunner } from "./harness-prompt-runner";
-
 import { workspaceActions } from "./harness-workspace-actions";
+import { useNotchObserver } from "./useNotchObserver";
 import { useSavedConversation, ConversationOpenNotice } from "./useSavedConversation";
 import { useQuietSettings } from "./useQuietSettings";
 import { useTabDrag } from "./useTabDrag";
@@ -43,7 +43,7 @@ import {
 import { type AcpCommand } from "@/lib/acp";
 import { useChatScroll } from "./useChatScroll";
 import { enqueuePrompt } from "@/lib/prompt-queue";
-import { usePromptQueue } from "./usePromptQueue";
+import { usePromptQueue, steerOrInterrupt } from "./usePromptQueue";
 import { removeSession, type StoredSession } from "@/lib/sessions";
 import { loadHistory, mergeHistory } from "@/lib/prompt-history";
 import {
@@ -472,10 +472,10 @@ export default function GraffHarness() {
       root: cwdOf(thread), modelKey: thread.model ?? model ?? undefined,
       onModelChange: key => changeModel(key, thread.id), onSend: text => void send(text, thread.id),
       onSetting: text => settings.change(thread.id, text),
-      onSteerQueued: queues[thread.id]?.length ? () => {
-        const next = queuesRef.current[thread.id]?.[0];
-        if (runningRef.current.has(thread.id) && next) steerQueued(thread.id, next.id);
-      } : undefined,
+      onSteerQueued: () => steerOrInterrupt(queuesRef.current[thread.id]?.[0], runningRef.current.has(thread.id), id => steerQueued(thread.id, id), () => {
+        const live = sessionsRef.current.get(thread.id);
+        if (live) void cancel(handleOf(thread.id), live).catch(() => undefined);
+      }),
       history: mergeHistory(history, thread.messages.flatMap(m => m.role === "user" && m.origin !== "notification" ? [m.text] : [])),
       busy: busyIds.has(thread.id), onStop: () => {
         const live = sessionsRef.current.get(thread.id);
@@ -497,13 +497,13 @@ export default function GraffHarness() {
     onClearPins={() => setPins(thread.id, [])} health={health}
     onOpenProject={() => setDialog({ mode: "new" })} onProjects={() => setProjectsOpen(true)} onConversations={openConversations} />;
 
+  useNotchObserver(chats, busyIds, focusChat);
   useDesktopShortcuts({ closeChat, newChat, reopenClosed, toggleSplit, focusChat, chats: groups.tabs.map(tab => ({ id: groups.focusOf(tab.id) })), activeId, columns: columnIds,
     split: direction => { setZoomedPane(null); addPane(direction); },
     zoomPane: () => setZoomedPane(value => value === null ? activeId : null),
     resizePane: delta => groups.resize(delta/4),
     toggleTerminal, equalize: groups.balance, openWorkspace: () => setDialog({ mode: "new" }),
   });
-
 
   const paneTodos = lastAssistant?.turn.todos ?? [];
   // Zoom only changes visibility; the split order is retained.

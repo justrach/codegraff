@@ -2,7 +2,8 @@
 
 import { useRef, useState } from "react";
 import { dropQueuedPrompt, editQueuedPrompt, setQueuedPromptEditing, shiftQueuedPrompt, type QueuedPrompt } from "@/lib/prompt-queue";
-import { createQueueSteerer, type SteerStatus } from "@/lib/prompt-queue-steer";
+import { createQueueSteerer, steerOrInterrupt, type SteerStatus } from "@/lib/prompt-queue-steer";
+export { steerOrInterrupt };
 
 export function usePromptQueue() {
   const queuesRef = useRef<Record<number, QueuedPrompt[]>>({});

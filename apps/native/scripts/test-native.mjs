@@ -22,12 +22,15 @@ const run = async (command, args) => {
 };
 const target = `${process.arch === 'arm64' ? 'arm64' : 'x86_64'}-apple-macosx14.0`;
 await run('xcrun', ['swiftc', '-O', '-emit-library', '-module-name', 'GraffActivity', '-target', target,
-  'electron/native/Activity.swift', 'electron/native/ComputerUse.swift', 'electron/native/Glass.swift', '-o', path.join(native, 'libGraffActivity.dylib'),
+  'electron/native/Activity.swift', 'electron/native/ComputerUse.swift', 'electron/native/Glass.swift',
+  'electron/native/NotchLayout.swift', 'electron/native/NotchView.swift', 'electron/native/NotchPanel.swift',
+  '-o', path.join(native, 'libGraffActivity.dylib'),
   '-Xlinker', '-install_name', '-Xlinker', '@rpath/libGraffActivity.dylib']);
 const common = ['clang', '-O2', '-bundle', '-undefined', 'dynamic_lookup', '-mmacosx-version-min=14.0',
   '-I', path.join(root, 'node_modules/node-api-headers/include')];
 await run('xcrun', [...common, 'electron/native/activity.c', '-L', native, '-lGraffActivity',
   '-Wl,-rpath,@loader_path', '-o', path.join(native, 'activity.node')]);
+console.log(`Native bridge exports verified: ${require('../electron/check-native-symbols.cjs').checkNativeSymbols(native)}`);
 await run('xcrun', [...common, '-fobjc-arc', '-framework', 'AppKit', 'electron/native/test-window-probe.m',
   '-o', path.join(native, 'test-window-probe.node')]);
 if (buildOnly) console.log('Native test bridge compiled. No GUI was launched.');

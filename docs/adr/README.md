@@ -160,6 +160,7 @@ record only when you need the evidence or the edge cases.
 | [0138](0138-unselected-splits-use-glass-overlay.md) | Unselected split panes keep their transcript under a light wash; the focused pane stays the working surface. |
 | [0139](0139-bounced-answers-stay-turn-local.md) | Retain a bounced answer only in the current turn, before unfinished-work reconciliation; never recover it from persisted history. |
 | [0140](0140-rlm-is-listed-when-available.md) | `rlm` is on the catalog whenever it is available. No batch-size or compactAt gate. `--old` still hides it. |
+| [0141](0141-observer-notch-is-a-nonactivating-panel.md) | The desktop session observer is a non-activating SwiftUI edge panel; cells are live ACP work, opt-in from Settings. |
 
 ## When to write one
 
