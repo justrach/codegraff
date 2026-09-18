@@ -73,7 +73,7 @@ fn translateHistory(arena: Allocator, msgs: *std.json.Array, to_kind: Provider.K
     msgs.* = out;
 }
 
-fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: bool) ![]const u8 {
+pub fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: bool) ![]const u8 {
     const same_format = root.provider.kind == p.kind;
     const same_selection = same_format and
         root.provider.context == p.context and

@@ -77,7 +77,7 @@ pub fn resumeCb(ctx_ptr: ?*anyopaque, gpa: Allocator, raw: []const u8, out: *tui
         syncRoot(convo, root) catch |err| return failure(gpa, out, err);
         session.saveSession(root, root.arena, root.session_name) catch |err| return failure(gpa, out, err);
     }
-    const resumed = session_branch.restore(root, &ctx.keys, root.arena, spec.source, spec.branch) catch |err| return failure(gpa, out, err);
+    const resumed = session_branch.restore(root, &ctx.keys, root.arena, spec.source, spec.branch, null) catch |err| return failure(gpa, out, err);
     if (ctx.convo) |convo| seed(convo, root) catch |err| return failure(gpa, out, err);
     ctx.provider = root.provider;
     ctx.last_context_tokens = root.last_context_tokens;
