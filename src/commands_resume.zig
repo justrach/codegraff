@@ -62,7 +62,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         if (!picked.local and picked.workspace.len > 0) picked_remote = try arena.dupe(u8, picked.workspace);
     }
 
-    const resumed = session_branch.restore(root, keys, arena, source, parsed.branch) catch |err| return switch (err) {
+    const resumed = session_branch.restore(root, keys, arena, source, parsed.branch, null) catch |err| return switch (err) {
         error.FileNotFound => reject(out, "no session named '{s}' ({s}{s} not found in cwd or ~/{s}) — /sessions lists saved ones\n", .{ source, source, session.session_ext, session.sessions_dir }),
         error.InvalidSessionName => reject(out, "resume failed: invalid source or branch name\n", .{}),
         error.BranchMatchesSource => reject(out, "branch failed: destination must differ from source\n", .{}),

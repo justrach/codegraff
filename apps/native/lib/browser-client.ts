@@ -1,8 +1,21 @@
-/** Browser side of /api/browser: the sidecar's live page, its controls,
- * and the element lookups behind annotations. */
+/** Browser side of /api/browser and the Chrome extension bridge: the
+ * sidecar's live page, its controls, and the element lookups behind
+ * annotations. Extension rows (the user's own Chrome, paired explicitly)
+ * speak the same method set; see apps/chrome-extension for the other end. */
 
 import type { KuriState } from "@/lib/browser/kuri-supervisor";
 import type { KuriHandle, PinElement } from "@/lib/browser/annotations";
+async function extensionCall<T>(chat: string, method: string, params: Record<string, unknown> = {}): Promise<T> {
+  const res = await fetch("/api/extension", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: method, chat, params }),
+    cache: "no-store",
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error || `extension ${method} → ${res.status}`);
+  return body.result as T;
+}
 
 import { desktop } from "./desktop";
 
@@ -11,6 +24,10 @@ const BASE = "/api/browser";
 export type PageInfo = { tabId: string; url: string; title: string; width: number; height: number; ready: string };
 
 export type BrowserStatus = { kuri: KuriState; tab: PageInfo | null };
+
+export type ExtensionTab = { id: number; windowId: number; url: string; title: string; active: boolean };
+
+export type ExtensionStatus = { paired: boolean; lastPollMs: number | null; tabs: ExtensionTab[]; pendingPins: number };
 
 export type InspectHit = { element: PinElement; ref: string | null; url: string; title: string };
 
@@ -103,3 +120,21 @@ export const browserMap = (chat: string) => browserCall<ElementMap | null>(chat,
 export const browserHandle = (chat: string) => browserCall<KuriHandle | null>(chat, "handle");
 export const browserClose = (chat: string) => browserCall<{ ok: true }>(chat, "close");
 export const browserStop = (chat: string) => browserCall<{ kuri: KuriState }>(chat, "stop");
+
+/** The same methods against the user's own Chrome, via the paired
+ * extension instead of the sidecar. `open` creates a tab in the user's
+ * window; the chat's later calls default to that tab, else the active one. */
+export async function extensionStatusRead(): Promise<ExtensionStatus> {
+  const res = await fetch("/api/extension", { cache: "no-store" });
+  if (res.status === 401) return { paired: false, lastPollMs: null, tabs: [], pendingPins: 0 };
+  if (!res.ok) throw new Error(`extension status → ${res.status}`);
+  return (await res.json()) as ExtensionStatus;
+}
+export const extensionTabs = (chat: string) => extensionCall<ExtensionTab[]>(chat, "tabs");
+export const extensionSnapshot = (chat: string) => extensionCall<{ snapshot: string; url: string; title: string }>(chat, "snapshot");
+export const extensionClick = (chat: string, target: { ref: string } | { selector: string }) => extensionCall<{ ok: true }>(chat, "click", target);
+export const extensionFill = (chat: string, target: ({ ref: string } | { selector: string }) & { text: string }) =>
+  extensionCall<{ ok: true }>(chat, "fill", target);
+export const extensionHighlight = (chat: string, target: { ref: string } | { selector: string }) =>
+  extensionCall<{ ok: true }>(chat, "highlight", target);
+export const extensionNavigate = (chat: string, url: string) => extensionCall<{ ok: true }>(chat, "navigate", { url });

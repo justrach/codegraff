@@ -94,16 +94,10 @@ test "the codex .responses arm refreshes auth and re-anchors before resending (#
     // Both wire formats go through the one helper — no second, drifting copy.
     try std.testing.expect(std.mem.indexOf(u8, src[arm_end..], "retryAfterAuthRefresh(self, msg, &auth_refreshed)") != null);
 
-    // A response.failed overload used to skip the shared transient retry path
-    // and surface immediately (most visibly from detached recap calls). The arm
-    // delegates to the one envelope gate, which runs the shared transient retry
-    // first and then the bounded gateway-artifact retry (#gateway-artifact).
+    // response.failed uses the shared transient retry, then the gateway-artifact retry.
     try std.testing.expect(std.mem.indexOf(u8, arm, "policy.afterServerErrorOrParseReject(self, \"\", failure.code, msg, &server_retries, &gw_retry)") != null);
-    // #1019: overflow trim must run on failure.message before the empty-etype flake retry.
-    const overflow_at = std.mem.indexOf(u8, arm, "recoverContextOverflow(self, msg, failure.code, &context_retried)") orelse
-        return error.ResponsesPathHasNoOverflowRecovery;
-    const flake_at = std.mem.indexOf(u8, arm, "policy.afterServerErrorOrParseReject(self, \"\", failure.code, msg, &server_retries, &gw_retry)").?;
-    try std.testing.expect(overflow_at < flake_at);
+    const overflow_at = std.mem.indexOf(u8, arm, "recoverContextOverflow(self, msg, failure.code, &context_retried)") orelse return error.ResponsesPathHasNoOverflowRecovery;
+    try std.testing.expect(overflow_at < std.mem.indexOf(u8, arm, "policy.afterServerErrorOrParseReject(self, \"\", failure.code, msg, &server_retries, &gw_retry)").?);
     const gate = @embedFile("agent_gateway_retry.zig");
     try std.testing.expect(std.mem.indexOf(u8, gate, "policy.retryTransientServerError(self, etype, code, msg, server_retries)") != null);
 

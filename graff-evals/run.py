@@ -17,7 +17,7 @@ outcome, and writes JSONL results plus a summary table.
   ./run.py --harness grok --task fix-fib --reps 3        # one task, 3 reps
   ./run.py --interactive                                 # pick + watch live
 """
-import argparse, json, os, re, resource, shutil, subprocess, sys, threading, time
+import argparse, codecs, json, os, re, resource, shutil, subprocess, sys, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from list_price import attach as attach_list_price
@@ -73,7 +73,8 @@ def materialize(task, sandbox):
             f.write(content)
     setup_timeout = int(task.get("setup_timeout_s", 60))
     for cmd in task.get("setup", []):
-        subprocess.run(["/bin/sh", "-c", cmd], cwd=sandbox, capture_output=True, timeout=setup_timeout)
+        subprocess.run(["/bin/sh", "-c", cmd], cwd=sandbox, capture_output=True, timeout=setup_timeout,
+                       check=task.get("strict_setup", False), env=dict(os.environ, TASK_ROOT=ROOT))
 
 
 def _resolve_model(harness, model):
@@ -351,7 +352,11 @@ def _rusage_children():
 
 def one_run(hname, harness, task, model, rep, live=False):
     sandbox = os.path.join(SANDBOX_DIR, f"{hname}-{task['id']}-r{rep}")
-    materialize(task, sandbox)
+    try:
+        materialize(task, sandbox)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        return {"harness": hname, "task": task["id"], "suite": task.get("suite", "core"),
+                "rep": rep, "error": f"environment setup failed: {error}", "outcome_ok": False}
     cmd, stdin_body = build_cmd(harness, task, model, sandbox)
     timeout = task.get("timeout_s", 240)
     t0 = time.monotonic()
@@ -364,7 +369,8 @@ def one_run(hname, harness, task, model, rep, live=False):
         p = subprocess.Popen(cmd, cwd=sandbox, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, stdin=subprocess.PIPE if stdin_body is not None else None,
                              text=True, start_new_session=True,
-                             env=dict(os.environ, **harness.get("env", {})))
+                             env={**os.environ, "PWD": sandbox, **{k: str(v).replace("{repo}", REPO).replace("{sandbox}", sandbox)
+                                                                   for k, v in harness.get("env", {}).items()}})
         if stdin_body is not None and p.stdin is not None:
             try:
                 p.stdin.write(stdin_body)
@@ -375,13 +381,15 @@ def one_run(hname, harness, task, model, rep, live=False):
         sel = selectors.DefaultSelector()
         sel.register(p.stdout, selectors.EVENT_READ, "out")
         sel.register(p.stderr, selectors.EVENT_READ, "err")
+        decoders = {k: codecs.getincrementaldecoder("utf-8")("replace") for k in ("out", "err")}
         open_streams = 2
         while open_streams and time.monotonic() - t0 < timeout:
             rss_peak = max(rss_peak, tree_rss_kb(p.pid))
             cpu_sample = max(cpu_sample, tree_cpu_s(p.pid))
             for key, _ in sel.select(timeout=0.5):
-                chunk = key.fileobj.readline()
-                if not chunk:
+                raw = os.read(key.fd, 65536)
+                chunk = decoders[key.data].decode(raw, final=not raw)
+                if not raw:
                     sel.unregister(key.fileobj)
                     open_streams -= 1
                     continue
@@ -421,6 +429,9 @@ def one_run(hname, harness, task, model, rep, live=False):
             p.wait(timeout=10)
         else:
             timed_out = False
+        sel.close()
+        p.stdout.close()
+        p.stderr.close()
         rc = p.returncode
         rss_peak = max(rss_peak, tree_rss_kb(p.pid))
     except FileNotFoundError:
@@ -429,6 +440,10 @@ def one_run(hname, harness, task, model, rep, live=False):
     ru1 = _rusage_children()
     stdout, stderr = "".join(stdout_parts), "".join(stderr_parts)
     wall = round(time.monotonic() - t0, 2)
+    if task.get("requires_clean_exit"):
+        for name, text in (("stdout", stdout), ("stderr", stderr)):
+            fd = os.open(os.path.join(sandbox, f".eval-{name}.txt"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as log: log.write(text)
     answer, usage = parse_answer_and_usage(harness, stdout, stderr, sandbox)
     with open(os.path.join(sandbox, ".eval-answer.txt"), "w") as f:
         f.write(answer)
@@ -444,7 +459,11 @@ def one_run(hname, harness, task, model, rep, live=False):
     except subprocess.TimeoutExpired:
         check_note = f"check timed out after {check_timeout}s"
         check_ok = False
+    artifact_ok = check_ok
+    if task.get("requires_clean_exit"):
+        check_ok = check_ok and rc == 0 and not timed_out
     rec = {"harness": hname, "task": task["id"], "suite": task.get("suite", "core"),
+           "artifact_ok": artifact_ok, "environment_version": task.get("environment_version"), "grader_version": task.get("grader_version"),
            "category": task.get("category", ""), "model": model, "rep": rep,
            "wall_s": wall, "first_out_s": first_out, "exit": rc, "timed_out": timed_out,
            "outcome_ok": check_ok, "answer_head": answer[:120],

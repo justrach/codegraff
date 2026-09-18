@@ -29,7 +29,7 @@ export default function HarnessChrome({navigationToggle, sidebarVisible = false,
   toggleTerminal, agentsOpen, onAgents, workingAgents = 0, tasksOpen = false, taskCount = 0, onTasks, splitNotice, onTabPointerDown, onTabClickCapture}: Props) {
   return (
     <div data-workspace-toolbar className={`${reviewStyles.chatbar} flex shrink-0 flex-col ${sidebarVisible ? "overflow-visible bg-transparent" : "overflow-hidden rounded-[14px] border border-line bg-page"}`}>
-      <div data-session-tab-strip hidden={sidebarVisible} className={sidebarVisible ? "hidden" : "flex h-10 min-w-0 shrink-0 items-center gap-1 px-2"}>
+      {!sidebarVisible && <div data-session-tab-strip className="flex h-10 min-w-0 shrink-0 items-center gap-1 px-2">
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <button type="button" aria-label="Show agents" aria-pressed={agentsOpen} onClick={onAgents}
           className={paneBtn(agentsOpen)}>Agents{workingAgents > 0 ? ` (${workingAgents})` : ""}</button>
@@ -44,7 +44,7 @@ export default function HarnessChrome({navigationToggle, sidebarVisible = false,
           </svg>
         </button>
         </div>
-      </div>
+      </div>}
       <div className={`${reviewStyles.actions} flex shrink-0 items-center gap-1 ${sidebarVisible ? "justify-end" : "min-h-10 border-t border-line px-2 py-1"}`}>
         {navigationToggle}
         <button type="button" aria-pressed={filesOpen && !changesOpen} onClick={onFiles} title={`${chatCwd ?? "Workspace"}\nShow this chat's files`}
@@ -61,7 +61,7 @@ export default function HarnessChrome({navigationToggle, sidebarVisible = false,
         <ActionMenu label="Chat actions" text="More" className="shrink-0">
           {!sidebarVisible && <button type="button" onClick={newChat}>New chat <span className="ml-auto text-ink-3">⌘T</span></button>}
           <button type="button" aria-pressed={split} onClick={toggleSplit}>{split ? "Close splits" : "Split view"} <span className="ml-auto text-ink-3">⌘\</span></button>
-          <button type="button" aria-pressed={conversationsOpen} onClick={openConversations}>All conversations</button>
+          <button type="button" aria-label="Conversations" aria-pressed={conversationsOpen} onClick={openConversations}>All conversations</button>
           <button type="button" onClick={onFolder}>Open a folder…</button>
         </ActionMenu>
         {!sidebarVisible && <AppSettings />}

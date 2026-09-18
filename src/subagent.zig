@@ -78,7 +78,7 @@ pub fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     // flagged, and no vision model anywhere refuses the spawn outright.
     const ask = vision_ask.seat(ctx, base, obj, cell, label, prompt, sys_override, niche);
     if (ask.blocked) return .{ .text = try vision_ask.blockMessage(ctx.gpa, ask), .is_error = true };
-    if (tools.json_args.flag(input, "run_in_background")) return spawnSubBackground(ctx, label, prompt, sys_override, niche, isolation, isolation_fallback, ask.pin.provider, ask.pin.effort, ask);
+    if (ctx.interactive_children or tools.json_args.flag(input, "run_in_background")) return spawnSubBackground(ctx, label, prompt, sys_override, niche, isolation, isolation_fallback, ask.pin.provider, ask.pin.effort, ask);
     const run = try runSub(ctx, "subagent", label, prompt, sys_override, niche, isolation, isolation_fallback, ask.pin.provider, ask.pin.effort);
     return vision_ask.flagReport(ctx.gpa, run.output, ask);
 }
@@ -144,8 +144,12 @@ pub const AgentJob = struct {
     /// backgrounded report earns the same honesty flag a foreground one does.
     ask: vision_ask.Ask = .{},
     ctx: ToolCtx,
+    owned: ?*@import("subagent_owned.zig").Owned = null,
+    owner: ?[]const u8 = null,
+    notified: bool = false,
     admitted: bool = false,
     done: bool = false,
+    feedback: @import("subagent_feedback.zig").Inbox = .{},
     is_error: bool = false,
     result: []u8 = &.{}, // gpa-owned once done
     usage: AgentUsage = .{},
@@ -158,7 +162,7 @@ pub const AgentJobs = struct {
     active: u32 = 0, // admitted and not yet done
     next_id: u32 = 1,
 
-    fn find(self: *AgentJobs, id: u32) ?*AgentJob {
+    pub fn find(self: *AgentJobs, id: u32) ?*AgentJob {
         for (self.list.items) |j| if (j.id == id) return j;
         return null;
     }
@@ -213,10 +217,20 @@ fn admitNext(gpa: Allocator, io: Io) void {
 /// shape in jobs.zig.
 fn agentJobPump(job: *AgentJob, gpa: Allocator, io: Io) void {
     const t0: Io.Timestamp = .now(io, .awake);
-    const run = runSub(job.ctx, "subagent", job.label, job.prompt, job.sys_override, job.niche, job.isolation, job.isolation_fallback, job.pin, job.effort) catch |err| SubRun{
+    var ctx = job.ctx;
+    ctx.subagent_feedback = &job.feedback;
+    var run = runSub(ctx, "subagent", job.label, job.prompt, job.sys_override, job.niche, job.isolation, job.isolation_fallback, job.pin, job.effort) catch |err| SubRun{
         .output = failure(gpa, err),
         .usage = .{ .duration_ms = @intCast(@max(0, t0.untilNow(io, .awake).toMilliseconds())) },
     };
+    const undelivered = job.feedback.close(io);
+    if (undelivered > 0) {
+        if (std.fmt.allocPrint(gpa, "{s}\n\n[{d} queued feedback message(s) were not delivered before the agent stopped.]", .{ run.output.text, undelivered })) |text| {
+            gpa.free(run.output.text);
+            run.output.text = text;
+        } else |_| {}
+        run.output.is_error = true;
+    }
     g_agent_jobs.mutex.lockUncancelable(io);
     job.result = vision_ask.flagText(gpa, run.output.text, job.ask); // #380 honesty flag
     job.is_error = run.output.is_error;
@@ -243,6 +257,15 @@ fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_o
     const niche_c = try gpa.dupe(u8, niche);
     errdefer gpa.free(niche_c);
 
+    const owned = try gpa.create(@import("subagent_owned.zig").Owned);
+    owned.* = .init(gpa);
+    errdefer {
+        owned.arena.deinit();
+        gpa.destroy(owned);
+    }
+    const owned_ctx = try owned.context(ctx);
+    const owned_pin = if (pin) |p| try owned.provider(p) else null;
+    const owner = if (ctx.interactive_children) try owned.arena.allocator().dupe(u8, ctx.session_name) else null;
     const job = try gpa.create(AgentJob);
     job.* = .{
         .id = 0,
@@ -252,10 +275,12 @@ fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_o
         .niche = niche_c,
         .isolation = isolation,
         .isolation_fallback = isolation_fallback,
-        .pin = pin,
+        .pin = owned_pin,
         .effort = effort,
+        .owned = owned,
+        .owner = owner,
         .ask = ask.rebased(prompt_c), // the caller's arena dies with this call
-        .ctx = ctx,
+        .ctx = owned_ctx,
     };
 
     g_agent_jobs.mutex.lockUncancelable(ctx.io);
@@ -276,9 +301,10 @@ fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_o
     }
     admitNext(gpa, ctx.io);
     ledger.remember(gpa, ctx.io, job.id, job.label);
+    @import("subagent_interactive.zig").request(ctx);
     return .{ .text = try std.fmt.allocPrint(
         gpa,
-        "[agent {d} started: {s}]\nIt runs in the background across turns. Do not poll. agent_output(id {d}, wait_ms>0) blocks until it finishes; omit wait_ms for a snapshot. After completion, agent_output keeps returning the same result.",
+        "[agent {d} started: {s}]\nIt runs in the background across turns. Do not poll. Interactive REPL calls release the prompt and notify you on completion; agent_output(id {d}) returns a snapshot. Headless agent_output(wait_ms>0) waits until it finishes. Send mid-task feedback with agent_message using the same id; it does not interrupt the current tool. After completion, agent_output keeps returning the same result.",
         .{ job.id, job.label, job.id },
     ) };
 }
@@ -325,6 +351,7 @@ pub fn agentOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
         if (job.done or waited >= deadline) {
             const text = try agentStatusText(gpa, id, job.done, job.is_error, job.usage, job.result);
             const is_err = job.done and job.is_error;
+            if (job.done) job.notified = true;
             g_agent_jobs.mutex.unlock(io);
             return .{ .text = text, .is_error = is_err };
         }
@@ -360,6 +387,11 @@ pub fn agentJobsReap(gpa: Allocator, io: Io) void {
     g_agent_jobs.mutex.unlock(io);
     for (list) |job| {
         if (job.admitted) job.future.await(io);
+        job.feedback.deinit(gpa);
+        if (job.owned) |owned| {
+            owned.arena.deinit();
+            gpa.destroy(owned);
+        }
         gpa.free(job.label);
         gpa.free(job.prompt);
         if (job.sys_override) |s| gpa.free(s);

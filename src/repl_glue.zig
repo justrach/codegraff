@@ -552,12 +552,19 @@ pub fn isSlashCommandLine(line: []const u8) bool {
 /// objective back as a prompt; a bare `/goal` and the lifecycle words stay commands. Extracted from
 /// mainloop (600-line cap), and kept beside isSlashCommandLine: both settle "command, or prompt?".
 pub fn goalPromptFromLine(line: []const u8) ?[]const u8 {
-    if (!std.mem.startsWith(u8, line, "/goal ")) return null;
-    const g = std.mem.trim(u8, line["/goal".len..], " \t");
+    const g = goalCommandArgs(line) orelse return null;
     if (g.len == 0) return null;
     for ([_][]const u8{ "clear", "off", "pause", "resume", "status" }) |sub|
         if (std.ascii.eqlIgnoreCase(g, sub)) return null;
     return g;
+}
+
+/// Exact command boundary: `/goals` is a read-only status alias, never `s`.
+pub fn goalCommandArgs(line: []const u8) ?[]const u8 {
+    const end = std.mem.indexOfAny(u8, line, " \t\r\n") orelse line.len;
+    if (std.mem.eql(u8, line[0..end], "/goals")) return "status";
+    if (!std.mem.eql(u8, line[0..end], "/goal")) return null;
+    return std.mem.trim(u8, line[end..], " \t\r\n");
 }
 
 /// Scripted `graff repl` host commands. The TUI path wires the same actions

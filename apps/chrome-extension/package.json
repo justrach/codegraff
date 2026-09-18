@@ -1,0 +1,1 @@
+{"name":"graff-chrome","private":true,"type":"module","scripts":{"test":"node --test *.test.mjs","check":"node --check background.js && node --check bridge.mjs && node --check install.mjs"}}

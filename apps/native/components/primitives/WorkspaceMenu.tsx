@@ -13,7 +13,7 @@ export default function WorkspaceMenu({position,current,rows,onSwitch,onNew,onSe
   const pick=(action?:()=>void)=>()=>{onClose();action?.();};
   const top=Math.min(position.top,Math.max(12,window.innerHeight-180));
   return createPortal(<div ref={menu} data-workspace-menu role="dialog" aria-label="Switch workspace"
-    className="fixed z-50 flex flex-col overflow-hidden rounded-[14px] border border-line bg-surface shadow-overlay"
+    className="fixed z-50 flex flex-col overflow-hidden rounded-window border border-line bg-surface shadow-overlay"
     style={{top,left:Math.max(12,Math.min(position.left,window.innerWidth-372)),width:'min(360px, calc(100vw - 24px))',maxHeight:`calc(100dvh - ${top+12}px)`}}
     onKeyDown={e=>{
       if(e.key==='ArrowDown'||e.key==='ArrowUp'){

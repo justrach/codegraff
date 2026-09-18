@@ -8,6 +8,8 @@ test {
     _ = @import("agent_request_body_responses.zig");
     _ = @import("agent_server_compact_tests.zig");
     _ = @import("provider_codegraff_tests.zig");
+    _ = @import("agent_responses.zig");
+    _ = @import("session_branch.zig");
 }
 
 test "oneshot -p still uses the live stall-watched transport" {

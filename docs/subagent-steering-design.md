@@ -1,6 +1,15 @@
 # Subagent steering: merged design for #417 and #392
 
-Status: design, not implemented. Supersedes the separate proposals in #417
+Status: broader retained-worker design remains proposed. Live background-child
+feedback is implemented as `agent_message`; see [usage](subagent-feedback.md)
+and [ADR 0116](adr/0116-live-subagent-feedback-is-queued.md). It reuses the
+existing numeric background handle and live registry, without introducing a
+second identity or retention scheme. Completed-worker resumption, aliases,
+and durable feedback queues below remain unimplemented. The historical
+source inventory below predates the handle ledger in ADR 0068; that ledger
+retains status but cannot reattach a live worker after process loss.
+
+The broader proposal supersedes the separate proposals in #417
 (retained, addressable subagents with parent-child steer messaging) and #392
 (resumable workers + two-tier steering). Read alongside #393, which supplies
 the containment rules this design must not violate.

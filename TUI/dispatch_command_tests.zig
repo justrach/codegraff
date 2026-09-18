@@ -436,6 +436,8 @@ test "/goal status and bare /goal do not publish an objective (#716)" {
     _ = applyLine(&m, "/goal ship it");
     const after_set = publish_count;
     _ = applyLine(&m, "/goal status");
+    _ = applyLine(&m, "/goals");
+    _ = applyLine(&m, "/goals pause");
     try std.testing.expectEqual(after_set, publish_count);
     try std.testing.expectEqualStrings("ship it", m.goal.?);
     const status = m.history.items[m.history.items.len - 1].text;

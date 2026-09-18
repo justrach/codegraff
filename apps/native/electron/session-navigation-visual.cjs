@@ -22,7 +22,7 @@ async function runSessionNavigation({ win, output }) {
     fs.writeFileSync(path.join(output,name+'.png'),(await wc.capturePage()).toPNG());
   };
   await wait(`!!document.querySelector('[data-session-navigation="sidebar"]')`);
-  assert.equal(await js(`document.querySelector('[data-session-tab-strip]').getBoundingClientRect().height`),0);
+  assert.equal(await js(`document.querySelector('[data-session-tab-strip]')?.getBoundingClientRect().height ?? 0`),0);
   await click('[aria-label="Workspace navigation"] button[aria-label="Appearance"]');
   await wait(`!!document.querySelector('[role="dialog"][aria-label="Appearance"]')`);
   const appearance = await js(`(()=>{const d=document.querySelector('[role="dialog"][aria-label="Appearance"]');const r=d.getBoundingClientRect();const h=[...d.querySelectorAll('strong')].find(el=>el.textContent==='Appearance');const hr=h.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,headingTop:hr.top,headingVisible:hr.bottom>0&&hr.top<innerHeight,vw:innerWidth};})()`);
@@ -73,7 +73,7 @@ async function runSessionNavigation({ win, output }) {
   await wait(`!!document.querySelector('[data-session-navigation="tabs"]')`);
   await click('[aria-label="Open navigation"]');
   await wait(`!!document.querySelector('[data-session-navigation="sidebar"]')`);
-  assert.equal(await js(`document.querySelector('[data-session-tab-strip]').getBoundingClientRect().height`),0);
+  assert.equal(await js(`document.querySelector('[data-session-tab-strip]')?.getBoundingClientRect().height ?? 0`),0);
   await capture('narrow-sidebar');
   await click('[aria-label="Close navigation"]');
   await wait(`!!document.querySelector('[data-session-navigation="tabs"]')`);

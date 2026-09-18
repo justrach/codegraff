@@ -1,0 +1,48 @@
+{
+  "presets": [
+    "warm-graphite",
+    "slate",
+    "nord",
+    "forest",
+    "mono",
+    "rose"
+  ],
+  "swatches": {
+    "warm-graphite": {
+      "bg": "#16140f",
+      "surface": "#1f1c16",
+      "accent": "#e8a33d",
+      "text": "#edeae2"
+    },
+    "slate": {
+      "bg": "#14171b",
+      "surface": "#1c2026",
+      "accent": "#6aa0e0",
+      "text": "#e6e9ee"
+    },
+    "nord": {
+      "bg": "#11181c",
+      "surface": "#18222a",
+      "accent": "#6fc0cc",
+      "text": "#dfe9ee"
+    },
+    "forest": {
+      "bg": "#14160f",
+      "surface": "#1d2018",
+      "accent": "#82b06a",
+      "text": "#e8ebe0"
+    },
+    "mono": {
+      "bg": "#0a0a0a",
+      "surface": "#161618",
+      "accent": "#fafafa",
+      "text": "#fafafa"
+    },
+    "rose": {
+      "bg": "#1a0e14",
+      "surface": "#251521",
+      "accent": "#ff6b9d",
+      "text": "#f7dde7"
+    }
+  }
+}

@@ -206,6 +206,8 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         self.strict = !self.strict;
         publishState(self);
         self.pushFmt(.system, "strict: {s}", .{onOff(self.strict)}) catch {};
+    } else if (std.mem.eql(u8, canon, "/goals")) {
+        applyGoal(self, "status");
     } else if (std.mem.eql(u8, canon, "/goal")) {
         applyGoal(self, arg);
     } else if (std.mem.eql(u8, canon, "/never")) {

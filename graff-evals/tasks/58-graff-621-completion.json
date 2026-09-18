@@ -1,0 +1,23 @@
+{
+  "id": "graff-621-completion",
+  "suite": "completion",
+  "category": "historical-feature",
+  "source": "https://github.com/justrach/codegraff/pull/621",
+  "strict_setup": true,
+  "requires_clean_exit": true,
+  "timeout_s": 1200,
+  "setup_timeout_s": 420,
+  "check_timeout_s": 600,
+  "setup": [
+    "python3 \"$TASK_ROOT/live/graff-621/environment.py\" ."
+  ],
+  "check": "python3 \"$TASK_ROOT/live/graff-621/check.py\" . --mode hidden",
+  "prompt": "Implement a persistent tool REPL and speculative execution in this Zig coding harness. Keep it native Zig and preserve the existing structured tool path.\n\nAdd an rlm tool with a code string accepting tool calls, name = tool(...) assignments, semicolon/newline-separated statements, and print(...) of strings or bound results. Common tools should accept positional shorthand: read_file(path), bash(command), webfetch(url), subagent(prompt). print(a, b) should include both results. Bindings persist between rlm calls, last assignment wins, and /new or /clear resets them.\n\nIndependent closed literal tool calls should begin concurrently as the code argument streams, including one-shot runs. The final executor must claim those results instead of running the same operation again. Do not execute incomplete strings or dependent calls before their inputs exist. Route host calls through the existing tool dispatcher and permission/budget checks. Add llm_query as a bounded tools-off model query. Keep subagent delegation available through both structured tools and the REPL.\n\nMake RLM available by default with cheap discovery through the existing folded-schema loader. --old/--no-rlm disables it; --rlm enables it again; last CLI flag wins. Environment settings must not override explicit CLI choices. Retain structured tool compatibility, including read_file and subagent, and keep the static machine-readable catalog contract stable.\n\nImplement the feature, add regression coverage, build, and run the relevant tests. Existing tests must remain intact and reachable. Keep handwritten source modules at or below 600 lines. Work only in this checkout; do not look up repository history, remote source, reference solutions, evaluator files, or neighboring workspaces. Do not publish anything. End with a concise report of what works and any unfinished requirements. Completion is judged by executable behavior, not by the report.",
+  "environment_version": 2,
+  "scoring": {
+    "repetitions": 3,
+    "minimum_passes": 2,
+    "clean_exit_required": true
+  },
+  "grader_version": 2
+}

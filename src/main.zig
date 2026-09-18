@@ -387,7 +387,6 @@ pub fn main(init: std.process.Init) !void {
     // If the metered companion connected, probe its license once so the note below can lean into paid tools (vs the conservative free-codedb note).
     if (!session_start.leanMode(flags.effectiveLean(), init.environ_map) and mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeLicensed(gpa, io, arena);
     boot.mark(io, "companion");
-
     var approvals: Approvals = undefined;
     try session_run.initApprovalsHooksFleet(io, gpa, arena, init.environ_map, &approvals, flags, out, json_mode);
     boot.mark(io, "approvals/hooks/fleet");
@@ -401,7 +400,6 @@ pub fn main(init: std.process.Init) !void {
     const sys_normal = try startup.buildSystemPrompt(io, arena, out, flags.system_prompt_flag, flags.append_system_flag, json_mode or flags.oneshot_prompt != null or init.environ_map.get("GRAFF_REPL_DEBUG") == null, (flags.oneshot_prompt != null or !(Io.File.stdin().isTty(io) catch true)) and !flags.effectiveYolo(), mcp_tools, g_codedbpro_licensed, init.environ_map.get("GRAFF_LEARNED_PROMPT"), init.environ_map);
     boot.mark(io, "system prompt");
     session_run.learningNotice(io, arena, init.environ_map, out, json_mode or flags.oneshot_prompt != null);
-
     var snaps: Snapshots = .{ .gpa = gpa, .io = io };
     defer snaps.deinit();
     // Keep an early fallback for failures before behavioral tracing is set up.

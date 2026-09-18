@@ -11,6 +11,7 @@ const util = @import("util.zig");
 pub const ResponsesFailure = struct {
     message: []const u8,
     code: ?[]const u8 = null,
+    request_id: ?[]const u8 = null,
 };
 
 pub const ResponsesResult = union(enum) { ok: std.json.ObjectMap, err: ResponsesFailure };
@@ -35,6 +36,7 @@ pub fn parseResponses(self: *Agent, body: []const u8) !ResponsesResult {
     var saw_incomplete = false;
     var err_msg: ?[]const u8 = null;
     var err_code: ?[]const u8 = null;
+    var err_rid: ?[]const u8 = null;
     var it = std.mem.tokenizeScalar(u8, body, '\n');
     while (it.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \r");
@@ -62,13 +64,14 @@ pub fn parseResponses(self: *Agent, body: []const u8) !ResponsesResult {
             else
                 "codex stream reported a failure";
             if (errorCode(v.object)) |code| err_code = result_arena.dupe(u8, code) catch null;
+            if (errorRequestId(v.object)) |id| err_rid = result_arena.dupe(u8, id) catch null;
         }
     }
     // A terminal failure wins even if the stream produced partial completed
     // items first. Committing those items as a successful compaction summary
     // would replace live history with a response the provider explicitly
     // rejected.
-    if (err_msg) |m| return .{ .err = .{ .message = m, .code = err_code } };
+    if (err_msg) |m| return .{ .err = .{ .message = m, .code = err_code, .request_id = err_rid } };
     if (saw_completed or saw_incomplete or items.items.len > 0) {
         var resp: std.json.ObjectMap = .empty;
         try resp.put(result_arena, "output", .{ .array = items });
@@ -90,10 +93,12 @@ pub fn parseResponses(self: *Agent, body: []const u8) !ResponsesResult {
         const raw_code = errorCode(v.object);
         if (message != null or raw_code != null) {
             const code = if (raw_code) |c| result_arena.dupe(u8, c) catch null else null;
+            const rid = if (errorRequestId(v.object)) |id| result_arena.dupe(u8, id) catch null else null;
             const m = message orelse "codex provider reported an error";
             return .{ .err = .{
                 .message = result_arena.dupe(u8, m) catch "unparseable provider error",
                 .code = code,
+                .request_id = rid,
             } };
         }
     }
@@ -106,7 +111,7 @@ pub fn parseResponses(self: *Agent, body: []const u8) !ResponsesResult {
 /// Each field is single-lined and bounded before it reaches last_api_error or
 /// the default-on trace.
 pub fn failureDiagnostic(allocator: std.mem.Allocator, provider: []const u8, failure: ResponsesFailure) ![]u8 {
-    var buf: [560]u8 = undefined;
+    var buf: [672]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     try writeDiagnosticField(&w, provider, 40);
     try w.writeAll(" api error");
@@ -117,6 +122,11 @@ pub fn failureDiagnostic(allocator: std.mem.Allocator, provider: []const u8, fai
     }
     try w.writeAll(": ");
     try writeDiagnosticField(&w, failure.message, 384);
+    if (failure.request_id) |rid| {
+        try w.writeAll(" [");
+        try writeDiagnosticField(&w, rid, 96);
+        try w.writeByte(']');
+    }
     return allocator.dupe(u8, w.buffered());
 }
 
@@ -220,4 +230,111 @@ pub fn errorMessage(obj: std.json.ObjectMap) ?[]const u8 {
     if (obj.get("detail")) |d| if (d == .string) return d.string;
     if (obj.get("message")) |m| if (m == .string) return m.string;
     return null;
+}
+
+/// Public error envelopes may carry a join id (`error.request_id`, top-level
+/// `request_id`, or the Responses `response.error` copy). Empty strings are
+/// treated as absent so a missing field never prints as `[]`.
+pub fn errorRequestId(obj: std.json.ObjectMap) ?[]const u8 {
+    if (obj.get("error")) |e| {
+        if (e == .object) {
+            if (e.object.get("request_id")) |m| if (m == .string and m.string.len > 0) return m.string;
+        }
+    }
+    if (obj.get("response")) |r| if (r == .object) {
+        if (r.object.get("error")) |e| if (e == .object) {
+            if (e.object.get("request_id")) |m| if (m == .string and m.string.len > 0) return m.string;
+        };
+        if (r.object.get("request_id")) |m| if (m == .string and m.string.len > 0) return m.string;
+    };
+    if (obj.get("request_id")) |m| if (m == .string and m.string.len > 0) return m.string;
+    return null;
+}
+
+test "failureDiagnostic includes request_id when present and omits when absent" {
+    const a = std.testing.allocator;
+    const with_id = try failureDiagnostic(a, "openai", .{
+        .message = "temporarily unavailable",
+        .code = "service_unavailable",
+        .request_id = "cg_req_abc",
+    });
+    defer a.free(with_id);
+    try std.testing.expectEqualStrings("openai api error [service_unavailable]: temporarily unavailable [cg_req_abc]", with_id);
+
+    const without = try failureDiagnostic(a, "openai", .{
+        .message = "temporarily unavailable",
+        .code = "service_unavailable",
+    });
+    defer a.free(without);
+    try std.testing.expectEqualStrings("openai api error [service_unavailable]: temporarily unavailable", without);
+    try std.testing.expect(std.mem.indexOf(u8, without, "cg_req_") == null);
+}
+
+test "parseResponses copies request_id from JSON envelope and SSE failed event" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent: Agent = undefined;
+    agent.arena = a;
+    agent.scratch_arena = null;
+    agent.message_mutation_arena = null;
+
+    const json_body =
+        "{\"type\":\"error\",\"error\":{\"message\":\"temporarily unavailable\",\"type\":\"service_unavailable\",\"code\":\"service_unavailable\",\"request_id\":\"cg_req_json\"}}";
+    switch (try parseResponses(&agent, json_body)) {
+        .err => |failure| {
+            try std.testing.expectEqualStrings("temporarily unavailable", failure.message);
+            try std.testing.expectEqualStrings("service_unavailable", failure.code.?);
+            try std.testing.expectEqualStrings("cg_req_json", failure.request_id.?);
+        },
+        .ok => return error.TestUnexpectedResult,
+    }
+
+    const no_id_body =
+        "{\"type\":\"error\",\"error\":{\"message\":\"temporarily unavailable\",\"code\":\"service_unavailable\"}}";
+    switch (try parseResponses(&agent, no_id_body)) {
+        .err => |failure| try std.testing.expect(failure.request_id == null),
+        .ok => return error.TestUnexpectedResult,
+    }
+
+    const failed_body =
+        "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"summary rejected\",\"code\":\"context_length_exceeded\",\"request_id\":\"cg_req_sse\"}}}\n";
+    switch (try parseResponses(&agent, failed_body)) {
+        .err => |failure| try std.testing.expectEqualStrings("cg_req_sse", failure.request_id.?),
+        .ok => return error.TestUnexpectedResult,
+    }
+}
+
+test "errorRequestId reads nested, Responses, and top-level fields; ignores empty" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var nested: std.json.ObjectMap = .empty;
+    try nested.put(a, "request_id", .{ .string = "cg_req_nested" });
+    var root1: std.json.ObjectMap = .empty;
+    try root1.put(a, "error", .{ .object = nested });
+    try std.testing.expectEqualStrings("cg_req_nested", errorRequestId(root1).?);
+
+    var resp_err: std.json.ObjectMap = .empty;
+    try resp_err.put(a, "request_id", .{ .string = "cg_req_resp" });
+    var resp: std.json.ObjectMap = .empty;
+    try resp.put(a, "error", .{ .object = resp_err });
+    var root2: std.json.ObjectMap = .empty;
+    try root2.put(a, "response", .{ .object = resp });
+    try std.testing.expectEqualStrings("cg_req_resp", errorRequestId(root2).?);
+
+    var root3: std.json.ObjectMap = .empty;
+    try root3.put(a, "request_id", .{ .string = "cg_req_top" });
+    try std.testing.expectEqualStrings("cg_req_top", errorRequestId(root3).?);
+
+    var empty_id: std.json.ObjectMap = .empty;
+    try empty_id.put(a, "request_id", .{ .string = "" });
+    var root4: std.json.ObjectMap = .empty;
+    try root4.put(a, "error", .{ .object = empty_id });
+    try std.testing.expect(errorRequestId(root4) == null);
+
+    var root5: std.json.ObjectMap = .empty;
+    try root5.put(a, "message", .{ .string = "hi" });
+    try std.testing.expect(errorRequestId(root5) == null);
 }

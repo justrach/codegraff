@@ -49,6 +49,8 @@ fn toolCtx(self: *Agent) tools_mod.ToolCtx {
         .mcp_context = self.mcp_context.value,
         .registry = if (self.sub) null else self.registry,
         .from_sub = self.sub,
+        .interactive_children = !self.sub and @import("subagent_interactive.zig").enabled.load(.acquire),
+        .session_name = self.session_name,
         .has_eval = self.eval_cmd != null,
         .approvals = self.approvals,
         .tracer = self.tracer,

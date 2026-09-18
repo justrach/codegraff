@@ -62,6 +62,8 @@ pub const Ctx = struct {
 
 /// Run turns until EOF/quit; main then performs final save/worktree cleanup.
 pub fn run(ctx: *Ctx) !void {
+    @import("subagent_interactive.zig").configure(ctx.interactive);
+    defer @import("subagent_interactive.zig").configure(false);
     if (main_mod.json_mode) json_inbox.start(ctx.gpa, ctx.io, ctx.in);
     defer if (main_mod.json_mode) json_inbox.stop();
     var title_jobs: mainloop_title.Jobs = .{};
@@ -71,7 +73,6 @@ pub fn run(ctx: *Ctx) !void {
     defer session.flushSavesAtExit(); // #273: the turn-path autosaves write in the background — no queued one may outlive this loop, on ANY exit (#364 stamps this teardown phase)
     defer ctx.root.closeCodexWs(); // #424: the held WS + response-id anchor deliberately span turns, so only loop exit may free them — without this they are the gpa's only exit leaks
     defer terminal.tty.releaseTerminal(); // #396: registered LAST so LIFO runs it FIRST — the tty goes back before the save/telemetry/learning phases that can take seconds
-    // Trajectory spine: each turn's parent is the previous; a changed prompt fingerprint marks a set_system_prompt edge.
     var prev_turn_id: u64 = 0;
     var prev_prompt_fp: [16]u8 = scoring.promptFingerprint(ctx.root.systemPrompt());
     // Armed only after a clean /loop turn and consumed by the next read (#226).
@@ -82,7 +83,7 @@ pub fn run(ctx: *Ctx) !void {
     var loop_clock: goal_pacing.LoopClock = .{}; // this run's wall clock: `/loop 30m <prompt>` arms a deadline, and every continuation is told where it stands
 
     while (true) {
-        // Titles can land between interactions but never join the response path.
+        @import("subagent_interactive.zig").line_notice = false;
         title_jobs.poll(ctx);
         recap_jobs.poll(ctx); // #419: a settled model recap emits here, before the next read
         // Drain streamed follow-ups before reading fresh input (empty in JSON/GUI).
@@ -403,7 +404,7 @@ pub fn run(ctx: *Ctx) !void {
         ctx.root.tools_used.clear(ctx.io); // per-turn tool log for the turn's node
         ctx.root.tool_calls_this_turn = 0;
         ctx.root.model_calls_this_turn = 0;
-        goal_state.beginTurn(ctx.root, !is_loop_continuation); // per-turn gate flags (the ARMED double-check is NOT one, #318) + the new-ask retirement of a finished checklist (#394)
+        goal_state.beginTurn(ctx.root, !is_loop_continuation and !@import("subagent_interactive.zig").line_notice); // per-turn gate flags (the ARMED double-check is NOT one, #318) + the new-ask retirement of a finished checklist (#394)
         ctx.root.seen_tool_keys.clearRetainingCapacity();
         if (main_mod.json_mode) ctx.root.emit(.{ .type = "started", .provider = ctx.root.provider.id, .model = ctx.root.provider.model });
         if (ctx.interactive and !main_mod.json_mode) {
@@ -413,7 +414,6 @@ pub fn run(ctx: *Ctx) !void {
         const turn_before = mainloop_trace.begin(ctx.root, ctx.io);
         mainloop_trace.recordLive(ctx.root, base_msg, turn_id, prev_turn_id);
         const turn_started = Io.Timestamp.now(ctx.io, .awake);
-        // Turn failures are surfaced without killing the session.
         const turn_result = providers.runTurnWithFallback(ctx.root, ctx.keys, ctx.arena, ctx.out);
         if (main_mod.json_mode) json_inbox.endTurn();
         // Reuse one full-history scan for trace, terminal event, and compaction.
@@ -585,7 +585,7 @@ pub fn run(ctx: *Ctx) !void {
                     // goal to done; a --goal standing objective outlives it (#318).
                     if (outcome == .accepted) _ = goal_flow.acceptLoopOutcome(ctx.root);
                     const tone = if (outcome == .accepted) style.green else style.yellow; // success must not look like the four failures
-                    try ctx.out.print("{s}↩ run stopped — {s}{s}\n", .{ tone, repl_glue.outcomeText(outcome, loop_iter_cap), style.reset });
+                    try ctx.out.print("{s}↩ run stopped — {s}{s}\n", .{ tone, if (@import("subagent_interactive.zig").yielded) "waiting for delegated work; prompt available" else repl_glue.outcomeText(outcome, loop_iter_cap), style.reset });
                     try ctx.out.flush();
                     if (ctx.root.tracer) |t| t.note("loop", @tagName(outcome)); // every /goal transition is traced; the run's end was not
                 },

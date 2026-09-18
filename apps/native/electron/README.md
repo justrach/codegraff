@@ -46,6 +46,11 @@ process-tree sample. macOS 26 uses grouped Liquid Glass surfaces. RSS sums may
 double-count shared pages; CPU is the lifetime average from `ps`, not a sampled
 instantaneous peak. Closing the application terminates its Bun/ACP process group.
 
+**Settings → Session observer** (or View → Session observer) pins a SwiftUI
+notch to the right screen edge while the app is in the background. Off until
+you turn it on. Cells are live ACP work, not chat titles. Hover for the
+label; click to focus that chat. The panel never becomes the key window.
+
 Run checks with Bun from `apps/native`:
 
 ```sh
