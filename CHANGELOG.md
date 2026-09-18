@@ -12,6 +12,7 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- Desktop ACP workers can park after a quiet period (`GRAFF_ACP_IDLE_MS`, default 30s) and `--resume` with the saved cache id. Parking is skipped while a prompt or `session/idle` subscriber is live; tab close still reaps immediately.
 - GUI usage replies show grouped metrics and plan limits; inline editing keeps the message bubble and grows with its text. Subtle transcript reveals respect reduced motion.
 - `#1013`: keep the first answer after a no-tool retry without allowing older turns to replace a later answer (ADR 0139).
 - GUI usage replies show grouped metrics and plan limits; inline editing keeps the message bubble and grows with its text. Subtle transcript reveals respect reduced motion.

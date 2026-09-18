@@ -15,6 +15,7 @@ import { attachmentStore } from "@/lib/attachment-store";
 import { retireWorker } from "@/lib/acp-retire";
 import { initializeWorker, serializeBootstrap } from "@/lib/acp-bootstrap";
 import { finishCancelledPrompt } from "@/lib/acp-cancel";
+import { armIdle, cancelIdle, forgetPark, forgetParkMatching, keepPark, parkedChats, takeParked, type ParkedWorker } from "@/lib/acp-idle";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,6 +42,8 @@ type Slot = {
   pendingPrompt: Promise<unknown> | null;
   restart: boolean;
   restartReady: Promise<void> | null;
+  /** Open session/idle SSE subscribers (peer pump). */
+  idleListeners: number;
 };
 
 const HANDSHAKE_MS = 120_000;
@@ -101,10 +104,29 @@ function defaultYolo(): boolean {
 // would skip. The signal is the fallback for an agent that does not wind down.
 const EXIT_GRACE_MS = 5_000;
 
-function killSlot(chat: string): Promise<void> {
+function parkSnapshot(slot: Slot): ParkedWorker {
+  return { resume: slot.resume ?? slot.sessionId, model: slot.model, cwd: slot.cwd, yolo: slot.yolo, mcp: slot.mcp };
+}
+
+function slotBusy(slot: Slot): boolean {
+  return slot.streaming || slot.pendingPrompt !== null || slot.idleListeners > 0;
+}
+
+function watchIdle(chat: string, slot: Slot): void {
+  if (slotBusy(slot)) { cancelIdle(chat); return; }
+  armIdle(chat, parkSnapshot(slot), () => { void killSlot(chat, true); }, () => {
+    const live = slots.get(chat);
+    return !live || live !== slot || slotBusy(live);
+  });
+}
+
+function killSlot(chat: string, parkFlag?: unknown): Promise<void> {
+  if (keepPark(parkFlag)) cancelIdle(chat);
+  else forgetPark(chat);
   const slot = slots.get(chat);
   if (!slot) return retirements.get(chat) ?? Promise.resolve();
   slots.delete(chat);
+  try { slot.transport.abort(new Error("worker retired")); } catch { /* already closed */ }
   const pending = closeSessionWriter(slot.child, EXIT_GRACE_MS);
   retirements.set(chat, pending);
   const forget = () => { if (retirements.get(chat) === pending) retirements.delete(chat); };
@@ -114,7 +136,9 @@ function killSlot(chat: string): Promise<void> {
 
 async function killPage(page: string) {
   const prefix = `${page}:`;
-  await Promise.all([...new Set([...slots.keys(), ...retirements.keys()])].filter(chat => chat.startsWith(prefix)).map(killSlot));
+  forgetParkMatching(prefix);
+  const chats = [...new Set([...slots.keys(), ...retirements.keys(), ...parkedChats()])].filter(chat => chat.startsWith(prefix));
+  await Promise.all(chats.map(chat => killSlot(chat)));
 }
 
 function spawnAgent(chat: string, opts: SpawnOpts): Slot {
@@ -147,6 +171,7 @@ function spawnAgent(chat: string, opts: SpawnOpts): Slot {
     commands: [],
     spawnError: null,
     pendingPrompt: null,
+    idleListeners: 0,
     restart: false,
     restartReady: null,
   };
@@ -229,15 +254,16 @@ async function bootstrapNow(chat: string, opts: BootstrapOpts): Promise<Slot> {
     await recovering.restartReady;
     if (slots.get(chat) !== live) return bootstrapNow(chat, opts);
   }
+  const parked = opts.reset ? (forgetPark(chat), undefined) : takeParked(chat);
   await killSlot(chat);
   if (g.__graffAcpShuttingDown) throw new Error("Desktop is shutting down");
   if (slots.has(chat)) return bootstrapNow(chat, opts);
   const slot = spawnAgent(chat, {
-    model: opts.model ?? recovering?.model ?? undefined,
-    resume: opts.resume ?? recovering?.resume ?? recovering?.sessionId ?? undefined,
-    cwd: opts.cwd ?? recovering?.cwd ?? defaultRoot(),
-    yolo: opts.yolo ?? recovering?.yolo ?? defaultYolo(),
-    mcp: opts.mcp ?? recovering?.mcp ?? true,
+    model: opts.model ?? recovering?.model ?? parked?.model ?? undefined,
+    resume: opts.resume ?? recovering?.resume ?? recovering?.sessionId ?? parked?.resume ?? undefined,
+    cwd: opts.cwd ?? recovering?.cwd ?? parked?.cwd ?? defaultRoot(),
+    yolo: opts.yolo ?? recovering?.yolo ?? parked?.yolo ?? defaultYolo(),
+    mcp: opts.mcp ?? recovering?.mcp ?? parked?.mcp ?? true,
   });
   slot.sessionId = await initializeWorker(slot.transport, slot.cwd, async () => {
     slot.restart = true;
@@ -285,7 +311,7 @@ export async function POST(req: NextRequest) {
   try {
     if (method === "shutdown") {
       g.__graffAcpShuttingDown = true;
-      await Promise.all([...new Set([...slots.keys(), ...retirements.keys()])].map(killSlot));
+      await Promise.all([...new Set([...slots.keys(), ...retirements.keys(), ...parkedChats()])].map(chat => killSlot(chat)));
       return Response.json({ ok: true });
     }
     if (method === "dispose") {
@@ -333,6 +359,8 @@ export async function POST(req: NextRequest) {
       return Response.json({ ok: true });
     }
     if (method === "session/idle") {
+      slot.idleListeners += 1;
+      cancelIdle(chat);
       const encoder = new TextEncoder();
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -341,13 +369,19 @@ export async function POST(req: NextRequest) {
             try { controller.enqueue(encoder.encode(`${line}\n`)); } catch { /* closed */ }
           };
           const stop = slot.transport.subscribe(send);
-          const close = () => { stop(); try { controller.close(); } catch { /* already closed */ } };
+          const close = () => {
+            stop();
+            slot.idleListeners = Math.max(0, slot.idleListeners - 1);
+            if (slots.get(chat) === slot) watchIdle(chat, slot);
+            try { controller.close(); } catch { /* already closed */ }
+          };
           req.signal.addEventListener("abort", close, { once: true });
         },
       });
       return new Response(stream, { headers: { "content-type": "application/x-ndjson", "cache-control": "no-store" } });
     }
     if (method === "session/prompt") {
+      cancelIdle(chat);
       if (slot.streaming) return Response.json({ error: "A turn is already active" }, { status: 409 });
       const promptParams = await prepareGuiPrompt(body.params);
       if (slot.streaming) return Response.json({ error: "A turn is already active" }, { status: 409 });
@@ -360,7 +394,10 @@ export async function POST(req: NextRequest) {
         });
       slot.pendingPrompt = pending;
       // Both rejection and success settle the gate without changing the wire outcome.
-      const settled = () => { if (slot.pendingPrompt === pending) { slot.pendingPrompt = null; slot.streaming = false; } };
+      const settled = () => {
+        if (slot.pendingPrompt === pending) { slot.pendingPrompt = null; slot.streaming = false; }
+        if (slots.get(chat) === slot) watchIdle(chat, slot);
+      };
       void pending.then(settled, settled);
       return new Response(stream, { headers: { "content-type": "application/x-ndjson", "cache-control": "no-store" } });
     }

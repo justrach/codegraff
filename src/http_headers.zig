@@ -148,6 +148,16 @@ pub fn adoptSessionId(id: []const u8) void {
     session_id_len = 36;
 }
 
+/// A replacement worker loading a saved session must take that conversation
+/// id even if startup already minted one (idle-park respawn, `graff acp --resume`).
+pub fn restoreSessionId(id: []const u8) void {
+    if (id.len != 36) return;
+    while (session_id_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
+    defer session_id_lock.store(false, .release);
+    @memcpy(session_id_buf[0..36], id[0..36]);
+    session_id_len = 36;
+}
+
 pub fn userAgent(provider: Provider) std.http.Client.Request.Headers.Value {
     if (std.mem.eql(u8, provider.id, "kimi")) {
         return .{ .override = root.kimi_user_agent };
@@ -428,6 +438,15 @@ test "adoptSessionId validates length and never overwrites a minted id" {
     adoptSessionId("too-short");
     adoptSessionId("00000000-0000-4000-8000-000000000000");
     try std.testing.expectEqualStrings(before, sessionId(io));
+}
+
+test "restoreSessionId overwrites a minted id so a parked worker keeps cache affinity" {
+    const io = std.testing.io;
+    _ = sessionId(io);
+    restoreSessionId("00000000-0000-4000-8000-000000000001");
+    try std.testing.expectEqualStrings("00000000-0000-4000-8000-000000000001", sessionId(io));
+    restoreSessionId("short");
+    try std.testing.expectEqualStrings("00000000-0000-4000-8000-000000000001", sessionId(io));
 }
 
 fn headerValue(headers: []const std.http.Header, name: []const u8) ?[]const u8 {
