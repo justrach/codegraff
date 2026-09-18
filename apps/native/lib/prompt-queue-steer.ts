@@ -1,5 +1,12 @@
 import { prioritizeQueuedPrompt, type QueuedPrompt } from "./prompt-queue.ts";
 
+/** Empty Enter-Enter while a turn runs: bump the next queued prompt, or interrupt. */
+export function steerOrInterrupt(next: { id: number } | undefined, running: boolean, steer: (id: number) => void, interrupt: () => void) {
+  if (!running) return;
+  if (next) steer(next.id);
+  else interrupt();
+}
+
 export type SteerStatus = { pending?: number; error?: string };
 type Turn = { ready: boolean; selected?: number; cancel?: () => Promise<void>; sent: boolean; attempt: number; timer?: ReturnType<typeof setTimeout> };
 

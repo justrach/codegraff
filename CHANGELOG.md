@@ -12,6 +12,7 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- Empty Enter-Enter while a turn is running interrupts (or steers the next queued prompt). It no longer required a queue to arm.
 - The folder picker can sort by name or modification time, filter Git repositories, and create folders.
 - Available `rlm` tools are listed from the first turn rather than waiting for a batch or context threshold (ADR 0140).
 - Desktop fonts are bundled locally; syntax highlighting, diagrams, and secondary panes load when needed.
