@@ -4,7 +4,6 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-
 const args = @import("args.zig");
 const agent_mod = @import("agent.zig");
 const provider_mod = @import("provider.zig");
@@ -83,7 +82,8 @@ pub fn run(
     cwd: []const u8,
     yolo: bool,
 ) !void {
-    @import("subagent_interactive.zig").configure(true); defer @import("subagent_interactive.zig").configure(false);
+    @import("subagent_interactive.zig").configure(true);
+    defer @import("subagent_interactive.zig").configure(false);
     root.ensureStoredKeys(keys);
     providers.ensureModelQueryCatalogs(root, keys.*, "");
     try root.ensureRootTools(.anthropic);
