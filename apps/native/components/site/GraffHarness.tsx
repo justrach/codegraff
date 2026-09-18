@@ -8,33 +8,27 @@ import { resumeQueuedPrompt } from "@/lib/prompt-queue-resume";
 import { createPromptRunner } from "./harness-prompt-runner";
 
 import { workspaceActions } from "./harness-workspace-actions";
-import ProjectsPane from "./ProjectsPane";
 import { useSavedConversation, ConversationOpenNotice } from "./useSavedConversation";
 import { useQuietSettings } from "./useQuietSettings";
 import { useTabDrag } from "./useTabDrag";
 import { mergeChatGroups, reorderChatGroups, resumeSplitTarget } from "@/lib/chat-groups";
 import { useChatGroups } from "./useChatGroups";
-import AppSettings from "./AppSettings";
 import HarnessChrome from "./HarnessChrome";
 import ChatSplitLayout from "./ChatSplitLayout";
-import TerminalPane from "./TerminalPane";
 import { sidebarRecents } from "./harness-sidebar";
-import AgentsPane from "./AgentsPane";
 import { newPageToken, newSessionName, type Chat, type Msg } from "./harness-types";
-import ChangesPane from "./ChangesPane";
-import ReviewsPane from "./ReviewsPane";
 import { useBrowserVisibility } from "./useBrowserVisibility";
 import { useReferenceNavigation } from "./useReferenceNavigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type PromptModel } from "@/components/primitives/PromptBar";
 import SidebarNav from "@/components/primitives/SidebarNav";
-import ConversationsPane from "@/components/site/ConversationsPane";
-import FilesPane from "@/components/site/FilesPane";
-import BrowserPane from "@/components/site/DesktopBrowserPane";
 import { type BrowserPin } from "@/lib/browser/annotations";
 import { browserClose } from "@/lib/browser-client";
 import ChatColumn from "./ChatColumn";
-import TasksSidebar from "./TasksSidebar";
+import {
+  AgentsPane, AppSettings, BrowserPane, ChangesPane, ConversationsPane, FilesPane,
+  ProjectsPane, ReviewsPane, TasksSidebar, TerminalPane, WorkspaceDialog,
+} from "./harness-panes";
 import { useTasksVisibility } from "./useTasksVisibility";
 import { MAX_COLUMNS, SPLIT_LIMIT_MESSAGE, splitLimitReached } from "./harness-split";
 import { useDesktopShortcuts } from "./useDesktopShortcuts";
@@ -51,7 +45,6 @@ import { enqueuePrompt } from "@/lib/prompt-queue";
 import { usePromptQueue } from "./usePromptQueue";
 import { removeSession, type StoredSession } from "@/lib/sessions";
 import { loadHistory, mergeHistory } from "@/lib/prompt-history";
-import WorkspaceDialog from "@/components/site/WorkspaceDialog";
 import {
   basename,
   findWorkspace,

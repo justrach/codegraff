@@ -40,7 +40,7 @@ record only when you need the evidence or the edge cases.
 | [0027](0027-kimi-identity-is-graff.md) | Kimi Coding User-Agent is `graff/<version>`, not a spoofed `kimi-code-cli` token. X-Msh device fields follow kimi-code's shapes. |
 | [0028](0028-codex-session-id-is-the-cache-key.md) | Codex HTTP/WS `session_id` is the `prompt_cache_key` (openai/codex ModelClient default), not a per-process random UUID. |
 | [0029](0029-mcp-inside-rlm-and-return-shapes.md) | Loaded MCP tools are rlm host functions; persist return shapes on the load result, never the prefix; fat MCP results auto-slim; default `-p` connects `.mcp.json` (folded, not skipped). |
-| [0030](0030-rlm-late-showcase.md) | Small turns hide `rlm` (and sPTC). Showcase on `--rlm`, a ≥4 native batch, context ≥50% of compactAt, or an explicit load — never on MCP fan-out or the prefix. |
+| [0030](0030-rlm-late-showcase.md) | Superseded by [0140](0140-rlm-is-listed-when-available.md). Late showcase hid `rlm` on small turns; that gate is gone. |
 | [0031](0031-xai-hosted-x-search.md) | xAI Responses splices hosted `x_search` onto tools turns. It is not a catalog function; `GRAFF_XAI_X_SEARCH=0` opts out. |
 | [0032](0032-acp-streams-mid-turn.md) | `graff acp` streams thought / tool / text `session/update`s mid-turn. The native app is an ACP client; it does not need `graff serve`. |
 | [0033](0033-user-can-retire-a-standing-constraint.md) | Only the user retires a standing constraint: TTY `/never` picker (two confirms), ACP/`rm`, or an explicit override. The model cannot. |
@@ -159,6 +159,7 @@ record only when you need the evidence or the edge cases.
 | [0137](0137-desktop-appearance-is-a-turn-note.md) | Desktop appearance tokens for `render_html` ride the turn, never the prefix or tool catalog; drawn HTML uses them unless the user named colors. |
 | [0138](0138-unselected-splits-use-glass-overlay.md) | Unselected split panes keep their transcript under a light wash; the focused pane stays the working surface. |
 | [0139](0139-bounced-answers-stay-turn-local.md) | Retain a bounced answer only in the current turn, before unfinished-work reconciliation; never recover it from persisted history. |
+| [0140](0140-rlm-is-listed-when-available.md) | `rlm` is on the catalog whenever it is available. No batch-size or compactAt gate. `--old` still hides it. |
 
 ## When to write one
 

@@ -77,7 +77,7 @@ test "#867 session save load preserves the loaded catalog and clears legacy sele
     try tmp.dir.writeFile(io, .{ .sub_path = ".graff/sessions/catalog-legacy-867.session.json", .data = "{\"provider\":\"anthropic\",\"model\":\"sonnet\",\"messages\":[]}" });
     try session.loadSession(&root, &keys, arena, "catalog-legacy-867");
     try std.testing.expectEqual(@as(usize, 0), native.loadedNames().len);
-    try std.testing.expect(!native.listed());
+    try std.testing.expectEqual(@import("rlm_spec.zig").available, native.listed());
     try std.testing.expect(!gate.isLoaded(tools[0].qualified_name));
     try std.testing.expect(!gate.isLoaded(tools[1].qualified_name));
 }
@@ -127,7 +127,7 @@ test "#867 malformed catalog state resets selections and validates saved names" 
         const saved = try std.json.parseFromSliceLeaky(std.json.Value, arena, json, .{});
         try restore(&root, saved.object);
         try std.testing.expectEqual(@as(usize, 0), native.loadedNames().len);
-        try std.testing.expect(!native.listed());
+        try std.testing.expectEqual(@import("rlm_spec.zig").available, native.listed());
         try std.testing.expectEqualStrings("", root.tools_anthropic);
         try std.testing.expect(!gate.isLoaded("mcp__missing__tool"));
         try std.testing.expect(!gate.isLoaded(tools[0].qualified_name));

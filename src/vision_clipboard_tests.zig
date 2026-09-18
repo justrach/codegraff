@@ -268,3 +268,15 @@ test "max_staged_image_bytes: base64 of a full-budget image stays under the 5 MB
     // …and the OLD 5 MiB ceiling did not, which is the #349 bug in one line.
     try testing.expect(std.base64.standard.Encoder.calcSize(5 * 1024 * 1024) > 5_000_000);
 }
+
+test "regularFileSize: absolute path outside cwd (GUI paste dir)" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "shot.png", .data = "not-a-real-png" });
+    const abs = try tmp.dir.realPathFileAlloc(io, "shot.png", testing.allocator);
+    defer testing.allocator.free(abs);
+    try testing.expect(std.fs.path.isAbsolute(abs));
+    const size = regularFileSize(io, abs);
+    try testing.expectEqual(@as(?u64, 14), size);
+}

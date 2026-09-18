@@ -15,6 +15,11 @@ current is part of cutting a release.
 - Desktop ACP workers can park after a quiet period (`GRAFF_ACP_IDLE_MS`, default 30s) and `--resume` with the saved cache id. Parking is skipped while a prompt or `session/idle` subscriber is live; tab close still reaps immediately.
 - Turn chrome shows local tok/s while writing (and at settle); MCP tools/Apps wait instead of looking like slow generation (#1017).
 - MCP App frames answer `ui/initialize`; app-initiated `mcp__` `tools/call` is forwarded through ACP (`session/mcp_call`). Native tools stay refused (#1018).
+- The folder picker can sort by name or modification time, filter Git repositories, and create folders.
+- Available `rlm` tools are listed from the first turn rather than waiting for a batch or context threshold (ADR 0140).
+- Desktop fonts are bundled locally; syntax highlighting, diagrams, and secondary panes load when needed.
+- Desktop appearance notes no longer alter slash commands. Clipboard image staging retries absolute paths through their parent directory when needed.
+- Resuming a saved conversation restores its persisted session identity even if startup already generated one.
 - GUI usage replies show grouped metrics and plan limits; inline editing keeps the message bubble and grows with its text. Subtle transcript reveals respect reduced motion.
 - `#1013`: keep the first answer after a no-tool retry without allowing older turns to replace a later answer (ADR 0139).
 - GUI usage replies show grouped metrics and plan limits; inline editing keeps the message bubble and grows with its text. Subtle transcript reveals respect reduced motion.

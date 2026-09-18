@@ -1,7 +1,7 @@
 export const bases = ["light", "dark", "website", "codegraff"] as const;
 export type BuiltinAppearance = typeof bases[number];
 export const colorTokens = ["page", "canvas", "surface", "inset", "hover", "hover-2", "ink", "ink-2", "ink-3", "line", "line-strong", "field", "stripe", "stripe-bg", "accent", "accent-ink", "accent-tint", "green", "green-tint", "red", "red-tint", "orange", "orange-tint", "brand-coral", "brand-gold"] as const;
-export const fonts = { geist: 'var(--font-inter), system-ui, sans-serif', system: '-apple-system, BlinkMacSystemFont, sans-serif', serif: 'Georgia, "Times New Roman", serif' };
+export const fonts = { geist: 'var(--font-geist-sans), system-ui, sans-serif', system: '-apple-system, BlinkMacSystemFont, sans-serif', serif: 'Georgia, "Times New Roman", serif' };
 export type CustomTheme = { version: 1; id: string; name: string; base: BuiltinAppearance; colors: Partial<Record<typeof colorTokens[number], string>>; font?: keyof typeof fonts; corners?: number };
 export const themeLimit = 16 * 1024;
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);

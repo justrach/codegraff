@@ -354,7 +354,7 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
     try s.objectField("cache_key");
     try s.write(http_headers.sessionId(root.io));
     try s.objectField("prompt_cache_key");
-    try s.write(http_headers.projectRootId(root.io));
+    try s.write(http_headers.projectRootId(root.io)); // idle-park resume must keep this partition
     try session_peer.writeFields(&s);
     try subagent_ledger.writeFields(&s, root.io);
     try s.endObject();

@@ -120,7 +120,16 @@ fn deleteQuietly(io: Io, path: []const u8) void {
 /// "not there, or not a file" — never "too big", which is the distinction the
 /// old single `.read_fail` threw away.
 pub fn regularFileSize(io: Io, path: []const u8) ?u64 {
-    const st = Io.Dir.cwd().statFile(io, path, .{}) catch return null;
+    if (fileSizeAt(io, Io.Dir.cwd(), path)) |n| return n;
+    if (!std.fs.path.isAbsolute(path)) return null;
+    const dir_path = std.fs.path.dirname(path) orelse return null;
+    var dir = Io.Dir.openDirAbsolute(io, dir_path, .{}) catch return null;
+    defer dir.close(io);
+    return fileSizeAt(io, dir, std.fs.path.basename(path));
+}
+
+fn fileSizeAt(io: Io, dir: Io.Dir, path: []const u8) ?u64 {
+    const st = dir.statFile(io, path, .{}) catch return null;
     if (st.kind != .file) return null;
     return st.size;
 }

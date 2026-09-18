@@ -27,6 +27,14 @@ test("ordinary prompts and file attachments do not load GUI skills", async () =>
   const original = { prompt: [{ type: "text", text: "Read the project" }, { type: "resource_link", name: "$theme", uri: "file:///fixture" }] };
   expect(await prepareGuiPrompt(original)).toBe(original);
 });
+test("slash commands do not receive desktop appearance tokens", async () => {
+  const original = { prompt: [{ type: "text", text: "/model lmstudio mock-vision" }], appearance: { page: "#0b0c09", ink: "#ececec" } };
+  const prepared = await prepareGuiPrompt(original);
+  const text = (prepared?.prompt as { text: string }[])[0].text;
+  expect(text).toBe("/model lmstudio mock-vision");
+  expect(text).not.toContain("[desktop appearance]");
+  expect(prepared).not.toHaveProperty("appearance");
+});
 test("desktop appearance tokens ride the prompt and leave the catalog alone", async () => {
   const original = { prompt: [{ type: "text", text: "Draw the burn-down" }], appearance: { page: "#faf8f5", surface: "#ffffff", ink: "#1a1a1a" } };
   const prepared = await prepareGuiPrompt(original);
