@@ -21,11 +21,14 @@ click and is a Chromium surface, not a bezel.
 ## Decision
 
 The desktop hosts a right-edge SwiftUI observer through the existing
-Node-API dylib (`updateNotch` / `hideNotch`). It shows at most six open
-chats as working / waiting / idle / error. Hovering expands a label;
-clicking focuses the main window and that chat. The panel cannot become
-key or main. Smoke and hidden GUI tests pass `allow: false` so the notch
-never appears on the host desktop.
+Node-API dylib (`updateNotch` / `hideNotch`). Cells show live ACP work
+(tool / think / write / ask), not chat titles. Idle chats leave the
+notch. Working ACP agents share the four activity slots. Usage rings
+(`kind: "usage"` plus a percent) are merged in the main process; tokens
+never go to Swift or the renderer. At most six cells. Hovering expands a
+label; clicking focuses the main window and that chat. The panel cannot
+become key or main. Smoke and hidden GUI tests pass `allow: false` so the
+notch never appears on the host desktop.
 
 SwiftUI is therefore the Activity sheet **and** this observer. The
 renderer only publishes a bounded snapshot; graff still owns coding.
@@ -33,6 +36,7 @@ renderer only publishes a bounded snapshot; graff still owns coding.
 ## Consequences
 
 A rebuild of the native dylib is required before the notch is visible.
-The View menu toggles it; the preference lives in `observer-notch.json`.
-Visual screenshots of the Chromium window are unchanged because the
-notch is a separate AppKit panel.
+It is off until Settings or View → Session observer turns it on; the
+preference lives in `observer-notch.json`. Visual screenshots of the
+Chromium window are unchanged because the notch is a separate AppKit
+panel.
