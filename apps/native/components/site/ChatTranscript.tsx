@@ -68,6 +68,7 @@ export default memo(function ChatTranscript({ messages, register, following, onO
               onEditPrompt(n, next);
             }} />
         : <AssistantBody key={message.id} turn={message.turn} onOpenPath={onOpenPath} onReview={onReview} onAnswer={onAnswer}
+            usage={(() => { const previous = messages[start + index - 1]; return previous?.role === "user" && /^\/(usage|cost)$/.test(previous.text.trim()); })()}
             scroller={scroller} following={following && start + index === messages.length - 1} snapshot={snapshot} />)}
     </div>
   </div>;

@@ -2,6 +2,7 @@
 
 import {useState, useEffect, useRef} from "react";
 import {validAppId} from "@/lib/mcp-apps";
+import motion from "./transcript-motion.module.css";
 
 /** One saved HTML snapshot shown inside the transcript. The two kinds differ
  *  only in where the bytes came from and what they may do; neither is ever
@@ -48,7 +49,7 @@ export default function SnapshotView({kind, id}: {kind: SnapshotKind; id: string
       {visible
         ? <div className="pointer-events-none absolute right-1 top-1 z-10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"><span className="pointer-events-auto">{toggle}</span></div>
         : toggle}
-      {visible && <div className="w-full bg-transparent" style={{height: "min(70vh, 32rem)"}}>{iframe}</div>}
+      {visible && <div className={`${motion.reveal} w-full bg-transparent`} style={{height: "min(70vh, 32rem)"}}>{iframe}</div>}
     </section>;
   }
   return <section ref={host} className="my-3 overflow-hidden rounded-lg border border-ink/10" aria-label={label}>
