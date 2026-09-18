@@ -99,6 +99,11 @@ test "the codex .responses arm refreshes auth and re-anchors before resending (#
     // delegates to the one envelope gate, which runs the shared transient retry
     // first and then the bounded gateway-artifact retry (#gateway-artifact).
     try std.testing.expect(std.mem.indexOf(u8, arm, "policy.afterServerErrorOrParseReject(self, \"\", failure.code, msg, &server_retries, &gw_retry)") != null);
+    // #1019: overflow trim must run on failure.message before the empty-etype flake retry.
+    const overflow_at = std.mem.indexOf(u8, arm, "recoverContextOverflow(self, msg, failure.code, &context_retried)") orelse
+        return error.ResponsesPathHasNoOverflowRecovery;
+    const flake_at = std.mem.indexOf(u8, arm, "policy.afterServerErrorOrParseReject(self, \"\", failure.code, msg, &server_retries, &gw_retry)").?;
+    try std.testing.expect(overflow_at < flake_at);
     const gate = @embedFile("agent_gateway_retry.zig");
     try std.testing.expect(std.mem.indexOf(u8, gate, "policy.retryTransientServerError(self, etype, code, msg, server_retries)") != null);
 

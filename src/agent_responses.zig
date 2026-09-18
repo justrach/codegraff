@@ -187,6 +187,25 @@ test "parseResponses: terminal failure beats partial items; incomplete stays mar
     }
 }
 
+test "#1019: type:error token-parse frame yields failure.message" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent: Agent = undefined;
+    agent.arena = a;
+    agent.scratch_arena = null;
+    agent.message_mutation_arena = null;
+    const body =
+        "data: {\"type\":\"error\",\"error\":{\"message\":\"Internal error during token parsing\"}}\n";
+    switch (try parseResponses(&agent, body)) {
+        .err => |failure| {
+            try std.testing.expectEqualStrings("Internal error during token parsing", failure.message);
+            try std.testing.expect(failure.code == null);
+        },
+        .ok => return error.TestUnexpectedResult,
+    }
+}
+
 pub fn errorMessage(obj: std.json.ObjectMap) ?[]const u8 {
     if (obj.get("error")) |e| {
         if (e == .object) {
