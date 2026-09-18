@@ -18,11 +18,14 @@ const { chromiumSample } = require('./hardware-profile.cjs');
 const fs = require('node:fs/promises');
 const { Terminals } = require('./terminal.cjs');
 const { installWindowState } = require('./window-state.cjs');
+const { createNotch, notchStore } = require('./notch.cjs');
 
 const root = process.env.GRAFF_CWD || app.getPath('home');
 const resources = process.env.GRAFF_ELECTRON_RESOURCES || process.resourcesPath;
-app.setName('Codegraff');
-app.setPath('userData', process.env.GRAFF_ELECTRON_SMOKE ? (process.env.GRAFF_SMOKE_PROFILE || path.join(require('node:os').tmpdir(), `codegraff-smoke-${process.pid}`)) : path.join(app.getPath('appData'), 'Codegraff Electron'));
+const developmentBuild = require('node:fs').existsSync(path.join(resources, 'codegraff-development'));
+const appName = developmentBuild ? 'Codegraff Dev' : 'Codegraff';
+app.setName(appName);
+app.setPath('userData', process.env.GRAFF_ELECTRON_SMOKE ? (process.env.GRAFF_SMOKE_PROFILE || path.join(require('node:os').tmpdir(), `codegraff-smoke-${process.pid}`)) : path.join(app.getPath('appData'), developmentBuild ? 'Codegraff Dev' : 'Codegraff Electron'));
 if (process.env.GRAFF_ELECTRON_SMOKE) process.env.GRAFF_THEMES_DIR = path.join(app.getPath('userData'), 'themes');
 let win, browser, backend, automation, computer, profiler;
 let terminals;
@@ -52,10 +55,12 @@ function trusted(event) {
   if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame ||
       new URL(event.senderFrame.url).origin !== backend.origin) throw new Error('Untrusted IPC sender');
 }
+let notch;
 function stop() {
   if (quitting) return; quitting = true;
   let unsafe = false;
   try { testDesktop?.assertSafe(); } catch (error) { console.error(error); unsafe = true; }
+  notch?.hide();
   terminals?.closeAll();
   profiler?.stop(); browser?.closeAll(); automation?.server.close(); backend?.stop();
   testDesktop?.cleanup();
@@ -67,11 +72,18 @@ process.on('SIGTERM', () => app.quit());
 process.on('SIGINT', () => app.quit());
 
 app.whenReady().then(async () => {
+  if (app.isPackaged && !developmentBuild && !process.env.GRAFF_ELECTRON_SMOKE) {
+    void require('./mcp-install.cjs').installMcp(path.join(resources, 'graff'), app.getPath('home'), { once: true })
+      .catch(error => dialog.showErrorBox('MCP setup incomplete', `${error.message}\nRetry from Tools → Configure MCP clients.`));
+  }
   await require('./shell-path.cjs').restoreShellPath();
   app.setAccessibilitySupportEnabled(true);
   const token = randomBytes(32).toString('hex');
+  const liveGlass = process.platform === 'darwin' && !testDesktop;
+  let glassOn = false;
   win = createWindow({ width: 1440, height: 920, minWidth: 900, minHeight: 600,
-    title: 'Codegraff', titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 11 }, backgroundColor: '#fafaf9', show: false,
+    title: appName, titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 11 },
+    transparent: liveGlass, backgroundColor: liveGlass ? '#00000000' : '#fafaf9', show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), partition: 'persist:app',
       contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: !process.env.GRAFF_ELECTRON_SMOKE } });
   const projects = require('./project-store.cjs').projectStore(app.getPath('userData'));
@@ -86,6 +98,33 @@ app.whenReady().then(async () => {
     if (mainFrame && !inPlace) { workspaceRequests.loading(); browser.closeAll(); terminals.closeAll(); }
   });
   computer = new ComputerUse(resources, win);
+  if (process.platform === 'darwin') {
+    try {
+      const native = require(path.join(resources, 'native/activity.node'));
+      notch = createNotch({
+        native: {
+          updateNotch: json => native.updateNotch(json),
+          hideNotch: () => native.hideNotch(),
+          inspectNotch: () => native.inspectNotch(),
+        },
+        store: notchStore(app.getPath('userData')),
+        allow: !testDesktop,
+        activate: id => {
+          if (!win || win.isDestroyed()) return;
+          if (win.isMinimized()) win.restore();
+          win.show();
+          win.focus();
+          if (id > 0) win.webContents.send('notch-select', id);
+        },
+      });
+      if (typeof native.onNotchClick === 'function') native.onNotchClick(id => notch.clicked(Number(id)));
+    } catch { /* unpackaged trees without the dylib keep the React app only */ }
+  }
+  ipcMain.on('notch', (event, snapshot) => {
+    trusted(event);
+    if (!snapshot || typeof snapshot !== 'object' || JSON.stringify(snapshot).length > 16000) return;
+    notch?.update(snapshot);
+  });
   const sampleTree = intervalSampler(process.pid, () => browser.liveCount);
   const sampleAgents = agentSampler();
   profiler = new Profiler(async () => {
@@ -100,7 +139,10 @@ app.whenReady().then(async () => {
     }
   }, () => app.getGPUFeatureStatus());
   browser.profiler = profiler;
-  win.webContents.on('did-finish-load', () => win.webContents.send('profile-enabled', !!profiler.active));
+  win.webContents.on('did-finish-load', () => {
+    win.webContents.send('profile-enabled', !!profiler.active);
+    if (glassOn) win.webContents.send('native-glass', true);
+  });
   win.webContents.on('render-process-gone', () => profiler.record('renderer-crash'));
   ipcMain.on('profile-longtask', (event, duration) => {
     const owned = event.sender === win.webContents || [...browser.tabs.values()].some(tab => tab.view?.webContents === event.sender);
@@ -159,20 +201,25 @@ app.whenReady().then(async () => {
   win.on('restore', () => win.webContents.send('browser-event', { type: 'layout' }));
   const updateMenu = require('./updates.cjs').installUpdates({ app, win, ipcMain, trusted, resources });
   Menu.setApplicationMenu(Menu.buildFromTemplate([
-    { label: 'Codegraff', submenu: [{ role: 'about' }, ...updateMenu, { type: 'separator' }, { label: 'Activity…', accelerator: 'CmdOrCtrl+,', click: () => void activity().catch(error => dialog.showErrorBox('Activity', error.message)) }, { label: 'Computer use…', click: () => void computer.configure().catch(error => dialog.showErrorBox('Computer use', error.message)) }, { type: 'separator' }, { role: 'quit' }] },
+    { label: appName, submenu: [{ role: 'about' }, ...updateMenu, { type: 'separator' }, { label: 'Activity…', accelerator: 'CmdOrCtrl+,', click: () => void activity().catch(error => dialog.showErrorBox('Activity', error.message)) }, { label: 'Computer use…', click: () => void computer.configure().catch(error => dialog.showErrorBox('Computer use', error.message)) }, { type: 'separator' }, { role: 'quit' }] },
     { label: 'File', submenu: [
       ['New chat', 'CmdOrCtrl+N', 'new'], ['New tab', 'CmdOrCtrl+T', 'new'],
       ['Close chat', 'CmdOrCtrl+W', 'close'], ['Reopen closed chat', 'CmdOrCtrl+Shift+T', 'reopen'],
       ['Toggle terminal', 'CmdOrCtrl+J', 'terminal'], ['Open workspace…', 'CmdOrCtrl+O', 'workspace'], ['Split right', 'CmdOrCtrl+D', 'split-right'],
       ['Split down', 'CmdOrCtrl+Shift+D', 'split-down'], ['Zoom split', 'CmdOrCtrl+Shift+Enter', 'split-zoom'],
     ].map(([label, accelerator, action]) => ({ label, accelerator, click: () => win.webContents.send('desktop-action', action) })) },
-    { label: 'Tools', submenu: [{ label: 'Install codegraff terminal command…', enabled: app.isPackaged && process.platform === 'darwin', click: async () => {
+    { label: 'Tools', submenu: [{ label: 'Configure MCP clients…', enabled: app.isPackaged && !developmentBuild, click: async () => {
+      try {
+        const detail = await require('./mcp-install.cjs').installMcp(path.join(resources, 'graff'), app.getPath('home'));
+        await dialog.showMessageBox(win, { message: 'MCP clients configured', detail });
+      } catch (error) { dialog.showErrorBox('MCP setup', error.message); }
+    } }, { label: 'Install codegraff terminal command…', enabled: app.isPackaged && !developmentBuild && process.platform === 'darwin', click: async () => {
       try {
         const installed = await require('./cli-launcher.cjs').installLauncher(path.resolve(app.getPath('exe'), '../../..'), app.getPath('home'));
         await dialog.showMessageBox(win, { message: 'Terminal command installed', detail: `Run codegraff . to open a project here. Ensure ${path.dirname(installed)} is on your PATH.` });
       } catch (error) { dialog.showErrorBox('Terminal command', error.message); }
     } }] },
-    { role: 'editMenu' }, { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { role: 'togglefullscreen' }, { label: 'Release browser pages', click: () => { browser.closeAll(); win.webContents.send('browser-event', { type: 'released' }); } }] },
+    { role: 'editMenu' }, { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { role: 'togglefullscreen' }, { label: 'Session observer', type: 'checkbox', checked: !!notch?.enabled(), visible: process.platform === 'darwin', click: item => { item.checked = notch?.setEnabled(item.checked) ?? false; } }, { label: 'Release browser pages', click: () => { browser.closeAll(); win.webContents.send('browser-event', { type: 'released' }); } }] },
     { label: 'Performance', submenu: [
       { label: 'Start recording', click: () => void profiler.start() },
       { label: 'Mark candidate phase', click: () => profiler.mark('candidate') },
@@ -186,6 +233,15 @@ app.whenReady().then(async () => {
     { role: 'windowMenu' },
   ]));
   await win.loadURL(backend.origin); win.setWindowButtonVisibility(true);
+  if (process.platform === 'darwin') {
+    try {
+      const native = require(path.join(resources, 'native/activity.node'));
+      if (native.glass(win.getNativeWindowHandle()) >= 0 && liveGlass) {
+        glassOn = true;
+        win.webContents.send('native-glass', true);
+      }
+    } catch { /* dev trees without the compiled dylib keep the CSS frost */ }
+  }
   if (testDesktop) testDesktop.present(win); else win.show();
   profiler.record('ui-ready');
   if (process.env.GRAFF_ELECTRON_SMOKE) require(process.env.GRAFF_SMOKE_LAUNCH_ONLY ? './smoke-launch.cjs' : './smoke.cjs').run({ win, browser, automation, backend, metrics, activity, computer, profiler, token }).then(() => app.quit()).catch(error => { console.error(error); stop(); app.exit(1); });

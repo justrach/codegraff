@@ -223,5 +223,36 @@
     "capabilities": [],
     "default_model": "gemini-3.8-flash",
     "note": "Pi coding agent (pi.dev) on Codegraff gateway"
+  },
+  "graff-dev-completion": {
+    "cmd": [
+      "{repo}/zig-out/bin/graff",
+      "-p",
+      "{prompt}",
+      "--model",
+      "{model}",
+      "--yolo",
+      "--no-lean",
+      "--no-telemetry",
+      "--no-subagent-tier"
+    ],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": [],
+    "env": {
+      "GRAFF_FLEET": "off",
+      "GRAFF_LEARN_AUTO": "off",
+      "GRAFF_NO_TELEMETRY": "1",
+      "GRAFF_MCP_CONFIG": "{repo}/graff-evals/live/graff-621/empty-mcp.json"
+    },
+    "default_model": "grok-4.6"
+  },
+  "fx-completion": {
+    "cmd": ["{repo}/graff-evals/fx-completion.py", "{model}", "{prompt}"],
+    "answer": "stdout",
+    "usage": null,
+    "capabilities": [],
+    "env": {"FX_MAX_AGENT_STEPS": "0"},
+    "default_model": "grok-4.6"
   }
 }

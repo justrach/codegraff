@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fsOpen, fsReveal } from "./fs-client.ts";
+import { createFolder, fsOpen, fsReveal } from "./fs-client.ts";
 
 async function withFetch(fetcher: typeof fetch, check: () => Promise<void>) {
   const original = globalThis.fetch;
@@ -32,5 +32,22 @@ test("file actions report non-JSON HTTP failures and network failures", async ()
   });
   await withFetch(async () => { throw new Error("Connection lost"); }, async () => {
     await assert.rejects(fsOpen("notes.md"), /Connection lost/);
+  });
+});
+
+test("createFolder posts the parent and name and returns the new path", async () => {
+  await withFetch(async (url, options) => {
+    assert.equal(String(url), "/api/workspaces");
+    assert.equal(options?.method, "POST");
+    assert.deepEqual(JSON.parse(String(options?.body)), { path: "/Users/demo/", name: "untitled folder" });
+    return new Response(JSON.stringify({ ok: true, path: "/Users/demo/untitled folder" }), { status: 200 });
+  }, async () => {
+    assert.deepEqual(await createFolder("/Users/demo/", "untitled folder"), { path: "/Users/demo/untitled folder" });
+  });
+});
+
+test("createFolder surfaces the server explanation", async () => {
+  await withFetch(async () => new Response(JSON.stringify({ error: "already exists: src" }), { status: 409 }), async () => {
+    await assert.rejects(createFolder("/demo", "src"), /already exists: src/);
   });
 });

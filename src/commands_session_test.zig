@@ -8,6 +8,16 @@ const std = @import("std");
 const Agent = @import("agent.zig").Agent;
 const resetConversationSteering = @import("commands_session.zig").resetConversationSteering;
 
+test "goal commands use exact boundaries and goals is read-only" {
+    const glue = @import("repl_glue.zig");
+    for ([_][]const u8{ "/goals", "/goals pause", "/goal status", "/goal\tpause" }) |line|
+        try std.testing.expect(glue.goalPromptFromLine(line) == null);
+    try std.testing.expectEqualStrings("status", glue.goalCommandArgs("/goals").?);
+    try std.testing.expectEqualStrings("ship it", glue.goalPromptFromLine("/goal\tship it").?);
+    for ([_][]const u8{ "/goalkeeper", "/goals-extra", "/goalship" }) |line|
+        try std.testing.expect(glue.goalCommandArgs(line) == null);
+}
+
 test "/clear + /new reset conversation steering — goal and ultracode_mode don't survive (#178)" {
     var root: Agent = undefined;
     root.io = std.testing.io;

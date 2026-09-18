@@ -1,5 +1,8 @@
 // This catalog belongs to the desktop composer, never the engine's skill registry.
-export const guiSkills = [{ id: "gui-theme", name: "GUI theme", description: "Create or adjust your desktop theme" }] as const;
+export const guiSkills = [
+  { id: "theme", name: "Theme", description: "Create or adjust your desktop theme" },
+  { id: "mcp", name: "MCP", description: "Add or adjust MCP servers for this desktop" },
+] as const;
 export function guiSkillRows(query: string) {
   return guiSkills.filter(skill => `${skill.id} ${skill.description}`.toLowerCase().includes(query.toLowerCase())).map(skill => ({ key: `gui-skill:${skill.id}`, name: `$${skill.id}`, desc: `GUI skill · ${skill.description}` }));
 }

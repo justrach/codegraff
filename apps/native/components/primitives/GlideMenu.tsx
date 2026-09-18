@@ -13,7 +13,7 @@ type GlideMenuProps = {
 export default function GlideMenu({
   children,
   className = "",
-  highlightClassName = "inset-x-0 rounded-[8px] bg-hover",
+  highlightClassName = "inset-x-0 rounded-control bg-hover",
   rowSelector = "[data-menu-row]",
 }: GlideMenuProps) {
   const ref = useRef<HTMLDivElement>(null);

@@ -274,6 +274,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         .provider = child_provider,
         .messages = std.json.Array.init(arena),
         .sub = true,
+        .feedback = ctx.subagent_feedback,
         .label = label,
         .out = null,
         .approvals = ctx.approvals,

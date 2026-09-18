@@ -171,7 +171,7 @@ export default function ConversationsPane({
           {loading && <p role="status" className="py-8 text-center text-sm text-ink-3">Loading conversations…</p>}
           {error && <p role="alert" className="text-[13px] text-orange">{error.message}<button type="button" className="ml-2 rounded px-2 py-1 underline" onClick={() => error.more ? setError(null) : setReload(n => n + 1)}>Retry</button></p>}
           {empty && (
-            <div className="flex flex-col items-center justify-center gap-1 rounded-[14px] bg-inset px-6 py-16 text-center">
+            <div className="flex flex-col items-center justify-center gap-1 rounded-window bg-inset px-6 py-16 text-center">
               <span className="text-[14px] font-medium text-ink">
                 {query.trim() || scope === "elsewhere" ? "No conversations match" : scope === "local" ? "No conversations in this project yet" : "No saved conversations yet"}
               </span>

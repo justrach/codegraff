@@ -4,6 +4,7 @@ import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AssistantTurn } from "@/
 import { prompt } from "@/lib/acp-client";
 import { annotationsBlock, type BrowserPin } from "@/lib/browser/annotations";
 import { browserHandle, browserNav } from "@/lib/browser-client";
+import { extensionAnnotationsBlock } from "@/lib/extension-annotations";
 import { pushHistory, saveHistory } from "@/lib/prompt-history";
 import type { QueuedPrompt } from "@/lib/prompt-queue";
 import type { createQueueSteerer } from "@/lib/prompt-queue-steer";
@@ -78,7 +79,9 @@ export function createPromptRunner({onStarted, onCompleted, runningRef, steerer,
     const pins = /^\/(effort|reasoning|fast)(?:\s|$)/.test(trimmed) ? [] : pinsRef.current[chatId] ?? [];
     if (pins.length > 0) {
       const handle = await browserHandle(handleOf(chatId)).catch(() => null);
-      wire = `${trimmed}\n\n${annotationsBlock(pins, handle)}`;
+      const blocks = [annotationsBlock(pins.filter((p) => p.source !== "extension"), handle),
+        extensionAnnotationsBlock(pins.filter((p) => p.source === "extension"))].filter(Boolean);
+      wire = `${trimmed}\n\n${blocks.join("\n\n")}`;
       setPins(chatId, []);
     }
     let turn: AssistantTurn = { ...emptyTurn(), model: spawnModel, startedAt: Date.now() };

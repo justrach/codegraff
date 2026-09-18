@@ -63,7 +63,7 @@ export default function AgentsPane({ root, onClose, request = agentRequest, full
     finally { pending.current.delete(key); updateDraft(key, { sending: false }); }
   };
   const messages = snapshot?.messages.filter(message => !selected || message.to === selected.session || message.from_session === selected.session) ?? [];
-  const pane = <aside aria-label="Agents panel" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-page text-ink">
+  const pane = <aside aria-label="Agents panel" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-window border border-line bg-page text-ink">
     <header className="flex items-center gap-3 border-b border-line p-4"><div className="min-w-0 flex-1"><strong>Agents <span className="font-normal text-ink-3">{snapshot ? agents.length : ''}</span></strong><p className="mt-1 text-xs text-ink-3">Inspect work, share context, and request handoffs.</p></div><button onClick={onClose} aria-label="Close agents" className="rounded px-2 py-1 hover:bg-hover">×</button></header>
     <div className="flex flex-wrap items-center gap-3 border-b border-line p-3">
       <div className="flex gap-1" role="group" aria-label="Agent scope">{['workspace', 'device'].map(value => <button key={value} aria-pressed={scope === value} onClick={() => { setScope(value); setRecipient(null); setComposing(false); }} className={`rounded-lg px-3 py-2 text-xs ${scope === value ? 'bg-hover-2 text-ink' : 'text-ink-2 hover:bg-hover'}`}>{value === 'workspace' ? 'This workspace' : 'All local Graffs'}</button>)}</div>

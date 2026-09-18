@@ -2,6 +2,7 @@
 //! Lean `Graff.Transport.eligible` is the spec. This file is the shared
 //! boolean so the 96-cell fixture test does not construct an Agent.
 
+const std = @import("std");
 const Provider = @import("provider.zig").Provider;
 
 pub const Flags = struct {
@@ -31,3 +32,10 @@ pub fn kindFromName(name: []const u8) ?Provider.Kind {
 }
 
 const std_mem = @import("std").mem;
+
+test "quiet forces SSE; a live root Responses turn without quiet is WS" {
+    const ws = Flags{ .kind = .responses, .is_sub = false, .codex_ws = true, .ws_off = false, .has_out = true, .quiet = false };
+    const quiet = Flags{ .kind = .responses, .is_sub = false, .codex_ws = true, .ws_off = false, .has_out = true, .quiet = true };
+    try std.testing.expect(eligible(ws));
+    try std.testing.expect(!eligible(quiet));
+}

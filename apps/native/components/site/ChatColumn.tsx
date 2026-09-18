@@ -34,7 +34,7 @@ export default function ChatColumn({ thread, compact, following, register, onOpe
       <div className="mx-auto max-w-[720px]">
         {thread.snapshot && thread.session ? <SavedSnapshot name={thread.session} cwd={thread.cwd} model={prompt.modelKey}
           onRefresh={onRefresh} onContinue={onContinue} /> : <>
-          {pins > 0 && <div className="mb-2 flex items-center gap-2 rounded-[8px] bg-surface px-2.5 py-1.5 text-[12.5px] text-ink-2 shadow-hairline">
+          {pins > 0 && <div className="mb-2 flex items-center gap-2 rounded-control bg-surface px-2.5 py-1.5 text-[12.5px] text-ink-2 shadow-hairline">
             <span className="shrink-0 text-[11px] font-medium tracking-wide text-ink-3 uppercase">Pinned</span>
             <span className="min-w-0 flex-1 truncate text-ink">{pins} element{pins === 1 ? "" : "s"} in the browser go with your next message</span>
             <button type="button" onClick={onShowPins} className="shrink-0 rounded px-1.5 text-[11.5px] font-medium text-ink-2 hover:bg-hover hover:text-ink">Show</button>

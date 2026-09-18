@@ -31,6 +31,7 @@
       "subagent",
       "workflow",
       "agent_output",
+      "agent_message",
       "learn_candidate",
       "peer_message",
       "workspace"
@@ -96,6 +97,7 @@
         "subagent",
         "workflow",
         "agent_output",
+        "agent_message",
         "peer_message",
         "workspace"
       ],
@@ -164,6 +166,7 @@
         "subagent",
         "workflow",
         "agent_output",
+        "agent_message",
         "learn_candidate",
         "peer_message",
         "workspace"
@@ -234,6 +237,7 @@
         "subagent",
         "workflow",
         "agent_output",
+        "agent_message",
         "peer_message",
         "workspace"
       ],
@@ -303,6 +307,7 @@
         "subagent",
         "workflow",
         "agent_output",
+        "agent_message",
         "learn_candidate",
         "peer_message",
         "workspace"
@@ -372,6 +377,7 @@
         "subagent",
         "workflow",
         "agent_output",
+        "agent_message",
         "peer_message",
         "workspace",
         "imagegen"
@@ -438,6 +444,7 @@
         "subagent",
         "workflow",
         "agent_output",
+        "agent_message",
         "learn_candidate",
         "peer_message",
         "workspace",
@@ -506,6 +513,7 @@
         "subagent",
         "workflow",
         "agent_output",
+        "agent_message",
         "peer_message",
         "workspace",
         "imagegen"
@@ -573,6 +581,7 @@
         "subagent",
         "workflow",
         "agent_output",
+        "agent_message",
         "learn_candidate",
         "peer_message",
         "workspace",
@@ -1027,6 +1036,7 @@
         "subagent",
         "workflow",
         "agent_output",
+        "agent_message",
         "peer_message",
         "workspace"
       ],
@@ -1095,6 +1105,7 @@
         "subagent",
         "workflow",
         "agent_output",
+        "agent_message",
         "learn_candidate",
         "peer_message",
         "workspace"
@@ -1165,6 +1176,7 @@
         "subagent",
         "workflow",
         "agent_output",
+        "agent_message",
         "peer_message",
         "workspace"
       ],
@@ -1234,6 +1246,7 @@
         "subagent",
         "workflow",
         "agent_output",
+        "agent_message",
         "learn_candidate",
         "peer_message",
         "workspace"
@@ -1303,6 +1316,7 @@
         "subagent",
         "workflow",
         "agent_output",
+        "agent_message",
         "peer_message",
         "workspace"
       ],
@@ -1371,6 +1385,7 @@
         "subagent",
         "workflow",
         "agent_output",
+        "agent_message",
         "learn_candidate",
         "peer_message",
         "workspace"
@@ -1441,6 +1456,7 @@
         "subagent",
         "workflow",
         "agent_output",
+        "agent_message",
         "peer_message",
         "workspace"
       ],
@@ -1510,6 +1526,7 @@
         "subagent",
         "workflow",
         "agent_output",
+        "agent_message",
         "learn_candidate",
         "peer_message",
         "workspace"

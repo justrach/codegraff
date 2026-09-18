@@ -1,6 +1,6 @@
 # 0030. Hide `rlm` on small turns; showcase later (sPTC rides unfold)
 
-Status: accepted 2026-08-25
+Status: superseded 2026-09-12 by [0124](0124-rlm-is-listed-when-available.md)
 
 ## Context
 

@@ -118,6 +118,16 @@ class Run:
 def execute(case: dict[str, Any], graff: str, port: int,
             provider: str | None, model: str | None) -> Run:
     scripted = ScriptedModel(case.get("script", []))
+    if case.get("feedback_scenario"):
+        if provider:
+            raise ValueError("feedback lifecycle fixtures require the scripted model")
+        from subagent_feedback_model import FeedbackModel
+        scripted = FeedbackModel(case["feedback_scenario"], load_tools=case.get("feedback_load_tools", False))
+    if "routing_reverse" in case:
+        if provider:
+            raise ValueError("routing isolation fixtures require the scripted model")
+        from subagent_routing_model import RoutingModel
+        scripted = RoutingModel(reverse=case["routing_reverse"])
     bound = 0 if provider else scripted.start(port)
     peer = None
     try:
@@ -279,6 +289,14 @@ def main() -> None:
 
     if not pathlib.Path(args.graff).exists():
         sys.exit(f"eval-tier2: {args.graff} does not exist - run `zig build` first")
+
+    if args.provider:
+        skipped = [case["id"] for case in cases if case.get("scripted_only")]
+        cases = [case for case in cases if not case.get("scripted_only")]
+        if skipped:
+            print("scripted-only lifecycle fixtures skipped: " + ", ".join(skipped))
+        if not cases:
+            sys.exit("eval-tier2: selected cases require the local scripted model; omit --provider")
 
     if args.provider:
         print(f"tier 2: {len(cases)} case(s) against {args.provider}"

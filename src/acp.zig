@@ -235,8 +235,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     _ = client;
     main_mod.unattended = true;
     root.in = null;
-    root.out = null;
-    root.stream_quiet = true;
+    root.out = null; // not stream_quiet: that forces SSE and misses resume cache
     main_mod.g_out = null;
     engine.implementation_version = main_mod.harness_version;
     engine.cancel_flag.store(false, .release);
@@ -526,6 +525,7 @@ test "isAcpSubcommand claims only `acp`, and arms the stdout discipline" {
 test {
     _ = @import("acp_protocol.zig");
     _ = @import("acp_stream.zig");
+    _ = @import("transport_gate.zig");
 }
 
 test "ACP advertises the complete REPL command catalog including compact" {

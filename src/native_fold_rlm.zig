@@ -1,5 +1,5 @@
-//! Late-showcase tests for folded `rlm` (ADR 0030). Split out of
-//! native_fold.zig so that file stays under the 600-line ceiling.
+//! Catalog tests for default `rlm` (ADR 0124). Split out of native_fold.zig
+//! so that file stays under the 600-line ceiling.
 
 const std = @import("std");
 const fold = @import("native_fold.zig");
@@ -27,16 +27,18 @@ test "rlm joins the fold only while available (off under --old)" {
     rlm_spec.available = false;
     try std.testing.expect(!fold.isFolded("rlm"));
     try std.testing.expect(!fold.blocked("rlm"));
+    try std.testing.expect(!fold.listed());
 
     rlm_spec.available = true;
     try std.testing.expect(fold.isFolded("rlm"));
+    try std.testing.expect(fold.listed());
     try std.testing.expect(fold.blocked("rlm"));
     fold.markLoaded("rlm");
     try std.testing.expect(fold.isLoaded("rlm"));
     try std.testing.expect(!fold.blocked("rlm"));
 }
 
-test "folded rlm stays off the listing until showcase; off stays off" {
+test "available rlm is on the catalog with no batch or compactAt gate" {
     const saved_avail = rlm.available;
     const saved_spec = rlm_spec.available;
     const saved_enabled = fold.enabled;
@@ -70,26 +72,17 @@ test "folded rlm stays off the listing until showcase; off stays off" {
     rlm.available = true;
     rlm.sync();
     try std.testing.expect(fold.isFolded("rlm"));
-    try std.testing.expect(!fold.listed());
-    const hidden = try schema_mod.renderRootTools(arena, .openai, &with_rlm, &.{});
-    try std.testing.expect(std.mem.indexOf(u8, hidden, "rlm") == null);
-    try std.testing.expect(std.mem.indexOf(u8, hidden, "llm_query") == null);
-
-    fold.showcaseRlm();
     try std.testing.expect(fold.listed());
-    // Name stays off the meta listing (that would rewrite the tools head).
-    const still = try schema_mod.renderRootTools(arena, .openai, &with_rlm, &.{});
-    try std.testing.expect(std.mem.indexOf(u8, still, "rlm") == null);
-    try std.testing.expect(std.mem.indexOf(u8, still, "llm_query") == null);
-
-    fold.markLoaded("rlm");
+    try std.testing.expect(!fold.catalogSkips("rlm"));
+    try std.testing.expect(!fold.noticeWideNative(&.{ "read_file", "codedb", "bash" }));
+    try std.testing.expect(!fold.noticeContext(0, 8000));
     const shown = try schema_mod.renderRootTools(arena, .openai, &with_rlm, &.{});
     try std.testing.expect(std.mem.indexOf(u8, shown, "rlm") != null);
     try std.testing.expect(std.mem.indexOf(u8, shown, "llm_query") != null);
     try std.testing.expect(std.mem.indexOf(u8, shown, rlm.tool_schema) != null);
 }
 
-test "lean keeps rlm folded until showcase; --rlm puts the schema on" {
+test "lean still lists rlm when it is available" {
     const saved_avail = rlm.available;
     const saved_spec = rlm_spec.available;
     const saved_enabled = fold.enabled;
@@ -107,8 +100,8 @@ test "lean keeps rlm folded until showcase; --rlm puts the schema on" {
     rlm.available = true;
     rlm.sync();
     try std.testing.expect(fold.isFolded("rlm"));
-    try std.testing.expect(fold.catalogSkips("rlm"));
-    try std.testing.expect(!fold.listed());
+    try std.testing.expect(fold.listed());
+    try std.testing.expect(!fold.catalogSkips("rlm"));
 
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -116,20 +109,12 @@ test "lean keeps rlm folded until showcase; --rlm puts the schema on" {
     const specs = [_]schema_mod.ToolSpec{
         .{ .name = rlm.tool_name, .desc = rlm.tool_desc, .schema = rlm.tool_schema },
     };
-    const hidden = try schema_mod.renderRootTools(arena, .openai, &specs, &.{});
-    try std.testing.expect(std.mem.indexOf(u8, hidden, "llm_query") == null);
-    try std.testing.expect(std.mem.indexOf(u8, hidden, rlm.tool_schema) == null);
-
-    fold.showcaseFromCli();
-    try std.testing.expect(fold.listed());
-    try std.testing.expect(fold.isLoaded("rlm"));
-    // Stable catalog still skips the mid-array slot; the schema rides the tail.
     const shown = try schema_mod.renderRootTools(arena, .openai, &specs, &.{});
     try std.testing.expect(std.mem.indexOf(u8, shown, "llm_query") != null);
     try std.testing.expect(std.mem.indexOf(u8, shown, rlm.tool_schema) != null);
 }
 
-test "wide native batch showcases rlm; MCP fan-out does not" {
+test "MCP fan-out does not hide an available rlm" {
     const saved_spec = rlm_spec.available;
     defer {
         rlm_spec.available = saved_spec;
@@ -137,31 +122,31 @@ test "wide native batch showcases rlm; MCP fan-out does not" {
     }
     isolate();
     rlm_spec.available = true;
-
-    try std.testing.expect(!fold.noticeWideNative(&.{ "read_file", "codedb", "bash" }));
-    try std.testing.expect(!fold.listed());
+    try std.testing.expect(fold.listed());
     try std.testing.expect(!fold.noticeWideNative(&.{
         "mcp__linear__list_comments",
         "mcp__linear__list_comments",
         "mcp__linear__list_comments",
         "mcp__linear__list_comments",
     }));
-    try std.testing.expect(!fold.listed());
-
-    try std.testing.expect(fold.noticeWideNative(&.{ "read_file", "codedb", "bash", "webfetch" }));
-    try std.testing.expect(fold.listed());
-    try std.testing.expect(fold.isLoaded("rlm"));
-
-    fold.resetSession();
-    try std.testing.expect(!fold.listed());
-    try std.testing.expect(!fold.isLoaded("rlm"));
-
-    fold.showcaseFromCli();
-    fold.resetSession();
     try std.testing.expect(fold.listed());
 }
 
-test "context below 50% of compactAt does not showcase; crossing it does" {
+test "a four-wide native batch is not required to list rlm" {
+    const saved_spec = rlm_spec.available;
+    defer {
+        rlm_spec.available = saved_spec;
+        fold.resetRlmDiscovery();
+    }
+    isolate();
+    rlm_spec.available = true;
+    try std.testing.expect(fold.listed());
+    try std.testing.expect(!fold.catalogSkips("rlm"));
+    try std.testing.expect(!fold.noticeWideNative(&.{}));
+    try std.testing.expect(fold.listed());
+}
+
+test "crossing 50% of compactAt does not change listing" {
     const saved_spec = rlm_spec.available;
     defer {
         rlm_spec.available = saved_spec;
@@ -170,53 +155,13 @@ test "context below 50% of compactAt does not showcase; crossing it does" {
     }
     isolate();
     rlm_spec.available = true;
-
-    // Default: 50% of compactAt. compactAt=8000 → threshold 4000.
-    try std.testing.expectEqual(@as(?u64, 4000), fold.contextThreshold(8000));
+    try std.testing.expect(fold.listed());
     try std.testing.expect(!fold.noticeContext(0, 8000));
-    try std.testing.expect(!fold.noticeContext(3999, 8000));
-    try std.testing.expect(!fold.listed());
-
-    try std.testing.expect(fold.noticeContext(4000, 8000));
+    try std.testing.expect(!fold.noticeContext(4000, 8000));
     try std.testing.expect(fold.listed());
-    try std.testing.expect(fold.isLoaded("rlm"));
-    try std.testing.expect(!fold.noticeContext(8000, 8000)); // already showcased
-
-    fold.resetSession();
-    try std.testing.expect(!fold.listed());
-    try std.testing.expect(!fold.isLoaded("rlm"));
-
-    fold.g_context_off = true;
-    try std.testing.expect(!fold.noticeContext(8000, 8000));
-    try std.testing.expect(!fold.listed());
 }
 
-test "lean first turn and MCP fan-out stay below the context trigger" {
-    const saved_spec = rlm_spec.available;
-    const saved_lean = no_local.lean;
-    defer {
-        rlm_spec.available = saved_spec;
-        no_local.lean = saved_lean;
-        fold.resetRlmDiscovery();
-        fold.resetContextKnob();
-    }
-    isolate();
-    rlm_spec.available = true;
-    no_local.lean = true;
-
-    // A small -p prompt is nowhere near 50% of a real compactAt.
-    try std.testing.expect(!fold.noticeContext(800, 160_000));
-    try std.testing.expect(!fold.listed());
-    try std.testing.expect(!fold.noticeWideNative(&.{
-        "mcp__linear__list_comments",
-        "mcp__linear__list_comments",
-        "mcp__linear__list_comments",
-        "mcp__linear__list_comments",
-    }));
-    try std.testing.expect(!fold.listed());
-}
-
-test "showcasing rlm keeps the tools head bytes; schema rides the tail" {
+test "available rlm stays in the catalog head, not a late tail append" {
     const saved_avail = rlm.available;
     const saved_spec = rlm_spec.available;
     const saved_stable = mcp_schema_gate.g_stable_catalog;
@@ -246,19 +191,11 @@ test "showcasing rlm keeps the tools head bytes; schema rides the tail" {
         .{ .name = rlm.tool_name, .desc = rlm.tool_desc, .schema = rlm.tool_schema },
     };
 
-    const before = try schema_mod.renderRootTools(arena, .openai, &specs, &.{});
-    try std.testing.expect(std.mem.indexOf(u8, before, "rlm") == null);
-    try std.testing.expect(std.mem.indexOf(u8, before, rlm.tool_schema) == null);
+    const first = try schema_mod.renderRootTools(arena, .openai, &specs, &.{});
+    try std.testing.expect(std.mem.indexOf(u8, first, "rlm") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first, rlm.tool_schema) != null);
 
-    try std.testing.expect(fold.noticeContext(50_000, 80_000));
-    const after = try schema_mod.renderRootTools(arena, .openai, &specs, &.{});
-    try std.testing.expect(before.len >= 1 and before[before.len - 1] == ']');
-    try std.testing.expect(std.mem.startsWith(u8, after, before[0 .. before.len - 1]));
-    try std.testing.expect(after.len > before.len);
-    try std.testing.expect(after[before.len - 1] == ',');
-    try std.testing.expect(std.mem.indexOf(u8, after[before.len - 1 ..], rlm.tool_schema) != null);
-    try std.testing.expect(std.mem.indexOf(u8, after[before.len - 1 ..], "llm_query") != null);
-
-    fold.resetSession();
-    try std.testing.expect(!fold.listed());
+    fold.markLoaded("rlm");
+    const again = try schema_mod.renderRootTools(arena, .openai, &specs, &.{});
+    try std.testing.expectEqual(first.len, again.len);
 }

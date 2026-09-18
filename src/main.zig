@@ -563,7 +563,7 @@ const workflow = @import("workflow_test.zig"); // the engine's tests live here (
 const exec = @import("exec.zig");
 test { // ── Unit tests (`zig build test`): pull in tests from imported modules (mcp.zig)
     _ = .{ @import("mcp_apps.zig"), @import("html_view.zig"), @import("providers_confirmation_tests.zig"), @import("repl_model_confirmation_tests.zig"), @import("repl_model_pick_tests.zig"), @import("engine_sink_citation_tests.zig"), @import("cite_markup_stream_tests.zig"), @import("oneshot_citation_tests.zig"), @import("tui_acp.zig") };
-    _ = .{ @import("main_test.zig"), @import("artifact_claim_command.zig") };
+    _ = .{ @import("main_test.zig"), @import("artifact_claim_command.zig"), @import("mcp_server_tests.zig") };
     _ = @import("session_catalog.zig");
     _ = @import("session_prompt.zig");
     _ = @import("prompt_astra.zig");
@@ -575,6 +575,8 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("list_dir_nearmiss.zig");
     _ = @import("repo_map.zig");
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests
+    _ = @import("agent_gateway_retry.zig"); // #1019: flake vs overflow classification must stay reachable
+    _ = @import("agent_responses.zig"); // #1019: type:error frame message extraction
     _ = @import("agent_server_compact.zig"); // server-side autocompact (codex Responses)
     _ = @import("compact_status.zig");
     _ = @import("agent_request_search_tests.zig");

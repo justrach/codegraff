@@ -43,7 +43,7 @@ def metaTools : List String :=
    "mcp_select_tool", "clock_sleep"]
 
 def rootExtras : List String :=
-  ["subagent", "workflow", "agent_output", "learn_candidate", "peer_message",
+  ["subagent", "workflow", "agent_output", "agent_message", "learn_candidate", "peer_message",
    "workspace"]
 
 def filterKeep (keep : String → Bool) : List String → List String
@@ -136,7 +136,7 @@ example : catalog {} =
       ["todo_write", "todo_read", "eval", "note_constraint", "ask_user",
        "attempt_completion", "load_tool_schemas", "mcp_search_tools",
        "mcp_select_tool"] ++
-      ["subagent", "workflow", "agent_output", "peer_message", "workspace"]) := by native_decide
+       ["subagent", "workflow", "agent_output", "agent_message", "peer_message", "workspace"]) := by native_decide
 
 example : catalog { imagegen := true } =
     catalog {} ++ ["imagegen"] := by native_decide

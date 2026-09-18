@@ -42,13 +42,15 @@ export default function DesktopSettings({ labeled = false }: { labeled?: boolean
   if (!available) return null;
   return <>
     <button ref={trigger} aria-label={labeled ? "Link settings" : "Settings"} title="Settings" aria-haspopup="dialog" aria-expanded={open}
-      onClick={() => setOpen(value => !value)} className="flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-3 hover:bg-hover hover:text-ink">
+      onClick={() => setOpen(value => !value)} className={labeled
+      ? "flex w-full items-center justify-start rounded-md px-3 py-2 text-left text-xs text-ink-3 hover:bg-hover hover:text-ink"
+      : "flex size-8 shrink-0 items-center justify-center rounded-full text-ink-3 hover:bg-hover hover:text-ink"}>
       {labeled ? "Link settings" : <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="m9 3-1 3-3 1 1 3-2 2 2 2-1 3 3 1 1 3h6l1-3 3-1-1-3 2-2-2-2 1-3-3-1-1-3Z"/><circle cx="12" cy="12" r="3"/></svg>}
     </button>
     {open && createPortal(<div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/20 p-4" onPointerDown={event => {
       if (event.target === event.currentTarget) { setOpen(false); restoreActionFocus(trigger.current); }
     }}>
-      <div ref={panel} role="dialog" aria-label="Settings" aria-modal="true" className="w-[380px] max-w-full rounded-xl border border-line bg-surface p-4 shadow-overlay">
+      <div ref={panel} role="dialog" aria-label="Settings" aria-modal="true" className="w-[380px] max-w-full rounded-window border border-line bg-surface p-4 shadow-overlay">
         <div className="mb-4 flex items-center justify-between"><strong className="text-sm font-medium">Settings</strong><button aria-label="Close settings" onClick={() => { setOpen(false); restoreActionFocus(trigger.current); }} className="rounded px-1.5 text-ink-3 hover:bg-hover">×</button></div>
         <fieldset disabled={destination === null || saving}>
           <legend className="mb-1 text-xs font-medium">Open web links in</legend>

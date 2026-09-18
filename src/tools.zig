@@ -102,6 +102,9 @@ pub const ToolCtx = struct {
     provider: Provider,
     subagent_provider: ?Provider = null,
     subagent_cross_provider: bool = false,
+    subagent_feedback: ?*@import("subagent_feedback.zig").Inbox = null,
+    interactive_children: bool = false,
+    session_name: []const u8 = "",
     registry: ?*mcp.Registry,
     from_sub: bool,
     has_eval: bool = false, // the root's --eval loop: escalation's strongest verifier

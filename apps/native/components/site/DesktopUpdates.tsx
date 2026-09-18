@@ -88,7 +88,7 @@ export default function DesktopUpdates() {
             role="dialog"
             aria-label="Update settings"
             data-desktop-update-panel
-            className="pointer-events-auto absolute right-0 mt-2 w-80 max-w-[calc(100vw-24px)] rounded-xl border border-line bg-page p-3 text-sm text-ink shadow-card"
+            className="pointer-events-auto absolute right-0 mt-2 w-80 max-w-[calc(100vw-24px)] rounded-window border border-line bg-page p-3 text-sm text-ink shadow-card"
           >
             <p className="text-[11px] font-medium tracking-wide text-ink-3 uppercase">App updates</p>
             <p className="mt-1 text-[13px] text-ink">Codegraff {state.currentVersion}</p>
@@ -142,7 +142,7 @@ export default function DesktopUpdates() {
         )}
       </div>
       {toast && (
-        <div data-desktop-update className="fixed bottom-4 left-4 z-[110] w-80 max-w-[calc(100vw-32px)] rounded-xl border border-line bg-page p-3 text-sm text-ink shadow-card">
+        <div data-desktop-update className="fixed bottom-4 left-4 z-[110] w-80 max-w-[calc(100vw-32px)] rounded-window border border-line bg-page p-3 text-sm text-ink shadow-card">
           <div className="flex items-center gap-3">
             <p role="status" className="min-w-0 flex-1">
               {statusCopy(state)}

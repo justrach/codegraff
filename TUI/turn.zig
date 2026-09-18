@@ -72,6 +72,7 @@ pub fn startJob(self: *Model) void {
 /// grok-build notify: a finished background job starts a turn while idle.
 pub fn maybeJobWake(self: *Model) void {
     if (self.pending != null or self.bg != null) return;
+    if (self.input.getValue().len > 0 or self.images.items.len > 0 or self.steer_queue.items.len > 0) return;
     const f = engine.g_idle_wake_fn orelse return;
     var buf: [512]u8 = undefined;
     const text = f(engine.g_turn_ctx, &buf) orelse return;

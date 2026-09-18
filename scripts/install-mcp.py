@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""Install a private local MCP service and merge detected client configs."""
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import plistlib
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+
+MARKER = '# Codegraff managed MCP service'
+
+
+def atomic(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        raise ValueError(f'Refusing symlink: {path.name}')
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix='.graff-')
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(text)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def merge_json(path, entry, key='mcpServers'):
+    data = json.loads(path.read_text()) if path.exists() else {}
+    if not isinstance(data, dict) or not isinstance(data.get(key, {}), dict):
+        raise ValueError('Unexpected config structure')
+    servers = data.setdefault(key, {})
+    if 'codegraff' in servers:
+        return 'existing entry preserved'
+    servers['codegraff'] = entry
+    atomic(path, json.dumps(data, indent=2) + '\n')
+    return 'registered'
+
+
+def merge_codex(path, url, token):
+    # Preserve the entire TOML document, including comments and unfamiliar tables.
+    source = path.read_text() if path.exists() else ''
+    try:
+        import tomllib
+    except ImportError:
+        raise ValueError('Codex registration requires Python 3.11+ for TOML validation')
+    data = tomllib.loads(source)
+    if not isinstance(data.get('mcp_servers', {}), dict):
+        raise ValueError('Unexpected MCP server table')
+    if 'codegraff' in data.get('mcp_servers', {}):
+        return 'existing entry preserved'
+    fragment = '\n[mcp_servers.codegraff]\nurl = ' + json.dumps(url) + '\n'
+    fragment += 'http_headers = { Authorization = ' + json.dumps('Bearer ' + token) + ' }\n'
+    fragment += 'tool_timeout_sec = 330\n'
+    tomllib.loads(source + fragment)
+    atomic(path, source + fragment)
+    return 'registered'
+
+
+def register(home, url, token):
+    headers = {'Authorization': 'Bearer ' + token}
+    entries = [
+        (home / '.claude.json', 'mcpServers', {'type': 'http', 'url': url, 'headers': headers}, (home / '.claude').exists()),
+        (home / '.cursor/mcp.json', 'mcpServers', {'url': url, 'headers': headers}, False),
+        (home / '.gemini/settings.json', 'mcpServers', {'httpUrl': url, 'headers': headers, 'timeout': 330000}, False),
+        (home / '.codeium/windsurf/mcp_config.json', 'mcpServers', {'serverUrl': url, 'headers': headers}, False),
+    ]
+    vscode = home / ('Library/Application Support/Code/User' if sys.platform == 'darwin' else '.config/Code/User')
+    entries.append((vscode / 'mcp.json', 'servers', {'type': 'http', 'url': url, 'headers': headers}, False))
+    results = []
+    for path, key, entry, detected in entries:
+        if not (detected or path.exists() or (path.parent != home and path.parent.exists())):
+            continue
+        try:
+            results.append((str(path.relative_to(home)), merge_json(path, entry, key)))
+        except (ValueError, OSError) as error:
+            results.append((str(path.relative_to(home)), f'skipped: {type(error).__name__}; original preserved'))
+    codex = home / '.codex/config.toml'
+    if codex.parent.exists():
+        try:
+            results.append(('.codex/config.toml', merge_codex(codex, url, token)))
+        except (ValueError, OSError) as error:
+            results.append(('.codex/config.toml', f'skipped: {type(error).__name__}; original preserved'))
+    return results
+
+
+def rpc(url, token, method, sid=None):
+    headers = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
+               'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-06-18'}
+    if sid:
+        headers['Mcp-Session-Id'] = sid
+    request = urllib.request.Request(url, data=json.dumps({'jsonrpc': '2.0', 'id': 1,
+        'method': method, 'params': {'protocolVersion': '2025-06-18', 'capabilities': {},
+        'clientInfo': {'name': 'codegraff-installer', 'version': '1'}}}).encode(), headers=headers)
+    # Never route loopback credentials through ambient HTTP proxies.
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=2) as response:
+        body = json.load(response)
+        session = response.headers.get('Mcp-Session-Id')
+    if session:
+        request = urllib.request.Request(url, headers={**headers, 'Mcp-Session-Id': session}, method='DELETE')
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=2):
+            pass
+    return body
+
+
+def ready(url, token):
+    try:
+        return rpc(url, token, 'initialize')['result']['serverInfo']['name'] == 'codegraff'
+    except (OSError, ValueError, KeyError):
+        return False
+
+
+def service(home, executable, directory, port, token):
+    state = home / '.graff/mcp'
+    command = [str(executable), 'mcp', 'serve', '--http', '--port', str(port)]
+    if sys.platform == 'darwin':
+        target = home / 'Library/LaunchAgents/dev.codegraff.mcp.plist'
+        if target.exists() and plistlib.loads(target.read_bytes()).get('CodegraffManaged') != 1:
+            raise ValueError('Existing launch agent is not managed by Codegraff')
+        config = {'Label': 'dev.codegraff.mcp', 'CodegraffManaged': 1, 'ProgramArguments': command,
+                  'WorkingDirectory': str(directory), 'EnvironmentVariables': {'GRAFF_MCP_TOKEN': token},
+                  'RunAtLoad': True, 'KeepAlive': True, 'ThrottleInterval': 10,
+                  'StandardOutPath': str(state / 'service.log'), 'StandardErrorPath': str(state / 'service.log')}
+        atomic(target, plistlib.dumps(config).decode())
+        domain = f'gui/{os.getuid()}'
+        subprocess.run(['launchctl', 'bootout', domain + '/dev.codegraff.mcp'], capture_output=True)
+        subprocess.run(['launchctl', 'bootstrap', domain, str(target)], check=True, capture_output=True)
+    elif sys.platform.startswith('linux') and shutil.which('systemctl'):
+        target = home / '.config/systemd/user/codegraff-mcp.service'
+        if target.exists() and MARKER not in target.read_text():
+            raise ValueError('Existing service is not managed by Codegraff')
+        quote = lambda value: json.dumps(str(value).replace('%', '%%').replace('$', '$$'))
+        atomic(target, MARKER + '\n[Unit]\nDescription=Codegraff local MCP\n[Service]\n' +
+            'ExecStart=' + ' '.join(quote(part) for part in command) + '\n' +
+            'WorkingDirectory=' + quote(directory) + '\nEnvironment=GRAFF_MCP_TOKEN=' + token +
+            '\nRestart=on-failure\nRestartSec=10\n[Install]\nWantedBy=default.target\n')
+        subprocess.run(['systemctl', '--user', 'daemon-reload'], check=True, capture_output=True)
+        subprocess.run(['systemctl', '--user', 'enable', '--now', 'codegraff-mcp.service'], check=True, capture_output=True)
+        subprocess.run(['systemctl', '--user', 'restart', 'codegraff-mcp.service'], check=True, capture_output=True)
+    else:
+        raise ValueError('Automatic service setup needs macOS launchd or Linux user systemd')
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--binary', required=True)
+    parser.add_argument('--directory')
+    parser.add_argument('--port', type=int)
+    args = parser.parse_args()
+    if os.environ.get('GRAFF_NO_MCP') == '1':
+        print('MCP setup skipped (GRAFF_NO_MCP=1)')
+        return
+    settings_path = Path.home() / '.graff/mcp/settings.json'
+    settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+    args.port = args.port or settings.get('port', 7720)
+    args.directory = args.directory or settings.get('directory', str(Path.home()))
+    if not 1 <= args.port <= 65535:
+        raise ValueError('Invalid port')
+    home = Path.home()
+    directory = Path(args.directory).resolve(strict=True)
+    if not directory.is_dir():
+        raise ValueError('Workspace must be a directory')
+    binary = Path(args.binary).resolve(strict=True)
+    state = home / '.graff/mcp'
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if state.is_symlink():
+        raise ValueError('Refusing symlinked service directory')
+    os.chmod(state, 0o700)
+    lock_path = state / 'install.lock'
+    if lock_path.is_symlink():
+        raise ValueError('Refusing symlinked installer lock')
+    install_lock = open(lock_path, 'a')
+    os.chmod(lock_path, 0o600)
+    fcntl.flock(install_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    token_path = state / 'token'
+    if token_path.is_symlink():
+        raise ValueError('Refusing symlinked token')
+    token = token_path.read_text().strip() if token_path.exists() else secrets.token_hex(32)
+    if not re.fullmatch('[0-9a-f]{64}', token):
+        raise ValueError('Invalid stored service token')
+    atomic(token_path, token + '\n')
+    url = f'http://127.0.0.1:{args.port}/mcp'
+    service(home, binary, directory, args.port, token)
+    for _ in range(30):
+        if ready(url, token):
+            break
+        time.sleep(.2)
+    else:
+        raise ValueError('Service did not become ready; client configs were not changed')
+    atomic(settings_path, json.dumps({'port': args.port, 'directory': str(directory)}))
+    for client, result in register(home, url, token):
+        print(f'{client}: {result}')
+    print(f'MCP ready at {url}; workspace: {directory}; approval-gated tasks. Restart clients to load it.')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as error:
+        print(f'MCP setup failed: {type(error).__name__}: {error}', file=sys.stderr)
+        sys.exit(1)

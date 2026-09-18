@@ -34,6 +34,7 @@ import TasksSidebar from "./TasksSidebar";
 import { useTasksVisibility } from "./useTasksVisibility";
 import { MAX_COLUMNS, SPLIT_LIMIT_MESSAGE, splitLimitReached } from "./harness-split";
 import { useDesktopShortcuts } from "./useDesktopShortcuts";
+import { useNotchObserver } from "./useNotchObserver";
 import { useDesktopWorkspace } from "./useDesktopWorkspace";
 import {
   cancel,
@@ -47,6 +48,7 @@ import { enqueuePrompt } from "@/lib/prompt-queue";
 import { usePromptQueue } from "./usePromptQueue";
 import { removeSession, type StoredSession } from "@/lib/sessions";
 import { loadHistory, mergeHistory } from "@/lib/prompt-history";
+import ModelSwitchDialog from "@/components/site/ModelSwitchDialog";
 import WorkspaceDialog from "@/components/site/WorkspaceDialog";
 import {
   basename,
@@ -137,6 +139,8 @@ export default function GraffHarness() {
   const [, setFollowing] = useState(true);
   const { queuesRef, queues, queueIdRef, setQueue, steerer, steerStatus, remove: removeQueued, edit: editQueued, beginEdit, cancelEdit, changeEdit, take: takeQueuedPrompt } = usePromptQueue();
   const [cancelError, setCancelError] = useState<Record<number, string>>({});
+  // A model pick awaiting confirmation: switching respawns the tab's agent.
+  const [pendingModel, setPendingModel] = useState<{ key: string; chatId: number } | null>(null);
   const runningRef = useRef(new Set<number>());
   const queueResumesRef = useRef(new Set<number>());
   // Closed tabs, oldest first, for the reopen shortcut.
@@ -187,16 +191,29 @@ export default function GraffHarness() {
     setFileRequest({ path: "", n: (fileReqRef.current += 1), changes: true });
   }, []);
 
-  const changeModel = (key: string, forChat?: number) => {
-    // New tabs inherit the pick; the tab respawns its agent with it
-    // (a fresh context — the agent cannot swap models mid-session).
-    const chatId = forChat ?? chatThread.id;
+  /** Respawn this tab's agent on `key` and reload its conversation: the
+   * `--resume` target carries the history across, so the switch keeps the chat
+   * instead of starting it over. New tabs inherit the pick. */
+  const applyModel = (key: string, chatId: number) => {
     setModelKey(key);
     setChatModel(chatId, key);
     void requireSession(chatId, true, key)
       .then(() => adoptCatalog(chatId))
-      .catch(() => undefined);
+      // A respawn that fails leaves the tab on its old model; say so rather
+      // than let the picker look like it silently did nothing.
+      .catch(error => setCancelError(current => ({ ...current, [chatId]: error instanceof Error ? error.message : "Could not switch model" })));
   };
+
+  const changeModel = (key: string, forChat?: number) => {
+    const chatId = forChat ?? chatThread.id;
+    // A tab with a conversation (or a turn in flight) has state to reload, so
+    // confirm the restart first; an empty tab has nothing to carry over.
+    const chat = chatsRef.current.find(c => c.id === chatId);
+    if ((chat?.messages.length ?? 0) > 0 || runningRef.current.has(chatId)) setPendingModel({ key, chatId });
+    else applyModel(key, chatId);
+  };
+
+  const modelLabel = (key: string | null | undefined) => models.find(m => m.key === key)?.name ?? key ?? "the current model";
 
   const runPrompt = createPromptRunner({ onStarted: started, onCompleted: completed,
     runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError
@@ -446,6 +463,7 @@ export default function GraffHarness() {
     resizePane: delta => groups.resize(delta/4),
     toggleTerminal, equalize: groups.balance, openWorkspace: () => setDialog({ mode: "new" }),
   });
+  useNotchObserver(chats, busyIds, focusChat);
 
 
   const paneTodos = lastAssistant?.turn.todos ?? [];
@@ -457,7 +475,7 @@ export default function GraffHarness() {
     <main ref={promptFocusRoot} data-graff-main data-workspace-ready={projectsReady} className="flex h-[100dvh] gap-0 bg-canvas p-2.5 text-ink lg:pl-0">
       <SidebarNav
         fill
-        className="hidden lg:flex"
+        className="hidden lg:flex bg-canvas"
         recents={recents}
         recentsTotal={storedTotal}
         activeTitle={chatThread.title}
@@ -506,7 +524,7 @@ export default function GraffHarness() {
               onContinue={path => { switchWorkspace(path); openConversations(); }}
               onNewChat={newProjectChat} />
           ) : conversationsOpen ? (
-            <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-page">
+            <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-window border border-line bg-page">
               <ConversationsPane
                 root={chatCwd}
                 activeId={chatThread.session ?? null}
@@ -546,6 +564,14 @@ export default function GraffHarness() {
         {terminalUsed && chatCwd && <TerminalPane key={chatCwd} cwd={chatCwd} visible={terminalVisible} onHide={() => setTerminalVisible(false)} />}
       </div>
 
+      {pendingModel && (
+        <ModelSwitchDialog
+          from={modelLabel(chatsRef.current.find(c => c.id === pendingModel.chatId)?.model ?? model)}
+          to={modelLabel(pendingModel.key)}
+          onCancel={() => setPendingModel(null)}
+          onConfirm={() => { const picked = pendingModel; setPendingModel(null); applyModel(picked.key, picked.chatId); }}
+        />
+      )}
       {dialog && (
         <WorkspaceDialog
           mode={dialog.mode}

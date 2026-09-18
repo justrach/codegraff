@@ -37,6 +37,12 @@ app.whenReady().then(async () => {
   testDesktop.present(win);
   await wait(() => { const state = inspect(); return state.active && state.visible && state.key && state.screens > 0; }, 'CI cannot activate a native window; a graphical login session is required');
   report.passed.push('graphical session and native window focus');
+  const glassKind = native.glass(handle);
+  if (glassKind < 0) report.skipped.push('AppKit pane glass: Reduce Transparency is on');
+  else {
+    assert.equal(inspect().paneGlass, true, 'NSGlassEffectView / NSVisualEffectView must sit behind the web contents');
+    report.passed.push(glassKind === 1 ? 'macOS 26 NSGlassEffectView behind web contents' : 'NSVisualEffectView pane-glass fallback');
+  }
   for (let n = 0; n < 2; n++) {
     native.show(handle, JSON.stringify({ rssMiB: 64, cpuPercent: 0, processes: 1, browsers: 0 }));
     let state;
@@ -54,6 +60,25 @@ app.whenReady().then(async () => {
     await wait(() => !inspect().sheetAttached, 'Return did not activate the Activity sheet Done button');
   }
   report.passed.push('production SwiftUI sheet presentation, Done key, dismissal and reopening');
+  const layout = JSON.parse(native.layoutNotch(2, 0));
+  assert.equal(layout.identifier, 'graff.observer-notch');
+  assert.ok(layout.width >= 52 && layout.height > 64);
+  native.updateNotch(JSON.stringify({ sessions: [
+    { id: 1, title: 'Live', state: 'working', label: 'Working for 12s', detail: 'Running 1 tool…' },
+    { id: 2, title: 'Ask', state: 'waiting', label: 'Waiting for your answer', detail: '' },
+  ] }));
+  let observer;
+  await wait(() => {
+    observer = JSON.parse(native.inspectNotch());
+    return observer.visible && observer.cells === 2 && observer.width >= 52;
+  }, 'The observer notch did not present');
+  assert.equal(observer.key, false, 'The observer must not become the key window');
+  assert.equal(observer.main, false, 'The observer must not become the main window');
+  assert.equal(observer.hidesOnDeactivate, false);
+  assert.equal(inspect().key, true, 'Presenting the observer must leave the app window key');
+  native.hideNotch();
+  await wait(() => !JSON.parse(native.inspectNotch()).visible, 'The observer notch did not hide');
+  report.passed.push('SwiftUI observer notch stays non-activating and visible while unfocused');
   const computer = new ComputerUse(resources, win);
   const permissions = computer.status();
   report.permissions = { accessibility: permissions.accessibility, screenRecording: permissions.screenRecording };

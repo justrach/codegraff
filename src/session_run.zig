@@ -408,7 +408,7 @@ pub fn saveOrResumeSession(root: *agent_mod.Agent, keys: *provider_mod.Keys, are
     if (!will_resume) session.saveSession(root, arena, root.session_name) catch {};
     if (flags.oneshot_prompt != null and will_resume) {
         const source = flags.resume_flag.?;
-        _ = session_branch.restore(root, keys, arena, source, flags.branch_flag) catch |err| std.process.fatal("cannot resume/branch from '{s}': {t}", .{ source, err });
+        _ = session_branch.restore(root, keys, arena, source, flags.branch_flag, if (flags.model_flag != null) root.provider else null) catch |err| std.process.fatal("cannot resume/branch from '{s}': {t}", .{ source, err });
     }
 }
 
@@ -421,7 +421,7 @@ pub fn saveOrResumeSession(root: *agent_mod.Agent, keys: *provider_mod.Keys, are
 pub fn restoreResumedSession(arena: Allocator, out: *Io.Writer, root: *agent_mod.Agent, keys: *provider_mod.Keys, flags: args.Flags, json_mode: bool, cwd_display: []const u8) !void {
     if (!(flags.oneshot_prompt == null and flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag)) return;
     const source = flags.resume_flag.?;
-    if (session_branch.restore(root, keys, arena, source, flags.branch_flag)) |_| {
+    if (session_branch.restore(root, keys, arena, source, flags.branch_flag, if (flags.model_flag != null) root.provider else null)) |_| {
         if (root.messages.items.len > 0) {
             if (!json_mode) {
                 // Prefer the saved AI summary; fall back to the first user

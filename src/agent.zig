@@ -85,6 +85,7 @@ pub const Agent = struct {
     client: *std.http.Client,
     provider: Provider,
     subagent_provider: ?Provider = null, // optional model pin for every direct child/workflow/judge
+    feedback: ?*@import("subagent_feedback.zig").Inbox = null,
     subagent_provider_explicit: bool = false, // #371: --subagent-*/GRAFF_SUBAGENT_*/--no-subagent-tier freeze it; a DERIVED default re-follows /model (providers.applyProviderInner)
     subagent_cross_provider: bool = false, // user explicitly allowed the pin to cross a provider/data boundary
     messages: std.json.Array,
@@ -348,6 +349,7 @@ pub const Agent = struct {
             // turn — durable in history, visible as an event. Offset-based:
             // an empty channel costs one small stat per step.
             peer_channel.deliverInbound(self);
+            try @import("subagent_feedback.zig").deliverToAgent(self);
             job_notify.deliver(self);
             schedule.deliver(self);
             channel_worker.deliver(self);
@@ -393,7 +395,10 @@ pub const Agent = struct {
                 // Retry empty replies; reconcile plain finals with live work (#745).
                 if (try empty_completion.handle(self, final_text, hist_len)) continue;
                 if (try @import("named_work.zig").handle(self, final_text)) continue;
-                if (try pending_work.finish(self, final_text)) |text| return text;
+                if (try pending_work.finish(self, final_text)) |text| {
+                    if (self.feedback) |inbox| if (!inbox.tryFinish(self.io)) continue;
+                    return text;
+                }
                 continue;
             }
             self.empty_completion_retries = 0;

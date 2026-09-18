@@ -139,6 +139,8 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             .subagent_cross_provider = self.subagent_cross_provider,
             .registry = self.registry, // workers get licensed codedb-pro reads too (#627)
             .from_sub = self.sub,
+            .interactive_children = !self.sub and @import("subagent_interactive.zig").enabled.load(.acquire),
+            .session_name = self.session_name,
             .has_eval = self.eval_cmd != null,
             .approvals = self.approvals,
             .tracer = self.tracer,

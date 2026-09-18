@@ -5,10 +5,10 @@ async function smokeGuiCustomization({ win, backend }) {
   const wait = async source => { for (let i = 0; i < 100; i++) { if (await js(source)) return; await sleep(100); } throw Error(`Customization check timed out: ${source}`); };
   const type = text => js(`(()=>{const input=document.querySelector('textarea[aria-label="Prompt"]');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,${JSON.stringify(text)});input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
   for (const prefix of ['$', '@']) {
-    await type(`${prefix}gui-th`);
+    await type(`${prefix}th`);
     await wait(`!![...document.querySelectorAll('button')].find(b=>b.textContent.includes('GUI skill ·'))`);
     await js(`[...document.querySelectorAll('button')].find(b=>b.textContent.includes('GUI skill ·')).click()`);
-    await wait(`document.querySelector('textarea[aria-label="Prompt"]').value==='$gui-theme '`);
+    await wait(`document.querySelector('textarea[aria-label="Prompt"]').value==='$theme '`);
   }
   // No model request: verify the composer inserts a reviewable draft, then clear it.
   await type('');

@@ -81,6 +81,8 @@ pub fn run(
     cwd: []const u8,
     yolo: bool,
 ) !void {
+    @import("subagent_interactive.zig").configure(true);
+    defer @import("subagent_interactive.zig").configure(false);
     root.ensureStoredKeys(keys);
     providers.ensureModelQueryCatalogs(root, keys.*, "");
     try root.ensureRootTools(.anthropic);
@@ -210,6 +212,7 @@ fn updateCb(ctx: ?*anyopaque, gpa: Allocator, action: []const u8) ?[]const u8 {
 
 fn idleWakeCb(ctx: ?*anyopaque, buf: []u8) ?[]const u8 {
     const c: *repl_glue.ReplCtx = @ptrCast(@alignCast(ctx orelse return null));
+    if (c.root) |root| if (@import("subagent_interactive.zig").takeWake(c.io, root.session_name, buf)) |t| return t;
     if (job_notify.takeIdleWake(c.io, buf)) |t| return t; // an idle stop waits for a real step boundary (#199)
     if (schedule.takeWake(c.io, buf)) |t| return t;
     return channel_worker.takeWake(c.io, buf);

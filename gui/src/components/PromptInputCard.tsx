@@ -365,7 +365,7 @@ export function PromptInputCard({
       ) : null}
       <Card
         className={cn(
-          "relative gap-0 rounded-2xl border border-foreground/5 bg-background/50 p-2 transition-colors transition-shadow ring-0",
+          "relative gap-0 rounded-[32px] border border-foreground/5 bg-background/50 p-2 transition-colors transition-shadow ring-0",
           isPlanningMode &&
             "border-[color:var(--accent)] ring-5 ring-[color:color-mix(in_oklab,var(--accent)_14%,transparent)] border-dashed",
           isUltraMode && "cg-ultra-shine border-transparent",

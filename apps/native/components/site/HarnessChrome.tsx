@@ -24,7 +24,7 @@ export default function HarnessChrome({unreadIds, chats, activeId, busyIds, focu
   const frame = useRef<HTMLDivElement>(null);
   useEffect(() => { frame.current?.querySelector(`[data-tab-id="${activeId}"]`)?.scrollIntoView({block: "nearest", inline: "nearest"}); }, [activeId]);
   return (
-    <div ref={frame} data-workspace-toolbar className={`${reviewStyles.chatbar} flex shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-page`}>
+    <div ref={frame} data-workspace-toolbar className={`${reviewStyles.chatbar} flex shrink-0 flex-col overflow-hidden rounded-window border border-line bg-page`}>
       {/* One workspace-level tab strip above every split; never owned by a pane. */}
       <div className="flex h-10 min-w-0 shrink-0 items-center gap-1 overflow-x-auto px-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <button type="button" aria-label="Show agents" aria-pressed={agentsOpen} onClick={onAgents}

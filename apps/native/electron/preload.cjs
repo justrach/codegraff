@@ -22,6 +22,12 @@ contextBridge.exposeInMainWorld('graffDesktop', {
     return () => ipcRenderer.removeListener('terminal-event', listener);
   },
   activity: () => ipcRenderer.invoke('activity'),
+  notch: snapshot => ipcRenderer.send('notch', snapshot),
+  notchSubscribe: callback => {
+    const listener = (_event, id) => callback(id);
+    ipcRenderer.on('notch-select', listener);
+    return () => ipcRenderer.removeListener('notch-select', listener);
+  },
   windowControl: action => ipcRenderer.invoke('window-control', action),
   subscribe: callback => {
     const listener = (_event, message) => callback(message);
@@ -36,6 +42,9 @@ const applyWindowState = () => {
   if (document.documentElement) document.documentElement.dataset.desktopFullscreen = String(fullscreen);
 };
 ipcRenderer.on('window-state', (_event, state) => { fullscreen = state.fullscreen === true; applyWindowState(); });
+ipcRenderer.on('native-glass', (_event, on) => {
+  if (document.documentElement) document.documentElement.dataset.nativeGlass = on ? 'true' : 'false';
+});
 window.addEventListener('DOMContentLoaded', applyWindowState);
 ipcRenderer.on('profile-enabled', (_event, enabled) => {
   longTasks?.disconnect();
