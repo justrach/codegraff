@@ -144,6 +144,9 @@ class ScriptedModel:
                 finish = "tool_calls" if "tool_calls" in message else "stop"
                 for delta in deltas or [{"role": "assistant", "content": ""}]:
                     self._chunk({"choices": [{"index": 0, "delta": delta, "finish_reason": None}]})
+                    if hook := getattr(model, "after_stream_delta", None):
+                        self.wfile.flush()
+                        hook(delta)
                 self._chunk({
                     "choices": [{"index": 0, "delta": {}, "finish_reason": finish}],
                     "usage": {"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12},

@@ -84,9 +84,9 @@ pub const snapshot_render_cap: usize = 2_000;
 /// pending, allDone flipped false, and the goal could never finish - durably,
 /// because the autosave persisted the damaged list. So the harness restates
 /// the list itself, once, as part of the new history.
-/// Returns null unless a root, non-review agent has an ACTIVE goal, which also
-/// excludes subagents and /review turns: they share the Agent struct but not
-/// the goal. Allocates from `arena`, which MUST outlive compact()'s temporary
+/// Restates any saved goal or current checklist, including inactive goals with
+/// their lifecycle authority. Excludes subagents and /review turns. Allocates
+/// from `arena`, which MUST outlive compact()'s temporary
 /// compaction arena - the text goes into the history that survives it.
 pub fn compactionSnapshot(arena: Allocator, root: *Agent) !?[]const u8 {
     // The gate is the CHECKLIST, not the goal. Gating on goalActive left every
@@ -96,7 +96,14 @@ pub fn compactionSnapshot(arena: Allocator, root: *Agent) !?[]const u8 {
     // review turns share the Agent but not the goal, so they still never do.
     if (root.sub or root.review_mode) return null;
     const rendered = goal_state.renderCurrent(root);
-    const objective: ?[]const u8 = if (root.goal) |g| g.objective else null;
+    const objective: ?[]const u8 = if (root.goal) |g|
+        try std.fmt.allocPrint(arena, "{s} (status: {s}; kind: {s})", .{ g.objective, @tagName(g.status), if (g.standing) "standing" else "task" })
+    else
+        null;
+    // A summary is not permission to revive paused or completed work. Keep
+    // lifecycle authority beside the objective even when there is no checklist.
+    const inactive = if (root.goal) |g| g.status != .active else false;
+    if (inactive) return try std.fmt.allocPrint(arena, "[standing state (harness-kept, survives context rewrites): goal: {s}. Do not resume this objective unless the user explicitly asks. Its checklist is retained for reference; read it with todo_read. This snapshot does not reactivate the goal.\n{s}]", .{ objective.?, try capRender(arena, rendered) });
     if (rendered.len == 0) {
         const obj = objective orelse return null; // no goal AND no checklist: nothing to restate
         return try std.fmt.allocPrint(arena, "[standing state (harness-kept, survives context rewrites): goal: {s}. No checklist has been written for it yet - plan the work with todo_write, and read the list back with todo_read at any time.]", .{obj});
@@ -170,6 +177,7 @@ pub fn applyGoalSet(root: *Agent, objective: []const u8, now_ms: i64) GoalSetRes
 /// work, not silence. A session with no goal reads as .active, so a bare /loop
 /// is governed by its work and its iteration bound alone.
 pub fn loopTurnDecision(root: *Agent, iters_left: u32, now_ms: i64) repl_glue.ContinuationDecision {
+    if (@import("subagent_interactive.zig").enabled.load(.acquire) and @import("subagent_interactive.zig").yielded) return .{ .stop = .idle };
     const work_done = root.completed != null or goal_state.checklistFinished(root);
     const model_stopped = repl_glue.turnStopped(root.tool_calls_this_turn, root.completion_refused);
     const gstatus: agent_mod.GoalStatus = if (root.goal) |g| g.status else .active;

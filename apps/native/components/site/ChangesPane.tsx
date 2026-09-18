@@ -63,7 +63,7 @@ export default function ChangesPane({ root, onClose }: { root?: string; onClose(
   const removed = rows.filter(row => row.kind === "remove").length;
   const newFiles = files.filter(file => file.untracked).length;
   const choose = (path: string) => { setSelected(path); setDiff(""); };
-  return <ResizableReviewPane><aside aria-label="Workspace changes" className={`${styles.panel} flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-page`}>
+  return <ResizableReviewPane><aside aria-label="Workspace changes" className={`${styles.panel} flex min-w-0 flex-1 flex-col overflow-hidden rounded-window border border-line bg-page`}>
     <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-3">
       <strong className="text-[13px] font-medium">Changes</strong>
       <span className="rounded-md bg-hover px-1.5 py-0.5 text-[10px] tabular-nums text-ink-3">{files.length}</span>

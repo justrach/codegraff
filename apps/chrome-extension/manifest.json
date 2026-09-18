@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Graff Sidecar",
+  "version": "0.1.0",
+  "description": "Let the graff harness read and drive the pages you already have open. Pairs explicitly, loopback only.",
+  "minimum_chrome_version": "116",
+  "permissions": ["tabs", "storage", "scripting", "activeTab", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "Graff Sidecar",
+    "default_popup": "popup.html"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

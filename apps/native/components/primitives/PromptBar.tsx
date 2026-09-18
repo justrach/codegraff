@@ -28,7 +28,8 @@ import { entryAt, historyKeyIntent, stepHistory } from "@/lib/prompt-history";
  * A composer with real controls: attach, @ data sources,
  * / commands, a model picker, dictation, and send.
  * Type @ or / to open the menus; ↑↓ + Enter to pick.
- * Variants: Rounded (card radius) · Pill (full radius).
+ * Variants: Rounded (composer radius) · Pill (full radius). Send is circular.
+ * Radii: docs/design.md.
  * ───────────────────────────────────────────────────────── */
 
 export type PromptModel = ModelChoice;
@@ -391,7 +392,7 @@ export default function PromptBar({
         } ${
           tall ? "gap-2.5 p-3.5" : "gap-1.5 p-1.5"
         } ${
-          pill ? (attachments.length > 0 || wide ? "rounded-[24px]" : "rounded-full") : tall ? "rounded-[22px]" : "rounded-[14px]"
+          pill ? (attachments.length > 0 || wide ? "rounded-composer" : "rounded-full") : "rounded-composer"
         }`}
       >
         <input
@@ -448,9 +449,7 @@ export default function PromptBar({
               setPlusOpen((current) => !current);
               inputRef.current?.focus();
             }}
-            className={`flex size-7 shrink-0 items-center justify-center justify-self-start text-ink-3 transition-[background-color,color,transform] duration-150 hover:bg-hover hover:text-ink active:scale-[0.94] ${
-              pill ? "rounded-full" : "rounded-[8px]"
-            } ${plusOpen ? "bg-hover text-ink" : ""} ${wide ? "col-start-1 row-start-2" : "col-start-1 row-start-1"}`}
+            className={`flex size-7 shrink-0 items-center justify-center justify-self-start rounded-full text-ink-3 transition-[background-color,color,transform] duration-150 hover:bg-hover hover:text-ink active:scale-[0.94] ${plusOpen ? "bg-hover text-ink" : ""} ${wide ? "col-start-1 row-start-2" : "col-start-1 row-start-1"}`}
           >
             <Icon size={16} strokeWidth={2}><path d="M12 5v14M5 12h14" /></Icon>
           </button>
@@ -531,9 +530,7 @@ export default function PromptBar({
             aria-pressed={busy ? undefined : listening} disabled={busy ? !canSend : !demo}
             title={busy ? "Queue this follow-up" : demo ? "Demo dictation" : "Dictation is not available yet"}
             onClick={busy ? send : () => setListening((current) => !current)}
-            className={`flex size-7 shrink-0 items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed transition-[background-color,color,transform] duration-150 active:scale-[0.94] ${
-              pill ? "rounded-full" : "rounded-[8px]"
-            } ${listening ? "bg-accent-tint text-accent-ink" : "text-ink-3 hover:bg-hover hover:text-ink"} ${wide ? "col-start-4 row-start-2" : "col-start-4 row-start-1"}`}
+            className={`flex size-7 shrink-0 items-center justify-center rounded-full disabled:opacity-30 disabled:cursor-not-allowed transition-[background-color,color,transform] duration-150 active:scale-[0.94] ${listening ? "bg-accent-tint text-accent-ink" : "text-ink-3 hover:bg-hover hover:text-ink"} ${wide ? "col-start-4 row-start-2" : "col-start-4 row-start-1"}`}
           >
             {busy ? <Icon size={16} strokeWidth={2.4}><path d="M12 19V5M5 12l7-7 7 7" /></Icon> : listening ? (
               <span className="flex h-3.5 items-center gap-[2.5px]">
@@ -550,8 +547,7 @@ export default function PromptBar({
             )}
           </button>
 
-          {/* send — tactile square (round in the pill variant); while a turn
-              runs it morphs into the Codex-style stop control */}
+          {/* send — circular; while a turn runs it morphs into stop */}
           <button
             type="button"
             aria-label={showStop ? "Stop" : "Send"}

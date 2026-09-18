@@ -142,3 +142,25 @@ test "idle wake spawn failure is reapable without a thread or model work (#537)"
     try std.testing.expectEqual(@as(usize, 0), Fake.turn_calls);
     try std.testing.expectEqual(@as(usize, 0), Fake.join_calls);
 }
+
+test "completion wake waits for drafts and queued user input" {
+    install();
+    defer uninstall();
+    engine.g_idle_wake_fn = Fake.wake;
+    var term: Term = undefined;
+    term.init(std.testing.allocator, 80, 24);
+    defer term.deinit();
+    _ = term.typeText("my unfinished prompt");
+    turn.maybeJobWake(&term.model);
+    try std.testing.expectEqual(@as(usize, 0), Fake.wake_calls);
+    try std.testing.expectEqualStrings("my unfinished prompt", term.model.input.getValue());
+    try term.model.input.setValue("");
+    try term.model.steer_queue.append(try std.testing.allocator.dupe(u8, "next task"));
+    turn.maybeJobWake(&term.model);
+    try std.testing.expectEqual(@as(usize, 0), Fake.wake_calls);
+    std.testing.allocator.free(term.model.steer_queue.orderedRemove(0));
+    turn.maybeJobWake(&term.model);
+    try std.testing.expectEqual(@as(usize, 1), Fake.wake_calls);
+    try expectFailedStart(&term);
+    try finishFailedStart(&term);
+}

@@ -58,6 +58,7 @@ ROOT_EXTRAS = (
     "subagent",
     "workflow",
     "agent_output",
+    "agent_message",
     "learn_candidate",
     "peer_message",
     "workspace",

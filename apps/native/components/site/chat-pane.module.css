@@ -2,17 +2,37 @@
   container: chat-pane / size;
 }
 
-/* Unselected splits keep their transcript. A light wash recedes them; the
- * focused pane stays the working surface (accent border). */
-.pane[data-glass="true"]::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  pointer-events: none;
-  border-radius: inherit;
-  background: color-mix(in srgb, var(--canvas) 28%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface) 35%, transparent);
+/* Unselected splits recede as a glass layer. The focused pane stays opaque
+ * so the working transcript remains the content surface, not another card. */
+.pane[data-glass="true"] {
+  isolation: isolate;
+  background-color: color-mix(in srgb, var(--page) 90%, transparent);
+  backdrop-filter: blur(8px) saturate(1.05);
+  -webkit-backdrop-filter: blur(8px) saturate(1.05);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--surface) 72%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.pane[data-glass="true"] [data-chat-composer] {
+  background-color: transparent;
+}
+
+/* Native AppKit glass sits behind the web view (ADR 0123). The main canvas
+ * provides the theme tint; never put a frosting overlay above the transcript. */
+:global(html[data-native-glass="true"]) .pane[data-glass="true"] {
+  background-color: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .pane[data-glass="true"] {
+    background-color: var(--page);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 
 /* A split is measured by its own width, not by the desktop window. */

@@ -161,7 +161,7 @@ function FilesPaneContent({ root, requested, onClose }: Props) {
       data-files-pane
       aria-label="Workspace files"
       aria-busy={!!loading}
-      className="flex w-[400px] max-w-[55%] shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-page"
+      className="flex w-[400px] max-w-[55%] shrink-0 flex-col overflow-hidden rounded-window border border-line bg-page"
       style={{ animation: "fade-in 300ms ease both" }}
     >
       {/* header: workspace root + close */}

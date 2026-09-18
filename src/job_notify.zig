@@ -210,6 +210,7 @@ fn drain(io: Io, buf: []u8, idle_too: bool) ?[]const u8 {
 /// Root step-boundary inject (same moment as peer deliverInbound).
 pub fn deliver(root: *Agent) void {
     if (root.sub) return;
+    @import("subagent_interactive.zig").deliver(root);
     var buf: [512]u8 = undefined;
     const text = takeWake(root.io, &buf) orelse return;
     @import("session_wake.zig").inject(root, text);

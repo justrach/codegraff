@@ -16,6 +16,39 @@ const goal_flow = @import("goal_flow.zig");
 const repl_glue = @import("repl_glue.zig");
 const Agent = agent_mod.Agent;
 
+test "compaction preserves inactive goal authority without asking to plan it" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = blankRoot(ar);
+    for ([_]agent_mod.GoalStatus{ .paused, .complete }) |status| {
+        root.goal = .{ .objective = "ship phase 2", .epoch = 1, .status = status };
+        const snap = (try goal_flow.compactionSnapshot(ar, &root)).?;
+        try std.testing.expect(std.mem.indexOf(u8, snap, @tagName(status)) != null);
+        try std.testing.expect(std.mem.indexOf(u8, snap, "Do not resume") != null);
+        try std.testing.expect(std.mem.indexOf(u8, snap, "plan the work") == null);
+        try std.testing.expectEqual(status, root.goal.?.status);
+    }
+    root.goal.?.status = .paused;
+    try root.todos.append(ar, .{ .content = "write the test", .status = "pending", .epoch = 1 });
+    const snap = (try goal_flow.compactionSnapshot(ar, &root)).?;
+    try std.testing.expect(std.mem.indexOf(u8, snap, "[ ] write the test") != null);
+    try std.testing.expectEqual(@as(usize, 1), goal_state.openCount(root.todos.items, 1));
+}
+
+test "compaction distinguishes task goals from standing policy" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = blankRoot(ar);
+    for ([_]bool{ false, true }) |standing| {
+        root.goal = .{ .objective = "keep tests green", .epoch = 1, .standing = standing };
+        const snap = (try goal_flow.compactionSnapshot(ar, &root)).?;
+        try std.testing.expect(std.mem.indexOf(u8, snap, "status: active") != null);
+        try std.testing.expect(std.mem.indexOf(u8, snap, if (standing) "kind: standing" else "kind: task") != null);
+    }
+}
+
 /// Restore `json` onto `root` the way loadSession does (session.zig): parse the
 /// goal, refill the epoch-stamped checklist, drop this-process freshness, then
 /// reconcile. The parsing and the reconciliation are the real functions; only

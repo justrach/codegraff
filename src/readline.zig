@@ -177,6 +177,7 @@ pub fn readLine(
             pend_i += 1;
             break :blk b;
         } else blk: {
+            if (try @import("subagent_interactive.zig").stealIdleLine(root.io, root.session_name, gpa, buf, in.buffered().len == 0 and tty.isForeground() and tty.pendingBytes() == 0 and !inputPendingTimed(100))) |line| return line;
             // While the input contains `ultracode`, drift the ember shine
             // across the letters: poll for input with a slower 140ms timeout,
             // and on each idle tick advance the phase + redraw so the hue

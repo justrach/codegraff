@@ -10,7 +10,6 @@ const main_mod = @import("main.zig");
 const provider_mod = @import("provider.zig");
 const Provider = provider_mod.Provider;
 const ReasoningEffort = main_mod.ReasoningEffort;
-
 const ws = @import("ws.zig"); // codex Responses WS transport (delta continuation held across a turn)
 const mcp = @import("mcp.zig");
 const approvals_mod = @import("approvals.zig");
@@ -84,6 +83,7 @@ pub const Agent = struct {
     client: *std.http.Client,
     provider: Provider,
     subagent_provider: ?Provider = null, // optional model pin for every direct child/workflow/judge
+    feedback: ?*@import("subagent_feedback.zig").Inbox = null,
     subagent_provider_explicit: bool = false, // #371: --subagent-*/GRAFF_SUBAGENT_*/--no-subagent-tier freeze it; a DERIVED default re-follows /model (providers.applyProviderInner)
     subagent_cross_provider: bool = false, // user explicitly allowed the pin to cross a provider/data boundary
     messages: std.json.Array,
@@ -353,6 +353,7 @@ pub const Agent = struct {
             // turn — durable in history, visible as an event. Offset-based:
             // an empty channel costs one small stat per step.
             peer_channel.deliverInbound(self);
+            try @import("subagent_feedback.zig").deliverToAgent(self);
             job_notify.deliver(self);
             schedule.deliver(self);
             channel_worker.deliver(self);
@@ -398,7 +399,10 @@ pub const Agent = struct {
                 // Retry empty replies; reconcile plain finals with live work (#745).
                 if (try bounced_answer.retry(self, final_text, hist_len)) continue;
                 if (try @import("named_work.zig").handle(self, final_text)) continue;
-                if (try pending_work.finish(self, bounced_answer.finish(self, final_text))) |text| return review_deadline.finish(text);
+                if (try pending_work.finish(self, bounced_answer.finish(self, final_text))) |text| {
+                    if (self.feedback) |inbox| if (!inbox.tryFinish(self.io)) continue;
+                    return review_deadline.finish(text);
+                }
                 continue;
             }
             self.empty_completion_retries = 0;
@@ -582,10 +586,6 @@ pub const Agent = struct {
     pub const mdWidth = @import("agent_render.zig").mdWidth;
     pub const mdSpanEnd = @import("agent_render.zig").mdSpanEnd;
     pub const mdFinishLine = @import("agent_render.zig").mdFinishLine;
-    // Streamed-markdown table rendering (buffered rows -> aligned columns,
-    // word-wrapped to termCols()) lives in agent_table.zig (#123, 600-line
-    // goal). Member-aliased so `self.flushTable(...)`/`Agent.isTableSeparator(...)`
-    // resolve unchanged regardless of physical file.
     pub const flushTable = @import("agent_table.zig").flushTable;
     pub const fitWidths = @import("agent_table.zig").fitWidths;
     pub const atomEnd = @import("agent_table.zig").atomEnd;

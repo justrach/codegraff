@@ -161,8 +161,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
-    if (std.mem.startsWith(u8, line, "/goal")) {
-        const text = std.mem.trim(u8, line["/goal".len..], " \t");
+    if (@import("repl_glue.zig").goalCommandArgs(line)) |text| {
         if (text.len == 0 or std.ascii.eqlIgnoreCase(text, "status")) {
             // bare /goal or /goal status: report the objective + lifecycle state.
             if (root.goal) |g| {

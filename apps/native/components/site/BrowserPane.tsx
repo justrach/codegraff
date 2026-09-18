@@ -591,7 +591,7 @@ export default function BrowserPane({
 
   return (
     <aside
-      className="relative hidden shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-page lg:flex"
+      className="relative hidden shrink-0 flex-col overflow-hidden rounded-window border border-line bg-page lg:flex"
       style={{ width: paneWidth, animation: "fade-in 300ms ease both" }}
     >
       <div

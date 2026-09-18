@@ -5,7 +5,14 @@ root="$(cd "$here/../../.." && pwd)"
 version="${GRAFF_VERSION:-0.0.291}"
 ui="$root/apps/native"
 out="$root/zig-out/electron"
-bundle="$out/Codegraff.app"
+app_name="Codegraff"
+bundle_id="dev.codegraff.electron.local"
+if [[ "${GRAFF_DEV:-0}" == "1" ]]; then
+  out="$root/zig-out/electron-dev"
+  app_name="Codegraff Dev"
+  bundle_id="dev.codegraff.app"
+fi
+bundle="$out/$app_name.app"
 cd "$ui"
 bun install --frozen-lockfile
 if [[ ! -f node_modules/electron/path.txt ]]; then bun node_modules/electron/install.js; fi
@@ -24,9 +31,10 @@ rm -rf "$bundle"
 ditto "$ui/node_modules/electron/dist/Electron.app" "$bundle"
 resources="$bundle/Contents/Resources"
 mkdir -p "$resources/app" "$resources/native"
+if [[ "${GRAFF_DEV:-0}" == "1" ]]; then touch "$resources/codegraff-development"; fi
 cp "$here/"*.cjs "$resources/app/"
 bun build "$here/updater-runtime.cjs" --target=node --format=cjs --external electron --outfile "$resources/app/updater-runtime.cjs"
-printf '{"name":"codegraff","productName":"Codegraff","version":"%s","main":"main.cjs"}\n' "$version" > "$resources/app/package.json"
+printf '{"name":"codegraff","productName":"%s","version":"%s","main":"main.cjs"}\n' "$app_name" "$version" > "$resources/app/package.json"
 ditto "$ui/.next/standalone" "$resources/ui"
 ditto "$ui/.next/static" "$resources/ui/.next/static"
 [[ ! -d "$ui/public" ]] || ditto "$ui/public" "$resources/ui/public"
@@ -44,12 +52,12 @@ xcrun clang -O2 -bundle -undefined dynamic_lookup -mmacosx-version-min=14.0 \
   -I "$ui/node_modules/node-api-headers/include" "$here/native/activity.c" \
   -L "$resources/native" -lGraffActivity -Wl,-rpath,@loader_path -o "$resources/native/activity.node"
 bun "$here/check-native-symbols.cjs" "$resources/native"
-/usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier dev.codegraff' "$bundle/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c 'Set :CFBundleName Codegraff' "$bundle/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $bundle_id" "$bundle/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleName $app_name" "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $version" "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :LSMinimumSystemVersion 14.0' "$bundle/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName Codegraff' "$bundle/Contents/Info.plist" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $app_name" "$bundle/Contents/Info.plist" 2>/dev/null || true
 macos="$bundle/Contents/MacOS"
 if [[ -e "$macos/Electron" ]]; then
   mv "$macos/Electron" "$macos/Codegraff"

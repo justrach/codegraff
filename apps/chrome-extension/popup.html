@@ -1,0 +1,77 @@
+<!doctype html>
+<html data-theme="warm-graphite">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="theme.css">
+<style>
+  /* Popup chrome reads the same tokens as the desktop GUI
+   * (theme.css is generated from gui/src/styles/ — see sync-theme.py).
+   * Radius 8px matches the GUI's --radius (0.5rem). */
+  body {
+    width: 300px; margin: 0; padding: 14px;
+    font: 13px "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--background); color: var(--foreground);
+  }
+  h1 { font-size: 14px; margin: 0 0 4px; color: var(--foreground); display: flex; align-items: center; gap: 8px; }
+  h1 img { width: 18px; height: 18px; }
+  p.sub { font-size: 11px; color: var(--muted-foreground); margin: 0 0 6px; line-height: 1.4; }
+  p.hint { font-size: 11px; color: var(--muted-foreground); line-height: 1.4; }
+  label { display: block; font-size: 11px; color: var(--muted-foreground); margin: 8px 0 3px; }
+  input {
+    width: 100%; box-sizing: border-box; padding: 6px 8px;
+    border: 1px solid var(--input); border-radius: 8px;
+    background: var(--card); color: var(--foreground); font: inherit;
+  }
+  input:focus { outline: 2px solid var(--ring); outline-offset: 0; border-color: var(--ring); }
+  button {
+    margin-top: 10px; width: 100%; padding: 7px;
+    border: 0; border-radius: 8px;
+    background: var(--accent); color: var(--accent-foreground);
+    font: inherit; cursor: pointer;
+  }
+  button.secondary { background: var(--secondary); color: var(--secondary-foreground); }
+  button.ghost { background: transparent; color: var(--muted-foreground); margin-top: 4px; font-size: 12px; }
+  #status { margin-top: 10px; font-size: 12px; color: var(--foreground); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .ok { background: var(--success); } .bad { background: var(--destructive); } .idle { background: var(--faint); }
+  /* Theme picker: the GUI's ThemePresetCard pattern (swatch + name + ring). */
+  #themes { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-top: 6px; }
+  .preset {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    margin: 0; padding: 6px 2px; width: auto;
+    background: transparent; color: var(--foreground);
+    border: 1px solid var(--border); border-radius: 8px;
+  }
+  .preset[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--ring); opacity: 1; }
+  .preset:not([aria-pressed="true"]):hover { border-color: var(--accent); background: var(--secondary); }
+  .preset .chip { display: flex; align-items: center; gap: 3px; width: 44px; height: 22px; padding: 0 5px; border-radius: 6px; overflow: hidden; }
+  .preset .t { flex: 1; height: 5px; border-radius: 3px; }
+  .preset .a { width: 9px; height: 9px; border-radius: 50%; }
+  .preset .n { font-size: 10px; color: var(--muted-foreground); }
+  .preset[aria-pressed="true"] .n { color: var(--foreground); }
+  .row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+  .row .lbl { font-size: 11px; color: var(--muted-foreground); flex: 1; }
+  #mode { width: auto; margin: 0; padding: 5px 10px; font-size: 12px; }
+  details { margin-top: 10px; }
+  summary { font-size: 12px; color: var(--muted-foreground); cursor: pointer; }
+</style>
+</head>
+<body>
+  <h1><img src="icons/icon48.png" alt="">Graff Sidecar</h1>
+  <p class="sub" id="pair-line">Pairs this browser with the graff harness on <b>this machine only</b>.</p>
+  <p class="hint">The harness can then read and drive your open tabs — you see everything it does.</p>
+  <label for="url">Harness URL</label>
+  <input id="url" spellcheck="false" placeholder="http://127.0.0.1:3000">
+  <label for="token">Pairing token</label>
+  <input id="token" type="password" spellcheck="false" placeholder="paste from graff">
+  <button id="save">Pair</button>
+  <button id="unpair" class="secondary">Unpair</button>
+  <div id="status"><span class="dot idle"></span>…</div>
+  <details id="appearance">
+    <summary>Appearance</summary>
+    <div class="row"><span class="lbl">Mode</span><button id="mode" class="secondary">Dark</button></div>
+    <div id="themes" role="group" aria-label="Theme preset"></div>
+  </details>
+  <script src="popup.js"></script>
+</body>
+</html>

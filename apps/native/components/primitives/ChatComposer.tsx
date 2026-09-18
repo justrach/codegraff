@@ -71,7 +71,7 @@ export default function ChatComposer() {
   };
 
   return (
-    <div className="flex h-[288px] w-full max-w-95 flex-col self-start overflow-hidden rounded-[14px] bg-surface shadow-card">
+    <div className="flex h-[288px] w-full max-w-95 flex-col self-start overflow-hidden rounded-window bg-surface shadow-card">
       {/* header — tabs + actions */}
       <div className="flex shrink-0 items-center justify-between border-b border-line p-1.5">
         <div className="flex items-center">
@@ -149,7 +149,7 @@ export default function ChatComposer() {
         <div
           role="presentation"
           onClick={() => inputRef.current?.focus()}
-          className="flex cursor-text flex-col gap-2 rounded-control border border-line bg-field p-2.5 shadow-[0_1px_2px_rgba(0,0,0,0.035)] transition-[border-color,box-shadow] duration-150 focus-within:border-line-strong focus-within:shadow-[0_1px_2px_rgba(0,0,0,0.025)]"
+          className="flex cursor-text flex-col gap-2 rounded-composer border border-line bg-field p-2.5 shadow-[0_1px_2px_rgba(0,0,0,0.035)] transition-[border-color,box-shadow] duration-150 focus-within:border-line-strong focus-within:shadow-[0_1px_2px_rgba(0,0,0,0.025)]"
         >
           <input
             ref={inputRef}

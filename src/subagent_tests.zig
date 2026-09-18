@@ -11,6 +11,154 @@ const subagent_run = @import("subagent_run.zig");
 
 const FailKind = subagent_run.FailKind;
 const classifyFailure = subagent_run.classifyFailure;
+const feedback = @import("subagent_feedback.zig");
+
+test "background feedback owns ordered messages and delivers once" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var inbox: feedback.Inbox = .{};
+    defer inbox.deinit(gpa);
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    var history: std.json.Array = .init(arena.allocator());
+    var first = [_]u8{ 'o', 'n', 'e' };
+    try inbox.enqueue(gpa, io, &first);
+    first[0] = 'X';
+    try inbox.enqueue(gpa, io, "two\nkeep this line");
+    try std.testing.expectEqual(@as(usize, 0), history.items.len);
+    try std.testing.expect(!inbox.tryFinish(io));
+    try std.testing.expect(try inbox.deliver(gpa, io, arena.allocator(), &history));
+    try std.testing.expectEqual(@as(usize, 2), history.items.len);
+    try std.testing.expectEqualStrings("user", history.items[0].object.get("role").?.string);
+    try std.testing.expectEqualStrings("[Parent task feedback]\none", history.items[0].object.get("content").?.string);
+    try std.testing.expectEqualStrings("[Parent task feedback]\ntwo\nkeep this line", history.items[1].object.get("content").?.string);
+    try std.testing.expect(!try inbox.deliver(gpa, io, arena.allocator(), &history));
+    try std.testing.expectEqual(@as(usize, 2), inbox.delivered);
+    try std.testing.expect(inbox.tryFinish(io));
+    try std.testing.expectError(error.AgentFinished, inbox.enqueue(gpa, io, "too late"));
+}
+
+test "background feedback is bounded and rejects empty invalid or oversized input" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var inbox: feedback.Inbox = .{};
+    defer inbox.deinit(gpa);
+    try std.testing.expectError(error.EmptyMessage, inbox.enqueue(gpa, io, " \n\t"));
+    try std.testing.expectError(error.InvalidUtf8, inbox.enqueue(gpa, io, "\xff"));
+    const large = try gpa.alloc(u8, feedback.max_message_bytes + 1);
+    defer gpa.free(large);
+    @memset(large, 'a');
+    try std.testing.expectError(error.MessageTooLarge, inbox.enqueue(gpa, io, large));
+    for (0..4) |_| try inbox.enqueue(gpa, io, large[0..feedback.max_message_bytes]);
+    try std.testing.expectError(error.InboxFull, inbox.enqueue(gpa, io, "x"));
+    try std.testing.expectEqual(@as(usize, 4), inbox.close(io));
+    try std.testing.expectError(error.AgentFinished, inbox.enqueue(gpa, io, "closed"));
+}
+
+test "background feedback message-count cap applies independently of byte cap" {
+    var inbox: feedback.Inbox = .{};
+    defer inbox.deinit(std.testing.allocator);
+    for (0..feedback.max_pending_messages) |_| try inbox.enqueue(std.testing.allocator, std.testing.io, "a");
+    try std.testing.expectError(error.InboxFull, inbox.enqueue(std.testing.allocator, std.testing.io, "b"));
+}
+
+test "background feedback allocation failure leaves the inbox deliverable" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var inbox: feedback.Inbox = .{};
+    defer inbox.deinit(gpa);
+    try inbox.enqueue(gpa, io, "preserve me");
+    var failed = std.testing.FailingAllocator.init(gpa, .{ .fail_index = 0 });
+    var history: std.json.Array = .init(failed.allocator());
+    defer history.deinit();
+    try std.testing.expectError(error.OutOfMemory, inbox.deliver(gpa, io, failed.allocator(), &history));
+    try std.testing.expectEqual(@as(usize, 1), inbox.pending.items.len);
+    try std.testing.expectEqual(@as(usize, 0), history.items.len);
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    var recovered: std.json.Array = .init(arena.allocator());
+    try std.testing.expect(try inbox.deliver(gpa, io, arena.allocator(), &recovered));
+    try std.testing.expect(inbox.tryFinish(io));
+}
+
+test "background feedback finishing before enqueue rejects rather than strands a message" {
+    var inbox: feedback.Inbox = .{};
+    defer inbox.deinit(std.testing.allocator);
+    try std.testing.expect(inbox.tryFinish(std.testing.io));
+    try std.testing.expectError(error.AgentFinished, inbox.enqueue(std.testing.allocator, std.testing.io, "late final feedback"));
+    try std.testing.expectEqual(@as(usize, 0), inbox.pending.items.len);
+}
+
+test "background feedback late allocation failures never partly consume a batch" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const large = try gpa.alloc(u8, feedback.max_message_bytes);
+    defer gpa.free(large);
+    @memset(large, 'a');
+    var observed_failure = false;
+    var observed_success = false;
+    for (0..12) |fail_index| {
+        var inbox: feedback.Inbox = .{};
+        defer inbox.deinit(gpa);
+        try inbox.enqueue(gpa, io, large);
+        try inbox.enqueue(gpa, io, large);
+        var failing = std.testing.FailingAllocator.init(gpa, .{ .fail_index = fail_index });
+        var arena = std.heap.ArenaAllocator.init(failing.allocator());
+        defer arena.deinit();
+        var history: std.json.Array = .init(arena.allocator());
+        if (inbox.deliver(gpa, io, arena.allocator(), &history)) |delivered| {
+            observed_success = true;
+            try std.testing.expect(delivered);
+            try std.testing.expectEqual(@as(usize, 2), history.items.len);
+            try std.testing.expectEqual(@as(usize, 0), inbox.pending.items.len);
+        } else |err| {
+            observed_failure = true;
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expectEqual(@as(usize, 0), history.items.len);
+            try std.testing.expectEqual(@as(usize, 2), inbox.pending.items.len);
+        }
+    }
+    try std.testing.expect(observed_failure and observed_success);
+}
+
+test "agent_message accepts queued children and refuses completed unknown or child callers" {
+    const tools = @import("tools.zig");
+    const messaging = @import("subagent_messaging.zig");
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    var ctx: tools.ToolCtx = .{ .gpa = gpa, .io = io, .client = undefined, .provider = undefined, .registry = null, .from_sub = false, .approvals = null, .tracer = null };
+    const saved = subagent.g_agent_jobs;
+    subagent.g_agent_jobs = .{};
+    defer {
+        subagent.g_agent_jobs.list.deinit(gpa);
+        subagent.g_agent_jobs = saved;
+    }
+    var label = [_]u8{'x'};
+    var job: subagent.AgentJob = .{ .id = 42, .label = &label, .prompt = &label, .niche = &label, .isolation = .shared_cwd, .isolation_fallback = false, .ctx = ctx };
+    defer job.feedback.deinit(gpa);
+    try subagent.g_agent_jobs.list.append(gpa, &job);
+    const input = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), "{\"id\":42,\"message\":\"new scope\"}", .{});
+    const queued = try messaging.send(ctx, input);
+    defer gpa.free(queued.text);
+    try std.testing.expect(!queued.is_error);
+    try std.testing.expectEqual(@as(usize, 1), job.feedback.pending.items.len);
+    job.done = true;
+    const finished = try messaging.send(ctx, input);
+    defer gpa.free(finished.text);
+    try std.testing.expect(finished.is_error);
+    const missing_input = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), "{\"id\":999,\"message\":\"new scope\"}", .{});
+    const missing = try messaging.send(ctx, missing_input);
+    defer gpa.free(missing.text);
+    try std.testing.expect(missing.is_error);
+    ctx.from_sub = true;
+    job.done = false;
+    const child = try messaging.send(ctx, input);
+    defer gpa.free(child.text);
+    try std.testing.expect(child.is_error);
+    try std.testing.expectEqual(@as(usize, 1), job.feedback.pending.items.len);
+}
 
 test "variantJudgePrompt: bounded, names the phase, keeps the score contract" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -187,4 +335,87 @@ test "#753 backtest: three issued handles survive process death through agent_ou
     const unknown = try subagent.agentOutput(gpa, io, 99, 0);
     defer gpa.free(unknown.text);
     try std.testing.expect(std.mem.indexOf(u8, unknown.text, "may never have started") != null);
+}
+
+test "interactive children yield once without cancellation or a model request" {
+    const interactive = @import("subagent_interactive.zig");
+    interactive.configure(true);
+    defer interactive.configure(false);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var root = .{ .sub = false, .arena = arena.allocator() };
+    var ctx: @import("tools.zig").ToolCtx = .{ .gpa = std.testing.allocator, .io = std.testing.io, .client = undefined, .provider = undefined, .registry = null, .from_sub = false, .approvals = null, .tracer = null };
+    interactive.request(ctx); // headless callers retain wait-until-exit behavior
+    try std.testing.expect((try interactive.beforeRequest(&root)) == null);
+    ctx.interactive_children = true;
+    interactive.request(ctx);
+    const text = (try interactive.beforeRequest(&root)).?;
+    try std.testing.expect(std.mem.indexOf(u8, text, "keep using the prompt") != null);
+    try std.testing.expect(interactive.yielded);
+    try std.testing.expect(!@import("agent.zig").Agent.esc_cancel.load(.acquire));
+    try std.testing.expect((try interactive.beforeRequest(&root)) == null);
+    try std.testing.expect(!interactive.yielded);
+}
+
+test "interactive child output never waits and completion wakes only its owner once" {
+    const interactive = @import("subagent_interactive.zig");
+    interactive.configure(true);
+    defer interactive.configure(false);
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const ctx: @import("tools.zig").ToolCtx = .{ .gpa = gpa, .io = io, .client = undefined, .provider = undefined, .registry = null, .from_sub = false, .approvals = null, .tracer = null, .interactive_children = true, .session_name = "owner" };
+    const saved = subagent.g_agent_jobs;
+    subagent.g_agent_jobs = .{};
+    defer {
+        subagent.g_agent_jobs.list.deinit(gpa);
+        subagent.g_agent_jobs = saved;
+    }
+    var label = [_]u8{'x'};
+    var job: subagent.AgentJob = .{ .id = 42, .label = &label, .prompt = &label, .niche = &label, .isolation = .shared_cwd, .isolation_fallback = false, .ctx = ctx, .owner = "owner" };
+    try subagent.g_agent_jobs.list.append(gpa, &job);
+    const running = try interactive.output(ctx, 42, 1); // used to wait up to 10h
+    defer gpa.free(running.text);
+    try std.testing.expect(!running.is_error);
+    try std.testing.expect(!job.done);
+    var buf: [512]u8 = undefined;
+    try std.testing.expect(interactive.takeWake(io, "owner", &buf) == null);
+    job.done = true;
+    job.is_error = true;
+    try std.testing.expect(interactive.takeWake(io, "other-session", &buf) == null);
+    try std.testing.expect(interactive.takeWake(io, "owner", buf[0..1]) == null);
+    try std.testing.expect(!job.notified);
+    var owner_storage = @import("subagent_owned.zig").Owned.init(gpa);
+    defer owner_storage.arena.deinit();
+    job.owned = &owner_storage;
+    interactive.rename(io, "owner", "renamed-session");
+    try std.testing.expect(interactive.takeWake(io, "owner", &buf) == null);
+    try std.testing.expectEqualStrings("renamed-session", job.owner.?);
+    const notice = interactive.takeWake(io, "renamed-session", &buf).?;
+    try std.testing.expect(std.mem.indexOf(u8, notice, "agent 42 failed") != null);
+    try std.testing.expect(interactive.takeWake(io, "renamed-session", &buf) == null);
+    job.notified = false;
+    const read = try interactive.output(ctx, 42, 1);
+    defer gpa.free(read.text);
+    try std.testing.expect(read.is_error);
+    try std.testing.expect(interactive.takeWake(io, "owner", &buf) == null);
+}
+
+test "background children own approvals and provider strings after parent turn ends" {
+    const gpa = std.testing.allocator;
+    var owner = @import("subagent_owned.zig").Owned.init(gpa);
+    defer owner.arena.deinit();
+    var source = std.heap.ArenaAllocator.init(gpa);
+    const a = source.allocator();
+    var approvals: @import("approvals.zig").Approvals = .{ .yolo = true };
+    try approvals.prefixes.append(a, try a.dupe(u8, "git"));
+    const ctx: @import("tools.zig").ToolCtx = .{ .gpa = gpa, .io = std.testing.io, .client = undefined, .provider = .{ .id = try a.dupe(u8, "local"), .kind = .openai, .auth = .bearer, .url = try a.dupe(u8, "http://localhost"), .api_key = "", .model = try a.dupe(u8, "fixture"), .context = 1000 }, .registry = null, .from_sub = false, .approvals = &approvals, .tracer = null };
+    const copy = try owner.context(ctx);
+    approvals.yolo = false;
+    source.deinit();
+    try std.testing.expect(copy.approvals.? != &approvals);
+    try std.testing.expect(copy.approvals.?.yolo);
+    try std.testing.expectEqualStrings("git", copy.approvals.?.prefixes.items[0]);
+    try std.testing.expectEqualStrings("fixture", copy.provider.model);
+    try std.testing.expectEqualStrings("http://localhost", copy.provider.url);
+    try std.testing.expect(copy.tools_used == null);
 }

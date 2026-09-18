@@ -23,8 +23,10 @@ const { pollCodexUsage } = require('./notch-usage.cjs');
 
 const root = process.env.GRAFF_CWD || app.getPath('home');
 const resources = process.env.GRAFF_ELECTRON_RESOURCES || process.resourcesPath;
-app.setName('Codegraff');
-app.setPath('userData', process.env.GRAFF_ELECTRON_PROFILE || (process.env.GRAFF_ELECTRON_SMOKE ? (process.env.GRAFF_SMOKE_PROFILE || path.join(require('node:os').tmpdir(), `codegraff-smoke-${process.pid}`)) : path.join(app.getPath('appData'), 'Codegraff Electron')));
+const developmentBuild = require('node:fs').existsSync(path.join(resources, 'codegraff-development'));
+const appName = developmentBuild ? 'Codegraff Dev' : 'Codegraff';
+app.setName(appName);
+app.setPath('userData', process.env.GRAFF_ELECTRON_PROFILE || (process.env.GRAFF_ELECTRON_SMOKE ? (process.env.GRAFF_SMOKE_PROFILE || path.join(require('node:os').tmpdir(), `codegraff-smoke-${process.pid}`)) : path.join(app.getPath('appData'), developmentBuild ? 'Codegraff Dev' : 'Codegraff Electron')));
 if (process.env.GRAFF_ELECTRON_SMOKE) process.env.GRAFF_THEMES_DIR = path.join(app.getPath('userData'), 'themes');
 let win, browser, backend, automation, computer, profiler;
 let terminals;
@@ -54,6 +56,7 @@ function trusted(event) {
   if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame ||
       new URL(event.senderFrame.url).origin !== backend.origin) throw new Error('Untrusted IPC sender');
 }
+let notch;
 let stopPromise;
 function stop() {
   if (stopPromise) return stopPromise;
@@ -78,6 +81,10 @@ process.on('SIGTERM', () => app.quit());
 process.on('SIGINT', () => app.quit());
 
 app.whenReady().then(async () => {
+  if (app.isPackaged && !developmentBuild && !process.env.GRAFF_ELECTRON_SMOKE) {
+    void require('./mcp-install.cjs').installMcp(path.join(resources, 'graff'), app.getPath('home'), { once: true })
+      .catch(error => dialog.showErrorBox('MCP setup incomplete', `${error.message}\nRetry from Tools → Configure MCP clients.`));
+  }
   await require('./shell-path.cjs').restoreShellPath();
   if (app.isPackaged && !process.env.GRAFF_ELECTRON_SMOKE) {
     void require('./engine-launcher.cjs').installEngine(path.join(resources, 'graff'), app.getPath('home'))
@@ -87,8 +94,11 @@ app.whenReady().then(async () => {
   app.setAccessibilitySupportEnabled(true);
   const passkeysConfigured = require('./webauthn.cjs').configureWebAuthn(app, resources);
   const token = randomBytes(32).toString('hex');
+  const liveGlass = process.platform === 'darwin' && !testDesktop;
+  let glassOn = false;
   win = createWindow({ width: 1440, height: 920, minWidth: 900, minHeight: 600,
-    title: 'Codegraff', titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 11 }, backgroundColor: '#fafaf9', show: false,
+    title: appName, titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 11 },
+    transparent: liveGlass, backgroundColor: liveGlass ? '#00000000' : '#fafaf9', show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), partition: 'persist:app',
       contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: !process.env.GRAFF_ELECTRON_SMOKE } });
   const projects = require('./project-store.cjs').projectStore(app.getPath('userData'));
@@ -151,7 +161,10 @@ app.whenReady().then(async () => {
     }
   }, () => app.getGPUFeatureStatus());
   browser.profiler = profiler;
-  win.webContents.on('did-finish-load', () => win.webContents.send('profile-enabled', !!profiler.active));
+  win.webContents.on('did-finish-load', () => {
+    win.webContents.send('profile-enabled', !!profiler.active);
+    if (glassOn) win.webContents.send('native-glass', true);
+  });
   win.webContents.on('render-process-gone', () => profiler.record('renderer-crash'));
   ipcMain.on('profile-longtask', (event, duration) => {
     const owned = event.sender === win.webContents || [...browser.tabs.values()].some(tab => tab.view?.webContents === event.sender);
@@ -223,14 +236,14 @@ app.whenReady().then(async () => {
   win.on('restore', () => win.webContents.send('browser-event', { type: 'layout' }));
   const updateMenu = require('./updates.cjs').installUpdates({ app, win, ipcMain, trusted, resources });
   Menu.setApplicationMenu(Menu.buildFromTemplate([
-    { label: 'Codegraff', submenu: [{ role: 'about' }, ...updateMenu, { type: 'separator' }, { label: 'Activity…', accelerator: 'CmdOrCtrl+,', click: () => void activity().catch(error => dialog.showErrorBox('Activity', error.message)) }, { label: 'Computer use…', click: () => void computer.configure().catch(error => dialog.showErrorBox('Computer use', error.message)) }, { type: 'separator' }, { role: 'quit' }] },
+    { label: appName, submenu: [{ role: 'about' }, ...updateMenu, { type: 'separator' }, { label: 'Activity…', accelerator: 'CmdOrCtrl+,', click: () => void activity().catch(error => dialog.showErrorBox('Activity', error.message)) }, { label: 'Computer use…', click: () => void computer.configure().catch(error => dialog.showErrorBox('Computer use', error.message)) }, { type: 'separator' }, { role: 'quit' }] },
     { label: 'File', submenu: [
       ['New chat', 'CmdOrCtrl+N', 'new'], ['New tab', 'CmdOrCtrl+T', 'new'],
       ['Close chat', 'CmdOrCtrl+W', 'close'], ['Reopen closed chat', 'CmdOrCtrl+Shift+T', 'reopen'],
       ['Toggle terminal', 'CmdOrCtrl+J', 'terminal'], ['Focus prompt', 'CmdOrCtrl+L', 'focus-prompt'], ['Open workspace…', 'CmdOrCtrl+O', 'workspace'], ['Split right', 'CmdOrCtrl+D', 'split-right'],
       ['Split down', 'CmdOrCtrl+Shift+D', 'split-down'], ['Zoom split', 'CmdOrCtrl+Shift+Enter', 'split-zoom'],
     ].map(([label, accelerator, action]) => ({ label, accelerator, click: () => win.webContents.send('desktop-action', action) })) },
-    { label: 'Tools', submenu: [{ label: 'Configure MCP clients…', enabled: app.isPackaged, click: async () => {
+    { label: 'Tools', submenu: [{ label: 'Configure MCP clients…', enabled: app.isPackaged && !developmentBuild, click: async () => {
       try {
         const detail = await require('./mcp-install.cjs').installMcp(path.join(resources, 'graff'), app.getPath('home'));
         await dialog.showMessageBox(win, { message: 'MCP clients configured', detail });
@@ -258,6 +271,15 @@ app.whenReady().then(async () => {
     { role: 'windowMenu' },
   ]));
   await win.loadURL(backend.origin); win.setWindowButtonVisibility(true);
+  if (process.platform === 'darwin') {
+    try {
+      const native = require(path.join(resources, 'native/activity.node'));
+      if (native.glass(win.getNativeWindowHandle()) >= 0 && liveGlass) {
+        glassOn = true;
+        win.webContents.send('native-glass', true);
+      }
+    } catch { /* dev trees without the compiled dylib keep the CSS frost */ }
+  }
   if (testDesktop) testDesktop.present(win); else win.show();
   profiler.record('ui-ready');
   if (process.env.GRAFF_ELECTRON_SMOKE) require(process.env.GRAFF_SMOKE_SERVER_LIFECYCLE ? './smoke-server-lifecycle.cjs' : process.env.GRAFF_SMOKE_LAUNCH_ONLY ? './smoke-launch.cjs' : './smoke.cjs').run({ win, browser, automation, backend, metrics, activity, computer, profiler, token }).then(() => app.quit()).catch(async error => { console.error(error); await stop(); app.exit(1); });

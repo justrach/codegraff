@@ -9,7 +9,7 @@ export default function TasksSidebar({ items, onClose }: { items: TaskItem[]; on
   return (
     <aside
       data-tasks-sidebar
-      className="hidden w-[360px] shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-page lg:flex"
+      className="hidden w-[360px] shrink-0 flex-col overflow-hidden rounded-window border border-line bg-page lg:flex"
       style={{ animation: "fade-in 300ms ease both" }}
     >
       <div className="flex h-11 shrink-0 items-center justify-between border-b border-line px-4">

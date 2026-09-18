@@ -748,7 +748,7 @@ export default function RecordsTable({ fill = false }: { fill?: boolean; variant
       {prop && meta && (
         <div
           data-recpop
-          className="fixed z-50 w-[320px] rounded-[14px] bg-surface px-3 pt-3 pb-1.5 shadow-overlay"
+          className="fixed z-50 w-[320px] rounded-window bg-surface px-3 pt-3 pb-1.5 shadow-overlay"
           style={{ top: prop.y, left: prop.x, animation: "pop-in 160ms cubic-bezier(0.23,1,0.32,1) both", transformOrigin: "top left" }}
         >
           <div className="pb-2 text-[13.5px] font-medium text-ink">{prop.col}</div>
@@ -960,7 +960,7 @@ export default function RecordsTable({ fill = false }: { fill?: boolean; variant
       {addOpen && (
         <div
           data-recpop
-          className="fixed z-50 w-[260px] rounded-[14px] bg-surface p-1.5 shadow-overlay"
+          className="fixed z-50 w-[260px] rounded-window bg-surface p-1.5 shadow-overlay"
           style={{ top: addOpen.y, left: addOpen.x, animation: "pop-in 160ms cubic-bezier(0.23,1,0.32,1) both", transformOrigin: "top left" }}
         >
           <div className="px-2 pb-1 pt-1 text-[12px] font-medium text-ink-3">New property</div>
@@ -990,7 +990,7 @@ export default function RecordsTable({ fill = false }: { fill?: boolean; variant
       {tableMenuOpen && (
         <div
           data-recpop
-          className="fixed z-50 w-[220px] rounded-[14px] bg-surface p-1.5 shadow-overlay"
+          className="fixed z-50 w-[220px] rounded-window bg-surface p-1.5 shadow-overlay"
           style={{ top: tableMenuOpen.y, left: tableMenuOpen.x, animation: "pop-in 160ms cubic-bezier(0.23,1,0.32,1) both", transformOrigin: "top right" }}
         >
           <div className="px-2 pb-1 pt-1 text-[12px] font-medium text-ink-3">Table options</div>

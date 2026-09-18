@@ -374,8 +374,9 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         const id = intField(input, "id") orelse return missingArg(gpa, "id");
         const wait_ms = intField(input, "wait_ms") orelse 0;
         if (id < 0 or id > std.math.maxInt(u32)) return .{ .text = try gpa.dupe(u8, "invalid agent id"), .is_error = true };
-        return agentOutput(gpa, io, @intCast(id), @intCast(@max(wait_ms, 0)));
+        return @import("subagent_interactive.zig").output(ctx, @intCast(id), @intCast(@max(wait_ms, 0)));
     }
+    if (std.mem.eql(u8, call.name, "agent_message")) return @import("subagent_messaging.zig").send(ctx, input);
     return .{ .text = try std.fmt.allocPrint(gpa, "unknown tool: {s}", .{call.name}), .is_error = true };
 }
 
