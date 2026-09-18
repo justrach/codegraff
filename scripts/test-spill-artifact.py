@@ -41,12 +41,12 @@ from mock_model import ScriptedModel  # noqa: E402
 
 SESSION = "spill-e2e"
 NEEDLE = "GRAFF-SPILL-NEEDLE-409"
-# The cap is window-proportional (Provider.perOutputCap = context/2 bytes), and
-# GRAFF_CONTEXT declares the window for an unknown/local model. 40k tokens ->
-# a 20_000-byte cap, with auto-compaction (80% = 32k tokens) far out of reach of
-# the ~7.5k tokens this history weighs.
+# The cap is Provider.perOutputCap: min(window/2, an absolute 40 KiB ceiling).
+# lmstudio is a catalog model with a 200k window, so the ceiling is what binds
+# and the seeded output has to clear it to be over-cap at all. Compaction (80%
+# of the window) stays far out of reach of this history.
 CONTEXT_TOKENS = 40_000
-OUTPUT_BYTES = 30_000
+OUTPUT_BYTES = 60_000
 # "…the FULL <n> bytes are at <path>; read or grep…" — src/tool_spill.zig
 MARKER_RE = re.compile(r"the FULL (\d+) bytes are at (\S+?); read or grep")
 
@@ -130,7 +130,8 @@ def main() -> None:
 
     # A padded output whose needle sits well past the cap, so nothing but the
     # artifact can still produce it.
-    output = ("build step ok\n" * 3000)[:OUTPUT_BYTES - len(NEEDLE) - 1] + NEEDLE + "\n"
+    pad = "build step ok\n"
+    output = (pad * (OUTPUT_BYTES // len(pad) + 2))[: OUTPUT_BYTES - len(NEEDLE) - 1] + NEEDLE + "\n"
     assert len(output) == OUTPUT_BYTES, len(output)
 
     failures: list[str] = []

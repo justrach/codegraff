@@ -61,7 +61,7 @@ export default function HarnessChrome({navigationToggle, sidebarVisible = false,
         <ActionMenu label="Chat actions" text="More" className="shrink-0">
           {!sidebarVisible && <button type="button" onClick={newChat}>New chat <span className="ml-auto text-ink-3">⌘T</span></button>}
           <button type="button" aria-pressed={split} onClick={toggleSplit}>{split ? "Close splits" : "Split view"} <span className="ml-auto text-ink-3">⌘\</span></button>
-          <button type="button" aria-pressed={conversationsOpen} onClick={openConversations}>All conversations</button>
+          <button type="button" aria-label="Conversations" aria-pressed={conversationsOpen} onClick={openConversations}>All conversations</button>
           <button type="button" onClick={onFolder}>Open a folder…</button>
         </ActionMenu>
         {!sidebarVisible && <AppSettings />}

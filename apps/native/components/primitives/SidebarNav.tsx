@@ -361,6 +361,17 @@ export default function SidebarNav({
               onClick={() => selectNav(item.key)}
             />
           ))}
+          {onSeeAll && (
+            <RailButton
+              icon={<IconMagnifyingGlass size={18} />}
+              label="Conversations"
+              active={currentNav === "conversations"}
+              onClick={() => {
+                selectNav("conversations");
+                onSeeAll();
+              }}
+            />
+          )}
         </GlideGroup>
 
         <div inert={collapsed} aria-hidden={collapsed} className="mt-3 min-h-0 flex-1 overflow-y-auto">
