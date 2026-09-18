@@ -12,6 +12,8 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- The folder picker can sort by name or modification time, filter Git repositories, and create folders.
+- Available `rlm` tools are listed from the first turn rather than waiting for a batch or context threshold (ADR 0140).
 - Desktop fonts are bundled locally; syntax highlighting, diagrams, and secondary panes load when needed.
 - Desktop appearance notes no longer alter slash commands. Clipboard image staging retries absolute paths through their parent directory when needed.
 - Resuming a saved conversation restores its persisted session identity even if startup already generated one.
