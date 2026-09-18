@@ -330,6 +330,7 @@ pub const Agent = struct {
 
     pub fn runTurn(self: *Agent) anyerror![]const u8 {
         var pending_work: empty_completion.PendingWork = .{};
+        var bounced_answer: empty_completion.BounceAnswer = .{};
         self.completed = null;
         self.mcp_context.begin(self.io);
         @import("named_work.zig").beginTurn(self);
@@ -395,9 +396,9 @@ pub const Agent = struct {
             const done = try @import("agent_steps.zig").stepForWire(self, root);
             if (done) |final_text| {
                 // Retry empty replies; reconcile plain finals with live work (#745).
-                if (try empty_completion.handle(self, final_text, hist_len)) continue;
+                if (try bounced_answer.retry(self, final_text, hist_len)) continue;
                 if (try @import("named_work.zig").handle(self, final_text)) continue;
-                if (try pending_work.finish(self, final_text)) |text| return review_deadline.finish(text);
+                if (try pending_work.finish(self, bounced_answer.finish(self, final_text))) |text| return review_deadline.finish(text);
                 continue;
             }
             self.empty_completion_retries = 0;

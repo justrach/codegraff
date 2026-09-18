@@ -34,6 +34,63 @@ pub fn shouldBounce(unattended: bool, lean: bool, text_only: bool, review: bool,
     return std.mem.trim(u8, final_text, " \t\r\n").len > 0;
 }
 
+/// Kept on the runTurn stack, never recovered from persisted message history.
+/// A later turn or a quoted retry note must not revive an earlier answer.
+pub const BounceAnswer = struct {
+    first: ?[]const u8 = null,
+
+    pub fn remember(state: *BounceAnswer, text: []const u8) void {
+        if (state.first == null and std.mem.trim(u8, text, " \t\r\n").len > 0) state.first = text;
+    }
+
+    pub fn retry(state: *BounceAnswer, self: *Agent, text: []const u8, hist_len: usize) !bool {
+        if (!try handle(self, text, hist_len)) return false;
+        state.remember(text);
+        return true;
+    }
+
+    pub fn finish(state: BounceAnswer, self: *const Agent, follow_up: []const u8) []const u8 {
+        return if (self.tool_calls_this_turn == 0) state.first orelse follow_up else follow_up;
+    }
+};
+
+test "#1013 an old bounce cannot replace a later turn's answer" {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    var self = pendingFixture(state.allocator());
+    self.tool_calls_this_turn = 0;
+    try self.messages.append(try messages.textMessage(self.arena, "user", "Earlier request"));
+    try self.messages.append(try messages.textMessage(self.arena, "assistant", "Earlier answer"));
+    try self.messages.append(try messages.userNote(self.arena, self.provider.kind, bounce_note));
+    try self.messages.append(try messages.textMessage(self.arena, "assistant", "Earlier retry"));
+    try self.messages.append(try messages.textMessage(self.arena, "user", "What is two plus two?"));
+    const current: BounceAnswer = .{};
+    try std.testing.expectEqualStrings("4", current.finish(&self, "4"));
+}
+
+test "#1013 bounce follow-up without tools keeps the first answer" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var self = pendingFixture(arena.allocator());
+    self.tool_calls_this_turn = 0;
+    var current: BounceAnswer = .{};
+    current.remember("First answer");
+    current.remember(" \n ");
+    try std.testing.expectEqualStrings("First answer", current.finish(&self, "See previous answer"));
+    self.tool_calls_this_turn = 2;
+    try std.testing.expectEqualStrings("Updated answer", current.finish(&self, "Updated answer"));
+}
+
+test "#1013 without a bounce note the follow-up is the answer" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var self = pendingFixture(arena.allocator());
+    self.tool_calls_this_turn = 0;
+    var current: BounceAnswer = .{};
+    current.remember(" \n ");
+    try std.testing.expectEqualStrings("Current answer", current.finish(&self, "Current answer"));
+}
+
 /// Handle a degenerate completion inside runTurn. Returns true when the
 /// caller should `continue` the loop.
 pub fn handle(self: *Agent, final_text: []const u8, hist_len: usize) !bool {

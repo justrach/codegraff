@@ -158,6 +158,7 @@ record only when you need the evidence or the edge cases.
 | [0136](0136-follow-up-promotes-a-live-shell.md) | A queued follow-up or force-steer promotes a foreground shell; Esc still kills it. |
 | [0137](0137-desktop-appearance-is-a-turn-note.md) | Desktop appearance tokens for `render_html` ride the turn, never the prefix or tool catalog; drawn HTML uses them unless the user named colors. |
 | [0138](0138-unselected-splits-use-glass-overlay.md) | Unselected split panes keep their transcript under a light wash; the focused pane stays the working surface. |
+| [0139](0139-bounced-answers-stay-turn-local.md) | Retain a bounced answer only in the current turn, before unfinished-work reconciliation; never recover it from persisted history. |
 
 ## When to write one
 
