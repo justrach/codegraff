@@ -397,7 +397,7 @@ pub const Agent = struct {
                 // Retry empty replies; reconcile plain finals with live work (#745).
                 if (try empty_completion.handle(self, final_text, hist_len)) continue;
                 if (try @import("named_work.zig").handle(self, final_text)) continue;
-                if (try pending_work.finish(self, final_text)) |text| return review_deadline.finish(text);
+                if (try pending_work.finish(self, final_text)) |text| return review_deadline.finish(empty_completion.keepFirstIfBounceIdle(self, text));
                 continue;
             }
             self.empty_completion_retries = 0;

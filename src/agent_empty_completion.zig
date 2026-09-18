@@ -34,6 +34,41 @@ pub fn shouldBounce(unattended: bool, lean: bool, text_only: bool, review: bool,
     return std.mem.trim(u8, final_text, " \t\r\n").len > 0;
 }
 
+fn contentString(msg: std.json.Value) ?[]const u8 {
+    if (msg != .object) return null;
+    const content = msg.object.get("content") orelse return null;
+    if (content == .string and content.string.len > 0) return content.string;
+    return null;
+}
+
+fn isAssistant(msg: std.json.Value) bool {
+    if (msg != .object) return false;
+    const role = msg.object.get("role") orelse return false;
+    return role == .string and std.mem.eql(u8, role.string, "assistant");
+}
+
+/// Lean `-p` bounce is stderr chrome; stdout is the last final. If that
+/// follow-up called no tools, keep the first answer (#1013).
+pub fn keepFirstIfBounceIdle(self: *const Agent, follow_up: []const u8) []const u8 {
+    if (self.tool_calls_this_turn != 0) return follow_up;
+    const items = self.messages.items;
+    var i = items.len;
+    while (i > 0) {
+        i -= 1;
+        const note = contentString(items[i]) orelse continue;
+        if (std.mem.indexOf(u8, note, bounce_note) == null) continue;
+        var j = i;
+        while (j > 0) {
+            j -= 1;
+            if (!isAssistant(items[j])) continue;
+            const first = contentString(items[j]) orelse continue;
+            if (std.mem.trim(u8, first, " \t\r\n").len > 0) return first;
+        }
+        break;
+    }
+    return follow_up;
+}
+
 /// Handle a degenerate completion inside runTurn. Returns true when the
 /// caller should `continue` the loop.
 pub fn handle(self: *Agent, final_text: []const u8, hist_len: usize) !bool {
@@ -274,4 +309,29 @@ test "no-local-tools lean critique is not an edit-oriented fake_done retry" {
     const before = self.messages.items.len;
     try std.testing.expect(!try handle(&self, "The design is coherent and needs no local changes.", before));
     try std.testing.expectEqual(before, self.messages.items.len);
+}
+
+test "#1013 bounce follow-up without tools keeps the first answer" {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    var self = pendingFixture(state.allocator());
+    const first = "TypeSafe AI sources: https://example.com/jev";
+    const meta = "That request was informational only. No files were changed.\n\nThe research is already in the previous answer.";
+    try self.messages.append(try messages.textMessage(self.arena, "user", "Read-only research about public projects"));
+    try self.messages.append(try messages.textMessage(self.arena, "assistant", first));
+    try self.messages.append(try messages.userNote(self.arena, self.provider.kind, bounce_note));
+    self.tool_calls_this_turn = 0;
+    try std.testing.expectEqualStrings(first, keepFirstIfBounceIdle(&self, meta));
+    self.tool_calls_this_turn = 2;
+    try std.testing.expectEqualStrings(meta, keepFirstIfBounceIdle(&self, meta));
+}
+
+test "#1013 without a bounce note the follow-up is the answer" {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    var self = pendingFixture(state.allocator());
+    try self.messages.append(try messages.textMessage(self.arena, "user", "what is 2+2"));
+    try self.messages.append(try messages.textMessage(self.arena, "assistant", "4"));
+    self.tool_calls_this_turn = 0;
+    try std.testing.expectEqualStrings("4", keepFirstIfBounceIdle(&self, "4"));
 }

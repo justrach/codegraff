@@ -42,7 +42,8 @@ pub fn classify(text: []const u8) Intent {
     while (words.next()) |raw| {
         const word = std.mem.trim(u8, raw, ".");
         if (oneOf(word, &.{ "fix", "edit", "implement", "add", "remove", "delete", "rename", "refactor", "write", "create", "update", "patch", "build", "test", "lint", "run", "merge", "push", "deploy", "commit" })) return .general;
-        if (oneOf(word, &.{ "summarize", "summarise", "summary", "explain", "describe", "overview", "map" })) informational = true;
+        if (oneOf(word, &.{ "summarize", "summarise", "summary", "explain", "describe", "overview", "map", "research", "investigate", "lookup" })) informational = true;
+        if (std.ascii.eqlIgnoreCase(word, "read-only")) informational = true;
     }
     return if (informational) .informational else .general;
 }
@@ -83,6 +84,8 @@ test "informational intent recognizes summaries and keeps mixed execution reques
         "Give me an OVERVIEW of this application.",
         "Summarise the tests and architecture",
         "Describe the deployment flow",
+        "Read-only research about public TypeSafe AI projects",
+        "Investigate how Folio uses citations",
     }) |text| try std.testing.expectEqual(Intent.informational, classify(text));
     for ([_][]const u8{
         "Fix src/parser.zig and summarize the change", "Explain and then refactor the parser",
