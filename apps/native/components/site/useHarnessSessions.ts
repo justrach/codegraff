@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type MutableRefObject, type Dispatch, type SetStateAction } from "react";
 import { checkHealth, disposePage, ensureSession, fetchModels, type Health } from "@/lib/acp-client";
+import { pumpIdlePeerTurns } from "./idle-peer-turns";
 import type { AcpCommand } from "@/lib/acp";
 import type { PromptModel } from "@/components/primitives/PromptBar";
 import { listSessionsPage, type StoredSession } from "@/lib/sessions";
 import { restoreProjects, persistProjects } from "@/lib/project-preferences";
-import { basename, findWorkspace, upsertWorkspace, type Workspace } from "@/lib/workspaces";
+import { findWorkspace, mergeWorkspaceActivity, restoreWorkspaceSelection, type Workspace } from "@/lib/workspaces";
 import { newSessionName, type Chat } from "./harness-types";
 type Ref<T> = MutableRefObject<T>;
 type Setter<T> = Dispatch<SetStateAction<T>>;
@@ -22,6 +23,16 @@ type Props = {
 const SIDEBAR_PAGE = 12;
 export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal}: Props) {
   const [projectsReady, setProjectsReady] = useState(false);
+  const idleCtl = useRef(new Map<number, AbortController>());
+  const watchIdle = (chatId: number, sessionId: string) => {
+    idleCtl.current.get(chatId)?.abort();
+    const ac = new AbortController();
+    idleCtl.current.set(chatId, ac);
+    void pumpIdlePeerTurns({
+      chatId, handle: handleOf(chatId), sessionId, signal: ac.signal,
+      running: () => runningRef.current.has(chatId), setChats,
+    });
+  };
   const adoptCatalog = async (chatId: number) => {
     // Use the provider and model actually resolved by graff.
     try {
@@ -74,6 +85,7 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
     });
     sessionsRef.current.set(chatId, id);
     setSessionIds((current) => ({ ...current, [chatId]: id }));
+    watchIdle(chatId, id);
     // Populate the command menu from this agent's advertisement.
     if (commands.length > 0) setCommands((current) => ({ ...current, [chatId]: commands }));
     setHealth({ ok: true });
@@ -88,15 +100,21 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
       if (cancelled) return;
       setHealth(h);
       if (!h.ok) return;
-      // The server's default workspace is always a row; the remembered pick
-      // wins when it is still listed, else the default is active.
+      // Keep startup context visible without persisting it as a folder choice.
       const root = h.cwd ?? "";
       const savedProjects = await restoreProjects(window.localStorage);
       if (cancelled) return;
-      let list = savedProjects.list;
-      if (root && !findWorkspace(list, root)) list = upsertWorkspace(list, { path: root, name: basename(root) });
-      const remembered = savedProjects.active;
-      const active = findWorkspace(list, remembered)?.path ?? findWorkspace(list, root)?.path ?? list[0]?.path ?? null;
+      let { list, active } = restoreWorkspaceSelection(savedProjects.list, savedProjects.active, root);
+      try {
+        const query = new URLSearchParams();
+        for (const row of savedProjects.list) query.append("root", row.path);
+        const response = await fetch(`/api/workspace-history?${query}`, { signal: AbortSignal.timeout(5000) });
+        if (response.ok) {
+          const data = await response.json();
+          if (Array.isArray(data.workspaces)) list = mergeWorkspaceActivity(list, data.workspaces);
+        }
+      } catch { /* Saved folder choices still work while history is unavailable. */ }
+      if (cancelled) return;
       workspacesRef.current = list;
       activePathRef.current = active;
       setWorkspaces(list);
@@ -128,6 +146,8 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
     return () => {
       cancelled = true;
       window.removeEventListener("pagehide", reap);
+      for (const ac of idleCtl.current.values()) ac.abort();
+      idleCtl.current.clear();
     };
     // The first tab's agent is spawned once per mount; later tabs spawn their
     // own on creation, and a model change respawns only the active tab's.

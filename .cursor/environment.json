@@ -1,0 +1,5 @@
+{
+  "name": "codegraff",
+  "user": "ubuntu",
+  "install": "bash scripts/cloud-agent-install.sh"
+}

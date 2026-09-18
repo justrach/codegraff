@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { reviewState, reviewDiff } from "./git-review";
+import { reviewState, reviewDiff, githubIssueUrlsFromRemote } from "./git-review";
 test("shared review includes staged, unstaged, new and deleted files without shell path interpretation", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'graff-review-'));
   const git = (...args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'ignore' });
@@ -43,5 +43,25 @@ test("numstat retains tabs in file names", async () => {
     const state = await reviewState(root, 'staged');
     assert.equal(state.files[0].path, 'with\ttab.txt');
     assert.equal(state.totalAdd, 2);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+test("github issue URLs come from a GitHub origin and stay off other remotes", async () => {
+  assert.deepEqual(githubIssueUrlsFromRemote("https://github.com/justrach/codegraff.git"), {
+    list: "https://github.com/justrach/codegraff/issues",
+    create: "https://github.com/justrach/codegraff/issues/new",
+  });
+  assert.deepEqual(githubIssueUrlsFromRemote("git@github.com:justrach/codegraff.git"), {
+    list: "https://github.com/justrach/codegraff/issues",
+    create: "https://github.com/justrach/codegraff/issues/new",
+  });
+  assert.equal(githubIssueUrlsFromRemote("https://gitlab.com/justrach/codegraff.git"), null);
+  const root = mkdtempSync(path.join(os.tmpdir(), "graff-review-github-"));
+  try {
+    execFileSync("git", ["init", "-q", root]);
+    execFileSync("git", ["remote", "add", "origin", "https://github.com/justrach/codegraff.git"], { cwd: root });
+    assert.deepEqual((await reviewState(root)).github, {
+      list: "https://github.com/justrach/codegraff/issues",
+      create: "https://github.com/justrach/codegraff/issues/new",
+    });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

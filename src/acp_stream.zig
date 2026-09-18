@@ -125,9 +125,17 @@ pub fn translateEvent(
     ev: Value,
     id_buf: *[64]u8,
     next_tool: *u32,
-) !enum { none, thought, text, tool } {
+) !enum { none, thought, text, tool, notice } {
     if (ev != .object) return .none;
     const typ = util.strFieldObj(ev.object, "type") orelse return .none;
+    if (std.mem.eql(u8, typ, "review_checkpoint")) {
+        const text = util.strFieldObj(ev.object, "text") orelse return .none;
+        if (text.len == 0) return .none;
+        try writeMessage(w, session_id, "\n\n");
+        try writeMessage(w, session_id, text);
+        try writeMessage(w, session_id, "\n\n");
+        return .notice;
+    }
     if (std.mem.eql(u8, typ, "reasoning")) {
         const text = util.strFieldObj(ev.object, "text") orelse return .none;
         if (text.len == 0) return .none;
@@ -180,6 +188,18 @@ pub fn translateEvent(
         };
         try writeToolDone(w, session_id, use_id, is_error, text);
         return .tool;
+    }
+    if (std.mem.eql(u8, typ, "ask_user")) {
+        try proto.writeNotification(w, "session/update", .{
+            .sessionId = session_id,
+            .update = .{
+                .sessionUpdate = "gui_ask_user",
+                .callId = util.strFieldObj(ev.object, "call_id") orelse "",
+                .question = util.strFieldObj(ev.object, "question") orelse "",
+                .input = ev.object.get("input") orelse Value{ .object = .empty },
+            },
+        });
+        return .notice;
     }
     return .none;
 }
@@ -241,6 +261,10 @@ pub const EventSink = struct {
         switch (kind) {
             .text => {
                 self.saw_text.* = true;
+                self.streamed_any = true;
+            },
+            .notice => {
+                self.saw_text.* = false;
                 self.streamed_any = true;
             },
             .tool => self.saw_text.* = false,
@@ -317,6 +341,22 @@ test "translateEvent: an id-less tool_call_started updates the announced call" {
     _ = try translateEvent(&w, "s1", finished.value, &id_buf, &next);
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "completed") != null);
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "\"content\"") == null);
+}
+
+test "translateEvent: ask_user becomes a gui_ask_user update" {
+    var buf: [2048]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const ev = try std.json.parseFromSlice(Value, a, "{\"type\":\"ask_user\",\"call_id\":\"q1\",\"question\":\"Which one?\",\"input\":{\"options\":[\"A\",\"B\"]}}", .{});
+    defer ev.deinit();
+    var id_buf: [64]u8 = @splat(0);
+    var next: u32 = 0;
+    try testing.expectEqual(.notice, try translateEvent(&w, "s1", ev.value, &id_buf, &next));
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "gui_ask_user") != null);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "Which one?") != null);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "\"q1\"") != null);
 }
 
 test "translateEvent: reasoning and text become chunks" {
@@ -434,4 +474,20 @@ test "parallel tool results retain their own IDs including long IDs" {
         const update = parsed.value.object.get("params").?.object.get("update").?;
         try std.testing.expectEqualStrings(id, update.object.get("toolCallId").?.string);
     }
+}
+
+test "review checkpoints stream a notice without suppressing the final answer" {
+    var output: Io.Writer.Allocating = .init(testing.allocator);
+    defer output.deinit();
+    var session_id: []const u8 = "review-session";
+    var saw_text = true;
+    var sink: EventSink = undefined;
+    sink.init(testing.allocator, &output.writer, &session_id, &saw_text);
+    defer sink.deinit();
+    try sink.writer.writeAll("{\"type\":\"review_checkpoint\",\"text\":\"Review remains in progress.\",\"complete\":false}\n");
+    try sink.writer.flush();
+    try testing.expect(!saw_text);
+    try testing.expect(sink.streamed_any);
+    try testing.expect(std.mem.indexOf(u8, output.writer.buffered(), "Review remains in progress.") != null);
+    try testing.expect(std.mem.indexOf(u8, output.writer.buffered(), "stopReason") == null);
 }

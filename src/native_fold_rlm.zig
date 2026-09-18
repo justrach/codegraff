@@ -1,4 +1,4 @@
-//! Catalog tests for default `rlm` (ADR 0124). Split out of native_fold.zig
+//! Catalog tests for default `rlm` (ADR 0140). Split out of native_fold.zig
 //! so that file stays under the 600-line ceiling.
 
 const std = @import("std");
@@ -38,7 +38,7 @@ test "rlm joins the fold only while available (off under --old)" {
     try std.testing.expect(!fold.blocked("rlm"));
 }
 
-test "available rlm is on the catalog with no batch or compactAt gate" {
+test "folded rlm stays off the catalog when rlm is off; on lists it" {
     const saved_avail = rlm.available;
     const saved_spec = rlm_spec.available;
     const saved_enabled = fold.enabled;
@@ -74,8 +74,6 @@ test "available rlm is on the catalog with no batch or compactAt gate" {
     try std.testing.expect(fold.isFolded("rlm"));
     try std.testing.expect(fold.listed());
     try std.testing.expect(!fold.catalogSkips("rlm"));
-    try std.testing.expect(!fold.noticeWideNative(&.{ "read_file", "codedb", "bash" }));
-    try std.testing.expect(!fold.noticeContext(0, 8000));
     const shown = try schema_mod.renderRootTools(arena, .openai, &with_rlm, &.{});
     try std.testing.expect(std.mem.indexOf(u8, shown, "rlm") != null);
     try std.testing.expect(std.mem.indexOf(u8, shown, "llm_query") != null);
@@ -114,6 +112,20 @@ test "lean still lists rlm when it is available" {
     try std.testing.expect(std.mem.indexOf(u8, shown, rlm.tool_schema) != null);
 }
 
+test "a four-wide native batch is not required to list rlm" {
+    const saved_spec = rlm_spec.available;
+    defer {
+        rlm_spec.available = saved_spec;
+        fold.resetRlmDiscovery();
+    }
+    isolate();
+    rlm_spec.available = true;
+    try std.testing.expect(fold.listed());
+    try std.testing.expect(!fold.noticeWideNative(&.{ "read_file", "codedb", "bash" }));
+    try std.testing.expect(!fold.noticeWideNative(&.{ "read_file", "codedb", "bash", "webfetch" }));
+    try std.testing.expect(fold.listed());
+}
+
 test "MCP fan-out does not hide an available rlm" {
     const saved_spec = rlm_spec.available;
     defer {
@@ -132,20 +144,6 @@ test "MCP fan-out does not hide an available rlm" {
     try std.testing.expect(fold.listed());
 }
 
-test "a four-wide native batch is not required to list rlm" {
-    const saved_spec = rlm_spec.available;
-    defer {
-        rlm_spec.available = saved_spec;
-        fold.resetRlmDiscovery();
-    }
-    isolate();
-    rlm_spec.available = true;
-    try std.testing.expect(fold.listed());
-    try std.testing.expect(!fold.catalogSkips("rlm"));
-    try std.testing.expect(!fold.noticeWideNative(&.{}));
-    try std.testing.expect(fold.listed());
-}
-
 test "crossing 50% of compactAt does not change listing" {
     const saved_spec = rlm_spec.available;
     defer {
@@ -161,7 +159,7 @@ test "crossing 50% of compactAt does not change listing" {
     try std.testing.expect(fold.listed());
 }
 
-test "available rlm stays in the catalog head, not a late tail append" {
+test "available rlm stays in the catalog head without a late tail append" {
     const saved_avail = rlm.available;
     const saved_spec = rlm_spec.available;
     const saved_stable = mcp_schema_gate.g_stable_catalog;
@@ -194,8 +192,22 @@ test "available rlm stays in the catalog head, not a late tail append" {
     const first = try schema_mod.renderRootTools(arena, .openai, &specs, &.{});
     try std.testing.expect(std.mem.indexOf(u8, first, "rlm") != null);
     try std.testing.expect(std.mem.indexOf(u8, first, rlm.tool_schema) != null);
-
-    fold.markLoaded("rlm");
+    try std.testing.expect(!fold.noticeContext(50_000, 80_000));
     const again = try schema_mod.renderRootTools(arena, .openai, &specs, &.{});
-    try std.testing.expectEqual(first.len, again.len);
+    try std.testing.expectEqualStrings(first, again);
+}
+
+test "explicit rlm wording is not required to list rlm" {
+    const saved_avail = rlm.available;
+    defer {
+        rlm.available = saved_avail;
+        rlm.sync();
+        fold.resetRlmDiscovery();
+    }
+    isolate();
+    rlm.available = true;
+    rlm.sync();
+    try std.testing.expect(fold.listed());
+    try std.testing.expect(!fold.noticeExplicit("summarize the architecture"));
+    try std.testing.expect(fold.listed());
 }

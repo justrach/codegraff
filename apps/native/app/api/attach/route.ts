@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import os from "node:os";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { attachmentDirectory, attachmentStore } from "@/lib/attachment-store";
 import path from "node:path";
 import { NextRequest } from "next/server";
 
@@ -11,33 +11,12 @@ export const dynamic = "force-dynamic";
  *  bytes have to land on disk before a prompt can mention them. They go to a
  *  temp directory rather than the workspace: an attachment belongs to one
  *  message, not to the project the user happens to be sitting in. */
-const DIR = path.join(os.tmpdir(), "graff-native-attachments");
+const DIR = attachmentDirectory;
 
 /** Generous on purpose. The harness downscales an oversized image to fit its
  *  own budget, so a tight limit here would refuse work it could actually do;
  *  this only stops something pathological. */
 const MAX_BYTES = 25 * 1024 * 1024;
-
-/** Attachments are per-message scratch. Sweep anything from a previous day so
- *  the directory cannot grow without bound. */
-const MAX_AGE_MS = 24 * 60 * 60 * 1000;
-
-function sweep(now: number) {
-  let entries: string[];
-  try {
-    entries = readdirSync(DIR);
-  } catch {
-    return;
-  }
-  for (const name of entries) {
-    const full = path.join(DIR, name);
-    try {
-      if (now - statSync(full).mtimeMs > MAX_AGE_MS) rmSync(full, { force: true });
-    } catch {
-      // raced with another sweep, or not ours to remove
-    }
-  }
-}
 
 /** Keep the name recognisable in the chip, but never let it steer where the
  *  write lands. The extension carries meaning: `isImagePath` reads it to
@@ -91,18 +70,25 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: `larger than the ${MAX_BYTES / (1024 * 1024)}MB attachment limit` }, { status: 413 });
   }
 
-  const now = Date.now();
-  mkdirSync(DIR, { recursive: true });
-  sweep(now);
-
+  attachmentStore().sweep();
   const name = safeName(file.name, file.type);
-  // Collisions are otherwise certain: every pasted screenshot has the same name.
-  const stamped = `${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}-${name}`;
-  const target = path.join(DIR, stamped);
+  let target: string;
   try {
-    writeFileSync(target, new Uint8Array(await file.arrayBuffer()));
+    target = attachmentStore().create(name, new Uint8Array(await file.arrayBuffer()));
   } catch (err) {
     return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }
   return Response.json({ ok: true, path: target, name, type: file.type, size: file.size });
+}
+
+
+export async function DELETE(req: NextRequest) {
+  try {
+    const body = await req.json();
+    if (!Array.isArray(body.paths) || body.paths.length > 32 || !body.paths.every((p: unknown) => typeof p === "string")) {
+      return Response.json({ error: "Invalid attachments" }, { status: 400 });
+    }
+    for (const target of body.paths) attachmentStore().discard(target);
+    return Response.json({ ok: true });
+  } catch { return Response.json({ error: "Attachment cleanup failed" }, { status: 500 }); }
 }

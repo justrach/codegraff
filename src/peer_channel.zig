@@ -27,6 +27,7 @@ const repl = @import("repl.zig");
 const peer_context = @import("peer_context.zig");
 const peer_inbox = @import("peer_inbox.zig");
 const peer_target = @import("peer_target.zig");
+const peer_idle = @import("peer_idle.zig");
 
 const Agent = agent_mod.Agent;
 const ToolCall = tools_mod.ToolCall;
@@ -36,7 +37,7 @@ const Owner = worktree_lease.Owner;
 pub const tool_name = "peer_message";
 pub const tool_desc = "Ping a co-resident session, list who is live, read parked inbound, or transfer an artifact claim. action=list | inbox | send (default) | claim | release | handoff | status. session is a DM (visible title, saved-session base, id/pid/name/goal); omit for this folder's room. Presence is device-local. Not \"all\".";
 pub const tool_schema =
-    \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["send", "list", "inbox", "claim", "release", "handoff", "status"], "description": "send (default): ping a peer. list: who is live. inbox: read+clear parked inbound. claim/release/handoff/status: repository-scoped artifact ownership (kind+key)."}, "session": {"type": "string", "description": "who to ping or hand a claim to: exact visible title, exact saved-session base, unique normalized title/slug, id, pid, unique name fragment, or unique goal fragment (omit = this folder's room). Named targets are DMs. Presence is device-local. Not \"all\"."}, "text": {"type": "string", "description": "one or two sentences of coordination intent (required for send)"}, "kind": {"type": "string", "enum": ["branch", "issue", "commit", "pull_request", "publication"], "description": "artifact kind for claim/release/handoff/status"}, "key": {"type": "string", "description": "artifact key: branch name, issue number, commit SHA, or PR number"}}}
+    \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["send", "list", "inbox", "claim", "release", "handoff", "status"], "description": "send (default): ping a peer. list: who is live. inbox: read+clear parked inbound. claim/release/handoff/status: repository-scoped artifact ownership (kind+key)."}, "session": {"type": "string", "description": "who to ping or hand a claim to: exact visible title, exact saved-session base, unique normalized title/slug, id, pid, unique name fragment, or unique goal fragment (omit = this folder's room). Named targets are DMs. Presence is device-local. Not \"all\"."}, "text": {"type": "string", "description": "one or two sentences of coordination intent (required for send)"}, "kind": {"type": "string", "enum": ["branch", "issue", "commit", "pull_request", "publication"], "description": "artifact kind for claim/release/handoff/status"}, "key": {"type": "string", "description": "artifact key: branch name, issue number, commit SHA, or PR number"}, "repo": {"type": "string", "description": "GitHub repository for claim/release/handoff/status, as owner/name or host/owner/name; defaults to the workspace CLI repository. Use the same repository for release or handoff."}}}
 ;
 
 /// Whether the named session sits in MY worktree (routes the post: worktree
@@ -66,13 +67,16 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
     };
     const action = tools_mod.json_args.str(obj, "action") orelse "send";
     if (std.mem.eql(u8, action, "claim") or std.mem.eql(u8, action, "release") or std.mem.eql(u8, action, "handoff") or std.mem.eql(u8, action, "status")) {
-        return @import("artifact_claim.zig").handleTool(
+        if (obj.get("repo")) |repo| if (repo != .string) return .{ .text = "claim repo must be a repository name", .is_error = true };
+        return @import("artifact_claim.zig").handleToolIn(
             self.arena,
             self.io,
             action,
             tools_mod.json_args.str(obj, "kind") orelse "publication",
             tools_mod.json_args.str(obj, "key") orelse "",
             tools_mod.json_args.str(obj, "session") orelse "",
+            self.agent_cwd orelse ".",
+            tools_mod.json_args.str(obj, "repo"),
         );
     }
     if (std.mem.eql(u8, action, "list")) {
@@ -84,6 +88,7 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
             .text = "peer_message: inbox read failed; messages and dropped count retained — retry action=inbox",
             .is_error = true,
         };
+        peer_idle.noteInboxConsumed();
         return .{ .text = text, .is_error = false };
     }
     if (!std.mem.eql(u8, action, "send")) return .{
@@ -125,12 +130,12 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
         .is_error = true,
     };
     if (to.len == 0) return .{
-        .text = "posted to this folder's room — every live session here hears it at their next step boundary. Set session to DM one peer instead.",
+        .text = "posted to this folder's room — every live idle session here starts a turn. A busy one reads it when that turn ends. Set session to DM one peer instead.",
         .is_error = false,
     };
     const via: []const u8 = if (cross_folder) "device room" else "this folder";
     return .{
-        .text = try std.fmt.allocPrint(self.arena, "DM to \"{s}\" via the {s} — only they hear it, at their next step boundary. Re-ping with session=\"{s}\".", .{ to, via, to }),
+        .text = try std.fmt.allocPrint(self.arena, "DM to \"{s}\" via the {s} — only they hear it. An idle root starts a turn; a busy one waits until that turn ends. Re-ping with session=\"{s}\".", .{ to, via, to }),
         .is_error = false,
     };
 }

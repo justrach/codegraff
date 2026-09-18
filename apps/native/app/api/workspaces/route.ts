@@ -70,6 +70,9 @@ export async function POST(req: NextRequest) {
   } catch {
     return Response.json({ error: "expected json" }, { status: 400 });
   }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return Response.json({ error: "expected an object" }, { status: 400 });
+  }
   const name = typeof body.name === "string" ? body.name : "";
   const reason = folderNameError(name);
   if (reason) return Response.json({ error: reason }, { status: 400 });

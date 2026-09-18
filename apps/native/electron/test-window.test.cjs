@@ -83,3 +83,22 @@ test('visible mode blocks macOS application activation as well as window focus',
   expect(() => app.focus()).toThrow('#832');
   expect(() => win.focus()).toThrow('#832');
 });
+
+
+test('hidden pin smoke check never loads the Electron runtime', () => {
+  const { spawnSync } = require('node:child_process');
+  const script = `
+    const Module = require('node:module');
+    const load = Module._load;
+    Module._load = function(id, ...args) {
+      if (id === 'electron') throw Error('hidden check loaded Electron');
+      return load.call(this, id, ...args);
+    };
+    require('./smoke-browser-pin.cjs').smokeBrowserPin({}).then(result => {
+      if (!result.startsWith('Skipped:')) process.exitCode = 1;
+    }).catch(error => { console.error(error); process.exitCode = 1; });
+  `;
+  const result = spawnSync('node', ['-e', script], { cwd: __dirname, env: process.env, encoding: 'utf8', timeout: 5000 });
+  expect(result.error).toBeUndefined();
+  expect(result.status).toBe(0);
+});

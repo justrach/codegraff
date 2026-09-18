@@ -77,6 +77,30 @@ export function splitImageMarkers(text: string): string[] {
   return text.split(IMAGE_MARKER_RE);
 }
 
+/** Pull staged-image markers out of draft text so the composer never shows
+ *  `@[…/graff-native-attachments/….png]` as spellchecked prose. */
+export function liftAttachmentMarkers(text: string): { text: string; attachments: Attachment[] } {
+  const parts = splitImageMarkers(text);
+  if (parts.length < 2) return { text, attachments: [] };
+  const attachments: Attachment[] = [];
+  let visible = "";
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i]!;
+    if (i % 2 === 1) {
+      const path = part.slice(2, -1);
+      attachments.push({
+        id: path,
+        name: markerName(part),
+        path,
+        preview: `/api/attach?name=${encodeURIComponent(markerName(part))}`,
+      });
+    } else {
+      visible += part;
+    }
+  }
+  return { text: visible.replace(/[ \t]{2,}/g, " ").trim(), attachments };
+}
+
 /** The staged file's basename — the name `/api/attach?name=` answers to. */
 export function markerName(marker: string): string {
   return marker.slice(marker.lastIndexOf("/") + 1, -1);
@@ -94,4 +118,15 @@ export function withAttachmentMarkers(text: string, attachments: readonly Attach
 /** Object URLs outlive the component that made them; free them explicitly. */
 export function releaseAttachments(attachments: readonly Attachment[]): void {
   for (const a of attachments) if (a.preview) URL.revokeObjectURL(a.preview);
+}
+
+
+/** Dropped drafts release their owned files; sent attachments only release URLs. */
+export function discardAttachments(attachments: readonly Attachment[]): void {
+  releaseAttachments(attachments);
+  if (!attachments.length) return;
+  for (let i = 0; i < attachments.length; i += 32) {
+    void fetch("/api/attach", { method: "DELETE", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ paths: attachments.slice(i, i + 32).map(a => a.path) }), keepalive: true }).catch(() => {});
+  }
 }

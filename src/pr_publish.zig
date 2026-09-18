@@ -113,26 +113,52 @@ pub fn extractBody(cmd: []const u8) []const u8 {
     return "";
 }
 
-pub fn hasVerificationSection(body: []const u8) bool {
-    const lower_needles = [_][]const u8{
-        "## verification", "## verify", "verification",
-        "commands run",    "local:",    "remote:",
-        "zig build test",  "tier 1",    "ci:",
-    };
-    var buf: [2048]u8 = undefined;
-    const n = @min(body.len, buf.len);
-    for (body[0..n], 0..) |c, i| buf[i] = std.ascii.toLower(c);
-    const slice = buf[0..n];
-    for (lower_needles) |need| if (std.mem.indexOf(u8, slice, need) != null) return true;
+// A disclosure format check, not evidence that a command ran or covers a claim.
+// Independent head observations and retained local failures remain authoritative.
+fn containsInsensitive(text: []const u8, needle: []const u8) bool {
+    if (text.len < needle.len) return false;
+    for (0..text.len - needle.len + 1) |i| {
+        if (std.ascii.eqlIgnoreCase(text[i..][0..needle.len], needle)) return true;
+    }
     return false;
 }
 
+fn reportedResult(text: []const u8) bool {
+    var words = std.mem.tokenizeAny(u8, text, " \t\r\n.,:;()[]*!—");
+    while (words.next()) |word| {
+        for ([_][]const u8{ "pass", "passed", "fail", "failed", "success", "successful", "failure", "pending", "skipped", "blocked" }) |result| {
+            if (std.ascii.eqlIgnoreCase(word, result)) return true;
+        }
+    }
+    return containsInsensitive(text, "exit 0") or containsInsensitive(text, "exit code 0");
+}
+
+pub fn hasVerificationSection(body: []const u8) bool {
+    var local = false;
+    var remote = false;
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r-*#");
+        if (std.ascii.startsWithIgnoreCase(line, "local:")) {
+            const value = std.mem.trim(u8, line[6..], " \t");
+            // Keep the command separate from the result: a script named
+            // test_passed.py is not a reported successful execution.
+            const begin = std.mem.indexOfScalar(u8, value, '`') orelse continue;
+            const tail = value[begin + 1 ..];
+            const end = std.mem.indexOfScalar(u8, tail, '`') orelse continue;
+            if (std.mem.trim(u8, tail[0..end], " \t").len == 0) continue;
+            local = local or reportedResult(tail[end + 1 ..]);
+        } else if (std.ascii.startsWithIgnoreCase(line, "remote:") or std.ascii.startsWithIgnoreCase(line, "ci:")) {
+            remote = remote or reportedResult(line) or containsInsensitive(line, "no pre-pr run") or
+                containsInsensitive(line, "no runs") or containsInsensitive(line, "not run") or
+                containsInsensitive(line, "unavailable") or containsInsensitive(line, "unknown");
+        }
+    }
+    return local and remote;
+}
+
 pub fn hasAbsoluteClaim(body: []const u8) bool {
-    var buf: [2048]u8 = undefined;
-    const n = @min(body.len, buf.len);
-    for (body[0..n], 0..) |c, i| buf[i] = std.ascii.toLower(c);
-    const slice = buf[0..n];
-    for (absolute_words) |w| if (std.mem.indexOf(u8, slice, w) != null) return true;
+    for (absolute_words) |word| if (containsInsensitive(body, word)) return true;
     return false;
 }
 
@@ -186,7 +212,7 @@ pub fn reason(decision: Decision, ev: Evidence) []const u8 {
         .block => if (claimOverreach(ev.body, ev.coverage))
             "behavior claim overreaches the committed regression (helper/one-separator coverage is not the changed dispatch path)"
         else if (!hasVerificationSection(ev.body))
-            "PR body needs a Verification section listing the commands and results actually run"
+            "PR body needs Local: `command` — result and Remote: CI status (or no pre-PR runs); report the commands and results actually observed"
         else if (ev.head_status == .pending)
             "non-draft publication blocked: the exact head SHA still has a pending branch run"
         else if (ev.head_status == .failed)
@@ -291,7 +317,7 @@ test "classifies create, draft, ready, and checks --watch" {
 }
 
 test "#847 failed or pending head blocks non-draft create" {
-    const body = "## Verification\nlocal: zig build test (pass)\nremote: pending";
+    const body = "## Verification\nlocal: `zig build test` (pass)\nremote: pending";
     try std.testing.expectEqual(Decision.block, decide(false, .{ .head_status = .failed, .body = body }));
     try std.testing.expectEqual(Decision.block, decide(false, .{ .head_status = .pending, .body = body }));
     try std.testing.expectEqual(Decision.allow, decide(true, .{ .head_status = .failed, .body = body }));
@@ -300,20 +326,20 @@ test "#847 failed or pending head blocks non-draft create" {
 
 test "#847 base-reproduced failure needs disclosure or a draft" {
     const bare = "## Verification\nzig build test";
-    const disclosed = "## Verification\nknown failure reproduced on the base branch\nzig build test";
+    const disclosed = "## Verification\nknown failure reproduced on the base branch\nLocal: `zig build test` failed\nRemote: failed";
     try std.testing.expectEqual(Decision.block, decide(false, .{ .head_status = .failed, .base_reproduced = true, .body = bare }));
     try std.testing.expectEqual(Decision.draft_only, decide(false, .{ .head_status = .failed, .base_reproduced = true, .body = disclosed }));
     try std.testing.expectEqual(Decision.allow, decide(true, .{ .head_status = .failed, .base_reproduced = true, .body = disclosed }));
 }
 
 test "#847 PR-only workflows with no pre-PR run stay allowed" {
-    const body = "## Verification\nlocal: zig build test\nremote: no pre-PR run; CI is PR-triggered";
+    const body = "## Verification\nlocal: `zig build test` passed\nremote: no pre-PR run; CI is PR-triggered";
     try std.testing.expectEqual(Decision.allow, decide(false, .{ .head_status = .none, .body = body }));
 }
 
 test "#847 missing verification section blocks non-draft" {
     try std.testing.expectEqual(Decision.block, decide(false, .{ .head_status = .passed, .body = "fixes the bug" }));
-    try std.testing.expectEqual(Decision.allow, decide(false, .{ .head_status = .passed, .body = "## Verification\nzig build test: pass" }));
+    try std.testing.expectEqual(Decision.allow, decide(false, .{ .head_status = .passed, .body = "## Verification\nLocal: `zig build test`: pass\nRemote: passed" }));
 }
 
 test "#847 one-separator helper test cannot publish an atomic claim" {
@@ -345,7 +371,7 @@ test "#847 gateCommand blocks a non-draft create with failed head" {
     setTestEvidence(.{
         .head_sha = "abc123",
         .head_status = .failed,
-        .body = "## Verification\nzig build test",
+        .body = "Local: `zig build test` passed\nRemote: failed",
     });
     defer clearTestEvidence();
     const msg = gateCommand(arena_state.allocator(), "gh pr create --title t --body '## Verification\nzig build test'").?;
@@ -370,7 +396,7 @@ test "#847 run-list JSON maps failed, pending, passed, and empty" {
 
 test "extractBody reads --body quoted text" {
     try std.testing.expectEqualStrings("hello", extractBody("gh pr create --body \"hello\" --title x"));
-    try std.testing.expect(hasVerificationSection("## Verification\nran zig build test"));
+    try std.testing.expect(hasVerificationSection("Local: `zig build test` passed\nRemote: no pre-PR runs"));
     try std.testing.expect(hasAbsoluteClaim("atomic delete is preserved"));
 }
 
@@ -380,4 +406,26 @@ test "#847 compound checks cannot hide a later publication and ready undo stays 
     try std.testing.expect(isPrCreate("/usr/local/bin/gh -R owner/repo pr create --body x"));
     try std.testing.expect(!isPrReady("gh pr ready --undo"));
     try std.testing.expect(!isDraftFlag("gh pr create --body '--draft'"));
+}
+
+test "#847 verification heading is not commands and results" {
+    for ([_][]const u8{
+        "verification",
+        "## Verification\nLocal tests passed.",
+        "Local: `zig build test`\nRemote: passed",
+        "Local: `zig build test` passed",
+        "Local: `test_passed.py`\nRemote: passed",
+        "Local: `` passed\nRemote: passed",
+    }) |body| {
+        try std.testing.expectEqual(Decision.block, decide(false, .{ .head_status = .passed, .body = body }));
+        try std.testing.expectEqual(Decision.allow, decide(true, .{ .head_status = .passed, .body = body }));
+    }
+}
+
+test "#847 verification disclosure after long body is inspected" {
+    var body: [3200]u8 = undefined;
+    @memset(&body, 'x');
+    const ending = "\n- LOCAL: `python3 -m unittest` — passed.\n- CI: no pre-PR runs.";
+    @memcpy(body[body.len - ending.len ..], ending);
+    try std.testing.expectEqual(Decision.allow, decide(false, .{ .head_status = .none, .body = &body }));
 }

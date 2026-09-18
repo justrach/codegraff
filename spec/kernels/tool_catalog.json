@@ -3,9 +3,7 @@
   "version": 1,
   "universe": {
     "base": [
-      "bash",
-      "bash_output",
-      "bash_kill",
+      "shell",
       "read_file",
       "edit_file",
       "write_file",
@@ -40,9 +38,7 @@
       "imagegen"
     ],
     "local": [
-      "bash",
-      "bash_output",
-      "bash_kill",
+      "shell",
       "read_file",
       "edit_file",
       "write_file",
@@ -52,7 +48,7 @@
       "imagegen"
     ],
     "lean": [
-      "bash",
+      "shell",
       "read_file",
       "edit_file",
       "write_file",
@@ -74,9 +70,7 @@
         "seat": "root"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -116,9 +110,7 @@
         "seat": "sub"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -143,9 +135,7 @@
         "seat": "root"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -186,9 +176,7 @@
         "seat": "sub"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -213,9 +201,7 @@
         "seat": "root"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -256,9 +242,7 @@
         "seat": "sub"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -283,9 +267,7 @@
         "seat": "root"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -327,9 +309,7 @@
         "seat": "sub"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -354,9 +334,7 @@
         "seat": "root"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -395,9 +373,7 @@
         "seat": "sub"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -421,9 +397,7 @@
         "seat": "root"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -463,9 +437,7 @@
         "seat": "sub"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -489,9 +461,7 @@
         "seat": "root"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -531,9 +501,7 @@
         "seat": "sub"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -557,9 +525,7 @@
         "seat": "root"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -600,9 +566,7 @@
         "seat": "sub"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -626,7 +590,7 @@
         "seat": "root"
       },
       "advertised": [
-        "bash",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -650,9 +614,7 @@
         "seat": "sub"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -677,7 +639,7 @@
         "seat": "root"
       },
       "advertised": [
-        "bash",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -701,9 +663,7 @@
         "seat": "sub"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -728,7 +688,7 @@
         "seat": "root"
       },
       "advertised": [
-        "bash",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -752,9 +712,7 @@
         "seat": "sub"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -779,7 +737,7 @@
         "seat": "root"
       },
       "advertised": [
-        "bash",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -803,9 +761,7 @@
         "seat": "sub"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -830,7 +786,7 @@
         "seat": "root"
       },
       "advertised": [
-        "bash",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -852,9 +808,7 @@
         "seat": "sub"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -878,7 +832,7 @@
         "seat": "root"
       },
       "advertised": [
-        "bash",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -900,9 +854,7 @@
         "seat": "sub"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -926,7 +878,7 @@
         "seat": "root"
       },
       "advertised": [
-        "bash",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -948,9 +900,7 @@
         "seat": "sub"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -974,7 +924,7 @@
         "seat": "root"
       },
       "advertised": [
-        "bash",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -996,9 +946,7 @@
         "seat": "sub"
       },
       "advertised": [
-        "bash",
-        "bash_output",
-        "bash_kill",
+        "shell",
         "read_file",
         "edit_file",
         "write_file",
@@ -1041,15 +989,13 @@
         "workspace"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1068,15 +1014,13 @@
         "skill"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1111,15 +1055,13 @@
         "workspace"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1138,15 +1080,13 @@
         "skill"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1181,15 +1121,13 @@
         "workspace"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1208,15 +1146,13 @@
         "skill"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1252,15 +1188,13 @@
         "workspace"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1279,15 +1213,13 @@
         "skill"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1321,15 +1253,13 @@
         "workspace"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1348,15 +1278,13 @@
         "skill"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1391,15 +1319,13 @@
         "workspace"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1418,15 +1344,13 @@
         "skill"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1461,15 +1385,13 @@
         "workspace"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1488,15 +1410,13 @@
         "skill"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1532,15 +1452,13 @@
         "workspace"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1559,15 +1477,13 @@
         "skill"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1587,15 +1503,13 @@
         "subagent"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1614,15 +1528,13 @@
         "skill"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1642,15 +1554,13 @@
         "subagent"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1669,15 +1579,13 @@
         "skill"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1697,15 +1605,13 @@
         "subagent"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1724,15 +1630,13 @@
         "skill"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1752,15 +1656,13 @@
         "subagent"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1779,15 +1681,13 @@
         "skill"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1807,15 +1707,13 @@
         "subagent"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1834,15 +1732,13 @@
         "skill"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1862,15 +1758,13 @@
         "subagent"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1889,15 +1783,13 @@
         "skill"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1917,15 +1809,13 @@
         "subagent"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1944,15 +1834,13 @@
         "skill"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1972,15 +1860,13 @@
         "subagent"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     },
@@ -1999,15 +1885,13 @@
         "skill"
       ],
       "blocked": [
-        "bash",
-        "bash_kill",
-        "bash_output",
         "codedb",
         "edit_file",
         "imagegen",
         "read_file",
         "read_tool_result",
         "render_html",
+        "shell",
         "write_file"
       ]
     }

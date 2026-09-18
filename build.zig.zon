@@ -6,6 +6,10 @@
         .zigzag = .{
             .path = "vendor/zigzag",
         },
+        .accord = .{
+            .url = "git+https://github.com/justrach/accord#c053e17295cb7ad8c0fb284d7d7748aad4aeeeea",
+            .hash = "accord-0.0.0-aQy1J3iBAgADDHWM0hIAXhISKtQ0zasFN7TyLhI_tkI8",
+        },
     },
     .paths = .{ "", "vendor/zigzag" },
     .fingerprint = 0x99ab87d62eef2520,

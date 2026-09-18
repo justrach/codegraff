@@ -4,6 +4,7 @@ const Io = std.Io;
 const Agent = @import("agent.zig").Agent;
 const proto = @import("acp_protocol.zig");
 const cancel_source = @import("cancel_source.zig");
+const acp_ask = @import("acp_ask.zig");
 
 pub const Inbox = struct {
     gpa: std.mem.Allocator,
@@ -16,13 +17,24 @@ pub const Inbox = struct {
     session_id: ?[]u8 = null,
     cancelled: bool = false,
     active: bool = false,
+    tick: bool = false,
     future: ?Io.Future(void) = null,
+    tick_future: ?Io.Future(void) = null,
 
-    pub fn start(self: *Inbox) void {
-        self.future = self.io.async(pump, .{self});
+    pub const Event = union(enum) {
+        line: []const u8,
+        tick,
+    };
+
+    pub fn start(self: *Inbox) !void {
+        // async may run the endless reader inline when its worker quota is
+        // busy, preventing the dispatcher from ever answering initialize.
+        self.future = try self.io.concurrent(pump, .{self});
+        self.tick_future = try self.io.concurrent(tickPump, .{self});
     }
 
     pub fn deinit(self: *Inbox) void {
+        if (self.tick_future) |*f| f.cancel(self.io);
         if (self.future) |*f| f.cancel(self.io);
         for (self.lines.items) |line| self.gpa.free(line);
         self.lines.deinit(self.gpa);
@@ -38,6 +50,25 @@ pub const Inbox = struct {
         const line = self.lines.orderedRemove(0);
         defer self.gpa.free(line);
         return try arena.dupe(u8, line);
+    }
+
+    /// Idle loop: a stdin line, a 200ms poll tick, or EOF (`null`).
+    /// A queued line always wins over a tick so a prompt is never delayed.
+    pub fn wait(self: *Inbox, arena: std.mem.Allocator) !?Event {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        while (self.lines.items.len == 0 and !self.eof and !self.tick)
+            self.ready.waitUncancelable(self.io, &self.mutex);
+        if (self.lines.items.len > 0) {
+            const line = self.lines.orderedRemove(0);
+            defer self.gpa.free(line);
+            return .{ .line = try arena.dupe(u8, line) };
+        }
+        if (self.tick) {
+            self.tick = false;
+            return .tick;
+        }
+        return null;
     }
 
     /// Called after prepareRootTurn, under the same lock as incoming cancel.
@@ -75,8 +106,22 @@ pub const Inbox = struct {
                     if (sid == null or std.mem.eql(u8, sid.?, current)) {
                         self.cancelled = true;
                         if (self.active) cancel_source.cancel(.acp_cancel);
+                        acp_ask.cancelIfWaiting();
                     }
                 }
+                return;
+            }
+            if (std.mem.eql(u8, r.method, "session/answer")) {
+                const obj: ?std.json.ObjectMap = if (r.params) |p| (if (p == .object) p.object else null) else null;
+                const cancelled_answer = if (obj) |o| switch (o.get("cancelled") orelse .null) {
+                    .bool => |b| b,
+                    else => false,
+                } else false;
+                const answer_text: []const u8 = if (obj) |o| blk: {
+                    const v = o.get("text") orelse break :blk "";
+                    break :blk if (v == .string) v.string else "";
+                } else "";
+                acp_ask.reply(answer_text, cancelled_answer);
                 return;
             }
             if (std.mem.eql(u8, r.method, "session/prompt") and self.session_id == null)
@@ -97,6 +142,24 @@ pub const Inbox = struct {
         self.eof = true;
         self.ready.broadcast(self.io);
         self.mutex.unlock(self.io);
+    }
+
+    fn tickPump(self: *Inbox) void {
+        const accord = @import("presence_accord.zig");
+        while (true) {
+            var n: u32 = 0;
+            while (n < 4) : (n += 1) {
+                if (accord.takePing()) break;
+                self.io.sleep(.fromMilliseconds(50), .awake) catch return;
+                if (self.eof) return;
+            }
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
+            if (self.eof) break;
+            if (self.active) continue;
+            self.tick = true;
+            self.ready.broadcast(self.io);
+        }
     }
 };
 
@@ -119,6 +182,20 @@ test "ACP cancel interrupts active turn and does not cancel its successor" {
     try std.testing.expect(!Agent.esc_cancel.load(.acquire));
 }
 
+test "session/answer fills the ask mailbox without queueing a line" {
+    acp_ask.attach(std.testing.io, std.testing.allocator);
+    defer acp_ask.detach();
+    var reader: Io.Reader = .fixed("");
+    var inbox: Inbox = .{ .gpa = std.testing.allocator, .io = std.testing.io, .reader = &reader };
+    defer inbox.deinit();
+    try inbox.accept("{\"method\":\"session/answer\",\"params\":{\"text\":\"pill\",\"cancelled\":false}}");
+    try std.testing.expectEqual(@as(usize, 0), inbox.lines.items.len);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const got = try acp_ask.wait(arena_state.allocator());
+    try std.testing.expectEqualStrings("pill", got.text);
+}
+
 test "ACP cancellation before turn setup survives the reset" {
     var reader: Io.Reader = .fixed("");
     var inbox: Inbox = .{ .gpa = std.testing.allocator, .io = std.testing.io, .reader = &reader };
@@ -129,4 +206,27 @@ test "ACP cancellation before turn setup survives the reset" {
     Agent.esc_cancel.store(false, .release);
     inbox.begin();
     try std.testing.expect(Agent.esc_cancel.load(.acquire));
+}
+
+test "#1007 wait prefers a queued line over a poll tick" {
+    var reader: Io.Reader = .fixed("");
+    var inbox: Inbox = .{ .gpa = std.testing.allocator, .io = std.testing.io, .reader = &reader };
+    defer inbox.deinit();
+    inbox.tick = true;
+    try inbox.accept("{\"method\":\"session/prompt\"}");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const ev = (try inbox.wait(arena.allocator())) orelse return error.ExpectedLine;
+    try std.testing.expect(ev == .line);
+}
+
+test "#1007 wait returns a tick when idle" {
+    var reader: Io.Reader = .fixed("");
+    var inbox: Inbox = .{ .gpa = std.testing.allocator, .io = std.testing.io, .reader = &reader };
+    defer inbox.deinit();
+    inbox.tick = true;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const ev = (try inbox.wait(arena.allocator())) orelse return error.ExpectedTick;
+    try std.testing.expect(ev == .tick);
 }

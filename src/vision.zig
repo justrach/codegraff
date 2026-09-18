@@ -161,6 +161,16 @@ pub const StageResult = union(enum) {
     }
 };
 
+fn readStagedBytes(io: Io, arena: Allocator, path: []const u8) ?[]u8 {
+    const limit: Io.Limit = .limited(@intCast(clip.max_staged_image_bytes));
+    if (Io.Dir.cwd().readFileAlloc(io, path, arena, limit)) |data| return data else |_| {}
+    if (!std.fs.path.isAbsolute(path)) return null;
+    const dir_path = std.fs.path.dirname(path) orelse return null;
+    var dir = Io.Dir.openDirAbsolute(io, dir_path, .{}) catch return null;
+    defer dir.close(io);
+    return dir.readFileAlloc(io, std.fs.path.basename(path), arena, limit) catch null;
+}
+
 /// Read an image file, base64-encode it, and stage it on the agent for the next
 /// turn (shared by /image, /paste, and Ctrl-V). Refuses on non-vision models.
 ///
@@ -178,7 +188,7 @@ pub fn stageImagePath(root: *Agent, path: []const u8) StageResult {
     defer if (fit.temp) clip.discard(io, root.gpa, fit.path);
 
     const arena = root.arena;
-    const data = Io.Dir.cwd().readFileAlloc(io, fit.path, arena, .limited(@intCast(clip.max_staged_image_bytes))) catch return .read_error;
+    const data = readStagedBytes(io, arena, fit.path) orelse return .read_error;
     const enc = std.base64.standard.Encoder;
     const b64 = arena.alloc(u8, enc.calcSize(data.len)) catch return .read_error;
     _ = enc.encode(b64, data);

@@ -1,0 +1,19 @@
+/* Card-resize and panel-reveal patterns from transitions.dev, tuned to the
+   desktop's existing easing. No runtime dependency or looping animation. */
+.resize {
+  transition: width 180ms var(--ease-out-strong, ease-out), height 180ms var(--ease-out-strong, ease-out);
+}
+
+.reveal {
+  animation: transcript-reveal 180ms var(--ease-out-strong, ease-out) both;
+}
+
+@keyframes transcript-reveal {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .resize { transition: none !important; }
+  .reveal { animation: none !important; }
+}

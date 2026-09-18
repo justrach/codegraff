@@ -43,6 +43,7 @@ const editByte = input_util.editByte; // #396: job-control-aware continuation re
 const addMark = input_util.addMark;
 const readline_commit = @import("readline_commit.zig");
 const rl_image = @import("readline_image.zig");
+const rl_keys = @import("readline_keys.zig");
 const util = @import("util.zig");
 
 const main_mod = @import("main.zig");
@@ -51,6 +52,7 @@ const session = @import("session.zig");
 const Agent = agent_mod.Agent;
 const saveSession = session.saveSession;
 const shutdown_trace = @import("shutdown_trace.zig"); // #364: the quit path's first phase stamp
+const peer_idle = @import("peer_idle.zig");
 const rl_history = @import("readline_history.zig");
 const HistoryNav = rl_history.HistoryNav;
 const PasteStore = @import("readline_paste.zig").Store;
@@ -77,8 +79,8 @@ pub fn readLine(
     var cur: usize = 0; // cursor index within buf
     var nav: HistoryNav = .init(history.items.len); // history + unsent-draft nav (#101)
     defer if (nav.draft) |d| gpa.free(d);
-    out.writeAll("\x1b[?2004h") catch {}; // terminal wraps pastes in ESC[200~ … ESC[201~
-    defer out.writeAll("\x1b[?2004l") catch {};
+    out.writeAll(rl_keys.enable_seq) catch {}; // bracketed paste + distinct Cmd/Option Backspace
+    defer out.writeAll(rl_keys.restore_seq) catch {};
     out.flush() catch {};
     // Ask the terminal (DSR 6) where input starts; the renderer treats those columns as a fixed prefix
     // and wraps the input across rows below it. Cursor moves in redraw are all
@@ -195,6 +197,20 @@ pub fn readLine(
                 input_util.g_shine_phase +%= 1;
                 redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
             }
+            // #1001 / #1007: empty composer polls so peer mail can start a turn
+            // without a key — same latch as TUI idleWakeCb and graff acp.
+            if (buf.items.len == 0) {
+                const idle_ms: i32 = if (@import("presence_accord.zig").enabled()) 50 else 200;
+                while (!inputPendingTimed(idle_ms)) {
+                    var wake_buf: [512]u8 = undefined;
+                    if (peer_idle.takeIdleWake(root.io, &wake_buf)) |wake| {
+                        buf.appendSlice(gpa, wake) catch break;
+                        try out.writeAll("\r\n");
+                        try out.flush();
+                        return buf.items;
+                    }
+                }
+            }
             break :blk switch (tty.promptByte(in)) {
                 .byte => |b| b,
                 .eof => return null,
@@ -262,10 +278,9 @@ pub fn readLine(
                     redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
                 }
             },
-            0x15 => if (cur > 0) { // Ctrl-U → delete to start of line
-                rl_image.deleteAtom(root, gpa, buf, &cur, &pastes, 0, cur);
-                cur = 0;
-                redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
+            0x15 => { // Ctrl-U → delete to start of line
+                if (rl_image.deleteModified(root, gpa, buf, &cur, &pastes, .delete_to_start))
+                    redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
             },
             0x0b => if (cur < buf.items.len) { // Ctrl-K → delete to end of line
                 rl_image.deleteAtom(root, gpa, buf, &cur, &pastes, cur, buf.items.len);
@@ -347,13 +362,9 @@ pub fn readLine(
                     continue;
                 }
                 const b1 = editByte(in) orelse break; // #396: guarded
-                if (b1 == 0x7f or b1 == 0x08) { // Option/Alt+Delete → delete previous word
-                    const s = rl_image.prevWord(buf.items, cur, &pastes);
-                    if (s < cur) {
-                        rl_image.deleteAtom(root, gpa, buf, &cur, &pastes, s, cur);
-                        cur = s;
+                if (rl_keys.legacyDelete(b1)) |action| { // Option/Alt+Delete → previous word
+                    if (rl_image.deleteModified(root, gpa, buf, &cur, &pastes, action))
                         redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
-                    }
                     continue;
                 }
                 if (b1 == 'b') { // Alt-b → word left
@@ -391,6 +402,17 @@ pub fn readLine(
                     }
                 }
                 const ps = params[0..pn];
+                if (rl_keys.csiDelete(ps, final)) |action| {
+                    if (rl_image.deleteModified(root, gpa, buf, &cur, &pastes, action))
+                        redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
+                    continue;
+                }
+                var replay: [2]u8 = undefined;
+                const replayed = rl_keys.csiReplay(ps, final, &replay);
+                if (replayed.len > 0) {
+                    pending.appendSlice(gpa, replayed) catch {};
+                    continue;
+                }
                 const word_mod = std.mem.indexOfScalar(u8, ps, ';') != null; // 1;3 (alt) / 1;5 (ctrl)
                 switch (final) {
                     'A' => if (nav.up(gpa, history.items, rl_history.g_history_images.slice(), buf.items, root.pending_image)) |step| { // up → history back; snapshots draft (#101)

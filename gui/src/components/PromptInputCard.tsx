@@ -23,7 +23,7 @@ import { useCommandAutocomplete } from "@/hooks/useCommandAutocomplete";
 import { useDropZone } from "@/hooks/useFileDrop";
 import { usePromptModelPicker } from "@/hooks/usePromptModelPicker";
 import { updateWorkspaceFastMode } from "@/app/sessionClientActions";
-import { savePastedImage } from "@/services/desktop/client";
+import { useClipboardPaste } from "@/hooks/useClipboardPaste";
 import { cn } from "@/utils/cn";
 import {
   getPromptHistoryNavigationResult,
@@ -321,36 +321,7 @@ export function PromptInputCard({
     setPlanningMode(!isPlanningMode);
   }
 
-  // Cmd/Ctrl+V of an image: persist the clipboard bytes to a temp file and add
-  // it through the same attachment pipeline as a drag-dropped file.
-  async function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
-    const items = event.clipboardData?.items;
-    if (!items) {
-      return;
-    }
-    for (const item of items) {
-      if (item.kind !== "file" || !item.type.startsWith("image/")) {
-        continue;
-      }
-      const file = item.getAsFile();
-      if (!file) {
-        continue;
-      }
-      event.preventDefault();
-      try {
-        const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
-        const ext = item.type.split("/")[1] ?? "png";
-        const path = await savePastedImage(bytes, ext);
-        const attachment = classifyPath(path);
-        if (attachment) {
-          addAttachments([attachment]);
-        }
-      } catch (error) {
-        console.error("Failed to attach pasted image", error);
-      }
-      return;
-    }
-  }
+  const handlePaste = useClipboardPaste(addAttachments);
 
   return (
     <div ref={dropZoneRef} className="relative mx-auto w-full max-w-3xl">

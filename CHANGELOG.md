@@ -12,6 +12,26 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- The folder picker can sort by name or modification time, filter Git repositories, and create folders.
+- Available `rlm` tools are listed from the first turn rather than waiting for a batch or context threshold (ADR 0140).
+- Desktop fonts are bundled locally; syntax highlighting, diagrams, and secondary panes load when needed.
+- Desktop appearance notes no longer alter slash commands. Clipboard image staging retries absolute paths through their parent directory when needed.
+- Resuming a saved conversation restores its persisted session identity even if startup already generated one.
+- GUI usage replies show grouped metrics and plan limits; inline editing keeps the message bubble and grows with its text. Subtle transcript reveals respect reduced motion.
+- `#1013`: keep the first answer after a no-tool retry without allowing older turns to replace a later answer (ADR 0139).
+- GUI usage replies show grouped metrics and plan limits; inline editing keeps the message bubble and grows with its text. Subtle transcript reveals respect reduced motion.
+- `#1013`: keep the first answer after a no-tool retry without allowing older turns to replace a later answer (ADR 0139).
+- GUI follow-up bar is a pill over the transcript with CSS frost; working subagents sit on the dock.
+- `ask_user` round-trips over ACP so the desktop can show an ApprovalCard mid-turn.
+- `#1011`: live replies keep the typewriter and block caret; the caret hides when the turn is done, and the first chunk reveals instead of painting in as one blob.
+- `#1009`: queued follow-up row does not paint a surface bar while a turn is working.
+- Drawn HTML uses the live desktop palette unless the turn already names colors (ADR 0137).
+- Accord Unix 0600 is a standing duplex per live session (`GRAFF_ACCORD=0` opts out); JSONL stays the durable room (ADR 0134). `/debug` reports Accord session count and RSS.
+- Engine messaging (idle peer mail, #1007) is the same latch on line REPL, TUI, and `graff acp`.
+- `#1001`: idle TUI and line REPL start a turn when the durable peer room has new unread mail (one auto-turn per batch; inbox consume resets).
+- `#1007`: idle `graff acp` sessions start that same turn; `peer_message` no longer claims delivery waits for a step boundary.
+- `#1006`: rendered views sit in the transcript without product chrome; desktop appearance tokens ride the turn (ADR 0137).
+
 - Live 12-PR board on grok-4.6 SuperGrok (n=3, no SPEC.md): graff / Pi /
   OpenCode 12/12, grok 11/12 (`#727`), exo 9/12 (gemini + two turbos —
   no-token check-greens do not count). Honest list$ $21.48 / $18.47 /
@@ -29,6 +49,14 @@ current is part of cutting a release.
   `sessions` key can reach a machine, and a viewer cannot start an
   unattended session unless the machine was started with `--yolo`.
   `docs/remote-control.md`, `docs/remote-control-security.md`.
+
+## v0.0.299
+
+- The MCP `run_task` result view uses the codegraff.com paper palette (paper, rice, ink, coral, cobalt, gold) instead of the desktop emerald chrome. Host light/dark still applies. No webfonts.
+- One catalog `shell` tool (`action=run|output|kill`) replaces advertised `bash` / `bash_output` / `bash_kill`. The old names still dispatch. Not a PTY.
+- A follow-up typed during a foreground shell wait promotes the command instead of blocking or killing it, so you can talk while it runs.
+
+See [the release notes](docs/releases/v0.0.299.md) for details.
 
 ## v0.0.297
 

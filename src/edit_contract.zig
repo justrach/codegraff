@@ -49,6 +49,12 @@ pub fn isContracted(role: []const u8) bool {
     return pb.isLandingRole(role);
 }
 
+/// Task-level mutation permission: a contracted slot still does not force
+/// edits on an informational brief, including across the one workflow retry.
+pub fn mutatingTask(role: []const u8, prompt: []const u8) bool {
+    return isContracted(role) and @import("task_intent.zig").classify(prompt) != .informational;
+}
+
 /// PURE contract verdict over two `git status --porcelain` snapshots.
 ///
 /// Two distinct failures, both of which mean nothing landed:
@@ -105,4 +111,14 @@ pub fn contractCheck(gpa: Allocator, io: Io, cwd: ?[]const u8, contracted: bool,
     }
     gpa.free(out.text);
     return .{ .text = gpa.dupe(u8, contract_unmet) catch "", .is_error = true };
+}
+
+test "read-only analysis keeps a non-mutating scope in a contracted slot" {
+    const intent = @import("task_intent.zig");
+    try std.testing.expect(isContracted("implement"));
+    try std.testing.expectEqual(intent.Intent.informational, intent.classify("Explain src/parser.zig"));
+    try std.testing.expect(!mutatingTask("implement", "Explain src/parser.zig"));
+    try std.testing.expect(!mutatingTask("implement", "Summarize the architecture"));
+    try std.testing.expect(mutatingTask("implement", "Fix src/parser.zig"));
+    try std.testing.expect(mutatingTask("implement", "Explain then implement the parser"));
 }

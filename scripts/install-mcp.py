@@ -33,19 +33,31 @@ def atomic(path, text):
             os.unlink(temporary)
 
 
-def merge_json(path, entry, key='mcpServers'):
+def merge_json(path, entry, key='mcpServers', previous=None):
     data = json.loads(path.read_text()) if path.exists() else {}
     if not isinstance(data, dict) or not isinstance(data.get(key, {}), dict):
         raise ValueError('Unexpected config structure')
     servers = data.setdefault(key, {})
-    if 'codegraff' in servers:
+    if 'codegraff' in servers and (previous is None or servers['codegraff'] != previous):
         return 'existing entry preserved'
+    if servers.get('codegraff') == entry:
+        return 'up to date'
     servers['codegraff'] = entry
     atomic(path, json.dumps(data, indent=2) + '\n')
     return 'registered'
 
 
-def merge_codex(path, url, token):
+def codex_entry(url, token):
+    return {'url': url, 'http_headers': {'Authorization': 'Bearer ' + token}, 'tool_timeout_sec': 330}
+
+
+def codex_fragment(entry):
+    return ('\n[mcp_servers.codegraff]\nurl = ' + json.dumps(entry['url']) + '\n' +
+            'http_headers = { Authorization = ' + json.dumps(entry['http_headers']['Authorization']) + ' }\n' +
+            'tool_timeout_sec = ' + str(entry['tool_timeout_sec']) + '\n')
+
+
+def merge_codex(path, url, token, previous=None):
     # Preserve the entire TOML document, including comments and unfamiliar tables.
     source = path.read_text() if path.exists() else ''
     try:
@@ -55,17 +67,30 @@ def merge_codex(path, url, token):
     data = tomllib.loads(source)
     if not isinstance(data.get('mcp_servers', {}), dict):
         raise ValueError('Unexpected MCP server table')
-    if 'codegraff' in data.get('mcp_servers', {}):
-        return 'existing entry preserved'
-    fragment = '\n[mcp_servers.codegraff]\nurl = ' + json.dumps(url) + '\n'
-    fragment += 'http_headers = { Authorization = ' + json.dumps('Bearer ' + token) + ' }\n'
-    fragment += 'tool_timeout_sec = 330\n'
-    tomllib.loads(source + fragment)
-    atomic(path, source + fragment)
+    entry = codex_entry(url, token)
+    current = data.get('mcp_servers', {}).get('codegraff')
+    if current is not None:
+        if previous is None or current != previous:
+            return 'existing entry preserved'
+        if current == entry:
+            return 'up to date'
+        old = codex_fragment(previous)
+        if source.count(old) != 1:
+            return 'existing entry preserved'
+        updated = source.replace(old, codex_fragment(entry), 1)
+    else:
+        updated = source + codex_fragment(entry)
+    tomllib.loads(updated)
+    atomic(path, updated)
     return 'registered'
 
 
 def register(home, url, token):
+    receipt = home / '.graff/mcp/clients.json'
+    owned = json.loads(receipt.read_text()) if receipt.exists() else {}
+    if not isinstance(owned, dict):
+        raise ValueError('Invalid client ownership receipt')
+    changed = False
     headers = {'Authorization': 'Bearer ' + token}
     entries = [
         (home / '.claude.json', 'mcpServers', {'type': 'http', 'url': url, 'headers': headers}, (home / '.claude').exists()),
@@ -80,15 +105,26 @@ def register(home, url, token):
         if not (detected or path.exists() or (path.parent != home and path.parent.exists())):
             continue
         try:
-            results.append((str(path.relative_to(home)), merge_json(path, entry, key)))
+            client = str(path.relative_to(home))
+            result = merge_json(path, entry, key, owned.get(client))
+            results.append((client, result))
+            if result in ('registered', 'up to date'):
+                owned[client] = entry
+                changed = True
         except (ValueError, OSError) as error:
             results.append((str(path.relative_to(home)), f'skipped: {type(error).__name__}; original preserved'))
     codex = home / '.codex/config.toml'
     if codex.parent.exists():
         try:
-            results.append(('.codex/config.toml', merge_codex(codex, url, token)))
+            result = merge_codex(codex, url, token, owned.get('.codex/config.toml'))
+            results.append(('.codex/config.toml', result))
+            if result in ('registered', 'up to date'):
+                owned['.codex/config.toml'] = codex_entry(url, token)
+                changed = True
         except (ValueError, OSError) as error:
             results.append(('.codex/config.toml', f'skipped: {type(error).__name__}; original preserved'))
+    if changed:
+        atomic(receipt, json.dumps(owned, indent=2) + "\n")
     return results
 
 

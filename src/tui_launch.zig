@@ -26,6 +26,8 @@ const engine_sink = @import("engine_sink.zig");
 const tui_sink = @import("tui_sink.zig");
 const tui_acp = @import("tui_acp.zig");
 const job_notify = @import("job_notify.zig");
+const peer_idle = @import("peer_idle.zig");
+const job_wait = @import("job_wait.zig");
 const schedule = @import("schedule.zig");
 const channel_worker = @import("channel_worker.zig");
 const util = @import("util.zig");
@@ -129,6 +131,8 @@ pub fn run(
     tui_acp.attach(&acp_session);
     defer tui_acp.detach();
     acp_session.ensure();
+    tui.setFollowupFn(noteFollowupCb);
+    defer tui.setFollowupFn(null);
     try tui.run(gpa, io, environ_map, .{
         .turn_ctx = &repl_ctx,
         .turn_fn = turnCb,
@@ -215,7 +219,9 @@ fn idleWakeCb(ctx: ?*anyopaque, buf: []u8) ?[]const u8 {
     if (c.root) |root| if (@import("subagent_interactive.zig").takeWake(c.io, root.session_name, buf)) |t| return t;
     if (job_notify.takeIdleWake(c.io, buf)) |t| return t; // an idle stop waits for a real step boundary (#199)
     if (schedule.takeWake(c.io, buf)) |t| return t;
-    return channel_worker.takeWake(c.io, buf);
+    if (channel_worker.takeWake(c.io, buf)) |t| return t;
+    _ = @import("presence_accord.zig").takePing(); // standing link; JSONL is still the drain
+    return peer_idle.takeIdleWake(c.io, buf);
 }
 
 fn versionCb(ctx: ?*anyopaque, gpa: Allocator) ?[]const u8 {
@@ -320,12 +326,17 @@ fn compactCb(ctx: ?*anyopaque, gpa: Allocator, history: []const tui.Turn, out: *
     return ok;
 }
 
+fn noteFollowupCb() void {
+    job_wait.noteFollowup();
+}
+
 fn cancelCb(ctx: ?*anyopaque) void {
     tui_acp.cancel();
     repl_glue.replCancelCb(ctx);
 }
 
-fn pasteCb(ctx: ?*anyopaque, dest: []u8) isize {
+fn pasteCb(ctx: ?*anyopaque, dest: []u8, owned: *bool) isize {
+    owned.* = false;
     const c: *repl_glue.ReplCtx = @ptrCast(@alignCast(ctx orelse return pasteErr(dest, "no session")));
     if (!vision.visionCapable(c.provider)) return pasteErr(dest, vision.no_vision_message);
     if (builtin.os.tag != .macos) return pasteErr(dest, "clipboard image paste is macOS-only — use /image <path>");
@@ -335,12 +346,10 @@ fn pasteCb(ctx: ?*anyopaque, dest: []u8) isize {
         .empty => return 0,
         .failed => |kind| return pasteErr(dest, vision.pasteFailMessage(kind)),
     };
-    const n = @min(grab.path.len, dest.len);
-    @memcpy(dest[0..n], grab.path[0..n]);
-    if (grab.owned) {
-        gpa.free(grab.path);
-    } else grab.release(c.io, gpa);
-    return @intCast(n);
+    const result = @import("tui_paste_transfer.zig").transfer(grab, c.io, gpa, dest) orelse
+        return pasteErr(dest, "clipboard image path is too long");
+    owned.* = result.owned;
+    return @intCast(result.len);
 }
 
 fn pasteErr(dest: []u8, msg: []const u8) isize {

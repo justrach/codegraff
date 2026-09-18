@@ -1,4 +1,4 @@
-import { ChevronRight, GitFork } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 
 import { useSidebarVisible } from "@/app/sidebarVisibilityContext";
 import {
@@ -9,6 +9,7 @@ import {
 import { cn } from "@/utils/cn";
 
 import { BranchSwitcherMenu } from "./BranchSwitcherMenu";
+import { GithubHubMenu } from "./GithubHubMenu";
 import { ProjectSwitcherMenu } from "./ProjectSwitcherMenu";
 import { useConversationHeaderState } from "./hooks/useConversationHeaderState";
 import type { ConversationDockviewTabProps } from "./types/conversationHeader";
@@ -73,10 +74,7 @@ export function ConversationDockviewTab({
                     event.stopPropagation();
                   }}
                 >
-                  <GitFork
-                    strokeWidth={2}
-                    className="size-3 shrink-0 text-muted-foreground"
-                  />
+                  <GithubHubMenu repoName={repoName} branchName={branchName} />
                   <ProjectSwitcherMenu
                     currentProjectLabel={repoName ?? currentProjectLabel}
                     isBusy={isProjectChangePending}

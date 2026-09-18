@@ -33,3 +33,10 @@ print `stuck replay`.
 A greeting after a file question does not re-open the file. Typing
 the same prompt again after a reply still runs (learn-auto, a re-type).
 The history-wide walk stays as a test helper only.
+
+## Scope refinement (#884, ADR 0116)
+
+An informational named-file nudge asks for evidence without demanding an edit.
+All named-file nudges carry persisted harness provenance, so they do not become
+human requests when saved conversations are reopened. The per-mention retry
+limit and change-request obligations remain in place.

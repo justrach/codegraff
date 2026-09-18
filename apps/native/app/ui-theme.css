@@ -51,38 +51,41 @@
 }
 
 .dark {
-  --page: oklch(0.209 0.004 264.477);
-  --canvas: oklch(0.231 0.004 264.487);
-  --surface: oklch(0.26 0.006 271.191);
-  --inset: oklch(0.243 0.004 264.492);
-  --hover: oklch(0.289 0.006 271.22);
-  --hover-2: oklch(0.318 0.007 274.747);
+  /* Lampblack: olive-near-black surfaces, lifted emerald. Cool blue-gray
+   * flattened the chrome; these stay darker than the previous Black theme
+   * without crushing cards into the page. */
+  --page: #0b0c09;
+  --canvas: #060705;
+  --surface: #141712;
+  --inset: #10120e;
+  --hover: #1c2018;
+  --hover-2: #252b20;
 
-  --ink: oklch(0.964 0.002 247.839);
-  --ink-2: oklch(0.731 0.008 260.731);
-  --ink-3: oklch(0.541 0.01 264.484);
+  --ink: #f3f5ef;
+  --ink-2: #c8d0c4;
+  --ink-3: #a9b3a6;
 
-  --line: oklch(0.308 0.006 258.354);
-  --line-strong: oklch(0.356 0.007 264.474);
-  --field: oklch(0.293 0.006 271.223);
-  --stripe: oklch(1 0 0 / 0.055);
-  --stripe-bg: oklch(0.226 0.004 264.485);
+  --line: #2a3027;
+  --line-strong: #3a4236;
+  --field: #181c15;
+  --stripe: oklch(1 0 0 / 0.04);
+  --stripe-bg: #090a07;
 
-  --accent: oklch(0.68 0.173 253.301);
-  --accent-ink: oklch(0.788 0.113 248.33);
-  --accent-tint: oklch(0.68 0.173 253.301 / 0.16);
+  --accent: #5dca8e;
+  --accent-ink: #a6e6c0;
+  --accent-tint: color-mix(in srgb, #5dca8e 16%, transparent);
 
-  --green: oklch(0.705 0.154 153.814);
-  --green-tint: oklch(0.705 0.154 153.814 / 0.14);
-  --orange: oklch(0.746 0.156 55.642);
-  --orange-tint: oklch(0.746 0.156 55.642 / 0.14);
-  --red: oklch(0.666 0.18 21.433);
-  --red-tint: oklch(0.666 0.18 21.433 / 0.14);
+  --green: #62c07a;
+  --green-tint: color-mix(in srgb, #62c07a 14%, transparent);
+  --orange: #e0a45a;
+  --orange-tint: color-mix(in srgb, #e0a45a 14%, transparent);
+  --red: #e07a66;
+  --red-tint: color-mix(in srgb, #e07a66 14%, transparent);
 
-  --tooltip-bg: oklch(0.182 0.004 264.459);
-  --tooltip-fg: oklch(0.964 0.002 247.839);
-  --tooltip-muted: oklch(0.731 0.008 260.731);
-  --tooltip-border: oklch(0.308 0.006 258.354);
+  --tooltip-bg: #060705;
+  --tooltip-fg: #f3f5ef;
+  --tooltip-muted: #c8d0c4;
+  --tooltip-border: #2a3027;
 
   --shadow-hairline: 0 0 0 1px var(--line);
   /* Elevation rings go to a subtle *light* hairline in dark mode: the ring
@@ -99,4 +102,3 @@
     0 0 0 1px oklch(1 0 0 / 0.15), 0 8px 28px oklch(0 0 0 / 0.34);
   --shadow-inset-field: inset 0 1px 2px oklch(0 0 0 / 0.4);
 }
-

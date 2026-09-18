@@ -31,6 +31,8 @@ test('a model-drawn page renders inline in a sandbox that cannot reach the app o
   const id=await snapshot(drawn);
   await page.goto(`/visual-tests/views?id=${id}`);
   await expect(page.locator('section[aria-label="Rendered view"]')).toBeVisible();
+  await expect(page.locator('section[aria-label="Rendered view"]')).not.toHaveClass(/border/);
+  await expect(page.getByText('Rendered view',{exact:true})).toHaveCount(0);
   const app=page.frameLocator('iframe');
   // Rendered, with its own inline script and style — a page, not a screenshot.
   await expect(app.locator('h1')).toHaveText('Revision burn-down');

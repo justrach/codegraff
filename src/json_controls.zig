@@ -23,6 +23,27 @@ const remote_images = @import("remote_images.zig");
 /// event carries `persisted:false` explicitly: a client that logs the stream
 /// must be able to tell this apart from an ordinary assistant turn, because
 /// the session it is mirroring does not contain it.
+/// `{"type":"edit","n":2,"text":"…"}` — drop prompt n and after, then the
+/// caller runs `text` as the replacement. Prefix before n is unchanged.
+/// null = not an edit request; false = failed (error already emitted).
+pub fn applyEdit(root: *Agent, rtype: []const u8, obj: std.json.ObjectMap) ?bool {
+    if (!std.mem.eql(u8, rtype, "edit")) return null;
+    const n_v = obj.get("n") orelse {
+        root.emit(.{ .type = "error", .message = "edit needs n (1-based prompt index)" });
+        return false;
+    };
+    const n: usize = switch (n_v) {
+        .integer => |i| if (i > 0) @intCast(i) else 0,
+        else => 0,
+    };
+    _ = @import("commands_edit.zig").rewindTo(root, n) catch {
+        root.emit(.{ .type = "error", .message = "edit: pick an existing prompt (see /edit)" });
+        return false;
+    };
+    root.emit(.{ .type = "edit", .ok = true, .n = n });
+    return true;
+}
+
 pub fn sideQuestion(root: *Agent, arena: Allocator, rtype: []const u8, text: []const u8) bool {
     if (!std.mem.eql(u8, rtype, "btw")) return false;
     if (side_question.ask(root, arena, text)) |answer| {
@@ -47,10 +68,20 @@ pub fn applyToolKnobs(obj: std.json.ObjectMap) void {
     }
 }
 
-/// Turn-scoped JSON options: tool ceilings plus native image parts. False
-/// means image validation already emitted the request error.
+/// User-request options: tool ceilings, native images, and explicit PR scope.
+/// False means validation already emitted the request error.
 pub fn applyTurnOptions(root: *Agent, obj: std.json.ObjectMap) bool {
     if (!remote_images.stage(root, obj)) return false;
+    if (obj.get("prAcceptance")) |value| {
+        if (value != .string) {
+            root.emit(.{ .type = "error", .message = "prAcceptance must be verified or draft" });
+            return false;
+        }
+        @import("pr_acceptance.zig").set(root, value.string) catch {
+            root.emit(.{ .type = "error", .message = "prAcceptance must be verified or draft" });
+            return false;
+        };
+    }
     applyToolKnobs(obj);
     return true;
 }

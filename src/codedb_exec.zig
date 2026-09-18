@@ -212,7 +212,7 @@ pub fn maybeCompactRead(ctx: ToolCtx, path: []const u8, start: ?i64, end: ?i64) 
     if (ctx.agent_cwd != null) return null;
     if (main_mod.g_codedb_present == null) main_mod.g_codedb_present = @import("skills.zig").binOnPath(ctx.io, "codedb");
     if (main_mod.g_codedb_present != true) return null;
-    if (!hooks.codedbFileIndexed(ctx.io, ctx.gpa, path)) return null;
+    if (!try hooks.codedbFileIndexed(ctx.io, ctx.gpa, path)) return null;
     return compactRead(ctx.gpa, ctx.io, path, start, end);
 }
 

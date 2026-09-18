@@ -20,6 +20,8 @@ at a real provider to run the same cases against one.
 
 A case can send structured setup controls with `controls_before_prompt`, such
 as selecting a local vision model before its first user message.
+`prompt_options` supplies explicit user-request fields; `github_fixture` installs
+a local-only GitHub CLI with scripted head/check evidence.
 
 Assertions a case can make:
 
@@ -30,6 +32,7 @@ Assertions a case can make:
   {"request_contains": {"index": -1, "text": "..."}}   what the harness sent
   {"request_lacks":    {"index": -1, "text": "..."}}
   {"final_text_contains": "..."}
+  {"file_equals": {"path": "relative/file", "content": "exact bytes"}}
   {"stderr_contains": "..."}                what the harness printed to stderr
 
 A case that deliberately DIES declares the exit code it wants with
@@ -38,6 +41,9 @@ nonzero exit, which made the harness's own fatal paths untestable - the
 loudest of them being run_budget.exhaustedFatal (#368), the last line a
 one-shot run prints when the model-call pool runs dry. A timeout is never
 an expected exit and always fails.
+
+A case can set `verify_command` to an evaluator-owned argv executed after the
+agent exits. A failed or timed-out verifier fails the case independently of prose.
 
 A case may also carry {"workspace_seed": {"relative/path": "content", ...}}:
 files written into the fresh workspace BEFORE graff boots, in scripted and
@@ -53,6 +59,7 @@ import argparse
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -63,6 +70,7 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 CASES = REPO / "evals" / "harness_behavior.jsonl"
 sys.path.insert(0, str(REPO / "scripts" / "eval"))
 from mock_model import ScriptedModel  # noqa: E402
+from github_fixture import prepare as prepare_github
 
 
 def load_cases() -> list[dict[str, Any]]:
@@ -94,11 +102,13 @@ class Run:
     """One harness run: the events it emitted and the requests it sent."""
 
     def __init__(self, events: list[dict[str, Any]], requests: list[dict[str, Any]],
-                 stderr: str, exit_code: int | None) -> None:
+                 stderr: str, exit_code: int | None, files=None, verification=None) -> None:
         self.events = events
         self.requests = requests
         self.stderr = stderr
         self.exit_code = exit_code
+        self.files = files or {}
+        self.verification = verification
 
     def final_text(self) -> str:
         for event in reversed(self.events):
@@ -116,7 +126,7 @@ class Run:
 
 
 def execute(case: dict[str, Any], graff: str, port: int,
-            provider: str | None, model: str | None) -> Run:
+            provider: str | None, model: str | None, evidence_dir: pathlib.Path | None = None) -> Run:
     scripted = ScriptedModel(case.get("script", []))
     if case.get("feedback_scenario"):
         if provider:
@@ -155,6 +165,16 @@ def execute(case: dict[str, Any], graff: str, port: int,
                 dest = pathlib.Path(workspace) / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_text(content, encoding="utf-8")
+            # Real linked-worktree topology for ownership/checkpoint cases.
+            if case.get("nested_worktree"):
+                for command in [
+                    ["git", "init", "-q"],
+                    ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"],
+                    ["git", "worktree", "add", "--detach", "nested"],
+                ]:
+                    subprocess.run(command, cwd=workspace, env=env, check=True, capture_output=True)
+            if "github_fixture" in case:
+                prepare_github(pathlib.Path(workspace), env, case["github_fixture"])
             # A genuinely live second graff in the same workspace, for #469
             # presence cases: the checkpoint only exists while a co-resident
             # session does, and a real peer announces (and probes) better than
@@ -162,7 +182,7 @@ def execute(case: dict[str, Any], graff: str, port: int,
             if case.get("live_peer"):
                 peer = subprocess.Popen(
                     [graff, "--json", "--yolo", "--model", model or "lmstudio"],
-                    cwd=workspace, env=env, stdin=subprocess.PIPE,
+                    cwd=str(pathlib.Path(workspace) / "nested") if case.get("peer_in_nested_worktree") else workspace, env=env, stdin=subprocess.PIPE,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
                 live_dir = pathlib.Path(workspace) / ".graff" / "live"
                 deadline = time.time() + 30
@@ -172,13 +192,15 @@ def execute(case: dict[str, Any], graff: str, port: int,
                     if peer.poll() is not None:
                         break
                     time.sleep(0.1)
+                if peer.poll() is not None or not live_dir.is_dir() or not any(live_dir.glob("*.json")):
+                    raise RuntimeError("Live-peer fixture did not announce before the deadline")
             argv = [graff, "--json", "--yolo", "--model", model or "lmstudio"]
             if provider:
                 argv += ["--subagent-provider", provider]
             argv += list(case.get("args", []))
 
             stdin_lines = [json.dumps(control) for control in case.get("controls_before_prompt", [])]
-            stdin_lines.append(json.dumps({"type": "user", "text": case["prompt"]}))
+            stdin_lines.append(json.dumps({"type": "user", "text": case["prompt"], **case.get("prompt_options", {})}))
             for control in case.get("controls_after_turn", []):
                 stdin_lines.append(json.dumps(control))
             if case.get("second_prompt"):
@@ -204,7 +226,43 @@ def execute(case: dict[str, Any], graff: str, port: int,
                         events.append(json.loads(line))
                     except ValueError:
                         pass
-            return Run(events, list(scripted.requests), stderr, code)
+            files = {}
+            for claim in case.get("assert", []):
+                if "file_equals" not in claim:
+                    continue
+                rel = claim["file_equals"]["path"]
+                path = pathlib.Path(workspace) / rel
+                try:
+                    path.resolve().relative_to(pathlib.Path(workspace).resolve())
+                    if path.stat().st_size > 1024 * 1024:
+                        raise ValueError("asserted file exceeds 1 MiB")
+                    files[rel] = path.read_text(encoding="utf-8")
+                except (OSError, ValueError):
+                    files[rel] = None
+            verification = None
+            if case.get("verify_command"):
+                # Evaluator-owned command, executed after the agent stops. Its
+                # assertions are not a file the agent can rewrite to pass.
+                try:
+                    checked = subprocess.run(case["verify_command"], cwd=workspace,
+                                             env=env, capture_output=True, text=True,
+                                             timeout=15)
+                    verification = dict(exit_code=checked.returncode,
+                                        stdout=checked.stdout, stderr=checked.stderr)
+                except subprocess.TimeoutExpired:
+                    verification = dict(exit_code=None, stdout="", stderr="verifier timed out")
+            if evidence_dir is not None:
+                destination = evidence_dir / case["id"]
+                destination.mkdir(parents=True, exist_ok=True, mode=0o700)
+                (destination / "result.json").write_text(json.dumps(dict(
+                    events=events, requests=list(scripted.requests), files=files,
+                    verification=verification, exit_code=code), indent=2))
+                (destination / "stderr.log").write_text(stderr)
+                for folder in ("traces", "trajectories", "sessions"):
+                    source = pathlib.Path(workspace) / ".graff" / folder
+                    if source.exists():
+                        shutil.copytree(source, destination / folder, dirs_exist_ok=True)
+            return Run(events, list(scripted.requests), stderr, code, files, verification)
     finally:
         if peer is not None:
             peer.kill()
@@ -216,9 +274,15 @@ def execute(case: dict[str, Any], graff: str, port: int,
 
 def evaluate(case: dict[str, Any], run: Run, live: bool = False) -> list[str]:
     failures = []
+    if case.get("verify_command"):
+        if run.verification is None or run.verification.get("exit_code") != 0:
+            failures.append(f"independent workspace verification failed: {run.verification!r}")
     for claim in case.get("assert", []):
         (kind, spec), = claim.items()
-        if kind == "event":
+        if kind == "file_equals":
+            if run.files.get(spec["path"]) != spec["content"]:
+                failures.append(f"workspace file {spec['path']!r} does not match the required outcome")
+        elif kind == "event":
             if not any(subset_matches(e, spec) for e in run.events):
                 failures.append(f"no event matched {json.dumps(spec)}")
         elif kind == "no_event":
@@ -233,6 +297,17 @@ def evaluate(case: dict[str, Any], run: Run, live: bool = False) -> list[str]:
             if kind == "events_at_most" and seen > want:
                 failures.append(
                     f"{seen} event(s) matched {json.dumps(spec['match'])}, wanted at most {want}")
+        elif kind == "request_tool_calls_at_most":
+            if live:
+                continue
+            try:
+                messages = run.requests[spec["index"]]["messages"]
+                count = sum(call.get("function", {}).get("name") == spec["name"]
+                            for message in messages for call in message.get("tool_calls", []))
+                if count > spec["count"]:
+                    failures.append(f"request[{spec['index']}] already contains {count} {spec['name']} calls")
+            except (IndexError, KeyError):
+                failures.append("missing message history for tool-order assertion")
         elif kind in ("request_contains", "request_lacks"):
             if live:
                 continue  # a live provider records no requests; scripted-only surface
@@ -269,6 +344,7 @@ def main() -> None:
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--dump", help="run one case and print its events and requests")
     parser.add_argument("--port", type=int, default=1234, help="scripted-model port")
+    parser.add_argument("--evidence-dir", type=pathlib.Path, help="retain private events, requests, outcomes and harness traces")
     parser.add_argument("--provider", help="run against a real provider instead of the script")
     parser.add_argument("--model", help="model name for --provider")
     args = parser.parse_args()
@@ -308,10 +384,11 @@ def main() -> None:
 
     failed = []
     for case in cases:
-        run = execute(case, args.graff, args.port, args.provider, args.model)
+        run = execute(case, args.graff, args.port, args.provider, args.model, args.evidence_dir)
         if args.dump:
             print(json.dumps({"events": run.events, "requests": run.requests,
-                              "exit_code": run.exit_code, "stderr": run.stderr[-2000:]},
+                              "exit_code": run.exit_code, "stderr": run.stderr[-2000:],
+                              "files": run.files, "verification": run.verification},
                              indent=2))
             return
         problems = evaluate(case, run, live=bool(args.provider))

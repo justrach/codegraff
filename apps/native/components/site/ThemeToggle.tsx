@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { restoreActionFocus } from "../primitives/ActionMenu";
 import CustomThemes from "./CustomThemes";
+import McpServers from "./McpServers";
+import DesktopSettings from "./DesktopSettings";
 import { appearanceEvent, appearanceKey, applyAppearance, readAppearance, type Appearance } from "@/lib/appearance";
 import { appearancePanelPosition, type PanelBox } from "./appearance-panel";
 
@@ -54,10 +56,10 @@ export function ThemeToggle({ labeled = false }: { labeled?: boolean }) {
       setPosition(appearancePanelPosition(rect, { width: window.innerWidth, height: window.innerHeight }));
     }} className={labeled
       ? "flex w-full items-center justify-start rounded-md px-3 py-2 text-left text-xs text-ink-3 hover:bg-hover hover:text-ink"
-      : "flex size-8 shrink-0 items-center justify-center rounded-full text-ink-3 hover:bg-hover hover:text-ink"}>
+      : "flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-3 hover:bg-hover hover:text-ink"}>
       {labeled ? "Appearance" : <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor" stroke="none" /></svg>}
     </button>
-    {position && createPortal(<div ref={panel} role="dialog" aria-label="Appearance" aria-modal="true" className="fixed z-[200] flex max-w-[calc(100vw-16px)] flex-col overflow-hidden rounded-window border border-line bg-surface p-3 shadow-overlay" style={{ top: position.top, left: position.left, width: position.width, maxHeight: `calc(100dvh - ${position.top + 12}px)` }}>
+    {position && createPortal(<div ref={panel} role="dialog" aria-label="Appearance" aria-modal="true" className="fixed z-[200] flex max-w-[calc(100vw-16px)] flex-col overflow-hidden rounded-xl border border-line bg-surface p-3 shadow-overlay" style={{ top: position.top, left: position.left, width: position.width, maxHeight: `calc(100dvh - ${position.top + 12}px)` }}>
       <div className="mb-3 flex shrink-0 items-center justify-between bg-surface"><strong className="text-xs font-medium">Appearance</strong><button aria-label="Close appearance" onClick={() => { setPosition(null); restoreActionFocus(trigger.current); }} className="rounded px-1.5 text-ink-3 hover:bg-hover">×</button></div>
       <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="grid grid-cols-2 gap-2">{themes.map(option => <button key={option.id} aria-pressed={theme === option.id} onClick={() => choose(option.id)} className={`rounded-lg border p-1.5 text-left focus-visible:outline-2 focus-visible:outline-accent ${theme === option.id ? "border-accent bg-accent-tint" : "border-line hover:bg-hover"}`}>
@@ -65,6 +67,8 @@ export function ThemeToggle({ labeled = false }: { labeled?: boolean }) {
         <span className="block text-[11px] font-medium text-ink">{option.name}</span><span className="block text-[9px] leading-4 text-ink-3">{option.detail}</span>
       </button>)}</div>
       <CustomThemes selected={theme} />
+      <DesktopSettings embedded />
+      <McpServers />
       </div>
     </div>, document.body)}
   </>;

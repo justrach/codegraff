@@ -2,14 +2,19 @@
 
 ## Automatic HTTP setup
 
+The packaged GUI installs its bundled `graff` command into `~/.local/bin` on
+launch and adds that directory to shell startup files. Open a new terminal to
+load the PATH change. GUI updates refresh this managed launcher; an existing
+independently installed command is preserved. `HARNESS_NO_PATH=1` skips PATH edits.
+
 The CLI installer and first launch of the packaged GUI run `graff mcp install`.
 The GUI also offers **Tools → Configure MCP clients**. Setup requires Python 3
 (Python 3.11+ to validate Codex TOML), and macOS launchd or Linux user systemd.
 
 Setup starts a shared service at `http://127.0.0.1:7720/mcp`, creates a private
 bearer token, and adds HTTP entries for detected Claude Code, Codex, Cursor,
-Gemini CLI, Windsurf and VS Code installations. Other entries and custom
-Codegraff entries are preserved. Malformed or JSON-with-comments files are
+Gemini CLI, Windsurf and VS Code installations. Installer-owned entries refresh on later installs while unrelated entries and
+user-modified Codegraff entries are preserved. Malformed or JSON-with-comments files are
 left unchanged with a diagnostic. Restart clients to load their new entry.
 Clients that require stdio can use the manual configuration below.
 
@@ -20,10 +25,10 @@ To choose a fixed project and optional port, run:
 graff mcp install --directory /absolute/path/to/project --port 7720
 ```
 
-Subsequent installs retain that directory and port. Changing the port requires
-manually updating any existing client entry, which setup preserves. Service
+Subsequent installs retain that directory and port. Changing the port refreshes installer-owned entries; user-modified entries
+remain yours to update. Service
 installation restarts the managed listener, so finish active tasks first.
-The GUI first-launch setup runs once after successful setup; the Tools action
+The GUI runs setup once per app version after successful setup; the Tools action
 can retry or configure clients installed later.
 
 Set `GRAFF_NO_MCP=1` when installing or launching the GUI to skip automatic setup.

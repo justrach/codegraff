@@ -51,6 +51,10 @@ export class AcpTransport {
   }
   abort(error: Error) { this.fail(error); }
   get usable(): boolean { return this.failure === null; }
+  subscribe(fn: (line: string) => void): () => void {
+    this.listeners.add(fn);
+    return () => { this.listeners.delete(fn); };
+  }
   notify(method: string, params?: unknown) {
     if (this.failure) throw this.failure;
     this.child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n");

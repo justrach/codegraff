@@ -3,7 +3,10 @@ import type { IDockviewPanelProps } from "dockview-react";
 import {
   ChevronDownIcon,
   ChevronRight,
+  CircleDotIcon,
   ExternalLinkIcon,
+  GitPullRequestCreateIcon,
+  GitPullRequestIcon,
   GitCommitHorizontalIcon,
   UploadIcon,
 } from "lucide-react";
@@ -18,6 +21,9 @@ import {
 import { usePreferredOpenTarget } from "@/components/conversation-panel/hooks/usePreferredOpenTarget";
 import { useConversationHeaderState } from "@/components/conversation-panel/hooks/useConversationHeaderState";
 import { CommitChangesDialog } from "@/components/conversation-panel/CommitChangesDialog";
+import { GithubHubCard, GithubHubMenu } from "@/components/conversation-panel/GithubHubMenu";
+import { githubRepoUrls } from "@/components/conversation-panel/utils/githubIssues";
+import { openExternalUrl } from "@/services/desktop/client";
 import {
   getFileDiffDisplayName,
   getFileDiffDisplayPath,
@@ -245,6 +251,16 @@ export function ChangesPane({
     void openWorkspacePathInTarget(params.workspacePath, resolvedPreferredAppId, path);
   };
 
+  const github =
+    showGitActions && repoName != null
+      ? githubRepoUrls(repoName, branchName)
+      : null;
+  const openGithub = (url: string) => {
+    void openExternalUrl(url).catch((error) => {
+      console.error("Failed to open GitHub", error);
+    });
+  };
+
   return (
     <PaneSurface className="overflow-auto">
       <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-border bg-background/70 px-4 py-2 text-xs backdrop-blur-md">
@@ -277,50 +293,92 @@ export function ChangesPane({
           </span>
         </div>
         {showGitActions ? (
-          <ButtonGroup aria-label="Git actions">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={isGitActionPending}
-              onClick={openCommitDialog}
-            >
-              <GitCommitHorizontalIcon data-icon="inline-start" />
-              Commit or push
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={
-                  <Button
-                    variant="outline"
-                    size="icon-sm"
-                    aria-label="More git actions"
-                    disabled={isGitActionPending}
-                  />
-                }
+          <div className="flex shrink-0 items-center gap-1.5">
+            {github != null && repoName != null ? (
+              <GithubHubMenu
+                repoName={repoName}
+                branchName={branchName}
+                labeled
+              />
+            ) : null}
+            <ButtonGroup aria-label="Git actions">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isGitActionPending}
+                onClick={openCommitDialog}
               >
-                <ChevronDownIcon />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-40">
-                <DropdownMenuGroup>
-                  <DropdownMenuItem
-                    onClick={() => {
-                      void handlePush();
-                    }}
-                    disabled={isGitActionPending}
-                  >
-                    <UploadIcon />
-                    Push
-                  </DropdownMenuItem>
-                </DropdownMenuGroup>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </ButtonGroup>
+                <GitCommitHorizontalIcon data-icon="inline-start" />
+                Commit or push
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      variant="outline"
+                      size="icon-sm"
+                      aria-label="More git actions"
+                      disabled={isGitActionPending}
+                    />
+                  }
+                >
+                  <ChevronDownIcon />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-44">
+                  <DropdownMenuGroup>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        void handlePush();
+                      }}
+                      disabled={isGitActionPending}
+                    >
+                      <UploadIcon />
+                      Push
+                    </DropdownMenuItem>
+                    {github != null ? (
+                      <>
+                        <DropdownMenuItem
+                          onClick={() => openGithub(github.issues)}
+                        >
+                          <CircleDotIcon />
+                          Open issues
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => openGithub(github.createIssue)}
+                        >
+                          <CircleDotIcon />
+                          New issue
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => openGithub(github.pulls)}
+                        >
+                          <GitPullRequestIcon />
+                          Pull requests
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => openGithub(github.createPull)}
+                        >
+                          <GitPullRequestCreateIcon />
+                          New pull request
+                        </DropdownMenuItem>
+                      </>
+                    ) : null}
+                  </DropdownMenuGroup>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </ButtonGroup>
+          </div>
         ) : null}
       </div>
 
       {changes.length === 0 ? (
-        <div className="px-4 py-10 text-center text-xs text-muted-foreground">
-          File edits made during this conversation will appear here.
+        <div className="flex flex-col gap-4 px-4 py-6">
+          {github != null && repoName != null ? (
+            <GithubHubCard repoName={repoName} branchName={branchName} />
+          ) : null}
+          <p className="text-center text-xs text-muted-foreground">
+            File edits made during this conversation will appear here.
+          </p>
         </div>
       ) : (
         <div className="flex flex-col">

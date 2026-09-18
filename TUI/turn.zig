@@ -108,6 +108,7 @@ pub fn finishJob(self: *Model) void {
     job.events.deinit();
     self.alloc.destroy(job);
     self.pending = null;
+    @import("owned_images.zig").collect(self);
     self.cancel_requested = false;
     self.scroll = 0;
     self.follow = true;

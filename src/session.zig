@@ -186,6 +186,7 @@ fn fingerprint(root: *Agent, name: []const u8) u64 {
     f.json(Value{ .array = root.messages });
     @import("session_catalog.zig").mixFingerprint(root, &f);
     f.text(@import("session_prompt.zig").snapshot(root) orelse "");
+    root.publication_checks.mixFingerprint(&f);
     session_peer.mixFingerprint(&f);
     subagent_ledger.mixFingerprint(&f);
     return f.final();
@@ -267,6 +268,7 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
     defer aw.deinit();
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     try s.beginObject();
+    try root.publication_checks.write(&s);
     try @import("session_catalog.zig").write(root, &s);
     try @import("session_prompt.zig").write(root, &s);
     try s.objectField("provider");
@@ -352,6 +354,8 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
     // kimi-code/codex key cache affinity on the durable conversation id; persisting ours keeps /resume warm.
     try s.objectField("cache_key");
     try s.write(http_headers.sessionId(root.io));
+    try s.objectField("prompt_cache_key");
+    try s.write(http_headers.projectRootId(root.io)); // idle-park resume must keep this partition
     try session_peer.writeFields(&s);
     try subagent_ledger.writeFields(&s, root.io);
     try s.endObject();
@@ -361,7 +365,7 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
     // #273: it does that on its own thread, and owns these bytes from here.
     const path = try root.gpa.dupe(u8, rel);
     errdefer root.gpa.free(path); // only reachable if toOwnedSlice fails: submit owns both
-    return session_writer.submit(root.gpa, root.io, dir, path, try aw.toOwnedSlice(), fp);
+    return session_writer.submitInHome(root.gpa, root.io, dir, path, try aw.toOwnedSlice(), fp, root.home);
 }
 
 /// Parse the persisted `goal` field into a structured Goal (#223). A bare string
@@ -414,6 +418,12 @@ pub fn contextTokensFromSession(obj: std.json.ObjectMap) u64 {
 /// The persisted prompt-cache key; absent/malformed in pre-cache sessions, whose resume mints a fresh one as before.
 pub fn cacheKeyFromSession(obj: std.json.ObjectMap) ?[]const u8 {
     const v = obj.get("cache_key") orelse return null;
+    return if (v == .string and v.string.len == 36) v.string else null;
+}
+
+/// Git-root prompt-cache partition. Absent on pre-idle-park saves.
+pub fn promptCacheKeyFromSession(obj: std.json.ObjectMap) ?[]const u8 {
+    const v = obj.get("prompt_cache_key") orelse return null;
     return if (v == .string and v.string.len == 36) v.string else null;
 }
 /// The persisted --json sequence high-water mark (#330); 0 for sessions saved
@@ -483,7 +493,7 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     // only ever raises the counter, so a legacy session (no field) or a corrupt
     // negative value simply leaves this process's numbering alone.
     protocol_seq.restore(eventSeqFromSession(obj));
-    if (cacheKeyFromSession(obj)) |k| http_headers.adoptSessionId(k);
+    if (cacheKeyFromSession(obj)) |k| http_headers.restoreSessionId(k);
 
     root.ensureStoredKeys(keys);
     if (std.mem.eql(u8, pid, "codex")) root.ensureModelCatalog(keys.*);
@@ -493,8 +503,10 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     // meter, and keep every still-unused format lazy.
     try @import("session_prompt.zig").restore(root, obj);
     try @import("session_catalog.zig").restore(root, obj);
+    try root.publication_checks.restore(arena, obj);
     try root.ensureRootTools(root.provider.kind);
     const compaction_window = try @import("compaction_window.zig").State.restore(arena, obj, msgs.items);
+    root.pr_draft_scope = null; // draft-only scope must be authorized again after resume
     root.messages = msgs;
     root.compaction_window = compaction_window;
     // Repair histories written by older builds where a Responses

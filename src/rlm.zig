@@ -65,7 +65,7 @@ pub fn feedLive(ctx: ToolCtx, delta: []const u8) void {
 }
 
 /// Append `rlm` after the lean/no-local filters. On by default from turn
-/// one (ADR 0124). No-op when `--old` or embedder mode stripped host tools.
+/// one (ADR 0140). No-op when `--old` or embedder mode stripped host tools.
 pub fn maybeAppend(comptime Spec: type, arena: Allocator, specs: []const Spec) ![]const Spec {
     sync();
     if (!available or no_local_tools.enabled) return specs;

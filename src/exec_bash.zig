@@ -75,10 +75,12 @@ fn startedText(gpa: Allocator, id: u32, cmd: []const u8, ssh: bool, auto_bg: boo
     errdefer aw.deinit();
     const w = &aw.writer;
     try w.print("[job {d} started: {s}]\n", .{ id, cmd });
-    if (auto_bg) {
-        try w.print("Command exceeded the {d}s foreground wait and was automatically moved to the background. Process is still running. Waiting via bash_output shows elapsed-time pulses so a long rebuild is distinguishable from a hang. You are notified on exit — do not poll. bash_output(id {d}, wait_ms>0) waits until it exits; omit wait_ms for a snapshot. bash_kill stops it.", .{ wait_s, id });
+    if (@import("job_wait.zig").followup_pending.load(.acquire)) {
+        try w.print("Follow-up received while this was running; it was moved to the background so you can talk. Process is still running as job {d}. shell action=output wait_ms>0 waits until it exits; omit wait_ms for a snapshot. action=kill stops it.", .{id});
+    } else if (auto_bg) {
+        try w.print("Command exceeded the {d}s foreground wait and was automatically moved to the background. Process is still running. You are notified on exit — do not poll. shell action=output id {d} is a snapshot, not wait-until-exit; omit wait_ms for an immediate snapshot. Leave it on /jobs or action=kill it. Explicit run_in_background keeps wait-until-exit for intentional long work.", .{ wait_s, id });
     } else {
-        try w.print("This is a persistent job. bash_output wait_ms is a snapshot timeout, not wait-until-exit — omit wait_ms for an immediate snapshot. You are notified on exit — do not poll. bash_output(id {d}) reads unread output. bash_kill stops it.", .{id});
+        try w.print("This is a persistent job. shell action=output wait_ms is a snapshot timeout, not wait-until-exit — omit wait_ms for an immediate snapshot. You are notified on exit — do not poll. action=output id {d} reads unread output. action=kill stops it.", .{id});
     }
     if (ssh) try w.writeAll(" Killing the local SSH job cannot prove a detached remote process stopped; verify the remote host.");
     if (partial.len > 0) {
@@ -217,6 +219,15 @@ test "cancel hint tells the model to restart with run_in_background" {
     try std.testing.expect(std.mem.indexOf(u8, cancel_hint, "run_in_background") != null);
 }
 
+test "auto-promoted jobs snapshot instead of inheriting wait-until-exit" {
+    const gpa = std.testing.allocator;
+    const text = try startedText(gpa, 7, "find /", false, true, 15, "partial");
+    defer gpa.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "wait-until-exit") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "waits until it exits") == null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "run_in_background") != null);
+}
+
 fn formatCapped(gpa: Allocator, cmd: []const u8, run: jobs.CappedRun) !ToolOutput {
     const exit_code: ?u8 = switch (run.term) {
         .exited => |code| code,
@@ -267,6 +278,8 @@ pub fn exec(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
         }
     };
     var result = try execUnchecked(ctx, call);
+    errdefer ctx.gpa.free(result.text);
+    try @import("cli_path_hint.zig").append(ctx.gpa, ctx.io, cmd, &result);
     if (warning) {
         const text = try std.mem.concat(ctx.gpa, u8, &.{ server_port.unknown_warning, result.text });
         ctx.gpa.free(result.text);
@@ -311,6 +324,7 @@ fn execUnchecked(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
             },
             .running => |r| blk: {
                 defer gpa.free(r.output);
+                jobs.markPersistent(io, r.id);
                 break :blk .{ .text = try startedText(gpa, r.id, cmd, ssh, true, wait_ms / 1000, r.output) };
             },
             .cancelled => |c| blk: {

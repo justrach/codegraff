@@ -57,6 +57,9 @@ pub fn build(b: *std.Build) void {
     // standalone graff-repl exe below). The repo's first dependency.
     const zigzag = b.dependency("zigzag", .{ .target = target, .optimize = optimize });
     exe.root_module.addImport("zigzag", zigzag.module("zigzag"));
+    const accord_dep = b.dependency("accord", .{ .target = target, .optimize = optimize });
+    const accord_mod = accord_dep.module("accord");
+    exe.root_module.addImport("accord", accord_mod);
     // Shared by the line-REPL picker and the TUI overlay so they cannot
     // drift: a file import from both modules is illegal in Zig 0.17.
     const models_rank_mod = b.createModule(.{
@@ -103,6 +106,7 @@ pub fn build(b: *std.Build) void {
     });
     unit_tests.root_module.addOptions("build_options", opts);
     unit_tests.root_module.addImport("zigzag", zigzag.module("zigzag"));
+    unit_tests.root_module.addImport("accord", accord_mod);
     unit_tests.root_module.addImport("models_rank", models_rank_mod);
     unit_tests.root_module.addImport("tui", tui_mod);
     // spec/ fixtures live outside src/; importing them here makes @embedFile
@@ -127,6 +131,9 @@ pub fn build(b: *std.Build) void {
     const acp_preauth_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-preauth.py" });
     acp_preauth_test.addArtifactArg(exe);
     test_step.dependOn(&acp_preauth_test.step);
+    const acp_startup_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-startup.py" });
+    acp_startup_test.addArtifactArg(exe);
+    test_step.dependOn(&acp_startup_test.step);
 
     // Learning kit: the adapter/suite files `graff learn init` materializes
     // into a workspace so zero-configuration learning needs no repo checkout.

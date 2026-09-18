@@ -11,8 +11,6 @@ record only when you need the evidence or the edge cases.
 
 | ADR | The rule |
 |---|---|
-| [Dev desktop](dev-desktop-identity.md) | Development builds have their own app identity and Electron profile so they can run alongside the installed desktop. |
-| [Chrome extension (experimental)](chrome-extension-explicit-tab-consent.md) | User Chrome control uses explicit per-tab consent, navigation revocation, native messaging, and an allowlisted MCP surface; real-browser acceptance is pending. |
 | [0001](0001-structured-outputs-are-a-formatting-step.md) | Structured output is a final formatting step. Never constrain the agentic phase with a schema grammar, and do not use `--output-schema` unless a program consumes the result. |
 | [0002](0002-xai-defaults-to-the-responses-wire.md) | xAI runs on the Responses wire by default (WS turns). Compaction is the client summarizer, not xAI's blob endpoint. `GRAFF_XAI_WIRE=chat` opts out. |
 | [0003](0003-codegraff-wire-follows-model-capability.md) | Codegraff uses Responses + WS for GPT-5.6+ (incl. GPT-6 Astra / Codex `gpt-5.6-*`) and grok-4.6; Claude, Gemini, and other aliases stay on Chat Completions. |
@@ -42,7 +40,7 @@ record only when you need the evidence or the edge cases.
 | [0027](0027-kimi-identity-is-graff.md) | Kimi Coding User-Agent is `graff/<version>`, not a spoofed `kimi-code-cli` token. X-Msh device fields follow kimi-code's shapes. |
 | [0028](0028-codex-session-id-is-the-cache-key.md) | Codex HTTP/WS `session_id` is the `prompt_cache_key` (openai/codex ModelClient default), not a per-process random UUID. |
 | [0029](0029-mcp-inside-rlm-and-return-shapes.md) | Loaded MCP tools are rlm host functions; persist return shapes on the load result, never the prefix; fat MCP results auto-slim; default `-p` connects `.mcp.json` (folded, not skipped). |
-| [0030](0030-rlm-late-showcase.md) | Superseded by [0124](0124-rlm-is-listed-when-available.md). Late showcase hid `rlm` on small turns; that gate is gone. |
+| [0030](0030-rlm-late-showcase.md) | Superseded by [0140](0140-rlm-is-listed-when-available.md). Late showcase hid `rlm` on small turns; that gate is gone. |
 | [0031](0031-xai-hosted-x-search.md) | xAI Responses splices hosted `x_search` onto tools turns. It is not a catalog function; `GRAFF_XAI_X_SEARCH=0` opts out. |
 | [0032](0032-acp-streams-mid-turn.md) | `graff acp` streams thought / tool / text `session/update`s mid-turn. The native app is an ACP client; it does not need `graff serve`. |
 | [0033](0033-user-can-retire-a-standing-constraint.md) | Only the user retires a standing constraint: TTY `/never` picker (two confirms), ACP/`rm`, or an explicit override. The model cannot. |
@@ -127,19 +125,41 @@ record only when you need the evidence or the edge cases.
 | [0112](0112-mcp-wire-names-preserve-raw-routing.md) | MCP wire names are escaped and bounded; raw server/tool identities control policy and dispatch. |
 | [0113](0113-clipboard-errors-need-evidence.md) | Direct AppKit clipboard failures need typed evidence; generic helper failures never imply Automation permission. |
 | [0114](0114-live-citations-are-terminal-presentation.md) | Live terminal citations use per-stream display filters with independent reasoning state; structured JSON/ACP output stays unchanged. |
-| [0115](0115-context-estimates-count-json-bytes.md) | Context estimates count exact JSON bytes without formatting history; live-tree reads and serializer parity preserve compaction policy. |
-| [0116](0116-live-subagent-feedback-is-queued.md) | `agent_message` queues bounded feedback to live background children at model-step boundaries; completion closes admission atomically, without resumption or budget reset. |
-| [0117](0117-goal-status-survives-compaction.md) | Compaction preserves goal status and kind; inactive goals are not reauthorized, and `/goals` is read-only status with exact command matching. |
-| [0118](0118-interactive-subagents-yield-the-parent.md) | Interactive direct subagents yield the parent; session-scoped completion wakes preserve drafts, while headless wait contracts remain unchanged. |
+| [0116](0116-informational-turns-have-bounded-scope.md) | Summary turns gather bounded evidence; coding completion requirements apply to requested changes. |
+| [0118](0118-file-edits-check-target-worktree.md) | File edits checkpoint the target Git worktree; unresolved paths retain the caller checkpoint. |
+| [0119](0119-computer-tools-receive-caller-context.md) | Computer-use MCP requests receive opaque caller-owned session and turn context. |
+| [0120](0120-draft-publication-does-not-complete-verification.md) | Draft PRs cannot satisfy verified completion; only a user control scoped to this conversation and goal permits an unverified draft handoff. |
+| [0121](0121-claims-include-repository-identity.md) | Claims include repository identity; literal PR mutations compare the observed repository, PR number and branch, while unknown scopes stay conservative. |
 
-| [0119](0119-historical-completion-requires-clean-exit.md) | Historical completion tasks require strict setup, calibrated behavior checks and a clean in-budget exit; artifact correctness is reported separately. |
+| [0122](0122-one-session-navigation-surface.md) | Open chats use the expanded sidebar or collapsed top tabs, preserving drafts and groups; focused mode keeps a compact composer and accessible settings. |
 
-| [0120](0120-mcp-server-delegates-bounded-cli-tasks.md) | `graff mcp serve` exposes bounded fresh CLI tasks over stdio; launch-time permissions and workspace stay outside tool arguments. |
-| [0121](0121-mcp-task-app-is-an-optional-result-view.md) | MCP task apps negotiate presentation only; structured results and text fallback share the same bounded task execution. |
+| [0123](0123-pr-check-observations-retain-the-rollup.md) | PR completion retains named current-head check observations locally; diagnostic receipts never replace fresh verification. |
 
-| [0122](0122-mcp-http-and-managed-client-registration.md) | HTTP MCP shares bounded task execution; CLI and GUI installs register detected clients additively through a private local service. |
-| [0123](0123-unselected-splits-use-appkit-glass.md) | Unselected split panes are CSS holes onto window-backed AppKit glass (`NSGlassEffectView`); SwiftUI stays the Activity sheet. |
-| [0124](0124-rlm-is-listed-when-available.md) | `rlm` is on the catalog whenever it is available. No batch-size or compactAt gate. `--old` still hides it. |
+| [0124](0124-review-checkpoints-preserve-unfinished-scope.md) | Explicit reviews request a findings checkpoint every twenty calls without forcing completion or changing authority. |
+
+| [0125](0125-review-deadlines-belong-to-one-turn.md) | Opt-in review deadlines use joined turn-owned watchers, preserve user cancellation, and cannot validate late results. |
+
+| [0126](0126-publication-retains-observed-check-failures.md) | Observed failed checks survive resumes; non-draft publication waits for successful reruns and occupies its own tool batch. |
+
+
+| [0127](0127-title-generation-is-an-explicit-result.md) | GUI titles require one explicit result and successful process exit; diagnostics never become chat names. |
+
+| [0128](0128-gui-context-meter-uses-harness-occupancy.md) | The GUI context ring uses last-reported harness occupancy; missing usage stays unknown. |
+
+| [0129](0129-mcp-server-delegates-bounded-cli-tasks.md) | `graff mcp serve` exposes bounded fresh CLI tasks over stdio; launch-time permissions and workspace stay outside tool arguments. |
+| [0130](0130-mcp-task-app-is-an-optional-result-view.md) | MCP task apps negotiate presentation only; structured results and text fallback share the same bounded task execution. |
+| [0131](0131-mcp-http-and-managed-client-registration.md) | HTTP MCP shares bounded task execution; CLI and GUI installs register detected clients additively through a private local service. |
+| [0132](0132-desktop-passkeys-use-signed-device-credentials.md) | Desktop Touch ID uses matching signed keychain configuration; account choice is explicit and existing iCloud credentials need a fallback. |
+| [0133](0133-clipboard-files-follow-consumer-ownership.md) | Clipboard cleanup requires file ownership and released consumers; age alone never deletes active or saved attachments. |
+
+| [0133](0133-publication-review-binds-committed-inputs.md) | Proposed: non-draft publication reviews immutable source and observed checks; changed inputs invalidate earlier assessments. |
+| [0134](0134-accord-live-jsonl-durable.md) | JSONL is the durable peer room; Accord Unix 0600 is live by default (`GRAFF_ACCORD=0` opts out). |
+| [0135](0135-one-shell-tool.md) | Advertise one `shell` tool (`run` / `output` / `kill`); bash names stay dispatch aliases. Not a PTY. |
+| [0136](0136-follow-up-promotes-a-live-shell.md) | A queued follow-up or force-steer promotes a foreground shell; Esc still kills it. |
+| [0137](0137-desktop-appearance-is-a-turn-note.md) | Desktop appearance tokens for `render_html` ride the turn, never the prefix or tool catalog; drawn HTML uses them unless the user named colors. |
+| [0138](0138-unselected-splits-use-glass-overlay.md) | Unselected split panes keep their transcript under a light wash; the focused pane stays the working surface. |
+| [0139](0139-bounced-answers-stay-turn-local.md) | Retain a bounced answer only in the current turn, before unfinished-work reconciliation; never recover it from persisted history. |
+| [0140](0140-rlm-is-listed-when-available.md) | `rlm` is on the catalog whenever it is available. No batch-size or compactAt gate. `--old` still hides it. |
 
 ## When to write one
 
@@ -171,5 +191,3 @@ What we do now, stated so a reader can comply without reading anything else.
 
 What this costs, what it protects, and what would justify revisiting it.
 ```
-| [0125](0125-user-chrome-is-a-paired-extension.md) | The user’s own Chrome is a paired extension, not a harness browser. The extension phones out; the harness opens no socket. |
-| [0126](0126-observer-notch-is-a-nonactivating-panel.md) | Session observer is a non-activating SwiftUI edge panel; it never becomes key, and SwiftUI is no longer only the Activity sheet. |

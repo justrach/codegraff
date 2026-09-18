@@ -19,17 +19,17 @@ const fs = require('node:fs/promises');
 const { Terminals } = require('./terminal.cjs');
 const { installWindowState } = require('./window-state.cjs');
 const { createNotch, notchStore } = require('./notch.cjs');
+const { pollCodexUsage } = require('./notch-usage.cjs');
 
 const root = process.env.GRAFF_CWD || app.getPath('home');
 const resources = process.env.GRAFF_ELECTRON_RESOURCES || process.resourcesPath;
 const developmentBuild = require('node:fs').existsSync(path.join(resources, 'codegraff-development'));
 const appName = developmentBuild ? 'Codegraff Dev' : 'Codegraff';
 app.setName(appName);
-app.setPath('userData', process.env.GRAFF_ELECTRON_SMOKE ? (process.env.GRAFF_SMOKE_PROFILE || path.join(require('node:os').tmpdir(), `codegraff-smoke-${process.pid}`)) : path.join(app.getPath('appData'), developmentBuild ? 'Codegraff Dev' : 'Codegraff Electron'));
+app.setPath('userData', process.env.GRAFF_ELECTRON_PROFILE || (process.env.GRAFF_ELECTRON_SMOKE ? (process.env.GRAFF_SMOKE_PROFILE || path.join(require('node:os').tmpdir(), `codegraff-smoke-${process.pid}`)) : path.join(app.getPath('appData'), developmentBuild ? 'Codegraff Dev' : 'Codegraff Electron')));
 if (process.env.GRAFF_ELECTRON_SMOKE) process.env.GRAFF_THEMES_DIR = path.join(app.getPath('userData'), 'themes');
 let win, browser, backend, automation, computer, profiler;
 let terminals;
-let quitting = false;
 const workspaceRequests = require('./workspace-open.cjs').workspaceOpen(target => {
   if (win && !win.isDestroyed()) win.webContents.send('workspace-open', target);
 });
@@ -56,17 +56,25 @@ function trusted(event) {
       new URL(event.senderFrame.url).origin !== backend.origin) throw new Error('Untrusted IPC sender');
 }
 let notch;
+let stopPromise;
 function stop() {
-  if (quitting) return; quitting = true;
-  let unsafe = false;
-  try { testDesktop?.assertSafe(); } catch (error) { console.error(error); unsafe = true; }
-  notch?.hide();
-  terminals?.closeAll();
-  profiler?.stop(); browser?.closeAll(); automation?.server.close(); backend?.stop();
-  testDesktop?.cleanup();
-  if (unsafe) app.exit(1);
+  if (stopPromise) return stopPromise;
+  return stopPromise = (async () => {
+    let unsafe = false;
+    try { testDesktop?.assertSafe(); } catch (error) { console.error(error); unsafe = true; }
+    notch?.hide();
+    terminals?.closeAll();
+    profiler?.stop(); browser?.closeAll(); automation?.server.close(); await backend?.stop();
+    testDesktop?.cleanup();
+    if (unsafe) app.exit(1);
+  })();
 }
-app.on('before-quit', stop);
+let stopped = false;
+app.on('before-quit', event => {
+  if (stopped) return;
+  event.preventDefault();
+  void stop().finally(() => { stopped = true; app.quit(); });
+});
 app.on('window-all-closed', () => app.quit());
 process.on('SIGTERM', () => app.quit());
 process.on('SIGINT', () => app.quit());
@@ -77,7 +85,13 @@ app.whenReady().then(async () => {
       .catch(error => dialog.showErrorBox('MCP setup incomplete', `${error.message}\nRetry from Tools → Configure MCP clients.`));
   }
   await require('./shell-path.cjs').restoreShellPath();
+  if (app.isPackaged && !process.env.GRAFF_ELECTRON_SMOKE) {
+    void require('./engine-launcher.cjs').installEngine(path.join(resources, 'graff'), app.getPath('home'))
+      .then(() => require('./mcp-install.cjs').installMcp(path.join(resources, 'graff'), app.getPath('home'), { once: true, version: app.getVersion() }))
+      .catch(error => dialog.showErrorBox('Command setup incomplete', `${error.message}\nRetry from Tools → Install codegraff terminal command.`));
+  }
   app.setAccessibilitySupportEnabled(true);
+  const passkeysConfigured = require('./webauthn.cjs').configureWebAuthn(app, resources);
   const token = randomBytes(32).toString('hex');
   const liveGlass = process.platform === 'darwin' && !testDesktop;
   let glassOn = false;
@@ -118,6 +132,13 @@ app.whenReady().then(async () => {
         },
       });
       if (typeof native.onNotchClick === 'function') native.onNotchClick(id => notch.clicked(Number(id)));
+      if (notch && !testDesktop) {
+        const tick = () => {
+          pollCodexUsage().then(cells => notch.setExtra(cells)).catch(() => notch.setExtra([]));
+        };
+        tick();
+        setInterval(tick, 60_000);
+      }
     } catch { /* unpackaged trees without the dylib keep the React app only */ }
   }
   ipcMain.on('notch', (event, snapshot) => {
@@ -205,7 +226,7 @@ app.whenReady().then(async () => {
     { label: 'File', submenu: [
       ['New chat', 'CmdOrCtrl+N', 'new'], ['New tab', 'CmdOrCtrl+T', 'new'],
       ['Close chat', 'CmdOrCtrl+W', 'close'], ['Reopen closed chat', 'CmdOrCtrl+Shift+T', 'reopen'],
-      ['Toggle terminal', 'CmdOrCtrl+J', 'terminal'], ['Open workspace…', 'CmdOrCtrl+O', 'workspace'], ['Split right', 'CmdOrCtrl+D', 'split-right'],
+      ['Toggle terminal', 'CmdOrCtrl+J', 'terminal'], ['Focus prompt', 'CmdOrCtrl+L', 'focus-prompt'], ['Open workspace…', 'CmdOrCtrl+O', 'workspace'], ['Split right', 'CmdOrCtrl+D', 'split-right'],
       ['Split down', 'CmdOrCtrl+Shift+D', 'split-down'], ['Zoom split', 'CmdOrCtrl+Shift+Enter', 'split-zoom'],
     ].map(([label, accelerator, action]) => ({ label, accelerator, click: () => win.webContents.send('desktop-action', action) })) },
     { label: 'Tools', submenu: [{ label: 'Configure MCP clients…', enabled: app.isPackaged && !developmentBuild, click: async () => {
@@ -213,12 +234,15 @@ app.whenReady().then(async () => {
         const detail = await require('./mcp-install.cjs').installMcp(path.join(resources, 'graff'), app.getPath('home'));
         await dialog.showMessageBox(win, { message: 'MCP clients configured', detail });
       } catch (error) { dialog.showErrorBox('MCP setup', error.message); }
-    } }, { label: 'Install codegraff terminal command…', enabled: app.isPackaged && !developmentBuild && process.platform === 'darwin', click: async () => {
+    } }, { label: 'Install codegraff terminal command…', enabled: app.isPackaged && process.platform === 'darwin', click: async () => {
       try {
+        await require('./engine-launcher.cjs').installEngine(path.join(resources, 'graff'), app.getPath('home'));
         const installed = await require('./cli-launcher.cjs').installLauncher(path.resolve(app.getPath('exe'), '../../..'), app.getPath('home'));
-        await dialog.showMessageBox(win, { message: 'Terminal command installed', detail: `Run codegraff . to open a project here. Ensure ${path.dirname(installed)} is on your PATH.` });
+        await dialog.showMessageBox(win, { message: 'Terminal command installed', detail: `Run graff for the CLI or codegraff . for the GUI. Open a new terminal to load the PATH update (${path.dirname(installed)}).` });
       } catch (error) { dialog.showErrorBox('Terminal command', error.message); }
-    } }] },
+    } }, { label: 'Browser passkey help…', click: () => void require('./webauthn.cjs').showPasskeyHelp({
+      window: win, browser, dialog, shell: require('electron').shell, configured: passkeysConfigured,
+    }).catch(() => dialog.showErrorBox('Browser passkeys', 'Could not open the default browser. Use another sign-in method on the site.')) }] },
     { role: 'editMenu' }, { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { role: 'togglefullscreen' }, { label: 'Session observer', type: 'checkbox', checked: !!notch?.enabled(), visible: process.platform === 'darwin', click: item => { item.checked = notch?.setEnabled(item.checked) ?? false; } }, { label: 'Release browser pages', click: () => { browser.closeAll(); win.webContents.send('browser-event', { type: 'released' }); } }] },
     { label: 'Performance', submenu: [
       { label: 'Start recording', click: () => void profiler.start() },
@@ -244,5 +268,5 @@ app.whenReady().then(async () => {
   }
   if (testDesktop) testDesktop.present(win); else win.show();
   profiler.record('ui-ready');
-  if (process.env.GRAFF_ELECTRON_SMOKE) require(process.env.GRAFF_SMOKE_LAUNCH_ONLY ? './smoke-launch.cjs' : './smoke.cjs').run({ win, browser, automation, backend, metrics, activity, computer, profiler, token }).then(() => app.quit()).catch(error => { console.error(error); stop(); app.exit(1); });
-}).catch(error => { console.error(error); stop(); app.exit(1); });
+  if (process.env.GRAFF_ELECTRON_SMOKE) require(process.env.GRAFF_SMOKE_SERVER_LIFECYCLE ? './smoke-server-lifecycle.cjs' : process.env.GRAFF_SMOKE_LAUNCH_ONLY ? './smoke-launch.cjs' : './smoke.cjs').run({ win, browser, automation, backend, metrics, activity, computer, profiler, token }).then(() => app.quit()).catch(async error => { console.error(error); await stop(); app.exit(1); });
+}).catch(async error => { console.error(error); await stop(); app.exit(1); });

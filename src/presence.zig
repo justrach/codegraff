@@ -302,13 +302,20 @@ pub fn noteLabelsFrom(io: Io, gpa: Allocator, arena: Allocator, title: ?[]const 
 /// peer ACKs it, so the re-issued command runs and one process checkpoints at
 /// most once per peer — awareness is the goal, not a tollbooth.
 pub fn gateCheck(io: Io, arena: Allocator) ?[]const u8 {
-    if (no_local_tools.lean) return null;
-    const dir_path = g_dir orelse return null;
-    if (g_identity.len == 0) return null;
+    return gateCheckIdentity(io, arena, g_identity);
+}
+
+pub fn hasCheckpointContext() bool {
+    return !no_local_tools.lean and g_dir != null and g_identity.len > 0;
+}
+
+pub fn gateCheckIdentity(io: Io, arena: Allocator, identity: []const u8) ?[]const u8 {
+    if (!hasCheckpointContext()) return null;
+    const dir_path = g_dir.?;
     var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return null;
     defer dir.close(io);
     const peers = listPeers(io, arena, dir);
-    const peer = unackedPeer(peers, g_identity, proc_identity.selfPid(), g_acked[0..g_acked_len]) orelse return null;
+    const peer = unackedPeer(peers, identity, proc_identity.selfPid(), g_acked[0..g_acked_len]) orelse return null;
     if (g_acked_len < g_acked.len) {
         g_acked[g_acked_len] = ackKey(peer);
         g_acked_len += 1;

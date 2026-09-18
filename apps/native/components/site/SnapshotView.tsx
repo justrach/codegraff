@@ -2,6 +2,7 @@
 
 import {useState, useEffect, useRef} from "react";
 import {validAppId} from "@/lib/mcp-apps";
+import motion from "./transcript-motion.module.css";
 
 /** One saved HTML snapshot shown inside the transcript. The two kinds differ
  *  only in where the bytes came from and what they may do; neither is ever
@@ -38,11 +39,23 @@ export default function SnapshotView({kind, id}: {kind: SnapshotKind; id: string
   }, [kind]);
   if (!validAppId(id)) return null;
   const {label, title, src, sandbox, allow} = KINDS[kind];
+  const iframe = (kind !== "view" || nearby) && <iframe title={title} src={src(id)} sandbox={sandbox} allow={allow}
+    referrerPolicy="no-referrer"
+    className={kind === "view" ? "block h-full w-full border-0 bg-transparent" : "block h-[620px] w-full border-0"} />;
+  const toggle = <button type="button" className="text-[11px] text-ink-3" onClick={()=>setVisible(!visible)} aria-expanded={visible}>{visible ? "Close view" : "Open view"}</button>;
+  // #1006: a model-drawn page is a figure in the turn, not a labeled product card.
+  if (kind === "view") {
+    return <section ref={host} className="group relative my-3 w-full" aria-label={label}>
+      {visible
+        ? <div className="pointer-events-none absolute right-1 top-1 z-10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"><span className="pointer-events-auto">{toggle}</span></div>
+        : toggle}
+      {visible && <div className={`${motion.reveal} w-full bg-transparent`} style={{height: "min(70vh, 32rem)"}}>{iframe}</div>}
+    </section>;
+  }
   return <section ref={host} className="my-3 overflow-hidden rounded-lg border border-ink/10" aria-label={label}>
     <div className="flex items-center justify-between px-3 py-2 text-xs text-ink-3">
-      <span>{label}</span><button type="button" onClick={()=>setVisible(!visible)} aria-expanded={visible}>{visible ? "Close view" : "Open view"}</button>
+      <span>{label}</span>{toggle}
     </div>
-    {visible && <div className="h-[620px]">{(kind !== "view" || nearby) && <iframe title={title} src={src(id)} sandbox={sandbox} allow={allow}
-      referrerPolicy="no-referrer" className="block h-[620px] w-full border-0" />}</div>}
+    {visible && <div className="h-[620px]">{iframe}</div>}
   </section>;
 }

@@ -126,6 +126,7 @@ fn release(self: *Model, op: *Op) void {
     if (op.text) |t| self.alloc.free(t);
     self.alloc.destroy(op);
     self.bg = null;
+    @import("owned_images.zig").collect(self);
 }
 
 fn applyCompact(self: *Model, op: *Op) void {

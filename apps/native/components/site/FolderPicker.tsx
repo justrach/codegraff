@@ -22,7 +22,7 @@ import { IconFolder, IconPlusMedium } from "@/lib/icons";
 import { basename } from "@/lib/workspaces";
 
 const FIELD =
-  "h-8 w-full rounded-[8px] bg-field px-2.5 text-[13px] text-ink shadow-hairline outline-none placeholder:text-ink-3 focus:bg-hover";
+  "h-8 w-full rounded-control bg-field px-2.5 text-[13px] text-ink shadow-hairline outline-none placeholder:text-ink-3 focus:bg-hover";
 
 function Chip({
   active,

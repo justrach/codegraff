@@ -13,13 +13,24 @@ const output = path.resolve(__dirname, '../images');
 app.whenReady().then(async () => {
   win = new BrowserWindow({ show:false, frame:false, transparent:true, backgroundColor:'#00000000', width:1920, height:1530, useContentSize:true, webPreferences:{ sandbox:true, contextIsolation:true, nodeIntegration:false, backgroundThrottling:false } });
   win.webContents.session.webRequest.onBeforeRequest((details, callback) => callback({cancel: /^https?:/.test(details.url)}));
-  for (const plate of plates) {
+  const requested = process.argv.slice(2);
+  for (const name of requested) assert.ok(plates.some(p => p.name === name), `Unknown plate: ${name}`);
+  for (const plate of plates.filter(p => !requested.length || requested.includes(p.name))) {
     win.setContentSize(plate.width, plate.height);
     const html = path.join(temporary, `${plate.name}.html`);
     fs.writeFileSync(html, plate.html());
     await win.loadFile(html);
     const state = await win.webContents.executeJavaScript(`(async()=>{await document.fonts.ready;await Promise.all([...document.images].map(i=>i.decode()));await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return {width:innerWidth,height:innerHeight,overflow:document.documentElement.scrollWidth>innerWidth,images:[...document.images].every(i=>i.naturalWidth>0)}})()`);
     assert.deepEqual(state, {width:plate.width,height:plate.height,overflow:false,images:true});
+    const layout = await win.webContents.executeJavaScript(`(() => {
+      const stage = document.querySelector('.stage');
+      const footer = document.querySelector('footer');
+      const header = document.querySelector('header');
+      const stamp = document.querySelector('.art-stamp');
+      return !stage || (stage.getBoundingClientRect().bottom < footer.getBoundingClientRect().top
+        && header.getBoundingClientRect().right < stamp.getBoundingClientRect().left);
+    })()`);
+    assert.ok(layout, `${plate.name}: screenshot or heading overlaps its frame`);
     const capture = await win.webContents.capturePage();
     // Normalize Retina captures so export size is independent of the display.
     const frame = capture.resize({width:plate.width,height:plate.height,quality:'best'});

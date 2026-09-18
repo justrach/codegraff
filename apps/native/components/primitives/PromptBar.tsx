@@ -8,13 +8,16 @@ import ModelEffortButtons from "./ModelEffortButtons";
 import type { ModelChoice } from "@/lib/acp-client";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ComposerMenu from "./ComposerMenu";
+import ComposerAttachments from "./ComposerAttachments";
 import { useComposerSweep } from "./useComposerSweep";
 import { useComposerSize } from "./useComposerSize";
 import { useComposerDraft } from "./useComposerDraft";
+import { useSteerArm } from "./useSteerArm";
 import type { AcpCommand } from "@/lib/acp";
 import {
   filesFrom,
   releaseAttachments,
+  discardAttachments,
   uploadAttachment,
   withAttachmentMarkers,
 } from "@/lib/attachments";
@@ -46,6 +49,8 @@ export default function PromptBar({
   onStop,
   history,
   root,
+  contextMeter,
+  inject,
 }: {
   variant?: string;
   /** the self-running walkthrough; turn off when embedding in a real surface */
@@ -72,10 +77,18 @@ export default function PromptBar({
   /** The workspace this composer sends into. The @ picker searches it, and a
    * picked file is mentioned by its path relative to it. */
   root?: string;
+  contextMeter?: import("@/lib/context-meter").ContextMeter;
+  /** Load this text into the draft when `key` changes (edit-prompt). */
+  inject?: { key: number; text: string } | null;
 }) {
   const pill = variant === "Pill";
   const catalog = models && models.length > 0 ? models : MODELS;
   const { draft, setDraft, attachments, setAttachments, uploads, setUploads, attachError, setAttachError } = useComposerDraft();
+  useEffect(() => {
+    if (!inject) return;
+    setDraft(inject.text);
+    setHistoryIndex(-1);
+  }, [inject?.key]);
   /* Recall cursor: -1 is the live draft. Whatever was being typed is kept
    * aside so ArrowDown past the newest entry hands it back untouched. */
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -292,13 +305,14 @@ export default function PromptBar({
 
   const removeAttachment = (id: string) => {
     setAttachments((current) => {
-      releaseAttachments(current.filter((a) => a.id === id));
+      discardAttachments(current.filter((a) => a.id === id));
       return current.filter((a) => a.id !== id);
     });
   };
 
   const canSend = !disabled && uploads === 0 && (draft.trim().length > 0 || attachments.length > 0);
   const showStop = busy;
+  const steerArm = useSteerArm(busy && !disabled, onSteerQueued);
   const send = () => {
     if (!canSend) return;
     if (/^\/(effort|reasoning)$/.test(draft.trim()) && model.effortLevels?.length) { modelRef.current?.dispatchEvent(new Event("graff-effort-open")); setDraft(""); return; }
@@ -348,6 +362,11 @@ export default function PromptBar({
       {modelOpen && <ModelPicker models={catalog} selected={model} anchor={modelRef} onClose={() => setModelOpen(false)}
         onSelect={next => { selectModel(next); inputRef.current?.focus({ preventScroll: true }); }} />}
 
+      {(steerArm.left > 0 || steerArm.steering) && (
+        <p role="status" className="mb-1.5 px-1 text-[12px] font-medium text-ink-2">
+          {steerArm.steering ? "Steering…" : `Enter again in ${steerArm.left} to steer`}
+        </p>
+      )}
       {/* ── composer ───────────────────────────────────── */}
       <div
         onDragOver={(event) => {
@@ -368,7 +387,7 @@ export default function PromptBar({
           setDragging(false);
           void attachFiles(files);
         }}
-        className={`relative isolate flex flex-col overflow-hidden border bg-surface shadow-card transition-[border-color,border-radius] duration-150 focus-within:border-line-strong ${
+        className={`relative isolate flex flex-col overflow-hidden border ${layout.glass} transition-[border-color,border-radius] duration-150 focus-within:border-line-strong ${
           dragging ? "border-accent-ink" : "border-line"
         } ${
           tall ? "gap-2.5 p-3.5" : "gap-1.5 p-1.5"
@@ -404,37 +423,7 @@ export default function PromptBar({
           {draft}
         </span>
 
-        {attachments.length > 0 && (
-          <div className={`flex flex-wrap gap-1.5 pt-0.5 ${pill ? "px-1" : "px-0.5"}`}>
-            {attachments.map((file) => (
-              <span
-                key={file.id}
-                className={`flex h-6.5 items-center gap-1.5 bg-field py-1 pr-1 pl-1.5 text-[11.5px] text-ink-2 shadow-hairline ${
-                  pill ? "rounded-full" : "rounded-chip"
-                }`}
-                style={{ animation: "pop-in 200ms cubic-bezier(0.23,1,0.32,1) both" }}
-              >
-                {file.preview ? (
-                  /* eslint-disable-next-line @next/next/no-img-element */
-                  <img src={file.preview} alt="" className="-my-1 size-6 rounded-[4px] object-cover" />
-                ) : (
-                  <Icon size={12}>{GLYPHS.file}</Icon>
-                )}
-                <span className="max-w-36 truncate">{file.name}</span>
-                <button
-                  type="button"
-                  aria-label={`Remove ${file.name}`}
-                  onClick={() => removeAttachment(file.id)}
-                  className={`-my-1 flex size-6 items-center justify-center text-ink-3 transition-colors duration-100 hover:bg-line/70 hover:text-ink ${
-                    pill ? "rounded-full" : "rounded-[5px]"
-                  }`}
-                >
-                  <Icon size={10} strokeWidth={2.5}><path d="M18 6L6 18M6 6l12 12" /></Icon>
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
+        <ComposerAttachments attachments={attachments} pill={pill} onRemove={removeAttachment} />
 
         {uploads > 0 && <p role="status" className="px-2 text-xs text-ink-3">Adding {uploads} {uploads === 1 ? "file" : "files"}…</p>}
         {attachError && (
@@ -488,7 +477,7 @@ export default function PromptBar({
               if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && busy && !disabled && onSteerQueued) {
                 event.preventDefault();
                 event.stopPropagation();
-                if (!event.repeat) onSteerQueued();
+                if (!event.repeat) steerArm.fire();
                 return;
               }
               // Other modified keys belong to desktop shortcuts.
@@ -517,6 +506,7 @@ export default function PromptBar({
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
                 event.stopPropagation();
+                if (!canSend && steerArm.consumeEnter()) return;
                 send();
               }
             }}
@@ -530,6 +520,7 @@ export default function PromptBar({
           />
 
           <ModelEffortButtons model={model} buttonRef={modelRef} modelOpen={modelOpen} wide={wide} pill={pill} busy={busy}
+            contextMeter={contextMeter} showContextMeter={!demo}
             onCommand={onSetting} openModel={() => { setPlusOpen(false); setModelOpen(current => !current); }} />
 
           {/* Keep cancellation available while a follow-up is being drafted. */}

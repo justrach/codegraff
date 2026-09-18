@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { filesFrom, isImageFile, marker, markerName, splitImageMarkers, withAttachmentMarkers, type Attachment } from "./attachments.ts";
+import { filesFrom, isImageFile, liftAttachmentMarkers, marker, markerName, splitImageMarkers, withAttachmentMarkers, type Attachment } from "./attachments.ts";
 
 const shot: Attachment = { id: "/tmp/a/shot.png", name: "shot.png", path: "/tmp/a/shot.png" };
 const notes: Attachment = { id: "/tmp/a/notes.md", name: "notes.md", path: "/tmp/a/notes.md" };
@@ -37,6 +37,16 @@ test("splitImageMarkers lifts a staged image out of the words around it", () => 
 test("only the staged attachment directory previews; any other path stays text", () => {
   assert.deepEqual(splitImageMarkers("@[/tmp/a/shot.png]"), ["@[/tmp/a/shot.png]"]);
   assert.deepEqual(splitImageMarkers("@[/tmp/x/graff-native-attachments/notes.md]"), ["@[/tmp/x/graff-native-attachments/notes.md]"]);
+});
+
+test("liftAttachmentMarkers turns staged image tokens into chips", () => {
+  const staged = "@[/tmp/x/graff-native-attachments/shot.png]";
+  const lifted = liftAttachmentMarkers(`look at this ${staged} please`);
+  assert.equal(lifted.text, "look at this please");
+  assert.equal(lifted.attachments.length, 1);
+  assert.equal(lifted.attachments[0]?.name, "shot.png");
+  assert.equal(lifted.attachments[0]?.path, "/tmp/x/graff-native-attachments/shot.png");
+  assert.deepEqual(liftAttachmentMarkers("no images here"), { text: "no images here", attachments: [] });
 });
 
 test("markerName is the basename /api/attach answers to", () => {

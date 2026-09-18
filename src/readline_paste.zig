@@ -9,6 +9,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const Entry = struct {
+    id: usize,
     start: usize,
     end: usize,
     label: []u8,
@@ -17,7 +18,6 @@ const Entry = struct {
 
 pub const Store = struct {
     entries: std.ArrayList(Entry) = .empty,
-    next_id: usize = 1,
 
     pub fn deinit(self: *Store, gpa: Allocator) void {
         self.clear(gpa);
@@ -35,6 +35,7 @@ pub const Store = struct {
 
     /// Insert one collapsed long paste at the cursor. Existing spans move with
     /// the surrounding text; the new span is inserted in positional order.
+    /// Reuse the lowest vacant display number without relabeling live spans.
     pub fn insert(
         self: *Store,
         gpa: Allocator,
@@ -43,7 +44,8 @@ pub const Store = struct {
         body: []const u8,
         lines: usize,
     ) !void {
-        const label = try std.fmt.allocPrint(gpa, "[Pasted text #{d} +{d} lines]", .{ self.next_id, lines });
+        const id = self.availableId();
+        const label = try std.fmt.allocPrint(gpa, "[Pasted text #{d} +{d} lines]", .{ id, lines });
         errdefer gpa.free(label);
         const owned_body = try gpa.dupe(u8, body);
         errdefer gpa.free(owned_body);
@@ -51,14 +53,25 @@ pub const Store = struct {
         try buf.insertSlice(gpa, cursor.*, label);
         self.edited(gpa, cursor.*, cursor.*, label.len);
         self.entries.appendAssumeCapacity(.{
+            .id = id,
             .start = cursor.*,
             .end = cursor.* + label.len,
             .label = label,
             .body = owned_body,
         });
         std.mem.sort(Entry, self.entries.items, {}, lessThan);
-        self.next_id += 1;
         cursor.* += label.len;
+    }
+
+    /// Labels are presentation only: detached entries release their number,
+    /// while literal lookalikes never reserve one or acquire a hidden body.
+    fn availableId(self: *const Store) usize {
+        var id: usize = 1;
+        while (true) : (id += 1) {
+            for (self.entries.items) |entry| {
+                if (entry.id == id) break;
+            } else return id;
+        }
     }
 
     /// Update semantic ranges after replacing `[from,to)` with `inserted_len`
@@ -306,7 +319,7 @@ test "typed duplicate beside a live span stays literal and unhighlighted" {
     try testing.expectEqualStrings("real\nbody [Pasted text #1 +2 lines]", buf.items);
 }
 
-test "paste ids are not reused after an attachment is removed" {
+test "paste ids are reused after an attachment is removed" {
     var store: Store = .{};
     defer store.deinit(testing.allocator);
     var buf: std.ArrayList(u8) = .empty;
@@ -318,7 +331,7 @@ test "paste ids are not reused after an attachment is removed" {
     cursor = 0;
     try store.insert(testing.allocator, &buf, &cursor, "second\nbody", 2);
 
-    try testing.expectEqualStrings("[Pasted text #2 +2 lines]", buf.items);
+    try testing.expectEqualStrings("[Pasted text #1 +2 lines]", buf.items);
 }
 
 test "expansion consumes identity even when the body begins with its label" {

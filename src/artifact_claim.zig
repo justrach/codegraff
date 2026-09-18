@@ -14,148 +14,20 @@ const ExecResult = tools_mod.ExecResult;
 const presence = @import("presence.zig");
 const proc_identity = @import("proc_identity.zig");
 
-pub const Kind = enum { branch, issue, commit, pull_request, publication };
-
-pub const Owner = struct {
-    session: []const u8 = "",
-    pid: i32 = 0,
-    start_id: u64 = 0,
-};
-
-pub const Claim = struct {
-    kind: Kind,
-    key: []const u8,
-    owner: Owner,
-    acquired_ms: i64 = 0,
-};
-
-pub const Verdict = enum { free, mine, foreign_live, stale };
-
-pub const max_claims = 32;
-
-pub const Ledger = struct {
-    items: [max_claims]Claim = undefined,
-    len: usize = 0,
-
-    pub fn slice(self: *const Ledger) []const Claim {
-        return self.items[0..self.len];
-    }
-};
-
-pub fn kindFrom(text: []const u8) ?Kind {
-    if (std.mem.eql(u8, text, "branch")) return .branch;
-    if (std.mem.eql(u8, text, "issue")) return .issue;
-    if (std.mem.eql(u8, text, "commit")) return .commit;
-    if (std.mem.eql(u8, text, "pull_request") or std.mem.eql(u8, text, "pr")) return .pull_request;
-    if (std.mem.eql(u8, text, "publication")) return .publication;
-    return null;
-}
-
-pub fn sameOwner(a: Owner, b: Owner) bool {
-    if (a.pid == 0 and b.pid == 0) return a.session.len > 0 and std.mem.eql(u8, a.session, b.session);
-    return a.pid != 0 and a.pid == b.pid and a.start_id == b.start_id and std.mem.eql(u8, a.session, b.session);
-}
-
-fn sameKey(a: Claim, kind: Kind, key: []const u8) bool {
-    if (a.kind != kind) return false;
-    if (key.len == 0 or a.key.len == 0) return std.mem.eql(u8, a.key, key);
-    return std.mem.eql(u8, a.key, key);
-}
-
-/// `owner_live` is the caller's probe of the recorded owner. Time passing and
-/// an absent pull request are not inputs — only a gone process is stale.
-pub fn verdict(claims: []const Claim, kind: Kind, key: []const u8, me: Owner, owner_live: bool) Verdict {
-    for (claims) |c| {
-        if (!sameKey(c, kind, key)) continue;
-        if (sameOwner(c.owner, me)) return .mine;
-        return if (owner_live) .foreign_live else .stale;
-    }
-    return .free;
-}
-
-pub fn find(claims: []const Claim, kind: Kind, key: []const u8) ?Claim {
-    for (claims) |c| if (sameKey(c, kind, key)) return c;
-    return null;
-}
-
-pub fn acquire(ledger: *Ledger, arena: Allocator, kind: Kind, key: []const u8, me: Owner, now_ms: i64, owner_live: bool) ![]const u8 {
-    switch (verdict(ledger.slice(), kind, key, me, owner_live)) {
-        .mine => return "claim already held by this session",
-        .foreign_live => return error.ClaimHeld,
-        .stale, .free => {},
-    }
-    var i: usize = 0;
-    while (i < ledger.len) {
-        if (sameKey(ledger.items[i], kind, key)) {
-            ledger.items[i] = .{
-                .kind = kind,
-                .key = try arena.dupe(u8, key),
-                .owner = .{
-                    .session = try arena.dupe(u8, me.session),
-                    .pid = me.pid,
-                    .start_id = me.start_id,
-                },
-                .acquired_ms = now_ms,
-            };
-            return "claim acquired (replaced stale owner)";
-        }
-        i += 1;
-    }
-    if (ledger.len >= max_claims) return error.ClaimFull;
-    ledger.items[ledger.len] = .{
-        .kind = kind,
-        .key = try arena.dupe(u8, key),
-        .owner = .{
-            .session = try arena.dupe(u8, me.session),
-            .pid = me.pid,
-            .start_id = me.start_id,
-        },
-        .acquired_ms = now_ms,
-    };
-    ledger.len += 1;
-    return "claim acquired";
-}
-
-pub fn release(ledger: *Ledger, kind: Kind, key: []const u8, me: Owner, owner_live: bool) ![]const u8 {
-    switch (verdict(ledger.slice(), kind, key, me, owner_live)) {
-        .free => return "no claim to release",
-        .stale => {}, // a live session may clear a dead owner's claim
-        .foreign_live => return error.ClaimHeld,
-        .mine => {},
-    }
-    var i: usize = 0;
-    while (i < ledger.len) {
-        if (sameKey(ledger.items[i], kind, key)) {
-            ledger.items[i] = ledger.items[ledger.len - 1];
-            ledger.len -= 1;
-            return "claim released";
-        }
-        i += 1;
-    }
-    return "no claim to release";
-}
-
-pub fn handoff(ledger: *Ledger, arena: Allocator, kind: Kind, key: []const u8, from: Owner, to: Owner, now_ms: i64, owner_live: bool) ![]const u8 {
-    if (sameOwner(from, to)) return "handoff to self is a no-op";
-    switch (verdict(ledger.slice(), kind, key, from, owner_live)) {
-        .mine => {},
-        .stale => if (!owner_live) {} else return error.ClaimHeld,
-        .foreign_live => return error.ClaimHeld,
-        .free => return error.NoClaim,
-    }
-    var i: usize = 0;
-    while (i < ledger.len) : (i += 1) {
-        if (!sameKey(ledger.items[i], kind, key)) continue;
-        ledger.items[i].owner = .{
-            .session = try arena.dupe(u8, to.session),
-            .pid = to.pid,
-            .start_id = to.start_id,
-        };
-        ledger.items[i].acquired_ms = now_ms;
-        return "claim handed off";
-    }
-    return error.NoClaim;
-}
+const claim_ledger = @import("artifact_claim_ledger.zig");
+pub const Kind = claim_ledger.Kind;
+pub const Owner = claim_ledger.Owner;
+pub const Claim = claim_ledger.Claim;
+pub const Verdict = claim_ledger.Verdict;
+pub const max_claims = claim_ledger.max_claims;
+pub const Ledger = claim_ledger.Ledger;
+pub const kindFrom = claim_ledger.kindFrom;
+pub const sameOwner = claim_ledger.sameOwner;
+pub const verdict = claim_ledger.verdict;
+pub const find = claim_ledger.find;
+pub const acquire = claim_ledger.acquire;
+pub const release = claim_ledger.release;
+pub const handoff = claim_ledger.handoff;
 
 /// Git / GitHub writes that must not proceed under a foreign live claim.
 pub fn isClaimedMutation(cmd: []const u8) bool {
@@ -233,46 +105,80 @@ fn ownerLive(io: Io, owner: Owner) bool {
         if (sameOwner(owner, g_test_owner)) return true;
         return g_test_live;
     }
-    if (owner.pid == 0) return true;
+    // A legacy handoff with no process identity is not held forever.
+    if (owner.pid == 0) return false;
     return proc_identity.ownerState(owner.start_id, proc_identity.probe(io, owner.pid)) == .held;
 }
 
 fn claimRelevant(held: Kind, mutation: Kind) bool {
-    if (held == mutation or held == .publication) return true;
+    if (held == mutation) return true;
     return switch (mutation) {
-        .pull_request => held == .branch or held == .commit,
+        .pull_request => held == .branch or held == .commit or held == .publication,
         .publication => held == .branch or held == .pull_request or held == .commit,
-        .commit => held == .branch,
-        else => false,
+        .commit => held == .branch or held == .publication,
+        .issue => false,
+        .branch => held == .publication,
     };
 }
 
 pub fn gateCommand(arena: Allocator, io: Io, cmd: []const u8, key: []const u8) ?[]const u8 {
+    return gateCommandIn(arena, io, cmd, key, ".");
+}
+
+pub fn gateCommandIn(arena: Allocator, io: Io, cmd: []const u8, key: []const u8, cwd: []const u8) ?[]const u8 {
     if (!isClaimedMutation(cmd)) return null;
     var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer scratch.deinit();
+    var local = readSnapshot(io, scratch.allocator()) catch return "artifact claim ledger unreadable or busy: action NOT performed";
+    const ledger = &local;
+    if (ledger.len == 0) return null;
+    const kind = mutationKind(cmd);
+    const me = selfOwner(io);
+    // Avoid remote lookups when every potentially relevant claim is ours.
+    var foreign = false;
+    for (ledger.slice()) |c| if (!sameOwner(c.owner, me)) {
+        foreign = true;
+        break;
+    };
+    if (!foreign) return null;
+    const resolved = if (builtin.is_test) null else @import("artifact_claim_target.zig").resolve(arena, io, cmd, kind, cwd);
+    // The remote read does not hold the ledger lock. A handoff/release during
+    // that read must be observed before deciding whether this action may run.
     const tx = begin(io, scratch.allocator()) catch return "artifact claim ledger unavailable or busy: action NOT performed";
     defer if (tx) |transaction| transaction.end();
-    var local: Ledger = .{};
-    const ledger = if (tx != null) &local else &g_ledger;
-    if (tx) |transaction| loadTransaction(transaction, ledger) catch return "artifact claim ledger unreadable: action NOT performed";
-    const kind = mutationKind(cmd);
-    const compound = std.mem.indexOfAny(u8, cmd, ";|&`$\n") != null;
-    const me = selfOwner(io);
-    const target: @import("artifact_claim_target.zig").Target = @import("artifact_claim_target.zig").explicit(cmd, kind) orelse .{ .kind = if (kind == .issue) Kind.issue else Kind.branch, .key = key };
+    local = .{};
+    if (tx) |transaction| {
+        loadTransaction(transaction, ledger) catch return "artifact claim ledger unreadable: action NOT performed";
+    } else local = g_ledger;
+    const compound = resolved == null and std.mem.indexOfAny(u8, cmd, ";|&`$\n") != null;
+    var target: @import("artifact_claim_target.zig").Target = resolved orelse @import("artifact_claim_target.zig").explicit(cmd, kind) orelse .{ .kind = if (kind == .issue) Kind.issue else Kind.branch, .key = key };
+    if (target.kind == .branch and target.key.len == 0) target.key = key;
     for (ledger.slice()) |c| {
         if (!compound and !claimRelevant(c.kind, kind)) continue;
-        const comparable = c.kind == target.kind or (c.kind == .publication and target.kind == .branch);
-        if (!compound and comparable and target.key.len > 0 and c.key.len > 0 and !std.mem.eql(u8, c.key, target.key)) continue;
-        if (verdict(ledger.slice(), c.kind, c.key, me, ownerLive(io, c.owner)) == .foreign_live)
-            return refuseText(arena, c.kind, c.key, c.owner);
+        const branch_claim = c.kind == .publication or c.kind == .branch;
+        if (!compound and c.kind == .branch and claim_ledger.differentRepository(c.repo, target.head_repo)) continue;
+        if (!compound and claim_ledger.differentRepository(c.repo, target.repo)) {
+            // A fork's branch can own the same PR's publication work. Unknown
+            // head repository evidence must not silently release that claim.
+            if (!branch_claim or claim_ledger.differentRepository(c.repo, target.head_repo)) continue;
+        }
+        const compare_key = if (branch_claim and target.branch != null) target.branch.? else target.key;
+        const comparable = c.kind == target.kind or (branch_claim and (target.kind == .branch or target.branch != null));
+        if (!compound and comparable and compare_key.len > 0 and c.key.len > 0 and !std.mem.eql(u8, c.key, compare_key)) continue;
+        if (!sameOwner(c.owner, me) and ownerLive(io, c.owner)) return refuseText(arena, c.kind, c.key, c.owner);
     }
     return null;
 }
 
 pub fn handleTool(arena: Allocator, io: Io, action: []const u8, kind_s: []const u8, key: []const u8, to_session: []const u8) !ExecResult {
+    return handleToolIn(arena, io, action, kind_s, key, to_session, ".", null);
+}
+
+pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []const u8, key: []const u8, to_session: []const u8, cwd: []const u8, requested_repo: ?[]const u8) !ExecResult {
     var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer scratch.deinit();
+    const repo = if (builtin.is_test and requested_repo == null) null else @import("artifact_repository.zig").resolve(arena, io, cwd, requested_repo);
+    if (requested_repo != null and repo == null) return .{ .text = "claim repository could not be resolved; no claim changed", .is_error = true };
     const tx = begin(io, scratch.allocator()) catch return .{ .text = "claim ledger unavailable or busy", .is_error = true };
     defer if (tx) |transaction| transaction.end();
     var local: Ledger = .{};
@@ -285,10 +191,11 @@ pub fn handleTool(arena: Allocator, io: Io, action: []const u8, kind_s: []const 
     };
     const me = selfOwner(io);
     const now: i64 = 0;
-    const existing = find(ledger.slice(), kind, key);
+    if (claim_ledger.ambiguous(ledger.slice(), kind, key, repo)) return .{ .text = "claim repository is ambiguous; specify repo explicitly", .is_error = true };
+    const existing = claim_ledger.findIn(ledger.slice(), kind, key, repo);
     const live = if (existing) |c| ownerLive(io, c.owner) else false;
     if (std.mem.eql(u8, action, "claim") or std.mem.eql(u8, action, "acquire")) {
-        const msg = acquire(ledger, storage, kind, key, me, now, live) catch |err| switch (err) {
+        const msg = claim_ledger.acquireIn(ledger, storage, kind, key, me, now, live, repo) catch |err| switch (err) {
             error.ClaimHeld => return .{ .text = refuseText(arena, kind, key, existing.?.owner), .is_error = true },
             else => return .{ .text = "claim acquire failed", .is_error = true },
         };
@@ -296,7 +203,9 @@ pub fn handleTool(arena: Allocator, io: Io, action: []const u8, kind_s: []const 
         return .{ .text = msg, .is_error = false };
     }
     if (std.mem.eql(u8, action, "release")) {
-        const msg = release(ledger, kind, key, me, live) catch return .{
+        const existing_owner = if (existing) |c| c.owner else null;
+        const recoverable = if (existing_owner) |o| o.pid == 0 and (std.mem.eql(u8, o.session, me.session) or o.session.len == 0) else false;
+        const msg = claim_ledger.releaseIn(ledger, kind, key, me, live and !recoverable, repo) catch return .{
             .text = "cannot release a live foreign claim",
             .is_error = true,
         };
@@ -319,7 +228,7 @@ pub fn handleTool(arena: Allocator, io: Io, action: []const u8, kind_s: []const 
             .id => |id| id,
             else => receiver.start_id,
         };
-        const msg = handoff(ledger, storage, kind, key, me, .{ .session = receiver.session_id, .pid = receiver.pid, .start_id = start_id }, now, live) catch |err| switch (err) {
+        const msg = claim_ledger.handoffIn(ledger, storage, kind, key, me, .{ .session = receiver.session_id, .pid = receiver.pid, .start_id = start_id }, now, live, repo) catch |err| switch (err) {
             error.ClaimHeld => return .{ .text = "cannot hand off a claim you do not own", .is_error = true },
             error.NoClaim => return .{ .text = "no claim to hand off", .is_error = true },
             else => return .{ .text = "handoff failed", .is_error = true },
@@ -329,7 +238,7 @@ pub fn handleTool(arena: Allocator, io: Io, action: []const u8, kind_s: []const 
     }
     if (std.mem.eql(u8, action, "status")) {
         if (existing) |c| {
-            const v = verdict(ledger.slice(), kind, key, me, live);
+            const v = claim_ledger.verdictIn(ledger.slice(), kind, key, me, live, repo);
             return .{ .text = try std.fmt.allocPrint(arena, "claim {s} {s}: {s} owner=\"{s}\"", .{ @tagName(kind), key, @tagName(v), c.owner.session }), .is_error = false };
         }
         return .{ .text = "no claim", .is_error = false };
@@ -346,6 +255,14 @@ fn persistPath() ?[]const u8 {
 fn begin(io: Io, arena: Allocator) !?@import("repo_transaction.zig").Transaction {
     const path = persistPath() orelse return null;
     return try @import("repo_transaction.zig").Transaction.begin(io, arena, path);
+}
+
+fn readSnapshot(io: Io, arena: Allocator) !Ledger {
+    const tx = try begin(io, arena);
+    defer if (tx) |transaction| transaction.end();
+    var ledger: Ledger = .{};
+    if (tx) |transaction| try loadTransaction(transaction, &ledger) else return g_ledger;
+    return ledger;
 }
 
 fn loadTransaction(tx: @import("repo_transaction.zig").Transaction, ledger: *Ledger) !void {
@@ -548,4 +465,32 @@ test "shared-tree ACK is not a claim release" {
     // Re-issuing after presence.gateCheck ACKs the peer — claim still holds.
     try std.testing.expect(gateCommand(ar, std.testing.io, "git commit -m wip", "feat/x") != null);
     try std.testing.expect(gateCommand(ar, std.testing.io, "git push origin HEAD", "feat/x") != null);
+}
+
+test "publication claims do not block unrelated issue creation" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    resetForTest();
+    defer resetForTest();
+    setTestOwner(.{ .session = "s-pub", .pid = 21, .start_id = 3 });
+    _ = try handleTool(ar, std.testing.io, "claim", "publication", "feat/x", "");
+    setTestOwner(.{ .session = "s-other", .pid = 22, .start_id = 4 });
+    setTestOwnerLive(true);
+    try std.testing.expect(gateCommand(ar, std.testing.io, "gh issue create --title x --body y", "12") == null);
+    try std.testing.expect(gateCommand(ar, std.testing.io, "gh pr create --title x --body y", "feat/x") != null);
+}
+
+test "legacy pid-zero handoff can be released by the labeled session" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    resetForTest();
+    defer resetForTest();
+    setTestOwner(.{ .session = "s-legacy", .pid = 0, .start_id = 0 });
+    _ = try handleTool(ar, std.testing.io, "claim", "publication", "feat/legacy", "");
+    setTestOwner(.{ .session = "s-legacy", .pid = 44, .start_id = 8 });
+    setTestOwnerLive(true);
+    const released = try handleTool(ar, std.testing.io, "release", "publication", "feat/legacy", "");
+    try std.testing.expect(!released.is_error);
 }

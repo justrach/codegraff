@@ -50,11 +50,11 @@ const HEALTH_TIMEOUT_MS = 75_000;
 export function kuriBin(): string | null {
   const home = os.homedir();
   const named = [process.env.KURI_BIN, path.join(home, ".local/bin/kuri"), path.join(home, "kuri/zig-out/bin/kuri")];
-  for (const candidate of named) if (candidate && existsSync(candidate)) return candidate;
+  for (const candidate of named) if (candidate && existsSync(/*turbopackIgnore: true*/ candidate)) return candidate;
   for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
     if (!dir) continue;
     const candidate = path.join(dir, "kuri");
-    if (existsSync(candidate)) return candidate;
+    if (existsSync(/*turbopackIgnore: true*/ candidate)) return candidate;
   }
   return null;
 }
@@ -238,7 +238,7 @@ async function spawnKuri(): Promise<{ port: number; token: string }> {
   // round). A private HOME gives the sidecar its own profile and state.
   mkdirSync(PRIVATE_HOME, { recursive: true });
   reapProfileChrome();
-  const child = spawn(bin, [], {
+  const child = spawn(/*turbopackIgnore: true*/ bin, [], {
     env: {
       ...process.env,
       HOME: PRIVATE_HOME,

@@ -54,7 +54,7 @@ test "the interactions catalog is the responses catalog without strict" {
     // Same tools, same order, same schemas — only the field Google rejects differs.
     try std.testing.expect(std.mem.indexOf(u8, schema.tools_responses_sub, "\"strict\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, tools_interactions_sub, "strict") == null);
-    try std.testing.expect(std.mem.indexOf(u8, tools_interactions_sub, "\"type\":\"function\",\"name\":\"bash\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tools_interactions_sub, "\"type\":\"function\",\"name\":\"shell\"") != null);
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, tools_interactions_sub, .{});
     defer parsed.deinit();
     var responses_parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, schema.tools_responses_sub, .{});

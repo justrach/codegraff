@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { GeistSans } from "geist/font/sans";
+import { GeistMono } from "geist/font/mono";
 import "./globals.css";
 import "./appearance.css";
 import "./motion.css";
@@ -9,16 +10,6 @@ import { ThemeSync } from "@/components/site/ThemeSync";
 import DesktopTitlebar from "@/components/site/DesktopTitlebar";
 import DesktopUpdates from "@/components/site/DesktopUpdates";
 import { BrowserWarm } from "@/components/site/BrowserWarm";
-
-const inter = Geist({
-  subsets: ["latin"],
-  variable: "--font-inter",
-});
-
-const mono = Geist_Mono({
-  subsets: ["latin"],
-  variable: "--font-mono-face",
-});
 
 export const metadata: Metadata = {
   title: "Codegraff",
@@ -34,7 +25,7 @@ export default function RootLayout({
       <head>
         <script dangerouslySetInnerHTML={{ __html: appearanceScript }} />
       </head>
-      <body className={`${inter.variable} ${mono.variable} font-sans`}>
+      <body className={`${GeistSans.variable} ${GeistMono.variable} font-sans`}>
         <ThemeSync />
         <MotionLifecycle />
         <BrowserWarm />

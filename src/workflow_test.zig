@@ -17,6 +17,7 @@ const util = @import("util.zig");
 const ToolCtx = tools.ToolCtx;
 const cappedPrevBody = workflow.cappedPrevBody;
 const phaseTaskCap = workflow.phaseTaskCap;
+const admissionNotice = workflow.admissionNotice;
 const withContext = workflow.withContext;
 const gateAllows = workflow.gateAllows;
 const buildAbortText = workflow.buildAbortText;
@@ -67,6 +68,19 @@ test "phaseTaskCap divides the phase budget across tasks, floored at min_task_pr
     try std.testing.expect(phase_prev_budget / max_workflow_tasks < min_task_prev_cap);
     try std.testing.expectEqual(@as(usize, min_task_prev_cap), phaseTaskCap(max_workflow_tasks));
     try std.testing.expectEqual(@as(usize, min_task_prev_cap), phaseTaskCap(50));
+}
+
+test "admissionNotice exposes omitted workflow tasks to synthesis and the final manifest (#863)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    try std.testing.expectEqualStrings(
+        "workflow warning [phase 1/2 sweep]: requested=4, executed=1, omitted=3",
+        admissionNotice(a, 1, 2, "sweep", 4, 1),
+    );
+    try std.testing.expectEqualStrings("", admissionNotice(a, 1, 2, "sweep", 4, 4));
+    try std.testing.expectEqualStrings("", admissionNotice(a, 2, 2, "synthesize", 1, 1));
 }
 
 test "withContext: set prepends context + blank line; absent/empty is byte-identical (U5)" {
@@ -152,7 +166,7 @@ test "buildManifest reports ok/retried per phase and SKIPPED for a gated phase (
     const a = arena_state.allocator();
 
     const tallies = [_]PhaseTally{
-        .{ .phase_no = 1, .total_phases = 3, .title = "Gather", .ok = 3, .total = 3, .retried = 1 },
+        .{ .phase_no = 1, .total_phases = 3, .title = "Gather", .ok = 3, .total = 3, .retried = 1, .diversity = admissionNotice(a, 1, 3, "Gather", 4, 3) },
         .{ .phase_no = 2, .total_phases = 3, .title = "Verify", .ok = 0, .total = 2, .retried = 0, .skipped_when = "no findings" },
         .{ .phase_no = 3, .total_phases = 3, .title = "Report", .ok = 1, .total = 2, .retried = 0 },
     };
@@ -160,6 +174,7 @@ test "buildManifest reports ok/retried per phase and SKIPPED for a gated phase (
 
     try std.testing.expect(std.mem.startsWith(u8, block, "## workflow"));
     try std.testing.expect(std.mem.indexOf(u8, block, "phase 1/3 Gather: 3/3 ok, 1 retried") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "workflow warning [phase 1/3 Gather]: requested=4, executed=3, omitted=1") != null);
     try std.testing.expect(std.mem.indexOf(u8, block, "phase 2/3 Verify: SKIPPED (when=\"no findings\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, block, "phase 3/3 Report: 1/2 ok, 0 retried") != null);
     // A skipped phase must never claim an ok/retried count it never earned.

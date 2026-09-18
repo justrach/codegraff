@@ -21,14 +21,10 @@ const readline = @import("readline.zig");
 const protocol_seq = @import("protocol_seq.zig");
 const vision = @import("vision.zig");
 const vision_queue = @import("vision_queue.zig");
+const acp_ask = @import("acp_ask.zig");
 
 /// Block the root agent for an ask_user reply; subagents have no stdin.
 pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
-    const in = self.in orelse return .{
-        .text = "no human is attached — make a reasonable assumption and continue",
-        .is_error = true,
-    };
-    const w = self.out.?;
     const question = if (tools_mod.json_args.object(call.input)) |o| (tools_mod.json_args.str(o, "question") orelse "(no question)") else "(no question)";
     if (main_mod.json_mode) {
         const call_id = if (call.id.len > 0) call.id else blk: {
@@ -37,6 +33,13 @@ pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
             break :blk id;
         };
         try emitAskUser(self, call_id, question, call.input);
+        // ACP owns stdin (`root.in` is null); answers arrive on session/answer.
+        if (self.in == null) {
+            const got = try acp_ask.wait(self.arena);
+            if (got.cancelled) return .{ .text = "user cancelled the follow-up", .is_error = true };
+            return finishAnswer(self, std.mem.trim(u8, got.text, " \t\r"));
+        }
+        const in = self.in.?;
         const raw = (try json_inbox.reply(self.arena, in)) orelse return .{
             .text = "user ended input without answering",
             .is_error = true,
@@ -52,6 +55,11 @@ pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
         if (answer.cancelled) return .{ .text = "user cancelled the follow-up", .is_error = true };
         return finishAnswer(self, answer.text);
     }
+    const in = self.in orelse return .{
+        .text = "no human is attached — make a reasonable assumption and continue",
+        .is_error = true,
+    };
+    const w = self.out.?;
     // Skip the re-print only when the question streamed live in full.
     if (!self.argStreamedFully(call)) try w.print("\n❓ {s}\n", .{question});
     if (tools_mod.json_args.object(call.input)) |o| if (tools_mod.json_args.arrayOf(o, "options")) |opts| {

@@ -11,8 +11,9 @@ test('GUI setup uses the bundled engine, records success and skips repeated firs
     const binary = path.join(home, 'fake graff');
     await fs.writeFile(binary, '#!/bin/sh\n[ "$1" = mcp ] && [ "$2" = install ] || exit 3\necho registered\n', {mode:0o700});
     assert.match(await installMcp(binary, home, {once:true}), /registered/);
+    assert.match(await installMcp(binary, home, {once:true, version:'2'}), /registered/);
     await fs.unlink(binary);
-    assert.equal(await installMcp(binary, home, {once:true}), 'MCP already configured');
+    assert.equal(await installMcp(binary, home, {once:true, version:'2'}), 'MCP already configured');
     await assert.rejects(installMcp(binary, home));
   } finally { await fs.rm(home, {recursive:true, force:true}); }
 });

@@ -35,7 +35,7 @@ pub var enabled = true;
 /// plus the deliberate-act tools whose first use tolerates one load call —
 /// measured (GRAFF_REQ_STATS top-5) at ~9.5k bytes of every request, with
 /// subagent alone at 5,052 (26% of the tools surface).
-/// Deliberately NOT here: the every-turn loop (bash, the file tools, codedb),
+/// Deliberately NOT here: the every-turn loop (shell, the file tools, codedb),
 /// loop control (ask_user, attempt_completion), and the meta arm itself
 /// (load_tool_schemas must stay callable to unfold these). Subagents are
 /// exempt at the call gates: their catalogs are comptime-baked full surfaces,
@@ -53,10 +53,9 @@ pub const folded = [_][]const u8{
     "workspace",
     "note_constraint",
     "agent_output",
-    "agent_message",
     "skill",
     "webfetch",
-    // ADR 0022 / 0124: isFolded is false under --old so the structured-only
+    // ADR 0022 / 0140: isFolded is false under --old so the structured-only
     // catalog stays byte-stable. While available, rlm is on the catalog
     // from turn one — no batch-size or compactAt gate.
     "rlm",
@@ -74,7 +73,7 @@ pub fn isFolded(name: []const u8) bool {
 }
 
 /// `--rlm` sets `g_cli_forced` so /new keeps the schema loaded. Listing
-/// itself follows `available` (ADR 0124), not a batch or compactAt gate.
+/// itself follows `available` (ADR 0140), not a batch or compactAt gate.
 var g_showcased: bool = false;
 var g_cli_forced: bool = false;
 
@@ -136,13 +135,32 @@ pub fn contextThreshold(compact_at: u64) ?u64 {
     return compact_at * pct / 100;
 }
 
-/// Kept so callers in agent.zig still compile. ADR 0124: compactAt never
+/// Kept so callers in agent.zig still compile. ADR 0140: compactAt never
 /// gates listing — rlm is already advertised when available.
 pub fn noticeContext(_: u64, _: u64) bool {
     return false;
 }
 
-/// Folded-native listing: advertised whenever rlm is on (ADR 0124).
+/// Lean/small turns hide rlm until a showcase. An explicit request for the
+/// REPL or persistent bindings is a predictable discovery path without
+/// advertising it on every short task.
+pub fn noticeExplicit(text: []const u8) bool {
+    if (listed() or !@import("rlm_spec.zig").available) return false;
+    var words = std.mem.tokenizeAny(u8, text, " \t\r\n,.;:!?()[]{}\"'`");
+    var saw = false;
+    while (words.next()) |word| {
+        if (std.ascii.eqlIgnoreCase(word, "rlm")) {
+            saw = true;
+            break;
+        }
+    }
+    if (!saw) return false;
+    showcaseRlm();
+    markLoaded("rlm");
+    return true;
+}
+
+/// Folded-native listing: advertised whenever rlm is on (ADR 0140).
 pub fn listed() bool {
     return @import("rlm_spec.zig").available;
 }
@@ -185,7 +203,7 @@ fn unmark(name: []const u8) void {
     }
 }
 
-/// Kept so callers in agent_tools still compile. ADR 0124: a native batch
+/// Kept so callers in agent_tools still compile. ADR 0140: a native batch
 /// never gates listing — rlm is already advertised when available.
 pub fn noticeWideNative(_: []const []const u8) bool {
     return false;
@@ -251,7 +269,7 @@ pub fn renderLoadedTail(s: *std.json.Stringify, kind: @import("provider.zig").Pr
     const schema_mod = @import("schema.zig");
     const mcp = @import("mcp.zig");
     for (loadedNames()) |name| {
-        // Available rlm is already in the catalog head (ADR 0124).
+        // #868: available rlm is already in the catalog head.
         if (std.mem.eql(u8, name, "rlm") and @import("rlm_spec.zig").available) continue;
         const spec = (try findRootSpec(out, name)) orelse continue;
         try schema_mod.writeToolEntry(s, kind, spec.name, spec.desc, .{ .raw = spec.schema });
@@ -273,7 +291,7 @@ pub fn renderLoadedTail(s: *std.json.Stringify, kind: @import("provider.zig").Pr
 /// cache the mode exists to protect, #476).
 pub fn catalogSkips(name: []const u8) bool {
     if (!enabled) return false;
-    // ADR 0124: when rlm is on, keep it on the catalog so the first turn
+    // ADR 0140: when rlm is on, keep it on the catalog so the first turn
     // can use it. --old still hides. No batch-size or compactAt gate.
     if (std.mem.eql(u8, name, "rlm") and @import("rlm_spec.zig").available) return false;
     if (mcp_schema_gate.g_stable_catalog) return isFolded(name);

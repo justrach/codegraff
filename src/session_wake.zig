@@ -22,7 +22,16 @@ pub fn isNotice(m: std.json.Value) bool {
     return v == .string and std.mem.eql(u8, v.string, "notification");
 }
 pub fn message(a: std.mem.Allocator, text: []const u8) !std.json.Value {
-    var m = try @import("messages.zig").textMessage(a, "user", text);
+    return mark(a, try @import("messages.zig").textMessage(a, "user", text));
+}
+pub fn typedMessage(a: std.mem.Allocator, kind: @import("provider.zig").Provider.Kind, text: []const u8) !std.json.Value {
+    return mark(a, if (kind == .interactions)
+        try @import("interactions_steps.zig").userInput(a, text)
+    else
+        try @import("messages.zig").textMessage(a, "user", text));
+}
+pub fn mark(a: std.mem.Allocator, source: std.json.Value) !std.json.Value {
+    var m = source;
     try m.object.put(a, origin_key, .{ .string = "notification" });
     return m;
 }
@@ -119,4 +128,24 @@ test "notification metadata stays off chat, responses and anthropic wires includ
         try std.testing.expect(std.mem.indexOf(u8, aw.written(), "\"role\":\"user\"") != null);
     }
     try std.testing.expect(isNotice(m)); // serialization must not mutate the saved object
+}
+
+test "internal notes retain provenance and do not replace the human request" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const messages = @import("messages.zig");
+    for ([_]@import("provider.zig").Provider.Kind{ .openai, .responses, .anthropic, .interactions }) |kind| {
+        const human = try @import("named_work.zig").userNudge(a, kind, "Explain parser.zig");
+        const note = try messages.userNote(a, kind, "Internal completion reminder");
+        try std.testing.expect(!isNotice(human));
+        try std.testing.expect(isNotice(note));
+        try std.testing.expectEqualStrings("Explain parser.zig", messages.latestUserText(&.{ human, note }));
+        var aw: std.Io.Writer.Allocating = .init(a);
+        var s: std.json.Stringify = .{ .writer = &aw.writer };
+        try writeWire(&s, note);
+        try std.testing.expect(std.mem.indexOf(u8, aw.written(), origin_key) == null);
+        try std.testing.expect(std.mem.indexOf(u8, aw.written(), "Internal completion reminder") != null);
+        if (kind == .interactions) try std.testing.expectEqualStrings("user_input", note.object.get("type").?.string);
+    }
 }

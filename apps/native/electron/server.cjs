@@ -20,12 +20,25 @@ async function startServer(resources, root, token, logDirectory, desktopEnv = {}
   const child = spawn(path.join(resources, 'bun'), [path.join(resources, 'ui/server.js')], {
     cwd: path.join(resources, 'ui'), detached: !managed, stdio: ['ignore', log, log],
     env: { ...process.env, ...desktopEnv, NODE_ENV: 'production', PORT: String(port), HOSTNAME: '127.0.0.1',
-      GRAFF_BIN: path.join(resources, 'graff'), GRAFF_CWD: root, GRAFF_DESKTOP_TOKEN: token },
+      GRAFF_BIN: path.join(resources, 'graff'), GRAFF_CWD: root, GRAFF_DESKTOP_TOKEN: token, GRAFF_ATTACHMENT_OWNER_PID: String(process.pid) },
   });
   fs.closeSync(log);
   let spawnError; child.on('error', error => { spawnError = error; });
   const origin = `http://127.0.0.1:${port}`;
-  const stop = () => { if (child.pid) { try { managed ? child.kill('SIGTERM') : process.kill(-child.pid, 'SIGTERM'); } catch {} } };
+  let stopping;
+  const stop = () => stopping ??= (async () => {
+    // Let workers save sessions and hand retained server pipes to drainers.
+    if (child.exitCode === null && child.signalCode === null) {
+      try {
+        const response = await fetch(`${origin}/api/acp`, {
+          method: 'POST', headers: { 'content-type': 'application/json', 'x-graff-desktop': token },
+          body: JSON.stringify({ method: 'shutdown' }), signal: AbortSignal.timeout(7500),
+        });
+        if (!response.ok) console.warn('Worker shutdown was not acknowledged; stopping backend');
+      } catch { console.warn('Worker shutdown unavailable; stopping backend'); }
+    }
+    if (child.pid) { try { managed ? child.kill('SIGTERM') : process.kill(-child.pid, 'SIGTERM'); } catch {} }
+  })();
   try {
     for (let attempt = 0; attempt < 120; attempt++) {
       if (spawnError) throw spawnError;
@@ -34,6 +47,6 @@ async function startServer(resources, root, token, logDirectory, desktopEnv = {}
       await new Promise(resolve => setTimeout(resolve, 250));
     }
     throw new Error('UI server did not start');
-  } catch (error) { stop(); throw error; }
+  } catch (error) { await stop(); throw error; }
 }
 module.exports = { startServer };

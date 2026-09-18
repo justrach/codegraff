@@ -588,6 +588,7 @@ pub const failure_evidence = fe;
 pub const contract_unmet = edit_contract.contract_unmet;
 pub const contract_brief_note = edit_contract.contract_brief_note;
 pub const isContracted = edit_contract.isContracted;
+pub const mutatingTask = edit_contract.mutatingTask;
 pub const contractUnmet = edit_contract.contractUnmet;
 pub const treeSnapshot = edit_contract.treeSnapshot;
 pub const contractCheck = edit_contract.contractCheck;

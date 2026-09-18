@@ -99,15 +99,16 @@ class ScriptedModel:
 
             def _message(self, reply: dict[str, Any]) -> dict[str, Any]:
                 message: dict[str, Any] = {"role": "assistant", "content": reply.get("text", "")}
-                if reply.get("tool"):
+                calls = reply.get("tools") or ([reply] if reply.get("tool") else [])
+                if calls:
                     message["tool_calls"] = [{
-                        "id": f"call_{len(model.requests)}",
+                        "id": f"call_{len(model.requests)}" + (f"_{index}" if len(calls) > 1 else ""),
                         "type": "function",
                         "function": {
-                            "name": reply["tool"],
-                            "arguments": json.dumps(reply.get("arguments", {})),
+                            "name": call["tool"],
+                            "arguments": json.dumps(call.get("arguments", {})),
                         },
-                    }]
+                    } for index, call in enumerate(calls)]
                 return message
 
             def _whole(self, reply: dict[str, Any]) -> None:

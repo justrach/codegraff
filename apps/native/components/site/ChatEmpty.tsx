@@ -59,6 +59,7 @@ export default function EmptyState({
       <div className={`relative ${compact ? "" : "home-reveal home-reveal-composer mt-7"}`}>
         <PromptBar
           demo={false}
+          variant="Pill"
           tall={!compact}
           placeholder={compact ? "Ask graff…" : "Ask graff to read, edit, or review this workspace…"}
           models={models}

@@ -73,12 +73,11 @@ pub fn rejectTool(arena: std.mem.Allocator, call: ToolCall) !?ExecResult {
         std.mem.eql(u8, call.name, "codedb") or
         std.mem.eql(u8, call.name, "attempt_completion")) return null;
 
-    if (std.mem.eql(u8, call.name, "bash") and call.input == .object) {
-        const command = call.input.object.get("command") orelse return denied(arena, call.name);
-        const background = call.input.object.get("run_in_background");
-        if (command == .string and
-            (background == null or background.? != .bool or !background.?.bool) and
-            policy.readOnlyAllowed(command.string)) return null;
+    const shell_tool = @import("shell_tool.zig");
+    if (shell_tool.isFamily(call.name) and call.input == .object) {
+        if (shell_tool.isJobControl(call)) return denied(arena, call.name);
+        const command = shell_tool.runCommand(call) orelse return denied(arena, call.name);
+        if (!shell_tool.isBackgroundRun(call) and policy.readOnlyAllowed(command)) return null;
     }
     return denied(arena, call.name);
 }
@@ -140,4 +139,57 @@ test "review context hides and restores parent history" {
     try std.testing.expectEqual(@as(u64, 300), root.context_local_tokens);
     try std.testing.expect(root.last_usage_includes_output);
     try std.testing.expect(!context.restore(&root));
+}
+
+/// A milestone asks for evidence-based narration, not raw per-call counters.
+/// It cannot end the review or grant permission to modify/delegate work.
+pub const Progress = struct {
+    next_calls: u64 = 20,
+
+    pub fn beforeRequest(self: *Progress, agent: *@import("agent.zig").Agent) !void {
+        if (!agent.review_mode or agent.sub or agent.model_calls_this_turn < self.next_calls) return;
+        const text = "Review checkpoint: briefly report what you have verified, what is still uncertain, and the next inspection needed. Do not claim the review is complete from partial coverage. If work remains, put this progress update before your next inspection tool call in the same response, then continue the read-only review. Do not start fixes, delegate, or repeat already-settled validation without new evidence.";
+        var note = try @import("named_work.zig").userNudge(agent.arena, agent.provider.kind, text);
+        try note.object.put(agent.arena, @import("session_wake.zig").origin_key, .{ .string = "notification" });
+        try agent.messages.append(note);
+        self.next_calls = agent.model_calls_this_turn +| 20;
+        agent.emit(.{ .type = "review_checkpoint", .text = "Read-only review remains in progress; a findings checkpoint was requested.", .complete = false });
+        if (agent.tracer) |tr| tr.note("review_checkpoint", "requested verified findings, remaining uncertainty and next inspection; no forced completion");
+    }
+};
+
+test "review milestones preserve user authority and do not complete or repeat at the same call" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Agent = @import("agent.zig").Agent;
+    var agent: Agent = undefined;
+    agent.arena = a;
+    agent.review_mode = true;
+    agent.sub = false;
+    agent.model_calls_this_turn = 19;
+    agent.messages = .init(a);
+    agent.provider.kind = .openai;
+    agent.tracer = null;
+    agent.completed = null;
+    agent.out = null;
+    try agent.messages.append(try @import("messages.zig").textMessage(a, "user", "Review the whole diff"));
+    var progress: Progress = .{};
+    try progress.beforeRequest(&agent);
+    try std.testing.expectEqual(@as(usize, 1), agent.messages.items.len);
+    agent.model_calls_this_turn = 20;
+    try progress.beforeRequest(&agent);
+    try std.testing.expectEqual(@as(usize, 2), agent.messages.items.len);
+    try std.testing.expect(@import("session_wake.zig").isNotice(agent.messages.items[1]));
+    try std.testing.expectEqualStrings("Review the whole diff", @import("messages.zig").latestUserText(agent.messages.items));
+    try std.testing.expect(agent.completed == null);
+    try progress.beforeRequest(&agent);
+    try std.testing.expectEqual(@as(usize, 2), agent.messages.items.len);
+    agent.model_calls_this_turn = 40;
+    try progress.beforeRequest(&agent);
+    try std.testing.expectEqual(@as(usize, 3), agent.messages.items.len);
+    agent.review_mode = false;
+    agent.model_calls_this_turn = 100;
+    try progress.beforeRequest(&agent);
+    try std.testing.expectEqual(@as(usize, 3), agent.messages.items.len);
 }

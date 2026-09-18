@@ -28,15 +28,15 @@ const Allocator = std.mem.Allocator;
 /// `GRAFF_NO_LOCAL_TOOLS=1` (session_run.zig). Never flipped mid-session.
 pub var enabled: bool = false;
 
-/// The built-in tools that reach this host: shell execution plus its two job
-/// controls, the three file tools, and codedb - which reads the host checkout
-/// through its own index. `webfetch` is deliberately absent: it is plain host
-/// HTTP with no sandbox to escape. So are the orchestration/meta tools, and
-/// everything MCP-sourced (an `mcp__*` name never matches here).
+/// The built-in tools that reach this host: the advertised `shell` tool, the
+/// three file tools, and codedb - which reads the host checkout through its
+/// own index. `webfetch` is deliberately absent: it is plain host HTTP with
+/// no sandbox to escape. So are the orchestration/meta tools, and everything
+/// MCP-sourced (an `mcp__*` name never matches here). `bash` /
+/// `bash_output` / `bash_kill` are dispatch aliases (gated_aliases): they
+/// are not advertised, but layer 2 still refuses them under this gate.
 pub const gated_tools = [_][]const u8{
-    "bash",
-    "bash_output",
-    "bash_kill",
+    "shell",
     "read_file",
     "edit_file",
     "write_file",
@@ -55,10 +55,20 @@ pub const gated_tools = [_][]const u8{
     "render_html",
 };
 
+/// Pre-unification names. Still dispatched, still blocked by --no-local-tools.
+pub const gated_aliases = [_][]const u8{
+    "bash",
+    "bash_output",
+    "bash_kill",
+};
+
 /// A name test only, independent of whether the gate is on, so the comptime
 /// catalog filter and the runtime refusal can share one list.
 pub fn isLocalTool(name: []const u8) bool {
     for (gated_tools) |tool| {
+        if (std.mem.eql(u8, name, tool)) return true;
+    }
+    for (gated_aliases) |tool| {
         if (std.mem.eql(u8, name, tool)) return true;
     }
     return false;
@@ -84,7 +94,7 @@ pub var lean: bool = false;
 /// hidden only when nothing is deferred. Overflow paging
 /// (`read_tool_result`) is interactive.
 pub const lean_tools = [_][]const u8{
-    "bash",
+    "shell",
     "read_file",
     "edit_file",
     "write_file",
@@ -129,7 +139,8 @@ pub const lean_subagent_desc = "Spawn a sidecar for a self-contained task. Child
 /// One-shot tool prose (ADR 0046). Same names and JSON schemas; shorter
 /// descriptions so flash models start and finish instead of rereading
 /// essays. Do not drop to four tools (ADR 0024).
-pub const lean_bash_desc = "Run /bin/sh -c in cwd. Returns stdout, stderr, exit. Foreground still running after 15s (or a shorter timeout) backgrounds — bash_output(wait_ms>0) waits; do not poll.";
+pub const lean_shell_desc = "Run /bin/sh -c in cwd. action=run returns stdout/stderr/exit. Foreground still running after 15s (or a shorter timeout) backgrounds — action=output wait_ms>0 waits; do not poll.";
+pub const lean_bash_desc = lean_shell_desc;
 pub const lean_read_file_desc = "Read a UTF-8 file. Call before editing. contains=exact-key numbered lines; start_line/end_line for a window.";
 pub const lean_edit_file_desc = "Replace exact text. Prefer one batched edits[] over many calls. Prefer over write_file for an existing file.";
 pub const lean_codedb_desc = "Indexed nav: context <task> (local) · around <name> · callpath A B · list_dir <path> · status. Prefer over bash grep/find/ls.";
@@ -137,7 +148,7 @@ pub const lean_attempt_completion_desc = "Task is done. Put the final answer in 
 
 fn leanCompactDesc(name: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, name, "subagent")) return lean_subagent_desc;
-    if (std.mem.eql(u8, name, "bash")) return lean_bash_desc;
+    if (std.mem.eql(u8, name, "shell") or std.mem.eql(u8, name, "bash")) return lean_shell_desc;
     if (std.mem.eql(u8, name, "read_file")) return lean_read_file_desc;
     if (std.mem.eql(u8, name, "edit_file")) return lean_edit_file_desc;
     if (std.mem.eql(u8, name, "codedb")) return lean_codedb_desc;
@@ -204,7 +215,8 @@ test "#330: the gated set is exactly the host-touching built-ins; webfetch, meta
     defer enabled = saved;
 
     for (gated_tools) |tool| try std.testing.expect(isLocalTool(tool));
-    try std.testing.expectEqual(@as(usize, 10), gated_tools.len);
+    try std.testing.expectEqual(@as(usize, 8), gated_tools.len);
+    try std.testing.expect(isLocalTool("bash") and isLocalTool("bash_output") and isLocalTool("bash_kill"));
     try std.testing.expect(isLocalTool("imagegen")); // #352: optional, but still a local spawn+write
     try std.testing.expect(isLocalTool("render_html")); // writes the snapshot under the host's own $HOME
     for ([_][]const u8{ "webfetch", "skill", "subagent", "workflow", "todo_write", "eval", "mcp__sandbox__exec", "mcp__sandbox__bash" }) |tool|
@@ -215,6 +227,7 @@ test "#330: the gated set is exactly the host-touching built-ins; webfetch, meta
     for (gated_tools) |tool| try std.testing.expect(!blocks(tool));
     enabled = true;
     for (gated_tools) |tool| try std.testing.expect(blocks(tool));
+    try std.testing.expect(blocks("bash") and blocks("bash_output") and blocks("bash_kill"));
     try std.testing.expect(!blocks("webfetch"));
     try std.testing.expect(!blocks("mcp__sandbox__bash"));
 }
@@ -227,7 +240,7 @@ test "#330: GRAFF_NO_LOCAL_TOOLS is affirmative-only" {
 test "lean: the filter keeps exactly the seven one-shot tools, and allocates nothing when off" {
     const Spec = struct { name: []const u8, desc: []const u8 = "" };
     const specs = [_]Spec{
-        .{ .name = "bash" },
+        .{ .name = "shell" },
         .{ .name = "workflow" },
         .{ .name = "read_file" },
         .{ .name = "todo_write" },
@@ -248,7 +261,7 @@ test "lean: the filter keeps exactly the seven one-shot tools, and allocates not
     lean = true;
     const kept = try filterLeanSpecs(Spec, arena, &specs);
     try std.testing.expectEqual(@as(usize, 4), kept.len);
-    try std.testing.expectEqualStrings("bash", kept[0].name);
+    try std.testing.expectEqualStrings("shell", kept[0].name);
     try std.testing.expectEqualStrings("read_file", kept[1].name);
     try std.testing.expectEqualStrings("subagent", kept[2].name);
     try std.testing.expectEqualStrings("attempt_completion", kept[3].name);
@@ -268,7 +281,7 @@ test "lean: the filter keeps exactly the seven one-shot tools, and allocates not
     try std.testing.expectEqual(specs.len, compact.len);
     for (compact) |s| {
         if (std.mem.eql(u8, s.name, "subagent")) try std.testing.expectEqualStrings(lean_subagent_desc, s.desc);
-        if (std.mem.eql(u8, s.name, "bash")) try std.testing.expectEqualStrings(lean_bash_desc, s.desc);
+        if (std.mem.eql(u8, s.name, "shell")) try std.testing.expectEqualStrings(lean_shell_desc, s.desc);
         if (leanCompactDesc(s.name) == null) try std.testing.expectEqualStrings("", s.desc);
     }
     try std.testing.expect(lean_bash_desc.len < 200);
@@ -281,7 +294,7 @@ test "lean: the filter keeps exactly the seven one-shot tools, and allocates not
 test "#330: filterRootSpecs drops only the gated names, and does not allocate when the gate is off" {
     const Spec = struct { name: []const u8 };
     const specs = [_]Spec{
-        .{ .name = "bash" },
+        .{ .name = "shell" },
         .{ .name = "webfetch" },
         .{ .name = "read_file" },
         .{ .name = "subagent" },
@@ -355,7 +368,8 @@ test "#330: neither catalog advertises a local tool under the gate, and webfetch
         try std.testing.expect(std.mem.indexOf(u8, catalog, "\"name\":\"webfetch\"") != null);
     }
     // …and the ungated twins still carry them, so the filter is what changed.
-    try std.testing.expect(std.mem.indexOf(u8, schema.tools_anthropic_sub, "\"name\":\"bash\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, schema.tools_anthropic_sub, "\"name\":\"shell\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, schema.tools_anthropic_sub, "\"name\":\"bash\"") == null);
 }
 
 test "#330: dispatch refuses a hallucinated bash call for the root AND for a subagent" {
@@ -431,6 +445,6 @@ test "lean catalog drops overflow pager and empty load_tool_schemas" {
     try std.testing.expect(std.mem.indexOf(u8, json, "write_file") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "read_tool_result") == null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"load_tool_schemas\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"rlm\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"rlm\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"read_file\"") != null);
 }

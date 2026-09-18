@@ -1,4 +1,5 @@
 import { parseRpcLine, type AcpCommand, type AcpUpdate, type JsonRpcLine } from "./acp";
+import { liveAppearanceTokens } from "./appearance-note";
 
 const BASE = "/api/acp";
 
@@ -106,9 +107,11 @@ export async function* prompt(
   sessionId: string,
   text: string,
 ): AsyncGenerator<AcpUpdate> {
+  const appearance = liveAppearanceTokens();
   const res = await rpc(chat, "session/prompt", {
     sessionId,
     prompt: [{ type: "text", text }],
+    ...(appearance ? { appearance } : {}),
   }, true);
   let terminal = false;
   for await (const line of ndjson(res)) {
@@ -128,6 +131,28 @@ export async function* prompt(
   if (!terminal) throw new Error("ACP stream ended before session/prompt returned");
 }
 
+/** Unsolicited session/update while the tab is idle (#1007). Ends on abort. */
+export async function* idleUpdates(
+  chat: ChatHandle,
+  sessionId: string,
+  signal?: AbortSignal,
+): AsyncGenerator<AcpUpdate> {
+  const res = await fetch(BASE, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ chat, method: "session/idle", params: { sessionId }, stream: true }),
+    cache: "no-store",
+    signal,
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`ACP session/idle → ${res.status}: ${detail.slice(0, 240)}`);
+  }
+  for await (const line of ndjson(res)) {
+    if ("method" in line && line.method === "session/update") yield line.params.update;
+  }
+}
+
 export async function cancel(chat: ChatHandle, sessionId: string): Promise<void> {
   const response = await fetch(BASE, {
     method: "POST",
@@ -135,6 +160,24 @@ export async function cancel(chat: ChatHandle, sessionId: string): Promise<void>
     body: JSON.stringify({ chat, method: "session/cancel", params: { sessionId } }),
   });
   if (!response.ok) throw new Error("Could not interrupt the current turn");
+}
+
+/** Mid-turn reply to `ask_user`. Notification, like cancel — the prompt stream stays open. */
+export async function answer(
+  chat: ChatHandle,
+  sessionId: string,
+  opts: { callId: string; text?: string; cancelled?: boolean },
+): Promise<void> {
+  const response = await fetch(BASE, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      chat,
+      method: "session/answer",
+      params: { sessionId, callId: opts.callId, text: opts.text ?? "", cancelled: opts.cancelled === true },
+    }),
+  });
+  if (!response.ok) throw new Error("Could not send the answer");
 }
 
 /** Kill a closed tab's agent. `keepalive` so a close-then-navigate still lands. */

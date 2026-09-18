@@ -91,6 +91,14 @@ click missed (overlay, prompt-origin, mid-origin).
 - If a touched file is already over 600 LOC, do not grow it; move it toward the limit before adding more behavior.
 - Generated files, vendored dependencies, lockfiles, and machine-produced artifacts are exempt; change their generator or source instead of hand-editing them.
 
+## Engine features are the same on REPL, TUI, and GUI
+
+Messaging (`peer_message`, idle peer mail, Accord live wake) and other
+engine-side behavior (turns, tools, compaction, goals) must work the same on
+the line REPL, the fullscreen TUI, and the desktop GUI (`graff acp`). Surface
+chrome can differ; the engine path cannot. If you add a wake, a latch, or a
+delivery rule, wire it on all three in the same change.
+
 ## Tests must be reachable
 
 - `zig build test` only runs the tests in files the test root pulls in. A new module's `test {}` blocks compile to nothing until something references it, and the suite still reports green.

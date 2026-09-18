@@ -104,6 +104,14 @@ pub fn phaseTaskCap(n_tasks: usize) usize {
     return @max(min_task_prev_cap, phase_prev_budget / n_tasks);
 }
 
+/// Tell both the next phase and the root when admission ran only a prefix of
+/// the authored tasks. Downsizing is intentional orchestration policy, but it
+/// must never make a reduced plan look like the complete requested plan.
+pub fn admissionNotice(arena: Allocator, phase_no: usize, total_phases: usize, title: []const u8, requested: usize, executed: usize) []const u8 {
+    if (executed >= requested) return "";
+    return std.fmt.allocPrint(arena, "workflow warning [phase {d}/{d} {s}]: requested={d}, executed={d}, omitted={d}", .{ phase_no, total_phases, title, requested, executed, requested - executed }) catch "workflow warning: requested tasks were omitted";
+}
+
 /// Bound one task's output before it enters the {{prev}} buffer (#4), to the
 /// given `cap`. Short outputs pass through untouched; over the cap, head +
 /// truncation marker + tail. Saturating subtraction guards a `cap` smaller
@@ -259,6 +267,7 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
     );
 
     var prev_results: []const u8 = "";
+    var gate_results: []const u8 = "";
     const tallies = try arena.alloc(PhaseTally, phases.len);
     for (phases, 1..) |phase_val, phase_no| {
         // §4-P2: stop BEFORE a phase whose remaining plan cannot be followed
@@ -291,11 +300,12 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
             .is_error = true,
         };
         const tasks = authored[0..@min(authored.len, @max(width_cap, 1))];
+        const admission_notice = admissionNotice(arena, phase_no, phases.len, title, authored.len, tasks.len);
         // #5 — conditional phase: skip when its `when` substring is absent from
         // the previous phase's results (case-insensitive). Phase 1 has no prev so
         // its `when` never gates; a skipped phase leaves {{prev}} untouched, so a
         // skipped final phase just returns the prior phase's results (early-exit).
-        if (phase_no > 1) if (phase.get("when")) |wv| if (wv == .string and !gateAllows(prev_results, wv.string)) {
+        if (phase_no > 1) if (phase.get("when")) |wv| if (wv == .string and !gateAllows(gate_results, wv.string)) {
             tick_gate.workerPrint("  [workflow] phase {d}/{d}: {s} — SKIPPED (when \"{s}\" absent)\n", .{ phase_no, phases.len, title, wv.string });
             wfp.phase(ctx.io, arena, run_id, phase_no, phases.len, title, "skipped", tasks.len); // #63
             tallies[phase_no - 1] = .{ .phase_no = phase_no, .total_phases = phases.len, .title = title, .ok = 0, .total = tasks.len, .retried = 0, .skipped_when = wv.string };
@@ -328,10 +338,9 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
             const raw = if (task.get("prompt")) |p| (if (p == .string) p.string else "") else "";
             if (raw.len == 0) return .{ .text = try gpa.dupe(u8, "each task needs a non-empty \"prompt\""), .is_error = true };
             rawp.* = raw;
-            // §3b, stolen from codex's patch-biased delegation: a contracted
-            // worker is told to MAKE the edits and to end by listing every
-            // changed path, so verify and the root review a diff, not a claim.
-            const noted = if (contracted)
+            // Read-only analysis keeps its non-mutating brief across retries.
+            const mutating = escalation.mutatingTask(shapes.canonicalSlot(title), raw);
+            const noted = if (mutating)
                 try withContext(arena, escalation.contract_brief_note, raw)
             else if (report_phase)
                 try withContext(arena, report_anchors.anchor_brief_note, raw)
@@ -377,12 +386,13 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
             route_trace.emitSpawnProvider(ctx.io, ctx.tracer, label, seat.provider, seat.cellOf(niche), seat.sourceFor(override != null), override, niche);
             fut.* = ctx.io.async(workflowTask, .{ ctx, label, prompt, override, niche, isolation, isolation_fallback, seat.pin });
         }
-        for (futures, outputs, labels, prompts, 0..) |*fut, *out, label, prompt, i| {
+        for (futures, outputs, labels, prompts, raws, 0..) |*fut, *out, label, prompt, raw, i| {
             if (dup.rep[i] != i) continue;
             // §3b — the edit contract, post-await: a contracted phase whose
             // porcelain never moved becomes is_error, which the retry below
-            // then picks up. #380's honesty flag composes inside it.
-            out.* = escalation.contractCheck(gpa, ctx.io, ctx.agent_cwd, contracted, tree_before, report_anchors.anchorCheck(gpa, ctx.io, ctx.agent_cwd, report_phase, vision_ask.flagReport(gpa, fut.await(ctx.io), vision_ask.forPrompt(prompt))));
+            // then picks up. Informational tasks keep a non-mutating scope.
+            const mutating = escalation.mutatingTask(shapes.canonicalSlot(title), raw);
+            out.* = escalation.contractCheck(gpa, ctx.io, ctx.agent_cwd, mutating, tree_before, report_anchors.anchorCheck(gpa, ctx.io, ctx.agent_cwd, report_phase, vision_ask.flagReport(gpa, fut.await(ctx.io), vision_ask.forPrompt(prompt))));
             // #63 — terminal per task, so a UI can settle that row without
             // waiting for the phase (and before the retry pass below reruns it).
             wfp.task(ctx.io, arena, run_id, phase_no, i + 1, tasks.len, label, if (out.is_error) "failed" else "completed");
@@ -457,7 +467,8 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
             // so the caller reads the API error, not a wall of bare headers.
             const details = try arena.alloc([]const u8, outputs.len);
             for (outputs, details) |out, *d| d.* = failExcerpt(arena, out.text);
-            const abort_text = try buildAbortText(arena, labels, details, phase_no, phases.len, title);
+            const raw_abort = try buildAbortText(arena, labels, details, phase_no, phases.len, title);
+            const abort_text = if (admission_notice.len == 0) raw_abort else try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ admission_notice, raw_abort });
             // The all-failed abort is the harness's own observation of a
             // failed attempt — parked as evidence for the next escalation.
             escalation.failure_evidence.note(shapes.classOf(shapes.rawAsk()), abort_text);
@@ -476,7 +487,8 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         if (ledger.fits(phase_budget.remainingOf(ctx.run_budget), @as(u64, @intCast(dup.survivors.len)) * phase_budget.cost_judge))
             scoreVariants(ctx, arena, seat, prompts, raws, overrides, niches, outputs);
 
-        tallies[phase_no - 1] = .{ .phase_no = phase_no, .total_phases = phases.len, .title = title, .ok = tasks.len - phase_failed, .total = tasks.len, .retried = nf, .diversity = wfp.joinNotes(arena, diversity, brief_diversity.collapseNote(arena, dup)) };
+        const phase_notes = wfp.joinNotes(arena, admission_notice, wfp.joinNotes(arena, diversity, brief_diversity.collapseNote(arena, dup)));
+        tallies[phase_no - 1] = .{ .phase_no = phase_no, .total_phases = phases.len, .title = title, .ok = tasks.len - phase_failed, .total = tasks.len, .retried = nf, .diversity = phase_notes };
         phases_ran = phase_no;
 
         // Divide the {{prev}} budget across THIS phase's own task count so a
@@ -499,7 +511,8 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
                 try aw.writer.print("### {s}\n{s}\n\n", .{ label, cappedPrevBody(arena, out.text, per_task_cap) });
             }
         }
-        prev_results = std.mem.trimEnd(u8, aw.writer.buffered(), "\n");
+        gate_results = std.mem.trimEnd(u8, aw.writer.buffered(), "\n");
+        prev_results = if (admission_notice.len == 0) gate_results else try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ admission_notice, gate_results });
     }
     // Only the phases that actually ran are tallied: P2 can break out of the
     // loop, leaving the rest of `tallies` uninitialized.

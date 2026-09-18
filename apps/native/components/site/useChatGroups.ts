@@ -24,7 +24,7 @@ export function useChatGroups(chats: Chat[], activeId: number) {
   });
   const tabs = useMemo(() => groups.map(group => ({
     id: group.ids[0], paneIds: group.ids, direction: group.direction, tree: group.tree,
-    title: group.ids.map(id => chats.find(chat => chat.id === id)?.title ?? (chats.length > 1 ? `Chat ${id}` : 'New chat')).join(' / '),
+    title: group.ids.map(id => chats.find(chat => chat.id === id)?.title ?? (chats.length > 1 ? `Chat ${id}` : 'Chat')).join(' / '),
   })), [groups,titleKey]);
   const updateTree = (apply: (tree: SplitTree) => SplitTree) => setLayouts(old => {
     const group=old.find(group=>group.ids.includes(activeId));

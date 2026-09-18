@@ -118,8 +118,8 @@ pub const Picked = struct { model: []const u8, provider: []const u8 = "" };
 /// by name, which is what the picker used to be stuck doing for every pick.
 pub const ModelFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, provider: []const u8, name: []const u8) ?Picked;
 pub const CancelFn = *const fn (turn_ctx: ?*anyopaque) void;
-/// Fill dest with a staged image path (return >0) or an error line (return <0).
-pub const PasteFn = *const fn (turn_ctx: ?*anyopaque, dest: []u8) isize;
+/// Fill dest with an image path (>0) and its ownership, or an error line (<0).
+pub const PasteFn = *const fn (turn_ctx: ?*anyopaque, dest: []u8, owned: *bool) isize;
 /// Run a user-typed `!` shell line; return combined output (caller frees), the
 /// gate's refusal, or null when the harness could not produce either. `params`
 /// carries the session's policy because `!` goes through the same gate the

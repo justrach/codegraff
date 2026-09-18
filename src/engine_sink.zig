@@ -216,7 +216,7 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
     // Compaction uses the live transport too, but its reply is bookkeeping,
     // not a new answer. Gate presentation, including the hosted fallback.
     if (a.stream_quiet) switch (ev.event) {
-        .reasoning_delta, .text_delta, .tool_arg_delta, .stream_complete => return,
+        .reasoning_delta, .text_delta, .tool_arg_delta, .completion_text, .stream_complete => return,
         else => {},
     };
     if (hosted_frontend) return hostedEmit(a, ev.event);

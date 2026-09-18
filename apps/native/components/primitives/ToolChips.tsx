@@ -309,8 +309,10 @@ export default function ToolChips({
             );
           })}
         </div>
+        </div>
+      </div>}
 
-      {/* file-diff chips */}
+      {/* file-diff chips — sit outside the disclosure so a collapsed run still shows what changed */}
       {(live ? diffs.length > 0 : step >= total) && (
         <div className="mt-2.5 flex max-w-full flex-wrap gap-1.5 border-t border-line pt-2.5">
           {diffs.map((d, i) => (
@@ -327,6 +329,7 @@ export default function ToolChips({
                 aria-label={`Show diff for ${d.file}`}
                 onFocus={openPreview(d.file)}
                 onBlur={closePreview(d.file)}
+                onClick={onOpenPath ? () => onOpenPath(d.file) : undefined}
                 className="inline-flex h-7 max-w-full items-center gap-1.5 rounded-chip
                   bg-surface px-2 font-mono text-[11.5px] text-ink shadow-btn
                   transition-colors duration-100 hover:bg-hover"
@@ -336,22 +339,10 @@ export default function ToolChips({
                 <span className="shrink-0 text-green tabular-nums">+{d.add}</span>
                 {d.del > 0 && <span className="shrink-0 text-red tabular-nums">−{d.del}</span>}
               </button>
-
             </span>
           ))}
-          <button
-            type="button"
-            className="inline-flex h-7 items-center rounded-chip px-1.5 font-mono text-[11.5px] text-ink-3
-              underline decoration-transparent underline-offset-2 transition-colors duration-100
-              hover:text-ink-2 hover:decoration-current"
-            style={{ animation: `fade-in 300ms ease-out ${DIFFS.length * 80}ms both` }}
-          >
-            {live ? `${diffs.length} files` : "+2 more"}
-          </button>
         </div>
       )}
-        </div>
-      </div>}
       {preview && typeof document !== "undefined" && createPortal(
         <div
           className="fixed z-50 w-72 overflow-hidden rounded-[10px] bg-surface shadow-overlay"

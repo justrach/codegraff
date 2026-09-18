@@ -52,14 +52,14 @@ test {
     _ = .{ @import("clipboard_native.zig"), @import("clipboard_edge_tests.zig"), @import("clipboard_failure_tests.zig"), @import("process_runner_clipboard_tests.zig") };
     _ = @import("server_orphan.zig");
     _ = @import("repo_transaction.zig");
-    _ = .{ @import("pr_command.zig"), @import("pr_evidence.zig"), @import("pr_verify.zig") };
+    _ = .{ @import("pr_command.zig"), @import("pr_evidence.zig"), @import("pr_verify.zig"), @import("pr_acceptance.zig"), @import("artifact_repository.zig"), @import("artifact_claim_ledger.zig"), @import("artifact_claim_store.zig") };
     _ = @import("argstream_citation_tests.zig"); // unit_tests' root is main.zig only, so reference every split-out module or its tests silently never run
     _ = @import("codex_node_repl.zig");
     _ = pricing;
     _ = models_cache;
     _ = ansi;
     _ = serve;
-    _ = .{ @import("json_inbox.zig"), @import("acp_inbox.zig"), @import("cite_markup.zig"), @import("server_diagnostics.zig"), @import("server_discovery.zig"), @import("job_browser_guard.zig"), @import("server_port.zig"), @import("job_registry_stop_tests.zig") };
+    _ = .{ @import("json_inbox.zig"), @import("acp_inbox.zig"), @import("cite_markup.zig"), @import("server_diagnostics.zig"), @import("server_discovery.zig"), @import("job_browser_guard.zig"), @import("preview_consumers.zig"), @import("plan_usage.zig"), @import("server_port.zig"), @import("job_registry_stop_tests.zig") };
     _ = util;
     _ = learn_store;
     _ = learn_eval;
@@ -124,7 +124,7 @@ test {
     _ = @import("obs_cost_test.zig");
     _ = @import("tui_launch.zig");
     _ = provider_mod;
-    _ = @import("named_work.zig");
+    _ = .{ @import("named_work.zig"), @import("task_intent.zig") };
 }
 const prompts = @import("prompts.zig");
 const schema = @import("schema.zig");
@@ -563,7 +563,7 @@ const workflow = @import("workflow_test.zig"); // the engine's tests live here (
 const exec = @import("exec.zig");
 test { // ── Unit tests (`zig build test`): pull in tests from imported modules (mcp.zig)
     _ = .{ @import("mcp_apps.zig"), @import("html_view.zig"), @import("providers_confirmation_tests.zig"), @import("repl_model_confirmation_tests.zig"), @import("repl_model_pick_tests.zig"), @import("engine_sink_citation_tests.zig"), @import("cite_markup_stream_tests.zig"), @import("oneshot_citation_tests.zig"), @import("tui_acp.zig") };
-    _ = .{ @import("main_test.zig"), @import("artifact_claim_command.zig"), @import("mcp_server_tests.zig") };
+    _ = .{ @import("mcp_server_tests.zig"), @import("main_test.zig"), @import("artifact_claim_command.zig"), @import("cli_path_hint.zig"), @import("run_budget.zig"), @import("pr_review_input.zig"), @import("pr_claim_review.zig"), @import("tui_paste_transfer.zig") };
     _ = @import("session_catalog.zig");
     _ = @import("session_prompt.zig");
     _ = @import("prompt_astra.zig");
@@ -571,12 +571,10 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("agent_model_loop.zig");
     _ = @import("publication_policy_tests.zig");
     _ = @import("jobs_completion_tests.zig");
-    _ = @import("test_hooks.zig"); // unreached modules; their tests were silently skipped
+    _ = .{ @import("readline_paste_number_tests.zig"), @import("test_hooks.zig") }; // unreached modules; their tests were silently skipped
     _ = @import("list_dir_nearmiss.zig");
     _ = @import("repo_map.zig");
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests
-    _ = @import("agent_gateway_retry.zig"); // #1019: flake vs overflow classification must stay reachable
-    _ = @import("agent_responses.zig"); // #1019: type:error frame message extraction
     _ = @import("agent_server_compact.zig"); // server-side autocompact (codex Responses)
     _ = @import("compact_status.zig");
     _ = @import("agent_request_search_tests.zig");
@@ -592,11 +590,11 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("goal_flow.zig");
     _ = @import("goal_todo.zig");
     _ = @import("goal_pacing.zig");
-    _ = .{ @import("presence_record.zig"), @import("peer_inbox_content_test.zig"), @import("peer_inbox_failure_test.zig"), @import("peer_inbox_storage_test.zig"), @import("peer_inbox_sequence_test.zig"), @import("peer_inbox_snapshot_test.zig") };
+    _ = .{ @import("presence_accord.zig"), @import("peer_idle.zig"), @import("acp_idle.zig"), @import("presence_chan.zig"), @import("presence_record.zig"), @import("peer_inbox_content_test.zig"), @import("peer_inbox_failure_test.zig"), @import("peer_inbox_storage_test.zig"), @import("peer_inbox_sequence_test.zig"), @import("peer_inbox_snapshot_test.zig") };
     _ = @import("acp_agents.zig");
     _ = @import("subagent_activity.zig");
     _ = @import("subagent_recovery.zig");
     _ = @import("acp_agent_activity.zig");
     _ = @import("read_image.zig");
-    _ = @import("mcp_names.zig");
+    _ = .{ @import("pr_local_checks.zig"), @import("mcp_names.zig"), @import("workspace_history.zig"), @import("file_worktree.zig"), @import("mcp_turn_context.zig"), @import("review_deadline.zig"), @import("issue_cmd.zig"), @import("shell_tool.zig"), @import("acp_ask.zig") };
 }

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import plistlib
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -34,6 +35,26 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(json.loads(cursor.read_text())['mcpServers']['other']['env']['KEY'], 'retained')
         self.assertTrue(codex.read_text().startswith('# keep comment'))
         self.assertEqual(cursor.stat().st_mode & 0o777, 0o600)
+
+    def test_owned_entries_refresh_but_user_edits_survive(self):
+        cursor = self.home / '.cursor/mcp.json'
+        cursor.parent.mkdir()
+        codex = self.home / '.codex/config.toml'
+        codex.parent.mkdir()
+        installer.register(self.home, self.url, self.token)
+        new_url = 'http://127.0.0.1:7721/mcp'
+        installer.register(self.home, new_url, self.token)
+        self.assertEqual(json.loads(cursor.read_text())['mcpServers']['codegraff']['url'], new_url)
+        if sys.version_info >= (3, 11):
+            self.assertIn(new_url, codex.read_text())
+        data = json.loads(cursor.read_text())
+        data['mcpServers']['codegraff']['custom'] = True
+        cursor.write_text(json.dumps(data))
+        before = cursor.read_bytes()
+        installer.register(self.home, self.url, self.token)
+        self.assertEqual(cursor.read_bytes(), before)
+        if sys.version_info >= (3, 11):
+            self.assertIn(self.url, codex.read_text())
 
     def test_malformed_config_unchanged(self):
         path = self.home / '.cursor/mcp.json'
