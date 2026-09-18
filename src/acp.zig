@@ -477,6 +477,7 @@ test {
     _ = @import("acp_protocol.zig");
     _ = @import("acp_stream.zig");
     _ = @import("transport_gate.zig");
+    _ = @import("acp_mcp_app.zig");
 }
 
 test "ACP advertises the complete REPL command catalog including compact" {
