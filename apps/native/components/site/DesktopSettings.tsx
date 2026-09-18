@@ -90,7 +90,7 @@ export default function DesktopSettings({ labeled = false, embedded = false }: {
   if (embedded) return <div className="mt-3 border-t border-line pt-3">{fields}</div>;
   return <>
     <button ref={trigger} aria-label={labeled ? "Link settings" : "Settings"} title="Settings" aria-haspopup="dialog" aria-expanded={open}
-      onClick={() => setOpen(value => !value)} className={labeled ? "flex w-full items-center rounded-md px-3 py-2 text-left text-xs hover:bg-hover" : "flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-3 hover:bg-hover hover:text-ink"}>
+      onClick={event => { event.stopPropagation(); setOpen(value => !value); }} className={labeled ? "flex w-full items-center rounded-md px-3 py-2 text-left text-xs hover:bg-hover" : "flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-3 hover:bg-hover hover:text-ink"}>
       {labeled ? "Link settings" : <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="m9 3-1 3-3 1 1 3-2 2 2 2-1 3 3 1 1 3h6l1-3 3-1-1-3 2-2-2-2 1-3-3-1-1-3Z"/><circle cx="12" cy="12" r="3"/></svg>}
     </button>
     {open && createPortal(<div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/20 p-4" onPointerDown={event => {

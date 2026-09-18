@@ -103,7 +103,7 @@ export default function McpServers({ labeled = false }: { labeled?: boolean }) {
 
   return <>
     <button ref={trigger} type="button" aria-label="MCP servers" aria-haspopup="dialog" aria-expanded={open}
-      onClick={() => setOpen((value) => !value)}
+      onClick={event => { event.stopPropagation(); setOpen((value) => !value); }}
       className={labeled
         ? "flex w-full items-center justify-start rounded-md px-3 py-2 text-left text-xs text-ink-3 hover:bg-hover hover:text-ink"
         : "flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-3 hover:bg-hover hover:text-ink"}>

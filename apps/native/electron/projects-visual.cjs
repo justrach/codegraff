@@ -2,38 +2,43 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 async function runProjectVisuals({ win, origin, output }) {
-  const wc = win.webContents, js = code => wc.executeJavaScript(code);
+  const wc = win.webContents, js = async code => {
+    try { return await wc.executeJavaScript(code); }
+    catch (error) { console.error('Project expression:', code); throw error; }
+  };
   const wait = async code => { for (let i = 0; i < 100; i++) { if (await js(code)) return; await new Promise(r => setTimeout(r, 50)); } throw Error(`Project check timed out: ${code}`); };
+  await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
+  const settingsDialog = '[role="dialog"][aria-label^="Workspace settings"]';
   const openSettings = async () => {
     await wait(`!!document.querySelector('[data-workspace-trigger]')`);
     await js(`document.querySelector('[data-workspace-trigger]').click()`);
     await wait(`!!document.querySelector('[data-workspace-menu]')`);
     await wait(`!!Array.from(document.querySelectorAll('[data-workspace-menu] button')).find(b=>b.textContent.includes('Project settings'))`);
     await js(`Array.from(document.querySelectorAll('[data-workspace-menu] button')).find(b=>b.textContent.includes('Project settings')).click()`);
-    await wait(`!!document.querySelector('[role="dialog"]')`);
+    await wait(`!!document.querySelector('${settingsDialog} [aria-label="Auto-approve tools"]')`);
   };
   await js(`window.projectRequests=[];const projectFetch=window.fetch;window.fetch=(input,options)=>{window.projectRequests.push(String(input));return projectFetch(input,options);};true`);
   await openSettings();
-  const originalSettings = await js(`(()=>{const d=document.querySelector('[role="dialog"]');return {name:d.querySelector('input').value,yolo:d.querySelector('[aria-label="Auto-approve tools"]').getAttribute('aria-checked'),mcp:d.querySelector('[aria-label="Start MCP servers"]').getAttribute('aria-checked')}})()`);
-  await js(`(()=>{const d=document.querySelector('[role="dialog"]'),e=d.querySelector('input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'cancel-probe');e.dispatchEvent(new Event('input',{bubbles:true}));d.querySelector('[aria-label="Auto-approve tools"]').click()})()`);
-  assert.ok(await js(`!!document.querySelector('[role="dialog"]')`), 'Auto-approve switch keeps Project Settings open');
+  const originalSettings = await js(`(()=>{const d=document.querySelector('${settingsDialog}');return {name:d.querySelector('input').value,yolo:d.querySelector('[aria-label="Auto-approve tools"]').getAttribute('aria-checked'),mcp:d.querySelector('[aria-label="Start MCP servers"]').getAttribute('aria-checked')}})()`);
+  await js(`(()=>{const d=document.querySelector('${settingsDialog}'),e=d.querySelector('input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'cancel-probe');e.dispatchEvent(new Event('input',{bubbles:true}));d.querySelector('[aria-label="Auto-approve tools"]').click()})()`);
+  assert.ok(await js(`!!document.querySelector('${settingsDialog}')`), 'Auto-approve switch keeps Project Settings open');
   assert.notEqual(await js(`document.querySelector('[aria-label="Auto-approve tools"]').getAttribute('aria-checked')`), originalSettings.yolo);
-  await js(`Array.from(document.querySelectorAll('[role="dialog"] button')).find(b=>b.textContent==='Cancel').click()`);
-  await wait(`!document.querySelector('[role="dialog"]')`);
+  await js(`Array.from(document.querySelectorAll('${settingsDialog} button')).find(b=>b.textContent==='Cancel').click()`);
+  await wait(`!document.querySelector('${settingsDialog}')`);
   await openSettings();
-  assert.deepEqual(await js(`(()=>{const d=document.querySelector('[role="dialog"]');return {name:d.querySelector('input').value,yolo:d.querySelector('[aria-label="Auto-approve tools"]').getAttribute('aria-checked')}})()`), { name: originalSettings.name, yolo: originalSettings.yolo }, 'Cancel discards the settings draft');
-  await js(`(()=>{const d=document.querySelector('[role="dialog"]'),e=d.querySelector('input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'settings-save-probe');e.dispatchEvent(new Event('input',{bubbles:true}));d.querySelector('[aria-label="Auto-approve tools"]').click()})()`);
-  assert.ok(await js(`!!document.querySelector('[role="dialog"]')`), 'Auto-approve switch still keeps the dialog open before Save');
+  assert.deepEqual(await js(`(()=>{const d=document.querySelector('${settingsDialog}');return {name:d.querySelector('input').value,yolo:d.querySelector('[aria-label="Auto-approve tools"]').getAttribute('aria-checked')}})()`), { name: originalSettings.name, yolo: originalSettings.yolo }, 'Cancel discards the settings draft');
+  await js(`(()=>{const d=document.querySelector('${settingsDialog}'),e=d.querySelector('input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'settings-save-probe');e.dispatchEvent(new Event('input',{bubbles:true}));d.querySelector('[aria-label="Auto-approve tools"]').click()})()`);
+  assert.ok(await js(`!!document.querySelector('${settingsDialog}')`), 'Auto-approve switch still keeps the dialog open before Save');
   await js(`document.querySelector('[aria-label="Start MCP servers"]').click()`);
-  assert.ok(await js(`!!document.querySelector('[role="dialog"]')`), 'MCP switch keeps Project Settings open');
-  await js(`Array.from(document.querySelectorAll('[role="dialog"] button')).find(b=>b.textContent==='Save').click()`);
-  await wait(`!document.querySelector('[role="dialog"]')`);
+  assert.ok(await js(`!!document.querySelector('${settingsDialog}')`), 'MCP switch keeps Project Settings open');
+  await js(`Array.from(document.querySelectorAll('${settingsDialog} button')).find(b=>b.textContent==='Save').click()`);
+  await wait(`!document.querySelector('${settingsDialog}')`);
   await openSettings();
-  assert.deepEqual(await js(`(()=>{const d=document.querySelector('[role="dialog"]');return {name:d.querySelector('input').value,yolo:d.querySelector('[aria-label="Auto-approve tools"]').getAttribute('aria-checked'),mcp:d.querySelector('[aria-label="Start MCP servers"]').getAttribute('aria-checked')}})()`), { name: 'settings-save-probe', yolo: originalSettings.yolo === 'true' ? 'false' : 'true', mcp: originalSettings.mcp === 'true' ? 'false' : 'true' }, 'Save persists the complete settings draft');
-  await js(`(()=>{const d=document.querySelector('[role="dialog"]'),e=d.querySelector('input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(originalSettings.name)});e.dispatchEvent(new Event('input',{bubbles:true}));d.querySelector('[aria-label="Auto-approve tools"]').click()})()`);
+  assert.deepEqual(await js(`(()=>{const d=document.querySelector('${settingsDialog}');return {name:d.querySelector('input').value,yolo:d.querySelector('[aria-label="Auto-approve tools"]').getAttribute('aria-checked'),mcp:d.querySelector('[aria-label="Start MCP servers"]').getAttribute('aria-checked')}})()`), { name: 'settings-save-probe', yolo: originalSettings.yolo === 'true' ? 'false' : 'true', mcp: originalSettings.mcp === 'true' ? 'false' : 'true' }, 'Save persists the complete settings draft');
+  await js(`(()=>{const d=document.querySelector('${settingsDialog}'),e=d.querySelector('input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(originalSettings.name)});e.dispatchEvent(new Event('input',{bubbles:true}));d.querySelector('[aria-label="Auto-approve tools"]').click()})()`);
   await js(`document.querySelector('[aria-label="Start MCP servers"]').click()`);
-  await js(`Array.from(document.querySelectorAll('[role="dialog"] button')).find(b=>b.textContent==='Save').click()`);
-  await wait(`!document.querySelector('[role="dialog"]')`);
+  await js(`Array.from(document.querySelectorAll('${settingsDialog} button')).find(b=>b.textContent==='Save').click()`);
+  await wait(`!document.querySelector('${settingsDialog}')`);
   await js(`document.querySelector('button[aria-label="Projects"]').click()`);
   await wait(`!!document.querySelector('[aria-label="Search projects"]')`);
   await js(`(()=>{const e=document.querySelector('[aria-label="Search projects"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'folder-42');e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
@@ -65,11 +70,11 @@ async function runProjectVisuals({ win, origin, output }) {
   await wait(`!!document.querySelector('[aria-label="Workspace files"]')`);
   assert.equal(await js(`!!document.querySelector('[aria-label="Workspace changes"]')`), false);
   await js(`document.querySelector('button[aria-label="Open folder…"]').click()`);
-  await wait(`!!document.querySelector('[role="dialog"]')`);
+  await wait(`!!document.querySelector('[role="dialog"][aria-label="Open a folder"]')`);
   // Unmount the picker before navigating: an in-flight listing + loadURL
   // left the renderer unable to run the next suite's scripts.
-  await js(`document.querySelector('[role="dialog"] button[aria-label="Close"]').click()`);
-  await wait(`!document.querySelector('[role="dialog"]')`);
+  await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"] button[aria-label="Close"]').click()`);
+  await wait(`!document.querySelector('[role="dialog"][aria-label="Open a folder"]')`);
   await wc.loadURL(origin);
   await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   win.setSize(900, 680);
