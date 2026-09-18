@@ -23,7 +23,9 @@ async function runSessionNavigation({ win, output }) {
   };
   await wait(`!!document.querySelector('[data-session-navigation="sidebar"]')`);
   assert.equal(await js(`document.querySelector('[data-session-tab-strip]')?.getBoundingClientRect().height ?? 0`),0);
-  await click('[aria-label="Workspace navigation"] button[aria-label="Appearance"]');
+  await click('[aria-label="Workspace navigation"] button[aria-label="Settings"]');
+  await wait(`document.querySelector('[aria-label="Workspace navigation"] button[aria-label="Settings"]')?.getAttribute('aria-expanded')==='true'`);
+  await click('button[aria-label="Appearance"]');
   await wait(`!!document.querySelector('[role="dialog"][aria-label="Appearance"]')`);
   const appearance = await js(`(()=>{const d=document.querySelector('[role="dialog"][aria-label="Appearance"]');const r=d.getBoundingClientRect();const h=[...d.querySelectorAll('strong')].find(el=>el.textContent==='Appearance');const hr=h.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,headingTop:hr.top,headingVisible:hr.bottom>0&&hr.top<innerHeight,vw:innerWidth};})()`);
   assert.ok(appearance.left >= 0, 'appearance stays on-screen from the sidebar gear');
