@@ -80,6 +80,7 @@ const overflow_needles = [_][]const u8{
     "input token count", // google: "The input token count (N) exceeds the maximum ..."
     "prompt token count", // github copilot: "prompt token count of N exceeds the limit of M"
     "maximum prompt length", // xai: "This model's maximum prompt length is N ..."
+    "during token parsing", // xai: "Internal error during token parsing" — tokenizer dies on a fat prompt instead of a 413; resending the same body never helps
     "reduce the length of the messages", // groq
     "exceeds the available context size", // llama.cpp server
     "exceeded model token limit", // kimi for coding
@@ -408,6 +409,7 @@ test "isContextOverflow (#193/#203/#414): guards beat patterns; every provider p
         .{ .msg = "The input token count (1196265) exceeds the maximum number of tokens allowed (1048575)", .want = true, .why = "google gemini" },
         .{ .msg = "prompt token count of 141000 exceeds the limit of 128000", .want = true, .why = "github copilot" },
         .{ .msg = "This model's maximum prompt length is 131072 but the request contains 537812 tokens", .want = true, .why = "xai/grok" },
+        .{ .msg = "Internal error during token parsing", .want = true, .why = "xai tokenizer 500 on a fat prompt; not a gateway flake" },
         .{ .msg = "Please reduce the length of the messages or completion.", .want = true, .why = "groq" },
         .{ .msg = "the request exceeds the available context size, try increasing it", .want = true, .why = "llama.cpp" },
         .{ .msg = "Your request exceeded model token limit: 262144 (requested: 300000)", .want = true, .why = "kimi for coding" },

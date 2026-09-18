@@ -54,6 +54,19 @@ fn trimmableAgent(a: std.mem.Allocator, kind: @import("provider.zig").Provider.K
     return agent;
 }
 
+test "#1019: token-parse 500 emergency-trims instead of dying" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = try trimmableAgent(a, .responses, 131072);
+    const before = agent.fullRequestEstimateTokens();
+    var retried = false;
+    try std.testing.expect(recoverContextOverflow(&agent, "Internal error during token parsing", null, &retried));
+    try std.testing.expect(retried);
+    try std.testing.expect(agent.last_request_context_overflow);
+    try std.testing.expect(agent.fullRequestEstimateTokens() < before);
+}
+
 test "recoverContextOverflow (#414): a Bedrock throttle rides the retry ladder instead of compacting" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
