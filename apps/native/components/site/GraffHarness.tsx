@@ -42,7 +42,7 @@ import {
 import { type AcpCommand } from "@/lib/acp";
 import { useChatScroll } from "./useChatScroll";
 import { enqueuePrompt } from "@/lib/prompt-queue";
-import { usePromptQueue } from "./usePromptQueue";
+import { usePromptQueue, steerOrInterrupt } from "./usePromptQueue";
 import { removeSession, type StoredSession } from "@/lib/sessions";
 import { loadHistory, mergeHistory } from "@/lib/prompt-history";
 import {
@@ -456,10 +456,10 @@ export default function GraffHarness() {
       root: cwdOf(thread), modelKey: thread.model ?? model ?? undefined,
       onModelChange: key => changeModel(key, thread.id), onSend: text => void send(text, thread.id),
       onSetting: text => settings.change(thread.id, text),
-      onSteerQueued: queues[thread.id]?.length ? () => {
-        const next = queuesRef.current[thread.id]?.[0];
-        if (runningRef.current.has(thread.id) && next) steerQueued(thread.id, next.id);
-      } : undefined,
+      onSteerQueued: () => steerOrInterrupt(queuesRef.current[thread.id]?.[0], runningRef.current.has(thread.id), id => steerQueued(thread.id, id), () => {
+        const live = sessionsRef.current.get(thread.id);
+        if (live) void cancel(handleOf(thread.id), live).catch(() => undefined);
+      }),
       history: mergeHistory(history, thread.messages.flatMap(m => m.role === "user" && m.origin !== "notification" ? [m.text] : [])),
       busy: busyIds.has(thread.id), onStop: () => {
         const live = sessionsRef.current.get(thread.id);
