@@ -2,6 +2,7 @@
 
 import {useState, useEffect, useRef} from "react";
 import {validAppId} from "@/lib/mcp-apps";
+import {hostReply} from "@/lib/mcp-apps-host";
 import motion from "./transcript-motion.module.css";
 
 /** One saved HTML snapshot shown inside the transcript. The two kinds differ
@@ -36,6 +37,17 @@ export default function SnapshotView({kind, id}: {kind: SnapshotKind; id: string
     if (kind !== 'view' || !host.current) return;
     const observer = new IntersectionObserver(([entry]) => setNearby(entry.isIntersecting), {rootMargin:'80px'});
     observer.observe(host.current); return () => observer.disconnect();
+  }, [kind]);
+  useEffect(() => {
+    if (kind !== "mcp-app") return;
+    const onMessage = (event: MessageEvent) => {
+      if (event.source === null || event.origin !== window.location.origin) return;
+      const reply = hostReply(event.data);
+      if (!reply) return;
+      (event.source as Window).postMessage(reply, event.origin);
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
   }, [kind]);
   if (!validAppId(id)) return null;
   const {label, title, src, sandbox, allow} = KINDS[kind];
