@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { hostReply, MCP_APPS_PROTOCOL } from "./mcp-apps-host";
+import { hostReply, MCP_APPS_PROTOCOL, parseToolCall } from "./mcp-apps-host";
 
 test("ui/initialize answers with the extension protocol version", () => {
   expect(hostReply({ jsonrpc: "2.0", id: 1, method: "ui/initialize" })).toEqual({
@@ -7,9 +7,17 @@ test("ui/initialize answers with the extension protocol version", () => {
   });
 });
 
-test("app-initiated tools/call is refused until the host forwards ACP", () => {
-  const reply = hostReply({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "search" } });
-  expect(reply).toMatchObject({ jsonrpc: "2.0", id: 2, error: { code: -32000 } });
+test("tools/call is parsed for ACP forwarding, not answered inline", () => {
+  expect(hostReply({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "mcp__docs__search" } })).toBeNull();
+  expect(parseToolCall({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "mcp__docs__search", arguments: { q: "x" } } }))
+    .toEqual({ id: 2, name: "mcp__docs__search", arguments: { q: "x" } });
+  expect(parseToolCall({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "write_file" } }))
+    .toEqual({ id: 3, name: "write_file", arguments: undefined });
+});
+
+test("native engine tool names are not ACP MCP calls", async () => {
+  const { callMcpAppTool } = await import("./acp-client");
+  await expect(callMcpAppTool("write_file", { path: "/tmp/x" })).rejects.toThrow("mcp__");
 });
 
 test("non-RPC traffic is ignored", () => {

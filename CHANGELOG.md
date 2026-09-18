@@ -14,7 +14,7 @@ current is part of cutting a release.
 
 - Desktop ACP workers can park after a quiet period (`GRAFF_ACP_IDLE_MS`, default 30s) and `--resume` with the saved cache id. Parking is skipped while a prompt or `session/idle` subscriber is live; tab close still reaps immediately.
 - Turn chrome shows local tok/s while writing (and at settle); MCP tools/Apps wait instead of looking like slow generation (#1017).
-- MCP App frames answer `ui/initialize`; app-initiated `tools/call` still fails until the host forwards ACP (#1018).
+- MCP App frames answer `ui/initialize`; app-initiated `mcp__` `tools/call` is forwarded through ACP (`session/mcp_call`). Native tools stay refused (#1018).
 - GUI usage replies show grouped metrics and plan limits; inline editing keeps the message bubble and grows with its text. Subtle transcript reveals respect reduced motion.
 - `#1013`: keep the first answer after a no-tool retry without allowing older turns to replace a later answer (ADR 0139).
 - GUI usage replies show grouped metrics and plan limits; inline editing keeps the message bubble and grows with its text. Subtle transcript reveals respect reduced motion.

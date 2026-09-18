@@ -2,7 +2,8 @@
 
 import {useState, useEffect, useRef} from "react";
 import {validAppId} from "@/lib/mcp-apps";
-import {hostReply} from "@/lib/mcp-apps-host";
+import {hostReply, parseToolCall, toolCallError, toolCallResult} from "@/lib/mcp-apps-host";
+import {callMcpAppTool} from "@/lib/acp-client";
 import motion from "./transcript-motion.module.css";
 
 /** One saved HTML snapshot shown inside the transcript. The two kinds differ
@@ -42,9 +43,17 @@ export default function SnapshotView({kind, id}: {kind: SnapshotKind; id: string
     if (kind !== "mcp-app") return;
     const onMessage = (event: MessageEvent) => {
       if (event.source === null || event.origin !== window.location.origin) return;
+      const source = event.source as Window;
+      const tool = parseToolCall(event.data);
+      if (tool) {
+        void callMcpAppTool(tool.name, tool.arguments)
+          .then(result => source.postMessage(toolCallResult(tool.id, result), event.origin))
+          .catch(error => source.postMessage(toolCallError(tool.id, error instanceof Error ? error.message : String(error)), event.origin));
+        return;
+      }
       const reply = hostReply(event.data);
       if (!reply) return;
-      (event.source as Window).postMessage(reply, event.origin);
+      source.postMessage(reply, event.origin);
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);

@@ -119,6 +119,7 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
     const live: *LiveTurn = @ptrCast(@alignCast(ctx));
     if (try @import("acp_agents.zig").handle(arena, live.root.io, live.root.home, w, req)) return true;
     if (try @import("acp_changes.zig").handle(arena, live.root.io, w, req)) return true;
+    if (try @import("acp_mcp_app.zig").handle(arena, w, req, live.root)) return true;
     if (!std.mem.eql(u8, req.method, "graff/models")) return false;
     if (req.id == null) return true;
     const keys = live.keys;
