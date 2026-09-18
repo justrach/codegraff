@@ -18,6 +18,8 @@ const { chromiumSample } = require('./hardware-profile.cjs');
 const fs = require('node:fs/promises');
 const { Terminals } = require('./terminal.cjs');
 const { installWindowState } = require('./window-state.cjs');
+const { createNotch, notchStore } = require('./notch.cjs');
+const { pollCodexUsage } = require('./notch-usage.cjs');
 
 const root = process.env.GRAFF_CWD || app.getPath('home');
 const resources = process.env.GRAFF_ELECTRON_RESOURCES || process.resourcesPath;
@@ -26,6 +28,7 @@ app.setPath('userData', process.env.GRAFF_ELECTRON_PROFILE || (process.env.GRAFF
 if (process.env.GRAFF_ELECTRON_SMOKE) process.env.GRAFF_THEMES_DIR = path.join(app.getPath('userData'), 'themes');
 let win, browser, backend, automation, computer, profiler;
 let terminals;
+let notch;
 const workspaceRequests = require('./workspace-open.cjs').workspaceOpen(target => {
   if (win && !win.isDestroyed()) win.webContents.send('workspace-open', target);
 });
@@ -57,6 +60,7 @@ function stop() {
   return stopPromise = (async () => {
     let unsafe = false;
     try { testDesktop?.assertSafe(); } catch (error) { console.error(error); unsafe = true; }
+    notch?.hide();
     terminals?.closeAll();
     profiler?.stop(); browser?.closeAll(); automation?.server.close(); await backend?.stop();
     testDesktop?.cleanup();
@@ -99,6 +103,40 @@ app.whenReady().then(async () => {
     if (mainFrame && !inPlace) { workspaceRequests.loading(); browser.closeAll(); terminals.closeAll(); }
   });
   computer = new ComputerUse(resources, win);
+  if (process.platform === 'darwin') {
+    try {
+      const native = require(path.join(resources, 'native/activity.node'));
+      notch = createNotch({
+        native: {
+          updateNotch: json => native.updateNotch(json),
+          hideNotch: () => native.hideNotch(),
+          inspectNotch: () => native.inspectNotch(),
+        },
+        store: notchStore(app.getPath('userData')),
+        allow: !testDesktop,
+        activate: id => {
+          if (!win || win.isDestroyed()) return;
+          if (win.isMinimized()) win.restore();
+          win.show();
+          win.focus();
+          if (id > 0) win.webContents.send('notch-select', id);
+        },
+      });
+      if (typeof native.onNotchClick === 'function') native.onNotchClick(id => notch.clicked(Number(id)));
+      if (notch && !testDesktop) {
+        const tick = () => {
+          pollCodexUsage().then(cells => notch.setExtra(cells)).catch(() => notch.setExtra([]));
+        };
+        tick();
+        setInterval(tick, 60_000);
+      }
+    } catch { /* unpackaged trees without the dylib keep the React app only */ }
+  }
+  ipcMain.on('notch', (event, snapshot) => {
+    trusted(event);
+    if (!snapshot || typeof snapshot !== 'object' || JSON.stringify(snapshot).length > 16000) return;
+    notch?.update(snapshot);
+  });
   const sampleTree = intervalSampler(process.pid, () => browser.liveCount);
   const sampleAgents = agentSampler();
   profiler = new Profiler(async () => {
@@ -163,6 +201,19 @@ app.whenReady().then(async () => {
     if (action === 'save') return linkSettings.save(value);
     throw new Error('Unknown link settings action');
   });
+  ipcMain.handle('notch-settings', (event, action, value) => {
+    trusted(event);
+    if (!notch) return null;
+    if (action === 'load') return notch.enabled();
+    if (action === 'save') {
+      const enabled = notch.setEnabled(!!value);
+      const view = Menu.getApplicationMenu()?.items.find(item => item.label === 'View');
+      const item = view?.submenu?.items.find(entry => entry.label === 'Session observer');
+      if (item) item.checked = enabled;
+      return enabled;
+    }
+    throw new Error('Unknown notch settings action');
+  });
   installExternalLinks(win.webContents, backend.origin, async url => {
     if (await linkSettings.load() === 'graff') {
       if (!win.isDestroyed()) win.webContents.send('browser-event', { type: 'open-link', url });
@@ -193,7 +244,7 @@ app.whenReady().then(async () => {
     } }, { label: 'Browser passkey help…', click: () => void require('./webauthn.cjs').showPasskeyHelp({
       window: win, browser, dialog, shell: require('electron').shell, configured: passkeysConfigured,
     }).catch(() => dialog.showErrorBox('Browser passkeys', 'Could not open the default browser. Use another sign-in method on the site.')) }] },
-    { role: 'editMenu' }, { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { role: 'togglefullscreen' }, { label: 'Release browser pages', click: () => { browser.closeAll(); win.webContents.send('browser-event', { type: 'released' }); } }] },
+    { role: 'editMenu' }, { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { role: 'togglefullscreen' }, { label: 'Session observer', type: 'checkbox', checked: !!notch?.enabled(), visible: process.platform === 'darwin', click: item => { item.checked = notch?.setEnabled(item.checked) ?? false; } }, { label: 'Release browser pages', click: () => { browser.closeAll(); win.webContents.send('browser-event', { type: 'released' }); } }] },
     { label: 'Performance', submenu: [
       { label: 'Start recording', click: () => void profiler.start() },
       { label: 'Mark candidate phase', click: () => profiler.mark('candidate') },
