@@ -12,6 +12,10 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- GUI usage replies show grouped metrics and plan limits; inline editing keeps the message bubble and grows with its text. Subtle transcript reveals respect reduced motion.
+- `#1013`: keep the first answer after a no-tool retry without allowing older turns to replace a later answer (ADR 0139).
+- GUI usage replies show grouped metrics and plan limits; inline editing keeps the message bubble and grows with its text. Subtle transcript reveals respect reduced motion.
+- `#1013`: keep the first answer after a no-tool retry without allowing older turns to replace a later answer (ADR 0139).
 - GUI follow-up bar is a pill over the transcript with CSS frost; working subagents sit on the dock.
 - `ask_user` round-trips over ACP so the desktop can show an ApprovalCard mid-turn.
 - `#1011`: live replies keep the typewriter and block caret; the caret hides when the turn is done, and the first chunk reveals instead of painting in as one blob.
