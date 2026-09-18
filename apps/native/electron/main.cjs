@@ -30,7 +30,6 @@ app.setPath('userData', process.env.GRAFF_ELECTRON_PROFILE || (process.env.GRAFF
 if (process.env.GRAFF_ELECTRON_SMOKE) process.env.GRAFF_THEMES_DIR = path.join(app.getPath('userData'), 'themes');
 let win, browser, backend, automation, computer, profiler;
 let terminals;
-let notch;
 const workspaceRequests = require('./workspace-open.cjs').workspaceOpen(target => {
   if (win && !win.isDestroyed()) win.webContents.send('workspace-open', target);
 });
