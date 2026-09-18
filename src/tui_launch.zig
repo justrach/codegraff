@@ -83,8 +83,7 @@ pub fn run(
     cwd: []const u8,
     yolo: bool,
 ) !void {
-    @import("subagent_interactive.zig").configure(true);
-    defer @import("subagent_interactive.zig").configure(false);
+    @import("subagent_interactive.zig").configure(true); defer @import("subagent_interactive.zig").configure(false);
     root.ensureStoredKeys(keys);
     providers.ensureModelQueryCatalogs(root, keys.*, "");
     try root.ensureRootTools(.anthropic);

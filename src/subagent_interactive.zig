@@ -9,6 +9,15 @@ var requested = std.atomic.Value(bool).init(false);
 pub var line_notice = false; // legacy line REPL provenance
 pub var yielded = false; // root thread only
 
+pub fn stealIdleLine(io: std.Io, owner: []const u8, gpa: std.mem.Allocator, buf: *std.ArrayList(u8), idle: bool) !?[]u8 {
+    if (!idle or !enabled.load(.acquire) or buf.items.len != 0) return null;
+    var notice: [512]u8 = undefined;
+    const text = takeWake(io, owner, &notice) orelse return null;
+    try buf.appendSlice(gpa, text);
+    line_notice = true;
+    return buf.items;
+}
+
 pub fn configure(on: bool) void {
     enabled.store(on, .release);
     requested.store(false, .release);

@@ -177,17 +177,7 @@ pub fn readLine(
             pend_i += 1;
             break :blk b;
         } else blk: {
-            const children = @import("subagent_interactive.zig");
-            while (children.enabled.load(.acquire) and buf.items.len == 0 and in.buffered().len == 0) {
-                if (!tty.isForeground() or tty.pendingBytes() > 0) break;
-                if (inputPendingTimed(100)) break;
-                var notice: [512]u8 = undefined;
-                if (children.takeWake(root.io, root.session_name, &notice)) |text| {
-                    try buf.appendSlice(gpa, text);
-                    children.line_notice = true;
-                    return buf.items;
-                }
-            }
+            if (try @import("subagent_interactive.zig").stealIdleLine(root.io, root.session_name, gpa, &buf, in.buffered().len == 0 and tty.isForeground() and tty.pendingBytes() == 0 and !inputPendingTimed(100))) |line| return line;
             // While the input contains `ultracode`, drift the ember shine
             // across the letters: poll for input with a slower 140ms timeout,
             // and on each idle tick advance the phase + redraw so the hue
