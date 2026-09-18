@@ -405,6 +405,7 @@ test "Accord live path is off in tests unless enabled" {
 }
 
 test "Accord stats report session RSS when enabled" {
+    if (builtin.os.tag == .windows) return;
     test_enabled = true;
     defer test_enabled = false;
     const s = stats();
@@ -429,15 +430,10 @@ test "listen binds a 0600 sock and stop unlinks it" {
     const name = g_own_name orelse return error.NoSock;
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const path = try std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir, name });
-    var tmp: [107:0]u8 = undefined;
-    try std.testing.expect(path.len <= tmp.len);
-    @memcpy(tmp[0..path.len], path);
-    tmp[path.len] = 0;
-    var st: std.c.Stat = undefined;
-    try std.testing.expect(std.c.stat(tmp[0..path.len :0], &st) == 0);
-    try std.testing.expectEqual(@as(std.c.mode_t, 0o600), st.mode & 0o777);
+    const st = try Io.Dir.cwd().statFile(io, path, .{});
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), st.permissions.toMode() & 0o777);
     stop(io);
-    try std.testing.expect(std.c.stat(tmp[0..path.len :0], &st) != 0);
+    try std.testing.expectError(error.FileNotFound, Io.Dir.cwd().statFile(io, path, .{}));
 }
 
 test "listenUnix socket is 0600" {
@@ -450,12 +446,8 @@ test "listenUnix socket is 0600" {
         listener.deinit(io);
         Io.Dir.cwd().deleteFile(io, path) catch {};
     }
-    var tmp: [107:0]u8 = undefined;
-    @memcpy(tmp[0..path.len], path);
-    tmp[path.len] = 0;
-    var st: std.c.Stat = undefined;
-    try std.testing.expect(std.c.stat(tmp[0..path.len :0], &st) == 0);
-    try std.testing.expectEqual(@as(std.c.mode_t, 0o600), st.mode & 0o777);
+    const st = try Io.Dir.cwd().statFile(io, path, .{});
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), st.permissions.toMode() & 0o777);
 }
 
 test "Unix 0600 round-trips the JSONL line" {
