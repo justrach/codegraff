@@ -405,6 +405,7 @@ test "Accord live path is off in tests unless enabled" {
 }
 
 test "Accord stats report session RSS when enabled" {
+    if (builtin.os.tag == .windows) return; // enabled() is hard-false there
     test_enabled = true;
     defer test_enabled = false;
     const s = stats();
@@ -414,7 +415,10 @@ test "Accord stats report session RSS when enabled" {
 }
 
 test "listen binds a 0600 sock and stop unlinks it" {
-    if (builtin.os.tag == .windows) return;
+    // std.c.Stat has no definition off macOS, so this body cannot even be
+    // analyzed elsewhere; a 0600 socket mode is a Unix property the
+    // macOS-only test below already asserts.
+    if (builtin.os.tag != .macos) return;
     const io = std.testing.io;
     const gpa = std.testing.allocator;
     test_enabled = true;
