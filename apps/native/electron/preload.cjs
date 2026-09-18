@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('graffDesktop', {
   },
   activity: () => ipcRenderer.invoke('activity'),
   notch: snapshot => ipcRenderer.send('notch', snapshot),
+  notchSettings: (action, value) => ipcRenderer.invoke('notch-settings', action, value),
   notchSubscribe: callback => {
     const listener = (_event, id) => callback(id);
     ipcRenderer.on('notch-select', listener);

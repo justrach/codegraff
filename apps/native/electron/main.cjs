@@ -213,6 +213,19 @@ app.whenReady().then(async () => {
     if (action === 'save') return linkSettings.save(value);
     throw new Error('Unknown link settings action');
   });
+  ipcMain.handle('notch-settings', (event, action, value) => {
+    trusted(event);
+    if (!notch) return null;
+    if (action === 'load') return notch.enabled();
+    if (action === 'save') {
+      const enabled = notch.setEnabled(!!value);
+      const view = require('electron').Menu.getApplicationMenu()?.items.find(item => item.label === 'View');
+      const item = view?.submenu?.items.find(entry => entry.label === 'Session observer');
+      if (item) item.checked = enabled;
+      return enabled;
+    }
+    throw new Error('Unknown notch settings action');
+  });
   installExternalLinks(win.webContents, backend.origin, async url => {
     if (await linkSettings.load() === 'graff') {
       if (!win.isDestroyed()) win.webContents.send('browser-event', { type: 'open-link', url });

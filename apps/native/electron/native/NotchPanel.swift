@@ -49,7 +49,7 @@ enum NotchController {
             sessions = []
         }
         store.sessions = sessions.isEmpty
-            ? [NotchSession(id: 0, title: "Codegraff", state: .idle, label: "Idle", detail: "")]
+            ? [NotchSession(id: 0, title: "Codegraff", caption: "idle", state: .idle, label: "Idle", detail: "")]
             : sessions
         show()
     }

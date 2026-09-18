@@ -7,9 +7,12 @@ enum NotchSessionState: String, Codable {
 struct NotchSession: Codable, Identifiable, Equatable {
     var id: Int
     var title: String
+    var caption: String?
     var state: NotchSessionState
     var label: String
     var detail: String
+    var kind: String?
+    var percent: Int?
 }
 
 final class NotchStore: ObservableObject {
@@ -45,7 +48,7 @@ struct NotchRootView: View {
                             onHover(store.hovering != nil)
                         }
                         .onTapGesture { onSelect(session.id) }
-                        .accessibilityLabel("\(session.title), \(session.label)")
+                        .accessibilityLabel("\(session.caption ?? session.title), \(session.label)")
                 }
             }
         }
@@ -56,9 +59,9 @@ struct NotchRootView: View {
 
     private func cell(_ session: NotchSession) -> some View {
         VStack(spacing: 4) {
-            NotchRing(state: session.state)
+            NotchRing(state: session.state, percent: session.percent)
                 .frame(width: 28, height: 28)
-            Text(session.title)
+            Text(session.caption ?? session.title)
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
@@ -90,10 +93,13 @@ struct NotchRootView: View {
 
 struct NotchRing: View {
     let state: NotchSessionState
+    var percent: Int? = nil
 
     var body: some View {
         Group {
-            if state == .working || state == .waiting {
+            if percent != nil {
+                ring(at: Date())
+            } else if state == .working || state == .waiting {
                 TimelineView(.animation) { timeline in ring(at: timeline.date) }
             } else {
                 ring(at: Date())
@@ -103,9 +109,15 @@ struct NotchRing: View {
 
     private func ring(at date: Date) -> some View {
         let t = date.timeIntervalSinceReferenceDate
+        let used = percent.map { min(1, max(0, Double($0) / 100)) }
         return ZStack {
             Circle().stroke(color.opacity(0.22), lineWidth: 2.5)
-            if state == .working {
+            if let used {
+                Circle()
+                    .trim(from: 0, to: used)
+                    .stroke(color, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            } else if state == .working {
                 Circle()
                     .trim(from: 0, to: 0.28)
                     .stroke(color, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
@@ -116,9 +128,11 @@ struct NotchRing: View {
                     .stroke(color.opacity(state == .waiting ? 0.55 + 0.35 * sin(t * 3) : 1), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                     .rotationEffect(.degrees(-90))
             }
-            Image(systemName: glyph)
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(.white.opacity(state == .working ? 0.9 : 0.75))
+            if used == nil {
+                Image(systemName: glyph)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white.opacity(state == .working ? 0.9 : 0.75))
+            }
         }
     }
 

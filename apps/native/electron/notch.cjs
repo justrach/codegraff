@@ -7,9 +7,9 @@ function notchStore(directory) {
     load() {
       try {
         const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-        return data.enabled !== false;
+        return data.enabled === true;
       } catch {
-        return true;
+        return false;
       }
     },
     save(enabled) {
@@ -21,26 +21,35 @@ function notchStore(directory) {
 
 function createNotch({ native, store, activate, allow = true }) {
   let enabled = allow && store.load();
-  const apply = snapshot => {
+  let last = { sessions: [] };
+  let extra = [];
+  const apply = () => {
     if (!native) return;
     if (!enabled) {
       native.hideNotch();
       return;
     }
-    native.updateNotch(JSON.stringify(snapshot || { sessions: [] }));
+    native.updateNotch(JSON.stringify({ sessions: [...(last.sessions || []), ...extra].slice(0, 6) }));
   };
-  if (enabled) apply({ sessions: [] });
+  if (enabled) apply();
   return {
     enabled: () => enabled,
     setEnabled(on) {
       if (!allow) return false;
       enabled = !!on;
       store.save(enabled);
-      if (enabled) apply({ sessions: [] });
+      if (enabled) apply();
       else native?.hideNotch();
       return enabled;
     },
-    update: apply,
+    update(snapshot) {
+      last = snapshot && typeof snapshot === 'object' ? snapshot : { sessions: [] };
+      apply();
+    },
+    setExtra(cells) {
+      extra = Array.isArray(cells) ? cells : [];
+      apply();
+    },
     hide() { native?.hideNotch(); },
     inspect() {
       if (!native?.inspectNotch) return null;
