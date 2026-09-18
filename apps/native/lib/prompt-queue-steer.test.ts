@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createQueueSteerer, type SteerStatus } from "./prompt-queue-steer.ts";
+import { createQueueSteerer, steerOrInterrupt, type SteerStatus } from "./prompt-queue-steer.ts";
 import { enqueuePrompt, dropQueuedPrompt, prioritizeQueuedPrompt, setQueuedPromptEditing, shiftQueuedPrompt } from "./prompt-queue.ts";
 
 function fixture(timeoutMs = 1000) {
@@ -116,4 +116,14 @@ it("steering cannot bypass an open queue editor", () => {
   f.steerer.steer(1, 3, async () => { cancelled++; });
   assert.equal(cancelled, 1);
   f.steerer.finish(1);
+});
+
+it("empty Enter-Enter interrupts when nothing is queued, else steers the next item", () => {
+  const steered: number[] = [];
+  let interrupted = 0;
+  steerOrInterrupt(undefined, true, id => steered.push(id), () => { interrupted++; });
+  steerOrInterrupt({ id: 9 }, true, id => steered.push(id), () => { interrupted++; });
+  steerOrInterrupt({ id: 9 }, false, id => steered.push(id), () => { interrupted++; });
+  assert.equal(interrupted, 1);
+  assert.deepEqual(steered, [9]);
 });
