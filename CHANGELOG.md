@@ -12,6 +12,9 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- Desktop fonts are bundled locally; syntax highlighting, diagrams, and secondary panes load when needed.
+- Desktop appearance notes no longer alter slash commands. Clipboard image staging retries absolute paths through their parent directory when needed.
+- Resuming a saved conversation restores its persisted session identity even if startup already generated one.
 - GUI usage replies show grouped metrics and plan limits; inline editing keeps the message bubble and grows with its text. Subtle transcript reveals respect reduced motion.
 - `#1013`: keep the first answer after a no-tool retry without allowing older turns to replace a later answer (ADR 0139).
 - GUI usage replies show grouped metrics and plan limits; inline editing keeps the message bubble and grows with its text. Subtle transcript reveals respect reduced motion.

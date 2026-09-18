@@ -10,6 +10,7 @@
         "@xterm/addon-fit": "^0.11.0",
         "@xterm/xterm": "^6.0.0",
         "electron-updater": "6.8.9",
+        "geist": "^1.7.2",
         "glimm": "^0.3.0",
         "iconoir-react": "^7.11.1",
         "liveline": "^0.0.7",
@@ -431,6 +432,8 @@
     "fastdom": ["fastdom@1.0.12", "", { "dependencies": { "strictdom": "^1.0.1" } }, "sha512-LB+xjSTEbjHE1cWsxu+tN2Xqr1kpi+V9aADI7sVM5ZMaXyYGPHULQMzpJMYqOTULK/73pUkWVzzObFRBkPr+hg=="],
 
     "fs-extra": ["fs-extra@10.1.0", "", { "dependencies": { "graceful-fs": "^4.2.0", "jsonfile": "^6.0.1", "universalify": "^2.0.0" } }, "sha512-oRXApq54ETRj4eMiFzGnHWGy+zo5raudjuxN0b8H7s/RU2oW0Wvsx9O0ACRN/kRq9E8Vu/ReskGB5o3ji+FzHQ=="],
+
+    "geist": ["geist@1.7.2", "", { "peerDependencies": { "next": ">=13.2.0" } }, "sha512-Gu5lDFa3pLRyoBlBPf0QIFHVdWAnpco7fS1bJm41jyLPFoguBgiubseUN2oLXMgqZ7uxAxDoXcHMhCY/fOTTgg=="],
 
     "glimm": ["glimm@0.3.0", "", { "peerDependencies": { "next": ">=14", "react": ">=18" }, "optionalPeers": ["next", "react"] }, "sha512-Maw5WJnUsgyfsHl7Vp95wa8G1uaFhUOSoQzAVPX1DxdHxmWNBa9VtDRNPplH1A+bIazn956ZP/wQvH4ZSxKN9Q=="],
 

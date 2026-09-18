@@ -21,7 +21,7 @@ const nextConfig: NextConfig = {
   // the bottom-left corner, on top of the sidebar's session control.
   devIndicators: { position: "bottom-right" },
   experimental: {
-    optimizePackageImports: ["iconoir-react"],
+    optimizePackageImports: ["iconoir-react", "streamdown"],
   },
 };
 

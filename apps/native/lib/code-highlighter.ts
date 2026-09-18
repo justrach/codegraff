@@ -1,5 +1,4 @@
-import { bundledLanguages, bundledLanguagesInfo, createHighlighter, type Highlighter, type BundledLanguage, type BundledTheme, type ThemeRegistrationAny } from "shiki";
-import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
+import type { Highlighter, BundledLanguage, BundledTheme, ThemeRegistrationAny } from "shiki";
 import type { CodeHighlighterPlugin } from "streamdown";
 
 type HighlightOptions = Parameters<CodeHighlighterPlugin["highlight"]>[0];
@@ -9,16 +8,41 @@ type Engine = Pick<Highlighter, "loadLanguage" | "loadTheme" | "codeToTokens" | 
 type Entry = { result: HighlightResult; bytes: number };
 type Request = { options: HighlightOptions; callback?: Callback; bytes: number };
 
-export const CODE_CACHE_BYTES = 4 * 1024 * 1024;
+export const CODE_CACHE_BYTES = 1536 * 1024;
 export const CODE_CACHE_ENTRIES = 32;
 export const CODE_HIGHLIGHT_LIMIT = 64 * 1024;
 const PENDING_BYTES = 512 * 1024;
 const PENDING_COUNT = 32;
 const THEMES: HighlightOptions["themes"] = ["github-light", "github-dark"];
-const languages = new Set(Object.keys(bundledLanguages));
-const aliases = new Map(bundledLanguagesInfo.flatMap(language => (language.aliases ?? []).map(alias => [alias, language.id])));
+let languages = new Set<string>();
+let aliases = new Map<string, string>();
+let langLoaders: Record<string, () => Promise<unknown>> = {};
+let themeLoaders: Record<string, () => Promise<unknown>> = {};
 const normalize = (language: string) => { const name = language.trim().toLowerCase(); return aliases.get(name) ?? name; };
 const plain = (source: string): HighlightResult => ({ tokens: source.split("\n").map(content => [{ content }]) });
+
+async function loadShikiEngine(): Promise<Engine> {
+  const [
+    { createHighlighterCore },
+    { createJavaScriptRegexEngine },
+    { bundledLanguages, bundledLanguagesInfo },
+    { bundledThemes },
+  ] = await Promise.all([
+    import("shiki/core"),
+    import("shiki/engine/javascript"),
+    import("shiki/langs"),
+    import("shiki/themes"),
+  ]);
+  langLoaders = bundledLanguages as Record<string, () => Promise<unknown>>;
+  themeLoaders = bundledThemes as Record<string, () => Promise<unknown>>;
+  languages = new Set(Object.keys(langLoaders));
+  aliases = new Map(bundledLanguagesInfo.flatMap(language => (language.aliases ?? []).map(alias => [alias, language.id])));
+  return createHighlighterCore({
+    themes: [],
+    langs: [],
+    engine: createJavaScriptRegexEngine({ forgiving: true }),
+  }) as unknown as Engine;
+}
 
 /** Keep only a bounded working set of tokens. A streamed fence otherwise caches
  * every prefix for the life of the renderer, including after its chat closes. */
@@ -41,7 +65,12 @@ export function createCodeHighlighter(options: {
   const themeName = (theme: HighlightOptions["themes"][number]) => typeof theme === "string" ? theme : `graff-theme-${themeKey(theme)}`;
   // Full source prevents collisions when equal-length edits share their edges.
   const keyFor = (value: HighlightOptions) => JSON.stringify([normalize(value.language), value.themes.map(themeKey), value.code]);
-  const languageFor = (value: HighlightOptions) => { const name = normalize(value.language); return languages.has(name) ? name : "text"; };
+  const languageFor = (value: HighlightOptions) => {
+    const name = normalize(value.language);
+    if (name === "text" || name === "txt" || name === "plain") return "text";
+    if (languages.size > 0 && !languages.has(name)) return "text";
+    return name;
+  };
   const ready = (value: HighlightOptions) => engine !== undefined &&
     (languageFor(value) === "text" || loadedLanguages.has(languageFor(value))) && value.themes.every(theme => loadedThemes.has(themeKey(theme)));
   const get = (key: string) => {
@@ -75,18 +104,24 @@ export function createCodeHighlighter(options: {
     return retain(key, result);
   };
   const prepare = async (value: HighlightOptions) => {
-    if (!loading) loading = (options.load ?? (() => createHighlighter({ themes: [], langs: [], engine: createJavaScriptRegexEngine({ forgiving: true }) })))();
+    if (!loading) loading = (options.load ?? loadShikiEngine)();
     const current = await loading;
     if (disposed) { current.dispose(); return; }
     engine = current;
     const themes = value.themes.filter(theme => !loadedThemes.has(themeKey(theme)));
     if (themes.length) {
-      await current.loadTheme(...themes.map(theme => typeof theme === "string" ? theme : { ...theme, name: themeName(theme) }) as (BundledTheme | ThemeRegistrationAny)[]);
+      await current.loadTheme(...await Promise.all(themes.map(async theme => {
+        if (typeof theme !== "string") return { ...theme, name: themeName(theme) };
+        const load = options.load ? undefined : themeLoaders[theme];
+        return load ? await load() : theme;
+      })) as (BundledTheme | ThemeRegistrationAny)[]);
       themes.forEach(theme => loadedThemes.add(themeKey(theme)));
     }
     const language = languageFor(value);
     if (language !== "text" && !loadedLanguages.has(language)) {
-      await current.loadLanguage(language as BundledLanguage); loadedLanguages.add(language);
+      const load = options.load ? undefined : langLoaders[language];
+      await current.loadLanguage((load ? await load() : language) as BundledLanguage);
+      loadedLanguages.add(language);
     }
   };
   const drain = async () => {
@@ -112,7 +147,11 @@ export function createCodeHighlighter(options: {
     name: "shiki", type: "code-highlighter",
     getThemes: () => THEMES,
     getSupportedLanguages: () => [...languages],
-    supportsLanguage: language => languages.has(normalize(language)),
+    supportsLanguage: language => {
+      const name = normalize(language);
+      if (name === "text" || name === "txt" || name === "plain" || name === "mermaid" || name === "mmd") return false;
+      return languages.size === 0 || languages.has(name);
+    },
     highlight(value, callback) {
       if (disposed) return plain(value.code);
       // Finish asynchronous requests in call order, including subsequent cache

@@ -43,7 +43,9 @@ export async function prepareGuiPrompt(params: Record<string, unknown> | undefin
     }));
     first.text = withGuiSkillContext(first.text, instructions.join("\n\n"));
   }
-  if (tokens) first.text = `${first.text}\n\n${appearanceNote(tokens)}`;
+  // Slash commands (`/model`, `/compact`, …) parse the whole first line.
+  // Appearance CSS contains `/` (oklch), which would corrupt `/model` ids.
+  if (tokens && !first.text.trimStart().startsWith("/")) first.text = `${first.text}\n\n${appearanceNote(tokens)}`;
   const next: Record<string, unknown> = { ...params, prompt };
   delete next.appearance;
   return next;

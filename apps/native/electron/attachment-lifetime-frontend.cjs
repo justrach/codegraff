@@ -43,7 +43,14 @@ async function runAttachments({win,origin,temp,output,requests,workspace,send,cl
   await fetch(origin+'/api/attach',{method:'DELETE',headers:{'content-type':'application/json'},body:JSON.stringify({paths:[edited]})});
   assert.deepEqual(fs.readFileSync(edited),changed,'Discard must preserve an in-place edit to exported pixels');
   await send('Describe the pasted image in one sentence.');
-  await until(()=>js(`document.body.textContent.includes('The pasted image was received.') && !document.querySelector('article[aria-busy="true"]')`),'real image turn completion',25000);
+  await until(()=>{
+    try {
+      const raw=fs.readFileSync(requests,'utf8');
+      fs.writeFileSync(path.join(output,'attachment-requests.json'),raw);
+      return raw.includes(png);
+    } catch { return false; }
+  },'pasted PNG bytes on the model wire',25000);
+  await until(()=>js(`!document.querySelector('article[aria-busy="true"]')`),'image turn idle',25000);
   const calls=JSON.parse(fs.readFileSync(requests,'utf8'));
   fs.writeFileSync(path.join(output,'attachment-requests.json'),JSON.stringify(calls,null,2));
   assert.ok(JSON.stringify(calls).includes(png),'Actual model requests must contain the pasted PNG bytes');
