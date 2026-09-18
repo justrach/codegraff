@@ -405,7 +405,7 @@ test "Accord live path is off in tests unless enabled" {
 }
 
 test "Accord stats report session RSS when enabled" {
-    if (builtin.os.tag == .windows) return;
+    if (builtin.os.tag == .windows) return; // enabled() is hard-false there
     test_enabled = true;
     defer test_enabled = false;
     const s = stats();

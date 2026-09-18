@@ -6,6 +6,7 @@ const Allocator = std.mem.Allocator;
 
 const agent_mod = @import("agent.zig");
 const provider_mod = @import("provider.zig");
+const providers = @import("providers.zig");
 const session = @import("session.zig");
 const http_headers = @import("http_headers.zig");
 const prompts = @import("prompts.zig");
@@ -37,7 +38,10 @@ pub fn parseSpec(raw: []const u8) ?Spec {
     return .{ .source = source, .branch = branch };
 }
 
-pub fn restore(root: *agent_mod.Agent, keys: *provider_mod.Keys, arena: Allocator, source_raw: []const u8, branch_raw: ?[]const u8) !Result {
+/// `model_override` is an explicit startup `--model`, already resolved to a
+/// provider by startup: see the block after loadSession for why it wins.
+/// `/resume` has no such flag and passes null.
+pub fn restore(root: *agent_mod.Agent, keys: *provider_mod.Keys, arena: Allocator, source_raw: []const u8, branch_raw: ?[]const u8, model_override: ?provider_mod.Provider) !Result {
     const source = try arena.dupe(u8, source_raw);
     if (!session.validSessionName(source)) return Error.InvalidSessionName;
     const branch = if (branch_raw) |raw| try arena.dupe(u8, raw) else null;
@@ -59,6 +63,18 @@ pub fn restore(root: *agent_mod.Agent, keys: *provider_mod.Keys, arena: Allocato
 
     root.ensureStoredKeys(keys);
     try session.loadSession(root, keys, arena, source);
+    // An explicit --model outranks the model the session file carries: the flag
+    // is the user's live intent, the saved model is only what the conversation
+    // last ran on. Without this the restore silently reverted the flag, so a
+    // host that respawns to switch models (the desktop picker) came back up on
+    // the OLD model and the switch looked like a no-op. Same precedence the
+    // --goal flag gets below. `keep_context` still decides whether the restored
+    // conversation is translated or dropped across a wire-format change,
+    // exactly as a mid-session /model does.
+    if (model_override) |p| {
+        _ = providers.applyProviderInner(root, arena, p, false) catch {};
+        root.fallback_active = false; // an explicit choice, never a repaired credential
+    }
     root.session_name = branch orelse source;
     if (branch) |dest| {
         root.session_parent = source;
@@ -72,4 +88,49 @@ pub fn restore(root: *agent_mod.Agent, keys: *provider_mod.Keys, arena: Allocato
         prompts.pinStandingGoal(root, arena);
     }
     return .{ .source = source, .target = root.session_name, .branched = branch != null };
+}
+
+test "--model outranks the model a resumed session saved" {
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+    var keys: provider_mod.Keys = .{ .values = @splat("test-key") };
+
+    var root: agent_mod.Agent = .{
+        .gpa = gpa,
+        .arena = arena,
+        .io = io,
+        .client = &client,
+        .provider = try keys.providerById("anthropic", "sonnet"),
+        .messages = (try std.json.parseFromSliceLeaky(std.json.Value, arena, "[{\"role\":\"user\",\"content\":\"switch me\"}]", .{})).array,
+        .subagent_provider_explicit = true,
+        .sub = false,
+        .label = "root",
+        .out = null,
+        .home = try std.fmt.allocPrint(arena, ".zig-cache/tmp/{s}", .{tmp.sub_path}),
+    };
+    try session.saveSessionTo(&root, arena, tmp.dir, "switch-1");
+    session.flushSaves();
+
+    // What the desktop picker does: respawn this conversation onto another
+    // model with `--model <new> --resume <session>`. Before the fix the session
+    // file's own model won, so the worker came back on the old one.
+    const deepseek = try keys.providerById("deepseek", "deepseek-chat");
+    const resumed = try restore(&root, &keys, arena, "switch-1", null, deepseek);
+    try std.testing.expectEqualStrings("switch-1", resumed.target);
+    try std.testing.expectEqualStrings("deepseek", root.provider.id);
+    try std.testing.expectEqualStrings("deepseek-chat", root.provider.model);
+    try std.testing.expectEqual(@as(usize, 1), root.messages.items.len); // the conversation rides along
+    try std.testing.expect(!root.fallback_active); // an explicit choice, not failover
+
+    // No flag: the saved model still wins, exactly as before.
+    _ = try restore(&root, &keys, arena, "switch-1", null, null);
+    try std.testing.expectEqualStrings("anthropic", root.provider.id);
+    try std.testing.expectEqualStrings("sonnet", root.provider.model);
 }
