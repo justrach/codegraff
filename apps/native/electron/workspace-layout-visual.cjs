@@ -39,6 +39,8 @@ app.whenReady().then(async () => {
     sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false,
   } });
   const wc = win.webContents;
+  wc.on('console-message', event => { if (event.level >= 2) console.error('Workspace renderer:', event.message); });
+  wc.on('render-process-gone', (_event, details) => console.error('Workspace renderer gone:', details));
   // Start the hidden renderer before sending commands to its Page domain.
   await wc.loadURL('about:blank');
   const unexpected = [];
@@ -63,12 +65,24 @@ app.whenReady().then(async () => {
       }
       return fixtureFetch(input,options);
     };` });
-  const js = source => { stage = source; return wc.executeJavaScript(source); };
+  const js = async source => {
+    stage = source;
+    try { return await wc.executeJavaScript(source); }
+    catch (error) { console.error('Workspace expression:', source); throw error; }
+  };
   const wait = async source => {
     for (let i = 0; i < 150; i++) { if (await js(source)) return; await sleep(40); }
     throw Error(`Workspace check timed out: ${source}`);
   };
-  const click = async selector => { await js(`document.querySelector(${JSON.stringify(selector)}).click()`); await sleep(100); };
+  const click = async selector => {
+    await wait(`!!document.querySelector(${JSON.stringify(selector)})`);
+    await js(`document.querySelector(${JSON.stringify(selector)}).click()`); await sleep(100);
+  };
+  const openAgents = async () => {
+    if (await js(`!!document.querySelector('[aria-label="Show agents"]')`)) await click('[aria-label="Show agents"]');
+    else await click('[aria-label="Workspace navigation"] button[aria-label="Agents"]');
+    await wait(`!!document.querySelector('[aria-label="Agents panel"]')`);
+  };
   const key = async (key, extra = {}) => {
     await js(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown',${JSON.stringify({key,bubbles:true,cancelable:true,...extra})}))`);
     await sleep(100);
@@ -85,8 +99,7 @@ app.whenReady().then(async () => {
   await wait(`!!document.querySelector('[aria-label="Close tasks"]')`);
   await click('[aria-label="Close tasks"]');
   await js(`(()=>{const e=document.querySelector('textarea[aria-label="Prompt"]');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,'Unsent follow-up');e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
-  await click('[aria-label="Show agents"]');
-  await wait(`!!document.querySelector('[aria-label="Agents panel"]')`);
+  await openAgents();
   assert.equal(await js(`document.querySelector('[data-chat-layout]').parentElement.style.display`), 'none');
   const geometry = await js(`(()=>{const t=document.querySelector('[data-workspace-toolbar]').getBoundingClientRect(),a=document.querySelector('[aria-label="Agents panel"]').getBoundingClientRect();return {toolbar:t.width,agents:a.width,below:a.top>=t.bottom}})()`);
   assert.ok(geometry.below && Math.abs(geometry.toolbar - geometry.agents) < 4, JSON.stringify(geometry));
@@ -107,8 +120,7 @@ app.whenReady().then(async () => {
   fs.writeFileSync(path.join(output, 'shared-toolbar-splits.png'), (await wc.capturePage()).toPNG());
   await key('d', { metaKey: true, shiftKey: true });
   await checkToolbar();
-  await click('[aria-label="Show agents"]');
-  await wait(`!!document.querySelector('[aria-label="Agents panel"]')`);
+  await openAgents();
   fs.writeFileSync(path.join(output, 'agents-workspace.png'), (await wc.capturePage()).toPNG());
   await wc.reload();
   await wait(`!!document.querySelector('[data-workspace-ready="true"] [data-workspace-toolbar]')`);
@@ -116,7 +128,7 @@ app.whenReady().then(async () => {
   assert.equal(await js(`!!document.querySelector('[data-tasks-sidebar]')`), false);
   assert.deepEqual(unexpected, [], 'Synthetic checks must never reach real agent APIs');
   console.log('PASS: shared toolbar above horizontal/vertical splits; full-width Agents; Tasks close persists across navigation/reload. No engine calls.');
-}).then(() => finish(0)).catch(error => { console.error(error); finish(1); });
+}).then(() => finish(0)).catch(error => { console.error(error); console.error('Workspace stage:', stage); finish(1); });
 function finish(code) {
   clearTimeout(deadline);
   try { testDesktop.assertSafe(); } catch (error) { console.error(error); code = 1; }

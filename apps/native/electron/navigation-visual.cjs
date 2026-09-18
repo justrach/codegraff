@@ -7,6 +7,8 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function runNavigationVisuals({win:fixtureWindow,origin,output}) {
   const win=testDesktop.createWindow({width:1100,height:760,titleBarStyle:'hiddenInset',webPreferences:{preload:path.join(__dirname,'preload.cjs'),sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});
   installWindowState(win);ipcMain.handle('browser',()=>null);
+  ipcMain.handle('link-settings',(_event,action)=>action==='save'?'system':'system');
+  ipcMain.handle('notch-settings',()=>null);
   // The demo workspace name maps to a disposable real folder for PTY checks.
   const terminalRoot=path.join(output,'terminal-workspace');fs.mkdirSync(terminalRoot,{recursive:true});
   const helper=path.join(output,'graff-terminal');
@@ -71,6 +73,6 @@ async function runNavigationVisuals({win:fixtureWindow,origin,output}) {
     assert.equal(await js(`!!document.querySelector('[data-workspace-menu]')`),false);
     if(process.platform==='darwin')await require('./terminal-visual.cjs').runTerminalVisual({win,output});
     console.log('Navigation visual checks passed: command catalog/new tabs, bounded keyboard menu, new/close/reopen, splits/zoom/resize, workspace search.');
-  } finally {terminals.closeAll();ipcMain.removeHandler('terminal');ipcMain.removeHandler('browser');win.destroy();testDesktop.present(fixtureWindow);}
+  } finally {terminals.closeAll();ipcMain.removeHandler('terminal');ipcMain.removeHandler('browser');ipcMain.removeHandler('link-settings');ipcMain.removeHandler('notch-settings');win.destroy();testDesktop.present(fixtureWindow);}
 }
 module.exports={runNavigationVisuals};

@@ -50,10 +50,12 @@ export function ThemeToggle({ labeled = false }: { labeled?: boolean }) {
     requestAnimationFrame(() => requestAnimationFrame(() => document.documentElement.classList.remove("theme-switching")));
   };
   return <>
-    <button ref={trigger} aria-label="Appearance" title="Appearance" aria-haspopup="dialog" aria-expanded={!!position} onClick={() => {
+    <button ref={trigger} aria-label="Appearance" title="Appearance" aria-haspopup="dialog" aria-expanded={!!position} onClick={event => {
+      event.stopPropagation();
       if (position) { setPosition(null); return; }
       const rect = trigger.current!.getBoundingClientRect();
       setPosition(appearancePanelPosition(rect, { width: window.innerWidth, height: window.innerHeight }));
+      (trigger.current?.closest("[popover]") as HTMLElement | null)?.hidePopover();
     }} className={labeled
       ? "flex w-full items-center justify-start rounded-md px-3 py-2 text-left text-xs text-ink-3 hover:bg-hover hover:text-ink"
       : "flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-3 hover:bg-hover hover:text-ink"}>
