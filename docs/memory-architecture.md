@@ -4,7 +4,7 @@ A design for pulling memory **into graff's core** as a pluggable, evolvable
 layer — rather than leaving it scattered across history/compaction/sessions or
 bolted on as an external MCP. Companion to
 [hyperagents.md](hyperagents.md) (the DGM/MAP-Elites evolution loop) and
-[architecture.md](../architecture.md) (the harness internals + perf budgets).
+[architecture.md](architecture.md) (the harness internals + perf budgets).
 
 Framing borrowed from **ALMA** (Automated meta-Learning of Memory designs for
 Agentic systems, [arXiv:2602.07755](https://arxiv.org/abs/2602.07755)): the

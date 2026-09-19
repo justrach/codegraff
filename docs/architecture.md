@@ -1,8 +1,8 @@
 # Architecture
 
-`simple-harness` is a terminal agentic loop built with Zig 0.17 dev and one
-vendored TUI dependency. It talks to
-two LLM providers, runs tools (including subagents and MCP servers) in
+Codegraff is a coding agent built with Zig 0.17. The terminal pager is
+first-party (`TUI/`); the desktop app is `apps/native`. The harness talks to
+LLM providers, runs tools (including subagents and MCP servers) in
 parallel, and compacts its own context. This document explains how the
 pieces fit together.
 
@@ -475,7 +475,7 @@ automatic semantic verification, and fleet-wide behavioral consumption remain
 deferred.
 The pre-existing append-only `Trajectory` DGM ledger and its record shapes remain
 unchanged. See
-[`docs/behavioral-trajectories.md`](docs/behavioral-trajectories.md).
+[`behavioral-trajectories.md`](behavioral-trajectories.md).
 
 ## Local learning engine
 
@@ -519,7 +519,7 @@ appends a new transaction rather than deleting history. `fleet.zig`
 marks the verified learned agent as local activation authority so later remote
 elite merges cannot replace that name. Full schemas, operational guidance,
 privacy implications, and the unimplemented collective-learning design are in
-[`docs/local-learning.md`](docs/local-learning.md).
+[`local-learning.md`](local-learning.md).
 
 ## Compaction
 

@@ -14,7 +14,7 @@ of opening a development desktop, preventing side-by-side testing.
 `zig-out/electron-dev/Codegraff Dev.app`, bundle ID `dev.codegraff.app`.
 A bundled development marker selects the name `Codegraff Dev` and a separate
 Electron user-data directory before acquiring the single-instance lock.
-`script/build_and_run.sh` builds and launches this variant by default and only
+`scripts/build_and_run.sh` builds and launches this variant by default and only
 stops this checkout's previous dev process. The release build remains unchanged.
 
 Development startup does not automatically configure external MCP clients, and

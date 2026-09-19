@@ -1,6 +1,6 @@
 # Electron desktop trial
 
-Run `./script/build_and_run.sh` from the repository root, or use the Codex Run
+Run `./scripts/build_and_run.sh` from the repository root, or use the Codex Run
 action. It builds the production UI with Bun, packages Chromium, Bun, graff,
 and the SwiftUI Activity sheet, then opens `zig-out/electron/Codegraff.app`.
 Builds currently target Apple Silicon macOS 14+; Liquid Glass uses macOS 26+.

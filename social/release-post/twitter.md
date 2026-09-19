@@ -1,6 +1,6 @@
 # graff launch thread (coworker framing)
 
-A nine-post X thread mirroring the LinkedIn launch: Graff as a continual learning coding coworker. Same story beats as socials/release-post/linkedin2.md, cut for X.
+A nine-post X thread mirroring the LinkedIn launch: Graff as a continual learning coding coworker. Same story beats as social/release-post/linkedin2.md, cut for X.
 
 Every tweet is 280 characters or fewer. Tweet 1 has no link. Tweet copy contains no em dashes or backticks.
 
@@ -112,7 +112,7 @@ Optional extras if you want denser media: Tweet 5 can use /social/graff-launch-0
 
 ## Source verification map
 
-- Binary and memory methodology: architecture.md and benchmarks/README.md
+- Binary and memory methodology: docs/architecture.md and benchmarks/README.md
 - ultracode multi-agent mode: src/mainloop.zig, README.md
 - Evolutionary / lineage archive: README.md (An evolutionary harness), src/trace.zig
 - Local promotion semantics: src/fleet.zig (promoteAgents) and src/commands_session.zig (/agents promote)
