@@ -293,7 +293,7 @@ export default function SelectionActions() {
               <span className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap px-2.5 text-[12.5px] font-normal text-ink-2">
                 <span
                   className="size-3 shrink-0 rounded-full border-[1.5px] border-line-strong border-t-ink-2"
-                  style={{ animation: "spin 700ms linear infinite" }}
+                  style={{ animation: "spin 700ms steps(16, end) infinite" }}
                 />
                 {mode === "thinking" ? (
                   <Shimmer className="text-[12.5px] font-normal">

@@ -13,7 +13,7 @@ export function Shimmer({
         backgroundImage:
           "linear-gradient(90deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%)",
         backgroundSize: "200% 100%",
-        animation: "shimmer-text 1.8s linear infinite",
+        animation: "shimmer-text 1.8s steps(8, end) infinite",
       }}
     >
       {children}

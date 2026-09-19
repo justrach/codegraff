@@ -198,7 +198,7 @@ export default function ThinkingState({
                 backgroundImage:
                   "linear-gradient(90deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%)",
                 backgroundSize: "200% 100%",
-                animation: "shimmer-text 1.4s linear infinite",
+                animation: "shimmer-text 1.4s steps(8, end) infinite",
               }}
             >
               {v.active}
@@ -257,21 +257,21 @@ export default function ThinkingState({
                       <path d="M20 6L9 17l-5-5" />
                     </svg>
                   ) : (
-                    <span className="size-3 shrink-0 rounded-full border-[1.5px] border-line-strong border-t-ink-2" style={{ animation: expanded ? "spin 700ms linear infinite" : undefined }} />
+                    <span className="size-3 shrink-0 rounded-full border-[1.5px] border-line-strong border-t-ink-2" style={{ animation: expanded ? "spin 700ms steps(16, end) infinite" : undefined }} />
                   )
                 )}
                 {row.shimmer ? (
                   <>
                     <span
                       className="size-3 shrink-0 rounded-full border-[1.5px] border-line-strong border-t-ink-2"
-                      style={{ animation: working && expanded ? "spin 700ms linear infinite" : undefined }}
+                      style={{ animation: working && expanded ? "spin 700ms steps(16, end) infinite" : undefined }}
                     />
                     <span
                       className="min-w-0 truncate bg-clip-text text-[12.5px] leading-relaxed text-transparent"
                       style={{
                         backgroundImage: "linear-gradient(90deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%)",
                         backgroundSize: "200% 100%",
-                        animation: working && expanded ? "shimmer-text 1.4s linear infinite" : undefined,
+                        animation: working && expanded ? "shimmer-text 1.4s steps(8, end) infinite" : undefined,
                       }}
                     >
                       {row.primary}
