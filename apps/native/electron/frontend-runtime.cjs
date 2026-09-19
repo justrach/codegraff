@@ -130,6 +130,8 @@ app.whenReady().then(async () => {
   // This suite does not download releases or open external browser pages.
   ipcMain.handle('updates', () => ({ status: 'unavailable', automatic: false, interactive: false }));
   const wc = win.webContents, js = code => wc.executeJavaScript(code);
+  // Name the next renderer throw in CI; executeJavaScript otherwise hides it.
+  wc.on('console-message', event => { if (/Error|error|Illegal/.test(event.message || '')) console.error('Front-end renderer:', event.message); });
   await wc.loadURL(origin); desktop.present(win);
   if (desktop.foreground) await until(() => win.isFocused(), 'foreground window focus');
   await until(() => js(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`), 'workspace and composer ready');
