@@ -10,6 +10,7 @@ const os = require('node:os');
 const net = require('node:net');
 const assert = require('node:assert/strict');
 const { installGalleryFixture } = require('./gallery-fixture.cjs');
+const { CLOSE_DIALOG, confirmCloseDialogIfOpen } = require('./close-confirm-harness.cjs');
 const { installPerformanceWorkload, frameRecorder, summarizeFrames } = require('./performance-workload.cjs');
 const { treeSample } = require('./process-metrics.cjs');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -155,9 +156,17 @@ app.whenReady().then(async () => {
   }
   // Closing the only chat must release renderer content; global caches remain observable.
   // Saved history opens a second tab; release it and the warm-up conversation.
+  // Closes while the confirmation is open are swallowed, so confirm each dialog.
+  let sawCloseDialog = false;
   for (let i = 0; i < 10 && await js(`!!document.querySelector('article')`); i++) {
     wc.send('desktop-action', 'close'); await sleep(150);
+    if (await confirmCloseDialogIfOpen(js)) {
+      sawCloseDialog = true;
+      // Only the confirmation, never a co-mounted dialog (narrow navigation).
+      await wait(`!document.querySelector(${JSON.stringify(CLOSE_DIALOG)})`);
+    }
   }
+  assert.ok(sawCloseDialog, 'Closing worker-backed tabs must ask for confirmation');
   await wait(`!document.querySelector('article')`); await sleep(1500);
   report.afterClose = await memory();
   report.unexpectedApiRequests = unexpected;
