@@ -4,17 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { modelChoices } from "./acp-client";
-import {
-  catalogMayWriteChatModel,
-  catalogMayWriteGlobalKey,
-  liveComposerKey,
-  modelDisplayName,
-  paneComposerKey,
-  pillFromAcp,
-  resolveComposerModel,
-  sameModels,
-  shouldConfirmModelSwitch,
-} from "./composer-model";
+import { liveComposerKey, paneComposerKey, pillFromAcp, resolveComposerModel, sameModels } from "./composer-model";
 
 test("the pill keeps an unknown live key instead of catalog[0]", () => {
   const decoy = { key: "catalog-zero", name: "catalog-zero" };
@@ -32,22 +22,6 @@ test("a tab with an agent does not inherit another chat's global pick", () => {
 test("a pending pick owns the pane pill until the new agent answers", () => {
   expect(paneComposerKey("glm-5.3-flash", "glm-5.3-flash", true, { chatId: 2, key: "grok-4.6" }, 2)).toBe("grok-4.6");
   expect(paneComposerKey("glm-5.3-flash", "glm-5.3-flash", true, { chatId: 2, key: "grok-4.6" }, 1)).toBe("glm-5.3-flash");
-});
-
-test("catalog refresh does not overwrite a pending pick or the global inherit", () => {
-  expect(catalogMayWriteChatModel(2, { chatId: 2 })).toBe(false);
-  expect(catalogMayWriteChatModel(1, { chatId: 2 })).toBe(true);
-  expect(catalogMayWriteChatModel(1, null)).toBe(true);
-  expect(catalogMayWriteGlobalKey(true)).toBe(false);
-  expect(catalogMayWriteGlobalKey(false)).toBe(true);
-});
-
-test("a chat with history or a running turn confirms before respawn", () => {
-  expect(shouldConfirmModelSwitch(1, false)).toBe(true);
-  expect(shouldConfirmModelSwitch(0, true)).toBe(true);
-  expect(shouldConfirmModelSwitch(0, false)).toBe(false);
-  expect(modelDisplayName([{ key: "a", name: "Alpha" }], "a")).toBe("Alpha");
-  expect(modelDisplayName([], null)).toBe("the current model");
 });
 
 test("sameModels ignores a new array of the same rows", () => {

@@ -92,13 +92,24 @@ test("uploadAttachment times out instead of hanging the composer", async () => {
   const file = new File([new Uint8Array([1])], "shot.png", { type: "image/png" });
   const original = globalThis.fetch;
   globalThis.fetch = (async (_url: unknown, init?: { signal?: AbortSignal }) => {
+    const signal = init?.signal;
+    if (!signal) throw new Error("expected abort signal");
     await new Promise((_, reject) => {
-      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason ?? new DOMException("aborted", "AbortError")), { once: true });
+      const fail = () => reject(signal.reason ?? new DOMException("The operation was aborted.", "TimeoutError"));
+      if (signal.aborted) {
+        fail();
+        return;
+      }
+      const timer = setTimeout(fail, 100);
+      signal.addEventListener("abort", () => {
+        clearTimeout(timer);
+        fail();
+      }, { once: true });
     });
     throw new Error("unreachable");
   }) as typeof fetch;
   try {
-    await assert.rejects(() => uploadAttachment(file, 20), /timed out/);
+    await assert.rejects(() => uploadAttachment(file, 15), /timed out/);
   } finally {
     globalThis.fetch = original;
   }
