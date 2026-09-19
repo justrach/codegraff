@@ -57,7 +57,7 @@ export default function ModelEffortButtons({ model, buttonRef, modelOpen, openMo
   const progress = levels.length > 1 ? draft / (levels.length - 1) : 0;
   const displayName = model.name.replace(/^gpt-/i, "GPT-").replace(/-(astra|sol|terra|luna)$/i, (_, name: string) => ` ${name[0].toUpperCase()}${name.slice(1)}`);
   return <div data-model-controls className={`flex w-full min-w-0 items-center gap-0.5 ${wide ? "col-start-2 row-start-2 justify-self-start" : "col-start-3 row-start-1"}`}>
-    <button ref={buttonRef} type="button" aria-expanded={modelOpen} aria-label="Choose model" disabled={saving || busy} onClick={openModel}
+    <button ref={buttonRef} type="button" aria-expanded={modelOpen} aria-label="Choose model" data-model={model.key} disabled={saving || busy} onClick={openModel}
       className={`flex h-7 min-w-0 items-center gap-1 px-1.5 text-[12px] font-medium text-ink-2 hover:bg-hover hover:text-ink ${pill ? "rounded-full" : "rounded-lg"}`}>
       {model.fast && model.fastSupported && <span className="text-accent [&_svg]:size-3.5" aria-label="Fast mode enabled"><Bolt filled /></span>}
       <span className="truncate" title={displayName}>{displayName}</span><span className="shrink-0"><Chevron /></span>

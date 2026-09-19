@@ -45,6 +45,8 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
         const chat = chatsRef.current.find((c) => c.id === chatId);
         if (chat?.model !== current) setChatModel(chatId, current);
         setModelKey((key) => (key === current ? key : current));
+      } else if (current) {
+        setModelKey((key) => key ?? current);
       }
     } catch {
       // Keep the spawn model. A failed catalog must not fail the session.

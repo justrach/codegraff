@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { restoreActionFocus } from "../primitives/ActionMenu";
 import CustomThemes from "./CustomThemes";
-import McpServers from "./McpServers";
 import DesktopSettings from "./DesktopSettings";
 import { appearanceEvent, appearanceKey, applyAppearance, readAppearance, type Appearance } from "@/lib/appearance";
 
@@ -68,7 +67,6 @@ export function ThemeToggle({ labeled = false }: { labeled?: boolean }) {
       </button>)}</div>
       <CustomThemes selected={theme} />
       <DesktopSettings embedded />
-      <McpServers />
       </div>
     </div>
     </div>, document.body)}

@@ -239,7 +239,12 @@ app.whenReady().then(async () => {
   fs.copyFileSync(requests, path.join(output, 'model-requests.json'));
   fs.cpSync(path.join(workspace, '.graff'), path.join(output, 'harness-evidence'), {recursive:true});
   fs.writeFileSync(path.join(output, 'follow-up-finished.png'), (await wc.capturePage()).toPNG());
+  const pillModel = await js(`document.querySelector('[aria-label="Choose model"]')?.getAttribute('data-model')`);
+  const savedModel = saved.map(name => JSON.parse(fs.readFileSync(path.join(workspace, '.graff/sessions', name), 'utf8'))).find(session => session.model)?.model;
+  assert.ok(pillModel && savedModel, 'composer pill and ACP session both name a model');
+  assert.equal(pillModel, savedModel, `composer pill ${pillModel} must match ACP session ${savedModel}`);
   report.passed.push('typed follow-up, real saved history, finished status and frozen elapsed time');
+  report.passed.push('composer pill matches the live ACP session model');
   if (process.env.GRAFF_CONTEXT_METER_TEST) {
     await until(()=>js(`!!document.querySelector('[role="meter"][aria-label="Context remaining"]')`),'live context meter');
     await click('[aria-label="Context remaining"]');
