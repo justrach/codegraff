@@ -1,23 +1,48 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path');
 const desktop = require('./test-desktop.cjs');
+const timeouts = require('./smoke-timeout.cjs');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 exports.run = async ({win, backend}) => {
   const output = process.env.GRAFF_SHUTDOWN_OUTPUT;
+  const workspace = process.env.GRAFF_CWD;
   const js = source => win.webContents.executeJavaScript(source);
-  // Phase markers: the next 180s hang shows which phase stalled, in CI output
+  // Phase markers: the next hang shows which phase stalled, in CI output
   // and in the uploaded server-desktop dir.
   const phase = name => {
     console.log(`Shutdown fixture: ${name}`);
     try { fs.writeFileSync(path.join(output, 'phase.txt'), `${name}\n`); } catch {}
   };
+  // Every wait ends before the external watchdog (see smoke-timeout.cjs), and
+  // the timeout path dumps renderer + backend + model + worker state so the
+  // next stall names where the prompt stopped instead of dying as a generic
+  // "Test deadline exceeded" under SIGKILL.
+  const outer = timeouts.outerMs(), startedAt = Date.now();
+  const dumpTimeout = async (label, waitedMs) => {
+    phase(`timed out: ${label}`);
+    const record = { label, waitedMs, outerMs: outer, at: new Date().toISOString() };
+    try { record.guiText = await js('document.body.innerText'); } catch (error) { record.guiText = `<unreadable: ${error.message}>`; }
+    try {
+      record.backend = await (async () => {
+        const response = await fetch(`${backend.origin}/api/acp`, { signal: AbortSignal.timeout(5000) });
+        const body = await response.json();
+        return `sessions=${body.sessions ?? '?'} ok=${body.ok ?? response.ok}`;
+      })();
+    } catch (error) { record.backend = `<unreachable: ${error.message}>`; }
+    record.workers = timeouts.collectWorkerState(workspace);
+    record.model = timeouts.collectModelState(output);
+    const file = timeouts.slug(label);
+    try { fs.writeFileSync(path.join(output, `timeout-${file}.json`), JSON.stringify(record, null, 2)); } catch {}
+    try { fs.writeFileSync(path.join(output, 'timeout-gui-text.txt'), record.guiText.slice(0, 20000)); } catch {}
+    try { fs.writeFileSync(path.join(output, 'timeout.png'), (await win.webContents.capturePage()).toPNG()); } catch {}
+    console.log(timeouts.formatTimeoutSummary({ label, elapsedMs: waitedMs, outerMs: outer,
+      backend: record.backend, workers: record.workers, model: record.model, guiChars: record.guiText.length }));
+  };
   const until = async (condition, label) => {
-    // Outer Electron budget is 180s; 30s here lost to CI scheduling on the
-    // scripted ACP turn (listener + HTTP check + completion text).
-    const budget = Number(process.env.GRAFF_TEST_TIMEOUT_MS);
-    const ms = Number.isFinite(budget) && budget >= 10000 ? Math.min(budget, 180000) : 90000;
+    const ms = timeouts.phaseBudget(label, outer, Date.now() - startedAt);
     const end = Date.now() + ms;
     while (Date.now() < end) { if (await condition()) return; await sleep(50); }
+    await dumpTimeout(label, ms);
     throw Error(`Shutdown fixture timed out: ${label}`);
   };
   await until(() => js(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`), 'composer');
@@ -39,7 +64,6 @@ exports.run = async ({win, backend}) => {
     await until(() => js(`document.body.innerText.includes('job 1 pinned')`), 'explicit user pin');
     phase('explicit user pin');
   }
-  const workspace = process.env.GRAFF_CWD;
   const listener = JSON.parse(fs.readFileSync(path.join(workspace,'listener.json'),'utf8'));
   const records = fs.readdirSync(path.join(process.env.HOME,'.codegraff/jobs')).map(name => JSON.parse(fs.readFileSync(path.join(process.env.HOME,'.codegraff/jobs',name),'utf8')));
   assert.equal(records.length, 1);
