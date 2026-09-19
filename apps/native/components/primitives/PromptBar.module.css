@@ -38,8 +38,12 @@
 }
 
 /* Split panes can be narrow even on a large display. Keep settings legible
-   on their own row and reserve separate space for attachment/send actions. */
+   on their own row and reserve separate space for attachment/send actions.
+   stacked shells use the composer radius — rounded-full on 3 rows is a balloon. */
 @container (max-width: 420px) {
+  .glass {
+    border-radius: var(--radius-composer);
+  }
   .controls {
     grid-template-columns: 28px minmax(0, 1fr) 0px 28px 28px;
   }
