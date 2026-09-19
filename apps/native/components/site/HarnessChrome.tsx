@@ -1,3 +1,4 @@
+"use client";
 import SessionTabs from "./SessionTabs";
 import type {SplitTree} from "@/lib/split-tree";
 import ActionMenu from "@/components/primitives/ActionMenu";
@@ -28,7 +29,7 @@ export default function HarnessChrome({navigationToggle, sidebarVisible = false,
   workspaceName, onFolder, openChanges, changesOpen = false, reviewsOpen = false, onReviews, browserOpen, onBrowser, pinCount, terminalVisible,
   toggleTerminal, agentsOpen, onAgents, workingAgents = 0, tasksOpen = false, taskCount = 0, onTasks, splitNotice, onTabPointerDown, onTabClickCapture}: Props) {
   return (
-    <div data-workspace-toolbar className={`${reviewStyles.chatbar} flex shrink-0 flex-col ${sidebarVisible ? "overflow-visible bg-transparent" : "overflow-hidden rounded-[14px] border border-line bg-page"}`}>
+    <div data-workspace-toolbar data-workspace-root={chatCwd} className={`${reviewStyles.chatbar} flex shrink-0 flex-col ${sidebarVisible ? "overflow-visible bg-transparent" : "overflow-hidden rounded-[14px] border border-line bg-page"}`}>
       {!sidebarVisible && <div data-session-tab-strip className="flex h-10 min-w-0 shrink-0 items-center gap-1 px-2">
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <button type="button" aria-label="Show agents" aria-pressed={agentsOpen} onClick={onAgents}

@@ -249,7 +249,7 @@ export default function ToolChips({
                   {"status" in row && row.status === "running" ? (
                     <span
                       className={`size-3 rounded-full border-[1.5px] border-line-strong border-t-ink-2 transition-opacity duration-100 group-hover/row:opacity-0 ${rowOpen ? "opacity-0" : ""}`}
-                      style={{ animation: "spin 700ms linear infinite" }}
+                      style={{ animation: "spin 700ms steps(16, end) infinite" }}
                     />
                   ) : (
                   <svg

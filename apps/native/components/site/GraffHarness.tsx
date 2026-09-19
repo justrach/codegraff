@@ -33,7 +33,7 @@ import {
   ProjectsPane, ReviewsPane, TasksSidebar, TerminalPane, WorkspaceDialog,
 } from "./harness-panes";
 import { useTasksVisibility } from "./useTasksVisibility";
-import { MAX_COLUMNS, SPLIT_LIMIT_MESSAGE, splitLimitReached } from "./harness-split";
+import { MAX_COLUMNS, SPLIT_LIMIT_MESSAGE, SPLIT_LIMIT_NOTICE_MS, splitLimitReached } from "./harness-split";
 import { useDesktopShortcuts } from "./useDesktopShortcuts";
 import { useDesktopWorkspace } from "./useDesktopWorkspace";
 import {
@@ -116,6 +116,13 @@ export default function GraffHarness() {
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [conversationsOpen, setConversationsOpen] = useState(false);
   const [splitNotice, setSplitNotice] = useState<string | null>(null);
+  // The pane-cap notice is a transient hint and clears itself; navigation
+  // errors sharing this slot persist until replaced (#825).
+  useEffect(() => {
+    if (splitNotice !== SPLIT_LIMIT_MESSAGE) return;
+    const timer = setTimeout(() => setSplitNotice(null), SPLIT_LIMIT_NOTICE_MS);
+    return () => clearTimeout(timer);
+  }, [splitNotice]);
   const openConversations = () => {
     setProjectsOpen(false);
     setAgentsOpen(false);

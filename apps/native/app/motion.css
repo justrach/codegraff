@@ -12,6 +12,13 @@
   50% { opacity: 0.6; }
 }
 
+/* Ambient, infinitely-running indicators are quantized with steps() at
+ * their call sites: a value that only changes a few times per second
+ * avoids a full-window compositor commit on every animation frame, which
+ * otherwise holds several percent of CPU for the duration of a turn
+ * (#1037). New infinite animations must do the same;
+ * lib/motion-throttle.test.ts enforces it. */
+
 @keyframes fade-up {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: none; }

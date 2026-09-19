@@ -31,7 +31,11 @@ pub const Version = struct {
     patch: u32 = 0,
 
     /// `v0.0.286`, `0.0.286`, `0.0.286-rc1` — anything after the patch digits
-    /// is ignored, so a pre-release tag still compares on its numbers.
+    /// is ignored, so a pre-release tag still compares on its numbers. A
+    /// fourth CLI hotfix segment (`0.0.300.1`) is likewise ignored: desktop
+    /// bundles stay 3-part (see electron/update-artifacts.cjs), so comparing
+    /// a segment the bundle can never carry would offer an update that never
+    /// converges. 4-part tags are CLI-only and carry no desktop asset.
     pub fn parse(text: []const u8) ?Version {
         var rest = std.mem.trim(u8, text, " \t\r\n\"");
         if (rest.len > 0 and (rest[0] == 'v' or rest[0] == 'V')) rest = rest[1..];
@@ -324,6 +328,17 @@ test "a tag parses with or without its v, and a partial one still reads" {
     try std.testing.expectEqual(Version{ .major = 0, .minor = 0, .patch = 287 }, Version.parse("v0.0.287-rc1").?);
     try std.testing.expect(Version.parse("") == null);
     try std.testing.expect(Version.parse("main") == null);
+}
+
+test "a four-segment CLI tag compares on its three-part base" {
+    // Desktop bundles stay 3-part while the CLI accepts 4-part hotfixes
+    // (see electron/update-artifacts.cjs). The trailing segment is ignored
+    // so a CLI-only 0.0.300.1 tag never offers a desktop "update" to an
+    // installed 0.0.300 build — there is no 4-part bundle to converge on.
+    try std.testing.expectEqual(Version{ .major = 0, .minor = 0, .patch = 300 }, Version.parse("v0.0.300.1").?);
+    const installed = Version.parse("0.0.300").?;
+    try std.testing.expect(!Version.parse("v0.0.300.1").?.newerThan(installed));
+    try std.testing.expect(Version.parse("v0.0.301").?.newerThan(installed));
 }
 
 test "the bundle version is read out of a plist" {
