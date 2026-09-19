@@ -122,3 +122,19 @@ test('in-app settings expose check and the six-hour automatic poll', () => {
   expect(src).toContain('every six hours');
   expect(src).toContain('data-desktop-update-automatic');
 });
+
+test('a packaged app without update config reports config, with it reports available (0.0.299)', () => {
+  const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+  const { updateAvailability } = require('./updates.cjs');
+  const { writeFeedConfig } = require('./update-artifacts.cjs');
+  const resources = fs.mkdtempSync(path.join(os.tmpdir(), 'graff-update-avail-'));
+  try {
+    const packaged = { app: { isPackaged: true }, resources, env: {}, platform: 'darwin', execPath: '/Applications/Codegraff.app/Contents/MacOS/Codegraff' };
+    // The 0.0.299 bundle: packaged and signed, but distribute.sh's config
+    // step never landed, so no update check may run.
+    expect(updateAvailability(packaged)).toEqual({ available: false, reason: 'config' });
+    // The 0.0.298/0.0.300 shape: the same app with the feed file present.
+    writeFeedConfig(path.join(resources, 'app-update.yml'));
+    expect(updateAvailability(packaged)).toEqual({ available: true, reason: null });
+  } finally { fs.rmSync(resources, { recursive: true, force: true }); }
+});
