@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { modelChoices } from "./acp-client";
-import { liveComposerKey, pillFromAcp, resolveComposerModel } from "./composer-model";
+import { liveComposerKey, pillFromAcp, resolveComposerModel, sameModels } from "./composer-model";
 
 test("the pill keeps an unknown live key instead of catalog[0]", () => {
   const decoy = { key: "catalog-zero", name: "catalog-zero" };
@@ -17,6 +17,12 @@ test("a tab with an agent does not inherit another chat's global pick", () => {
   expect(liveComposerKey(undefined, "catalog-zero", true)).toBeUndefined();
   expect(liveComposerKey("running-live", "catalog-zero", true)).toBe("running-live");
   expect(liveComposerKey(undefined, "catalog-zero", false)).toBe("catalog-zero");
+});
+
+test("sameModels ignores a new array of the same rows", () => {
+  const row = { key: "running-live", name: "running-live" };
+  expect(sameModels([row], [{ ...row }])).toBe(true);
+  expect(sameModels([row], [{ key: "other", name: "other" }])).toBe(false);
 });
 
 function askAcpModels(binary: string, model: string): Promise<unknown> {

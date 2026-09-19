@@ -26,3 +26,7 @@ export function pillFromAcp(
 ): ModelChoice {
   return resolveComposerModel(models, liveComposerKey(current ?? undefined, globalKey, hasAgent));
 }
+
+export function sameModels(a: ModelChoice[], b: ModelChoice[]): boolean {
+  return a.length === b.length && a.every((m, i) => m.key === b[i]?.key && m.name === b[i]?.name);
+}

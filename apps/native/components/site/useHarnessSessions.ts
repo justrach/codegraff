@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type MutableRefObject, type Dispatch, type SetStateAction } from "react";
 import { bindMcpAppChat, checkHealth, disposePage, ensureSession, fetchModels, type Health } from "@/lib/acp-client";
+import { sameModels } from "@/lib/composer-model";
 import { pumpIdlePeerTurns } from "./idle-peer-turns";
 import type { AcpCommand } from "@/lib/acp";
 import type { PromptModel } from "@/components/primitives/PromptBar";
@@ -36,13 +37,17 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
   const adoptCatalog = async (chatId: number) => {
     // Pill follows this chat's agent. A transient /api/models process is not that agent.
     const handle = sessionsRef.current.has(chatId) ? handleOf(chatId) : undefined;
-    const { models: live, current, commands: available } = await fetchModels(handle, activePathRef.current ?? undefined);
-    if (live.length > 0) setModels(live);
-    if (available?.length) { setCatalogCommands(available); setCommands(old => ({ ...old, [chatId]: available })); }
-    if (current && handle) {
-      const chat = chatsRef.current.find((c) => c.id === chatId);
-      if (chat?.model !== current) setChatModel(chatId, current);
-      setModelKey((key) => (key === current ? key : current));
+    try {
+      const { models: live, current, commands: available } = await fetchModels(handle, activePathRef.current ?? undefined);
+      if (live.length > 0) setModels((prev) => (sameModels(prev, live) ? prev : live));
+      if (available?.length) { setCatalogCommands(available); setCommands(old => ({ ...old, [chatId]: available })); }
+      if (current && handle) {
+        const chat = chatsRef.current.find((c) => c.id === chatId);
+        if (chat?.model !== current) setChatModel(chatId, current);
+        setModelKey((key) => (key === current ? key : current));
+      }
+    } catch {
+      // Keep the spawn model. A failed catalog must not fail the session.
     }
   };
 

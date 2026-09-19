@@ -23,6 +23,7 @@ async function runBrowserFocus({ win, output, click, until, report }) {
   try {
     const navigateUser = async url => {
       await click('[aria-label="Address"]');
+      await until(() => js(`document.activeElement?.getAttribute('aria-label')==='Address'`), 'address field focused');
       for (const keyCode of url) await desktop.testInput(wc, { type: 'char', keyCode });
       await desktop.testInput(wc, { type: 'keyDown', keyCode: 'Return' });
       await desktop.testInput(wc, { type: 'keyUp', keyCode: 'Return' });
