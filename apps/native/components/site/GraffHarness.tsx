@@ -25,8 +25,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type PromptModel } from "@/components/primitives/PromptBar";
 import SidebarNav from "@/components/primitives/SidebarNav";
 import { type BrowserPin } from "@/lib/browser/annotations";
-import { browserClose } from "@/lib/browser-client";
 import ChatColumn from "./ChatColumn";
+import CloseConfirmDialog from "@/components/site/CloseConfirmDialog";
 import ModelSwitchDialog from "@/components/site/ModelSwitchDialog";
 import {
   AgentsPane, AppSettings, BrowserPane, ChangesPane, ConversationsPane, FilesPane,
@@ -39,14 +39,14 @@ import { useDesktopWorkspace } from "./useDesktopWorkspace";
 import {
   answer, cancel,
   chatHandle,
-  disposeSession,
   type Health,
 } from "@/lib/acp-client";
 import { type AcpCommand } from "@/lib/acp";
 import { useChatScroll } from "./useChatScroll";
 import { enqueuePrompt } from "@/lib/prompt-queue";
 import { usePromptQueue, steerOrInterrupt } from "./usePromptQueue";
-import { removeSession, type StoredSession } from "@/lib/sessions";
+import { useChatClose } from "./useChatClose";
+import { type StoredSession } from "@/lib/sessions";
 import { loadHistory, mergeHistory } from "@/lib/prompt-history";
 import {
   basename,
@@ -149,8 +149,6 @@ export default function GraffHarness() {
   const pendingPickRef = useRef<{ key: string; chatId: number } | null>(null);
   const runningRef = useRef(new Set<number>());
   const queueResumesRef = useRef(new Set<number>());
-  // Closed tabs, oldest first, for the reopen shortcut.
-  const closedRef = useRef<{ session: string | null; cwd?: string; resumable: boolean }[]>([]);
 
   const chatThread = chats.find((c) => c.id === activeId) ?? chats[0];
   // Split positions are independent of keyboard focus.
@@ -299,18 +297,6 @@ export default function GraffHarness() {
     if (folder && folder !== activePathRef.current) activateWorkspace(folder);
   });
 
-  /** Bring back the tab that was closed last, resuming its graff session so
-   * the conversation comes back with it. A tab that never got a message has
-   * nothing saved, so it returns as a fresh one. */
-  const reopenClosed = () => {
-    const stack = closedRef.current;
-    const last = stack[stack.length - 1];
-    if (!last) return;
-    closedRef.current = stack.slice(0, -1);
-    if (last.session && last.resumable) void openStored(last.session, last.cwd);
-    else newChat();
-  };
-
   /** Another chat beside the ones on screen, in the workspace the active
    * chat is in. Up to four columns; past that they are too narrow to read. */
   const addPane = (direction: "row" | "column" = splitDirection) => {
@@ -331,58 +317,14 @@ export default function GraffHarness() {
     else addPane();
   };
 
-  const dropChat = (id: number) => {
-    sessionsRef.current.delete(id);
-    sessionNamesRef.current.delete(id);
-    runningRef.current.delete(id);
-    steerer.finish(id);
-    setQueue(id, []);
-    setSessionIds((current) => {
-      const { [id]: _gone, ...rest } = current;
-      return rest;
-    });
-    setBusyFor(id, false);
-    const { [id]: _pins, ...remainingPins } = pinsRef.current;
-    pinsRef.current = remainingPins; setPinsByChat(remainingPins);
-    setCommands(current => { const { [id]: _commands, ...rest } = current; return rest; });
-    setCancelError(current => { const { [id]: _error, ...rest } = current; return rest; });
-    unwatchIdle(id);
-    void disposeSession(handleOf(id));
-    void browserClose(handleOf(id)).catch(() => undefined);
-  };
-
-  const closeChats = (ids: number[]) => {
-    const visible = columnIds.filter(pane => !ids.includes(pane));
-    groups.remove(ids); setZoomedPane(null);
-    for (const id of ids) {
-      const going = chatsRef.current.find(c => c.id === id);
-      if (going) closedRef.current = [...closedRef.current.slice(-9), {
-        session: going.session ?? null, cwd: going.cwd, resumable: going.messages.length > 0,
-      }];
-      dropChat(id);
-    }
-    const remaining = chatsRef.current.filter(c => !ids.includes(c.id));
-    chatsRef.current = remaining; setChats(remaining);
-    if (!remaining.length) { openChat(++chatIdRef.current); return; }
-    if (ids.includes(activeId)) focusChat(visible[0] ?? remaining[remaining.length - 1].id);
-  };
-  const closeChat = (id: number) => closeChats([id]);
-  const closeTab = (id: number) => closeChats(groups.groups.find(group => group.ids.includes(id))?.ids ?? [id]);
+  const { closeChat, closeTab, reopenClosed, dropStored, pendingClose, cancelPendingClose, confirmPendingClose } = useChatClose({
+    sessionsRef, sessionNamesRef, chatsRef, runningRef, chatIdRef, pinsRef, activePathRef, groups, columnIds, activeId,
+    handleOf, setBusyFor, setQueue, steerer, setSessionIds, setCommands, setCancelError, setPinsByChat, setZoomedPane,
+    setChats, setStored, openChat, focusChat, openStored, newChat, refreshStored, unwatchIdle,
+  });
 
   const pickRecent = (id: string) => {
     void openStored(id);
-  };
-
-  /** Put a saved chat away, or remove it for good. Its tab closes with it,
-   * and the row goes at once rather than after the next poll. */
-  const dropStored = (name: string, archive: boolean) => {
-    const cwd = activePathRef.current ?? undefined;
-    const open = chatsRef.current.filter((c) => c.session === name && (c.cwd ?? null) === (cwd ?? null));
-    if (open.length) closeChats(open.map(chat => chat.id));
-    setStored((current) => current.filter((s) => s.name !== name));
-    void removeSession(name, { root: cwd, archive })
-      .catch(() => undefined)
-      .then(() => refreshStored());
   };
 
   const { switchWorkspace, addWorkspace, saveWorkspace, forgetWorkspace, newProjectChat, activateWorkspace } = workspaceActions({
@@ -612,6 +554,14 @@ export default function GraffHarness() {
           to={modelLabel(pendingModel.key)}
           onCancel={cancelPending}
           onConfirm={() => confirmPending(pendingModel)}
+        />
+      )}
+      {pendingClose && (
+        <CloseConfirmDialog
+          tabs={pendingClose.ids.length}
+          workers={pendingClose.workers}
+          onCancel={cancelPendingClose}
+          onConfirm={confirmPendingClose}
         />
       )}
       {dialog && (
