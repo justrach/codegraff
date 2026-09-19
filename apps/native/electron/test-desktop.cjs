@@ -4,14 +4,14 @@ const policy = createTestWindowPolicy(require('electron'));
 const buttons = new WeakMap();
 const attachTestDebugger = wc => { if (!wc.debugger.isAttached()) wc.debugger.attach('1.3'); };
 async function focusTestPage(wc) {
-  // Select the target WebContentsView inside its hidden, unfocusable window.
-  // This does not activate the BrowserWindow (the native policy forbids that).
-  wc.focus();
-  if (policy.foreground) return;
+  if (policy.foreground) {
+    wc.focus();
+    return;
+  }
+  // WebContents.focus() can still activate macOS even when the BrowserWindow is
+  // unfocusable and the app policy is prohibited. Emulate focus in Chromium only.
   wc.setBackgroundThrottling(false);
   attachTestDebugger(wc);
-  // Focus inside Chromium, never in the desktop window manager. This preserves
-  // native Tab navigation and trusted input while another application is active.
   await wc.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true });
 }
 const modifierBits = list => (list ?? []).reduce((bits, name) => bits | ({ alt: 1, control: 2, ctrl: 2, meta: 4, shift: 8 }[name] ?? 0), 0);
