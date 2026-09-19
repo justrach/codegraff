@@ -33,7 +33,9 @@ async function confirmCloseDialog({ js, click, until }) {
   })()`);
   assert.equal(tagged, true, 'Confirmation owns a confirm button');
   await click('[data-close-confirm="true"]');
-  await until(() => js(`!document.querySelector('[role="dialog"]')`), 'close confirmation dismissed');
+  // Only the confirmation: narrow viewports keep the navigation panel mounted
+  // with role="dialog" while tabs close, so waiting on every dialog stalls.
+  await until(() => js(`!document.querySelector(${JSON.stringify(DIALOG)})`), 'close confirmation dismissed');
 }
 
 // Benchmark variant: that suite has no pointer helper and already clicks in-page.

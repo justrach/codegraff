@@ -10,7 +10,7 @@ const os = require('node:os');
 const net = require('node:net');
 const assert = require('node:assert/strict');
 const { installGalleryFixture } = require('./gallery-fixture.cjs');
-const { confirmCloseDialogIfOpen } = require('./close-confirm-harness.cjs');
+const { CLOSE_DIALOG, confirmCloseDialogIfOpen } = require('./close-confirm-harness.cjs');
 const { installPerformanceWorkload, frameRecorder, summarizeFrames } = require('./performance-workload.cjs');
 const { treeSample } = require('./process-metrics.cjs');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -162,7 +162,8 @@ app.whenReady().then(async () => {
     wc.send('desktop-action', 'close'); await sleep(150);
     if (await confirmCloseDialogIfOpen(js)) {
       sawCloseDialog = true;
-      await wait(`!document.querySelector('[role="dialog"]')`);
+      // Only the confirmation, never a co-mounted dialog (narrow navigation).
+      await wait(`!document.querySelector(${JSON.stringify(CLOSE_DIALOG)})`);
     }
   }
   assert.ok(sawCloseDialog, 'Closing worker-backed tabs must ask for confirmation');

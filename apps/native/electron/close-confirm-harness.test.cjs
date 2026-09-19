@@ -25,11 +25,18 @@ function dialog(label, buttons) {
 function setup(label = 'Close tab', buttons = null) {
   const state = {
     dialog: dialog(label, buttons ?? [button('', { 'aria-label': 'Close' }), button('Cancel'), button(label)]),
+    // Narrow viewports keep the navigation panel mounted with role="dialog"
+    // while tabs close; dismissal must not wait on it.
+    nav: { label: 'Navigation' },
   };
   state.document = {
     querySelector(selector) {
-      if (selector === CLOSE_DIALOG || selector === '[role="dialog"]') {
+      if (selector === CLOSE_DIALOG) {
         return state.dialog && state.dialog.label.startsWith('Close ') ? state.dialog : null;
+      }
+      if (selector === '[role="dialog"]') {
+        if (state.dialog && state.dialog.label.startsWith('Close ')) return state.dialog;
+        return state.nav;
       }
       if (selector === '[data-close-confirm="true"]') {
         return state.dialog?.buttons.find(item => item.getAttribute('data-close-confirm') === 'true') ?? null;
