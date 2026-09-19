@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { restoreActionFocus } from "../primitives/ActionMenu";
 import CustomThemes from "./CustomThemes";
 import DesktopSettings from "./DesktopSettings";
+import TraceSettings from "./TraceSettings";
 import { appearanceEvent, appearanceKey, applyAppearance, readAppearance, type Appearance } from "@/lib/appearance";
 
 const themes = [
@@ -67,6 +68,7 @@ export function ThemeToggle({ labeled = false }: { labeled?: boolean }) {
       </button>)}</div>
       <CustomThemes selected={theme} />
       <DesktopSettings embedded />
+      <TraceSettings />
       </div>
     </div>
     </div>, document.body)}
