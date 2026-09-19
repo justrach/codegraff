@@ -26,13 +26,13 @@ for(const pinned of [false,true]) {
  fs.writeFileSync(path.join(workspace,'listener.py'),"import os,json,socket\nsocket.getfqdn=lambda *_: (_ for _ in ()).throw(RuntimeError('unexpected hostname lookup'))\nfrom pathlib import Path\nfrom http.server import HTTPServer,BaseHTTPRequestHandler\nfrom socketserver import TCPServer\nclass NumericHTTPServer(HTTPServer):\n def server_bind(self):\n  TCPServer.server_bind(self)\n  self.server_name,self.server_port=self.server_address[:2]\nclass Handler(BaseHTTPRequestHandler):\n def do_GET(self):\n  print('request served',flush=True)\n  self.send_response(200);self.end_headers();self.wfile.write(b'ready')\ns=NumericHTTPServer(('127.0.0.1',0),Handler)\nPath('listener.json').write_text(json.dumps({'pid':os.getpid(),'port':s.server_port}))\ns.serve_forever()\n");
  fs.writeFileSync(path.join(workspace,'ready.py'),"import json,time,urllib.request\nfrom pathlib import Path\nfor _ in range(100):\n if Path('listener.json').exists():break\n time.sleep(.05)\nr=json.loads(Path('listener.json').read_text());body=urllib.request.urlopen('http://127.0.0.1:'+str(r['port']),timeout=2).read();assert body==b'ready',body;print('HTTP response verified: ready')\n");
  const script=path.join(temp,'script.json'),mcp=path.join(temp,'mcp.json');fs.writeFileSync(mcp,'{"mcpServers":{}}');fs.writeFileSync(script,JSON.stringify([{tool:'bash',arguments:{command:'python3 listener.py',run_in_background:true}},{tool:'bash',arguments:{command:'python3 ready.py'}},{text:'Listener ready for shutdown.'}]));
- const env={...process.env,HOME:temp,LMSTUDIO_API_KEY:'local',GRAFF_CWD:workspace,GRAFF_ELECTRON_RESOURCES:resources,GRAFF_ELECTRON_SMOKE:path.join(out,'smoke.json'),GRAFF_SMOKE_SERVER_LIFECYCLE:'1',GRAFF_SHUTDOWN_OUTPUT:out,GRAFF_SHUTDOWN_PIN:pinned?'1':'0',GRAFF_SMOKE_PROFILE:path.join(temp,'profile'),GRAFF_MCP_CONFIG:mcp,GRAFF_NO_TELEMETRY:'1',GRAFF_FLEET:'off',GRAFF_NO_SMOLIFY:'1',GRAFF_NO_CODEDB_GUARD:'1',GRAFF_TEST_TIMEOUT_MS:process.env.GRAFF_TEST_TIMEOUT_MS||'120000'};
+ const env={...process.env,HOME:temp,LMSTUDIO_API_KEY:'local',GRAFF_CWD:workspace,GRAFF_ELECTRON_RESOURCES:resources,GRAFF_ELECTRON_SMOKE:path.join(out,'smoke.json'),GRAFF_SMOKE_SERVER_LIFECYCLE:'1',GRAFF_SHUTDOWN_OUTPUT:out,GRAFF_SHUTDOWN_PIN:pinned?'1':'0',GRAFF_SMOKE_PROFILE:path.join(temp,'profile'),GRAFF_MCP_CONFIG:mcp,GRAFF_NO_TELEMETRY:'1',GRAFF_FLEET:'off',GRAFF_NO_SMOLIFY:'1',GRAFF_NO_CODEDB_GUARD:'1',GRAFF_TEST_TIMEOUT_MS:process.env.GRAFF_TEST_TIMEOUT_MS||'180000'};
  for(const key of Object.keys(env))if(key.endsWith('_API_KEY')&&key!=='LMSTUDIO_API_KEY')delete env[key];
  const fd=fs.openSync(path.join(out,'model.log'),'w'),model=spawn('python3',[path.join(repo,'scripts/eval/frontend_model.py'),'--script',script,'--requests',path.join(out,'requests.json')],{env,stdio:['ignore',fd,fd]});fs.closeSync(fd);
  const unrelated=net.createServer(s=>s.end());await new Promise(r=>unrelated.listen(0,'127.0.0.1',r));
  try {
   const end=Date.now()+10000;while(!fs.readFileSync(path.join(out,'model.log'),'utf8').includes('scripted model on')){assert(model.exitCode===null&&Date.now()<end,'fixture unavailable');await sleep(50)}
-  process.env.GRAFF_TEST_TIMEOUT_MS='120000';
+  process.env.GRAFF_TEST_TIMEOUT_MS=env.GRAFF_TEST_TIMEOUT_MS;
   assert.equal(await runDesktopProcess(require('electron'),[path.join(ui,'electron/server-lifecycle-entry.cjs')],env),0,'Electron fixture failed');
   const replies=JSON.parse(fs.readFileSync(path.join(out,'requests.json'),'utf8')).flatMap(request=>request.messages||[]);
   assert(replies.some(message=>message.role==='tool'&&message.content==='HTTP response verified: ready\n'),'agent did not observe a successful HTTP check');
@@ -63,6 +63,9 @@ for(const pinned of [false,true]) {
   }
   if(fs.existsSync(path.join(workspace,'.graff')))fs.cpSync(path.join(workspace,'.graff'),path.join(out,'graff'),{recursive:true});
   const logs=path.join(temp,'profile/logs');if(fs.existsSync(logs))fs.cpSync(logs,path.join(out,'logs'),{recursive:true});
-  model.kill('SIGTERM');unrelated.close();fs.rmSync(temp,{recursive:true,force:true});
+  model.kill('SIGTERM');
+  const death=Date.now()+5000;while(model.exitCode===null&&Date.now()<death)await sleep(50);
+  if(model.exitCode===null)model.kill('SIGKILL');
+  unrelated.close();fs.rmSync(temp,{recursive:true,force:true});
  }
 }

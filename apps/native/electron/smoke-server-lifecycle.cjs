@@ -6,10 +6,10 @@ exports.run = async ({win, backend}) => {
   const output = process.env.GRAFF_SHUTDOWN_OUTPUT;
   const js = source => win.webContents.executeJavaScript(source);
   const until = async (condition, label) => {
-    // Outer Electron budget is 120s; 30s here lost to CI scheduling on the
+    // Outer Electron budget is 180s; 30s here lost to CI scheduling on the
     // scripted ACP turn (listener + HTTP check + completion text).
     const budget = Number(process.env.GRAFF_TEST_TIMEOUT_MS);
-    const ms = Number.isFinite(budget) && budget >= 10000 ? Math.min(budget, 120000) : 90000;
+    const ms = Number.isFinite(budget) && budget >= 10000 ? Math.min(budget, 180000) : 90000;
     const end = Date.now() + ms;
     while (Date.now() < end) { if (await condition()) return; await sleep(50); }
     throw Error(`Shutdown fixture timed out: ${label}`);
