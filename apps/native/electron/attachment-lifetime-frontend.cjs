@@ -2,6 +2,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path');
 const { nativeImage } = require('electron');
+const { confirmCloseDialog } = require('./close-confirm-harness.cjs');
 async function runAttachments({win,origin,temp,output,requests,workspace,send,click,until,report}) {
   const wc = win.webContents, js = code => wc.executeJavaScript(code);
   if(await js(`!!document.querySelector('[aria-label="Close browser"]')`))await click('[aria-label="Close browser"]');
@@ -121,6 +122,8 @@ async function runAttachments({win,origin,temp,output,requests,workspace,send,cl
   assert.ok(fs.readFileSync(archivedTranscript,'utf8').includes(path.basename(aged)),'Archived replay must retain its image reference');
   assert.ok(fs.existsSync(path.join(savedDirectory,'archived',archiveName+'.session.json')));
   await click('[data-tab-id]:has(button[aria-pressed="true"]) [aria-label="Close tab"]');
+  // The image turn's worker is still enrolled, so the close asks first.
+  await confirmCloseDialog({ js, click, until });
   if(await js(`!!document.querySelector('[aria-label="Expand sidebar"]')?.checkVisibility()`))await click('[aria-label="Expand sidebar"]');
   else if(await js(`!!document.querySelector('[aria-label="Open navigation"]')?.checkVisibility()`))await click('[aria-label="Open navigation"]');
   const savedRow = '#sidebar-chat-list button[data-session-name=' + JSON.stringify(savedName.replace(/\.session\.json$/, '')) + ']';

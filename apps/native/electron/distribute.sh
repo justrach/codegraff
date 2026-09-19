@@ -36,6 +36,10 @@ spctl --assess --type execute --verbose=2 "$app"
 archive="$out/Codegraff-$version-macos-arm64.zip"
 ditto -c -k --keepParent "$app" "$archive"
 bun "$here/update-artifacts.cjs" "$version" "$archive" "$out/latest-mac.yml"
+# The 0.0.299 zip passed every gate below yet installed an app that never
+# checked for updates: its bundle had no app-update.yml. Prove the upload
+# bytes carry the feed config before anything else touches this directory.
+bun "$here/update-artifacts.cjs" verify-bundle "$app" "$archive"
 bash "$here/create-dmg.sh" "$app" "$dmg"
 codesign --sign "$GRAFF_SIGN_IDENTITY" --timestamp "$dmg"
 xcrun notarytool submit "$dmg" --keychain-profile "$GRAFF_NOTARY_PROFILE" --wait --output-format json > "$out/dmg-notary.json"
