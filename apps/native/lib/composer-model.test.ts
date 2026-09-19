@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { modelChoices } from "./acp-client";
-import { liveComposerKey, pillFromAcp, resolveComposerModel, sameModels } from "./composer-model";
+import { liveComposerKey, paneComposerKey, pillFromAcp, resolveComposerModel, sameModels } from "./composer-model";
 
 test("the pill keeps an unknown live key instead of catalog[0]", () => {
   const decoy = { key: "catalog-zero", name: "catalog-zero" };
@@ -17,6 +17,11 @@ test("a tab with an agent does not inherit another chat's global pick", () => {
   expect(liveComposerKey(undefined, "catalog-zero", true)).toBeUndefined();
   expect(liveComposerKey("running-live", "catalog-zero", true)).toBe("running-live");
   expect(liveComposerKey(undefined, "catalog-zero", false)).toBe("catalog-zero");
+});
+
+test("a pending pick owns the pane pill until the new agent answers", () => {
+  expect(paneComposerKey("glm-5.3-flash", "glm-5.3-flash", true, { chatId: 2, key: "grok-4.6" }, 2)).toBe("grok-4.6");
+  expect(paneComposerKey("glm-5.3-flash", "glm-5.3-flash", true, { chatId: 2, key: "grok-4.6" }, 1)).toBe("glm-5.3-flash");
 });
 
 test("sameModels ignores a new array of the same rows", () => {

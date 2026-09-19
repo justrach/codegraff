@@ -17,6 +17,39 @@ export function liveComposerKey(
   return globalModel ?? undefined;
 }
 
+/** A confirmed or in-flight pick owns the pill until the new agent answers. */
+export function paneComposerKey(
+  threadModel: string | undefined,
+  globalModel: string | null | undefined,
+  hasAgent: boolean,
+  pending?: { chatId: number; key: string } | null,
+  chatId?: number,
+): string | undefined {
+  if (pending && chatId === pending.chatId) return pending.key;
+  return liveComposerKey(threadModel, globalModel, hasAgent);
+}
+
+/** Catalog refresh must not overwrite the chat the user is switching. */
+export function catalogMayWriteChatModel(
+  chatId: number,
+  pending?: { chatId: number } | null,
+): boolean {
+  return pending?.chatId !== chatId;
+}
+
+/** An existing agent's `current` is that chat's model, not the global inherit. */
+export function catalogMayWriteGlobalKey(hasAgent: boolean): boolean {
+  return !hasAgent;
+}
+
+export function shouldConfirmModelSwitch(messageCount: number, running: boolean): boolean {
+  return messageCount > 0 || running;
+}
+
+export function modelDisplayName(models: { key: string; name: string }[], key: string | null | undefined): string {
+  return models.find((m) => m.key === key)?.name ?? key ?? "the current model";
+}
+
 /** Pill after a `graff/models` reply. `current` is the agent; the catalog only prettifies it. */
 export function pillFromAcp(
   models: ModelChoice[],
