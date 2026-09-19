@@ -15,7 +15,6 @@ const ToolCtx = tools_mod.ToolCtx;
 const ToolOutput = tools_mod.ToolOutput;
 const exec = @import("exec.zig");
 const execTool = exec.execTool;
-const shell_tool = @import("shell_tool.zig");
 const imagegen = @import("imagegen.zig");
 const terminal = @import("term.zig");
 const tty = terminal.tty;
@@ -26,10 +25,10 @@ const eval_control = @import("agent_eval_control.zig");
 
 pub const skipped_text = "tool execution skipped because the operation was aborted";
 
-/// Write / edit / shell (and imagegen) serialize the whole batch, matching
-/// the Pi/MiniMax rule: if any call is sequential, none of them race.
+/// Write / edit / imagegen serialize the whole batch so a later edit cannot
+/// race a write on the same path. Shell-only batches stay parallel (#266).
+/// Mixing bash with write/edit still serializes, because write/edit do.
 pub fn isSequential(name: []const u8) bool {
-    if (shell_tool.isFamily(name)) return true;
     if (std.mem.eql(u8, name, "write_file")) return true;
     if (std.mem.eql(u8, name, "edit_file")) return true;
     if (std.mem.eql(u8, name, imagegen.tool_name)) return true;
@@ -180,28 +179,33 @@ fn runParallel(self: *Agent, ctx: ToolCtx, calls: []const ToolCall, ext_idx: []c
     }
 }
 
-test "isSequential: mutating file/shell tools, not reads" {
+test "isSequential: mutating file tools, not shell or reads" {
     try std.testing.expect(isSequential("write_file"));
     try std.testing.expect(isSequential("edit_file"));
-    try std.testing.expect(isSequential("shell"));
-    try std.testing.expect(isSequential("bash"));
     try std.testing.expect(isSequential(imagegen.tool_name));
+    try std.testing.expect(!isSequential("shell"));
+    try std.testing.expect(!isSequential("bash"));
     try std.testing.expect(!isSequential("read_file"));
     try std.testing.expect(!isSequential("codedb"));
     try std.testing.expect(!isSequential("webfetch"));
     try std.testing.expect(!isSequential("subagent"));
 }
 
-test "batchNeedsSerial: any mutating call serializes the batch" {
+test "batchNeedsSerial: file mutations serialize; bash-only stays parallel" {
     const read = ToolCall{ .id = "1", .name = "read_file", .input = .{ .object = .empty } };
     const write = ToolCall{ .id = "2", .name = "write_file", .input = .{ .object = .empty } };
     const codedb = ToolCall{ .id = "3", .name = "codedb", .input = .{ .object = .empty } };
+    const bash = ToolCall{ .id = "4", .name = "bash", .input = .{ .object = .empty } };
     const mixed = [_]ToolCall{ read, write };
     try std.testing.expect(batchNeedsSerial(&mixed, &.{ 0, 1 }));
     const reads = [_]ToolCall{ read, codedb };
     try std.testing.expect(!batchNeedsSerial(&reads, &.{ 0, 1 }));
     const only_write = [_]ToolCall{write};
     try std.testing.expect(batchNeedsSerial(&only_write, &.{0}));
+    const two_bash = [_]ToolCall{ bash, bash };
+    try std.testing.expect(!batchNeedsSerial(&two_bash, &.{ 0, 1 }));
+    const bash_write = [_]ToolCall{ bash, write };
+    try std.testing.expect(batchNeedsSerial(&bash_write, &.{ 0, 1 }));
 }
 
 test "skipped_text is a stable model-facing sentence" {

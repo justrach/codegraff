@@ -40,8 +40,9 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
     if (live.length > 0) setModels(live);
     if (available?.length) { setCatalogCommands(available); setCommands(old => ({ ...old, [chatId]: available })); }
     if (current && handle) {
-      setChatModel(chatId, current);
-      setModelKey(current);
+      const chat = chatsRef.current.find((c) => c.id === chatId);
+      if (chat?.model !== current) setChatModel(chatId, current);
+      setModelKey((key) => (key === current ? key : current));
     }
   };
 

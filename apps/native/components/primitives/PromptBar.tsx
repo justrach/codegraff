@@ -103,7 +103,8 @@ export default function PromptBar({
    * the owner re-points modelKey, the picked entry must follow — the initial
    * useState snapshot is stale by then. Unknown keys keep their own name. */
   useEffect(() => {
-    setModel(resolveComposerModel(catalog, modelKey));
+    const next = resolveComposerModel(catalog, modelKey);
+    setModel((cur) => (cur.key === next.key && cur.name === next.name ? cur : next));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelKey, models]);
   const [dragging, setDragging] = useState(false);

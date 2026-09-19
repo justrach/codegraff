@@ -493,3 +493,7 @@ test "rejectToolCall: truncated arguments are a local error, not an executed cal
     try std.testing.expectEqualStrings(tool_call_args.invalid_exec_message, denied.text);
     try std.testing.expectEqual(@as(u64, 0), agent.tool_calls_this_turn);
 }
+
+test {
+    _ = @import("agent_tool_batch.zig");
+}
