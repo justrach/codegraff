@@ -17,7 +17,8 @@ import HarnessChrome from "./HarnessChrome";
 import ChatSplitLayout from "./ChatSplitLayout";
 import { sidebarRecents } from "./harness-sidebar";
 import { newPageToken, newSessionName, type Chat, type Msg } from "./harness-types";
-import { liveComposerKey } from "@/lib/composer-model";
+import { modelDisplayName, paneComposerKey } from "@/lib/composer-model";
+import { createModelSwitcher } from "./harness-model";
 import { useBrowserVisibility } from "./useBrowserVisibility";
 import { useReferenceNavigation } from "./useReferenceNavigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -145,6 +146,7 @@ export default function GraffHarness() {
   const [cancelError, setCancelError] = useState<Record<number, string>>({});
   // A model pick awaiting confirmation: switching respawns the tab's agent.
   const [pendingModel, setPendingModel] = useState<{ key: string; chatId: number } | null>(null);
+  const pendingPickRef = useRef<{ key: string; chatId: number } | null>(null);
   const runningRef = useRef(new Set<number>());
   const queueResumesRef = useRef(new Set<number>());
   // Closed tabs, oldest first, for the reopen shortcut.
@@ -177,7 +179,8 @@ export default function GraffHarness() {
   };
 
   const { adoptCatalog, requireSession, refreshStored, projectsReady } = useHarnessSessions({
-    sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal
+    sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal,
+    pendingPick: () => pendingPickRef.current ?? pendingModel,
   });
 
   const { openPath, openReference } = useReferenceNavigation({
@@ -203,24 +206,11 @@ export default function GraffHarness() {
     openChanges();
   }, [filesOpen, fileRequest, openChanges]);
 
-  /** Respawn this tab's agent on `key` and reload its conversation: the
-   * `--resume` target carries the history across, so the switch keeps the chat
-   * instead of starting it over. New tabs inherit the pick. */
-  const applyModel = (key: string, chatId: number) => {
-    void requireSession(chatId, true, key)
-      .catch(error => setCancelError(current => ({ ...current, [chatId]: error instanceof Error ? error.message : "Could not switch model" })));
-  };
-
-  const changeModel = (key: string, forChat?: number) => {
-    const chatId = forChat ?? chatThread.id;
-    // A tab with a conversation (or a turn in flight) has state to reload, so
-    // confirm the restart first; an empty tab has nothing to carry over.
-    const chat = chatsRef.current.find(c => c.id === chatId);
-    if ((chat?.messages.length ?? 0) > 0 || runningRef.current.has(chatId)) setPendingModel({ key, chatId });
-    else applyModel(key, chatId);
-  };
-
-  const modelLabel = (key: string | null | undefined) => models.find(m => m.key === key)?.name ?? key ?? "the current model";
+  const { changeModel, cancelPending, confirmPending } = createModelSwitcher({
+    chatsRef, runningRef, pendingPickRef, activeChatId: () => chatThread.id,
+    requireSession, setChatModel, setCancelError, setPendingModel,
+  });
+  const modelLabel = (key: string | null | undefined) => modelDisplayName(models, key);
 
   const runPrompt = createPromptRunner({ onStarted: started, onCompleted: completed,
     runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError
@@ -465,7 +455,7 @@ export default function GraffHarness() {
       chatsRef.current = next; setChats(next);
     }}
     prompt={{ demo: false, models, commands: commands[thread.id] ?? catalogCommands,
-      root: cwdOf(thread), modelKey: liveComposerKey(thread.model, model, sessionsRef.current.has(thread.id)),
+      root: cwdOf(thread), modelKey: paneComposerKey(thread.model, model, sessionsRef.current.has(thread.id), pendingModel, thread.id),
       onModelChange: key => changeModel(key, thread.id), onSend: text => void send(text, thread.id),
       onSetting: text => settings.change(thread.id, text),
       onSteerQueued: () => steerOrInterrupt(queuesRef.current[thread.id]?.[0], runningRef.current.has(thread.id), id => steerQueued(thread.id, id), () => {
@@ -619,8 +609,8 @@ export default function GraffHarness() {
         <ModelSwitchDialog
           from={modelLabel(chatsRef.current.find(c => c.id === pendingModel.chatId)?.model ?? model)}
           to={modelLabel(pendingModel.key)}
-          onCancel={() => setPendingModel(null)}
-          onConfirm={() => { const picked = pendingModel; setPendingModel(null); applyModel(picked.key, picked.chatId); }}
+          onCancel={cancelPending}
+          onConfirm={() => confirmPending(pendingModel)}
         />
       )}
       {dialog && (

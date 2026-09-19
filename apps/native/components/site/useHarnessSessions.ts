@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MutableRefObject, type Dispatch, type SetStateAction } from "react";
 import { bindMcpAppChat, checkHealth, disposePage, ensureSession, fetchModels, type Health } from "@/lib/acp-client";
-import { sameModels } from "@/lib/composer-model";
+import { catalogMayWriteChatModel, catalogMayWriteGlobalKey, sameModels } from "@/lib/composer-model";
 import { pumpIdlePeerTurns } from "./idle-peer-turns";
 import type { AcpCommand } from "@/lib/acp";
 import type { PromptModel } from "@/components/primitives/PromptBar";
@@ -20,10 +20,13 @@ type Props = {
   setSessionIds: Setter<Record<number, string>>; setHealth: Setter<Health | null>;
   setWorkspaces: Setter<Workspace[]>; setActivePath: Setter<string | null>;
   setChats: Setter<Chat[]>; setStored: Setter<StoredSession[]>; setStoredTotal: Setter<number>;
+  pendingPick(): { key: string; chatId: number } | null;
 };
 const SIDEBAR_PAGE = 12;
-export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal}: Props) {
+export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal, pendingPick}: Props) {
   const [projectsReady, setProjectsReady] = useState(false);
+  const pendingRef = useRef(pendingPick);
+  pendingRef.current = pendingPick;
   const idleCtl = useRef(new Map<number, AbortController>());
   const watchIdle = (chatId: number, sessionId: string) => {
     idleCtl.current.get(chatId)?.abort();
@@ -43,9 +46,10 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
       if (available?.length) { setCatalogCommands(available); setCommands(old => ({ ...old, [chatId]: available })); }
       if (current && handle) {
         const chat = chatsRef.current.find((c) => c.id === chatId);
-        if (chat?.model !== current) setChatModel(chatId, current);
-        setModelKey((key) => (key === current ? key : current));
-      } else if (current) {
+        if (catalogMayWriteChatModel(chatId, pendingRef.current()) && chat?.model !== current) {
+          setChatModel(chatId, current);
+        }
+      } else if (current && catalogMayWriteGlobalKey(false)) {
         setModelKey((key) => key ?? current);
       }
     } catch {

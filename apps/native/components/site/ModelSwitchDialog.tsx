@@ -72,7 +72,7 @@ export default function ModelSwitchDialog({ from, to, onCancel, onConfirm }: Pro
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+      className="fixed inset-0 z-[300] flex items-center justify-center p-4"
       style={{ background: "color-mix(in oklab, var(--ink) 22%, transparent)", animation: "fade-in 160ms ease both" }}
       onPointerDown={(event) => {
         if (event.target === event.currentTarget) onCancel();
