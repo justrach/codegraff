@@ -45,11 +45,31 @@ export function filesFrom(data: DataTransfer | null | undefined): File[] {
   return out;
 }
 
+/** File-picker rows must keep the user gesture; preventDefault drops it. */
+export function attachRowKeepsUserActivation(rowKey: string): boolean {
+  return rowKey === "attach";
+}
+
+/** Generous: a large paste should finish, but a hung HTTP/1.1 slot must not. */
+export const ATTACH_TIMEOUT_MS = 30_000;
+
+function attachFailure(err: unknown): Error {
+  if (err instanceof DOMException && (err.name === "TimeoutError" || err.name === "AbortError")) {
+    return new Error("Adding the file timed out. Try again.");
+  }
+  return err instanceof Error ? err : new Error(String(err));
+}
+
 /** Write one file to the harness-readable temp directory and describe it. */
-export async function uploadAttachment(file: File): Promise<Attachment> {
+export async function uploadAttachment(file: File, timeoutMs = ATTACH_TIMEOUT_MS): Promise<Attachment> {
   const body = new FormData();
   body.append("file", file);
-  const res = await fetch("/api/attach", { method: "POST", body });
+  let res: Response;
+  try {
+    res = await fetch("/api/attach", { method: "POST", body, signal: AbortSignal.timeout(timeoutMs) });
+  } catch (err) {
+    throw attachFailure(err);
+  }
   const json = (await res.json()) as { path?: string; name?: string; error?: string };
   if (!res.ok || !json.path) throw new Error(json.error ?? `attach failed (${res.status})`);
   return {

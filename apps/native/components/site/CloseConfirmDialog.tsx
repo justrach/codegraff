@@ -1,33 +1,32 @@
 "use client";
 
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { IconCrossSmall } from "@/lib/icons";
 
 /* ─────────────────────────────────────────────────────────
- * MODEL SWITCH DIALOG
- * The composer's picker cannot swap a model inside a live agent: it
- * respawns `graff acp --model <new> --resume <session>`, so the tab goes
- * quiet for a moment while the old worker is retired and the conversation
- * is reloaded onto the new model. Anything the outgoing agent was still
- * running — background jobs, subagents — stops with it. That is worth
- * confirming once, instead of silently restarting the chat under the user.
+ * CLOSE CONFIRM DIALOG
+ * Closing a tab stops its `graff acp` worker: the agent process is
+ * retired and anything it was still running — background jobs,
+ * subagents — stops with it. Worth confirming once, instead of
+ * silently killing the chat under the user.
  * ───────────────────────────────────────────────────────── */
 
 const BUTTON = "h-8 shrink-0 rounded-full px-3 text-[12.5px] font-medium transition-colors";
 
 type Props = {
-  /** The model being left, as the composer showed it. */
-  from: string;
-  /** The model being switched to. */
-  to: string;
+  /** Tabs about to close (a split tab closes its whole group). */
+  tabs: number;
+  /** How many of them own a live worker. The prompt only shows above zero. */
+  workers: number;
   onCancel: () => void;
-  onConfirm: () => void;
+  onConfirm: (dontAskAgain: boolean) => void;
 };
 
-export default function ModelSwitchDialog({ from, to, onCancel, onConfirm }: Props) {
+export default function CloseConfirmDialog({ tabs, workers, onCancel, onConfirm }: Props) {
   const panel = useRef<HTMLDivElement>(null);
   const confirm = useRef<HTMLButtonElement>(null);
+  const [dontAskAgain, setDontAskAgain] = useState(false);
   const cancel = useRef(onCancel);
   cancel.current = onCancel;
 
@@ -40,8 +39,8 @@ export default function ModelSwitchDialog({ from, to, onCancel, onConfirm }: Pro
       .filter((element): element is HTMLElement => element instanceof HTMLElement && !element.contains(dialog))
       .map((element) => ({ element, inert: element.inert }));
     background.forEach(({ element }) => { element.inert = true; });
-    const controls = () => Array.from(dialog.querySelectorAll<HTMLButtonElement>("button"))
-      .filter((element) => !element.disabled && element.getClientRects().length > 0);
+    const controls = () => Array.from(dialog.querySelectorAll<HTMLElement>("button, input"))
+      .filter((element) => !(element as HTMLButtonElement).disabled && element.getClientRects().length > 0);
     confirm.current?.focus({ preventScroll: true });
     const keepFocus = (event: FocusEvent) => {
       if (!dialog.contains(event.target as Node)) (controls()[0] ?? dialog).focus({ preventScroll: true });
@@ -70,9 +69,15 @@ export default function ModelSwitchDialog({ from, to, onCancel, onConfirm }: Pro
     };
   }, []);
 
+  const plural = tabs !== 1;
+  const title = plural ? `Close ${tabs} tabs` : "Close tab";
+  const stopLine = plural
+    ? `Closing these tabs stops ${workers === tabs ? `their ${workers === 1 ? "agent" : "agents"}` : `${workers} running ${workers === 1 ? "agent" : "agents"}`}.`
+    : "Closing this tab stops its agent.";
+
   return createPortal(
     <div
-      className="fixed inset-0 z-[300] flex items-center justify-center p-4"
+      className="fixed inset-0 z-[60] flex items-center justify-center p-4"
       style={{ background: "color-mix(in oklab, var(--ink) 22%, transparent)", animation: "fade-in 160ms ease both" }}
       onPointerDown={(event) => {
         if (event.target === event.currentTarget) onCancel();
@@ -83,29 +88,29 @@ export default function ModelSwitchDialog({ from, to, onCancel, onConfirm }: Pro
         role="dialog"
         tabIndex={-1}
         aria-modal="true"
-        aria-label={`Switch model to ${to}`}
+        aria-label={title}
         className="flex w-full max-w-[440px] flex-col overflow-hidden rounded-window bg-surface shadow-overlay"
         style={{ animation: "pop-in 180ms cubic-bezier(0.23,1,0.32,1) both" }}
       >
         <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-4">
-          <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink">Switch model</span>
+          <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink">{title}</span>
           <button
             type="button"
             aria-label="Close"
             onClick={onCancel}
-            className="flex size-7 items-center justify-center rounded-[6px] text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
+            className="flex size-7 items-center justify-center rounded-full text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
           >
             <IconCrossSmall size={16} />
           </button>
         </div>
 
         <div className="flex flex-col gap-2 px-4 py-4 text-[12.5px] leading-5 text-ink-2">
-          <p>
-            This chat restarts its agent on <span className="font-medium text-ink">{to}</span>
-            {from !== to && <> instead of <span className="font-medium text-ink">{from}</span></>}.
-          </p>
-          <p>The conversation is reloaded onto the new model, so its history carries over.</p>
-          <p className="text-ink-3">Anything the current agent is still running — background jobs, subagents — stops.</p>
+          <p>{stopLine}</p>
+          <p className="text-ink-3">Anything still running — background jobs, subagents — stops with {plural ? "them" : "it"}.</p>
+          <label className="mt-1 flex cursor-pointer items-center gap-2 text-[12.5px] text-ink-2">
+            <input type="checkbox" checked={dontAskAgain} onChange={(event) => setDontAskAgain(event.target.checked)} />
+            Don&apos;t ask again
+          </label>
         </div>
 
         <div className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-4 py-3">
@@ -115,10 +120,10 @@ export default function ModelSwitchDialog({ from, to, onCancel, onConfirm }: Pro
           <button
             ref={confirm}
             type="button"
-            onClick={onConfirm}
+            onClick={() => onConfirm(dontAskAgain)}
             className={`${BUTTON} bg-ink px-3.5 text-canvas hover:opacity-90`}
           >
-            Switch model
+            {title}
           </button>
         </div>
       </div>

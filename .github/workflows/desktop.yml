@@ -168,6 +168,7 @@ jobs:
             zig-out/split-stress/
             zig-out/native-tab-drag/
             zig-out/session-navigation/
+            zig-out/server-desktop/
             zig-out/visual-tests/test-run.json
             zig-out/visual-tests/stress-results.json
             zig-out/visual-tests/stress-fullscreen.png

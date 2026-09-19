@@ -1,6 +1,7 @@
 "use client";
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
+import { attachRowKeepsUserActivation } from "@/lib/attachments";
 import { Icon, GLYPHS, BRANDS, SOURCES } from "./prompt-demo";
 type Row = { key: string; name: string; desc: string };
 type Props = {
@@ -43,7 +44,7 @@ export default function ComposerMenu({ anchor, panel, id, menu, rows, query, act
         const mark = source ? source.brand ? BRANDS[source.brand] : <Icon size={15}>{GLYPHS[source.glyph ?? "clip"]}</Icon>
           : row.key.startsWith("file:") ? <Icon size={15}>{GLYPHS.file}</Icon> : null;
         return <button key={row.key} id={`${id}-${i}`} type="button" role="option" aria-selected={i === active} title={`${row.name} — ${row.desc}`}
-          onPointerDown={event => { event.preventDefault(); onPick(row); }} onPointerMove={() => {
+          onPointerDown={event => { if (!attachRowKeepsUserActivation(row.key)) event.preventDefault(); onPick(row); }} onPointerMove={() => {
             if (active !== i) setActive(i);
             if (!engaged) setEngaged(true);
           }}

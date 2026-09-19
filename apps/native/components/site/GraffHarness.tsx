@@ -17,15 +17,16 @@ import HarnessChrome from "./HarnessChrome";
 import ChatSplitLayout from "./ChatSplitLayout";
 import { sidebarRecents } from "./harness-sidebar";
 import { newPageToken, newSessionName, type Chat, type Msg } from "./harness-types";
-import { liveComposerKey } from "@/lib/composer-model";
+import { modelDisplayName, paneComposerKey } from "@/lib/composer-model";
+import { createModelSwitcher } from "./harness-model";
 import { useBrowserVisibility } from "./useBrowserVisibility";
 import { useReferenceNavigation } from "./useReferenceNavigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type PromptModel } from "@/components/primitives/PromptBar";
 import SidebarNav from "@/components/primitives/SidebarNav";
 import { type BrowserPin } from "@/lib/browser/annotations";
-import { browserClose } from "@/lib/browser-client";
 import ChatColumn from "./ChatColumn";
+import CloseConfirmDialog from "@/components/site/CloseConfirmDialog";
 import ModelSwitchDialog from "@/components/site/ModelSwitchDialog";
 import {
   AgentsPane, AppSettings, BrowserPane, ChangesPane, ConversationsPane, FilesPane,
@@ -38,14 +39,14 @@ import { useDesktopWorkspace } from "./useDesktopWorkspace";
 import {
   answer, cancel,
   chatHandle,
-  disposeSession,
   type Health,
 } from "@/lib/acp-client";
 import { type AcpCommand } from "@/lib/acp";
 import { useChatScroll } from "./useChatScroll";
 import { enqueuePrompt } from "@/lib/prompt-queue";
 import { usePromptQueue, steerOrInterrupt } from "./usePromptQueue";
-import { removeSession, type StoredSession } from "@/lib/sessions";
+import { useChatClose } from "./useChatClose";
+import { type StoredSession } from "@/lib/sessions";
 import { loadHistory, mergeHistory } from "@/lib/prompt-history";
 import {
   basename,
@@ -145,10 +146,9 @@ export default function GraffHarness() {
   const [cancelError, setCancelError] = useState<Record<number, string>>({});
   // A model pick awaiting confirmation: switching respawns the tab's agent.
   const [pendingModel, setPendingModel] = useState<{ key: string; chatId: number } | null>(null);
+  const pendingPickRef = useRef<{ key: string; chatId: number } | null>(null);
   const runningRef = useRef(new Set<number>());
   const queueResumesRef = useRef(new Set<number>());
-  // Closed tabs, oldest first, for the reopen shortcut.
-  const closedRef = useRef<{ session: string | null; cwd?: string; resumable: boolean }[]>([]);
 
   const chatThread = chats.find((c) => c.id === activeId) ?? chats[0];
   // Split positions are independent of keyboard focus.
@@ -176,8 +176,9 @@ export default function GraffHarness() {
     setPinsByChat(pinsRef.current);
   };
 
-  const { adoptCatalog, requireSession, refreshStored, projectsReady } = useHarnessSessions({
-    sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal
+  const { adoptCatalog, requireSession, refreshStored, projectsReady, unwatchIdle } = useHarnessSessions({
+    sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal,
+    pendingPick: () => pendingPickRef.current ?? pendingModel,
   });
 
   const { openPath, openReference } = useReferenceNavigation({
@@ -203,24 +204,11 @@ export default function GraffHarness() {
     openChanges();
   }, [filesOpen, fileRequest, openChanges]);
 
-  /** Respawn this tab's agent on `key` and reload its conversation: the
-   * `--resume` target carries the history across, so the switch keeps the chat
-   * instead of starting it over. New tabs inherit the pick. */
-  const applyModel = (key: string, chatId: number) => {
-    void requireSession(chatId, true, key)
-      .catch(error => setCancelError(current => ({ ...current, [chatId]: error instanceof Error ? error.message : "Could not switch model" })));
-  };
-
-  const changeModel = (key: string, forChat?: number) => {
-    const chatId = forChat ?? chatThread.id;
-    // A tab with a conversation (or a turn in flight) has state to reload, so
-    // confirm the restart first; an empty tab has nothing to carry over.
-    const chat = chatsRef.current.find(c => c.id === chatId);
-    if ((chat?.messages.length ?? 0) > 0 || runningRef.current.has(chatId)) setPendingModel({ key, chatId });
-    else applyModel(key, chatId);
-  };
-
-  const modelLabel = (key: string | null | undefined) => models.find(m => m.key === key)?.name ?? key ?? "the current model";
+  const { changeModel, cancelPending, confirmPending } = createModelSwitcher({
+    chatsRef, runningRef, pendingPickRef, activeChatId: () => chatThread.id,
+    requireSession, setChatModel, setCancelError, setPendingModel,
+  });
+  const modelLabel = (key: string | null | undefined) => modelDisplayName(models, key);
 
   const runPrompt = createPromptRunner({ onStarted: started, onCompleted: completed,
     runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError
@@ -309,18 +297,6 @@ export default function GraffHarness() {
     if (folder && folder !== activePathRef.current) activateWorkspace(folder);
   });
 
-  /** Bring back the tab that was closed last, resuming its graff session so
-   * the conversation comes back with it. A tab that never got a message has
-   * nothing saved, so it returns as a fresh one. */
-  const reopenClosed = () => {
-    const stack = closedRef.current;
-    const last = stack[stack.length - 1];
-    if (!last) return;
-    closedRef.current = stack.slice(0, -1);
-    if (last.session && last.resumable) void openStored(last.session, last.cwd);
-    else newChat();
-  };
-
   /** Another chat beside the ones on screen, in the workspace the active
    * chat is in. Up to four columns; past that they are too narrow to read. */
   const addPane = (direction: "row" | "column" = splitDirection) => {
@@ -341,57 +317,14 @@ export default function GraffHarness() {
     else addPane();
   };
 
-  const dropChat = (id: number) => {
-    sessionsRef.current.delete(id);
-    sessionNamesRef.current.delete(id);
-    runningRef.current.delete(id);
-    steerer.finish(id);
-    setQueue(id, []);
-    setSessionIds((current) => {
-      const { [id]: _gone, ...rest } = current;
-      return rest;
-    });
-    setBusyFor(id, false);
-    const { [id]: _pins, ...remainingPins } = pinsRef.current;
-    pinsRef.current = remainingPins; setPinsByChat(remainingPins);
-    setCommands(current => { const { [id]: _commands, ...rest } = current; return rest; });
-    setCancelError(current => { const { [id]: _error, ...rest } = current; return rest; });
-    void disposeSession(handleOf(id));
-    void browserClose(handleOf(id)).catch(() => undefined);
-  };
-
-  const closeChats = (ids: number[]) => {
-    const visible = columnIds.filter(pane => !ids.includes(pane));
-    groups.remove(ids); setZoomedPane(null);
-    for (const id of ids) {
-      const going = chatsRef.current.find(c => c.id === id);
-      if (going) closedRef.current = [...closedRef.current.slice(-9), {
-        session: going.session ?? null, cwd: going.cwd, resumable: going.messages.length > 0,
-      }];
-      dropChat(id);
-    }
-    const remaining = chatsRef.current.filter(c => !ids.includes(c.id));
-    chatsRef.current = remaining; setChats(remaining);
-    if (!remaining.length) { openChat(++chatIdRef.current); return; }
-    if (ids.includes(activeId)) focusChat(visible[0] ?? remaining[remaining.length - 1].id);
-  };
-  const closeChat = (id: number) => closeChats([id]);
-  const closeTab = (id: number) => closeChats(groups.groups.find(group => group.ids.includes(id))?.ids ?? [id]);
+  const { closeChat, closeTab, reopenClosed, dropStored, pendingClose, cancelPendingClose, confirmPendingClose } = useChatClose({
+    sessionsRef, sessionNamesRef, chatsRef, runningRef, chatIdRef, pinsRef, activePathRef, groups, columnIds, activeId,
+    handleOf, setBusyFor, setQueue, steerer, setSessionIds, setCommands, setCancelError, setPinsByChat, setZoomedPane,
+    setChats, setStored, openChat, focusChat, openStored, newChat, refreshStored, unwatchIdle,
+  });
 
   const pickRecent = (id: string) => {
     void openStored(id);
-  };
-
-  /** Put a saved chat away, or remove it for good. Its tab closes with it,
-   * and the row goes at once rather than after the next poll. */
-  const dropStored = (name: string, archive: boolean) => {
-    const cwd = activePathRef.current ?? undefined;
-    const open = chatsRef.current.filter((c) => c.session === name && (c.cwd ?? null) === (cwd ?? null));
-    if (open.length) closeChats(open.map(chat => chat.id));
-    setStored((current) => current.filter((s) => s.name !== name));
-    void removeSession(name, { root: cwd, archive })
-      .catch(() => undefined)
-      .then(() => refreshStored());
   };
 
   const { switchWorkspace, addWorkspace, saveWorkspace, forgetWorkspace, newProjectChat, activateWorkspace } = workspaceActions({
@@ -465,7 +398,7 @@ export default function GraffHarness() {
       chatsRef.current = next; setChats(next);
     }}
     prompt={{ demo: false, models, commands: commands[thread.id] ?? catalogCommands,
-      root: cwdOf(thread), modelKey: liveComposerKey(thread.model, model, sessionsRef.current.has(thread.id)),
+      root: cwdOf(thread), modelKey: paneComposerKey(thread.model, model, sessionsRef.current.has(thread.id), pendingModel, thread.id),
       onModelChange: key => changeModel(key, thread.id), onSend: text => void send(text, thread.id),
       onSetting: text => settings.change(thread.id, text),
       onSteerQueued: () => steerOrInterrupt(queuesRef.current[thread.id]?.[0], runningRef.current.has(thread.id), id => steerQueued(thread.id, id), () => {
@@ -619,8 +552,16 @@ export default function GraffHarness() {
         <ModelSwitchDialog
           from={modelLabel(chatsRef.current.find(c => c.id === pendingModel.chatId)?.model ?? model)}
           to={modelLabel(pendingModel.key)}
-          onCancel={() => setPendingModel(null)}
-          onConfirm={() => { const picked = pendingModel; setPendingModel(null); applyModel(picked.key, picked.chatId); }}
+          onCancel={cancelPending}
+          onConfirm={() => confirmPending(pendingModel)}
+        />
+      )}
+      {pendingClose && (
+        <CloseConfirmDialog
+          tabs={pendingClose.ids.length}
+          workers={pendingClose.workers}
+          onCancel={cancelPendingClose}
+          onConfirm={confirmPendingClose}
         />
       )}
       {dialog && (

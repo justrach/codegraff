@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path');
 const desktop = require('./test-desktop.cjs');
+const { confirmCloseDialog } = require('./close-confirm-harness.cjs');
 async function runNarrowNavigation({win, output, click, until, report}) {
   const wc = win.webContents, js = code => wc.executeJavaScript(code);
   const escape = async () => {
@@ -18,6 +19,8 @@ async function runNarrowNavigation({win, output, click, until, report}) {
   await click('[aria-label="Open navigation"]');
   // Open conversations live in the session list; closing moves the saved one to History.
   await click('[data-session-navigation="sidebar"] [data-tab-id]:has(button[aria-pressed="true"]) [aria-label="Close tab"]');
+  // The completed turns' worker is still enrolled, so the close asks first.
+  await confirmCloseDialog({ js, click, until });
   await until(() => js(`!!document.querySelector('#sidebar-chat-list button[data-row]')`), 'closed saved conversation available in History');
   await js(`document.querySelector('#sidebar-chat-list button[data-row]').parentElement.querySelector('button[aria-label^="Actions for "]').setAttribute('data-narrow-actions','true')`);
   await click('[data-narrow-actions="true"]');

@@ -5,6 +5,12 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 exports.run = async ({win, backend}) => {
   const output = process.env.GRAFF_SHUTDOWN_OUTPUT;
   const js = source => win.webContents.executeJavaScript(source);
+  // Phase markers: the next 180s hang shows which phase stalled, in CI output
+  // and in the uploaded server-desktop dir.
+  const phase = name => {
+    console.log(`Shutdown fixture: ${name}`);
+    try { fs.writeFileSync(path.join(output, 'phase.txt'), `${name}\n`); } catch {}
+  };
   const until = async (condition, label) => {
     // Outer Electron budget is 180s; 30s here lost to CI scheduling on the
     // scripted ACP turn (listener + HTTP check + completion text).
@@ -15,6 +21,7 @@ exports.run = async ({win, backend}) => {
     throw Error(`Shutdown fixture timed out: ${label}`);
   };
   await until(() => js(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`), 'composer');
+  phase('composer ready');
   async function submit(text) {
     const box = await js(`(() => { const e=document.querySelector('textarea[aria-label="Prompt"]');e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
     await desktop.testInput(win.webContents, {type:'mouseDown',button:'left',clickCount:1,...box});
@@ -24,10 +31,13 @@ exports.run = async ({win, backend}) => {
     await desktop.testInput(win.webContents, {type:'keyUp',keyCode:'Return'});
   }
   await submit('Start the isolated listener, check its socket, and report readiness.');
+  phase('prompt submitted');
   await until(() => js(`document.body.innerText.includes('Listener ready for shutdown.')`), 'agent completion');
+  phase('agent completion');
   if (process.env.GRAFF_SHUTDOWN_PIN === '1') {
     await submit('/jobs keep 1');
     await until(() => js(`document.body.innerText.includes('job 1 pinned')`), 'explicit user pin');
+    phase('explicit user pin');
   }
   const workspace = process.env.GRAFF_CWD;
   const listener = JSON.parse(fs.readFileSync(path.join(workspace,'listener.json'),'utf8'));
@@ -38,6 +48,7 @@ exports.run = async ({win, backend}) => {
   fs.writeFileSync(path.join(output,'gui-text.txt'),await js('document.body.innerText'));
   fs.writeFileSync(path.join(output,'before-quit.png'),(await win.webContents.capturePage()).toPNG());
   desktop.assertSafe();
+  phase('before-quit captured; observing quit');
   // Observe shutdown before the external watchdog can reap Electron's group.
   const alive = pid => {
     try { return !require('node:child_process').execFileSync('ps',['-p',String(pid),'-o','stat='],{encoding:'utf8'}).trim().startsWith('Z'); }
@@ -48,8 +59,10 @@ exports.run = async ({win, backend}) => {
     event.preventDefault();
     if (observingQuit) return;
     observingQuit = true;
+    phase('before-quit received');
     until(() => !alive(backend.child.pid) && !alive(records[0].owner_pid), 'production backend and worker shutdown')
       .then(() => {
+        phase('backend and worker shutdown observed');
         fs.writeFileSync(path.join(output,'quit-observed.json'),JSON.stringify({backendGone:true,workerGone:true}));
         require('electron').app.exit(0);
       }).catch(error => { console.error(error); require('electron').app.exit(1); });
