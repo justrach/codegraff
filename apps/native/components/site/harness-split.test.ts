@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { MAX_COLUMNS, SPLIT_LIMIT_MESSAGE, splitLimitReached } from "./harness-split.ts";
+import { MAX_COLUMNS, SPLIT_LIMIT_MESSAGE, SPLIT_LIMIT_NOTICE_MS, splitLimitReached } from "./harness-split.ts";
 
 describe("split pane cap", () => {
   it("is four and names the readability limit", () => {
@@ -9,5 +9,6 @@ describe("split pane cap", () => {
     assert.equal(splitLimitReached(4), true);
     assert.equal(splitLimitReached(5), true);
     assert.match(SPLIT_LIMIT_MESSAGE, /four panes/i);
+    assert.equal(SPLIT_LIMIT_NOTICE_MS, 5000);
   });
 });
