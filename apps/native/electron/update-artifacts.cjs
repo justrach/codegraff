@@ -3,6 +3,12 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const feed = { provider: 'generic', url: 'https://github.com/justrach/codegraff/releases/latest/download/', updaterCacheDirName: 'codegraff-updater' };
 function writeManifest(version, archive, output) {
+  // Desktop bundles stay 3-part even though the CLI accepts 4-part hotfix
+  // versions (0.0.300.1): electron-updater compares feed versions as semver,
+  // which has no fourth segment, and the Apple chain (Info.plist marketing
+  // version, notarization, spctl) is only verified for 3-part. Ship desktop
+  // fixes as 3-part releases; 4-part tags are CLI-only and carry no desktop
+  // asset, so the desktop updaters below never see one.
   if (!/^\d+\.\d+\.\d+$/.test(version)) throw Error('Only stable versions can enter the desktop update feed.');
   const url = path.basename(archive);
   if (url !== `Codegraff-${version}-macos-arm64.zip`) throw Error('Update archive name must match its version and architecture.');

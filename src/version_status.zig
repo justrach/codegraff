@@ -24,15 +24,19 @@ const Version = struct {
     major: u32,
     minor: u32,
     patch: u32,
+    // CLI hotfix segment (0.0.300.1); 0 when the tag has three parts.
+    // Desktop bundles stay 3-part (see electron/update-artifacts.cjs).
+    build: u32 = 0,
 
     fn eql(self: Version, other: Version) bool {
-        return self.major == other.major and self.minor == other.minor and self.patch == other.patch;
+        return self.major == other.major and self.minor == other.minor and self.patch == other.patch and self.build == other.build;
     }
 
     fn order(self: Version, other: Version) std.math.Order {
         if (self.major != other.major) return std.math.order(self.major, other.major);
         if (self.minor != other.minor) return std.math.order(self.minor, other.minor);
-        return std.math.order(self.patch, other.patch);
+        if (self.patch != other.patch) return std.math.order(self.patch, other.patch);
+        return std.math.order(self.build, other.build);
     }
 };
 
@@ -48,8 +52,18 @@ fn parseVersion(s: []const u8) ?Version {
     const major_s = it.next() orelse return null;
     const minor_s = it.next() orelse return null;
     const patch_s = it.next() orelse return null;
+    const build_s = it.next();
+    if (it.next() != null) return null;
     const major = std.fmt.parseInt(u32, major_s, 10) catch return null;
     const minor = std.fmt.parseInt(u32, minor_s, 10) catch return null;
+    if (build_s) |b| {
+        // A pre-release suffix belongs to the last segment only; anything
+        // after the patch digits when a fourth segment follows is malformed.
+        const patch = std.fmt.parseInt(u32, patch_s, 10) catch return null;
+        const build_digits = std.mem.indexOfAny(u8, b, "-+") orelse b.len;
+        const build = std.fmt.parseInt(u32, b[0..build_digits], 10) catch return null;
+        return .{ .major = major, .minor = minor, .patch = patch, .build = build };
+    }
     const patch_digits = std.mem.indexOfAny(u8, patch_s, "-+") orelse patch_s.len;
     const patch = std.fmt.parseInt(u32, patch_s[0..patch_digits], 10) catch return null;
     return .{ .major = major, .minor = minor, .patch = patch };
@@ -63,7 +77,10 @@ fn isCleanReleaseVersion(s: []const u8) bool {
         '.' => dots += 1,
         else => return false,
     };
-    return dots == 2;
+    // Releases are 3-part (0.0.301); CLI hotfixes add a fourth segment
+    // (0.0.300.1). Desktop bundles stay 3-part (see
+    // apps/native/electron/update-artifacts.cjs).
+    return dots == 2 or dots == 3;
 }
 
 /// Pure comparison. `latest_tag` is the GitHub tag (with or without `v`);
@@ -190,6 +207,30 @@ test "comparison classifies release and dev builds with one policy" {
 test "unavailable and unparseable latest checks do not guess" {
     try std.testing.expectEqual(Failure.fetch, compare("0.0.292", null).failure);
     try std.testing.expectEqual(Failure.latest_tag, compare("0.0.292", "latest").failure);
+}
+
+test "four-segment hotfix versions order between their neighbors" {
+    // 0.0.300 < 0.0.300.1 < 0.0.301, and a missing fourth segment reads as 0.
+    try std.testing.expectEqual(State.older, compare("0.0.300", "v0.0.300.1").state);
+    try std.testing.expectEqual(State.newer, compare("0.0.300.1", "v0.0.300").state);
+    try std.testing.expectEqual(State.older, compare("0.0.300.1", "v0.0.301").state);
+    try std.testing.expectEqual(State.current, compare("0.0.300.1", "v0.0.300.1").state);
+    try std.testing.expectEqual(State.current, compare("0.0.300", "v0.0.300.0").state);
+    try std.testing.expectEqual(State.current, compare("0.0.300.0", "v0.0.300").state);
+    try std.testing.expectEqual(std.math.Order.lt, compare("0.0.300", "v0.0.300.1").order.?);
+    try std.testing.expectEqual(std.math.Order.gt, compare("0.0.300.2", "v0.0.300.1").order.?);
+}
+
+test "four-segment dev builds and the reinstall guard follow the same policy" {
+    const dev = compare("0.0.300.1-2-gabc", "v0.0.300.1");
+    try std.testing.expectEqual(State.dev, dev.state);
+    try std.testing.expectEqual(std.math.Order.eq, dev.order.?);
+    try std.testing.expect(alreadyHasRelease("0.0.300.1", "v0.0.300.1"));
+    try std.testing.expect(alreadyHasRelease("0.0.300.1", "v0.0.300"));
+    try std.testing.expect(!alreadyHasRelease("0.0.300", "v0.0.300.1"));
+    // Five segments are not a release on either side.
+    try std.testing.expectEqual(Failure.latest_tag, compare("0.0.300.1", "v0.0.300.1.2").failure);
+    try std.testing.expectEqual(State.dev, compare("0.0.300.1.2", "v0.0.300.1").state);
 }
 
 test "alreadyHasRelease refuses a reinstall when disk is current or newer" {

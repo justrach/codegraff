@@ -16,5 +16,7 @@ test('release metadata can be read by the updater and identifies the exact archi
     expect(load(JSON.stringify(feed)).url).toBe('https://github.com/justrach/codegraff/releases/latest/download/');
     expect(() => writeManifest('1.2.4', file, manifest)).toThrow('archive name');
     expect(() => writeManifest('1.2.3-beta.1', file, manifest)).toThrow('stable');
+    // Four-segment CLI hotfixes (0.0.300.1) never enter the desktop feed.
+    expect(() => writeManifest('1.2.3.4', file, manifest)).toThrow('stable');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
