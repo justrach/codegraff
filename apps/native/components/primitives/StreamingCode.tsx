@@ -29,15 +29,15 @@ export default function StreamingCode({ node: _node, className, children, collap
   </CompletedCode>;
   const bounded = typeof codeBlockMaxHeight === "number" ? codeBlockMaxHeight > 0 && Number.isFinite(codeBlockMaxHeight)
     : !["0", "none", "Infinity", ""].includes(codeBlockMaxHeight);
-  return <CodeBlockContainer dir="ltr" language={language} isIncomplete data-code-streaming>
+  return <CodeBlockContainer dir="ltr" language={language} isIncomplete data-code-streaming className="min-w-0 max-w-full">
     <CodeBlockHeader language={language} />
-    {(copy || download) && <div className="pointer-events-none sticky top-2 z-10 -mt-10 flex h-8 items-center justify-end">
-      <div data-streamdown="code-block-actions" className="pointer-events-auto flex shrink-0 items-center gap-2 rounded-md border border-sidebar bg-sidebar/80 px-1.5 py-1 supports-[backdrop-filter]:bg-sidebar/70 supports-[backdrop-filter]:backdrop-blur">{actions}</div>
+    {(copy || download) && <div className="flex justify-end px-2 pb-1">
+      <div data-streamdown="code-block-actions" className="flex shrink-0 items-center gap-2 rounded-md border border-sidebar bg-sidebar/80 px-1.5 py-1 supports-[backdrop-filter]:bg-sidebar/70 supports-[backdrop-filter]:backdrop-blur">{actions}</div>
     </div>}
     <div data-language={language} data-streamdown="code-block-body"
-      className={`min-w-0 rounded-md border border-border bg-background p-4 text-sm ${bounded ? "overflow-y-auto" : ""}`}
+      className={`min-w-0 max-w-full overflow-x-auto rounded-md border border-border bg-background p-4 text-sm ${bounded ? "overflow-y-auto" : ""}`}
       style={bounded ? { maxHeight: codeBlockMaxHeight } : undefined}>
-      <pre className="overflow-x-auto"><code className="whitespace-pre">{code.replace(/\n+$/, "")}</code></pre>
+      <pre className="min-w-0"><code className="whitespace-pre">{code.replace(/\n+$/, "")}</code></pre>
     </div>
   </CodeBlockContainer>;
 }

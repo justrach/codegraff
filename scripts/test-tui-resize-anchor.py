@@ -158,7 +158,8 @@ def stable_frame(fd, rows, cols, budget=1.5):
         if last is not None and now == last:
             return now
         last = now
-    return last
+    # An expired wait is not a settled frame. Judging drift from `last` is #866.
+    return None
 
 
 def reread(fd):

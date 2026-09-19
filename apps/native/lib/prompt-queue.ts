@@ -42,6 +42,12 @@ export function setQueuedPromptEditing(list: QueuedPrompt[], id: number, editing
   });
 }
 
+/** Queued follow-up chrome. No surface fill or hairline while a turn is running. */
+export function queuedPromptRowClass(busy: boolean): string {
+  const row = "flex flex-wrap items-center gap-2 rounded-[8px] px-2.5 py-1.5 text-[12.5px] text-ink-2";
+  return busy ? row : `${row} bg-surface shadow-hairline`;
+}
+
 export function shiftQueuedPrompt(list: QueuedPrompt[]): {
   next: QueuedPrompt | undefined;
   rest: QueuedPrompt[];

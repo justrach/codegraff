@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { dropQueuedPrompt, editQueuedPrompt, enqueuePrompt, prioritizeQueuedPrompt, setQueuedPromptEditing, shiftQueuedPrompt } from "./prompt-queue.ts";
+import { dropQueuedPrompt, editQueuedPrompt, enqueuePrompt, prioritizeQueuedPrompt, queuedPromptRowClass, setQueuedPromptEditing, shiftQueuedPrompt } from "./prompt-queue.ts";
 
 describe("prompt-queue", () => {
   it("ignores blank lines", () => {
@@ -52,6 +52,17 @@ describe("prompt-queue", () => {
   });
 });
 
+
+describe("queued follow-up chrome", () => {
+  it("drops the surface slab while a turn is running", () => {
+    const busy = queuedPromptRowClass(true);
+    const idle = queuedPromptRowClass(false);
+    assert.equal(busy.includes("bg-surface"), false);
+    assert.equal(busy.includes("shadow-hairline"), false);
+    assert.ok(idle.includes("bg-surface"));
+    assert.ok(idle.includes("shadow-hairline"));
+  });
+});
 
 describe("queue editing lifecycle", () => {
   const list = [{ id: 1, text: "first" }, { id: 2, text: "original" }];
