@@ -161,7 +161,8 @@ async function runChatOverflow({ win, origin, output }) {
       const left = Math.max(r.left + local.clientLeft, b.left, 0), right = Math.min(r.left + local.clientLeft + local.clientWidth, b.left + e.clientWidth, innerWidth);
       const top = Math.max(r.top + local.clientTop, b.top, 0), bottom = Math.min(r.top + local.clientTop + local.clientHeight, b.top + e.clientHeight, innerHeight);
       const x = Math.floor((left + right) / 2), y = Math.floor((top + bottom) / 2);
-      return { x, y, hit: right - left > 2 && bottom - top > 2 && local.contains(document.elementFromPoint(x, y)),
+      const hitEl = document.elementFromPoint(x, y);
+      return { x, y, hit: right - left > 2 && bottom - top > 2 && local.contains(hitEl) && !hitEl?.closest('[data-streamdown="code-block-actions"]'),
         contained: r.left >= b.left - 1 && r.right <= b.left + e.clientWidth + 1, top: e.scrollTop };
     })()`);
     // Streaming and entry animations may move a block after it first appears.
