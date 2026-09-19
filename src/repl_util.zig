@@ -4,7 +4,7 @@
 //! (#123, 600-line goal) — pure functions, no Model dependency.
 
 const std = @import("std");
-const zz = @import("zigzag");
+const zz = @import("repl_style.zig");
 const cite_markup = @import("cite_markup.zig");
 
 pub const accent = zz.Color.fromRgb(0x05, 0x96, 0x69); // codegraff.com emerald accent (#059669)

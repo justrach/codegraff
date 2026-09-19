@@ -1,16 +1,11 @@
-//! `graff repl` — an interactive chat REPL on the zigzag TUI, styled in the
-//! Codegraff ink-and-emerald language: a bordered welcome box, conversation turns
-//! (`>` you, `⏺` the model), a rounded input box pinned to the bottom, a status
-//! line, and `/`-style commands mirroring the harness's interactive set.
-//!
-//! Spike branch: spike/zigzag-repl. Reachable as `graff repl` (subcommand of
-//! the main binary) and the standalone `graff-repl` exe — both call `run()`.
+//! Scripted `graff repl` Model: conversation history, slash commands, and a
+//! pane renderer for piped/CI stdin. TTY `graff repl` is the Grok-style pager
+//! (`tui_launch`), not this Model. Styling is local (`repl_style.zig`).
 //!
 //! The model call runs on a background thread so the ensō thinking spinner
-//! animates while it works (the zigzag loop re-renders every frame). The whole
-//! conversation is sent each turn (multi-turn memory). Without a model wired in
-//! (standalone exe) it falls back to a pure i64 arithmetic evaluator, which
-//! keeps it fully unit-testable.
+//! can animate while a scripted job is in flight. The whole conversation is
+//! sent each turn. Without a model wired in it falls back to a pure i64
+//! arithmetic evaluator, which keeps it fully unit-testable.
 //!
 //! Split across sibling files (#123, 600-line goal): repl_parser.zig (the
 //! offline arithmetic evaluator), repl_util.zig (stateless string/format
@@ -21,7 +16,7 @@
 //! Model.method() resolve unchanged regardless of which file backs them).
 
 const std = @import("std");
-const zz = @import("zigzag");
+const zz = @import("repl_style.zig");
 
 const parser_mod = @import("repl_parser.zig");
 const util = @import("repl_util.zig");
@@ -41,6 +36,7 @@ test {
     _ = model_commands;
     _ = model_render;
     _ = repl_run;
+    _ = @import("repl_style.zig");
 }
 
 // ---------------------------------------------------------------------------
@@ -101,8 +97,6 @@ pub const dragon_frames = [_][]const u8{ "🐉  ", "🐉 ✦", "🐉 ✧", "🐉
 const Anim = enum { enso, braille, dragon };
 pub const Toast = enum { none, copied, failed };
 pub const TOAST_MS: u64 = 1500; // copy-confirmation toast window (wall-clock ms), #85
-
-const POLL_NS: u64 = 50 * std.time.ns_per_ms;
 
 // ---------------------------------------------------------------------------
 // Background model call.
@@ -178,9 +172,6 @@ pub const Model = struct {
     steer_queue: std.array_list.Managed([]const u8) = undefined,
     cancel_requested: bool = false,
 
-    pub const Tick = struct { timestamp: u64, delta: u64 };
-    pub const Msg = union(enum) { key: zz.KeyEvent, tick: Tick, mouse: zz.MouseEvent };
-
     pub fn setup(self: *Model, alloc: std.mem.Allocator) void {
         self.* = .{
             .alloc = alloc,
@@ -193,11 +184,6 @@ pub const Model = struct {
         self.input.setPrompt("> ");
         self.input.setPlaceholder(if (self.chat) "Ask anything, or /help" else "Try an expression, or /help");
         self.push(.welcome, "") catch {};
-    }
-
-    pub fn init(self: *Model, ctx: *zz.Context) zz.Cmd(Msg) {
-        self.setup(ctx.persistent_allocator);
-        return .none;
     }
 
     pub fn deinit(self: *Model) void {
@@ -283,78 +269,11 @@ pub const Model = struct {
 
     pub const steerEnter = model_turn.steerEnter;
 
-    pub fn update(self: *Model, msg: Msg, ctx: *zz.Context) zz.Cmd(Msg) {
-        switch (msg) {
-            .key => |k| switch (k.key) {
-                .page_up => self.scroll +|= 10,
-                .page_down => self.scroll -|= 10,
-                .enter => {
-                    self.scroll = 0; // jump to the latest on submit
-                    if (self.pending != null) {
-                        self.steerEnter(); // a turn is streaming: Enter steers, not submits
-                        return .{ .tick = POLL_NS };
-                    }
-                    const effect = self.applyLine(self.input.getValue());
-                    self.input.setValue("") catch {};
-                    if (effect == .quit) return .quit;
-                    if (self.pending != null) return .{ .tick = POLL_NS };
-                    return .none;
-                },
-                // While a turn streams, keys edit the input box too, so the user
-                // can compose a steer line; otherwise it's normal line editing.
-                else => self.input.handleKey(k),
-            },
-            .tick => {
-                if (self.pending) |job| {
-                    if (job.done.load(.acquire)) {
-                        self.finishJob();
-                        // Run the next queued steer line, if any, as the next turn.
-                        if (self.drainSteer() == .quit) return .quit;
-                        if (self.pending != null) return .{ .tick = POLL_NS };
-                        return .none;
-                    }
-                    return .{ .tick = POLL_NS };
-                }
-                return .none;
-            },
-            .mouse => |m| switch (m.event_type) {
-                .press => {
-                    if (m.button == .wheel_up) {
-                        self.scroll +|= 3;
-                    } else if (m.button == .wheel_down) {
-                        self.scroll -|= 3;
-                    } else if (m.button == .left) {
-                        self.sel_anchor_row = m.y; // begin a drag-selection
-                        self.sel_cur_row = m.y;
-                    }
-                },
-                .drag => {
-                    if (m.button == .left and self.sel_anchor_row != null) self.sel_cur_row = m.y;
-                },
-                .release => {
-                    if (self.sel_anchor_row) |a0| {
-                        self.copySelection(ctx, a0, self.sel_cur_row orelse a0);
-                        self.sel_anchor_row = null;
-                        self.sel_cur_row = null;
-                    }
-                },
-                .move => {},
-            },
-        }
-        return .none;
-    }
-
-    // Pane rendering (spinnerFrame/statusLine/render/copySelection) lives in
+    // Pane rendering (spinnerFrame/statusLine/render) lives in
     // repl_model_render.zig.
     pub const spinnerFrame = model_render.spinnerFrame;
     pub const statusLine = model_render.statusLine;
     pub const render = model_render.render;
-
-    pub fn view(self: *Model, ctx: *const zz.Context) []const u8 {
-        return self.render(ctx.allocator, ctx.width, ctx.height, ctx.elapsed / std.time.ns_per_ms) catch "repl: render error";
-    }
-
-    pub const copySelection = model_render.copySelection;
     pub const selectionText = model_render.selectionText;
 };
 
@@ -373,12 +292,8 @@ pub const HELP_CALC =
 // Markdown and pipe-table rendering lives in repl_markdown.zig.
 pub const renderMarkdown = repl_markdown.renderMarkdown;
 
-// run/runScripted (the live TUI loop + the headless/scriptable twin) and
-// main() (the standalone `graff-repl` exe's entry point) live in
-// repl_run.zig.
-pub const run = repl_run.run;
+// runScripted (piped/CI twin of the Model) lives in repl_run.zig.
 pub const runScripted = repl_run.runScripted;
-pub const main = repl_run.main;
 
 // ---------------------------------------------------------------------------
 // Tests — headless. Chat path uses a stubbed turn_fn (no network); it still
@@ -483,8 +398,8 @@ test "model: chat path (background thread + multi-turn) via stub" {
     try std.testing.expect(std.mem.indexOf(u8, out, "thinking") == null);
 }
 
-test "repl: main and Program(Model) type-check" {
-    _ = &main;
+test "repl: runScripted type-checks" {
+    _ = &runScripted;
 }
 
 test "model: /rewind and /compact (leak-checked)" {

@@ -19,7 +19,7 @@ pub const WCHAR = u16;
 pub const SHORT = i16;
 
 /// UTF-8. PowerShell 5.1/conhost default to CP437/1252, which turns box-drawing
-/// and icons into mojibake (#607). zigzag already switches; the line REPL did not.
+/// and icons into mojibake (#607). The fullscreen TUI already switches; the line REPL did not.
 pub const CP_UTF8: UINT = 65001;
 
 pub const STD_INPUT_HANDLE: DWORD = 0xFFFFFFF6; // (DWORD)-10

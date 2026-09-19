@@ -568,7 +568,7 @@ pub fn goalCommandArgs(line: []const u8) ?[]const u8 {
 }
 
 /// Scripted `graff repl` host commands. The TUI path wires the same actions
-/// through tui_launch; this bind is the zigzag / headless equivalent.
+/// through tui_launch; this bind is the scripted / headless equivalent.
 pub fn bindHostCommands() void {
     repl.g_version_fn = versionCb;
     repl.g_update_fn = updateCb;

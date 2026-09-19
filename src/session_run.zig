@@ -67,7 +67,7 @@ const prompts = @import("prompts.zig");
 const local_tools = @import("local_tools.zig");
 
 /// `graff repl`: interactive chat on the Grok-style TUI (same as `graff tui`).
-/// Piped/non-TTY stdin still drives the old scripted zigzag Model so CI
+/// Piped/non-TTY stdin still drives the scripted Model so CI
 /// (`printf ... | graff repl`) keeps a stable headless path.
 /// Self-contained — exits after. Moved out of main() (600-line goal).
 /// `root` is already a stable, fully-constructed main()-owned Agent by the

@@ -4,7 +4,7 @@
 //! The public entry point remains repl.renderMarkdown.
 
 const std = @import("std");
-const zz = @import("zigzag");
+const zz = @import("repl_style.zig");
 
 const util = @import("repl_util.zig");
 const softCut = @import("util.zig").softCut;

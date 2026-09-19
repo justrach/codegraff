@@ -53,10 +53,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.addOptions("build_options", opts);
-    // zigzag: the TUI framework backing the `graff repl` subcommand (and the
-    // standalone graff-repl exe below). The repo's first dependency.
-    const zigzag = b.dependency("zigzag", .{ .target = target, .optimize = optimize });
-    exe.root_module.addImport("zigzag", zigzag.module("zigzag"));
     const accord_dep = b.dependency("accord", .{ .target = target, .optimize = optimize });
     const accord_mod = accord_dep.module("accord");
     exe.root_module.addImport("accord", accord_mod);
@@ -105,7 +101,6 @@ pub fn build(b: *std.Build) void {
         .filters = test_filters,
     });
     unit_tests.root_module.addOptions("build_options", opts);
-    unit_tests.root_module.addImport("zigzag", zigzag.module("zigzag"));
     unit_tests.root_module.addImport("accord", accord_mod);
     unit_tests.root_module.addImport("models_rank", models_rank_mod);
     unit_tests.root_module.addImport("tui", tui_mod);
@@ -165,40 +160,6 @@ pub fn build(b: *std.Build) void {
         exe.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
         unit_tests.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
     }
-
-    // --- spike (branch: spike/zigzag-repl): zigzag-based REPL ---
-    // Also reachable as the `graff repl` subcommand of the main binary (see
-    // src/main.zig). This standalone exe + `repl-test` step are kept for
-    // isolated builds / unit tests. `zig build repl`, `zig build repl-test`.
-
-    const repl_exe = b.addExecutable(.{
-        .name = "graff-repl",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/repl.zig"),
-            .target = target,
-            .optimize = optimize,
-            .strip = lean_release,
-        }),
-    });
-    repl_exe.root_module.addOptions("build_options", opts);
-    repl_exe.root_module.addImport("zigzag", zigzag.module("zigzag"));
-    b.installArtifact(repl_exe);
-
-    const repl_run = b.addRunArtifact(repl_exe);
-    repl_run.step.dependOn(b.getInstallStep());
-    const repl_step = b.step("repl", "Run the zigzag REPL spike");
-    repl_step.dependOn(&repl_run.step);
-
-    const repl_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/repl.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    repl_tests.root_module.addImport("zigzag", zigzag.module("zigzag"));
-    const repl_test_step = b.step("repl-test", "Run zigzag REPL unit tests");
-    repl_test_step.dependOn(&b.addRunArtifact(repl_tests).step);
 
     const tui_exe = b.addExecutable(.{
         .name = "graff-tui",

@@ -161,6 +161,7 @@ record only when you need the evidence or the edge cases.
 | [0139](0139-bounced-answers-stay-turn-local.md) | Retain a bounced answer only in the current turn, before unfinished-work reconciliation; never recover it from persisted history. |
 | [0140](0140-rlm-is-listed-when-available.md) | `rlm` is on the catalog whenever it is available. No batch-size or compactAt gate. `--old` still hides it. |
 | [0141](0141-observer-notch-is-a-nonactivating-panel.md) | The desktop session observer is a non-activating SwiftUI edge panel; cells are live ACP work, opt-in from Settings. |
+| [0142](0142-zigzag-is-not-a-frontend.md) | Zigzag is not a frontend. TTY `graff repl` is `TUI/`; piped/CI uses a local scripted Model. Do not vendor zigzag. |
 
 ## When to write one
 

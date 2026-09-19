@@ -240,7 +240,7 @@ pub fn tryHandle(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writ
     return true;
 }
 
-/// Host callback for the TUI / zigzag repl: `check` or `install`.
+/// Host callback for the TUI / scripted repl: `check` or `install`.
 pub fn hostAction(io: Io, gpa: Allocator, home: []const u8, action: []const u8) ?[]const u8 {
     suppress_picker = true;
     defer suppress_picker = false;
