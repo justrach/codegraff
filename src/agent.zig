@@ -31,10 +31,7 @@ const prompt_ui = @import("agent_prompt.zig");
 const agent_tests = @import("agent_tests.zig");
 const empty_completion = @import("agent_empty_completion.zig");
 const goal_state = @import("goal_state.zig");
-const peer_channel = @import("peer_channel.zig"); // #469: turn-boundary peer message delivery
-const job_notify = @import("job_notify.zig");
-const schedule = @import("schedule.zig");
-const channel_worker = @import("channel_worker.zig");
+const turn_inbox = @import("turn_inbox.zig");
 
 pub const TodoItem = struct {
     content: []const u8,
@@ -347,16 +344,10 @@ pub const Agent = struct {
                 if (!self.sub) esc_cancel.store(false, .release);
                 return error.Interrupted;
             }
-            // #469: co-resident sessions' queued channel messages land at EVERY
-            // step boundary, so a working session picks a peer's note up
-            // mid-task (between tool batches) and can act on it in the same
-            // turn — durable in history, visible as an event. Offset-based:
-            // an empty channel costs one small stat per step.
-            peer_channel.deliverInbound(self);
-            try @import("subagent_feedback.zig").deliverToAgent(self);
-            job_notify.deliver(self);
-            schedule.deliver(self);
-            channel_worker.deliver(self);
+            // Peer mail, job/schedule wakes, and REPL steer land here so a
+            // follow-up typed during tools is the next user message in this
+            // turn rather than the next prompt after runTurn returns.
+            try turn_inbox.deliver(self);
             // #193: pre-send overflow gate. A single turn's tool-output burst can
             // push the input past the model's wall before the between-turns 80%
             // meter (last_context_tokens, server-reported) catches up. Estimate the
