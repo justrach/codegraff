@@ -17,6 +17,8 @@ export type PinElement = {
 
 export type BrowserPin = {
   id: number;
+  /** Where the pin was made: the sidecar pane, or the user's own tab. */
+  source?: "sidecar" | "extension";
   /** What the user wants done here. */
   comment: string;
   url: string;

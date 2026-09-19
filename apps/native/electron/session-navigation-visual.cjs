@@ -21,10 +21,16 @@ async function runSessionNavigation({ win, output }) {
     await js('document.fonts.ready.then(()=>true)'); await pause(320);
     fs.writeFileSync(path.join(output,name+'.png'),(await wc.capturePage()).toPNG());
   };
+  const openAppearance = async settings => {
+    await js(`document.querySelector(${JSON.stringify(settings)}).click()`);
+    await wait(`document.querySelector(${JSON.stringify(settings)})?.getAttribute('aria-expanded')==='true'`);
+    await wait(`!!document.querySelector('[popover]:popover-open button[aria-label="Appearance"]')`);
+    await js(`document.querySelector('[popover]:popover-open button[aria-label="Appearance"]').click()`);
+    await wait(`!!document.querySelector('[role="dialog"][aria-label="Appearance"]')`);
+  };
   await wait(`!!document.querySelector('[data-session-navigation="sidebar"]')`);
-  assert.equal(await js(`document.querySelector('[data-session-tab-strip]').getBoundingClientRect().height`),0);
-  await click('[aria-label="Workspace navigation"] button[aria-label="Appearance"]');
-  await wait(`!!document.querySelector('[role="dialog"][aria-label="Appearance"]')`);
+  assert.equal(await js(`document.querySelector('[data-session-tab-strip]')?.getBoundingClientRect().height ?? 0`),0);
+  await openAppearance('[aria-label="Workspace navigation"] button[aria-label="Settings"]');
   const appearance = await js(`(()=>{const d=document.querySelector('[role="dialog"][aria-label="Appearance"]');const r=d.getBoundingClientRect();const h=[...d.querySelectorAll('strong')].find(el=>el.textContent==='Appearance');const hr=h.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,headingTop:hr.top,headingVisible:hr.bottom>0&&hr.top<innerHeight,vw:innerWidth};})()`);
   assert.ok(appearance.left >= 0, 'appearance stays on-screen from the sidebar gear');
   assert.ok(appearance.right <= appearance.vw, 'appearance does not overflow the right edge');
@@ -53,8 +59,7 @@ async function runSessionNavigation({ win, output }) {
   assert.equal(await active(),drafted);
   assert.equal(await js(`document.querySelector('[data-chat="${drafted}"] textarea').value`),'Keep this draft');
   assert.equal(await js(`!!document.querySelector('[data-chat-empty] h1')`),false,'focused mode keeps the empty composer compact');
-  await click('[data-workspace-toolbar] button[aria-label="Appearance"]');
-  await wait(`!!document.querySelector('[role="dialog"][aria-label="Appearance"]')`);
+  await openAppearance('[data-workspace-toolbar] button[aria-label="Settings"]');
   await click('[aria-label="Close appearance"]');
   await desktop.testInput(wc,{type:'keyDown',keyCode:'Escape'});
   await desktop.testInput(wc,{type:'keyUp',keyCode:'Escape'});
@@ -73,7 +78,7 @@ async function runSessionNavigation({ win, output }) {
   await wait(`!!document.querySelector('[data-session-navigation="tabs"]')`);
   await click('[aria-label="Open navigation"]');
   await wait(`!!document.querySelector('[data-session-navigation="sidebar"]')`);
-  assert.equal(await js(`document.querySelector('[data-session-tab-strip]').getBoundingClientRect().height`),0);
+  assert.equal(await js(`document.querySelector('[data-session-tab-strip]')?.getBoundingClientRect().height ?? 0`),0);
   await capture('narrow-sidebar');
   await click('[aria-label="Close navigation"]');
   await wait(`!!document.querySelector('[data-session-navigation="tabs"]')`);

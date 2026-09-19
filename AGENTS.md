@@ -21,6 +21,14 @@ their edit histories are visible to everyone.
   not enough because edit history stays visible. Then tell the user what was
   exposed and for how long.
 
+## Keychain: never dump it
+
+Never run `security dump-keychain` (with or without `-d`), and never walk every
+keychain item. macOS pops an unlock dialog per secret and floods the desktop.
+To check one named notary profile, use
+`security find-generic-password -l <profile-name>` or read the documented
+default from the release scripts. Do not `pkill` `security`/`securityd`.
+
 ## Decisions live in docs/adr/
 
 Settled, evidence-backed decisions are recorded as ADRs. Read the one-line
@@ -34,6 +42,10 @@ new load-bearing decision, add a record in the same branch.
 - **Colors, bold/dim, glyphs, layout are ours.** Styling travels in the output byte stream as SGR escape sequences, so the app controls it per character. The palette lives in `src/ansi.zig` (the accent is codegraff.com's emerald `#059669`; coral/red hues are reserved for errors).
 - **The font is not ours.** The terminal emulator owns the typeface — it loads the font, measures the cell grid, and rasterizes glyphs itself; the wire protocol has no sequence for an app to request a font. (xterm's legacy `OSC 50` is unimplemented by modern emulators and would hijack the user's whole terminal — do not emit it.) If a user asks to "change the REPL font," the answer is their terminal's config, e.g. `font-family = Geist Mono` (the site's typeface) in Ghostty — never a code change here.
 - **HDR/wide-gamut color is not ours either.** Truecolor SGR is 8-bit sRGB per channel — the protocol's ceiling; no sequence expresses Display P3 or EDR headroom, and macOS terminals clip app colors to SDR regardless of the panel. Pick values that look right on both P3 and sRGB displays (as `#059669` does); that's the whole lever.
+
+## Desktop UI: native is the reference
+
+The graphical app follows [docs/design.md](docs/design.md). Radii are tokens (`rounded-composer`, `rounded-window`, `rounded-card`, `rounded-control`, `rounded-chip`, `rounded-full`). Icon-only buttons are circles; labelled buttons are pills; the prompt bar is 32px. Do not invent `rounded-[Npx]` for chrome. Nested split panes stay 6px. The TUI is not this surface.
 
 ## Driving the pager (no PTY, no Ghostty window)
 
@@ -78,6 +90,14 @@ click missed (overlay, prompt-origin, mid-origin).
 - When a change would push a file past 600 LOC, split cohesive responsibilities into focused sibling modules as part of the same change.
 - If a touched file is already over 600 LOC, do not grow it; move it toward the limit before adding more behavior.
 - Generated files, vendored dependencies, lockfiles, and machine-produced artifacts are exempt; change their generator or source instead of hand-editing them.
+
+## Engine features are the same on REPL, TUI, and GUI
+
+Messaging (`peer_message`, idle peer mail, Accord live wake) and other
+engine-side behavior (turns, tools, compaction, goals) must work the same on
+the line REPL, the fullscreen TUI, and the desktop GUI (`graff acp`). Surface
+chrome can differ; the engine path cannot. If you add a wake, a latch, or a
+delivery rule, wire it on all three in the same change.
 
 ## Tests must be reachable
 

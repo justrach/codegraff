@@ -16,4 +16,17 @@ export async function agentRequest(root: string | undefined, params: Record<stri
 }
 
 export type ChildAgent = { id: string; label: string; task: string; status: 'working' | 'completed' | 'failed'; updatedAt: number; truncated: boolean };
+
+/** Working and failed children belong on the composer dock; completed ones do not. */
+export function composerChildren(children: ChildAgent[] | undefined): ChildAgent[] {
+  return (children ?? []).filter(child => child.status !== 'completed');
+}
+
+export function childElapsed(updatedAt: number, now = Date.now()): string {
+  const start = updatedAt > 0 && updatedAt < 1e12 ? updatedAt * 1000 : updatedAt;
+  const seconds = Math.max(0, Math.floor((now - start) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m ${seconds % 60}s`;
+}
 export type ChildActivity = { agent: ChildAgent; updates: import('./acp').JsonRpcLine[]; response: string };

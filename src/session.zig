@@ -95,6 +95,7 @@ pub fn renameSession(root: *Agent, arena: Allocator, slug: []const u8) void {
     }
     const old_name = root.session_name;
     root.session_name = arena.dupe(u8, name) catch return;
+    @import("subagent_interactive.zig").rename(root.io, old_name, root.session_name);
     saveSession(root, arena, root.session_name) catch {};
     if (sessionPath(arena, old_name)) |op| (Io.Dir.cwd().deleteFile(root.io, op) catch {}) else |_| {}
 }
@@ -353,6 +354,8 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
     // kimi-code/codex key cache affinity on the durable conversation id; persisting ours keeps /resume warm.
     try s.objectField("cache_key");
     try s.write(http_headers.sessionId(root.io));
+    try s.objectField("prompt_cache_key");
+    try s.write(http_headers.projectRootId(root.io)); // idle-park resume must keep this partition
     try session_peer.writeFields(&s);
     try subagent_ledger.writeFields(&s, root.io);
     try s.endObject();
@@ -415,6 +418,12 @@ pub fn contextTokensFromSession(obj: std.json.ObjectMap) u64 {
 /// The persisted prompt-cache key; absent/malformed in pre-cache sessions, whose resume mints a fresh one as before.
 pub fn cacheKeyFromSession(obj: std.json.ObjectMap) ?[]const u8 {
     const v = obj.get("cache_key") orelse return null;
+    return if (v == .string and v.string.len == 36) v.string else null;
+}
+
+/// Git-root prompt-cache partition. Absent on pre-idle-park saves.
+pub fn promptCacheKeyFromSession(obj: std.json.ObjectMap) ?[]const u8 {
+    const v = obj.get("prompt_cache_key") orelse return null;
     return if (v == .string and v.string.len == 36) v.string else null;
 }
 /// The persisted --json sequence high-water mark (#330); 0 for sessions saved
@@ -484,7 +493,7 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     // only ever raises the counter, so a legacy session (no field) or a corrupt
     // negative value simply leaves this process's numbering alone.
     protocol_seq.restore(eventSeqFromSession(obj));
-    if (cacheKeyFromSession(obj)) |k| http_headers.adoptSessionId(k);
+    if (cacheKeyFromSession(obj)) |k| http_headers.restoreSessionId(k);
 
     root.ensureStoredKeys(keys);
     if (std.mem.eql(u8, pid, "codex")) root.ensureModelCatalog(keys.*);

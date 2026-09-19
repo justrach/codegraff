@@ -4,10 +4,13 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefOb
 import Markdown from "@/components/primitives/Markdown";
 import ThinkingState from "@/components/primitives/ThinkingState";
 import ToolChips, { type LiveDiff } from "@/components/primitives/ToolChips";
+import ApprovalCard from "@/components/primitives/ApprovalCard";
 import TurnActivity from "./TurnActivity";
 import HtmlArtifact from "./HtmlArtifact";
 import McpAppResult from "./McpAppResult";
 import SnapshotView from "./SnapshotView";
+import UsageSummary from "./UsageSummary";
+import motion from "./transcript-motion.module.css";
 import { markerName, splitImageMarkers } from "@/lib/attachments";
 import { pinScrollerTail } from "@/lib/follow-scroll";
 import { IconArrowUp, IconCrossSmall, IconEditBig } from "@/lib/icons";
@@ -65,6 +68,21 @@ export const UserBubble = memo(function UserBubble({ text, onEdit }: { text: str
   const words = parts.filter((_, index) => index % 2 === 0).join("");
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(words);
+  const bubble = useRef<HTMLDivElement>(null);
+  const editor = useRef<HTMLTextAreaElement>(null);
+  const [editWidth, setEditWidth] = useState<number>();
+  useLayoutEffect(() => {
+    if (!editing || !editor.current) return;
+    const input = editor.current;
+    const resize = () => {
+      input.style.height = "0px";
+      input.style.height = `${input.scrollHeight}px`;
+    };
+    resize();
+    const observer = new ResizeObserver(resize);
+    if (bubble.current) observer.observe(bubble.current);
+    return () => observer.disconnect();
+  }, [editing, draft]);
   const save = () => {
     const next = draft.trim();
     setEditing(false);
@@ -78,31 +96,31 @@ export const UserBubble = memo(function UserBubble({ text, onEdit }: { text: str
           {images.map((part, index) => <PastedImage key={`${index}-${part}`} name={markerName(part)} />)}
         </div>}
         {words.trim() && <div className="flex max-w-full items-end gap-1">
-          {onEdit && !editing && <button type="button" data-edit-prompt aria-label="Edit prompt" onClick={() => { setDraft(words); setEditing(true); }}
-            className="mb-0.5 flex size-6 shrink-0 items-center justify-center rounded-[6px] text-ink-3 opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-hover-2 hover:text-ink group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+          {onEdit && !editing && <button type="button" data-edit-prompt aria-label="Edit prompt" onClick={() => { setEditWidth(bubble.current?.getBoundingClientRect().width); setDraft(words); setEditing(true); }}
+            className="mb-0.5 flex size-6 shrink-0 items-center justify-center rounded-full text-ink-3 opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-hover-2 hover:text-ink group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100">
             <IconEditBig size={13} />
           </button>}
-          {editing ? <div className="relative min-w-[14rem] max-w-full">
-            <textarea data-edit-prompt-draft value={draft} autoFocus rows={Math.min(8, Math.max(2, draft.split("\n").length))}
+          <div ref={bubble} data-message-bubble data-editing={editing}
+            className="min-w-0 max-w-full whitespace-pre-wrap break-words rounded-card px-3.5 py-2 text-[13px] leading-relaxed text-ink shadow-hairline [overflow-wrap:anywhere] focus-within:ring-1 focus-within:ring-[color-mix(in_oklab,var(--accent)_25%,transparent)]"
+            style={{ background: "color-mix(in oklab, var(--accent) 12%, var(--surface))", width: editing && editWidth ? Math.max(140, editWidth) : undefined }}>
+            {editing ? <>
+            <textarea ref={editor} data-edit-prompt-draft aria-label="Edit prompt" value={draft} autoFocus rows={1}
               onChange={e => setDraft(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); save(); } if (e.key === "Escape") setEditing(false); }}
-              className="min-w-0 w-full resize-y rounded-xl px-3.5 pb-9 pt-2.5 text-[13px] leading-relaxed text-ink shadow-hairline outline-none ring-1 ring-transparent transition-[box-shadow,ring-color] duration-150 focus:ring-[color-mix(in_oklab,var(--accent)_40%,transparent)]"
-              style={{ background: "color-mix(in oklab, var(--accent) 12%, var(--surface))" }} />
-            <div className="absolute bottom-1.5 right-1.5 flex items-center gap-0.5">
+              onKeyDown={e => { if (e.nativeEvent.isComposing) return; if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); save(); } if (e.key === "Escape") setEditing(false); }}
+              className="block min-w-0 w-full resize-none overflow-hidden border-0 bg-transparent p-0 text-[13px] leading-relaxed text-ink outline-none" />
+            <div className={`${motion.reveal} mt-2 flex items-center justify-end gap-1`}>
               <button type="button" aria-label="Cancel" onClick={() => setEditing(false)}
-                className="flex size-6 items-center justify-center rounded-[6px] text-ink-3 transition-[background-color,color] duration-150 hover:bg-hover-2 hover:text-ink">
+                className="flex size-7 items-center justify-center rounded-full text-ink-3 transition-[background-color,color] duration-150 hover:bg-hover-2 hover:text-ink">
                 <IconCrossSmall size={13} />
               </button>
               <button type="button" aria-label="Send again" onClick={save} disabled={!draft.trim()}
-                className="flex size-6 items-center justify-center rounded-[8px] transition-[opacity,transform] duration-150 enabled:active:scale-[0.94] disabled:opacity-30"
+                className="flex size-7 items-center justify-center rounded-full transition-[opacity,transform] duration-150 enabled:active:scale-[0.94] disabled:opacity-30"
                 style={{ background: "var(--ink)", color: "var(--surface)" }}>
                 <IconArrowUp size={14} />
               </button>
             </div>
-          </div> : <div
-            className="min-w-0 max-w-full whitespace-pre-wrap break-words rounded-xl px-3.5 py-2 text-[13px] leading-relaxed text-ink shadow-hairline [overflow-wrap:anywhere]"
-            style={{ background: "color-mix(in oklab, var(--accent) 12%, var(--surface))" }}
-          >{words}</div>}
+            </> : words}
+          </div>
         </div>}
       </div>
     </div>
@@ -113,18 +131,22 @@ export const AssistantBody = memo(function AssistantBody({
   turn,
   onOpenPath,
   onReview,
+  onAnswer,
   scroller,
   following,
   reasoningLabel,
   snapshot,
+  usage = false,
 }: {
   turn: AssistantTurn;
   onOpenPath?: (path: string) => void;
   onReview?: () => void;
+  onAnswer?: (text: string, cancelled?: boolean) => void;
   scroller?: RefObject<HTMLDivElement | null>;
   following: boolean;
   reasoningLabel?: string;
   snapshot?: boolean;
+  usage?: boolean;
 }) {
   const thinking = turn.status === "thinking";
   const live = thinking || turn.status === "streaming";
@@ -174,10 +196,20 @@ export const AssistantBody = memo(function AssistantBody({
           </div>
         ) : (
           <div key={`text-${i}`} className="mt-3 max-w-[630px]">
-            <StreamingMarkdown text={block.text} live={i === lastTextIndex && live}
-              onOpenPath={onOpenPath} scroller={scroller} following={i === lastTextIndex && following} />
+            {usage ? <UsageSummary text={block.text} /> : <StreamingMarkdown text={block.text} live={i === lastTextIndex && live}
+              onOpenPath={onOpenPath} scroller={scroller} following={i === lastTextIndex && following} />}
           </div>
         ),
+      )}
+      {turn.status === "ask" && turn.ask && (
+        <div data-ask-card className="mt-4">
+          <ApprovalCard
+            questions={[{ q: turn.ask.question, type: "radio", options: turn.ask.options }]}
+            resettable={false}
+            onSubmitted={(answers) => onAnswer?.(answers?.filter(Boolean).join(", ") ?? "", false)}
+            onCancelled={() => onAnswer?.("", true)}
+          />
+        </div>
       )}
       {!snapshot && <TurnActivity turn={turn} />}
       {turn.error && (

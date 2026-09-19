@@ -306,7 +306,7 @@ On the 3-task spine (exact-reply + file-ops + fix-fib) graff was **19.9s /
 
 Same model, same endpoint, the older Rust codegraff used **4.3×** the memory
 and **~14×** the disk for a dead-heat turn. Method:
-[architecture.md](architecture.md).
+[docs/architecture.md](docs/architecture.md).
 
 </details>
 
@@ -436,9 +436,9 @@ The repository is organized as follows:
 | `src/`, `TUI/` | harness + terminal |
 | `apps/` | desktop (Electron) and iOS |
 | `graff-evals/` | live, in-house, FrontierHarness |
-| `docs/` | ADRs, images, install, embedding |
+| `docs/` | ADRs, architecture, images, install, embedding |
 | `sdk/` | generated TypeScript / Python |
-| `scripts/` | tier-1/2, PTY probes, release |
+| `scripts/` | tier-1/2, PTY probes, release, desktop launch |
 
 Desktop code lives in `apps/native`; evaluation tooling lives in `graff-evals`.
 
@@ -459,7 +459,7 @@ Docs-only pushes skip it. In-house PR fixtures: `graff-evals/`
 Build on Apple Silicon macOS 14+ with Bun, Zig, and Xcode command-line tools:
 
 ```sh
-./script/build_and_run.sh
+./scripts/build_and_run.sh
 ```
 
 The development bundle starts its own local server and uses local development
@@ -492,4 +492,4 @@ licence is perpetual unless they breach it. Commercial permission without
 copyleft exists only if **both authors grant it jointly in writing**, and is
 revocable.
 
-<p align="center"><sub>Built in Zig 0.17 dev · <a href="LICENSE">AGPL-3.0 (modified)</a> · <a href="architecture.md">architecture.md</a> · <a href="CHANGELOG.md">CHANGELOG</a> · <a href="uxlog.md">uxlog.md</a></sub></p>
+<p align="center"><sub>Built in Zig 0.17 dev · <a href="LICENSE">AGPL-3.0 (modified)</a> · <a href="docs/architecture.md">architecture</a> · <a href="CHANGELOG.md">CHANGELOG</a> · <a href="docs/uxlog.md">uxlog</a></sub></p>

@@ -1,5 +1,5 @@
 //! Tool-call dispatch: the batch runner (runTools) that rejects/dedupes/
-//! gates each call then fans external ones out across the Io thread pool,
+//! gates each call then runs external ones (serial if any write/edit/shell),
 //! the human-approval gate for bash/write_file/edit_file/MCP calls
 //! (gateTool), meta-tool handling (attempt_completion/eval/todo_write/
 //! todo_read/ask_user, on the agent's own thread — handleMeta/askUser),
@@ -23,8 +23,6 @@ const ExecResult = tools_mod.ExecResult;
 // which belongs to the input-inversion issue (#430), not to this one.
 const engine_events = @import("engine_events.zig");
 const engine_sink = @import("engine_sink.zig");
-const terminal = @import("term.zig");
-const tty = terminal.tty;
 
 const schema = @import("schema.zig");
 const isMetaName = schema.isMetaName;
@@ -41,11 +39,6 @@ pub const gateTool = @import("agent_tool_gate.zig").gateTool;
 pub const firstWord = @import("agent_tool_gate.zig").firstWord;
 
 const tools_mod = @import("tools.zig");
-const ToolCtx = tools_mod.ToolCtx;
-const ToolOutput = tools_mod.ToolOutput;
-
-const exec = @import("exec.zig");
-const execTool = exec.execTool;
 
 const brief_diversity = @import("brief_diversity.zig"); // #382: N sibling spawns in one batch are a fleet
 const playbook_glue = @import("playbook_glue.zig"); // #381: the note_constraint meta arm
@@ -55,22 +48,12 @@ const local_tools = @import("local_tools.zig");
 const schedule = @import("schedule.zig");
 const util = @import("util.zig"); // #225: unixMs, for the clock_sleep interrupted-elapsed measurement
 
-// #440: the ONE size contract for a tool result — preview + durable handle +
-// byte count + shape hint, applied at tool time, clamped under the send-time cap.
-const tool_handle = @import("tool_handle.zig");
 const cite_markup = @import("cite_markup.zig");
 
-// escWatchTask/drainStdin/rawNonblockStdin live in agent_interrupt.zig;
-// esc_cancel/esc_watch_done STAY declared on the Agent struct (never alias
-// a var — see agent_interrupt.zig's own header). Reached via Agent's namespace.
-const escWatchTask = Agent.escWatchTask;
-const drainStdin = Agent.drainStdin;
-const rawNonblockStdin = Agent.rawNonblockStdin;
-
 /// Run a batch of tool calls. Meta tools are handled inline (they mutate
-/// agent state); everything else fans out across the Io thread pool.
-/// Bash calls must clear the permission gate before dispatch. Results
-/// are returned in call order, arena-owned.
+/// agent state); mutating file/shell calls run one at a time, otherwise
+/// external calls fan out across the Io thread pool. Results are returned
+/// in call order, arena-owned.
 pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
     if (!self.sub and calls.len >= 4) {
         var names: [32][]const u8 = undefined;
@@ -123,94 +106,8 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
     }
 
     if (ext_idx.items.len > 0) {
-        // A child's fan-out is the root's to announce, so the moment is not
-        // produced at all for a subagent: engine policy about who owns the
-        // terminal, kept at the emit site rather than re-derived by a sink
-        // that would need to back-read the Agent to know (#422 slice-1 rule).
-        if (ext_idx.items.len > 1 and !self.sub) {
-            engine_sink.forAgent(self).emit(self.io, .{ .parallel_batch_started = .{ .count = ext_idx.items.len } });
-        }
-        const ctx: ToolCtx = .{
-            .gpa = self.gpa,
-            .io = self.io,
-            .client = self.client,
-            .provider = self.provider,
-            .subagent_provider = self.subagent_provider,
-            .subagent_cross_provider = self.subagent_cross_provider,
-            .mcp_context = self.mcp_context.value,
-            .registry = self.registry, // workers get licensed codedb-pro reads too (#627)
-            .from_sub = self.sub,
-            .has_eval = self.eval_cmd != null,
-            .approvals = self.approvals,
-            .tracer = self.tracer,
-            .run_budget = self.run_budget,
-            .publication_checks = self.publication_checks,
-            .depth = self.depth,
-            .snapshots = self.snapshots,
-            .tools_used = &self.tools_used,
-            .loop_deadline_ms = self.loop_deadline_ms,
-            .agent_cwd = self.agent_cwd,
-        };
-        // Esc while tools run: a stdin watcher for the join (esc_cancel);
-        // subagents notice mid-flight, the root aborts at its next runTurn.
-        const esc_watch = !self.sub and self.in != null and main_mod.use_color and !main_mod.json_mode;
-        var esc_tio: ?tty.RawState = null;
-        var esc_fut: ?Io.Future(void) = null;
-        if (esc_watch) if (rawNonblockStdin()) |tio| {
-            esc_tio = tio;
-            Agent.esc_watch_done.store(false, .release);
-            esc_fut = self.io.async(escWatchTask, .{});
-        };
-        defer if (esc_tio) |tio| {
-            Agent.esc_watch_done.store(true, .release);
-            if (esc_fut) |*f| f.await(self.io);
-            drainStdin();
-            tty.restore(tio);
-        };
-        // Join ALL futures before any fallible work: an early error
-        // return would otherwise free the futures while pool tasks are
-        // still writing into them (and abandon running tools).
-        const futures = try self.gpa.alloc(Io.Future(ToolOutput), ext_idx.items.len);
-        defer self.gpa.free(futures);
-        const outputs = try self.gpa.alloc(ToolOutput, ext_idx.items.len);
-        defer self.gpa.free(outputs);
-        for (ext_idx.items, futures) |i, *fut| fut.* = self.io.concurrent(execTool, .{ ctx, calls[i] }) catch self.io.async(execTool, .{ ctx, calls[i] });
-        for (futures, outputs) |*fut, *output| output.* = fut.await(self.io);
-        defer for (outputs) |output| self.gpa.free(output.text);
-        // #440: one threshold for the whole batch, pinned under this model's
-        // send-time per-output cap so an oversized result is always turned into
-        // a handle HERE rather than truncated later.
-        const handle_threshold = tool_handle.effectiveThreshold(self.provider.perOutputCap());
-        const handle_target: tool_handle.Target = .{
-            .io = self.io,
-            .dir = .cwd(),
-            .run_id = if (self.tracer) |tr| tr.identity.run_id else "untraced",
-        };
-        for (ext_idx.items, outputs) |i, output| {
-            try @import("pr_local_checks.zig").record(self, calls[i], .{ .text = output.text, .is_error = output.is_error, .cancelled = output.cancelled });
-            // Over the threshold, the bytes go to a durable handle; the model
-            // gets a bounded preview + path + byte count + shape hint.
-            const handled = try tool_handle.forResult(self.gpa, self.arena, handle_target, output.text, handle_threshold);
-            // #541: the handle-protocol lesson rides this agent's FIRST handle
-            // instead of standing in every request's system prompt.
-            const text = try tool_handle.withFirstNote(self.arena, handled, &self.handle_note_shown);
-            results[i] = .{ .text = text, .is_error = output.is_error, .cancelled = output.cancelled, .ms = output.ms };
-            if (self.eval_cmd != null and toolInvalidatesEval(calls[i])) {
-                self.eval_verified = false;
-                self.eval_repair_pending = false;
-            }
-        }
+        try @import("agent_tool_batch.zig").runExternal(self, calls, ext_idx.items, results);
         brief_diversity.noteSiblingBatch(self.arena, self.tracer, calls, ext_idx.items, results); // #382
-        // #266: a cancelled parallel batch used to just look "running" and then
-        // failed — one terminal line says what completed, failed, and cancelled.
-        if (ext_idx.items.len > 1 and !self.sub) { // root's line to draw, as above
-            var tally: engine_events.BatchOutcome = .{ .done = 0, .failed = 0, .cancelled = 0 };
-            for (ext_idx.items) |i| {
-                const r = results[i];
-                if (r.cancelled) tally.cancelled += 1 else if (r.is_error) tally.failed += 1 else tally.done += 1;
-            }
-            engine_sink.forAgent(self).emit(self.io, .{ .parallel_batch_finished = tally });
-        }
     }
     if (defer_completion) if (eval_control.completionIndex(calls)) |i| {
         var verify_failed = ext_idx.items.len == 0;
@@ -595,4 +492,8 @@ test "rejectToolCall: truncated arguments are a local error, not an executed cal
     try std.testing.expect(denied.is_error);
     try std.testing.expectEqualStrings(tool_call_args.invalid_exec_message, denied.text);
     try std.testing.expectEqual(@as(u64, 0), agent.tool_calls_this_turn);
+}
+
+test {
+    _ = @import("agent_tool_batch.zig");
 }

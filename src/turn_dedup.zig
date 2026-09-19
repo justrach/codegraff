@@ -31,6 +31,10 @@ pub const Outcome = enum { started, skipped, stuck };
 /// duplicate. The same words after an assistant reply are a new ask
 /// (learn-auto sends one prompt per model call).
 pub fn enqueue(root: *Agent, arena: Allocator, out: ?*Io.Writer, text: []const u8) !Outcome {
+    if (@import("subagent_interactive.zig").line_notice) {
+        try root.messages.append(try @import("session_wake.zig").message(arena, text));
+        return .started;
+    }
     if (messages.trailingUserIs(root.messages.items, text)) {
         hits +|= 1;
         if (hits >= max_replays) {

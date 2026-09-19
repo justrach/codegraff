@@ -35,14 +35,21 @@ from typing import Any
 
 from codex_ws_mock import CodexMock, RecordedRequest
 
+# The advertised names --no-local-tools must remove. The shell tool is a
+# single catalog entry since the run/output/kill unification; `bash` and
+# friends are dispatch aliases that are never advertised but are still
+# refused at runtime, which the calls below exercise.
 GATED_TOOLS = (
-    "bash",
-    "bash_output",
-    "bash_kill",
+    "shell",
     "read_file",
     "edit_file",
     "write_file",
     "codedb",
+)
+GATED_ALIASES = (
+    "bash",
+    "bash_output",
+    "bash_kill",
 )
 # The marker is split by an empty shell quote, so the whole string only ever
 # exists because /bin/sh actually ran the command - it is not a substring of the
@@ -311,7 +318,7 @@ def assert_gated(requests: list[RecordedRequest], events: list[dict]) -> None:
     # Layer 1, root: nothing local advertised; webfetch, orchestration and the
     # MCP-sourced sandbox tool all survive.
     wire = tool_names(root[0])
-    leaked = [n for n in wire if n in GATED_TOOLS]
+    leaked = [n for n in wire if n in GATED_TOOLS or n in GATED_ALIASES]
     if leaked:
         raise AssertionError(f"root catalog still advertises {leaked!r}")
     names = catalog_names(root[0])

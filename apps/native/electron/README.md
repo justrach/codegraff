@@ -1,6 +1,6 @@
 # Electron desktop trial
 
-Run `./script/build_and_run.sh` from the repository root, or use the Codex Run
+Run `./scripts/build_and_run.sh` from the repository root, or use the Codex Run
 action. It builds the production UI with Bun, packages Chromium, Bun, graff,
 and the SwiftUI Activity sheet, then opens `zig-out/electron/Codegraff.app`.
 Builds currently target Apple Silicon macOS 14+; Liquid Glass uses macOS 26+.
@@ -45,6 +45,11 @@ The View menu can release every browser page.
 process-tree sample. macOS 26 uses grouped Liquid Glass surfaces. RSS sums may
 double-count shared pages; CPU is the lifetime average from `ps`, not a sampled
 instantaneous peak. Closing the application terminates its Bun/ACP process group.
+
+**Settings → Session observer** (or View → Session observer) pins a SwiftUI
+notch to the right screen edge while the app is in the background. Off until
+you turn it on. Cells are live ACP work, not chat titles. Hover for the
+label; click to focus that chat. The panel never becomes the key window.
 
 Run checks with Bun from `apps/native`:
 

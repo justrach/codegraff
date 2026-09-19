@@ -61,6 +61,7 @@ pub const ResponsesFailure = responses.ResponsesFailure;
 pub const ResponsesResult = responses.ResponsesResult;
 pub const parseResponses = responses.parseResponses;
 pub const errorMessage = responses.errorMessage;
+pub const errorRequestId = responses.errorRequestId;
 
 pub const buildBody = @import("agent_request_body.zig").buildBody;
 const codex_chain = @import("codex_chain.zig");
@@ -75,6 +76,16 @@ pub const landing_note =
     "no tools are offered. Land the answer NOW from the evidence already gathered: state what was " ++
     "completed and what was verified, then name what remains unchecked. Honestly-labeled partial " ++
     "results beat dying mid-tool-call.";
+
+fn sayTypedApiError(self: *Agent, etype: []const u8, ecode: ?[]const u8, emsg: []const u8, request_id: ?[]const u8) !void {
+    const rid = request_id orelse "";
+    if (ecode) |c| {
+        if (rid.len != 0) return self.sayApiError("api error ({s} {s}): {s} [{s}]", .{ etype, c, emsg, rid });
+        return self.sayApiError("api error ({s} {s}): {s}", .{ etype, c, emsg });
+    }
+    if (rid.len != 0) return self.sayApiError("api error ({s}): {s} [{s}]", .{ etype, emsg, rid });
+    return self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
+}
 
 pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     // Root and title requests rendezvous after launch-time CA loading.
@@ -455,10 +466,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     if (recoverContextOverflow(self, emsg, ecode, &context_retried)) continue; // #193/#203: streamed error event overflow (by code or phrasing) → trim + retry
                     if (try policy.afterServerErrorOrParseReject(self, etype, ecode, emsg, &server_retries, &gw_retry)) continue;
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
-                    if (ecode) |c|
-                        try self.sayApiError("api error ({s} {s}): {s}", .{ etype, c, emsg })
-                    else
-                        try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
+                    try sayTypedApiError(self, etype, ecode, emsg, errorRequestId(root));
                     return error.ApiError;
                 };
                 self.recordUsage(root, body.len);
@@ -502,10 +510,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             if (recoverContextOverflow(self, emsg, ecode, &context_retried)) continue; // #193/#203: {"type":"error"} overflow (by code or phrasing) → trim + retry
             if (try policy.afterServerErrorOrParseReject(self, etype, ecode, emsg, &server_retries, &gw_retry)) continue;
             if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
-            if (ecode) |c|
-                try self.sayApiError("api error ({s} {s}): {s}", .{ etype, c, emsg })
-            else
-                try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
+            try sayTypedApiError(self, etype, ecode, emsg, errorRequestId(root));
             return error.ApiError;
         };
         if (apiErrorMessage(root)) |msg| {
@@ -551,7 +556,10 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             if (recoverContextOverflow(self, msg, errorCode(root), &context_retried)) continue;
             if (try policy.afterServerErrorOrParseReject(self, "", errorCode(root), msg, &server_retries, &gw_retry)) continue;
             if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
-            try self.sayApiError("api error: {s}", .{msg});
+            if (errorRequestId(root)) |rid|
+                try self.sayApiError("api error: {s} [{s}]", .{ msg, rid })
+            else
+                try self.sayApiError("api error: {s}", .{msg});
             return error.ApiError;
         }
 

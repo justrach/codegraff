@@ -35,7 +35,7 @@ export default function ComposerMenu({ anchor, panel, id, menu, rows, query, act
     if (row.offsetTop < viewport.scrollTop) viewport.scrollTop = row.offsetTop;
     else if (row.offsetTop + row.offsetHeight > viewport.scrollTop + viewport.clientHeight) viewport.scrollTop = row.offsetTop + row.offsetHeight - viewport.clientHeight;
   }, [active, query, position]);
-  return createPortal(<div ref={panel} data-composer-menu className="motion-surface fixed z-[200] flex flex-col overflow-hidden rounded-xl border border-line bg-surface p-1 shadow-raised"
+  return createPortal(<div ref={panel} data-composer-menu className="motion-surface fixed z-[200] flex flex-col overflow-hidden rounded-window border border-line bg-surface p-1 shadow-raised"
     style={{ ...position, visibility: position ? "visible" : "hidden" }} onMouseLeave={() => setEngaged(false)}>
     <div ref={list} id={id} role="listbox" aria-label={menu === "slash" ? "Commands" : menu === "skill" ? "GUI skills" : "Sources and files"} className="relative min-h-0 overflow-y-auto overscroll-contain">
       {rows.map((row, i) => {

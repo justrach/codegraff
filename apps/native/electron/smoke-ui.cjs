@@ -21,6 +21,9 @@ async function smokeUI({ win, browser, backend }) {
   await wait(`document.querySelectorAll('[aria-label="Close tab"]').length===${beforeTabs}`);
   await click('[aria-label="Appearance"]');
   await wait(`!!document.querySelector('[role="dialog"][aria-label="Appearance"]')`);
+  const appearance = await js(`(()=>{const e=document.querySelector('[role="dialog"][aria-label="Appearance"]');const r=e.getBoundingClientRect();return {width:r.width,mcp:!!e.querySelector('[aria-label="MCP servers"]')||e.textContent.includes('MCP servers')};})()`);
+  assert.equal(appearance.mcp, false, 'Appearance must not embed MCP servers');
+  assert.ok(appearance.width >= 300 && appearance.width <= 428, JSON.stringify(appearance));
   for (const [name, expected] of [['White', 'light'], ['Black', 'dark'], ['Website', 'website'], ['CodeGraff', 'codegraff']]) {
     await js(`[...document.querySelectorAll('[role="dialog"] button')].find(b=>b.textContent.includes(${JSON.stringify(name)})).click()`);
     await wait(`document.documentElement.dataset.theme===${JSON.stringify(expected)}`);

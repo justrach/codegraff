@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type MutableRefObject, type Dispatch, type SetStateAction } from "react";
-import { checkHealth, disposePage, ensureSession, fetchModels, type Health } from "@/lib/acp-client";
+import { bindMcpAppChat, checkHealth, disposePage, ensureSession, fetchModels, type Health } from "@/lib/acp-client";
+import { sameModels } from "@/lib/composer-model";
+import { pumpIdlePeerTurns } from "./idle-peer-turns";
 import type { AcpCommand } from "@/lib/acp";
 import type { PromptModel } from "@/components/primitives/PromptBar";
 import { listSessionsPage, type StoredSession } from "@/lib/sessions";
@@ -22,18 +24,32 @@ type Props = {
 const SIDEBAR_PAGE = 12;
 export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal}: Props) {
   const [projectsReady, setProjectsReady] = useState(false);
+  const idleCtl = useRef(new Map<number, AbortController>());
+  const watchIdle = (chatId: number, sessionId: string) => {
+    idleCtl.current.get(chatId)?.abort();
+    const ac = new AbortController();
+    idleCtl.current.set(chatId, ac);
+    void pumpIdlePeerTurns({
+      chatId, handle: handleOf(chatId), sessionId, signal: ac.signal,
+      running: () => runningRef.current.has(chatId), setChats,
+    });
+  };
   const adoptCatalog = async (chatId: number) => {
-    // Use the provider and model actually resolved by graff.
+    // Pill follows this chat's agent. A transient /api/models process is not that agent.
+    const handle = sessionsRef.current.has(chatId) ? handleOf(chatId) : undefined;
     try {
-      const { models: live, current, commands: available } = await fetchModels(sessionsRef.current.has(chatId) ? handleOf(chatId) : undefined, activePathRef.current ?? undefined);
-      if (live.length > 0) setModels(live);
+      const { models: live, current, commands: available } = await fetchModels(handle, activePathRef.current ?? undefined);
+      if (live.length > 0) setModels((prev) => (sameModels(prev, live) ? prev : live));
       if (available?.length) { setCatalogCommands(available); setCommands(old => ({ ...old, [chatId]: available })); }
-      if (current) {
-        setChatModel(chatId, current);
-        setModelKey((fallback) => fallback ?? current);
+      if (current && handle) {
+        const chat = chatsRef.current.find((c) => c.id === chatId);
+        if (chat?.model !== current) setChatModel(chatId, current);
+        setModelKey((key) => (key === current ? key : current));
+      } else if (current) {
+        setModelKey((key) => key ?? current);
       }
     } catch {
-      // Do not invent a selected model when the catalog is unavailable.
+      // Keep the spawn model. A failed catalog must not fail the session.
     }
   };
 
@@ -54,6 +70,10 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
     };
   }, []);
 
+  useEffect(() => {
+    bindMcpAppChat(sessionsRef.current.has(activeId) ? handleOf(activeId) : undefined);
+  }, [activeId, handleOf]);
+
   const requireSession = async (chatId: number, reset = false, key?: string): Promise<string> => {
     if (chatsRef.current.find(c => c.id === chatId)?.snapshot) throw new Error("Continue here before resuming this saved snapshot.");
     const live = sessionsRef.current.get(chatId);
@@ -73,10 +93,16 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
       mcp: ws?.mcp,
     });
     sessionsRef.current.set(chatId, id);
+    bindMcpAppChat(handleOf(chatId));
     setSessionIds((current) => ({ ...current, [chatId]: id }));
+    watchIdle(chatId, id);
     // Populate the command menu from this agent's advertisement.
     if (commands.length > 0) setCommands((current) => ({ ...current, [chatId]: commands }));
     setHealth({ ok: true });
+    if (spawnModel) {
+      setChatModel(chatId, spawnModel);
+      setModelKey(spawnModel);
+    }
     await adoptCatalog(chatId);
     return id;
   };
@@ -134,6 +160,8 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
     return () => {
       cancelled = true;
       window.removeEventListener("pagehide", reap);
+      for (const ac of idleCtl.current.values()) ac.abort();
+      idleCtl.current.clear();
     };
     // The first tab's agent is spawned once per mount; later tabs spawn their
     // own on creation, and a model change respawns only the active tab's.

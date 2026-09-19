@@ -4,10 +4,16 @@ on:
   push:
   pull_request:
 
+# Same-repo PRs already ran on the head-branch push. Keep pull_request for forks.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # No-Zig checks — always enforced. The SDKs are committed, so they can be
   # validated without building the binary.
   sdk:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -53,6 +59,7 @@ jobs:
   # Zig build / fmt / test + SDK drift, pinned to the exact 0.17 dev build the
   # codebase targets.
   zig:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -235,6 +242,7 @@ jobs:
   # it compiles, passes tests, and the binary loads + runs on a real Windows
   # runner (the macOS/Linux jobs above can't exercise the console backend).
   windows:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7

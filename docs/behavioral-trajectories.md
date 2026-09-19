@@ -214,7 +214,7 @@ Required fields:
   otherwise `0`.
 
 This event is emitted once at the shared provider boundary, before model or tool
-work. It covers interactive, JSON, one-shot, and zigzag REPL root turns. Provider
+work. It covers interactive, JSON, one-shot, and scripted REPL root turns. Provider
 fallback retries occur inside that boundary and do not create extra behavioral
 turns. Active attribution is cleared when the complete provider operation
 returns; later administrative or resume-preprocessing API/tool work carries
@@ -224,7 +224,7 @@ calls are not separate behavioral root turns in Phase 1.
 `trajectory_node` is correlation metadata scoped to the current process. Legacy
 node IDs restart in later processes and legacy rows do not all carry `run_id`, so
 historical consumers must not treat this number alone as a globally unique join
-key. One-shot and zigzag modes preserve their old DGM behavior and currently use
+key. One-shot and scripted REPL modes preserve their old DGM behavior and currently use
 `0` here.
 
 #### `run_finished`

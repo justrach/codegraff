@@ -63,7 +63,7 @@ pub fn enterRaw() ?RawState {
         if (w.GetConsoleMode(h, &mode) != 0) {
             _ = w.SetConsoleMode(h, mode | w.ENABLE_VIRTUAL_TERMINAL_PROCESSING | w.ENABLE_PROCESSED_OUTPUT);
         }
-        // #607: zigzag UTF-8s its Windows platform layer; this path never did,
+        // #607: Windows TUI must UTF-8 the console; this path never did,
         // so PowerShell 5.1 decoded box-drawing as CP437. Restore the prior CPs
         // on the way out so the parent shell keeps its OEM page.
         const orig: RawState = .{

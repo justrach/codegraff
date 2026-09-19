@@ -300,7 +300,7 @@ than that flag refuses localhost.
   so the result is on screen without a click.
 
 The design and what is deliberately left out are in
-`plans/2026-09-03-browser-sidecar.md`. The sidebar footer names the tab's graff
+`docs/proposals/2026-09-03-browser-sidecar.md`. The sidebar footer names the tab's graff
 session (`native-…`, the `--resume` target); clicking it copies the
 command that continues the same conversation in a terminal.
 

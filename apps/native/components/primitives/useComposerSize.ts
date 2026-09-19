@@ -16,7 +16,10 @@ export function useComposerSize({ inputRef, controlsRef, measureRef, modelRef, d
       const modelWidth = model.offsetWidth + (label ? label.scrollWidth - label.clientWidth : 0);
       const effortWidth = model.nextElementSibling instanceof HTMLElement ? model.nextElementSibling.offsetWidth : 0;
       const inlineWidth = controls.clientWidth - 28 * 3 - modelWidth - effortWidth - 4 * 4;
-      const fullWidth = draft.includes("\n") || measure.offsetWidth + 8 > inlineWidth;
+      // Match PromptBar.module.css @container (max-width: 420px). Below that
+      // the grid stacks; rounded-full on a stacked shell becomes a balloon.
+      const stacked = controls.clientWidth <= 420;
+      const fullWidth = stacked || draft.includes("\n") || measure.offsetWidth + 8 > inlineWidth;
       if (fullWidth !== expanded) setExpanded(fullWidth);
       input.style.height = "0px";
       const height = input.scrollHeight;

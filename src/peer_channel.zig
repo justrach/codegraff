@@ -130,12 +130,12 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
         .is_error = true,
     };
     if (to.len == 0) return .{
-        .text = "posted to this folder's room — every live session here hears it at their next step boundary. Set session to DM one peer instead.",
+        .text = "posted to this folder's room — every live idle session here starts a turn. A busy one reads it when that turn ends. Set session to DM one peer instead.",
         .is_error = false,
     };
     const via: []const u8 = if (cross_folder) "device room" else "this folder";
     return .{
-        .text = try std.fmt.allocPrint(self.arena, "DM to \"{s}\" via the {s} — only they hear it, at their next step boundary. Re-ping with session=\"{s}\".", .{ to, via, to }),
+        .text = try std.fmt.allocPrint(self.arena, "DM to \"{s}\" via the {s} — only they hear it. An idle root starts a turn; a busy one waits until that turn ends. Re-ping with session=\"{s}\".", .{ to, via, to }),
         .is_error = false,
     };
 }

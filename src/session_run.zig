@@ -67,7 +67,7 @@ const prompts = @import("prompts.zig");
 const local_tools = @import("local_tools.zig");
 
 /// `graff repl`: interactive chat on the Grok-style TUI (same as `graff tui`).
-/// Piped/non-TTY stdin still drives the old scripted zigzag Model so CI
+/// Piped/non-TTY stdin still drives the scripted Model so CI
 /// (`printf ... | graff repl`) keeps a stable headless path.
 /// Self-contained — exits after. Moved out of main() (600-line goal).
 /// `root` is already a stable, fully-constructed main()-owned Agent by the
@@ -246,6 +246,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     // they reach the exit-time leak check — and our record would linger in
     // the registry until a peer's liveness probe reaps it.
     presence.retire(io);
+    @import("presence_accord.zig").stop(io);
     presence.deinit(gpa);
     @import("router_catalog.zig").shutdown(io);
     // #396: the run is over. The frontend hands the terminal back and latches
@@ -370,6 +371,7 @@ pub fn buildRootAgent(
         }
     }
     presence.noteLabelsFrom(io, gpa, arena, root.session_title, root.session_name);
+    @import("presence_accord.zig").listen(io, gpa, presence.registryPath());
     if (flags.eval_cmd_flag) |c| root.eval_cmd = try arena.dupe(u8, c);
     // #502: --output-schema (inline JSON or @file) → structured outputs.
     if (flags.output_schema_flag) |schema_arg| {
@@ -409,7 +411,7 @@ pub fn saveOrResumeSession(root: *agent_mod.Agent, keys: *provider_mod.Keys, are
     if (!will_resume) session.saveSession(root, arena, root.session_name) catch {};
     if (flags.oneshot_prompt != null and will_resume) {
         const source = flags.resume_flag.?;
-        _ = session_branch.restore(root, keys, arena, source, flags.branch_flag) catch |err| std.process.fatal("cannot resume/branch from '{s}': {t}", .{ source, err });
+        _ = session_branch.restore(root, keys, arena, source, flags.branch_flag, if (flags.model_flag != null) root.provider else null) catch |err| std.process.fatal("cannot resume/branch from '{s}': {t}", .{ source, err });
     }
 }
 
@@ -422,7 +424,7 @@ pub fn saveOrResumeSession(root: *agent_mod.Agent, keys: *provider_mod.Keys, are
 pub fn restoreResumedSession(arena: Allocator, out: *Io.Writer, root: *agent_mod.Agent, keys: *provider_mod.Keys, flags: args.Flags, json_mode: bool, cwd_display: []const u8) !void {
     if (!(flags.oneshot_prompt == null and flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag)) return;
     const source = flags.resume_flag.?;
-    if (session_branch.restore(root, keys, arena, source, flags.branch_flag)) |_| {
+    if (session_branch.restore(root, keys, arena, source, flags.branch_flag, if (flags.model_flag != null) root.provider else null)) |_| {
         if (root.messages.items.len > 0) {
             if (!json_mode) {
                 // Prefer the saved AI summary; fall back to the first user
@@ -469,6 +471,7 @@ pub fn finalizeSession(gpa: Allocator, io: Io, arena: Allocator, out: *Io.Writer
     // #469: our presence record leaves the registry with us; a crashed session
     // skips this and gets reaped by the next reader's liveness probe instead.
     presence.retire(io);
+    @import("presence_accord.zig").stop(io);
     presence.deinit(gpa); // its gpa-owned globals must not reach the exit-time leak check
     @import("router_catalog.zig").shutdown(io);
     @import("workspace_switch.zig").deinitDisplay(gpa);

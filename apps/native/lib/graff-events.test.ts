@@ -52,10 +52,11 @@ describe("applyEvent", () => {
       type: "ask_user",
       call_id: "q1",
       question: "Apply the edit?",
-      input: {},
+      input: { options: ["Yes", "No"] },
     });
     assert.equal(turn.status, "ask");
     assert.equal(turn.ask?.callId, "q1");
+    assert.deepEqual(turn.ask?.options, ["Yes", "No"]);
     turn = applyEvent(turn, { type: "turn", text: "done", context_tokens: 1, cost_usd: 0.01 });
     assert.equal(turn.status, "done");
     assert.equal(turn.ask, undefined);

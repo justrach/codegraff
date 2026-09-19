@@ -16,6 +16,9 @@ export type DesktopBridge = {
   windowControl?(action: "fullscreen" | "zoom-in" | "zoom-out" | "reset-zoom"): Promise<void>;
   browser<T = PageInfo | null>(chat: string, method: string, params?: Record<string, unknown>): Promise<T>;
   activity(): Promise<{ rssMiB: number; cpuPercent: number; processes: number; browsers: number }>;
+  notch?(snapshot: { sessions: Array<{ id: number; title: string; caption?: string; state: string; label: string; detail: string; kind?: string; percent?: number }> }): void;
+  notchSettings?(action: 'load' | 'save', value?: boolean): Promise<boolean | null>;
+  notchSubscribe?(callback: (id: number) => void): () => void;
   subscribe(callback: (event: DesktopEvent) => void): () => void;
 };
 declare global { interface Window { graffDesktop?: DesktopBridge } }

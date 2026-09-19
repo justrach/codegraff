@@ -65,6 +65,7 @@ export function useDesktopShortcuts(actions: Actions) {
           else if(k==='enter'&&e.shiftKey)handled=dispatch('split-zoom');
           else if(k==='o'&&!e.shiftKey)handled=dispatch('workspace');
           else if(k==='\\'){a.toggleSplit();handled=true;}
+          else if(k==='b'&&!e.shiftKey){window.dispatchEvent(new CustomEvent('graff-toggle-sidebar'));handled=true;}
           else if(['[',']','{','}'].includes(k)){cycle(e.shiftKey?a.chats.map(c=>c.id):a.columns,k==='['||k==='{'?-1:1);handled=true;}
           else if(!e.shiftKey&&/^[1-9]$/.test(k)){const chat=k==='9'?a.chats.at(-1):a.chats[Number(k)-1];if(chat)focus(chat.id);handled=true;}
           else if(k==='enter'||(e.ctrlKey&&k==='f')){void desktop()?.windowControl?.('fullscreen');handled=true;}

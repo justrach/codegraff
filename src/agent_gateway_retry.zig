@@ -97,6 +97,10 @@ pub fn isShortGatewayFlake(etype: []const u8, code: ?[]const u8, msg: []const u8
     // Gateway 110-byte follow-up. etype is often invalid_request_error, which
     // would otherwise hard-fail on the "invalid" needle. Auth/quota still die.
     if (isBodyParseRejection(msg)) return true;
+    // xAI 500s "Internal error during token parsing" on a fat prompt. The
+    // "internal" flake needle would resend the same body twice and then kill
+    // the turn; overflow recovery trims instead (agent_overflow.zig).
+    if (util.indexOfIgnoreCase(msg, "token parsing") != null) return false;
     const hard = [_][]const u8{ "invalid", "authentication", "unauthorized", "insufficient", "quota", "permission", "tool_choice", "not found" };
     for (hard) |n| {
         if (util.indexOfIgnoreCase(etype, n) != null) return false;
@@ -194,6 +198,7 @@ test "shouldRetryBodyParseAfterTimeouts (#gateway-artifact): timeout history gat
 
 test "isShortGatewayFlake: internal/empty api_error retry; invalid/auth/quota do not" {
     try std.testing.expect(isShortGatewayFlake("api_error", null, "Internal Server Error"));
+    try std.testing.expect(!isShortGatewayFlake("api_error", null, "Internal error during token parsing"));
     try std.testing.expect(isShortGatewayFlake("api_error", null, ""));
     try std.testing.expect(isShortGatewayFlake("error", null, "   "));
     try std.testing.expect(isShortGatewayFlake("", null, "unknown error"));
@@ -206,6 +211,16 @@ test "isShortGatewayFlake: internal/empty api_error retry; invalid/auth/quota do
     try std.testing.expect(isShortGatewayFlake("invalid_request_error", null, "Body must be valid JSON"));
     try std.testing.expect(isShortGatewayFlake("api_error", null, "Malformed JSON in request body"));
     try std.testing.expect(!isShortGatewayFlake("invalid_request_error", null, "invalid prompt"));
+}
+
+test "#1019: token-parse 500 is not a short gateway flake (WS etype empty)" {
+    const msg = "Internal error during token parsing";
+    // The Responses WS arm calls afterServerErrorOrParseReject with etype "".
+    try std.testing.expect(!isShortGatewayFlake("", null, msg));
+    try std.testing.expect(!isShortGatewayFlake("api_error", null, msg));
+    try std.testing.expect(!isShortGatewayFlake("", null, "xai api error: Internal error during token parsing"));
+    try std.testing.expect(!isBodyParseRejection(msg));
+    try std.testing.expect(isShortGatewayFlake("api_error", null, "Internal Server Error"));
 }
 
 test "#748: error-only SSE is not a truncated gateway body" {

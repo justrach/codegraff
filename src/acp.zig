@@ -119,6 +119,7 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
     const live: *LiveTurn = @ptrCast(@alignCast(ctx));
     if (try @import("acp_agents.zig").handle(arena, live.root.io, live.root.home, w, req)) return true;
     if (try @import("acp_changes.zig").handle(arena, live.root.io, w, req)) return true;
+    if (try @import("acp_mcp_app.zig").handle(arena, w, req, live.root)) return true;
     if (!std.mem.eql(u8, req.method, "graff/models")) return false;
     if (req.id == null) return true;
     const keys = live.keys;
@@ -186,6 +187,8 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     var inbox: @import("acp_inbox.zig").Inbox = .{ .gpa = gpa, .io = io, .reader = in };
     try inbox.start();
     defer inbox.deinit();
+    @import("acp_ask.zig").attach(io, gpa);
+    defer @import("acp_ask.zig").detach();
     var live: LiveTurn = .{ .root = root, .keys = keys, .out = out, .inbox = &inbox };
     var d: Dispatch = .{
         .turn = LiveTurn.run,
@@ -199,11 +202,16 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
         .extra = liveModels,
     };
     while (true) {
-        const line = (inbox.next(arena) catch break) orelse break;
-        handleLine(&d, arena, out, line) catch |err| {
-            std.debug.print("acp: dispatch failed: {t}\n", .{err});
-            break;
-        };
+        const event = (inbox.wait(arena) catch break) orelse break;
+        switch (event) {
+            .tick => @import("acp_idle.zig").maybeWake(&d, arena, out, io) catch |err| {
+                std.debug.print("acp: idle wake failed: {t}\n", .{err});
+            },
+            .line => |line| handleLine(&d, arena, out, line) catch |err| {
+                std.debug.print("acp: dispatch failed: {t}\n", .{err});
+                break;
+            },
+        }
         out.flush() catch break;
     }
     session.saveSession(root, arena, root.session_name) catch {};
@@ -469,6 +477,7 @@ test {
     _ = @import("acp_protocol.zig");
     _ = @import("acp_stream.zig");
     _ = @import("transport_gate.zig");
+    _ = @import("acp_mcp_app.zig");
 }
 
 test "ACP advertises the complete REPL command catalog including compact" {

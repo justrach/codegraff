@@ -380,7 +380,7 @@ pub fn readTrajectoryArchive(io: Io, arena: Allocator, max_bytes: usize) []const
 
 /// Begin one behavioral root turn at the common provider boundary, before any
 /// model or tool work. Interactive mode may already have reserved a legacy DGM
-/// node; one-shot and zigzag REPL modes deliberately leave that ledger unchanged.
+/// node; one-shot and scripted REPL modes deliberately leave that ledger unchanged.
 pub fn beginRootTurn(tracer: ?*Tracer) u64 {
     const trajectory_node = if (g_traj) |tj| tj.currentTurn() else 0;
     const behavior = if (tracer) |tr| tr.behavior else null;

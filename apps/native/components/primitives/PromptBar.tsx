@@ -6,12 +6,14 @@ import ModelPicker from "./ModelPicker";
 import layout from "./PromptBar.module.css";
 import ModelEffortButtons from "./ModelEffortButtons";
 import type { ModelChoice } from "@/lib/acp-client";
+import { resolveComposerModel } from "@/lib/composer-model";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ComposerMenu from "./ComposerMenu";
 import ComposerAttachments from "./ComposerAttachments";
 import { useComposerSweep } from "./useComposerSweep";
 import { useComposerSize } from "./useComposerSize";
 import { useComposerDraft } from "./useComposerDraft";
+import { useSteerArm } from "./useSteerArm";
 import type { AcpCommand } from "@/lib/acp";
 import {
   filesFrom,
@@ -27,7 +29,8 @@ import { entryAt, historyKeyIntent, stepHistory } from "@/lib/prompt-history";
  * A composer with real controls: attach, @ data sources,
  * / commands, a model picker, dictation, and send.
  * Type @ or / to open the menus; ↑↓ + Enter to pick.
- * Variants: Rounded (card radius) · Pill (full radius).
+ * Variants: Rounded (composer radius) · Pill (full radius). Send is circular.
+ * Radii: docs/design.md.
  * ───────────────────────────────────────────────────────── */
 
 export type PromptModel = ModelChoice;
@@ -95,16 +98,13 @@ export default function PromptBar({
   const [dismissed, setDismissed] = useState(false);
   const [plusOpen, setPlusOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
-  const [model, setModel] = useState<PromptModel>(
-    () => catalog.find((m) => m.key === modelKey) ?? catalog[0] ?? MODELS[1],
-  );
+  const [model, setModel] = useState<PromptModel>(() => resolveComposerModel(catalog, modelKey));
   /* Live surfaces load their catalog async (graff/models); once it lands, or
    * the owner re-points modelKey, the picked entry must follow — the initial
-   * useState snapshot is stale by then. */
+   * useState snapshot is stale by then. Unknown keys keep their own name. */
   useEffect(() => {
-    if (!modelKey) return;
-    const found = catalog.find((m) => m.key === modelKey);
-    if (found && found !== model) setModel(found);
+    const next = resolveComposerModel(catalog, modelKey);
+    setModel((cur) => (cur.key === next.key && cur.name === next.name ? cur : next));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelKey, models]);
   const [dragging, setDragging] = useState(false);
@@ -310,6 +310,7 @@ export default function PromptBar({
 
   const canSend = !disabled && uploads === 0 && (draft.trim().length > 0 || attachments.length > 0);
   const showStop = busy;
+  const steerArm = useSteerArm(busy && !disabled, onSteerQueued);
   const send = () => {
     if (!canSend) return;
     if (/^\/(effort|reasoning)$/.test(draft.trim()) && model.effortLevels?.length) { modelRef.current?.dispatchEvent(new Event("graff-effort-open")); setDraft(""); return; }
@@ -359,6 +360,11 @@ export default function PromptBar({
       {modelOpen && <ModelPicker models={catalog} selected={model} anchor={modelRef} onClose={() => setModelOpen(false)}
         onSelect={next => { selectModel(next); inputRef.current?.focus({ preventScroll: true }); }} />}
 
+      {(steerArm.left > 0 || steerArm.steering) && (
+        <p role="status" className="mb-1.5 px-1 text-[12px] font-medium text-ink-2">
+          {steerArm.steering ? "Steering…" : `Enter again in ${steerArm.left} to steer`}
+        </p>
+      )}
       {/* ── composer ───────────────────────────────────── */}
       <div
         onDragOver={(event) => {
@@ -379,12 +385,12 @@ export default function PromptBar({
           setDragging(false);
           void attachFiles(files);
         }}
-        className={`relative isolate flex flex-col overflow-hidden border bg-surface shadow-card transition-[border-color,border-radius] duration-150 focus-within:border-line-strong ${
+        className={`relative isolate flex flex-col overflow-hidden border ${layout.glass} transition-[border-color,border-radius] duration-150 focus-within:border-line-strong ${
           dragging ? "border-accent-ink" : "border-line"
         } ${
           tall ? "gap-2.5 p-3.5" : "gap-1.5 p-1.5"
         } ${
-          pill ? (attachments.length > 0 || wide ? "rounded-[24px]" : "rounded-full") : tall ? "rounded-[22px]" : "rounded-[14px]"
+          pill ? (attachments.length > 0 || wide ? "rounded-composer" : "rounded-full") : "rounded-composer"
         }`}
       >
         <input
@@ -441,9 +447,7 @@ export default function PromptBar({
               setPlusOpen((current) => !current);
               inputRef.current?.focus();
             }}
-            className={`flex size-7 shrink-0 items-center justify-center justify-self-start text-ink-3 transition-[background-color,color,transform] duration-150 hover:bg-hover hover:text-ink active:scale-[0.94] ${
-              pill ? "rounded-full" : "rounded-[8px]"
-            } ${plusOpen ? "bg-hover text-ink" : ""} ${wide ? "col-start-1 row-start-2" : "col-start-1 row-start-1"}`}
+            className={`flex size-7 shrink-0 items-center justify-center justify-self-start rounded-full text-ink-3 transition-[background-color,color,transform] duration-150 hover:bg-hover hover:text-ink active:scale-[0.94] ${plusOpen ? "bg-hover text-ink" : ""} ${wide ? "col-start-1 row-start-2" : "col-start-1 row-start-1"}`}
           >
             <Icon size={16} strokeWidth={2}><path d="M12 5v14M5 12h14" /></Icon>
           </button>
@@ -471,7 +475,7 @@ export default function PromptBar({
               if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && busy && !disabled && onSteerQueued) {
                 event.preventDefault();
                 event.stopPropagation();
-                if (!event.repeat) onSteerQueued();
+                if (!event.repeat) steerArm.fire();
                 return;
               }
               // Other modified keys belong to desktop shortcuts.
@@ -500,6 +504,7 @@ export default function PromptBar({
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
                 event.stopPropagation();
+                if (!canSend && steerArm.consumeEnter()) return;
                 send();
               }
             }}
@@ -523,9 +528,7 @@ export default function PromptBar({
             aria-pressed={busy ? undefined : listening} disabled={busy ? !canSend : !demo}
             title={busy ? "Queue this follow-up" : demo ? "Demo dictation" : "Dictation is not available yet"}
             onClick={busy ? send : () => setListening((current) => !current)}
-            className={`flex size-7 shrink-0 items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed transition-[background-color,color,transform] duration-150 active:scale-[0.94] ${
-              pill ? "rounded-full" : "rounded-[8px]"
-            } ${listening ? "bg-accent-tint text-accent-ink" : "text-ink-3 hover:bg-hover hover:text-ink"} ${wide ? "col-start-4 row-start-2" : "col-start-4 row-start-1"}`}
+            className={`flex size-7 shrink-0 items-center justify-center rounded-full disabled:opacity-30 disabled:cursor-not-allowed transition-[background-color,color,transform] duration-150 active:scale-[0.94] ${listening ? "bg-accent-tint text-accent-ink" : "text-ink-3 hover:bg-hover hover:text-ink"} ${wide ? "col-start-4 row-start-2" : "col-start-4 row-start-1"}`}
           >
             {busy ? <Icon size={16} strokeWidth={2.4}><path d="M12 19V5M5 12l7-7 7 7" /></Icon> : listening ? (
               <span className="flex h-3.5 items-center gap-[2.5px]">
@@ -542,16 +545,13 @@ export default function PromptBar({
             )}
           </button>
 
-          {/* send — tactile square (round in the pill variant); while a turn
-              runs it morphs into the Codex-style stop control */}
+          {/* send — circular; while a turn runs it morphs into stop */}
           <button
             type="button"
             aria-label={showStop ? "Stop" : "Send"}
             disabled={showStop ? !onStop : !canSend}
             onClick={showStop ? onStop : send}
-            className={`flex size-7 shrink-0 items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed transition-[background-color,color,transform] duration-200 enabled:active:scale-[0.94] ${
-              pill ? "rounded-full" : "rounded-[8px]"
-            } ${wide ? "col-start-5 row-start-2" : "col-start-5 row-start-1"}`}
+            className={`flex size-7 shrink-0 items-center justify-center rounded-full disabled:opacity-30 disabled:cursor-not-allowed transition-[background-color,color,transform] duration-200 enabled:active:scale-[0.94] ${wide ? "col-start-5 row-start-2" : "col-start-5 row-start-1"}`}
             style={{
               background: showStop || canSend ? "var(--ink)" : "var(--line-strong)",
               color: showStop || canSend ? "var(--surface)" : "var(--ink-2)",

@@ -387,7 +387,6 @@ pub fn main(init: std.process.Init) !void {
     // If the metered companion connected, probe its license once so the note below can lean into paid tools (vs the conservative free-codedb note).
     if (!session_start.leanMode(flags.effectiveLean(), init.environ_map) and mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeLicensed(gpa, io, arena);
     boot.mark(io, "companion");
-
     var approvals: Approvals = undefined;
     try session_run.initApprovalsHooksFleet(io, gpa, arena, init.environ_map, &approvals, flags, out, json_mode);
     boot.mark(io, "approvals/hooks/fleet");
@@ -401,7 +400,6 @@ pub fn main(init: std.process.Init) !void {
     const sys_normal = try startup.buildSystemPrompt(io, arena, out, flags.system_prompt_flag, flags.append_system_flag, json_mode or flags.oneshot_prompt != null or init.environ_map.get("GRAFF_REPL_DEBUG") == null, (flags.oneshot_prompt != null or !(Io.File.stdin().isTty(io) catch true)) and !flags.effectiveYolo(), mcp_tools, g_codedbpro_licensed, init.environ_map.get("GRAFF_LEARNED_PROMPT"), init.environ_map);
     boot.mark(io, "system prompt");
     session_run.learningNotice(io, arena, init.environ_map, out, json_mode or flags.oneshot_prompt != null);
-
     var snaps: Snapshots = .{ .gpa = gpa, .io = io };
     defer snaps.deinit();
     // Keep an early fallback for failures before behavioral tracing is set up.
@@ -575,6 +573,8 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("list_dir_nearmiss.zig");
     _ = @import("repo_map.zig");
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests
+    _ = @import("agent_gateway_retry.zig"); // #1019: flake vs overflow classification must stay reachable
+    _ = @import("agent_responses.zig"); // #1019: type:error frame message extraction
     _ = @import("agent_server_compact.zig"); // server-side autocompact (codex Responses)
     _ = @import("compact_status.zig");
     _ = @import("agent_request_search_tests.zig");
@@ -590,11 +590,11 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("goal_flow.zig");
     _ = @import("goal_todo.zig");
     _ = @import("goal_pacing.zig");
-    _ = .{ @import("presence_accord.zig"), @import("peer_idle.zig"), @import("presence_chan.zig"), @import("presence_record.zig"), @import("peer_inbox_content_test.zig"), @import("peer_inbox_failure_test.zig"), @import("peer_inbox_storage_test.zig"), @import("peer_inbox_sequence_test.zig"), @import("peer_inbox_snapshot_test.zig") };
+    _ = .{ @import("presence_accord.zig"), @import("peer_idle.zig"), @import("acp_idle.zig"), @import("presence_chan.zig"), @import("presence_record.zig"), @import("peer_inbox_content_test.zig"), @import("peer_inbox_failure_test.zig"), @import("peer_inbox_storage_test.zig"), @import("peer_inbox_sequence_test.zig"), @import("peer_inbox_snapshot_test.zig") };
     _ = @import("acp_agents.zig");
     _ = @import("subagent_activity.zig");
     _ = @import("subagent_recovery.zig");
     _ = @import("acp_agent_activity.zig");
     _ = @import("read_image.zig");
-    _ = .{ @import("pr_local_checks.zig"), @import("mcp_names.zig"), @import("workspace_history.zig"), @import("file_worktree.zig"), @import("mcp_turn_context.zig"), @import("review_deadline.zig"), @import("issue_cmd.zig"), @import("shell_tool.zig") };
+    _ = .{ @import("pr_local_checks.zig"), @import("mcp_names.zig"), @import("workspace_history.zig"), @import("file_worktree.zig"), @import("mcp_turn_context.zig"), @import("review_deadline.zig"), @import("issue_cmd.zig"), @import("shell_tool.zig"), @import("acp_ask.zig") };
 }

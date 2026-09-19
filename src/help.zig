@@ -30,7 +30,7 @@ const peers_blurb =
 pub const sections = [_]Section{
     .{ .title = "getting around", .names = &.{ "/new", "/clear", "/resume", "/save", "/sessions", "/workspace", "/experiment", "/rename", "/rewind", "/edit", "/snapshot", "/teleport" } },
     .{ .title = "the model", .names = &.{ "/model", "/models", "/effort", "/reasoning", "/fast", "/thinking", "/keepcontext", "/fallback", "/routes" } },
-    .{ .title = "working autonomously", .names = &.{ "/goal", "/pr-acceptance", "/loop", "/schedule", "/review", "/issue", "/plan", "/todo", "/jobs", "/ultracode", "/strict", "/yolo", "/never" } },
+    .{ .title = "working autonomously", .names = &.{ "/goal", "/goals", "/pr-acceptance", "/loop", "/schedule", "/review", "/issue", "/plan", "/todo", "/jobs", "/ultracode", "/strict", "/yolo", "/never" } },
     .{ .title = "talking to other graffs", .names = &.{ "/tell", "/peek", "/adapter" }, .blurb = peers_blurb },
     .{ .title = "your setup", .names = &.{ "/login", "/key", "/cost", "/usage", "/version", "/update", "/privacy", "/mcp", "/import-claude", "/skills", "/plugins", "/agents", "/hooks", "/tools", "/fleet" } },
     .{ .title = "context & history", .names = &.{ "/compact", "/btw", "/doctor", "/debug", "/cache", "/trace", "/trajectory" } },

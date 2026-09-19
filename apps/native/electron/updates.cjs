@@ -23,12 +23,26 @@ function updateAvailability({ app, resources, env = process.env, execPath = proc
   return { available: true, reason: null };
 }
 
-function createUpdates({ updater, version, available = true, automatic = true, notify, save = () => {}, onReady, unavailableReason }) {
+function firstCheckDelayMs(pending) {
+  return pending ? 0 : FIRST_CHECK_MS;
+}
+
+function createUpdates({ updater, version, available = true, automatic = true, pending, notify, save = () => {}, onReady, unavailableReason }) {
   const blocked = !available;
   const blockedMessage = blocked ? unavailableMessage(unavailableReason) : undefined;
-  let state = { status: available ? 'idle' : 'unavailable', currentVersion: version, automatic: available ? automatic : false, interactive: false, message: blockedMessage };
+  const leftover = available && pending && pending !== version ? pending : undefined;
+  let state = { status: leftover ? 'ready' : available ? 'idle' : 'unavailable', currentVersion: version, automatic: available ? automatic : false, interactive: false, message: blockedMessage, ...(leftover ? { version: leftover, percent: 100 } : {}) };
   let checking = false;
   const emit = patch => { state = { ...state, ...patch }; notify({ ...state }); };
+  if (leftover && onReady) {
+    // Last session downloaded this build and the user chose Later. Offer
+    // again now — not 30s later, not only if electron-updater re-emits.
+    setImmediate(() => {
+      if (state.prompted === leftover) return;
+      state.prompted = leftover;
+      onReady(leftover);
+    });
+  }
   if (available) {
     updater.autoDownload = true;
     updater.autoInstallOnAppQuit = false;
@@ -81,17 +95,40 @@ function createUpdates({ updater, version, available = true, automatic = true, n
   };
 }
 
+function readPrefs(file) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return {
+      automatic: raw.automatic !== false,
+      pending: typeof raw.pending === 'string' && raw.pending ? raw.pending : undefined,
+    };
+  } catch {
+    return { automatic: true, pending: undefined };
+  }
+}
+
+function writePrefs(file, patch) {
+  const cur = readPrefs(file);
+  const next = { automatic: patch.automatic ?? cur.automatic };
+  const pending = Object.prototype.hasOwnProperty.call(patch, 'pending') ? patch.pending : cur.pending;
+  if (pending) next.pending = pending;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(next));
+}
+
 function installUpdates({ app, win, ipcMain, trusted, resources }) {
   const { dialog } = require('electron');
   const prefs = path.join(app.getPath('userData'), 'updates.json');
-  let automatic = true;
-  try { automatic = JSON.parse(fs.readFileSync(prefs, 'utf8')).automatic !== false; } catch {}
+  const loaded = readPrefs(prefs);
+  let automatic = loaded.automatic;
+  let pending = loaded.pending === app.getVersion() ? undefined : loaded.pending;
+  if (loaded.pending && !pending) writePrefs(prefs, { pending: undefined });
   const gate = updateAvailability({ app, resources });
   const available = gate.available;
   let autoItem;
-  const controller = createUpdates({ version: app.getVersion(), automatic, available, unavailableReason: gate.reason,
+  const controller = createUpdates({ version: app.getVersion(), automatic, pending, available, unavailableReason: gate.reason,
     updater: available ? require('./updater-runtime.cjs') : null,
-    save: value => { fs.mkdirSync(path.dirname(prefs), { recursive: true }); fs.writeFileSync(prefs, JSON.stringify({ automatic: value })); },
+    save: value => writePrefs(prefs, { automatic: value }),
     notify: state => {
       if (autoItem) autoItem.checked = state.automatic;
       if (!win.isDestroyed()) { win.webContents.send('update-state', state); win.setProgressBar(state.status === 'downloading' ? (state.percent ?? 0) / 100 : -1); }
@@ -99,6 +136,8 @@ function installUpdates({ app, win, ipcMain, trusted, resources }) {
     onReady: readyVersion => {
       // The standard update modal (Sparkle/electron-updater style): pops once
       // per downloaded version, after the download — never mid-conversation.
+      // Later persists `pending` so the same offer comes back on next launch.
+      writePrefs(prefs, { pending: readyVersion });
       if (win.isDestroyed()) return;
       void dialog.showMessageBox(win, {
         type: 'info',
@@ -122,7 +161,7 @@ function installUpdates({ app, win, ipcMain, trusted, resources }) {
     return controller.state();
   });
   const check = () => { if (controller.state().automatic) void controller.check(); };
-  const first = setTimeout(check, FIRST_CHECK_MS), repeat = setInterval(check, POLL_MS);
+  const first = setTimeout(check, firstCheckDelayMs(pending)), repeat = setInterval(check, POLL_MS);
   first.unref(); repeat.unref();
   app.once('before-quit', () => { clearTimeout(first); clearInterval(repeat); });
   return [
@@ -130,4 +169,4 @@ function installUpdates({ app, win, ipcMain, trusted, resources }) {
     autoItem,
   ];
 }
-module.exports = { createUpdates, installUpdates, updateAvailability, unavailableMessage, FIRST_CHECK_MS, POLL_MS };
+module.exports = { createUpdates, installUpdates, updateAvailability, unavailableMessage, firstCheckDelayMs, FIRST_CHECK_MS, POLL_MS };

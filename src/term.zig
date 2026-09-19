@@ -146,7 +146,7 @@ pub const tty = struct {
     /// One-time: let the Windows console interpret ANSI/VT escapes and decode
     /// stdout as UTF-8 (CP 65001). No-op elsewhere. Call once from main before
     /// any styled output. PowerShell 5.1/conhost otherwise treat box-drawing
-    /// as CP437 (#607); zigzag already did this in its raw-mode path.
+    /// as CP437 (#607); the fullscreen TUI already did this in its raw-mode path.
     pub fn enableVtOutput() void {
         if (!is_windows) return;
         for ([_]win.DWORD{ win.STD_OUTPUT_HANDLE, win.STD_ERROR_HANDLE }) |id| {
@@ -202,7 +202,7 @@ pub const tty = struct {
             if (blocking) raw &= ~@as(u32, win.ENABLE_PROCESSED_INPUT) else raw |= win.ENABLE_PROCESSED_INPUT;
             if (win.SetConsoleMode(h, raw) == 0) return null;
             // Line REPL (#607): readline/pickers go through here, not TUI/tty.
-            // Same CP 65001 switch zigzag uses, so `›` chrome is not CP437.
+            // Same CP 65001 switch the TUI uses, so `›` chrome is not CP437.
             const orig: RawState = .{
                 .in_mode = mode,
                 .output_cp = win.GetConsoleOutputCP(),
@@ -560,7 +560,7 @@ test "line REPL raw mode switches the Windows console to UTF-8 (#607)" {
     const rest_at = std.mem.indexOf(u8, src, "pub fn restore(state: RawState) void {").?;
     const rest = src[rest_at..std.mem.indexOfPos(u8, src, rest_at, "pub fn poll(").?];
     try std.testing.expect(std.mem.indexOf(u8, rest, "SetConsoleOutputCP(state.output_cp)") != null);
-    // readline.zig is the line REPL prompt — not TUI/tty, not zigzag.
+    // readline.zig is the line REPL prompt — not TUI/tty.
     const rl = @embedFile("readline.zig");
     try std.testing.expect(std.mem.indexOf(u8, rl, "tty.enterRaw(true)") != null);
 }

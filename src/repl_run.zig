@@ -1,49 +1,17 @@
-//! `graff repl` — top-level entry points: the live TUI loop (run), the
-//! headless/scriptable twin for CI and non-TTY stdin (runScripted), and the
-//! standalone `graff-repl` exe's main(). Split out of repl.zig (#123,
-//! 600-line goal).
+//! Scripted `graff repl` entry: headless twin of the Model for CI and non-TTY
+//! stdin. TTY `graff repl` is `tui_launch`, not this file.
 
 const std = @import("std");
-const builtin = @import("builtin");
-const zz = @import("zigzag");
 
 const repl = @import("repl.zig");
 const Model = repl.Model;
 
-/// Run the REPL. Pass a `turn_fn` (+ opaque ctx + model name) to chat with a
-/// model; pass null/null/"" for the offline arithmetic engine.
-pub fn run(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    environ_map: *const std.process.Environ.Map,
-    turn_ctx: ?*anyopaque,
-    turn_fn: ?repl.TurnFn,
-    model_fn: ?repl.ModelFn,
-    cancel_fn: ?repl.CancelFn,
-    model_name: []const u8,
-    models: []const u8,
-) !void {
-    repl.g_turn_ctx = turn_ctx;
-    repl.g_turn_fn = turn_fn;
-    repl.g_model_fn = model_fn;
-    repl.g_cancel_fn = cancel_fn;
-    repl.g_model_name = model_name;
-    repl.g_debug = environ_map.get("GRAFF_REPL_DEBUG") != null;
-    repl.g_models = models;
-    var program = zz.Program(Model).initWithOptions(gpa, io, environ_map, .{ .mouse = true });
-    defer program.deinit();
-    try program.run();
-}
-
-/// Headless, scriptable twin of run(): drives the SAME Model + turn_fn as the
-/// live TUI, but reads input lines from `in` and prints each turn's new output to
-/// `out` instead of taking over the terminal. Lets
+/// Headless, scriptable Model: reads input lines from `in` and prints each
+/// turn's new output to `out` instead of taking over the terminal. Lets
 ///   printf '/goal X\n<prompt>\n' | graff repl
-/// exercise the exact repl path (goal steering, todo_write, cross-turn continuity)
-/// from a script / CI / test — a 1:1 map of the interactive behavior. main() routes
-/// here automatically when stdin is not a TTY. GRAFF_REPL_DEBUG=1 additionally dumps
-/// each turn's raw agent stream to stderr (where mid-turn renders like the
-/// todo_write checklist appear).
+/// exercise goal steering, todo_write, and cross-turn continuity from a
+/// script / CI / test. main() routes here when stdin is not a TTY.
+/// GRAFF_REPL_DEBUG=1 dumps each turn's raw agent stream to stderr.
 pub fn runScripted(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -112,14 +80,7 @@ pub fn runScripted(
     try out.flush();
 }
 
-pub fn main(init: std.process.Init) !void {
-    // Standalone `graff-repl` never visits src/main.zig. zigzag enableRawMode
-    // also sets CP 65001; this covers any bytes printed before raw mode (#607).
-    if (builtin.os.tag == .windows) @import("term.zig").tty.enableVtOutput();
-    return run(init.gpa, init.io, init.environ_map, null, null, null, null, "", "");
-}
-
-test "standalone graff-repl enables Windows UTF-8 before zigzag raw mode (#607)" {
-    const src = @embedFile("repl_run.zig");
-    try std.testing.expect(std.mem.indexOf(u8, src, "tty.enableVtOutput()") != null);
+test "Windows UTF-8 is enabled on the line REPL and TUI path (#607)" {
+    const src = @embedFile("term.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "enableVtOutput") != null);
 }

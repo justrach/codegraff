@@ -259,7 +259,7 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
                 }
                 if (telemetry.g_telem) |t| {
                     const run_id: []const u8 = &scoring.g_run_id;
-                    // Genome-send (graff-dgm.md §B): the eval genome is this agent's own
+                    // Genome-send (docs/proposals/graff-dgm.md §B): the eval genome is this agent's own
                     // persona, never spawned via runSub, so its prompt_text never reached
                     // the worker. A cell only promotes when harness_scores joins to a
                     // harness_genomes row, so ride the genome text over on a `propose`

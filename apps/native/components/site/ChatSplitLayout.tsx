@@ -39,7 +39,9 @@ export default function ChatSplitLayout({ threads, liveChatIds, activeId, direct
   const geometry=useMemo(()=>splitGeometry(tree),[tree]);
   return <div data-chat-layout className="relative flex min-h-0 min-w-0 flex-1" style={{flexDirection:direction}}>
     {threads.map((thread,index)=>
-      <section key={thread.id} data-chat={thread.id} data-focused={thread.id===activeId} aria-label={`Chat pane ${index+1}`}
+      <section key={thread.id} data-chat={thread.id} data-focused={thread.id===activeId}
+        data-glass={split && thread.id !== activeId ? "true" : undefined}
+        aria-label={`Chat pane ${index+1}`}
         onPointerDownCapture={()=>{if(thread.id!==activeId)onFocus(thread.id);}}
         onFocusCapture={()=>{if(thread.id!==activeId)onFocus(thread.id);}}
         style={{...paneStyle(geometry.panes.find(p=>p.id===thread.id)!.box),minHeight:0,borderColor:split&&thread.id===activeId?'var(--accent)':undefined}}

@@ -30,7 +30,7 @@ const learn_submit = @import("learn_submit.zig");
 const learn_tournament = @import("learn_tournament.zig");
 const recipe = @import("recipe.zig");
 
-// `graff repl` (zigzag TUI chat).
+// Scripted `graff repl` Model (piped/CI). TTY `graff repl` is TUI/.
 const repl = @import("repl.zig");
 const repl_markdown = @import("repl_markdown.zig");
 const repl_parser = @import("repl_parser.zig");

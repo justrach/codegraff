@@ -21,8 +21,12 @@ export default function ActionMenu({ label, text = "…", children, className = 
       className="flex h-7 min-w-7 items-center justify-center rounded-md px-2 text-xs text-ink-2 hover:bg-hover focus-visible:outline-auto">{text}</button>
     <div ref={panel} id={id} popover="auto" role={open ? "dialog" : undefined} aria-label={label}
       onToggle={event => { const opened = event.newState === "open"; setOpen(opened); if (opened) { position(); panel.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus(); } }}
-      onClick={event => { if ((event.target as Element).closest("button:not(:disabled)")) panel.current?.hidePopover(); }}
-      className={`fixed m-0 max-h-[calc(100dvh-16px)] ${wide ? "w-80 max-w-[calc(100vw-16px)]" : "w-52"} overflow-y-auto rounded-lg border border-line bg-surface p-1.5 text-ink shadow-overlay [&>button]:flex [&>button]:w-full [&>button]:justify-start [&>button]:rounded-md [&>button]:px-3 [&>button]:py-2 [&>button]:text-left [&>button]:text-xs [&>button:hover]:bg-hover`}>
+      onClick={event => {
+        const button = (event.target as Element).closest("button:not(:disabled)");
+        // Nested dialog triggers keep the menu open until their own panel mounts.
+        if (button && button.getAttribute("aria-haspopup") !== "dialog") panel.current?.hidePopover();
+      }}
+      className={`fixed m-0 max-h-[calc(100dvh-16px)] ${wide ? "w-80 max-w-[calc(100vw-16px)]" : "w-52"} overflow-y-auto rounded-window border border-line bg-surface p-1.5 text-ink shadow-overlay [&>button]:flex [&>button]:w-full [&>button]:justify-start [&>button]:rounded-control [&>button]:px-3 [&>button]:py-2 [&>button]:text-left [&>button]:text-xs [&>button:hover]:bg-hover`}>
       {children}
     </div>
   </span>;

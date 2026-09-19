@@ -55,9 +55,9 @@ pub const folded = [_][]const u8{
     "agent_output",
     "skill",
     "webfetch",
-    // ADR 0022 / 0030: isFolded is false under --old so the structured-only
-    // load_tool_schemas listing stays byte-stable. The name stays hidden
-    // until listed() — small turns do not advertise rlm or sPTC.
+    // ADR 0022 / 0140: isFolded is false under --old so the structured-only
+    // catalog stays byte-stable. While available, rlm is on the catalog
+    // from turn one — no batch-size or compactAt gate.
     "rlm",
 };
 
@@ -72,9 +72,8 @@ pub fn isFolded(name: []const u8) bool {
     return false;
 }
 
-/// Session-discovered rlm (wide native batch or context threshold). `--rlm`
-/// sets `g_cli_forced` so /new does not hide it again. Never set this
-/// because MCP slims or a fat first payload.
+/// `--rlm` sets `g_cli_forced` so /new keeps the schema loaded. Listing
+/// itself follows `available` (ADR 0140), not a batch or compactAt gate.
 var g_showcased: bool = false;
 var g_cli_forced: bool = false;
 
@@ -136,14 +135,10 @@ pub fn contextThreshold(compact_at: u64) ?u64 {
     return compact_at * pct / 100;
 }
 
-/// True when this sample newly showcased rlm (caller rebuilds the catalog).
-pub fn noticeContext(tokens: u64, compact_at: u64) bool {
-    if (listed() or !@import("rlm_spec.zig").available) return false;
-    const threshold = contextThreshold(compact_at) orelse return false;
-    if (tokens < threshold) return false;
-    showcaseRlm();
-    markLoaded("rlm");
-    return true;
+/// Kept so callers in agent.zig still compile. ADR 0140: compactAt never
+/// gates listing — rlm is already advertised when available.
+pub fn noticeContext(_: u64, _: u64) bool {
+    return false;
 }
 
 /// Lean/small turns hide rlm until a showcase. An explicit request for the
@@ -165,9 +160,9 @@ pub fn noticeExplicit(text: []const u8) bool {
     return true;
 }
 
-/// Folded-native listing and catalog discovery: hidden on small turns.
+/// Folded-native listing: advertised whenever rlm is on (ADR 0140).
 pub fn listed() bool {
-    return g_showcased or isLoaded("rlm");
+    return @import("rlm_spec.zig").available;
 }
 
 pub fn showcaseRlm() void {
@@ -208,26 +203,10 @@ fn unmark(name: []const u8) void {
     }
 }
 
-/// Host tools sPTC can overlap. MCP fan-out (Linear comments) must not
-/// showcase — that re-invites the each() footgun (ADR 0029).
-const wide_native = [_][]const u8{ "read_file", "codedb", "bash", "webfetch" };
-
-/// True when this batch newly showcased rlm (caller rebuilds the catalog).
-pub fn noticeWideNative(names: []const []const u8) bool {
-    if (listed() or !@import("rlm_spec.zig").available) return false;
-    var n: usize = 0;
-    for (names) |name| {
-        for (wide_native) |w| {
-            if (std.mem.eql(u8, name, w)) {
-                n += 1;
-                break;
-            }
-        }
-    }
-    if (n < 4) return false;
-    showcaseRlm();
-    markLoaded("rlm");
-    return true;
+/// Kept so callers in agent_tools still compile. ADR 0140: a native batch
+/// never gates listing — rlm is already advertised when available.
+pub fn noticeWideNative(_: []const []const u8) bool {
+    return false;
 }
 
 /// Whether the fold is live at all — hiddenSpec consults this so
@@ -312,8 +291,8 @@ pub fn renderLoadedTail(s: *std.json.Stringify, kind: @import("provider.zig").Pr
 /// cache the mode exists to protect, #476).
 pub fn catalogSkips(name: []const u8) bool {
     if (!enabled) return false;
-    // #868: when rlm is on, keep it on the catalog so lean/explicit tasks can
-    // discover it without waiting for a 4-wide batch or --rlm. --old still hides.
+    // ADR 0140: when rlm is on, keep it on the catalog so the first turn
+    // can use it. --old still hides. No batch-size or compactAt gate.
     if (std.mem.eql(u8, name, "rlm") and @import("rlm_spec.zig").available) return false;
     if (mcp_schema_gate.g_stable_catalog) return isFolded(name);
     return blocked(name);
@@ -540,4 +519,8 @@ test "explicit native loads rebuild the active provider catalog (#492)" {
     try std.testing.expect(isLoaded("workflow"));
     try std.testing.expectEqual(@as(usize, 1), agent.invalidations);
     try std.testing.expectEqual(@as(usize, 1), agent.rebuilds);
+}
+
+test {
+    _ = @import("native_fold_rlm.zig");
 }

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { distanceFromTail, isFollowingTail, pinScrollerTail, TAIL_SLACK_PX, followsAfterScroll } from "./follow-scroll.ts";
+import { distanceFromTail, isFollowingTail, overlayClearancePx, pinScrollerTail, TAIL_SLACK_PX, followsAfterScroll } from "./follow-scroll.ts";
 
 function box(scrollTop: number, scrollHeight = 1000, clientHeight = 400) {
   return { scrollTop, scrollHeight, clientHeight };
@@ -26,6 +26,12 @@ describe("follow-scroll", () => {
   });
 });
 
+
+it("clears a stacked composer instead of the old 9rem floor", () => {
+  assert.equal(overlayClearancePx(80), 144);
+  assert.equal(overlayClearancePx(180), 192);
+  assert.equal(overlayClearancePx(Number.NaN), 144);
+});
 
 it("content growth does not impersonate a reader scrolling away", () => {
   assert.equal(followsAfterScroll(box(600, 2000), 600, true), true);

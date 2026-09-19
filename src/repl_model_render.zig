@@ -1,12 +1,10 @@
 //! `graff repl` Model — pane rendering: spinner frame selection, the status
 //! line, the full frame draw (conversation history + input box, clamped to
-//! the terminal size), and mouse drag-selection copy. Split out of the
-//! Model struct in repl.zig (#123, 600-line goal); reached through
-//! repl.zig's member aliases, so both `self.render(...)` and
-//! `Model.render(...)` resolve here unchanged.
+//! the terminal size), and selection text. Split out of the Model struct in
+//! repl.zig (#123, 600-line goal); reached through repl.zig's member aliases.
 
 const std = @import("std");
-const zz = @import("zigzag");
+const zz = @import("repl_style.zig");
 
 const repl = @import("repl.zig");
 const Model = repl.Model;
@@ -50,7 +48,7 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, term_width: usize, term_heig
     const a = arena_state.allocator();
 
     const inner: u16 = @intCast(@max(@as(usize, 8), term_width) - 4);
-    const border_color = if (self.ultracode) repl.ultracode_palette[(now_ms / 180) % repl.ultracode_palette.len] else zz.Color.brightBlack;
+    const border_color: zz.Color = if (self.ultracode) repl.ultracode_palette[(now_ms / 180) % repl.ultracode_palette.len] else .brightBlack;
     const box = (zz.Style{}).borderAll(zz.Border.rounded)
         .borderForeground(border_color).paddingLeft(1).paddingRight(1).width(inner);
 
@@ -190,20 +188,6 @@ pub fn selectionText(self: *Model, a: std.mem.Allocator, r0: usize, r1: usize) ?
     const trimmed = std.mem.trim(u8, buf.items, " \t\r\n");
     if (trimmed.len == 0) return null;
     return a.dupe(u8, trimmed) catch null;
-}
-
-/// Copy the drag-selected lines (screen rows r0..r1 inclusive, 0-based) to the
-/// clipboard via OSC52 and raise a confirmation toast. Empty selections write
-/// nothing and raise no toast. Restores copy after mouse mode disabled native
-/// terminal selection (#91, #85).
-pub fn copySelection(self: *Model, ctx: *zz.Context, r0: usize, r1: usize) void {
-    const text = self.selectionText(self.alloc, r0, r1) orelse return;
-    defer self.alloc.free(text);
-    const ok = ctx.setClipboard(text) catch false;
-    // render() is hash-gated and may skip its flush; push the OSC52 out now.
-    if (ctx._terminal) |term| term.flush() catch {};
-    self.toast = if (ok) .copied else .failed;
-    self.toast_until_ms = (ctx.elapsed / std.time.ns_per_ms) + repl.TOAST_MS;
 }
 
 test "live pending tail paints markdown before the turn settles" {

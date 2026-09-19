@@ -1,6 +1,7 @@
-//! #1001: idle roots start a turn when the durable room has unread peer mail.
-//! JSONL drain is the source of truth; Accord Unix (ADR 0134) is opt-in live
-//! on post. One auto-turn per new unread batch — inbox consume resets.
+//! #1001 / #1007: idle roots start a turn when the durable room has unread
+//! peer mail. Same latch on line REPL, TUI, and graff acp (GUI). JSONL drain
+//! is the source of truth; Accord Unix (ADR 0134) is the standing live wake.
+//! One auto-turn per new unread batch — inbox consume resets.
 
 const std = @import("std");
 const Io = std.Io;

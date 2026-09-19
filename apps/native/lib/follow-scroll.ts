@@ -28,3 +28,9 @@ export function pinScrollerTail(el: HTMLElement | null, following: boolean): voi
   if (!el || !following) return;
   el.scrollTop = el.scrollHeight;
 }
+
+/** Bottom padding so the last transcript line sits above a floating composer. */
+export function overlayClearancePx(overlayHeight: number, slack = 12, floor = 144): number {
+  if (!Number.isFinite(overlayHeight) || overlayHeight < 0) return floor;
+  return Math.max(floor, Math.ceil(overlayHeight + slack));
+}

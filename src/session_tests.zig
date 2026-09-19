@@ -484,6 +484,11 @@ test "cache_key round-trips: parsed on load, garbage and absence rejected" {
         \\{"cache_key":42}
     , .{});
     try std.testing.expect(session.cacheKeyFromSession(wrong_type.object) == null);
+    const both = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"cache_key":"00000000-0000-4000-8000-000000000000","prompt_cache_key":"11111111-1111-5111-8111-111111111111"}
+    , .{});
+    try std.testing.expectEqualStrings("11111111-1111-5111-8111-111111111111", session.promptCacheKeyFromSession(both.object).?);
+    try std.testing.expect(session.promptCacheKeyFromSession(legacy.object) == null);
 }
 
 test "hasMeaningfulState: a peer wake alone is not a conversation" {

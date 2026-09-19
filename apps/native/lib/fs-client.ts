@@ -88,7 +88,7 @@ export async function gitFileDiff(path: string, root?: string): Promise<string> 
 
 /* ── folder browser (New workspace) ── */
 
-export type FolderEntry = { name: string; path: string; git: boolean };
+export type FolderEntry = { name: string; path: string; git: boolean; mtime: number };
 
 export type FolderListing = {
   path: string;
@@ -105,4 +105,17 @@ export async function browseFolders(path: string): Promise<FolderListing> {
   const body = (await res.json()) as FolderListing & { error?: string };
   if (!res.ok) throw new Error(body.error ?? `workspaces ${res.status}`);
   return body;
+}
+
+/** Create a folder inside `parent` (the listing currently on screen). */
+export async function createFolder(parent: string, name: string): Promise<{ path: string }> {
+  const res = await fetch("/api/workspaces", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path: parent, name }),
+  });
+  const body = (await res.json().catch(() => null)) as { path?: string; error?: string } | null;
+  if (!res.ok) throw new Error(body?.error ?? `Could not create this folder (${res.status}).`);
+  if (!body?.path) throw new Error("Could not create this folder.");
+  return { path: body.path };
 }

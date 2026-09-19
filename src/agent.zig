@@ -10,7 +10,6 @@ const main_mod = @import("main.zig");
 const provider_mod = @import("provider.zig");
 const Provider = provider_mod.Provider;
 const ReasoningEffort = main_mod.ReasoningEffort;
-
 const ws = @import("ws.zig"); // codex Responses WS transport (delta continuation held across a turn)
 const mcp = @import("mcp.zig");
 const approvals_mod = @import("approvals.zig");
@@ -32,10 +31,7 @@ const prompt_ui = @import("agent_prompt.zig");
 const agent_tests = @import("agent_tests.zig");
 const empty_completion = @import("agent_empty_completion.zig");
 const goal_state = @import("goal_state.zig");
-const peer_channel = @import("peer_channel.zig"); // #469: turn-boundary peer message delivery
-const job_notify = @import("job_notify.zig");
-const schedule = @import("schedule.zig");
-const channel_worker = @import("channel_worker.zig");
+const turn_inbox = @import("turn_inbox.zig");
 
 pub const TodoItem = struct {
     content: []const u8,
@@ -84,6 +80,7 @@ pub const Agent = struct {
     client: *std.http.Client,
     provider: Provider,
     subagent_provider: ?Provider = null, // optional model pin for every direct child/workflow/judge
+    feedback: ?*@import("subagent_feedback.zig").Inbox = null,
     subagent_provider_explicit: bool = false, // #371: --subagent-*/GRAFF_SUBAGENT_*/--no-subagent-tier freeze it; a DERIVED default re-follows /model (providers.applyProviderInner)
     subagent_cross_provider: bool = false, // user explicitly allowed the pin to cross a provider/data boundary
     messages: std.json.Array,
@@ -330,6 +327,7 @@ pub const Agent = struct {
 
     pub fn runTurn(self: *Agent) anyerror![]const u8 {
         var pending_work: empty_completion.PendingWork = .{};
+        var bounced_answer: empty_completion.BounceAnswer = .{};
         self.completed = null;
         self.mcp_context.begin(self.io);
         @import("named_work.zig").beginTurn(self);
@@ -346,15 +344,10 @@ pub const Agent = struct {
                 if (!self.sub) esc_cancel.store(false, .release);
                 return error.Interrupted;
             }
-            // #469: co-resident sessions' queued channel messages land at EVERY
-            // step boundary, so a working session picks a peer's note up
-            // mid-task (between tool batches) and can act on it in the same
-            // turn — durable in history, visible as an event. Offset-based:
-            // an empty channel costs one small stat per step.
-            peer_channel.deliverInbound(self);
-            job_notify.deliver(self);
-            schedule.deliver(self);
-            channel_worker.deliver(self);
+            // Peer mail, job/schedule wakes, and REPL steer land here so a
+            // follow-up typed during tools is the next user message in this
+            // turn rather than the next prompt after runTurn returns.
+            try turn_inbox.deliver(self);
             // #193: pre-send overflow gate. A single turn's tool-output burst can
             // push the input past the model's wall before the between-turns 80%
             // meter (last_context_tokens, server-reported) catches up. Estimate the
@@ -395,9 +388,12 @@ pub const Agent = struct {
             const done = try @import("agent_steps.zig").stepForWire(self, root);
             if (done) |final_text| {
                 // Retry empty replies; reconcile plain finals with live work (#745).
-                if (try empty_completion.handle(self, final_text, hist_len)) continue;
+                if (try bounced_answer.retry(self, final_text, hist_len)) continue;
                 if (try @import("named_work.zig").handle(self, final_text)) continue;
-                if (try pending_work.finish(self, final_text)) |text| return review_deadline.finish(text);
+                if (try pending_work.finish(self, bounced_answer.finish(self, final_text))) |text| {
+                    if (self.feedback) |inbox| if (!inbox.tryFinish(self.io)) continue;
+                    return review_deadline.finish(text);
+                }
                 continue;
             }
             self.empty_completion_retries = 0;
@@ -581,10 +577,6 @@ pub const Agent = struct {
     pub const mdWidth = @import("agent_render.zig").mdWidth;
     pub const mdSpanEnd = @import("agent_render.zig").mdSpanEnd;
     pub const mdFinishLine = @import("agent_render.zig").mdFinishLine;
-    // Streamed-markdown table rendering (buffered rows -> aligned columns,
-    // word-wrapped to termCols()) lives in agent_table.zig (#123, 600-line
-    // goal). Member-aliased so `self.flushTable(...)`/`Agent.isTableSeparator(...)`
-    // resolve unchanged regardless of physical file.
     pub const flushTable = @import("agent_table.zig").flushTable;
     pub const fitWidths = @import("agent_table.zig").fitWidths;
     pub const atomEnd = @import("agent_table.zig").atomEnd;

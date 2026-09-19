@@ -15,6 +15,7 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
   const [width, setWidth] = useState(520);
   const frame = useRef<HTMLDivElement>(null);
   const address = useRef<HTMLInputElement>(null);
+  const typing = useRef(false);
   const infoRevision = useRef(0);
   const callbacks = useRef({ pins, onPinsChange }); callbacks.current = { pins, onPinsChange };
   const storageKey = `graff.electron.browser.url:${memoryKey || chat}`;
@@ -76,6 +77,11 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat, storageKey]);
   useEffect(() => layoutRef.current(), [width, pins.length, error, picking]);
+  useEffect(() => {
+    if (typing.current || !address.current) return;
+    const next = !url || url === "about:blank" ? "" : url;
+    if (address.current.value !== next) address.current.value = next;
+  }, [url]);
   useEffect(() => { void desktop()?.browser(chat, "pins", { pins }).catch(() => {}); }, [chat, pins, info?.url]);
   const button = "h-7 rounded-md px-2 text-xs hover:bg-hover disabled:opacity-40";
   return <aside className="relative flex shrink-0 flex-col overflow-hidden rounded-xl border border-line bg-page" style={{ width, maxWidth: "55vw" }}>
@@ -91,12 +97,16 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
       <button className={button} aria-label="Activity" onClick={() => void desktop()!.activity()}>Activity</button>
       <button className={button} aria-label="Close browser" onClick={() => { void desktop()!.browser(chat, "close"); onClose(); }}>×</button>
     </header>
-    <form className="flex h-10 items-center gap-1 border-b border-line px-2" onSubmit={e => { e.preventDefault(); void command("open", { url }); }}>
+    <form className="flex h-10 items-center gap-1 border-b border-line px-2" onSubmit={e => {
+      e.preventDefault();
+      const typed = (address.current?.value ?? url).trim();
+      void command("open", { url: typed });
+    }}>
       <button type="button" className={button} aria-label="Back" disabled={!info?.canGoBack} onClick={() => void command("back")}>←</button>
       <button type="button" className={button} aria-label="Forward" disabled={!info?.canGoForward} onClick={() => void command("forward")}>→</button>
-      <button type="button" className={button} aria-label="Reload" onClick={() => void command("open", { url })}>↻</button>
-      <input ref={address} className="h-7 min-w-0 flex-1 rounded-md bg-field px-2 text-xs outline-none" aria-label="Address" placeholder="Search or enter a URL" value={url} onChange={e => setUrl(e.target.value)} onFocus={e => e.currentTarget.select()} />
-      <button className={button}>Go</button>
+      <button type="button" className={button} aria-label="Reload" onClick={() => void command("open", { url: address.current?.value || url })}>↻</button>
+      <input ref={address} className="h-7 min-w-0 flex-1 rounded-md bg-field px-2 text-xs outline-none" aria-label="Address" placeholder="Search or enter a URL" defaultValue={url} onChange={e => setUrl(e.target.value)} onFocus={e => { typing.current = true; e.currentTarget.select(); }} onBlur={() => { typing.current = false; }} />
+      <button type="submit" className={button} aria-label="Go">Go</button>
     </form>
     {picking && <p role="status" className="border-b border-line bg-accent-tint px-3 py-2 text-xs text-accent-ink">Click the page to pin. Esc cancels.</p>}
     {error && <p role="alert" className="px-3 py-2 text-xs text-red">{error}</p>}

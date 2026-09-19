@@ -53,6 +53,10 @@ pub fn shouldPulseTurn(unattended: bool, json_mode: bool, sub: bool, call_n: u64
 /// set. Returns pause text or null to proceed. Never pauses when the cap is 0.
 /// Call 2+ used to print an inner-loop counter; that line is gone (ADR 0021).
 pub fn beforeRequest(self: *Agent) !?[]const u8 {
+    if (try @import("subagent_interactive.zig").beforeRequest(self)) |text| {
+        try self.say("{s}\n", .{text});
+        return text;
+    }
     self.model_calls_this_turn += 1;
     const cap = max_turn_model_calls;
     if (cap != 0 and self.model_calls_this_turn > cap) {

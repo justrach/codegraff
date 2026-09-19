@@ -64,14 +64,16 @@
   --shadow-overlay: var(--shadow-overlay);
 
   /* type */
-  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: var(--font-mono-face), ui-monospace, "SF Mono", monospace;
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", monospace;
 
-  /* radii — chips 6, controls 8, cards 10, windows 14, pills 999 */
-  --radius-chip: 6px;
-  --radius-control: 8px;
-  --radius-card: 10px;
-  --radius-window: 14px;
+  /* radii — see docs/design.md. chips 8, controls 12, cards 16,
+   * windows 24, composer 32, pills 999 */
+  --radius-chip: 8px;
+  --radius-control: 12px;
+  --radius-card: 16px;
+  --radius-window: 24px;
+  --radius-composer: 32px;
 
   /* easing — strong curves; built-ins are too weak */
   --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
@@ -103,6 +105,22 @@ body {
   font-size: 14px;
   letter-spacing: -0.01em;
   line-height: 1.5;
+}
+
+html[data-native-glass="true"] body {
+  background-color: transparent;
+  background-image: none;
+}
+
+html[data-native-glass="true"] [data-graff-main] {
+  /* Keep the native material subtle, even over a bright desktop. */
+  background-color: color-mix(in srgb, var(--page) 90%, transparent);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  html[data-native-glass="true"] [data-graff-main] {
+    background-color: var(--page);
+  }
 }
 
 ::selection {
@@ -294,7 +312,7 @@ a:focus-visible .animated-underline::after {
   height: 28px;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-control);
+  border-radius: 999px;
 }
 
 /* The sidebar is one persistent 224px tree clipped by a 52px shell.

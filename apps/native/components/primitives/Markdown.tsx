@@ -2,10 +2,8 @@
 
 import { useMemo, type JSX, type ReactNode } from "react";
 import { Streamdown, type Components, type ControlsConfig, type ExtraProps } from "streamdown";
-import { mermaid } from "@streamdown/mermaid";
 import { code } from "@/lib/code-highlighter";
 import StreamingCode from "./StreamingCode";
-import { useDarkTheme } from "./useDarkTheme";
 import { stripCiteMarkup } from "@/lib/cite-markup";
 
 /* ─────────────────────────────────────────────────────────
@@ -23,13 +21,12 @@ import { stripCiteMarkup } from "@/lib/cite-markup";
 /** `src/acp.zig`, `README.md`, `benchmarks/` — but not `--flags` or phrases. */
 const PATHISH = /^(?:[\w@.-]+\/)+[\w@.-]*$|^[\w-][\w.-]*\.[a-z0-9]{1,8}$/i;
 
-const PLUGINS = { code, mermaid };
+const PLUGINS = { code };
 
 const CONTROLS: ControlsConfig = {
   code: { copy: true, download: false },
   table: { copy: true, download: false, fullscreen: false },
   image: { download: false },
-  mermaid: { copy: true, download: false, fullscreen: true, panZoom: true },
 };
 
 const HEADING_STYLE: Record<number, string> = {
@@ -110,7 +107,7 @@ function inlineCode(onOpen?: (path: string) => void) {
       <code
         {...rest}
         onClick={pathish ? () => onOpen(target) : undefined}
-        title={pathish ? `Open ${stripCiteMarkup(text)} in the files pane` : undefined}
+        title={pathish ? `Open ${stripCiteMarkup(text)}` : undefined}
         className={`rounded-[4px] bg-inset px-1 py-px font-mono text-[0.92em] text-ink shadow-hairline ${
           pathish ? "cursor-pointer underline decoration-line underline-offset-2 transition-colors hover:bg-hover hover:decoration-ink" : ""
         }`}
@@ -128,7 +125,9 @@ export default function Markdown({
   onOpenPath,
 }: {
   text: string;
-  /** A turn is still arriving: heal the open tail and show the caret. */
+  /** A turn is still arriving: heal the open tail and show the caret.
+   *  Once it settles, omit the caret — the block glyph is the typing cursor,
+   *  not a settled mark (#1011). */
   streaming?: boolean;
   /** The whole text is already here (a file in the files pane): one parse,
    * no block splitting, no tail healing. */
@@ -138,8 +137,8 @@ export default function Markdown({
 }) {
   // Streamdown is memoized on its props; a fresh components object per
   // render would defeat that, so it changes only with the callback.
-  const mermaidTheme = useDarkTheme() ? "dark" : "default";
-  const mermaidOptions = useMemo(() => ({ config: { theme: mermaidTheme, securityLevel: "strict" as const, fontFamily: "inherit" } }), [mermaidTheme]);
+  // Mermaid is not a Streamdown plugin here: closed fences go through
+  // StreamingCode → MermaidDiagram, which dynamic-imports mermaid.
   const components = useMemo<Components>(
     () => ({ ...STATIC_COMPONENTS, code: props => <StreamingCode {...props} collapseLongCode={!asDocument} />, inlineCode: inlineCode(onOpenPath) }),
     [onOpenPath, asDocument],
@@ -149,9 +148,8 @@ export default function Markdown({
       <Streamdown
         mode={asDocument ? "static" : "streaming"}
         isAnimating={streaming}
-        caret="block"
+        caret={streaming ? "block" : undefined}
         plugins={PLUGINS}
-        mermaid={mermaidOptions}
         components={components}
         controls={CONTROLS}
         lineNumbers={false}

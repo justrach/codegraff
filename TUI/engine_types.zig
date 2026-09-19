@@ -31,7 +31,7 @@ pub const Params = struct {
 };
 
 /// Lock-free single-writer / single-reader preview buffer (same contract as
-/// the zigzag REPL stream). Overflow drops live bytes only.
+/// the scripted REPL stream). Overflow drops live bytes only.
 pub const StreamBuf = struct {
     buf: []u8 = &.{},
     len: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),

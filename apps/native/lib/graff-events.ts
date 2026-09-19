@@ -80,7 +80,15 @@ export type TodoItem = {
 export type AskPrompt = {
   callId: string;
   question: string;
+  options: string[];
 };
+
+export function parseAskOptions(input: unknown): string[] {
+  if (!input || typeof input !== "object") return [];
+  const opts = (input as Record<string, unknown>).options;
+  if (!Array.isArray(opts)) return [];
+  return opts.flatMap((item) => (typeof item === "string" && item.trim() ? [item] : []));
+}
 
 export type TurnStatus = "thinking" | "streaming" | "ask" | "done" | "error" | "snapshot";
 
@@ -163,7 +171,7 @@ function upsertTool(turn: AssistantTurn, name: string, input: Record<string, unk
     path: typeof input.path === "string" ? input.path : undefined,
     atChars: turn.text.length,
   };
-  return { ...turn, tools: [...turn.tools, row], status: turn.status === "ask" ? "ask" : "streaming" };
+  return { ...turn, tools: [...turn.tools, row], status: "streaming" };
 }
 
 export function summarizeInput(name: string, input: Record<string, unknown>): { text: string; tone?: "add" }[] {
@@ -284,19 +292,19 @@ export function applyEvent(turn: AssistantTurn, ev: GraffEvent): AssistantTurn {
         ...turn,
         provider: typeof ev.provider === "string" ? ev.provider : turn.provider,
         model: typeof ev.model === "string" ? ev.model : turn.model,
-        status: turn.status === "ask" ? "ask" : "thinking",
+        status: "thinking",
       };
     case "reasoning":
       return {
         ...turn,
         reasoning: `${turn.reasoning}${typeof ev.text === "string" ? ev.text : ""}`,
-        status: turn.status === "ask" ? "ask" : "thinking",
+        status: "thinking",
       };
     case "text":
       return {
         ...turn,
         text: `${turn.text}${typeof ev.text === "string" ? ev.text : ""}`,
-        status: turn.status === "ask" ? "ask" : "streaming",
+        status: "streaming",
       };
     case "tool_call":
     case "tool_call_started": {
@@ -336,6 +344,7 @@ export function applyEvent(turn: AssistantTurn, ev: GraffEvent): AssistantTurn {
         ask: {
           callId: String(ev.call_id ?? ""),
           question: String(ev.question ?? "The agent needs a decision."),
+          options: parseAskOptions(ev.input),
         },
         status: "ask",
       };
@@ -356,7 +365,7 @@ export function applyEvent(turn: AssistantTurn, ev: GraffEvent): AssistantTurn {
         status: "error",
       };
     case "finalizing":
-      return { ...turn, status: turn.status === "ask" ? "ask" : "streaming" };
+      return { ...turn, status: "streaming" };
     default:
       return turn;
   }

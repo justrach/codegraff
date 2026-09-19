@@ -12,6 +12,9 @@ async function smokeModelPicker({ win }) {
   try {
     win.setSize(900, 600); await sleep(250);
     await wait(`!!document.querySelector('[aria-label="Choose model"]')`);
+    assert.equal(await js(`document.querySelector('[aria-label="Choose model"]').getAttribute('data-model')`), 'Graff');
+    assert.match(await js(`document.querySelector('[aria-label="Choose model"]').textContent`), /Graff/);
+    assert.equal(await js(`document.querySelector('[aria-label="Choose model"]').textContent.includes('Decoy')`), false);
     await click('[aria-label="Choose model"]');
     await wait(`!!document.querySelector('[aria-label="Choose a model"]')`);
     let rect = await bounds();

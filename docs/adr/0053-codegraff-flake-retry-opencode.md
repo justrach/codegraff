@@ -54,3 +54,6 @@ TUI steal.
   vs graff 362s is mostly `cookie-store` variance (89s on `072310`,
   185s on `072758`). RSS stays ~91M; do not take OpenCode's heap.
 - Revisit if a named 400 should retry; do not retry `invalid_request`.
+- xAI `Internal error during token parsing` is not a flake: the "internal"
+  needle would resend the same fat body. Classify it as overflow and
+  emergency-trim (client summarizer, ADR 0002) once.

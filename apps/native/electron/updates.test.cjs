@@ -91,9 +91,28 @@ test('the ready modal pops once per version, never in a dismiss loop', async () 
 });
 
 test('automatic checks wait 30s after launch then every six hours', () => {
-  const { FIRST_CHECK_MS, POLL_MS } = require('./updates.cjs');
+  const { FIRST_CHECK_MS, POLL_MS, firstCheckDelayMs } = require('./updates.cjs');
   expect(FIRST_CHECK_MS).toBe(30_000);
   expect(POLL_MS).toBe(6 * 60 * 60 * 1000);
+  expect(firstCheckDelayMs(undefined)).toBe(FIRST_CHECK_MS);
+  expect(firstCheckDelayMs('1.0.1')).toBe(0);
+});
+
+test('a pending download from last session is ready and prompts again on launch', async () => {
+  const f = fixture({ pending: '1.0.1' });
+  expect(f.updates.state().status).toBe('ready');
+  expect(f.updates.state().version).toBe('1.0.1');
+  await new Promise(resolve => setImmediate(resolve));
+  expect(f.ready).toEqual(['1.0.1']);
+  f.updater.emit('update-downloaded', { version: '1.0.1' });
+  expect(f.ready).toEqual(['1.0.1']);
+});
+
+test('a pending version that is already installed does not prompt', async () => {
+  const f = fixture({ pending: '1.0.0' });
+  expect(f.updates.state().status).toBe('idle');
+  await new Promise(resolve => setImmediate(resolve));
+  expect(f.ready).toEqual([]);
 });
 
 test('in-app settings expose check and the six-hour automatic poll', () => {

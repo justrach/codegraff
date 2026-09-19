@@ -1,22 +1,22 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Switch } from "@/components/atoms/Switch";
 import type { PromptModel } from "@/components/primitives/PromptBar";
-import { displayDirPath, rankFolderEntries, sameBrowse, sameDir, splitFolderQuery } from "@/lib/folder-picker";
-import { browseFolders, fsReveal, type FolderListing } from "@/lib/fs-client";
-import { IconCrossSmall, IconFolder } from "@/lib/icons";
+import { FolderPicker } from "@/components/site/FolderPicker";
+import { fsReveal } from "@/lib/fs-client";
+import { IconCrossSmall } from "@/lib/icons";
 import { basename, type Workspace } from "@/lib/workspaces";
 
 /* ─────────────────────────────────────────────────────────
  * WORKSPACE DIALOG
  * The two faces of the sidebar's workspace menu. "New workspace" walks
  * the machine's folders one level at a time (typed paths stay listed and
- * fuzzy-ranked like /model) and hands back the folder graff should run in.
- * "Workspace settings" edits
- * how new tabs in a workspace spawn: its name, default model and whether
- * tools are auto-approved.
+ * fuzzy-ranked like /model; Name / Modified / Git chips reorder or hide
+ * the list; New folder creates one in place) and hands back the folder
+ * graff should run in. "Workspace settings" edits how new tabs in a
+ * workspace spawn: its name, default model and whether tools are auto-approved.
  * ───────────────────────────────────────────────────────── */
 
 type Props = {
@@ -100,7 +100,7 @@ function Frame({ title, onClose, children }: { title: string; onClose: () => voi
         tabIndex={-1}
         aria-modal="true"
         aria-label={title}
-        className="flex w-full max-w-[560px] flex-col overflow-hidden rounded-[14px] bg-surface shadow-overlay"
+        className="flex w-full max-w-[560px] flex-col overflow-hidden rounded-window bg-surface shadow-overlay"
         style={{ maxHeight: "min(680px, calc(100dvh - 32px))", animation: "pop-in 180ms cubic-bezier(0.23,1,0.32,1) both" }}
       >
         <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-4">
@@ -118,221 +118,6 @@ function Frame({ title, onClose, children }: { title: string; onClose: () => voi
       </div>
     </div>,
     document.body,
-  );
-}
-
-function Chip({ active, onClick, children }: { active?: boolean; onClick: () => void; children: ReactNode }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`h-6 shrink-0 rounded-full px-2 text-[11.5px] font-medium transition-colors ${
-        active ? "bg-hover-2 text-ink" : "bg-field text-ink-2 shadow-hairline hover:bg-hover hover:text-ink"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
-function GitBadge() {
-  return <span className="shrink-0 rounded-full bg-field px-1.5 font-mono text-[10px] text-ink-2 shadow-hairline">git</span>;
-}
-
-function FolderPicker({ startPath, onPick, onClose }: { startPath?: string; onPick: (path: string) => void; onClose: () => void }) {
-  const [listing, setListing] = useState<FolderListing | null>(null);
-  const [typed, setTyped] = useState(displayDirPath(startPath ?? "~"));
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  // Only the newest navigation may land: a slow listing of a big folder
-  // must not overwrite the one the user has already moved on to.
-  const seq = useRef(0);
-  const pickRef = useRef(onPick);
-  pickRef.current = onPick;
-  const go = useCallback(async (target: string, opts: { pick?: boolean; refresh?: boolean } = {}) => {
-    const n = (seq.current += 1);
-    const refresh = opts.refresh === true;
-    if (!refresh) setBusy(true);
-    setError(null);
-    try {
-      const next = await browseFolders(target);
-      if (n !== seq.current) return;
-      setListing(next);
-      if (!refresh) setTyped(displayDirPath(next.path));
-      setError(null);
-      if (opts.pick) pickRef.current(next.path);
-    } catch (err) {
-      if (n !== seq.current) return;
-      if (!refresh) setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      if (n === seq.current) setBusy(false);
-    }
-  }, []);
-  useEffect(() => {
-    void go(startPath ?? "~");
-    return () => { seq.current++; };
-  }, [go, startPath]);
-
-  const parsed = splitFolderQuery(typed, listing?.path);
-  const listingPath = listing?.path ?? null;
-  const listingHome = listing?.home ?? null;
-  useEffect(() => {
-    if (!listingPath || !parsed.browse) return;
-    if (sameBrowse(parsed.browse, listingPath, listingHome)) return;
-    void go(parsed.browse, { refresh: true });
-    const request = seq.current;
-    return () => { if (seq.current === request) seq.current++; };
-  }, [go, listingHome, listingPath, parsed.browse]);
-  const shown = useMemo(
-    () => (listing ? rankFolderEntries(listing.entries, parsed.needle) : []),
-    [listing, parsed.needle],
-  );
-
-  const crumbs = listing ? listing.path.split("/").filter(Boolean) : [];
-  const crumbPath = (i: number) => `/${crumbs.slice(0, i + 1).join("/")}`;
-  const home = listing?.home;
-  const repo = listing?.default;
-
-  return (
-    <>
-      <div className="flex shrink-0 flex-col gap-2 border-b border-line px-4 py-3">
-        <form
-          className="flex items-center gap-2"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void go(typed);
-          }}
-        >
-          <span className="flex size-5 shrink-0 items-center justify-center text-ink-2">
-            <IconFolder size={16} />
-          </span>
-          <input
-            value={typed}
-            onChange={(event) => {
-              // Editing an explicit lookup retires it and makes the new path
-              // actionable immediately, even if the old folder is still loading.
-              if (busy) { seq.current++; setBusy(false); }
-              setTyped(event.target.value); setError(null);
-            }}
-            spellCheck={false}
-            autoFocus
-            aria-label="Folder path"
-            placeholder="/path/to/project"
-            className={`${FIELD} font-mono text-[12.5px]`}
-          />
-          <button
-            type="submit"
-            className="h-8 shrink-0 rounded-[8px] bg-hover-2 px-3 text-[12.5px] font-medium text-ink transition-colors hover:bg-line-strong"
-          >
-            Go
-          </button>
-        </form>
-        <div className="flex items-center gap-1.5 text-[11.5px] text-ink-3">
-          <Chip onClick={() => void go("~")} active={sameDir(listing?.path, home)}>
-            Home
-          </Chip>
-          {repo && (
-            <Chip onClick={() => void go(repo)} active={sameDir(listing?.path, repo)}>
-              {basename(repo)}
-            </Chip>
-          )}
-          <span className="ml-1 min-w-0 flex-1 truncate">Pick the folder graff should read and edit.</span>
-        </div>
-      </div>
-
-      <div className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-3 text-[12px] whitespace-nowrap text-ink-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <button type="button" onClick={() => void go("/")} className="rounded px-1 py-0.5 font-medium transition-colors hover:bg-hover hover:text-ink">
-          /
-        </button>
-        {crumbs.map((seg, i) => (
-          <span key={crumbPath(i)} className="flex items-center gap-1">
-            {i > 0 && <span className="text-line-strong">/</span>}
-            <button
-              type="button"
-              onClick={() => void go(crumbPath(i))}
-              className={`rounded px-1 py-0.5 transition-colors hover:bg-hover hover:text-ink ${i === crumbs.length - 1 ? "font-medium text-ink" : ""}`}
-            >
-              {seg}
-            </button>
-          </span>
-        ))}
-        {listing?.git && (
-          <span className="ml-1">
-            <GitBadge />
-          </span>
-        )}
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-y-auto" style={{ minHeight: 200 }}>
-        {busy && <p role="status" className="px-4 py-3 text-[12.5px] text-ink-3">Reading folder…</p>}
-        {error && <p role="alert" className="px-4 py-3 text-[12.5px] text-red">{error}</p>}
-        {!listing && !busy && !error && <p className="px-4 py-3 text-[12.5px] text-ink-3">Press Enter to browse, or open this folder directly.</p>}
-        {listing && (
-          <div className="flex flex-col px-2 py-1.5">
-            {listing.parent && (
-              <button
-                type="button"
-                onClick={() => void go(listing.parent as string)}
-                className="flex h-8 items-center gap-2 rounded-[7px] px-2 text-left text-[13px] text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
-              >
-                <span className="flex size-4 shrink-0 items-center justify-center">…</span>
-                <span>Up one level</span>
-              </button>
-            )}
-            {shown.map((entry) => (
-              <div
-                key={entry.path}
-                className="group flex h-8 items-center gap-2 rounded-[7px] px-2 transition-colors duration-100 hover:bg-hover"
-              >
-                <button
-                  type="button"
-                  onClick={() => void go(entry.path)}
-                  title={entry.path}
-                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                >
-                  <span className={`flex size-4 shrink-0 items-center justify-center ${entry.git ? "text-accent-ink" : "text-ink-3"}`}>
-                    <IconFolder size={14} />
-                  </span>
-                  <span className="min-w-0 flex-1 truncate text-[13px] text-ink">{entry.name}</span>
-                </button>
-                {entry.git && <GitBadge />}
-                <button
-                  type="button"
-                  onClick={() => onPick(entry.path)}
-                  className="h-6 shrink-0 rounded-[6px] px-1.5 text-[11.5px] font-medium text-ink-3 opacity-0 transition-[opacity,background-color,color] duration-100 group-hover:opacity-100 hover:bg-hover-2 hover:text-ink focus:opacity-100"
-                >
-                  Use
-                </button>
-              </div>
-            ))}
-            {shown.length === 0 && (
-              <p className="px-2 py-2 text-[12.5px] text-ink-3">{parsed.needle ? "No folders match this name." : "No folders here"}</p>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div className="flex shrink-0 items-center gap-2 border-t border-line px-4 py-3">
-        <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink-3" title={listing ? displayDirPath(listing.path) : ""}>
-          {listing ? displayDirPath(listing.path) : ""}
-        </span>
-        <button
-          type="button"
-          onClick={onClose}
-          className="h-8 rounded-full px-3 text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-hover hover:text-ink"
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          disabled={!typed.trim() || busy}
-          onClick={() => void go(typed, { pick: true })}
-          className="h-8 rounded-full bg-ink px-3.5 text-[12.5px] font-medium text-canvas transition-opacity hover:opacity-90 disabled:opacity-50"
-        >
-          Open folder
-        </button>
-      </div>
-    </>
   );
 }
 

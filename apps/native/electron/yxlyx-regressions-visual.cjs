@@ -38,7 +38,7 @@ async function runYxlyxRegressions({ win, origin }) {
   await wait(`document.querySelector('[data-conversation-library]')?.textContent.includes('Active snapshot fixture')`);
   await js(`Array.from(document.querySelectorAll('[data-conversation-library] li button')).find(e=>e.textContent.includes('Active snapshot fixture')).click()`);
   await wait(`!!document.querySelector('[data-session-snapshot]')`);
-  assert.match(await js(`document.querySelector('[data-session-snapshot]').textContent`), /not attached to a live REPL/);
+  assert.match(await js(`document.querySelector('[data-session-snapshot]').textContent`), /Live REPL status unknown/);
   await wait(`!!document.querySelector('[data-saved-snapshot]')`);
   assert.equal(await js(`document.querySelector('[data-chat][data-focused="true"] textarea')`), null, 'A saved snapshot cannot accept input before explicit continuation');
   assert.match(await js(`document.querySelector('[data-saved-snapshot]').textContent`), /Live (?:REPL )?status unknown/);
