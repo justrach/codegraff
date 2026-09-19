@@ -3,9 +3,10 @@ import { idleUpdates, type ChatHandle } from "@/lib/acp-client";
 import { holdWhileIdle, waitWhile } from "@/lib/idle-http";
 import type { Chat } from "./harness-types";
 
-/** Paint unsolicited ACP session/update while a tab is idle (#1007).
- *  The idle HTTP stream is dropped for the duration of a prompt turn so
- *  attach and other POSTs can use the origin's connection slots (#1068). */
+/** Paint unsolicited ACP session/update while the page is idle (#1007).
+ *  Every idle HTTP stream is dropped while ANY prompt turn runs, so an attach
+ *  or other POST during one chat's turn can use the origin's connection slots
+ *  no matter how many background tabs hold streams (#1068). */
 export async function pumpIdlePeerTurns(opts: {
   chatId: number;
   handle: ChatHandle;

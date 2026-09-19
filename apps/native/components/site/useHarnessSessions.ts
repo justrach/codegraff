@@ -34,8 +34,17 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
     idleCtl.current.set(chatId, ac);
     void pumpIdlePeerTurns({
       chatId, handle: handleOf(chatId), sessionId, signal: ac.signal,
-      running: () => runningRef.current.has(chatId), setChats,
+      // Every pump pauses while ANY turn runs: the six-slot HTTP/1.1 pool is
+      // per origin, so one chat's turn frees the idle streams of all the
+      // others or a mid-turn attach never starts.
+      running: () => runningRef.current.size > 0, setChats,
     });
+  };
+  /** A closed tab's pump would otherwise hold its stream — and its pool slot —
+   * until unload; the server only ends it when the client hangs up. */
+  const unwatchIdle = (chatId: number) => {
+    idleCtl.current.get(chatId)?.abort();
+    idleCtl.current.delete(chatId);
   };
   const adoptCatalog = async (chatId: number) => {
     // Pill follows this chat's agent. A transient /api/models process is not that agent.
@@ -192,5 +201,5 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
   };
 
   catalogRef.current = { adopt: (id: number) => { if (!runningRef.current.has(id)) void adoptCatalog(id).catch(() => undefined); }, activeId };
-  return { adoptCatalog, requireSession, refreshStored, projectsReady };
+  return { adoptCatalog, requireSession, refreshStored, projectsReady, unwatchIdle };
 }

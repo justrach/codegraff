@@ -178,7 +178,7 @@ export default function GraffHarness() {
     setPinsByChat(pinsRef.current);
   };
 
-  const { adoptCatalog, requireSession, refreshStored, projectsReady } = useHarnessSessions({
+  const { adoptCatalog, requireSession, refreshStored, projectsReady, unwatchIdle } = useHarnessSessions({
     sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal,
     pendingPick: () => pendingPickRef.current ?? pendingModel,
   });
@@ -346,6 +346,7 @@ export default function GraffHarness() {
     pinsRef.current = remainingPins; setPinsByChat(remainingPins);
     setCommands(current => { const { [id]: _commands, ...rest } = current; return rest; });
     setCancelError(current => { const { [id]: _error, ...rest } = current; return rest; });
+    unwatchIdle(id);
     void disposeSession(handleOf(id));
     void browserClose(handleOf(id)).catch(() => undefined);
   };
