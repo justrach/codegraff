@@ -276,6 +276,7 @@ app.whenReady().then(async () => {
   }
   if (process.env.GRAFF_NARROW_NAV_TEST) await require('./narrow-navigation-frontend.cjs').runNarrowNavigation({ win, output, click, until, report });
   await require('./attachment-lifetime-frontend.cjs').runAttachments({win,origin,temp,output,requests,workspace,send,click,until,report});
+  if (process.env.GRAFF_NARROW_NAV_TEST) return;
   await require('./browser-focus-frontend.cjs').runBrowserFocus({ win, output, click, until, report });
   await require('./tab-drag-visual.cjs').runTabDrag({ win, origin, output });
   report.passed.push('trusted pointer and keyboard: tab reorder, horizontal/vertical splits, draft retention, Escape and four-pane limit');
