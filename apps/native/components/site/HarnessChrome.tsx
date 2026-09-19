@@ -6,8 +6,6 @@ import AppSettings from "./AppSettings";
 import type { PointerEvent, MouseEvent, ReactNode } from "react";
 import type { Chat } from "./harness-types";
 import reviewStyles from "./ChangesPane.module.css";
-import { useEffect, useState } from "react";
-import { openTraces, tracesPrefEvent, tracesWanted } from "@/lib/trace-pref";
 
 type Props = {
   navigationToggle?: ReactNode; sidebarVisible?: boolean;
@@ -30,14 +28,6 @@ export default function HarnessChrome({navigationToggle, sidebarVisible = false,
   conversationsOpen, openConversations, split, toggleSplit, filesOpen, onFiles, chatCwd,
   workspaceName, onFolder, openChanges, changesOpen = false, reviewsOpen = false, onReviews, browserOpen, onBrowser, pinCount, terminalVisible,
   toggleTerminal, agentsOpen, onAgents, workingAgents = 0, tasksOpen = false, taskCount = 0, onTasks, splitNotice, onTabPointerDown, onTabClickCapture}: Props) {
-  const [showTraces, setShowTraces] = useState(false);
-  useEffect(() => {
-    const sync = () => setShowTraces(tracesWanted());
-    sync();
-    window.addEventListener(tracesPrefEvent, sync);
-    window.addEventListener("storage", sync);
-    return () => { window.removeEventListener(tracesPrefEvent, sync); window.removeEventListener("storage", sync); };
-  }, []);
   return (
     <div data-workspace-toolbar data-workspace-root={chatCwd} className={`${reviewStyles.chatbar} flex shrink-0 flex-col ${sidebarVisible ? "overflow-visible bg-transparent" : "overflow-hidden rounded-[14px] border border-line bg-page"}`}>
       {!sidebarVisible && <div data-session-tab-strip className="flex h-10 min-w-0 shrink-0 items-center gap-1 px-2">
@@ -67,7 +57,6 @@ export default function HarnessChrome({navigationToggle, sidebarVisible = false,
           <button type="button" aria-label="Toggle terminal" aria-pressed={terminalVisible} onClick={toggleTerminal}>Terminal <span className="ml-auto text-ink-3">⌘J</span></button>
           <button type="button" aria-label="Browser" aria-pressed={browserOpen} onClick={onBrowser}>Browser{pinCount > 0 ? ` (${pinCount})` : ""}</button>
           <button type="button" aria-label="Files" aria-pressed={filesOpen && !changesOpen} onClick={onFiles}>Files</button>
-          {showTraces && <button type="button" aria-label="Run traces" onClick={() => openTraces()}>Traces</button>}
         </ActionMenu>
         {(taskCount > 0 || tasksOpen) && onTasks && <button type="button" aria-label="Show tasks" aria-pressed={tasksOpen} onClick={onTasks} className={paneBtn(tasksOpen)}>Tasks{taskCount ? ` (${taskCount})` : ""}</button>}
         <ActionMenu label="Chat actions" text="More" className="shrink-0">

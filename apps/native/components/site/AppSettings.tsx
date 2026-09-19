@@ -5,6 +5,7 @@ import { ThemeToggle } from "./ThemeToggle";
 import DesktopSettings from "./DesktopSettings";
 import McpServers from "./McpServers";
 import TracesPane from "./TracesPane";
+import { openTraces } from "@/lib/trace-pref";
 
 export default function AppSettings({ sidebar = false }: { sidebar?: boolean }) {
   return <>
@@ -13,6 +14,7 @@ export default function AppSettings({ sidebar = false }: { sidebar?: boolean }) 
       <ThemeToggle labeled />
       <DesktopSettings labeled />
       <McpServers labeled />
+      <button type="button" onClick={() => openTraces()}>Run traces</button>
     </ActionMenu>
     <TracesPane />
   </>;

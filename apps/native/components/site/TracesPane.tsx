@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { eventLabel, formatDuration, type TraceEvent, type TraceSummary } from "@/lib/run-traces";
-import { tracesOpenEvent, tracesWanted } from "@/lib/trace-pref";
+import { tracesOpenEvent } from "@/lib/trace-pref";
 import { listTraces, readTrace, type TraceListItem } from "@/lib/traces";
 
 function workspaceRoot(): string | undefined {
@@ -27,7 +27,7 @@ export default function TracesPane() {
   const [loading, setLoading] = useState("");
 
   useEffect(() => {
-    const openPane = () => { if (tracesWanted()) { setRoot(workspaceRoot()); setOpen(true); } };
+    const openPane = () => { setRoot(workspaceRoot()); setOpen(true); };
     window.addEventListener(tracesOpenEvent, openPane);
     return () => window.removeEventListener(tracesOpenEvent, openPane);
   }, []);
@@ -66,7 +66,7 @@ export default function TracesPane() {
         <header className="flex items-center gap-3 border-b border-line p-4">
           <div className="min-w-0 flex-1">
             <strong>Traces</strong>
-            <p className="mt-1 text-xs text-ink-3">Local operational timeline for this workspace. Prompt text is not shown.</p>
+            <p className="mt-1 text-xs text-ink-3">This workspace’s local run timeline. Prompt text is not shown.</p>
           </div>
           <button type="button" onClick={() => setOpen(false)} aria-label="Close traces" className="rounded px-2 py-1 hover:bg-hover">×</button>
         </header>
