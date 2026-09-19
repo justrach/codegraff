@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
-const { outerMs, phaseBudget, slug, tailText, collectWorkerState, collectModelState, formatTimeoutSummary } = require('./smoke-timeout.cjs');
+const fs = require('node:fs'), http = require('node:http'), os = require('node:os'), path = require('node:path');
+const { outerMs, phaseBudget, slug, tailText, collectWorkerState, collectModelState, formatTimeoutSummary, dumpTimeout } = require('./smoke-timeout.cjs');
 
 test('outer budget mirrors the spawner validation, defaulting hand runs', () => {
   assert.equal(outerMs({ GRAFF_TEST_TIMEOUT_MS: '180000' }), 180000);
@@ -89,6 +89,51 @@ test('model state marks an absent requests file', () => {
   try {
     const state = collectModelState(root);
     assert.equal(state.requests.present, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the timeout drill captures renderer, backend, model, and workers', async () => {
+  const { root, workspace, output } = fixture();
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, sessions: 3 }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const phases = [];
+  try {
+    const record = await dumpTimeout({ label: 'agent completion', waitedMs: 150000, outer: 180000,
+      output, workspace, js: async () => 'typed prompt, no reply yet',
+      capturePage: async () => Buffer.from('png-bytes'),
+      backendOrigin: `http://127.0.0.1:${server.address().port}`, writePhase: name => phases.push(name) });
+    assert.equal(record.backend, 'sessions=3 ok=true');
+    assert.equal(record.guiText, 'typed prompt, no reply yet');
+    assert.equal(record.workers.count, 2);
+    assert.equal(record.model.requests.count, 2);
+    assert.deepEqual(phases, ['timed out: agent completion']);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(output, 'timeout-agent-completion.json'), 'utf8')).label, 'agent completion');
+    assert.equal(fs.readFileSync(path.join(output, 'timeout-gui-text.txt'), 'utf8'), 'typed prompt, no reply yet');
+    assert.equal(fs.readFileSync(path.join(output, 'timeout.png'), 'utf8'), 'png-bytes');
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the timeout drill degrades when every capture fails', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'graff-smoke-timeout-'));
+  const output = path.join(root, 'output');
+  fs.mkdirSync(output, { recursive: true });
+  try {
+    const record = await dumpTimeout({ label: 'agent completion', waitedMs: 150000, outer: 180000,
+      output, workspace: path.join(root, 'missing'), js: async () => { throw new Error('renderer gone'); },
+      capturePage: async () => { throw new Error('no frame'); },
+      backendOrigin: 'http://127.0.0.1:1', writePhase: () => {} });
+    assert.match(record.guiText, /renderer gone/);
+    assert.match(record.backend, /unreachable/);
+    assert.match(record.workers.error, /ENOENT/);
+    assert.equal(record.model.requests.present, false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

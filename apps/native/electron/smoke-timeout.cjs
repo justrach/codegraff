@@ -86,6 +86,31 @@ function collectModelState(outputDir) {
   return state;
 }
 
+/** The timeout path itself, with Electron I/O injected so the failure drill is
+// a unit test, not a hope: `js` runs renderer snippets, `capturePage` returns
+// a PNG buffer, `backendOrigin` is the UI server root (or null to skip the
+// health probe). Every capture is best-effort; the dump never masks the
+// timeout error it documents. */
+async function dumpTimeout({ label, waitedMs, outer, output, workspace, js, capturePage, backendOrigin, writePhase }) {
+  writePhase(`timed out: ${label}`);
+  const record = { label, waitedMs, outerMs: outer, at: new Date().toISOString() };
+  try { record.guiText = await js('document.body.innerText'); } catch (error) { record.guiText = `<unreadable: ${error.message}>`; }
+  try {
+    const response = await fetch(`${backendOrigin}/api/acp`, { signal: AbortSignal.timeout(5000) });
+    const body = await response.json();
+    record.backend = `sessions=${body.sessions ?? '?'} ok=${body.ok ?? response.ok}`;
+  } catch (error) { record.backend = `<unreachable: ${error.message}>`; }
+  record.workers = collectWorkerState(workspace);
+  record.model = collectModelState(output);
+  const file = slug(label);
+  try { fs.writeFileSync(path.join(output, `timeout-${file}.json`), JSON.stringify(record, null, 2)); } catch {}
+  try { fs.writeFileSync(path.join(output, 'timeout-gui-text.txt'), record.guiText.slice(0, 20000)); } catch {}
+  try { fs.writeFileSync(path.join(output, 'timeout.png'), await capturePage()); } catch {}
+  console.log(formatTimeoutSummary({ label, elapsedMs: waitedMs, outerMs: outer,
+    backend: record.backend, workers: record.workers, model: record.model, guiChars: record.guiText.length }));
+  return record;
+}
+
 /** One compact block for the CI log; the full record goes to timeout-*.json. */
 function formatTimeoutSummary({ label, elapsedMs, outerMs: outer, backend, workers, model, guiChars }) {
   const workerLine = workers.error ? `workers=<${workers.error}>`
@@ -98,4 +123,4 @@ function formatTimeoutSummary({ label, elapsedMs, outerMs: outer, backend, worke
   ].join('\n');
 }
 
-module.exports = { outerMs, phaseBudget, slug, tailText, collectWorkerState, collectModelState, formatTimeoutSummary };
+module.exports = { outerMs, phaseBudget, slug, tailText, collectWorkerState, collectModelState, formatTimeoutSummary, dumpTimeout };

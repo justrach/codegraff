@@ -18,31 +18,13 @@ exports.run = async ({win, backend}) => {
   // next stall names where the prompt stopped instead of dying as a generic
   // "Test deadline exceeded" under SIGKILL.
   const outer = timeouts.outerMs(), startedAt = Date.now();
-  const dumpTimeout = async (label, waitedMs) => {
-    phase(`timed out: ${label}`);
-    const record = { label, waitedMs, outerMs: outer, at: new Date().toISOString() };
-    try { record.guiText = await js('document.body.innerText'); } catch (error) { record.guiText = `<unreadable: ${error.message}>`; }
-    try {
-      record.backend = await (async () => {
-        const response = await fetch(`${backend.origin}/api/acp`, { signal: AbortSignal.timeout(5000) });
-        const body = await response.json();
-        return `sessions=${body.sessions ?? '?'} ok=${body.ok ?? response.ok}`;
-      })();
-    } catch (error) { record.backend = `<unreachable: ${error.message}>`; }
-    record.workers = timeouts.collectWorkerState(workspace);
-    record.model = timeouts.collectModelState(output);
-    const file = timeouts.slug(label);
-    try { fs.writeFileSync(path.join(output, `timeout-${file}.json`), JSON.stringify(record, null, 2)); } catch {}
-    try { fs.writeFileSync(path.join(output, 'timeout-gui-text.txt'), record.guiText.slice(0, 20000)); } catch {}
-    try { fs.writeFileSync(path.join(output, 'timeout.png'), (await win.webContents.capturePage()).toPNG()); } catch {}
-    console.log(timeouts.formatTimeoutSummary({ label, elapsedMs: waitedMs, outerMs: outer,
-      backend: record.backend, workers: record.workers, model: record.model, guiChars: record.guiText.length }));
-  };
   const until = async (condition, label) => {
     const ms = timeouts.phaseBudget(label, outer, Date.now() - startedAt);
     const end = Date.now() + ms;
     while (Date.now() < end) { if (await condition()) return; await sleep(50); }
-    await dumpTimeout(label, ms);
+    await timeouts.dumpTimeout({ label, waitedMs: ms, outer, output, workspace, js,
+      capturePage: () => win.webContents.capturePage().then(page => page.toPNG()),
+      backendOrigin: backend.origin, writePhase: phase });
     throw Error(`Shutdown fixture timed out: ${label}`);
   };
   await until(() => js(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`), 'composer');
