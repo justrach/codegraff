@@ -47,6 +47,8 @@ pub const LiveTurn = struct {
             self.root.sys_override = try review.systemPrompt(arena, self.root.sys_normal);
         var context = review.Context.begin(arena, self.root, review_prompt != null);
         defer if (context.restore(self.root)) self.root.rebaseContextMeter();
+        if (@import("side_steer.zig").isSideRequest(text))
+            return @import("side_steer.zig").spawnSide(self.root, arena, null, text);
         switch (try @import("turn_dedup.zig").enqueue(self.root, arena, self.out, review_prompt orelse text)) {
             .started => {},
             .skipped => return "",
