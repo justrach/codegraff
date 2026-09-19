@@ -91,12 +91,16 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
       <button className={button} aria-label="Activity" onClick={() => void desktop()!.activity()}>Activity</button>
       <button className={button} aria-label="Close browser" onClick={() => { void desktop()!.browser(chat, "close"); onClose(); }}>×</button>
     </header>
-    <form className="flex h-10 items-center gap-1 border-b border-line px-2" onSubmit={e => { e.preventDefault(); void command("open", { url }); }}>
+    <form className="flex h-10 items-center gap-1 border-b border-line px-2" onSubmit={e => {
+      e.preventDefault();
+      const typed = (address.current?.value ?? url).trim();
+      void command("open", { url: typed });
+    }}>
       <button type="button" className={button} aria-label="Back" disabled={!info?.canGoBack} onClick={() => void command("back")}>←</button>
       <button type="button" className={button} aria-label="Forward" disabled={!info?.canGoForward} onClick={() => void command("forward")}>→</button>
-      <button type="button" className={button} aria-label="Reload" onClick={() => void command("open", { url })}>↻</button>
+      <button type="button" className={button} aria-label="Reload" onClick={() => void command("open", { url: address.current?.value || url })}>↻</button>
       <input ref={address} className="h-7 min-w-0 flex-1 rounded-md bg-field px-2 text-xs outline-none" aria-label="Address" placeholder="Search or enter a URL" value={url} onChange={e => setUrl(e.target.value)} onFocus={e => e.currentTarget.select()} />
-      <button className={button}>Go</button>
+      <button type="submit" className={button} aria-label="Go">Go</button>
     </form>
     {picking && <p role="status" className="border-b border-line bg-accent-tint px-3 py-2 text-xs text-accent-ink">Click the page to pin. Esc cancels.</p>}
     {error && <p role="alert" className="px-3 py-2 text-xs text-red">{error}</p>}

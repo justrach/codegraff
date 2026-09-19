@@ -21,15 +21,19 @@ async function runBrowserFocus({ win, output, click, until, report }) {
   ipcMain.removeHandler('browser');
   ipcMain.handle('browser', (_event, { chat, method, params }) => method === 'handle' ? bridge.handle(chat) : browser.command(chat, method, params));
   try {
+    const loaded = want => {
+      const got = [...browser.tabs.values()].map(tab => tab.view?.webContents.getURL() || tab.url);
+      return got.some(href => href === want || href === `${want}/` || href.replace(/\/$/, '') === want.replace(/\/$/, ''));
+    };
     const navigateUser = async url => {
       await click('[aria-label="Address"]');
-      await until(() => js(`document.activeElement?.getAttribute('aria-label')==='Address'`), 'address field focused');
-      // Controlled React value ignores CDP char events; same path as browser-address-visual.
-      await js(`(()=>{const e=document.querySelector('[aria-label="Address"]');e.focus();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(url)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+      await until(() => js(`!!document.querySelector('[aria-label="Address"]')`), 'address field present');
+      await js(`(()=>{const e=document.querySelector('[aria-label="Address"]');e.focus();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(url)});e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));})()`);
       await until(() => js(`document.querySelector('[aria-label="Address"]').value===${JSON.stringify(url)}`), 'address value');
       await js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))');
-      await js(`document.querySelector('[aria-label="Address"]').form.requestSubmit()`);
-      await until(() => browser.visible && browser.tabs.get(browser.visible)?.view?.webContents.getURL() === url, 'explicit address navigation');
+      if (await js(`!!document.querySelector('[aria-label="Go"]')`)) await click('[aria-label="Go"]');
+      else await js(`document.querySelector('[aria-label="Address"]').form.requestSubmit()`);
+      await until(() => loaded(url), 'explicit address navigation');
     };
     const openBrowser = async () => {
       await click('[aria-label="Workspace tools"]');
