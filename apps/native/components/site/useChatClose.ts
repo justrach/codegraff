@@ -26,6 +26,7 @@ type Props = {
   openChat(id: number): void; focusChat(id: number): void;
   openStored(name: string, cwd?: string): void; newChat(): void;
   refreshStored(): Promise<void>;
+  unwatchIdle?(id: number): void;
 };
 
 /** Tab close, and the reopen stack behind it. Closing a tab retires its
@@ -35,7 +36,7 @@ export function useChatClose(props: Props) {
   const { sessionsRef, sessionNamesRef, chatsRef, runningRef, chatIdRef, pinsRef, activePathRef } = props;
   const { groups, columnIds, activeId, handleOf, setBusyFor, setQueue, steerer } = props;
   const { setSessionIds, setCommands, setCancelError, setPinsByChat, setZoomedPane, setChats, setStored } = props;
-  const { openChat, focusChat, openStored, newChat, refreshStored } = props;
+  const { openChat, focusChat, openStored, newChat, refreshStored, unwatchIdle } = props;
   // Closed tabs, oldest first, for the reopen shortcut.
   const closedRef = useRef<{ session: string | null; cwd?: string; resumable: boolean }[]>([]);
   const [dontAskAgain, setDontAskAgain] = useState(false);
@@ -59,6 +60,7 @@ export function useChatClose(props: Props) {
     pinsRef.current = remainingPins; setPinsByChat(remainingPins);
     setCommands(current => { const { [id]: _commands, ...rest } = current; return rest; });
     setCancelError(current => { const { [id]: _error, ...rest } = current; return rest; });
+    unwatchIdle?.(id);
     void disposeSession(handleOf(id));
     void browserClose(handleOf(id)).catch(() => undefined);
   };

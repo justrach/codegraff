@@ -37,7 +37,7 @@ export default function StreamingCode({ node: _node, className, children, collap
     <div data-language={language} data-streamdown="code-block-body"
       className={`min-w-0 max-w-full overflow-x-auto rounded-md border border-border bg-background p-4 text-sm ${bounded ? "overflow-y-auto" : ""}`}
       style={bounded ? { maxHeight: codeBlockMaxHeight } : undefined}>
-      <pre className="min-w-0"><code className="whitespace-pre">{code.replace(/\n+$/, "")}</code></pre>
+      <pre className="min-w-0 font-mono"><code className="whitespace-pre">{code.replace(/\n+$/, "")}</code></pre>
     </div>
   </CodeBlockContainer>;
 }

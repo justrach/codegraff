@@ -1,8 +1,12 @@
 import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AssistantTurn } from "@/lib/acp";
 import { idleUpdates, type ChatHandle } from "@/lib/acp-client";
+import { holdWhileIdle, waitWhile } from "@/lib/idle-http";
 import type { Chat } from "./harness-types";
 
-/** Paint unsolicited ACP session/update while a tab is idle (#1007). */
+/** Paint unsolicited ACP session/update while the page is idle (#1007).
+ *  Every idle HTTP stream is dropped while ANY prompt turn runs, so an attach
+ *  or other POST during one chat's turn can use the origin's connection slots
+ *  no matter how many background tabs hold streams (#1068). */
 export async function pumpIdlePeerTurns(opts: {
   chatId: number;
   handle: ChatHandle;
@@ -12,34 +16,45 @@ export async function pumpIdlePeerTurns(opts: {
   setChats(update: (current: Chat[]) => Chat[]): void;
 }): Promise<void> {
   let asstId: number | undefined;
-  try {
-    for await (const update of idleUpdates(opts.handle, opts.sessionId, opts.signal)) {
-      if (opts.running() || opts.signal.aborted) continue;
-      opts.setChats(current => current.map(chat => {
-        if (chat.id !== opts.chatId) return chat;
-        const existing = asstId != null
-          ? chat.messages.find(message => message.role === "assistant" && message.id === asstId)
-          : undefined;
-        let messages = chat.messages;
-        let id = asstId;
-        let turn: AssistantTurn = existing && existing.role === "assistant" ? existing.turn : emptyTurn();
-        if (!existing) {
-          id = Date.now();
-          asstId = id;
-          messages = [...chat.messages, { id, role: "assistant", turn }];
-        }
-        turn = applyAcpUpdate(turn, update);
-        if (update.sessionUpdate === "gui_turn_end") {
-          turn = finishAcpTurn(turn);
-          asstId = undefined;
-        }
-        return {
-          ...chat,
-          messages: messages.map(message => message.role === "assistant" && message.id === id ? { ...message, turn } : message),
-        };
-      }));
-    }
-  } catch {
+  const paint = (update: Parameters<typeof applyAcpUpdate>[1]) => {
+    if (opts.running() || opts.signal.aborted) return;
+    opts.setChats(current => current.map(chat => {
+      if (chat.id !== opts.chatId) return chat;
+      const existing = asstId != null
+        ? chat.messages.find(message => message.role === "assistant" && message.id === asstId)
+        : undefined;
+      let messages = chat.messages;
+      let id = asstId;
+      let turn: AssistantTurn = existing && existing.role === "assistant" ? existing.turn : emptyTurn();
+      if (!existing) {
+        id = Date.now();
+        asstId = id;
+        messages = [...chat.messages, { id, role: "assistant", turn }];
+      }
+      turn = applyAcpUpdate(turn, update);
+      if (update.sessionUpdate === "gui_turn_end") {
+        turn = finishAcpTurn(turn);
+        asstId = undefined;
+      }
+      return {
+        ...chat,
+        messages: messages.map(message => message.role === "assistant" && message.id === id ? { ...message, turn } : message),
+      };
+    }));
+  };
+
+  while (!opts.signal.aborted) {
+    await waitWhile(() => opts.running(), opts.signal);
     if (opts.signal.aborted) return;
+    const result = await holdWhileIdle({
+      signal: opts.signal,
+      busy: opts.running,
+      open: async (signal) => {
+        for await (const update of idleUpdates(opts.handle, opts.sessionId, signal)) {
+          paint(update);
+        }
+      },
+    });
+    if (result !== "paused") return;
   }
 }

@@ -14,6 +14,7 @@ const vision = @import("vision.zig");
 const vision_queue = @import("vision_queue.zig");
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
+const side_steer = @import("side_steer.zig");
 
 pub const max_replays: u8 = 3;
 
@@ -34,6 +35,14 @@ pub fn enqueue(root: *Agent, arena: Allocator, out: ?*Io.Writer, text: []const u
     if (@import("subagent_interactive.zig").line_notice) {
         try root.messages.append(try @import("session_wake.zig").message(arena, text));
         return .started;
+    }
+    try side_steer.deliverReports(root, arena, out);
+    // A `&`-marked line spawns a side agent instead of becoming the next
+    // blocking turn; the session stays interactive and its report is injected
+    // at a later boundary.
+    if (side_steer.isSideRequest(text)) {
+        _ = try side_steer.spawnSide(root, arena, out, text);
+        return .skipped;
     }
     if (messages.trailingUserIs(root.messages.items, text)) {
         hits +|= 1;

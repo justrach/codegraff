@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { filesFrom, isImageFile, liftAttachmentMarkers, marker, markerName, splitImageMarkers, withAttachmentMarkers, type Attachment } from "./attachments.ts";
+import { attachRowKeepsUserActivation, filesFrom, isImageFile, liftAttachmentMarkers, marker, markerName, splitImageMarkers, uploadAttachment, withAttachmentMarkers, type Attachment } from "./attachments.ts";
 
 const shot: Attachment = { id: "/tmp/a/shot.png", name: "shot.png", path: "/tmp/a/shot.png" };
 const notes: Attachment = { id: "/tmp/a/notes.md", name: "notes.md", path: "/tmp/a/notes.md" };
@@ -81,4 +81,36 @@ test("a paste carrying only text yields nothing, so the composer lets it through
   } as unknown as DataTransfer;
   assert.deepEqual(filesFrom(textOnly), []);
   assert.deepEqual(filesFrom(null), []);
+});
+
+test("the attach row keeps the pointer gesture so the file dialog can open", () => {
+  assert.equal(attachRowKeepsUserActivation("attach"), true);
+  assert.equal(attachRowKeepsUserActivation("file:notes.md"), false);
+});
+
+test("uploadAttachment times out instead of hanging the composer", async () => {
+  const file = new File([new Uint8Array([1])], "shot.png", { type: "image/png" });
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (_url: unknown, init?: { signal?: AbortSignal }) => {
+    const signal = init?.signal;
+    if (!signal) throw new Error("expected abort signal");
+    await new Promise((_, reject) => {
+      const fail = () => reject(signal.reason ?? new DOMException("The operation was aborted.", "TimeoutError"));
+      if (signal.aborted) {
+        fail();
+        return;
+      }
+      const timer = setTimeout(fail, 100);
+      signal.addEventListener("abort", () => {
+        clearTimeout(timer);
+        fail();
+      }, { once: true });
+    });
+    throw new Error("unreachable");
+  }) as typeof fetch;
+  try {
+    await assert.rejects(() => uploadAttachment(file, 15), /timed out/);
+  } finally {
+    globalThis.fetch = original;
+  }
 });

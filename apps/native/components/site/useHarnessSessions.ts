@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MutableRefObject, type Dispatch, type SetStateAction } from "react";
 import { bindMcpAppChat, checkHealth, disposePage, ensureSession, fetchModels, type Health } from "@/lib/acp-client";
-import { sameModels } from "@/lib/composer-model";
+import { catalogMayWriteChatModel, catalogMayWriteGlobalKey, sameModels } from "@/lib/composer-model";
 import { pumpIdlePeerTurns } from "./idle-peer-turns";
 import type { AcpCommand } from "@/lib/acp";
 import type { PromptModel } from "@/components/primitives/PromptBar";
@@ -20,10 +20,13 @@ type Props = {
   setSessionIds: Setter<Record<number, string>>; setHealth: Setter<Health | null>;
   setWorkspaces: Setter<Workspace[]>; setActivePath: Setter<string | null>;
   setChats: Setter<Chat[]>; setStored: Setter<StoredSession[]>; setStoredTotal: Setter<number>;
+  pendingPick(): { key: string; chatId: number } | null;
 };
 const SIDEBAR_PAGE = 12;
-export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal}: Props) {
+export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal, pendingPick}: Props) {
   const [projectsReady, setProjectsReady] = useState(false);
+  const pendingRef = useRef(pendingPick);
+  pendingRef.current = pendingPick;
   const idleCtl = useRef(new Map<number, AbortController>());
   const watchIdle = (chatId: number, sessionId: string) => {
     idleCtl.current.get(chatId)?.abort();
@@ -31,8 +34,17 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
     idleCtl.current.set(chatId, ac);
     void pumpIdlePeerTurns({
       chatId, handle: handleOf(chatId), sessionId, signal: ac.signal,
-      running: () => runningRef.current.has(chatId), setChats,
+      // Every pump pauses while ANY turn runs: the six-slot HTTP/1.1 pool is
+      // per origin, so one chat's turn frees the idle streams of all the
+      // others or a mid-turn attach never starts.
+      running: () => runningRef.current.size > 0, setChats,
     });
+  };
+  /** A closed tab's pump would otherwise hold its stream — and its pool slot —
+   * until unload; the server only ends it when the client hangs up. */
+  const unwatchIdle = (chatId: number) => {
+    idleCtl.current.get(chatId)?.abort();
+    idleCtl.current.delete(chatId);
   };
   const adoptCatalog = async (chatId: number) => {
     // Pill follows this chat's agent. A transient /api/models process is not that agent.
@@ -43,9 +55,10 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
       if (available?.length) { setCatalogCommands(available); setCommands(old => ({ ...old, [chatId]: available })); }
       if (current && handle) {
         const chat = chatsRef.current.find((c) => c.id === chatId);
-        if (chat?.model !== current) setChatModel(chatId, current);
-        setModelKey((key) => (key === current ? key : current));
-      } else if (current) {
+        if (catalogMayWriteChatModel(chatId, pendingRef.current()) && chat?.model !== current) {
+          setChatModel(chatId, current);
+        }
+      } else if (current && catalogMayWriteGlobalKey(false)) {
         setModelKey((key) => key ?? current);
       }
     } catch {
@@ -188,5 +201,5 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
   };
 
   catalogRef.current = { adopt: (id: number) => { if (!runningRef.current.has(id)) void adoptCatalog(id).catch(() => undefined); }, activeId };
-  return { adoptCatalog, requireSession, refreshStored, projectsReady };
+  return { adoptCatalog, requireSession, refreshStored, projectsReady, unwatchIdle };
 }

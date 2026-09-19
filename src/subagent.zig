@@ -246,7 +246,7 @@ fn agentJobPump(job: *AgentJob, gpa: Allocator, io: Io) void {
 /// job and return immediately with its id; the child runs on the pool.
 /// Never blocks on a free concurrency slot — a spawn beyond the cap is
 /// queued, not failed; admitNext drains it once room frees up.
-fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool, pin: ?Provider, effort: ?main_mod.ReasoningEffort, ask: vision_ask.Ask) !ToolOutput {
+pub fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool, pin: ?Provider, effort: ?main_mod.ReasoningEffort, ask: vision_ask.Ask) !ToolOutput {
     const gpa = ctx.gpa;
     const label_c = try gpa.dupe(u8, label);
     errdefer gpa.free(label_c);
