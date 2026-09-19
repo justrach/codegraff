@@ -1,5 +1,5 @@
 "use client";
-import type { ComponentProps } from "react";
+import { useLayoutEffect, useRef, type ComponentProps } from "react";
 import PromptBar from "@/components/primitives/PromptBar";
 import composer from "@/components/primitives/PromptBar.module.css";
 import type { Health } from "@/lib/acp-client";
@@ -10,6 +10,7 @@ import PromptQueue from "./PromptQueue";
 import ComposerAgents from "./ComposerAgents";
 import SavedSnapshot from "./SavedSnapshot";
 import type { Chat } from "./harness-types";
+import { overlayClearancePx } from "@/lib/follow-scroll";
 
 export default function ChatColumn({ thread, compact, following, register, onOpenPath, onReview, onAnswer, onEditPrompt,
   prompt, queue, pins, onShowPins, onClearPins, health, onOpenProject, onProjects, onConversations,
@@ -26,16 +27,27 @@ export default function ChatColumn({ thread, compact, following, register, onOpe
 }) {
   const measured = thread.messages.findLast(message => message.role === "assistant" && message.turn.contextMeter);
   const contextMeter = measured?.role === "assistant" ? measured.turn.contextMeter : undefined;
+  const hostRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const overlay = composerRef.current, host = hostRef.current;
+    if (!overlay || !host) return;
+    const apply = () => host.style.setProperty("--composer-clearance", `${overlayClearancePx(overlay.offsetHeight)}px`);
+    apply();
+    const observer = new ResizeObserver(apply);
+    observer.observe(overlay);
+    return () => observer.disconnect();
+  }, []);
   if (!thread.messages.length && !thread.snapshot) return <div className="min-h-0 flex-1 overflow-y-auto">
     <EmptyState compact={compact} onOpenProject={onOpenProject} onProjects={onProjects}
       onContinue={onConversations} onReview={onReview} onSend={prompt.onSend} onSetting={prompt.onSetting}
       health={health} history={prompt.history} cwd={prompt.root} models={prompt.models}
       modelKey={prompt.modelKey} onModelChange={prompt.onModelChange} commands={prompt.commands} />
   </div>;
-  return <div className="relative flex min-h-0 flex-1 flex-col">
+  return <div ref={hostRef} className="relative flex min-h-0 flex-1 flex-col">
     <ChatTranscript messages={thread.messages} register={register} following={following}
       onOpenPath={onOpenPath} onReview={onReview} onAnswer={onAnswer} snapshot={thread.snapshot} onEditPrompt={onEditPrompt} />
-    <div data-chat-composer className={`pointer-events-none absolute inset-x-0 bottom-0 z-10 px-4 ${composer.dock} ${compact ? "py-2" : "pt-16 pb-6 sm:px-8"}`}>
+    <div ref={composerRef} data-chat-composer className={`pointer-events-none absolute inset-x-0 bottom-0 z-10 px-4 ${composer.dock} ${compact ? "py-2" : "pt-16 pb-6 sm:px-8"}`}>
       <div className="pointer-events-auto mx-auto max-w-[720px]">
         {thread.snapshot && thread.session ? <SavedSnapshot name={thread.session} cwd={thread.cwd} model={prompt.modelKey}
           onRefresh={onRefresh} onContinue={onContinue} /> : <>
