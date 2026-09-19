@@ -24,9 +24,11 @@ async function runBrowserFocus({ win, output, click, until, report }) {
     const navigateUser = async url => {
       await click('[aria-label="Address"]');
       await until(() => js(`document.activeElement?.getAttribute('aria-label')==='Address'`), 'address field focused');
-      for (const keyCode of url) await desktop.testInput(wc, { type: 'char', keyCode });
-      await desktop.testInput(wc, { type: 'keyDown', keyCode: 'Return' });
-      await desktop.testInput(wc, { type: 'keyUp', keyCode: 'Return' });
+      // Controlled React value ignores CDP char events; same path as browser-address-visual.
+      await js(`(()=>{const e=document.querySelector('[aria-label="Address"]');e.focus();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(url)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+      await until(() => js(`document.querySelector('[aria-label="Address"]').value===${JSON.stringify(url)}`), 'address value');
+      await js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))');
+      await js(`document.querySelector('[aria-label="Address"]').form.requestSubmit()`);
       await until(() => browser.visible && browser.tabs.get(browser.visible)?.view?.webContents.getURL() === url, 'explicit address navigation');
     };
     const openBrowser = async () => {
