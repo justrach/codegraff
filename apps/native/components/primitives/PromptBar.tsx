@@ -6,6 +6,7 @@ import ModelPicker from "./ModelPicker";
 import layout from "./PromptBar.module.css";
 import ModelEffortButtons from "./ModelEffortButtons";
 import type { ModelChoice } from "@/lib/acp-client";
+import { resolveComposerModel } from "@/lib/composer-model";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ComposerMenu from "./ComposerMenu";
 import ComposerAttachments from "./ComposerAttachments";
@@ -97,16 +98,12 @@ export default function PromptBar({
   const [dismissed, setDismissed] = useState(false);
   const [plusOpen, setPlusOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
-  const [model, setModel] = useState<PromptModel>(
-    () => catalog.find((m) => m.key === modelKey) ?? catalog[0] ?? MODELS[1],
-  );
+  const [model, setModel] = useState<PromptModel>(() => resolveComposerModel(catalog, modelKey));
   /* Live surfaces load their catalog async (graff/models); once it lands, or
    * the owner re-points modelKey, the picked entry must follow — the initial
-   * useState snapshot is stale by then. */
+   * useState snapshot is stale by then. Unknown keys keep their own name. */
   useEffect(() => {
-    if (!modelKey) return;
-    const found = catalog.find((m) => m.key === modelKey);
-    if (found && found !== model) setModel(found);
+    setModel(resolveComposerModel(catalog, modelKey));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelKey, models]);
   const [dragging, setDragging] = useState(false);

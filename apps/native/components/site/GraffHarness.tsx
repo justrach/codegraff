@@ -17,6 +17,7 @@ import HarnessChrome from "./HarnessChrome";
 import ChatSplitLayout from "./ChatSplitLayout";
 import { sidebarRecents } from "./harness-sidebar";
 import { newPageToken, newSessionName, type Chat, type Msg } from "./harness-types";
+import { liveComposerKey } from "@/lib/composer-model";
 import { useBrowserVisibility } from "./useBrowserVisibility";
 import { useReferenceNavigation } from "./useReferenceNavigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -206,12 +207,7 @@ export default function GraffHarness() {
    * `--resume` target carries the history across, so the switch keeps the chat
    * instead of starting it over. New tabs inherit the pick. */
   const applyModel = (key: string, chatId: number) => {
-    setModelKey(key);
-    setChatModel(chatId, key);
     void requireSession(chatId, true, key)
-      .then(() => adoptCatalog(chatId))
-      // A respawn that fails leaves the tab on its old model; say so rather
-      // than let the picker look like it silently did nothing.
       .catch(error => setCancelError(current => ({ ...current, [chatId]: error instanceof Error ? error.message : "Could not switch model" })));
   };
 
@@ -469,7 +465,7 @@ export default function GraffHarness() {
       chatsRef.current = next; setChats(next);
     }}
     prompt={{ demo: false, models, commands: commands[thread.id] ?? catalogCommands,
-      root: cwdOf(thread), modelKey: thread.model ?? model ?? undefined,
+      root: cwdOf(thread), modelKey: liveComposerKey(thread.model, model, sessionsRef.current.has(thread.id)),
       onModelChange: key => changeModel(key, thread.id), onSend: text => void send(text, thread.id),
       onSetting: text => settings.change(thread.id, text),
       onSteerQueued: () => steerOrInterrupt(queuesRef.current[thread.id]?.[0], runningRef.current.has(thread.id), id => steerQueued(thread.id, id), () => {

@@ -34,17 +34,14 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
     });
   };
   const adoptCatalog = async (chatId: number) => {
-    // Use the provider and model actually resolved by graff.
-    try {
-      const { models: live, current, commands: available } = await fetchModels(sessionsRef.current.has(chatId) ? handleOf(chatId) : undefined, activePathRef.current ?? undefined);
-      if (live.length > 0) setModels(live);
-      if (available?.length) { setCatalogCommands(available); setCommands(old => ({ ...old, [chatId]: available })); }
-      if (current) {
-        setChatModel(chatId, current);
-        setModelKey((fallback) => fallback ?? current);
-      }
-    } catch {
-      // Do not invent a selected model when the catalog is unavailable.
+    // Pill follows this chat's agent. A transient /api/models process is not that agent.
+    const handle = sessionsRef.current.has(chatId) ? handleOf(chatId) : undefined;
+    const { models: live, current, commands: available } = await fetchModels(handle, activePathRef.current ?? undefined);
+    if (live.length > 0) setModels(live);
+    if (available?.length) { setCatalogCommands(available); setCommands(old => ({ ...old, [chatId]: available })); }
+    if (current && handle) {
+      setChatModel(chatId, current);
+      setModelKey(current);
     }
   };
 
@@ -94,6 +91,10 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
     // Populate the command menu from this agent's advertisement.
     if (commands.length > 0) setCommands((current) => ({ ...current, [chatId]: commands }));
     setHealth({ ok: true });
+    if (spawnModel) {
+      setChatModel(chatId, spawnModel);
+      setModelKey(spawnModel);
+    }
     await adoptCatalog(chatId);
     return id;
   };
