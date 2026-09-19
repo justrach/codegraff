@@ -142,7 +142,7 @@ export default function FineTuneCard() {
                 backgroundImage:
                   "linear-gradient(90deg, var(--accent) 35%, var(--accent-ink) 50%, var(--accent) 65%)",
                 backgroundSize: "200% 100%",
-                animation: "shimmer-text 1.4s linear infinite",
+                animation: "shimmer-text 1.4s steps(8, end) infinite",
               }}
             >
               Adjust

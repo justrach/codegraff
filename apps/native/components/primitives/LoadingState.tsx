@@ -52,7 +52,7 @@ function LoaderGrid({
           className={`size-[4px] bg-ink ${round ? "rounded-full" : "rounded-[1px]"}`}
           style={{
             opacity: delay === null ? 0.07 : 0.15,
-            animation: delay === null ? "none" : `pixel-on ${dur}ms ease-in-out ${delay}ms infinite`,
+            animation: delay === null ? "none" : `pixel-on ${dur}ms steps(4, end) ${delay}ms infinite`,
           }}
         />
       ))}
@@ -99,7 +99,7 @@ export default function LoadingState({
         backgroundImage:
           "linear-gradient(90deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%)",
         backgroundSize: "200% 100%",
-        animation: "shimmer-text 1.4s linear infinite",
+        animation: "shimmer-text 1.4s steps(8, end) infinite",
       }}
     >
       {resolvedLabel}

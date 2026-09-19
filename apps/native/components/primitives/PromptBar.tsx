@@ -536,7 +536,7 @@ export default function PromptBar({
                   <span
                     key={i}
                     className="w-[2.5px] rounded-full bg-current"
-                    style={{ height: "100%", animation: `eq-bounce 900ms ease-in-out ${i * 150}ms infinite` }}
+                    style={{ height: "100%", animation: `eq-bounce 900ms steps(6, end) ${i * 150}ms infinite` }}
                   />
                 ))}
               </span>

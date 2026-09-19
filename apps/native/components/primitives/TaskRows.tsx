@@ -33,7 +33,7 @@ function SpinnerRing({ active, children }: { active?: boolean; children?: React.
     <span className="relative inline-flex shrink-0 items-center justify-center" style={{ width: size, height: size }}>
       <svg
         width={size} height={size} className="absolute inset-0"
-        style={active ? { animation: "spin 1.1s linear infinite" } : undefined}
+        style={active ? { animation: "spin 1.1s steps(16, end) infinite" } : undefined}
       >
         <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--line)" strokeWidth={stroke} />
         {active && (
@@ -166,7 +166,7 @@ export default function TaskRows({
       pill:
         row2 === "failed" ? (
           <span className="inline-flex h-5.5 items-center gap-1.5 rounded-full bg-red-tint px-2 text-[11.5px] font-medium text-red" style={{ animation: "fade-in 200ms ease-out both" }}>
-            Failed <span style={{ animation: "spin 1.2s linear infinite" }} className="flex">{RetryIcon}</span>
+            Failed <span style={{ animation: "spin 1.2s steps(16, end) infinite" }} className="flex">{RetryIcon}</span>
           </span>
         ) : row2 === "done" ? (
           <span className="inline-flex h-5.5 items-center gap-1.5 rounded-full bg-green-tint px-2 text-[11.5px] font-medium text-green" style={{ animation: "fade-in 200ms ease-out both" }}>

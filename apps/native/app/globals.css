@@ -926,7 +926,7 @@ th.is-colsel .records-header-icon {
   flex: 0 0 8px;
   border-radius: 50%;
   background: var(--accent);
-  animation: records-pulse 1.1s ease-in-out infinite;
+  animation: records-pulse 1.1s steps(6, end) infinite;
 }
 
 @keyframes records-pulse {
