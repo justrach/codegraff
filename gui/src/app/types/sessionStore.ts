@@ -57,6 +57,7 @@ export interface SessionStoreState {
   workspacesByPath: Record<string, WorkspaceSession>;
   applySessionSnapshot: (snapshot: SessionSnapshot) => void;
   addAttachments: (key: string | null, items: Attachment[]) => void;
+  replaceAttachments: (key: string | null, items: Attachment[]) => void;
   removeAttachment: (key: string | null, id: string) => void;
   clearAttachments: (key: string | null) => void;
   moveAttachments: (fromKey: string | null, toKey: string | null) => void;
