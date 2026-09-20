@@ -2,6 +2,7 @@
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import Markdown from "@/components/primitives/Markdown";
+import { BrowserLinkText } from "@/components/primitives/BrowserLinks";
 import ThinkingState from "@/components/primitives/ThinkingState";
 import ToolChips, { type LiveDiff } from "@/components/primitives/ToolChips";
 import ApprovalCard from "@/components/primitives/ApprovalCard";
@@ -119,7 +120,7 @@ export const UserBubble = memo(function UserBubble({ text, onEdit }: { text: str
                 <IconArrowUp size={14} />
               </button>
             </div>
-            </> : words}
+            </> : <BrowserLinkText text={words} />}
           </div>
         </div>}
       </div>
