@@ -4,7 +4,9 @@ import { useMemo, type JSX, type ReactNode } from "react";
 import { Streamdown, type Components, type ControlsConfig, type ExtraProps } from "streamdown";
 import { code } from "@/lib/code-highlighter";
 import StreamingCode from "./StreamingCode";
+import { BrowserLink, BROWSER_LINK_CLASS, linkifyBrowserChildren } from "./BrowserLinks";
 import { stripCiteMarkup } from "@/lib/cite-markup";
+import { normalizeBrowserTarget } from "@/lib/browser-links";
 
 /* ─────────────────────────────────────────────────────────
  * MARKDOWN
@@ -49,8 +51,8 @@ function textOf(node: ReactNode): string {
 
 function heading(level: 1 | 2 | 3 | 4 | 5 | 6) {
   const Tag = `h${level}` as const;
-  return function Heading({ node: _node, className: _className, ...rest }: El<typeof Tag>) {
-    return <Tag {...rest} className={HEADING_STYLE[level]} />;
+  return function Heading({ node: _node, className: _className, children, ...rest }: El<typeof Tag>) {
+    return <Tag {...rest} className={HEADING_STYLE[level]}>{linkifyBrowserChildren(children)}</Tag>;
   };
 }
 
@@ -63,14 +65,18 @@ const STATIC_COMPONENTS: Components = {
   h4: heading(4),
   h5: heading(5),
   h6: heading(6),
-  p: ({ node: _node, className: _className, ...rest }) => <p {...rest} className="[&+p]:mt-3" />,
+  p: ({ node: _node, className: _className, children, ...rest }) => (
+    <p {...rest} className="[&+p]:mt-3">{linkifyBrowserChildren(children)}</p>
+  ),
   ul: ({ node: _node, className: _className, ...rest }) => (
     <ul {...rest} className="list-disc pl-5 marker:text-ink-3 [&>li+li]:mt-1 [li_&]:mt-1" />
   ),
   ol: ({ node: _node, className: _className, ...rest }) => (
     <ol {...rest} className="list-decimal pl-5 marker:text-ink-3 [&>li+li]:mt-1 [li_&]:mt-1" />
   ),
-  li: ({ node: _node, className: _className, ...rest }) => <li {...rest} className="pl-0.5" />,
+  li: ({ node: _node, className: _className, children, ...rest }) => (
+    <li {...rest} className="pl-0.5">{linkifyBrowserChildren(children)}</li>
+  ),
   blockquote: ({ node: _node, className: _className, ...rest }) => (
     <blockquote {...rest} className="border-l-2 border-line pl-3 text-ink-2 [&>p+p]:mt-2" />
   ),
@@ -79,42 +85,55 @@ const STATIC_COMPONENTS: Components = {
       {...rest}
       target="_blank"
       rel="noreferrer"
-      className="text-ink underline decoration-line underline-offset-2 hover:decoration-ink"
+      className={BROWSER_LINK_CLASS}
     >
       {children}
     </a>
   ),
   hr: ({ node: _node, className: _className, ...rest }) => <hr {...rest} className="border-line" />,
-  strong: ({ node: _node, className: _className, ...rest }) => <strong {...rest} className="font-semibold text-ink" />,
-  del: ({ node: _node, className: _className, ...rest }) => <del {...rest} className="text-ink-3" />,
+  strong: ({ node: _node, className: _className, children, ...rest }) => (
+    <strong {...rest} className="font-semibold text-ink">{linkifyBrowserChildren(children)}</strong>
+  ),
+  em: ({ node: _node, className: _className, children, ...rest }) => (
+    <em {...rest}>{linkifyBrowserChildren(children)}</em>
+  ),
+  del: ({ node: _node, className: _className, children, ...rest }) => (
+    <del {...rest} className="text-ink-3">{linkifyBrowserChildren(children)}</del>
+  ),
   thead: ({ node: _node, className: _className, ...rest }) => <thead {...rest} className="border-b border-line bg-inset" />,
   tr: ({ node: _node, className: _className, ...rest }) => <tr {...rest} className="border-b border-line last:border-0" />,
-  th: ({ node: _node, className: _className, ...rest }) => (
-    <th {...rest} className="px-2.5 py-1.5 text-left text-[12.5px] font-semibold whitespace-nowrap text-ink" />
+  th: ({ node: _node, className: _className, children, ...rest }) => (
+    <th {...rest} className="px-2.5 py-1.5 text-left text-[12.5px] font-semibold whitespace-nowrap text-ink">
+      {linkifyBrowserChildren(children)}
+    </th>
   ),
-  td: ({ node: _node, className: _className, ...rest }) => (
-    <td {...rest} className="px-2.5 py-1.5 align-top text-[12.5px] text-ink-2" />
+  td: ({ node: _node, className: _className, children, ...rest }) => (
+    <td {...rest} className="px-2.5 py-1.5 align-top text-[12.5px] text-ink-2">
+      {linkifyBrowserChildren(children)}
+    </td>
   ),
 };
 
 function inlineCode(onOpen?: (path: string) => void) {
   return function InlineCode({ node: _node, className: _className, children, ...rest }: El<"code">) {
     const text = textOf(children);
+    const href = normalizeBrowserTarget(text);
     // `src/acp.zig:96` and `file.md:7-31` open the file; the line ref is display-only.
     const target = text.replace(/\/$/, "").replace(/:\d+(?:[-–]\d+)?$/, "");
-    const pathish = onOpen !== undefined && PATHISH.test(target);
-    return (
+    const pathish = href == null && onOpen !== undefined && PATHISH.test(target);
+    const codeNode = (
       <code
         {...rest}
         onClick={pathish ? () => onOpen(target) : undefined}
-        title={pathish ? `Open ${stripCiteMarkup(text)}` : undefined}
+        title={pathish ? `Open ${stripCiteMarkup(text)}` : href ?? undefined}
         className={`rounded-[4px] bg-inset px-1 py-px font-mono text-[0.92em] text-ink shadow-hairline ${
-          pathish ? "cursor-pointer underline decoration-line underline-offset-2 transition-colors hover:bg-hover hover:decoration-ink" : ""
+          pathish || href ? "cursor-pointer underline decoration-line underline-offset-2 transition-colors hover:bg-hover hover:decoration-ink" : ""
         }`}
       >
         {children}
       </code>
     );
+    return href == null ? codeNode : <BrowserLink href={href}>{codeNode}</BrowserLink>;
   };
 }
 
