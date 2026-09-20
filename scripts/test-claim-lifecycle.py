@@ -96,7 +96,7 @@ def run(binary, recovery, evidence):
         state=json.loads((work/'gh-state.json').read_text())
         state['base_sha']=initial
         (work/'gh-state.json').write_text(json.dumps(state))
-        commands = ['git add probe.txt', 'git commit -m fixture', 'git push origin HEAD',
+        commands = ['git commit -m fixture', 'git push origin HEAD',
                     'gh pr create --title fixture --body-file notes.md', 'gh pr edit 1 --title fixture']
         claim = lambda action: tool('peer_message', action=action, kind='publication', key='fixture', repo='fixture/primary')
         owner = caller = None
