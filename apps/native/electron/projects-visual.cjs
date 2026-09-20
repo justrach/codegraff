@@ -69,8 +69,14 @@ async function runProjectVisuals({ win, origin, output }) {
   await js(`document.querySelector('button[aria-label="Files"]').click()`);
   await wait(`!!document.querySelector('[aria-label="Workspace files"]')`);
   assert.equal(await js(`!!document.querySelector('[aria-label="Workspace changes"]')`), false);
+  await js(`window.folderFetchCount=0;window.releaseFolderFetch=[];const folderBaseFetch=window.fetch;window.fetch=(input,options)=>{if(String(input).includes('/api/workspaces')){window.folderFetchCount+=1;const reply=()=>new Response(JSON.stringify({path:'/demo',parent:'/',git:false,home:'/demo',default:'/demo',entries:[{name:'apps',path:'/demo/apps',git:false}]}),{headers:{'content-type':'application/json'}});if(window.folderFetchCount===1)return Promise.resolve(reply());return new Promise(resolve=>window.releaseFolderFetch.push(()=>resolve(reply())));}return folderBaseFetch(input,options);};true`);
   await js(`document.querySelector('button[aria-label="Open folder…"]').click()`);
-  await wait(`!!document.querySelector('[role="dialog"][aria-label="Open a folder"]')`);
+  await wait(`document.querySelector('[role="dialog"][aria-label="Open a folder"]')?.textContent.includes('apps')`);
+  await js(`(()=>{const form=document.querySelector('[role="dialog"][aria-label="Open a folder"] form');form.requestSubmit();form.requestSubmit();form.requestSubmit();})()`);
+  await wait(`window.folderFetchCount===4`);
+  assert.ok(await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"]')?.textContent.includes('apps')`), 'Repeated Enter keeps the current folder listing visible while navigation is pending');
+  await js(`window.releaseFolderFetch.splice(0).forEach(release=>release())`);
+  await wait(`!Array.from(document.querySelectorAll('[role="dialog"][aria-label="Open a folder"] button')).find(b=>b.textContent==='Open folder').disabled`);
   // Unmount the picker before navigating: an in-flight listing + loadURL
   // left the renderer unable to run the next suite's scripts.
   await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"] button[aria-label="Close"]').click()`);
