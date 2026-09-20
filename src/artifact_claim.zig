@@ -283,6 +283,7 @@ pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []cons
 fn persistPath(io: Io, arena: Allocator, cwd: []const u8) ?[]const u8 {
     if (g_persist_path) |p| return p;
     if (builtin.is_test and !g_test_resolve_cwd) return null;
+    if (cwd.len == 0 or std.mem.eql(u8, cwd, ".")) return persist_rel;
     if (claim_path.canonicalFile(arena, io, cwd)) |p| return p;
     if (builtin.is_test) return null;
     return persist_rel;
@@ -316,7 +317,7 @@ fn mergeLegacyFile(io: Io, arena: Allocator, ledger: *Ledger, path: []const u8) 
 fn loadTransaction(io: Io, tx: @import("repo_transaction.zig").Transaction, ledger: *Ledger, cwd: []const u8) !void {
     if (try tx.read()) |text| try loadJson(tx.arena, ledger, text);
     if (builtin.is_test and !g_test_resolve_cwd) return;
-    if (cwd.len == 0) return;
+    if (cwd.len == 0 or std.mem.eql(u8, cwd, ".")) return;
     const legacy = claim_path.legacyFile(tx.arena, cwd) orelse return;
     if (!claim_path.samePath(legacy, tx.path)) mergeLegacyFile(io, tx.arena, ledger, legacy);
 }

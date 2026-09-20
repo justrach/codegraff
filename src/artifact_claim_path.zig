@@ -89,7 +89,7 @@ test "canonicalFile is identical across linked worktrees of one repo" {
     const pa = canonicalFile(ar, io, root) orelse return error.TestUnexpectedResult;
     const pb = canonicalFile(ar, io, other) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings(pa, pb);
-    try std.testing.expect(std.mem.endsWith(u8, pa, "artifact-claims.json"));
+    try std.testing.expect(std.mem.endsWith(u8, pa, persist_rel));
     const other_repo = try std.fmt.allocPrint(a, "{s}/other", .{tmp_root});
     defer a.free(other_repo);
     try Io.Dir.cwd().createDirPath(io, other_repo);
