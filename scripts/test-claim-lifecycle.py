@@ -148,7 +148,7 @@ def run(binary, recovery, evidence):
             else:
                 owner.close()
                 owner = None
-            recovery_commands = commands
+            recovery_commands = ['git add probe.txt'] + commands
             model.caller_steps = [claim('claim')]+[tool('bash',command=cmd) for cmd in recovery_commands]
             first = len(model.requests)
             caller.prompt('Acquire ownership after recovery, then perform the writes.')
