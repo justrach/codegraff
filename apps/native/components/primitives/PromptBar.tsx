@@ -7,6 +7,7 @@ import layout from "./PromptBar.module.css";
 import ModelEffortButtons from "./ModelEffortButtons";
 import type { ModelChoice } from "@/lib/acp-client";
 import { resolveComposerModel } from "@/lib/composer-model";
+import { shouldPickComposerRow } from "@/lib/composer-keyboard";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ComposerMenu from "./ComposerMenu";
 import ComposerAttachments from "./ComposerAttachments";
@@ -488,7 +489,7 @@ export default function PromptBar({
                   setActive((activeIndex + (event.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length);
                   return;
                 }
-                if (!event.shiftKey && (event.key === "Enter" || event.key === "Tab")) {
+                if (shouldPickComposerRow(event.key, event.shiftKey, engaged)) {
                   event.preventDefault();
                   event.stopPropagation();
                   pick(rows[activeIndex]);
