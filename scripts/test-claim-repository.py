@@ -93,7 +93,7 @@ def run_case(binary, name, case, evidence):
         work = Path(temp)
         model.work = work
         env = {k: v for k, v in os.environ.items() if not k.endswith('_API_KEY')}
-        env.update(HOME=temp, LMSTUDIO_API_KEY='local', GRAFF_NO_TELEMETRY='1',
+        env.update(HOME=temp, LMSTUDIO_API_KEY='local', GRAFF_NO_TELEMETRY='1', GRAFF_ACCORD='0',
                    GRAFF_FLEET='off', GRAFF_NO_SMOLIFY='1', GRAFF_NO_CODEDB_GUARD='1')
         state = dict(checks='SUCCESS', head_branch='feature', pr_unavailable=case.get('pr_unavailable', False))
         state['wait_release'] = case.get('wait_release', False)

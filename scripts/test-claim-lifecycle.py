@@ -84,7 +84,7 @@ def run(binary, recovery, evidence):
     with tempfile.TemporaryDirectory(prefix='graff-claim-life-') as temp:
         work = Path(temp)
         env = {k:v for k,v in os.environ.items() if not k.endswith('_API_KEY')}
-        env.update(HOME=temp, LMSTUDIO_API_KEY='local', GRAFF_NO_TELEMETRY='1',
+        env.update(HOME=temp, LMSTUDIO_API_KEY='local', GRAFF_NO_TELEMETRY='1', GRAFF_ACCORD='0',
             GRAFF_FLEET='off', GRAFF_NO_SMOLIFY='1', GRAFF_NO_CODEDB_GUARD='1')
         prepare(work, env, {'checks':'SUCCESS', 'runs':'success', 'new_runs':'success', 'head_branch':'fixture'})
         subprocess.run(['git','init','--bare','-q',str(work/'remote.git')], check=True, timeout=10)
@@ -179,7 +179,7 @@ def independent_issue(binary, evidence):
     with tempfile.TemporaryDirectory(prefix='graff-claim-issue-') as temp:
         work = Path(temp)
         env = {k:v for k,v in os.environ.items() if not k.endswith('_API_KEY')}
-        env.update(HOME=temp, LMSTUDIO_API_KEY='local', GRAFF_NO_TELEMETRY='1',
+        env.update(HOME=temp, LMSTUDIO_API_KEY='local', GRAFF_NO_TELEMETRY='1', GRAFF_ACCORD='0',
             GRAFF_FLEET='off', GRAFF_NO_SMOLIFY='1', GRAFF_NO_CODEDB_GUARD='1')
         prepare(work,env,{'checks':'SUCCESS'})
         owner = caller = None
