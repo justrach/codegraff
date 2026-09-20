@@ -117,7 +117,9 @@ export default function PromptBar({
   const [auto, setAuto] = useState(demo);
   const [autoStep, setAutoStep] = useState(0);
   const [expanded, setExpanded] = useState(false);
-  const wide = expanded || tall;
+  // Live split composers keep one stable grid; content-driven row changes made
+  // history recall visibly reshape the whole prompt card.
+  const wide = !demo || expanded || tall;
   const [engaged, setEngaged] = useState(false);
   const controlsRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
