@@ -12,6 +12,7 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- `#1088`: `gh issue create` is not owned by the latest claimed issue; pushing a new branch is not an unrelated PR.
 - `#1084`: gpt-6-astra `/effort medium` sends medium (no longer remapped to low).
 - Empty Enter-Enter while a turn is running interrupts (or steers the next queued prompt). It no longer required a queue to arm.
 - Desktop ACP workers can park after a quiet period (`GRAFF_ACP_IDLE_MS`, default 30s) and `--resume` with the saved cache id. Parking is skipped while a prompt or `session/idle` subscriber is live; tab close still reaps immediately.

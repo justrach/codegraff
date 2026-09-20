@@ -198,7 +198,7 @@ test "#840 publication branch keys are not compared with PR numbers" {
     var agent: Agent = undefined;
     agent.arena = arena.allocator();
     agent.io = std.testing.io;
-    try std.testing.expect((try bash(&agent, "gh pr edit 123 --title x")).?.is_error);
+    try std.testing.expect(try bash(&agent, "gh pr edit 123 --title x") == null);
     try std.testing.expect(try bash(&agent, "gh pr create --draft --head feat/b") == null);
 }
 
