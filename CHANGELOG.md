@@ -12,6 +12,7 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- Line REPL boxes GFM pipe tables (including `|---|` separators and pipe-less `a | b` rows) when the stream ends.
 - `#1088`: claims own one artifact. Conflicts ping Accord; acquire/release/handoff also replicate as replaceable Accord progress (file ledger stays canonical). Staging is not a lock.
 - `#1084`: gpt-6-astra `/effort medium` sends medium (no longer remapped to low).
 - Empty Enter-Enter while a turn is running interrupts (or steers the next queued prompt). It no longer required a queue to arm.

@@ -90,6 +90,12 @@ test "incremental markdown streaming renders like renderMdLine" {
     try std.testing.expectEqualStrings("x │ y\n", aw.writer.buffered());
     aw.clearRetainingCapacity();
 
+    a.streamMarkdown("| PR | What |\n|---|---|\n| 1093 | keyboard |\n");
+    a.flushStreamTail();
+    try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "│") != null);
+    try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "| PR |") == null);
+    aw.clearRetainingCapacity();
+
     // Stream tail: a partial prose line flushes whatever is pending.
     a.streamMarkdown("tail without newline");
     a.flushStreamTail();

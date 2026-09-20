@@ -195,6 +195,17 @@ pub fn wrapCell(gpa: Allocator, cell: []const u8, width: usize, out: *std.ArrayL
     if (out.items.len == 0) out.append(gpa, "") catch {};
 }
 
+/// GFM table row: leading `|` or a ` | ` cell join (pipe-less header).
+pub fn isTableRowLine(body: []const u8) bool {
+    if (body.len == 0) return false;
+    if (body[0] == '|') return true;
+    var i: usize = 1;
+    while (i + 1 < body.len) : (i += 1) {
+        if (body[i] == '|' and body[i - 1] == ' ' and body[i + 1] == ' ') return true;
+    }
+    return false;
+}
+
 /// True if a `|`-delimited row contains only separator chars (-, :, space).
 pub fn isTableSeparator(body: []const u8) bool {
     var any_dash = false;
@@ -243,4 +254,12 @@ test "isTableSeparator: only |, -, :, space and at least one dash" {
     try std.testing.expect(!isTableSeparator("| a | b |")); // letters
     try std.testing.expect(!isTableSeparator("|   |   |")); // no dash
     try std.testing.expect(!isTableSeparator("")); // empty
+}
+
+test "isTableRowLine: leading pipe or GFM cell join" {
+    try std.testing.expect(isTableRowLine("| PR | What |"));
+    try std.testing.expect(isTableRowLine("|---|---|"));
+    try std.testing.expect(isTableRowLine("PR | What"));
+    try std.testing.expect(!isTableRowLine("just prose"));
+    try std.testing.expect(!isTableRowLine(""));
 }
