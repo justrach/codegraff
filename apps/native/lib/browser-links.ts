@@ -3,7 +3,7 @@ export type BrowserLinkSegment =
   | { kind: "link"; label: string; href: string };
 
 const EXPLICIT_HTTP = /^https?:\/\//i;
-const LOCAL_HOST = /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|\d{1,3}(?:\.\d{1,3}){3})(?::\d{1,5})?(?:[/?#]|$)/i;
+const LOCAL_HOST = /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[[0-9a-f:.]+\]|\d{1,3}(?:\.\d{1,3}){3})(?::\d{1,5})?(?:[/?#]|$)/i;
 const FILELIKE_SUFFIXES = new Set([
   "7z", "avif", "avi", "bak", "bmp", "bz2", "c", "cc", "cfg", "conf", "cpp", "css",
   "csv", "dmg", "doc", "docx", "eot", "exe", "flac", "gif", "go", "gz", "h", "hpp",
@@ -13,7 +13,7 @@ const FILELIKE_SUFFIXES = new Set([
   "tgz", "toml", "ts", "tsx", "ttf", "txt", "wasm", "wav", "webm", "webmanifest", "webp",
   "woff", "woff2", "xls", "xlsx", "xml", "xz", "yaml", "yml", "zig", "zip",
 ]);
-const CANDIDATE = /https?:\/\/[^\s<>"'`]+|www\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}(?::\d{1,5})?(?:[/?#][^\s<>"'`]*)?|(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|\d{1,3}(?:\.\d{1,3}){3})(?::\d{1,5})?(?:[/?#][^\s<>"'`]*)?|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{2,59})(?::\d{1,5})?(?:[/?#][^\s<>"'`]*)?/giu;
+const CANDIDATE = /https?:\/\/[^\s<>"'`]+|www\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}(?::\d{1,5})?(?:[/?#][^\s<>"'`]*)?|(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[[0-9a-f:.]+\]|\d{1,3}(?:\.\d{1,3}){3})(?::\d{1,5})?(?:[/?#][^\s<>"'`]*)?|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{2,59})(?::\d{1,5})?(?:[/?#][^\s<>"'`]*)?/giu;
 const TRAILING_PUNCTUATION = /[.,;:!?]+$/u;
 const CLOSERS: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
 

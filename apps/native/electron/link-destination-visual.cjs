@@ -111,6 +111,19 @@ async function runLinkDestinationVisuals({ origin, output }) {
     await wait(`!document.querySelector('[aria-label="Close browser"]')`);
     await wait(() => browser.visible === null, 'browser closed');
   };
+  const routeRenderedUserLink = async () => {
+    const url = `${destination}/rendered-user-bubble`, before = routed.length, opened = system.length, appURL = wc.getURL();
+    const selector = `[data-user-bubble] a[href="${url}"][target="_blank"]`;
+    await js(`(()=>{const e=document.querySelector('textarea[aria-label="Prompt"]');e.focus();Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,${JSON.stringify(`Open ${url}`)});e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));})()`);
+    await wait(`!!document.querySelector(${JSON.stringify(selector)})`, 'real UserBubble rendered its browser link');
+    await click(selector);
+    await wait(() => routed.length === before + 1, 'rendered user link intercepted exactly once');
+    assert.deepEqual(routed[before], { choice: 'system', url });
+    await wait(() => system.length === opened + 1, 'rendered user link reached the fake system opener');
+    assert.equal(system.at(-1), url);
+    assert.equal(wc.getURL(), appURL, 'rendered user link preserves the main app URL');
+    await wait(`!document.querySelector('article[aria-busy="true"]')`, 'rendered user link prompt completed');
+  };
   const route = async (choice, target, suffix) => {
     const url = `${destination}/${suffix}`, before = routed.length, opened = system.length, appURL = wc.getURL();
     await link(url, target);
@@ -141,6 +154,7 @@ async function runLinkDestinationVisuals({ origin, output }) {
     assert.equal(await store.load(), 'system');
     await screenshot('link-destination-default.png');
     await closeSettings();
+    await routeRenderedUserLink();
     await route('system', '', 'default-normal'); await route('system', '_blank', 'default-blank');
     await openSettings(); await choose('graff'); await closeSettings();
     await route('graff', '', 'graff-normal');
@@ -199,7 +213,7 @@ async function runLinkDestinationVisuals({ origin, output }) {
     await require('./browser-address-visual.cjs').runBrowserAddress({ wc, browser, destination, guard, wait, delayOpenReply: () => { delayNextOpen = true; }, openReplySent: () => delayedReplySent });
     await require('./inline-reference-visual.cjs').inlineReferenceVisual({ wc, js, wait, browser, destination, closeBrowser, screenshot });
     assert.deepEqual(blocked, [], 'no external network or engine/model requests attempted');
-    console.log('Link destination visuals passed: default/save/switch, reload and fresh-store persistence, normal/blank links, closed-browser reveal, overlays, unsafe/same-origin links, split focus and preserved app.');
+    console.log('Link destination visuals passed: real UserBubble click, default/save/switch, reload and fresh-store persistence, normal/blank links, closed-browser reveal, overlays, unsafe/same-origin links, split focus and preserved app.');
   } finally {
     ipcMain.removeHandler('link-settings'); ipcMain.removeHandler('browser'); ipcMain.removeListener('browser-overlay', overlay);
     browser.closeAll(); win.destroy(); browser.session.webRequest.onBeforeRequest(null);

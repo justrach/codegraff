@@ -10,6 +10,7 @@ describe("normalizeBrowserTarget", () => {
     assert.equal(normalizeBrowserTarget("example.com"), "https://example.com/");
     assert.equal(normalizeBrowserTarget("localhost:3000"), "http://localhost:3000/");
     assert.equal(normalizeBrowserTarget("192.168.1.20:8080/health"), "http://192.168.1.20:8080/health");
+    assert.equal(normalizeBrowserTarget("[2001:db8::1]:8080/health"), "http://[2001:db8::1]:8080/health");
   });
 
   it("rejects unsafe, credential-bearing, and file-like lookalikes", () => {
@@ -64,8 +65,13 @@ describe("browserLinkSegments", () => {
     ]) assert.deepEqual(browserLinkSegments(text), [{ kind: "text", value: text }]);
   });
 
-  it("recognizes the reported local preview URL exactly", () => {
+  it("recognizes the reported local preview URL and bare IPv6 destinations exactly", () => {
     const url = "http://localhost:3090/visual-tests/radius-preview";
     assert.deepEqual(browserLinkSegments(url), [{ kind: "link", label: url, href: url }]);
+    assert.deepEqual(browserLinkSegments("Open [2001:db8::1]:8080/health."), [
+      { kind: "text", value: "Open " },
+      { kind: "link", label: "[2001:db8::1]:8080/health", href: "http://[2001:db8::1]:8080/health" },
+      { kind: "text", value: "." },
+    ]);
   });
 });
