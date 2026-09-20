@@ -75,8 +75,12 @@ async function runProjectVisuals({ win, origin, output }) {
   await js(`(()=>{const form=document.querySelector('[role="dialog"][aria-label="Open a folder"] form');form.requestSubmit();form.requestSubmit();form.requestSubmit();})()`);
   await wait(`window.folderFetchCount===4`);
   assert.ok(await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"]')?.textContent.includes('apps')`), 'Repeated Enter keeps the current folder listing visible while navigation is pending');
-  await js(`window.releaseFolderFetch.splice(0).forEach(release=>release())`);
+  await js(`window.releaseFolderFetch.shift()();window.releaseFolderFetch.shift()();new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+  assert.ok(await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"]')?.textContent.includes('apps')`), 'Stale navigation responses do not clear the listing while the newest request is pending');
+  assert.equal(await js(`Array.from(document.querySelectorAll('[role="dialog"][aria-label="Open a folder"] button')).find(b=>b.textContent==='Open folder').disabled`), true, 'The newest folder request remains pending');
+  await js(`window.releaseFolderFetch.shift()()`);
   await wait(`!Array.from(document.querySelectorAll('[role="dialog"][aria-label="Open a folder"] button')).find(b=>b.textContent==='Open folder').disabled`);
+  assert.ok(await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"]')?.textContent.includes('apps')`), 'The folder listing remains visible after the newest request settles');
   // Unmount the picker before navigating: an in-flight listing + loadURL
   // left the renderer unable to run the next suite's scripts.
   await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"] button[aria-label="Close"]').click()`);
