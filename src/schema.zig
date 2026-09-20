@@ -559,8 +559,8 @@ test "subagent_spec: run_in_background is a boolean, optional (not in required),
 }
 
 test "subagent_spec: independent fan-out defaults to worktree, not shared_cwd" {
-    try std.testing.expect(std.mem.indexOf(u8, subagent_spec.schema, "default to \"worktree\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, subagent_spec.schema, "default to \\\"worktree\\\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, subagent_spec.schema, "Default shared_cwd") == null);
-    try std.testing.expect(std.mem.indexOf(u8, workflow_spec.schema, "fan-out tasks default to \"worktree\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, workflow_spec.schema, "pipeline stages default to \"shared_cwd\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, workflow_spec.schema, "fan-out tasks default to \\\"worktree\\\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, workflow_spec.schema, "pipeline stages default to \\\"shared_cwd\\\"") != null);
 }
