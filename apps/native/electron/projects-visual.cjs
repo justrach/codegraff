@@ -76,9 +76,12 @@ async function runProjectVisuals({ win, origin, output, pressEnter }) {
   await pressEnter(); await pressEnter(); await pressEnter();
   await wait(`window.folderFetchCount===4`);
   assert.ok(await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"]')?.textContent.includes('apps')`), 'Repeated Enter keeps the current folder listing visible while navigation is pending');
-  await js(`window.releaseFolderFetch.shift()();window.releaseFolderFetch.shift()();new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
-  assert.ok(await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"]')?.textContent.includes('apps')`), 'Stale navigation responses do not clear the listing while the newest request is pending');
-  assert.equal(await js(`Array.from(document.querySelectorAll('[role="dialog"][aria-label="Open a folder"] button')).find(b=>b.textContent==='Open folder').disabled`), true, 'The newest folder request remains pending');
+  await js(`window.releaseFolderFetch.shift()();new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+  assert.ok(await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"]')?.textContent.includes('apps')`), 'The first stale navigation response does not clear the listing');
+  assert.equal(await js(`Array.from(document.querySelectorAll('[role="dialog"][aria-label="Open a folder"] button')).find(b=>b.textContent==='Open folder').disabled`), true, 'The newest folder request remains pending after the first stale response');
+  await js(`window.releaseFolderFetch.shift()();new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+  assert.ok(await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"]')?.textContent.includes('apps')`), 'The second stale navigation response does not clear the listing');
+  assert.equal(await js(`Array.from(document.querySelectorAll('[role="dialog"][aria-label="Open a folder"] button')).find(b=>b.textContent==='Open folder').disabled`), true, 'The newest folder request remains pending after both stale responses');
   await js(`window.releaseFolderFetch.shift()()`);
   await wait(`!Array.from(document.querySelectorAll('[role="dialog"][aria-label="Open a folder"] button')).find(b=>b.textContent==='Open folder').disabled`);
   assert.ok(await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"]')?.textContent.includes('apps')`), 'The folder listing remains visible after the newest request settles');
