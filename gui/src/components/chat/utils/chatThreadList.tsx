@@ -1,8 +1,7 @@
 import type { TranscriptMessage } from "@/services/desktop/types/contracts";
 
 import { ChatCommandResultRow } from "../ChatCommandResultRow";
-import { ChatEventRow } from "../ChatEventRow";
-import { ChatMessageRow } from "../ChatMessageRow";
+import { ChatTranscriptMessage } from "../ChatTranscriptMessage";
 import { ChatWorkRow } from "../ChatWorkRow";
 import { THREAD_ITEM_GAP } from "../constants/chatThread";
 import type {
@@ -73,17 +72,6 @@ function estimateCommandResultItemSize(
   return Math.min(520, 64 + lineCount * 20);
 }
 
-function renderChatMessage(message: TranscriptMessage, workspacePath: string | null) {
-  switch (message.kind) {
-    case "user":
-    case "assistant":
-    case "reasoning":
-      return <ChatMessageRow message={message} workspacePath={workspacePath} />;
-    default:
-      return <ChatEventRow message={message} />;
-  }
-}
-
 export function estimateChatThreadItemSize(item: ChatThreadItem): number {
   const contentSize =
     item.kind === "message"
@@ -106,7 +94,10 @@ export function renderChatThreadItem(
 ) {
   const row =
     item.kind === "message" ? (
-      renderChatMessage(item.message, workspacePath)
+      <ChatTranscriptMessage
+        message={item.message}
+        workspacePath={workspacePath}
+      />
     ) : item.kind === "request_work" ? (
       <ChatWorkRow
         key={item.key}

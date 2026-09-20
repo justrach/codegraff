@@ -9,7 +9,6 @@ import {
   classifyPath,
   parseAttachmentBlock,
 } from "@/components/attachments/attachmentTypes";
-import { openPathDefault } from "@/services/desktop/client";
 import type {
   ChatMessageRowProps,
   TextOnlyMessageProps,
@@ -20,9 +19,11 @@ interface UserChatMessageProps extends TextOnlyMessageProps {
 }
 
 function handleOpenAttachment(path: string) {
-  void openPathDefault(path).catch((error) => {
-    console.error("Failed to open attachment", error);
-  });
+  void import("@/services/desktop/client")
+    .then(({ openPathDefault }) => openPathDefault(path))
+    .catch((error) => {
+      console.error("Failed to open attachment", error);
+    });
 }
 
 function UserChatMessage({ text, workspacePath }: UserChatMessageProps) {
