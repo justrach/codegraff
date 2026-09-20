@@ -43,6 +43,7 @@ async function runNavigationVisuals({win:fixtureWindow,origin,output}) {
     if(process.env.GRAFF_VISUAL_SUITE==='interactions'){await interactions();return;}
     await require('./yxlyx-regressions-visual.cjs').runYxlyxRegressions({win,origin});
     await require('./projects-visual.cjs').runProjectVisuals({win,origin,output,pressEnter});
+    if(process.env.GRAFF_VISUAL_SUITE==='folder-picker')return;
     await require('./project-recovery-visual.cjs').runProjectRecovery({win,origin,output});
     await require('./review-recovery-visual.cjs').runReviewRecovery({win,origin,output});
     await interactions();

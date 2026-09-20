@@ -23,6 +23,7 @@
     "test:links": "GRAFF_VISUAL_SUITE=links bun scripts/test-visual.mjs",
     "test:interactions": "GRAFF_VISUAL_SUITE=interactions bun scripts/test-visual.mjs",
     "test:projects": "GRAFF_VISUAL_SUITE=projects bun scripts/test-visual.mjs",
+    "test:folder-picker": "GRAFF_VISUAL_SUITE=folder-picker bun scripts/test-visual.mjs",
     "test:splits": "GRAFF_VISUAL_SUITE=splits bun scripts/test-visual.mjs",
     "test:stress": "GRAFF_VISUAL_SUITE=stress bun scripts/test-visual.mjs",
     "test:code": "GRAFF_VISUAL_SUITE=code bun scripts/test-visual.mjs",
