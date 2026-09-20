@@ -163,6 +163,7 @@ record only when you need the evidence or the edge cases.
 | [0141](0141-observer-notch-is-a-nonactivating-panel.md) | The desktop session observer is a non-activating SwiftUI edge panel; cells are live ACP work, opt-in from Settings. |
 | [0142](0142-zigzag-is-not-a-frontend.md) | Zigzag is not a frontend. TTY `graff repl` is `TUI/`; piped/CI uses a local scripted Model. Do not vendor zigzag. |
 | [0143](0143-release-desktop-is-com-codegraff-app.md) | Packaged Codegraff.app is `com.codegraff.app`. `dev.*` identities are local rebuilds only. |
+| [0144](0144-claim-asks-on-accord.md) | Claim conflicts ping the owner on Accord/JSONL; the model does not broker handoff in chat. |
 
 ## When to write one
 

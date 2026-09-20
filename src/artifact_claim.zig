@@ -44,7 +44,16 @@ pub fn mutationKind(cmd: []const u8) Kind {
 }
 
 pub fn refuseText(arena: Allocator, kind: Kind, key: []const u8, owner: Owner) []const u8 {
-    return std.fmt.allocPrint(arena, "artifact claim held: {s} {s} is owned by live session \"{s}\" (pid {d}). The action was NOT performed. Acknowledging the shared-tree checkpoint, polling, or finding no pull request does not transfer ownership. The owner must peer_message action=handoff (or action=release) first.", .{ @tagName(kind), if (key.len > 0) key else "(worktree)", owner.session, owner.pid }) catch "artifact claim held: the action was NOT performed";
+    return std.fmt.allocPrint(arena, "artifact claim held: {s} {s} owner=\"{s}\" pid {d}. NOT performed. Asked them on Accord to handoff or release.", .{ @tagName(kind), if (key.len > 0) key else "(worktree)", owner.session, owner.pid }) catch "artifact claim held: the action was NOT performed";
+}
+
+/// JSONL is durable; Accord is the live poke (ADR 0134 / 0144). Do not make
+/// the model broker a handoff in the user's chat.
+fn pingOwner(io: Io, arena: Allocator, owner: Owner, kind: Kind, key: []const u8) void {
+    if (builtin.is_test) return;
+    const text = std.fmt.allocPrint(arena, "need {s} {s} handed off or released — a publish is blocked", .{ @tagName(kind), if (key.len > 0) key else "worktree" }) catch return;
+    _ = presence.postTo(io, arena, text, owner.session);
+    _ = presence.postToDevice(io, arena, text, owner.session, false);
 }
 
 // --- process-global ledger (one worktree, many tests swap it) ---
@@ -172,7 +181,10 @@ pub fn gateCommandIn(arena: Allocator, io: Io, cmd: []const u8, key: []const u8,
         } else if (compare_key.len > 0 and c.key.len > 0 and !std.mem.eql(u8, c.key, compare_key)) continue;
         // Named claims do not match an unresolved git/issue/push target (#1014, #1088).
         if (compare_key.len == 0 and c.key.len > 0 and kind != .pull_request) continue;
-        if (!sameOwner(c.owner, me) and ownerLive(io, c.owner)) return refuseText(arena, c.kind, c.key, c.owner);
+        if (!sameOwner(c.owner, me) and ownerLive(io, c.owner)) {
+            pingOwner(io, arena, c.owner, c.kind, c.key);
+            return refuseText(arena, c.kind, c.key, c.owner);
+        }
     }
     return null;
 }
