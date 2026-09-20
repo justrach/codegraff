@@ -97,6 +97,49 @@ pub fn action(input: []const u8) ?Action {
     return scan(input, null);
 }
 
+pub fn has(input: []const u8, wanted: Action) bool {
+    return scan(input, wanted) != null;
+}
+
+/// First `git -C <path>` directory in `input`, if the path is a literal word.
+pub fn gitWorkDir(input: []const u8) ?[]const u8 {
+    var lexer = Lexer{ .input = input };
+    var state: State = .command;
+    var pending_c = false;
+    while (lexer.next()) |token| switch (token) {
+        .separator => {
+            state = .command;
+            pending_c = false;
+        },
+        .word => |raw| {
+            const word = tokenText(raw);
+            if (word.len == 0) continue;
+            if (pending_c) return word;
+            switch (state) {
+                .command => {
+                    if (isAssignment(word)) continue;
+                    const exe = std.fs.path.basename(word);
+                    if (std.mem.eql(u8, exe, "git")) state = .git else if (isWrapper(exe)) {} else state = .ignore;
+                },
+                .git_value => state = .git,
+                .git => {
+                    if (std.mem.eql(u8, word, "-C")) {
+                        pending_c = true;
+                    } else if (std.mem.eql(u8, word, "-c")) {
+                        state = .git_value;
+                    } else if (word[0] == '-') {
+                        continue;
+                    } else {
+                        state = .ignore;
+                    }
+                },
+                else => {},
+            }
+        },
+    };
+    return null;
+}
+
 fn scan(input: []const u8, wanted: ?Action) ?Action {
     var lexer = Lexer{ .input = input };
     var state: State = .command;
@@ -216,16 +259,19 @@ fn hasCommandFlag(word: []const u8) bool {
     return std.mem.indexOfScalar(u8, word[1..], 'c') != null;
 }
 
+/// History rewrites and commits, not staging. `git add` is shared-tree
+/// presence, not an artifact claim (#1088).
 fn isSharedTreeGit(subcommand: []const u8) bool {
     for ([_][]const u8{
-        "add",    "rm",    "mv",          "commit", "reset", "restore", "checkout", "switch",       "stash", "pull",
-        "rebase", "merge", "cherry-pick", "revert", "am",    "apply",   "clean",    "update-index",
+        "commit", "reset", "checkout", "switch", "rebase", "merge", "cherry-pick", "revert",
     }) |name| if (std.mem.eql(u8, subcommand, name)) return true;
     return false;
 }
 
 test "classify protects actual writes across command boundaries and shell wrappers" {
-    try std.testing.expectEqual(Kind.commit, classify("git -C repo add -A").?);
+    try std.testing.expect(classify("git -C repo add -A") == null);
+    try std.testing.expectEqual(Kind.commit, classify("git -C repo commit -m wip").?);
+    try std.testing.expectEqualStrings("repo", gitWorkDir("git -C repo commit -m wip").?);
     try std.testing.expectEqual(Kind.publication, classify("cd repo && git push origin HEAD").?);
     try std.testing.expectEqual(Kind.pull_request, classify("env gh -R owner/repo pr create --title x").?);
     try std.testing.expectEqual(Kind.pull_request, classify("bash -lc 'gh pr ready 42'").?);

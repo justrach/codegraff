@@ -356,7 +356,7 @@ test "persist round-trip survives a resume-shaped reload" {
 }
 
 test "claimed mutations include push and gh pr create, not status or checks --watch" {
-    try std.testing.expect(isClaimedMutation("git add -A"));
+    try std.testing.expect(!isClaimedMutation("git add -A"));
     try std.testing.expect(isClaimedMutation("git commit -m wip"));
     try std.testing.expect(isClaimedMutation("git push origin HEAD"));
     try std.testing.expect(isClaimedMutation("gh pr create --title x --body y"));
@@ -504,6 +504,8 @@ test "#1088 issue create is not the latest claimed issue; push is not an unrelat
     try std.testing.expect(gateCommand(ar, std.testing.io, "gh issue edit 1087 --title x", "") != null);
     try std.testing.expect(gateCommand(ar, std.testing.io, "git push origin HEAD", "release/v0.0.302") == null);
     try std.testing.expect(gateCommand(ar, std.testing.io, "git push origin HEAD", "") == null);
+    try std.testing.expect(gateCommand(ar, std.testing.io, "git add src/artifact_claim.zig", "release/v0.0.301") == null);
+    try std.testing.expect(gateCommand(ar, std.testing.io, "git -C other commit -m wip", "") == null);
 }
 
 test "legacy pid-zero handoff can be released by the labeled session" {
