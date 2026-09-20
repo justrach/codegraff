@@ -1,16 +1,24 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const React = require('react');
+const { EventEmitter } = require('node:events');
 const { renderToStaticMarkup } = require('react-dom/server');
+const { externalURL, installExternalLinks } = require('./external-links.cjs');
 
 const REPORTED_URL = 'http://localhost:3090/visual-tests/radius-preview';
 
 async function components() {
-  const [{ default: Markdown }, { BrowserLinkText }] = await Promise.all([
+  const [{ default: Markdown }, { BrowserLinkText }, { AssistantBody, UserBubble }, { emptyTurn }] = await Promise.all([
     import('../components/primitives/Markdown.tsx'),
     import('../components/primitives/BrowserLinks.tsx'),
+    import('../components/site/ChatBubbles.tsx'),
+    import('../lib/graff-events.ts'),
   ]);
-  return { Markdown, BrowserLinkText };
+  return { Markdown, BrowserLinkText, AssistantBody, UserBubble, emptyTurn };
+}
+
+function hrefs(html) {
+  return [...html.matchAll(/<a\b[^>]*\bhref="([^"]+)"[^>]*>/g)].map(match => match[1]);
 }
 
 test('the reported inline-code URL is a clickable browser link', async () => {
@@ -51,4 +59,32 @@ test('raw user-message text links browser destinations without swallowing punctu
   assert.match(html, new RegExp(`href="${REPORTED_URL}"`));
   assert.match(html, /href="https:\/\/www\.example\.com\/"/);
   assert.match(html, /<\/a>\.$/);
+});
+
+test('real assistant and user messages route their emitted anchors through Electron safety', async () => {
+  const { AssistantBody, UserBubble, emptyTurn } = await components();
+  const assistant = renderToStaticMarkup(React.createElement(AssistantBody, {
+    turn: { ...emptyTurn(), status: 'done', text: `Open ${REPORTED_URL}; ignore javascript:example.com.` },
+    following: false,
+  }));
+  const user = renderToStaticMarkup(React.createElement(UserBubble, {
+    text: 'Try www.example.com, not file:///tmp/example.com.',
+  }));
+  const destinations = [...hrefs(assistant), ...hrefs(user)];
+  assert.deepEqual(destinations, [REPORTED_URL, 'https://www.example.com/']);
+  assert.match(assistant, /target="_blank"/);
+  assert.match(user, /target="_blank"/);
+  assert.doesNotMatch(assistant, /href="javascript:/);
+  assert.doesNotMatch(user, /href="file:/);
+
+  const contents = new EventEmitter();
+  const opened = [];
+  let popup;
+  contents.setWindowOpenHandler = handler => { popup = handler; };
+  installExternalLinks(contents, 'http://127.0.0.1:3788', url => opened.push(url));
+  for (const href of destinations) {
+    assert.equal(externalURL(href), href);
+    assert.deepEqual(popup({ url: href }), { action: 'deny' });
+  }
+  assert.deepEqual(opened, destinations);
 });
