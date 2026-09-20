@@ -290,17 +290,23 @@ export default function PromptBar({
     inputRef.current?.focus();
   };
 
+  const [failedAttaches, setFailedAttaches] = useState<{ id: string; name: string; error: string; file: File }[]>([]);
+
   const attachFiles = async (files: File[]) => {
     if (demo || files.length === 0) return;
-    setAttachError(null); setUploads(count => count + files.length);
-    for (const file of files) {
+    setAttachError(null);
+    setUploads(count => count + files.length);
+    await Promise.all(files.map(async (file, index) => {
+      const id = `${file.name || "attachment"}-${Date.now()}-${index}`;
       try {
         const attachment = await uploadAttachment(file);
         setAttachments((current) => [...current, attachment]);
       } catch (err) {
-        setAttachError(err instanceof Error ? err.message : String(err));
+        const error = err instanceof Error ? err.message : String(err);
+        setFailedAttaches((current) => [...current, { id, name: file.name || "attachment", error, file }]);
+        setAttachError(error);
       } finally { setUploads(count => count - 1); }
-    }
+    }));
     if (inputRef.current?.closest("[data-promptbar]")?.contains(document.activeElement)) inputRef.current.focus();
   };
 
@@ -308,6 +314,22 @@ export default function PromptBar({
     setAttachments((current) => {
       discardAttachments(current.filter((a) => a.id === id));
       return current.filter((a) => a.id !== id);
+    });
+  };
+
+  const retryFailed = (id: string) => {
+    const job = failedAttaches.find((item) => item.id === id);
+    if (!job) return;
+    setFailedAttaches((current) => current.filter((item) => item.id !== id));
+    setAttachError(null);
+    void attachFiles([job.file]);
+  };
+
+  const dismissFailed = (id: string) => {
+    setFailedAttaches((current) => {
+      const next = current.filter((item) => item.id !== id);
+      setAttachError(next.at(-1)?.error ?? null);
+      return next;
     });
   };
 
@@ -321,6 +343,7 @@ export default function PromptBar({
     releaseAttachments(attachments);
     setDraft("");
     setAttachments([]);
+    setFailedAttaches([]);
     setAttachError(null);
     setHistoryIndex(-1);
     stashRef.current = "";
@@ -424,10 +447,11 @@ export default function PromptBar({
           {draft}
         </span>
 
-        <ComposerAttachments attachments={attachments} pill={pill} onRemove={removeAttachment} />
+        <ComposerAttachments attachments={attachments} failed={failedAttaches} pill={pill}
+          onRemove={removeAttachment} onRetryFailed={retryFailed} onDismissFailed={dismissFailed} />
 
         {uploads > 0 && <p role="status" className="px-2 text-xs text-ink-3">Adding {uploads} {uploads === 1 ? "file" : "files"}…</p>}
-        {attachError && (
+        {attachError && failedAttaches.length === 0 && (
           <div className={`text-[11.5px] text-red ${pill ? "px-2" : "px-1"}`} role="status">
             {attachError}
           </div>
