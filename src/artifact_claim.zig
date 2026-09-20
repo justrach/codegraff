@@ -44,7 +44,21 @@ pub fn mutationKind(cmd: []const u8) Kind {
 }
 
 pub fn refuseText(arena: Allocator, kind: Kind, key: []const u8, owner: Owner) []const u8 {
-    return std.fmt.allocPrint(arena, "artifact claim held: {s} {s} is owned by live session \"{s}\" (pid {d}). The action was NOT performed. Acknowledging the shared-tree checkpoint, polling, or finding no pull request does not transfer ownership. The owner must peer_message action=handoff (or action=release) first.", .{ @tagName(kind), if (key.len > 0) key else "(worktree)", owner.session, owner.pid }) catch "artifact claim held: the action was NOT performed";
+    return std.fmt.allocPrint(arena, "artifact claim held: {s} {s} owner=\"{s}\" pid {d}. NOT performed. Asked them on Accord to handoff or release.", .{ @tagName(kind), if (key.len > 0) key else "(worktree)", owner.session, owner.pid }) catch "artifact claim held: the action was NOT performed";
+}
+
+/// JSONL is durable; Accord is the live poke (ADR 0134 / 0144). Do not make
+/// the model broker a handoff in the user's chat.
+fn pingOwner(io: Io, arena: Allocator, owner: Owner, kind: Kind, key: []const u8) void {
+    if (builtin.is_test) return;
+    const text = std.fmt.allocPrint(arena, "need {s} {s} handed off or released — a publish is blocked", .{ @tagName(kind), if (key.len > 0) key else "worktree" }) catch return;
+    _ = presence.postTo(io, arena, text, owner.session);
+    _ = presence.postToDevice(io, arena, text, owner.session, false);
+}
+
+fn announceLive(io: Io, arena: Allocator, ledger: *const Ledger) void {
+    const json = persistJson(arena, ledger) catch return;
+    @import("presence_accord.zig").liveClaim(io, json);
 }
 
 // --- process-global ledger (one worktree, many tests swap it) ---
@@ -141,7 +155,9 @@ pub fn gateCommandIn(arena: Allocator, io: Io, cmd: []const u8, key: []const u8,
         break;
     };
     if (!foreign) return null;
-    const resolved = if (builtin.is_test) null else @import("artifact_claim_target.zig").resolve(arena, io, cmd, kind, cwd);
+    // Never `gh pr view` an issue create: that attaches the current PR/issue
+    // number and makes a new write look like the latest claimed one (#1088).
+    const resolved = if (builtin.is_test or kind != .pull_request) null else @import("artifact_claim_target.zig").resolve(arena, io, cmd, kind, cwd);
     // The remote read does not hold the ledger lock. A handoff/release during
     // that read must be observed before deciding whether this action may run.
     const tx = begin(io, scratch.allocator()) catch return "artifact claim ledger unavailable or busy: action NOT performed";
@@ -150,22 +166,30 @@ pub fn gateCommandIn(arena: Allocator, io: Io, cmd: []const u8, key: []const u8,
     if (tx) |transaction| {
         loadTransaction(transaction, ledger) catch return "artifact claim ledger unreadable: action NOT performed";
     } else local = g_ledger;
-    const compound = resolved == null and std.mem.indexOfAny(u8, cmd, ";|&`$\n") != null;
     var target: @import("artifact_claim_target.zig").Target = resolved orelse @import("artifact_claim_target.zig").explicit(cmd, kind) orelse .{ .kind = if (kind == .issue) Kind.issue else Kind.branch, .key = key };
     if (target.kind == .branch and target.key.len == 0) target.key = key;
     for (ledger.slice()) |c| {
-        if (!compound and !claimRelevant(c.kind, kind)) continue;
+        if (!claimRelevant(c.kind, kind)) continue;
         const branch_claim = c.kind == .publication or c.kind == .branch;
-        if (!compound and c.kind == .branch and claim_ledger.differentRepository(c.repo, target.head_repo)) continue;
-        if (!compound and claim_ledger.differentRepository(c.repo, target.repo)) {
+        if (c.kind == .branch and claim_ledger.differentRepository(c.repo, target.head_repo)) continue;
+        if (claim_ledger.differentRepository(c.repo, target.repo)) {
             // A fork's branch can own the same PR's publication work. Unknown
             // head repository evidence must not silently release that claim.
             if (!branch_claim or claim_ledger.differentRepository(c.repo, target.head_repo)) continue;
         }
         const compare_key = if (branch_claim and target.branch != null) target.branch.? else target.key;
         const comparable = c.kind == target.kind or (branch_claim and (target.kind == .branch or target.branch != null));
-        if (!compound and comparable and compare_key.len > 0 and c.key.len > 0 and !std.mem.eql(u8, c.key, compare_key)) continue;
-        if (!sameOwner(c.owner, me) and ownerLive(io, c.owner)) return refuseText(arena, c.kind, c.key, c.owner);
+        if (!comparable) {
+            // `gh pr create` with no head stays conservative. Other new writes
+            // (issue create, push of another branch) are not the claimed object.
+            if (!(kind == .pull_request and compare_key.len == 0)) continue;
+        } else if (compare_key.len > 0 and c.key.len > 0 and !std.mem.eql(u8, c.key, compare_key)) continue;
+        // Named claims do not match an unresolved git/issue/push target (#1014, #1088).
+        if (compare_key.len == 0 and c.key.len > 0 and kind != .pull_request) continue;
+        if (!sameOwner(c.owner, me) and ownerLive(io, c.owner)) {
+            pingOwner(io, arena, c.owner, c.kind, c.key);
+            return refuseText(arena, c.kind, c.key, c.owner);
+        }
     }
     return null;
 }
@@ -200,6 +224,7 @@ pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []cons
             else => return .{ .text = "claim acquire failed", .is_error = true },
         };
         if (tx) |transaction| transaction.write(try persistJson(scratch.allocator(), ledger)) catch return .{ .text = "claim was NOT persisted; retry before publishing", .is_error = true };
+        announceLive(io, scratch.allocator(), ledger);
         return .{ .text = msg, .is_error = false };
     }
     if (std.mem.eql(u8, action, "release")) {
@@ -210,6 +235,7 @@ pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []cons
             .is_error = true,
         };
         if (tx) |transaction| transaction.write(try persistJson(scratch.allocator(), ledger)) catch return .{ .text = "claim was NOT persisted; retry before publishing", .is_error = true };
+        announceLive(io, scratch.allocator(), ledger);
         return .{ .text = msg, .is_error = false };
     }
     if (std.mem.eql(u8, action, "handoff")) {
@@ -234,6 +260,7 @@ pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []cons
             else => return .{ .text = "handoff failed", .is_error = true },
         };
         if (tx) |transaction| transaction.write(try persistJson(scratch.allocator(), ledger)) catch return .{ .text = "claim was NOT persisted; retry before publishing", .is_error = true };
+        announceLive(io, scratch.allocator(), ledger);
         return .{ .text = msg, .is_error = false };
     }
     if (std.mem.eql(u8, action, "status")) {
@@ -349,7 +376,7 @@ test "persist round-trip survives a resume-shaped reload" {
 }
 
 test "claimed mutations include push and gh pr create, not status or checks --watch" {
-    try std.testing.expect(isClaimedMutation("git add -A"));
+    try std.testing.expect(!isClaimedMutation("git add -A"));
     try std.testing.expect(isClaimedMutation("git commit -m wip"));
     try std.testing.expect(isClaimedMutation("git push origin HEAD"));
     try std.testing.expect(isClaimedMutation("gh pr create --title x --body y"));
@@ -401,7 +428,7 @@ test "empty bash key still blocks a named publication claim" {
     setTestOwner(.{ .session = "s-other" });
     setTestOwnerLive(true);
     try std.testing.expect(gateCommand(ar, std.testing.io, "gh pr create --title x --body y", "") != null);
-    try std.testing.expect(gateCommand(ar, std.testing.io, "git commit -m wip", "") != null);
+    try std.testing.expect(gateCommand(ar, std.testing.io, "git commit -m wip", "") == null);
 }
 
 test "file persist reloads after a resume-shaped reset" {
@@ -479,6 +506,26 @@ test "publication claims do not block unrelated issue creation" {
     setTestOwnerLive(true);
     try std.testing.expect(gateCommand(ar, std.testing.io, "gh issue create --title x --body y", "12") == null);
     try std.testing.expect(gateCommand(ar, std.testing.io, "gh pr create --title x --body y", "feat/x") != null);
+}
+
+test "#1088 issue create is not the latest claimed issue; push is not an unrelated PR" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    resetForTest();
+    defer resetForTest();
+    setTestOwner(.{ .session = "s-owner", .pid = 41, .start_id = 7 });
+    _ = try handleTool(ar, std.testing.io, "claim", "issue", "1087", "");
+    _ = try handleTool(ar, std.testing.io, "claim", "pull_request", "1079", "");
+    setTestOwner(.{ .session = "s-other", .pid = 42, .start_id = 8 });
+    setTestOwnerLive(true);
+    try std.testing.expect(gateCommand(ar, std.testing.io, "gh issue create --title x --body y", "") == null);
+    try std.testing.expect(gateCommand(ar, std.testing.io, "gh issue create --title 'x' --body y", "") == null);
+    try std.testing.expect(gateCommand(ar, std.testing.io, "gh issue edit 1087 --title x", "") != null);
+    try std.testing.expect(gateCommand(ar, std.testing.io, "git push origin HEAD", "release/v0.0.302") == null);
+    try std.testing.expect(gateCommand(ar, std.testing.io, "git push origin HEAD", "") == null);
+    try std.testing.expect(gateCommand(ar, std.testing.io, "git add src/artifact_claim.zig", "release/v0.0.301") == null);
+    try std.testing.expect(gateCommand(ar, std.testing.io, "git -C other commit -m wip", "") == null);
 }
 
 test "legacy pid-zero handoff can be released by the labeled session" {

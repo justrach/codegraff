@@ -20,6 +20,18 @@ async function runComposerInteractions({ win, origin, output }) {
     await pause();
   };
   const frames = () => js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))');
+  const nativeKey = async key => {
+    await testDesktop.testInput(wc, { type: 'keyDown', keyCode: key });
+    await testDesktop.testInput(wc, { type: 'keyUp', keyCode: key });
+    await frames();
+  };
+  const hover = async selector => {
+    await js(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'nearest',behavior:'instant'})`);
+    await frames();
+    const point = await js(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
+    await testDesktop.testInput(wc, { type: 'mouseMove', ...point });
+    await frames();
+  };
   const pointer = async selector => {
     await js(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'nearest',behavior:'instant'})`);
     for (let attempt = 0; attempt < 30; attempt++) {
@@ -44,6 +56,63 @@ async function runComposerInteractions({ win, origin, output }) {
   ipcMain.handle('window-control', (_event, action) => { windowActions.push(action); });
   try {
     await wc.loadURL(origin); win.setSize(1440, 900); testDesktop.present(win);
+    await wait(`!!document.querySelector('textarea') && !document.querySelector('[aria-label="Choose model"]').textContent.includes('Loading')`);
+
+    // A completion row only owns Enter/Tab after its dark hover state makes
+    // that selection visible. Before engagement, Enter submits and Tab keeps
+    // normal focus traversal instead of silently choosing the attach row.
+    await js(`(()=>{
+      const original=window.fetch;window.composerKeyboardProbe={fileClicks:0,requests:0};
+      window.fetch=async(input,options)=>{
+        if(String(input).includes('/api/acp')&&options?.body){
+          const body=JSON.parse(options.body);
+          if(body.method==='session/prompt'){
+            window.composerKeyboardProbe.requests++;
+            return new Response(JSON.stringify({jsonrpc:'2.0',id:body.id??1,result:{stopReason:'end_turn'}})+'\\n',{headers:{'content-type':'application/x-ndjson'}});
+          }
+        }
+        return original(input,options);
+      };
+      document.querySelector('input[type="file"]').addEventListener('click',event=>{event.preventDefault();window.composerKeyboardProbe.fileClicks++;});
+    })()`);
+    await testDesktop.testInput(wc, { type: 'mouseMove', x: 1, y: 1 });
+    await input('@tab-without-selection');
+    await wait(`!!document.querySelector('[data-composer-menu] [role="option"][title^="Add photos"]')`);
+    assert.equal(await js(`document.querySelector('[data-composer-menu] [role="option"][title^="Add photos"]').classList.contains('bg-hover')`), false, 'An untouched @ menu has no visibly selected row');
+    await nativeKey('Tab');
+    assert.equal(await js('window.composerKeyboardProbe.fileClicks'), 0, 'Unengaged Tab must not open the file chooser');
+    assert.equal(await js('window.composerKeyboardProbe.requests'), 0, 'Unengaged Tab must not submit');
+    assert.notEqual(await js('document.activeElement.tagName'), 'TEXTAREA', 'Unengaged Tab keeps normal focus traversal');
+    await input('@enter-without-selection');
+    await wait(`!!document.querySelector('[data-composer-menu] [role="option"][title^="Add photos"]')`);
+    assert.equal(await js(`document.querySelector('[data-composer-menu] [role="option"][title^="Add photos"]').classList.contains('bg-hover')`), false, 'A changed @ query resets visible selection');
+    await nativeKey('Enter');
+    await wait(`window.composerKeyboardProbe.requests===1`);
+    assert.equal(await js('window.composerKeyboardProbe.fileClicks'), 0, 'Unengaged Enter submits instead of opening the file chooser');
+    assert.equal(await js('document.querySelector("textarea").value'), '', 'Unengaged Enter clears the submitted draft');
+
+    await wc.loadURL(origin);
+    await wait(`!!document.querySelector('textarea') && !document.querySelector('[aria-label="Choose model"]').textContent.includes('Loading')`);
+    await js(`(()=>{window.composerKeyboardProbe={fileClicks:0};document.querySelector('input[type="file"]').addEventListener('click',event=>{event.preventDefault();window.composerKeyboardProbe.fileClicks++;});})()`);
+    await testDesktop.testInput(wc, { type: 'mouseMove', x: 1, y: 1 });
+    await input('@hover-selection');
+    await wait(`!!document.querySelector('[data-composer-menu] [role="option"][title^="Add photos"]')`);
+    await hover('[data-composer-menu] [role="option"][title^="Add photos"]');
+    await wait(`document.querySelector('[data-composer-menu] [role="option"][title^="Add photos"]').classList.contains('bg-hover')`);
+    await nativeKey('Enter');
+    assert.equal(await js('window.composerKeyboardProbe.fileClicks'), 1, 'Hover-highlighted Enter opens the file chooser');
+    await testDesktop.testInput(wc, { type: 'mouseMove', x: 1, y: 1 });
+    await frames();
+    await input('@arrow-selection');
+    await wait(`!!document.querySelector('[data-composer-menu] [role="option"][title^="Add photos"]')`);
+    assert.equal(await js(`document.querySelector('[data-composer-menu] [role="option"][title^="Add photos"]').classList.contains('bg-hover')`), false, 'A fresh @ query starts without a visible selection');
+    await nativeKey('ArrowDown');
+    await wait(`document.querySelector('[data-composer-menu] [role="option"][title^="Add photos"]').classList.contains('bg-hover')`);
+    await nativeKey('Tab');
+    assert.equal(await js('window.composerKeyboardProbe.fileClicks'), 2, 'Arrow-highlighted Tab opens the file chooser');
+    assert.equal(await js('document.activeElement.tagName'), 'TEXTAREA', 'Engaged Tab is consumed and returns focus to the composer');
+
+    await wc.loadURL(origin);
     await wait(`!!document.querySelector('textarea') && !document.querySelector('[aria-label="Choose model"]').textContent.includes('Loading')`);
     await js(`(()=>{
       const original=window.fetch;window.composerRequests=[];window.composerCancels=0;window.fileChooserClicks=0;

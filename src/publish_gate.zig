@@ -73,8 +73,9 @@ pub fn bash(self: *Agent, cmd: []const u8) !?ExecResult {
 
 fn mutationKey(self: *Agent, cmd: []const u8) []const u8 {
     if (!artifact_claim.isClaimedMutation(cmd)) return "";
-    // Unknown shell forms do not establish a comparable branch target.
-    if (std.mem.indexOfAny(u8, cmd, ";|&`$\n\"'\\*?{}") != null or
+    // Interpolation and globbing do not establish a comparable branch target.
+    // Compound `;&|` still resolves via cwd or `git -C` (#1014).
+    if (std.mem.indexOfAny(u8, cmd, "`$\"'\\*?{}") != null or
         std.mem.indexOf(u8, cmd, " -R") != null or std.mem.indexOf(u8, cmd, " --repo") != null) return "";
     const ev = @import("pr_evidence.zig");
     const c = @import("pr_command.zig").parse(self.arena, cmd) catch null;
@@ -82,7 +83,8 @@ fn mutationKey(self: *Agent, cmd: []const u8) []const u8 {
         if (command.flag("--head", "-H")) |head| return head;
         if (!std.mem.eql(u8, command.verb, "create") and command.selector() != null) return "";
     }
-    const cwd = if (c) |command| command.cwd orelse self.agent_cwd orelse "." else self.agent_cwd orelse ".";
+    const git_c = @import("artifact_claim_command.zig").gitWorkDir(cmd);
+    const cwd = git_c orelse if (c) |command| command.cwd orelse self.agent_cwd orelse "." else self.agent_cwd orelse ".";
     return ev.capture(self.gpa, self.io, self.arena, .{ .cwd = cwd, .selector = "" }, &.{ "git", "branch", "--show-current" }) catch "";
 }
 
@@ -198,7 +200,7 @@ test "#840 publication branch keys are not compared with PR numbers" {
     var agent: Agent = undefined;
     agent.arena = arena.allocator();
     agent.io = std.testing.io;
-    try std.testing.expect((try bash(&agent, "gh pr edit 123 --title x")).?.is_error);
+    try std.testing.expect(try bash(&agent, "gh pr edit 123 --title x") == null);
     try std.testing.expect(try bash(&agent, "gh pr create --draft --head feat/b") == null);
 }
 

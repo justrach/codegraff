@@ -25,6 +25,7 @@ const tick_gate = @import("tick_gate.zig"); // #tui-tick: subagent ticks land at
 // isTableSeparator lives in agent_table.zig; reached through the Agent
 // struct's member alias.
 const isTableSeparator = Agent.isTableSeparator;
+const isTableRowLine = Agent.isTableRowLine;
 
 /// Incremental streaming markdown: every delta byte either prints
 /// immediately or is held only as long as classification demands. Each
@@ -135,7 +136,7 @@ pub fn mdTryClassify(self: *Agent, w: *Io.Writer) void {
 
     // A buffered table ends at the first line that isn't another row —
     // render it before this line emits anything.
-    if (self.md_table.items.len > 0 and body[0] != '|') self.flushTable(w);
+    if (self.md_table.items.len > 0 and !isTableRowLine(body)) self.flushTable(w);
     if (self.md_fence) {
         // Inside a fence the only special line is the ``` closer.
         const bt = countPrefix(body, '`');
@@ -228,7 +229,9 @@ pub fn mdTryClassify(self: *Agent, w: *Io.Writer) void {
             }
             self.mdStartProse(w);
         },
-        else => self.mdStartProse(w),
+        else => if (isTableRowLine(body)) {
+            self.md_kind = .hold;
+        } else self.mdStartProse(w),
     }
 }
 
@@ -395,7 +398,7 @@ pub fn mdFinishLine(self: *Agent, w: *Io.Writer) bool {
             const line = self.md_buf.items;
             var lead: usize = 0;
             while (lead < line.len and line[lead] == ' ') lead += 1;
-            if (!self.md_fence and lead < line.len and line[lead] == '|') {
+            if (!self.md_fence and lead < line.len and isTableRowLine(line[lead..])) {
                 // Table row: buffer it — columns can only align once the
                 // whole table is known.
                 if (self.gpa.dupe(u8, line[lead..])) |dup| {

@@ -12,6 +12,9 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- Line REPL boxes GFM pipe tables (including `|---|` separators and pipe-less `a | b` rows) when the stream ends.
+- `#1088`: claims own one artifact. Conflicts ping Accord; acquire/release/handoff also replicate as replaceable Accord progress (file ledger stays canonical). Staging is not a lock.
+- `#1084`: gpt-6-astra `/effort medium` sends medium (no longer remapped to low).
 - Empty Enter-Enter while a turn is running interrupts (or steers the next queued prompt). It no longer required a queue to arm.
 - Desktop ACP workers can park after a quiet period (`GRAFF_ACP_IDLE_MS`, default 30s) and `--resume` with the saved cache id. Parking is skipped while a prompt or `session/idle` subscriber is live; tab close still reaps immediately.
 - Turn chrome shows local tok/s while writing (and at settle); MCP tools/Apps wait instead of looking like slow generation (#1017).
@@ -53,6 +56,11 @@ current is part of cutting a release.
   `sessions` key can reach a machine, and a viewer cannot start an
   unattended session unless the machine was started with `--yolo`.
   `docs/remote-control.md`, `docs/remote-control-security.md`.
+
+## v0.0.302
+
+- Packaged `Codegraff.app` uses `com.codegraff.app`. A `dev.*` bundle ID fails the desktop tests and `distribute.sh` (ADR 0143).
+- Graff commits may include `Co-Authored-By: Codegraff <blackfloofie@codegraff.com>`; vendor attribution stays banned.
 
 ## v0.0.299
 

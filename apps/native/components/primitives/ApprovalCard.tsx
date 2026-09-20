@@ -10,7 +10,7 @@ import GlideMenu from "@/components/primitives/GlideMenu";
  * move between questions (the card's height animates to fit),
  * the step counter rolls like an odometer, and the footer uses
  * pill actions — a quiet Skip and a dark Continue with a ⏎.
- * Single-choice answers auto-advance; multi-select waits.
+ * Every answer waits for an explicit Continue, Send, or Enter confirmation.
  * ───────────────────────────────────────────────────────── */
 
 const DEFAULT_QUESTIONS = [
@@ -142,7 +142,7 @@ export default function ApprovalCard({
   const [sent, setSent] = useState(false);
   const [open, setOpen] = useState(true);
 
-  const advanceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const submittedRef = useRef(false);
   const questionRefs = useRef<(HTMLDivElement | null)[]>([]);
   const measured = useRef(false);
   const [viewportH, setViewportH] = useState<number | undefined>(undefined);
@@ -175,15 +175,13 @@ export default function ApprovalCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qi]);
 
-  useEffect(() => () => { if (advanceTimer.current) clearTimeout(advanceTimer.current); }, []);
-
   const goTo = (next: number) => {
-    if (advanceTimer.current) clearTimeout(advanceTimer.current);
     setQi(Math.min(Math.max(next, 0), QUESTIONS.length - 1));
   };
 
   const send = () => {
-    if (advanceTimer.current) clearTimeout(advanceTimer.current);
+    if (submittedRef.current) return;
+    submittedRef.current = true;
     setSent(true);
     const collected = QUESTIONS.map((question, qIdx) => {
       const customText = custom[qIdx]?.trim();
@@ -210,20 +208,14 @@ export default function ApprovalCard({
           : [...picked, index];
       return { ...current, [qi]: next };
     });
-    if (type === "radio") {
-      setCustom((current) => ({ ...current, [qi]: "" }));
-      if (advanceTimer.current) clearTimeout(advanceTimer.current);
-      advanceTimer.current = setTimeout(() => {
-        if (last) send();
-        else setQi((current) => Math.min(QUESTIONS.length - 1, current + 1));
-      }, 480);
-    }
+    if (type === "radio") setCustom((current) => ({ ...current, [qi]: "" }));
   };
 
   const reset = () => {
     setQi(0);
     setAnswers({});
     setCustom({});
+    submittedRef.current = false;
     setSent(false);
     setOpen(true);
     measured.current = false;
@@ -310,6 +302,12 @@ export default function ApprovalCard({
                             aria-pressed={on}
                             tabIndex={active ? 0 : -1}
                             onClick={() => { if (active) toggle(i); }}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" && question.type === "radio" && on) {
+                                event.preventDefault();
+                                advance();
+                              }
+                            }}
                             className="relative z-10 flex items-center gap-1.5 rounded-control pl-1 pr-2 py-1 text-left transition-colors duration-100"
                           >
                             <span

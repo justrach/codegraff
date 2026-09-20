@@ -26,7 +26,13 @@ const setup =
     \\ else if(kind==='unsupported') put(['org.example.clipboard-edge-unsupported'],[png]);
     \\ else if(kind==='unsupported-text') put(['public.html','public.utf8-plain-text'],['<b>fixture</b>','fixture']);
     \\ else if(kind==='remote') put(['public.file-url'],['https://example.invalid/image.png']);
-    \\ else {
+    \\ else if(kind==='filenames'||kind==='filenames-alternate') {
+    \\  if(!png.writeToFileAtomically(argv[2],true)) throw Error('fixture file write failed');
+    \\  const declared=kind==='filenames-alternate'?['public.tiff','NSFilenamesPboardType']:['NSFilenamesPboardType'];
+    \\  pb.declareTypesOwner($(declared),null);
+    \\  if(kind==='filenames-alternate' && !pb.setDataForType(broken,'public.tiff')) throw Error('fixture flavor write failed');
+    \\  if(!pb.setPropertyListForType([argv[2]],'NSFilenamesPboardType')) throw Error('fixture flavor write failed');
+    \\ } else {
     \\  if(kind!=='missing') {
     \\   const data=kind==='nonimage'||kind==='nonimage-png'?broken:png;
     \\   if(!data.writeToFileAtomically(argv[2],true)) throw Error('fixture file write failed');
@@ -68,10 +74,13 @@ test "#883 named pasteboard edge cases mixed flavors alternate images file URLs 
         .{ .kind = "corrupt-text", .expected = .convert },
         .{ .kind = "file", .ext = "space # percent% quote' double\" café 雪.PNG", .expected = .furl, .source_png = true },
         .{ .kind = "file-alternate", .expected = .furl, .source_png = true },
+        .{ .kind = "file", .ext = "cache", .expected = .furl, .source_png = true },
+        .{ .kind = "filenames", .expected = .furl, .source_png = true },
+        .{ .kind = "filenames-alternate", .expected = .furl, .source_png = true },
         .{ .kind = "missing", .expected = .convert },
         .{ .kind = "nonimage", .ext = "txt", .expected = .empty },
         .{ .kind = "nonimage-png", .expected = .convert },
-        .{ .kind = "unsupported-file", .ext = "unsupported", .expected = .empty, .source_png = true },
+        .{ .kind = "unsupported-file", .ext = "unsupported", .expected = .furl, .source_png = true },
         .{ .kind = "remote", .expected = .empty },
         .{ .kind = "unsupported", .expected = .empty },
         .{ .kind = "unsupported-text", .expected = .empty },
@@ -95,7 +104,16 @@ test "#883 named pasteboard edge cases mixed flavors alternate images file URLs 
             .png => got == .ok and got.ok.flavor == .png,
             .furl => got == .ok and got.ok.flavor == .furl,
         };
-        if (!matches) std.debug.print("clipboard edge case {s}: expected {s}, got {s}\n", .{ case.kind, @tagName(case.expected), @tagName(got) });
+        if (!matches) std.debug.print("clipboard edge case {s}: expected {s}, got {s} {s}\n", .{
+            case.kind,
+            @tagName(case.expected),
+            @tagName(got),
+            switch (got) {
+                .failed => |k| @tagName(k),
+                .ok => |g| g.flavor.name(),
+                else => "",
+            },
+        });
         try std.testing.expect(matches);
         if (got == .ok) {
             try std.testing.expect(got.ok.owned);

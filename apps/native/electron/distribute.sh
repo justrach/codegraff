@@ -16,6 +16,7 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/graff-distribute.XXXXXX")"
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
 ditto "$source_app" "$app"
+bun "$here/release-identity.cjs" "$app"
 version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
 # Desktop stays 3-part while the CLI accepts 4-part hotfixes (0.0.300.1):
 # electron-updater compares the feed as semver and the notarization chain is

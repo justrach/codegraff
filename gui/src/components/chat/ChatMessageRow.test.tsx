@@ -11,14 +11,6 @@ import type { ReactNode } from "react";
 import ReactDOM from "react-dom";
 
 import type { TranscriptMessage } from "@/services/desktop/types/contracts";
-import type { ChatThreadRenderItem } from "./types/chatComponents";
-
-mock.module("./ChatCommandResultRow", () => ({
-  ChatCommandResultRow: () => null,
-}));
-mock.module("./ChatWorkRow", () => ({
-  ChatWorkRow: () => null,
-}));
 
 const { flushSync } = ReactDOM;
 
@@ -26,7 +18,7 @@ let unregisterDom: (() => Promise<void>) | null = null;
 let createRoot: typeof import("react-dom/client").createRoot;
 let ChatMarkdownMessage: typeof import("./ChatMarkdownMessage").ChatMarkdownMessage;
 let ChatMessageRow: typeof import("./ChatMessageRow").ChatMessageRow;
-let renderChatThreadItem: typeof import("./utils/chatThreadList").renderChatThreadItem;
+let ChatTranscriptMessage: typeof import("./ChatTranscriptMessage").ChatTranscriptMessage;
 
 beforeAll(async () => {
   const { GlobalRegistrator } = await import("@happy-dom/global-registrator");
@@ -39,7 +31,7 @@ beforeAll(async () => {
   ({ createRoot } = await import("react-dom/client"));
   ({ ChatMarkdownMessage } = await import("./ChatMarkdownMessage"));
   ({ ChatMessageRow } = await import("./ChatMessageRow"));
-  ({ renderChatThreadItem } = await import("./utils/chatThreadList"));
+  ({ ChatTranscriptMessage } = await import("./ChatTranscriptMessage"));
 });
 
 afterAll(async () => {
@@ -86,24 +78,6 @@ function contentMessage(
     requestId: "request-1",
     text,
   };
-}
-
-function renderThreadMessage(message: TranscriptMessage) {
-  return renderChatThreadItem(
-    {
-      item: {
-        kind: "message",
-        key: message.id,
-        message,
-      },
-      index: 0,
-    } as ChatThreadRenderItem,
-    {
-      itemCount: 1,
-      requestTimingsById: {},
-      workspacePath: null,
-    },
-  );
 }
 
 function mountMarkdownMessage(text: string, copyText?: string) {
@@ -164,7 +138,9 @@ describe("chat response copy dispatch", () => {
     ];
 
     for (const [message, shouldCopy] of messages) {
-      const row = mount(renderThreadMessage(message));
+      const row = mount(
+        <ChatTranscriptMessage message={message} workspacePath={null} />,
+      );
       try {
         expect(
           row.container.querySelector('button[aria-label="Copy response"]') !=

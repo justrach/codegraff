@@ -582,6 +582,7 @@ pub const Agent = struct {
     pub const atomEnd = @import("agent_table.zig").atomEnd;
     pub const wrapCell = @import("agent_table.zig").wrapCell;
     pub const isTableSeparator = @import("agent_table.zig").isTableSeparator;
+    pub const isTableRowLine = @import("agent_table.zig").isTableRowLine;
 };
 
 test {
