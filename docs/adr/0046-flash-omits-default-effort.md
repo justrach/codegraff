@@ -44,6 +44,7 @@ interactive-length essays on every `-p` turn.
 - Flash SWE wall is generation without thinking novels, not Zig vs JS.
 - `/effort` remains the only way effort moves (ADR / `effort_route`:
   no auto-flip).
+- GPT-6 Astra is not flash: `/effort medium` sends medium (#1084).
 - `-p` writes `calling <model>` to stderr at start and drops the
   call-2 stdout pulse. Eval `first_out` is no longer "time to model
   call 2"; stdout stays the answer.

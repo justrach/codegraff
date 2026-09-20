@@ -12,6 +12,7 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- `#1084`: gpt-6-astra `/effort medium` sends medium (no longer remapped to low).
 - Empty Enter-Enter while a turn is running interrupts (or steers the next queued prompt). It no longer required a queue to arm.
 - Desktop ACP workers can park after a quiet period (`GRAFF_ACP_IDLE_MS`, default 30s) and `--resume` with the saved cache id. Parking is skipped while a prompt or `session/idle` subscriber is live; tab close still reaps immediately.
 - Turn chrome shows local tok/s while writing (and at settle); MCP tools/Apps wait instead of looking like slow generation (#1017).
