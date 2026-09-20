@@ -130,7 +130,7 @@ pub fn setupWorktreeAndBanner(
         } else {
             const created = task_workspace.ensure(gpa, io, arena, .{ .slug = wt }) catch |err|
                 std.process.fatal("--worktree '{s}': {s}", .{ wt, task_workspace.createFailureText(err) });
-            task_workspace.enter(gpa, io, arena, created) catch
+            task_workspace.enter(io, arena, created) catch
                 std.process.fatal("--worktree '{s}': could not enter {s} (is this a git repository?)", .{ wt, created.path });
             if (!main_mod.json_mode) sink.emit(io, .{ .worktree_entered = .{
                 .path = created.path,

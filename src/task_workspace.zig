@@ -302,14 +302,13 @@ pub fn checkoutClaimed(gpa: Allocator, io: Io, arena: Allocator, home: []const u
     return lease.duplicateOwner(peers.records, peers.probes, identity.id, self) != null;
 }
 
-pub fn enter(gpa: Allocator, io: Io, arena: Allocator, wt: Workspace) !void {
+pub fn enter(io: Io, arena: Allocator, wt: Workspace) !void {
     if (builtin.os.tag == .windows) return error.Unsupported;
     const z = try arena.dupeSentinel(u8, wt.path, 0);
     if (std.posix.system.chdir(z.ptr) != 0) return error.ChdirFailed;
-    const owned_path = try gpa.dupe(u8, wt.path);
-    const owned_branch = try gpa.dupe(u8, wt.branch);
-    main_mod.g_cwd_display = owned_path;
-    main_mod.g_worktree_branch = owned_branch;
+    // Session arena outlives the process; GPA dupes leaked at shutdown.
+    main_mod.g_cwd_display = try arena.dupe(u8, wt.path);
+    main_mod.g_worktree_branch = try arena.dupe(u8, wt.branch);
     tool_spill.enable(.{ .io = io, .dir = .cwd(), .base_abs = main_mod.g_cwd_display });
 }
 
@@ -331,7 +330,7 @@ pub fn maybeAutoIsolate(gpa: Allocator, io: Io, arena: Allocator, home: []const 
     const nonce = std.fmt.bytesToHex(raw, .lower);
     const slug = autoSlug(arena, proc_identity.selfPid(), nonce[0..8]) catch return .{ .failed = error.CreateFailed };
     const wt = create(gpa, io, arena, .{ .slug = slug, .unique = true }) catch |err| return .{ .failed = err };
-    enter(gpa, io, arena, wt) catch |err| return .{ .failed = err };
+    enter(io, arena, wt) catch |err| return .{ .failed = err };
     return .{ .isolated = wt };
 }
 
