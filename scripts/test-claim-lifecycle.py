@@ -198,8 +198,10 @@ def independent_issue(binary, evidence):
                                   tool('bash',command='gh issue edit 2 --title fixture')]
             start = len(model.requests)
             caller.prompt('Try the claimed issue and then the unrelated issue.')
-            requests = model.requests[start:]
-            assert len(requests)==3
+            requests = [req for req in model.requests[start:]
+                        if not (isinstance(req['messages'][-1].get('content'), str)
+                                and req['messages'][-1]['content'].startswith('[peer]'))]
+            assert len(requests)==3, len(requests)
             assert 'artifact claim held' in requests[1]['messages'][-1]['content']
             mutations = [json.loads(line) for line in (work/'mutations.jsonl').read_text().splitlines()]
             assert mutations == [['issue','edit','2','--title','fixture']],mutations
