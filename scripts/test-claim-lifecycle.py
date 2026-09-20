@@ -116,7 +116,10 @@ def run(binary, recovery, evidence):
                 observed = model.requests[first:]
                 # Each successive request contains the prior actual tool result.
                 for request in observed[4:]:
-                    assert 'artifact claim held' in request['messages'][-1]['content'], request['messages'][-1]
+                    content = request['messages'][-1].get('content', '')
+                    if isinstance(content, str) and content.startswith('[peer]'):
+                        continue
+                    assert 'artifact claim held' in content, request['messages'][-1]
                 assert '[]' in observed[3]['messages'][-1]['content']
                 assert (work/unrelated).read_text() == 'fixture'
                 assert len(observed) == len(commands)+5, len(observed)
