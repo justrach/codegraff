@@ -11,6 +11,7 @@ const cases = ["all", "url", "prose", "inline-path", "nested", "table", "fence",
 type Case = typeof cases[number];
 const token = "UnbrokenDiagnosticPayload".repeat(32);
 const path = `fixtures/${"deeply-nested-module/".repeat(18)}${"long-component-name-".repeat(12)}fixture.tsx:128-256`;
+const worktreePath = `/Users/example/codegraff/.worktrees/${"agent-overflow-regression-".repeat(14)}checkout`;
 const url = `https://example.com/artifacts/overflow-fixture/builds/${"release-candidate-".repeat(20)}report?filter=${"diagnostic%2F".repeat(35)}&view=expanded#final-result`;
 const codeLine = `const diagnostic = "${token}"; // FENCE_END`;
 const openFence = `## CASE: stream\n\nAn incomplete fence grows in explicit steps.\n\n\`\`\`typescript\nconst streamed = "`;
@@ -32,7 +33,7 @@ function makeTurn(name: Exclude<Case, "all" | "user">, step: number): AssistantT
       turn.text = `## CASE: prose\n\n${token}\n\nPROSE_END`;
       break;
     case "inline-path":
-      turn.text = `## CASE: inline-path\n\nOpen \`${path}\` and inspect the entire path.\n\nAlso non-path inline code: \`${token}\`.\n\nPATH_END`;
+      turn.text = `## CASE: inline-path\n\nOpen \`${path}\` and inspect the entire path.\n\nWorktree kept: ${worktreePath} WORKTREE_PATH_END\n\nAlso non-path inline code: \`${token}\`.\n\nPATH_END`;
       break;
     case "nested":
       turn.text = `## CASE: nested\n\n1. Outer ordered item\n   - Inner bullet ${token}\n     - Deep link [${url}](${url})\n\n> A quoted diagnostic\n>\n> - Nested quoted item \`${path}\`\n>   - ${token}\n\nNESTED_END`;
