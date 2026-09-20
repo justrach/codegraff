@@ -442,7 +442,9 @@ test "create: non-git folder is not a task workspace" {
     const a = std.testing.allocator;
     const io = std.testing.io;
     // std.testing.tmpDir lives inside this repo's cache, so git walks up to it.
-    const root = try std.fmt.allocPrint(a, "/tmp/graff-nongit-{d}", .{std.time.milliTimestamp()});
+    var raw: [4]u8 = undefined;
+    io.random(&raw);
+    const root = try std.fmt.allocPrint(a, "/tmp/graff-nongit-{s}", .{std.fmt.bytesToHex(raw, .lower)});
     defer a.free(root);
     try Io.Dir.cwd().createDirPath(io, root);
     defer Io.Dir.cwd().deleteTree(io, root) catch {};
