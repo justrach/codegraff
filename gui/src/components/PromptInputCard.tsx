@@ -75,8 +75,13 @@ export function PromptInputCard({
   // it — the highlight drifts away from the caret.
   const commandOverlayRef = useRef<HTMLDivElement | null>(null);
   const dropZoneRef = useRef<HTMLDivElement | null>(null);
-  const { attachments, addAttachments, removeAttachment, replaceAttachments } =
-    useAttachments(binding);
+  const {
+    attachmentScopeKey,
+    attachments,
+    addAttachments,
+    removeAttachment,
+    replaceAttachments,
+  } = useAttachments(binding);
   const { isActive: isDropActive } = useDropZone(dropZoneRef, (paths) => {
     const accepted = paths
       .map((path) => classifyPath(path))
@@ -125,6 +130,7 @@ export function PromptInputCard({
   const [attachmentsBeforeHistory, setAttachmentsBeforeHistory] = useState<
     Attachment[]
   >([]);
+  const promptHistoryScopeRef = useRef(attachmentScopeKey);
   const promptHistoryLengthRef = useRef(promptHistory.length);
 
   function resetHistoryNavigation() {
@@ -248,21 +254,42 @@ export function PromptInputCard({
       return false;
     }
 
-    const textarea = event.currentTarget;
-    if (direction === "previous" && !isCaretOnFirstLine(textarea)) {
-      return false;
-    }
-    if (direction === "next" && !isCaretOnLastLine(textarea)) {
-      return false;
-    }
-
+    const didHistoryScopeChange =
+      promptHistoryScopeRef.current !== attachmentScopeKey;
     const didHistoryLengthChange =
       promptHistoryLengthRef.current !== promptHistory.length;
-    const effectiveCursor = didHistoryLengthChange ? null : historyCursor;
-    const effectiveDraftBeforeHistory = didHistoryLengthChange
+    const didHistoryChange = didHistoryScopeChange || didHistoryLengthChange;
+    const effectiveCursor = didHistoryChange ? null : historyCursor;
+    const effectiveDraftBeforeHistory = didHistoryChange
       ? ""
       : draftBeforeHistory;
+    const effectiveAttachmentsBeforeHistory = didHistoryChange
+      ? []
+      : attachmentsBeforeHistory;
+    promptHistoryScopeRef.current = attachmentScopeKey;
     promptHistoryLengthRef.current = promptHistory.length;
+    if (didHistoryChange) {
+      resetHistoryNavigation();
+    }
+
+    // Once history browsing has started, arrows always move between recalled
+    // prompts. The line-boundary guard only protects multiline drafts before
+    // entering history; otherwise a recalled multiline prompt appears stuck.
+    const textarea = event.currentTarget;
+    if (
+      effectiveCursor == null &&
+      direction === "previous" &&
+      !isCaretOnFirstLine(textarea)
+    ) {
+      return false;
+    }
+    if (
+      effectiveCursor == null &&
+      direction === "next" &&
+      !isCaretOnLastLine(textarea)
+    ) {
+      return false;
+    }
 
     const result = getPromptHistoryNavigationResult({
       direction,
@@ -291,7 +318,7 @@ export function PromptInputCard({
     if (result.cursor == null) {
       // Exited history — restore the live draft and its attachments.
       setPromptDraft(result.draft);
-      replaceAttachments(attachmentsBeforeHistory);
+      replaceAttachments(effectiveAttachmentsBeforeHistory);
       setAttachmentsBeforeHistory([]);
     } else {
       const { body, paths } = parseAttachmentBlock(result.draft);

@@ -6,8 +6,11 @@ import type {
 
 export const LATEST_WORKSPACE_STORAGE_KEY = 'session:latest-workspace-path'
 
-function getConversationDraftKey(conversationId: string): string {
-  return `conversation:${conversationId}`
+function getConversationDraftKey(
+  workspacePath: string | null | undefined,
+  conversationId: string,
+): string {
+  return `conversation:${workspacePath ?? ""}::${conversationId}`
 }
 
 export function getWorkspaceDraftKey(workspacePath: string): string {
@@ -19,7 +22,7 @@ export function getPromptDraftKey(
   conversationId: string | null | undefined,
 ): string | null {
   if (conversationId != null) {
-    return getConversationDraftKey(conversationId)
+    return getConversationDraftKey(workspacePath, conversationId)
   }
 
   if (workspacePath != null) {
