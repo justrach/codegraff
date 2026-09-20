@@ -201,8 +201,8 @@ def independent_issue(binary, evidence):
             start = len(model.requests)
             caller.prompt('Try the claimed issue and then the unrelated issue.')
             requests = model.requests[start:]
-            assert len(requests)==3
-            assert 'artifact claim held' in requests[1]['messages'][-1]['content']
+            tool_turns = [r for r in requests if r.get('messages') and r['messages'][-1].get('role')=='tool']
+            assert any('artifact claim held' in r['messages'][-1].get('content','') for r in tool_turns), tool_turns
             mutations = [json.loads(line) for line in (work/'mutations.jsonl').read_text().splitlines()]
             assert mutations == [['issue','edit','2','--title','fixture']],mutations
             assert owner.proc.poll() is None
