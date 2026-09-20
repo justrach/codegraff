@@ -14,8 +14,10 @@ their edit histories are visible to everyone.
   text, the root cause in code terms, and the fix. Evidence stays in the
   conversation, not the tracker. Same for PR bodies and commit messages.
 - **No assistant or model-vendor attribution anywhere** — not in issues, PRs,
-  commit messages, or trailers (no `Co-Authored-By`, no session links). Commits
-  carry only the repository owner's git identity.
+  commit messages, or trailers. No OpenAI/Anthropic/Cursor/session links. Commits
+  still use the repository owner's git identity as Author. When graff makes the
+  commit, `Co-Authored-By: Codegraff <blackfloofie@codegraff.com>` is allowed
+  (and is the only allowed trailer). Omit it if the user says not to.
 - **If something sensitive was already posted, delete it** (`gh api graphql`
   `deleteIssue` with the node id from `gh issue view N --json id`); editing is
   not enough because edit history stays visible. Then tell the user what was

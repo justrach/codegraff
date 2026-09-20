@@ -6,7 +6,7 @@ version="${GRAFF_VERSION:-0.0.291}"
 ui="$root/apps/native"
 out="$root/zig-out/electron"
 app_name="Codegraff"
-bundle_id="dev.codegraff.electron.local"
+bundle_id="com.codegraff.app"
 if [[ "${GRAFF_DEV:-0}" == "1" ]]; then
   out="$root/zig-out/electron-dev"
   app_name="Codegraff Dev"

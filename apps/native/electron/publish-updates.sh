@@ -5,6 +5,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tag="${1:?Usage: publish-updates.sh vVERSION distribution-directory}"
 out="${2:?Provide the notarized distribution directory}"
 repo=justrach/codegraff
+bun "$here/release-identity.cjs" "$out/Codegraff.app"
 codesign --verify --deep --strict "$out/Codegraff.app"
 xcrun stapler validate "$out/Codegraff.app"
 xcrun stapler validate "$out/Codegraff-macos-arm64.dmg"

@@ -54,6 +54,11 @@ current is part of cutting a release.
   unattended session unless the machine was started with `--yolo`.
   `docs/remote-control.md`, `docs/remote-control-security.md`.
 
+## v0.0.302
+
+- Packaged `Codegraff.app` uses `com.codegraff.app`. A `dev.*` bundle ID fails the desktop tests and `distribute.sh` (ADR 0143).
+- Graff commits may include `Co-Authored-By: Codegraff <blackfloofie@codegraff.com>`; vendor attribution stays banned.
+
 ## v0.0.299
 
 - The MCP `run_task` result view uses the codegraff.com paper palette (paper, rice, ink, coral, cobalt, gold) instead of the desktop emerald chrome. Host light/dark still applies. No webfonts.
