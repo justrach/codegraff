@@ -316,7 +316,7 @@ fn mergeLegacyFile(io: Io, arena: Allocator, ledger: *Ledger, path: []const u8) 
 fn loadTransaction(io: Io, tx: @import("repo_transaction.zig").Transaction, ledger: *Ledger, cwd: []const u8) !void {
     if (try tx.read()) |text| try loadJson(tx.arena, ledger, text);
     if (builtin.is_test and !g_test_resolve_cwd) return;
-    if (cwd.len == 0 or std.mem.eql(u8, cwd, ".")) return;
+    if (cwd.len == 0) return;
     const legacy = claim_path.legacyFile(tx.arena, cwd) orelse return;
     if (!claim_path.samePath(legacy, tx.path)) mergeLegacyFile(io, tx.arena, ledger, legacy);
     for (claim_path.siblingLegacyFiles(tx.arena, io, cwd, tx.path)) |other| {

@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "eval"))
 from mock_model import ScriptedModel
 from process_guard import run as bounded_run
+from claim_ledger import path as claim_ledger_path
 
 from github_fixture import GH, prepare_review
 
@@ -164,7 +165,7 @@ def handoff(graff):
                     if step == 1:
                         acquired.set()
                         assert primed.wait(35), "peer did not reach foreign claim gate"
-                        ledger = json.loads((work / ".graff/artifact-claims.json").read_text())
+                        ledger = json.loads(claim_ledger_path(work).read_text())
                         receiver = next(c["session"] for c in ledger if c["key"] == "independent")
                         return peer("handoff", session=receiver)
                     if step == 2:

@@ -14,6 +14,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'eval'))
 from github_fixture import prepare
 from mock_model import ScriptedModel
+from claim_ledger import path as claim_ledger_path
 
 
 def tool(name, **arguments):
@@ -128,11 +129,11 @@ def run(binary, recovery, evidence):
             caller.prompt('/resume claim-lifecycle')
             blocked_round('Repeat the claimed writes after resuming the saved conversation.')
             before_compact = len(model.requests)
-            ledger_before = (work/'.graff/artifact-claims.json').read_text()
+            ledger_before = claim_ledger_path(work).read_text()
             model.caller_steps = [{'text':'COMPACTED_LIFECYCLE_FIXTURE: publication ownership remains with the live peer.'}]
             caller.prompt('/compact')
             assert len(model.requests) > before_compact, 'compaction did not request a summary'
-            assert (work/'.graff/artifact-claims.json').read_text() == ledger_before
+            assert claim_ledger_path(work).read_text() == ledger_before
             compacted_turn = len(model.requests)
             blocked_round('Repeat the claimed writes after compacting the conversation.')
             assert 'COMPACTED_LIFECYCLE_FIXTURE' in json.dumps(model.requests[compacted_turn]), 'summary was not installed'
@@ -163,9 +164,11 @@ def run(binary, recovery, evidence):
                 (dest/'requests.json').write_text(json.dumps(model.requests,indent=2))
                 for label,client in [('owner',owner),('caller',caller)]:
                     if client: (dest/f'{label}-acp.json').write_text(json.dumps(client.events,indent=2))
-                for name in ['mutations.jsonl','gh-argv.jsonl','.graff/artifact-claims.json']:
+                for name in ['mutations.jsonl','gh-argv.jsonl']:
                     source=work/name
                     if source.exists(): (dest/source.name).write_text(source.read_text())
+                ledger = claim_ledger_path(work)
+                if ledger.exists(): (dest/'artifact-claims.json').write_text(ledger.read_text())
             if owner: owner.close()
             if caller: caller.close()
             model.stop()

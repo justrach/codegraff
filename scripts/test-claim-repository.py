@@ -14,6 +14,7 @@ import threading
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'eval'))
 from github_fixture import prepare, prepare_review
 from mock_model import ScriptedModel
+from claim_ledger import path as claim_ledger_path
 
 
 def tool(name, **arguments):
@@ -64,7 +65,7 @@ class Model(ScriptedModel):
                 assert 'claim released' in json.dumps(body), body
                 (self.work/'release-done').touch()
             if c.get('legacy') and step == 1:
-                command = "python3 - <<'PYCLAIM'\nimport json\nfrom pathlib import Path\np=Path('.graff/artifact-claims.json')\nrows=json.loads(p.read_text())\nfor row in rows: row.pop('repo',None)\np.write_text(json.dumps(rows))\nPYCLAIM"
+                command = "python3 - <<'PYCLAIM'\nimport json, subprocess\nfrom pathlib import Path\ncommon=subprocess.check_output(['git','rev-parse','--git-common-dir'], text=True).strip()\np=Path(common)/'artifact-claims.json'\nrows=json.loads(p.read_text())\nfor row in rows: row.pop('repo',None)\np.write_text(json.dumps(rows))\nPYCLAIM"
                 return tool('bash', command=command)
             if c.get('rebind') and step == 2:
                 return tool('peer_message', action='claim', kind=c.get('owner_kind','publication'), key=c['held'], repo=c['owner'])
@@ -123,7 +124,7 @@ def run_case(binary, name, case, evidence):
                 release_thread.start()
             done = subprocess.run(argv, cwd=work, env=env, input=json.dumps({'type': 'user', 'text': 'Claim the target branch and PR, then edit and mark it ready.'})+'\n', capture_output=True, text=True, timeout=45)
             events = [json.loads(line) for line in done.stdout.splitlines() if line.startswith('{')]
-            claims = json.loads((work/'.graff/artifact-claims.json').read_text())
+            claims = json.loads(claim_ledger_path(work).read_text())
             mutations = (work/'mutations.jsonl').read_text().splitlines() if (work/'mutations.jsonl').exists() else []
             if evidence:
                 dest = evidence/name
