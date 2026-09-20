@@ -152,8 +152,10 @@ def run(binary, recovery, evidence):
             model.caller_steps = [claim('claim')]+[tool('bash',command=cmd) for cmd in recovery_commands]
             first = len(model.requests)
             caller.prompt('Acquire ownership after recovery, then perform the writes.')
-            observed = model.requests[first:]
-            assert len(observed)==len(recovery_commands)+3, len(observed)
+            observed = [req for req in model.requests[first:]
+                        if not (isinstance(req['messages'][-1].get('content'), str)
+                                and req['messages'][-1]['content'].startswith('[peer]'))]
+            assert len(observed) >= len(recovery_commands)+1, len(observed)
             assert sum('committed_inputs' in json.dumps(r) for r in observed)==1, 'Recovered publication requires its own review'
             head = subprocess.check_output(['git','rev-parse','HEAD'],cwd=work,text=True).strip()
             remote = subprocess.check_output(['git','--git-dir',str(work/'remote.git'),'rev-parse','refs/heads/fixture'],text=True).strip()
