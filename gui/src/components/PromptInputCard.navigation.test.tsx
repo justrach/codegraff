@@ -274,18 +274,18 @@ test("scope round trips cannot revive an earlier cursor or attachment snapshot",
   }
 });
 
-test("same conversation ids keep attachments isolated across workspaces", () => {
+test("delimiter-like scope values keep attachments isolated", () => {
   const firstAttachment = image("/images/workspace-first.png");
   const secondAttachment = image("/images/workspace-second.png");
   const composer = mountComposer({
     bindings: {
       first: {
-        conversationId: "shared-conversation",
-        workspacePath: "/workspace/first",
+        conversationId: "b",
+        workspacePath: "/workspace/a::chat",
       },
       second: {
-        conversationId: "shared-conversation",
-        workspacePath: "/workspace/second",
+        conversationId: "chat::b",
+        workspacePath: "/workspace/a",
       },
     },
     histories: { first: [], second: [] },

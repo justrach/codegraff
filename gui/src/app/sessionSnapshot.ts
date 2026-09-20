@@ -10,7 +10,7 @@ function getConversationDraftKey(
   workspacePath: string | null | undefined,
   conversationId: string,
 ): string {
-  return `conversation:${workspacePath ?? ""}::${conversationId}`
+  return `conversation:${JSON.stringify([workspacePath ?? null, conversationId])}`
 }
 
 export function getWorkspaceDraftKey(workspacePath: string): string {
