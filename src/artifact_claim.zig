@@ -173,7 +173,12 @@ pub fn gateCommandIn(arena: Allocator, io: Io, cmd: []const u8, key: []const u8,
     if (tx) |transaction| {
         loadTransaction(io, transaction, ledger, cwd) catch return "artifact claim ledger unreadable: action NOT performed";
     } else local = g_ledger;
-    var target: @import("artifact_claim_target.zig").Target = resolved orelse @import("artifact_claim_target.zig").explicit(cmd, kind) orelse .{ .kind = if (kind == .issue) Kind.issue else Kind.branch, .key = key };
+    // A failed `gh pr view` is unknown identity, not "PR N in no repo".
+    // explicit() would keep the number and skip a foreign publication claim.
+    var target: @import("artifact_claim_target.zig").Target = if (kind == .pull_request and !builtin.is_test)
+        resolved orelse .{ .kind = .pull_request, .key = "" }
+    else
+        resolved orelse @import("artifact_claim_target.zig").explicit(cmd, kind) orelse .{ .kind = if (kind == .issue) Kind.issue else Kind.branch, .key = key };
     if (target.kind == .branch and target.key.len == 0) target.key = key;
     for (ledger.slice()) |c| {
         if (!claimRelevant(c.kind, kind)) continue;
