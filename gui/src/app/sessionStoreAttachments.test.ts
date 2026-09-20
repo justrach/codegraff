@@ -31,8 +31,21 @@ test("attachment replacement removes the previous history entry atomically", () 
   ];
 
   sessionStore.getState().addAttachments(key, [previous]);
-  sessionStore.getState().replaceAttachments(key, next);
+  const replacementNotifications: string[][] = [];
+  const unsubscribe = sessionStore.subscribe((current, prior) => {
+    if (current.attachmentsByKey[key] !== prior.attachmentsByKey[key]) {
+      replacementNotifications.push(
+        (current.attachmentsByKey[key] ?? []).map((item) => item.path),
+      );
+    }
+  });
 
+  sessionStore.getState().replaceAttachments(key, next);
+  unsubscribe();
+
+  expect(replacementNotifications).toEqual([
+    next.map((item) => item.path),
+  ]);
   expect(getAttachments(key)).toEqual(next);
   expect(getAttachments(key)).not.toContainEqual(previous);
 

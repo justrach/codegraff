@@ -51,17 +51,26 @@ afterAll(async () => {
 
 const workspacePath = "/workspace/history-tests";
 
+function getBinding(
+  scope: string,
+  bindings?: Record<string, ChatBinding>,
+): ChatBinding {
+  return bindings?.[scope] ?? { conversationId: scope, workspacePath };
+}
+
 function ComposerHarness({
+  bindings,
   histories,
   initialDrafts,
   scope,
 }: {
+  bindings?: Record<string, ChatBinding>;
   histories: Record<string, string[]>;
   initialDrafts: Record<string, string>;
   scope: string;
 }) {
   const [drafts, setDrafts] = useState(initialDrafts);
-  const binding: ChatBinding = { conversationId: scope, workspacePath };
+  const binding = getBinding(scope, bindings);
   const promptDraft = drafts[scope] ?? "";
 
   return (
@@ -84,12 +93,13 @@ function ComposerHarness({
       stopPrompt={async () => {}}
       submitPrompt={async () => {}}
       updatePromptSettings={async () => {}}
-      workspacePath={workspacePath}
+      workspacePath={binding.workspacePath}
     />
   );
 }
 
 function mountComposer(input: {
+  bindings?: Record<string, ChatBinding>;
   histories: Record<string, string[]>;
   initialAttachments?: Record<string, Attachment[]>;
   initialDrafts: Record<string, string>;
@@ -99,7 +109,11 @@ function mountComposer(input: {
   for (const [conversationId, attachments] of Object.entries(
     input.initialAttachments ?? {},
   )) {
-    const key = getPromptDraftKey(workspacePath, conversationId)!;
+    const binding = getBinding(conversationId, input.bindings);
+    const key = getPromptDraftKey(
+      binding.workspacePath,
+      binding.conversationId,
+    )!;
     sessionStore.getState().addAttachments(key, attachments);
   }
   const container = document.createElement("div");
@@ -111,6 +125,7 @@ function mountComposer(input: {
     flushSync(() => {
       root.render(
         <ComposerHarness
+          bindings={input.bindings}
           histories={input.histories}
           initialDrafts={input.initialDrafts}
           scope={scope}
@@ -223,6 +238,78 @@ test("equal-length chat switches cannot restore another chat's draft or attachme
 
     composer.arrow("ArrowUp");
     expect(composer.textareaValue()).toBe("second new");
+  } finally {
+    composer.close();
+  }
+});
+
+test("scope round trips cannot revive an earlier cursor or attachment snapshot", () => {
+  const firstAttachment = image("/images/first-live.png");
+  const composer = mountComposer({
+    histories: {
+      first: ["first old", "first new"],
+      second: ["second old", "second new"],
+    },
+    initialAttachments: { first: [firstAttachment] },
+    initialDrafts: {
+      first: "first draft",
+      second: "second draft",
+    },
+    scope: "first",
+  });
+
+  try {
+    composer.arrow("ArrowUp");
+    expect(composer.textareaValue()).toBe("first new");
+    expect(attachmentTitles(composer.container)).toEqual([]);
+
+    composer.switchScope("second");
+    composer.switchScope("first");
+    composer.arrow("ArrowDown");
+
+    expect(composer.textareaValue()).toBe("first new");
+    expect(attachmentTitles(composer.container)).toEqual([]);
+  } finally {
+    composer.close();
+  }
+});
+
+test("same conversation ids keep attachments isolated across workspaces", () => {
+  const firstAttachment = image("/images/workspace-first.png");
+  const secondAttachment = image("/images/workspace-second.png");
+  const composer = mountComposer({
+    bindings: {
+      first: {
+        conversationId: "shared-conversation",
+        workspacePath: "/workspace/first",
+      },
+      second: {
+        conversationId: "shared-conversation",
+        workspacePath: "/workspace/second",
+      },
+    },
+    histories: { first: [], second: [] },
+    initialAttachments: {
+      first: [firstAttachment],
+      second: [secondAttachment],
+    },
+    initialDrafts: {
+      first: "first workspace draft",
+      second: "second workspace draft",
+    },
+    scope: "first",
+  });
+
+  try {
+    expect(attachmentTitles(composer.container)).toEqual([
+      firstAttachment.path,
+    ]);
+
+    composer.switchScope("second");
+    expect(composer.textareaValue()).toBe("second workspace draft");
+    expect(attachmentTitles(composer.container)).toEqual([
+      secondAttachment.path,
+    ]);
   } finally {
     composer.close();
   }
