@@ -10,7 +10,7 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## Unreleased
+## v0.0.302
 
 - Line REPL boxes GFM pipe tables (including `|---|` separators and pipe-less `a | b` rows) when the stream ends.
 - `#1088`: claims own one artifact. Conflicts ping Accord; acquire/release/handoff also replicate as replaceable Accord progress (file ledger stays canonical). Staging is not a lock.
