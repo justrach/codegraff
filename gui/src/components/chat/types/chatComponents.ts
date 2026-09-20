@@ -157,12 +157,6 @@ export interface FileDiffResultProps {
   workspacePath: string | null;
 }
 
-export interface MarkdownChatMessageProps {
-  text: string;
-  toneClassName: string;
-  workspacePath: string | null;
-}
-
 export interface FilePathButtonProps {
   label: string;
   path: string;

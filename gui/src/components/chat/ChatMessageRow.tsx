@@ -2,17 +2,15 @@ import {
   CHAT_BODY_TONE_CLASS,
   CHAT_REASONING_TONE_CLASS,
 } from "./constants/chatStyles";
-import { ChatMarkdown } from "./ChatMarkdown";
+import { ChatMarkdownMessage } from "./ChatMarkdownMessage";
 import { ChatInlineText } from "./ChatInlineText";
 import { AttachmentTray } from "@/components/attachments/AttachmentTray";
 import {
   classifyPath,
   parseAttachmentBlock,
 } from "@/components/attachments/attachmentTypes";
-import { openPathDefault } from "@/services/desktop/client";
 import type {
   ChatMessageRowProps,
-  MarkdownChatMessageProps,
   TextOnlyMessageProps,
 } from "./types/chatComponents";
 
@@ -21,9 +19,11 @@ interface UserChatMessageProps extends TextOnlyMessageProps {
 }
 
 function handleOpenAttachment(path: string) {
-  void openPathDefault(path).catch((error) => {
-    console.error("Failed to open attachment", error);
-  });
+  void import("@/services/desktop/client")
+    .then(({ openPathDefault }) => openPathDefault(path))
+    .catch((error) => {
+      console.error("Failed to open attachment", error);
+    });
 }
 
 function UserChatMessage({ text, workspacePath }: UserChatMessageProps) {
@@ -53,29 +53,14 @@ function UserChatMessage({ text, workspacePath }: UserChatMessageProps) {
   );
 }
 
-function MarkdownChatMessage({
-  text,
-  toneClassName,
-  workspacePath,
-}: MarkdownChatMessageProps) {
-  return (
-    <article className="max-w-3xl">
-      <ChatMarkdown
-        text={text}
-        className={`cg-stream-in ${toneClassName ?? ""}`}
-        workspacePath={workspacePath}
-      />
-    </article>
-  );
-}
-
 export function ChatMessageRow({ message, workspacePath }: ChatMessageRowProps) {
   switch (message.kind) {
     case "user":
       return <UserChatMessage text={message.text} workspacePath={workspacePath} />;
     case "assistant":
       return (
-        <MarkdownChatMessage
+        <ChatMarkdownMessage
+          copyText={message.text}
           text={message.text}
           toneClassName={CHAT_BODY_TONE_CLASS}
           workspacePath={workspacePath}
@@ -83,7 +68,7 @@ export function ChatMessageRow({ message, workspacePath }: ChatMessageRowProps) 
       );
     case "reasoning":
       return (
-        <MarkdownChatMessage
+        <ChatMarkdownMessage
           text={message.text}
           toneClassName={CHAT_REASONING_TONE_CLASS}
           workspacePath={workspacePath}
