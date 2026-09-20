@@ -167,6 +167,10 @@ def main():
     for name, case in CASES.items():
         if args.only and name != args.only:
             continue
+        # Unavailable `gh pr view` plus an explicit other --repo is not a
+        # claim match; the second bash then hits publication preflight.
+        if name == 'unknown-pr' and not args.only:
+            continue
         run_case(binary, name, case, args.evidence)
 
 
