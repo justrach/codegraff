@@ -12,7 +12,7 @@ current is part of cutting a release.
 
 ## Unreleased
 
-- `#1088`: claims own one artifact. A conflict pings the owner on Accord (JSONL still durable); staging is not a lock; issue create and a new-branch push are not someone else's issue or PR.
+- `#1088`: claims own one artifact. Conflicts ping Accord; acquire/release/handoff also replicate as replaceable Accord progress (file ledger stays canonical). Staging is not a lock.
 - `#1084`: gpt-6-astra `/effort medium` sends medium (no longer remapped to low).
 - Empty Enter-Enter while a turn is running interrupts (or steers the next queued prompt). It no longer required a queue to arm.
 - Desktop ACP workers can park after a quiet period (`GRAFF_ACP_IDLE_MS`, default 30s) and `--resume` with the saved cache id. Parking is skipped while a prompt or `session/idle` subscriber is live; tab close still reaps immediately.

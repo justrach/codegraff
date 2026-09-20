@@ -56,6 +56,11 @@ fn pingOwner(io: Io, arena: Allocator, owner: Owner, kind: Kind, key: []const u8
     _ = presence.postToDevice(io, arena, text, owner.session, false);
 }
 
+fn announceLive(io: Io, arena: Allocator, ledger: *const Ledger) void {
+    const json = persistJson(arena, ledger) catch return;
+    @import("presence_accord.zig").liveClaim(io, json);
+}
+
 // --- process-global ledger (one worktree, many tests swap it) ---
 
 var g_ledger: Ledger = .{};
@@ -219,6 +224,7 @@ pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []cons
             else => return .{ .text = "claim acquire failed", .is_error = true },
         };
         if (tx) |transaction| transaction.write(try persistJson(scratch.allocator(), ledger)) catch return .{ .text = "claim was NOT persisted; retry before publishing", .is_error = true };
+        announceLive(io, scratch.allocator(), ledger);
         return .{ .text = msg, .is_error = false };
     }
     if (std.mem.eql(u8, action, "release")) {
@@ -229,6 +235,7 @@ pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []cons
             .is_error = true,
         };
         if (tx) |transaction| transaction.write(try persistJson(scratch.allocator(), ledger)) catch return .{ .text = "claim was NOT persisted; retry before publishing", .is_error = true };
+        announceLive(io, scratch.allocator(), ledger);
         return .{ .text = msg, .is_error = false };
     }
     if (std.mem.eql(u8, action, "handoff")) {
@@ -253,6 +260,7 @@ pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []cons
             else => return .{ .text = "handoff failed", .is_error = true },
         };
         if (tx) |transaction| transaction.write(try persistJson(scratch.allocator(), ledger)) catch return .{ .text = "claim was NOT persisted; retry before publishing", .is_error = true };
+        announceLive(io, scratch.allocator(), ledger);
         return .{ .text = msg, .is_error = false };
     }
     if (std.mem.eql(u8, action, "status")) {

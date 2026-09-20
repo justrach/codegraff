@@ -121,11 +121,23 @@ fn sockPath(buf: []u8, chan_name: []const u8) ?[]const u8 {
 /// Best-effort live send of the same JSONL line already appended to the room.
 /// Never fails the durable write. Fans out to every peer sock in the live dir.
 pub fn livePost(io: Io, gpa: std.mem.Allocator, chan_name: []const u8, json_line: []const u8) void {
+    fanout(io, gpa, chan_name, .msg, .none, json_line);
+}
+
+/// Latest claim ledger as replaceable progress. File JSON remains canonical
+/// (ADR 0145); Accord coalesces to the newest snapshot.
+pub fn liveClaim(io: Io, json: []const u8) void {
+    if (builtin.is_test) return;
+    const gpa = g_gpa orelse return;
+    fanout(io, gpa, "", .progress, accord.Flags.replaceable, json);
+}
+
+fn fanout(io: Io, gpa: std.mem.Allocator, chan_name: []const u8, kind: accord.Kind, flags: accord.Flags, payload: []const u8) void {
     if (!enabled()) return;
     if (builtin.os.tag == .windows) return;
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     if (sockPath(&path_buf, chan_name)) |path| {
-        sendLine(io, gpa, path, json_line) catch {};
+        sendFrame(io, gpa, path, kind, flags, payload) catch {};
         return;
     }
     const dir_path = g_dir_path orelse return;
@@ -137,7 +149,7 @@ pub fn livePost(io: Io, gpa: std.mem.Allocator, chan_name: []const u8, json_line
         if (g_own_name) |own| if (std.mem.eql(u8, entry.name, own)) continue;
         if (dropDeadSock(io, dir_path, entry.name)) continue;
         const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
-        sendLine(io, gpa, path, json_line) catch {};
+        sendFrame(io, gpa, path, kind, flags, payload) catch {};
     }
 }
 
@@ -308,12 +320,12 @@ fn dropInbound(sess: *accord.Session) void {
     gpa.destroy(sess);
 }
 
-fn sendLine(io: Io, gpa: std.mem.Allocator, path: []const u8, json_line: []const u8) !void {
+fn sendFrame(io: Io, gpa: std.mem.Allocator, path: []const u8, kind: accord.Kind, flags: accord.Flags, payload: []const u8) !void {
     const sess = ensureOut(io, gpa, path) orelse return;
-    sess.send(1, .msg, .none, json_line) catch {
+    sess.send(1, kind, flags, payload) catch {
         dropOut(io, gpa, path);
         const retry = ensureOut(io, gpa, path) orelse return;
-        retry.send(1, .msg, .none, json_line) catch {};
+        retry.send(1, kind, flags, payload) catch {};
     };
 }
 
@@ -555,4 +567,9 @@ test "standing link carries msg, progress, and a reply on one session" {
     const halt = try pair.server.recv(1);
     defer halt.deinit(gpa);
     try std.testing.expectEqual(accord.Kind.stop, halt.kind);
+}
+
+test "liveClaim is a no-op when Accord is off" {
+    test_enabled = false;
+    liveClaim(std.testing.io, "[]");
 }
