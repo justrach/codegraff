@@ -67,6 +67,7 @@ def prepare(work, env, state):
     gh.chmod(0o755)
     subprocess.run(["git", "init", "-q", "-b", "fixture"], cwd=work, check=True, timeout=10)
     subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                    "-c", "commit.gpgsign=false",
                     "commit", "-q", "--allow-empty", "-m", "fixture"], cwd=work, check=True, timeout=10)
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=work, text=True, timeout=10).strip()
     fixture = dict(initial_head=head, **state)
@@ -105,6 +106,7 @@ def prepare_review(work, files):
     state["base_sha"] = state["initial_head"]
     subprocess.run(["git", "add", "--", *files], cwd=work, check=True, timeout=10)
     subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                    "-c", "commit.gpgsign=false",
                     "commit", "-qm", "fixture reviewed change"], cwd=work, check=True, timeout=10)
     state["initial_head"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=work, text=True, timeout=10).strip()
     state["new_runs"] = "success"
