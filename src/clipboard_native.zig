@@ -1,4 +1,5 @@
 //! Direct pasteboard flavors avoid AppleScript's lossy PNGf coercion (#843).
+//! Telegram/Qt copies a cache path (`NSFilenamesPboardType`), often without an image suffix.
 const std = @import("std");
 const clip = @import("vision_clipboard.zig");
 const runner = @import("process_runner.zig");

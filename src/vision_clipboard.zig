@@ -38,8 +38,9 @@ pub const Flavor = enum {
     /// (TIFF, JPEG, HEIC, live data-provider promises), so it covers almost
     /// every real screenshot/copy-image clipboard.
     png,
-    /// `«class furl»` — a file the user copied in Finder, Telegram, Slack…
-    /// The pasteboard carries only the URL, never pixels.
+    /// `«class furl»` / `NSFilenamesPboardType` — a file the user copied in
+    /// Finder, Telegram, Slack… The pasteboard carries a path, never pixels.
+    /// Telegram cache files often have no image extension.
     furl,
     /// `«class PDF »` — Preview, Illustrator, Keynote and friends put up a
     /// vector-only clipboard with no raster flavor at all.
