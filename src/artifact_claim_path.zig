@@ -8,29 +8,21 @@ const ranOk = process_runner.ranOk;
 
 pub const persist_rel = ".graff/artifact-claims.json";
 
-/// Shared ledger: `<repo>/.graff/artifact-claims.json` of the main checkout
-/// (parent of the Git common dir). Linked worktrees share that file.
+/// Main checkout: `.graff/artifact-claims.json` (same bytes as before #1092).
+/// Linked worktree: `gitdir:` pointer → main checkout `.graff`.
 pub fn canonicalFile(arena: Allocator, io: Io, cwd: []const u8) ?[]const u8 {
-    const common = gitCommonDirWalk(arena, io, cwd) orelse return null;
-    const root = std.fs.path.dirname(common) orelse return null;
-    return std.fs.path.join(arena, &.{ root, persist_rel }) catch null;
-}
-
-fn gitCommonDirWalk(arena: Allocator, io: Io, cwd: []const u8) ?[]const u8 {
-    if (cwd.len == 0) return null;
-    var buf: [4096]u8 = undefined;
-    const start = blk: {
-        const n = Io.Dir.cwd().realPathFile(io, cwd, &buf) catch break :blk cwd;
-        break :blk arena.dupe(u8, buf[0..n]) catch cwd;
+    if (cwd.len == 0) return persist_rel;
+    const git_here = std.fs.path.join(arena, &.{ cwd, ".git" }) catch return persist_rel;
+    const st = Io.Dir.cwd().statFile(io, git_here, .{}) catch {
+        if (std.mem.eql(u8, cwd, ".")) return persist_rel;
+        return std.fs.path.join(arena, &.{ cwd, persist_rel }) catch persist_rel;
     };
-    var cur = start;
-    while (true) {
-        const git_path = std.fs.path.join(arena, &.{ cur, ".git" }) catch return null;
-        if (Io.Dir.cwd().openDir(io, git_path, .{ .iterate = false })) |dir| {
-            dir.close(io);
-            return git_path;
-        } else |_| {}
-        if (Io.Dir.cwd().readFileAlloc(io, git_path, arena, .limited(4096))) |text| {
+    if (st.kind != .file) {
+        if (std.mem.eql(u8, cwd, ".")) return persist_rel;
+        return std.fs.path.join(arena, &.{ cwd, persist_rel }) catch persist_rel;
+    }
+    {
+        if (Io.Dir.cwd().readFileAlloc(io, git_here, arena, .limited(4096))) |text| {
             const line = std.mem.trim(u8, text, " \t\r\n");
             const prefix = "gitdir:";
             if (std.mem.startsWith(u8, line, prefix)) {
@@ -38,20 +30,23 @@ fn gitCommonDirWalk(arena: Allocator, io: Io, cwd: []const u8) ?[]const u8 {
                 const gitdir = if (std.fs.path.isAbsolute(raw))
                     raw
                 else
-                    (std.fs.path.resolve(arena, &.{ cur, raw }) catch return null);
-                const marker = std.fs.path.join(arena, &.{ gitdir, "commondir" }) catch return null;
-                if (Io.Dir.cwd().readFileAlloc(io, marker, arena, .limited(256))) |cd| {
-                    const rel = std.mem.trim(u8, cd, " \t\r\n");
-                    if (rel.len == 0) return gitdir;
-                    if (std.fs.path.isAbsolute(rel)) return arena.dupe(u8, rel) catch gitdir;
-                    return std.fs.path.resolve(arena, &.{ gitdir, rel }) catch gitdir;
-                } else |_| return gitdir;
+                    (std.fs.path.resolve(arena, &.{ cwd, raw }) catch return persist_rel);
+                const marker = std.fs.path.join(arena, &.{ gitdir, "commondir" }) catch return persist_rel;
+                const common = blk: {
+                    if (Io.Dir.cwd().readFileAlloc(io, marker, arena, .limited(256))) |cd| {
+                        const rel = std.mem.trim(u8, cd, " \t\r\n");
+                        if (rel.len == 0) break :blk gitdir;
+                        if (std.fs.path.isAbsolute(rel)) break :blk rel;
+                        break :blk std.fs.path.resolve(arena, &.{ gitdir, rel }) catch gitdir;
+                    } else |_| break :blk gitdir;
+                };
+                const root = std.fs.path.dirname(common) orelse return persist_rel;
+                return std.fs.path.join(arena, &.{ root, persist_rel }) catch persist_rel;
             }
         } else |_| {}
-        const parent = std.fs.path.dirname(cur) orelse return null;
-        if (std.mem.eql(u8, parent, cur)) return null;
-        cur = parent;
     }
+    if (std.mem.eql(u8, cwd, ".")) return persist_rel;
+    return std.fs.path.join(arena, &.{ cwd, persist_rel }) catch persist_rel;
 }
 
 pub fn legacyFile(arena: Allocator, cwd: []const u8) ?[]const u8 {

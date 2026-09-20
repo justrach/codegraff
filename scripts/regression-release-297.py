@@ -193,7 +193,7 @@ def handoff(graff):
             with concurrent.futures.ThreadPoolExecutor(2) as pool:
                 one, two = pool.submit(actor, "A"), pool.submit(actor, "B")
                 a, b = one.result(), two.result()
-            assert a.returncode == b.returncode == 0, (a.stderr[-1000:], b.stderr[-1000:])
+            assert a.returncode == b.returncode == 0, (a.returncode, b.returncode, a.stderr[:1500], a.stderr[-500:], b.stderr[:1500], b.stderr[-500:])
             mutations = (work / "mutations.jsonl").read_text().splitlines() if (work / "mutations.jsonl").exists() else []
             assert len(mutations) == 2, (mutations, a.stdout[-4000:], b.stdout[-4000:])
             assert 'artifact claim held' in a.stdout and 'artifact claim held' in b.stdout, (a.stdout[-3000:], b.stdout[-3000:])
