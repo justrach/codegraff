@@ -276,15 +276,11 @@ test "#382: shape F carries the contract that separates a concept fleet from a r
 }
 
 test "shape catalog never tells a dependent chain to isolate into worktrees" {
-    // Regression guard for the worst bug the catalog's own first review found.
-    // It used to say "give file-editing tasks isolation:worktree so they cannot
-    // collide". Every task gets its OWN worktree branched from HEAD, so on a
-    // dependent chain (transform -> verify, implement -> review) the later stage
-    // read the ORIGINAL file: a workflow could report a successful implement +
-    // review while the edits never reached the caller's tree at all.
-    try std.testing.expect(std.mem.indexOf(u8, shape_catalog_note, "IN PARALLEL") != null);
-    try std.testing.expect(std.mem.indexOf(u8, shape_catalog_note, "Never set it on a dependent chain") != null);
-    // The old unconditional phrasing must not come back.
+    // Fan-out defaults to worktree. Same-branch / pipeline stages must stay
+    // on shared_cwd so later stages see earlier edits (#295).
+    try std.testing.expect(std.mem.indexOf(u8, shape_catalog_note, "default to isolation:\"worktree\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, shape_catalog_note, "shared_cwd\" only for same-branch") != null);
+    try std.testing.expect(std.mem.indexOf(u8, shape_catalog_note, "pipeline stages") != null);
     try std.testing.expect(std.mem.indexOf(u8, shape_catalog_note, "Give file-editing tasks isolation") == null);
 }
 

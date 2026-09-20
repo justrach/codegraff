@@ -235,7 +235,7 @@ test "in-process handleLine speaks the same initialize / new / prompt envelopes"
 test "session/new reports an isolated checkout when Dispatch.cwd is set" {
     var state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer state.deinit();
-    var buf: [2048]u8 = undefined;
+    var buf: [16384]u8 = undefined;
     var w: Io.Writer = .fixed(&buf);
     var d: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .seed = 0x11, .cwd = "/repo/.graff/worktrees/session-1" };
     try handleLine(&d, state.allocator(), &w, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/new\"}");

@@ -441,13 +441,14 @@ test "create: non-git folder is not a task workspace" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const a = std.testing.allocator;
     const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const tmp_root = try tmp.dir.realPathFileAlloc(io, ".", a);
-    defer a.free(tmp_root);
+    // std.testing.tmpDir lives inside this repo's cache, so git walks up to it.
+    const root = try std.fmt.allocPrint(a, "/tmp/graff-nongit-{d}", .{std.time.milliTimestamp()});
+    defer a.free(root);
+    try Io.Dir.cwd().createDirPath(io, root);
+    defer Io.Dir.cwd().deleteTree(io, root) catch {};
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
-    try std.testing.expectError(error.NotAGitRepo, create(a, io, arena.allocator(), .{ .slug = "x", .cwd = tmp_root }));
+    try std.testing.expectError(error.NotAGitRepo, create(a, io, arena.allocator(), .{ .slug = "x", .cwd = root }));
     try std.testing.expect(std.mem.indexOf(u8, createFailureText(error.NotAGitRepo), "plain folder") != null);
 }
 
