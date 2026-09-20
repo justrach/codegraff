@@ -333,7 +333,8 @@ pub const usage_text =
     \\  graff plugins [load <name>]       list Claude/Cursor/Grok/Codex plugin trees (in place)
     \\  graff learn [help]                local mutate/evaluate/promote/rollback engine
     \\  graff worktree list              list -w tabs and experiment-pool trees (tagged)
-    \\  graff worktree create <name> [base]  mint a task workspace (branch + worktree) so concurrent agents do not share a checkout
+    \\  graff worktree create <name> [base]  mint a task workspace from the remote base (origin/main after fetch; optional base)
+    \\  graff worktree archive <name>    remove a clean duplicate checkout; dirty or unique-commit trees stay
     \\  graff worktree merge <name>      squash-land worktree-<name> onto the current branch + clean up
     \\  graff worktree remove <name>     discard worktree-<name> (drops its scratch work) + delete the branch
     \\  graff worktree prune             drop git registrations for worktrees whose dirs were deleted

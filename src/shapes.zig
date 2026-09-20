@@ -148,12 +148,11 @@ pub const shape_catalog_note =
     \\Use phases only when a phase genuinely needs ALL of the previous one;
     \\per-item work belongs in pipeline.
     \\
-    \\isolation:"worktree" ONLY for tasks that edit files IN PARALLEL within one
-    \\phase and whose edits nothing downstream has to read. Every task gets its
-    \\OWN worktree branched from HEAD, so a later stage cannot see an earlier
-    \\stage's edits. Never set it on a dependent chain (transform then verify,
-    \\implement then review) — those stages must share the working tree or the
-    \\reviewer inspects the original file and the edits are stranded.
+    \\Independent / fan-out tasks default to isolation:"worktree" (own branch +
+    \\checkout, tools bound to agent_cwd, no process-wide chdir). Use
+    \\isolation:"shared_cwd" only for same-branch collaboration — review + fix,
+    \\pipeline stages, agents that must see each other's uncommitted files.
+    \\A failed git worktree add fails the spawn unless isolation_fallback:true.
 ;
 
 test "canonicalSlot: exact, first-word, and miss" {

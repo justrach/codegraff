@@ -180,13 +180,31 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
         return;
     }
 
+    if (std.mem.eql(u8, action, "archive")) {
+        if (args.len < 2) {
+            try out.writeAll("usage: graff worktree archive <name>\n");
+            return;
+        }
+        const tw = @import("task_workspace.zig");
+        const result = tw.archive(gpa, io, arena, ".", args[1]) catch |err| {
+            try out.print("✗ {s}\n", .{tw.archiveFailureText(err)});
+            return;
+        };
+        if (result.removed) {
+            try out.print("✓ archived {s} (removed checkout and branch {s})\n", .{ result.path, result.branch });
+        } else {
+            try out.print("kept {s} — {s}\n", .{ result.path, @import("agent_worktree.zig").keepReasonText(result.reason) });
+        }
+        return;
+    }
+
     if (std.mem.eql(u8, action, "prune")) {
         // Drops git's registrations for worktrees whose dirs were deleted out of
         // band, and with `older-than <days>` the stale DIRECTORIES too (#112).
         return worktree_prune.pruneCommand(gpa, io, arena, out, args[1..]);
     }
 
-    try out.print("unknown worktree command '{s}' — use: graff worktree list | create <name> [base] | merge <name> | remove <name> | prune [older-than <days>]\n", .{action});
+    try out.print("unknown worktree command '{s}' — use: graff worktree list | create <name> [base] | archive <name> | merge <name> | remove <name> | prune [older-than <days>]\n", .{action});
 }
 
 test { // split-out module: unreferenced, its tests silently never run

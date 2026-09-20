@@ -32,7 +32,7 @@ const task_workspace = @import("task_workspace.zig");
 pub const tool_name = "workspace";
 pub const tool_desc = "List this repo's git worktrees, switch into one, or create a task workspace (fresh branch + worktree). action=list (default), use, or create. path is a worktree path, its last folder, or a unique name fragment. create needs name and optional base. File tools and bash follow the new cwd. Root session only — a subagent stays in its assigned tree. Do not bash-cd to switch.";
 pub const tool_schema =
-    \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "use", "create"], "description": "list (default): the repo's git worktrees. use: chdir this session into one. create: mint a fresh branch and worktree, then enter it."}, "path": {"type": "string", "description": "worktree path, last folder, or unique fragment (required for use)"}, "name": {"type": "string", "description": "task workspace name (required for create)"}, "base": {"type": "string", "description": "base branch or commit for create (default HEAD)"}}}
+    \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "use", "create"], "description": "list (default): the repo's git worktrees. use: chdir this session into one. create: mint a fresh branch and worktree from the remote base, then enter it."}, "path": {"type": "string", "description": "worktree path, last folder, or unique fragment (required for use)"}, "name": {"type": "string", "description": "task workspace name (required for create)"}, "base": {"type": "string", "description": "base branch or commit for create (default origin/main after fetch)"}}}
 ;
 
 pub const Entry = struct {

@@ -23,8 +23,10 @@ A new independent task is `workspace action=create`.
 2. `workspace action=use path=<folder or unique fragment>` — chdir this
    session. Example: `path=cursor-peer-pull-554f` matches a Claude worktree
    named that, or `path=cursor/peer-pull-554f` matches the branch.
-3. `workspace action=create name=<slug>` — mint a fresh branch and worktree,
-   then enter it. Optional `base` is a branch or commit (default HEAD).
+3. `workspace action=create name=<slug>` — mint a fresh branch and worktree
+   from the remote base, then enter it. Optional `base` is a branch or commit
+   (default `origin/main` after fetch). Independent work gets its own tree;
+   same-branch collaboration stays in one workspace (`isolation: shared_cwd`).
 4. If the match is ambiguous, name more of the path. Do not guess.
 
 Do not paste every worktree path into the next user turn. The list result is

@@ -32,12 +32,10 @@ const agent_file = @import("agent_file.zig");
 /// elite prompt; builtins ship compiled in, and `.harness/agents/<name>.md`
 /// or `.toml` files override or extend them — that's where an evolution driver
 /// promotes archive winners (still as `.md`). Spawn with `agent: "<name>"`.
-/// #276 P0-1: per-agent git-worktree isolation. `.shared_cwd` (default) is
-/// today's behavior — every fanned-out subagent shares the caller's working
-/// tree. `.worktree` gives the child its own scratch `git worktree`, threaded
-/// through as its `Agent.agent_cwd` (never a process-wide chdir — see
-/// jobs.zig's "Per-agent worktree isolation" section and subagent.zig's
-/// runSub) so parallel siblings never race on the same files.
+/// #276 P0-1: per-agent git-worktree isolation. Independent / fan-out
+/// children default to `.worktree` (own branch + checkout, `agent_cwd`, no
+/// process-wide chdir). `.shared_cwd` is same-branch collaboration only
+/// (review + fix, pipeline stages, an explicit isolation field).
 pub const Isolation = enum {
     shared_cwd,
     worktree,
@@ -61,7 +59,7 @@ pub const AgentType = struct {
     score: ?f64 = null, // written by the evolution driver, shown in /agents
     builtin: bool = false,
     learned: bool = false,
-    isolation: ?Isolation = null, // persona default (frontmatter `isolation: worktree`); null = no opinion, falls through to shared_cwd
+    isolation: ?Isolation = null, // persona default; null = no opinion, falls through to the caller default (worktree for fan-out)
     // #292 persona model pin. Both null = no opinion; the spawn keeps the
     // session default (--subagent-model or the #291 ladder). `model` is an
     // exact name and wins over `tier` when a persona sets both; neither is
@@ -82,12 +80,14 @@ const builtin_agent_types = [_]AgentType{
         .desc = "adversarial code reviewer — hunts defects, assumes guilt",
         .prompt = "You are an adversarial code reviewer. Read the code you are pointed at and hunt for genuine defects: logic errors, unhandled edge cases, races, leaks, security holes. Assume the code is guilty until proven correct. Report only findings you can defend with a concrete failure scenario, each with file:line and the exact sequence that breaks. No style nits. End with a verdict: the single most dangerous defect, or 'no defensible defects found'.",
         .builtin = true,
+        .isolation = .shared_cwd, // same-branch review
     },
     .{
         .name = "researcher",
         .desc = "evidence gatherer — reads widely, cites precisely, never edits",
         .prompt = "You are a research agent. Your job is to READ and REPORT, never to modify anything. Explore the files or sources you are pointed at, follow the references that matter, and produce a tight evidence-backed summary: every claim cites its file:line or source. Separate what you verified from what you infer. End with the 3 facts most load-bearing for the task and 1 open question.",
         .builtin = true,
+        .isolation = .shared_cwd,
         .tier = .small, // luna / flash / sonnet — cheap search seat, same as sol+luna
     },
     .{
@@ -101,6 +101,7 @@ const builtin_agent_types = [_]AgentType{
         .desc = "claim refuter — tries to prove the premise wrong",
         .prompt = "You are a skeptic. You receive a claim or finding; your only goal is to REFUTE it. Search for counterexamples, missing context, and alternative explanations. Default to 'refuted' unless the claim survives your strongest attack. Report the attack you ran, what you found, and a final verdict: refuted (with the counterexample) or survives (with what would have broken it).",
         .builtin = true,
+        .isolation = .shared_cwd,
     },
 };
 
@@ -425,18 +426,20 @@ pub fn resolveNiche(obj: std.json.ObjectMap) []const u8 {
     if (obj.get("agent")) |v| if (v == .string) return v.string;
     return "";
 }
-/// #276 P0-1: effective isolation mode for a subagent/workflow-task input.
-/// Precedence: an explicit `isolation` field on the call wins; else a named
-/// agent type's persona default (`isolation:` frontmatter); else `.shared_cwd`
-/// (today's behavior, unchanged for every call that never mentions isolation).
-/// An unrecognized `isolation` string is treated the same as omitted — falls
-/// through to the persona/default rather than failing the spawn outright.
-pub fn resolveIsolation(obj: std.json.ObjectMap) Isolation {
+/// Effective isolation for a subagent / workflow-task input.
+/// Precedence: explicit `isolation` wins; else a named persona's default;
+/// else `default` (fan-out uses `.worktree`; pipeline stages pass `.shared_cwd`).
+/// An unrecognized `isolation` string is treated as omitted.
+pub fn resolveIsolationWithDefault(obj: std.json.ObjectMap, default: Isolation) Isolation {
     if (obj.get("isolation")) |v| if (v == .string) if (Isolation.parse(v.string)) |iso| return iso;
     if (obj.get("agent")) |v| if (v == .string) for (g_agent_types) |t| {
-        if (std.mem.eql(u8, t.name, v.string)) return t.isolation orelse .shared_cwd;
+        if (std.mem.eql(u8, t.name, v.string)) return t.isolation orelse default;
     };
-    return .shared_cwd;
+    return default;
+}
+
+pub fn resolveIsolation(obj: std.json.ObjectMap) Isolation {
+    return resolveIsolationWithDefault(obj, .worktree);
 }
 
 /// #276 design point 4: worktree creation failure fails the spawn unless the
@@ -458,7 +461,7 @@ test "builtin researcher is the small search seat (luna on Codex)" {
     try std.testing.expect(false);
 }
 
-test "resolveIsolation: explicit field wins, then the named persona's default, then shared_cwd" {
+test "resolveIsolation: fan-out defaults to worktree; pipeline default stays shared_cwd" {
     _ = agent_file;
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -477,16 +480,14 @@ test "resolveIsolation: explicit field wins, then the named persona's default, t
         .{ .name = "reviewer", .desc = "", .prompt = "x" }, // no opinion
     };
 
-    // A plain task with no isolation/agent field defaults to shared_cwd.
-    try std.testing.expectEqual(Isolation.shared_cwd, resolveIsolation(obj(a, "{\"description\":\"x\",\"prompt\":\"y\"}")));
-    // A named persona's own default applies when the call doesn't override it.
+    try std.testing.expectEqual(Isolation.worktree, resolveIsolation(obj(a, "{\"description\":\"x\",\"prompt\":\"y\"}")));
+    try std.testing.expectEqual(Isolation.shared_cwd, resolveIsolationWithDefault(obj(a, "{\"description\":\"x\",\"prompt\":\"y\"}"), .shared_cwd));
     try std.testing.expectEqual(Isolation.worktree, resolveIsolation(obj(a, "{\"agent\":\"implementer\"}")));
     try std.testing.expectEqual(Isolation.shared_cwd, resolveIsolation(obj(a, "{\"agent\":\"researcher\"}")));
-    try std.testing.expectEqual(Isolation.shared_cwd, resolveIsolation(obj(a, "{\"agent\":\"reviewer\"}"))); // no opinion → default
-    // An explicit isolation field overrides the persona's default either way.
+    try std.testing.expectEqual(Isolation.worktree, resolveIsolation(obj(a, "{\"agent\":\"reviewer\"}")));
+    try std.testing.expectEqual(Isolation.shared_cwd, resolveIsolationWithDefault(obj(a, "{\"agent\":\"reviewer\"}"), .shared_cwd));
     try std.testing.expectEqual(Isolation.shared_cwd, resolveIsolation(obj(a, "{\"agent\":\"implementer\",\"isolation\":\"shared_cwd\"}")));
     try std.testing.expectEqual(Isolation.worktree, resolveIsolation(obj(a, "{\"agent\":\"researcher\",\"isolation\":\"worktree\"}")));
-    // An unrecognized isolation string falls through rather than erroring.
     try std.testing.expectEqual(Isolation.worktree, resolveIsolation(obj(a, "{\"agent\":\"implementer\",\"isolation\":\"bogus\"}")));
 }
 
