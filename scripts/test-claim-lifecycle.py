@@ -117,10 +117,13 @@ def run(binary, recovery, evidence):
                 # Each successive request contains the prior actual tool result.
                 # `git add` is shared-tree presence, not an artifact claim.
                 for request in observed[4:]:
-                    content = request['messages'][-1].get('content', '')
+                    last = request['messages'][-1]
+                    if last.get('role') != 'tool':
+                        continue
+                    content = last.get('content', '')
                     if content.strip() in ('', '(no output)'):
                         continue
-                    assert 'artifact claim held' in content, request['messages'][-1]
+                    assert 'artifact claim held' in content, last
                 assert '[]' in observed[3]['messages'][-1]['content']
                 assert (work/unrelated).read_text() == 'fixture'
                 assert len(observed) == len(commands)+5, len(observed)
