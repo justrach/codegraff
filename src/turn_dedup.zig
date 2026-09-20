@@ -47,6 +47,10 @@ pub fn enqueue(root: *Agent, arena: Allocator, out: ?*Io.Writer, text: []const u
     if (messages.trailingUserIs(root.messages.items, text)) {
         hits +|= 1;
         if (hits >= max_replays) {
+            // A skipped turn runs no model call and records no trajectory
+            // nodes; without this note it is invisible next to a prompt the
+            // worker never received at all.
+            if (root.tracer) |tr| tr.note("turn_dedup", "stuck replay");
             if (out) |w| {
                 w.print("{s}{s}{s}\n", .{ style.yellow, stuck_text, style.reset }) catch {};
                 w.flush() catch {};
@@ -55,6 +59,7 @@ pub fn enqueue(root: *Agent, arena: Allocator, out: ?*Io.Writer, text: []const u
             }
             return .stuck;
         }
+        if (root.tracer) |tr| tr.note("turn_dedup", "skipped duplicate");
         return .skipped;
     }
     hits = 0;
@@ -131,4 +136,47 @@ test "#714: the same words after an assistant reply are a new ask" {
     try agent.messages.append(try messages.textMessage(a, "assistant", "LEARN_AUTO_OK"));
     try std.testing.expect(!try enqueueOrSkip(&agent, a, null, "do a little work"));
     try std.testing.expectEqual(@as(usize, 3), agent.messages.items.len);
+}
+
+test "a skipped duplicate leaves a trace note instead of vanishing" {
+    resetForTest();
+    defer resetForTest();
+    @import("side_steer.zig").resetForTest();
+    defer @import("side_steer.zig").resetForTest();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var aw: Io.Writer.Allocating = .init(a);
+    defer aw.deinit();
+    var tracer: @import("trace.zig").Tracer = .{
+        .io = std.testing.io,
+        .gpa = std.testing.allocator,
+        .out = &aw.writer,
+        .start = Io.Timestamp.now(std.testing.io, .awake),
+    };
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = a,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = .{
+            .id = "xai",
+            .kind = .openai,
+            .auth = .bearer,
+            .url = "",
+            .api_key = "k",
+            .model = "grok-4.6",
+            .context = 100_000,
+        },
+        .messages = .init(a),
+        .sub = false,
+        .label = "test",
+        .out = null,
+        .tracer = &tracer,
+    };
+    try std.testing.expect(!try enqueueOrSkip(&agent, a, null, "Read SPEC.md"));
+    try std.testing.expect(try enqueueOrSkip(&agent, a, null, "Read SPEC.md"));
+    const logged = aw.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, logged, "\"turn_dedup\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, logged, "skipped duplicate") != null);
 }
