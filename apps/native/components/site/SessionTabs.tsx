@@ -28,19 +28,10 @@ export default function SessionTabs({ chats, activeId, busyIds, unreadIds, agent
             title={c.title ?? "Drag to reorder or to a chat edge to split"}
             key={c.id}
             style={{ width: vertical ? "100%" : (c.paneIds?.length ?? 1) > 1 ? 230 : 144 }}
-            className={`group/tab select-none touch-none flex h-8 shrink-0 items-center gap-0.5 rounded-[7px] pl-2.5 pr-1 text-[12.5px] font-medium transition-colors duration-100 ${
+            className={`group/tab select-none touch-none flex h-8 shrink-0 items-center rounded-[7px] pr-1 text-[12.5px] font-medium transition-colors duration-100 ${
               c.id === activeId && !agentsOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
             }`}
           >
-            {c.tree && (c.paneIds?.length ?? 1) > 1 && <SplitLayoutIcon tree={c.tree} />}
-            {busyIds.has(c.id) && (
-              <span
-                className="mr-1 size-3 shrink-0 animate-spin rounded-full border-[1.5px] border-current border-r-transparent text-ink-2 motion-reduce:animate-none"
-                role="img"
-                aria-label="Working"
-              />
-            )}
-            {!busyIds.has(c.id) && (c.paneIds ?? [c.id]).some(id => unreadIds?.has(id)) && <span role="img" aria-label="Unread response" className="mr-1 size-1.5 shrink-0 rounded-full bg-blue-500" />}
             <button
               type="button"
               aria-pressed={c.id === activeId && !agentsOpen}
@@ -48,9 +39,18 @@ export default function SessionTabs({ chats, activeId, busyIds, unreadIds, agent
                 focusChat(c.id);
               }}
               title={c.title ?? (chats.length > 1 ? `Chat ${c.id}` : "Untitled")}
-              className="min-w-0 flex-1 text-left"
+              className="flex h-full min-w-0 flex-1 items-center gap-0.5 pl-2.5 text-left"
             >
-              <span className="block truncate">{c.title ?? (chats.length > 1 ? `Chat ${c.id}` : "Untitled")}</span>
+              {c.tree && (c.paneIds?.length ?? 1) > 1 && <SplitLayoutIcon tree={c.tree} />}
+              {busyIds.has(c.id) && (
+                <span
+                  className="mr-1 size-3 shrink-0 animate-spin rounded-full border-[1.5px] border-current border-r-transparent text-ink-2 motion-reduce:animate-none"
+                  role="img"
+                  aria-label="Working"
+                />
+              )}
+              {!busyIds.has(c.id) && (c.paneIds ?? [c.id]).some(id => unreadIds?.has(id)) && <span role="img" aria-label="Unread response" className="mr-1 size-1.5 shrink-0 rounded-full bg-blue-500" />}
+              <span className="block min-w-0 flex-1 truncate">{c.title ?? (chats.length > 1 ? `Chat ${c.id}` : "Untitled")}</span>
             </button>
             <button
               type="button"
