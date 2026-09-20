@@ -87,6 +87,7 @@ async function runProjectVisuals({ win, origin, output, pressEnter }) {
   assert.equal(await js(`window.folderListingInvisible`), false, 'The apps row stays visibly rendered after either stale response');
   await js(`window.releaseFolderFetch.shift()()`);
   await wait(`!Array.from(document.querySelectorAll('[role="dialog"][aria-label="Open a folder"] button')).find(b=>b.textContent==='Open folder').disabled`);
+  await js(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
   assert.ok(await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"]')?.textContent.includes('apps')`), 'The folder listing remains visible after the newest request settles');
   await js(`window.monitorFolderListing=false`);
   assert.equal(await js(`window.folderListingInvisible`), false, 'The apps row stays visibly rendered during repeated submission');
