@@ -145,7 +145,7 @@ def handoff(graff):
         env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")}
         env.update(HOME=temp, PATH=str(work / "bin") + os.pathsep + os.environ["PATH"], LMSTUDIO_API_KEY="local",
                    GRAFF_NO_TELEMETRY="1", GRAFF_FLEET="off", GRAFF_NO_SMOLIFY="1", GRAFF_NO_CODEDB_GUARD="1",
-                   GRAFF_ISOLATION_FALLBACK="1", NO_COLOR="1")  # shared-checkout claim handoff; isolation stays default elsewhere
+                   GRAFF_AUTO_ISOLATE="0", NO_COLOR="1")  # shared-checkout claim handoff; isolation stays default elsewhere
         prepare_review(work, ['notes.md'])
         acquired, primed, transferred = (threading.Event() for _ in range(3))
         def peer(action, kind="publication", key="fixture", **extra):

@@ -94,7 +94,7 @@ def run_case(binary, name, case, evidence):
         env = {k: v for k, v in os.environ.items() if not k.endswith('_API_KEY')}
         env.update(HOME=temp, LMSTUDIO_API_KEY='local', GRAFF_NO_TELEMETRY='1',
                    GRAFF_FLEET='off', GRAFF_NO_SMOLIFY='1', GRAFF_NO_CODEDB_GUARD='1',
-                   GRAFF_ISOLATION_FALLBACK='1')
+                   GRAFF_AUTO_ISOLATE='0')
         state = dict(checks='SUCCESS', head_branch='feature', pr_unavailable=case.get('pr_unavailable', False))
         state['wait_release'] = case.get('wait_release', False)
         if 'head_repo' in case: state['head_repo'] = case['head_repo']

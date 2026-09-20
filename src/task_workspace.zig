@@ -179,6 +179,12 @@ pub fn envIsolationFallback(val: ?[]const u8) bool {
     return std.mem.eql(u8, v, "1") or std.mem.eql(u8, v, "true") or std.mem.eql(u8, v, "yes");
 }
 
+/// Shared-checkout fixtures / explicit same-tree work. Default remains isolate.
+pub fn envSkipAutoIsolate(val: ?[]const u8) bool {
+    const v = val orelse return false;
+    return std.mem.eql(u8, v, "0") or std.mem.eql(u8, v, "off") or std.mem.eql(u8, v, "false");
+}
+
 fn absPath(io: Io, arena: Allocator, path: []const u8) ![]const u8 {
     var buf: [4096]u8 = undefined;
     const n = Io.Dir.cwd().realPathFile(io, path, &buf) catch return arena.dupe(u8, path);
@@ -463,6 +469,10 @@ test "preferRemoteBase: explicit wins, then origin, then empty (local HEAD)" {
     try std.testing.expect(envIsolationFallback("true"));
     try std.testing.expect(!envIsolationFallback(null));
     try std.testing.expect(!envIsolationFallback("0"));
+    try std.testing.expect(envSkipAutoIsolate("0"));
+    try std.testing.expect(envSkipAutoIsolate("off"));
+    try std.testing.expect(!envSkipAutoIsolate(null));
+    try std.testing.expect(!envSkipAutoIsolate("1"));
 }
 
 test "create: worktree starts from the remote base, not a stale local HEAD" {

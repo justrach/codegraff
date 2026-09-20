@@ -140,7 +140,7 @@ pub fn setupWorktreeAndBanner(
         }
     }
     var isolated: ?task_workspace.Workspace = null;
-    if (flags.worktree_flag == null) {
+    if (flags.worktree_flag == null and !task_workspace.envSkipAutoIsolate(environ_map.get("GRAFF_AUTO_ISOLATE"))) {
         switch (task_workspace.maybeAutoIsolate(
             gpa,
             io,
