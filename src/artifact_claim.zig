@@ -319,10 +319,6 @@ fn loadTransaction(io: Io, tx: @import("repo_transaction.zig").Transaction, ledg
     if (cwd.len == 0) return;
     const legacy = claim_path.legacyFile(tx.arena, cwd) orelse return;
     if (!claim_path.samePath(legacy, tx.path)) mergeLegacyFile(io, tx.arena, ledger, legacy);
-    for (claim_path.siblingLegacyFiles(tx.arena, io, cwd, tx.path)) |other| {
-        if (claim_path.samePath(other, legacy)) continue;
-        mergeLegacyFile(io, tx.arena, ledger, other);
-    }
 }
 
 fn reload(io: Io) !void {
