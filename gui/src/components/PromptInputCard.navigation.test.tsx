@@ -1,8 +1,19 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, mock, test } from "bun:test";
 import { useState } from "react";
 
 import type { Attachment } from "./attachments/attachmentTypes";
 import type { ChatBinding } from "@/services/desktop/types/contracts";
+
+mock.module("@/hooks/useCommandAutocomplete", () => ({
+  useCommandAutocomplete: () => ({
+    activeIndex: 0,
+    handleKeyDown: () => false,
+    isOpen: false,
+    items: [],
+    pick: () => {},
+    setActiveIndex: () => {},
+  }),
+}));
 
 let createRoot: typeof import("react-dom/client").createRoot;
 let flushSync: typeof import("react-dom").flushSync;
