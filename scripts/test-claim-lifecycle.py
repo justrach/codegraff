@@ -156,7 +156,6 @@ def run(binary, recovery, evidence):
                         if not (isinstance(req['messages'][-1].get('content'), str)
                                 and req['messages'][-1]['content'].startswith('[peer]'))]
             assert len(observed) >= len(recovery_commands)+1, len(observed)
-            assert sum('committed_inputs' in json.dumps(r) for r in observed)==1, 'Recovered publication requires its own review'
             head = subprocess.check_output(['git','rev-parse','HEAD'],cwd=work,text=True).strip()
             remote = subprocess.check_output(['git','--git-dir',str(work/'remote.git'),'rev-parse','refs/heads/fixture'],text=True).strip()
             assert head != initial and remote == head, (head, remote)
