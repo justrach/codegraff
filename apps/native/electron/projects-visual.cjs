@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const testDesktop = require('./test-desktop.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
-async function runProjectVisuals({ win, origin, output }) {
+async function runProjectVisuals({ win, origin, output, pressEnter }) {
   const wc = win.webContents, js = async code => {
     try { return await wc.executeJavaScript(code); }
     catch (error) { console.error('Project expression:', code); throw error; }
@@ -107,6 +107,28 @@ async function runProjectVisuals({ win, origin, output }) {
   await wait(`document.querySelector('${folderInput}').value===${JSON.stringify(selectedPath + '/')}`);
   assert.equal(await js(`document.activeElement===document.querySelector('${folderInput}')`), true, 'keyboard folder navigation keeps focus in the path field');
   await js(`window.fetch=window.folderPickerFetch;delete window.folderPickerFetch;delete window.folderPickerRequests;delete window.folderPickerPartial`);
+  await js(`window.folderFetchCount=0;window.releaseFolderFetch=[];const folderBaseFetch=window.fetch;window.fetch=(input,options)=>{if(String(input).includes('/api/workspaces')){window.folderFetchCount+=1;const reply=()=>new Response(JSON.stringify({path:'/demo',parent:'/',git:false,home:'/demo',default:'/demo',entries:[{name:'apps',path:'/demo/apps',git:false}]}),{headers:{'content-type':'application/json'}});if(window.folderFetchCount===1)return Promise.resolve(reply());return new Promise(resolve=>window.releaseFolderFetch.push(()=>resolve(reply())));}return folderBaseFetch(input,options);};true`);
+  await js(`document.querySelector('button[aria-label="Open folder…"]').click()`);
+  await wait(`document.querySelector('[role="dialog"][aria-label="Open a folder"]')?.textContent.includes('apps')`);
+  await js(`(()=>{window.folderListingInvisible=false;window.monitorFolderListing=true;const visible=()=>{const dialog=document.querySelector('[role="dialog"][aria-label="Open a folder"]'),button=dialog&&Array.from(dialog.querySelectorAll('button[title]')).find(b=>b.title==='/demo/apps');if(!dialog||!button||!button.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}))return false;const r=button.getBoundingClientRect();if(r.width<=0||r.height<=0)return false;for(let node=button.parentElement;node;node=node.parentElement){const style=getComputedStyle(node),clip=node.getBoundingClientRect();if(/^(auto|scroll|hidden|clip)$/.test(style.overflowX)&&(r.left<clip.left||r.right>clip.right))return false;if(/^(auto|scroll|hidden|clip)$/.test(style.overflowY)&&(r.top<clip.top||r.bottom>clip.bottom))return false;if(node===dialog)break;}return true;};const check=()=>{if(!window.monitorFolderListing)return;if(!visible())window.folderListingInvisible=true;requestAnimationFrame(check);};requestAnimationFrame(check);return true;})()`);
+  await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"] input[aria-label="Folder path"]').focus()`);
+  await pressEnter(); await pressEnter(); await pressEnter();
+  await wait(`window.folderFetchCount===4`);
+  assert.ok(await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"]')?.textContent.includes('apps')`), 'Repeated Enter keeps the current folder listing visible while navigation is pending');
+  await js(`window.releaseFolderFetch.shift()();new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+  assert.ok(await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"]')?.textContent.includes('apps')`), 'The first stale navigation response does not clear the listing');
+  assert.equal(await js(`Array.from(document.querySelectorAll('[role="dialog"][aria-label="Open a folder"] button')).find(b=>b.textContent==='Open folder').disabled`), true, 'The newest folder request remains pending after the first stale response');
+  assert.equal(await js(`window.folderListingInvisible`), false, 'The apps row stays visibly rendered after the first stale response');
+  await js(`window.releaseFolderFetch.shift()();new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+  assert.ok(await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"]')?.textContent.includes('apps')`), 'The second stale navigation response does not clear the listing');
+  assert.equal(await js(`Array.from(document.querySelectorAll('[role="dialog"][aria-label="Open a folder"] button')).find(b=>b.textContent==='Open folder').disabled`), true, 'The newest folder request remains pending after both stale responses');
+  assert.equal(await js(`window.folderListingInvisible`), false, 'The apps row stays visibly rendered after either stale response');
+  await js(`window.releaseFolderFetch.shift()()`);
+  await wait(`!Array.from(document.querySelectorAll('[role="dialog"][aria-label="Open a folder"] button')).find(b=>b.textContent==='Open folder').disabled`);
+  await js(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+  assert.ok(await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"]')?.textContent.includes('apps')`), 'The folder listing remains visible after the newest request settles');
+  await js(`window.monitorFolderListing=false`);
+  assert.equal(await js(`window.folderListingInvisible`), false, 'The apps row stays visibly rendered during repeated submission');
   // Unmount the picker before navigating: an in-flight listing + loadURL
   // left the renderer unable to run the next suite's scripts.
   await js(`document.querySelector('${folderDialog} button[aria-label="Close"]').click()`);

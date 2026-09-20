@@ -19,6 +19,7 @@ async function runNavigationVisuals({win:fixtureWindow,origin,output}) {
   wc.on("console-message",event=>{if(event.level>=2)console.error("Navigation renderer:",event.message);});
   const wait=async c=>{for(let i=0;i<150;i++){if(await js(c))return;await sleep(50);}throw Error(`Navigation timeout: ${c}`);};
   const key=async(key,extra={})=>{await js(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown',${JSON.stringify({key,bubbles:true,cancelable:true,...extra})}))`);await sleep(100);};
+  const pressEnter=async()=>{await testDesktop.pressEnter(wc);await sleep(50);};
   const input=async text=>{await js(`(()=>{const e=document.querySelector('textarea[aria-label="Prompt"]');e.focus();Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,${JSON.stringify(text)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`);await sleep(100);};
   const tabs=()=>js(`document.querySelectorAll('[aria-label="Close tab"]').length`);
   try {
@@ -41,7 +42,8 @@ async function runNavigationVisuals({win:fixtureWindow,origin,output}) {
     };
     if(process.env.GRAFF_VISUAL_SUITE==='interactions'){await interactions();return;}
     await require('./yxlyx-regressions-visual.cjs').runYxlyxRegressions({win,origin});
-    await require('./projects-visual.cjs').runProjectVisuals({win,origin,output});
+    await require('./projects-visual.cjs').runProjectVisuals({win,origin,output,pressEnter});
+    if(process.env.GRAFF_VISUAL_SUITE==='folder-picker')return;
     await require('./project-recovery-visual.cjs').runProjectRecovery({win,origin,output});
     await require('./review-recovery-visual.cjs').runReviewRecovery({win,origin,output});
     await interactions();
