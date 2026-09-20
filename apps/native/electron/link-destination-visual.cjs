@@ -113,16 +113,18 @@ async function runLinkDestinationVisuals({ origin, output }) {
   };
   const routeRenderedUserLink = async () => {
     const url = `${destination}/rendered-user-bubble`, before = routed.length, opened = system.length, appURL = wc.getURL();
+    const fixtureURL = `${origin}/visual-tests/links?target=${encodeURIComponent(url)}`;
     const selector = `[data-user-bubble] a[href="${url}"][target="_blank"]`;
-    await js(`(()=>{const e=document.querySelector('textarea[aria-label="Prompt"]');e.focus();Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,${JSON.stringify(`Open ${url}`)});e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));})()`);
-    await wait(`!!document.querySelector(${JSON.stringify(selector)})`, 'real UserBubble rendered its browser link');
+    await wc.loadURL(fixtureURL);
+    await wait(`document.querySelector('[data-link-message-fixture]')?.dataset.ready==='true' && !!document.querySelector(${JSON.stringify(selector)})`, 'real UserBubble rendered its browser link');
     await click(selector);
     await wait(() => routed.length === before + 1, 'rendered user link intercepted exactly once');
     assert.deepEqual(routed[before], { choice: 'system', url });
     await wait(() => system.length === opened + 1, 'rendered user link reached the fake system opener');
     assert.equal(system.at(-1), url);
-    assert.equal(wc.getURL(), appURL, 'rendered user link preserves the main app URL');
-    await wait(`!document.querySelector('article[aria-busy="true"]')`, 'rendered user link prompt completed');
+    assert.equal(wc.getURL(), fixtureURL, 'rendered user link preserves its fixture page');
+    await wc.loadURL(appURL);
+    await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`, 'main app restored after rendered link fixture');
   };
   const route = async (choice, target, suffix) => {
     const url = `${destination}/${suffix}`, before = routed.length, opened = system.length, appURL = wc.getURL();
