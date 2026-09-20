@@ -113,12 +113,13 @@ def run(binary, recovery, evidence):
                 prefix = [write, write, tool('bash',command='gh pr list --json number')]
                 model.caller_steps = prefix+[tool('bash',command=cmd) for cmd in commands+commands[:1]]
                 caller.prompt(label)
-                observed = model.requests[first:]
+                def is_peer(req):
+                    content = req['messages'][-1].get('content', '')
+                    return isinstance(content, str) and content.startswith('[peer]')
+                observed = [req for req in model.requests[first:] if not is_peer(req)]
                 # Each successive request contains the prior actual tool result.
                 for request in observed[4:]:
                     content = request['messages'][-1].get('content', '')
-                    if isinstance(content, str) and content.startswith('[peer]'):
-                        continue
                     assert 'artifact claim held' in content, request['messages'][-1]
                 assert '[]' in observed[3]['messages'][-1]['content']
                 assert (work/unrelated).read_text() == 'fixture'
