@@ -369,10 +369,6 @@ export function FolderPicker({ startPath, onPick, onClose }: { startPath?: strin
                 <div
                   key={entry.path}
                   data-folder-index={index}
-                  onPointerMove={() => {
-                    keyboard.current = false;
-                    setActive(index);
-                  }}
                   className={`group flex h-8 items-center gap-2 rounded-[7px] px-2 transition-colors duration-100 ${index === active ? "bg-hover" : "hover:bg-hover"}`}
                 >
                   <button
@@ -380,7 +376,6 @@ export function FolderPicker({ startPath, onPick, onClose }: { startPath?: strin
                     type="button"
                     role="option"
                     aria-selected={index === active}
-                    onFocus={() => setActive(index)}
                     onClick={() => void go(entry.path)}
                     title={entry.path}
                     className="flex min-w-0 flex-1 items-center gap-2 text-left"

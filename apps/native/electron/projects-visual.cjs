@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const testDesktop = require('./test-desktop.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
 async function runProjectVisuals({ win, origin, output }) {
@@ -6,7 +7,13 @@ async function runProjectVisuals({ win, origin, output }) {
     try { return await wc.executeJavaScript(code); }
     catch (error) { console.error('Project expression:', code); throw error; }
   };
+  const pause = () => new Promise(resolve => setTimeout(resolve, 60));
   const wait = async code => { for (let i = 0; i < 100; i++) { if (await js(code)) return; await new Promise(r => setTimeout(r, 50)); } throw Error(`Project check timed out: ${code}`); };
+  const key = async keyCode => {
+    await testDesktop.testInput(wc, { type: 'keyDown', keyCode });
+    await testDesktop.testInput(wc, { type: 'keyUp', keyCode });
+    await pause();
+  };
   await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   const settingsDialog = '[role="dialog"][aria-label^="Workspace settings"]';
   const openSettings = async () => {
@@ -69,22 +76,37 @@ async function runProjectVisuals({ win, origin, output }) {
   await js(`document.querySelector('button[aria-label="Files"]').click()`);
   await wait(`!!document.querySelector('[aria-label="Workspace files"]')`);
   assert.equal(await js(`!!document.querySelector('[aria-label="Workspace changes"]')`), false);
-  await js(`(()=>{window.folderPickerFetch=window.fetch;window.fetch=(input,options)=>{const url=new URL(String(input),location.origin);if(url.pathname!='/api/workspaces'||options?.method)return window.folderPickerFetch(input,options);const requested=(url.searchParams.get('path')||'/demo/folder-42').replace(/\\/+$/,'');const entries=requested.endsWith('/meld-v3')||requested.endsWith('/melody')?[]:[{name:'meld-v3',path:requested+'/meld-v3',git:true,mtime:2},{name:'melody',path:requested+'/melody',git:false,mtime:1}];return Promise.resolve(new Response(JSON.stringify({path:requested+'/',parent:'/demo',git:false,home:'/demo',default:'/demo/folder-42',entries}),{headers:{'content-type':'application/json'}}));};})()`);
+  await js(`(()=>{window.folderPickerFetch=window.fetch;window.folderPickerRequests=[];window.fetch=(input,options)=>{const url=new URL(String(input),location.origin);if(url.pathname!='/api/workspaces'||options?.method)return window.folderPickerFetch(input,options);const requested=(url.searchParams.get('path')||'/demo/folder-42').replace(/\\/+$/,'');window.folderPickerRequests.push(requested);if(requested.endsWith('/mel'))return Promise.resolve(new Response(JSON.stringify({error:'not a directory'}),{status:404,headers:{'content-type':'application/json'}}));const entries=requested.includes('/melody-')?[]:Array.from({length:30},(_,i)=>{const name='melody-'+String(i).padStart(2,'0');return {name,path:requested+'/'+name,git:i===0,mtime:30-i};});return Promise.resolve(new Response(JSON.stringify({path:requested+'/',parent:'/demo',git:false,home:'/demo',default:'/demo/folder-42',entries}),{headers:{'content-type':'application/json'}}));};})()`);
   await js(`document.querySelector('button[aria-label="Open folder…"]').click()`);
   const folderDialog = '[role="dialog"][aria-label="Open a folder"]';
-  await wait(`document.querySelectorAll('${folderDialog} [role="option"]').length===2`);
-  await js(`(()=>{const e=document.querySelector('${folderDialog} input[aria-label="Folder path"]'),base=e.value.replace(/\\/+$/,'');e.focus();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,base+'/mel');e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
-  await wait(`document.querySelectorAll('${folderDialog} [role="option"]').length===2`);
-  await js(`document.querySelector('${folderDialog} input[aria-label="Folder path"]').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}))`);
-  const firstFolder = await js(`document.querySelector('${folderDialog} input[aria-label="Folder path"]').getAttribute('aria-activedescendant')`);
-  await js(`document.querySelector('${folderDialog} input[aria-label="Folder path"]').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}))`);
-  const secondFolder = await js(`document.querySelector('${folderDialog} input[aria-label="Folder path"]').getAttribute('aria-activedescendant')`);
-  assert.ok(firstFolder && secondFolder && firstFolder !== secondFolder, 'ArrowDown moves the active folder result');
-  const selectedPath = await js(`document.getElementById(${JSON.stringify(secondFolder)}).title`);
-  await js(`document.querySelector('${folderDialog} input[aria-label="Folder path"]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))`);
-  await wait(`document.querySelector('${folderDialog} input[aria-label="Folder path"]').value===${JSON.stringify(selectedPath + '/')}`);
-  assert.equal(await js(`document.activeElement===document.querySelector('${folderDialog} input[aria-label="Folder path"]')`), true, 'keyboard folder navigation keeps focus in the path field');
-  await js(`window.fetch=window.folderPickerFetch;delete window.folderPickerFetch`);
+  const folderInput = `${folderDialog} input[aria-label="Folder path"]`;
+  await wait(`document.querySelectorAll('${folderDialog} [role="option"]').length===30`);
+  await js(`(()=>{const e=document.querySelector('${folderInput}'),base=e.value.replace(/\\/+$/,'');window.folderPickerPartial=base+'/mel';e.focus();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,window.folderPickerPartial);e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await wait(`document.querySelectorAll('${folderDialog} [role="option"]').length===30`);
+  assert.equal(await js(`document.querySelector('${folderInput}').getAttribute('aria-activedescendant')`), null, 'typing does not choose a folder result');
+  await key('Enter');
+  await wait(`window.folderPickerRequests.includes(window.folderPickerPartial)`);
+  assert.equal(await js(`document.querySelector('${folderInput}').value===window.folderPickerPartial&&document.querySelector('${folderInput}').getAttribute('aria-activedescendant')===null`), true, 'Enter without a selection submits only the typed path');
+  await js(`document.querySelector('${folderInput}').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowUp',bubbles:true,cancelable:true}))`);
+  const lastFolder = await js(`document.querySelector('${folderInput}').getAttribute('aria-activedescendant')`);
+  assert.equal(lastFolder, await js(`Array.from(document.querySelectorAll('${folderDialog} [role="option"]')).at(-1).id`), 'ArrowUp starts at the last folder');
+  await js(`document.querySelector('${folderInput}').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}))`);
+  assert.equal(await js(`document.querySelector('${folderInput}').getAttribute('aria-activedescendant')`), lastFolder, 'ArrowDown clamps at the last folder');
+  await js(`(()=>{const e=document.querySelector('${folderInput}'),base=window.folderPickerPartial.slice(0,-3);Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,base+'melo');e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  assert.equal(await js(`document.querySelector('${folderInput}').getAttribute('aria-activedescendant')`), null, 'editing the query resets the active result');
+  await js(`(()=>{const e=document.querySelector('${folderInput}');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,window.folderPickerPartial);e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  for (let i = 0; i < 24; i++) {
+    await js(`document.querySelector('${folderInput}').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}))`);
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  const selectedFolder = await js(`document.querySelector('${folderInput}').getAttribute('aria-activedescendant')`);
+  assert.ok(selectedFolder, 'ArrowDown activates a folder result');
+  assert.ok(await js(`document.querySelector('${folderDialog} [role="listbox"]').parentElement.parentElement.scrollTop>0`), 'keyboard navigation keeps the active folder visible');
+  const selectedPath = await js(`document.getElementById(${JSON.stringify(selectedFolder)}).title`);
+  await key('Enter');
+  await wait(`document.querySelector('${folderInput}').value===${JSON.stringify(selectedPath + '/')}`);
+  assert.equal(await js(`document.activeElement===document.querySelector('${folderInput}')`), true, 'keyboard folder navigation keeps focus in the path field');
+  await js(`window.fetch=window.folderPickerFetch;delete window.folderPickerFetch;delete window.folderPickerRequests;delete window.folderPickerPartial`);
   // Unmount the picker before navigating: an in-flight listing + loadURL
   // left the renderer unable to run the next suite's scripts.
   await js(`document.querySelector('${folderDialog} button[aria-label="Close"]').click()`);
