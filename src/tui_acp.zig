@@ -161,6 +161,7 @@ pub const Session = struct {
                 .ctx = @ptrCast(self),
                 .seed = seed,
                 .bind_session = bindSession,
+                .cwd = main_mod.g_cwd_display,
             },
         };
     }

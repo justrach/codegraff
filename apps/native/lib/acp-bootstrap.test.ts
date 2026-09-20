@@ -12,7 +12,7 @@ async function worker(mode: string) {
     require('node:readline').createInterface({input:process.stdin}).on('line', line => {
       const req=JSON.parse(line);
       if(req.method==='initialize' && mode!=='initialize') send({id:req.id,result:{}});
-      if(req.method==='session/new' && mode!=='session/new') send({id:req.id,result:mode==='invalid'?{}:{sessionId:'ready'}});
+      if(req.method==='session/new' && mode!=='session/new') send({id:req.id,result:mode==='invalid'?{}:mode==='isolated'?{sessionId:'ready',cwd:'/isolated/tree'}:{sessionId:'ready'}});
     });
     console.log('ready');
   `], { stdio: ["pipe", "pipe", "inherit"] });
@@ -38,12 +38,21 @@ for (const mode of ["initialize", "session/new", "invalid"]) {
     try {
       expect(await initializeWorker(fresh.transport, process.cwd(), async () => {
         throw new Error('A successful handshake must not retire its child');
-      }, 1000)).toBe('ready');
+      }, 1000)).toEqual({ sessionId: 'ready' });
       expect(fresh.transport.usable).toBe(true);
     } finally { await retireWorker(fresh.child, 50); }
   });
 }
 
+
+test("session/new checkout binds the worker to its isolated worktree", async () => {
+  const isolated = await worker("isolated");
+  try {
+    expect(await initializeWorker(isolated.transport, "/shared/repo", async () => {
+      throw new Error("A successful handshake must not retire its child");
+    }, 1000)).toEqual({ sessionId: "ready", cwd: "/isolated/tree" });
+  } finally { await retireWorker(isolated.child, 50); }
+});
 
 test("overlapping startup and first prompt share a completed worker", async () => {
   const pending = new Map<string, Promise<string>>();
@@ -54,9 +63,9 @@ test("overlapping startup and first prompt share a completed worker", async () =
     if (session) return session;
     starts++;
     live = await worker("okay");
-    session = await initializeWorker(live.transport, process.cwd(), async () => {
+    session = (await initializeWorker(live.transport, process.cwd(), async () => {
       await retireWorker(live!.child, 50);
-    }, 1000);
+    }, 1000)).sessionId;
     return session;
   };
   try {

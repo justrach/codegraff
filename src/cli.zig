@@ -333,6 +333,7 @@ pub const usage_text =
     \\  graff plugins [load <name>]       list Claude/Cursor/Grok/Codex plugin trees (in place)
     \\  graff learn [help]                local mutate/evaluate/promote/rollback engine
     \\  graff worktree list              list -w tabs and experiment-pool trees (tagged)
+    \\  graff worktree create <name> [base]  mint a task workspace (branch + worktree) so concurrent agents do not share a checkout
     \\  graff worktree merge <name>      squash-land worktree-<name> onto the current branch + clean up
     \\  graff worktree remove <name>     discard worktree-<name> (drops its scratch work) + delete the branch
     \\  graff worktree prune             drop git registrations for worktrees whose dirs were deleted
@@ -368,7 +369,7 @@ pub const usage_text =
     \\  --eval <cmd>                    scoring command for an eval-driven loop (the `eval` tool runs it)
     \\  --until <0-100>                 eval-loop target score; stop when reached (default 90)
     \\  --niche <name>                  fleet niche this eval optimizes (reviewer/researcher/implementer/skeptic or a custom agent); tags submitted scores so the DGM can promote a champion for that role
-    \\  -w, --worktree <name>           isolate this session in a git worktree (.graff/worktrees/<name>) so parallel agents don't collide on files
+    \\  -w, --worktree <name>           isolate this session in a git worktree (.graff/worktrees/<name>) so parallel agents don't collide on files. A second session in a claimed checkout auto-isolates.
     \\  --experiment N                  pre-mint N child worktrees (1-16) under .graff/worktrees/exp-<id>/; next spawns claim a seat
     \\  --add-dir <path>                extra file-tool root (repeatable, max 16). Not a cwd switch; no skills/sessions from it
     \\  --context-limit name=N          cap a named prefix: skill_catalog_bytes|mcp_schema_bytes|agents_md_bytes

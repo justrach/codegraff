@@ -265,12 +265,14 @@ async function bootstrapNow(chat: string, opts: BootstrapOpts): Promise<Slot> {
     yolo: opts.yolo ?? recovering?.yolo ?? parked?.yolo ?? defaultYolo(),
     mcp: opts.mcp ?? recovering?.mcp ?? parked?.mcp ?? true,
   });
-  slot.sessionId = await initializeWorker(slot.transport, slot.cwd, async () => {
+  const created = await initializeWorker(slot.transport, slot.cwd, async () => {
     slot.restart = true;
     slot.restartReady = retireWorker(slot.child);
     try { await slot.restartReady; }
     finally { if (slots.get(chat) === slot) slots.delete(chat); }
   }, HANDSHAKE_MS);
+  slot.sessionId = created.sessionId;
+  if (created.cwd) slot.cwd = created.cwd;
   if (!slot.resume) registerSessionWriter(sessionFile(slot.cwd, slot.sessionId), slot.child, () => {
     if (slots.get(chat) === slot) void killSlot(chat).catch(() => undefined);
   });

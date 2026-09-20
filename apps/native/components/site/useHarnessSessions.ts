@@ -97,7 +97,7 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
     const cwd = chat?.cwd ?? activePathRef.current ?? undefined;
     const ws = findWorkspace(workspacesRef.current, cwd);
     const spawnModel = key ?? chat?.model ?? ws?.model ?? model ?? undefined;
-    const { sessionId: id, commands } = await ensureSession(handleOf(chatId), {
+    const { sessionId: id, commands, cwd: checkout } = await ensureSession(handleOf(chatId), {
       model: spawnModel,
       reset,
       resume: sessionNamesRef.current.get(chatId),
@@ -105,6 +105,11 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
       yolo: ws?.yolo,
       mcp: ws?.mcp,
     });
+    if (checkout && checkout !== cwd) {
+      const next = chatsRef.current.map((c) => (c.id === chatId ? { ...c, cwd: checkout } : c));
+      chatsRef.current = next;
+      setChats(next);
+    }
     sessionsRef.current.set(chatId, id);
     bindMcpAppChat(handleOf(chatId));
     setSessionIds((current) => ({ ...current, [chatId]: id }));

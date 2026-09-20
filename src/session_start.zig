@@ -145,10 +145,27 @@ pub fn setupWorktreeAndBanner(
             } });
         }
     }
+    const isolated = if (flags.worktree_flag == null) @import("task_workspace.zig").maybeAutoIsolate(
+        gpa,
+        io,
+        arena,
+        environ_map.get("HOME") orelse "",
+        false,
+        flags.effectiveLean(),
+    ) else null;
+    if (isolated) |wt| {
+        if (!main_mod.json_mode) sink.emit(io, .{ .worktree_entered = .{
+            .path = wt.path,
+            .branch = wt.branch,
+            .autocommit = main_mod.g_worktree_autocommit,
+        } });
+    }
     var cwd_buf: [4096]u8 = undefined;
     main_mod.g_cwd_display = if (flags.worktree_flag) |wt|
         // After chdir into the worktree, realPath(AT_FDCWD) is unreliable; derive from the launch dir.
         std.fmt.allocPrint(arena, "{s}/.graff/worktrees/{s}", .{ environ_map.get("PWD") orelse ".", wt }) catch try arena.dupe(u8, environ_map.get("PWD") orelse ".")
+    else if (isolated) |wt|
+        try arena.dupe(u8, wt.path)
     else if (Io.Dir.cwd().realPath(io, &cwd_buf)) |n|
         try arena.dupe(u8, cwd_buf[0..n])
     else |_|

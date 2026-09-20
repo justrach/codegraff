@@ -95,11 +95,12 @@ export type SessionOpts = {
 export async function ensureSession(
   chat: ChatHandle,
   opts: SessionOpts = {},
-): Promise<{ sessionId: string; commands: AcpCommand[] }> {
+): Promise<{ sessionId: string; commands: AcpCommand[]; cwd?: string }> {
   const res = await rpc(chat, "bootstrap", opts);
-  const body = (await res.json()) as { sessionId?: string; error?: string; commands?: AcpCommand[] };
+  const body = (await res.json()) as { sessionId?: string; error?: string; commands?: AcpCommand[]; cwd?: string };
   if (!body.sessionId) throw new Error(body.error ?? "ACP session/new failed");
-  return { sessionId: body.sessionId, commands: body.commands ?? [] };
+  const checkout = typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : undefined;
+  return { sessionId: body.sessionId, commands: body.commands ?? [], cwd: checkout };
 }
 
 export async function* prompt(
