@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, expect, mock, test } from "bun:test";
-import { useState } from "react";
 
 import type { Attachment } from "./attachments/attachmentTypes";
 import type { ChatBinding } from "@/services/desktop/types/contracts";
@@ -18,6 +17,7 @@ mock.module("@/hooks/useCommandAutocomplete", () => ({
 let createRoot: typeof import("react-dom/client").createRoot;
 let flushSync: typeof import("react-dom").flushSync;
 let PromptInputCard: typeof import("./PromptInputCard").PromptInputCard;
+let usePromptDraft: typeof import("@/hooks/useSession").usePromptDraft;
 let getPromptDraftKey: typeof import("@/app/sessionSnapshot").getPromptDraftKey;
 let resetSessionStore: typeof import("@/app/sessionStore").resetSessionStore;
 let sessionStore: typeof import("@/app/sessionStore").sessionStore;
@@ -41,6 +41,7 @@ beforeAll(async () => {
   ({ createRoot } = await import("react-dom/client"));
   ({ flushSync } = await import("react-dom"));
   ({ PromptInputCard } = await import("./PromptInputCard"));
+  ({ usePromptDraft } = await import("@/hooks/useSession"));
   ({ getPromptDraftKey } = await import("@/app/sessionSnapshot"));
   ({ resetSessionStore, sessionStore } = await import("@/app/sessionStore"));
 });
@@ -61,17 +62,14 @@ function getBinding(
 function ComposerHarness({
   bindings,
   histories,
-  initialDrafts,
   scope,
 }: {
   bindings?: Record<string, ChatBinding>;
   histories: Record<string, string[]>;
-  initialDrafts: Record<string, string>;
   scope: string;
 }) {
-  const [drafts, setDrafts] = useState(initialDrafts);
   const binding = getBinding(scope, bindings);
-  const promptDraft = drafts[scope] ?? "";
+  const { promptDraft, setPromptDraft } = usePromptDraft(binding);
 
   return (
     <PromptInputCard
@@ -86,9 +84,7 @@ function ComposerHarness({
       promptHistory={histories[scope] ?? []}
       promptSettings={null}
       setPlanningMode={() => {}}
-      setPromptDraft={(value) => {
-        setDrafts((current) => ({ ...current, [scope]: value }));
-      }}
+      setPromptDraft={setPromptDraft}
       setUltraMode={() => {}}
       stopPrompt={async () => {}}
       submitPrompt={async () => {}}
@@ -106,6 +102,14 @@ function mountComposer(input: {
   scope: string;
 }) {
   resetSessionStore();
+  for (const [conversationId, draft] of Object.entries(input.initialDrafts)) {
+    const binding = getBinding(conversationId, input.bindings);
+    const key = getPromptDraftKey(
+      binding.workspacePath,
+      binding.conversationId,
+    )!;
+    sessionStore.getState().setPromptDraftValue(key, draft);
+  }
   for (const [conversationId, attachments] of Object.entries(
     input.initialAttachments ?? {},
   )) {
@@ -127,7 +131,6 @@ function mountComposer(input: {
         <ComposerHarness
           bindings={input.bindings}
           histories={input.histories}
-          initialDrafts={input.initialDrafts}
           scope={scope}
         />,
       );
@@ -137,9 +140,12 @@ function mountComposer(input: {
 
   return {
     container,
-    arrow(key: "ArrowUp" | "ArrowDown") {
+    arrow(
+      key: "ArrowUp" | "ArrowDown",
+      caret = container.querySelector("textarea")!.value.length,
+    ) {
       const textarea = container.querySelector("textarea")!;
-      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      textarea.setSelectionRange(caret, caret);
       flushSync(() => {
         textarea.dispatchEvent(
           new KeyboardEvent("keydown", {
@@ -195,6 +201,24 @@ test("recalled multiline prompts keep navigating instead of trapping ArrowUp", (
     expect(composer.textareaValue()).toBe("newest prompt\nwith a second line");
 
     composer.arrow("ArrowUp");
+    expect(composer.textareaValue()).toBe("older prompt");
+  } finally {
+    composer.close();
+  }
+});
+
+test("live multiline drafts keep ArrowUp in the textarea below the first line", () => {
+  const composer = mountComposer({
+    histories: { chat: ["older prompt"] },
+    initialDrafts: { chat: "first line\nsecond line" },
+    scope: "chat",
+  });
+
+  try {
+    composer.arrow("ArrowUp");
+    expect(composer.textareaValue()).toBe("first line\nsecond line");
+
+    composer.arrow("ArrowUp", 0);
     expect(composer.textareaValue()).toBe("older prompt");
   } finally {
     composer.close();
@@ -335,10 +359,25 @@ test("each recalled prompt replaces attachments and exiting restores only the li
     scope: "chat",
   });
 
+  const key = getPromptDraftKey(workspacePath, "chat")!;
+  const replacementNotifications: string[][] = [];
+  let unsubscribe: (() => void) | null = sessionStore.subscribe(
+    (current, prior) => {
+      if (current.attachmentsByKey[key] !== prior.attachmentsByKey[key]) {
+        replacementNotifications.push(
+          (current.attachmentsByKey[key] ?? []).map((item) => item.path),
+        );
+      }
+    },
+  );
+
   try {
     composer.arrow("ArrowUp");
+    unsubscribe();
+    unsubscribe = null;
     expect(composer.textareaValue()).toBe("newest");
     expect(attachmentTitles(composer.container)).toEqual([newest.path]);
+    expect(replacementNotifications).toEqual([[newest.path]]);
 
     composer.arrow("ArrowUp");
     expect(composer.textareaValue()).toBe("older");
@@ -353,6 +392,7 @@ test("each recalled prompt replaces attachments and exiting restores only the li
     expect(composer.textareaValue()).toBe("live draft");
     expect(attachmentTitles(composer.container)).toEqual([live.path]);
   } finally {
+    unsubscribe?.();
     composer.close();
   }
 });
