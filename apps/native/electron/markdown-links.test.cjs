@@ -68,7 +68,7 @@ test('real assistant and user messages route their emitted anchors through Elect
     following: false,
   }));
   const user = renderToStaticMarkup(React.createElement(UserBubble, {
-    text: 'Try www.example.com, not file:///tmp/example.com.',
+    text: 'Try www.example.com, not file:///tmp/example.com or image.png.',
   }));
   const destinations = [...hrefs(assistant), ...hrefs(user)];
   assert.deepEqual(destinations, [REPORTED_URL, 'https://www.example.com/']);
@@ -76,6 +76,7 @@ test('real assistant and user messages route their emitted anchors through Elect
   assert.match(user, /target="_blank"/);
   assert.doesNotMatch(assistant, /href="javascript:/);
   assert.doesNotMatch(user, /href="file:/);
+  assert.doesNotMatch(user, /href="https:\/\/image\.png/);
 
   const contents = new EventEmitter();
   const opened = [];
