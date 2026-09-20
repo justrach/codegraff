@@ -43,4 +43,8 @@ async function testInput(wc, event) {
     clickCount: event.clickCount ?? 0, modifiers,
     ...(type === 'mouseWheel' ? { deltaX: -(event.deltaX ?? 0), deltaY: -(event.deltaY ?? 0) } : {}) });
 }
-module.exports = { ...policy, attachTestDebugger, focusTestPage, testInput };
+async function pressEnter(wc) {
+  await testInput(wc, { type: 'keyDown', keyCode: 'Return' });
+  await testInput(wc, { type: 'keyUp', keyCode: 'Return' });
+}
+module.exports = { ...policy, attachTestDebugger, focusTestPage, testInput, pressEnter };
