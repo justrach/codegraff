@@ -1,6 +1,7 @@
 """Local-only GitHub CLI fixture for production dispatch regressions."""
 import json
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -76,6 +77,26 @@ def prepare(work, env, state):
     env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
     if fixture.get("review_files"):
         prepare_review(work, fixture["review_files"])
+
+
+def claim_ledger(work):
+    """Canonical claim file (Git common dir), then the legacy workspace copy."""
+    work = Path(work)
+    for args in (
+        ["git", "-C", str(work), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        ["git", "-C", str(work), "rev-parse", "--git-common-dir"],
+    ):
+        try:
+            raw = subprocess.check_output(args, text=True, timeout=10).strip()
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+        if not raw:
+            continue
+        common = Path(raw) if Path(raw).is_absolute() else (work / raw)
+        path = common / "artifact-claims.json"
+        if path.exists():
+            return path
+    return work / ".graff" / "artifact-claims.json"
 
 
 def prepare_review(work, files):
