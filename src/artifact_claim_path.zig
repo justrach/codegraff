@@ -1,5 +1,6 @@
 //! One claim ledger per Git repository, not per worktree cwd (#1092).
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const process_runner = @import("process_runner.zig");
@@ -59,6 +60,7 @@ pub fn samePath(a: []const u8, b: []const u8) bool {
 }
 
 test "canonicalFile is identical across linked worktrees of one repo" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     const a = std.testing.allocator;
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
@@ -99,6 +101,7 @@ test "canonicalFile is identical across linked worktrees of one repo" {
 }
 
 test "claim follows a worktree switch and does not shadow another repo" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     const claims = @import("artifact_claim.zig");
     const a = std.testing.allocator;
     const io = std.testing.io;
