@@ -99,6 +99,20 @@ export function rankFolderEntries<T extends RankableFolder>(entries: readonly T[
   return scored.map((row) => row.item);
 }
 
+/** Move an explicit keyboard selection through the visible folder results.
+ * A null selection preserves Enter's typed-path behavior until an arrow key
+ * chooses the first (Down) or last (Up) result. */
+export function stepFolderSelection(
+  length: number,
+  active: number | null,
+  direction: "up" | "down",
+): number | null {
+  if (length <= 0) return null;
+  if (active == null) return direction === "down" ? 0 : length - 1;
+  const delta = direction === "down" ? 1 : -1;
+  return Math.max(0, Math.min(length - 1, active + delta));
+}
+
 export function parseFolderView(raw: unknown): FolderView {
   if (!raw || typeof raw !== "object") return { ...DEFAULT_FOLDER_VIEW };
   const rec = raw as Record<string, unknown>;

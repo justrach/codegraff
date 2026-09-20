@@ -16,6 +16,7 @@ import {
   sameDir,
   saveFolderView,
   splitFolderQuery,
+  stepFolderSelection,
   uniqueFolderName,
 } from "./folder-picker.ts";
 
@@ -95,6 +96,18 @@ describe("rankFolderEntries", () => {
     ]);
     assert.deepEqual(rankFolderEntries(entries, "lib").map((e) => e.name), ["lib"]);
     assert.deepEqual(rankFolderEntries(entries, "zzz"), []);
+  });
+});
+
+describe("stepFolderSelection", () => {
+  it("starts from the nearest end, clamps, and leaves an empty list unselected", () => {
+    assert.equal(stepFolderSelection(3, null, "down"), 0);
+    assert.equal(stepFolderSelection(3, null, "up"), 2);
+    assert.equal(stepFolderSelection(3, 0, "up"), 0);
+    assert.equal(stepFolderSelection(3, 0, "down"), 1);
+    assert.equal(stepFolderSelection(3, 2, "down"), 2);
+    assert.equal(stepFolderSelection(0, null, "down"), null);
+    assert.equal(stepFolderSelection(0, 0, "up"), null);
   });
 });
 
