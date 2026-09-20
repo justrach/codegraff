@@ -179,6 +179,13 @@ pub fn gitCommonDir(gpa: Allocator, io: Io, arena: Allocator) []const u8 {
     return revParse(gpa, io, arena, "--git-common-dir");
 }
 
+/// Same as `gitCommonDir`, but `git -C dir` so a worktree switch still hits
+/// the shared `.git` of the repository.
+pub fn gitCommonDirAt(gpa: Allocator, io: Io, arena: Allocator, dir: []const u8) []const u8 {
+    if (dir.len == 0) return gitCommonDir(gpa, io, arena);
+    return revParseAt(gpa, io, arena, dir, "--git-common-dir");
+}
+
 fn revParseAt(gpa: Allocator, io: Io, arena: Allocator, dir: []const u8, flag: []const u8) []const u8 {
     const r = runCapped(gpa, io, &.{ "git", "-C", dir, "rev-parse", "--path-format=absolute", flag }, 8192, 8192, 15_000) catch return "";
     defer {

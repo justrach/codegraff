@@ -15,6 +15,7 @@ const presence = @import("presence.zig");
 const proc_identity = @import("proc_identity.zig");
 
 const claim_ledger = @import("artifact_claim_ledger.zig");
+const claim_path = @import("artifact_claim_path.zig");
 pub const Kind = claim_ledger.Kind;
 pub const Owner = claim_ledger.Owner;
 pub const Claim = claim_ledger.Claim;
@@ -67,10 +68,11 @@ var g_ledger: Ledger = .{};
 var g_test_owner: Owner = .{};
 var g_test_live: bool = true;
 var g_persist_path: ?[]const u8 = null;
+var g_test_resolve_cwd: bool = false;
 var g_test_peers: ?[]const @import("worktree_lease.zig").Owner = null;
 var g_store: ?std.heap.ArenaAllocator = null;
 
-pub const persist_rel = ".graff/artifact-claims.json";
+pub const persist_rel = claim_path.persist_rel;
 
 fn storeAlloc() Allocator {
     if (g_store == null) g_store = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -82,6 +84,7 @@ pub fn resetForTest() void {
     g_test_owner = .{};
     g_test_live = true;
     g_persist_path = null;
+    g_test_resolve_cwd = false;
     g_test_peers = null;
     if (g_store) |*st| {
         st.deinit();
@@ -91,6 +94,10 @@ pub fn resetForTest() void {
 
 pub fn setPersistPath(path: []const u8) void {
     g_persist_path = path;
+}
+
+pub fn setTestResolveCwd(on: bool) void {
+    g_test_resolve_cwd = on;
 }
 
 pub fn setTestOwner(owner: Owner) void {
@@ -143,7 +150,7 @@ pub fn gateCommandIn(arena: Allocator, io: Io, cmd: []const u8, key: []const u8,
     if (!isClaimedMutation(cmd)) return null;
     var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer scratch.deinit();
-    var local = readSnapshot(io, scratch.allocator()) catch return "artifact claim ledger unreadable or busy: action NOT performed";
+    var local = readSnapshot(io, scratch.allocator(), cwd) catch return "artifact claim ledger unreadable or busy: action NOT performed";
     const ledger = &local;
     if (ledger.len == 0) return null;
     const kind = mutationKind(cmd);
@@ -160,11 +167,11 @@ pub fn gateCommandIn(arena: Allocator, io: Io, cmd: []const u8, key: []const u8,
     const resolved = if (builtin.is_test or kind != .pull_request) null else @import("artifact_claim_target.zig").resolve(arena, io, cmd, kind, cwd);
     // The remote read does not hold the ledger lock. A handoff/release during
     // that read must be observed before deciding whether this action may run.
-    const tx = begin(io, scratch.allocator()) catch return "artifact claim ledger unavailable or busy: action NOT performed";
+    const tx = begin(io, scratch.allocator(), cwd) catch return "artifact claim ledger unavailable or busy: action NOT performed";
     defer if (tx) |transaction| transaction.end();
     local = .{};
     if (tx) |transaction| {
-        loadTransaction(transaction, ledger) catch return "artifact claim ledger unreadable: action NOT performed";
+        loadTransaction(io, transaction, ledger, cwd) catch return "artifact claim ledger unreadable: action NOT performed";
     } else local = g_ledger;
     var target: @import("artifact_claim_target.zig").Target = resolved orelse @import("artifact_claim_target.zig").explicit(cmd, kind) orelse .{ .kind = if (kind == .issue) Kind.issue else Kind.branch, .key = key };
     if (target.kind == .branch and target.key.len == 0) target.key = key;
@@ -203,12 +210,12 @@ pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []cons
     defer scratch.deinit();
     const repo = if (builtin.is_test and requested_repo == null) null else @import("artifact_repository.zig").resolve(arena, io, cwd, requested_repo);
     if (requested_repo != null and repo == null) return .{ .text = "claim repository could not be resolved; no claim changed", .is_error = true };
-    const tx = begin(io, scratch.allocator()) catch return .{ .text = "claim ledger unavailable or busy", .is_error = true };
+    const tx = begin(io, scratch.allocator(), cwd) catch return .{ .text = "claim ledger unavailable or busy", .is_error = true };
     defer if (tx) |transaction| transaction.end();
     var local: Ledger = .{};
     const ledger = if (tx != null) &local else &g_ledger;
     const storage = if (tx != null) scratch.allocator() else storeAlloc();
-    if (tx) |transaction| loadTransaction(transaction, ledger) catch return .{ .text = "claim ledger unreadable; no claim changed", .is_error = true };
+    if (tx) |transaction| loadTransaction(io, transaction, ledger, cwd) catch return .{ .text = "claim ledger unreadable; no claim changed", .is_error = true };
     const kind = kindFrom(kind_s) orelse return .{
         .text = "kind must be branch, issue, commit, pull_request, or publication",
         .is_error = true,
@@ -273,32 +280,53 @@ pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []cons
     return .{ .text = "action must be claim, release, handoff, or status", .is_error = true };
 }
 
-fn persistPath() ?[]const u8 {
+fn persistPath(io: Io, arena: Allocator, cwd: []const u8) ?[]const u8 {
     if (g_persist_path) |p| return p;
+    if (builtin.is_test and !g_test_resolve_cwd) return null;
+    if (claim_path.canonicalFile(arena, io, cwd)) |p| return p;
     if (builtin.is_test) return null;
     return persist_rel;
 }
 
-fn begin(io: Io, arena: Allocator) !?@import("repo_transaction.zig").Transaction {
-    const path = persistPath() orelse return null;
+fn begin(io: Io, arena: Allocator, cwd: []const u8) !?@import("repo_transaction.zig").Transaction {
+    const path = persistPath(io, arena, cwd) orelse return null;
     return try @import("repo_transaction.zig").Transaction.begin(io, arena, path);
 }
 
-fn readSnapshot(io: Io, arena: Allocator) !Ledger {
-    const tx = try begin(io, arena);
+fn readSnapshot(io: Io, arena: Allocator, cwd: []const u8) !Ledger {
+    const tx = try begin(io, arena, cwd);
     defer if (tx) |transaction| transaction.end();
     var ledger: Ledger = .{};
-    if (tx) |transaction| try loadTransaction(transaction, &ledger) else return g_ledger;
+    if (tx) |transaction| try loadTransaction(io, transaction, &ledger, cwd) else return g_ledger;
     return ledger;
 }
 
-fn loadTransaction(tx: @import("repo_transaction.zig").Transaction, ledger: *Ledger) !void {
-    const text = try tx.read() orelse return;
-    try loadJson(tx.arena, ledger, text);
+fn mergeLegacyFile(io: Io, arena: Allocator, ledger: *Ledger, path: []const u8) void {
+    const text = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024)) catch return;
+    var extra: Ledger = .{};
+    loadJson(arena, &extra, text) catch return;
+    for (extra.slice()) |c| {
+        if (claim_ledger.findIn(ledger.slice(), c.kind, c.key, c.repo) != null) continue;
+        if (ledger.len >= max_claims) return;
+        ledger.items[ledger.len] = c;
+        ledger.len += 1;
+    }
+}
+
+fn loadTransaction(io: Io, tx: @import("repo_transaction.zig").Transaction, ledger: *Ledger, cwd: []const u8) !void {
+    if (try tx.read()) |text| try loadJson(tx.arena, ledger, text);
+    if (builtin.is_test and !g_test_resolve_cwd) return;
+    if (cwd.len == 0 or std.mem.eql(u8, cwd, ".")) return;
+    const legacy = claim_path.legacyFile(tx.arena, cwd) orelse return;
+    if (!claim_path.samePath(legacy, tx.path)) mergeLegacyFile(io, tx.arena, ledger, legacy);
+    for (claim_path.siblingLegacyFiles(tx.arena, io, cwd, tx.path)) |other| {
+        if (claim_path.samePath(other, legacy)) continue;
+        mergeLegacyFile(io, tx.arena, ledger, other);
+    }
 }
 
 fn reload(io: Io) !void {
-    const path = persistPath() orelse return;
+    const path = persistPath(io, storeAlloc(), ".") orelse return;
     // Every transaction reads again under the lock. A previously cached owner
     // must never survive a peer's acknowledged handoff.
     g_ledger.len = 0;
@@ -313,6 +341,10 @@ fn reload(io: Io) !void {
 
 pub const persistJson = @import("artifact_claim_store.zig").persistJson;
 pub const loadJson = @import("artifact_claim_store.zig").loadJson;
+
+test {
+    _ = @import("artifact_claim_path.zig");
+}
 
 test "acquire / handoff / release are atomic and session-scoped" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
