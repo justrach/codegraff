@@ -11,4 +11,4 @@ def path(work: Path) -> Path:
     root = Path(common)
     if not root.is_absolute():
         root = work / root
-    return root / "artifact-claims.json"
+    return root.parent / ".graff" / "artifact-claims.json"

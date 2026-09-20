@@ -65,7 +65,7 @@ class Model(ScriptedModel):
                 assert 'claim released' in json.dumps(body), body
                 (self.work/'release-done').touch()
             if c.get('legacy') and step == 1:
-                command = "python3 - <<'PYCLAIM'\nimport json, subprocess\nfrom pathlib import Path\ncommon=subprocess.check_output(['git','rev-parse','--git-common-dir'], text=True).strip()\np=Path(common)/'artifact-claims.json'\nrows=json.loads(p.read_text())\nfor row in rows: row.pop('repo',None)\np.write_text(json.dumps(rows))\nPYCLAIM"
+                command = "python3 - <<'PYCLAIM'\nimport json, subprocess\nfrom pathlib import Path\ncommon=subprocess.check_output(['git','rev-parse','--git-common-dir'], text=True).strip()\nroot=Path(common)\nif not root.is_absolute(): root=Path.cwd()/root\np=root.parent/'.graff'/'artifact-claims.json'\nrows=json.loads(p.read_text())\nfor row in rows: row.pop('repo',None)\np.write_text(json.dumps(rows))\nPYCLAIM"
                 return tool('bash', command=command)
             if c.get('rebind') and step == 2:
                 return tool('peer_message', action='claim', kind=c.get('owner_kind','publication'), key=c['held'], repo=c['owner'])

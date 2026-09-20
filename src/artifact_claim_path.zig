@@ -8,12 +8,12 @@ const ranOk = process_runner.ranOk;
 
 pub const persist_rel = ".graff/artifact-claims.json";
 
-/// Shared file under the Git common dir. Empty when `cwd` is not a repo.
-/// Walks `.git` on disk so claim ops do not spawn `git` (Linux Threaded Io
-/// panics when two harnesses do that at once).
+/// Shared ledger: `<repo>/.graff/artifact-claims.json` of the main checkout
+/// (parent of the Git common dir). Linked worktrees share that file.
 pub fn canonicalFile(arena: Allocator, io: Io, cwd: []const u8) ?[]const u8 {
     const common = gitCommonDirWalk(arena, io, cwd) orelse return null;
-    return std.fs.path.join(arena, &.{ common, "artifact-claims.json" }) catch null;
+    const root = std.fs.path.dirname(common) orelse return null;
+    return std.fs.path.join(arena, &.{ root, persist_rel }) catch null;
 }
 
 fn gitCommonDirWalk(arena: Allocator, io: Io, cwd: []const u8) ?[]const u8 {
