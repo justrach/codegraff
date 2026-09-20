@@ -22,8 +22,9 @@ test("a radio click waits for Send, submits the latest selection once, and ignor
   await expect(pistachio).toHaveAttribute("aria-pressed", "false");
   await expect(mint).toHaveAttribute("aria-pressed", "true");
   await card.getByRole("button", { name: "Send" }).evaluate((button) => {
-    button.click();
-    button.click();
+    const sendButton = button as HTMLButtonElement;
+    sendButton.click();
+    sendButton.click();
   });
 
   await expect(submissions).toHaveText(JSON.stringify(["Mint"]));
