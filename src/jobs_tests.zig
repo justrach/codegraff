@@ -116,11 +116,11 @@ test "bash_output wait_ms on a persistent job snapshots immediately (ADR 0152)" 
     const io = std.testing.io;
     const id = (try jobs.spawnJobOpts(gpa, io, "sleep 8", .{ .persistent = true })).id;
     defer jobs.jobsReap(gpa, io);
-    const t0 = std.time.milliTimestamp();
+    const t0 = std.Io.Timestamp.now(io, .awake).nanoseconds;
     const snap = try jobs.jobOutput(gpa, io, id, 5_000);
-    const elapsed = std.time.milliTimestamp() - t0;
+    const elapsed_ms = @divTrunc(std.Io.Timestamp.now(io, .awake).nanoseconds - t0, std.time.ns_per_ms);
     defer gpa.free(snap.text);
-    try std.testing.expect(elapsed < 800);
+    try std.testing.expect(elapsed_ms < 800);
     try std.testing.expect(std.mem.indexOf(u8, snap.text, "running") != null);
     try std.testing.expect(std.mem.indexOf(u8, snap.text, "persistent server") != null);
     try std.testing.expect(std.mem.indexOf(u8, snap.text, "do not poll") != null);
