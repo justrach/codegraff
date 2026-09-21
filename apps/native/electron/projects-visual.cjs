@@ -1,12 +1,19 @@
 const assert = require('node:assert/strict');
+const testDesktop = require('./test-desktop.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
-async function runProjectVisuals({ win, origin, output }) {
+async function runProjectVisuals({ win, origin, output, pressEnter }) {
   const wc = win.webContents, js = async code => {
     try { return await wc.executeJavaScript(code); }
     catch (error) { console.error('Project expression:', code); throw error; }
   };
-  const wait = async code => { for (let i = 0; i < 100; i++) { if (await js(code)) return; await new Promise(r => setTimeout(r, 50)); } throw Error(`Project check timed out: ${code}`); };
+  const pause = () => new Promise(resolve => setTimeout(resolve, 60));
+  const wait = async code => { for (let i = 0; i < 200; i++) { if (await js(code)) return; await new Promise(r => setTimeout(r, 50)); } throw Error(`Project check timed out: ${code}`); };
+  const key = async keyCode => {
+    await testDesktop.testInput(wc, { type: 'keyDown', keyCode });
+    await testDesktop.testInput(wc, { type: 'keyUp', keyCode });
+    await pause();
+  };
   await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   const settingsDialog = '[role="dialog"][aria-label^="Workspace settings"]';
   const openSettings = async () => {
@@ -69,11 +76,68 @@ async function runProjectVisuals({ win, origin, output }) {
   await js(`document.querySelector('button[aria-label="Files"]').click()`);
   await wait(`!!document.querySelector('[aria-label="Workspace files"]')`);
   assert.equal(await js(`!!document.querySelector('[aria-label="Workspace changes"]')`), false);
+  await js(`(()=>{window.folderPickerFetch=window.fetch;window.folderPickerRequests=[];window.fetch=(input,options)=>{const url=new URL(String(input),location.origin);if(url.pathname!='/api/workspaces'||options?.method)return window.folderPickerFetch(input,options);const requested=(url.searchParams.get('path')||'/demo/folder-42').replace(/\\/+$/,'');window.folderPickerRequests.push(requested);if(requested.endsWith('/mel'))return Promise.resolve(new Response(JSON.stringify({error:'not a directory'}),{status:404,headers:{'content-type':'application/json'}}));const entries=requested.includes('/melody-')?[]:Array.from({length:30},(_,i)=>{const name='melody-'+String(i).padStart(2,'0');return {name,path:requested+'/'+name,git:i===0,mtime:30-i};});return Promise.resolve(new Response(JSON.stringify({path:requested+'/',parent:'/demo',git:false,home:'/demo',default:'/demo/folder-42',entries}),{headers:{'content-type':'application/json'}}));};})()`);
   await js(`document.querySelector('button[aria-label="Open folder…"]').click()`);
-  await wait(`!!document.querySelector('[role="dialog"][aria-label="Open a folder"]')`);
+  const folderDialog = '[role="dialog"][aria-label="Open a folder"]';
+  const folderInput = `${folderDialog} input[aria-label="Folder path"]`;
+  await wait(`document.querySelectorAll('${folderDialog} [role="option"]').length===30`);
+  await js(`(()=>{const e=document.querySelector('${folderInput}'),base=e.value.replace(/\\/+$/,'');window.folderPickerPartial=base+'/mel';e.focus();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,window.folderPickerPartial);e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await wait(`document.querySelectorAll('${folderDialog} [role="option"]').length===30`);
+  assert.equal(await js(`document.querySelector('${folderInput}').getAttribute('aria-activedescendant')`), null, 'typing does not choose a folder result');
+  await key('Enter');
+  await wait(`window.folderPickerRequests.includes(window.folderPickerPartial)`);
+  assert.equal(await js(`document.querySelector('${folderInput}').value===window.folderPickerPartial&&document.querySelector('${folderInput}').getAttribute('aria-activedescendant')===null`), true, 'Enter without a selection submits only the typed path');
+  await js(`document.querySelector('${folderInput}').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowUp',bubbles:true,cancelable:true}))`);
+  const lastFolder = await js(`document.querySelector('${folderInput}').getAttribute('aria-activedescendant')`);
+  assert.equal(lastFolder, await js(`Array.from(document.querySelectorAll('${folderDialog} [role="option"]')).at(-1).id`), 'ArrowUp starts at the last folder');
+  await js(`document.querySelector('${folderInput}').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}))`);
+  assert.equal(await js(`document.querySelector('${folderInput}').getAttribute('aria-activedescendant')`), lastFolder, 'ArrowDown clamps at the last folder');
+  await js(`(()=>{const e=document.querySelector('${folderInput}'),base=window.folderPickerPartial.slice(0,-3);Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,base+'melo');e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  assert.equal(await js(`document.querySelector('${folderInput}').getAttribute('aria-activedescendant')`), null, 'editing the query resets the active result');
+  await js(`(()=>{const e=document.querySelector('${folderInput}');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,window.folderPickerPartial);e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  for (let i = 0; i < 24; i++) {
+    await js(`document.querySelector('${folderInput}').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}))`);
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  const selectedFolder = await js(`document.querySelector('${folderInput}').getAttribute('aria-activedescendant')`);
+  assert.ok(selectedFolder, 'ArrowDown activates a folder result');
+  assert.ok(await js(`document.querySelector('${folderDialog} [role="listbox"]').parentElement.parentElement.scrollTop>0`), 'keyboard navigation keeps the active folder visible');
+  const selectedPath = await js(`document.getElementById(${JSON.stringify(selectedFolder)}).title`);
+  await key('Enter');
+  await wait(`document.querySelector('${folderInput}').value===${JSON.stringify(selectedPath + '/')}`);
+  assert.equal(await js(`document.activeElement===document.querySelector('${folderInput}')`), true, 'keyboard folder navigation keeps focus in the path field');
+  await js(`window.fetch=window.folderPickerFetch;delete window.folderPickerFetch;delete window.folderPickerRequests;delete window.folderPickerPartial`);
+  if (await js(`!!document.querySelector('${folderDialog}')`)) {
+    await js(`document.querySelector('${folderDialog} button[aria-label="Close"]').click()`);
+    await wait(`!document.querySelector('${folderDialog}')`);
+  }
+  await js(`window.folderFetchCount=0;window.releaseFolderFetch=[];const folderBaseFetch=window.fetch;window.fetch=(input,options)=>{if(String(input).includes('/api/workspaces')){window.folderFetchCount+=1;const reply=()=>new Response(JSON.stringify({path:'/demo',parent:'/',git:false,home:'/demo',default:'/demo',entries:[{name:'apps',path:'/demo/apps',git:false}]}),{headers:{'content-type':'application/json'}});if(window.folderFetchCount===1)return Promise.resolve(reply());return new Promise(resolve=>window.releaseFolderFetch.push(()=>resolve(reply())));}return folderBaseFetch(input,options);};true`);
+  await js(`document.querySelector('button[aria-label="Open folder…"]').click()`);
+  await wait(`!!document.querySelector('${folderDialog}')`);
+  await wait(`document.querySelector('${folderDialog}')?.textContent.includes('apps')`);
+  await js(`(()=>{const dialog=document.querySelector('[role="dialog"][aria-label="Open a folder"]');return Promise.all(dialog.parentElement.getAnimations({subtree:true}).filter(animation=>animation.effect?.getTiming().iterations!==Infinity).map(animation=>animation.finished.catch(()=>{}))).then(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));})()`);
+  await js(`(()=>{window.folderListingInvisible=false;window.monitorFolderListing=true;const visible=()=>{const dialog=document.querySelector('[role="dialog"][aria-label="Open a folder"]'),button=dialog&&Array.from(dialog.querySelectorAll('button[title]')).find(b=>b.title==='/demo/apps');if(!dialog||!button||!button.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}))return false;const r=button.getBoundingClientRect();if(r.width<=0||r.height<=0)return false;for(let node=button.parentElement;node;node=node.parentElement){const style=getComputedStyle(node),clip=node.getBoundingClientRect();if(/^(auto|scroll|hidden|clip)$/.test(style.overflowX)&&(r.right<=clip.left||r.left>=clip.right))return false;if(/^(auto|scroll|hidden|clip)$/.test(style.overflowY)&&(r.bottom<=clip.top||r.top>=clip.bottom))return false;if(node===dialog)break;}return true;};const check=()=>{if(!window.monitorFolderListing)return;if(!visible())window.folderListingInvisible=true;requestAnimationFrame(check);};requestAnimationFrame(check);return true;})()`);
+  await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"] input[aria-label="Folder path"]').focus()`);
+  await pressEnter(); await pressEnter(); await pressEnter();
+  await wait(`window.folderFetchCount===4`);
+  assert.ok(await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"]')?.textContent.includes('apps')`), 'Repeated Enter keeps the current folder listing visible while navigation is pending');
+  await js(`window.releaseFolderFetch.shift()();new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+  assert.ok(await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"]')?.textContent.includes('apps')`), 'The first stale navigation response does not clear the listing');
+  assert.equal(await js(`Array.from(document.querySelectorAll('[role="dialog"][aria-label="Open a folder"] button')).find(b=>b.textContent==='Open folder').disabled`), true, 'The newest folder request remains pending after the first stale response');
+  assert.equal(await js(`window.folderListingInvisible`), false, 'The apps row stays visibly rendered after the first stale response');
+  await js(`window.releaseFolderFetch.shift()();new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+  assert.ok(await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"]')?.textContent.includes('apps')`), 'The second stale navigation response does not clear the listing');
+  assert.equal(await js(`Array.from(document.querySelectorAll('[role="dialog"][aria-label="Open a folder"] button')).find(b=>b.textContent==='Open folder').disabled`), true, 'The newest folder request remains pending after both stale responses');
+  assert.equal(await js(`window.folderListingInvisible`), false, 'The apps row stays visibly rendered after either stale response');
+  await js(`window.releaseFolderFetch.shift()()`);
+  await wait(`!Array.from(document.querySelectorAll('[role="dialog"][aria-label="Open a folder"] button')).find(b=>b.textContent==='Open folder').disabled`);
+  await js(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+  assert.ok(await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"]')?.textContent.includes('apps')`), 'The folder listing remains visible after the newest request settles');
+  await js(`window.monitorFolderListing=false`);
+  assert.equal(await js(`window.folderListingInvisible`), false, 'The apps row stays visibly rendered during repeated submission');
   // Unmount the picker before navigating: an in-flight listing + loadURL
   // left the renderer unable to run the next suite's scripts.
-  await js(`document.querySelector('[role="dialog"][aria-label="Open a folder"] button[aria-label="Close"]').click()`);
+  await js(`document.querySelector('${folderDialog} button[aria-label="Close"]').click()`);
   await wait(`!document.querySelector('[role="dialog"][aria-label="Open a folder"]')`);
   await wc.loadURL(origin);
   await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
