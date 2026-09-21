@@ -16,6 +16,7 @@ var last_woken_unread: usize = 0;
 
 pub fn resetForTest() void {
     last_woken_unread = 0;
+    @import("peer_wake.zig").resetForTest();
 }
 
 fn ingest(io: Io, arena: Allocator) void {
@@ -41,6 +42,11 @@ pub fn takeIdleWake(io: Io, buf: []u8) ?[]const u8 {
     var fba = std.heap.FixedBufferAllocator.init(&scratch);
     const arena = fba.allocator();
     ingest(io, arena);
+    if (@import("daddy.zig").takeIdleText(arena, buf)) |t| {
+        last_woken_unread = peer_inbox.unread();
+        return t;
+    }
+    if (!@import("peer_wake.zig").idlePeerAllowed()) return null;
     const n = peer_inbox.unread();
     if (n == 0 or n <= last_woken_unread) return null;
     last_woken_unread = n;

@@ -35,9 +35,9 @@ const ExecResult = tools_mod.ExecResult;
 const Owner = worktree_lease.Owner;
 
 pub const tool_name = "peer_message";
-pub const tool_desc = "Ping a co-resident session, list who is live, read parked inbound, or transfer an artifact claim. action=list | inbox | send (default) | claim | release | handoff | status. session is a DM (visible title, saved-session base, id/pid/name/goal); omit for this folder's room. Presence is device-local. Not \"all\".";
+pub const tool_desc = "Ping a co-resident session, list who is live, read parked inbound, direct one as supervisor, or transfer an artifact claim. action=list | inbox | send (default) | direct | claim | release | handoff | status. session is a DM (visible title, saved-session base, id/pid/name/goal); omit for this folder's room (send only). Presence is device-local. Not \"all\".";
 pub const tool_schema =
-    \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["send", "list", "inbox", "claim", "release", "handoff", "status"], "description": "send (default): ping a peer. list: who is live. inbox: read+clear parked inbound. claim/release/handoff/status: repository-scoped artifact ownership (kind+key)."}, "session": {"type": "string", "description": "who to ping or hand a claim to: exact visible title, exact saved-session base, unique normalized title/slug, id, pid, unique name fragment, or unique goal fragment (omit = this folder's room). Named targets are DMs. Presence is device-local. Not \"all\"."}, "text": {"type": "string", "description": "one or two sentences of coordination intent (required for send)"}, "kind": {"type": "string", "enum": ["branch", "issue", "commit", "pull_request", "publication"], "description": "artifact kind for claim/release/handoff/status"}, "key": {"type": "string", "description": "artifact key: branch name, issue number, commit SHA, or PR number"}, "repo": {"type": "string", "description": "GitHub repository for claim/release/handoff/status, as owner/name or host/owner/name; defaults to the workspace CLI repository. Use the same repository for release or handoff."}}}
+    \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["send", "list", "inbox", "direct", "claim", "release", "handoff", "status"], "description": "send (default): ping a peer. list: who is live. inbox: read+clear parked inbound. direct: supervisor control of one named session. claim/release/handoff/status: repository-scoped artifact ownership (kind+key)."}, "session": {"type": "string", "description": "who to ping, direct, or hand a claim to: exact visible title, exact saved-session base, unique normalized title/slug, id, pid, unique name fragment, or unique goal fragment (omit = this folder's room for send). Named targets are DMs. Presence is device-local. Not \"all\"."}, "text": {"type": "string", "description": "one or two sentences of coordination intent (required for send and direct)"}, "kind": {"type": "string", "enum": ["branch", "issue", "commit", "pull_request", "publication"], "description": "artifact kind for claim/release/handoff/status"}, "key": {"type": "string", "description": "artifact key: branch name, issue number, commit SHA, or PR number"}, "repo": {"type": "string", "description": "GitHub repository for claim/release/handoff/status, as owner/name or host/owner/name; defaults to the workspace CLI repository. Use the same repository for release or handoff."}}}
 ;
 
 /// Whether the named session sits in MY worktree (routes the post: worktree
@@ -89,10 +89,14 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
             .is_error = true,
         };
         peer_idle.noteInboxConsumed();
+        @import("peer_wake.zig").retireInjects(&self.messages);
         return .{ .text = text, .is_error = false };
     }
+    if (std.mem.eql(u8, action, "direct")) {
+        return @import("daddy.zig").send(self, tools_mod.json_args.str(obj, "session") orelse "", tools_mod.json_args.str(obj, "text") orelse "");
+    }
     if (!std.mem.eql(u8, action, "send")) return .{
-        .text = "peer_message action must be send, list, inbox, claim, release, handoff, or status",
+        .text = "peer_message action must be send, list, inbox, direct, claim, release, handoff, or status",
         .is_error = true,
     };
     const text = tools_mod.json_args.str(obj, "text") orelse "";
@@ -240,8 +244,15 @@ pub fn deliverInbound(root: *Agent) void {
             renderPeerBlock(sink, root.io, true, &.{}, &.{summary});
     }
     if (peer_inbox.parkHeard(local_msgs, device_msgs) == 0) return;
-    // History gets the wake only (ADR 0004). Bodies wait in the ring.
-    root.messages.append(@import("session_wake.zig").message(root.arena, peer_context.capInject(peer_inbox.formatWake(root.arena))) catch return) catch {};
+    // History gets at most one `[peer]` wake per mailbox generation, and
+    // never during tool continuation (#1137). Bodies wait in the ring.
+    const wake_mod = @import("peer_wake.zig");
+    const gen = peer_inbox.generation();
+    if (wake_mod.decide(root.messages.items, gen) == .inject) {
+        const wake = @import("session_wake.zig").message(root.arena, peer_context.capInject(peer_inbox.formatWake(root.arena))) catch return;
+        wake_mod.insertWake(&root.messages, wake) catch {};
+        wake_mod.markInjected(gen);
+    }
 }
 
 /// Emit the drain's visible half as one bracketed unit: a blank notice, the

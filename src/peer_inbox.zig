@@ -70,6 +70,34 @@ pub fn pending() bool {
     return g_len > 0 or g_dropped > 0;
 }
 
+/// Mailbox generation: unread count plus the parked bodies. Same state
+/// produces the same value so a wake can be coalesced (#1137).
+pub fn generation() u64 {
+    var h = std.hash.Wyhash.init(0);
+    h.update(std.mem.asBytes(&g_len));
+    h.update(std.mem.asBytes(&g_dropped));
+    var i: usize = 0;
+    while (i < g_len) : (i += 1) {
+        const p = itemAt(i);
+        h.update(fromSlice(p));
+        h.update(textSlice(p));
+        h.update(std.mem.asBytes(&p.dm));
+        h.update(std.mem.asBytes(&p.device));
+    }
+    return h.final();
+}
+
+/// True when any parked body starts with `want` (daddy directives).
+pub fn anyTextPrefixed(want: []const u8) bool {
+    var i: usize = 0;
+    while (i < g_len) : (i += 1) {
+        const text = textSlice(itemAt(i));
+        const t = std.mem.trimStart(u8, text, " \t\r\n");
+        if (std.mem.startsWith(u8, t, want)) return true;
+    }
+    return false;
+}
+
 /// Add saved loss after restoring the array, preserving any restore evictions.
 pub fn restoreDropped(v: std.json.Value) void {
     const count = switch (v) {
@@ -382,6 +410,19 @@ test "formatList: title and saved-session base lead the line" {
     const text = formatList(a, &peers, "here");
     try testing.expect(std.mem.indexOf(u8, text, "Fixing login recovery [fixing-login-recovery] session--aaa pid 11 this-folder · recover login") != null);
     try testing.expect(std.mem.indexOf(u8, text, "device-local") != null);
+}
+
+test "generation is stable for the same bodies and anyTextPrefixed sees [daddy]" {
+    resetForTest();
+    defer resetForTest();
+    const empty = generation();
+    try testing.expectEqual(empty, generation());
+    _ = parkHeard(&.{msg("s-a", "[daddy] hold the tree", "")}, &.{});
+    const once = generation();
+    try testing.expect(once != empty);
+    try testing.expectEqual(once, generation());
+    try testing.expect(anyTextPrefixed("[daddy]"));
+    try testing.expect(!anyTextPrefixed("[peer]"));
 }
 
 test "inbox JSON round-trip: restoreJson rebuilds the ring" {
