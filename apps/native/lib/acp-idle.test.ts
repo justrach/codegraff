@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { armIdle, cancelIdle, forgetPark, forgetParkMatching, idleMs, keepPark, parkCount, parkedChats, takeParked } from "./acp-idle";
+import { armIdle, cancelIdle, forgetPark, forgetParkMatching, idleMs, keepPark, parkCount, parkNow, parkedChats, takeParked } from "./acp-idle";
 
 afterEach(() => {
   forgetPark("idle-test");
@@ -62,6 +62,14 @@ test("forgetParkMatching drops a page of parked chats", () => {
   forgetParkMatching("page:");
   expect(takeParked("page:1")).toBeUndefined();
   expect(takeParked("page:2")).toBeUndefined();
+});
+
+test("parkNow keeps a dead worker resumable until dispose", () => {
+  parkNow("idle-test", { resume: "session-dead", model: "mock", cwd: "/tmp", yolo: true, mcp: false });
+  expect(parkCount()).toBe(1);
+  expect(takeParked("idle-test")).toEqual({ resume: "session-dead", model: "mock", cwd: "/tmp", yolo: true, mcp: false });
+  parkNow("idle-test", { resume: null, model: null, cwd: "/tmp", yolo: true, mcp: false });
+  expect(takeParked("idle-test")).toBeUndefined();
 });
 
 test("cancelIdle and forgetPark do not kill a live worker", async () => {

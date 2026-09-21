@@ -58,6 +58,13 @@ export function takeParked(chat: string): ParkedWorker | undefined {
   return held;
 }
 
+/** Keep a crashed or otherwise-exited worker resumable. Dispose/reset still
+ *  call forgetPark so a closed tab does not come back. */
+export function parkNow(chat: string, snapshot: ParkedWorker): void {
+  cancelIdle(chat);
+  if (snapshot.resume) parked.set(chat, snapshot);
+}
+
 export function armIdle(chat: string, snapshot: ParkedWorker, kill: () => void, busy?: () => boolean): void {
   cancelIdle(chat);
   const wait = idleMs();
