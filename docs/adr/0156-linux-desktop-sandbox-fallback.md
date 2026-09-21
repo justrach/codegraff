@@ -23,5 +23,6 @@ usual case for an unpacked tree before a deb install.
 ## Consequences
 
 An unpacked Linux build opens without a root step. A deb install can turn
-the sandbox helper setuid. Signing the packages is still a separate release
-step.
+the sandbox helper setuid. The tag workflow uploads that unsigned `.deb`
+(ADR 0157). Signing remains a later replacement of the same asset, not a
+reason to skip the upload.

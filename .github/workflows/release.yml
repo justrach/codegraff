@@ -78,3 +78,25 @@ jobs:
               exit 1
             }
           done
+
+  # Linux desktop package. macOS stays a notarized upload from a Mac
+  # (publish-updates.sh). This runner can build the unsigned .deb the
+  # packager already writes; signing is not a gate (ADR 0157).
+  desktop-linux:
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - uses: ./.github/actions/setup-codegraff-zig
+      - name: Package the Linux desktop
+        run: |
+          set -euo pipefail
+          GRAFF_VERSION="${GITHUB_REF_NAME#v}" bash apps/native/electron/build.sh
+      - name: Upload the Linux desktop package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash apps/native/electron/publish-linux.sh "$GITHUB_REF_NAME" zig-out/electron

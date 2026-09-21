@@ -250,3 +250,17 @@ are attached. Every latest stable release must carry `latest-mac.yml` and its
 versioned ZIP alongside the DMG; a CLI-only latest release cannot serve a desktop
 update. Publish the complete release atomically. Versions older than the first
 updater-enabled release need one manual DMG installation.
+
+The tag workflow also builds this tree on Linux and uploads the unsigned
+package next to the CLI tarballs:
+
+```sh
+GRAFF_VERSION=VERSION bash apps/native/electron/build.sh
+bash apps/native/electron/publish-linux.sh vVERSION zig-out/electron
+```
+
+That attaches `Codegraff-linux-amd64.deb` (or `arm64`) and
+`Codegraff-linux-<arch>-SHA256SUMS`. An AppImage is included when
+`appimagetool` was on `PATH` during the build. There is no notarization step
+on Linux; the upload is the unsigned `.deb` `build.sh` wrote. A development
+bundle (`GRAFF_DEV=1`) is not a release asset.

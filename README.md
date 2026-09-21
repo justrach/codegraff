@@ -39,6 +39,17 @@ The signed and notarized app includes its runtime; no developer tools or local
 server are needed. [Verify the download checksum](https://github.com/justrach/codegraff/releases/latest/download/Codegraff-DMG-SHA256SUMS).
 For a `graff` command in your terminal, install the CLI below.
 
+### Desktop for Linux
+
+x86_64
+
+1. [Download the package](https://github.com/justrach/codegraff/releases/latest/download/Codegraff-linux-amd64.deb).
+2. Install it with `sudo apt install ./Codegraff-linux-amd64.deb`.
+3. Open **Codegraff** from the app menu, or run `codegraff`.
+
+[Verify the download checksum](https://github.com/justrach/codegraff/releases/latest/download/Codegraff-linux-amd64-SHA256SUMS).
+The package is unsigned. It includes its runtime.
+
 ### Terminal
 
 On macOS or Linux:
