@@ -191,7 +191,7 @@ fn worktreeAgeMs(io: Io, now_ms: i64, path: []const u8) i64 {
 
 /// `worktreeKeepReason` for a listed worktree, gathering the two facts it needs
 /// from git. Any failed probe stays `.unverifiable`, i.e. keeps the worktree.
-fn keepReasonFor(gpa: Allocator, io: Io, e: Entry) KeepReason {
+pub fn keepReasonFor(gpa: Allocator, io: Io, e: Entry) KeepReason {
     const st = runCapped(gpa, io, &.{ "git", "-C", e.path, "status", "--porcelain" }, 1 << 16, 8192, 30_000) catch return .unverifiable;
     defer {
         gpa.free(st.stdout);
@@ -199,7 +199,7 @@ fn keepReasonFor(gpa: Allocator, io: Io, e: Entry) KeepReason {
     }
     if (!ranOk(st)) return .unverifiable;
     if (e.head.len == 0) return .unverifiable;
-    const refs = runCapped(gpa, io, &.{ "git", "branch", "--all", "--contains", e.head, "--format=%(refname)" }, 1 << 16, 8192, 30_000) catch return .unverifiable;
+    const refs = runCapped(gpa, io, &.{ "git", "-C", e.path, "branch", "--all", "--contains", e.head, "--format=%(refname)" }, 1 << 16, 8192, 30_000) catch return .unverifiable;
     defer {
         gpa.free(refs.stdout);
         gpa.free(refs.stderr);
@@ -212,15 +212,15 @@ fn keepReasonFor(gpa: Allocator, io: Io, e: Entry) KeepReason {
 /// Remove the directory git registered for `e`. No `--force`: we already proved
 /// the tree is clean, so git's own refusal is a second belt — #112 must not
 /// turn `prune` into a data-loss command.
-fn removeWorktree(gpa: Allocator, io: Io, e: Entry) bool {
-    const rm = runCapped(gpa, io, &.{ "git", "worktree", "remove", e.path }, 8192, 8192, 60_000) catch return false;
+pub fn removeWorktree(gpa: Allocator, io: Io, e: Entry) bool {
+    const rm = runCapped(gpa, io, &.{ "git", "-C", e.path, "worktree", "remove", e.path }, 8192, 8192, 60_000) catch return false;
     defer {
         gpa.free(rm.stdout);
         gpa.free(rm.stderr);
     }
     if (!ranOk(rm)) return false;
     if (isGraffScratchBranch(e.branch)) {
-        if (runCapped(gpa, io, &.{ "git", "branch", "-D", shortBranch(e.branch) }, 8192, 8192, 30_000)) |b| {
+        if (runCapped(gpa, io, &.{ "git", "-C", e.path, "branch", "-D", shortBranch(e.branch) }, 8192, 8192, 30_000)) |b| {
             gpa.free(b.stdout);
             gpa.free(b.stderr);
         } else |_| {}
