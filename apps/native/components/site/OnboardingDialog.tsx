@@ -35,7 +35,7 @@ export default function OnboardingDialog({ account, onClose, onLogin }: Props) {
   }, []);
 
   const sheet = (
-    <div data-onboarding className="fixed inset-0 z-[65] flex items-center justify-center p-4">
+    <div data-onboarding className="fixed inset-0 z-[65] flex items-center justify-center p-4"
       style={{ background: "color-mix(in oklab, var(--ink) 22%, transparent)" }}
       onPointerDown={event => { if (event.target === event.currentTarget) onClose(); }}>
       <div ref={panel} role="dialog" aria-modal="true" aria-label="Welcome to Codegraff"
