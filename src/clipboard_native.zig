@@ -8,7 +8,20 @@ pub const script = @embedFile("clipboard_export.js");
 pub fn grab(io: std.Io, gpa: std.mem.Allocator, board: []const u8) clip.GrabAttempt {
     if (@import("builtin").os.tag != .macos) return .empty;
     const path = clip.tempPath(io, gpa, "png") orelse return .{ .failed = .extract };
-    return grabWithRunner(io, gpa, board, path, runner.runCapped);
+    return grabWithRunner(io, gpa, board, path, runHelper);
+}
+
+/// osascript must outlive a leftover Esc. `runCapped` shares `Agent.esc_cancel`
+/// with bash; a prior cancel classified every screenshot paste as unavailable.
+fn runHelper(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    argv: []const []const u8,
+    stdout_cap: usize,
+    stderr_cap: usize,
+    deadline_ms: u64,
+) !runner.CappedRun {
+    return runner.runCappedWithOptions(gpa, io, argv, stdout_cap, stderr_cap, deadline_ms, .{ .ignore_cancel = true });
 }
 
 /// Same extraction path with an injected process boundary for failure tests.
