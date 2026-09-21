@@ -10,9 +10,11 @@ export interface PlaceholderPaneParams extends ChatBinding {
   // Per-tab key for terminal panes so multiple terminals each get a distinct PTY
   // (persisted in the layout so sessions are stable across restore).
   terminalKey?: string;
+  initialCommand?: string;
 }
 
 export type TerminalPaneParams = PlaceholderPaneParams & {
   kind: "terminal";
   terminalKey?: string;
+  initialCommand?: string;
 };

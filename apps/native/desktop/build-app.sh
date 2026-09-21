@@ -60,6 +60,8 @@ if [[ "${SKIP_UI:-0}" != "1" ]]; then
   if [[ -d "$ui/public" ]]; then
     ditto "$ui/public" "$app/Contents/Resources/ui/public"
   fi
+  cp "$ui/THIRD_PARTY_NOTICES.md" "$app/Contents/Resources/THIRD_PARTY_NOTICES.md"
+  ditto "$ui/third-party" "$app/Contents/Resources/third-party"
   # 31 MB of image-resizing native code that this app never runs: images
   # are `unoptimized` in next.config.ts, so nothing ever loads it. Dropping
   # it also leaves the payload with no native code at all to sign.

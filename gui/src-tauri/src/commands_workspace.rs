@@ -1,6 +1,7 @@
 use super::map_command_error;
 use crate::dto::{
     CheckoutGitBranchInput, CloneRepositoryInput, CommitGitChangesInput, CreateGitBranchInput,
+    TaskWorkspaceActionInput, TaskWorkspaceReviewDto,
     CreateSavedWorkspaceInput, QuickStartProjectInput, QuickStartVisibility, RuntimeStatusDto,
     SaveConversationLayoutInput, SessionSnapshotDto, TerminalCloseInput, TerminalOpenInput,
     TerminalResizeInput, TerminalSessionDto, TerminalWriteInput, UpdateSavedWorkspaceLayoutInput,
@@ -191,6 +192,30 @@ pub(crate) async fn get_conversation_layout(
     state
         .manager
         .get_conversation_layout(conversation_id)
+        .await
+        .map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn task_workspace_action(
+    input: TaskWorkspaceActionInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<SessionSnapshotDto, String> {
+    state
+        .manager
+        .task_workspace_action(input)
+        .await
+        .map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn task_workspace_review(
+    workspace_path: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<TaskWorkspaceReviewDto, String> {
+    state
+        .manager
+        .task_workspace_review(workspace_path)
         .await
         .map_err(map_command_error)
 }

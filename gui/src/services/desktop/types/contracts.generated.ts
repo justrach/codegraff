@@ -49,7 +49,9 @@ recap?: SessionRecap, followup: FollowupRequest | null, };
 
 export type WorkspaceKind = "project" | "managed_chat";
 
-export type WorkspaceSession = { kind: WorkspaceKind, workspacePath: string, workspaceName: string, configured: boolean, configurationError: string | null, selectedConversationId: string | null, conversations: Array<ConversationSessionSummary>, };
+export type TaskWorkspaceSummary = { branch: string, baseBranch: string, baseCommit: string, checkoutBytes: number, keepReason: string | null, setupScript: string | null, runScript: string | null, teardownScript: string | null, setupError: string | null, runError: string | null, mergedBack: boolean, };
+
+export type WorkspaceSession = { kind: WorkspaceKind, workspacePath: string, workspaceName: string, configured: boolean, configurationError: string | null, selectedConversationId: string | null, conversations: Array<ConversationSessionSummary>, task?: TaskWorkspaceSummary, };
 
 export type SavedWorkspaceSummary = { id: string, name: string, updatedAt: bigint, };
 
@@ -123,6 +125,12 @@ export type SendPromptInput = { workspacePath: string, prompt: string, conversat
 export type ChatHandoffTarget = "local" | "worktree";
 
 export type HandoffChatInput = { sourceWorkspacePath: string, conversationId: string | null, target: ChatHandoffTarget, branchName: string | null, };
+
+export type TaskWorkspaceAction = "create" | "archive" | "discard" | "merge_back" | "update_from_base" | "sync_merged";
+
+export type TaskWorkspaceActionInput = { action: TaskWorkspaceAction, sourceWorkspacePath: string | null, workspacePath: string | null, branchName: string | null, baseBranch: string | null, setupScript: string | null, runScript: string | null, teardownScript: string | null, deleteBranch: boolean, };
+
+export type TaskWorkspaceReview = { workspacePath: string, branch: string, baseBranch: string, stat: string, patch: string, error: string | null, };
 
 export type RuntimeStatus = { workspacePath: string | null, workspaceName: string | null, gitRepoName: string | null, gitBranchName: string | null, gitBranches: Array<string>, gitWorkspaceKind: GitWorkspaceKind | null, gitMainWorkspacePath: string | null, availableOpenTargets: Array<string>, configured: boolean, configurationError: string | null, };
 

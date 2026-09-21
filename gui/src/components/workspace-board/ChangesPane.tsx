@@ -23,7 +23,8 @@ import { useConversationHeaderState } from "@/components/conversation-panel/hook
 import { CommitChangesDialog } from "@/components/conversation-panel/CommitChangesDialog";
 import { GithubHubCard, GithubHubMenu } from "@/components/conversation-panel/GithubHubMenu";
 import { githubRepoUrls } from "@/components/conversation-panel/utils/githubIssues";
-import { openExternalUrl } from "@/services/desktop/client";
+import { openExternalUrl, taskWorkspaceReview } from "@/services/desktop/client";
+import { useSessionStore } from "@/hooks/useSession";
 import {
   getFileDiffDisplayName,
   getFileDiffDisplayPath,
@@ -175,6 +176,38 @@ export function ChangesPane({
   );
   const view = useConversationView(binding);
   const workspaceMeta = useWorkspaceMeta(params.workspacePath);
+  const task = useSessionStore(
+    (state) =>
+      state.workspaces.find(
+        (workspace) => workspace.workspacePath === params.workspacePath,
+      )?.task ?? null,
+  );
+  const [worktreeReview, setWorktreeReview] = useState<string | null>(null);
+  useEffect(() => {
+    if (task == null) {
+      setWorktreeReview(null);
+      return;
+    }
+    let cancelled = false;
+    void taskWorkspaceReview(params.workspacePath)
+      .then((review) => {
+        if (cancelled) {
+          return;
+        }
+        const body = [review.stat, review.patch].filter(Boolean).join("\n");
+        setWorktreeReview(review.error ?? (body || "Working tree matches its base."));
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setWorktreeReview(
+            error instanceof Error ? error.message : "Could not read the worktree diff",
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [params.workspacePath, task]);
   const {
     repoName,
     branchName,
@@ -370,6 +403,12 @@ export function ChangesPane({
           </div>
         ) : null}
       </div>
+
+      {worktreeReview != null ? (
+        <pre className="max-h-64 overflow-auto border-b border-border px-4 py-2 font-mono text-[11px] whitespace-pre-wrap text-muted-foreground">
+          {worktreeReview}
+        </pre>
+      ) : null}
 
       {changes.length === 0 ? (
         <div className="flex flex-col gap-4 px-4 py-6">

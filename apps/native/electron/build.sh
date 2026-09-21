@@ -38,6 +38,8 @@ printf '{"name":"codegraff","productName":"%s","version":"%s","main":"main.cjs"}
 ditto "$ui/.next/standalone" "$resources/ui"
 ditto "$ui/.next/static" "$resources/ui/.next/static"
 [[ ! -d "$ui/public" ]] || ditto "$ui/public" "$resources/ui/public"
+cp "$ui/THIRD_PARTY_NOTICES.md" "$resources/THIRD_PARTY_NOTICES.md"
+ditto "$ui/third-party" "$resources/third-party"
 bun "$here/prepare-bundle.cjs" "$resources/ui"
 rm -rf "$resources/ui/node_modules/@img"
 cp "$(command -v bun)" "$resources/bun"

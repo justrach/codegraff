@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import { copyText } from "@/lib/ui-sounds";
 
 /** Mount only on disclosure. Long output scrolls inside the call, never the page. */
 export default function ToolOutput({ detail, mono }: { detail: { text: string; tone?: "add" }[]; mono?: boolean }) {
@@ -8,7 +9,7 @@ export default function ToolOutput({ detail, mono }: { detail: { text: string; t
   const text = detail.map(line => line.text).join("\n");
   return <div className="my-1 ml-2 min-w-0 border-l border-line pl-3.5">
     <button type="button" className="mb-1 text-xs text-ink-3 hover:text-ink" onClick={() => {
-      void navigator.clipboard.writeText(text).then(() => { setCopied(true); setError(false); }).catch(() => setError(true));
+      void copyText(text).then(() => { setCopied(true); setError(false); }).catch(() => setError(true));
     }}>{copied ? "Copied" : "Copy output"}</button>
     {error && <span role="alert" className="ml-2 text-xs text-red">Could not copy. Select the output to copy it.</span>}
     <div data-tool-output tabIndex={0} role="region" aria-label="Tool output" className="max-h-64 overflow-auto overscroll-contain rounded outline-offset-2">

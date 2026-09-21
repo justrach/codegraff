@@ -12,6 +12,8 @@ import { isQaMockMode, mockInvokeCommand } from "./clientQaMock";
 import type {
   AgentsPayload,
   HandoffChatInput,
+  TaskWorkspaceActionInput,
+  TaskWorkspaceReview,
   CheckoutGitBranchInput,
   ChatBinding,
   CloneRepositoryInput,
@@ -172,6 +174,18 @@ export function createManagedChat(): Promise<SessionSnapshot> {
 
 export function handoffChat(input: HandoffChatInput): Promise<SessionSnapshot> {
   return invokeCommand("handoff_chat", { input });
+}
+
+export function taskWorkspaceAction(
+  input: TaskWorkspaceActionInput,
+): Promise<SessionSnapshot> {
+  return invokeCommand("task_workspace_action", { input });
+}
+
+export function taskWorkspaceReview(
+  workspacePath: string,
+): Promise<TaskWorkspaceReview> {
+  return invokeCommand("task_workspace_review", { workspacePath });
 }
 
 export function sendPrompt(input: SendPromptInput): Promise<SessionSnapshot> {

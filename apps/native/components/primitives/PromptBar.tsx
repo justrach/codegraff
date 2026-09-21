@@ -24,6 +24,7 @@ import {
   withAttachmentMarkers,
 } from "@/lib/attachments";
 import { entryAt, historyKeyIntent, stepHistory } from "@/lib/prompt-history";
+import { playUiSound } from "@/lib/ui-sounds";
 
 /* ─────────────────────────────────────────────────────────
  * PROMPT BAR
@@ -304,7 +305,7 @@ export default function PromptBar({
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         setFailedAttaches((current) => [...current, { id, name: file.name || "attachment", error, file }]);
-        setAttachError(error);
+        setAttachError(error); playUiSound("error");
       } finally { setUploads(count => count - 1); }
     }));
     if (inputRef.current?.closest("[data-promptbar]")?.contains(document.activeElement)) inputRef.current.focus();
@@ -339,7 +340,7 @@ export default function PromptBar({
   const send = () => {
     if (!canSend) return;
     if (/^\/(effort|reasoning)$/.test(draft.trim()) && model.effortLevels?.length) { modelRef.current?.dispatchEvent(new Event("graff-effort-open")); setDraft(""); return; }
-    onSend?.(withAttachmentMarkers(draft.trim(), attachments));
+    playUiSound("press"); onSend?.(withAttachmentMarkers(draft.trim(), attachments));
     releaseAttachments(attachments);
     setDraft("");
     setAttachments([]);

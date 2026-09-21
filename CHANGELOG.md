@@ -13,6 +13,9 @@ current is part of cutting a release.
 ## v0.0.302.4
 
 - A background command that exits resumes the same session with its exit status and output, instead of waiting for another message (#1154).
+- Desktop interface sounds are optional and off until turned on. Cuelume notices ship with the app bundle.
+- Desktop task workspaces get their own Git checkouts, with a keep gate so dirty or unique trees are not dropped.
+- OpenAI Platform prompt-cache breakpoints cover GPT-5.6 and later. Platform GPT-6 can use the Responses WebSocket. Resume restores the saved prompt-cache key.
 - Composer send/stop stays a circle: more inset so the 32px corner no longer clips it into a square (#1152).
 - New chat stays in the folder already open, on the desktop and through ACP. Worktrees and other GUI workspace changes have to match the ACP session; that rule is in AGENTS.md and docs/notices.
 - GUI transcript drag-selection paints, and each message has a copy icon at the bottom.

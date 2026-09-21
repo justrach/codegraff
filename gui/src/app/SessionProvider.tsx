@@ -5,6 +5,7 @@ import * as desktopClient from "../services/desktop/client";
 import type {
   ChatBinding,
   HandoffChatInput,
+  TaskWorkspaceActionInput,
   SessionSnapshot,
 } from "../services/desktop/types/contracts";
 import { extractBindingsFromLayoutJson } from "../components/workspace-board/layout";
@@ -314,6 +315,17 @@ export function SessionProvider({ children }: SessionProviderProps) {
         await runWorkspaceRuntimeStatusAction(workspacePath, () =>
           desktopClient.pushGitBranch(workspacePath),
         );
+      },
+      taskWorkspaceAction: async (input: TaskWorkspaceActionInput) => {
+        const snapshot = await desktopClient.taskWorkspaceAction(input);
+        applySessionSnapshot(snapshot);
+        syncBoardSelectionFromSnapshot(snapshot);
+        if (snapshot.activeWorkspacePath != null) {
+          ensureWorkspaceMeta(snapshot.activeWorkspacePath, {
+            forceRuntimeStatus: true,
+          });
+        }
+        return snapshot;
       },
       handoffChat: async (input: HandoffChatInput) => {
         const originPromptDraftKey = getPromptDraftKey(

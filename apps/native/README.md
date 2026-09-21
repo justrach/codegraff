@@ -23,13 +23,16 @@ Copied from Beautiful UI:
 Dropped:
 
 - **posthog** / `instrumentation-client.ts` / email capture
-- **cuelume** interaction sounds
 - **dialkit** tuning overlay
 - **`@central-icons-react`** — commercial; `CENTRAL_LICENSE_KEY` is not set
   here, so SidebarNav uses the free stroke set in `lib/icons.tsx`
 - Ice-cream `SCENARIOS` / `matchScenario` demo data
 
-Kept (free): `tailwindcss` v4, `shadow-plugin`, `iconoir-react`, `liveline`.
+Kept (free): `tailwindcss` v4, `shadow-plugin`, `iconoir-react`, `liveline`,
+and optional [cuelume](https://github.com/Danilaa1/cuelume) interface sounds
+(MIT, off by default). See `THIRD_PARTY_NOTICES.md` and
+`third-party/cuelume/`.
+
 The prompt-bar feedback uses a short native browser animation; it does not
 allocate a shader canvas.
 
