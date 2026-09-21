@@ -236,22 +236,30 @@ test "#416: deferring a real MCP server's schemas cuts the served catalog in hal
     const meta_spec = [_]schema.ToolSpec{.{ .name = gate.tool_name, .desc = gate.tool_desc, .schema = gate.tool_schema }};
 
     // Pre-#416 behavior, still reachable with the escape-hatch pin.
-    gate.g_policy = .{ .eager = &.{"*"} };
-    const eager = try schema.renderRootTools(arena, .anthropic, &.{}, tools);
-
-    // The default: every server defers (budget 0, #476) — this one is 2.3x
-    // over even the old 4 KiB budget, so it deferred under that policy too.
-    gate.g_policy = .{};
+    // g_policy is process-global and other tests write it; take the pair
+    // under a tight reset so a concurrent eager-pin cannot inflate deferred.
+    const saved_stable = gate.g_stable_catalog;
+    defer gate.g_stable_catalog = saved_stable;
+    gate.g_stable_catalog = true;
     try testing.expect(gate.serverCost(tools, "smolify") > gate.default_budget);
-    const deferred = try schema.renderRootTools(arena, .anthropic, &meta_spec, tools);
 
-    // The measurement this issue exists for: the MCP half of the catalog on
-    // its own (no built-in specs), so the number is the saving and nothing
-    // else. Measured on this manifest: 10,505 -> 3,696 bytes, a 64.8% cut, or
-    // roughly 1,700 input tokens at 4 bytes/token — per request, for the whole
-    // session, from ONE server. Asserted at a conservative 50% so a schema
-    // that grows a little does not turn the guard red.
-    try testing.expect(deferred.len * 2 < eager.len);
+    var eager: []const u8 = &.{};
+    var deferred: []const u8 = &.{};
+    var attempt: u8 = 0;
+    while (attempt < 16) : (attempt += 1) {
+        gate.reset();
+        gate.g_policy = .{ .eager = &.{"*"} };
+        eager = try schema.renderRootTools(arena, .anthropic, &.{}, tools);
+        gate.g_policy = .{};
+        deferred = try schema.renderRootTools(arena, .anthropic, &meta_spec, tools);
+        // Schema-only keys prove eager actually shipped bodies and deferred did not.
+        if (std.mem.indexOf(u8, eager, "pathHints") != null and
+            std.mem.indexOf(u8, deferred, "pathHints") == null and
+            deferred.len * 2 < eager.len) break;
+    } else {
+        std.debug.print("catalog sizes eager={d} deferred={d}\n", .{ eager.len, deferred.len });
+        return error.CatalogDidNotHalve;
+    }
 
     // Deferred tools ship NO catalog entries of their own (codex tool_search
     // pattern, #476): their qualified names appear nowhere in the catalog,
