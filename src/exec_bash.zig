@@ -1,10 +1,12 @@
 //! Root and subagent `bash` dispatch. Split out of exec.zig so the grok-build
 //! auto-background path (#620) has room without growing exec.zig.
 //!
-//! Root foreground: spawn a job, wait up to 120s (a shorter `timeout` may
-//! promote earlier; a larger one cannot extend the wait), then promote
-//! rather than kill — the process keeps running and the model gets a job
-//! id. Subagents stay on the #93 kill-at-120s path (no TTY, no /jobs UI).
+//! Root foreground: spawn a job, wait up to 120s unattended (interactive
+//! REPL/TUI/GUI: 15s, ADR 0154). A shorter `timeout` may promote earlier; a
+//! larger one cannot extend the wait. Then promote rather than kill — the
+//! process keeps running and the model gets a job id. Interactive parked
+//! jobs yield the parent like subagents. Subagents stay on the #93
+//! kill-at-120s path (no TTY, no /jobs UI).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -30,7 +32,8 @@ const exec_bash_stream = @import("exec_bash_stream.zig");
 pub const root_wait_ms: u64 = 120 * 1000;
 
 /// Lean `-p` has no human watching a hung test (ADR 0055). DeepSeek flash
-/// SWE sat 120s on `python3 test_json_stream.py`. Interactive stays 120s.
+/// SWE sat 120s on `python3 test_json_stream.py`. Interactive REPL/TUI/GUI
+/// uses the same 15s bound so a `gh run watch` parks and yields (ADR 0154).
 pub const lean_oneshot_wait_ms: u64 = 15 * 1000;
 
 /// Wall-clock ceiling for one *subagent* bash command. Subagents run on pool
@@ -90,14 +93,19 @@ fn startedText(gpa: Allocator, id: u32, cmd: []const u8, ssh: bool, auto_bg: boo
     return aw.toOwnedSlice();
 }
 
-fn defaultRootWaitMs() u64 {
+fn defaultRootWaitMs(interactive: bool) u64 {
     const main_mod = @import("main.zig");
+    if (interactive) return lean_oneshot_wait_ms;
     if (main_mod.unattended and @import("no_local_tools.zig").lean) return lean_oneshot_wait_ms;
     return root_wait_ms;
 }
 
 fn rootWaitMs(input: Value) u64 {
-    const bound = defaultRootWaitMs();
+    return rootWaitMsFor(input, false);
+}
+
+fn rootWaitMsFor(input: Value, interactive: bool) u64 {
+    const bound = defaultRootWaitMs(interactive);
     const t = intField(input, "timeout") orelse return bound;
     if (t <= 0) return bound;
     // #850: timeout may shorten the foreground wait; it must not recreate the
@@ -176,6 +184,16 @@ test "rootWaitMs: lean unattended oneshot defaults to 15s; shorter timeout still
     try std.testing.expectEqual(lean_oneshot_wait_ms, rootWaitMs(huge.value));
     main_mod.unattended = false;
     try std.testing.expectEqual(root_wait_ms, rootWaitMs(empty.value));
+}
+
+test "rootWaitMs: interactive REPL parks at 15s (ADR 0154)" {
+    const empty = try std.json.parseFromSlice(Value, std.testing.allocator, "{}", .{});
+    defer empty.deinit();
+    try std.testing.expectEqual(lean_oneshot_wait_ms, rootWaitMsFor(empty.value, true));
+    try std.testing.expectEqual(root_wait_ms, rootWaitMsFor(empty.value, false));
+    const huge = try std.json.parseFromSlice(Value, std.testing.allocator, "{\"timeout\":120000}", .{});
+    defer huge.deinit();
+    try std.testing.expectEqual(lean_oneshot_wait_ms, rootWaitMsFor(huge.value, true));
 }
 
 fn formatJobDone(gpa: Allocator, cmd: []const u8, wait: jobs.FgDone) !ToolOutput {
@@ -321,9 +339,10 @@ fn execUnchecked(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
             .persistent = bg,
         }) catch |err| return .{ .text = try spawnFailText(gpa, err), .is_error = true };
         if (bg) {
+            @import("subagent_interactive.zig").request(ctx);
             return .{ .text = try startedText(gpa, job.id, job.cmd, ssh, false, 0, "") };
         }
-        const wait_ms = rootWaitMs(input);
+        const wait_ms = rootWaitMsFor(input, ctx.interactive_children);
         const waited = jobs.waitForeground(gpa, io, job.id, wait_ms) catch |err| return .{
             .text = try std.fmt.allocPrint(gpa, "could not wait on job {d} ({t})", .{ job.id, err }),
             .is_error = true,
@@ -336,6 +355,7 @@ fn execUnchecked(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
             .running => |r| blk: {
                 defer gpa.free(r.output);
                 jobs.markPersistent(io, r.id);
+                @import("subagent_interactive.zig").request(ctx);
                 break :blk .{ .text = try startedText(gpa, r.id, cmd, ssh, true, wait_ms / 1000, r.output) };
             },
             .cancelled => |c| blk: {

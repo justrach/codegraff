@@ -33,7 +33,7 @@ pub fn beforeRequest(root: anytype) !?[]const u8 {
     if (root.sub or !enabled.load(.acquire)) return null;
     yielded = requested.swap(false, .acq_rel);
     if (!yielded) return null;
-    const text = "Subagents launched; their work continues separately. You can keep using the prompt; completed results will be surfaced automatically.";
+    const text = "Background work continues separately. You can keep using the prompt; completed shell jobs and subagents will be surfaced automatically.";
     return try root.arena.dupe(u8, text);
 }
 
@@ -82,4 +82,16 @@ pub fn output(ctx: tools.ToolCtx, id: u32, wait_ms: u64) !tools.ToolOutput {
     defer registry.mutex.unlock(ctx.io);
     if (registry.find(id)) |job| if (!job.done) request(ctx);
     return result;
+}
+
+test "beforeRequest yields so parked shell jobs free the prompt" {
+    configure(true);
+    defer configure(false);
+    requested.store(true, .release);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const Fake = struct { sub: bool = false, arena: std.mem.Allocator };
+    const text = (try beforeRequest(Fake{ .arena = arena_state.allocator() })) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, text, "keep using the prompt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "shell jobs") != null);
 }

@@ -191,6 +191,20 @@ test "#850: a bounded promote leaves the child on bash_output and bash_kill" {
     try std.testing.expect(std.mem.indexOf(u8, after.text, "running") == null);
 }
 
+test "ADR 0152: auto-parked job output ignores wait_ms" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+    jobs.g_jobs = .{};
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const id = (try jobs.spawnJob(gpa, io, "sleep 8; printf never")).id;
+    defer jobs.jobsReap(gpa, io);
+    jobs.markPersistent(io, id);
+    const snap = try jobs.jobOutput(gpa, io, id, 30_000);
+    defer gpa.free(snap.text);
+    try std.testing.expect(std.mem.indexOf(u8, snap.text, "running") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snap.text, "do not poll") != null);
+}
+
 test "#620: a short foreground command finishes as done, not a job" {
     if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
     jobs.g_jobs = .{};
