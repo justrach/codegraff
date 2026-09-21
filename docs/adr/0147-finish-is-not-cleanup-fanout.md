@@ -21,7 +21,9 @@ preemption was already out of scope (#430, ADR 0134).
   without bound.
 - `deliverInbound` parks inbound during a root turn. Paint and the
   one-line `[peer]` wake wait until idle. Same latch on REPL, TUI, and
-  `graff acp`.
+  `graff acp`. A wake is never the newest authoritative user turn
+  while tools continue, and `attempt_completion` does not auto-run a
+  peer wake (#1137). The same unread generation is exposed at most once.
 
 ## Consequences
 

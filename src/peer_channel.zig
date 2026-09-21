@@ -250,8 +250,9 @@ pub fn deliverInbound(root: *Agent) void {
 }
 
 /// Mid-turn mail stays parked. Announce only when idle and something new landed.
+/// A completed turn does not get a task-authoritative wake (#1137).
 pub fn shouldAnnounce(busy: bool, newly_parked: usize) bool {
-    return !busy and newly_parked > 0;
+    return @import("peer_wake_loop.zig").shouldInjectAuthoritative(busy, newly_parked);
 }
 
 /// Emit the drain's visible half as one bracketed unit: a blank notice, the
@@ -499,6 +500,8 @@ test "summarizeTranscript: last prompt, last words, last tool, from complete lin
 }
 
 test "#1136 shouldAnnounce: park during a turn, announce only when idle" {
+    @import("peer_idle.zig").resetForTest();
+    defer @import("peer_idle.zig").resetForTest();
     try std.testing.expect(!shouldAnnounce(true, 3));
     try std.testing.expect(!shouldAnnounce(true, 0));
     try std.testing.expect(!shouldAnnounce(false, 0));

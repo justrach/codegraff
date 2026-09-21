@@ -13,10 +13,14 @@ const presence = @import("presence.zig");
 const presence_chan = @import("presence_chan.zig");
 
 var last_woken_unread: usize = 0;
+var last_placed_gen: u64 = 0;
+var suppress_idle_wake: bool = false;
 var turn_busy: std.atomic.Value(bool) = .init(false);
 
 pub fn resetForTest() void {
     last_woken_unread = 0;
+    last_placed_gen = 0;
+    suppress_idle_wake = false;
     turn_busy.store(false, .release);
 }
 
@@ -32,6 +36,30 @@ pub fn noteTurnEnd() void {
 
 pub fn isBusy() bool {
     return turn_busy.load(.acquire);
+}
+
+/// Accepted `attempt_completion` ends the task. Parked mail stays readable
+/// but must not start another assistant/tool cycle (#1137).
+pub fn noteCompletion() void {
+    suppress_idle_wake = true;
+}
+
+/// A later human prompt re-opens idle auto-turn.
+pub fn noteHumanPrompt() void {
+    suppress_idle_wake = false;
+}
+
+pub fn idleWakeSuppressed() bool {
+    return suppress_idle_wake;
+}
+
+pub fn markPlaced(gen: u64) void {
+    last_placed_gen = gen;
+    last_woken_unread = peer_inbox.unread();
+}
+
+pub fn placedGeneration() u64 {
+    return last_placed_gen;
 }
 
 fn ingest(io: Io, arena: Allocator) void {
@@ -53,7 +81,7 @@ fn ingest(io: Io, arena: Allocator) void {
 /// buffer so a spent Agent arena cannot hide new JSONL. Does not inject
 /// history — `runTurn`'s deliverInbound handles leftover room bytes.
 pub fn takeIdleWake(io: Io, buf: []u8) ?[]const u8 {
-    if (isBusy()) return null;
+    if (isBusy() or suppress_idle_wake) return null;
     var scratch: [64 * 1024]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&scratch);
     const arena = fba.allocator();
@@ -71,6 +99,7 @@ pub fn takeIdleWake(io: Io, buf: []u8) ?[]const u8 {
 /// `action=inbox` consumed the batch — a later peer can wake again.
 pub fn noteInboxConsumed() void {
     last_woken_unread = 0;
+    last_placed_gen = 0;
 }
 
 test "#1001 idle wake fires once per new unread batch" {
@@ -106,6 +135,29 @@ test "#1001 idle wake fires once per new unread batch" {
     try std.testing.expect(takeIdleWake(io, &buf) == null);
 }
 
+test "#1137 idle wake is silent after attempt_completion until a human prompt" {
+    peer_inbox.resetForTest();
+    resetForTest();
+    defer {
+        peer_inbox.resetForTest();
+        resetForTest();
+    }
+    var buf: [256]u8 = undefined;
+    const msg: presence_chan.Message = .{
+        .from_pid = 2,
+        .from_start = 1,
+        .from_session = "s-peer",
+        .text = "hold the tree",
+        .to = "s-me",
+    };
+    _ = peer_inbox.parkHeard(&.{msg}, &.{});
+    noteCompletion();
+    try std.testing.expect(takeIdleWake(std.testing.io, &buf) == null);
+    noteHumanPrompt();
+    const wake = takeIdleWake(std.testing.io, &buf) orelse return error.ExpectedWakeAfterHuman;
+    try std.testing.expect(std.mem.indexOf(u8, wake, "[peer]") != null);
+}
+
 test "#1136 idle wake is silent while a root turn is in flight" {
     peer_inbox.resetForTest();
     resetForTest();
@@ -128,6 +180,26 @@ test "#1136 idle wake is silent while a root turn is in flight" {
     noteTurnEnd();
     const wake = takeIdleWake(std.testing.io, &buf) orelse return error.ExpectedWakeAfterIdle;
     try std.testing.expect(std.mem.indexOf(u8, wake, "[peer]") != null);
+}
+
+test "#1137 same unread generation does not idle-wake twice" {
+    peer_inbox.resetForTest();
+    resetForTest();
+    defer {
+        peer_inbox.resetForTest();
+        resetForTest();
+    }
+    var buf: [256]u8 = undefined;
+    const msg: presence_chan.Message = .{
+        .from_pid = 2,
+        .from_start = 1,
+        .from_session = "s-peer",
+        .text = "hold the tree",
+        .to = "s-me",
+    };
+    _ = peer_inbox.parkHeard(&.{msg}, &.{});
+    try std.testing.expect(takeIdleWake(std.testing.io, &buf) != null);
+    try std.testing.expect(takeIdleWake(std.testing.io, &buf) == null);
 }
 
 test "#1001 more mail after a wake can fire again" {
