@@ -451,6 +451,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
             extra_owned = extra.len > 0;
         } else {
             const outcome = jobs.agentWorktreeFinish(gpa, ctx.io, w);
+            @import("worktree_reap.zig").reapAfterTask(gpa, ctx.io);
             if (outcome.kept) {
                 extra = std.fmt.allocPrint(gpa, "\n\n[worktree kept ({s}) — path: {s}, branch: {s}; finish is not archive — do not spawn a cleanup child]", .{ jobs.keepReasonText(outcome.reason), w.path, w.branch }) catch "";
                 extra_owned = extra.len > 0;
