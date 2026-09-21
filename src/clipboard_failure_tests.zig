@@ -73,7 +73,7 @@ fn check(comptime replies: []const Reply, expected: clip.GrabAttempt) !void {
     switch (expected) {
         .failed => |kind| {
             try std.testing.expectEqual(kind, got.failed);
-            if (kind == .access) {
+            if (kind == .access or kind == .unavailable) {
                 const message = paste.pasteMessage(.{ .failed = got.failed });
                 try std.testing.expect(std.mem.indexOf(u8, message, "Automation") == null);
                 try std.testing.expect(std.mem.indexOf(u8, message, "synthetic helper error") == null);
@@ -128,8 +128,8 @@ test "#883 successful clipboard reply with bad file is extraction failure" {
     try check(&.{.{ .stdout = "ok:png", .file = "not a PNG" }}, .{ .failed = .extract });
 }
 
-test "#883 generic clipboard failure is access without Automation advice" {
-    try check(&.{.{ .exit_code = 1, .stderr = "synthetic helper error", .file = "partial" }}, .{ .failed = .access });
+test "#1085 generic helper failure is unavailable, not a generic access line" {
+    try check(&.{.{ .exit_code = 1, .stderr = "synthetic helper error", .file = "partial" }}, .{ .failed = .unavailable });
 }
 
 test "#883 explicit Apple Event denial is denied" {
@@ -141,8 +141,8 @@ test "#883 clipboard retry cannot accept stale output" {
 }
 
 test "#883 truncated denial and cancellation never imply permission failure" {
-    try check(&.{.{ .exit_code = 1, .stderr = "error (-1743)", .stderr_truncated = true }}, .{ .failed = .access });
-    try check(&.{.{ .stdout = "ok:png", .cancelled = true, .file = clip.png_magic }}, .{ .failed = .access });
+    try check(&.{.{ .exit_code = 1, .stderr = "error (-1743)", .stderr_truncated = true }}, .{ .failed = .unavailable });
+    try check(&.{.{ .stdout = "ok:png", .cancelled = true, .file = clip.png_magic }}, .{ .failed = .unavailable });
 }
 
 test "#883 empty clipboard removes partial file" {
