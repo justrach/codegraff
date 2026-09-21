@@ -13,9 +13,25 @@ const presence = @import("presence.zig");
 const presence_chan = @import("presence_chan.zig");
 
 var last_woken_unread: usize = 0;
+var turn_busy: std.atomic.Value(bool) = .init(false);
 
 pub fn resetForTest() void {
     last_woken_unread = 0;
+    turn_busy.store(false, .release);
+}
+
+/// Root `runTurn` latch. Idle auto-turn (#1001 / #1007) and mid-turn
+/// `deliverInbound` injects stay off while a prompt is in flight (#1136).
+pub fn noteTurnStart() void {
+    turn_busy.store(true, .release);
+}
+
+pub fn noteTurnEnd() void {
+    turn_busy.store(false, .release);
+}
+
+pub fn isBusy() bool {
+    return turn_busy.load(.acquire);
 }
 
 fn ingest(io: Io, arena: Allocator) void {
@@ -37,6 +53,7 @@ fn ingest(io: Io, arena: Allocator) void {
 /// buffer so a spent Agent arena cannot hide new JSONL. Does not inject
 /// history — `runTurn`'s deliverInbound handles leftover room bytes.
 pub fn takeIdleWake(io: Io, buf: []u8) ?[]const u8 {
+    if (isBusy()) return null;
     var scratch: [64 * 1024]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&scratch);
     const arena = fba.allocator();
@@ -87,6 +104,30 @@ test "#1001 idle wake fires once per new unread batch" {
     _ = try peer_inbox.takeAll(arena);
     noteInboxConsumed();
     try std.testing.expect(takeIdleWake(io, &buf) == null);
+}
+
+test "#1136 idle wake is silent while a root turn is in flight" {
+    peer_inbox.resetForTest();
+    resetForTest();
+    defer {
+        peer_inbox.resetForTest();
+        resetForTest();
+    }
+    var buf: [256]u8 = undefined;
+    const msg: presence_chan.Message = .{
+        .from_pid = 2,
+        .from_start = 1,
+        .from_session = "s-peer",
+        .text = "hold the tree",
+        .to = "s-me",
+    };
+    _ = peer_inbox.parkHeard(&.{msg}, &.{});
+    noteTurnStart();
+    try std.testing.expect(isBusy());
+    try std.testing.expect(takeIdleWake(std.testing.io, &buf) == null);
+    noteTurnEnd();
+    const wake = takeIdleWake(std.testing.io, &buf) orelse return error.ExpectedWakeAfterIdle;
+    try std.testing.expect(std.mem.indexOf(u8, wake, "[peer]") != null);
 }
 
 test "#1001 more mail after a wake can fire again" {

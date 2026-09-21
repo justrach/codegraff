@@ -326,6 +326,8 @@ pub const Agent = struct {
     }
 
     pub fn runTurn(self: *Agent) anyerror![]const u8 {
+        if (!self.sub) @import("peer_idle.zig").noteTurnStart();
+        defer if (!self.sub) @import("peer_idle.zig").noteTurnEnd();
         var pending_work: empty_completion.PendingWork = .{};
         var bounced_answer: empty_completion.BounceAnswer = .{};
         self.completed = null;

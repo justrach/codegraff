@@ -30,7 +30,7 @@ pub fn worktreeKeepReason(status_ok: bool, porcelain: []const u8, base: []const 
 pub fn keepReasonText(reason: KeepReason) []const u8 {
     return switch (reason) {
         .dirty => "has changes",
-        .committed => "has commits that exist ONLY on this branch - merge or cherry-pick them, nothing else references them",
+        .committed => "has commits that exist ONLY on this branch — keep this tree; merge or cherry-pick later, do not spawn a cleanup child",
         .unverifiable => "could not verify it is safe to remove",
         .removed => "",
     };

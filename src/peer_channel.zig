@@ -10,7 +10,8 @@
 //!   - peer_message: send (default), list, inbox, claim, release, handoff, status.
 //!   - /tell <session> <text>: the user's own line into a peer's inbox.
 //!   - /sessions: the saved-session list gains a "live now" section.
-//!   - deliverInbound: drain + park at every root step boundary.
+//!   - deliverInbound: drain + park at every root step boundary; paint and
+//!     the history wake wait until the root is idle (#1136).
 
 const std = @import("std");
 
@@ -141,9 +142,10 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
 }
 
 /// The receiving half, called at every step boundary of a root agent's turn:
-/// drain the rooms, park heard bodies, paint them for the human, and inject
-/// at most a one-line `[peer]` wake. Never fails a turn — delivery trouble
-/// is silence, not an error, because a peer must never break our session.
+/// drain the rooms and park heard bodies. Paint and the one-line `[peer]`
+/// wake wait until idle — a mid-turn inject aborts tools (#1136). Never
+/// fails a turn — delivery trouble is silence, not an error, because a
+/// peer must never break our session.
 /// The room tail a late joiner parks; anything older is seek-skipped.
 pub const backlog_tail_max = 10;
 var g_backlog_tail_cut = false;
@@ -196,6 +198,10 @@ pub fn deliverInbound(root: *Agent) void {
     }
     device_msgs = heard.items;
     if (local_msgs.len == 0 and device_msgs.len == 0 and omitted == 0 and skipped == 0) return;
+    const newly = peer_inbox.parkHeard(local_msgs, device_msgs);
+    // Park always. Paint and history inject wait until the root is idle
+    // (#1136): a mid-turn user-role wake aborts tools. ADR 0134 / #430.
+    if (!shouldAnnounce(peer_idle.isBusy(), newly)) return;
     const sink = engine_sink.forAgent(root);
     // The visible block gets one blank line of air on either side: peer lines
     // land mid-stream at a step boundary and used to butt straight against
@@ -239,9 +245,13 @@ pub fn deliverInbound(root: *Agent) void {
         if (summary.len > 0)
             renderPeerBlock(sink, root.io, true, &.{}, &.{summary});
     }
-    if (peer_inbox.parkHeard(local_msgs, device_msgs) == 0) return;
     // History gets the wake only (ADR 0004). Bodies wait in the ring.
     root.messages.append(@import("session_wake.zig").message(root.arena, peer_context.capInject(peer_inbox.formatWake(root.arena))) catch return) catch {};
+}
+
+/// Mid-turn mail stays parked. Announce only when idle and something new landed.
+pub fn shouldAnnounce(busy: bool, newly_parked: usize) bool {
+    return !busy and newly_parked > 0;
 }
 
 /// Emit the drain's visible half as one bracketed unit: a blank notice, the
@@ -486,6 +496,13 @@ test "summarizeTranscript: last prompt, last words, last tool, from complete lin
     try std.testing.expectEqualStrings("switched the query to display_name", sum.last_said);
     try std.testing.expectEqualStrings("edit_file", sum.last_tool);
     try std.testing.expectEqual(5, sum.messages); // the torn tail is skipped
+}
+
+test "#1136 shouldAnnounce: park during a turn, announce only when idle" {
+    try std.testing.expect(!shouldAnnounce(true, 3));
+    try std.testing.expect(!shouldAnnounce(true, 0));
+    try std.testing.expect(!shouldAnnounce(false, 0));
+    try std.testing.expect(shouldAnnounce(false, 1));
 }
 
 test "displayWindow: only a backlog drain is windowed, to its trailing lines" {
