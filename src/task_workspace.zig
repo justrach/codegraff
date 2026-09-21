@@ -390,8 +390,10 @@ test "indexLockPath: two worktree git dirs never share a lock file" {
     const a = arena_state.allocator();
     const main_lock = indexLockPath(a, "/repo/.git") orelse return error.TestUnexpectedResult;
     const wt_lock = indexLockPath(a, "/repo/.git/worktrees/session-1") orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("/repo/.git/index.lock", main_lock);
-    try std.testing.expectEqualStrings("/repo/.git/worktrees/session-1/index.lock", wt_lock);
+    const expect_main = try std.fs.path.join(a, &.{ "/repo/.git", "index.lock" });
+    const expect_wt = try std.fs.path.join(a, &.{ "/repo/.git/worktrees/session-1", "index.lock" });
+    try std.testing.expectEqualStrings(expect_main, main_lock);
+    try std.testing.expectEqualStrings(expect_wt, wt_lock);
     try std.testing.expect(!std.mem.eql(u8, main_lock, wt_lock));
 }
 
