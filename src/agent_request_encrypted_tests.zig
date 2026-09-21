@@ -50,3 +50,31 @@ test "latest Responses models request and replay encrypted reasoning" {
         try std.testing.expect(std.mem.indexOf(u8, body, "previous_response_id") == null);
     }
 }
+
+test "grok (xAI) drops encrypted reasoning blobs it cannot decrypt cross-request (ADR 0002)" {
+    // grok rides full-resend over the held socket; xAI's store:false blobs only
+    // decrypt inside a live chain, so a replayed blob throws could-not-decrypt.
+    // The reasoning item is dropped from the input without breaking the array or
+    // its neighbors (both flanking user turns must survive the skip).
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    var agent = try testAgentFor(a, "codegraff", .responses, "grok-4.6");
+    try agent.messages.append(.{ .object = try userMsg(a, "alpha-user") });
+    try withEncryptedHistory(a, &agent);
+    try agent.messages.append(.{ .object = try userMsg(a, "beta-user") });
+    const body = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(body);
+    _ = try std.json.parseFromSliceLeaky(std.json.Value, a, body, .{}); // input array intact
+    try std.testing.expect(std.mem.indexOf(u8, body, "encrypted_content") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "alpha-user") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "beta-user") != null);
+}
+
+fn userMsg(a: std.mem.Allocator, text: []const u8) !std.json.ObjectMap {
+    var o: std.json.ObjectMap = .empty;
+    try o.put(a, "role", .{ .string = "user" });
+    try o.put(a, "content", .{ .string = text });
+    return o;
+}

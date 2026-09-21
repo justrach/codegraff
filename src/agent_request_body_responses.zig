@@ -56,7 +56,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     // this item server-side, so only a full anchor writes it.
     if (!chain and explicit_cache) try writeCacheAnchor(s);
     const from = if (chain) self.codex_sent_upto else 0;
-    if (!self.ws_prewarm) for (self.messages.items[from..]) |m| try @import("session_wake.zig").writeWire(s, m); // prewarm: NO input items; turn 1 chains onto the warmup id
+    if (!self.ws_prewarm) for (self.messages.items[from..]) |m| try @import("session_wake.zig").writeWireInput(s, m, self.provider.model); // prewarm: NO input items; turn 1 chains onto the warmup id
     try s.endArray();
     if (tools) |t| {
         const payload = blk: {
@@ -98,7 +98,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     try s.endObject();
     try s.objectField("include");
     try s.beginArray();
-    try s.write("reasoning.encrypted_content");
+    if (!@import("effort_route.zig").grokFamily(self.provider.model)) try s.write("reasoning.encrypted_content");
     if (is_codex and codex_tool_search.web_search) try s.write("web_search_call.action.sources");
     try s.endArray();
     try s.objectField("store");

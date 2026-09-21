@@ -52,6 +52,25 @@ pub fn writeWire(s: *std.json.Stringify, m: std.json.Value) !void {
     }
     try s.endObject();
 }
+/// writeWire for a Responses request `input`. grok (xAI family) drops reasoning
+/// items: their `encrypted_content` blobs only decrypt inside a live chain (ADR
+/// 0002), and grok rides full-resend over the held socket, so replaying a blob
+/// fails with xAI's "Could not decrypt the provided encrypted_content". Writing
+/// nothing omits the item from the enclosing array. grok reasoning is blob-only
+/// (no summary), so dropping it costs no readable context — the blob was never
+/// decryptable cross-request anyway.
+pub fn writeWireInput(s: *std.json.Stringify, m: std.json.Value, model: []const u8) !void {
+    if (dropReasoningFor(model, m)) return;
+    try writeWire(s, m);
+}
+
+fn dropReasoningFor(model: []const u8, m: std.json.Value) bool {
+    if (!@import("effort_route.zig").grokFamily(model)) return false;
+    if (m != .object) return false;
+    const t = m.object.get("type") orelse return false;
+    return t == .string and std.mem.eql(u8, t.string, "reasoning");
+}
+
 pub fn writeWireArray(s: *std.json.Stringify, items: []const std.json.Value) !void {
     try s.beginArray();
     for (items) |m| try writeWire(s, m);
