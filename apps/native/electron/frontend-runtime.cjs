@@ -133,7 +133,6 @@ app.whenReady().then(async () => {
   // Name the next renderer throw in CI; executeJavaScript otherwise hides it.
   wc.on('console-message', event => { if (/Error|error|Illegal/.test(event.message || '')) console.error('Front-end renderer:', event.message); });
   desktop.attachTestDebugger(wc);
-  await require('./test-onboarding.cjs').installPageWorldOnboardingSeed(wc);
   await wc.loadURL(origin); desktop.present(win);
   if (desktop.foreground) await until(() => win.isFocused(), 'foreground window focus');
   await until(() => js(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`), 'workspace and composer ready');

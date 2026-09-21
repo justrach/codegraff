@@ -6,13 +6,13 @@ import {
   ONBOARDING_EVENT, requestLogin, requestOnboarding, type AccountStatus,
 } from "@/lib/account-client";
 import { shouldShowOnboarding, writeOnboardingDismissed, type OnboardingWorld } from "@/lib/onboarding";
+import AccountPanel from "./AccountPanel";
+import LoginDialog from "./LoginDialog";
+import OnboardingDialog from "./OnboardingDialog";
 
 function pageWorld(): (Window & OnboardingWorld) | null {
   return typeof window === "undefined" ? null : window;
 }
-import AccountPanel from "./AccountPanel";
-import LoginDialog from "./LoginDialog";
-import OnboardingDialog from "./OnboardingDialog";
 
 const signedOut: AccountStatus = { signedIn: false, plan: null, provider: null };
 
@@ -21,7 +21,11 @@ export default function AccountChrome() {
   const [panel, setPanel] = useState(false);
   const [login, setLogin] = useState(false);
   const [onboarding, setOnboarding] = useState(false);
+  const [requested, setRequested] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  const autoOnboarding = shouldShowOnboarding(pageWorld()?.localStorage, pageWorld());
+  const showOnboarding = onboarding && (requested || autoOnboarding);
 
   const refresh = useCallback(async () => {
     try { setAccount(await fetchAccount()); }
@@ -41,7 +45,7 @@ export default function AccountChrome() {
   }, []);
   useEffect(() => {
     const onLogin = () => { setLogin(true); setPanel(false); };
-    const onHelp = () => { setOnboarding(true); setPanel(false); };
+    const onHelp = () => { setRequested(true); setOnboarding(true); setPanel(false); };
     const onChanged = () => { void refresh(); };
     window.addEventListener(LOGIN_EVENT, onLogin);
     window.addEventListener(ONBOARDING_EVENT, onHelp);
@@ -86,6 +90,7 @@ export default function AccountChrome() {
 
   const dismissOnboarding = () => {
     writeOnboardingDismissed(typeof window === "undefined" ? null : window.localStorage, true);
+    setRequested(false);
     setOnboarding(false);
   };
 
@@ -109,6 +114,6 @@ export default function AccountChrome() {
       }}
       onShortcuts={() => { setPanel(false); requestOnboarding(); }} />}
     {login && <LoginDialog onClose={() => setLogin(false)} onSignedIn={() => void signedIn()} />}
-    {onboarding && <OnboardingDialog account={account} onClose={dismissOnboarding} onLogin={requestLogin} />}
+    {showOnboarding && <OnboardingDialog account={account} onClose={dismissOnboarding} onLogin={requestLogin} />}
   </>;
 }

@@ -11,6 +11,7 @@ import { ThemeSync } from "@/components/site/ThemeSync";
 import DesktopTitlebar from "@/components/site/DesktopTitlebar";
 import DesktopUpdates from "@/components/site/DesktopUpdates";
 import { BrowserWarm } from "@/components/site/BrowserWarm";
+import OnboardingFixtureSeed from "@/components/site/OnboardingFixtureSeed";
 
 export const metadata: Metadata = {
   title: "Codegraff",
@@ -35,6 +36,7 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: appearanceScript }} />
+        <OnboardingFixtureSeed />
       </head>
       <body className={`${GeistSans.variable} ${GeistMono.variable} ${googleSansCode.variable} font-sans`}>
         <ThemeSync />

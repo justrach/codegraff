@@ -2,7 +2,7 @@
 const path = require('node:path');
 const ONBOARDING_KEY = 'graff.onboarding.dismissed';
 const ONBOARDING_DISMISSED = 'true';
-const PAGE_SEED = "window.__GRAFF_ONBOARDED__=true;try{localStorage.setItem('graff.onboarding.dismissed','true')}catch(e){}";
+const PAGE_SEED = 'window.__GRAFF_ONBOARDED__=true;document.documentElement.dataset.graffOnboarded="1";try{localStorage.setItem(\'graff.onboarding.dismissed\',\'true\')}catch(e){}';
 const PRELOAD = path.join(__dirname, 'test-onboarding-preload.cjs');
 
 function installOnboardingSeed(win) {

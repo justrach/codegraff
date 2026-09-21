@@ -13,6 +13,7 @@ test("the account control stays outside the collapsed copy wrapper", () => {
   const src = readFileSync(join(import.meta.dir, "../components/primitives/SidebarNav.tsx"), "utf8");
   const account = src.match(/data-account-control[\s\S]{0,80}/)?.[0] ?? "";
   expect(account).toContain("data-account-control");
+  expect(account).toContain("inert={collapsed}");
   expect(account).not.toContain("sidebar-copy");
   expect(src.indexOf("data-account-control")).toBeLessThan(src.indexOf("footerControls ?"));
 });

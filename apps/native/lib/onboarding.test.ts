@@ -2,8 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   ONBOARDING_DISMISSED_VALUE,
+  ONBOARDING_DOM_ATTR,
   ONBOARDING_KEY,
   ONBOARDING_WORLD_FLAG,
+  documentAlreadyOnboarded,
+  fixtureSuppressesOnboarding,
   onboardingDismissedScript,
   pageWorldAlreadyOnboarded,
   parseOnboardingDismissed,
@@ -48,8 +51,20 @@ test("production fixtures persist the same dismissed flag as Skip/Done", () => {
   assert.match(onboardingDismissedScript(), new RegExp(ONBOARDING_KEY.replaceAll(".", "\\.")));
   assert.match(onboardingDismissedScript(), new RegExp(ONBOARDING_DISMISSED_VALUE));
   assert.match(onboardingDismissedScript(), new RegExp(ONBOARDING_WORLD_FLAG));
+  assert.match(onboardingDismissedScript(), new RegExp(ONBOARDING_DOM_ATTR));
   assert.equal(pageWorldAlreadyOnboarded({ [ONBOARDING_WORLD_FLAG]: true }, memoryStorage()), true);
   assert.equal(shouldShowOnboarding(memoryStorage(), { [ONBOARDING_WORLD_FLAG]: true }), false);
+});
+
+test("test fixtures never auto-show the welcome sheet", () => {
+  const storage = memoryStorage();
+  assert.equal(fixtureSuppressesOnboarding({}), false);
+  assert.equal(shouldShowOnboarding(storage, null, { GRAFF_CWD: "/tmp/workspace" }), false);
+  assert.equal(shouldShowOnboarding(storage, null, { GRAFF_ELECTRON_SMOKE: "1" }), false);
+  assert.equal(shouldShowOnboarding(storage, null, { GRAFF_VISUAL_TESTS: "1" }), false);
+  const marked = { documentElement: { dataset: { [ONBOARDING_DOM_ATTR]: "1" } } };
+  assert.equal(documentAlreadyOnboarded(marked), true);
+  assert.equal(shouldShowOnboarding(storage, null, null, marked), false);
 });
 
 test("unavailable storage shows onboarding instead of throwing", () => {

@@ -3,9 +3,12 @@
 export const ONBOARDING_KEY = "graff.onboarding.dismissed";
 export const ONBOARDING_DISMISSED_VALUE = "true";
 export const ONBOARDING_WORLD_FLAG = "__GRAFF_ONBOARDED__";
+export const ONBOARDING_DOM_ATTR = "graffOnboarded";
 
 export type OnboardingStorage = Pick<Storage, "getItem" | "setItem">;
 export type OnboardingWorld = { [ONBOARDING_WORLD_FLAG]?: boolean };
+export type OnboardingDocument = Pick<Document, "documentElement">;
+export type OnboardingEnv = { GRAFF_CWD?: string; GRAFF_ELECTRON_SMOKE?: string; GRAFF_VISUAL_TESTS?: string };
 
 export function parseOnboardingDismissed(value: unknown): boolean {
   return value === true || value === "true" || value === "1";
@@ -33,13 +36,36 @@ export function seedOnboardingDismissed(storage?: OnboardingStorage | null): voi
 }
 
 export function onboardingDismissedScript(): string {
-  return `window.${ONBOARDING_WORLD_FLAG}=true;try{localStorage.setItem(${JSON.stringify(ONBOARDING_KEY)},${JSON.stringify(ONBOARDING_DISMISSED_VALUE)})}catch(e){}`;
+  return `window.${ONBOARDING_WORLD_FLAG}=true;document.documentElement.dataset.${ONBOARDING_DOM_ATTR}="1";try{localStorage.setItem(${JSON.stringify(ONBOARDING_KEY)},${JSON.stringify(ONBOARDING_DISMISSED_VALUE)})}catch(e){}`;
 }
 
-export function pageWorldAlreadyOnboarded(world?: OnboardingWorld | null, storage?: OnboardingStorage | null): boolean {
-  return world?.[ONBOARDING_WORLD_FLAG] === true || readOnboardingDismissed(storage);
+export function fixtureSuppressesOnboarding(env?: OnboardingEnv | null): boolean {
+  return Boolean(env?.GRAFF_CWD || env?.GRAFF_ELECTRON_SMOKE || env?.GRAFF_VISUAL_TESTS);
 }
 
-export function shouldShowOnboarding(storage?: OnboardingStorage | null, world?: OnboardingWorld | null): boolean {
-  return !pageWorldAlreadyOnboarded(world, storage);
+export function documentAlreadyOnboarded(doc?: OnboardingDocument | null): boolean {
+  try {
+    return doc?.documentElement.dataset[ONBOARDING_DOM_ATTR] === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function pageWorldAlreadyOnboarded(
+  world?: OnboardingWorld | null,
+  storage?: OnboardingStorage | null,
+  doc?: OnboardingDocument | null,
+): boolean {
+  const page = doc ?? (typeof document !== "undefined" ? document : null);
+  return world?.[ONBOARDING_WORLD_FLAG] === true || documentAlreadyOnboarded(page) || readOnboardingDismissed(storage);
+}
+
+export function shouldShowOnboarding(
+  storage?: OnboardingStorage | null,
+  world?: OnboardingWorld | null,
+  env?: OnboardingEnv | null,
+  doc?: OnboardingDocument | null,
+): boolean {
+  if (fixtureSuppressesOnboarding(env)) return false;
+  return !pageWorldAlreadyOnboarded(world, storage, doc);
 }

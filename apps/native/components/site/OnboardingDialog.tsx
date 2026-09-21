@@ -14,10 +14,6 @@ type Props = {
   onLogin: () => void;
 };
 
-function testAlreadyOnboarded(): boolean {
-  return typeof window !== "undefined" && Boolean((window as { __GRAFF_ONBOARDED__?: boolean }).__GRAFF_ONBOARDED__);
-}
-
 export default function OnboardingDialog({ account, onClose, onLogin }: Props) {
   const panel = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
@@ -27,9 +23,7 @@ export default function OnboardingDialog({ account, onClose, onLogin }: Props) {
     const dialog = panel.current;
     if (!dialog) return;
     const previous = document.activeElement as HTMLElement | null;
-    if (!testAlreadyOnboarded()) {
-      dialog.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
-    }
+    dialog.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close.current(); }
     };
@@ -41,7 +35,7 @@ export default function OnboardingDialog({ account, onClose, onLogin }: Props) {
   }, []);
 
   const sheet = (
-    <div data-onboarding className={`fixed inset-0 z-[65] flex items-center justify-center p-4 ${testAlreadyOnboarded() ? "pointer-events-none" : "pointer-events-auto"}`}
+    <div data-onboarding className="pointer-events-auto fixed inset-0 z-[65] flex items-center justify-center p-4"
       style={{ background: "color-mix(in oklab, var(--ink) 22%, transparent)" }}
       onPointerDown={event => { if (event.target === event.currentTarget) onClose(); }}>
       <div ref={panel} role="dialog" aria-modal="true" aria-label="Welcome to Codegraff"
