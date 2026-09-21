@@ -50,6 +50,7 @@ const skills = @import("skills.zig");
 const skill_docs = @import("skill_docs.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: refuse an MCP tool whose schema was never loaded
 const read_file = @import("read_file.zig");
+const read_miss = @import("read_miss.zig");
 const result_read = @import("result_read.zig");
 const codedb_exec = @import("codedb_exec.zig"); // native codedb dispatch (list_dir / status / one-shots)
 // #337: edit_file's verified write path, plus the file-tool helpers that moved
@@ -264,6 +265,9 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     if (std.mem.eql(u8, call.name, result_read.tool_name)) return result_read.exec(ctx, call);
     if (std.mem.eql(u8, call.name, "read_file")) {
         const path = strField(input, "path") orelse return missingArg(gpa, "path");
+        if (ctx.read_miss) |tracker| {
+            if (tracker.shouldRefuse(path)) return .{ .text = try read_miss.refusalText(gpa, path), .is_error = true };
+        }
         if (!confinedPath(path) or !noSymlinkEscape(io, path, ctx.agent_cwd)) return outsideCwd(gpa, path);
         const start_line = intField(input, "start_line");
         const end_line = intField(input, "end_line");
@@ -429,4 +433,6 @@ test { // main.zig is at the 600-line cap; exec.zig is these modules' importer, 
     _ = @import("spec_ptc.zig");
     _ = @import("xai_hosted.zig");
     _ = @import("read_file_schema_tests.zig"); // #761: optional read_file fields
+    _ = @import("read_miss.zig"); // #1116: consecutive read_file miss storm
+    _ = @import("read_miss_tests.zig");
 }

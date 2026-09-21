@@ -167,6 +167,7 @@ record only when you need the evidence or the edge cases.
 | [0145](0145-live-claims-are-accord-progress.md) | Claim acquire/release/handoff replicate as replaceable Accord progress; the JSON ledger stays canonical. |
 | [0146](0146-concurrent-sessions-auto-isolate.md) | A second live session in the same Git checkout gets its own worktree; concurrent agents never share `index.lock`. |
 | [0147](0147-finish-is-not-cleanup-fanout.md) | Finish is not archive: park peer mail until idle, refuse cleanup/fix-it children, cap live fan-out. |
+| [0148](0148-read-file-miss-storm-stops.md) | After N same-prefix or incrementing `read_file` misses, refuse further guesses this turn and point at `codedb list_dir`. |
 
 ## When to write one
 
