@@ -1,9 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  ONBOARDING_DISMISSED_VALUE,
   ONBOARDING_KEY,
+  onboardingDismissedScript,
   parseOnboardingDismissed,
   readOnboardingDismissed,
+  seedOnboardingDismissed,
   shouldShowOnboarding,
   writeOnboardingDismissed,
 } from "./onboarding.ts";
@@ -33,6 +36,15 @@ test("only the true forms count as dismissed", () => {
   assert.equal(parseOnboardingDismissed("false"), false);
   assert.equal(parseOnboardingDismissed("yes"), false);
   assert.equal(readOnboardingDismissed(null), false);
+});
+
+test("production fixtures persist the same dismissed flag as Skip/Done", () => {
+  const storage = memoryStorage();
+  seedOnboardingDismissed(storage);
+  assert.equal(storage.getItem(ONBOARDING_KEY), ONBOARDING_DISMISSED_VALUE);
+  assert.equal(shouldShowOnboarding(storage), false);
+  assert.match(onboardingDismissedScript(), new RegExp(ONBOARDING_KEY.replaceAll(".", "\\.")));
+  assert.match(onboardingDismissedScript(), new RegExp(ONBOARDING_DISMISSED_VALUE));
 });
 
 test("unavailable storage shows onboarding instead of throwing", () => {

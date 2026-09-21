@@ -4,6 +4,8 @@ function installGalleryFixture() {
   // Page unload must use the mocked fetch path too, never a real ACP beacon.
   navigator.sendBeacon = () => false;
   localStorage.setItem('graff.native.browser.open', '0');
+  // Same flag the app writes after Skip/Done — empty-chat fixtures stay modal-free.
+  localStorage.setItem('graff.onboarding.dismissed', 'true');
   const root = '/demo/field-notes';
   const catalog = { result: { current: { model: 'Graff', provider: '', effort: 'medium', fast: false, effortLevels: ['low', 'medium', 'high'] }, models: [
     { name: 'Decoy', provider: '', context: 128000, authenticated: true, cost: 'local', current: false },

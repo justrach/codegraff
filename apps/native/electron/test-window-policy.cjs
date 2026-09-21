@@ -1,5 +1,6 @@
 // Test-only policy. Production windows must not import or inherit this policy.
 const assert = require('node:assert/strict');
+const { installOnboardingSeed } = require('./test-onboarding.cjs');
 function createTestWindowPolicy({ app, BrowserWindow }, env = process.env, platform = process.platform) {
   const { testWindowMode, testWindowOptions, presentWindow, installTestWindowPolicy } = require('./test-window.cjs');
   const mode = testWindowMode(env), foreground = mode === 'foreground';
@@ -18,7 +19,10 @@ function createTestWindowPolicy({ app, BrowserWindow }, env = process.env, platf
   return {
     foreground,
     createWindow(value) {
-      const win = new BrowserWindow(options(value)); guard(win); return win;
+      const win = new BrowserWindow(options(value));
+      guard(win);
+      installOnboardingSeed(win);
+      return win;
     },
     present(win) {
       presentWindow(win, app, undefined, env);

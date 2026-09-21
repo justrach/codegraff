@@ -1,6 +1,7 @@
 const { test, expect } = require('bun:test');
 const { EventEmitter } = require('node:events');
 const { createTestWindowPolicy } = require('./test-window-policy.cjs');
+const { PRELOAD: ONBOARDING_PRELOAD } = require('./test-onboarding.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
 const ts = require('typescript');
@@ -9,7 +10,13 @@ function fixture(env = {}) {
   app.setActivationPolicy = value => calls.push(value);
   app.focus = () => calls.push('app.focus');
   class Window extends EventEmitter {
-    constructor(options) { super(); this.options = options; windows.add(this); app.emit('browser-window-created', {}, this); }
+    constructor(options) {
+      super();
+      this.options = options;
+      this.webContents = { session: { preloads: [], getPreloads() { return this.preloads; }, setPreloads(list) { this.preloads = list; } } };
+      windows.add(this);
+      app.emit('browser-window-created', {}, this);
+    }
     static getAllWindows() { return [...windows]; }
     show() { this.visible = true; this.emit('show'); }
     showInactive() { this.visible = true; this.emit('show'); }
@@ -26,6 +33,8 @@ test('#832: every background test window rejects native activation, including cl
   const b = policy.createWindow({});
   expect(calls).toEqual(['prohibited']);
   expect(a.options).toMatchObject({ show: false, focusable: false, webPreferences: { sandbox: true, backgroundThrottling: false } });
+  expect(a.webContents.session.getPreloads()).toEqual([ONBOARDING_PRELOAD]);
+  expect(b.webContents.session.getPreloads()).toEqual([ONBOARDING_PRELOAD]);
   policy.present(a); policy.present(b);
   for (const action of ['show', 'showInactive', 'focus', 'restore', 'maximize', 'setFullScreen']) {
     expect(() => b[action](true)).toThrow('GRAFF_TEST_FOREGROUND=1');

@@ -14,9 +14,9 @@ export type DeviceStart = {
   expires_in: number;
 };
 
-export type DevicePoll =
-  | { status: "ok"; api_key: string }
-  | { status: "pending" | "denied" | "expired" | string };
+export type DeviceApproved = { status: "ok"; api_key: string };
+export type DeviceWaiting = { status: "pending" | "denied" | "expired" };
+export type DevicePoll = DeviceApproved | DeviceWaiting;
 
 export type AccountStatus = {
   signedIn: boolean;
@@ -120,7 +120,12 @@ export function parseDevicePoll(raw: unknown): DevicePoll {
     if (!api_key) throw new Error("approved but no api_key returned");
     return { status: "ok", api_key };
   }
-  return { status };
+  if (status === "denied" || status === "expired") return { status };
+  return { status: "pending" };
+}
+
+export function approvedApiKey(poll: DevicePoll): string | null {
+  return poll.status === "ok" ? poll.api_key : null;
 }
 
 /** Public poll result: never includes the key. */
@@ -157,6 +162,7 @@ export async function pollDeviceLogin(deviceCode: string, post: JsonPost = defau
 }
 
 export function storeApprovedKey(home: string, poll: DevicePoll): { status: string } {
-  if (poll.status === "ok") writeApiKey(home, poll.api_key);
+  const key = approvedApiKey(poll);
+  if (key) writeApiKey(home, key);
   return publicPollStatus(poll);
 }

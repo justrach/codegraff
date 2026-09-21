@@ -14,6 +14,7 @@ import {
   startDeviceLogin,
   storeApprovedKey,
   writeApiKey,
+  approvedApiKey,
 } from "./codegraff-login";
 
 const temps: string[] = [];
@@ -84,8 +85,11 @@ test("start and poll parse the device-code shape and hide the key", () => {
   expect(start.interval).toBe(3);
   const ok = parseDevicePoll({ status: "ok", api_key: "cg_sk_secret" });
   expect(ok).toEqual({ status: "ok", api_key: "cg_sk_secret" });
+  expect(approvedApiKey(ok)).toBe("cg_sk_secret");
   expect(publicPollStatus(ok)).toEqual({ status: "ok" });
   expect(parseDevicePoll({ status: "pending" })).toEqual({ status: "pending" });
+  expect(parseDevicePoll({ status: "unknown" })).toEqual({ status: "pending" });
+  expect(approvedApiKey(parseDevicePoll({ status: "pending" }))).toBeNull();
 });
 
 test("an approved poll writes the shared store and returns status only", async () => {
@@ -100,6 +104,12 @@ test("an approved poll writes the shared store and returns status only", async (
   const published = storeApprovedKey(dir, { status: "ok", api_key: "cg_sk_stored" });
   expect(published).toEqual({ status: "ok" });
   expect(readAccountStatus(dir).signedIn).toBe(true);
+});
+
+test("a pending poll does not write a key", () => {
+  const dir = home();
+  expect(storeApprovedKey(dir, { status: "pending" })).toEqual({ status: "pending" });
+  expect(readAccountStatus(dir).signedIn).toBe(false);
 });
 
 test("a damaged login file is signed out instead of throwing", () => {
