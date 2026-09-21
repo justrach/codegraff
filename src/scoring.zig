@@ -51,6 +51,7 @@ pub fn providerClass(model: []const u8) []const u8 {
         .{ .needle = "glm-5", .tier = "frontier" },
         .{ .needle = "kimi-k2", .tier = "frontier" },
         .{ .needle = "minimax-m", .tier = "frontier" },
+        .{ .needle = "mimo-v2.6-pro", .tier = "frontier" },
         .{ .needle = "mimo-v2.5-pro", .tier = "frontier" },
         .{ .needle = "fugu", .tier = "frontier" },
         .{ .needle = "gemini-3", .tier = "frontier" },

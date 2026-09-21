@@ -19,3 +19,12 @@ Native window pattern from https://github.com/justrach/merjs
 merjs is not vendored as a web framework here. The UI is Next.js so the
 React primitives can be used as-is. The Zig file in `desktop/` is the
 WKWebView shell only.
+
+## Cuelume
+
+Interface sounds use the `cuelume` package (MIT) by Daniel Belyi, synthesized
+in the page. Off until the user turns them on. License:
+`third-party/cuelume/LICENSE`. Also listed in `THIRD_PARTY_NOTICES.md`.
+
+https://github.com/Danilaa1/cuelume
+

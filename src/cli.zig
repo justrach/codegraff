@@ -323,7 +323,8 @@ pub const usage_text =
     \\  graff login zai                  Z.AI Coding Plan OAuth login
     \\  graff key set <provider> <key>   store a key (Keychain; POSIX 0600 file; Windows home ACL)
     \\  graff key list                   show which providers have keys
-    \\  graff models [refresh]           list the live catalog; refresh Codex + models.dev metadata
+    \\  graff refresh                    pull live catalogs (same as `graff models refresh`)
+    \\  graff models [refresh]           list the live catalog; refresh Codex + provider lists + models.dev
     \\  graff route <model>…             dry-run which provider/billing a model lands on (no API call)
     \\  graff mcp add <name> -- <cmd>     add a stdio MCP server to .mcp.json
     \\  graff mcp add <name> --url <url>  add a Streamable HTTP MCP server

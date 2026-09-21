@@ -66,6 +66,7 @@ pub fn visionModel(m_full: []const u8) bool {
         (m.len > 1 and m[0] == 'k' and std.ascii.isDigit(m[1])) or // Kimi Code k3+
         std.mem.startsWith(u8, m, "gemini") or
         std.mem.startsWith(u8, m, "muse-spark") or // multimodal Meta/Muse Spark family
+        std.mem.startsWith(u8, m, "mimo-v2.6") or // omni-modal; v2.5 stays text-only
         std.mem.startsWith(u8, m, "gemma") or // gemma-3/4 are multimodal (LM Studio etc.)
         std.mem.startsWith(u8, m, "llava") or
         std.mem.startsWith(u8, m, "pixtral") or
@@ -396,6 +397,7 @@ test "visionModel: vision-capable model families only" {
     try std.testing.expect(visionModel("qwen2.5-vl-7b"));
     try std.testing.expect(visionModel("llama-3.2-11b-vision"));
     try std.testing.expect(!visionModel("deepseek-v4-pro"));
+    try std.testing.expect(visionModel("mimo-v2.6-pro"));
     try std.testing.expect(!visionModel("mimo-v2.5"));
     try std.testing.expect(!visionModel("grok-build")); // grok-4 prefix only, not all grok
     try std.testing.expect(!visionModel("qwen2.5-coder-7b")); // text-only local model

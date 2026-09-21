@@ -1,6 +1,7 @@
 #[path = "simple_prompt.rs"]
 mod prompt;
-
+#[path = "task_host.rs"]
+mod task_host;
 use crate::{
     bridge::emitter::UiEventEmitter,
     desktop_open,
@@ -21,14 +22,12 @@ use std::{
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use uuid::Uuid;
-
 #[derive(Clone)]
 struct QueuedPrompt {
     agent_id: Option<String>,
     engine_prompt: String,
     request_id: String,
 }
-
 #[derive(Clone, Default)]
 struct ConversationState {
     workspace_path: String,
@@ -53,7 +52,6 @@ struct ConversationState {
     ultracode_enabled: bool,
     updated_at: i64,
 }
-
 #[derive(Default)]
 struct RuntimeState {
     active_workspace_path: Option<String>,
@@ -79,7 +77,6 @@ struct RuntimeState {
     /// Surfaced as the conversation's `followup` so the FollowupComposer renders.
     pending_followups: HashMap<String, FollowupRequestDto>,
 }
-
 /// One model the `graff` CLI advertises in `--schema`.
 #[derive(Clone)]
 struct ModelOption {
@@ -89,7 +86,6 @@ struct ModelOption {
     context: Option<u64>,
     is_default: bool,
 }
-
 /// A persistent `graff --json` child bound to one conversation. Keeping the
 /// process alive across turns preserves conversation context (and the model's
 /// KV cache).
@@ -1601,11 +1597,6 @@ impl RuntimeManager {
             .await
     }
 
-    /// Handles chat handoff as a no-op in the MVP adapter.
-    pub async fn handoff_chat(&self, _: HandoffChatInput) -> Result<SessionSnapshotDto> {
-        self.snapshot().await
-    }
-
     /// Answers an in-flight `ask_user` prompt: writes the reply to the graff
     /// child's stdin (unblocking it), clears the pending followup, and lets the
     /// still-running stream_turn loop pick up the resulting tool_result.
@@ -1705,7 +1696,11 @@ impl RuntimeManager {
     }
 
     /// Archives a workspace from the local registry.
+    /// Task checkouts go through the keep gate first.
     pub async fn archive_workspace(&self, workspace_path: String) -> Result<SessionSnapshotDto> {
+        if let Some(snapshot) = self.archive_if_task(&workspace_path).await? {
+            return Ok(snapshot);
+        }
         self.projects
             .archive_workspace(Path::new(&workspace_path))?;
         let conversation_ids: Vec<String> = {
@@ -1917,6 +1912,8 @@ impl RuntimeManager {
     }
 
     async fn snapshot(&self) -> Result<SessionSnapshotDto> {
+        self.auto_archive_merged_tasks(false).await;
+        let task_by_path = self.task_records();
         let mut state = self.state.lock().await;
         let registered = self.projects.list_workspaces().unwrap_or_default();
         for workspace in &registered {
@@ -1998,6 +1995,7 @@ impl RuntimeManager {
                     configuration_error: None,
                     selected_conversation_id,
                     conversations,
+                    task: task_by_path.get(path).map(task_host::summary),
                 }
             })
             .collect();

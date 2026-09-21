@@ -1,5 +1,7 @@
+import { useEffect, useRef, useState } from "react";
 import {
   FolderPlus,
+  GitBranch,
   PanelsTopLeft,
   PenSquare,
   Plug2Icon,
@@ -14,6 +16,7 @@ import { useExpandedProjectPaths } from "../hooks/useExpandedProjectPaths";
 import {
   useSessionActions,
   useSidebarSession,
+  useWorkspaceMeta,
 } from "../hooks/useSession";
 import { formatRelativeTimestamp } from "../utils/time";
 import { handleWindowDragStart } from "../utils/window";
@@ -23,6 +26,12 @@ import { SidebarArchiveAction } from "./SidebarArchiveAction";
 import { SidebarItemActionsMenu } from "./SidebarItemActionsMenu";
 import { SidebarSettingsControl } from "./SidebarSettingsControl";
 import { ProjectSidebarProject } from "./ProjectSidebarProject";
+import { TaskWorkspaceCard } from "./task-workspace/TaskWorkspaceCard";
+import {
+  TaskWorkspaceCreateDialog,
+  TaskWorkspaceFinishDialog,
+} from "./task-workspace/TaskWorkspaceDialogs";
+import { queueTaskRun } from "./task-workspace/taskRun";
 import type { ProjectSidebarProps } from "./types/sidebar";
 import { Button } from "./ui/Button";
 import {
@@ -75,6 +84,7 @@ export function ProjectSidebar({
   const {
     archiveConversation,
     archiveWorkspace,
+    taskWorkspaceAction,
     deleteSavedWorkspace,
     openWorkspacePicker,
     openProject,
@@ -91,9 +101,41 @@ export function ProjectSidebar({
     savedWorkspaces,
     workspaces,
   } = useSidebarSession();
+  const [createOpen, setCreateOpen] = useState(false);
+  const [finishPath, setFinishPath] = useState<string | null>(null);
+  const [taskBusy, setTaskBusy] = useState(false);
+  const [taskError, setTaskError] = useState<string | null>(null);
   const projectWorkspaces = workspaces.filter(
     (workspace) => workspace.kind === "project",
   );
+  const taskWorkspaces = projectWorkspaces.filter(
+    (workspace) => workspace.task != null,
+  );
+  const activeMeta = useWorkspaceMeta(activeWorkspacePath);
+  const finishWorkspace = taskWorkspaces.find(
+    (workspace) => workspace.workspacePath === finishPath,
+  );
+
+  const syncedMerged = useRef(false);
+  useEffect(() => {
+    if (syncedMerged.current) {
+      return;
+    }
+    syncedMerged.current = true;
+    void taskWorkspaceAction({
+      action: "sync_merged",
+      sourceWorkspacePath: null,
+      workspacePath: null,
+      branchName: null,
+      baseBranch: null,
+      setupScript: null,
+      runScript: null,
+      teardownScript: null,
+      deleteBranch: false,
+    }).catch(() => {
+      // A missing gh login is not a reason to block the sidebar.
+    });
+  }, [taskWorkspaceAction]);
   const managedChats = workspaces.filter(
     (workspace) => workspace.kind === "managed_chat",
   );
@@ -125,8 +167,36 @@ export function ProjectSidebar({
   }
 
   function handleArchiveWorkspace(workspacePath: string) {
+    const task = projectWorkspaces.find(
+      (workspace) => workspace.workspacePath === workspacePath,
+    )?.task;
+    if (task != null) {
+      setTaskError(null);
+      setFinishPath(workspacePath);
+      return;
+    }
     collapseProject(workspacePath);
     void archiveWorkspace(workspacePath);
+  }
+
+  async function runTaskAction(
+    input: Parameters<typeof taskWorkspaceAction>[0],
+  ) {
+    setTaskBusy(true);
+    setTaskError(null);
+    try {
+      const snapshot = await taskWorkspaceAction(input);
+      if (snapshot.uiError) {
+        setTaskError(snapshot.uiError);
+      } else {
+        setCreateOpen(false);
+        setFinishPath(null);
+      }
+    } catch (error) {
+      setTaskError(error instanceof Error ? error.message : "Task workspace action failed");
+    } finally {
+      setTaskBusy(false);
+    }
   }
 
   async function handleRenameProject(
@@ -399,6 +469,19 @@ export function ProjectSidebar({
               type="button"
               variant="ghost"
               size="icon"
+              aria-label="New task workspace"
+              title="New task workspace"
+              onClick={() => {
+                setTaskError(null);
+                setCreateOpen(true);
+              }}
+            >
+              <GitBranch strokeWidth={2} className="size-3.5 shrink-0" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
               className="-mr-2"
               aria-label="Open project"
               title="Open project"
@@ -409,6 +492,48 @@ export function ProjectSidebar({
           </div>
 
           <SidebarGroupContent>
+            {taskWorkspaces.length > 0 ? (
+              <div className="mb-2 grid gap-2 px-1">
+                {taskWorkspaces.map((project) =>
+                  project.task ? (
+                    <TaskWorkspaceCard
+                      key={project.workspacePath}
+                      name={project.workspaceName}
+                      task={project.task}
+                      busy={taskBusy}
+                      onOpen={() => {
+                        void openProject(project.workspacePath);
+                      }}
+                      onMerge={() => {
+                        void runTaskAction({
+                          action: "merge_back",
+                          sourceWorkspacePath: null,
+                          workspacePath: project.workspacePath,
+                          branchName: null,
+                          baseBranch: null,
+                          setupScript: null,
+                          runScript: null,
+                          teardownScript: null,
+                          deleteBranch: false,
+                        });
+                      }}
+                      onArchive={() => {
+                        setTaskError(null);
+                        setFinishPath(project.workspacePath);
+                      }}
+                      onRun={() => {
+                        if (!project.task?.runScript) {
+                          return;
+                        }
+                        queueTaskRun(project.workspacePath, project.task.runScript);
+                        void openProject(project.workspacePath);
+                        handleStartNewChat(project.workspacePath);
+                      }}
+                    />
+                  ) : null,
+                )}
+              </div>
+            ) : null}
             {projectWorkspaces.length === 0 ? (
               <p className="px-2 py-1 text-xs font-medium text-sidebar-foreground/60">
                 No projects yet
@@ -457,6 +582,62 @@ export function ProjectSidebar({
           </div>
         </div>
       </div>
+      <TaskWorkspaceCreateDialog
+        open={createOpen}
+        sourcePath={activeWorkspacePath}
+        branches={activeMeta.runtimeStatus?.gitBranches ?? []}
+        busy={taskBusy}
+        error={taskError}
+        onOpenChange={setCreateOpen}
+        onSubmit={(input) => {
+          void runTaskAction(input);
+        }}
+      />
+      <TaskWorkspaceFinishDialog
+        open={finishPath != null}
+        branch={finishWorkspace?.task?.branch ?? null}
+        keepReason={finishWorkspace?.task?.keepReason ?? null}
+        busy={taskBusy}
+        error={taskError}
+        onOpenChange={(open) => {
+          if (!open) {
+            setFinishPath(null);
+          }
+        }}
+        onArchive={(deleteBranch, discard) => {
+          if (finishPath == null) {
+            return;
+          }
+          void runTaskAction({
+            action: discard ? "discard" : "archive",
+            sourceWorkspacePath: null,
+            workspacePath: finishPath,
+            branchName: null,
+            baseBranch: null,
+            setupScript: null,
+            runScript: null,
+            teardownScript: null,
+            deleteBranch,
+          });
+        }}
+        onKeep={() => setFinishPath(null)}
+        onUpdate={() => {
+          if (finishPath == null) {
+            return;
+          }
+          void runTaskAction({
+            action: "update_from_base",
+            sourceWorkspacePath: null,
+            workspacePath: finishPath,
+            branchName: null,
+            baseBranch: null,
+            setupScript: null,
+            runScript: null,
+            teardownScript: null,
+            deleteBranch: false,
+          });
+        }}
+      />
     </Sidebar>
   );
 }

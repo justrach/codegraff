@@ -16,8 +16,12 @@ pub fn maybeWake(d: *engine.Dispatch, arena: Allocator, w: *Io.Writer, io: Io, s
     const sid = d.session_id orelse return;
     if (sid.len == 0) return;
     if (peer_idle.isBusy()) return; // in-flight prompt is not preempted (#1136)
-    var buf: [512]u8 = undefined;
+    var buf: [4096]u8 = undefined;
     const wake = idle_wake.takeIdleWake(io, session_name, &buf) orelse return;
+    const interactive = @import("subagent_interactive.zig");
+    const was_notice = interactive.line_notice;
+    interactive.line_notice = true;
+    defer interactive.line_notice = was_notice;
     try promptWake(d, arena, w, wake);
 }
 
@@ -84,6 +88,30 @@ test "#1136 maybeWake is silent while a root turn is in flight" {
     try maybeWake(&d, arena.allocator(), &w, std.testing.io, "s1");
     try std.testing.expectEqual(@as(usize, 0), w.buffered().len);
     peer_idle.noteTurnEnd();
+}
+
+test "#1154 a finished background job starts an ACP turn with its output" {
+    peer_inbox.resetForTest();
+    peer_idle.resetForTest();
+    defer {
+        peer_inbox.resetForTest();
+        peer_idle.resetForTest();
+    }
+    const notify = @import("job_notify.zig");
+    const io = std.testing.io;
+    var scratch: [4096]u8 = undefined;
+    while (notify.takeIdleWake(io, &scratch)) |_| {}
+    notify.queue(io, 4, 0, false, "zig build test", false, "1/1 passed");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [2048]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    var d: engine.Dispatch = .{ .turn = echoTurn, .ctx = undefined, .session_id = "s1" };
+    try maybeWake(&d, arena.allocator(), &w, io, "s1");
+    const out = w.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "echo:[job 4 exited 0: zig build test]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "1/1 passed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "gui_turn_end") != null);
 }
 
 test "#1007 maybeWake is silent without a session or mail" {

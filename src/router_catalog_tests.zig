@@ -52,6 +52,22 @@ test "parseModels reads Vercel context_window and skips non-language types" {
     try std.testing.expectEqual(pricing.default_context, snapshot.models[1].context);
 }
 
+test "parseModels accepts Xiaomi's context-less /v1/models rows and keeps the baked window" {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    const snapshot = parseModels(state.allocator(), "xiaomi",
+        \\{"object":"list","data":[
+        \\ {"id":"mimo-v2.6-pro","object":"model","owned_by":"xiaomi"},
+        \\ {"id":"mimo-v2.6-flash","object":"model","owned_by":"xiaomi"}
+        \\]}
+    ) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 2), snapshot.models.len);
+    try std.testing.expectEqualStrings("mimo-v2.6-pro", snapshot.models[0].name);
+    try std.testing.expectEqualStrings("xiaomi", snapshot.models[0].provider);
+    try std.testing.expectEqual(@as(u64, 1_048_576), snapshot.models[0].context);
+    try std.testing.expectEqual(@as(u64, 1_048_576), snapshot.models[1].context);
+}
+
 test "parseModels strips Google's models/ prefix and takes the window from the baked row" {
     var state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer state.deinit();

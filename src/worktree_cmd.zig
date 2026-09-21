@@ -246,6 +246,14 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
     }
 
     if (std.mem.eql(u8, action, "prune")) {
+        // `unused` is the explicit stale-checkout sweep (#1118). Bare prune
+        // still only drops registrations unless an age window is named.
+        if (args.len > 1 and std.mem.eql(u8, args[1], "unused")) {
+            const n = @import("worktree_reap.zig").orphans(gpa, io, arena, ".");
+            const m = @import("worktree_reap.zig").mergedPulls(gpa, io, arena, ".");
+            try out.print("✓ swept unused worktrees — removed {d} idle session tree(s), {d} merged-PR tree(s)\n", .{ n, m });
+            return;
+        }
         // Drops git's registrations for worktrees whose dirs were deleted out of
         // band, and with `older-than <days>` the stale DIRECTORIES too (#112).
         return worktree_prune.pruneCommand(gpa, io, arena, out, args[1..]);
@@ -256,4 +264,5 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
 
 test { // split-out module: unreferenced, its tests silently never run
     _ = worktree_prune;
+    _ = @import("worktree_reap.zig");
 }

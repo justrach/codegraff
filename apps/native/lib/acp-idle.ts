@@ -1,5 +1,7 @@
-/** Park an idle `graff acp` child after a quiet period. The session file
- *  stays on disk; the next bootstrap respawns with `--resume`.
+/** Park an idle `graff acp` child after a quiet period. Off by default:
+ *  an open GUI tab keeps its worker so a background command can still
+ *  resume the turn when it exits. Set `GRAFF_ACP_IDLE_MS` to shed it;
+ *  the session file stays on disk and the next bootstrap uses `--resume`.
  *
  *  Do not park while a prompt, session/idle subscriber, or other busy
  *  callback is live — stream close alone is not ownership of background work. */
@@ -21,9 +23,9 @@ const parked = (g.__graffAcpParked ??= new Map());
 
 export function idleMs(): number {
   const raw = process.env.GRAFF_ACP_IDLE_MS;
-  if (raw === undefined || raw === "") return 30_000;
+  if (raw === undefined || raw === "") return 0;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) return 30_000;
+  if (!Number.isFinite(n) || n < 0) return 0;
   return n;
 }
 
@@ -56,6 +58,13 @@ export function takeParked(chat: string): ParkedWorker | undefined {
   const held = parked.get(chat);
   parked.delete(chat);
   return held;
+}
+
+/** Keep a crashed or otherwise-exited worker resumable. Dispose/reset still
+ *  call forgetPark so a closed tab does not come back. */
+export function parkNow(chat: string, snapshot: ParkedWorker): void {
+  cancelIdle(chat);
+  if (snapshot.resume) parked.set(chat, snapshot);
 }
 
 export function armIdle(chat: string, snapshot: ParkedWorker, kill: () => void, busy?: () => boolean): void {

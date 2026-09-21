@@ -1,4 +1,5 @@
 "use client";
+import { playUiSound } from "@/lib/ui-sounds";
 
 /** Segmented control — equal-width segments, sliding thumb. */
 export function SegmentedControl<T extends string>({
@@ -35,7 +36,7 @@ export function SegmentedControl<T extends string>({
           key={opt}
           role="tab"
           aria-selected={opt === value}
-          onClick={() => onChange(opt)}
+          onClick={() => { if (opt === value) return; onChange(opt); playUiSound("toggle"); }}
           className={`relative z-10 rounded-full px-3 text-[13px] font-medium
             transition-colors duration-150
             ${opt === value ? "text-ink" : "text-ink-3 hover:text-ink-2"}`}

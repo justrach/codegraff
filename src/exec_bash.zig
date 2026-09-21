@@ -81,7 +81,7 @@ fn startedText(gpa: Allocator, id: u32, cmd: []const u8, ssh: bool, auto_bg: boo
     if (@import("job_wait.zig").followup_pending.load(.acquire)) {
         try w.print("Follow-up received while this was running; it was moved to the background so you can talk. Process is still running as job {d}. You are notified on exit — do not poll. action=output is a snapshot; action=kill stops it.", .{id});
     } else if (auto_bg) {
-        try w.print("Command exceeded the {d}s foreground wait and was automatically moved to the background. Process is still running as job {d}. You are notified on exit — do not poll. action=output is a snapshot; leave it on /jobs or action=kill it.", .{ wait_s, id });
+        try w.print("Command exceeded the {d}s foreground wait and was automatically moved to the background. Process is still running as job {d}. You are notified on exit with the status and output — do not poll. action=output is a snapshot; leave it on /jobs or action=kill it.", .{ wait_s, id });
     } else {
         try w.print("This is a persistent server. It runs in the background across turns. You are notified on exit — do not poll. action=output id {d} reads unread output. action=kill stops it.", .{id});
     }

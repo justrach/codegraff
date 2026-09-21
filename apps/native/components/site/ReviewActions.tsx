@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState, type RefObject } from "react";
+import { copyText, playUiSound } from "@/lib/ui-sounds";
 
 export default function ReviewActions({ diff, path, root, viewport, count }: {
   count: number; diff: string; path: string; root?: string; viewport: RefObject<HTMLElement | null>;
@@ -16,14 +17,14 @@ export default function ReviewActions({ diff, path, root, viewport, count }: {
     nodes[next].scrollIntoView({ block: "start", behavior: "auto" }); setHunk(next);
   };
   const copy = async () => {
-    try { await navigator.clipboard.writeText(diff); setError(""); setCopied(true); clearTimeout(timer.current); timer.current = setTimeout(() => setCopied(false), 1800); }
+    try { await copyText(diff); setError(""); setCopied(true); clearTimeout(timer.current); timer.current = setTimeout(() => setCopied(false), 1800); }
     catch { setError("Couldn't copy the diff. Try again."); }
   };
   const reveal = async () => {
     try {
       const reply = await fetch("/api/fs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "reveal", path, root }) });
       if (!reply.ok) throw Error(); setError("");
-    } catch { setError("Couldn't reveal this file in Finder."); }
+    } catch { playUiSound("error"); setError("Couldn't reveal this file in Finder."); }
   };
   const button = "rounded-[6px] px-2 py-1 text-[11px] text-ink-3 hover:bg-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-30";
   return <footer className="shrink-0 border-t border-line bg-inset px-2 py-1.5">

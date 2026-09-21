@@ -173,11 +173,20 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
 
 const LiveTurn = @import("acp_live_turn.zig").LiveTurn;
 
+var acp_inbox_nudge: ?*@import("acp_inbox.zig").Inbox = null;
+
+fn nudgeAcp() void {
+    if (acp_inbox_nudge) |inbox| inbox.nudge();
+}
+
 pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_mod.Agent, keys: *provider_mod.Keys, client: *std.http.Client, in: *Io.Reader, out: *Io.Writer, arena: Allocator, flags: args.Flags) !bool {
     if (!(flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "acp"))) return false;
     _ = environ_map;
     _ = client;
     main_mod.unattended = true;
+    // GUI is an interactive root (ADR 0154): park long shells and resume on exit.
+    @import("subagent_interactive.zig").configure(true);
+    defer @import("subagent_interactive.zig").configure(false);
     root.in = null;
     root.out = null; // not stream_quiet: that forces SSE and misses resume cache
     main_mod.g_out = null;
@@ -187,6 +196,13 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     var inbox: @import("acp_inbox.zig").Inbox = .{ .gpa = gpa, .io = io, .reader = in };
     try inbox.start();
     defer inbox.deinit();
+    acp_inbox_nudge = &inbox;
+    const prev_queued = @import("job_notify.zig").on_queued;
+    @import("job_notify.zig").on_queued = nudgeAcp;
+    defer {
+        @import("job_notify.zig").on_queued = prev_queued;
+        acp_inbox_nudge = null;
+    }
     @import("acp_ask.zig").attach(io, gpa);
     defer @import("acp_ask.zig").detach();
     var live: LiveTurn = .{ .root = root, .keys = keys, .out = out, .inbox = &inbox };

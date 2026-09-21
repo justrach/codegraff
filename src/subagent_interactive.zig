@@ -26,11 +26,21 @@ pub fn configure(on: bool) void {
 }
 
 pub fn request(ctx: tools.ToolCtx) void {
-    // ACP and other unattended sessions have no prompt to hand back. Ending
-    // the turn here skips the model's next tool (the retention fixture's
-    // readiness check) and the desktop reports a finished turn too early.
+    if (ctx.interactive_children and !ctx.from_sub) armYield();
+}
+
+/// The next model request will be replaced by the yield notice. Job completion
+/// must stay queued for the idle auto-turn instead of landing in a turn that
+/// is about to return without another model call (#1154).
+/// Unattended sessions (ACP, one-shot) have no prompt to hand back. Yielding
+/// there ends the turn before the model's next tool.
+pub fn armYield() void {
     if (@import("main.zig").unattended) return;
-    if (ctx.interactive_children and !ctx.from_sub) requested.store(true, .release);
+    if (enabled.load(.acquire)) requested.store(true, .release);
+}
+
+pub fn yieldPending() bool {
+    return enabled.load(.acquire) and requested.load(.acquire);
 }
 
 pub fn beforeRequest(root: anytype) !?[]const u8 {

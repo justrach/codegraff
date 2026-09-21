@@ -10,6 +10,9 @@ const engine_sink = @import("engine_sink.zig");
 const tool_pulse = @import("tool_pulse.zig");
 const Agent = agent_mod.Agent;
 
+/// Tail kept on the notice so an idle wake can continue without polling (#1154).
+const output_cap: usize = 3072;
+
 pub const Notice = struct {
     id: u32,
     exit_code: ?u8 = null,
@@ -17,7 +20,15 @@ pub const Notice = struct {
     idle: bool = false, // the idle policy stopped it (#199): no auto-turn wake
     preview: [48]u8 = undefined,
     preview_len: u8 = 0,
+    output: [output_cap]u8 = undefined,
+    output_len: u16 = 0,
+    output_truncated: bool = false,
 };
+
+/// ACP (and any other idle loop) sets this so a finished job wakes the
+/// session immediately, not only on the next poll. Must not re-enter jobs
+/// or this module: the pump may still hold the jobs mutex.
+pub var on_queued: ?*const fn () void = null;
 
 const cap: usize = 16;
 var mu: Io.Mutex = .init;
@@ -52,28 +63,53 @@ pub fn line(buf: []u8, n: Notice) []const u8 {
     return std.fmt.bufPrint(buf, "[job {d} ended: {s}]", .{ n.id, cmd }) catch buf[0..0];
 }
 
+fn clipOutput(src: []const u8) struct { buf: [output_cap]u8, len: u16, truncated: bool } {
+    var buf: [output_cap]u8 = undefined;
+    if (src.len <= output_cap) {
+        @memcpy(buf[0..src.len], src);
+        return .{ .buf = buf, .len = @intCast(src.len), .truncated = false };
+    }
+    @memcpy(buf[0..output_cap], src[src.len - output_cap ..]);
+    return .{ .buf = buf, .len = output_cap, .truncated = true };
+}
+
 fn wakeLine(buf: []u8, n: Notice) []const u8 {
     var head: [96]u8 = undefined;
     const h = line(&head, n);
     if (n.idle) return std.fmt.bufPrint(buf, "{s} — silent and unread past the idle stop; rerun it only if it is still needed.", .{h}) catch h;
-    return std.fmt.bufPrint(buf, "{s} — unread output via shell action=output; do not poll.", .{h}) catch h;
+    const out = n.output[0..n.output_len];
+    const body: []const u8 = if (out.len == 0) "(no output)" else out;
+    const note: []const u8 = if (n.output_truncated) "\n[older output omitted]" else "";
+    return std.fmt.bufPrint(buf, "{s}\n{s}{s}\nContinue the task from this result. do not poll.", .{ h, body, note }) catch h;
 }
 
 /// Standalone notification convenience (tests). The job pump MUST split
 /// queue (under jobs mutex) from publish (outside it); calling this after
 /// exposing done reintroduces #728. Publication is UI, not a model wake.
 pub fn record(io: Io, id: u32, exit_code: ?u8, killed: bool, cmd: []const u8, idle: bool) void {
-    queue(io, id, exit_code, killed, cmd, idle);
+    queue(io, id, exit_code, killed, cmd, idle, "");
     publish(io, id, exit_code, killed);
 }
 
 /// Queue while holding the jobs mutex, in the same critical section as done.
 /// Consumers hold jobs -> notification mutex in that same order. Never call
 /// a frontend here: it may re-enter jobOutput.
-pub fn queue(io: Io, id: u32, exit_code: ?u8, killed: bool, cmd: []const u8, idle: bool) void {
+pub fn queue(io: Io, id: u32, exit_code: ?u8, killed: bool, cmd: []const u8, idle: bool, output: []const u8) void {
     const clipped = clipCmd(cmd);
-    const n = Notice{ .id = id, .exit_code = exit_code, .killed = killed, .idle = idle, .preview = clipped.buf, .preview_len = clipped.len };
+    const tail = clipOutput(output);
+    const n = Notice{
+        .id = id,
+        .exit_code = exit_code,
+        .killed = killed,
+        .idle = idle,
+        .preview = clipped.buf,
+        .preview_len = clipped.len,
+        .output = tail.buf,
+        .output_len = tail.len,
+        .output_truncated = tail.truncated,
+    };
     mu.lockUncancelable(io);
+    var queued = false;
     if (dismissedIndex(id)) |i| {
         std.mem.copyForwards(u32, dismissed[i .. dismissed_len - 1], dismissed[i + 1 .. dismissed_len]);
         dismissed_len -= 1;
@@ -84,8 +120,10 @@ pub fn queue(io: Io, id: u32, exit_code: ?u8, killed: bool, cmd: []const u8, idl
         }
         ring[count] = n;
         count += 1;
+        queued = true;
     }
     mu.unlock(io);
+    if (queued) if (on_queued) |hook| hook();
 }
 
 /// Frontend-only publication AFTER releasing the jobs mutex. No wake is queued.
@@ -187,7 +225,7 @@ fn drain(io: Io, buf: []u8, idle_too: bool) ?[]const u8 {
             keep += 1;
             continue;
         }
-        var one: [200]u8 = undefined;
+        var one: [4096]u8 = undefined;
         const w = wakeLine(&one, ring[i]);
         if (used > 0) {
             if (used + 1 >= buf.len) break;
@@ -211,7 +249,10 @@ fn drain(io: Io, buf: []u8, idle_too: bool) ?[]const u8 {
 pub fn deliver(root: *Agent) void {
     if (root.sub) return;
     @import("subagent_interactive.zig").deliver(root);
-    var buf: [512]u8 = undefined;
+    // A parked shell is about to end this turn without another model call.
+    // Leave the notice for the idle auto-turn so the result is not swallowed (#1154).
+    if (@import("subagent_interactive.zig").yieldPending()) return;
+    var buf: [4096]u8 = undefined;
     const text = takeWake(root.io, &buf) orelse return;
     @import("session_wake.zig").inject(root, text);
 }
@@ -276,6 +317,37 @@ test "printRunning parks a persistent server instead of inviting a wait_ms poll 
     aw.clearRetainingCapacity();
     try printRunning(&aw.writer, 446, 15_000, true, true);
     try std.testing.expectEqualStrings("[job 446: running · 15s waited, then interrupted — persistent server; parked in the background. You are notified on exit; do not poll]", aw.written());
+}
+
+test "#1154: idle wake carries exit status and output, and a pending yield does not swallow it" {
+    const io = std.testing.io;
+    count = 0;
+    dismissed_len = 0;
+    const interactive = @import("subagent_interactive.zig");
+    interactive.configure(true);
+    defer interactive.configure(false);
+    interactive.armYield();
+    queue(io, 12, 0, false, "zig build test", false, "All 2 tests passed.");
+    var agent: Agent = undefined;
+    agent.sub = false;
+    agent.io = io;
+    agent.session_name = "";
+    deliver(&agent); // yield is armed: the notice stays queued
+    var buf: [4096]u8 = undefined;
+    const text = takeIdleWake(io, &buf) orelse return error.Empty;
+    try std.testing.expect(std.mem.indexOf(u8, text, "[job 12 exited 0: zig build test]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "All 2 tests passed.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "do not poll") != null);
+    try std.testing.expect(takeIdleWake(io, &buf) == null);
+
+    var big: [output_cap + 32]u8 = undefined;
+    @memset(&big, 'x');
+    @memcpy(big[big.len - 8 ..], "TAIL-END");
+    queue(io, 13, 1, false, "make", false, &big);
+    const tail = takeWake(io, &buf) orelse return error.Empty;
+    try std.testing.expect(std.mem.indexOf(u8, tail, "TAIL-END") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tail, "[older output omitted]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tail, "[job 13 exited 1: make]") != null);
 }
 
 test "takeWake drains and formats the grok-build do-not-poll reminder" {

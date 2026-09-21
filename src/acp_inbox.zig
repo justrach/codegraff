@@ -71,6 +71,16 @@ pub const Inbox = struct {
         return null;
     }
 
+    /// A finished background job wants a turn now. Safe from the pump thread:
+    /// it only sets the tick the idle loop already drains.
+    pub fn nudge(self: *Inbox) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.eof) return;
+        self.tick = true;
+        self.ready.broadcast(self.io);
+    }
+
     /// Called after prepareRootTurn, under the same lock as incoming cancel.
     pub fn begin(self: *Inbox) void {
         self.mutex.lockUncancelable(self.io);

@@ -1,7 +1,8 @@
 import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AssistantTurn } from "@/lib/acp";
 import { idleUpdates, type ChatHandle } from "@/lib/acp-client";
-import { holdWhileIdle, waitWhile } from "@/lib/idle-http";
+import { holdIdleUntilAbort } from "@/lib/idle-http";
 import type { Chat } from "./harness-types";
+import { playUiSound } from "@/lib/ui-sounds";
 
 /** Paint unsolicited ACP session/update while the page is idle (#1007).
  *  Every idle HTTP stream is dropped while ANY prompt turn runs, so an attach
@@ -18,6 +19,7 @@ export async function pumpIdlePeerTurns(opts: {
   let asstId: number | undefined;
   const paint = (update: Parameters<typeof applyAcpUpdate>[1]) => {
     if (opts.running() || opts.signal.aborted) return;
+    let cue: "error" | "ready" | null = null;
     opts.setChats(current => current.map(chat => {
       if (chat.id !== opts.chatId) return chat;
       const existing = asstId != null
@@ -35,26 +37,23 @@ export async function pumpIdlePeerTurns(opts: {
       if (update.sessionUpdate === "gui_turn_end") {
         turn = finishAcpTurn(turn);
         asstId = undefined;
+        cue = turn.error ? "error" : "ready";
       }
       return {
         ...chat,
         messages: messages.map(message => message.role === "assistant" && message.id === id ? { ...message, turn } : message),
       };
     }));
+    if (cue) playUiSound(cue);
   };
 
-  while (!opts.signal.aborted) {
-    await waitWhile(() => opts.running(), opts.signal);
-    if (opts.signal.aborted) return;
-    const result = await holdWhileIdle({
-      signal: opts.signal,
-      busy: opts.running,
-      open: async (signal) => {
-        for await (const update of idleUpdates(opts.handle, opts.sessionId, signal)) {
-          paint(update);
-        }
-      },
-    });
-    if (result !== "paused") return;
-  }
+  await holdIdleUntilAbort({
+    signal: opts.signal,
+    busy: opts.running,
+    open: async (signal) => {
+      for await (const update of idleUpdates(opts.handle, opts.sessionId, signal)) {
+        paint(update);
+      }
+    },
+  });
 }

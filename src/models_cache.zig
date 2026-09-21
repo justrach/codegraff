@@ -546,7 +546,7 @@ pub fn list(out: *Io.Writer) !void {
             try out.print("  {s:<34}{d:>10} ctx   (unpriced)\n", .{ m.name, ctx });
         }
     }
-    try out.writeAll("\nrefresh Codex catalog + models.dev metadata:  graff models refresh\n");
+    try out.writeAll("\nrefresh live catalogs:  graff refresh\n");
     try out.flush();
 }
 

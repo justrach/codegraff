@@ -82,6 +82,14 @@ pub fn orphans(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8) usize 
     return removed;
 }
 
+/// After an agent task: drop stale registrations and dead session checkouts.
+/// Named task workspaces stay; this does not archive them.
+pub fn reapAfterTask(gpa: Allocator, io: Io) void {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    _ = orphans(gpa, io, arena_state.allocator(), ".");
+}
+
 fn prMerged(gpa: Allocator, io: Io, cwd: []const u8, branch: []const u8) bool {
     const name = prune.shortBranch(branch);
     const r = process_runner.runCappedWithOptions(gpa, io, &.{ "gh", "pr", "view", name, "--json", "state", "-q", ".state" }, 4096, 4096, 20_000, .{ .cwd = .{ .path = cwd } }) catch return false;

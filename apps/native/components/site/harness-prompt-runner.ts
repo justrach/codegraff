@@ -9,6 +9,7 @@ import { pushHistory, saveHistory } from "@/lib/prompt-history";
 import type { QueuedPrompt } from "@/lib/prompt-queue";
 import type { createQueueSteerer } from "@/lib/prompt-queue-steer";
 import type { Chat } from "./harness-types";
+import { playUiSound } from "@/lib/ui-sounds";
 type Ref<T> = MutableRefObject<T>;
 type Setter<T> = Dispatch<SetStateAction<T>>;
 type Props = {
@@ -115,10 +116,14 @@ export function createPromptRunner({onStarted, onCompleted, runningRef, steerer,
       if (/^\/(effort|reasoning|fast)(?:\s|$)/.test(trimmed)) void adoptCatalog(chatId);
       turn = finishAcpTurn(turn);
       painter.finish(turn);
-      if (turn.status === "done" && !turn.error) onCompleted(chatId);
+      if (turn.status === "done" && !turn.error) {
+        onCompleted(chatId);
+        if (!trimmed.startsWith("/")) playUiSound("ready");
+      } else if (turn.error) playUiSound("error");
     } catch (err) {
       turn = finishAcpTurn({ ...turn, error: err instanceof Error ? err.message : String(err), status: "error" });
       painter.finish(turn);
+      playUiSound("error");
     } finally {
       painter.dispose();
       steerer.finish(chatId);

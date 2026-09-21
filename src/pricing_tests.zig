@@ -221,6 +221,22 @@ test "refresh overlay augments price/context lookups (codex cap still applies)" 
     try std.testing.expectEqual(pricing.codex_context_window, pricing.contextFor("codex", "future-model-x"));
 }
 
+test "Xiaomi catalog follows the live /v1/models list" {
+    const spec = provider_mod.specFor("xiaomi") orelse return error.MissingXiaomiSpec;
+    try std.testing.expectEqualStrings("mimo-v2.6-pro", spec.default_model);
+    try std.testing.expectEqual(provider_mod.ProviderSpec.CatalogKind.openai, spec.catalog);
+    try std.testing.expectEqualStrings("https://api.xiaomimimo.com/v1/models", spec.models_url);
+    try std.testing.expect(pricing.providerModelInTable("xiaomi", "mimo-v2.6-pro"));
+    try std.testing.expect(pricing.providerModelInTable("xiaomi", "mimo-v2.6-flash"));
+    try std.testing.expect(pricing.providerModelInTable("xiaomi", "mimo-v2.6-pro-ultraspeed"));
+    try std.testing.expect(pricing.providerModelInTable("xiaomi", "mimo-v2.5-pro"));
+    try std.testing.expectEqual(@as(u64, 1_048_576), pricing.contextFor("xiaomi", "mimo-v2.6-pro"));
+    const p = pricing.priceFor("mimo-v2.6-pro") orelse return error.MissingMimo26Price;
+    try std.testing.expectEqual(@as(f64, 0.435), p.in);
+    try std.testing.expectEqual(@as(f64, 0.87), p.out);
+    try std.testing.expectEqual(@as(f64, 0.0036), p.cache);
+}
+
 test "Z.AI default is GLM-5.3 with official prices and a 1M window" {
     const spec = provider_mod.specFor("zai") orelse return error.MissingZaiSpec;
     try std.testing.expectEqualStrings("glm-5.3", spec.default_model);

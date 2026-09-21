@@ -9,6 +9,14 @@ const builtin = @import("builtin");
 
 const resolveKeys = @import("startup.zig").resolveKeys;
 
+test "graff refresh is the short catalog pull, not a new command" {
+    const startup = @import("startup.zig");
+    try std.testing.expectEqual(startup.CatalogCommand.refresh, startup.catalogCommand("refresh"));
+    try std.testing.expectEqual(startup.CatalogCommand.list, startup.catalogCommand("models"));
+    try std.testing.expectEqual(startup.CatalogCommand.route, startup.catalogCommand("route"));
+    try std.testing.expectEqual(startup.CatalogCommand.none, startup.catalogCommand("update"));
+}
+
 test "resolveKeys does not load Kimi/xAI OAuth credentials for an explicit unrelated provider" {
     // #274: loadKimiOAuth/loadXaiOAuth refresh in place (a synchronous
     // network round-trip) when the stored credential is near expiry. Before
