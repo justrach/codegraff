@@ -1,4 +1,21 @@
+import path from "node:path";
 import type { AcpTransport } from "./acp-transport";
+
+/** Keep the spawn workspace unless session/new named a real absolute checkout
+ * that is not the host process cwd. A relative "." (g_cwd_display default) or
+ * inherited PWD from `next start` in apps/native would otherwise enroll
+ * `apps/native/.graff/sessions` instead of the fixture workspace. Isolated
+ * worktrees stay adopted. */
+export function bindSessionCwd(requested: string, reported?: string, hostCwd = process.cwd()): string {
+  if (!reported) return requested;
+  const checkout = reported.trim();
+  if (!checkout || !path.isAbsolute(checkout)) return requested;
+  const resolved = path.resolve(checkout);
+  const spawned = path.resolve(requested);
+  const host = path.resolve(hostCwd);
+  if (resolved === host && resolved !== spawned) return requested;
+  return resolved;
+}
 
 /** A failed handshake cannot recover from a late reply. Retire its worker
  * before reporting failure so a retry starts with a fresh transport. */

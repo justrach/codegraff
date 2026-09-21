@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, readdirSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { NextRequest } from "next/server";
@@ -363,6 +363,63 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
   } finally {
     await call("dispose");
     if (oldBin === undefined) delete process.env.GRAFF_BIN; else process.env.GRAFF_BIN = oldBin;
+    rmSync(temp, { recursive: true, force: true });
+  }
+}, 15000);
+
+test("ACP enrolls the requested workspace when session/new reports the host cwd", async () => {
+  const temp = mkdtempSync(path.join(os.tmpdir(), "graff-acp-enroll-"));
+  const isolated = path.join(temp, ".graff", "worktrees", "session-1");
+  const binary = path.join(temp, "agent.cjs");
+  const host = process.cwd();
+  const oldBin = process.env.GRAFF_BIN;
+  writeFileSync(binary, `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.writeFileSync('spawn.env', JSON.stringify({ cwd: process.cwd(), pwd: process.env.PWD, graffCwd: process.env.GRAFF_CWD }));
+const send = value => console.log(JSON.stringify(value));
+require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+  const req = JSON.parse(line);
+  if (req.method === 'initialize') send({id:req.id,result:{}});
+  if (req.method === 'session/new') {
+    const checkout = process.env.GRAFF_REPORT_CWD || ${JSON.stringify(host)};
+    send({id:req.id,result:{sessionId:'enroll',cwd:checkout}});
+    send({method:'session/update',params:{update:{sessionUpdate:'available_commands_update',availableCommands:[]}}});
+  }
+  if (req.method === 'session/prompt') send({id:req.id,result:{stopReason:'end_turn'}});
+}).on('close',()=>process.exit(0));
+`, { mode: 0o700 });
+  const chat = `enroll-${path.basename(temp)}`;
+  const call = (method: string, params = {}) => deadline(POST(new NextRequest("http://localhost/api/acp", {
+    method: "POST", body: JSON.stringify({ chat, method, params }),
+  })), method);
+  const { attachmentStore } = await import("./attachment-store");
+  try {
+    process.env.GRAFF_BIN = binary;
+    delete process.env.GRAFF_REPORT_CWD;
+    const hostReport = await call("bootstrap", { cwd: temp, model: "fixture", yolo: false, mcp: false });
+    expect(hostReport.status).toBe(200);
+    expect(await hostReport.json()).toMatchObject({ sessionId: "enroll", cwd: path.resolve(temp) });
+    const spawned = JSON.parse(readFileSync(path.join(temp, "spawn.env"), "utf8"));
+    expect(path.resolve(spawned.cwd)).toBe(path.resolve(temp));
+    expect(path.resolve(spawned.pwd)).toBe(path.resolve(temp));
+    expect(path.resolve(spawned.graffCwd)).toBe(path.resolve(temp));
+    const store = attachmentStore();
+    const image = store.create("enroll.png", new Uint8Array([1, 2, 3]));
+    const prompted = await call("session/prompt", { prompt: [{ type: "text", text: `See @[${image}]` }] });
+    expect(prompted.status).toBe(200);
+    await deadline(prompted.text(), "image prompt");
+    const scope = path.join(realpathSync(temp), ".graff", "sessions");
+    const refs = path.join(store.directory, ".ownership", "references", path.basename(image));
+    const scopes = readdirSync(refs).map(name => JSON.parse(readFileSync(path.join(refs, name), "utf8")).directory);
+    expect(scopes).toEqual([scope]);
+    process.env.GRAFF_REPORT_CWD = isolated;
+    const tree = await call("bootstrap", { cwd: temp, model: "fixture", reset: true, yolo: false, mcp: false });
+    expect(tree.status).toBe(200);
+    expect(await tree.json()).toMatchObject({ sessionId: "enroll", cwd: isolated });
+  } finally {
+    await call("dispose");
+    if (oldBin === undefined) delete process.env.GRAFF_BIN; else process.env.GRAFF_BIN = oldBin;
+    delete process.env.GRAFF_REPORT_CWD;
     rmSync(temp, { recursive: true, force: true });
   }
 }, 15000);

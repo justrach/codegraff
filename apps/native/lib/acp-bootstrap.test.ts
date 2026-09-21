@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { AcpTransport } from "./acp-transport";
-import { initializeWorker, serializeBootstrap } from "./acp-bootstrap";
+import { bindSessionCwd, initializeWorker, serializeBootstrap } from "./acp-bootstrap";
 import { retireWorker } from "./acp-retire";
 
 async function worker(mode: string) {
@@ -44,6 +44,19 @@ for (const mode of ["initialize", "session/new", "invalid"]) {
   });
 }
 
+
+test("bindSessionCwd keeps the spawn workspace when session/new reports the host cwd", () => {
+  const workspace = "/private/tmp/graff-frontend/workspace";
+  const host = "/Users/runner/work/codegraff/codegraff/apps/native";
+  expect(bindSessionCwd(workspace, ".", host)).toBe(workspace);
+  expect(bindSessionCwd(workspace, "", host)).toBe(workspace);
+  expect(bindSessionCwd(workspace, undefined, host)).toBe(workspace);
+  expect(bindSessionCwd(workspace, host, host)).toBe(workspace);
+  expect(bindSessionCwd(workspace, workspace, host)).toBe(workspace);
+  expect(bindSessionCwd(workspace, "/repo/.graff/worktrees/session-1", host))
+    .toBe("/repo/.graff/worktrees/session-1");
+  expect(bindSessionCwd(host, host, host)).toBe(host);
+});
 
 test("session/new checkout binds the worker to its isolated worktree", async () => {
   const isolated = await worker("isolated");

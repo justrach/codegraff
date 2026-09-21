@@ -164,13 +164,18 @@ pub fn setupWorktreeAndBanner(
             .autocommit = main_mod.g_worktree_autocommit,
         } });
     }
-    var cwd_buf: [4096]u8 = undefined;
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     main_mod.g_cwd_display = if (flags.worktree_flag) |wt|
         // After chdir into the worktree, realPath(AT_FDCWD) is unreliable; derive from the launch dir.
         std.fmt.allocPrint(arena, "{s}/.graff/worktrees/{s}", .{ environ_map.get("PWD") orelse ".", wt }) catch try arena.dupe(u8, environ_map.get("PWD") orelse ".")
     else if (isolated) |wt|
         try arena.dupe(u8, wt.path)
-    else if (Io.Dir.cwd().realPath(io, &cwd_buf)) |n|
+    else if (std.process.currentPath(io, &cwd_buf)) |n|
+        // Posix cwd is the spawn root. Io.Dir.cwd().realPath can name the
+        // parent host via inherited PWD (Next's apps/native) while sessions
+        // still write to the requested workspace.
+        try arena.dupe(u8, cwd_buf[0..n])
+    else |_| if (Io.Dir.cwd().realPath(io, &cwd_buf)) |n|
         try arena.dupe(u8, cwd_buf[0..n])
     else |_|
         try arena.dupe(u8, environ_map.get("PWD") orelse ".");
