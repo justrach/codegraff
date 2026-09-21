@@ -80,23 +80,6 @@ pub fn pending() bool {
     return g_len > 0 or g_dropped > 0;
 }
 
-/// Mailbox generation: unread count plus the parked bodies. Same state
-/// produces the same value so a wake can be coalesced (#1137).
-pub fn generation() u64 {
-    var h = std.hash.Wyhash.init(0);
-    h.update(std.mem.asBytes(&g_len));
-    h.update(std.mem.asBytes(&g_dropped));
-    var i: usize = 0;
-    while (i < g_len) : (i += 1) {
-        const p = itemAt(i);
-        h.update(fromSlice(p));
-        h.update(textSlice(p));
-        h.update(std.mem.asBytes(&p.dm));
-        h.update(std.mem.asBytes(&p.device));
-    }
-    return h.final();
-}
-
 /// True when any parked body starts with `want` (daddy directives).
 pub fn anyTextPrefixed(want: []const u8) bool {
     var i: usize = 0;
