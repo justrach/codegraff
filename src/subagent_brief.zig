@@ -78,10 +78,7 @@ pub fn fromInput(gpa: Allocator, obj: ObjectMap) Owned {
     return .{ .text = text, .owned = true };
 }
 
-pub fn environmentHeader(arena: Allocator, env: Env) ![]const u8 {
-    var aw: Io.Writer.Allocating = .init(arena);
-    errdefer aw.deinit();
-    const w = &aw.writer;
+fn writeEnvironment(w: *Io.Writer, env: Env) !usize {
     try w.writeAll(environment_header);
     var lines: usize = 0;
     if (trimmed(env.cwd).len > 0) {
@@ -100,16 +97,30 @@ pub fn environmentHeader(arena: Allocator, env: Env) ![]const u8 {
         try w.print("\n- pre_tool hooks: {s}", .{trimmed(env.hooks)});
         lines += 1;
     }
-    if (lines == 0) return "";
+    return lines;
+}
+
+pub fn environmentHeader(arena: Allocator, env: Env) ![]const u8 {
+    var aw: Io.Writer.Allocating = .init(arena);
+    errdefer aw.deinit();
+    if (try writeEnvironment(&aw.writer, env) == 0) {
+        aw.deinit();
+        return "";
+    }
     return aw.toOwnedSlice();
 }
 
 /// Prepend the environment header unless this is the judge (text-only ranker).
 pub fn withEnvironment(arena: Allocator, kind: []const u8, prompt: []const u8, env: Env) ![]const u8 {
     if (std.mem.eql(u8, kind, "judge_task")) return prompt;
-    const header = try environmentHeader(arena, env);
-    if (header.len == 0) return prompt;
-    return std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ header, prompt });
+    var aw: Io.Writer.Allocating = .init(arena);
+    errdefer aw.deinit();
+    if (try writeEnvironment(&aw.writer, env) == 0) {
+        aw.deinit();
+        return prompt;
+    }
+    try aw.writer.print("\n\n{s}", .{prompt});
+    return aw.toOwnedSlice();
 }
 
 fn instructionName(io: Io) []const u8 {
