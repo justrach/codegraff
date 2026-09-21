@@ -3,9 +3,11 @@
 ## Automatic HTTP setup
 
 The packaged GUI installs its bundled `graff` command into `~/.local/bin` on
-launch and adds that directory to shell startup files. Open a new terminal to
-load the PATH change. GUI updates refresh this managed launcher; an existing
-independently installed command is preserved. `HARNESS_NO_PATH=1` skips PATH edits.
+launch (and `~/bin` plus Homebrew/`/usr/local/bin` when those dirs are writable)
+and prepends `~/.local/bin` on zsh/bash login and interactive startup files.
+Open a new terminal if your current one was started before that PATH line.
+GUI updates refresh this managed launcher; an existing independently installed
+command is preserved. `HARNESS_NO_PATH=1` skips PATH edits.
 
 The CLI installer and first launch of the packaged GUI run `graff mcp install`.
 The GUI also offers **Tools → Configure MCP clients**. Setup requires Python 3

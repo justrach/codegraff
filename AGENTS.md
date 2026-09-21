@@ -49,6 +49,14 @@ new load-bearing decision, add a record in the same branch.
 
 The graphical app follows [docs/design.md](docs/design.md). Radii are tokens (`rounded-composer`, `rounded-window`, `rounded-card`, `rounded-control`, `rounded-chip`, `rounded-full`). Icon-only buttons are circles; labelled buttons are pills; the prompt bar is 32px. Do not invent `rounded-[Npx]` for chrome. Nested split panes stay 6px. The TUI is not this surface.
 
+## Packaged GUI installs `graff` on PATH
+
+First launch of a packaged desktop build must leave `graff` as a command the user can type in a new terminal. **This includes Developer ID signed and notarized `.app` / `.dmg` builds.** Notarization, stapling, Gatekeeper, and the release sign flow do not skip, stub, or replace that step. MCP client setup is a separate first-launch job and must not gate PATH install (a failed `graff mcp install` is not an excuse to skip the shim).
+
+`apps/native/electron/engine-launcher.cjs` writes `~/.local/bin/graff`, prepends that directory on zsh/bash **login and interactive** startup files (`.zprofile` and `.zshrc`, not only the GUI process’s `SHELL`), and shims `~/bin`, `/opt/homebrew/bin`, and `/usr/local/bin` when writable. `HARNESS_NO_PATH=1` is the only skip — do not set it in notarized or release builds.
+
+Regression: `apps/native/electron/engine-launcher.test.cjs` (`login zsh finds graff without inheriting the app PATH` and `packaged first launch always installs graff on PATH, including notarized builds`).
+
 ## Driving the pager (no PTY, no Ghostty window)
 
 Do not spawn `graff tui` or a terminal emulator to inspect or click the pager.

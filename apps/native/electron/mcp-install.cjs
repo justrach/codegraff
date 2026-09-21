@@ -3,7 +3,15 @@ const { execFile } = require('node:child_process');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
-async function installMcp(binary, home, { once = false, version = '1' } = {}) {
+let queue = Promise.resolve();
+
+async function installMcp(binary, home, opts = {}) {
+  const run = queue.then(() => installMcpLocked(binary, home, opts));
+  queue = run.catch(() => {});
+  return run;
+}
+
+async function installMcpLocked(binary, home, { once = false, version = '1' } = {}) {
   if (process.env.GRAFF_NO_MCP === '1') return 'MCP setup skipped';
   const receipt = path.join(home, '.graff/mcp/gui-installed');
   if (once) {
