@@ -9,7 +9,7 @@ const Value = std.json.Value;
 const exec = @import("exec.zig");
 const tools = @import("tools.zig");
 
-fn testCtx(client: *std.http.Client, cwd: []const u8) tools.ToolCtx {
+fn testCtx(client: *std.http.Client, cwd: []const u8, tracker: ?*@import("read_miss.zig").Tracker) tools.ToolCtx {
     return .{
         .gpa = std.testing.allocator,
         .io = std.testing.io,
@@ -20,18 +20,25 @@ fn testCtx(client: *std.http.Client, cwd: []const u8) tools.ToolCtx {
         .approvals = null,
         .tracer = null,
         .agent_cwd = cwd,
+        .read_miss = tracker,
     };
 }
 
 fn readFile(cwd: []const u8, input_json: []const u8) !tools.ToolOutput {
+    return readFileTracked(cwd, input_json, null);
+}
+
+fn readFileTracked(cwd: []const u8, input_json: []const u8, tracker: ?*@import("read_miss.zig").Tracker) !tools.ToolOutput {
     var parsed = try std.json.parseFromSlice(Value, std.testing.allocator, input_json, .{});
     defer parsed.deinit();
     var client: std.http.Client = undefined;
-    return exec.execTool(testCtx(&client, cwd), .{
+    const out = exec.execTool(testCtx(&client, cwd, tracker), .{
         .id = "call_1",
         .name = "read_file",
         .input = parsed.value,
     });
+    if (tracker) |t| t.noteOutput("read_file", parsed.value, out.text, out.is_error);
+    return out;
 }
 
 test "read_file (#761): a call with only path is a whole-file read" {
@@ -66,4 +73,48 @@ test "read_file (#761): a call with only path is a whole-file read" {
     defer gpa.free(combined.text);
     try std.testing.expect(combined.is_error);
     try std.testing.expect(std.mem.indexOf(u8, combined.text, "cannot be combined") != null);
+}
+
+test "#1116: sequential missing reads under one prefix stop and point at list_dir" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tracker: @import("read_miss.zig").Tracker = .{};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "real.txt", .data = "kept\n" });
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &real_buf);
+    const cwd = real_buf[0..n];
+
+    const first = try readFileTracked(cwd, "{\"path\":\"docs/adr/0365-one.md\"}", &tracker);
+    defer gpa.free(first.text);
+    try std.testing.expect(first.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, first.text, "does not exist") != null);
+
+    const second = try readFileTracked(cwd, "{\"path\":\"docs/adr/0366-two.md\"}", &tracker);
+    defer gpa.free(second.text);
+    try std.testing.expect(second.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, second.text, "does not exist") != null);
+
+    const third = try readFileTracked(cwd, "{\"path\":\"docs/adr/0367-three.md\"}", &tracker);
+    defer gpa.free(third.text);
+    try std.testing.expect(third.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, third.text, "does not exist") != null);
+
+    const fourth = try readFileTracked(cwd, "{\"path\":\"docs/adr/0397-reshuffle.md\"}", &tracker);
+    defer gpa.free(fourth.text);
+    try std.testing.expect(fourth.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, fourth.text, "refused") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fourth.text, "codedb list_dir") != null);
+
+    const other = try readFileTracked(cwd, "{\"path\":\"missing-elsewhere.txt\"}", &tracker);
+    defer gpa.free(other.text);
+    try std.testing.expect(other.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, other.text, "does not exist") != null);
+
+    const kept = try readFileTracked(cwd, "{\"path\":\"real.txt\"}", &tracker);
+    defer gpa.free(kept.text);
+    try std.testing.expect(!kept.is_error);
+    try std.testing.expectEqualStrings("kept\n", kept.text);
 }

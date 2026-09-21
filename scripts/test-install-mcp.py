@@ -83,7 +83,13 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(data['ProgramArguments'][0], '/Applications/A B.app/graff')
         self.assertEqual(data['EnvironmentVariables']['GRAFF_MCP_TOKEN'], self.token)
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-        self.assertEqual(run.call_count, 2)
+        commands = [tuple(call.args[0]) for call in run.call_args_list]
+        domain = f'gui/{os.getuid()}/dev.codegraff.mcp'
+        self.assertEqual(commands, [
+            ('launchctl', 'bootout', domain),
+            ('launchctl', 'bootstrap', f'gui/{os.getuid()}', str(path)),
+            ('launchctl', 'kickstart', '-k', domain),
+        ])
 
     def test_unmanaged_service_preserved(self):
         path = self.home / 'Library/LaunchAgents/dev.codegraff.mcp.plist'

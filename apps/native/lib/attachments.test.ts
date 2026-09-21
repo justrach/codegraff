@@ -88,28 +88,69 @@ test("the attach row keeps the pointer gesture so the file dialog can open", () 
   assert.equal(attachRowKeepsUserActivation("file:notes.md"), false);
 });
 
+function hangUntilAbort(signal?: AbortSignal): Promise<never> {
+  if (!signal) return Promise.reject(new Error("expected abort signal"));
+  return new Promise((_, reject) => {
+    const fail = () => reject(signal.reason ?? new DOMException("The operation was aborted.", "TimeoutError"));
+    if (signal.aborted) {
+      fail();
+      return;
+    }
+    signal.addEventListener("abort", fail, { once: true });
+  });
+}
+
+function okAttach(name: string): Response {
+  return Response.json({ path: `/tmp/x/${name}`, name });
+}
+
 test("uploadAttachment times out instead of hanging the composer", async () => {
   const file = new File([new Uint8Array([1])], "shot.png", { type: "image/png" });
   const original = globalThis.fetch;
+  globalThis.fetch = (async (_url: unknown, init?: { signal?: AbortSignal }) => hangUntilAbort(init?.signal)) as typeof fetch;
+  try {
+    await assert.rejects(() => uploadAttachment(file, 15), /Adding shot\.png timed out/);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("a hung first upload does not block a later file from completing", async () => {
+  const hung = new File([new Uint8Array([1])], "stuck.png", { type: "image/png" });
+  const later = new File([new Uint8Array([1])], "ok.png", { type: "image/png" });
+  const original = globalThis.fetch;
+  let calls = 0;
   globalThis.fetch = (async (_url: unknown, init?: { signal?: AbortSignal }) => {
-    const signal = init?.signal;
-    if (!signal) throw new Error("expected abort signal");
-    await new Promise((_, reject) => {
-      const fail = () => reject(signal.reason ?? new DOMException("The operation was aborted.", "TimeoutError"));
-      if (signal.aborted) {
-        fail();
-        return;
-      }
-      const timer = setTimeout(fail, 100);
-      signal.addEventListener("abort", () => {
-        clearTimeout(timer);
-        fail();
-      }, { once: true });
-    });
-    throw new Error("unreachable");
+    calls += 1;
+    if (calls === 1) return hangUntilAbort(init?.signal);
+    return okAttach("ok.png");
   }) as typeof fetch;
   try {
-    await assert.rejects(() => uploadAttachment(file, 15), /timed out/);
+    const pendingHung = uploadAttachment(hung, 80);
+    const finished = await uploadAttachment(later, 80);
+    assert.equal(finished.name, "ok.png");
+    await assert.rejects(pendingHung, /Adding stuck\.png timed out/);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("partial multi-file failure names the failed file and keeps the successful one", async () => {
+  const bad = new File([new Uint8Array([1])], "notes.md", { type: "text/markdown" });
+  const good = new File([new Uint8Array([1])], "shot.png", { type: "image/png" });
+  const original = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    if (calls === 1) return Response.json({ error: "not stored" }, { status: 500 });
+    return okAttach("shot.png");
+  }) as typeof fetch;
+  try {
+    const results = await Promise.allSettled([uploadAttachment(bad, 80), uploadAttachment(good, 80)]);
+    assert.equal(results[0]?.status, "rejected");
+    assert.match((results[0] as PromiseRejectedResult).reason.message, /notes\.md/);
+    assert.equal(results[1]?.status, "fulfilled");
+    assert.equal((results[1] as PromiseFulfilledResult<{ name: string }>).value.name, "shot.png");
   } finally {
     globalThis.fetch = original;
   }

@@ -22,6 +22,7 @@ const rlm_spec = @import("rlm_spec.zig");
 const rlm_mcp = @import("rlm_mcp.zig");
 const rlm_reduce = @import("rlm_reduce.zig");
 const mcp_shapes = @import("mcp_shapes.zig");
+const read_miss = @import("read_miss.zig");
 
 pub const tool_name = "rlm";
 pub const tool_desc = "Programmatic tool calling (RLM + sPTC). Functions ARE this session's tools. Literal read_file/codedb/bash/webfetch/sleep_ms/llm_query/subagent start as the script streams. Binds persist. subagent(\"task\") is sidecar-only (keep the critical-path next step local). Loaded MCP names are host functions after load_tool_schemas; each(arr, tool, field) maps a JSON array; len(x)/project(x, field) slim it. print() is the answer. Prefer one rlm over N tool calls.";
@@ -131,16 +132,77 @@ fn speculate(ctx: ToolCtx, arena: Allocator, calls: []const spec_ptc.Call, claim
         try uniq.append(arena, c);
     }
     if (uniq.items.len == 0) return;
-    const futs = try arena.alloc(Io.Future(ToolOutput), uniq.items.len);
-    const keys = try arena.alloc([]const u8, uniq.items.len);
-    for (uniq.items, futs, keys) |c, *fut, *key| {
+    var read_paths: std.ArrayList([]const u8) = .empty;
+    for (uniq.items) |c| {
+        if (std.mem.eql(u8, c.name, "read_file")) {
+            if (read_miss.pathFromArgsJson(c.args_json)) |p| try read_paths.append(arena, p);
+        }
+    }
+    var batch = read_miss.Batch.init(read_paths.items);
+    var wave1: std.ArrayList(spec_ptc.Call) = .empty;
+    var hold: std.ArrayList(spec_ptc.Call) = .empty;
+    for (uniq.items) |c| {
+        if (std.mem.eql(u8, c.name, "read_file")) {
+            if (read_miss.pathFromArgsJson(c.args_json)) |p| {
+                if (ctx.read_miss) |tracker| {
+                    switch (batch.classify(tracker, p)) {
+                        .refuse => {
+                            try claimed.put(try c.key(arena), .{
+                                .text = try read_miss.refusalText(ctx.gpa, p),
+                                .is_error = true,
+                            });
+                            continue;
+                        },
+                        .hold => {
+                            try hold.append(arena, c);
+                            continue;
+                        },
+                        .run => {},
+                    }
+                }
+            }
+        }
+        try wave1.append(arena, c);
+    }
+    try launchHost(ctx, arena, wave1.items, claimed);
+    if (hold.items.len == 0) return;
+    var wave2: std.ArrayList(spec_ptc.Call) = .empty;
+    for (hold.items) |c| {
+        const p = read_miss.pathFromArgsJson(c.args_json) orelse {
+            try wave2.append(arena, c);
+            continue;
+        };
+        if (ctx.read_miss) |tracker| {
+            if (tracker.shouldRefuse(p)) {
+                try claimed.put(try c.key(arena), .{
+                    .text = try read_miss.refusalText(ctx.gpa, p),
+                    .is_error = true,
+                });
+                continue;
+            }
+        }
+        try wave2.append(arena, c);
+    }
+    try launchHost(ctx, arena, wave2.items, claimed);
+}
+
+fn launchHost(ctx: ToolCtx, arena: Allocator, calls: []const spec_ptc.Call, claimed: *std.StringHashMap(ToolOutput)) !void {
+    if (calls.len == 0) return;
+    const futs = try arena.alloc(Io.Future(ToolOutput), calls.len);
+    const keys = try arena.alloc([]const u8, calls.len);
+    for (calls, futs, keys) |c, *fut, *key| {
         key.* = try c.key(arena);
         fut.* = ctx.io.async(runHost, .{ ctx, c });
     }
-    for (futs, keys) |*fut, key| {
+    for (futs, keys, calls) |*fut, key, c| {
         const out = fut.await(ctx.io);
+        if (ctx.read_miss) |tracker| tracker.noteOutput(c.name, pathValue(arena, c.args_json), out.text, out.is_error);
         try claimed.put(key, out);
     }
+}
+
+fn pathValue(arena: Allocator, args_json: []const u8) Value {
+    return std.json.parseFromSliceLeaky(Value, arena, args_json, .{}) catch .null;
 }
 
 fn runHost(ctx: ToolCtx, call: spec_ptc.Call) ToolOutput {

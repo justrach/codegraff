@@ -152,6 +152,28 @@ export function createSessionStoreState(
         };
       });
     },
+    replaceAttachments: (key, items) => {
+      if (key == null) {
+        return;
+      }
+
+      set((current) => {
+        const nextByKey = { ...current.attachmentsByKey };
+        if (items.length === 0) {
+          delete nextByKey[key];
+        } else {
+          const paths = new Set<string>();
+          nextByKey[key] = items.filter((item) => {
+            if (paths.has(item.path)) {
+              return false;
+            }
+            paths.add(item.path);
+            return true;
+          });
+        }
+        return { attachmentsByKey: nextByKey };
+      });
+    },
     removeAttachment: (key, id) => {
       if (key == null) {
         return;

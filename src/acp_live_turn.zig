@@ -32,6 +32,10 @@ pub const LiveTurn = struct {
 
     pub fn run(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const u8 {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
+        // Receipt marker before any dedup/turn work: a worker that logged its
+        // recipe but never this line never received its prompt — the stall is
+        // upstream (client dispatch / bootstrap / transport), not in the turn.
+        if (self.root.tracer) |tr| tr.note("acp_prompt", self.session_id);
         agent_mod.Agent.prepareRootTurn(); // #753: a prior stream cancel must not steal the continuation
         if (self.inbox) |inbox| inbox.begin();
         defer if (self.inbox) |inbox| inbox.end();
@@ -124,3 +128,50 @@ pub const LiveTurn = struct {
         return final;
     }
 };
+
+test "session/prompt receipt is traced even when dedup skips the turn" {
+    const dedup = @import("turn_dedup.zig");
+    dedup.resetForTest();
+    defer dedup.resetForTest();
+    @import("side_steer.zig").resetForTest();
+    defer @import("side_steer.zig").resetForTest();
+    const interactive = @import("subagent_interactive.zig");
+    const was_notice = interactive.line_notice;
+    interactive.line_notice = false;
+    defer interactive.line_notice = was_notice;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var aw: Io.Writer.Allocating = .init(a);
+    defer aw.deinit();
+    var tracer: trace.Tracer = .{
+        .io = std.testing.io,
+        .gpa = std.testing.allocator,
+        .out = &aw.writer,
+        .start = Io.Timestamp.now(std.testing.io, .awake),
+    };
+    var root: agent_mod.Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = a,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "grok-4.6", .context = 100_000 },
+        .messages = std.json.Array.init(a),
+        .sub = false,
+        .label = "test",
+        .out = null,
+        .tracer = &tracer,
+    };
+    try root.messages.append(try messages.textMessage(a, "user", "hi"));
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    var out_buf: [1024]u8 = undefined;
+    var out: Io.Writer = .fixed(&out_buf);
+    var live: LiveTurn = .{ .root = &root, .keys = &keys, .out = &out, .session_id = "s1" };
+    // A back-to-back duplicate skips the model turn entirely — the receipt
+    // marker must already be in the trace, or a skipped prompt is
+    // indistinguishable from one the worker never received.
+    try std.testing.expectEqualStrings("", try LiveTurn.run(&live, a, "hi"));
+    const logged = aw.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, logged, "\"acp_prompt\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, logged, "s1") != null);
+}

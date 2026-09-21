@@ -27,7 +27,29 @@ pub fn looksMcp(name: []const u8) bool {
     return mcp.Registry.isMcp(name);
 }
 
+/// Catalog natives stay native even when an MCP short name collides (#1016).
+pub fn isNativeHost(name: []const u8) bool {
+    if (@import("shell_tool.zig").isFamily(name)) return true;
+    const names = [_][]const u8{
+        "read_file",         "edit_file",       "write_file",
+        "codedb",            "webfetch",        "sleep_ms",
+        "llm_query",         "subagent",        "skill",
+        "ask_user",          "todo_write",      "todo_read",
+        "eval",              "note_constraint", "attempt_completion",
+        "load_tool_schemas", "clock_sleep",     "workflow",
+        "agent_output",      "peer_message",    "workspace",
+        "imagegen",          "learn_candidate", "rlm",
+        "read_tool_result",  "render_html",     "mcp_search_tools",
+        "mcp_select_tool",
+    };
+    for (names) |n| {
+        if (std.mem.eql(u8, name, n)) return true;
+    }
+    return false;
+}
+
 pub fn resolve(ctx: ToolCtx, name: []const u8) ?[]const u8 {
+    if (isNativeHost(name)) return null;
     if (mcp.Registry.isMcp(name)) return name;
     const reg = ctx.registry orelse return null;
     var hit: ?[]const u8 = null;
@@ -272,6 +294,54 @@ test "unloaded MCP name is refused; loaded name is prepared for exec" {
 
 test "MCP-inside-rlm host functions are on by default" {
     try std.testing.expect(host_enabled);
+}
+
+test "#1016: native read_file is not remapped to an unloaded MCP short name" {
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    mcp_schema_gate.reset();
+    defer mcp_schema_gate.reset();
+    mcp_schema_gate.g_policy = .{ .enabled = true, .budget = 0, .eager = &.{} };
+    var inner: std.json.ObjectMap = .empty;
+    try inner.put(arena, "type", .{ .string = "string" });
+    var props: std.json.ObjectMap = .empty;
+    try props.put(arena, "path", .{ .object = inner });
+    var schema: std.json.ObjectMap = .empty;
+    try schema.put(arena, "type", .{ .string = "object" });
+    try schema.put(arena, "properties", .{ .object = props });
+    var colliding = [_]mcp.Tool{.{
+        .server_index = 0,
+        .original_name = "read_file",
+        .qualified_name = "mcp__wiki__read_file",
+        .description = "wiki",
+        .input_schema = .{ .object = schema },
+    }};
+    var registry = mcp.Registry.empty(gpa, io);
+    defer registry.deinit();
+    registry.tools = colliding[0..];
+    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer dummy_client.deinit();
+    const ctx: ToolCtx = .{
+        .gpa = gpa,
+        .io = io,
+        .client = &dummy_client,
+        .provider = undefined,
+        .registry = &registry,
+        .from_sub = false,
+        .approvals = null,
+        .tracer = null,
+    };
+    try std.testing.expect(isNativeHost("read_file"));
+    try std.testing.expect(resolve(ctx, "read_file") == null);
+    try std.testing.expect(mcp_schema_gate.blocked(registry.tools, "mcp__wiki__read_file"));
+    const call: spec_ptc.Call = .{ .name = "read_file", .args_json = "{\"path\":\"note.txt\"}" };
+    switch (prepare(ctx, arena, call)) {
+        .run => |c| try std.testing.expectEqualStrings("read_file", c.name),
+        .refuse => return error.ShouldKeepNativeReadFile,
+    }
 }
 
 test "short name resolves when unique and loaded; consent/deferral still block" {

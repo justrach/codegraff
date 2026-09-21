@@ -200,6 +200,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
         .bind_session = liveBind,
         .meter = liveMeter,
         .extra = liveModels,
+        .cwd = if (std.fs.path.isAbsolute(main_mod.g_cwd_display)) main_mod.g_cwd_display else "",
     };
     while (true) {
         const event = (inbox.wait(arena) catch break) orelse break;

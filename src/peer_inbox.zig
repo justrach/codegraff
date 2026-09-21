@@ -46,12 +46,22 @@ var g_items: [inbox_cap]Parked = undefined;
 var g_head: usize = 0;
 var g_len: usize = 0;
 var g_dropped: usize = 0;
+var g_gen: u64 = 0;
+
+pub fn generation() u64 {
+    return g_gen;
+}
+
+fn bumpGen() void {
+    g_gen +%= 1;
+}
 
 pub fn clear() void {
     for (0..g_len) |i| itemAt(i).deinit();
     g_head = 0;
     g_len = 0;
     g_dropped = 0;
+    bumpGen();
 }
 
 pub fn resetForTest() void {
@@ -143,6 +153,7 @@ pub fn parkHeard(local: []const Message, device: []const Message) usize {
         parkOne(m.from_session, m.text, m.to.len > 0, true);
         n += 1;
     }
+    if (n > 0) bumpGen();
     return n;
 }
 

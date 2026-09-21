@@ -41,7 +41,7 @@ async function runSavedSessionVisuals({ win, origin, output }) {
       if (fixture.fail) return new Response('Snapshot unavailable', { status: 503 });
       return json({ ...row(name), messages: name === 'empty-repl' ? [] : [
         { role: 'user', content: 'Check the files and report the result.' },
-        { role: 'assistant', content: 'I am checking the remaining files.', tool_calls: [
+        { role: 'assistant', content: 'The repository work is complete and verified, but publication is temporarily blocked. The regression path is locally verified and the changes remain available until publication can continue.', tool_calls: [
           { id: 'check', function: { name: 'bash', arguments: '{"command":"check-files"}' } }
         ] },
         ...(fixture.completed ? [{ role: 'tool', tool_call_id: 'check', content: 'Checks passed.' },
@@ -50,14 +50,23 @@ async function runSavedSessionVisuals({ win, origin, output }) {
     };
   ` });
   try {
+    win.setContentSize(1520, 374);
     await wc.loadURL(origin);
     await wait(`!!document.querySelector('[data-workspace-ready="true"] [aria-label="Conversations"]')`);
     await js(`document.querySelector('[aria-label="Conversations"]').click()`);
     // Resolve and click in one renderer turn: workspace refresh may replace rows.
     await wait(`(()=>{const row=Array.from(document.querySelectorAll('[data-conversation-library] li button')).find(e=>e.textContent.includes('active-repl'));if(!row)return false;row.click();return true;})()`);
-    await wait(`document.body.textContent.includes('I am checking the remaining files.')`);
+    await wait(`document.body.textContent.includes('The repository work is complete and verified,')`);
     await wait(`!!document.querySelector('[data-saved-snapshot]')`);
+    await wait(`!document.querySelector('[data-saved-cache-check]').textContent.includes('Checking')`);
     assert.match(await js(`document.querySelector('[data-saved-snapshot]').textContent`), /Live (?:REPL )?status unknown/);
+    await js(`window.dispatchEvent(new KeyboardEvent('keydown',{key:'w',metaKey:true,bubbles:true,cancelable:true}))`);
+    await wait(`!document.querySelector('[data-saved-snapshot]')`);
+    await js(`window.dispatchEvent(new KeyboardEvent('keydown',{key:'t',metaKey:true,shiftKey:true,bubbles:true,cancelable:true}))`);
+    await wait(`!!document.querySelector('[data-saved-snapshot]')`);
+    await wait(`!document.querySelector('[data-saved-cache-check]').textContent.includes('Checking')`);
+    const reopenedLayout = await js(`(()=>{const article=document.querySelector('article').getBoundingClientRect(),snapshot=document.querySelector('[data-saved-snapshot]').getBoundingClientRect();return {articleBottom:article.bottom,snapshotTop:snapshot.top,gap:snapshot.top-article.bottom}})()`);
+    assert.ok(reopenedLayout.gap >= 0, `Reopened saved snapshot overlaps the transcript: ${JSON.stringify(reopenedLayout)}`);
     assert.equal(await js(`document.querySelector('[data-chat] textarea[aria-label="Prompt"]')`), null, 'Snapshot cannot accept follow-ups');
     assert.equal(await js(`document.querySelector('article')?.dataset.turnStatus`), 'snapshot', 'Intermediate prose is not a completed turn');
     assert.equal(await js(`!!document.querySelector('[data-turn-activity]')?.textContent.includes('Turn finished')`), false);
@@ -66,7 +75,7 @@ async function runSavedSessionVisuals({ win, origin, output }) {
     assert.equal(await js(`window.savedFixture.requests.some(r=>r.method==='session/prompt')`), false);
     await js(`window.savedFixture.fail=true;document.querySelector('[data-saved-snapshot] [data-refresh-snapshot]').click()`);
     await wait(`!!document.querySelector('[data-saved-snapshot] [role="alert"]')`);
-    assert.ok(await js(`document.body.textContent.includes('I am checking the remaining files.')`), 'Refresh failure preserves history');
+    assert.ok(await js(`document.body.textContent.includes('The repository work is complete and verified,')`), 'Refresh failure preserves history');
     await js(`window.savedFixture.fail=false;window.savedFixture.completed=true;document.querySelector('[data-refresh-snapshot]').click()`);
     await wait(`document.body.textContent.includes('All files checked.')`);
     assert.match(await js(`document.querySelector('[data-saved-snapshot]').textContent`), /Live (?:REPL )?status unknown/, 'Successful refresh is still a snapshot');
@@ -88,7 +97,7 @@ async function runSavedSessionVisuals({ win, origin, output }) {
     await wait(`(()=>{const row=Array.from(document.querySelectorAll('[data-conversation-library] li button')).find(e=>e.textContent.includes('empty-repl'));if(!row)return false;row.click();return true;})()`);
     await wait(`!!document.querySelector('[data-saved-snapshot]')`);
     assert.equal(await js(`document.querySelector('[data-chat] textarea')`), null, 'Empty saved sessions also require explicit continuation');
-    console.log('Saved session GUI checks passed: intermediate commentary, read-only ownership, failed/completed refresh, explicit continuation, empty history.');
+    console.log('Saved session GUI checks passed: short-window Cmd+Shift+T clearance, intermediate commentary, read-only ownership, failed/completed refresh, explicit continuation, empty history.');
   } finally {
     await wc.debugger.sendCommand('Page.removeScriptToEvaluateOnNewDocument', { identifier });
     wc.debugger.detach();

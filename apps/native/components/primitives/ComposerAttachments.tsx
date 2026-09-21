@@ -5,13 +5,17 @@ import { createPortal } from "react-dom";
 import type { Attachment } from "@/lib/attachments";
 import { Icon, GLYPHS } from "./prompt-demo";
 
-export default function ComposerAttachments({ attachments, pill, onRemove }: {
-  attachments: readonly Attachment[]; pill: boolean; onRemove(id: string): void;
+export type FailedAttach = { id: string; name: string; error: string };
+
+export default function ComposerAttachments({ attachments, failed = [], pill, onRemove, onRetryFailed, onDismissFailed }: {
+  attachments: readonly Attachment[]; failed?: readonly FailedAttach[]; pill: boolean;
+  onRemove(id: string): void; onRetryFailed?(id: string): void; onDismissFailed?(id: string): void;
 }) {
   const [previewId, setPreviewId] = useState<string | null>(null);
   const preview = attachments.find(file => file.id === previewId && file.preview);
+  const chips = attachments.length > 0 || failed.length > 0;
   return <>
-    {attachments.length > 0 && <div className={`flex flex-wrap gap-1.5 pt-0.5 ${pill ? "px-1" : "px-0.5"}`}>
+    {chips && <div className={`flex flex-wrap gap-1.5 pt-0.5 ${pill ? "px-1" : "px-0.5"}`}>
       {attachments.map(file => <span key={file.id}
         className={`flex h-6.5 items-center gap-1.5 bg-field py-1 pr-1 pl-1.5 text-[11.5px] text-ink-2 shadow-hairline ${pill ? "rounded-full" : "rounded-chip"}`}
         style={{ animation: "pop-in 200ms cubic-bezier(0.23,1,0.32,1) both" }}>
@@ -27,7 +31,19 @@ export default function ComposerAttachments({ attachments, pill, onRemove }: {
           <Icon size={10} strokeWidth={2.5}><path d="M18 6L6 18M6 6l12 12" /></Icon>
         </button>
       </span>)}
+      {failed.map(file => <span key={file.id}
+        className={`flex h-6.5 max-w-full items-center gap-1 bg-field py-1 pr-1 pl-1.5 text-[11.5px] text-red shadow-hairline ${pill ? "rounded-full" : "rounded-chip"}`}
+        role="status">
+        <span className="max-w-36 truncate" title={file.error}>{file.name}</span>
+        {onRetryFailed && <button type="button" aria-label={`Retry ${file.name}`} onClick={() => onRetryFailed(file.id)}
+          className={`flex h-6 items-center px-1.5 text-[11px] text-ink-2 hover:bg-hover hover:text-ink ${pill ? "rounded-full" : "rounded-[5px]"}`}>Retry</button>}
+        <button type="button" aria-label={`Remove ${file.name}`} onClick={() => (onDismissFailed ?? onRemove)(file.id)}
+          className={`-my-1 flex size-6 items-center justify-center text-ink-3 transition-colors duration-100 hover:bg-line/70 hover:text-ink ${pill ? "rounded-full" : "rounded-[5px]"}`}>
+          <Icon size={10} strokeWidth={2.5}><path d="M18 6L6 18M6 6l12 12" /></Icon>
+        </button>
+      </span>)}
     </div>}
+    {failed.length > 0 && <p className={`text-[11.5px] text-red ${pill ? "px-2" : "px-1"}`} role="status">{failed[failed.length - 1]?.error}</p>}
     {preview && <AttachmentPreview key={preview.id} file={preview} onClose={() => setPreviewId(null)} />}
   </>;
 }

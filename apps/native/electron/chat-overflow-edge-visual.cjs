@@ -49,6 +49,14 @@ async function runOverflowEdges({ win, origin }) {
       if (name === 'inline-path') {
         await js(`document.querySelector('[data-overflow-scroller="left"] code[title]').click()`);
         assert.equal(await js(`document.querySelector('[data-overflow-path-opened="left"]').textContent`), 'Path clicked');
+        const worktreeWrapped = await js(`Array.from(document.querySelectorAll('[data-chat-transcript]'), e => {
+          const paragraph = Array.from(e.querySelectorAll('p')).find(p => p.textContent.includes('WORKTREE_PATH_END'));
+          if (!paragraph) return false;
+          const range = document.createRange(); range.selectNodeContents(paragraph);
+          const bounds = e.getBoundingClientRect(), rects = Array.from(range.getClientRects()).filter(r => r.width);
+          return rects.length > 1 && rects.every(r => r.left >= bounds.left - 1 && r.right <= bounds.right + 1);
+        })`);
+        assert.deepEqual(worktreeWrapped, [true, true], `${width}px/inline-path: long .worktrees path wraps inside each transcript`);
       }
       if (name === 'table' || name === 'fence') {
         const local = await js(`Array.from(document.querySelectorAll('[data-chat-transcript]'), e => {

@@ -1,5 +1,6 @@
 import { parseRpcLine, type AcpCommand, type AcpUpdate, type JsonRpcLine } from "./acp";
 import { liveAppearanceTokens } from "./appearance-note";
+import { readAnswerResponse, validateAnswer } from "./ask-answer";
 
 const BASE = "/api/acp";
 
@@ -95,11 +96,12 @@ export type SessionOpts = {
 export async function ensureSession(
   chat: ChatHandle,
   opts: SessionOpts = {},
-): Promise<{ sessionId: string; commands: AcpCommand[] }> {
+): Promise<{ sessionId: string; commands: AcpCommand[]; cwd?: string }> {
   const res = await rpc(chat, "bootstrap", opts);
-  const body = (await res.json()) as { sessionId?: string; error?: string; commands?: AcpCommand[] };
+  const body = (await res.json()) as { sessionId?: string; error?: string; commands?: AcpCommand[]; cwd?: string };
   if (!body.sessionId) throw new Error(body.error ?? "ACP session/new failed");
-  return { sessionId: body.sessionId, commands: body.commands ?? [] };
+  const checkout = typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : undefined;
+  return { sessionId: body.sessionId, commands: body.commands ?? [], cwd: checkout };
 }
 
 export async function* prompt(
@@ -168,16 +170,18 @@ export async function answer(
   sessionId: string,
   opts: { callId: string; text?: string; cancelled?: boolean },
 ): Promise<void> {
+  const checked = validateAnswer(opts);
+  if (!checked.ok) throw new Error(checked.error);
   const response = await fetch(BASE, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       chat,
       method: "session/answer",
-      params: { sessionId, callId: opts.callId, text: opts.text ?? "", cancelled: opts.cancelled === true },
+      params: { sessionId, callId: checked.value.callId, text: checked.value.text, cancelled: checked.value.cancelled },
     }),
   });
-  if (!response.ok) throw new Error("Could not send the answer");
+  await readAnswerResponse(response);
 }
 
 /** Kill a closed tab's agent. `keepalive` so a close-then-navigate still lands. */

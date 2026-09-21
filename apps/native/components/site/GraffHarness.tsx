@@ -389,7 +389,7 @@ export default function GraffHarness() {
   const columnBody = (thread: Chat) => <ChatColumn key={thread.id} thread={thread}
     compact={columnIds.length > 1 || navigation.focusedMode || filesOpen || browserOpen || agentsOpen || reviewsOpen || !!(fileRequest?.changes)} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
     onOpenPath={path => openReference(path, thread.id)} onReview={openChanges}
-    onAnswer={(text, cancelled) => { const live = sessionsRef.current.get(thread.id); const ask = thread.messages.findLast(m => m.role === "assistant")?.turn.ask; if (live && ask) void answer(handleOf(thread.id), live, { callId: ask.callId, text, cancelled }); }}
+    onAnswer={(text, cancelled) => { const live = sessionsRef.current.get(thread.id); const ask = thread.messages.findLast(m => m.role === "assistant")?.turn.ask; if (!live || !ask) return Promise.reject(new Error("This question is no longer waiting")); return answer(handleOf(thread.id), live, { callId: ask.callId, text, cancelled }); }}
     onEditPrompt={(n, text) => {
       const live = sessionsRef.current.get(thread.id);
       if (live) void cancel(handleOf(thread.id), live).catch(() => undefined);

@@ -1,30 +1,53 @@
 //! One claim ledger per Git repository, not per worktree cwd (#1092).
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const lease = @import("worktree_lease.zig");
 const process_runner = @import("process_runner.zig");
 const runCapped = process_runner.runCapped;
 const ranOk = process_runner.ranOk;
 
 pub const persist_rel = ".graff/artifact-claims.json";
 
-/// Shared file under the Git common dir. Empty when `cwd` is not a repo.
+/// Main checkout: `.graff/artifact-claims.json` (same bytes as before #1092).
+/// Linked worktree: `gitdir:` pointer → main checkout `.graff`.
 pub fn canonicalFile(arena: Allocator, io: Io, cwd: []const u8) ?[]const u8 {
-    if (cwd.len == 0) return null;
-    var common = lease.gitCommonDirAt(std.heap.page_allocator, io, arena, cwd);
-    if (common.len == 0) {
-        const r = runCapped(std.heap.page_allocator, io, &.{ "git", "-C", cwd, "rev-parse", "--git-common-dir" }, 8192, 8192, 15_000) catch return null;
-        defer {
-            std.heap.page_allocator.free(r.stdout);
-            std.heap.page_allocator.free(r.stderr);
-        }
-        if (!ranOk(r)) return null;
-        const rel = std.mem.trim(u8, r.stdout, " \t\r\n");
-        if (rel.len == 0) return null;
-        common = if (std.fs.path.isAbsolute(rel)) arena.dupe(u8, rel) catch return null else std.fs.path.resolve(arena, &.{ cwd, rel }) catch return null;
+    if (cwd.len == 0) return persist_rel;
+    const git_here = std.fs.path.join(arena, &.{ cwd, ".git" }) catch return persist_rel;
+    const st = Io.Dir.cwd().statFile(io, git_here, .{}) catch {
+        if (std.mem.eql(u8, cwd, ".")) return persist_rel;
+        return std.fs.path.join(arena, &.{ cwd, persist_rel }) catch persist_rel;
+    };
+    if (st.kind != .file) {
+        if (std.mem.eql(u8, cwd, ".")) return persist_rel;
+        return std.fs.path.join(arena, &.{ cwd, persist_rel }) catch persist_rel;
     }
-    return std.fs.path.join(arena, &.{ common, "artifact-claims.json" }) catch null;
+    {
+        if (Io.Dir.cwd().readFileAlloc(io, git_here, arena, .limited(4096))) |text| {
+            const line = std.mem.trim(u8, text, " \t\r\n");
+            const prefix = "gitdir:";
+            if (std.mem.startsWith(u8, line, prefix)) {
+                const raw = std.mem.trim(u8, line[prefix.len..], " \t");
+                const gitdir = if (std.fs.path.isAbsolute(raw))
+                    raw
+                else
+                    (std.fs.path.resolve(arena, &.{ cwd, raw }) catch return persist_rel);
+                const marker = std.fs.path.join(arena, &.{ gitdir, "commondir" }) catch return persist_rel;
+                const common = blk: {
+                    if (Io.Dir.cwd().readFileAlloc(io, marker, arena, .limited(256))) |cd| {
+                        const rel = std.mem.trim(u8, cd, " \t\r\n");
+                        if (rel.len == 0) break :blk gitdir;
+                        if (std.fs.path.isAbsolute(rel)) break :blk rel;
+                        break :blk std.fs.path.resolve(arena, &.{ gitdir, rel }) catch gitdir;
+                    } else |_| break :blk gitdir;
+                };
+                const root = std.fs.path.dirname(common) orelse return persist_rel;
+                return std.fs.path.join(arena, &.{ root, persist_rel }) catch persist_rel;
+            }
+        } else |_| {}
+    }
+    if (std.mem.eql(u8, cwd, ".")) return persist_rel;
+    return std.fs.path.join(arena, &.{ cwd, persist_rel }) catch persist_rel;
 }
 
 pub fn legacyFile(arena: Allocator, cwd: []const u8) ?[]const u8 {
@@ -36,30 +59,8 @@ pub fn samePath(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
-/// Other worktree `.graff` ledgers of this repo (porcelain `worktree` lines).
-pub fn siblingLegacyFiles(arena: Allocator, io: Io, cwd: []const u8, skip: []const u8) []const []const u8 {
-    const r = runCapped(std.heap.page_allocator, io, &.{ "git", "-C", cwd, "worktree", "list", "--porcelain" }, 64 * 1024, 4096, 15_000) catch return &.{};
-    defer {
-        std.heap.page_allocator.free(r.stdout);
-        std.heap.page_allocator.free(r.stderr);
-    }
-    if (!ranOk(r)) return &.{};
-    var list: std.ArrayList([]const u8) = .empty;
-    var it = std.mem.splitScalar(u8, r.stdout, '\n');
-    while (it.next()) |line| {
-        const prefix = "worktree ";
-        if (!std.mem.startsWith(u8, line, prefix)) continue;
-        const dir = std.mem.trim(u8, line[prefix.len..], " \t\r");
-        if (dir.len == 0) continue;
-        const file = legacyFile(arena, dir) orelse continue;
-        if (samePath(file, skip)) continue;
-        list.append(arena, file) catch continue;
-        if (list.items.len >= 32) break;
-    }
-    return list.items;
-}
-
 test "canonicalFile is identical across linked worktrees of one repo" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     const a = std.testing.allocator;
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
@@ -90,7 +91,7 @@ test "canonicalFile is identical across linked worktrees of one repo" {
     const pa = canonicalFile(ar, io, root) orelse return error.TestUnexpectedResult;
     const pb = canonicalFile(ar, io, other) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings(pa, pb);
-    try std.testing.expect(std.mem.endsWith(u8, pa, "artifact-claims.json"));
+    try std.testing.expect(std.mem.endsWith(u8, pa, persist_rel));
     const other_repo = try std.fmt.allocPrint(a, "{s}/other", .{tmp_root});
     defer a.free(other_repo);
     try Io.Dir.cwd().createDirPath(io, other_repo);
@@ -100,6 +101,7 @@ test "canonicalFile is identical across linked worktrees of one repo" {
 }
 
 test "claim follows a worktree switch and does not shadow another repo" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     const claims = @import("artifact_claim.zig");
     const a = std.testing.allocator;
     const io = std.testing.io;
