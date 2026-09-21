@@ -12,6 +12,8 @@ test('outer budget mirrors the spawner validation, defaulting hand runs', () => 
 
 test('waits end before the watchdog instead of racing it', () => {
   assert.equal(phaseBudget('composer', 180000, 0), 90000);
+  assert.equal(phaseBudget('composer focus', 180000, 0), 15000);
+  assert.equal(phaseBudget('typed prompt ready', 180000, 0), 15000);
   assert.equal(phaseBudget('agent completion', 180000, 0), 150000);
   assert.equal(phaseBudget('agent completion', 60000, 0), 30000);
   assert.equal(phaseBudget('explicit user pin', 180000, 0), 60000);

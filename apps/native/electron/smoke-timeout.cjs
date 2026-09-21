@@ -22,6 +22,8 @@ function outerMs(env = process.env) {
 function phaseBudget(label, outer = outerMs(), elapsedMs = 0) {
   switch (label) {
     case 'composer': return 90000;
+    case 'composer focus': return 15000;
+    case 'typed prompt ready': return 15000;
     case 'agent completion': return Math.max(30000, outer - 30000);
     case 'explicit user pin': return 60000;
     case 'production backend and worker shutdown':

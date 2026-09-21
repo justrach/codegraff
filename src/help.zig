@@ -87,4 +87,6 @@ test "render prints every section title, the peers blurb, and the exit footer" {
     for (sections) |sec| try std.testing.expect(std.mem.indexOf(u8, text, sec.title) != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "how hearing works") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "exit | /exit | /quit") != null);
+    const login = find("/login") orelse return error.MissingLogin;
+    try std.testing.expect(std.mem.indexOf(u8, text, login.usage) != null);
 }

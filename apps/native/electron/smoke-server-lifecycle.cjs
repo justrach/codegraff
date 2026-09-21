@@ -29,13 +29,31 @@ exports.run = async ({win, backend}) => {
   };
   await until(() => js(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`), 'composer');
   phase('composer ready');
-  async function submit(text) {
-    const box = await js(`(() => { const e=document.querySelector('textarea[aria-label="Prompt"]');e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
+  // Same click + wait-for-value + Send path as frontend-runtime.cjs. Return
+  // after a missed click left the composer empty and every worker idle at
+  // recipe (native CI, pinned shutdown pass).
+  async function click(selector) {
+    const box = await js(`(() => { const e=document.querySelector(${JSON.stringify(selector)});e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
     await desktop.testInput(win.webContents, {type:'mouseDown',button:'left',clickCount:1,...box});
     await desktop.testInput(win.webContents, {type:'mouseUp',button:'left',clickCount:1,...box});
-    for (const keyCode of text) await desktop.testInput(win.webContents, {type:'char',keyCode});
-    await desktop.testInput(win.webContents, {type:'keyDown',keyCode:'Return'});
-    await desktop.testInput(win.webContents, {type:'keyUp',keyCode:'Return'});
+  }
+  async function submit(text) {
+    const ready = () => js(`document.querySelector('textarea[aria-label="Prompt"]').value === ${JSON.stringify(text)} && !document.querySelector('[aria-label="Send"]').disabled`);
+    for (let attempt = 0; attempt < 2 && !(await ready()); attempt++) {
+      await click('textarea[aria-label="Prompt"]');
+      await until(() => js(`document.activeElement === document.querySelector('textarea[aria-label="Prompt"]')`), 'composer focus');
+      for (const keyCode of text) await desktop.testInput(win.webContents, {type:'char',keyCode});
+      const end = Date.now() + 8000;
+      while (Date.now() < end && !(await ready())) await sleep(50);
+      if (!(await ready()) && attempt === 0) phase('typed prompt missed; retrying');
+    }
+    if (!(await ready())) {
+      await timeouts.dumpTimeout({ label: 'typed prompt ready', waitedMs: 8000, outer, output, workspace, js,
+        capturePage: () => win.webContents.capturePage().then(page => page.toPNG()),
+        backendOrigin: backend.origin, writePhase: phase });
+      throw Error('Shutdown fixture failed to land the composer text');
+    }
+    await click('[aria-label="Send"]');
   }
   await submit('Start the isolated listener, check its socket, and report readiness.');
   phase('prompt submitted');
