@@ -2,6 +2,7 @@ import {
   CHAT_BODY_TONE_CLASS,
   CHAT_REASONING_TONE_CLASS,
 } from "./constants/chatStyles";
+import { AssistantResponseCopyButton } from "./AssistantResponseCopyButton";
 import { ChatMarkdownMessage } from "./ChatMarkdownMessage";
 import { ChatInlineText } from "./ChatInlineText";
 import { AttachmentTray } from "@/components/attachments/AttachmentTray";
@@ -33,7 +34,7 @@ function UserChatMessage({ text, workspacePath }: UserChatMessageProps) {
     .filter((item): item is NonNullable<typeof item> => item != null);
 
   return (
-    <article className="cg-message-in flex w-full flex-col items-end gap-2 select-none">
+    <article className="cg-message-in flex w-full flex-col items-end gap-2 select-text">
       {attachments.length > 0 ? (
         <AttachmentTray
           attachments={attachments}
@@ -42,11 +43,11 @@ function UserChatMessage({ text, workspacePath }: UserChatMessageProps) {
         />
       ) : null}
       {body.length > 0 ? (
-        <div
-          className="w-fit select-text rounded-xl bg-muted px-3.5 py-1.5 text-sm text-foreground"
-          style={{ maxWidth: "min(42rem, 85%)" }}
-        >
-          <ChatInlineText as="p" text={body} workspacePath={workspacePath} />
+        <div className="flex w-fit max-w-[min(42rem,85%)] flex-col items-end gap-1.5">
+          <div className="w-fit select-text rounded-xl bg-muted px-3.5 py-1.5 text-sm text-foreground">
+            <ChatInlineText as="p" text={body} workspacePath={workspacePath} />
+          </div>
+          <AssistantResponseCopyButton text={body} />
         </div>
       ) : null}
     </article>

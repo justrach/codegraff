@@ -12,6 +12,9 @@ current is part of cutting a release.
 
 ## v0.0.302.4
 
+- New chat stays in the folder already open, on the desktop and through ACP. Worktrees and other GUI workspace changes have to match the ACP session; that rule is in AGENTS.md and docs/notices.
+- GUI transcript drag-selection paints, and each message has a copy icon at the bottom.
+
 - Task workspace housekeeping: `graff worktree update` merges the remote base; `gc` drops dead session trees and clean trees whose GitHub PR is MERGED (dirty trees stay). Desktop: Update from main, Clear unused trees. Asking to free space unfolds `workspace` so `action=gc` is callable this turn.
 - xAI Responses WS chains `previous_response_id` on the held socket (store:false in-memory cache) and `generate:false` prewarms a fresh socket. A stalled first handshake or 426 latches HTTPS SSE for the session; chrome shows a dim `using HTTPS SSE` notice. `GRAFF_XAI_WS_CHAIN=0` opts out.
 - HTTPS SSE prefers HTTP/2 (`justrach/http-zig`): connection reuse, ALPN `h2`, first-failure HTTP/1.1 latch. `GRAFF_HTTP2=0` forces 1.1.

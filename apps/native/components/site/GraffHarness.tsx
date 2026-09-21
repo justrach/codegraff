@@ -235,11 +235,11 @@ export default function GraffHarness() {
     await runPrompt(chatId, trimmed);
   };
 
-  const openChat = (id: number) => {
+  const openChat = (id: number, folder?: string) => {
     setProjectsOpen(false); setAgentsOpen(false);
     const session = newSessionName();
     sessionNamesRef.current.set(id, session);
-    const cwd = activePathRef.current ?? undefined;
+    const cwd = folder ?? activePathRef.current ?? undefined;
     const ws = findWorkspace(workspacesRef.current, cwd);
     const next = [...chatsRef.current, { id, title: null, messages: [], model: ws?.model ?? model ?? undefined, session, cwd }];
     chatsRef.current = next; setChats(next);
@@ -272,7 +272,11 @@ export default function GraffHarness() {
   });
   const openStored = (name: string, cwd = activePathRef.current ?? undefined) => savedConversation.open(name, cwd);
 
-  const newChat = () => openChat((chatIdRef.current += 1));
+  const newChat = () => {
+    const folder = chatsRef.current.find(c => c.id === activeIdRef.current)?.cwd;
+    if (folder && folder !== activePathRef.current) activateWorkspace(folder);
+    openChat((chatIdRef.current += 1), folder ?? activePathRef.current ?? undefined);
+  };
 
   /** Focus a pane in place, or restore the selected workspace tab’s layout. */
   const focusChat = (id: number, focusPrompt = true) => {
@@ -314,7 +318,7 @@ export default function GraffHarness() {
     }
     setSplitNotice(null);
     const id = (chatIdRef.current += 1);
-    openChat(id);
+    openChat(id, chatsRef.current.find(c => c.id === activeIdRef.current)?.cwd ?? activePathRef.current ?? undefined);
     groups.split(id,activeId,direction === "row" ? "right" : "bottom");
   };
 
@@ -348,9 +352,7 @@ export default function GraffHarness() {
 
   const recents = sidebarRecents(stored, chats, unread);
 
-  // The tab bar's folder chip is the *tab's* workspace; the sidebar's
-  // switcher is the *active* one (where new tabs open). They differ only
-  // after a switch, and each says so on hover.
+  // The folder chip is the tab's workspace. New chat opens there.
   const cwdOf = (thread: Chat) => thread.cwd ?? activePath ?? health?.cwd;
   const workspaceNameOf = (thread: Chat) => {
     const dir = cwdOf(thread);

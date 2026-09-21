@@ -1,6 +1,8 @@
 # Repository instructions
 
-Read `AGENTS.md` first — it is the full contract for working in this repository. The rule below is repeated here because it is non-negotiable.
+Read `AGENTS.md` first — it is the full contract for working in this repository. The rules below are repeated here because they are non-negotiable.
+
+Worktrees and changes to the GUI must be 1:1 with ACP. A new-chat folder rule, a worktree handoff, or a session cwd that exists only in desktop chrome is not done until the ACP session does the same thing.
 
 ## Public tracker: bare minimum, no internals, no attribution
 

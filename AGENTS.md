@@ -109,6 +109,11 @@ the line REPL, the fullscreen TUI, and the desktop GUI (`graff acp`). Surface
 chrome can differ; the engine path cannot. If you add a wake, a latch, or a
 delivery rule, wire it on all three in the same change.
 
+Worktrees and changes to the GUI must be 1:1 with ACP. A new-chat folder
+rule, a worktree handoff, or a session cwd that exists only in desktop chrome
+is not done — wire the same behavior through the ACP session in the same
+change. The workspace the agent runs in is not chrome.
+
 ## Tests must be reachable
 
 - `zig build test` only runs the tests in files the test root pulls in. A new module's `test {}` blocks compile to nothing until something references it, and the suite still reports green.
