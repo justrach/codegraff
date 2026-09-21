@@ -52,6 +52,7 @@ test "runTools: incrementing invented ADR paths stop after miss_limit (#1116)" {
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
     var agent = testAgent(arena, cwd, &client);
+    defer agent.tools_used.deinit(gpa);
 
     const paths = [_][]const u8{
         "docs/adr/0365-foo.md",
@@ -97,6 +98,7 @@ test "runTools: sequential same-prefix misses refuse the next guess" {
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
     var agent = testAgent(arena, cwd, &client);
+    defer agent.tools_used.deinit(gpa);
 
     const first = [_][]const u8{ "docs/adr/a.md", "docs/adr/b.md", "docs/adr/c.md" };
     var wave1: [3]ToolCall = undefined;

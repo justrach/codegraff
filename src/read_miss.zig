@@ -324,7 +324,9 @@ test "batch holds incrementing overflow until the first misses latch" {
     t.noteResult(paths[1], true);
     t.noteResult(paths[2], true);
     try std.testing.expect(t.shouldRefuse(paths[3]));
-    try std.testing.expectEqual(Wave.refuse, Batch.init(&paths[3..]).classify(&t, paths[3]));
+    const held = paths[3..];
+    var refuse_batch = Batch.init(held);
+    try std.testing.expectEqual(Wave.refuse, refuse_batch.classify(&t, paths[3]));
 }
 
 test "batch of existing incrementing files is not refused after a hit" {
@@ -344,7 +346,9 @@ test "batch of existing incrementing files is not refused after a hit" {
     t.noteResult(paths[1], false);
     t.noteResult(paths[2], false);
     try std.testing.expect(!t.shouldRefuse(paths[3]));
-    try std.testing.expectEqual(Wave.run, Batch.init(paths[3..]).classify(&t, paths[3]));
+    const rest = paths[3..];
+    var hit_batch = Batch.init(rest);
+    try std.testing.expectEqual(Wave.run, hit_batch.classify(&t, paths[3]));
 }
 
 test "non-incrementing same-prefix reads stay uncapped until misses accrue" {
