@@ -79,13 +79,38 @@ describe("queue force steer", () => {
     f.steerer.finish(1);
   });
 
-  it("surfaces an unconfirmed cancellation without losing the queue", async () => {
+  it("keeps an accepted steer pending when stream teardown exceeds the timer", async () => {
     const f = fixture(5);
     f.steerer.ready(1);
     f.steerer.steer(1, 3, async () => {});
+    await Promise.resolve();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(f.status().error, undefined);
+    assert.equal(f.status().pending, 3);
+    assert.deepEqual(f.queue().map(x => x.id), [3, 1, 2]);
+    f.steerer.finish(1);
+  });
+
+  it("surfaces an unconfirmed cancellation without losing the queue", async () => {
+    const f = fixture(5);
+    f.steerer.ready(1);
+    f.steerer.steer(1, 3, () => new Promise(() => {}));
     await new Promise(resolve => setTimeout(resolve, 20));
     assert.match(f.status().error!, /Could not confirm/);
     assert.deepEqual(f.queue().map(x => x.id), [3, 1, 2]);
+    f.steerer.finish(1);
+  });
+
+  it("ignores repeated steer after the cancel request is accepted", async () => {
+    const f = fixture();
+    f.steerer.ready(1);
+    let calls = 0;
+    f.steerer.steer(1, 3, async () => { calls++; });
+    await Promise.resolve();
+    f.steerer.steer(1, 2, async () => { calls++; });
+    assert.equal(calls, 1);
+    assert.equal(f.status().pending, 3);
+    assert.equal(f.status().error, undefined);
     f.steerer.finish(1);
   });
 
