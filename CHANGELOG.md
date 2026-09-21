@@ -13,6 +13,7 @@ current is part of cutting a release.
 ## v0.0.302.4
 
 - Xiaomi's model list follows `https://api.xiaomimimo.com/v1/models` (same 6h cache and `graff models refresh` as the other live catalogs). Offline fallback and the default are MiMo-V2.6.
+- `graff refresh` is the short form of `graff models refresh`.
 - A background command that exits resumes the same session with its exit status and output, instead of waiting for another message (#1154).
 - Desktop interface sounds are optional and off until turned on. Cuelume notices ship with the app bundle.
 - Desktop task workspaces get their own Git checkouts, with a keep gate so dirty or unique trees are not dropped.
