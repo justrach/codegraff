@@ -291,10 +291,10 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         if (read_file_miss.stopGuess(io, gpa, path, resolved)) |t| return .{ .text = t, .is_error = true };
         const outcome = read_file.read(io, gpa, .cwd(), resolved, start_line, end_line, contains) catch |err| {
             if (fsErrorText(gpa, .read, path, err)) |t|
-                return .{ .text = read_file_miss.decorateMiss(gpa, path, err, t), .is_error = true };
+                return .{ .text = read_file_miss.decorateMiss(io, gpa, path, err, t), .is_error = true };
             return err;
         };
-        read_file_miss.noteHit(path);
+        read_file_miss.noteHit(io, path);
         return switch (outcome) {
             .text => |text| .{ .text = text },
             .truncated => |value| blk: {

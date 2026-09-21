@@ -24,14 +24,14 @@ const Slot = struct {
     }
 };
 
-var mutex: std.Thread.Mutex = .{};
+var mutex: Io.Mutex = .init;
 var slots: [max_slots]Slot = @splat(.{});
 var used: u8 = 0;
 /// Off until a root turn arms the tracker so unrelated unit tests cannot trip it.
 var armed: bool = false;
 
 pub fn dirOf(path: []const u8) []const u8 {
-    const trimmed = std.mem.trimRight(u8, path, "/\\");
+    const trimmed = std.mem.trimEnd(u8, path, "/\\");
     if (trimmed.len == 0) return ".";
     if (std.fs.path.dirname(trimmed)) |d| {
         if (d.len == 0 or std.mem.eql(u8, d, ".")) return ".";
@@ -51,16 +51,17 @@ pub fn leadingNumber(name: []const u8) ?u32 {
     return @intCast(n);
 }
 
-pub fn resetTurn() void {
-    mutex.lock();
-    defer mutex.unlock();
+pub fn resetTurn(io: Io) void {
+    mutex.lockUncancelable(io);
+    defer mutex.unlock(io);
     used = 0;
     armed = true;
 }
 
 pub fn resetForTest() void {
-    mutex.lock();
-    defer mutex.unlock();
+    const io = std.testing.io;
+    mutex.lockUncancelable(io);
+    defer mutex.unlock(io);
     used = 0;
     armed = false;
 }
@@ -94,9 +95,9 @@ fn takeSlotLocked(dir: []const u8) *Slot {
     return slot;
 }
 
-pub fn blocked(path: []const u8) bool {
-    mutex.lock();
-    defer mutex.unlock();
+pub fn blocked(io: Io, path: []const u8) bool {
+    mutex.lockUncancelable(io);
+    defer mutex.unlock(io);
     if (!armed) return false;
     const slot = findSlotLocked(dirOf(path)) orelse return false;
     return slot.blocked;
@@ -104,9 +105,9 @@ pub fn blocked(path: []const u8) bool {
 
 /// Record a not-found. Returns true once this prefix (or incrementing name
 /// pattern) has hit the stop.
-pub fn noteMiss(path: []const u8) bool {
-    mutex.lock();
-    defer mutex.unlock();
+pub fn noteMiss(io: Io, path: []const u8) bool {
+    mutex.lockUncancelable(io);
+    defer mutex.unlock(io);
     if (!armed) return false;
     const dir = dirOf(path);
     const slot = takeSlotLocked(dir);
@@ -122,9 +123,9 @@ pub fn noteMiss(path: []const u8) bool {
     return slot.blocked;
 }
 
-pub fn noteHit(path: []const u8) void {
-    mutex.lock();
-    defer mutex.unlock();
+pub fn noteHit(io: Io, path: []const u8) void {
+    mutex.lockUncancelable(io);
+    defer mutex.unlock(io);
     if (!armed) return;
     const slot = findSlotLocked(dirOf(path)) orelse return;
     slot.misses = 0;
@@ -150,15 +151,15 @@ fn exists(io: Io, resolved: []const u8) bool {
 /// Refuse an invented path under a blocked prefix. A file that actually
 /// exists still reads.
 pub fn stopGuess(io: Io, gpa: Allocator, path: []const u8, resolved: []const u8) ?[]u8 {
-    if (!blocked(path)) return null;
+    if (!blocked(io, path)) return null;
     if (exists(io, resolved)) return null;
     return message(gpa, path) catch null;
 }
 
 /// On a not-found, record the miss and replace the error once the prefix stops.
-pub fn decorateMiss(gpa: Allocator, path: []const u8, err: anyerror, text: []u8) []u8 {
+pub fn decorateMiss(io: Io, gpa: Allocator, path: []const u8, err: anyerror, text: []u8) []u8 {
     if (err != error.FileNotFound and err != error.NotDir) return text;
-    if (!noteMiss(path)) return text;
+    if (!noteMiss(io, path)) return text;
     const stop = message(gpa, path) catch return text;
     gpa.free(text);
     return stop;
@@ -174,13 +175,14 @@ test "dirOf and leadingNumber: ADR-shaped guesses" {
 }
 
 test "#1116: three same-prefix misses stop further invented names" {
-    resetTurn();
+    const io = std.testing.io;
+    resetTurn(io);
     defer resetForTest();
-    try std.testing.expect(!noteMiss("docs/adr/0365-alpha.md"));
-    try std.testing.expect(!noteMiss("docs/adr/0366-beta.md"));
-    try std.testing.expect(noteMiss("docs/adr/0367-gamma.md"));
-    try std.testing.expect(blocked("docs/adr/0368-delta.md"));
-    try std.testing.expect(!blocked("src/main.zig"));
+    try std.testing.expect(!noteMiss(io, "docs/adr/0365-alpha.md"));
+    try std.testing.expect(!noteMiss(io, "docs/adr/0366-beta.md"));
+    try std.testing.expect(noteMiss(io, "docs/adr/0367-gamma.md"));
+    try std.testing.expect(blocked(io, "docs/adr/0368-delta.md"));
+    try std.testing.expect(!blocked(io, "src/main.zig"));
     const gpa = std.testing.allocator;
     const text = try message(gpa, "docs/adr/0368-delta.md");
     defer gpa.free(text);
@@ -189,33 +191,36 @@ test "#1116: three same-prefix misses stop further invented names" {
 }
 
 test "#1116: a hit on the prefix clears the stop; another directory is independent" {
-    resetTurn();
+    const io = std.testing.io;
+    resetTurn(io);
     defer resetForTest();
-    _ = noteMiss("tmp/a.txt");
-    _ = noteMiss("tmp/b.txt");
-    try std.testing.expect(!blocked("tmp/c.txt"));
-    noteHit("tmp/real.txt");
-    try std.testing.expect(!noteMiss("tmp/again.txt"));
-    try std.testing.expect(!noteMiss("other/x.txt"));
-    try std.testing.expect(!noteMiss("other/y.txt"));
-    try std.testing.expect(noteMiss("other/z.txt"));
-    try std.testing.expect(blocked("other/w.txt"));
-    try std.testing.expect(!blocked("tmp/again.txt"));
+    _ = noteMiss(io, "tmp/a.txt");
+    _ = noteMiss(io, "tmp/b.txt");
+    try std.testing.expect(!blocked(io, "tmp/c.txt"));
+    noteHit(io, "tmp/real.txt");
+    try std.testing.expect(!noteMiss(io, "tmp/again.txt"));
+    try std.testing.expect(!noteMiss(io, "other/x.txt"));
+    try std.testing.expect(!noteMiss(io, "other/y.txt"));
+    try std.testing.expect(noteMiss(io, "other/z.txt"));
+    try std.testing.expect(blocked(io, "other/w.txt"));
+    try std.testing.expect(!blocked(io, "tmp/again.txt"));
 }
 
 test "#1116: incrementing numbered names under one prefix are a storm" {
-    resetTurn();
+    const io = std.testing.io;
+    resetTurn(io);
     defer resetForTest();
-    try std.testing.expect(!noteMiss("docs/adr/0365-one.md"));
-    try std.testing.expect(!noteMiss("docs/adr/0366-two.md"));
-    try std.testing.expect(noteMiss("docs/adr/0397-reshuffle.md"));
-    try std.testing.expect(blocked("docs/adr/0398-next.md"));
+    try std.testing.expect(!noteMiss(io, "docs/adr/0365-one.md"));
+    try std.testing.expect(!noteMiss(io, "docs/adr/0366-two.md"));
+    try std.testing.expect(noteMiss(io, "docs/adr/0397-reshuffle.md"));
+    try std.testing.expect(blocked(io, "docs/adr/0398-next.md"));
 }
 
 test "#1116: unarmed tracker does not record misses" {
+    const io = std.testing.io;
     resetForTest();
-    try std.testing.expect(!noteMiss("docs/adr/0365-alpha.md"));
-    try std.testing.expect(!noteMiss("docs/adr/0366-beta.md"));
-    try std.testing.expect(!noteMiss("docs/adr/0367-gamma.md"));
-    try std.testing.expect(!blocked("docs/adr/0368-delta.md"));
+    try std.testing.expect(!noteMiss(io, "docs/adr/0365-alpha.md"));
+    try std.testing.expect(!noteMiss(io, "docs/adr/0366-beta.md"));
+    try std.testing.expect(!noteMiss(io, "docs/adr/0367-gamma.md"));
+    try std.testing.expect(!blocked(io, "docs/adr/0368-delta.md"));
 }
