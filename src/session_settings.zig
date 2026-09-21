@@ -108,6 +108,9 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     if (environ_map.get("GRAFF_CODEX_WS")) |v| {
         main_mod.g_codex_ws = !(std.ascii.eqlIgnoreCase(v, "off") or std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "no"));
     }
+    if (environ_map.get("GRAFF_HTTP2")) |v| {
+        main_mod.g_http2 = !(std.ascii.eqlIgnoreCase(v, "off") or std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "no"));
+    }
     // #225 GRAFF_CLOCK_SLEEP (root-only clock_sleep meta tool) and #330
     // GRAFF_NO_LOCAL_TOOLS (the hard local-execution gate): both are
     // affirmative-only (1|true|on|yes), like GRAFF_WS_FORCE_FAIL_ONCE below,

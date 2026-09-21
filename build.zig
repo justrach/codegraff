@@ -56,6 +56,9 @@ pub fn build(b: *std.Build) void {
     const accord_dep = b.dependency("accord", .{ .target = target, .optimize = optimize });
     const accord_mod = accord_dep.module("accord");
     exe.root_module.addImport("accord", accord_mod);
+    const http_zig_dep = b.dependency("http_zig", .{ .target = target, .optimize = optimize });
+    const http_zig_mod = http_zig_dep.module("http_zig");
+    exe.root_module.addImport("http_zig", http_zig_mod);
     // Shared by the line-REPL picker and the TUI overlay so they cannot
     // drift: a file import from both modules is illegal in Zig 0.17.
     const models_rank_mod = b.createModule(.{
@@ -102,6 +105,7 @@ pub fn build(b: *std.Build) void {
     });
     unit_tests.root_module.addOptions("build_options", opts);
     unit_tests.root_module.addImport("accord", accord_mod);
+    unit_tests.root_module.addImport("http_zig", http_zig_mod);
     unit_tests.root_module.addImport("models_rank", models_rank_mod);
     unit_tests.root_module.addImport("tui", tui_mod);
     // spec/ fixtures live outside src/; importing them here makes @embedFile

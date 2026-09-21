@@ -7,7 +7,11 @@
             .url = "git+https://github.com/justrach/accord#c053e17295cb7ad8c0fb284d7d7748aad4aeeeea",
             .hash = "accord-0.0.0-aQy1J3iBAgADDHWM0hIAXhISKtQ0zasFN7TyLhI_tkI8",
         },
+        .http_zig = .{
+            .url = "git+https://github.com/justrach/http-zig#1d734eee07d3add6638b171adcc0da9f933d7902",
+            .hash = "http_zig-0.1.0-2CB7E-I9AgAXrxfMjTCoG9Q9RRwh3QhfEY4OXfhHWCiX",
+        },
     },
-    .paths = .{ "" },
+    .paths = .{""},
     .fingerprint = 0x99ab87d62eef2520,
 }

@@ -31,6 +31,7 @@ pub var show_timing = false;
 pub var show_cost = false;
 pub var json_mode = false; // --json: structured JSONL events on stdout instead of human text
 pub var g_codex_ws = true; // root Codex turns use the WebSocket transport (Responses API over wss) with SSE fallback; GRAFF_CODEX_WS=off|0 forces SSE
+pub var g_http2 = true; // HTTPS SSE prefers http-zig HTTP/2; GRAFF_HTTP2=off|0 forces HTTP/1.1
 pub var g_clock_sleep: bool = false; // #225: root-only clock_sleep meta tool, off by default; --clock-sleep / GRAFF_CLOCK_SLEEP=1 turns it on (gates advertising in renderRootTools, mirrors g_codex_ws)
 pub var g_force_stall_once: bool = false; // #134 test seam (GRAFF_FORCE_STALL_ONCE=1): the next live turn returns error.StreamStalled — proves the stall path is never labeled a user Esc
 pub var g_force_drop_once: bool = false; // #132/#133 test seam (GRAFF_FORCE_DROP_ONCE=1): the next live turn returns error.StreamDropped
@@ -581,6 +582,8 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("agent_ws_steer.zig");
     _ = @import("agent_ws_signal.zig");
     _ = @import("agent_ws_prewarm.zig");
+    _ = @import("http2_pool.zig");
+    _ = @import("agent_stream_h2.zig");
     _ = @import("tui_acp_updates.zig");
     _ = @import("acp_preauth.zig"); // credential-free ACP loop must stay in the test root
     _ = @import("task_outcome.zig"); // goal-outcome telemetry events

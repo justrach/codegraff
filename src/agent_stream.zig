@@ -103,6 +103,8 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     self.md_table.clearRetainingCapacity();
     self.partial_text.clearRetainingCapacity(); // fresh Esc-interrupt capture
 
+    if (try @import("agent_stream_h2.zig").postStream(self, body)) |full| return full;
+
     // Esc-interrupt: while the root's request is on a TTY, stdin sits in raw
     // non-blocking no-echo mode — from *before* the connect, so Esc pressed
     // during a slow time-to-first-token wait neither echoes ^[ nor leaks into
