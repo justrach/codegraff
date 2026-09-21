@@ -16,6 +16,7 @@ const proc_identity = @import("proc_identity.zig");
 
 const claim_ledger = @import("artifact_claim_ledger.zig");
 const claim_path = @import("artifact_claim_path.zig");
+const claim_stale = @import("artifact_claim_stale.zig");
 pub const Kind = claim_ledger.Kind;
 pub const Owner = claim_ledger.Owner;
 pub const Claim = claim_ledger.Claim;
@@ -173,6 +174,21 @@ pub fn gateCommandIn(arena: Allocator, io: Io, cmd: []const u8, key: []const u8,
     if (tx) |transaction| {
         loadTransaction(io, transaction, ledger, cwd) catch return "artifact claim ledger unreadable: action NOT performed";
     } else local = g_ledger;
+    const before_len = ledger.len;
+    var stale_i: usize = 0;
+    while (stale_i < ledger.len) {
+        if (ledger.items[stale_i].kind == .publication and !ownerLive(io, ledger.items[stale_i].owner)) {
+            ledger.items[stale_i] = ledger.items[ledger.len - 1];
+            ledger.len -= 1;
+            continue;
+        }
+        stale_i += 1;
+    }
+    if (ledger.len < before_len) {
+        if (tx) |transaction| {
+            if (persistJson(scratch.allocator(), ledger)) |json| transaction.write(json) catch {} else |_| {}
+        }
+    }
     var target: @import("artifact_claim_target.zig").Target = resolved orelse @import("artifact_claim_target.zig").explicit(cmd, kind) orelse .{ .kind = if (kind == .issue) Kind.issue else Kind.branch, .key = key };
     if (target.kind == .branch and target.key.len == 0) target.key = key;
     for (ledger.slice()) |c| {
@@ -223,7 +239,8 @@ pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []cons
     const me = selfOwner(io);
     const now: i64 = 0;
     if (claim_ledger.ambiguous(ledger.slice(), kind, key, repo)) return .{ .text = "claim repository is ambiguous; specify repo explicitly", .is_error = true };
-    const existing = claim_ledger.findIn(ledger.slice(), kind, key, repo);
+    const existing = claim_ledger.findIn(ledger.slice(), kind, key, repo) orelse
+        if (kind == .publication) claim_stale.publicationRecord(ledger.slice(), key, repo) else null;
     const live = if (existing) |c| ownerLive(io, c.owner) else false;
     if (std.mem.eql(u8, action, "claim") or std.mem.eql(u8, action, "acquire")) {
         const msg = claim_ledger.acquireIn(ledger, storage, kind, key, me, now, live, repo) catch |err| switch (err) {
@@ -237,7 +254,8 @@ pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []cons
     if (std.mem.eql(u8, action, "release")) {
         const existing_owner = if (existing) |c| c.owner else null;
         const recoverable = if (existing_owner) |o| o.pid == 0 and (std.mem.eql(u8, o.session, me.session) or o.session.len == 0) else false;
-        const msg = claim_ledger.releaseIn(ledger, kind, key, me, live and !recoverable, repo) catch return .{
+        const held = existing orelse return .{ .text = "no claim to release", .is_error = false };
+        const msg = claim_ledger.releaseIn(ledger, held.kind, held.key, me, live and !recoverable, held.repo orelse repo) catch return .{
             .text = "cannot release a live foreign claim",
             .is_error = true,
         };
@@ -272,8 +290,8 @@ pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []cons
     }
     if (std.mem.eql(u8, action, "status")) {
         if (existing) |c| {
-            const v = claim_ledger.verdictIn(ledger.slice(), kind, key, me, live, repo);
-            return .{ .text = try std.fmt.allocPrint(arena, "claim {s} {s}: {s} owner=\"{s}\"", .{ @tagName(kind), key, @tagName(v), c.owner.session }), .is_error = false };
+            const v = claim_ledger.verdictIn(ledger.slice(), c.kind, c.key, me, live, c.repo orelse repo);
+            return .{ .text = try std.fmt.allocPrint(arena, "claim {s} {s}: {s} owner=\"{s}\"", .{ @tagName(c.kind), c.key, @tagName(v), c.owner.session }), .is_error = false };
         }
         return .{ .text = "no claim", .is_error = false };
     }
@@ -341,6 +359,7 @@ pub const loadJson = @import("artifact_claim_store.zig").loadJson;
 
 test {
     _ = @import("artifact_claim_path.zig");
+    _ = @import("artifact_claim_stale.zig");
 }
 
 test "acquire / handoff / release are atomic and session-scoped" {
