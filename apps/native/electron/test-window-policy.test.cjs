@@ -13,7 +13,11 @@ function fixture(env = {}) {
     constructor(options) {
       super();
       this.options = options;
-      this.webContents = { session: { preloads: [], getPreloads() { return this.preloads; }, setPreloads(list) { this.preloads = list; } } };
+      this.webContents = {
+        session: { preloads: [], getPreloads() { return this.preloads; }, setPreloads(list) { this.preloads = list; } },
+        isDestroyed() { return false; },
+        setBackgroundThrottling() {},
+      };
       windows.add(this);
       app.emit('browser-window-created', {}, this);
     }
