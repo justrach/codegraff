@@ -27,6 +27,33 @@ fn pidGone(io: Io, pid: i32) bool {
     return proc_identity.probe(io, pid) == .gone;
 }
 
+fn hasIgnoreCase(hay: []const u8, needle: []const u8) bool {
+    if (hay.len < needle.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= hay.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(hay[i .. i + needle.len], needle)) return true;
+    }
+    return false;
+}
+
+/// User asked to free disk. Unfold `workspace` so action=gc is callable.
+/// Do not match a generic "clean up" — that is finish-is-not-archive.
+pub fn userAskedToFreeTrees(text: []const u8) bool {
+    const needles = [_][]const u8{
+        "clear up space",
+        "free space",
+        "free disk",
+        "clear unused",
+        "unused worktree",
+        "unused trees",
+        "workspace gc",
+        "/workspace gc",
+        "worktree gc",
+    };
+    for (needles) |n| if (hasIgnoreCase(text, n)) return true;
+    return false;
+}
+
 /// Drop registrations whose dirs are already gone, then remove clean
 /// auto-isolate trees whose pid is dead. Returns how many directories went.
 pub fn orphans(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8) usize {
@@ -100,6 +127,14 @@ pub fn mergedPulls(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8) us
         if (prune.removeWorktree(gpa, io, e)) removed += 1;
     }
     return removed;
+}
+
+test "userAskedToFreeTrees: space/gc wording, not generic cleanup" {
+    try std.testing.expect(userAskedToFreeTrees("can we clear up space"));
+    try std.testing.expect(userAskedToFreeTrees("Free disk please"));
+    try std.testing.expect(userAskedToFreeTrees("run worktree gc"));
+    try std.testing.expect(!userAskedToFreeTrees("clean up the worktree after you finish"));
+    try std.testing.expect(!userAskedToFreeTrees("summarize the architecture"));
 }
 
 test "sessionPid: only auto-isolate session branches" {

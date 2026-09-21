@@ -12,7 +12,7 @@ current is part of cutting a release.
 
 ## v0.0.302.4
 
-- Task workspace housekeeping: `graff worktree update` merges the remote base; `gc` drops dead session trees and clean trees whose GitHub PR is MERGED (dirty trees stay). Desktop: Update from main, disk use on the projects card. `/workspace gc` and `workspace action=gc` free space when the user asks; they do not run because a turn finished.
+- Task workspace housekeeping: `graff worktree update` merges the remote base; `gc` drops dead session trees and clean trees whose GitHub PR is MERGED (dirty trees stay). Desktop: Update from main, Clear unused trees. Asking to free space unfolds `workspace` so `action=gc` is callable this turn.
 
 ## v0.0.302.3
 
