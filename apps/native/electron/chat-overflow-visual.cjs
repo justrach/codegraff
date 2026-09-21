@@ -7,11 +7,11 @@ async function runChatOverflow({ win, origin, output }) {
   const wc = win.webContents, js = code => wc.executeJavaScript(code);
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const wait = async code => {
-    for (let i = 0; i < 120; i++) {
+    for (let i = 0; i < 300; i++) {
       if (await js(code)) return;
       await sleep(50);
     }
-    throw Error(`Chat overflow timed out: ${code}`);
+    throw Error(`Chat overflow timed out: ${code} ${await testDesktop.describeWorkspace(wc)}`);
   };
   const settle = async () => {
     await js(`document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))))`);

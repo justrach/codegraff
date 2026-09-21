@@ -47,4 +47,22 @@ async function pressEnter(wc) {
   await testInput(wc, { type: 'keyDown', keyCode: 'Return' });
   await testInput(wc, { type: 'keyUp', keyCode: 'Return' });
 }
-module.exports = { ...policy, attachTestDebugger, focusTestPage, testInput, pressEnter };
+async function describeWorkspace(wc) {
+  try {
+    return await wc.executeJavaScript(`(() => {
+      const main = document.querySelector('[data-graff-main]');
+      return JSON.stringify({
+        ready: main?.getAttribute('data-workspace-ready'),
+        prompt: !!document.querySelector('textarea[aria-label="Prompt"]'),
+        onboarded: document.documentElement.dataset.graffOnboarded || '',
+        world: window.__GRAFF_ONBOARDED__ === true,
+        onboard: !!document.querySelector('[data-onboarding]'),
+        modal: document.querySelector('[aria-modal="true"]')?.getAttribute('aria-label') || '',
+        text: (document.body?.innerText || '').replace(/\\s+/g, ' ').slice(0, 280),
+      });
+    })()`);
+  } catch (error) {
+    return String(error);
+  }
+}
+module.exports = { ...policy, attachTestDebugger, focusTestPage, testInput, pressEnter, describeWorkspace };

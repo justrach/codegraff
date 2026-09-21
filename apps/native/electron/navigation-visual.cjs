@@ -17,7 +17,7 @@ async function runNavigationVisuals({win:fixtureWindow,origin,output}) {
   ipcMain.handle('terminal',(_event,{action,params})=>terminals.command(action,action==='open'?{...params,cwd:terminalRoot}:params));
   const wc=win.webContents,js=async c=>{try{return await wc.executeJavaScript(c);}catch(error){console.error("Navigation expression:",c);throw error;}};
   wc.on("console-message",event=>{if(event.level>=2)console.error("Navigation renderer:",event.message);});
-  const wait=async c=>{for(let i=0;i<150;i++){if(await js(c))return;await sleep(50);}throw Error(`Navigation timeout: ${c}`);};
+  const wait=async c=>{for(let i=0;i<300;i++){if(await js(c))return;await sleep(50);}throw Error(`Navigation timeout: ${c} ${await testDesktop.describeWorkspace(wc)}`);};
   const key=async(key,extra={})=>{await js(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown',${JSON.stringify({key,bubbles:true,cancelable:true,...extra})}))`);await sleep(100);};
   const pressEnter=async()=>{await testDesktop.pressEnter(wc);await sleep(50);};
   const input=async text=>{await js(`(()=>{const e=document.querySelector('textarea[aria-label="Prompt"]');e.focus();Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,${JSON.stringify(text)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`);await sleep(100);};

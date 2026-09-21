@@ -81,8 +81,27 @@ async function runNavigationKeyboard({win, origin}) {
   await click('button[aria-label="Collapse sidebar"]');
   await wait(`document.activeElement.matches('[aria-label="Expand sidebar"]')`);
   await js(`document.querySelector('[aria-label="Workspace navigation"] button[aria-label="Conversations"]').focus()`);
+  const railSequence = await js(`(() => {
+    const root = document.querySelector('[aria-label="Workspace navigation"]');
+    const items = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    let node;
+    while ((node = walker.nextNode())) {
+      if (!(node instanceof HTMLElement)) continue;
+      if (node.closest('[inert]') || node.getAttribute('aria-hidden') === 'true' || node.tabIndex < 0) continue;
+      if (!node.matches('button, [href], input, textarea, select, [tabindex]')) continue;
+      items.push(node.getAttribute('aria-label') || node.textContent.trim().slice(0, 40));
+    }
+    return items;
+  })()`);
+  console.log('Collapsed rail tab sequence:', JSON.stringify(railSequence));
   await key('Tab');
-  assert.equal(await js(`!!document.activeElement.closest('[aria-label="Workspace navigation"]')`), false, 'Collapsed chat rows and footer are skipped after the visible navigation icons');
+  const afterConversations = await js(`(() => {
+    const el = document.activeElement;
+    return {inRail: !!el?.closest('[aria-label="Workspace navigation"]'), label: el?.getAttribute('aria-label') || el?.textContent?.trim().slice(0, 40) || el?.tagName};
+  })()`);
+  console.log('Tab after Conversations:', JSON.stringify(afterConversations));
+  assert.equal(afterConversations.inRail, false, 'Collapsed chat rows and footer are skipped after the visible navigation icons: ' + JSON.stringify({railSequence, afterConversations}));
   await click('button[aria-label="Expand sidebar"]');
   await wait(`document.activeElement.matches('[aria-label="Collapse sidebar"]')`);
   await wc.loadURL(origin);

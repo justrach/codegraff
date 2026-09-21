@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   ONBOARDING_DISMISSED_VALUE,
   ONBOARDING_DOM_ATTR,
@@ -8,6 +11,7 @@ import {
   documentAlreadyOnboarded,
   fixtureSuppressesOnboarding,
   onboardingDismissedScript,
+  onboardingPromoteScript,
   pageWorldAlreadyOnboarded,
   parseOnboardingDismissed,
   readOnboardingDismissed,
@@ -52,6 +56,11 @@ test("production fixtures persist the same dismissed flag as Skip/Done", () => {
   assert.match(onboardingDismissedScript(), new RegExp(ONBOARDING_DISMISSED_VALUE));
   assert.match(onboardingDismissedScript(), new RegExp(ONBOARDING_WORLD_FLAG));
   assert.match(onboardingDismissedScript(), new RegExp(ONBOARDING_DOM_ATTR));
+  const promote = onboardingPromoteScript();
+  assert.match(promote, new RegExp(ONBOARDING_KEY.replaceAll(".", "\\.")));
+  assert.match(promote, new RegExp(ONBOARDING_WORLD_FLAG));
+  assert.doesNotMatch(promote, /setItem/);
+  assert.match(promote, /getItem/);
   assert.equal(pageWorldAlreadyOnboarded({ [ONBOARDING_WORLD_FLAG]: true }, memoryStorage()), true);
   assert.equal(shouldShowOnboarding(memoryStorage(), { [ONBOARDING_WORLD_FLAG]: true }), false);
 });
@@ -75,4 +84,12 @@ test("unavailable storage shows onboarding instead of throwing", () => {
   };
   assert.equal(readOnboardingDismissed(broken), false);
   assert.doesNotThrow(() => writeOnboardingDismissed(broken, true));
+});
+
+test("the layout seed stays static so production `/` is not dynamized", () => {
+  const seed = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../components/site/OnboardingFixtureSeed.tsx"), "utf8");
+  assert.match(seed, /onboardingPromoteScript/);
+  assert.doesNotMatch(seed, /connection/);
+  assert.doesNotMatch(seed, /fixtureSuppressesOnboarding/);
+  assert.doesNotMatch(seed, /async function/);
 });

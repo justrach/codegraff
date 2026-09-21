@@ -26,6 +26,7 @@ test('production chrome never mounts the welcome sheet once fixtures mark the pa
   expect(chrome).toContain('showOnboarding && <OnboardingDialog');
   expect(chrome).toContain('requested || autoOnboarding');
   expect(fs.readFileSync(path.join(__dirname, '../app/layout.tsx'), 'utf8')).toContain('OnboardingFixtureSeed');
+  expect(fs.readFileSync(path.join(__dirname, '../components/site/OnboardingFixtureSeed.tsx'), 'utf8')).not.toContain('connection');
   expect(fs.readFileSync(path.join(__dirname, '../components/site/OnboardingDialog.tsx'), 'utf8')).not.toContain('testAlreadyOnboarded');
   expect(fs.readFileSync(path.join(__dirname, 'frontend-runtime.cjs'), 'utf8')).not.toContain('installPageWorldOnboardingSeed');
 });

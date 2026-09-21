@@ -45,6 +45,13 @@ export function onboardingDismissedScript(): string {
   return `window.${ONBOARDING_WORLD_FLAG}=true;document.documentElement.dataset.${ONBOARDING_DOM_ATTR}="1";try{localStorage.setItem(${JSON.stringify(ONBOARDING_KEY)},${JSON.stringify(ONBOARDING_DISMISSED_VALUE)})}catch(e){}`;
 }
 
+/** Head script: copy an already-persisted Skip/Done flag into the page world.
+ * Fresh profiles have nothing to promote, so production onboarding still shows.
+ * Must stay synchronous — awaiting `connection()` dynamizes every `/` load. */
+export function onboardingPromoteScript(): string {
+  return `try{if(localStorage.getItem(${JSON.stringify(ONBOARDING_KEY)})===${JSON.stringify(ONBOARDING_DISMISSED_VALUE)}||document.documentElement.dataset.${ONBOARDING_DOM_ATTR}==="1"){window.${ONBOARDING_WORLD_FLAG}=true;document.documentElement.dataset.${ONBOARDING_DOM_ATTR}="1"}}catch(e){}`;
+}
+
 export function fixtureSuppressesOnboarding(env?: OnboardingEnv | null): boolean {
   return Boolean(env?.GRAFF_CWD || env?.GRAFF_ELECTRON_SMOKE || env?.GRAFF_VISUAL_TESTS);
 }
