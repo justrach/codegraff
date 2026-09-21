@@ -67,3 +67,49 @@ test "read_file (#761): a call with only path is a whole-file read" {
     try std.testing.expect(combined.is_error);
     try std.testing.expect(std.mem.indexOf(u8, combined.text, "cannot be combined") != null);
 }
+
+test "#1116: sequential missing reads under one prefix stop and point at list_dir" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const miss = @import("read_file_miss.zig");
+    miss.resetTurn();
+    defer miss.resetForTest();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "real.txt", .data = "kept\n" });
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &real_buf);
+    const cwd = real_buf[0..n];
+
+    const first = try readFile(cwd, "{\"path\":\"docs/adr/0365-one.md\"}");
+    defer gpa.free(first.text);
+    try std.testing.expect(first.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, first.text, "does not exist") != null);
+
+    const second = try readFile(cwd, "{\"path\":\"docs/adr/0366-two.md\"}");
+    defer gpa.free(second.text);
+    try std.testing.expect(second.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, second.text, "does not exist") != null);
+
+    const third = try readFile(cwd, "{\"path\":\"docs/adr/0367-three.md\"}");
+    defer gpa.free(third.text);
+    try std.testing.expect(third.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, third.text, "codedb list_dir") != null);
+    try std.testing.expect(std.mem.indexOf(u8, third.text, "stopped guessing") != null);
+
+    const fourth = try readFile(cwd, "{\"path\":\"docs/adr/0397-reshuffle.md\"}");
+    defer gpa.free(fourth.text);
+    try std.testing.expect(fourth.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, fourth.text, "stopped guessing") != null);
+
+    const other = try readFile(cwd, "{\"path\":\"missing-elsewhere.txt\"}");
+    defer gpa.free(other.text);
+    try std.testing.expect(other.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, other.text, "does not exist") != null);
+
+    const kept = try readFile(cwd, "{\"path\":\"real.txt\"}");
+    defer gpa.free(kept.text);
+    try std.testing.expect(!kept.is_error);
+    try std.testing.expectEqualStrings("kept\n", kept.text);
+}

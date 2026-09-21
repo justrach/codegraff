@@ -14,13 +14,13 @@ pub const Result = union(enum) {
 
 pub fn classify(r: runner.CappedRun) Result {
     if (r.timed_out) return .{ .failed = .timeout };
-    if (r.cancelled) return .{ .failed = .access };
+    if (r.cancelled) return .{ .failed = .unavailable };
     if (!runner.ranOk(r)) {
         // Only the system's explicit Apple Event denial code warrants a
         // permission category. Never show raw stderr (it may contain paths).
         if (r.term == .exited and !r.stderr_truncated and std.mem.endsWith(u8, std.mem.trim(u8, r.stderr, " \r\n"), "(-1743)"))
             return .{ .failed = .denied };
-        return .{ .failed = .access };
+        return .{ .failed = .unavailable };
     }
     if (r.stdout_truncated) return .{ .failed = .extract };
     const status = std.mem.trim(u8, r.stdout, " \r\n");
