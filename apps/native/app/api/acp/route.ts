@@ -335,6 +335,10 @@ export async function POST(req: NextRequest) {
       await Promise.all([...new Set([...slots.keys(), ...retirements.keys(), ...parkedChats()])].map(chat => killSlot(chat, undefined, "shutdown")));
       return Response.json({ ok: true });
     }
+    if (method === "retire-all") {
+      await Promise.all([...new Set([...slots.keys(), ...retirements.keys(), ...parkedChats()])].map(id => killSlot(id, undefined, "dispose")));
+      return Response.json({ ok: true });
+    }
     if (method === "dispose") {
       await killSlot(chat);
       return Response.json({ ok: true });

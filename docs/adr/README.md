@@ -174,6 +174,7 @@ record only when you need the evidence or the edge cases.
 | [0150](0150-subagent-briefs-are-structured.md) | Child briefs are headed sections plus a harness environment header; the judge stays a bare prompt. |
 | [0151](0151-zai-coding-plan-login.md) | Z.AI Coding Plan is a `sub_login` like Kimi/xAI: `graff login zai` uses ZCode's public CLI OAuth broker, then provisions a Graff-named API key onto `/api/coding/paas/v4`. |
 | [0152](0152-persistent-shells-snapshot-once.md) | Persistent shells snapshot immediately (`wait_ms` ignored) and stay on `/jobs`; do not poll. Finite jobs still wait until exit (ADR 0010). |
+| [0153](0153-desktop-login-uses-shared-device-store.md) | Desktop Login with Codegraff writes the shared device-code store and restarts local ACP; remote hosts stay terminal-login only. |
 
 ## When to write one
 

@@ -3,6 +3,7 @@
 import PromptBar, { type PromptModel } from "@/components/primitives/PromptBar";
 import type { AcpCommand } from "@/lib/acp";
 import type { Health } from "@/lib/acp-client";
+import EmptyLoginHint from "./EmptyLoginHint";
 
 function greeting(): string {
   const hour = new Date().getHours();
@@ -55,6 +56,7 @@ export default function EmptyState({
 
       {!compact && !where && onOpenProject && <button type="button" onClick={onOpenProject}
         className="mt-5 self-start rounded-control px-3 py-2 text-sm text-ink-2 hover:bg-hover">Choose a project folder…</button>}
+      {!compact && <EmptyLoginHint />}
 
       <div className={`relative ${compact ? "" : "home-reveal home-reveal-composer mt-7"}`}>
         <PromptBar

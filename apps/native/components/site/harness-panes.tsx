@@ -14,4 +14,5 @@ export const FilesPane = dynamic(() => import("./FilesPane"));
 export const BrowserPane = dynamic(() => import("./DesktopBrowserPane"));
 export const TasksSidebar = dynamic(() => import("./TasksSidebar"));
 export const AppSettings = dynamic(() => import("./AppSettings"));
+export const AccountChrome = dynamic(() => import("./AccountChrome"));
 export const WorkspaceDialog = dynamic(() => import("./WorkspaceDialog"));

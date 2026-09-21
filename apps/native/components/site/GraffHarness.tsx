@@ -30,7 +30,7 @@ import ChatColumn from "./ChatColumn";
 import CloseConfirmDialog from "@/components/site/CloseConfirmDialog";
 import ModelSwitchDialog from "@/components/site/ModelSwitchDialog";
 import {
-  AgentsPane, AppSettings, BrowserPane, ChangesPane, ConversationsPane, FilesPane,
+  AccountChrome, AgentsPane, AppSettings, BrowserPane, ChangesPane, ConversationsPane, FilesPane,
   ProjectsPane, ReviewsPane, TasksSidebar, TerminalPane, WorkspaceDialog,
 } from "./harness-panes";
 import { useTasksVisibility } from "./useTasksVisibility";
@@ -499,6 +499,7 @@ export default function GraffHarness() {
         onDeleteRecent={(id) => dropStored(id, false)}
         onNewWorkspace={() => setDialog({ mode: "new" })}
         onWorkspaceSettings={() => setDialog(sidebarWorkspace ? { mode: "settings" } : { mode: "new" })}
+        accountControl={<AccountChrome />}
         footerControls={<AppSettings sidebar />}
       /></div>
 
