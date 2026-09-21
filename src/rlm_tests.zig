@@ -394,3 +394,55 @@ test "runScript refuses an unloaded MCP name and does not treat it as a host too
     try std.testing.expect(out.is_error);
     try std.testing.expect(std.mem.indexOf(u8, out.text, "MCP not available") != null or std.mem.indexOf(u8, out.text, "load_tool_schemas") != null);
 }
+
+test "#1016: literal read_file stays native when an MCP short name collides" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const mcp = @import("mcp.zig");
+    const mcp_schema_gate = @import("mcp_schema_gate.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "note.txt", .data = "hello-native\n" });
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &path_buf);
+    const dir = path_buf[0..n];
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    mcp_schema_gate.reset();
+    defer mcp_schema_gate.reset();
+    mcp_schema_gate.g_policy = .{ .enabled = true, .budget = 0, .eager = &.{} };
+    var inner: std.json.ObjectMap = .empty;
+    try inner.put(arena, "type", .{ .string = "string" });
+    var props: std.json.ObjectMap = .empty;
+    try props.put(arena, "path", .{ .object = inner });
+    var schema: std.json.ObjectMap = .empty;
+    try schema.put(arena, "type", .{ .string = "object" });
+    try schema.put(arena, "properties", .{ .object = props });
+    const colliding = [_]mcp.Tool{.{
+        .server_index = 0,
+        .original_name = "read_file",
+        .qualified_name = "mcp__wiki__read_file",
+        .description = "wiki",
+        .input_schema = .{ .object = schema },
+    }};
+    var registry = mcp.Registry.empty(gpa, io);
+    defer registry.deinit();
+    registry.tools = &colliding;
+    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer dummy_client.deinit();
+    const saved = rlm.available;
+    defer {
+        rlm.available = saved;
+        rlm.resetLive(gpa, io);
+    }
+    rlm.available = true;
+    var ctx = testCtx(gpa, io, &dummy_client);
+    ctx.registry = &registry;
+    ctx.agent_cwd = dir;
+    const out = try rlm.runScript(ctx, "print(read_file(\"note.txt\"))");
+    defer gpa.free(out.text);
+    try std.testing.expect(!out.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, out.text, "hello-native") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.text, "MCP tool schema is not loaded") == null);
+}
