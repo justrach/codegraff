@@ -16,7 +16,7 @@ function pageWorld(): (Window & OnboardingWorld) | null {
 
 const signedOut: AccountStatus = { signedIn: false, plan: null, provider: null };
 
-export default function AccountChrome() {
+export default function AccountChrome({ tabIndex, inert }: { tabIndex?: number; inert?: boolean } = {}) {
   const [account, setAccount] = useState<AccountStatus>(signedOut);
   const [panel, setPanel] = useState(false);
   const [login, setLogin] = useState(false);
@@ -96,6 +96,7 @@ export default function AccountChrome() {
 
   return <>
     <button type="button" data-account-trigger aria-label="Account" aria-haspopup="dialog" aria-expanded={panel}
+      tabIndex={tabIndex} inert={inert} aria-hidden={inert || (tabIndex != null && tabIndex < 0) || undefined}
       title="Account" onClick={() => setPanel(open => !open)}
       className="sidebar-row relative z-10 mx-2 flex h-8 items-center rounded-control px-2 text-left transition-[background-color,color,transform] duration-150 hover:bg-hover-2 active:scale-[0.98]">
       <span className={`flex size-7 shrink-0 items-center justify-center rounded-full text-[11px] font-medium ${account.signedIn ? "bg-accent text-white" : "bg-hover text-ink-2"}`}>

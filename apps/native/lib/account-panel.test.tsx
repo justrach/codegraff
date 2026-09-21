@@ -1,10 +1,20 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import AccountPanel from "../components/site/AccountPanel";
+import AccountChrome from "../components/site/AccountChrome";
 import OnboardingDialog from "../components/site/OnboardingDialog";
 import LoginDialog from "../components/site/LoginDialog";
 import EmptyLoginHint from "../components/site/EmptyLoginHint";
 import AppSettings from "../components/site/AppSettings";
+
+test("the collapsed rail drops Account from the keyboard sequence", () => {
+  const html = renderToStaticMarkup(<AccountChrome tabIndex={-1} inert />);
+  expect(html).toContain('data-account-trigger');
+  expect(html).toContain('tabindex="-1"');
+  expect(html).toContain("inert");
+  expect(html).toContain('aria-hidden="true"');
+  expect(html).toContain('aria-label="Account"');
+});
 
 test("the account panel shows signed-out login and settings entries", () => {
   const html = renderToStaticMarkup(

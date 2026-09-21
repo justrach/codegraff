@@ -11,9 +11,14 @@ test("see-all conversations fades with sidebar copy when the rail collapses", ()
 
 test("the account control stays outside the collapsed copy wrapper", () => {
   const src = readFileSync(join(import.meta.dir, "../components/primitives/SidebarNav.tsx"), "utf8");
-  const account = src.match(/data-account-control[\s\S]{0,80}/)?.[0] ?? "";
+  const account = src.match(/data-account-control[\s\S]{0,200}/)?.[0] ?? "";
   expect(account).toContain("data-account-control");
-  expect(account).toContain("inert={collapsed}");
+  expect(account).toContain("inert={hide.inert}");
+  expect(account).toContain('aria-hidden={hide["aria-hidden"]}');
+  expect(account).toContain("tabIndex={collapsed ? -1 : undefined}");
   expect(account).not.toContain("sidebar-copy");
+  expect(src).toContain("collapsedFooterFocus");
+  expect(src).toContain("tabIndex: hide.tabIndex");
+  expect(src).toContain("inert: hide.inert");
   expect(src.indexOf("data-account-control")).toBeLessThan(src.indexOf("footerControls ?"));
 });

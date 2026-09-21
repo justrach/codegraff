@@ -1,6 +1,7 @@
 "use client";
 
-import { Fragment, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Fragment, cloneElement, isValidElement, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { collapsedFooterFocus } from "@/lib/rail-tab-sequence";
 import { createPortal } from "react-dom";
 import {
   IconCheckmark1Small,
@@ -75,7 +76,7 @@ type SidebarNavProps = {
   footerLabel?: string;
   footerIcon?: ReactNode;
   footerControls?: ReactNode;
-  /** Always-visible account control; stays clickable when the rail collapses. */
+  /** Account control; removed from the tab sequence when the rail collapses. */
   accountControl?: ReactNode;
   onFooterClick?: () => void;
   /** Tooltip on the footer control. */
@@ -261,6 +262,10 @@ export default function SidebarNav({
     setQuery("");
     searchButtonRef.current?.focus();
   };
+  const hide = collapsedFooterFocus(collapsed);
+  const account = isValidElement<{ tabIndex?: number; inert?: boolean }>(accountControl)
+    ? cloneElement(accountControl, { tabIndex: hide.tabIndex, inert: hide.inert })
+    : accountControl;
 
   return (
     <aside
@@ -523,8 +528,8 @@ export default function SidebarNav({
           </div>
         </div>
 
-        {accountControl && <div data-account-control inert={collapsed} aria-hidden={collapsed} className="mt-auto shrink-0 pb-1">{accountControl}</div>}
-        {footerControls ? <div inert={collapsed} aria-hidden={collapsed} className="sidebar-copy">{footerControls}</div> : <div inert={collapsed} aria-hidden={collapsed} className="sidebar-copy mx-2 mt-3 w-[232px] border-t border-line pt-3">
+        {accountControl && <div data-account-control inert={hide.inert} aria-hidden={hide["aria-hidden"]} tabIndex={collapsed ? -1 : undefined} className="mt-auto shrink-0 pb-1">{account}</div>}
+        {footerControls ? <div inert={hide.inert} aria-hidden={hide["aria-hidden"]} className="sidebar-copy">{footerControls}</div> : <div inert={collapsed} aria-hidden={collapsed} className="sidebar-copy mx-2 mt-3 w-[232px] border-t border-line pt-3">
           <button
             type="button"
             onClick={onFooterClick ?? onNewChat}
