@@ -94,6 +94,19 @@ test('invalid metadata fails before writing config or invoking signer', async ()
   assert.equal(called, false);
 });
 
+test('signBundle rejects a same-team profile for a different bundle before invoking the signer', async () => {
+  let called = false;
+  await assert.rejects(signBundle({
+    app: 'Fixture.app',
+    identity,
+    profilePath: 'fixture.provisionprofile',
+    readProvisioningProfile: () => profile('com.unrelated.app'),
+    readBundleId: () => bundleId,
+    sign: () => { called = true; },
+  }), /provisioning profile/);
+  assert.equal(called, false);
+});
+
 test('default reader obtains actual bundle identifier through PlistBuddy', { skip: process.platform !== 'darwin' }, async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'webauthn-plist-test-'));
   const app = path.join(root, 'Fixture.app');
