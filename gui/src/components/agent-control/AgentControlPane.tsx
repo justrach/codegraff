@@ -11,7 +11,9 @@ import {
 } from "lucide-react";
 
 import {
+  currentSupervisorTitle,
   formatAgentActivityLabel,
+  formatDaddyDirective,
   type AgentOverviewItem,
   type AgentOverviewSnapshot,
   type AgentOverviewStatus,
@@ -22,6 +24,8 @@ import { useSessionActions } from "@/hooks/useSession";
 import * as desktopClient from "@/services/desktop/client";
 import type { FollowupRequest } from "@/services/desktop/types/contracts";
 import { Button } from "@/components/ui/Button";
+
+import { DaddyDirectForm, DaddySupervisorBanner } from "./DaddyDirect";
 
 const STATUS_LABELS: Record<AgentOverviewStatus, string> = {
   running: "Working",
@@ -155,6 +159,7 @@ interface AgentControlCardProps {
   onCancelStop: () => void;
   onConfirmStop: (item: AgentOverviewItem) => void;
   onAnswerFollowup: (followup: FollowupRequest, answer: FollowupAnswer) => void;
+  onDirect: (item: AgentOverviewItem, text: string) => void;
 }
 
 function AgentControlCard({
@@ -165,6 +170,7 @@ function AgentControlCard({
   onCancelStop,
   onConfirmStop,
   onAnswerFollowup,
+  onDirect,
 }: AgentControlCardProps) {
   const canStop = item.kind === "orchestrator" && item.status === "running";
   const followup = item.kind === "orchestrator" ? item.followup : null;
@@ -239,6 +245,8 @@ function AgentControlCard({
           onAnswer={(answer) => onAnswerFollowup(followup, answer)}
         />
       ) : null}
+
+      <DaddyDirectForm item={item} onDirect={onDirect} />
     </div>
   );
 }
@@ -252,6 +260,7 @@ export function AgentControlPaneContent({
   onCancelStop,
   onConfirmStop,
   onAnswerFollowup,
+  onDirect,
 }: {
   overview: AgentOverviewSnapshot;
   stopPendingId: string | null;
@@ -261,6 +270,7 @@ export function AgentControlPaneContent({
   onCancelStop: () => void;
   onConfirmStop: (item: AgentOverviewItem) => void;
   onAnswerFollowup: (followup: FollowupRequest, answer: FollowupAnswer) => void;
+  onDirect: (item: AgentOverviewItem, text: string) => void;
 }) {
   const cardHandlers = {
     onSelect,
@@ -268,6 +278,7 @@ export function AgentControlPaneContent({
     onCancelStop,
     onConfirmStop,
     onAnswerFollowup,
+    onDirect,
   };
 
   return (
@@ -294,6 +305,8 @@ export function AgentControlPaneContent({
       </header>
 
       <div className="agent-control-scroll">
+        <DaddySupervisorBanner title={currentSupervisorTitle(overview)} />
+
         <section aria-label="Active agents">
           <div className="space-y-1.5">
             {overview.active.length > 0 ? (
@@ -413,6 +426,17 @@ export function AgentControlPane({
     });
   }
 
+  function handleDirect(item: AgentOverviewItem, text: string) {
+    void desktopClient
+      .sendPrompt({
+        workspacePath: item.workspacePath,
+        conversationId: item.conversationId,
+        agentId: item.kind === "orchestrator" ? item.agentId : null,
+        prompt: formatDaddyDirective(item, text),
+      })
+      .catch(() => null);
+  }
+
   const label = formatAgentActivityLabel(overview);
 
   return (
@@ -455,6 +479,7 @@ export function AgentControlPane({
           onCancelStop={() => setStopPendingId(null)}
           onConfirmStop={handleConfirmStop}
           onAnswerFollowup={handleAnswerFollowup}
+          onDirect={handleDirect}
         />
       </div>
     </>
