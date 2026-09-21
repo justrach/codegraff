@@ -453,7 +453,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         } else {
             const outcome = jobs.agentWorktreeFinish(gpa, ctx.io, w);
             if (outcome.kept) {
-                extra = std.fmt.allocPrint(gpa, "\n\n[worktree kept ({s}) — path: {s}, branch: {s}]", .{ jobs.keepReasonText(outcome.reason), w.path, w.branch }) catch "";
+                extra = std.fmt.allocPrint(gpa, "\n\n[worktree kept ({s}) — path: {s}, branch: {s}; finish is not archive — do not spawn a cleanup child]", .{ jobs.keepReasonText(outcome.reason), w.path, w.branch }) catch "";
                 extra_owned = extra.len > 0;
             }
         }

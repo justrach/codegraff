@@ -142,7 +142,7 @@ export const AssistantBody = memo(function AssistantBody({
   turn: AssistantTurn;
   onOpenPath?: (path: string) => void;
   onReview?: () => void;
-  onAnswer?: (text: string, cancelled?: boolean) => void;
+  onAnswer?: (text: string, cancelled?: boolean) => void | Promise<void>;
   scroller?: RefObject<HTMLDivElement | null>;
   following: boolean;
   reasoningLabel?: string;

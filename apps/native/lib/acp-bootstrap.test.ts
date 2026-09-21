@@ -1,8 +1,11 @@
 import { test, expect } from "bun:test";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { AcpTransport } from "./acp-transport";
-import { initializeWorker, serializeBootstrap } from "./acp-bootstrap";
+import { bindSessionCwd, initializeWorker, serializeBootstrap } from "./acp-bootstrap";
 import { retireWorker } from "./acp-retire";
 
 async function worker(mode: string) {
@@ -12,7 +15,7 @@ async function worker(mode: string) {
     require('node:readline').createInterface({input:process.stdin}).on('line', line => {
       const req=JSON.parse(line);
       if(req.method==='initialize' && mode!=='initialize') send({id:req.id,result:{}});
-      if(req.method==='session/new' && mode!=='session/new') send({id:req.id,result:mode==='invalid'?{}:{sessionId:'ready'}});
+      if(req.method==='session/new' && mode!=='session/new') send({id:req.id,result:mode==='invalid'?{}:mode==='isolated'?{sessionId:'ready',cwd:'/isolated/tree'}:{sessionId:'ready'}});
     });
     console.log('ready');
   `], { stdio: ["pipe", "pipe", "inherit"] });
@@ -38,12 +41,54 @@ for (const mode of ["initialize", "session/new", "invalid"]) {
     try {
       expect(await initializeWorker(fresh.transport, process.cwd(), async () => {
         throw new Error('A successful handshake must not retire its child');
-      }, 1000)).toBe('ready');
+      }, 1000)).toEqual({ sessionId: 'ready' });
       expect(fresh.transport.usable).toBe(true);
     } finally { await retireWorker(fresh.child, 50); }
   });
 }
 
+
+test("bindSessionCwd keeps the spawn workspace when session/new reports the host cwd", () => {
+  const workspace = "/private/tmp/graff-frontend/workspace";
+  const host = "/Users/runner/work/codegraff/codegraff/apps/native";
+  expect(bindSessionCwd(workspace, ".", host)).toBe(workspace);
+  expect(bindSessionCwd(workspace, "", host)).toBe(workspace);
+  expect(bindSessionCwd(workspace, undefined, host)).toBe(workspace);
+  expect(bindSessionCwd(workspace, host, host)).toBe(workspace);
+  expect(bindSessionCwd(workspace, workspace, host)).toBe(workspace);
+  expect(bindSessionCwd(workspace, "/repo/.graff/worktrees/session-1", host))
+    .toBe("/repo/.graff/worktrees/session-1");
+  expect(bindSessionCwd(host, host, host)).toBe(host);
+});
+
+test("bindSessionCwd treats a host cwd symlink as the host, not a checkout", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "graff-bind-cwd-"));
+  try {
+    const host = path.join(root, "apps-native");
+    const workspace = path.join(root, "workspace");
+    mkdirSync(host);
+    mkdirSync(workspace);
+    const alias = path.join(root, "host-alias");
+    symlinkSync(host, alias);
+    expect(bindSessionCwd(workspace, alias, host)).toBe(workspace);
+    expect(bindSessionCwd(workspace, host, alias)).toBe(workspace);
+    expect(bindSessionCwd(workspace, workspace, host)).toBe(path.resolve(workspace));
+    const tree = path.join(workspace, ".graff", "worktrees", "session-1");
+    mkdirSync(tree, { recursive: true });
+    expect(bindSessionCwd(workspace, tree, host)).toBe(path.resolve(tree));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("session/new checkout binds the worker to its isolated worktree", async () => {
+  const isolated = await worker("isolated");
+  try {
+    expect(await initializeWorker(isolated.transport, "/shared/repo", async () => {
+      throw new Error("A successful handshake must not retire its child");
+    }, 1000)).toEqual({ sessionId: "ready", cwd: "/isolated/tree" });
+  } finally { await retireWorker(isolated.child, 50); }
+});
 
 test("overlapping startup and first prompt share a completed worker", async () => {
   const pending = new Map<string, Promise<string>>();
@@ -54,9 +99,9 @@ test("overlapping startup and first prompt share a completed worker", async () =
     if (session) return session;
     starts++;
     live = await worker("okay");
-    session = await initializeWorker(live.transport, process.cwd(), async () => {
+    session = (await initializeWorker(live.transport, process.cwd(), async () => {
       await retireWorker(live!.child, 50);
-    }, 1000);
+    }, 1000)).sessionId;
     return session;
   };
   try {

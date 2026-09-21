@@ -237,7 +237,7 @@ pub fn run(ctx: ToolCtx, pv: Value, outer_context: []const u8) !ToolOutput {
         sp.override = fleet.resolveOverride(so);
         const an = fleet.resolveNiche(so);
         sp.niche = if (an.len > 0) an else sp.label;
-        sp.isolation = fleet.resolveIsolation(so);
+        sp.isolation = fleet.resolveIsolationWithDefault(so, .shared_cwd);
         // A pipeline is a dependent chain over one item: stage 2+ must see
         // what earlier stages did, which worktree isolation would silently
         // hide (#295 territory). Reject rather than run the chain wrong.

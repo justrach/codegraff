@@ -4,10 +4,19 @@ const Allocator = std.mem.Allocator;
 const ToolCall = @import("tools.zig").ToolCall;
 const ExecResult = @import("tools.zig").ExecResult;
 
+fn checkTail(command: []const u8) []const u8 {
+    var rest = std.mem.trim(u8, command, " \t\r\n");
+    while (std.mem.startsWith(u8, rest, "cd ")) {
+        const sep = std.mem.indexOf(u8, rest, "&&") orelse break;
+        rest = std.mem.trimStart(u8, rest[sep + 2 ..], " \t");
+    }
+    return rest;
+}
+
 pub fn isCheck(command: []const u8) bool {
-    var words = std.mem.tokenizeAny(u8, command, " \t\r\n");
+    var words = std.mem.tokenizeAny(u8, checkTail(command), " \t\r\n");
     const executable = std.fs.path.basename(words.next() orelse return false);
-    if (std.mem.eql(u8, executable, "pytest")) return true;
+    if (std.mem.eql(u8, executable, "pytest") or std.mem.startsWith(u8, executable, "eval-tier")) return true;
     const first = words.next() orelse return false;
     if (std.mem.eql(u8, executable, "python") or std.mem.eql(u8, executable, "python3")) {
         if (std.mem.eql(u8, first, "-m")) {
@@ -167,6 +176,8 @@ test "observed failed check survives unrelated success and clears only on its su
 test "check classification excludes prose and ordinary inspection" {
     try std.testing.expect(isCheck("python3 -m unittest test_delete -v"));
     try std.testing.expect(isCheck("zig build test"));
+    try std.testing.expect(isCheck("cd apps/native && bun run test:desktop"));
+    try std.testing.expect(isCheck("scripts/eval-tier1.sh --only reach"));
     try std.testing.expect(!isCheck("echo pytest failed"));
     try std.testing.expect(!isCheck("git diff"));
 }

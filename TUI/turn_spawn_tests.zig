@@ -143,6 +143,21 @@ test "idle wake spawn failure is reapable without a thread or model work (#537)"
     try std.testing.expectEqual(@as(usize, 0), Fake.join_calls);
 }
 
+test "#1136 idle wake does not start a turn while one is already in flight" {
+    install();
+    defer uninstall();
+    engine.g_idle_wake_fn = Fake.wake;
+    var term: Term = undefined;
+    term.init(std.testing.allocator, 80, 24);
+    defer term.deinit();
+    _ = term.typeText("in flight");
+    _ = term.enter();
+    try expectFailedStart(&term);
+    turn.maybeJobWake(&term.model);
+    try std.testing.expectEqual(@as(usize, 0), Fake.wake_calls);
+    try finishFailedStart(&term);
+}
+
 test "completion wake waits for drafts and queued user input" {
     install();
     defer uninstall();

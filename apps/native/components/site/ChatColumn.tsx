@@ -18,7 +18,7 @@ export default function ChatColumn({ thread, compact, following, register, onOpe
   thread: Chat; compact: boolean; following: boolean;
   register: (element: HTMLDivElement | null) => void;
   onOpenPath: (path: string) => void; onReview: () => void;
-  onAnswer?: (text: string, cancelled?: boolean) => void; onEditPrompt?: (n: number, text: string) => void;
+  onAnswer?: (text: string, cancelled?: boolean) => void | Promise<void>; onEditPrompt?: (n: number, text: string) => void;
   prompt: ComponentProps<typeof PromptBar> & Required<Pick<ComponentProps<typeof PromptBar>, "onSend" | "models" | "onModelChange">>;
   queue: ComponentProps<typeof PromptQueue>;
   pins: number; onShowPins: () => void; onClearPins: () => void;

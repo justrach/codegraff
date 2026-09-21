@@ -67,6 +67,7 @@ def events(request: RecordedRequest) -> list[dict]:
                 "arguments": json.dumps({
                     "description": "terra worker",
                     "prompt": "Return the worker report exactly.",
+                    "isolation": "shared_cwd",
                 }),
                 "status": "completed",
             },

@@ -53,6 +53,8 @@ pub const Dispatch = struct {
     meter: ?MeterFn = null,
     extra: ?ExtraFn = null,
     error_message: ?*const fn (ctx: *anyopaque, err: anyerror) []const u8 = null,
+    /// Isolated checkout after session start (`g_cwd_display`). Empty omits the field.
+    cwd: []const u8 = "",
 };
 
 fn respond(w: *Io.Writer, req: proto.Request, result: anytype) !void {
@@ -178,7 +180,10 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
     if (std.mem.eql(u8, req.method, "session/new")) {
         d.created += 1;
         d.session_id = try std.fmt.allocPrint(arena, "acp-{x}-{d}", .{ d.seed, d.created });
-        try respond(w, req, .{ .sessionId = d.session_id.? });
+        if (d.cwd.len > 0)
+            try respond(w, req, .{ .sessionId = d.session_id.?, .cwd = d.cwd })
+        else
+            try respond(w, req, .{ .sessionId = d.session_id.? });
         try proto.writeAvailableCommands(w, d.session_id.?, proto.slashCommands());
         return;
     }
@@ -225,6 +230,17 @@ test "in-process handleLine speaks the same initialize / new / prompt envelopes"
     try handleLine(&d, a, &w, "{\"id\":3,\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"ping\"}]}}");
     try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"text\":\"echo:ping\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"stopReason\":\"end_turn\"") != null);
+}
+
+test "session/new reports an isolated checkout when Dispatch.cwd is set" {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    var buf: [32768]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    var d: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .seed = 0x11, .cwd = "/repo/.graff/worktrees/session-1" };
+    try handleLine(&d, state.allocator(), &w, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/new\"}");
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"sessionId\":\"acp-11-1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"cwd\":\"/repo/.graff/worktrees/session-1\"") != null);
 }
 
 test "authenticate names the out-of-band terminal login" {

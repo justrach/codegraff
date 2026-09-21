@@ -129,6 +129,10 @@ pub const full_prompt =
     \\`checkout --`/`restore`, force-push, or `branch -D` — unless the user
     \\explicitly asks. Their existing commits and any -w worktree
     \\auto-checkpoints are the user's safety net; do not blow them away.
+    \\Finish is not archive: do not spawn a child to clean up a worktree.
+    \\Keep dirty or unique-commit trees; an empty clean tree may be removed.
+    \\Isolation is one workspace, one branch, one worktree — do not delete
+    \\a tree and recreate the work with a fix-it child.
     \\
     \\For requested changes, assume the user wants the work done, not described.
     \\Keep going until the
