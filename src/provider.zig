@@ -87,7 +87,8 @@ pub const provider_specs = [_]ProviderSpec{
     // matching what it already does on the Responses wire.
     .{ .id = "google", .display_name = "Google Gemini", .kind = .interactions, .auth = .goog_api_key, .url = "https://generativelanguage.googleapis.com/v1beta/interactions", .env_key = "GEMINI_API_KEY", .default_model = "gemini-3.8-flash", .catalog = .openai, .models_url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200", .takes_effort = true },
     .{ .id = "minimax", .display_name = "MiniMax", .kind = .anthropic, .auth = .bearer, .url = "https://api.minimax.io/anthropic/v1/messages", .env_key = "MINIMAX_API_KEY", .default_model = "MiniMax-M3" },
-    .{ .id = "xiaomi", .display_name = "Xiaomi", .kind = .openai, .auth = .bearer, .url = "https://api.xiaomimimo.com/v1/chat/completions", .env_key = "XIAOMI_API_KEY", .default_model = "mimo-v2.5-pro" },
+    // Live list at /v1/models (Bearer, same as chat). Baked rows are the offline floor.
+    .{ .id = "xiaomi", .display_name = "Xiaomi", .kind = .openai, .auth = .bearer, .url = "https://api.xiaomimimo.com/v1/chat/completions", .env_key = "XIAOMI_API_KEY", .default_model = "mimo-v2.6-pro", .catalog = .openai, .models_url = "https://api.xiaomimimo.com/v1/models" },
     .{ .id = "kilo", .display_name = "Kilo Gateway", .kind = .openai, .auth = .bearer, .url = "https://api.kilo.ai/api/gateway/v1/chat/completions", .env_key = "KILO_API_KEY", .default_model = "kilo-auto/small" },
     .{ .id = "groq", .display_name = "Groq", .kind = .openai, .auth = .bearer, .url = "https://api.groq.com/openai/v1/chat/completions", .env_key = "GROQ_API_KEY", .default_model = "openai/gpt-oss-120b" },
     .{ .id = "cerebras", .display_name = "Cerebras", .kind = .openai, .auth = .bearer, .url = "https://api.cerebras.ai/v1/chat/completions", .env_key = "CEREBRAS_API_KEY", .default_model = "gpt-oss-120b", .catalog = .openai, .models_url = "https://api.cerebras.ai/v1/models", .takes_effort = true },
