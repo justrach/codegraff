@@ -119,6 +119,7 @@ fn writeUpdate(w: *Io.Writer, session_id: []const u8, ev: engine_events.EngineEv
             if (label.skipTranscript(r.name)) return;
             try acp_stream.writeToolDone(w, session_id, "call-1", true, r.message);
         },
+        .session_notice => |n| try acp_stream.writeThought(w, session_id, n.text),
         else => {},
     }
 }

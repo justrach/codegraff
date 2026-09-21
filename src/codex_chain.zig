@@ -40,13 +40,10 @@ pub fn propsFor(self: *const Agent) u64 {
 /// optimization trades cheap cache reads for full-price re-uploads.
 pub var g_force_full_resend = false;
 
-/// GRAFF_XAI_WS_CHAIN=1 (session_settings.applyEnvKnobs): experiment — xAI
-/// documents on-socket chaining with store:false via a per-connection cache,
-/// and a live probe chained successfully, but a second probe reproduced the
-/// original silent multi-minute stall (both 2026-08-15). Off until the
-/// service is consistent; the errorFrameAction/reanchor ladder contains the
-/// blast radius when it is on.
-pub var g_xai_ws_chain = false;
+/// xAI on-socket chaining (published WS contract: store:false / ZDR via the
+/// per-connection cache). GRAFF_XAI_WS_CHAIN=0 opts out. A not-found, 25-min
+/// cap, or drop re-anchors with full input (shouldDropChain).
+pub var g_xai_ws_chain = true;
 
 /// May this request chain onto the held response instead of re-anchoring?
 /// Brands whose Responses WS holds prior state in-memory and accept
@@ -175,6 +172,11 @@ test "usable: chains only on a clean extension of what the server holds" {
 
     // /model or /effort changed between turns.
     try std.testing.expect(!usable(true, true, 4, 6, 0, 0, 8, 7));
+}
+
+test "chainUsable: xAI chains by default on a held socket" {
+    try std.testing.expect(g_xai_ws_chain);
+    try std.testing.expect(usable(true, true, 1, 2, 0, 0, 7, 7));
 }
 
 test "chainBrandOk: xAI and codex chain; anthropic does not" {

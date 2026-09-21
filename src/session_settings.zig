@@ -240,9 +240,11 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
         if (v.len > 0) provider_mod.g_vercel_url_override = v;
     }
     ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
-    // #502 follow-up: opt-in xAI on-socket chaining (see codex_chain.g_xai_ws_chain).
-    if (environ_map.get("GRAFF_XAI_WS_CHAIN")) |v|
-        @import("codex_chain.zig").g_xai_ws_chain = std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "true");
+    // xAI on-socket chaining is on (ADR 0002). GRAFF_XAI_WS_CHAIN=0/off/false opts out.
+    if (environ_map.get("GRAFF_XAI_WS_CHAIN")) |v| {
+        const off = std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "off") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "no");
+        @import("codex_chain.zig").g_xai_ws_chain = !off;
+    }
     // GRAFF_WS_FORCE_FAIL_ONCE proves a clean retry; the counted sibling proves
     // that two consecutive failures latch the SSE fallback. Test seams only.
     if (environ_map.get("GRAFF_WS_FORCE_FAIL_ONCE")) |v| {
