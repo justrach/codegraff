@@ -8,7 +8,7 @@ fn checkTail(command: []const u8) []const u8 {
     var rest = std.mem.trim(u8, command, " \t\r\n");
     while (std.mem.startsWith(u8, rest, "cd ")) {
         const sep = std.mem.indexOf(u8, rest, "&&") orelse break;
-        rest = std.mem.trimLeft(u8, rest[sep + 2 ..], " \t");
+        rest = std.mem.trimStart(u8, rest[sep + 2 ..], " \t");
     }
     return rest;
 }

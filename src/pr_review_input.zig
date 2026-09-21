@@ -131,9 +131,8 @@ test "claim review includes unchanged callers that establish test reachability" 
     _ = try capture(std.testing.allocator, io, a, cwd, &.{ "git", "add", "build.zig" });
     _ = try capture(std.testing.allocator, io, a, cwd, &.{ "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "base" });
     const base = try capture(std.testing.allocator, io, a, cwd, &.{ "git", "rev-parse", "HEAD" });
-    try temp.dir.makePath(io, "src");
-    try temp.dir.writeFile(io, .{ .sub_path = "src/dispatch.zig", .data = "pub fn run() void {}\n" });
-    _ = try capture(std.testing.allocator, io, a, cwd, &.{ "git", "add", "src/dispatch.zig" });
+    try temp.dir.writeFile(io, .{ .sub_path = "dispatch.zig", .data = "pub fn run() void {}\n" });
+    _ = try capture(std.testing.allocator, io, a, cwd, &.{ "git", "add", "dispatch.zig" });
     _ = try capture(std.testing.allocator, io, a, cwd, &.{ "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "head" });
     const head = try capture(std.testing.allocator, io, a, cwd, &.{ "git", "rev-parse", "HEAD" });
     const input = try gather(std.testing.allocator, io, a, cwd, base, head, "claim");
