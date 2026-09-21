@@ -203,7 +203,7 @@ test "session/answer ignores an empty non-cancelled reply" {
     var inbox: Inbox = .{ .gpa = std.testing.allocator, .io = std.testing.io, .reader = &reader };
     defer inbox.deinit();
     try inbox.accept("{\"method\":\"session/answer\",\"params\":{\"text\":\"\",\"cancelled\":false}}");
-    acp_ask.reply("kept", false);
+    try std.testing.expect(acp_ask.reply("kept", false));
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const got = try acp_ask.wait(arena_state.allocator());

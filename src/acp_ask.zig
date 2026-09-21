@@ -98,7 +98,7 @@ const testing = std.testing;
 test "reply before wait is not lost" {
     attach(testing.io, testing.allocator);
     defer detach();
-    reply("yes", false);
+    try testing.expect(reply("yes", false));
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const got = try wait(arena_state.allocator());
@@ -122,7 +122,7 @@ test "cancelIfWaiting is a no-op when nobody is blocked" {
     attach(testing.io, testing.allocator);
     defer detach();
     cancelIfWaiting();
-    reply("later", false);
+    try testing.expect(reply("later", false));
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const got = try wait(arena_state.allocator());
