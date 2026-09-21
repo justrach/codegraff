@@ -9,7 +9,7 @@ import { transcriptPageStart } from "@/lib/transcript-window";
 export default memo(function ChatTranscript({ messages, register, following, onOpenPath, onReview, onAnswer, snapshot, onEditPrompt }: {
   messages: Msg[]; register: (element: HTMLDivElement | null) => void; following: boolean;
   onOpenPath: (path: string) => void; onReview: () => void;
-  onAnswer?: (text: string, cancelled?: boolean) => void; snapshot?: boolean;
+  onAnswer?: (text: string, cancelled?: boolean) => void | Promise<void>; snapshot?: boolean;
   onEditPrompt?: (n: number, text: string) => void; // n is 1-based user prompt index; text is the replacement
 }) {
   const scroller = useRef<HTMLDivElement>(null);

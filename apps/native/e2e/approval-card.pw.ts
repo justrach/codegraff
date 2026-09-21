@@ -92,3 +92,17 @@ test("multi-question radio and checkbox answers require explicit progression", a
 
   await expect(submissions).toHaveText(JSON.stringify([["Online", "Blue"]]));
 });
+
+test("Answers sent waits for acknowledgement and keeps the selection after a failed delivery", async ({ page }) => {
+  const card = page.getByRole("region", { name: "Acknowledged approval" });
+  await card.getByRole("button", { name: "Yes" }).click();
+  await card.getByRole("button", { name: "Send" }).click();
+  await expect(card.getByText("Sending…")).toBeVisible();
+  await expect(card.getByText("Answers sent")).toHaveCount(0);
+  await expect(card.getByRole("alert")).toHaveText("notify failed");
+  await expect(card.getByRole("button", { name: "Yes" })).toHaveAttribute("aria-pressed", "true");
+  await expect(card.getByLabel("Acknowledged submissions")).toHaveText("0");
+  await card.getByRole("button", { name: "Send" }).click();
+  await expect(card.getByText("Answers sent")).toBeVisible();
+  await expect(card.getByLabel("Acknowledged submissions")).toHaveText("1");
+});

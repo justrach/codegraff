@@ -324,3 +324,45 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
     rmSync(temp, { recursive: true, force: true });
   }
 }, 15000);
+
+test("session/answer acknowledges the matching call_id and rejects empty or dead delivery", async () => {
+  const temp = mkdtempSync(path.join(os.tmpdir(), "graff-acp-answer-"));
+  const binary = path.join(temp, "agent.cjs");
+  const oldBin = process.env.GRAFF_BIN;
+  writeFileSync(binary, `#!/usr/bin/env node
+const fs=require('node:fs');
+const send=value=>console.log(JSON.stringify(value));
+require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
+  const req=JSON.parse(line);
+  if(req.method==='initialize') send({id:req.id,result:{}});
+  if(req.method==='session/new') {
+    send({id:req.id,result:{sessionId:'ask'}});
+    send({method:'session/update',params:{update:{sessionUpdate:'available_commands_update',availableCommands:[]}}});
+  }
+  if(req.method==='session/answer') fs.appendFileSync('answers', JSON.stringify(req.params)+'\\n');
+}).on('close',()=>process.exit(0));
+`, { mode: 0o700 });
+  const chat = `answer-${path.basename(temp)}`;
+  const call = (method: string, params = {}) => deadline(POST(new NextRequest("http://localhost/api/acp", {
+    method: "POST", body: JSON.stringify({ chat, method, params }),
+  })), method);
+  try {
+    process.env.GRAFF_BIN = binary;
+    expect((await call("bootstrap", { cwd: temp, model: "fixture", yolo: false, mcp: false })).status).toBe(200);
+    const empty = await call("session/answer", { callId: "q1", text: "  " });
+    expect(empty.status).toBe(400);
+    expect(await empty.json()).toEqual({ error: "empty answer" });
+    const first = await call("session/answer", { callId: "q1", text: "Mint" });
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual({ ok: true, callId: "q1" });
+    const repeat = await call("session/answer", { callId: "q1", text: "Mint" });
+    expect(repeat.status).toBe(200);
+    await new Promise(resolve => setTimeout(resolve, 40));
+    const answers = readFileSync(path.join(temp, "answers"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(answers).toEqual([{ callId: "q1", text: "Mint", cancelled: false, sessionId: "ask" }]);
+  } finally {
+    await call("dispose");
+    if (oldBin === undefined) delete process.env.GRAFF_BIN; else process.env.GRAFF_BIN = oldBin;
+    rmSync(temp, { recursive: true, force: true });
+  }
+}, 15000);

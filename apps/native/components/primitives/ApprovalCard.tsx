@@ -129,8 +129,8 @@ export default function ApprovalCard({
   resettable = true,
   questions,
 }: {
-  onSubmitted?: (answers?: string[]) => void;
-  onCancelled?: () => void;
+  onSubmitted?: (answers?: string[]) => void | Promise<void>;
+  onCancelled?: () => void | Promise<void>;
   resettable?: boolean;
   variant?: string;
   questions?: ApprovalQuestion[];
@@ -140,6 +140,8 @@ export default function ApprovalCard({
   const [answers, setAnswers] = useState<Record<number, number[]>>({});
   const [custom, setCustom] = useState<Record<number, string>>({});
   const [sent, setSent] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   const [open, setOpen] = useState(true);
 
   const submittedRef = useRef(false);
@@ -180,16 +182,28 @@ export default function ApprovalCard({
   };
 
   const send = () => {
-    if (submittedRef.current) return;
-    submittedRef.current = true;
-    setSent(true);
+    if (submittedRef.current || sending) return;
     const collected = QUESTIONS.map((question, qIdx) => {
       const customText = custom[qIdx]?.trim();
       if (customText) return customText;
       const picked = answers[qIdx] ?? [];
       return picked.map((i) => question.options[i]).filter(Boolean).join(", ");
     }).filter(Boolean);
-    onSubmitted?.(collected);
+    if (collected.length === 0) {
+      setSendError("Select an answer before sending.");
+      return;
+    }
+    submittedRef.current = true;
+    setSending(true);
+    setSendError(null);
+    void Promise.resolve(onSubmitted?.(collected)).then(() => {
+      setSent(true);
+      setSending(false);
+    }, (error: unknown) => {
+      submittedRef.current = false;
+      setSending(false);
+      setSendError(error instanceof Error && error.message ? error.message : "Could not send the answer");
+    });
   };
 
   const advance = () => {
@@ -217,6 +231,8 @@ export default function ApprovalCard({
     setCustom({});
     submittedRef.current = false;
     setSent(false);
+    setSending(false);
+    setSendError(null);
     setOpen(true);
     measured.current = false;
   };
@@ -355,6 +371,9 @@ export default function ApprovalCard({
           </div>
         </div>
 
+        {sendError && (
+          <p role="alert" className="px-3 pb-1 text-[12px] text-red">{sendError}</p>
+        )}
         {/* footer — step nav (rolling counter) + pill actions */}
         <div className="primitive-card-footer flex items-center justify-between gap-3">
           <div className="flex items-center gap-1 text-ink-3">
@@ -382,11 +401,11 @@ export default function ApprovalCard({
           </div>
 
           <div className="-mr-0.5 flex items-center gap-1.5">
-            <Button variant="ghost" size="sm" onClick={() => (last ? (setOpen(false), onCancelled?.()) : goTo(qi + 1))}>
+            <Button variant="ghost" size="sm" disabled={sending} onClick={() => (last ? (setOpen(false), onCancelled?.()) : goTo(qi + 1))}>
               Skip
             </Button>
-            <Button variant="accent" size="sm" disabled={!hasAnswer} onClick={advance}>
-              {last ? "Send" : "Continue"}
+            <Button variant="accent" size="sm" disabled={!hasAnswer || sending} onClick={advance}>
+              {sending ? "Sending…" : last ? "Send" : "Continue"}
             </Button>
           </div>
         </div>

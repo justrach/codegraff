@@ -67,9 +67,10 @@ pub fn wait(arena: Allocator) !Reply {
     return .{ .text = try arena.dupe(u8, src orelse ""), .cancelled = false };
 }
 
-pub fn reply(answer: []const u8, cancel: bool) void {
-    const io = io_slot orelse return;
-    const gpa = gpa_slot orelse return;
+pub fn reply(answer: []const u8, cancel: bool) bool {
+    if (!cancel and std.mem.trim(u8, answer, " \t\r\n").len == 0) return false;
+    const io = io_slot orelse return false;
+    const gpa = gpa_slot orelse return false;
     mutex.lockUncancelable(io);
     defer mutex.unlock(io);
     clearLocked();
@@ -77,6 +78,7 @@ pub fn reply(answer: []const u8, cancel: bool) void {
     if (!cancel) text = gpa.dupe(u8, answer) catch null;
     pending = true;
     ready.broadcast(io);
+    return true;
 }
 
 /// session/cancel while ask_user is blocked: wake the waiter, ignore otherwise.
@@ -102,6 +104,18 @@ test "reply before wait is not lost" {
     const got = try wait(arena_state.allocator());
     try testing.expectEqualStrings("yes", got.text);
     try testing.expect(!got.cancelled);
+}
+
+test "empty non-cancelled reply is rejected" {
+    attach(testing.io, testing.allocator);
+    defer detach();
+    try testing.expect(!reply("", false));
+    try testing.expect(!reply("   ", false));
+    try testing.expect(reply("", true));
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const got = try wait(arena_state.allocator());
+    try testing.expect(got.cancelled);
 }
 
 test "cancelIfWaiting is a no-op when nobody is blocked" {
