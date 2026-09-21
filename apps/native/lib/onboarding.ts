@@ -8,7 +8,13 @@ export const ONBOARDING_DOM_ATTR = "graffOnboarded";
 export type OnboardingStorage = Pick<Storage, "getItem" | "setItem">;
 export type OnboardingWorld = { [ONBOARDING_WORLD_FLAG]?: boolean };
 export type OnboardingDocument = Pick<Document, "documentElement">;
-export type OnboardingEnv = { GRAFF_CWD?: string; GRAFF_ELECTRON_SMOKE?: string; GRAFF_VISUAL_TESTS?: string };
+/** Fixture env, including `process.env` (weak optional keys are not assignable to it). */
+export type OnboardingEnv = {
+  GRAFF_CWD?: string;
+  GRAFF_ELECTRON_SMOKE?: string;
+  GRAFF_VISUAL_TESTS?: string;
+  [name: string]: string | undefined;
+};
 
 export function parseOnboardingDismissed(value: unknown): boolean {
   return value === true || value === "true" || value === "1";

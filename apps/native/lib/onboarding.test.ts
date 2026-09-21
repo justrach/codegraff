@@ -59,6 +59,7 @@ test("production fixtures persist the same dismissed flag as Skip/Done", () => {
 test("test fixtures never auto-show the welcome sheet", () => {
   const storage = memoryStorage();
   assert.equal(fixtureSuppressesOnboarding({}), false);
+  assert.equal(typeof fixtureSuppressesOnboarding(process.env), "boolean");
   assert.equal(shouldShowOnboarding(storage, null, { GRAFF_CWD: "/tmp/workspace" }), false);
   assert.equal(shouldShowOnboarding(storage, null, { GRAFF_ELECTRON_SMOKE: "1" }), false);
   assert.equal(shouldShowOnboarding(storage, null, { GRAFF_VISUAL_TESTS: "1" }), false);
