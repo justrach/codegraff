@@ -8,11 +8,13 @@ afterEach(() => {
   delete process.env.GRAFF_ACP_IDLE_MS;
 });
 
-test("idleMs defaults to 30s and 0 disables parking", () => {
+test("idleMs defaults to 0 so an open GUI tab is not parked", () => {
   delete process.env.GRAFF_ACP_IDLE_MS;
-  expect(idleMs()).toBe(30_000);
+  expect(idleMs()).toBe(0);
   process.env.GRAFF_ACP_IDLE_MS = "0";
   expect(idleMs()).toBe(0);
+  process.env.GRAFF_ACP_IDLE_MS = "40000";
+  expect(idleMs()).toBe(40_000);
 });
 
 test("keepPark is only true, never an Array.map index", () => {
@@ -38,6 +40,15 @@ test("GRAFF_ACP_IDLE_MS=0 never parks", async () => {
   process.env.GRAFF_ACP_IDLE_MS = "0";
   let killed = 0;
   armIdle("idle-test", { resume: "session-z", model: null, cwd: "/tmp", yolo: true, mcp: false }, () => { killed += 1; });
+  await new Promise(resolve => setTimeout(resolve, 40));
+  expect(killed).toBe(0);
+  expect(takeParked("idle-test")).toBeUndefined();
+});
+
+test("unset GRAFF_ACP_IDLE_MS never parks an open tab", async () => {
+  delete process.env.GRAFF_ACP_IDLE_MS;
+  let killed = 0;
+  armIdle("idle-test", { resume: "session-open", model: null, cwd: "/tmp", yolo: true, mcp: false }, () => { killed += 1; });
   await new Promise(resolve => setTimeout(resolve, 40));
   expect(killed).toBe(0);
   expect(takeParked("idle-test")).toBeUndefined();

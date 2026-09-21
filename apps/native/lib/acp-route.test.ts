@@ -286,6 +286,52 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
   }
 }, 15000);
 
+test("an open GUI worker is not killed while idle", async () => {
+  const temp = mkdtempSync(path.join(os.tmpdir(), "graff-acp-keep-"));
+  const binary = path.join(temp, "agent.cjs");
+  const oldBin = process.env.GRAFF_BIN;
+  const oldIdle = process.env.GRAFF_ACP_IDLE_MS;
+  writeFileSync(binary, `#!/usr/bin/env node
+const fs=require('node:fs');
+fs.writeFileSync('pid', String(process.pid));
+fs.appendFileSync('starts', JSON.stringify(process.argv.slice(2))+'\\n');
+const send=value=>console.log(JSON.stringify(value));
+require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
+  const req=JSON.parse(line);
+  if(req.method==='initialize') send({id:req.id,result:{}});
+  if(req.method==='session/new') {
+    send({id:req.id,result:{sessionId:'kept-alive'}});
+    send({method:'session/update',params:{update:{sessionUpdate:'available_commands_update',availableCommands:[]}}});
+  }
+  if(req.method==='session/prompt') {
+    send({method:'session/update',params:{update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'started'}}}});
+    send({id:req.id,result:{stopReason:'end_turn'}});
+  }
+}).on('close',()=>process.exit(0));
+`, { mode: 0o700 });
+  const chat = `keep-alive-${path.basename(temp)}`;
+  const call = (method: string, params = {}) => deadline(POST(new NextRequest("http://localhost/api/acp", {
+    method: "POST", body: JSON.stringify({ chat, method, params }),
+  })), method);
+  try {
+    process.env.GRAFF_BIN = binary;
+    delete process.env.GRAFF_ACP_IDLE_MS;
+    expect((await call("bootstrap", { cwd: temp, model: "fixture", yolo: false, mcp: false })).status).toBe(200);
+    const first = await call("session/prompt", { prompt: [{ type: "text", text: "start" }] });
+    expect(await deadline(first.text(), "first turn")).toContain("started");
+    const pid = Number(readFileSync(path.join(temp, "pid"), "utf8"));
+    await new Promise(resolve => setTimeout(resolve, 80));
+    expect(() => process.kill(pid, 0)).not.toThrow();
+    const starts = readFileSync(path.join(temp, "starts"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(starts).toEqual([["acp", "--model", "fixture"]]);
+  } finally {
+    await call("dispose");
+    if (oldBin === undefined) delete process.env.GRAFF_BIN; else process.env.GRAFF_BIN = oldBin;
+    if (oldIdle === undefined) delete process.env.GRAFF_ACP_IDLE_MS; else process.env.GRAFF_ACP_IDLE_MS = oldIdle;
+    rmSync(temp, { recursive: true, force: true });
+  }
+}, 15000);
+
 test("a crashed ACP is resumed on the next prompt", async () => {
   const temp = mkdtempSync(path.join(os.tmpdir(), "graff-acp-crash-"));
   const binary = path.join(temp, "agent.cjs");

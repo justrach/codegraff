@@ -1,5 +1,6 @@
-/** Park an idle `graff acp` child after a quiet period. The session file
- *  stays on disk; the next bootstrap respawns with `--resume`.
+/** Park an idle `graff acp` child after a quiet period. Off by default:
+ *  an open GUI tab keeps its worker. Set `GRAFF_ACP_IDLE_MS` to shed it;
+ *  the session file stays on disk and the next bootstrap uses `--resume`.
  *
  *  Do not park while a prompt, session/idle subscriber, or other busy
  *  callback is live — stream close alone is not ownership of background work. */
@@ -21,9 +22,9 @@ const parked = (g.__graffAcpParked ??= new Map());
 
 export function idleMs(): number {
   const raw = process.env.GRAFF_ACP_IDLE_MS;
-  if (raw === undefined || raw === "") return 30_000;
+  if (raw === undefined || raw === "") return 0;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) return 30_000;
+  if (!Number.isFinite(n) || n < 0) return 0;
   return n;
 }
 
