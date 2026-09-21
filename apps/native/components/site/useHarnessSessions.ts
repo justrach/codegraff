@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type MutableRefObject, type Dispatch, type SetStateAction } from "react";
 import { bindMcpAppChat, checkHealth, disposePage, ensureSession, fetchModels, type Health } from "@/lib/acp-client";
+import { shouldReapPage } from "@/lib/acp-terminate";
 import { catalogMayWriteChatModel, catalogMayWriteGlobalKey, sameModels } from "@/lib/composer-model";
 import { pumpIdlePeerTurns } from "./idle-peer-turns";
 import type { AcpCommand } from "@/lib/acp";
@@ -173,7 +174,10 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
     // Reap this page's agents when it goes away — without this every reload
     // leaves a `graff acp` (and its MCP children) running under the dev server.
     const page = pageRef.current;
-    const reap = () => disposePage(page);
+    const reap = (event: PageTransitionEvent) => {
+      if (!shouldReapPage(event)) return;
+      disposePage(page);
+    };
     window.addEventListener("pagehide", reap);
     return () => {
       cancelled = true;
