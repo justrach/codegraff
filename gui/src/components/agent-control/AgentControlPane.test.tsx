@@ -58,6 +58,7 @@ function renderContent(snapshot: AgentOverviewSnapshot): string {
       onCancelStop={() => {}}
       onConfirmStop={() => {}}
       onAnswerFollowup={() => {}}
+      onDirect={() => {}}
     />,
   );
 }
@@ -158,6 +159,21 @@ describe("AgentControlPaneContent", () => {
     const markup = renderContent(snapshot);
     expect(markup).toContain("What should I name it?");
     expect(markup).toContain('aria-label="Answer"');
+  });
+
+  test("shows the supervisor banner and Direct on a living orchestrator", () => {
+    const snapshot = overview([
+      item("orch", "idle", {
+        kind: "orchestrator",
+        isCurrentConversation: true,
+        conversationTitle: "Fix login",
+        label: "Main agent",
+      }),
+    ]);
+    const markup = renderContent(snapshot);
+    expect(markup).toContain("Supervisor");
+    expect(markup).toContain("Directing from Fix login");
+    expect(markup).toContain('aria-label="Direct Main agent"');
   });
 
   test("subagents never carry followup controls", () => {

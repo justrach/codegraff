@@ -466,6 +466,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (try @import("commands_resume.zig").tryHandle(root, keys, arena, line, out)) return true;
     if (std.mem.startsWith(u8, line, "/tell") and (line.len == 5 or line[5] == ' ' or line[5] == '\t')) return peer_channel.tellCommand(root, arena, line, out); // #469
+    if (try @import("daddy.zig").slashCommand(root, arena, line, out)) return true;
     if (std.mem.startsWith(u8, line, "/peek") and (line.len == 5 or line[5] == ' ' or line[5] == '\t')) return peer_channel.peekCommand(root, arena, line, out); // #469
     if (std.mem.startsWith(u8, line, "/routes") and (line.len == 7 or line[7] == ' ' or line[7] == '\t')) return route_set.command(root, keys, arena, line, out); // user-defined priced lanes
     if (std.mem.eql(u8, line, "/sessions")) {

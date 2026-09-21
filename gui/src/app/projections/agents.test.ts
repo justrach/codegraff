@@ -5,7 +5,14 @@ import type {
   SessionMessage,
 } from "@/services/desktop/types/contracts";
 
-import { buildAgentOverview, formatAgentActivityLabel } from "./agents";
+import {
+  buildAgentOverview,
+  canDirect,
+  currentSupervisorTitle,
+  formatAgentActivityLabel,
+  formatDaddyDirective,
+  type AgentOverviewItem,
+} from "./agents";
 
 function view(messages: SessionMessage[]): ConversationViewSnapshot {
   return {
@@ -239,5 +246,69 @@ describe("formatAgentActivityLabel", () => {
     expect(formatAgentActivityLabel({ totalActive: 2, needsInput: 2 })).toBe(
       "Agent control — 2 active, 2 need input",
     );
+  });
+});
+
+function overviewItem(
+  overrides: Partial<AgentOverviewItem> = {},
+): AgentOverviewItem {
+  return {
+    id: "item",
+    agentId: "forge",
+    conversationId: "conversation-1",
+    conversationTitle: "Fix login",
+    workspacePath: "/code/project",
+    kind: "orchestrator",
+    label: "Main agent",
+    detail: "Ready",
+    status: "idle",
+    followup: null,
+    isCurrentConversation: false,
+    sequence: 0,
+    ...overrides,
+  };
+}
+
+describe("daddy directives", () => {
+  test("canDirect allows orchestrators and running children, not failed ones", () => {
+    expect(canDirect(overviewItem({ kind: "orchestrator", status: "idle" }))).toBe(
+      true,
+    );
+    expect(
+      canDirect(overviewItem({ kind: "subagent", status: "running" })),
+    ).toBe(true);
+    expect(
+      canDirect(overviewItem({ kind: "subagent", status: "completed" })),
+    ).toBe(false);
+    expect(
+      canDirect(overviewItem({ kind: "orchestrator", status: "failed" })),
+    ).toBe(false);
+  });
+
+  test("formatDaddyDirective uses the engine prefix and names children", () => {
+    expect(formatDaddyDirective(overviewItem(), "run the tests")).toBe(
+      "[daddy] run the tests",
+    );
+    expect(
+      formatDaddyDirective(
+        overviewItem({ kind: "subagent", label: "Review implementation" }),
+        "stop editing",
+      ),
+    ).toBe("[daddy] for Review implementation: stop editing");
+  });
+
+  test("currentSupervisorTitle is the focused orchestrator", () => {
+    const current = overviewItem({
+      isCurrentConversation: true,
+      conversationTitle: "Fix login",
+    });
+    const other = overviewItem({
+      id: "other",
+      conversationTitle: "Other task",
+    });
+    expect(
+      currentSupervisorTitle({ active: [other, current], recent: [] }),
+    ).toBe("Fix login");
+    expect(currentSupervisorTitle({ active: [other], recent: [] })).toBeNull();
   });
 });
