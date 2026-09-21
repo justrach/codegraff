@@ -28,8 +28,8 @@ A new independent task is `workspace action=create`.
    (default `origin/main` after fetch). Independent work gets its own tree;
    same-branch collaboration stays in one workspace (`isolation: shared_cwd`).
    Create copies gitignored files matching `.worktreeinclude` (else
-   `file_include_globs`, else `.env*`) from the main checkout, then runs
-   `scripts.setup` from `.graff/workspace.toml` or `.conductor/settings.toml`.
+   `include` in `.graff/workspace.toml`, else `.env*`) from the main checkout,
+   then runs `scripts.setup` from `.graff/workspace.toml`.
    `graff worktree run <name>` is the run script; `archive` runs `scripts.archive`
    before removing a clean duplicate (ADR 0153). Desktop Tools: New task workspace, Run, Archive.
 4. If the match is ambiguous, name more of the path. Do not guess.

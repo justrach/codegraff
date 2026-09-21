@@ -199,7 +199,7 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
             break :blk if (n > 0) try arena.dupe(u8, path_buf[0..n]) else dest;
         };
         if (!@import("workspace_prepare.zig").runNamed(gpa, io, arena, ".", path, name)) {
-            try out.writeAll("✗ no run script — add scripts.run to .graff/workspace.toml or .conductor/settings.toml\n");
+            try out.writeAll("✗ no run script — add scripts.run to .graff/workspace.toml\n");
             return;
         }
         try out.print("✓ run finished in {s}\n", .{path});

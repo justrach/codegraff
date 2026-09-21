@@ -9,19 +9,19 @@ const process_runner = @import("process_runner.zig");
 const runCapped = process_runner.runCapped;
 const ranOk = process_runner.ranOk;
 
-test "parseScripts reads Conductor and graff toml" {
+test "parseScripts reads graff workspace toml" {
     const s = prep.parseScripts(
         \\[scripts]
         \\setup = "pnpm install"
-        \\run = "pnpm dev --port $CONDUCTOR_PORT"
+        \\run = "pnpm dev --port $GRAFF_WORKSPACE_PORT"
         \\archive = "./script/workspace-archive.sh"
         \\
     );
     try std.testing.expectEqualStrings("pnpm install", s.setup);
-    try std.testing.expectEqualStrings("pnpm dev --port $CONDUCTOR_PORT", s.run);
+    try std.testing.expectEqualStrings("pnpm dev --port $GRAFF_WORKSPACE_PORT", s.run);
     try std.testing.expectEqualStrings("./script/workspace-archive.sh", s.archive);
     const globs = prep.parseIncludeGlobs(
-        \\file_include_globs = """
+        \\include = """
         \\.env.local
         \\certs/local/**
         \\"""
@@ -32,9 +32,9 @@ test "parseScripts reads Conductor and graff toml" {
 }
 
 test "workspacePort is stable per name and stays in 40000-49999" {
-    const a = prep.workspacePort("tokyo");
-    const b = prep.workspacePort("tokyo");
-    const c = prep.workspacePort("warsaw");
+    const a = prep.workspacePort("task-a");
+    const b = prep.workspacePort("task-a");
+    const c = prep.workspacePort("task-b");
     try std.testing.expectEqual(a, b);
     try std.testing.expect(a != c);
     try std.testing.expect(a >= 40_000 and a < 50_000);
@@ -72,7 +72,7 @@ test "create copies gitignored include files and runs setup" {
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     const ar = arena.allocator();
-    const one = try ws.create(a, io, ar, .{ .slug = "tokyo", .cwd = root });
+    const one = try ws.create(a, io, ar, .{ .slug = "task-a", .cwd = root });
     try std.testing.expect(one.copied >= 1);
     try std.testing.expect(one.setup_ran);
     try std.testing.expect(one.setup_ok);

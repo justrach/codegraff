@@ -1,6 +1,5 @@
 //! After minting a task worktree: copy selected gitignored files and run
-//! project scripts. Same shape as Conductor (`.worktreeinclude`, setup/run/
-//! archive) without taking Conductor's product surface.
+//! project scripts from `.graff/workspace.toml`.
 
 const std = @import("std");
 const Io = std.Io;
@@ -49,27 +48,20 @@ pub fn parseScripts(text: []const u8) Scripts {
 }
 
 pub fn parseIncludeGlobs(text: []const u8) ?[]const u8 {
-    return tomlString(text, "file_include_globs");
+    return tomlString(text, "include") orelse tomlString(text, "file_include_globs");
 }
 
-/// `.worktreeinclude` wins; else `file_include_globs`; else `.env*`.
+/// `.worktreeinclude` wins; else `include` in `.graff/workspace.toml`; else `.env*`.
 pub fn includeText(arena: Allocator, io: Io, root: []const u8) []const u8 {
     if (readOptional(io, arena, root, ".worktreeinclude")) |t| return t;
     if (readOptional(io, arena, root, ".graff/workspace.toml")) |t| {
-        if (parseIncludeGlobs(t)) |g| return g;
-    }
-    if (readOptional(io, arena, root, ".conductor/settings.toml")) |t| {
         if (parseIncludeGlobs(t)) |g| return g;
     }
     return ".env*\n.env\n";
 }
 
 pub fn loadScripts(arena: Allocator, io: Io, root: []const u8) Scripts {
-    if (readOptional(io, arena, root, ".graff/workspace.toml")) |t| {
-        const s = parseScripts(t);
-        if (s.setup.len + s.run.len + s.archive.len > 0) return s;
-    }
-    if (readOptional(io, arena, root, ".conductor/settings.toml")) |t| return parseScripts(t);
+    if (readOptional(io, arena, root, ".graff/workspace.toml")) |t| return parseScripts(t);
     return .{};
 }
 
@@ -223,13 +215,9 @@ fn runScript(
     const n1 = std.fmt.allocPrint(arena, "GRAFF_WORKSPACE_NAME={s}", .{name}) catch return false;
     const n2 = std.fmt.allocPrint(arena, "GRAFF_WORKSPACE_PATH={s}", .{dest}) catch return false;
     const n3 = std.fmt.allocPrint(arena, "GRAFF_ROOT_PATH={s}", .{root}) catch return false;
-    const n4 = std.fmt.allocPrint(arena, "CONDUCTOR_WORKSPACE_NAME={s}", .{name}) catch return false;
-    const n5 = std.fmt.allocPrint(arena, "CONDUCTOR_WORKSPACE_PATH={s}", .{dest}) catch return false;
-    const n6 = std.fmt.allocPrint(arena, "CONDUCTOR_ROOT_PATH={s}", .{root}) catch return false;
-    const n7 = std.fmt.allocPrint(arena, "CONDUCTOR_PORT={d}", .{port}) catch return false;
-    const n8 = std.fmt.allocPrint(arena, "GRAFF_WORKSPACE_PORT={d}", .{port}) catch return false;
+    const n4 = std.fmt.allocPrint(arena, "GRAFF_WORKSPACE_PORT={d}", .{port}) catch return false;
     const r = runCappedWithOptions(gpa, io, &.{
-        "env", n1, n2, n3, n4, n5, n6, n7, n8, "/bin/sh", "-c", cmd,
+        "env", n1, n2, n3, n4, "/bin/sh", "-c", cmd,
     }, 64 * 1024, 16 * 1024, deadline_ms, .{ .cwd = .{ .path = dest } }) catch return false;
     defer {
         gpa.free(r.stdout);
