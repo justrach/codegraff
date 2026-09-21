@@ -17,7 +17,7 @@ import { rememberAnswer, validateAnswer } from "@/lib/ask-answer";
 import { formatTermination, recordTermination, type TerminateReason } from "@/lib/acp-terminate";
 import { bindSessionCwd, initializeWorker, serializeBootstrap } from "@/lib/acp-bootstrap";
 import { finishCancelledPrompt } from "@/lib/acp-cancel";
-import { armIdle, cancelIdle, forgetPark, forgetParkMatching, keepPark, parkedChats, takeParked, type ParkedWorker } from "@/lib/acp-idle";
+import { armIdle, cancelIdle, forgetPark, forgetParkMatching, keepPark, parkNow, parkedChats, takeParked, type ParkedWorker } from "@/lib/acp-idle";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -198,7 +198,9 @@ function spawnAgent(chat: string, opts: SpawnOpts): Slot {
     slot.spawnError = err;
   });
   child.on("exit", () => {
-    if (slots.get(chat) === slot && !slot.restart) slots.delete(chat);
+    if (slots.get(chat) !== slot || slot.restart) return;
+    slots.delete(chat);
+    parkNow(chat, parkSnapshot(slot));
   });
   slots.set(chat, slot);
   try { attachmentStore().enrollSession(imageScope, child.pid); }

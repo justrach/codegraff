@@ -209,7 +209,7 @@ fn jobPump(job: *Job, gpa: Allocator, io: Io) void {
     const idle = job.stopped_idle;
     // Publish done + queue atomically against jobOutput/jobKill consuming it.
     // A bounded dismissed-id cache cannot close a queue-after-unlock race.
-    if (!quiet and !detached) job_notify.queue(io, id, code, killed, job.cmd, idle);
+    if (!quiet and !detached) job_notify.queue(io, id, code, killed, job.cmd, idle, job.buf.items[job.cursor..]);
     g_jobs.mutex.unlock(io);
     if (detached) return;
     if (builtin.is_test) if (completion_test_hook) |hook| hook(io, id);

@@ -26,7 +26,18 @@ pub fn configure(on: bool) void {
 }
 
 pub fn request(ctx: tools.ToolCtx) void {
-    if (ctx.interactive_children and !ctx.from_sub) requested.store(true, .release);
+    if (ctx.interactive_children and !ctx.from_sub) armYield();
+}
+
+/// The next model request will be replaced by the yield notice. Job completion
+/// must stay queued for the idle auto-turn instead of landing in a turn that
+/// is about to return without another model call (#1154).
+pub fn armYield() void {
+    if (enabled.load(.acquire)) requested.store(true, .release);
+}
+
+pub fn yieldPending() bool {
+    return enabled.load(.acquire) and requested.load(.acquire);
 }
 
 pub fn beforeRequest(root: anytype) !?[]const u8 {
