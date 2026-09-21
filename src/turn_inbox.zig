@@ -11,6 +11,7 @@ const main_mod = @import("main.zig");
 
 pub fn deliver(self: *Agent) !void {
     @import("peer_wake.zig").noteTurnStart(self.messages.items);
+    @import("peer_wake.zig").applyPendingRetire(&self.messages);
     @import("peer_channel.zig").deliverInbound(self);
     try @import("subagent_feedback.zig").deliverToAgent(self);
     @import("job_notify.zig").deliver(self);

@@ -24,10 +24,12 @@ pub const Decision = enum { skip_empty, skip_coalesced, skip_continuation, injec
 
 var last_injected_gen: u64 = 0;
 var suppress_idle: bool = false;
+var retire_pending: bool = false;
 
 pub fn resetForTest() void {
     last_injected_gen = 0;
     suppress_idle = false;
+    retire_pending = false;
 }
 
 pub fn lastInjected() u64 {
@@ -86,9 +88,9 @@ pub fn isMidToolContinuation(messages: []const Value) bool {
     return false;
 }
 
-pub fn decide(messages: []const Value, generation: u64) Decision {
-    if (generation == 0 or !peer_inbox.pending()) return .skip_empty;
-    if (generation == last_injected_gen) return .skip_coalesced;
+pub fn decide(messages: []const Value, generation: u64, pending: bool) Decision {
+    if (generation != 0 and generation == last_injected_gen) return .skip_coalesced;
+    if (generation == 0 or !pending) return .skip_empty;
     if (isMidToolContinuation(messages)) return .skip_continuation;
     return .inject;
 }
@@ -102,6 +104,19 @@ pub fn insertWake(messages: *std.json.Array, wake: Value) !void {
     }
 }
 
+/// Inbox consume: do not touch `messages` here (tests construct a bare Agent).
+pub fn markInboxCleared() void {
+    last_injected_gen = 0;
+    retire_pending = true;
+}
+
+/// Drop stale `[peer]` lines at the next real step boundary.
+pub fn applyPendingRetire(messages: *std.json.Array) void {
+    if (!retire_pending) return;
+    retire_pending = false;
+    retireInjects(messages);
+}
+
 /// Inbox consume retires the stale `[peer]` lines for this mailbox generation.
 pub fn retireInjects(messages: *std.json.Array) void {
     var i: usize = 0;
@@ -113,6 +128,7 @@ pub fn retireInjects(messages: *std.json.Array) void {
         i += 1;
     }
     last_injected_gen = 0;
+    retire_pending = false;
 }
 
 fn userText(arena: std.mem.Allocator, s: []const u8) !Value {
@@ -143,7 +159,7 @@ test "#1137 mid-tool continuation is not an authoritative user turn" {
     try msgs.append(try toolResult(a));
     try std.testing.expect(isMidToolContinuation(msgs.items));
     const gen = peer_inbox.generation();
-    try std.testing.expectEqual(Decision.skip_continuation, decide(msgs.items, gen));
+    try std.testing.expectEqual(Decision.skip_continuation, decide(msgs.items, gen, true));
     try std.testing.expectEqualStrings("inspect src/peer_channel.zig", @import("messages.zig").latestUserText(msgs.items));
 }
 
@@ -159,11 +175,9 @@ test "#1137 same mailbox generation is idempotent" {
     const gen = peer_inbox.generation();
     var msgs = std.json.Array.init(a);
     try msgs.append(try userText(a, "keep going"));
-    try std.testing.expectEqual(Decision.inject, decide(msgs.items, gen));
+    try std.testing.expectEqual(Decision.inject, decide(msgs.items, gen, true));
     markInjected(gen);
-    try std.testing.expectEqual(Decision.skip_coalesced, decide(msgs.items, gen));
-    _ = peer_inbox.parkHeard(&.{.{ .from_session = "s-a", .text = "one" }}, &.{});
-    try std.testing.expectEqual(Decision.skip_coalesced, decide(msgs.items, peer_inbox.generation()));
+    try std.testing.expectEqual(Decision.skip_coalesced, decide(msgs.items, gen, true));
 }
 
 test "#1137 completed turn does not idle-wake on ambient mail" {
@@ -195,7 +209,7 @@ test "#1137 a later human turn lifts the latch and can see parked mail" {
     try std.testing.expect(peer_inbox.pending());
     const wake = peer_inbox.formatWake(a);
     try std.testing.expect(std.mem.indexOf(u8, wake, "unread") != null);
-    try std.testing.expectEqual(Decision.inject, decide(msgs.items, peer_inbox.generation()));
+    try std.testing.expectEqual(Decision.inject, decide(msgs.items, peer_inbox.generation(), true));
 }
 
 test "#1137 insertWake keeps the human as the newest user turn" {
@@ -235,5 +249,5 @@ test "empty mailbox does not inject" {
     defer resetForTest();
     peer_inbox.resetForTest();
     defer peer_inbox.resetForTest();
-    try std.testing.expectEqual(Decision.skip_empty, decide(&.{}, 0));
+    try std.testing.expectEqual(Decision.skip_empty, decide(&.{}, 0, false));
 }

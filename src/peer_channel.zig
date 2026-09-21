@@ -89,7 +89,7 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
             .is_error = true,
         };
         peer_idle.noteInboxConsumed();
-        @import("peer_wake.zig").retireInjects(&self.messages);
+        @import("peer_wake.zig").markInboxCleared();
         return .{ .text = text, .is_error = false };
     }
     if (std.mem.eql(u8, action, "direct")) {
@@ -248,7 +248,7 @@ pub fn deliverInbound(root: *Agent) void {
     // never during tool continuation (#1137). Bodies wait in the ring.
     const wake_mod = @import("peer_wake.zig");
     const gen = peer_inbox.generation();
-    if (wake_mod.decide(root.messages.items, gen) == .inject) {
+    if (wake_mod.decide(root.messages.items, gen, peer_inbox.pending()) == .inject) {
         const wake = @import("session_wake.zig").message(root.arena, peer_context.capInject(peer_inbox.formatWake(root.arena))) catch return;
         wake_mod.insertWake(&root.messages, wake) catch {};
         wake_mod.markInjected(gen);
