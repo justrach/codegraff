@@ -152,7 +152,8 @@ Graff, including `/compact`. New tabs inherit it before starting a coding sessio
 Command behavior belongs to the engine; terminal display settings retain their
 terminal meaning. Menus remain inside the window and scroll independently.
 
-The desktop adapts familiar Ghostty bindings to chats and split panes:
+The desktop adapts familiar Ghostty bindings to chats and split panes.
+On Linux and Windows, Command in this table is Ctrl. Split resize is Ctrl+Alt with the arrow keys, and Ctrl+Alt+= equalizes splits.
 
 | Keys | Action |
 |---|---|
@@ -178,7 +179,7 @@ The File menu lists the main actions. Standard copy, paste, undo and text select
 remain native. Terminal-only actions such as sending escape sequences have no
 chat equivalent. A web browser reserves some shortcuts for its own tabs.
 
-The macOS workspace terminal opens your login shell in the active folder. Drag
+The macOS workspace terminal opens your login shell in the active folder. On Linux it opens `$SHELL` through a POSIX PTY. Drag
 its top edge to resize it. Hiding it preserves the session; **End session** stops
 it. Up to four workspace shells can stay open, with bounded output history.
 

@@ -25,6 +25,12 @@ elif [[ ! -x "$root/zig-out/bin/graff" ]]; then
   echo "No built graff executable to reuse. Run without GRAFF_REUSE_ENGINE." >&2
   exit 1
 fi
+if [[ "$(uname -s)" == "Linux" ]]; then
+  # shellcheck disable=SC1091
+  source "$here/build-linux.sh"
+  stage_linux_app
+  exit 0
+fi
 mkdir -p "$out"
 # This directory is an isolated build artifact, never the installed application.
 rm -rf "$bundle"

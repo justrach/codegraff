@@ -39,10 +39,13 @@ export function useDesktopShortcuts(actions: Actions) {
     const onKey=(e:KeyboardEvent)=>{
       // Dialogs own their typing and navigation. Escape and Tab remain local.
       if(e.isComposing||e.keyCode===229)return;
-      if(e.target instanceof Element&&e.target.closest('[data-workspace-terminal]')&&!e.metaKey)return;
+      const mac=/Mac|iPhone|iPad/.test(navigator.platform);
+      const shortcut=e.metaKey||(!mac&&e.ctrlKey);
+      if(e.target instanceof Element&&e.target.closest('[data-workspace-terminal]')&&!shortcut)return;
       if(document.querySelector('[role="dialog"]'))return;
       const a=ref.current,k=e.key.toLowerCase();let handled=false;
       const command=e.metaKey||e.ctrlKey;
+      const chord=mac?e.metaKey&&e.ctrlKey:e.ctrlKey&&e.altKey;
       const focus=(id:number)=>{
         a.focusChat(id);
         requestAnimationFrame(()=>{
@@ -52,8 +55,8 @@ export function useDesktopShortcuts(actions: Actions) {
       const cycle=(ids:number[],delta:number)=>{const index=ids.indexOf(a.activeId);const id=ids[(index+delta+ids.length)%ids.length];if(id!==undefined)focus(id);};
       if(e.ctrlKey&&!e.metaKey&&k==='tab'){cycle(a.chats.map(c=>c.id),e.shiftKey?-1:1);handled=true;}
       else if(command){
-        if(e.metaKey&&e.ctrlKey&&k.startsWith('arrow')){a.resizePane(k==='arrowleft'||k==='arrowup'?-0.2:0.2);handled=true;}
-        else if(e.metaKey&&e.ctrlKey&&['=','+'].includes(k)){a.equalize();handled=true;}
+        if(chord&&k.startsWith('arrow')){a.resizePane(k==='arrowleft'||k==='arrowup'?-0.2:0.2);handled=true;}
+        else if(chord&&['=','+'].includes(k)){a.equalize();handled=true;}
         else if(e.altKey&&k.startsWith('arrow')){cycle(a.columns,k==='arrowleft'||k==='arrowup'?-1:1);handled=true;}
         else if(!e.altKey){
           if(k==='j'&&!e.shiftKey)handled=dispatch('terminal');

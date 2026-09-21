@@ -2,13 +2,16 @@ const {test,after}=require('node:test');
 const assert=require('node:assert/strict');const {execFileSync}=require('node:child_process');const fs=require('node:fs');const path=require('node:path');const os=require('node:os');
 const {Terminals,frame}=require('./terminal.cjs');
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'graff-pty-test-')),binary=path.join(temp,'pty');
-if(process.platform==='darwin')execFileSync('xcrun',['clang','-O2',path.join(__dirname,'native/terminal.c'),'-o',binary]);
+const source=path.join(__dirname,'native/terminal.c');
+if(process.platform==='darwin')execFileSync('xcrun',['clang','-O2',source,'-o',binary]);
+else if(process.platform==='linux')execFileSync('cc',['-O2','-Wall',source,'-o',binary,'-lutil']);
+const pty=process.platform==='darwin'||process.platform==='linux';
 after(()=>fs.rmSync(temp,{recursive:true,force:true}));
 const wait=async condition=>{for(let i=0;i<200;i++){if(condition())return;await new Promise(r=>setTimeout(r,20));}throw Error('PTY timed out');};
 test('PTY frames preserve input bytes and resize dimensions',()=>{
  const value=frame(0,Buffer.from('hello\r'));assert.equal(value.readUInt32LE(1),6);assert.equal(value.subarray(5).toString(),'hello\r');
 });
-test('real workspace PTY supports input, resize, interrupt, hide and cleanup',{skip:process.platform!=='darwin'},async()=>{
+test('real workspace PTY supports input, resize, interrupt, hide and cleanup',{skip:!pty},async()=>{
  const cwd=path.join(temp,'folder with spaces');fs.mkdirSync(cwd);let output='';
  const manager=new Terminals(binary,event=>{if(event.data){output+=event.data;manager.command('ack',{id:event.id,length:event.data.length});}},{shell:'/bin/sh'});
  try {
@@ -29,7 +32,7 @@ test('terminal rejects a file as a workspace and starts no shell',()=>{
  assert.throws(()=>manager.open(file),/folder/);assert.equal(manager.sessions.size,0);
 });
 
-test('ending a noisy terminal releases a helper blocked by renderer backpressure',{skip:process.platform!=='darwin'},async()=>{
+test('ending a noisy terminal releases a helper blocked by renderer backpressure',{skip:!pty},async()=>{
  const manager=new Terminals(binary,()=>{},{shell:'/bin/sh'});
  try {
   const {id}=manager.open(temp),slot=manager.sessions.get(id);

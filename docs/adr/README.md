@@ -177,6 +177,7 @@ record only when you need the evidence or the edge cases.
 | [0153](0153-task-workspaces-copy-and-scripts.md) | Task workspaces copy gitignored include files from the main checkout and run setup/run/archive scripts from `.graff/workspace.toml`. Finish is still not archive. |
 | [0154](0154-parked-shells-yield-the-parent.md) | Interactive parked shells yield the parent like subagents: 15s foreground wait, then the prompt is yours until the job-exit wake. |
 | [0155](0155-resume-reenters-saved-worktree.md) | Resume of a linked-worktree save re-enters that tree; `$HOME` origin stays history-only. |
+| [0156](0156-linux-desktop-sandbox-fallback.md) | Linux desktop uses system window decorations, a POSIX terminal, and a sandbox fallback when user namespaces or the setuid helper are unavailable. |
 
 ## When to write one
 

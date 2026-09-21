@@ -10,6 +10,10 @@ class ComputerUse {
     return result;
   }
   async configure() {
+    if (process.platform !== 'darwin') {
+      await dialog.showMessageBox(this.window, { title: 'Computer use', type: 'info', buttons: ['OK'], message: 'Computer use is available on macOS.' });
+      return this.status();
+    }
     const status = this.native('permissions');
     const { response } = await dialog.showMessageBox(this.window, {
       title: 'Computer use', type: 'info', buttons: [this.enabled ? 'Disable computer use' : 'Enable computer use', 'Cancel'], cancelId: 1,
@@ -22,7 +26,10 @@ class ComputerUse {
     }
     return this.status();
   }
-  status() { return { enabled: this.enabled, platform: process.platform, ...this.native('permissions') }; }
+  status() {
+    if (process.platform !== 'darwin') return { enabled: false, platform: process.platform, accessibility: false, screenRecording: false };
+    return { enabled: this.enabled, platform: process.platform, ...this.native('permissions') };
+  }
   async command(method, params = {}) {
     if (method === 'status') return this.status();
     if (!this.enabled) throw new Error('Enable Computer use from the Codegraff menu first. The agent cannot enable it.');

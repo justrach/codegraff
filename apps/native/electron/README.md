@@ -197,6 +197,10 @@ score. Chromium chooses its supported GPU backend; no forced driver flags or
 custom Metal pipeline are needed for the current DOM-based interface.
 See [repeatable performance scenarios](VISUAL-TESTS.md) for the model-free runner.
 
+## Linux desktop
+
+`build.sh` on Linux writes an unpacked app at `zig-out/electron/codegraff`, a `.deb`, and an AppImage when `appimagetool` is installed. Launch with `codegraff` in that directory. The window uses system decorations. The terminal helper is a POSIX PTY. macOS activity, Liquid Glass, and computer use stay out of the bundle. The launcher uses the setuid sandbox helper when the deb install sets it, a user namespace when `unshare --user` works, and `--no-sandbox` otherwise so the app still opens.
+
 ## Building a distribution disk image
 
 `build.sh` produces a development app with a local signature. For public downloads,

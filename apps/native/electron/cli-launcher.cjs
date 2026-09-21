@@ -1,10 +1,37 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const marker = '# Codegraff GUI terminal launcher';
+const desktopMarker = '# Codegraff GUI desktop entry';
+const linuxMarker = 'Codegraff Linux desktop launcher';
 const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
 
+function bundleRoot(exe, platform = process.platform) {
+  if (platform === 'darwin') return path.resolve(exe, '../../..');
+  return path.dirname(exe);
+}
+
+function bundleExecutable(bundle) {
+  const candidates = [
+    path.join(bundle, 'Contents/MacOS/Codegraff'),
+    path.join(bundle, 'codegraff.bin'),
+    path.join(bundle, 'Codegraff.exe'),
+  ];
+  for (const file of candidates) {
+    try { if (require('node:fs').statSync(file).isFile()) return file; } catch { /* try the next layout */ }
+  }
+  return candidates[0];
+}
+
+function launchCommand(bundle) {
+  const wrapper = path.join(bundle, 'codegraff');
+  try {
+    if (require('node:fs').readFileSync(wrapper, 'utf8').includes(linuxMarker)) return wrapper;
+  } catch { /* macOS bundles have no Linux wrapper */ }
+  return bundleExecutable(bundle);
+}
+
 function launcherSource(bundle) {
-  const binary = path.join(bundle, 'Contents/MacOS/Codegraff');
+  const binary = launchCommand(bundle);
   return `#!/bin/sh
 ${marker}
 APP_BIN=${quote(binary)}
@@ -33,8 +60,36 @@ nohup "\$APP_BIN" </dev/null >/dev/null 2>&1 &
 `;
 }
 
+async function installDesktopEntry(home, command, bundle) {
+  const applications = path.join(home, '.local/share/applications');
+  const file = path.join(applications, 'codegraff.desktop');
+  try {
+    const previous = await fs.readFile(file, 'utf8');
+    if (!previous.includes(desktopMarker)) throw Error('An unrelated codegraff desktop entry already exists.');
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const icon = path.join(bundle, 'codegraff.png');
+  let iconName = 'codegraff';
+  try { await fs.access(icon); iconName = icon; } catch { /* theme icon name */ }
+  const body = `${desktopMarker}
+[Desktop Entry]
+Type=Application
+Name=Codegraff
+Exec="${command.replaceAll('"', '\\"')}" %U
+Icon=${iconName}
+Terminal=false
+Categories=Development;
+StartupWMClass=codegraff
+`;
+  await fs.mkdir(applications, { recursive: true });
+  await fs.writeFile(file, body, { mode: 0o644 });
+  return file;
+}
+
 async function installLauncher(bundle, home) {
-  await fs.access(path.join(bundle, 'Contents/MacOS/Codegraff'), require('node:fs').constants.X_OK);
+  const binary = bundleExecutable(bundle);
+  await fs.access(binary, require('node:fs').constants.X_OK);
+  const command = launchCommand(bundle);
+  if (command !== binary) await fs.access(command, require('node:fs').constants.X_OK);
   const directory = path.join(home, '.local/bin'), file = path.join(directory, 'codegraff');
   await fs.mkdir(directory, { recursive: true });
   try {
@@ -50,6 +105,7 @@ async function installLauncher(bundle, home) {
     await fs.writeFile(temporary, launcherSource(bundle), { mode: 0o755, flag: 'wx' });
     await fs.rename(temporary, file);
   } finally { await fs.rm(temporary, { force: true }); }
+  if (command !== binary) await installDesktopEntry(home, command, bundle);
   return file;
 }
-module.exports = { launcherSource, installLauncher };
+module.exports = { launcherSource, installLauncher, bundleRoot, launchCommand };

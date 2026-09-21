@@ -1,6 +1,10 @@
 // Small macOS PTY bridge. stdin: opcode + little-endian uint32 size + payload.
 // Input opcode 0; resize opcode 1 with little-endian uint16 columns, rows.
+#if defined(__APPLE__)
 #include <util.h>
+#else
+#include <pty.h>
+#endif
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <poll.h>

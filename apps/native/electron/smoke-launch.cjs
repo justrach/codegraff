@@ -20,14 +20,22 @@ async function run({ win, backend, browser, token }) {
   const { app } = require('electron');
   assert.equal(app.isPackaged, true, 'Packaged launch must report isPackaged');
   assert.notEqual(path.basename(process.execPath), 'Electron', 'Packaged executable must not keep the development name');
+  assert.notEqual(path.basename(process.execPath).toLowerCase(), 'electron', 'Packaged executable must not keep the development name');
   const resources = process.env.GRAFF_ELECTRON_RESOURCES || process.resourcesPath;
-  const native = require(path.join(resources, 'native/activity.node'));
-  assert.equal(typeof native.show, 'function');
+  let nativeCheck = 'macOS native extras omitted';
+  if (process.platform === 'darwin') {
+    const native = require(path.join(resources, 'native/activity.node'));
+    assert.equal(typeof native.show, 'function');
+    nativeCheck = 'native module ABI';
+  } else {
+    assert.equal(fs.existsSync(path.join(resources, 'native/activity.node')), false);
+    assert.equal(fs.existsSync(path.join(resources, 'native/graff-terminal')), true);
+  }
   const version = execFileSync(path.join(resources, 'graff'), ['--version'], { encoding: 'utf8', timeout: 10000 }).trim().split('\n')[0];
   assert.match(version, /graff/i);
   if (process.env.GRAFF_SMOKE_HTML_TOOL) await require('./smoke-html.cjs').run({ win, backend, token });
   if (process.env.GRAFF_SMOKE_TITLES) await require('./smoke-titles.cjs').run({ win, backend });
-  const report = { appVersion: app.getVersion(), passed: ['bundled server', 'production composer', 'empty browser lifecycle', 'request authentication', 'native module ABI', 'bundled engine executable', 'packaged executable'], version };
+  const report = { appVersion: app.getVersion(), passed: ['bundled server', 'production composer', 'empty browser lifecycle', 'request authentication', nativeCheck, 'bundled engine executable', 'packaged executable'], version };
   if (process.env.GRAFF_SMOKE_WEBAUTHN) report.passed.push(await require('./smoke-webauthn.cjs').run({ browser, backend, resources }));
   fs.writeFileSync(process.env.GRAFF_ELECTRON_SMOKE, JSON.stringify(report, null, 2));
   console.log(process.env.GRAFF_SMOKE_TITLES ? 'Packaged title checks passed.' : process.env.GRAFF_SMOKE_HTML_TOOL ? 'Packaged launch and offline HTML tool checks passed.' : 'Packaged launch checks passed. No prompt sent or coding setting changed.');
