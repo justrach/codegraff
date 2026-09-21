@@ -1,6 +1,9 @@
 import { test, expect } from "bun:test";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { AcpTransport } from "./acp-transport";
 import { bindSessionCwd, initializeWorker, serializeBootstrap } from "./acp-bootstrap";
 import { retireWorker } from "./acp-retire";
@@ -56,6 +59,26 @@ test("bindSessionCwd keeps the spawn workspace when session/new reports the host
   expect(bindSessionCwd(workspace, "/repo/.graff/worktrees/session-1", host))
     .toBe("/repo/.graff/worktrees/session-1");
   expect(bindSessionCwd(host, host, host)).toBe(host);
+});
+
+test("bindSessionCwd treats a host cwd symlink as the host, not a checkout", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "graff-bind-cwd-"));
+  try {
+    const host = path.join(root, "apps-native");
+    const workspace = path.join(root, "workspace");
+    mkdirSync(host);
+    mkdirSync(workspace);
+    const alias = path.join(root, "host-alias");
+    symlinkSync(host, alias);
+    expect(bindSessionCwd(workspace, alias, host)).toBe(workspace);
+    expect(bindSessionCwd(workspace, host, alias)).toBe(workspace);
+    expect(bindSessionCwd(workspace, workspace, host)).toBe(path.resolve(workspace));
+    const tree = path.join(workspace, ".graff", "worktrees", "session-1");
+    mkdirSync(tree, { recursive: true });
+    expect(bindSessionCwd(workspace, tree, host)).toBe(path.resolve(tree));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("session/new checkout binds the worker to its isolated worktree", async () => {

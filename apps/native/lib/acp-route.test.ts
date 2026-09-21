@@ -400,9 +400,10 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     expect(hostReport.status).toBe(200);
     expect(await hostReport.json()).toMatchObject({ sessionId: "enroll", cwd: path.resolve(temp) });
     const spawned = JSON.parse(readFileSync(path.join(temp, "spawn.env"), "utf8"));
-    expect(path.resolve(spawned.cwd)).toBe(path.resolve(temp));
-    expect(path.resolve(spawned.pwd)).toBe(path.resolve(temp));
-    expect(path.resolve(spawned.graffCwd)).toBe(path.resolve(temp));
+    // process.cwd() is realpath; os.tmpdir() on macOS is /var → /private/var.
+    expect(realpathSync(spawned.cwd)).toBe(realpathSync(temp));
+    expect(realpathSync(spawned.pwd)).toBe(realpathSync(temp));
+    expect(realpathSync(spawned.graffCwd)).toBe(realpathSync(temp));
     const store = attachmentStore();
     const image = store.create("enroll.png", new Uint8Array([1, 2, 3]));
     const prompted = await call("session/prompt", { prompt: [{ type: "text", text: `See @[${image}]` }] });
