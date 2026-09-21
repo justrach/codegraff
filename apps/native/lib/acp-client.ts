@@ -1,5 +1,6 @@
 import { parseRpcLine, type AcpCommand, type AcpUpdate, type JsonRpcLine } from "./acp";
 import { liveAppearanceTokens } from "./appearance-note";
+import { readAnswerResponse, validateAnswer } from "./ask-answer";
 
 const BASE = "/api/acp";
 
@@ -168,16 +169,18 @@ export async function answer(
   sessionId: string,
   opts: { callId: string; text?: string; cancelled?: boolean },
 ): Promise<void> {
+  const checked = validateAnswer(opts);
+  if (!checked.ok) throw new Error(checked.error);
   const response = await fetch(BASE, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       chat,
       method: "session/answer",
-      params: { sessionId, callId: opts.callId, text: opts.text ?? "", cancelled: opts.cancelled === true },
+      params: { sessionId, callId: checked.value.callId, text: checked.value.text, cancelled: checked.value.cancelled },
     }),
   });
-  if (!response.ok) throw new Error("Could not send the answer");
+  await readAnswerResponse(response);
 }
 
 /** Kill a closed tab's agent. `keepalive` so a close-then-navigate still lands. */

@@ -121,7 +121,7 @@ pub const Inbox = struct {
                     const v = o.get("text") orelse break :blk "";
                     break :blk if (v == .string) v.string else "";
                 } else "";
-                acp_ask.reply(answer_text, cancelled_answer);
+                _ = acp_ask.reply(answer_text, cancelled_answer);
                 return;
             }
             if (std.mem.eql(u8, r.method, "session/prompt") and self.session_id == null)
@@ -194,6 +194,20 @@ test "session/answer fills the ask mailbox without queueing a line" {
     defer arena_state.deinit();
     const got = try acp_ask.wait(arena_state.allocator());
     try std.testing.expectEqualStrings("pill", got.text);
+}
+
+test "session/answer ignores an empty non-cancelled reply" {
+    acp_ask.attach(std.testing.io, std.testing.allocator);
+    defer acp_ask.detach();
+    var reader: Io.Reader = .fixed("");
+    var inbox: Inbox = .{ .gpa = std.testing.allocator, .io = std.testing.io, .reader = &reader };
+    defer inbox.deinit();
+    try inbox.accept("{\"method\":\"session/answer\",\"params\":{\"text\":\"\",\"cancelled\":false}}");
+    try std.testing.expect(acp_ask.reply("kept", false));
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const got = try acp_ask.wait(arena_state.allocator());
+    try std.testing.expectEqualStrings("kept", got.text);
 }
 
 test "ACP cancellation before turn setup survives the reset" {
