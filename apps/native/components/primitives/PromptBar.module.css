@@ -39,7 +39,7 @@
 
 /* Split panes can be narrow even on a large display. Keep settings legible
    on their own row and reserve separate space for attachment/send actions.
-   stacked shells use the composer radius — rounded-full on 3 rows is a balloon. */
+   stacked shells use the composer radius — a pill on 3 rows is a balloon. */
 @container (max-width: 420px) {
   .glass {
     border-radius: var(--radius-composer);

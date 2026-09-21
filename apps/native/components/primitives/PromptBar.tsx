@@ -391,7 +391,7 @@ export default function PromptBar({
         } ${
           tall ? "gap-2.5 p-3.5" : "gap-1.5 p-1.5"
         } ${
-          pill ? (attachments.length > 0 || wide ? "rounded-composer" : "rounded-full") : "rounded-composer"
+          "rounded-composer"
         }`}
       >
         <input
