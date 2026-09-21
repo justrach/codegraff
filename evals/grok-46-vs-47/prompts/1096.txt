@@ -1,0 +1,36 @@
+You are patching justrach/codegraff. Do not use tools. Reply with one unified diff and nothing else.
+
+PR 1096 — fix(native): require visible composer selection on Enter.
+
+Bug: the @ menu defaults its active index to the attachment action. The keyboard handler activates that row on Enter or Tab immediately, even though `engaged` intentionally withholds the visual highlight until the user hovers or navigates with the arrow keys. Pressing Enter after typing an @ query can open the system file picker with no visible selection.
+
+Required behavior:
+- An autocomplete row is keyboard-activatable only after it is visibly engaged (hover or arrow keys).
+- If the @ menu is open but no row is engaged, Enter still submits the prompt and Tab keeps normal focus traversal.
+- Reuse the existing `engaged` state. Do not add a second selection model.
+- Shift+Enter must not activate a row.
+- Arrow keys are not activation keys.
+
+Current handler in apps/native/components/primitives/PromptBar.tsx (engaged already exists; arrow keys already call setEngaged(true); ComposerMenu receives setEngaged for hover):
+```
+if (menu && rows.length > 0) {
+  if (!event.shiftKey && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+    event.preventDefault();
+    event.stopPropagation();
+    setEngaged(true);
+    setActive((activeIndex + (event.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length);
+    return;
+  }
+  if (!event.shiftKey && (event.key === "Enter" || event.key === "Tab")) {
+    event.preventDefault();
+    event.stopPropagation();
+    pick(rows[activeIndex]);
+    return;
+  }
+}
+```
+Later, unengaged Enter falls through to send().
+
+Add a pure helper `shouldPickComposerRow(key, shiftKey, engaged)` in apps/native/lib/composer-keyboard.ts, unit tests in apps/native/lib/composer-keyboard.test.ts, wire PromptBar to it, and append the new test file to the `test` script in apps/native/package.json (node --experimental-strip-types --test ...). The test script already lists lib/composer-model-pick.test.ts; insert the new file beside it.
+
+Write the unified diff.

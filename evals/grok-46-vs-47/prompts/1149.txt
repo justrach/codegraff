@@ -1,0 +1,67 @@
+You are patching justrach/codegraff. Do not use tools. Reply with one unified diff and nothing else.
+
+PR 1149 — test: reject same-team profiles for a different bundle.
+
+Why: a matching team wildcard is not enough to authorize another product's profile.
+
+Add tests only:
+
+- profileEntitlements rejects TEAM.* keychain groups when application-identifier is another bundle.
+- signBundle rejects that profile before the signer runs.
+
+Match the existing helpers and assertion style in these two files. Do not rewrite unrelated tests.
+
+FILE apps/native/electron/webauthn-profile.test.cjs
+```
+const assert = require('node:assert/strict');
+const { test } = require('node:test');
+const { readProfile, profileEntitlements } = require('./webauthn-profile.cjs');
+
+const config = { keychainAccessGroup: 'ABCDE12345.org.example.fixture.webauthn' };
+const appId = 'ABCDE12345.org.example.fixture';
+const now = Date.parse('2030-01-01T00:00:00Z');
+
+function fixture() {
+  return {
+    Platform: ['OSX'],
+    TeamIdentifier: ['ABCDE12345'],
+    ExpirationDate: new Date('2099-01-01'),
+    Entitlements: {
+      'com.apple.application-identifier': appId,
+      'keychain-access-groups': ['ABCDE12345.*'],
+    },
+  };
+}
+
+function authorize(profile) {
+  return profileEntitlements(profile, config, now);
+}
+```
+The file already has a table of authorize() accept cases and a table of reject cases (wrong team, wrong application, wrong keychain group, expired, and so on), plus:
+```
+test('accepts a profile until its expiration boundary', () => {
+  const profile = fixture();
+  profile.ExpirationDate = new Date(now + 1);
+  assert.deepEqual(authorize(profile), { 'com.apple.application-identifier': appId });
+});
+```
+
+FILE apps/native/electron/webauthn-signing.test.cjs
+```
+const { signBundle } = require('./webauthn-signing.cjs');
+const identity = 'Developer ID Application: Test Fixture (ABCDE12345)';
+const bundleId = 'org.example.fixture';
+const profile = appId => ({ Platform: ['OSX'], TeamIdentifier: ['ABCDE12345'], ExpirationDate: new Date('2099-01-01'),
+  Entitlements: { 'com.apple.application-identifier': `ABCDE12345.${appId}`, 'keychain-access-groups': ['ABCDE12345.*'] } });
+```
+An existing test already proves invalid metadata fails before the signer:
+```
+test('invalid metadata fails before writing config or invoking signer', async () => {
+  let called = false;
+  await assert.rejects(signBundle({ app: 'Fixture.app', identity, teamId: '', readBundleId: () => bundleId, sign: () => { called = true; } }), /valid signing team/);
+  assert.equal(called, false);
+});
+```
+signBundle accepts readProvisioningProfile and readBundleId overrides.
+
+Write the two missing tests as a unified diff against those paths.

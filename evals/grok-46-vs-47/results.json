@@ -1,0 +1,120 @@
+{
+  "protocol": {
+    "runner": "grok CLI (Grok Build)",
+    "models": ["grok-4.6", "grok-4.7"],
+    "resolved_models": ["grok-4.6-build", "grok-4.7-build"],
+    "reasoning_effort": "high",
+    "turns": 1,
+    "tools": "disabled",
+    "pricing_card": {
+      "input_per_mtok": 2.0,
+      "cached_input_per_mtok": 0.5,
+      "output_per_mtok": 6.0,
+      "note": "Public xAI list for grok-4.6 and grok-4.7 under 200k prompt tokens. Reasoning tokens are inside output."
+    },
+    "build_receipt_note": "grok-4.7-build receipts matched the list card exactly. grok-4.6-build receipts were 0.34x that card on every run."
+  },
+  "prs": [
+    {
+      "number": 1149,
+      "title": "test: reject same-team profiles for a different bundle",
+      "url": "https://github.com/justrach/codegraff/pull/1149"
+    },
+    {
+      "number": 1096,
+      "title": "fix(native): require visible composer selection on Enter",
+      "url": "https://github.com/justrach/codegraff/pull/1096"
+    },
+    {
+      "number": 1035,
+      "title": "Unlink reclaimable Accord peer socks",
+      "url": "https://github.com/justrach/codegraff/pull/1035"
+    }
+  ],
+  "runs": [
+    {
+      "model": "grok-4.6",
+      "resolved": "grok-4.6-build",
+      "pr": 1149,
+      "wall_s": 108.547,
+      "input_tokens": 17502,
+      "cached_input_tokens": 256,
+      "output_tokens": 5962,
+      "reasoning_tokens": 5461,
+      "build_receipt_usd": 0.02410736,
+      "list_cost_usd": 0.070904,
+      "checks_hit": 6,
+      "checks_total": 8
+    },
+    {
+      "model": "grok-4.7",
+      "resolved": "grok-4.7-build",
+      "pr": 1149,
+      "wall_s": 333.837,
+      "input_tokens": 15922,
+      "cached_input_tokens": 1152,
+      "output_tokens": 22958,
+      "reasoning_tokens": 22438,
+      "build_receipt_usd": 0.170168,
+      "list_cost_usd": 0.170168,
+      "checks_hit": 7,
+      "checks_total": 8
+    },
+    {
+      "model": "grok-4.6",
+      "resolved": "grok-4.6-build",
+      "pr": 1096,
+      "wall_s": 138.814,
+      "input_tokens": 18669,
+      "cached_input_tokens": 0,
+      "output_tokens": 8064,
+      "reasoning_tokens": 7036,
+      "build_receipt_usd": 0.02914548,
+      "list_cost_usd": 0.085722,
+      "checks_hit": 7,
+      "checks_total": 8
+    },
+    {
+      "model": "grok-4.7",
+      "resolved": "grok-4.7-build",
+      "pr": 1096,
+      "wall_s": 269.817,
+      "input_tokens": 15713,
+      "cached_input_tokens": 1152,
+      "output_tokens": 19450,
+      "reasoning_tokens": 18435,
+      "build_receipt_usd": 0.148702,
+      "list_cost_usd": 0.148702,
+      "checks_hit": 7,
+      "checks_total": 8
+    },
+    {
+      "model": "grok-4.6",
+      "resolved": "grok-4.6-build",
+      "pr": 1035,
+      "wall_s": 260.076,
+      "input_tokens": 16846,
+      "cached_input_tokens": 1920,
+      "output_tokens": 15551,
+      "reasoning_tokens": 14319,
+      "build_receipt_usd": 0.04350572,
+      "list_cost_usd": 0.127958,
+      "checks_hit": 7,
+      "checks_total": 8
+    },
+    {
+      "model": "grok-4.7",
+      "resolved": "grok-4.7-build",
+      "pr": 1035,
+      "wall_s": 747.711,
+      "input_tokens": 16958,
+      "cached_input_tokens": 1152,
+      "output_tokens": 52540,
+      "reasoning_tokens": 50930,
+      "build_receipt_usd": 0.349732,
+      "list_cost_usd": 0.349732,
+      "checks_hit": 7,
+      "checks_total": 8
+    }
+  ]
+}
