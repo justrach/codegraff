@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import {
   ONBOARDING_DISMISSED_VALUE,
   ONBOARDING_KEY,
+  ONBOARDING_WORLD_FLAG,
   onboardingDismissedScript,
+  pageWorldAlreadyOnboarded,
   parseOnboardingDismissed,
   readOnboardingDismissed,
   seedOnboardingDismissed,
@@ -45,6 +47,9 @@ test("production fixtures persist the same dismissed flag as Skip/Done", () => {
   assert.equal(shouldShowOnboarding(storage), false);
   assert.match(onboardingDismissedScript(), new RegExp(ONBOARDING_KEY.replaceAll(".", "\\.")));
   assert.match(onboardingDismissedScript(), new RegExp(ONBOARDING_DISMISSED_VALUE));
+  assert.match(onboardingDismissedScript(), new RegExp(ONBOARDING_WORLD_FLAG));
+  assert.equal(pageWorldAlreadyOnboarded({ [ONBOARDING_WORLD_FLAG]: true }, memoryStorage()), true);
+  assert.equal(shouldShowOnboarding(memoryStorage(), { [ONBOARDING_WORLD_FLAG]: true }), false);
 });
 
 test("unavailable storage shows onboarding instead of throwing", () => {

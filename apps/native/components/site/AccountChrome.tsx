@@ -5,7 +5,11 @@ import {
   ACCOUNT_EVENT, fetchAccount, LOGIN_EVENT, logoutAccount, notifyAccountChanged,
   ONBOARDING_EVENT, requestLogin, requestOnboarding, type AccountStatus,
 } from "@/lib/account-client";
-import { shouldShowOnboarding, writeOnboardingDismissed } from "@/lib/onboarding";
+import { shouldShowOnboarding, writeOnboardingDismissed, type OnboardingWorld } from "@/lib/onboarding";
+
+function pageWorld(): (Window & OnboardingWorld) | null {
+  return typeof window === "undefined" ? null : window;
+}
 import AccountPanel from "./AccountPanel";
 import LoginDialog from "./LoginDialog";
 import OnboardingDialog from "./OnboardingDialog";
@@ -26,8 +30,14 @@ export default function AccountChrome() {
 
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (shouldShowOnboarding(window.localStorage)) setOnboarding(true);
+    const world = pageWorld();
+    if (!world) return;
+    if (!shouldShowOnboarding(world.localStorage, world)) return;
+    // Production tests seed the dismissed flag in the page world before paint.
+    const timer = world.setTimeout(() => {
+      if (shouldShowOnboarding(world.localStorage, world)) setOnboarding(true);
+    }, 0);
+    return () => world.clearTimeout(timer);
   }, []);
   useEffect(() => {
     const onLogin = () => { setLogin(true); setPanel(false); };
