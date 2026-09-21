@@ -50,17 +50,16 @@ const orch_rows = @import("orchestration_rows.zig"); // #290: a scored tournamen
 /// instead registers the spawn and returns immediately — see
 /// spawnSubBackground below.
 const spawn_gate = @import("subagent_spawn.zig");
-const subagent_brief = @import("subagent_brief.zig"); // the structured delegation brief (sections + harness environment header)
 
 pub fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     const obj = tools.json_args.object(input) orelse return .{ .text = try ctx.gpa.dupe(u8, "subagent: arguments must be a JSON object with a \"prompt\" string"), .is_error = true };
     const label = tools.json_args.str(obj, "description") orelse "subagent";
-    const task = tools.json_args.str(obj, "prompt") orelse "";
-    if (task.len == 0) return .{ .text = try ctx.gpa.dupe(u8, "subagent: missing required \"prompt\" (a self-contained task)"), .is_error = true };
-    if (spawn_gate.refuse(ctx.from_sub, label, task, g_agent_jobs.active)) |why|
+    const briefed = @import("subagent_brief.zig").fromInput(ctx.gpa, obj);
+    defer @import("subagent_brief.zig").release(ctx.gpa, briefed);
+    const prompt = briefed.text;
+    if (prompt.len == 0) return .{ .text = try ctx.gpa.dupe(u8, "subagent: missing required \"prompt\" (a self-contained task)"), .is_error = true };
+    if (spawn_gate.refuse(ctx.from_sub, label, prompt, g_agent_jobs.active)) |why|
         return .{ .text = try ctx.gpa.dupe(u8, why), .is_error = true };
-    const prompt = try subagent_brief.compose(ctx.gpa, obj, task); // context/established_facts/scope/deliverable around the task in a fixed order; a bare prompt is unchanged
-    defer ctx.gpa.free(prompt); // spawnSubBackground dupes it and rebases `ask` onto its copy; the sync path is done with it once flagReport returns
     const sys_override = fleet.resolveOverride(obj);
     const niche = fleet.resolveNiche(obj);
     const isolation = fleet.resolveIsolation(obj);
@@ -68,15 +67,9 @@ pub fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     // #292: explicit spawn `model`/`tier` > persona frontmatter > the session
     // default (--subagent-model / the #291 ladder), resolved provider-locally.
     const base = childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider);
-    // #372: a bare spawn instantiates no catalog shape, so its cell is
-    // (adhoc, <the canonical slot its description or persona niche names>) —
-    // the same closed vocabulary a workflow phase files fitness under, so
-    // both feed one policy instead of two disjoint ones.
+    // #372: adhoc cell uses the same role vocabulary as a workflow phase.
     const cell: route_policy.Cell = .{ .role = route_policy.roleOf(label, niche) };
-    // #380: that chain, its notes and its #372 route line in one call (this
-    // file is at the cap). A task naming an image is a VISION ASK: a blind
-    // AUTOMATIC seat is re-routed to one that sees, a human's pin is kept but
-    // flagged, and no vision model anywhere refuses the spawn outright.
+    // #380: vision-aware seat + honesty flag (this file is at the cap).
     const ask = vision_ask.seat(ctx, base, obj, cell, label, prompt, sys_override, niche);
     if (ask.blocked) return .{ .text = try vision_ask.blockMessage(ctx.gpa, ask), .is_error = true };
     if (ctx.interactive_children or tools.json_args.flag(input, "run_in_background")) return spawnSubBackground(ctx, label, prompt, sys_override, niche, isolation, isolation_fallback, ask.pin.provider, ask.pin.effort, ask);

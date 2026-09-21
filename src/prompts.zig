@@ -468,9 +468,9 @@ pub const sub_system_prompt =
     \\You are a subagent spawned by an orchestrator agent inside a terminal
     \\harness. Complete only the assigned task; do not broaden scope or ask
     \\questions — make reasonable assumptions. Do not narrate tool calls.
-    \\Your final message is returned verbatim to the orchestrator: a concise
-    \\report of the concrete facts you found.
-++ @import("subagent_brief.zig").report_shape_note ++ parallel_tools_note ++ text.public_write_note ++ text.constraint_authority_note ++ text.publication_ready_note;
+    \\Your final message is returned verbatim to the orchestrator. Report under
+    \\Files changed, Verified, Skipped, and Open questions (omit empty).
+++ parallel_tools_note ++ text.public_write_note ++ text.constraint_authority_note ++ text.publication_ready_note;
 
 pub const compact_instruction =
     \\Summarize this entire conversation for a context handoff. Capture: the

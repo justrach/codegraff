@@ -1,307 +1,284 @@
-//! The delegation brief a child receives. Two halves, one fixed order:
-//!
-//!   1. The ENVIRONMENT header the harness already knows and no parent should
-//!      have to type: working directory, the project-instructions file to read
-//!      first, tools this session disabled, pre-tool hooks that may refuse a
-//!      call. `withEnvironment` prepends it on every spawn path that runs
-//!      through subagent_run.runSub (subagent, workflow task, workflow retry) —
-//!      the judge ranks handed excerpts and is left alone.
-//!   2. The PARENT's structured sections from the `subagent` tool call —
-//!      context, task, established facts, scope, deliverable — rendered by
-//!      `render` with one heading each, empty ones omitted. A call that passes
-//!      only `prompt` renders byte-identically to that prompt, so the plain
-//!      string path is unchanged.
-//!
-//! Composed in the child's first USER message, not its system prompt: the
-//! sections vary per spawn, and the system prompt stays a stable cache prefix.
+//! Structured child briefs: optional parent fields render as headed sections
+//! around `prompt`, and `runSub` prepends a harness-stated environment
+//! header on every path except the judge. Shared engine path — REPL, TUI,
+//! and GUI compose the same first user message.
 
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const ObjectMap = std.json.ObjectMap;
 
 const json_args = @import("json_args.zig");
 const no_local_tools = @import("no_local_tools.zig");
-const hooks_mod = @import("hooks.zig");
 
-/// The structured fields of one `subagent` call, in render order. `task` is
-/// the required `prompt`; the rest are optional and trimmed before use.
-pub const Sections = struct {
-    context: ?[]const u8 = null,
-    task: []const u8,
-    established_facts: ?[]const u8 = null,
-    scope: ?[]const u8 = null,
-    deliverable: ?[]const u8 = null,
+pub const context_header = "## Context";
+pub const environment_header = "## Environment";
+pub const facts_header = "## Established facts";
+pub const scope_header = "## Scope";
+pub const deliverable_header = "## Deliverable";
 
-    /// Read the optional sections off the tool-call object; `task` is the
-    /// already-validated prompt the caller extracted.
-    pub fn fromArgs(obj: std.json.ObjectMap, task: []const u8) Sections {
-        return .{
-            .context = json_args.str(obj, "context"),
-            .task = task,
-            .established_facts = json_args.str(obj, "established_facts"),
-            .scope = json_args.str(obj, "scope"),
-            .deliverable = json_args.str(obj, "deliverable"),
-        };
-    }
-
-    /// Did the parent fill any section beyond the task itself?
-    pub fn structured(self: Sections) bool {
-        return present(self.context) or present(self.established_facts) or present(self.scope) or present(self.deliverable);
-    }
+pub const Fields = struct {
+    prompt: []const u8,
+    context: []const u8 = "",
+    established_facts: []const u8 = "",
+    scope: []const u8 = "",
+    deliverable: []const u8 = "",
 };
 
-fn present(s: ?[]const u8) bool {
-    const v = s orelse return false;
-    return std.mem.trim(u8, v, &std.ascii.whitespace).len > 0;
-}
-
-pub const heading_context = "## Context";
-pub const heading_task = "## Task";
-pub const heading_established = "## Established (do not re-derive)";
-pub const heading_scope = "## Scope";
-pub const heading_deliverable = "## Deliverable";
-
-fn section(w: *Io.Writer, heading: []const u8, body: ?[]const u8, first: *bool) !void {
-    const v = body orelse return;
-    const t = std.mem.trim(u8, v, &std.ascii.whitespace);
-    if (t.len == 0) return;
-    if (!first.*) try w.writeAll("\n\n");
-    first.* = false;
-    try w.print("{s}\n{s}", .{ heading, t });
-}
-
-/// The parent's brief as one string. Always an owned copy (the caller frees):
-/// a plain task comes back byte-identical, a structured one as headed
-/// sections in the fixed order, empties skipped.
-pub fn render(alloc: Allocator, s: Sections) ![]u8 {
-    if (!s.structured()) return alloc.dupe(u8, s.task);
-    var aw: Io.Writer.Allocating = .init(alloc);
-    errdefer aw.deinit();
-    var first = true;
-    try section(&aw.writer, heading_context, s.context, &first);
-    try section(&aw.writer, heading_task, s.task, &first);
-    try section(&aw.writer, heading_established, s.established_facts, &first);
-    try section(&aw.writer, heading_scope, s.scope, &first);
-    try section(&aw.writer, heading_deliverable, s.deliverable, &first);
-    return aw.toOwnedSlice();
-}
-
-/// execSubagent's one call: the structured fields of `obj` around `task`.
-pub fn compose(alloc: Allocator, obj: std.json.ObjectMap, task: []const u8) ![]u8 {
-    return render(alloc, Sections.fromArgs(obj, task));
-}
-
-/// Appended to the child's system prompt: the report shape a parent gets when
-/// its brief named no deliverable, so every child answers in the same frame.
-pub const report_shape_note =
-    \\ When the brief names no deliverable, report in this order: files changed
-    \\(one line each, with why), verified (what you ran and saw), skipped (and
-    \\why), open questions. State what the brief asked for and nothing else.
-;
-
-/// One pre-tool hook the child's calls will pass through.
-pub const Guard = struct {
-    match: []const u8,
-    suggest: []const u8 = "",
-};
-
-/// What the harness knows about the child's environment. Every field empty
-/// renders to "" — a bare session adds nothing to the brief.
 pub const Env = struct {
     cwd: []const u8 = "",
-    instructions_file: ?[]const u8 = null,
-    disabled_tools: []const []const u8 = &.{},
-    pre_tool_hooks: []const Guard = &.{},
-
-    pub fn empty(self: Env) bool {
-        return self.cwd.len == 0 and self.instructions_file == null and self.disabled_tools.len == 0 and self.pre_tool_hooks.len == 0;
-    }
+    instructions: []const u8 = "",
+    disabled: []const u8 = "",
+    hooks: []const u8 = "",
 };
 
-pub const env_heading = "[environment — stated by the harness, not the parent]";
+pub const Owned = struct {
+    text: []const u8,
+    owned: bool = false,
+};
 
-/// The environment header, or "" when there is nothing to say.
-pub fn renderEnv(alloc: Allocator, env: Env) ![]u8 {
-    if (env.empty()) return alloc.dupe(u8, "");
-    var aw: Io.Writer.Allocating = .init(alloc);
+pub fn release(gpa: Allocator, o: Owned) void {
+    if (o.owned) gpa.free(o.text);
+}
+
+fn trimmed(s: []const u8) []const u8 {
+    return std.mem.trim(u8, s, " \t\r\n");
+}
+
+pub fn hasExtras(f: Fields) bool {
+    return trimmed(f.context).len > 0 or trimmed(f.established_facts).len > 0 or
+        trimmed(f.scope).len > 0 or trimmed(f.deliverable).len > 0;
+}
+
+/// Headed sections around `prompt`. Empties omitted. A bare prompt is the
+/// same bytes — no headings, no trailing newline.
+pub fn render(arena: Allocator, f: Fields) ![]const u8 {
+    if (trimmed(f.prompt).len == 0 or !hasExtras(f)) return f.prompt;
+    var aw: Io.Writer.Allocating = .init(arena);
     errdefer aw.deinit();
     const w = &aw.writer;
-    try w.writeAll(env_heading);
-    if (env.cwd.len > 0) try w.print("\nworking directory: {s}", .{env.cwd});
-    if (env.instructions_file) |f| try w.print("\nproject instructions: {s} in the working directory — read it first; its rules bind you too", .{f});
-    if (env.disabled_tools.len > 0) {
-        try w.writeAll("\ndisabled tools this session (do not call them): ");
-        for (env.disabled_tools, 0..) |name, i| {
-            if (i > 0) try w.writeAll(", ");
-            try w.writeAll(name);
-        }
+    if (trimmed(f.context).len > 0) try w.print("{s}\n{s}\n\n", .{ context_header, trimmed(f.context) });
+    try w.writeAll(f.prompt);
+    if (trimmed(f.established_facts).len > 0) try w.print("\n\n{s}\n{s}", .{ facts_header, trimmed(f.established_facts) });
+    if (trimmed(f.scope).len > 0) try w.print("\n\n{s}\n{s}", .{ scope_header, trimmed(f.scope) });
+    if (trimmed(f.deliverable).len > 0) try w.print("\n\n{s}\n{s}", .{ deliverable_header, trimmed(f.deliverable) });
+    return aw.toOwnedSlice();
+}
+
+pub fn fromInput(gpa: Allocator, obj: ObjectMap) Owned {
+    const f = Fields{
+        .prompt = json_args.str(obj, "prompt") orelse "",
+        .context = json_args.str(obj, "context") orelse "",
+        .established_facts = json_args.str(obj, "established_facts") orelse "",
+        .scope = json_args.str(obj, "scope") orelse "",
+        .deliverable = json_args.str(obj, "deliverable") orelse "",
+    };
+    if (trimmed(f.prompt).len == 0 or !hasExtras(f)) return .{ .text = f.prompt };
+    const text = render(gpa, f) catch return .{ .text = f.prompt };
+    return .{ .text = text, .owned = true };
+}
+
+fn writeEnvironment(w: *Io.Writer, env: Env) !usize {
+    try w.writeAll(environment_header);
+    var lines: usize = 0;
+    if (trimmed(env.cwd).len > 0) {
+        try w.print("\n- working directory: {s}", .{trimmed(env.cwd)});
+        lines += 1;
     }
-    for (env.pre_tool_hooks) |g| {
-        if (std.mem.eql(u8, g.match, "*"))
-            try w.writeAll("\npre-tool hook: every tool call may be refused; a refusal returns the hook's message — follow it")
-        else
-            try w.print("\npre-tool hook may refuse: {s}", .{g.match});
-        if (g.suggest.len > 0) try w.print(" (use instead: {s})", .{g.suggest});
+    if (trimmed(env.instructions).len > 0) {
+        try w.print("\n- project instructions: {s}", .{trimmed(env.instructions)});
+        lines += 1;
+    }
+    if (trimmed(env.disabled).len > 0) {
+        try w.print("\n- disabled tools: {s}", .{trimmed(env.disabled)});
+        lines += 1;
+    }
+    if (trimmed(env.hooks).len > 0) {
+        try w.print("\n- pre_tool hooks: {s}", .{trimmed(env.hooks)});
+        lines += 1;
+    }
+    return lines;
+}
+
+pub fn environmentHeader(arena: Allocator, env: Env) ![]const u8 {
+    var aw: Io.Writer.Allocating = .init(arena);
+    errdefer aw.deinit();
+    if (try writeEnvironment(&aw.writer, env) == 0) {
+        aw.deinit();
+        return "";
     }
     return aw.toOwnedSlice();
 }
 
-/// The instructions file the ROOT loaded at startup, if any — same list and
-/// order as startup.buildSystemPrompt. `dir` null means the process cwd.
-pub fn instructionsFile(io: Io, dir: ?[]const u8) ?[]const u8 {
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    for ([_][]const u8{ "AGENTS.md", "HARNESS.md", "CLAUDE.md" }) |fname| {
-        const path = if (dir) |d| (std.fmt.bufPrint(&buf, "{s}/{s}", .{ d, fname }) catch continue) else fname;
-        if (Io.Dir.cwd().access(io, path, .{})) |_| return fname else |_| {}
-    }
-    return null;
-}
-
-/// Gather the header's facts from the live gates. `cwd_override` is the
-/// child's isolated worktree when it has one (Agent.agent_cwd).
-pub fn detectEnv(io: Io, arena: Allocator, cwd_override: ?[]const u8) Env {
-    var env: Env = .{};
-    if (cwd_override) |c| {
-        env.cwd = c;
-    } else {
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
-        if (std.process.currentPath(io, &buf)) |n| {
-            env.cwd = arena.dupe(u8, buf[0..n]) catch "";
-        } else |_| {}
-    }
-    env.instructions_file = instructionsFile(io, cwd_override);
-    if (no_local_tools.enabled) {
-        var list: std.ArrayList([]const u8) = .empty;
-        for (no_local_tools.gated_tools ++ no_local_tools.gated_aliases) |name| {
-            if (no_local_tools.blocks(name)) list.append(arena, name) catch break;
-        }
-        env.disabled_tools = list.items;
-    }
-    env.pre_tool_hooks = guardsFrom(arena, @import("main.zig").g_hooks.pre_tool);
-    return env;
-}
-
-pub fn guardsFrom(arena: Allocator, pre_tool: []const hooks_mod.Hook) []const Guard {
-    if (pre_tool.len == 0) return &.{};
-    const out = arena.alloc(Guard, pre_tool.len) catch return &.{};
-    for (pre_tool, out) |h, *g| g.* = .{ .match = h.match, .suggest = h.suggest };
-    return out;
-}
-
-/// Prepend the environment header to a child's brief. The judge is text-only
-/// and ranks handed excerpts, so it gets the prompt untouched; so does any
-/// child when the header has nothing to say.
-pub fn withEnvironment(io: Io, arena: Allocator, kind: []const u8, cwd_override: ?[]const u8, prompt: []const u8) []const u8 {
+/// Prepend the environment header unless this is the judge (text-only ranker).
+pub fn withEnvironment(arena: Allocator, kind: []const u8, prompt: []const u8, env: Env) ![]const u8 {
     if (std.mem.eql(u8, kind, "judge_task")) return prompt;
-    const header = renderEnv(arena, detectEnv(io, arena, cwd_override)) catch return prompt;
-    if (header.len == 0) return prompt;
-    return std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ header, prompt }) catch prompt;
+    var aw: Io.Writer.Allocating = .init(arena);
+    errdefer aw.deinit();
+    if (try writeEnvironment(&aw.writer, env) == 0) {
+        aw.deinit();
+        return prompt;
+    }
+    try aw.writer.print("\n\n{s}", .{prompt});
+    return aw.toOwnedSlice();
 }
 
-// ── tests ──────────────────────────────────────────────────────────────────
-
-fn parseArgs(arena: Allocator, json: []const u8) !std.json.ObjectMap {
-    const v = try std.json.parseFromSliceLeaky(std.json.Value, arena, json, .{});
-    return v.object;
+fn instructionName(io: Io) []const u8 {
+    for ([_][]const u8{ "AGENTS.md", "HARNESS.md", "CLAUDE.md" }) |name| {
+        _ = Io.Dir.cwd().statFile(io, name, .{}) catch continue;
+        return name;
+    }
+    return "";
 }
 
-test "render: a plain prompt passes through byte-identically" {
+fn disabledLine(arena: Allocator) []const u8 {
+    const child = "child cannot spawn children; no parent transcript";
+    if (no_local_tools.enabled)
+        return std.fmt.allocPrint(arena, "{s}; --no-local-tools", .{child}) catch child;
+    if (no_local_tools.lean)
+        return std.fmt.allocPrint(arena, "{s}; --lean catalog", .{child}) catch child;
+    return child;
+}
+
+fn hookSummary(arena: Allocator, pre_tool: anytype) []const u8 {
+    if (pre_tool.len == 0) return "";
+    var aw: Io.Writer.Allocating = .init(arena);
+    for (pre_tool, 0..) |h, i| {
+        if (i > 0) aw.writer.writeAll("; ") catch return "";
+        aw.writer.print("{s} -> {s}", .{ h.match, h.command }) catch return "";
+    }
+    return aw.toOwnedSlice() catch "";
+}
+
+/// `runSub` seam: environment header + parent brief. Judge is identity.
+pub fn prepare(arena: Allocator, io: Io, kind: []const u8, prompt: []const u8, agent_cwd: ?[]const u8, pre_tool: anytype) ![]const u8 {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = agent_cwd orelse blk: {
+        const n = Io.Dir.cwd().realPath(io, &buf) catch break :blk "";
+        break :blk buf[0..n];
+    };
+    const env = Env{
+        .cwd = cwd,
+        .instructions = instructionName(io),
+        .disabled = disabledLine(arena),
+        .hooks = hookSummary(arena, pre_tool),
+    };
+    return withEnvironment(arena, kind, prompt, env);
+}
+
+test "render: a bare prompt is unchanged; empty extras do not add headings" {
     const gpa = std.testing.allocator;
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const obj = try parseArgs(arena_state.allocator(), "{\"description\":\"scan\",\"prompt\":\"find the caller of foo\"}");
-    const out = try compose(gpa, obj, "find the caller of foo");
-    defer gpa.free(out);
-    try std.testing.expectEqualStrings("find the caller of foo", out);
-    // Whitespace-only optional fields count as absent, not as structure.
-    const blank = try parseArgs(arena_state.allocator(), "{\"prompt\":\"x\",\"scope\":\"  \",\"deliverable\":\"\"}");
-    const out2 = try compose(gpa, blank, "x");
-    defer gpa.free(out2);
-    try std.testing.expectEqualStrings("x", out2);
+    const prompt = "1. grep for seat()\n2. report the callers";
+    try std.testing.expectEqualStrings(prompt, try render(gpa, .{ .prompt = prompt }));
+    try std.testing.expectEqualStrings(prompt, try render(gpa, .{
+        .prompt = prompt,
+        .context = "  \n",
+        .established_facts = "",
+        .scope = "   ",
+        .deliverable = "",
+    }));
 }
 
-test "render: sections come out in the fixed order, each under its heading" {
+test "render: optional fields become headed sections in fixed order around prompt" {
     const gpa = std.testing.allocator;
     const out = try render(gpa, .{
-        .deliverable = "files changed; verified; skipped",
-        .scope = "do not touch unrelated work",
-        .established_facts = "runSub composes the prompt at one call site",
-        .task = "1. read it\n2. change it",
-        .context = "Zig harness; read AGENTS.md; 600 LOC ceiling",
+        .context = "repo is /workspace; do not invent paths",
+        .prompt = "1. open src/subagent.zig",
+        .established_facts = "runSub already injects the playbook block",
+        .scope = "do not retouch workflow task fields",
+        .deliverable = "files changed, verified, skipped, open questions",
     });
     defer gpa.free(out);
-    const expected =
-        "## Context\nZig harness; read AGENTS.md; 600 LOC ceiling\n\n" ++
-        "## Task\n1. read it\n2. change it\n\n" ++
-        "## Established (do not re-derive)\nrunSub composes the prompt at one call site\n\n" ++
-        "## Scope\ndo not touch unrelated work\n\n" ++
-        "## Deliverable\nfiles changed; verified; skipped";
-    try std.testing.expectEqualStrings(expected, out);
+    const ctx_at = std.mem.indexOf(u8, out, context_header) orelse return error.TestExpectedEqual;
+    const prompt_at = std.mem.indexOf(u8, out, "1. open src/subagent.zig") orelse return error.TestExpectedEqual;
+    const facts_at = std.mem.indexOf(u8, out, facts_header) orelse return error.TestExpectedEqual;
+    const scope_at = std.mem.indexOf(u8, out, scope_header) orelse return error.TestExpectedEqual;
+    const del_at = std.mem.indexOf(u8, out, deliverable_header) orelse return error.TestExpectedEqual;
+    try std.testing.expect(ctx_at < prompt_at);
+    try std.testing.expect(prompt_at < facts_at);
+    try std.testing.expect(facts_at < scope_at);
+    try std.testing.expect(scope_at < del_at);
+    try std.testing.expect(std.mem.indexOf(u8, out, environment_header) == null);
 }
 
-test "render: empty sections are omitted and values are trimmed" {
+test "fromInput: JSON extras compose; missing prompt stays empty even with context" {
     const gpa = std.testing.allocator;
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const obj = try parseArgs(arena_state.allocator(), "{\"prompt\":\"  do X  \",\"established_facts\":\"\\n  A is at line 12\\n\",\"context\":\"\"}");
-    const out = try compose(gpa, obj, "  do X  ");
-    defer gpa.free(out);
-    try std.testing.expectEqualStrings("## Task\ndo X\n\n## Established (do not re-derive)\nA is at line 12", out);
-    try std.testing.expect(std.mem.indexOf(u8, out, heading_context) == null);
-    try std.testing.expect(std.mem.indexOf(u8, out, heading_scope) == null);
-    try std.testing.expect(std.mem.indexOf(u8, out, heading_deliverable) == null);
+    {
+        const parsed = try std.json.parseFromSlice(std.json.Value, gpa, "{\"prompt\":\"do it\",\"context\":\"cwd is /tmp\"}", .{});
+        defer parsed.deinit();
+        const owned = fromInput(gpa, parsed.value.object);
+        defer release(gpa, owned);
+        try std.testing.expect(owned.owned);
+        try std.testing.expect(std.mem.indexOf(u8, owned.text, context_header) != null);
+        try std.testing.expect(std.mem.indexOf(u8, owned.text, "do it") != null);
+    }
+    {
+        const parsed = try std.json.parseFromSlice(std.json.Value, gpa, "{\"prompt\":\"do it\"}", .{});
+        defer parsed.deinit();
+        const owned = fromInput(gpa, parsed.value.object);
+        defer release(gpa, owned);
+        try std.testing.expect(!owned.owned);
+        try std.testing.expectEqualStrings("do it", owned.text);
+    }
+    {
+        const parsed = try std.json.parseFromSlice(std.json.Value, gpa, "{\"context\":\"repo\",\"prompt\":\"\"}", .{});
+        defer parsed.deinit();
+        const owned = fromInput(gpa, parsed.value.object);
+        defer release(gpa, owned);
+        try std.testing.expectEqualStrings("", owned.text);
+    }
 }
 
-test "renderEnv: an empty environment adds nothing" {
+test "withEnvironment: workers get the harness header; the judge does not" {
     const gpa = std.testing.allocator;
-    const out = try renderEnv(gpa, .{});
-    defer gpa.free(out);
-    try std.testing.expectEqualStrings("", out);
+    const env = Env{
+        .cwd = "/tmp/tree",
+        .instructions = "AGENTS.md",
+        .disabled = "child cannot spawn children; no parent transcript",
+        .hooks = "bash -> ./guard.sh",
+    };
+    const task = "1. list callers of seat()";
+    const child = try withEnvironment(gpa, "subagent", task, env);
+    defer gpa.free(child);
+    try std.testing.expect(std.mem.startsWith(u8, child, environment_header));
+    try std.testing.expect(std.mem.indexOf(u8, child, "working directory: /tmp/tree") != null);
+    try std.testing.expect(std.mem.indexOf(u8, child, "project instructions: AGENTS.md") != null);
+    try std.testing.expect(std.mem.indexOf(u8, child, "disabled tools:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, child, "pre_tool hooks: bash -> ./guard.sh") != null);
+    try std.testing.expect(std.mem.endsWith(u8, child, task));
+
+    const wf = try withEnvironment(gpa, "workflow_task", task, env);
+    defer gpa.free(wf);
+    try std.testing.expect(std.mem.indexOf(u8, wf, environment_header) != null);
+
+    const retry = try withEnvironment(gpa, "workflow_retry", task, env);
+    defer gpa.free(retry);
+    try std.testing.expect(std.mem.indexOf(u8, retry, environment_header) != null);
+
+    try std.testing.expectEqualStrings(task, try withEnvironment(gpa, "judge_task", task, env));
 }
 
-test "renderEnv: cwd, instructions file, disabled tools and hooks, in that order" {
-    const gpa = std.testing.allocator;
-    const out = try renderEnv(gpa, .{
-        .cwd = "/work/repo",
-        .instructions_file = "AGENTS.md",
-        .disabled_tools = &.{ "shell", "edit_file" },
-        .pre_tool_hooks = &.{ .{ .match = "bash|read_file", .suggest = "zigrep" }, .{ .match = "*" } },
-    });
-    defer gpa.free(out);
-    try std.testing.expect(std.mem.startsWith(u8, out, env_heading));
-    const cwd = std.mem.indexOf(u8, out, "working directory: /work/repo").?;
-    const instr = std.mem.indexOf(u8, out, "project instructions: AGENTS.md").?;
-    const disabled = std.mem.indexOf(u8, out, "disabled tools this session (do not call them): shell, edit_file").?;
-    const hook = std.mem.indexOf(u8, out, "pre-tool hook may refuse: bash|read_file (use instead: zigrep)").?;
-    const star = std.mem.indexOf(u8, out, "every tool call may be refused").?;
-    try std.testing.expect(cwd < instr and instr < disabled and disabled < hook and hook < star);
+test "subagent schema and description ask for one brief in section order" {
+    const spec = @import("schema_agents.zig").subagent_spec;
+    for ([_][]const u8{ "\"context\"", "\"established_facts\"", "\"scope\"", "\"deliverable\"" }) |field| {
+        try std.testing.expect(std.mem.indexOf(u8, spec.schema, field) != null);
+    }
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, spec.schema, .{});
+    defer parsed.deinit();
+    const required = parsed.value.object.get("required").?.array.items;
+    for (required) |r| {
+        try std.testing.expect(!std.mem.eql(u8, r.string, "context"));
+        try std.testing.expect(!std.mem.eql(u8, r.string, "established_facts"));
+        try std.testing.expect(!std.mem.eql(u8, r.string, "scope"));
+        try std.testing.expect(!std.mem.eql(u8, r.string, "deliverable"));
+    }
+    try std.testing.expect(std.mem.indexOf(u8, spec.desc, "established_facts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, spec.desc, "Brief once") != null);
 }
 
-test "withEnvironment: header precedes the brief for workers, never for the judge" {
-    const gpa = std.testing.allocator;
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const io = std.testing.io;
-    // The judge ranks handed excerpts: no header, the prompt untouched.
-    try std.testing.expectEqualStrings("score this", withEnvironment(io, arena, "judge_task", null, "score this"));
-    // A worker with an explicit cwd gets the header first, then a blank line, then its brief.
-    const out = withEnvironment(io, arena, "subagent", "/tmp", "## Task\ndo X");
-    try std.testing.expect(std.mem.startsWith(u8, out, env_heading));
-    try std.testing.expect(std.mem.indexOf(u8, out, "working directory: /tmp") != null);
-    try std.testing.expect(std.mem.endsWith(u8, out, "\n\n## Task\ndo X"));
-}
-
-test "guardsFrom mirrors the loaded pre-tool hooks; report_shape_note names the four report parts" {
-    const gpa = std.testing.allocator;
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const hooks = [_]hooks_mod.Hook{.{ .match = "bash", .command = "./guard.sh", .timeout_ms = 1, .suggest = "shell" }};
-    const guards = guardsFrom(arena_state.allocator(), &hooks);
-    try std.testing.expectEqual(@as(usize, 1), guards.len);
-    try std.testing.expectEqualStrings("bash", guards[0].match);
-    try std.testing.expectEqualStrings("shell", guards[0].suggest);
-    try std.testing.expectEqual(@as(usize, 0), guardsFrom(arena_state.allocator(), &.{}).len);
-    for ([_][]const u8{ "files changed", "verified", "skipped", "open questions" }) |part|
-        try std.testing.expect(std.mem.indexOf(u8, report_shape_note, part) != null);
+test "child system prompt asks for a default report shape" {
+    const prompt = @import("prompts.zig").sub_system_prompt;
+    for ([_][]const u8{ "Files changed", "Verified", "Skipped", "Open questions" }) |h| {
+        try std.testing.expect(std.mem.indexOf(u8, prompt, h) != null);
+    }
 }

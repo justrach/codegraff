@@ -171,6 +171,7 @@ record only when you need the evidence or the edge cases.
 | [0145](0145-gpt-5-6-reasoning-replays-from-local-history.md) | GPT-5.6 reasoning replays from local history: never send `reasoning.context` or `reasoning.mode`; `max` effort is the ladder ceiling (shown as Ultra); PTC items stay opaque history. |
 | [0148](0148-midstream-provider-error-is-a-transient-500.md) | A streamed provider "internal error" after output began is a transient 500: bounded backoff retry, never overflow. Overflow needs a size/length phrasing or code; the meter pins only on a real rejection. Reverses `#1019`. |
 | [0149](0149-daddy-directives-are-explicit-control.md) | Ambient `[peer]` wakes are not a new task; `[daddy]` directives are explicit supervisor control. |
+| [0150](0150-subagent-briefs-are-structured.md) | Child briefs are headed sections plus a harness environment header; the judge stays a bare prompt. |
 
 ## When to write one
 

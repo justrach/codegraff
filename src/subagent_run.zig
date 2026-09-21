@@ -28,7 +28,6 @@ const trace = @import("trace.zig");
 const textMessage = @import("messages.zig").textMessage;
 const protocol_seq = @import("protocol_seq.zig"); // #330: monotonic `seq` on every --json event
 const subagent_retry = @import("subagent_retry.zig"); // bounded in-worker re-ask: the failover the root has and a worker did not
-const subagent_brief = @import("subagent_brief.zig"); // the harness-stated environment header every worker brief opens with
 
 fn guiEmit(io: Io, ev: anytype) void {
     if (!main_mod.json_mode) return;
@@ -352,12 +351,8 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
 
     const wf_task = std.mem.eql(u8, kind, "workflow_task");
     if (wf_task) guiEmit(ctx.io, .{ .type = "tool_call", .name = "subagent", .input = .{ .description = label }, .id = sub_id });
-    // Loop deadline + playbook.rideBrief: every spawn path (subagent, workflow,
-    // retry, judge) injects live constraints here from .graff/playbook.jsonl.
-    // subagent_brief.withEnvironment first: the harness states the working
-    // directory, instructions file, disabled tools and pre-tool hooks once, so
-    // no parent has to (the judge is exempt — it ranks handed excerpts).
-    const task_prompt = playbook.rideBrief(ctx.io, arena, try goal_pacing.childTaskPrompt(arena, subagent_brief.withEnvironment(ctx.io, arena, kind, agent.agent_cwd, prompt), ctx.loop_deadline_ms, util.unixMs(ctx.io)));
+    const tasked = try @import("subagent_brief.zig").prepare(arena, ctx.io, kind, prompt, ctx.agent_cwd, main_mod.g_hooks.pre_tool);
+    const task_prompt = playbook.rideBrief(ctx.io, arena, try goal_pacing.childTaskPrompt(arena, tasked, ctx.loop_deadline_ms, util.unixMs(ctx.io)));
     try agent.messages.append(try textMessage(arena, "user", task_prompt));
     defer agent.tools_used.deinit(gpa);
     // Retry transient failures against the same child history.
