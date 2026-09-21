@@ -111,4 +111,3 @@ test("a failed turn names the provider from the harness error and keeps its word
   const failed = finishAcpTurn({ ...emptyTurn(), status: "error", error: "xai api error: boom", startedAt: 1000 }, 13000);
   expect(turnActivity(failed, 13000).detail).toMatch(/^After 12s\./);
 });
-});

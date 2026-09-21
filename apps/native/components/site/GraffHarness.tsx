@@ -188,10 +188,6 @@ export default function GraffHarness() {
     sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal,
     pendingPick: () => pendingPickRef.current ?? pendingModel,
   });
-  useOpenWorkspace({
-    chats, chatsRef, sessionNamesRef, chatIdRef, msgIdRef, groups, activeId,
-    filesOpen, fileRequest, zoomedPane, setChats, setActiveId, setFilesOpen, setFileRequest, setZoomedPane,
-  });
 
   const { openPath, openReference } = useReferenceNavigation({
     context: (id = activeIdRef.current) => ({ root: chatsRef.current.find(c => c.id === id)?.cwd ?? activePathRef.current ?? health?.cwd, chat: handleOf(id), focus: () => focusChat(id) }),

@@ -43,7 +43,7 @@ fn helperBody() []const u8 {
     const src = @embedFile("idle_wake_sources.zig");
     const start = std.mem.indexOf(u8, src, "pub fn takeIdleWake").?;
     const rest = src[start..];
-    const end = std.mem.indexOf(u8, rest, "\n}\n").?;
+    const end = std.mem.indexOf(u8, rest, "\n}").?;
     return rest[0 .. end + 1];
 }
 
