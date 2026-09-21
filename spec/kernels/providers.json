@@ -132,9 +132,9 @@
       "id": "zai",
       "kind": "openai",
       "auth": "bearer",
-      "login": "api_key",
+      "login": "zai_cli",
       "catalog": "openai",
-      "sub_login": false,
+      "sub_login": true,
       "takes_effort": true
     },
     {

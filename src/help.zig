@@ -62,7 +62,7 @@ pub fn render(out: *Io.Writer) !void {
         \\esc during a response interrupts the turn; streamed output remains in history.
         \\"always allow" answers persist to .harness/settings.json in the cwd.
         \\launch flags: --model <name> · --yolo · -p "prompt" · --json · --help · --version
-        \\subcommands: graff login [codex] · graff key set <provider> <key> · graff --schema
+        \\subcommands: graff login [codex|kimi|xai|zai] · graff key set <provider> <key> · graff --schema
         \\
     );
 }

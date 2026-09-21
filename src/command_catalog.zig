@@ -52,7 +52,7 @@ pub const commands = [_]Item{
     .{ .name = "/ultracode", .desc = "toggle persistent workflow mode; bare opens an on/off picker, or /ultracode on|off" },
     .{ .name = "/fallback", .usage = "/fallback [allow|remove|off]", .desc = "opt-in cross-provider fallback for this workspace (same-provider rollout stays on)" },
     .{ .name = "/key", .usage = "/key [provider secret]", .desc = "show API-key status; /key <provider> <secret> adds one live (+ Keychain)" },
-    .{ .name = "/login", .usage = "/login [codegraff|codex|kimi]", .desc = "OAuth sign-in (no key to paste); bare opens a picker (codex alias: oai)" },
+    .{ .name = "/login", .usage = "/login [codegraff|codex|kimi|xai|zai]", .desc = "OAuth sign-in (no key to paste); bare opens a picker (codex alias: oai; zai aliases: glm, z.ai)" },
     .{ .name = "/keepcontext", .desc = "toggle keeping the conversation when /model switches wire format (default on)" },
     .{ .name = "/effort", .desc = "reasoning depth: low|medium|high|... (codex, deepseek, codegraff; persists)" },
     .{ .name = "/reasoning", .desc = "alias for /effort" },

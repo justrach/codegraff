@@ -170,6 +170,7 @@ record only when you need the evidence or the edge cases.
 | [0148](0148-read-file-miss-storm-stops.md) | After N same-prefix or incrementing `read_file` misses, refuse further guesses this turn and point at `codedb list_dir`. |
 | [0149](0149-daddy-directives-are-explicit-control.md) | Ambient `[peer]` wakes are not a new task; `[daddy]` directives are explicit supervisor control. |
 | [0150](0150-subagent-briefs-are-structured.md) | Child briefs are headed sections plus a harness environment header; the judge stays a bare prompt. |
+| [0151](0151-zai-coding-plan-login.md) | Z.AI Coding Plan is a `sub_login` like Kimi/xAI: `graff login zai` uses ZCode's public CLI OAuth broker, then provisions a Graff-named API key onto `/api/coding/paas/v4`. |
 
 ## When to write one
 

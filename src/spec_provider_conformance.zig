@@ -32,6 +32,7 @@ fn loginName(l: ProviderSpec.LoginKind) []const u8 {
         .codex_device => "codex_device",
         .kimi_device => "kimi_device",
         .xai_device => "xai_device",
+        .zai_cli => "zai_cli",
     };
 }
 

@@ -6,7 +6,7 @@ from typing import Literal
 
 Kind = Literal["anthropic", "openai", "responses", "interactions"]
 Auth = Literal["x_api_key", "bearer", "goog_api_key"]
-Login = Literal["api_key", "codegraff_device", "codex_device", "kimi_device", "xai_device"]
+Login = Literal["api_key", "codegraff_device", "codex_device", "kimi_device", "xai_device", "zai_cli"]
 Catalog = Literal["baked", "codex", "kimi", "openai", "anthropic"]
 
 
@@ -45,7 +45,7 @@ SPECS: list[dict] = [
     row("kimi", "openai", "bearer", login="kimi_device", catalog="kimi", sub_login=True),
     row("moonshot", "openai", "bearer"),
     row("xai", "openai", "bearer", login="xai_device", catalog="openai", sub_login=True),
-    row("zai", "openai", "bearer", catalog="openai", takes_effort=True),
+    row("zai", "openai", "bearer", login="zai_cli", catalog="openai", sub_login=True, takes_effort=True),
     row("meta", "openai", "bearer", catalog="openai", takes_effort=True),
     row("vercel", "openai", "bearer", catalog="openai", takes_effort=True),
     row("openrouter", "openai", "bearer", catalog="openai", takes_effort=True),

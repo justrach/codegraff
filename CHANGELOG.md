@@ -12,6 +12,7 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- `graff login zai` (aliases `glm`, `z.ai`) signs in to a Z.AI Coding Plan and routes chat to `/api/coding/paas/v4` without `ZAI_CODING=1` (ADR 0151).
 - Native: clickable browser/chat links, folder-picker repeat submissions, composer history recall layout, prompt-history session/attachment scoping, saved-snapshot reopen, worktree path wrapping. Shutdown-fixture stalls dump renderer/backend/worker state (#1080, #1103, #1105, #1108, #1109, #1112, #1113).
 
 ## v0.0.302.1

@@ -58,6 +58,7 @@ graff -p "Explain this project"  # ask a single question
 
 ```sh
 graff login kimi
+graff login zai
 graff login codex
 graff key set deepseek sk-...
 graff --model grok-4.6
@@ -206,7 +207,7 @@ for await (const ev of runAgent({ prompt: "summarize README.md", yolo: true })) 
 ```
 graff [flags]                 REPL
 graff -p "prompt"             one-shot (answer on stdout)
-graff login [codegraff|codex|kimi]
+graff login [codegraff|codex|kimi|xai|zai]
 graff key set <provider> <key>
 graff mcp add <name> -- <cmd>
 graff learn <command>

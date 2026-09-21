@@ -354,6 +354,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             .{ .name = "codex", .desc = "ChatGPT / OpenAI sign-in (alias: oai)" },
             .{ .name = "kimi", .desc = "Kimi Code sign-in (device-code OAuth)" },
             .{ .name = "xai", .desc = "Grok / SuperGrok sign-in (device-code OAuth)" },
+            .{ .name = "zai", .desc = "Z.AI Coding Plan sign-in (CLI OAuth)" },
         };
         // Bare /login: pick a provider on a TTY, else just list the options.
         if (target.len == 0) {
@@ -374,6 +375,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             target = "codex";
         if (std.mem.eql(u8, target, "graff")) target = "codegraff";
         if (std.mem.eql(u8, target, "grok")) target = "xai";
+        if (@import("oauth_zai.zig").isLoginName(target)) target = "zai";
 
         const home = root.home;
         try out.flush(); // hand stdout to the login flow's own writer
@@ -401,6 +403,12 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 try out.flush();
                 return true;
             };
+        } else if (std.mem.eql(u8, target, "zai")) {
+            oauth.zaiLogin(root.io, root.gpa, arena, home) catch |err| {
+                try out.print("\xe2\x9c\x97 zai login failed: {t}\n", .{err});
+                try out.flush();
+                return true;
+            };
         } else {
             // A pure API-key provider, or something unrecognized.
             if (provider_mod.specFor(target) != null) {
@@ -408,7 +416,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 try out.flush();
                 return true;
             }
-            try out.print("can't log into '{s}' \xe2\x80\x94 try /login codegraff | codex | kimi | xai (others: /key <provider> <key>)\n", .{target});
+            try out.print("can't log into '{s}' \xe2\x80\x94 try /login codegraff | codex | kimi | xai | zai (others: /key <provider> <key>)\n", .{target});
             try out.flush();
             return true;
         }

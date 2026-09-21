@@ -51,6 +51,7 @@ pub fn loginOnDisk(io: Io, arena: Allocator, home: []const u8, spec: provider_mo
         .api_key => return false,
         .kimi_device => credential_store.oauthPath(arena, home, ".kimi"),
         .xai_device => credential_store.oauthPath(arena, home, ".xai"),
+        .zai_cli => credential_store.oauthPath(arena, home, ".zai"),
         .codex_device => blk: {
             const dir = oauth_helpers.codexHomeDir(arena, home) orelse return false;
             break :blk std.fmt.allocPrint(arena, "{s}/auth.json", .{dir}) catch return false;

@@ -77,7 +77,7 @@ fastApplies: boolean, };
 
 export type UpdatePromptSettingsInput = { workspacePath: string | null, providerId: string, modelId: string, reasoningEffort: string | null, };
 
-export type ProviderAuthMethodKind = "api_key" | "o_auth_device" | "o_auth_code" | "google_adc" | "aws_profile" | "codex_device" | "codegraff_device" | "kimi_device";
+export type ProviderAuthMethodKind = "api_key" | "o_auth_device" | "o_auth_code" | "google_adc" | "aws_profile" | "codex_device" | "codegraff_device" | "kimi_device" | "xai_device" | "zai_cli";
 
 export type ProviderAuthMethod = { kind: ProviderAuthMethodKind, label: string, };
 

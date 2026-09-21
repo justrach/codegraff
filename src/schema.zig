@@ -475,6 +475,7 @@ test "providerDisplayName & providerLoginKind: id mapping with sane fallbacks" {
     try std.testing.expectEqualStrings("codegraff_device", providerLoginKind("codegraff"));
     try std.testing.expectEqualStrings("codex_device", providerLoginKind("codex"));
     try std.testing.expectEqualStrings("kimi_device", providerLoginKind("kimi"));
+    try std.testing.expectEqualStrings("zai_cli", providerLoginKind("zai"));
     try std.testing.expectEqualStrings("api_key", providerLoginKind("openai"));
 }
 // isMetaName's own coverage, and #381's note_constraint catalog contract,
