@@ -4,7 +4,7 @@ async function post(action: string, root: string | undefined, name?: string) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ action, root, name }),
   });
-  const body = await response.json() as { error?: string; path?: string; command?: string; output?: string };
+  const body = await response.json() as { error?: string; path?: string; command?: string; output?: string; root?: string };
   if (!response.ok) throw new Error(body.error || "Worktree request failed");
   return body;
 }
@@ -30,4 +30,12 @@ export async function archiveTaskWorkspace(root?: string): Promise<void> {
   if (!window.confirm("Archive this task workspace? Dirty or unique-commit trees stay.")) return;
   const body = await post("archive", root);
   if (body.output && !body.output.startsWith("✓")) window.alert(body.output);
+  if (body.root) window.dispatchEvent(new CustomEvent("graff-open-workspace", { detail: { cwd: body.root } }));
+}
+
+export async function landTaskWorkspace(root?: string): Promise<void> {
+  if (!window.confirm("Land this workspace onto the base branch as one commit and remove the checkout?")) return;
+  const body = await post("merge", root);
+  if (body.output) window.alert(body.output);
+  if (body.root) window.dispatchEvent(new CustomEvent("graff-open-workspace", { detail: { cwd: body.root } }));
 }

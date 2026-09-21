@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { graffBin, parseCreate, runCommand, sanitizeSlug, slugFromCheckout } from "@/lib/worktree-cli";
+import { graffBin, parseCreate, repoRoot, runCommand, sanitizeSlug, slugFromCheckout } from "@/lib/worktree-cli";
 import { resolveRoot } from "@/lib/server-root";
 
 export const runtime = "nodejs";
@@ -32,10 +32,13 @@ export async function POST(req: Request) {
     if ("error" in resolved) return Response.json({ error: resolved.error }, { status: resolved.status });
     const bin = graffBin();
     const action = body.action;
+    const repo = repoRoot(resolved.root);
+    const slug = () => sanitizeSlug(typeof body.name === "string" ? body.name : "")
+      ?? slugFromCheckout(resolved.root);
     if (action === "create") {
       const name = sanitizeSlug(typeof body.name === "string" ? body.name : "");
       if (!name) return Response.json({ error: "workspace name must be 1-64 letters, digits, '.', '_' or '-'" }, { status: 400 });
-      const result = await run(bin, ["worktree", "create", name], resolved.root, 120_000);
+      const result = await run(bin, ["worktree", "create", name], repo, 120_000);
       const parsed = parseCreate(result.stdout);
       if (result.code !== 0 || !parsed) {
         return Response.json({ error: result.stderr.trim() || result.stdout.trim() || "create failed" }, { status: 502 });
@@ -43,16 +46,21 @@ export async function POST(req: Request) {
       return Response.json(parsed);
     }
     if (action === "archive") {
-      const name = sanitizeSlug(typeof body.name === "string" ? body.name : "")
-        ?? slugFromCheckout(resolved.root);
+      const name = slug();
       if (!name) return Response.json({ error: "not a task workspace" }, { status: 400 });
-      const result = await run(bin, ["worktree", "archive", name], resolved.root, 60_000);
+      const result = await run(bin, ["worktree", "archive", name], repo, 60_000);
       if (result.code !== 0) return Response.json({ error: result.stderr.trim() || result.stdout.trim() || "archive failed" }, { status: 502 });
-      return Response.json({ ok: true, output: result.stdout.trim() });
+      return Response.json({ ok: true, output: result.stdout.trim(), root: repo });
+    }
+    if (action === "merge" || action === "land") {
+      const name = slug();
+      if (!name) return Response.json({ error: "not a task workspace" }, { status: 400 });
+      const result = await run(bin, ["worktree", "merge", name], repo, 120_000);
+      if (result.code !== 0) return Response.json({ error: result.stderr.trim() || result.stdout.trim() || "land failed" }, { status: 502 });
+      return Response.json({ ok: true, output: result.stdout.trim(), root: repo });
     }
     if (action === "run") {
-      const name = sanitizeSlug(typeof body.name === "string" ? body.name : "")
-        ?? slugFromCheckout(resolved.root);
+      const name = slug();
       if (!name) return Response.json({ error: "not a task workspace" }, { status: 400 });
       return Response.json({ ok: true, name, command: runCommand(name) });
     }

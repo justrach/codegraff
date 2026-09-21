@@ -41,3 +41,12 @@ export function parseCreate(stdout: string): CreateResult | null {
 export function runCommand(name: string): string {
   return `graff worktree run ${name}`;
 }
+
+/** The git repo root for a task checkout (`…/.graff/worktrees/<name>` → `…`). */
+export function repoRoot(checkout: string): string {
+  const norm = checkout.replace(/\\/g, "/");
+  const marker = "/.graff/worktrees/";
+  const i = norm.lastIndexOf(marker);
+  if (i > 0) return checkout.slice(0, i);
+  return checkout;
+}

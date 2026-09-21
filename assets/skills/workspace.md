@@ -30,8 +30,10 @@ A new independent task is `workspace action=create`.
    Create copies gitignored files matching `.worktreeinclude` (else
    `include` in `.graff/workspace.toml`, else `.env*`) from the main checkout,
    then runs `scripts.setup` from `.graff/workspace.toml`.
-   `graff worktree run <name>` is the run script; `archive` runs `scripts.archive`
-   before removing a clean duplicate (ADR 0153). Desktop Tools: New task workspace, Run, Archive.
+   `graff worktree run <name>` is the run script. The user lands or archives;
+   do not spawn a child to delete a tree. `graff worktree land <name>` squash-lands
+   onto the base branch and removes the checkout. `archive` removes a clean
+   duplicate only. Desktop Tools: New task workspace, Run, Land, Archive.
 4. If the match is ambiguous, name more of the path. Do not guess.
 
 Do not paste every worktree path into the next user turn. The list result is

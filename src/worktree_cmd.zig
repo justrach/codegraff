@@ -68,9 +68,9 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
         return worktree_prune.listWithAge(gpa, io, arena, out);
     }
 
-    if (std.mem.eql(u8, action, "merge")) {
+    if (std.mem.eql(u8, action, "merge") or std.mem.eql(u8, action, "land")) {
         if (args.len < 2) {
-            try out.writeAll("usage: graff worktree merge <name>\n");
+            try out.writeAll("usage: graff worktree merge <name>\n       graff worktree land <name>\n");
             return;
         }
         const name = args[1];

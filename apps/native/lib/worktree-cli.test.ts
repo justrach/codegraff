@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { parseCreate, runCommand, sanitizeSlug, slugFromCheckout } from "./worktree-cli";
+import { parseCreate, repoRoot, runCommand, sanitizeSlug, slugFromCheckout } from "./worktree-cli";
 
 test("sanitizeSlug matches the engine's workspace names", () => {
   assert.equal(sanitizeSlug("tokyo"), "tokyo");
@@ -26,4 +26,9 @@ test("slugFromCheckout reads a task worktree folder", () => {
   assert.equal(slugFromCheckout("/repo/.graff/worktrees/tokyo"), "tokyo");
   assert.equal(slugFromCheckout("/repo"), null);
   assert.equal(runCommand("tokyo"), "graff worktree run tokyo");
+});
+
+test("repoRoot strips a task worktree suffix", () => {
+  assert.equal(repoRoot("/repo/.graff/worktrees/task-a"), "/repo");
+  assert.equal(repoRoot("/repo"), "/repo");
 });

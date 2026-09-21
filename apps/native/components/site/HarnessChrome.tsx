@@ -7,7 +7,7 @@ import { IconSidebarLeftOpen } from "@/lib/icons";
 import type { PointerEvent, MouseEvent, ReactNode } from "react";
 import type { Chat } from "./harness-types";
 import reviewStyles from "./ChangesPane.module.css";
-import { archiveTaskWorkspace, createTaskWorkspace, runTaskWorkspace } from "./harness-task-workspace";
+import { archiveTaskWorkspace, createTaskWorkspace, landTaskWorkspace, runTaskWorkspace } from "./harness-task-workspace";
 
 type Props = {
   navigationToggle?: ReactNode; sidebarVisible?: boolean;
@@ -58,6 +58,7 @@ export default function HarnessChrome({navigationToggle, sidebarVisible = false,
           {onReviews && <button type="button" aria-label="GitHub reviews" aria-pressed={reviewsOpen} onClick={onReviews}>Reviews</button>}
           <button type="button" aria-label="New task workspace" onClick={() => void createTaskWorkspace(chatCwd).catch(err => window.alert(String(err.message || err)))}>New task workspace</button>
           <button type="button" aria-label="Run workspace script" onClick={() => void runTaskWorkspace(chatCwd, () => { if (!terminalVisible) toggleTerminal(); }).catch(err => window.alert(String(err.message || err)))}>Run</button>
+          <button type="button" aria-label="Land task workspace" onClick={() => void landTaskWorkspace(chatCwd).catch(err => window.alert(String(err.message || err)))}>Land</button>
           <button type="button" aria-label="Archive task workspace" onClick={() => void archiveTaskWorkspace(chatCwd).catch(err => window.alert(String(err.message || err)))}>Archive</button>
           <button type="button" aria-label="Toggle terminal" aria-pressed={terminalVisible} onClick={toggleTerminal}>Terminal <span className="ml-auto text-ink-3">⌘J</span></button>
           <button type="button" aria-label="Browser" aria-pressed={browserOpen} onClick={onBrowser}>Browser{pinCount > 0 ? ` (${pinCount})` : ""}</button>
