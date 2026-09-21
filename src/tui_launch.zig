@@ -12,13 +12,14 @@ const pricing = @import("pricing.zig");
 const providers = @import("providers.zig");
 const process_runner = @import("process_runner.zig");
 const repl = @import("repl.zig");
+const version_status = @import("version_status.zig");
+const update_cmd = @import("update_cmd.zig");
 const repl_bash = @import("repl_bash.zig");
 const repl_glue = @import("repl_glue.zig");
 const session = @import("session.zig");
 const tui = @import("tui");
 const tui_peer = @import("tui_peer.zig");
 const tui_constraint = @import("tui_constraint.zig");
-const tui_command = @import("tui_command.zig");
 const tui_session = @import("tui_session.zig");
 const engine_sink = @import("engine_sink.zig");
 const tui_sink = @import("tui_sink.zig");
@@ -157,9 +158,8 @@ pub fn run(
         .idle_wake_fn = idleWakeCb,
         .peer_fn = tui_peer.peerCb,
         .constraint_fn = tui_constraint.constraintCb,
-        .command_fn = tui_command.commandCb,
-        .version_fn = tui_command.versionCb,
-        .update_fn = tui_command.updateCb,
+        .version_fn = versionCb,
+        .update_fn = updateCb,
     });
     try tui_session.syncRoot(&convo, root);
 }
@@ -205,10 +205,20 @@ fn historyCb(ctx: ?*anyopaque, op: tui.HistoryOp) void {
     }
 }
 
+fn updateCb(ctx: ?*anyopaque, gpa: Allocator, action: []const u8) ?[]const u8 {
+    const c: *repl_glue.ReplCtx = @ptrCast(@alignCast(ctx orelse return null));
+    return update_cmd.hostAction(c.io, gpa, c.home, action);
+}
+
 fn idleWakeCb(ctx: ?*anyopaque, buf: []u8) ?[]const u8 {
     const c: *repl_glue.ReplCtx = @ptrCast(@alignCast(ctx orelse return null));
     const name = if (c.root) |root| root.session_name else "";
     return idle_wake.takeIdleWake(c.io, name, buf);
+}
+
+fn versionCb(ctx: ?*anyopaque, gpa: Allocator) ?[]const u8 {
+    const c: *repl_glue.ReplCtx = @ptrCast(@alignCast(ctx orelse return null));
+    return version_status.commandText(c.io, gpa, @import("build_options").version) catch null;
 }
 
 /// Overlay the TUI preview buffer as a repl.StreamBuf so replTurnCb's
@@ -438,7 +448,6 @@ test {
     _ = tui_acp;
     _ = repl_bash;
     _ = tui_peer;
-    _ = tui_command;
 }
 
 test "debug HUD names the in-process ACP session" {
