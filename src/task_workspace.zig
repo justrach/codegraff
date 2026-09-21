@@ -16,6 +16,7 @@ const main_mod = @import("main.zig");
 const tool_spill = @import("tool_spill.zig");
 const agent_worktree = @import("agent_worktree.zig");
 const worktree_prune = @import("worktree_prune.zig");
+const workspace_prepare = @import("workspace_prepare.zig");
 
 pub const CreateError = error{ NotAGitRepo, InvalidName, NameCollision, CreateFailed, Unsupported };
 pub const ArchiveError = error{ InvalidName, NotFound, ArchiveFailed };
@@ -45,6 +46,9 @@ pub const Workspace = struct {
     path: []const u8,
     branch: []const u8,
     base: []const u8 = "",
+    copied: usize = 0,
+    setup_ran: bool = false,
+    setup_ok: bool = true,
 };
 
 pub const AutoOpts = struct {
@@ -233,11 +237,15 @@ pub fn create(gpa: Allocator, io: Io, arena: Allocator, opts: CreateOpts) (Creat
     const base = resolveCreateBase(gpa, io, arena, opts.cwd, opts.base);
     try mintOnce(gpa, io, arena, opts.cwd, named.path, named.branch, base);
     const path = try absPath(io, arena, dest);
+    const prep = workspace_prepare.afterCreate(gpa, io, arena, opts.cwd, path, named.name);
     return .{
         .name = named.name,
         .path = path,
         .branch = named.branch,
         .base = readHead(gpa, io, arena, path),
+        .copied = prep.copied,
+        .setup_ran = prep.setup_ran,
+        .setup_ok = prep.setup_ok,
     };
 }
 
@@ -280,6 +288,7 @@ pub fn archive(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8, slug: 
     const contained = ranOk(refs) and worktree_prune.containedElsewhere(refs.stdout, own);
     const reason = agent_worktree.worktreeKeepReason(ranOk(st), st.stdout, worktree_prune.containmentBase(head, contained), head);
     if (reason != .removed) return .{ .removed = false, .reason = reason, .path = path, .branch = named.branch };
+    workspace_prepare.beforeArchive(gpa, io, arena, cwd, path, named.name);
     if (runCapped(gpa, io, &.{ "git", "-C", cwd, "worktree", "remove", dest }, 8192, 8192, 30_000)) |r| {
         defer {
             gpa.free(r.stdout);

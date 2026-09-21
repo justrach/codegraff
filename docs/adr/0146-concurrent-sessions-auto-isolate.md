@@ -37,4 +37,5 @@ Finish is not archive.
 The second concurrent agent never contends on the first agent's `index.lock`.
 A first session still owns the folder it started in. Experiment-pool pre-mint
 (ADR 0037) still skips mid-turn `worktree add` when seats are reserved.
-Setup scripts stay #1123. Stale-tree reaping stays #1118.
+Setup/run/archive scripts and `.worktreeinclude` copy are ADR 0153. Stale-tree
+reaping stays #1118. Desktop review/merge-back stays #1124.

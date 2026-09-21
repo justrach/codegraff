@@ -10,7 +10,11 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## Unreleased
+## v0.0.302.3
+
+- Task workspaces copy gitignored files (`.worktreeinclude` or Conductor `file_include_globs`) and run setup/run/archive scripts (ADR 0153). Desktop Tools: New task workspace, Run, Archive.
+
+## v0.0.302.2
 
 - Persistent `shell` / `bash_output` jobs snapshot immediately (`wait_ms` ignored) and stay on `/jobs`; the 15s still-running poll no longer holds the turn (ADR 0152). Finite jobs still wait until exit.
 - `graff login zai` (aliases `glm`, `z.ai`) signs in to a Z.AI Coding Plan and routes chat to `/api/coding/paas/v4` without `ZAI_CODING=1` (ADR 0151).
