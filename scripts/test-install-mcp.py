@@ -156,5 +156,16 @@ class InstallTests(unittest.TestCase):
             installer.run_managed(['launchctl', 'bootstrap', 'x'])
         self.assertEqual(calls['n'], 3)
 
+    def test_linux_without_user_systemd_starts_detached(self):
+        with patch.object(installer.sys, 'platform', 'linux'), \
+             patch.object(installer.shutil, 'which', return_value='/usr/bin/systemctl'), \
+             patch.object(installer, 'linux_user_systemd', return_value=False), \
+             patch.object(installer.subprocess, 'Popen') as popen:
+            installer.service(self.home, Path('/usr/bin/graff'), self.home, 7720, self.token)
+        popen.assert_called_once()
+        unit = self.home / '.config/systemd/user/codegraff-mcp.service'
+        self.assertIn('Codegraff managed MCP service', unit.read_text())
+        self.assertIn('mcp', unit.read_text())
+
 if __name__ == '__main__':
     unittest.main()
