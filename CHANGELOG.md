@@ -13,7 +13,7 @@ current is part of cutting a release.
 ## v0.0.302.4
 
 - Task workspace housekeeping: `graff worktree update` merges the remote base; `gc` drops dead session trees and clean trees whose GitHub PR is MERGED (dirty trees stay). Desktop: Update from main, Clear unused trees. Asking to free space unfolds `workspace` so `action=gc` is callable this turn.
-- xAI Responses WS chains `previous_response_id` on the held socket (store:false in-memory cache). A stalled first handshake or 426 latches HTTPS SSE for the session; chrome shows a dim `using HTTPS SSE` notice. `GRAFF_XAI_WS_CHAIN=0` opts out.
+- xAI Responses WS chains `previous_response_id` on the held socket (store:false in-memory cache) and `generate:false` prewarms a fresh socket. A stalled first handshake or 426 latches HTTPS SSE for the session; chrome shows a dim `using HTTPS SSE` notice. `GRAFF_XAI_WS_CHAIN=0` opts out.
 
 ## v0.0.302.3
 
