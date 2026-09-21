@@ -145,7 +145,7 @@ fn writeCacheAnchor(s: *std.json.Stringify) !void {
 /// line restores tools-first behavior. Model guidance is composed here too,
 /// at request time, so provider switches cannot retain another model's note.
 pub fn schemaAwarePrompt(self: *Agent) ![]const u8 {
-    const base = try @import("prompt_astra.zig").append(self, self.systemPrompt());
+    const base = try @import("prompt_guidance.zig").append(self, self.systemPrompt());
     if (self.output_schema == null) return base;
     // #543 degrade: this provider cannot enforce json_schema server-side —
     // learned on the chat wire (sox), or structural on minimax / kimi-anthropic

@@ -21,6 +21,7 @@ import { modelDisplayName, paneComposerKey } from "@/lib/composer-model";
 import { createModelSwitcher } from "./harness-model";
 import { useBrowserVisibility } from "./useBrowserVisibility";
 import { useReferenceNavigation } from "./useReferenceNavigation";
+import { useThreadCallbacks } from "./useThreadCallbacks";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type PromptModel } from "@/components/primitives/PromptBar";
 import SidebarNav from "@/components/primitives/SidebarNav";
@@ -186,6 +187,10 @@ export default function GraffHarness() {
   const { adoptCatalog, requireSession, refreshStored, projectsReady, unwatchIdle } = useHarnessSessions({
     sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal,
     pendingPick: () => pendingPickRef.current ?? pendingModel,
+  });
+  useOpenWorkspace({
+    chats, chatsRef, sessionNamesRef, chatIdRef, msgIdRef, groups, activeId,
+    filesOpen, fileRequest, zoomedPane, setChats, setActiveId, setFilesOpen, setFileRequest, setZoomedPane,
   });
 
   const { openPath, openReference } = useReferenceNavigation({
@@ -386,16 +391,24 @@ export default function GraffHarness() {
     return session ? cancel(handleOf(chat), session) : Promise.reject(new Error("Session unavailable"));
   });
 
+  // Stable per-column callbacks: the harness renders on every token, and a
+  // fresh closure here would re-render every markdown block in every column.
+  const threadCallbacks = useThreadCallbacks({
+    onOpenPath: (path, chatId) => openReference(path, chatId),
+    onAnswer: (chatId, text, cancelled) => { const live = sessionsRef.current.get(chatId); const ask = chats.find(c => c.id === chatId)?.messages.findLast(m => m.role === "assistant")?.turn.ask; if (live && ask) void answer(handleOf(chatId), live, { callId: ask.callId, text, cancelled }); },
+    onEditPrompt: (chatId, n, text) => {
+      const live = sessionsRef.current.get(chatId);
+      if (live) void cancel(handleOf(chatId), live).catch(() => undefined);
+      runningRef.current.delete(chatId);
+      void runPrompt(chatId, text, { edit: n });
+    },
+  }, chats.map(c => c.id));
+
   const columnBody = (thread: Chat) => <ChatColumn key={thread.id} thread={thread}
     compact={columnIds.length > 1 || navigation.focusedMode || filesOpen || browserOpen || agentsOpen || reviewsOpen || !!(fileRequest?.changes)} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
-    onOpenPath={path => openReference(path, thread.id)} onReview={openChanges}
-    onAnswer={(text, cancelled) => { const live = sessionsRef.current.get(thread.id); const ask = thread.messages.findLast(m => m.role === "assistant")?.turn.ask; if (!live || !ask) return Promise.reject(new Error("This question is no longer waiting")); return answer(handleOf(thread.id), live, { callId: ask.callId, text, cancelled }); }}
-    onEditPrompt={(n, text) => {
-      const live = sessionsRef.current.get(thread.id);
-      if (live) void cancel(handleOf(thread.id), live).catch(() => undefined);
-      runningRef.current.delete(thread.id);
-      void runPrompt(thread.id, text, { edit: n });
-    }}
+    onOpenPath={threadCallbacks(thread.id).onOpenPath} onReview={openChanges}
+    onAnswer={threadCallbacks(thread.id).onAnswer}
+    onEditPrompt={threadCallbacks(thread.id).onEditPrompt}
     onRefresh={loaded => {
       const messages: Msg[] = loaded.messages.map(m => ({ id: ++msgIdRef.current, ...m }));
       setChats(current => current.map(c => c.id === thread.id && c.snapshot ? { ...c, messages } : c));

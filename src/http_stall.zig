@@ -143,3 +143,18 @@ test "stall budget (#680): each reconnect widens the between-lines wait — a qu
     try std.testing.expectEqual(@as(u64, 20 * 1000), budgetMsWidened(20 * 1000, true, 2));
     try std.testing.expectEqual(@as(u64, 5 * 1000), budgetMsWidened(5 * 1000, true, 1));
 }
+
+// GPT-5.6 can pause generation for several seconds mid-stream while a safety
+// classifier reviews the output (OpenAI's "Using GPT-5.6" guide). With prose
+// already flowing the between-lines budget is the tight regime, so pin that a
+// pause of that size never trips it: 30s on the shipped default, and the 15s
+// floor still holds it when GRAFF_STREAM_STALL_SECS is set low.
+test "stall budget: a several-second GPT-5.6 mid-stream safety pause stays inside the tightened budget" {
+    const pause_ms: u64 = 10 * 1000; // "several seconds", with margin
+    const base: u64 = 120 * 1000;
+    try std.testing.expect(!expired(pause_ms, base, true));
+    try std.testing.expect(pause_ms < interFrameBudgetMs(base, true, true, 0));
+    try std.testing.expect(pause_ms < interFrameBudgetMs(base, true, false, 0)); // reasoning-only phase: full budget
+    try std.testing.expect(pause_ms < budgetMs(20 * 1000, true)); // short override: the floor covers it
+    try std.testing.expect(idle_floor_ms > pause_ms);
+}

@@ -146,3 +146,29 @@ test "flash and Gemini map default medium to low; grok and glm-5.3 stay medium" 
     try std.testing.expect(!allows("xai", "grok-4.6", "max"));
     try std.testing.expect(allows("xai", "grok-4.6", "high"));
 }
+
+// GPT-5.6 (sol / terra / luna, bare alias, gateway names) accepts
+// reasoning.effort up to `max`. The picker shows OpenAI's maximum as Ultra, so
+// a typed or saved `max` must normalize to that tag and still reach the wire
+// as the API value `max`; grok's allow-list keeps rejecting it. Default stays
+// `medium` (Agent.reasoning), which the API also documents as its default.
+test "GPT-5.6 family: max is accepted (as Ultra) and wired as max; grok still folds it" {
+    const seats = [_]struct { id: []const u8, model: []const u8 }{
+        .{ .id = "openai", .model = "gpt-5.6" },
+        .{ .id = "openai", .model = "gpt-5.6-terra" },
+        .{ .id = "openai", .model = "gpt-5.6-luna" },
+        .{ .id = "codex", .model = "gpt-5.6-sol" },
+        .{ .id = "codegraff", .model = "openai/gpt-5.6-sol" },
+    };
+    for (seats) |s| {
+        try std.testing.expectEqualStrings("ultra", normalize(s.id, s.model, "max"));
+        try std.testing.expect(allows(s.id, s.model, "ultra"));
+        try std.testing.expect(allows(s.id, s.model, "xhigh"));
+        try std.testing.expectEqualStrings("max", wireEffort(s.model, "ultra"));
+        try std.testing.expectEqualStrings("xhigh", wireEffort(s.model, "xhigh"));
+        try std.testing.expectEqualStrings("medium", wireEffort(s.model, "medium")); // not a flash/Astra seat: default medium is sent as-is
+    }
+    try std.testing.expectEqualStrings("max", normalize("xai", "grok-4.6", "max")); // untouched, then refused
+    try std.testing.expect(!allows("xai", "grok-4.6", "max"));
+    try std.testing.expect(!allows("xai", "grok-4.6", "ultra"));
+}

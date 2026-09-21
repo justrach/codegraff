@@ -50,14 +50,17 @@ const orch_rows = @import("orchestration_rows.zig"); // #290: a scored tournamen
 /// instead registers the spawn and returns immediately — see
 /// spawnSubBackground below.
 const spawn_gate = @import("subagent_spawn.zig");
+const subagent_brief = @import("subagent_brief.zig"); // the structured delegation brief (sections + harness environment header)
 
 pub fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     const obj = tools.json_args.object(input) orelse return .{ .text = try ctx.gpa.dupe(u8, "subagent: arguments must be a JSON object with a \"prompt\" string"), .is_error = true };
     const label = tools.json_args.str(obj, "description") orelse "subagent";
-    const prompt = tools.json_args.str(obj, "prompt") orelse "";
-    if (prompt.len == 0) return .{ .text = try ctx.gpa.dupe(u8, "subagent: missing required \"prompt\" (a self-contained task)"), .is_error = true };
-    if (spawn_gate.refuse(ctx.from_sub, label, prompt, g_agent_jobs.active)) |why|
+    const task = tools.json_args.str(obj, "prompt") orelse "";
+    if (task.len == 0) return .{ .text = try ctx.gpa.dupe(u8, "subagent: missing required \"prompt\" (a self-contained task)"), .is_error = true };
+    if (spawn_gate.refuse(ctx.from_sub, label, task, g_agent_jobs.active)) |why|
         return .{ .text = try ctx.gpa.dupe(u8, why), .is_error = true };
+    const prompt = try subagent_brief.compose(ctx.gpa, obj, task); // context/established_facts/scope/deliverable around the task in a fixed order; a bare prompt is unchanged
+    defer ctx.gpa.free(prompt); // spawnSubBackground dupes it and rebases `ask` onto its copy; the sync path is done with it once flagReport returns
     const sys_override = fleet.resolveOverride(obj);
     const niche = fleet.resolveNiche(obj);
     const isolation = fleet.resolveIsolation(obj);

@@ -29,3 +29,28 @@ test("actual reasoning is retained when a turn completes", () => {
   expect(html).toContain("Inspect the relevant file.");
   expect(html).toContain("Thought for 8s");
 });
+
+const count = (html: string, needle: string) => html.split(needle).length - 1;
+
+test("an errored turn tells the failure once, with the provider's words as muted detail", () => {
+  const turn = { ...emptyTurn(), status: "error" as const, startedAt: 1000, endedAt: 13000, error: "xai api error: Internal error during token parsing" };
+  const html = renderToStaticMarkup(<AssistantBody turn={turn} following={false} onRetry={() => {}} />);
+  expect(count(html, "Response interrupted")).toBe(1);
+  expect(count(html, "data-turn-error")).toBe(1);
+  expect(count(html, "role=\"alert\"")).toBe(1);
+  expect(html).toContain("xai failed mid-response");
+  expect(html).toContain("Internal error during token parsing");
+  expect(html).toContain("After 12s.");
+  expect(html).toContain("data-retry-turn");
+  expect(html).not.toMatch(/data-retry-turn[^>]*\sdisabled=/);
+});
+
+test("Retry only exists on an errored turn, and waits while another turn is live", () => {
+  const done = { ...emptyTurn(), status: "done" as const, text: "Fine." };
+  expect(renderToStaticMarkup(<AssistantBody turn={done} following={false} onRetry={() => {}} />)).not.toContain("data-retry-turn");
+  const failed = { ...emptyTurn(), status: "error" as const, error: "Disconnected" };
+  expect(renderToStaticMarkup(<AssistantBody turn={failed} following={false} />)).not.toContain("data-retry-turn");
+  const busy = renderToStaticMarkup(<AssistantBody turn={failed} following={false} onRetry={() => {}} retryDisabled />);
+  expect(busy).toContain("data-retry-turn");
+  expect(busy).toMatch(/data-retry-turn[^>]*\sdisabled=/);
+});

@@ -168,6 +168,8 @@ record only when you need the evidence or the edge cases.
 | [0146](0146-concurrent-sessions-auto-isolate.md) | A second live session in the same Git checkout gets its own worktree; concurrent agents never share `index.lock`. |
 | [0147](0147-finish-is-not-cleanup-fanout.md) | Finish is not archive: park peer wakes until idle, paint the tally at the step boundary, refuse cleanup/fix-it children, cap live fan-out. |
 | [0148](0148-read-file-miss-storm-stops.md) | After N same-prefix or incrementing `read_file` misses, refuse further guesses this turn and point at `codedb list_dir`. |
+| [0145](0145-gpt-5-6-reasoning-replays-from-local-history.md) | GPT-5.6 reasoning replays from local history: never send `reasoning.context` or `reasoning.mode`; `max` effort is the ladder ceiling (shown as Ultra); PTC items stay opaque history. |
+| [0148](0148-midstream-provider-error-is-a-transient-500.md) | A streamed provider "internal error" after output began is a transient 500: bounded backoff retry, never overflow. Overflow needs a size/length phrasing or code; the meter pins only on a real rejection. Reverses `#1019`. |
 
 ## When to write one
 

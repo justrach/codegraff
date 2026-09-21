@@ -470,7 +470,7 @@ pub const sub_system_prompt =
     \\questions — make reasonable assumptions. Do not narrate tool calls.
     \\Your final message is returned verbatim to the orchestrator: a concise
     \\report of the concrete facts you found.
-++ parallel_tools_note ++ text.public_write_note ++ text.constraint_authority_note ++ text.publication_ready_note;
+++ @import("subagent_brief.zig").report_shape_note ++ parallel_tools_note ++ text.public_write_note ++ text.constraint_authority_note ++ text.publication_ready_note;
 
 pub const compact_instruction =
     \\Summarize this entire conversation for a context handoff. Capture: the

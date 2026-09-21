@@ -1,16 +1,25 @@
 "use client";
-import { memo, useCallback, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AssistantBody, UserBubble } from "./ChatBubbles";
 import SessionNotice from "./SessionNotice";
 import type { Msg } from "./harness-types";
 import { pinScrollerTail } from "@/lib/follow-scroll";
 import { transcriptPageStart } from "@/lib/transcript-window";
 
-export default memo(function ChatTranscript({ messages, register, following, onOpenPath, onReview, onAnswer, snapshot, onEditPrompt }: {
+const isPrompt = (message: Msg): message is Extract<Msg, { role: "user" }> => message.role === "user" && message.origin !== "notification";
+
+/** 1-based index of the user prompt each message belongs to: the prompt itself, or the prompt that produced an assistant turn. */
+export function promptIndexes(messages: Msg[]): number[] {
+  let n = 0;
+  return messages.map(message => isPrompt(message) ? ++n : n);
+}
+
+export default memo(function ChatTranscript({ messages, register, following, onOpenPath, onReview, onAnswer, snapshot, onEditPrompt, busy }: {
   messages: Msg[]; register: (element: HTMLDivElement | null) => void; following: boolean;
   onOpenPath: (path: string) => void; onReview: () => void;
   onAnswer?: (text: string, cancelled?: boolean) => void | Promise<void>; snapshot?: boolean;
   onEditPrompt?: (n: number, text: string) => void; // n is 1-based user prompt index; text is the replacement
+  busy?: boolean; // a turn is live in this chat: Retry on an errored turn waits
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const registerScroller = useCallback((element: HTMLDivElement | null) => {
@@ -18,6 +27,16 @@ export default memo(function ChatTranscript({ messages, register, following, onO
   }, [register]);
   const followingRef = useRef(following);
   followingRef.current = following;
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  const prompts = useMemo(() => promptIndexes(messages), [messages]);
+  // Retry is the edit path with the same words: the engine rewinds to that
+  // prompt and re-sends it, so the errored turn is replaced in place. Stable
+  // across token paints so memoized turns stay memoized (the ref holds the text).
+  const retryPrompt = useCallback((n: number) => {
+    const last = messagesRef.current.filter(isPrompt)[n - 1];
+    if (last) onEditPrompt?.(n, last.text);
+  }, [onEditPrompt]);
   const [shown, setShown] = useState(0);
   const expanded = useRef(false);
   const anchor = useRef<{ height: number; top: number } | null>(null);
@@ -63,11 +82,9 @@ export default memo(function ChatTranscript({ messages, register, following, onO
       {messages.slice(start).map((message, index) => message.role === "user"
         ? message.origin === "notification"
           ? <SessionNotice key={message.id} text={message.text} />
-          : <UserBubble key={message.id} text={message.text} onEdit={snapshot || !onEditPrompt ? undefined : (next) => {
-              const n = messages.slice(0, start + index + 1).filter(m => m.role === "user" && m.origin !== "notification").length;
-              onEditPrompt(n, next);
-            }} />
+          : <UserBubble key={message.id} text={message.text} promptIndex={prompts[start + index]} onEdit={snapshot || !onEditPrompt ? undefined : onEditPrompt} />
         : <AssistantBody key={message.id} turn={message.turn} onOpenPath={onOpenPath} onReview={onReview} onAnswer={onAnswer}
+            retryDisabled={busy} promptIndex={prompts[start + index]} onRetry={snapshot || !onEditPrompt || message.turn.status !== "error" ? undefined : retryPrompt}
             usage={(() => { const previous = messages[start + index - 1]; return previous?.role === "user" && /^\/(usage|cost)$/.test(previous.text.trim()); })()}
             scroller={scroller} following={following && start + index === messages.length - 1} snapshot={snapshot} />)}
     </div>
