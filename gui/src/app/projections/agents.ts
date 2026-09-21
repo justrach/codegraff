@@ -248,6 +248,34 @@ export function buildAgentOverview({
  * One spoken-style summary of the overview, used as the control-pane trigger's
  * aria-label/title so the button announces the same thing the pane shows.
  */
+/** Orchestrators and live children can take a supervisor directive. */
+export function canDirect(item: AgentOverviewItem): boolean {
+  if (item.kind === "orchestrator") return item.status !== "failed";
+  return item.status === "running";
+}
+
+/** Same `[daddy]` prefix the engine parks and idle-wakes on. */
+export function formatDaddyDirective(
+  item: AgentOverviewItem,
+  text: string,
+): string {
+  const body = text.trim();
+  if (item.kind === "subagent") {
+    return `[daddy] for ${item.label}: ${body}`;
+  }
+  return `[daddy] ${body}`;
+}
+
+export function currentSupervisorTitle(
+  overview: Pick<AgentOverviewSnapshot, "active" | "recent">,
+): string | null {
+  const items = [...overview.active, ...overview.recent];
+  const current = items.find(
+    (item) => item.kind === "orchestrator" && item.isCurrentConversation,
+  );
+  return current?.conversationTitle ?? null;
+}
+
 export function formatAgentActivityLabel(
   overview: Pick<AgentOverviewSnapshot, "totalActive" | "needsInput">,
 ): string {

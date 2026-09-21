@@ -81,11 +81,16 @@ fn ingest(io: Io, arena: Allocator) void {
 /// buffer so a spent Agent arena cannot hide new JSONL. Does not inject
 /// history — `runTurn`'s deliverInbound handles leftover room bytes.
 pub fn takeIdleWake(io: Io, buf: []u8) ?[]const u8 {
-    if (isBusy() or suppress_idle_wake) return null;
+    if (isBusy()) return null;
     var scratch: [64 * 1024]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&scratch);
     const arena = fba.allocator();
     ingest(io, arena);
+    if (@import("daddy.zig").takeIdleText(arena, buf)) |t| {
+        last_woken_unread = peer_inbox.unread();
+        return t;
+    }
+    if (suppress_idle_wake) return null;
     const n = peer_inbox.unread();
     if (n == 0 or n <= last_woken_unread) return null;
     last_woken_unread = n;
@@ -219,4 +224,18 @@ test "#1001 more mail after a wake can fire again" {
     _ = peer_inbox.parkHeard(&.{b}, &.{});
     const again = takeIdleWake(io, &buf) orelse return error.ExpectedSecond;
     try std.testing.expect(std.mem.indexOf(u8, again, "[peer]") != null);
+}
+
+test "daddy idle wake fires after attempt_completion" {
+    peer_inbox.resetForTest();
+    resetForTest();
+    defer {
+        peer_inbox.resetForTest();
+        resetForTest();
+    }
+    var buf: [256]u8 = undefined;
+    noteCompletion();
+    _ = peer_inbox.parkHeard(&.{.{ .from_session = "s-dad", .text = "[daddy] switch to the tests" }}, &.{});
+    const wake = takeIdleWake(std.testing.io, &buf) orelse return error.ExpectedDaddyAfterCompletion;
+    try std.testing.expect(std.mem.indexOf(u8, wake, "[daddy]") != null);
 }

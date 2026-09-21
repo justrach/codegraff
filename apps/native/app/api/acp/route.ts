@@ -15,7 +15,7 @@ import { attachmentStore } from "@/lib/attachment-store";
 import { retireWorker } from "@/lib/acp-retire";
 import { rememberAnswer, validateAnswer } from "@/lib/ask-answer";
 import { formatTermination, recordTermination, type TerminateReason } from "@/lib/acp-terminate";
-import { initializeWorker, serializeBootstrap } from "@/lib/acp-bootstrap";
+import { bindSessionCwd, initializeWorker, serializeBootstrap } from "@/lib/acp-bootstrap";
 import { finishCancelledPrompt } from "@/lib/acp-cancel";
 import { armIdle, cancelIdle, forgetPark, forgetParkMatching, keepPark, parkedChats, takeParked, type ParkedWorker } from "@/lib/acp-idle";
 
@@ -170,7 +170,9 @@ function spawnAgent(chat: string, opts: SpawnOpts): Slot {
   const child = spawn(graffBin(), args, {
     stdio: ["pipe", "pipe", "inherit"],
     cwd: opts.cwd,
-    env: { ...env, GRAFF_DESKTOP_CHAT: chat, ...(!opts.mcp ? { GRAFF_MCP_CONFIG: mcpOffPath() } : {}) },
+    // Inherited PWD is the Next host (apps/native). Graff's display cwd
+    // falls back to PWD when Io realPath misses; pin it to the spawn root.
+    env: { ...env, GRAFF_DESKTOP_CHAT: chat, GRAFF_CWD: opts.cwd, PWD: opts.cwd, ...(!opts.mcp ? { GRAFF_MCP_CONFIG: mcpOffPath() } : {}) },
   });
   const slot: Slot = {
     child,
@@ -288,7 +290,8 @@ async function bootstrapNow(chat: string, opts: BootstrapOpts): Promise<Slot> {
     finally { if (slots.get(chat) === slot) slots.delete(chat); }
   }, HANDSHAKE_MS);
   slot.sessionId = created.sessionId;
-  if (created.cwd) slot.cwd = created.cwd;
+  slot.cwd = bindSessionCwd(slot.cwd, created.cwd);
+  attachmentStore().enrollSession(path.dirname(sessionFile(slot.cwd, slot.resume ?? slot.sessionId)), slot.child.pid);
   if (!slot.resume) registerSessionWriter(sessionFile(slot.cwd, slot.sessionId), slot.child, () => {
     if (slots.get(chat) === slot) void killSlot(chat, undefined, "session-writer").catch(() => undefined);
   });

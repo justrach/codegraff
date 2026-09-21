@@ -168,7 +168,8 @@ record only when you need the evidence or the edge cases.
 | [0146](0146-concurrent-sessions-auto-isolate.md) | A second live session in the same Git checkout gets its own worktree; concurrent agents never share `index.lock`. |
 | [0147](0147-finish-is-not-cleanup-fanout.md) | Finish is not archive: park peer wakes until idle, paint the tally at the step boundary, refuse cleanup/fix-it children, cap live fan-out. |
 | [0148](0148-read-file-miss-storm-stops.md) | After N same-prefix or incrementing `read_file` misses, refuse further guesses this turn and point at `codedb list_dir`. |
-| [0149](0149-subagent-briefs-are-structured.md) | Child briefs are headed sections plus a harness environment header; the judge stays a bare prompt. |
+| [0149](0149-daddy-directives-are-explicit-control.md) | Ambient `[peer]` wakes are not a new task; `[daddy]` directives are explicit supervisor control. |
+| [0150](0150-subagent-briefs-are-structured.md) | Child briefs are headed sections plus a harness environment header; the judge stays a bare prompt. |
 
 ## When to write one
 
