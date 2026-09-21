@@ -6,6 +6,17 @@ UX = how it behaves. Add an entry whenever a change alters what the user
 sees or how an interaction flows — small entries are fine; the point is
 that "why does it work this way?" always has an answer here.
 
+## 2026-09-22
+
+### File chips stop shouting the worktree (UI)
+A collapsed run was still a wall of full-width pills — the same
+`.worktrees/…` prefix on every row, plus a green/red +1 −1 that ACP stamps
+on every edit whether or not it measured a diff. The transcript now shows
+three short names (`core.css`, `dto/mod.rs` when basenames collide) and a
+`+N` for the rest. The full path stays on the chip title and the hover
+preview. Opening the tool list uses the same short name, so expanding
+"Edited 54" is a list of files, not a list of worktree prefixes.
+
 ## 2026-08-21
 
 ### Transcript is the task, not the event bus (UI)
