@@ -51,7 +51,7 @@ pub const sessionMeta = session_index.sessionMeta;
 pub const sessionAge = session_index.sessionAge;
 pub const SessionEntry = session_index.SessionEntry;
 pub const listSavedSessions = session_index.listSavedSessions;
-pub const listSavedSessionsAll = session_index.listSavedSessionsAll;
+pub const listSavedSessionsAll = @import("session_discovery.zig").listAll;
 pub const homeSessionPath = session_index.homeSessionPath;
 pub const displayWorkspace = session_index.displayWorkspace;
 
@@ -461,17 +461,8 @@ pub fn restoreContextMeter(root: *Agent, saved_context_tokens: u64, saved_local_
 /// the restored provider's kind — same provider id guarantees it.
 pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8) !void {
     flushSaves(); // #273: a session switch never leaves the outgoing one queued
-    const path = try sessionPath(arena, name);
-    const data = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(8 * 1024 * 1024)) catch blk: {
-        // backward-compat: older builds wrote <name>.session.json in cwd.
-        const legacy = try std.fmt.allocPrint(arena, "{s}{s}", .{ name, session_ext });
-        break :blk Io.Dir.cwd().readFileAlloc(root.io, legacy, arena, .limited(8 * 1024 * 1024)) catch {
-            // #712: a save from `$HOME` is invisible if we only look at cwd.
-            if (root.home.len == 0) return error.FileNotFound;
-            const home_path = try homeSessionPath(arena, root.home, name);
-            break :blk try Io.Dir.cwd().readFileAlloc(root.io, home_path, arena, .limited(8 * 1024 * 1024));
-        };
-    };
+    const found = @import("session_discovery.zig").locate(root, arena, name) orelse return error.FileNotFound;
+    const data = Io.Dir.cwd().readFileAlloc(root.io, found.path, arena, .limited(8 * 1024 * 1024)) catch return error.FileNotFound;
     const parsed = try std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always });
     if (parsed != .object) return error.BadSession;
     const obj = parsed.object;

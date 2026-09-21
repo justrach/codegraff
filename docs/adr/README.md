@@ -69,7 +69,7 @@ record only when you need the evidence or the edge cases.
 | [0056](0056-composer-image-chips-sync-on-delete.md) | Composer image chips sync on delete and reuse `#N`; `clipboard_paste` MIME/bytes wait until send. |
 | [0057](0057-peer-title-is-an-address.md) | `peer_message` resolves exact title / saved-session base before opaque id or goal. |
 | [0058](0058-compact-cut-stalls-on-no-progress.md) | Same unresolved `compact_cut` pin that does not shrink stops after two tries. |
-| [0059](0059-saved-session-discovery-is-device-scoped.md) | `/resume` and `/sessions` list cwd then `~/.graff/sessions`; resume keeps tools in the current cwd. |
+| [0059](0059-saved-session-discovery-is-device-scoped.md) | `/resume` and `/sessions` list cwd then `~/.graff/sessions`; home-origin resume keeps tools in the current cwd. Linked worktrees: [0155](0155-resume-reenters-saved-worktree.md). |
 | [0060](0060-named-source-gate-is-per-unanswered-mention.md) | The named-source nudge is per unanswered mention; identical user turns do not replay (#714). |
 | [0061](0061-tool-only-turns-narrate-and-ask-in-band.md) | Heads-up text rides in the same response as the tool calls; a choice for the user is an `ask_user` call; a job exit the model already read never wakes it. |
 | [0062](0062-background-servers-idle-lifecycle-and-ownership-record.md) | A background job silent and unread for 2h is stopped with its command kept; `/jobs keep` pins one (retained at exit); every job has an ownership record `graff servers` can list and stop, verified by start identity (#199). |
@@ -176,6 +176,7 @@ record only when you need the evidence or the edge cases.
 | [0152](0152-persistent-shells-snapshot-once.md) | Persistent shells snapshot immediately (`wait_ms` ignored) and stay on `/jobs`; do not poll. Finite jobs still wait until exit (ADR 0010). |
 | [0153](0153-task-workspaces-copy-and-scripts.md) | Task workspaces copy gitignored include files from the main checkout and run setup/run/archive scripts from `.graff/workspace.toml`. Finish is still not archive. |
 | [0154](0154-parked-shells-yield-the-parent.md) | Interactive parked shells yield the parent like subagents: 15s foreground wait, then the prompt is yours until the job-exit wake. |
+| [0155](0155-resume-reenters-saved-worktree.md) | Resume of a linked-worktree save re-enters that tree; `$HOME` origin stays history-only. |
 
 ## When to write one
 

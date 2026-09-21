@@ -563,13 +563,9 @@ const exec = @import("exec.zig");
 test { // ── Unit tests (`zig build test`): pull in tests from imported modules (mcp.zig)
     _ = .{ @import("mcp_apps.zig"), @import("html_view.zig"), @import("providers_confirmation_tests.zig"), @import("repl_model_confirmation_tests.zig"), @import("repl_model_pick_tests.zig"), @import("engine_sink_citation_tests.zig"), @import("cite_markup_stream_tests.zig"), @import("oneshot_citation_tests.zig"), @import("tui_acp.zig") };
     _ = .{ @import("mcp_server_tests.zig"), @import("main_test.zig"), @import("artifact_claim_command.zig"), @import("cli_path_hint.zig"), @import("run_budget.zig"), @import("pr_review_input.zig"), @import("pr_claim_review.zig"), @import("tui_paste_transfer.zig") };
-    _ = @import("session_catalog.zig");
-    _ = @import("session_prompt.zig");
+    _ = .{ @import("session_catalog.zig"), @import("session_prompt.zig"), @import("session_discovery.zig") };
     _ = .{ @import("prompt_astra.zig"), @import("prompt_guidance.zig") }; // per-model guidance (Astra, GPT-5.6)
-    _ = @import("agent_empty_completion.zig"); // #745: plain-final reconciliation
-    _ = @import("agent_model_loop.zig");
-    _ = @import("publication_policy_tests.zig");
-    _ = @import("jobs_completion_tests.zig");
+    _ = .{ @import("agent_empty_completion.zig"), @import("agent_model_loop.zig"), @import("publication_policy_tests.zig"), @import("jobs_completion_tests.zig") };
     _ = .{ @import("readline_paste_number_tests.zig"), @import("test_hooks.zig"), @import("peer_wake_loop.zig") };
     _ = @import("list_dir_nearmiss.zig");
     _ = @import("repo_map.zig");

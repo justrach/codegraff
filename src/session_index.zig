@@ -111,7 +111,7 @@ pub const SessionEntry = struct {
     local: bool = true,
 };
 
-fn sameWorkspace(a: []const u8, b: []const u8) bool {
+pub fn sameWorkspace(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, std.mem.trimEnd(u8, a, "/"), std.mem.trimEnd(u8, b, "/"));
 }
 
@@ -134,6 +134,32 @@ fn listFromDir(io: Io, arena: Allocator, dir: Io.Dir, workspace: []const u8, loc
         }) catch {};
     }
     return entries;
+}
+
+/// Merge `.graff/sessions` under `workspace` into `entries`. Existing base
+/// names win (cwd / earlier extras stay). #1151
+pub fn appendWorkspaceSessions(
+    io: Io,
+    arena: Allocator,
+    entries: *std.ArrayList(SessionEntry),
+    workspace: []const u8,
+    local: bool,
+) void {
+    var root = Io.Dir.cwd().openDir(io, workspace, .{}) catch return;
+    defer root.close(io);
+    var sess = root.openDir(io, sessions_dir, .{ .iterate = true }) catch return;
+    defer sess.close(io);
+    const extra = listFromDir(io, arena, sess, workspace, local);
+    for (extra.items) |e| {
+        var seen = false;
+        for (entries.items) |c| {
+            if (std.mem.eql(u8, c.base, e.base)) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) entries.append(arena, e) catch {};
+    }
 }
 
 fn newerFirst(_: void, a: SessionEntry, b: SessionEntry) bool {

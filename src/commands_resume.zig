@@ -70,7 +70,11 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         else => reject(out, "resume failed: {t}\n", .{err}),
     };
     presence.noteLabelsFrom(root.io, root.gpa, arena, root.session_title, root.session_name);
-    if (picked_remote) |ws| {
+    if (resumed.entered) {
+        try out.print("now at {s} — read_file/edit_file/bash use this tree\n", .{session.displayWorkspace(arena, resumed.workspace, root.home)});
+    } else if (resumed.enter_failed) {
+        try out.print("could not enter {s} — history restored here; read_file/edit_file/bash stay in {s}\n", .{ session.displayWorkspace(arena, resumed.workspace, root.home), main_mod.g_cwd_display });
+    } else if (picked_remote) |ws| {
         try out.print("this save is from {s} — history restored here; read_file/edit_file/bash stay in {s}\n", .{ session.displayWorkspace(arena, ws, root.home), main_mod.g_cwd_display });
     }
     if (resumed.branched) {

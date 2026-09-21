@@ -433,8 +433,10 @@ pub fn restoreResumedSession(arena: Allocator, out: *Io.Writer, root: *agent_mod
                 // Prefer the saved AI summary; fall back to the first user
                 // message only for older sessions that have no saved title.
                 const restored_title = root.session_title orelse title_mod.firstUserTitle(arena, root.messages);
-                title_mod.setTerminalTitle(out, restored_title, cwd_display);
-                try title_mod.printSessionHeader(out, restored_title, cwd_display);
+                const cwd_now = @import("main.zig").g_cwd_display;
+                const cwd_shown = if (cwd_now.len > 0) cwd_now else cwd_display;
+                title_mod.setTerminalTitle(out, restored_title, cwd_shown);
+                try title_mod.printSessionHeader(out, restored_title, cwd_shown);
                 root.tui_header_shown = true;
                 if (flags.branch_flag) |dest|
                     try out.print("↩ branched {s}{s} → {s}{s} — {d} message(s) on {s}\n", .{ source, session.session_ext, dest, session.session_ext, root.messages.items.len, root.provider.model })

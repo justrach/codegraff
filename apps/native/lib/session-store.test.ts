@@ -53,6 +53,23 @@ describe("listSessionRows", () => {
     assert.equal(notes?.local, false);
     assert.equal(notes?.origin, "~");
   });
+
+  it("lists an isolated worktree save and cwd still wins on the same name", () => {
+    const cwd = mkdtempSync(path.join(tmpdir(), "graff-cwd-"));
+    const home = mkdtempSync(path.join(tmpdir(), "graff-home-"));
+    const wt = path.join(cwd, ".graff", "worktrees", "session-a");
+    writeSession(cwd, "shared", { title: "Main copy", updated_ms: 20 });
+    writeSession(wt, "shared", { title: "Tree copy", updated_ms: 90 });
+    writeSession(wt, "isolated", { title: "Only tree", updated_ms: 40, workspace: wt });
+    const rows = listSessionRows(cwd, home);
+    assert.equal(rows.find((r) => r.name === "shared")?.title, "Main copy");
+    assert.equal(rows.find((r) => r.name === "shared")?.local, true);
+    const isolated = rows.find((r) => r.name === "isolated");
+    assert.equal(isolated?.title, "Only tree");
+    assert.equal(isolated?.local, false);
+    assert.equal(isolated?.workspace, wt);
+    assert.equal(findSessionFile(cwd, "isolated", home)?.workspace, wt);
+  });
 });
 
 describe("legacy placeholder titles", () => {

@@ -207,12 +207,35 @@ function newerFirst(a: StoredSessionRow, b: StoredSessionRow): number {
   return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
 }
 
-/** Cwd saves first (they win on the same base name), then `~/.graff/sessions`
- *  when that tree is a different workspace. ADR 0059 / #712. */
+/** Auto-isolate trees live here (ADR 0146). Other git worktrees are listed
+ *  by the engine via `git worktree list`. */
+export function extraWorktreeRoots(cwd: string): string[] {
+  const root = path.join(cwd, ".graff", "worktrees");
+  if (!existsSync(root)) return [];
+  try {
+    return readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(root, entry.name));
+  } catch {
+    return [];
+  }
+}
+
+/** Cwd saves first (they win on the same base name), then linked worktrees
+ *  under `.graff/worktrees` (#1151), then `~/.graff/sessions` when that tree
+ *  is a different workspace. ADR 0059 / #712. */
 export function listSessionRows(cwd: string, home = homeDir()): StoredSessionRow[] {
   const cwdDir = path.join(cwd, SESSIONS_DIR);
   const rows = readDir(cwdDir, cwd, true, home, cwd);
   const seen = new Set(rows.map((r) => r.name));
+  for (const wt of extraWorktreeRoots(cwd)) {
+    if (sameWorkspace(wt, cwd)) continue;
+    for (const row of readDir(path.join(wt, SESSIONS_DIR), wt, false, home, cwd)) {
+      if (seen.has(row.name)) continue;
+      rows.push(row);
+      seen.add(row.name);
+    }
+  }
   if (home && !sameWorkspace(home, cwd)) {
     for (const row of readDir(path.join(home, SESSIONS_DIR), home, false, home, cwd)) {
       if (seen.has(row.name)) continue;
@@ -272,6 +295,10 @@ export function findSessionFile(cwd: string, name: string, home = homeDir()): { 
   if (!NAME_RE.test(name)) return null;
   const localFile = path.join(cwd, SESSIONS_DIR, `${name}${SESSION_EXT}`);
   if (existsSync(localFile)) return { file: localFile, local: true, workspace: cwd };
+  for (const wt of extraWorktreeRoots(cwd)) {
+    const file = path.join(wt, SESSIONS_DIR, `${name}${SESSION_EXT}`);
+    if (existsSync(file)) return { file, local: false, workspace: wt };
+  }
   if (home && !sameWorkspace(home, cwd)) {
     const homeFile = path.join(home, SESSIONS_DIR, `${name}${SESSION_EXT}`);
     if (existsSync(homeFile)) return { file: homeFile, local: false, workspace: home };
