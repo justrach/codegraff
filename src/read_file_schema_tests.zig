@@ -73,7 +73,7 @@ test "#1116: sequential missing reads under one prefix stop and point at list_di
     const gpa = std.testing.allocator;
     const io = std.testing.io;
     const miss = @import("read_file_miss.zig");
-    miss.resetTurn();
+    miss.resetTurn(io);
     defer miss.resetForTest();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
