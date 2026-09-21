@@ -81,7 +81,7 @@ test "#1136 maybeWake is silent while a root turn is in flight" {
     var w: Io.Writer = .fixed(&buf);
     var d: engine.Dispatch = .{ .turn = echoTurn, .ctx = undefined, .session_id = "s1" };
     peer_idle.noteTurnStart();
-    try maybeWake(&d, arena.allocator(), &w, std.testing.io);
+    try maybeWake(&d, arena.allocator(), &w, std.testing.io, "s1");
     try std.testing.expectEqual(@as(usize, 0), w.buffered().len);
     peer_idle.noteTurnEnd();
 }
