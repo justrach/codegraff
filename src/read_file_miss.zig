@@ -24,14 +24,24 @@ const Slot = struct {
     }
 };
 
-var mutex: std.Thread.Mutex = .{};
+/// Spin-lock: this Zig has no `std.Thread.Mutex`, and the io-less helpers
+/// (`resetTurn`, `noteMiss`) have no `Io` to park an `Io.Mutex` on.
+var lock: std.atomic.Value(bool) = .init(false);
 var slots: [max_slots]Slot = @splat(.{});
 var used: u8 = 0;
 /// Off until a root turn arms the tracker so unrelated unit tests cannot trip it.
 var armed: bool = false;
 
+fn lockSlots() void {
+    while (lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
+}
+
+fn unlockSlots() void {
+    lock.store(false, .release);
+}
+
 pub fn dirOf(path: []const u8) []const u8 {
-    const trimmed = std.mem.trimRight(u8, path, "/\\");
+    const trimmed = std.mem.trimEnd(u8, path, "/\\");
     if (trimmed.len == 0) return ".";
     if (std.fs.path.dirname(trimmed)) |d| {
         if (d.len == 0 or std.mem.eql(u8, d, ".")) return ".";
@@ -52,15 +62,15 @@ pub fn leadingNumber(name: []const u8) ?u32 {
 }
 
 pub fn resetTurn() void {
-    mutex.lock();
-    defer mutex.unlock();
+    lockSlots();
+    defer unlockSlots();
     used = 0;
     armed = true;
 }
 
 pub fn resetForTest() void {
-    mutex.lock();
-    defer mutex.unlock();
+    lockSlots();
+    defer unlockSlots();
     used = 0;
     armed = false;
 }
@@ -95,8 +105,8 @@ fn takeSlotLocked(dir: []const u8) *Slot {
 }
 
 pub fn blocked(path: []const u8) bool {
-    mutex.lock();
-    defer mutex.unlock();
+    lockSlots();
+    defer unlockSlots();
     if (!armed) return false;
     const slot = findSlotLocked(dirOf(path)) orelse return false;
     return slot.blocked;
@@ -105,8 +115,8 @@ pub fn blocked(path: []const u8) bool {
 /// Record a not-found. Returns true once this prefix (or incrementing name
 /// pattern) has hit the stop.
 pub fn noteMiss(path: []const u8) bool {
-    mutex.lock();
-    defer mutex.unlock();
+    lockSlots();
+    defer unlockSlots();
     if (!armed) return false;
     const dir = dirOf(path);
     const slot = takeSlotLocked(dir);
@@ -123,8 +133,8 @@ pub fn noteMiss(path: []const u8) bool {
 }
 
 pub fn noteHit(path: []const u8) void {
-    mutex.lock();
-    defer mutex.unlock();
+    lockSlots();
+    defer unlockSlots();
     if (!armed) return;
     const slot = findSlotLocked(dirOf(path)) orelse return;
     slot.misses = 0;
