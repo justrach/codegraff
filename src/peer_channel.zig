@@ -10,8 +10,8 @@
 //!   - peer_message: send (default), list, inbox, claim, release, handoff, status.
 //!   - /tell <session> <text>: the user's own line into a peer's inbox.
 //!   - /sessions: the saved-session list gains a "live now" section.
-//!   - deliverInbound: drain + park at every root step boundary; paint and
-//!     the history wake wait until the root is idle (#1136).
+//!   - deliverInbound: drain + park at every root step boundary. The human
+//!     tally paints there (#469). The history wake waits until idle (#1136).
 
 const std = @import("std");
 
@@ -199,9 +199,24 @@ pub fn deliverInbound(root: *Agent) void {
     device_msgs = heard.items;
     if (local_msgs.len == 0 and device_msgs.len == 0 and omitted == 0 and skipped == 0) return;
     const newly = peer_inbox.parkHeard(local_msgs, device_msgs);
-    // Park always. Paint and history inject wait until the root is idle
-    // (#1136): a mid-turn user-role wake aborts tools. ADR 0134 / #430.
+    // Park always. Paint the human tally at this step boundary (#469).
+    // History inject waits until idle (#1136): a mid-turn user-role wake
+    // aborts tools. ADR 0134 / #430 / ADR 0147.
+    paintHeard(root, own, is_backlog_drain, omitted, skipped, local_msgs, device_msgs);
     if (!shouldAnnounce(peer_idle.isBusy(), newly)) return;
+    // History gets the wake only (ADR 0004). Bodies wait in the ring.
+    root.messages.append(@import("session_wake.zig").message(root.arena, peer_context.capInject(peer_inbox.formatWake(root.arena))) catch return) catch {};
+}
+
+fn paintHeard(
+    root: *Agent,
+    own: []const u8,
+    is_backlog_drain: bool,
+    omitted: usize,
+    skipped: usize,
+    local_msgs: []const presence.Message,
+    device_msgs: []const presence.Message,
+) void {
     const sink = engine_sink.forAgent(root);
     // The visible block gets one blank line of air on either side: peer lines
     // land mid-stream at a step boundary and used to butt straight against
@@ -245,8 +260,6 @@ pub fn deliverInbound(root: *Agent) void {
         if (summary.len > 0)
             renderPeerBlock(sink, root.io, true, &.{}, &.{summary});
     }
-    // History gets the wake only (ADR 0004). Bodies wait in the ring.
-    root.messages.append(@import("session_wake.zig").message(root.arena, peer_context.capInject(peer_inbox.formatWake(root.arena))) catch return) catch {};
 }
 
 /// Mid-turn mail stays parked. Announce only when idle and something new landed.
@@ -502,6 +515,8 @@ test "summarizeTranscript: last prompt, last words, last tool, from complete lin
 test "#1136 shouldAnnounce: park during a turn, announce only when idle" {
     @import("peer_idle.zig").resetForTest();
     defer @import("peer_idle.zig").resetForTest();
+    // Paint is not gated here — deliverInbound paints at the step boundary
+    // even while busy (#469). This flag is the history-wake latch only.
     try std.testing.expect(!shouldAnnounce(true, 3));
     try std.testing.expect(!shouldAnnounce(true, 0));
     try std.testing.expect(!shouldAnnounce(false, 0));
