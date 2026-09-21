@@ -20,8 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "eval"))
 from mock_model import ScriptedModel
 from process_guard import run as bounded_run
+from claim_ledger import path as claim_ledger_path
 
-from github_fixture import GH, prepare_review
+from github_fixture import GH, claim_ledger, prepare_review
 
 
 def tool(command):
@@ -144,7 +145,8 @@ def handoff(graff):
         (work / "notes.md").write_text("## Verification\nLocal: `python3 -m unittest` passed.\nRemote: passed.\n")
         env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")}
         env.update(HOME=temp, PATH=str(work / "bin") + os.pathsep + os.environ["PATH"], LMSTUDIO_API_KEY="local",
-                   GRAFF_NO_TELEMETRY="1", GRAFF_FLEET="off", GRAFF_NO_SMOLIFY="1", GRAFF_NO_CODEDB_GUARD="1", NO_COLOR="1")
+                   GRAFF_NO_TELEMETRY="1", GRAFF_FLEET="off", GRAFF_NO_SMOLIFY="1", GRAFF_NO_CODEDB_GUARD="1",
+                   GRAFF_ACCORD="0", GRAFF_AUTO_ISOLATE="0", NO_COLOR="1")
         prepare_review(work, ['notes.md'])
         acquired, primed, transferred = (threading.Event() for _ in range(3))
         def peer(action, kind="publication", key="fixture", **extra):
@@ -164,7 +166,7 @@ def handoff(graff):
                     if step == 1:
                         acquired.set()
                         assert primed.wait(35), "peer did not reach foreign claim gate"
-                        ledger = json.loads((work / ".graff/artifact-claims.json").read_text())
+                        ledger = json.loads(claim_ledger_path(work).read_text())
                         receiver = next(c["session"] for c in ledger if c["key"] == "independent")
                         return peer("handoff", session=receiver)
                     if step == 2:
@@ -192,7 +194,7 @@ def handoff(graff):
             with concurrent.futures.ThreadPoolExecutor(2) as pool:
                 one, two = pool.submit(actor, "A"), pool.submit(actor, "B")
                 a, b = one.result(), two.result()
-            assert a.returncode == b.returncode == 0, (a.stderr[-1000:], b.stderr[-1000:])
+            assert a.returncode == b.returncode == 0, (a.returncode, b.returncode, a.stderr[:1500], a.stderr[-500:], b.stderr[:1500], b.stderr[-500:])
             mutations = (work / "mutations.jsonl").read_text().splitlines() if (work / "mutations.jsonl").exists() else []
             assert len(mutations) == 2, (mutations, a.stdout[-4000:], b.stdout[-4000:])
             assert 'artifact claim held' in a.stdout and 'artifact claim held' in b.stdout, (a.stdout[-3000:], b.stdout[-3000:])
