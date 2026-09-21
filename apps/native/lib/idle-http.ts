@@ -50,3 +50,39 @@ export async function holdWhileIdle(opts: {
   if (opts.busy() || hold.signal.aborted) return "paused";
   return "ended";
 }
+
+export function waitMs(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted || ms <= 0) {
+      resolve();
+      return;
+    }
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
+
+/** Keep the idle pump open for the tab's lifetime. A dead ACP ends the
+ *  stream; retry so `session/idle` can spawn it again instead of going
+ *  silent until the next human prompt. */
+export async function holdIdleUntilAbort(opts: {
+  signal: AbortSignal;
+  busy(): boolean;
+  open(signal: AbortSignal): Promise<void>;
+  pollMs?: number;
+  retryDelayMs?: number;
+}): Promise<void> {
+  while (!opts.signal.aborted) {
+    await waitWhile(() => opts.busy(), opts.signal, opts.pollMs);
+    if (opts.signal.aborted) return;
+    const result = await holdWhileIdle(opts);
+    if (result === "aborted") return;
+    if (result === "paused") continue;
+    await waitMs(opts.retryDelayMs ?? 250, opts.signal);
+  }
+}

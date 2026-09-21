@@ -1,6 +1,6 @@
 import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AssistantTurn } from "@/lib/acp";
 import { idleUpdates, type ChatHandle } from "@/lib/acp-client";
-import { holdWhileIdle, waitWhile } from "@/lib/idle-http";
+import { holdIdleUntilAbort } from "@/lib/idle-http";
 import type { Chat } from "./harness-types";
 
 /** Paint unsolicited ACP session/update while the page is idle (#1007).
@@ -43,18 +43,13 @@ export async function pumpIdlePeerTurns(opts: {
     }));
   };
 
-  while (!opts.signal.aborted) {
-    await waitWhile(() => opts.running(), opts.signal);
-    if (opts.signal.aborted) return;
-    const result = await holdWhileIdle({
-      signal: opts.signal,
-      busy: opts.running,
-      open: async (signal) => {
-        for await (const update of idleUpdates(opts.handle, opts.sessionId, signal)) {
-          paint(update);
-        }
-      },
-    });
-    if (result !== "paused") return;
-  }
+  await holdIdleUntilAbort({
+    signal: opts.signal,
+    busy: opts.running,
+    open: async (signal) => {
+      for await (const update of idleUpdates(opts.handle, opts.sessionId, signal)) {
+        paint(update);
+      }
+    },
+  });
 }

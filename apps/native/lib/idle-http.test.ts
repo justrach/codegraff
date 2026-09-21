@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { holdWhileIdle, waitWhile } from "./idle-http.ts";
+import { holdIdleUntilAbort, holdWhileIdle, waitWhile } from "./idle-http.ts";
 
 test("waitWhile returns immediately when idle", async () => {
   const ac = new AbortController();
@@ -50,4 +50,21 @@ test("holdWhileIdle reports ended when the stream finishes while idle", async ()
     busy: () => false,
     open: async () => {},
   }), "ended");
+});
+
+test("holdIdleUntilAbort reopens after a dead ACP ends the stream", async () => {
+  const ac = new AbortController();
+  let opened = 0;
+  const pumping = holdIdleUntilAbort({
+    signal: ac.signal,
+    busy: () => false,
+    retryDelayMs: 10,
+    pollMs: 10,
+    open: async () => {
+      opened += 1;
+      if (opened >= 2) ac.abort();
+    },
+  });
+  await pumping;
+  assert.ok(opened >= 2);
 });
