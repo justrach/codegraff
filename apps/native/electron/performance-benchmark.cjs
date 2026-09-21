@@ -89,7 +89,7 @@ app.whenReady().then(async () => {
   const send = async name => {
     const prompt = `Run the synthetic ${name} workload`;
     // A single native value write can land before React's listener is attached.
-    // Reapply until Send enables instead of waiting out the 30s timeout.
+    // Reapply until Send enables, instead of waiting out the 30s timeout.
     for (let i = 0; i < 1200; i++) {
       const ready = await js(`(()=>{window.benchmarkCase=${JSON.stringify(name)};const input=document.querySelector('textarea[aria-label="Prompt"]');const send=document.querySelector('[aria-label="Send"]');if(!input||!send)return false;if(!send.disabled)return true;Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,${JSON.stringify(prompt)});input.dispatchEvent(new Event('input',{bubbles:true}));return !send.disabled;})()`);
       if (ready) break;
