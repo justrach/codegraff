@@ -66,6 +66,13 @@ for (const [name, change] of [
   });
 }
 
+test('rejects a same-team profile for a different bundle even when TEAM.* keychain groups match', () => {
+  const profile = fixture();
+  profile.Entitlements['com.apple.application-identifier'] = 'ABCDE12345.com.unrelated.app';
+  profile.Entitlements['keychain-access-groups'] = ['ABCDE12345.*'];
+  assert.throws(() => authorize(profile), /provisioning profile/);
+});
+
 test('accepts a profile until its expiration boundary', () => {
   const profile = fixture();
   profile.ExpirationDate = new Date(now + 1);
