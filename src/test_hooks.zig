@@ -48,6 +48,7 @@ const native_fold = @import("native_fold.zig");
 const edit_batch = @import("edit_batch.zig");
 // Moved off subagent.zig, which is at the 600-line cap.
 const subagent_tests = @import("subagent_tests.zig");
+const subagent_brief = @import("subagent_brief.zig");
 const subagent_ledger = @import("subagent_ledger.zig"); // #753: handle ledger tests
 // Bench score/cost priors → derived tier ladders (.harness/bench.json).
 const bench_priors = @import("bench_priors.zig");
@@ -251,6 +252,7 @@ test {
     _ = native_fold;
     _ = edit_batch;
     _ = subagent_tests;
+    _ = subagent_brief;
     _ = subagent_ledger;
     _ = bench_priors;
     _ = bench_priors_tests;
@@ -379,4 +381,6 @@ test {
     _ = @import("edit_worktree_tests.zig"); // #747: edit lands on the selected worktree
     _ = @import("mcp.zig");
     _ = @import("mcp_rpc.zig");
+    _ = @import("subagent_brief.zig"); // structured delegation brief + harness environment header
+    _ = @import("idle_wake_sources.zig"); // shared idle auto-turn sources for REPL / TUI / ACP
 }

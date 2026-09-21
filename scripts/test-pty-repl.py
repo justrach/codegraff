@@ -76,7 +76,7 @@ def main() -> None:
             session.send_line("/help")
             session.wait_for_literal("/models [health]", start=cursor)
             session.wait_for_literal("/fallback [allow|remove|off]", start=cursor)
-            session.wait_for_literal("/login [codegraff|codex|kimi]", start=cursor)
+            session.wait_for_literal("/login [codegraff|codex|kimi|xai|zai]", start=cursor)
             session.wait_for_literal(base, start=cursor)
             session.wait_for_prompt(start=cursor)
             cursor = len(session.raw)

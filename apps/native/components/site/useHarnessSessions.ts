@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type MutableRefObject, type Dispatch, type SetStateAction } from "react";
 import { bindMcpAppChat, checkHealth, disposePage, ensureSession, fetchModels, type Health } from "@/lib/acp-client";
+import { shouldReapPage } from "@/lib/acp-terminate";
 import { catalogMayWriteChatModel, catalogMayWriteGlobalKey, sameModels } from "@/lib/composer-model";
 import { pumpIdlePeerTurns } from "./idle-peer-turns";
 import type { AcpCommand } from "@/lib/acp";
@@ -97,7 +98,7 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
     const cwd = chat?.cwd ?? activePathRef.current ?? undefined;
     const ws = findWorkspace(workspacesRef.current, cwd);
     const spawnModel = key ?? chat?.model ?? ws?.model ?? model ?? undefined;
-    const { sessionId: id, commands } = await ensureSession(handleOf(chatId), {
+    const { sessionId: id, commands, cwd: checkout } = await ensureSession(handleOf(chatId), {
       model: spawnModel,
       reset,
       resume: sessionNamesRef.current.get(chatId),
@@ -105,6 +106,11 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
       yolo: ws?.yolo,
       mcp: ws?.mcp,
     });
+    if (checkout && checkout !== cwd) {
+      const next = chatsRef.current.map((c) => (c.id === chatId ? { ...c, cwd: checkout } : c));
+      chatsRef.current = next;
+      setChats(next);
+    }
     sessionsRef.current.set(chatId, id);
     bindMcpAppChat(handleOf(chatId));
     setSessionIds((current) => ({ ...current, [chatId]: id }));
@@ -168,7 +174,10 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
     // Reap this page's agents when it goes away — without this every reload
     // leaves a `graff acp` (and its MCP children) running under the dev server.
     const page = pageRef.current;
-    const reap = () => disposePage(page);
+    const reap = (event: PageTransitionEvent) => {
+      if (!shouldReapPage(event)) return;
+      disposePage(page);
+    };
     window.addEventListener("pagehide", reap);
     return () => {
       cancelled = true;

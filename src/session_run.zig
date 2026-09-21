@@ -131,7 +131,10 @@ pub fn runFrontendCommands(gpa: Allocator, io: Io, environ_map: anytype, root: *
         try finalizeSession(gpa, final_io, arena, out, root, json_mode);
         return true;
     }
-    if (try @import("acp.zig").runAcpCommand(gpa, io, environ_map, root, keys, client, in, out, arena, flags)) return true;
+    if (try @import("acp.zig").runAcpCommand(gpa, io, environ_map, root, keys, client, in, out, arena, flags)) {
+        try finalizeSession(gpa, final_io, arena, out, root, json_mode);
+        return true;
+    }
     if (try tui_launch.maybeRun(gpa, io, environ_map, root, keys, client, arena, flags, json_mode, cwd)) {
         try finalizeSession(gpa, final_io, arena, out, root, json_mode);
         return true;
@@ -491,7 +494,7 @@ pub fn finalizeSession(gpa: Allocator, io: Io, arena: Allocator, out: *Io.Writer
     // before the per-turn checkpoint) so a worktree never quits with work left
     // uncommitted on its scratch branch.
     jobs.worktreeAutoCommit(gpa, io, "wip: session end");
-    try out.writeAll("\n");
+    if (!json_mode) try out.writeAll("\n"); // TTY restore; ACP's writer is JSON-RPC
     try out.flush();
 }
 

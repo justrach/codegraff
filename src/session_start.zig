@@ -44,7 +44,6 @@ const mcp_config = @import("mcp_config.zig");
 const plugin_scan = @import("plugin_scan.zig");
 const adopt = @import("adopt.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: the eager-vs-deferred policy for MCP tool schemas
-const jobs = @import("jobs.zig");
 const tool_spill = @import("tool_spill.zig"); // #409: where an over-cap tool output's full bytes go
 const trace = @import("trace.zig");
 const scoring = @import("scoring.zig");
@@ -119,7 +118,8 @@ pub fn setupWorktreeAndBanner(
     }
     // --worktree/-w: run this session in an isolated git worktree so parallel
     // agents don't collide on files. Creates .graff/worktrees/<name> on branch
-    // worktree-<name> (from HEAD) and enters it; reuses it if it already exists.
+    // worktree-<name> from the remote base and enters it; reuses it if it exists.
+    const task_workspace = @import("task_workspace.zig");
     if (flags.worktree_flag) |wt| {
         // POSIX-only: the chdir below goes through libc's `chdir`, which Windows
         // builds don't link. -w is a parallel-agent dev workflow (mac/linux); on
@@ -128,28 +128,54 @@ pub fn setupWorktreeAndBanner(
         if (builtin.os.tag == .windows) {
             std.process.fatal("--worktree is not yet supported on Windows (POSIX-only chdir) — run without -w", .{});
         } else {
-            const wt_path = try std.fmt.allocPrint(arena, ".graff/worktrees/{s}", .{wt});
-            const wt_branch = try std.fmt.allocPrint(arena, "worktree-{s}", .{wt});
-            if (jobs.runCapped(gpa, io, &.{ "git", "worktree", "add", wt_path, "-b", wt_branch }, 8192, 8192, 60_000)) |r| {
-                gpa.free(r.stdout);
-                gpa.free(r.stderr);
-            } else |_| {}
-            const wt_z = arena.dupeSentinel(u8, wt_path, 0) catch std.process.fatal("--worktree: out of memory", .{});
-            if (std.posix.system.chdir(wt_z.ptr) != 0)
-                std.process.fatal("--worktree '{s}': could not enter {s} (is this a git repository?)", .{ wt, wt_path });
-            main_mod.g_worktree_branch = wt_branch; // non-null = auto-commit each turn to this scratch branch
+            const created = task_workspace.ensure(gpa, io, arena, .{ .slug = wt }) catch |err|
+                std.process.fatal("--worktree '{s}': {s}", .{ wt, task_workspace.createFailureText(err) });
+            task_workspace.enter(io, arena, created) catch
+                std.process.fatal("--worktree '{s}': could not enter {s} (is this a git repository?)", .{ wt, created.path });
             if (!main_mod.json_mode) sink.emit(io, .{ .worktree_entered = .{
-                .path = wt_path,
-                .branch = wt_branch,
+                .path = created.path,
+                .branch = created.branch,
                 .autocommit = main_mod.g_worktree_autocommit,
             } });
         }
     }
-    var cwd_buf: [4096]u8 = undefined;
+    var isolated: ?task_workspace.Workspace = null;
+    if (flags.worktree_flag == null and !task_workspace.envSkipAutoIsolate(environ_map.get("GRAFF_AUTO_ISOLATE"))) {
+        switch (task_workspace.maybeAutoIsolate(
+            gpa,
+            io,
+            arena,
+            environ_map.get("HOME") orelse "",
+            false,
+            flags.effectiveLean(),
+        )) {
+            .skip => {},
+            .isolated => |wt| isolated = wt,
+            .failed => |err| {
+                if (!task_workspace.envIsolationFallback(environ_map.get("GRAFF_ISOLATION_FALLBACK")))
+                    std.process.fatal("concurrent session isolation failed: {s}", .{task_workspace.createFailureText(err)});
+            },
+        }
+    }
+    if (isolated) |wt| {
+        if (!main_mod.json_mode) sink.emit(io, .{ .worktree_entered = .{
+            .path = wt.path,
+            .branch = wt.branch,
+            .autocommit = main_mod.g_worktree_autocommit,
+        } });
+    }
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     main_mod.g_cwd_display = if (flags.worktree_flag) |wt|
         // After chdir into the worktree, realPath(AT_FDCWD) is unreliable; derive from the launch dir.
         std.fmt.allocPrint(arena, "{s}/.graff/worktrees/{s}", .{ environ_map.get("PWD") orelse ".", wt }) catch try arena.dupe(u8, environ_map.get("PWD") orelse ".")
-    else if (Io.Dir.cwd().realPath(io, &cwd_buf)) |n|
+    else if (isolated) |wt|
+        try arena.dupe(u8, wt.path)
+    else if (std.process.currentPath(io, &cwd_buf)) |n|
+        // Posix cwd is the spawn root. Io.Dir.cwd().realPath can name the
+        // parent host via inherited PWD (Next's apps/native) while sessions
+        // still write to the requested workspace.
+        try arena.dupe(u8, cwd_buf[0..n])
+    else |_| if (Io.Dir.cwd().realPath(io, &cwd_buf)) |n|
         try arena.dupe(u8, cwd_buf[0..n])
     else |_|
         try arena.dupe(u8, environ_map.get("PWD") orelse ".");

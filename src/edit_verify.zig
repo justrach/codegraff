@@ -312,7 +312,7 @@ pub fn fsErrorText(gpa: Allocator, op: FileOp, path: []const u8, err: anyerror) 
     return (switch (err) {
         // A missing target, or a non-directory used as a path component.
         error.FileNotFound, error.NotDir => switch (op) {
-            .read => std.fmt.allocPrint(gpa, "read_file: {s} does not exist (paths are relative to the cwd) — check the name, or list the directory with bash `ls`", .{path}),
+            .read => std.fmt.allocPrint(gpa, "read_file: {s} does not exist (paths are relative to the cwd) — check the name, or list the directory with codedb list_dir", .{path}),
             .edit => std.fmt.allocPrint(gpa, "edit_file: {s} does not exist — edit_file only rewrites an existing file; use write_file to create it", .{path}),
             .write => std.fmt.allocPrint(gpa, "write_file: cannot create {s} — its parent directory does not exist; create it first with bash `mkdir -p`", .{path}),
         },

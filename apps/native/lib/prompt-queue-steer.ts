@@ -8,7 +8,7 @@ export function steerOrInterrupt(next: { id: number } | undefined, running: bool
 }
 
 export type SteerStatus = { pending?: number; error?: string };
-type Turn = { ready: boolean; selected?: number; cancel?: () => Promise<void>; sent: boolean; attempt: number; timer?: ReturnType<typeof setTimeout> };
+type Turn = { ready: boolean; selected?: number; cancel?: () => Promise<void>; sent: boolean; accepted: boolean; attempt: number; timer?: ReturnType<typeof setTimeout> };
 
 /** A turn-scoped guard: never send a deferred cancellation into the next turn. */
 export function createQueueSteerer(options: {
@@ -23,13 +23,22 @@ export function createQueueSteerer(options: {
     turn.sent = true;
     const attempt = turn.attempt;
     try {
-      void turn.cancel().catch(() => failed(chat, turn, attempt));
+      void turn.cancel().then(
+        () => accepted(chat, turn, attempt),
+        () => failed(chat, turn, attempt),
+      );
     } catch {
       failed(chat, turn, attempt);
     }
   };
-  const failed = (chat: number, turn: Turn, attempt: number) => {
+  const accepted = (chat: number, turn: Turn, attempt: number) => {
     if (turns.get(chat) !== turn || turn.attempt !== attempt) return;
+    clearTimeout(turn.timer);
+    turn.accepted = true;
+    if (turn.selected !== undefined) options.status(chat, { pending: turn.selected });
+  };
+  const failed = (chat: number, turn: Turn, attempt: number) => {
+    if (turns.get(chat) !== turn || turn.attempt !== attempt || turn.accepted) return;
     clearTimeout(turn.timer);
     turn.attempt += 1;
     turn.selected = undefined;
@@ -40,7 +49,7 @@ export function createQueueSteerer(options: {
   return {
     begin(chat: number) {
       clearTimeout(turns.get(chat)?.timer);
-      turns.set(chat, { ready: false, sent: false, attempt: 0 });
+      turns.set(chat, { ready: false, sent: false, accepted: false, attempt: 0 });
       options.status(chat, {});
     },
     ready(chat: number) {
@@ -64,7 +73,9 @@ export function createQueueSteerer(options: {
       options.setQueue(chat, prioritizeQueuedPrompt(queue, item));
       options.status(chat, { pending: item });
       const attempt = ++turn.attempt;
-      turn.timer = setTimeout(() => failed(chat, turn, attempt), options.timeoutMs ?? 10_000);
+      turn.timer = setTimeout(() => {
+        if (!turn.accepted) failed(chat, turn, attempt);
+      }, options.timeoutMs ?? 10_000);
       dispatch(chat, turn);
     },
   };

@@ -58,12 +58,16 @@ function PastedImage({ name }: { name: string }) {
       {/* Local staged pixels: no remote image optimizer or expiring object URL. */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={src} alt="Pasted image" loading="lazy" onError={() => setFailed(true)}
-        className="block h-32 max-w-full rounded-lg object-contain" />
+        className="block h-32 max-w-full rounded-chip object-contain" />
     </a>
   );
 }
 
-export const UserBubble = memo(function UserBubble({ text, onEdit }: { text: string; onEdit?: (next: string) => void }) {
+export const UserBubble = memo(function UserBubble({ text, promptIndex, onEdit }: {
+  text: string;
+  /** 1-based index of this prompt in the chat; handed back to `onEdit` so the handler can stay identical across renders. */
+  promptIndex?: number; onEdit?: (promptIndex: number, next: string) => void;
+}) {
   const parts = splitImageMarkers(text);
   const images = parts.filter((_, index) => index % 2 === 1);
   const words = parts.filter((_, index) => index % 2 === 0).join("");
@@ -87,8 +91,8 @@ export const UserBubble = memo(function UserBubble({ text, onEdit }: { text: str
   const save = () => {
     const next = draft.trim();
     setEditing(false);
-    if (!next || next === words.trim() || !onEdit) return;
-    onEdit(next);
+    if (!next || next === words.trim() || !onEdit || promptIndex === undefined) return;
+    onEdit(promptIndex, next);
   };
   return (
     <div data-user-bubble className="group flex justify-end pl-10 sm:pl-24" style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
@@ -138,11 +142,18 @@ export const AssistantBody = memo(function AssistantBody({
   reasoningLabel,
   snapshot,
   usage = false,
+  onRetry,
+  retryDisabled,
+  promptIndex,
 }: {
   turn: AssistantTurn;
   onOpenPath?: (path: string) => void;
   onReview?: () => void;
-  onAnswer?: (text: string, cancelled?: boolean) => void;
+  onAnswer?: (text: string, cancelled?: boolean) => void | Promise<void>;
+  /** Re-send prompt `promptIndex` (1-based), the one that produced this turn; rendered only when it errored. */
+  onRetry?: (promptIndex: number) => void;
+  retryDisabled?: boolean;
+  promptIndex?: number;
   scroller?: RefObject<HTMLDivElement | null>;
   following: boolean;
   reasoningLabel?: string;
@@ -212,10 +223,7 @@ export const AssistantBody = memo(function AssistantBody({
           />
         </div>
       )}
-      {!snapshot && <TurnActivity turn={turn} />}
-      {turn.error && (
-        <p role="alert" className="mt-4 max-w-[620px] text-[13.5px] leading-[1.65] text-red">{turn.error}</p>
-      )}
+      {!snapshot && <TurnActivity turn={turn} onRetry={turn.status === "error" ? onRetry : undefined} promptIndex={promptIndex} retryDisabled={retryDisabled} />}
       {turn.recap && turn.status === "done" && (
         <p className="mt-3 text-[12px] text-ink-3">{turn.recap}</p>
       )}
@@ -226,7 +234,7 @@ export const AssistantBody = memo(function AssistantBody({
         <button
           type="button"
           onClick={onReview}
-          className="mt-4 flex h-9 w-full max-w-[630px] items-center gap-2 rounded-[10px] bg-surface px-3 text-left shadow-btn transition-colors duration-100 hover:bg-hover"
+          className="mt-4 flex h-9 w-full max-w-[630px] items-center gap-2 rounded-control bg-surface px-3 text-left shadow-btn transition-colors duration-100 hover:bg-hover"
           style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-ink-3" aria-hidden>

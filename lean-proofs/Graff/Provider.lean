@@ -23,6 +23,7 @@ inductive Login where
   | codexDevice
   | kimiDevice
   | xaiDevice
+  | zaiCli
 deriving DecidableEq, Repr, BEq
 
 inductive Catalog where
@@ -58,7 +59,7 @@ def specs : List Row :=
   , { id := "kimi",       kind := .openai,    auth := .bearer,  login := .kimiDevice, catalog := .kimi, subLogin := true }
   , { id := "moonshot",   kind := .openai,    auth := .bearer }
   , { id := "xai",        kind := .openai,    auth := .bearer,  login := .xaiDevice, catalog := .openai, subLogin := true }
-  , { id := "zai",        kind := .openai,    auth := .bearer,  catalog := .openai, takesEffort := true }
+  , { id := "zai",        kind := .openai,    auth := .bearer,  login := .zaiCli, catalog := .openai, subLogin := true, takesEffort := true }
   , { id := "meta",       kind := .openai,    auth := .bearer,  catalog := .openai, takesEffort := true }
   , { id := "vercel",     kind := .openai,    auth := .bearer,  catalog := .openai, takesEffort := true }
   , { id := "openrouter", kind := .openai,    auth := .bearer,  catalog := .openai, takesEffort := true }

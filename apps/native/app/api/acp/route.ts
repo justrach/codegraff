@@ -13,7 +13,9 @@ import { prepareGuiPrompt } from "@/lib/gui-skill-context";
 import { attachmentStore } from "@/lib/attachment-store";
 
 import { retireWorker } from "@/lib/acp-retire";
-import { initializeWorker, serializeBootstrap } from "@/lib/acp-bootstrap";
+import { rememberAnswer, validateAnswer } from "@/lib/ask-answer";
+import { formatTermination, recordTermination, type TerminateReason } from "@/lib/acp-terminate";
+import { bindSessionCwd, initializeWorker, serializeBootstrap } from "@/lib/acp-bootstrap";
 import { finishCancelledPrompt } from "@/lib/acp-cancel";
 import { armIdle, cancelIdle, forgetPark, forgetParkMatching, keepPark, parkedChats, takeParked, type ParkedWorker } from "@/lib/acp-idle";
 
@@ -44,6 +46,9 @@ type Slot = {
   restartReady: Promise<void> | null;
   /** Open session/idle SSE subscribers (peer pump). */
   idleListeners: number;
+  /** `session/answer` call_ids already delivered to this worker. */
+  answered: Set<string>;
+  spawnedAt: number;
 };
 
 const HANDSHAKE_MS = 120_000;
@@ -120,11 +125,20 @@ function watchIdle(chat: string, slot: Slot): void {
   });
 }
 
-function killSlot(chat: string, parkFlag?: unknown): Promise<void> {
+function killSlot(chat: string, parkFlag?: unknown, reason: TerminateReason = "dispose"): Promise<void> {
   if (keepPark(parkFlag)) cancelIdle(chat);
   else forgetPark(chat);
   const slot = slots.get(chat);
   if (!slot) return retirements.get(chat) ?? Promise.resolve();
+  const turnActive = slotBusy(slot);
+  if (keepPark(parkFlag) && turnActive) return Promise.resolve();
+  console.warn(formatTermination(recordTermination({
+    chat,
+    reason: keepPark(parkFlag) ? "idle-park" : reason,
+    turnActive,
+    childAgeMs: Date.now() - slot.spawnedAt,
+    signal: "EOF",
+  })));
   slots.delete(chat);
   try { slot.transport.abort(new Error("worker retired")); } catch { /* already closed */ }
   const pending = closeSessionWriter(slot.child, EXIT_GRACE_MS);
@@ -138,7 +152,7 @@ async function killPage(page: string) {
   const prefix = `${page}:`;
   forgetParkMatching(prefix);
   const chats = [...new Set([...slots.keys(), ...retirements.keys(), ...parkedChats()])].filter(chat => chat.startsWith(prefix));
-  await Promise.all(chats.map(chat => killSlot(chat)));
+  await Promise.all(chats.map(chat => killSlot(chat, undefined, "dispose-page")));
 }
 
 function spawnAgent(chat: string, opts: SpawnOpts): Slot {
@@ -156,7 +170,9 @@ function spawnAgent(chat: string, opts: SpawnOpts): Slot {
   const child = spawn(graffBin(), args, {
     stdio: ["pipe", "pipe", "inherit"],
     cwd: opts.cwd,
-    env: { ...env, GRAFF_DESKTOP_CHAT: chat, ...(!opts.mcp ? { GRAFF_MCP_CONFIG: mcpOffPath() } : {}) },
+    // Inherited PWD is the Next host (apps/native). Graff's display cwd
+    // falls back to PWD when Io realPath misses; pin it to the spawn root.
+    env: { ...env, GRAFF_DESKTOP_CHAT: chat, GRAFF_CWD: opts.cwd, PWD: opts.cwd, ...(!opts.mcp ? { GRAFF_MCP_CONFIG: mcpOffPath() } : {}) },
   });
   const slot: Slot = {
     child,
@@ -174,6 +190,8 @@ function spawnAgent(chat: string, opts: SpawnOpts): Slot {
     idleListeners: 0,
     restart: false,
     restartReady: null,
+    answered: new Set<string>(),
+    spawnedAt: Date.now(),
   };
   slot.transport = new AcpTransport(child, message => noteCommands(slot, message));
   child.on("error", (err) => {
@@ -184,9 +202,9 @@ function spawnAgent(chat: string, opts: SpawnOpts): Slot {
   });
   slots.set(chat, slot);
   try { attachmentStore().enrollSession(imageScope, child.pid); }
-  catch (error) { void killSlot(chat).catch(() => undefined); throw error; }
+  catch (error) { void killSlot(chat, undefined, "bootstrap-replace").catch(() => undefined); throw error; }
   if (slot.resume) registerSessionWriter(sessionFile(slot.cwd, slot.resume), child, () => {
-    if (slots.get(chat) === slot) void killSlot(chat).catch(() => undefined);
+    if (slots.get(chat) === slot) void killSlot(chat, undefined, "session-writer").catch(() => undefined);
   });
   return slot;
 }
@@ -255,7 +273,7 @@ async function bootstrapNow(chat: string, opts: BootstrapOpts): Promise<Slot> {
     if (slots.get(chat) !== live) return bootstrapNow(chat, opts);
   }
   const parked = opts.reset ? (forgetPark(chat), undefined) : takeParked(chat);
-  await killSlot(chat);
+  await killSlot(chat, undefined, "bootstrap-replace");
   if (g.__graffAcpShuttingDown) throw new Error("Desktop is shutting down");
   if (slots.has(chat)) return bootstrapNow(chat, opts);
   const slot = spawnAgent(chat, {
@@ -265,14 +283,17 @@ async function bootstrapNow(chat: string, opts: BootstrapOpts): Promise<Slot> {
     yolo: opts.yolo ?? recovering?.yolo ?? parked?.yolo ?? defaultYolo(),
     mcp: opts.mcp ?? recovering?.mcp ?? parked?.mcp ?? true,
   });
-  slot.sessionId = await initializeWorker(slot.transport, slot.cwd, async () => {
+  const created = await initializeWorker(slot.transport, slot.cwd, async () => {
     slot.restart = true;
     slot.restartReady = retireWorker(slot.child);
     try { await slot.restartReady; }
     finally { if (slots.get(chat) === slot) slots.delete(chat); }
   }, HANDSHAKE_MS);
+  slot.sessionId = created.sessionId;
+  slot.cwd = bindSessionCwd(slot.cwd, created.cwd);
+  attachmentStore().enrollSession(path.dirname(sessionFile(slot.cwd, slot.resume ?? slot.sessionId)), slot.child.pid);
   if (!slot.resume) registerSessionWriter(sessionFile(slot.cwd, slot.sessionId), slot.child, () => {
-    if (slots.get(chat) === slot) void killSlot(chat).catch(() => undefined);
+    if (slots.get(chat) === slot) void killSlot(chat, undefined, "session-writer").catch(() => undefined);
   });
   await drainCommands(slot);
   if (slots.get(chat) !== slot) throw new Error("ACP startup was disposed. Retry to start a new worker.");
@@ -311,7 +332,7 @@ export async function POST(req: NextRequest) {
   try {
     if (method === "shutdown") {
       g.__graffAcpShuttingDown = true;
-      await Promise.all([...new Set([...slots.keys(), ...retirements.keys(), ...parkedChats()])].map(chat => killSlot(chat)));
+      await Promise.all([...new Set([...slots.keys(), ...retirements.keys(), ...parkedChats()])].map(chat => killSlot(chat, undefined, "shutdown")));
       return Response.json({ ok: true });
     }
     if (method === "dispose") {
@@ -351,12 +372,19 @@ export async function POST(req: NextRequest) {
       return Response.json({ ok: true });
     }
     if (method === "session/answer") {
-      try {
-        slot.transport.notify("session/answer", { ...body.params, sessionId: slot.sessionId });
-      } catch {
-        // a dead transport means the turn is over regardless
+      const checked = validateAnswer(body.params);
+      if (!checked.ok) return Response.json({ error: checked.error }, { status: 400 });
+      if (!slot.sessionId) return Response.json({ error: "session is no longer valid" }, { status: 409 });
+      if (rememberAnswer(slot.answered, checked.value.callId) === "repeat") {
+        return Response.json({ ok: true, callId: checked.value.callId });
       }
-      return Response.json({ ok: true });
+      try {
+        slot.transport.notify("session/answer", { ...checked.value, sessionId: slot.sessionId });
+      } catch (error) {
+        slot.answered.delete(checked.value.callId);
+        return Response.json({ error: error instanceof Error ? error.message : "notify failed" }, { status: 503 });
+      }
+      return Response.json({ ok: true, callId: checked.value.callId });
     }
     if (method === "session/idle") {
       slot.idleListeners += 1;

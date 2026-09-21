@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { AcpTransport } from "./acp-transport";
-import { createPromptStream } from "./acp-prompt-stream";
+import { createPromptStream, promptTimeoutMs } from "./acp-prompt-stream";
 import { prompt } from "./acp-client";
 import { applyAcpUpdate, emptyTurn, finishAcpTurn } from "./acp";
 import { turnActivity } from "./turn-activity";
@@ -89,6 +89,73 @@ for (const outcome of ["end_turn", "cancelled", "error", "exit"] as const) {
     });
   }
 }
+
+test("fixture runs cap the prompt stream below the outer watchdog; production keeps the day", () => {
+  const saved = process.env.GRAFF_TEST_TIMEOUT_MS;
+  try {
+    delete process.env.GRAFF_TEST_TIMEOUT_MS;
+    assert.equal(promptTimeoutMs(), 24 * 60 * 60 * 1000);
+    process.env.GRAFF_TEST_TIMEOUT_MS = "180000";
+    assert.equal(promptTimeoutMs(), 120000);
+    process.env.GRAFF_TEST_TIMEOUT_MS = "soon";
+    assert.equal(promptTimeoutMs(), 24 * 60 * 60 * 1000);
+    process.env.GRAFF_TEST_TIMEOUT_MS = "60000";
+    assert.equal(promptTimeoutMs(), 24 * 60 * 60 * 1000);
+  } finally {
+    if (saved === undefined) delete process.env.GRAFF_TEST_TIMEOUT_MS;
+    else process.env.GRAFF_TEST_TIMEOUT_MS = saved;
+  }
+});
+
+test("the capped timeout reaches the transport", async () => {
+  const saved = process.env.GRAFF_TEST_TIMEOUT_MS;
+  process.env.GRAFF_TEST_TIMEOUT_MS = "180000";
+  try {
+    let seen = 0;
+    const transport = { request: (_method: string, _params: unknown, timeout: number) => {
+      seen = timeout;
+      return new Promise(() => {});
+    } };
+    const { stream } = createPromptStream(transport, {}, () => {});
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(seen, 120000);
+    await stream.cancel().catch(() => {});
+  } finally {
+    if (saved === undefined) delete process.env.GRAFF_TEST_TIMEOUT_MS;
+    else process.env.GRAFF_TEST_TIMEOUT_MS = saved;
+  }
+});
+
+test("mid-stream retry announcement resets streamed text and records a notice", () => {
+  let turn = emptyTurn();
+  turn = applyAcpUpdate(turn, { sessionUpdate: "tool_call", toolCallId: "write", title: "Update layout", status: "in_progress" });
+  turn = applyAcpUpdate(turn, { sessionUpdate: "tool_call_update", toolCallId: "write", status: "completed" });
+  turn = applyAcpUpdate(turn, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "The plan has three" } });
+  turn = applyAcpUpdate(turn, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "[provider error mid-response — retrying in 1s (1/3)]" } });
+  assert.equal(turn.text, "");
+  assert.equal(turn.retryNotice, "provider error mid-response — retrying in 1s (1/3)");
+  assert.deepEqual(turn.tools.map(tool => tool.status), ["ok"]);
+  turn = applyAcpUpdate(turn, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "recovered after the retry" } });
+  assert.equal(turn.text, "recovered after the retry");
+  assert.equal(turn.retryNotice, "provider error mid-response — retrying in 1s (1/3)");
+  const activity = turnActivity({ ...turn, connected: true, startedAt: 1000, lastUpdateAt: 2000 }, 2000);
+  assert.equal(activity.live, true);
+  assert.equal(activity.detail, "provider error mid-response — retrying in 1s (1/3)");
+  turn = applyAcpUpdate(turn, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "[server overloaded — retrying in 2s (2/3)]" } });
+  assert.equal(turn.text, "");
+  assert.equal(turn.retryNotice, "server overloaded — retrying in 2s (2/3)");
+  assert.deepEqual(turn.tools.map(tool => tool.status), ["ok"]);
+});
+
+test("a non-matching message chunk still appends", () => {
+  let turn = applyAcpUpdate(emptyTurn(), { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Hello" } });
+  turn = applyAcpUpdate(turn, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: " [not a retry]" } });
+  assert.equal(turn.text, "Hello [not a retry]");
+  assert.equal(turn.retryNotice, undefined);
+  turn = applyAcpUpdate(turn, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "[gateway flake — retrying in 1s (1/3)]" } });
+  assert.equal(turn.text, "Hello [not a retry][gateway flake — retrying in 1s (1/3)]");
+  assert.equal(turn.retryNotice, undefined);
+});
 
 test("closing a live HTTP reader cancels once, and later failure cannot write into it", async () => {
   const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stdin: new PassThrough() });

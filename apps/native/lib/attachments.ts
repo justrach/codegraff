@@ -53,25 +53,35 @@ export function attachRowKeepsUserActivation(rowKey: string): boolean {
 /** Generous: a large paste should finish, but a hung HTTP/1.1 slot must not. */
 export const ATTACH_TIMEOUT_MS = 30_000;
 
-function attachFailure(err: unknown): Error {
+export function attachTimeoutMessage(name: string): string {
+  return `Adding ${name.trim() || "the file"} timed out. Try again.`;
+}
+
+function attachFailure(err: unknown, name: string): Error {
   if (err instanceof DOMException && (err.name === "TimeoutError" || err.name === "AbortError")) {
-    return new Error("Adding the file timed out. Try again.");
+    return new Error(attachTimeoutMessage(name));
   }
-  return err instanceof Error ? err : new Error(String(err));
+  const detail = err instanceof Error ? err.message : String(err);
+  const label = name.trim();
+  return new Error(label ? `${label}: ${detail}` : detail);
 }
 
 /** Write one file to the harness-readable temp directory and describe it. */
-export async function uploadAttachment(file: File, timeoutMs = ATTACH_TIMEOUT_MS): Promise<Attachment> {
+export async function uploadAttachment(file: File, timeoutMs = ATTACH_TIMEOUT_MS, signal?: AbortSignal): Promise<Attachment> {
   const body = new FormData();
   body.append("file", file);
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
   let res: Response;
   try {
-    res = await fetch("/api/attach", { method: "POST", body, signal: AbortSignal.timeout(timeoutMs) });
+    res = await fetch("/api/attach", { method: "POST", body, signal: combined });
   } catch (err) {
-    throw attachFailure(err);
+    throw attachFailure(err, file.name ?? "");
   }
   const json = (await res.json()) as { path?: string; name?: string; error?: string };
-  if (!res.ok || !json.path) throw new Error(json.error ?? `attach failed (${res.status})`);
+  if (!res.ok || !json.path) {
+    throw attachFailure(new Error(json.error ?? `attach failed (${res.status})`), file.name ?? "");
+  }
   return {
     id: json.path,
     name: json.name ?? file.name ?? "attachment",

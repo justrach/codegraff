@@ -165,6 +165,14 @@ record only when you need the evidence or the edge cases.
 | [0143](0143-release-desktop-is-com-codegraff-app.md) | Packaged Codegraff.app is `com.codegraff.app`. `dev.*` identities are local rebuilds only. |
 | [0144](0144-claim-asks-on-accord.md) | Claim conflicts ping the owner on Accord/JSONL; the model does not broker handoff in chat. |
 | [0145](0145-live-claims-are-accord-progress.md) | Claim acquire/release/handoff replicate as replaceable Accord progress; the JSON ledger stays canonical. |
+| [0146](0146-concurrent-sessions-auto-isolate.md) | A second live session in the same Git checkout gets its own worktree; concurrent agents never share `index.lock`. |
+| [0147](0147-finish-is-not-cleanup-fanout.md) | Finish is not archive: park peer wakes until idle, paint the tally at the step boundary, refuse cleanup/fix-it children, cap live fan-out. |
+| [0148](0148-read-file-miss-storm-stops.md) | After N same-prefix or incrementing `read_file` misses, refuse further guesses this turn and point at `codedb list_dir`. |
+| [0145](0145-gpt-5-6-reasoning-replays-from-local-history.md) | GPT-5.6 reasoning replays from local history: never send `reasoning.context` or `reasoning.mode`; `max` effort is the ladder ceiling (shown as Ultra); PTC items stay opaque history. |
+| [0148](0148-midstream-provider-error-is-a-transient-500.md) | A streamed provider "internal error" after output began is a transient 500: bounded backoff retry, never overflow. Overflow needs a size/length phrasing or code; the meter pins only on a real rejection. Reverses `#1019`. |
+| [0149](0149-daddy-directives-are-explicit-control.md) | Ambient `[peer]` wakes are not a new task; `[daddy]` directives are explicit supervisor control. |
+| [0150](0150-subagent-briefs-are-structured.md) | Child briefs are headed sections plus a harness environment header; the judge stays a bare prompt. |
+| [0151](0151-zai-coding-plan-login.md) | Z.AI Coding Plan is a `sub_login` like Kimi/xAI: `graff login zai` uses ZCode's public CLI OAuth broker, then provisions a Graff-named API key onto `/api/coding/paas/v4`. |
 
 ## When to write one
 

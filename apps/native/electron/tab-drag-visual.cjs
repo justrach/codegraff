@@ -17,19 +17,22 @@ async function runTabDrag({win, origin, output}) {
   const tabs=()=>js(`Array.from(document.querySelectorAll('[data-tab-id]')).map(t=>Number(t.dataset.tabId))`);
   const panes=()=>js(`Array.from(document.querySelectorAll('[data-chat]')).map(t=>Number(t.dataset.chat))`);
   const point=selector=>js(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()`);
-  const click=async selector=>{
+  const settledPoint=async selector=>{
     // Hydration and workspace discovery move the tab strip after loadURL.
-    // Hit-test settled coordinates before sending one real pointer click.
+    // Hit-test settled coordinates before sending real pointer input.
     for(let i=0;i<50;i++) {
       const before=await point(selector);
       await new Promise(resolve=>setTimeout(resolve,100));
       const p=await point(selector);
       if(before.x!==p.x||before.y!==p.y)continue;
       if(!await js(`document.querySelector(${JSON.stringify(selector)})?.contains(document.elementFromPoint(${p.x},${p.y}))`))continue;
-      for(const type of ['mouseDown','mouseUp'])await desktop.testInput(wc,{type,button:'left',clickCount:1,...p});
-      return;
+      return p;
     }
     throw Error(`Pointer target did not settle: ${selector}`);
+  };
+  const click=async selector=>{
+    const p=await settledPoint(selector);
+    for(const type of ['mouseDown','mouseUp'])await desktop.testInput(wc,{type,button:'left',clickCount:1,...p});
   };
   const focusComposer=async()=>{
     // The landing composer moves when the browser closes and workspace health arrives.
@@ -44,8 +47,19 @@ async function runTabDrag({win, origin, output}) {
     }
     throw Error('Composer did not settle and accept pointer focus');
   };
-  const down=async id=>{const p=await point(`[data-tab-id="${id}"]`);await desktop.testInput(wc,{type:'mouseDown',button:'left',clickCount:1,...p});return p;};
-  const move=async(from,to)=>{for(let i=1;i<=10;i++)await desktop.testInput(wc,{type:'mouseMove',x:Math.round(from.x+(to.x-from.x)*i/10),y:Math.round(from.y+(to.y-from.y)*i/10)});};
+  const down=async id=>{
+    const p=await settledPoint(`[data-tab-id="${id}"]`);
+    // CDP mousePressed without a preceding move often misses the tab after the composer click.
+    await desktop.testInput(wc,{type:'mouseMove',...p});
+    await desktop.testInput(wc,{type:'mouseDown',button:'left',clickCount:1,...p});
+    return p;
+  };
+  const move=async(from,to)=>{
+    for(let i=1;i<=10;i++){
+      await desktop.testInput(wc,{type:'mouseMove',button:'left',x:Math.round(from.x+(to.x-from.x)*i/10),y:Math.round(from.y+(to.y-from.y)*i/10)});
+      await new Promise(r=>setTimeout(r,16));
+    }
+  };
   const up=to=>desktop.testInput(wc,{type:'mouseUp',button:'left',clickCount:1,...to});
   const drag=async(id,to)=>{await move(await down(id),to);await up(to);};
   await wc.loadURL(origin);win.setSize(1320,850);
@@ -55,7 +69,10 @@ async function runTabDrag({win, origin, output}) {
   const [one,two]=await tabs();
   await click('textarea[aria-label="Prompt"]');
   for(const keyCode of 'Draft survives dragging')await desktop.testInput(wc,{type:'char',keyCode});
-  const target=await point(`[data-tab-id="${one}"]`);target.x-=55;
+  await wait(`document.querySelector('textarea[aria-label="Prompt"]').value==='Draft survives dragging'`);
+  await settledPoint(`[data-tab-id="${one}"]`);
+  await settledPoint(`[data-tab-id="${two}"]`);
+  const target=await js(`(()=>{const r=document.querySelector('[data-tab-id="${one}"]').getBoundingClientRect();return {x:Math.round(r.left+r.width*0.25),y:Math.round(r.top+r.height/2)}})()`);
   await drag(two,target);
   await wait(`Number(document.querySelector('[data-tab-id]').dataset.tabId)===${two}`);
   assert.deepEqual(await panes(),[two]);

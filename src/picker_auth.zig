@@ -70,6 +70,12 @@ pub fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, provider_id: 
                 keys.codex_account = auth.account;
                 reloaded = true;
             }
+        } else if (std.mem.eql(u8, provider_id, "zai")) {
+            if (oauth.loadZaiOAuth(root.io, root.gpa, arena, home, false, null)) |k| {
+                value.* = k;
+                source.* = .login;
+                reloaded = true;
+            }
         }
         // #402: the live Agent holds its OWN Provider copy — providers.applyProviderInner
         // is otherwise the only writer — so refreshing Keys alone left the active
@@ -86,6 +92,7 @@ pub fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, provider_id: 
             const is_codex = std.mem.eql(u8, provider_id, "codex");
             policy.adoptFreshAuth(root, .{ .key = key, .account = if (is_codex) keys.codex_account else "" });
             root.provider.source = .login;
+            if (std.mem.eql(u8, provider_id, "zai")) root.provider.url = provider_mod.g_zai_url_override orelse spec.url;
             root.closeCodexWs(); // the held socket was dialed with the stale bearer
         };
     }
@@ -235,7 +242,7 @@ pub fn offerProviderAuth(
         try out.flush();
         return;
     };
-    const can_login = std.mem.eql(u8, pid, "codegraff") or std.mem.eql(u8, pid, "codex") or std.mem.eql(u8, pid, "kimi") or std.mem.eql(u8, pid, "xai");
+    const can_login = spec.login != .api_key;
 
     // Non-interactive (one-shot / no TTY): no picker — print the hint and bail.
     if (!use_color or root.in == null) {
@@ -297,6 +304,12 @@ pub fn offerProviderAuth(
         } else if (std.mem.eql(u8, pid, "xai")) {
             oauth.xaiLogin(root.io, root.gpa, arena, home) catch |err| {
                 try out.print("\xe2\x9c\x97 xai login failed: {t}\n", .{err});
+                try out.flush();
+                return;
+            };
+        } else if (std.mem.eql(u8, pid, "zai")) {
+            oauth.zaiLogin(root.io, root.gpa, arena, home) catch |err| {
+                try out.print("\xe2\x9c\x97 zai login failed: {t}\n", .{err});
                 try out.flush();
                 return;
             };

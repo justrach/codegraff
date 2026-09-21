@@ -351,9 +351,8 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
 
     const wf_task = std.mem.eql(u8, kind, "workflow_task");
     if (wf_task) guiEmit(ctx.io, .{ .type = "tool_call", .name = "subagent", .input = .{ .description = label }, .id = sub_id });
-    // Loop deadline + playbook.rideBrief: every spawn path (subagent, workflow,
-    // retry, judge) injects live constraints here from .graff/playbook.jsonl.
-    const task_prompt = playbook.rideBrief(ctx.io, arena, try goal_pacing.childTaskPrompt(arena, prompt, ctx.loop_deadline_ms, util.unixMs(ctx.io)));
+    const tasked = try @import("subagent_brief.zig").prepare(arena, ctx.io, kind, prompt, ctx.agent_cwd, main_mod.g_hooks.pre_tool);
+    const task_prompt = playbook.rideBrief(ctx.io, arena, try goal_pacing.childTaskPrompt(arena, tasked, ctx.loop_deadline_ms, util.unixMs(ctx.io)));
     try agent.messages.append(try textMessage(arena, "user", task_prompt));
     defer agent.tools_used.deinit(gpa);
     // Retry transient failures against the same child history.
@@ -453,7 +452,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         } else {
             const outcome = jobs.agentWorktreeFinish(gpa, ctx.io, w);
             if (outcome.kept) {
-                extra = std.fmt.allocPrint(gpa, "\n\n[worktree kept ({s}) — path: {s}, branch: {s}]", .{ jobs.keepReasonText(outcome.reason), w.path, w.branch }) catch "";
+                extra = std.fmt.allocPrint(gpa, "\n\n[worktree kept ({s}) — path: {s}, branch: {s}; finish is not archive — do not spawn a cleanup child]", .{ jobs.keepReasonText(outcome.reason), w.path, w.branch }) catch "";
                 extra_owned = extra.len > 0;
             }
         }

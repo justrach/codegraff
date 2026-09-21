@@ -77,10 +77,10 @@ pub fn promote(provider_id: []const u8) ?Promotion {
 /// startup.resolveKeys, which owns the "is this provider even in play"
 /// gate (#274 — a login refresh is a synchronous network call).
 ///
-/// Only kimi and xai reach the load here: codegraff's device login is not a
-/// flat-rate plan (`sub_login = false`), and codex is resolved earlier because
-/// its `env_key` is the CODEX_DISABLED sentinel, so it has no metered key to
-/// outrank in the first place.
+/// Only kimi, xai, and zai reach the load here: codegraff's device login is
+/// not a flat-rate plan (`sub_login = false`), and codex is resolved earlier
+/// because its `env_key` is the CODEX_DISABLED sentinel, so it has no metered
+/// key to outrank in the first place.
 pub fn preferPlan(
     io: std.Io,
     gpa: std.mem.Allocator,
@@ -95,6 +95,7 @@ pub fn preferPlan(
     const token = switch (spec.login) {
         .kimi_device => oauth.loadKimiOAuth(io, gpa, arena, home, false, null),
         .xai_device => oauth.loadXaiOAuth(io, gpa, arena, home, false, null),
+        .zai_cli => oauth.loadZaiOAuth(io, gpa, arena, home, false, null),
         else => null,
     } orelse return;
     if (value.*) |metered| park(spec.id, metered, source.*);

@@ -24,11 +24,8 @@ const tui_session = @import("tui_session.zig");
 const engine_sink = @import("engine_sink.zig");
 const tui_sink = @import("tui_sink.zig");
 const tui_acp = @import("tui_acp.zig");
-const job_notify = @import("job_notify.zig");
-const peer_idle = @import("peer_idle.zig");
+const idle_wake = @import("idle_wake_sources.zig");
 const job_wait = @import("job_wait.zig");
-const schedule = @import("schedule.zig");
-const channel_worker = @import("channel_worker.zig");
 const util = @import("util.zig");
 const obs = @import("obs.zig");
 const vision = @import("vision.zig");
@@ -215,12 +212,8 @@ fn updateCb(ctx: ?*anyopaque, gpa: Allocator, action: []const u8) ?[]const u8 {
 
 fn idleWakeCb(ctx: ?*anyopaque, buf: []u8) ?[]const u8 {
     const c: *repl_glue.ReplCtx = @ptrCast(@alignCast(ctx orelse return null));
-    if (c.root) |root| if (@import("subagent_interactive.zig").takeWake(c.io, root.session_name, buf)) |t| return t;
-    if (job_notify.takeIdleWake(c.io, buf)) |t| return t; // an idle stop waits for a real step boundary (#199)
-    if (schedule.takeWake(c.io, buf)) |t| return t;
-    if (channel_worker.takeWake(c.io, buf)) |t| return t;
-    _ = @import("presence_accord.zig").takePing(); // standing link; JSONL is still the drain
-    return peer_idle.takeIdleWake(c.io, buf);
+    const name = if (c.root) |root| root.session_name else "";
+    return idle_wake.takeIdleWake(c.io, name, buf);
 }
 
 fn versionCb(ctx: ?*anyopaque, gpa: Allocator) ?[]const u8 {

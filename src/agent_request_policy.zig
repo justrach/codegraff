@@ -358,39 +358,8 @@ pub fn errorCode(root: std.json.ObjectMap) ?[]const u8 {
     return null;
 }
 
-const max_server_retries: usize = 3; // #opencode-parity: bounded retries for a transient in-stream server overload
-
-/// #opencode-parity: an in-band error event (an SSE {"type":"error"} or a JSON
-/// error envelope) naming a TRANSIENT server condition — Anthropic overloaded_error,
-/// OpenAI server_error / server_is_overloaded, or plain "overloaded" — is a 5xx that
-/// surfaced mid-stream and should be retried, not hard-failed. Billing / quota /
-/// invalid-input errors are NOT transient and fall through to a hard fail.
-fn isTransientServerError(etype: []const u8, code: ?[]const u8, msg: []const u8) bool {
-    const needles = [_][]const u8{ "overloaded", "server_error", "server_is_overloaded" };
-    for (needles) |n| {
-        if (util.indexOfIgnoreCase(etype, n) != null) return true;
-        if (util.indexOfIgnoreCase(msg, n) != null) return true;
-        if (code) |c| if (util.indexOfIgnoreCase(c, n) != null) return true;
-    }
-    return false;
-}
-
-/// If an in-stream error names a transient server overload, back off and retry the
-/// request (bounded), like a 5xx — returns true to signal the caller to `continue`.
-/// Esc during the backoff propagates as error.Interrupted. #opencode-parity.
-pub fn retryTransientServerError(self: *Agent, etype: []const u8, code: ?[]const u8, msg: []const u8, retries: *usize) !bool {
-    if (!isTransientServerError(etype, code, msg)) return false;
-    if (retries.* >= max_server_retries) return false;
-    retries.* += 1;
-    self.partial_text.clearRetainingCapacity(); // fresh re-stream after the retry, no concat
-    const delay_ms = RetryPlan.delayMs(true, retries.* - 1); // 1·2·4s
-    try self.say("[server overloaded — retrying in {d}s ({d}/{d})]\n", .{ delay_ms / 1000, retries.*, max_server_retries });
-    if (self.tracer) |tr| tr.note("retry", "server overloaded (in-stream)");
-    if (telemetry.g_telem) |t| t.errorEvent("server_overloaded", if (msg.len > 0) msg else etype);
-    self.sleepInterruptible(delay_ms) catch return error.Interrupted;
-    return true;
-}
-
+// The transient-server retry ladder (retryTransientServerError) lives in
+// agent_gateway_retry.zig with the other in-band error ladders (ADR 0148).
 pub const GatewayRetryState = @import("agent_gateway_retry.zig").GatewayRetryState;
 pub const noteRetry = @import("agent_gateway_retry.zig").noteRetry;
 pub const noteFlake = @import("agent_gateway_retry.zig").noteFlake;
@@ -418,18 +387,6 @@ test "sseKeepAliveOnly: comment-only bodies true, data/error/JSON bodies false" 
     try std.testing.expect(!sseKeepAliveOnly(""));
     try std.testing.expect(!sseKeepAliveOnly("data: {\"choices\":[]}\n"));
     try std.testing.expect(!sseKeepAliveOnly("{\"error\":{\"message\":\"x\"}}"));
-}
-
-test "isTransientServerError (#opencode-parity): overload/server_error retry; quota/invalid/auth do not" {
-    // transient server conditions → retry like a 5xx
-    try std.testing.expect(isTransientServerError("overloaded_error", null, ""));
-    try std.testing.expect(isTransientServerError("api_error", "server_error", ""));
-    try std.testing.expect(isTransientServerError("", "server_is_overloaded", ""));
-    try std.testing.expect(isTransientServerError("", null, "The server is Overloaded, please try again")); // case-insensitive, in message
-    // billing / input / auth → NOT transient, must hard-fail
-    try std.testing.expect(!isTransientServerError("insufficient_quota", "insufficient_quota", "You exceeded your current quota"));
-    try std.testing.expect(!isTransientServerError("invalid_request_error", null, "invalid prompt"));
-    try std.testing.expect(!isTransientServerError("authentication_error", null, "invalid api key"));
 }
 
 /// #opencode-parity: a 429 body naming a billing/quota cap (OpenAI insufficient_quota,

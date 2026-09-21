@@ -10,6 +10,7 @@ describe("normalizeBrowserTarget", () => {
     assert.equal(normalizeBrowserTarget("example.com"), "https://example.com/");
     assert.equal(normalizeBrowserTarget("localhost:3000"), "http://localhost:3000/");
     assert.equal(normalizeBrowserTarget("192.168.1.20:8080/health"), "http://192.168.1.20:8080/health");
+    assert.equal(normalizeBrowserTarget("[2001:db8::1]:8080/health"), "http://[2001:db8::1]:8080/health");
   });
 
   it("rejects unsafe, credential-bearing, and file-like lookalikes", () => {
@@ -20,9 +21,19 @@ describe("normalizeBrowserTarget", () => {
       "person@example.com",
       "README.md",
       "component.tsx",
+      "image.png",
+      "photo.final.jpeg",
+      "archive.tar.gz",
+      "slides.pptx",
+      "clip.mp4",
       "src/example.com",
       "999.1.1.1",
     ]) assert.equal(normalizeBrowserTarget(value), null, value);
+  });
+
+  it("allows explicit or www-prefixed destinations even when the host resembles a filename", () => {
+    assert.equal(normalizeBrowserTarget("https://image.png/docs"), "https://image.png/docs");
+    assert.equal(normalizeBrowserTarget("www.image.png/docs"), "https://www.image.png/docs");
   });
 });
 
@@ -49,13 +60,18 @@ describe("browserLinkSegments", () => {
 
   it("does not link email, unsafe-scheme, or file-path lookalikes", () => {
     for (const text of [
-      "person@example.com src/example.com README.md",
+      "person@example.com src/example.com README.md image.png photo.final.jpeg archive.tar.gz",
       "javascript:example.com mailto:example.com custom:example.com",
     ]) assert.deepEqual(browserLinkSegments(text), [{ kind: "text", value: text }]);
   });
 
-  it("recognizes the reported local preview URL exactly", () => {
+  it("recognizes the reported local preview URL and bare IPv6 destinations exactly", () => {
     const url = "http://localhost:3090/visual-tests/radius-preview";
     assert.deepEqual(browserLinkSegments(url), [{ kind: "link", label: url, href: url }]);
+    assert.deepEqual(browserLinkSegments("Open [2001:db8::1]:8080/health."), [
+      { kind: "text", value: "Open " },
+      { kind: "link", label: "[2001:db8::1]:8080/health", href: "http://[2001:db8::1]:8080/health" },
+      { kind: "text", value: "." },
+    ]);
   });
 });

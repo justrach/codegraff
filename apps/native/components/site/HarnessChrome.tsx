@@ -3,6 +3,7 @@ import SessionTabs from "./SessionTabs";
 import type {SplitTree} from "@/lib/split-tree";
 import ActionMenu from "@/components/primitives/ActionMenu";
 import AppSettings from "./AppSettings";
+import { IconSidebarLeftOpen } from "@/lib/icons";
 import type { PointerEvent, MouseEvent, ReactNode } from "react";
 import type { Chat } from "./harness-types";
 import reviewStyles from "./ChangesPane.module.css";
@@ -39,7 +40,7 @@ export default function HarnessChrome({navigationToggle, sidebarVisible = false,
           agentsOpen={agentsOpen} focusChat={focusChat} closeChat={closeChat}
           onTabPointerDown={onTabPointerDown} onTabClickCapture={onTabClickCapture} />
         <button type="button" aria-label="New chat" title="New chat (⌘T)" onClick={newChat}
-          className="ml-0.5 flex size-7 shrink-0 items-center justify-center rounded-[7px] text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink">
+          className="ml-0.5 flex size-7 shrink-0 items-center justify-center rounded-full text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
             <path d="M12 5v14M5 12h14" />
           </svg>
@@ -65,6 +66,11 @@ export default function HarnessChrome({navigationToggle, sidebarVisible = false,
           <button type="button" aria-label="Conversations" aria-pressed={conversationsOpen} onClick={openConversations}>All conversations</button>
           <button type="button" onClick={onFolder}>Open a folder…</button>
         </ActionMenu>
+        {!sidebarVisible && <button type="button" aria-label="Expand sidebar" title="Expand sidebar (⌘B)"
+          onClick={() => window.dispatchEvent(new CustomEvent("graff-toggle-sidebar"))}
+          className="hidden size-7 shrink-0 items-center justify-center rounded-full text-ink-3 hover:bg-hover hover:text-ink lg:flex">
+          <IconSidebarLeftOpen size={16} />
+        </button>}
         {!sidebarVisible && <AppSettings />}
         <div data-desktop-update-slot className="shrink-0" />
         </div>

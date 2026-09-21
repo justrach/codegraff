@@ -31,7 +31,7 @@ pub const sections = [_]Section{
     .{ .title = "getting around", .names = &.{ "/new", "/clear", "/resume", "/save", "/sessions", "/workspace", "/experiment", "/rename", "/rewind", "/edit", "/snapshot", "/teleport" } },
     .{ .title = "the model", .names = &.{ "/model", "/models", "/effort", "/reasoning", "/fast", "/thinking", "/keepcontext", "/fallback", "/routes" } },
     .{ .title = "working autonomously", .names = &.{ "/goal", "/goals", "/pr-acceptance", "/loop", "/schedule", "/review", "/issue", "/plan", "/todo", "/jobs", "/ultracode", "/strict", "/yolo", "/never" } },
-    .{ .title = "talking to other graffs", .names = &.{ "/tell", "/peek", "/adapter" }, .blurb = peers_blurb },
+    .{ .title = "talking to other graffs", .names = &.{ "/tell", "/daddy", "/peek", "/adapter" }, .blurb = peers_blurb },
     .{ .title = "your setup", .names = &.{ "/login", "/key", "/cost", "/usage", "/version", "/update", "/privacy", "/mcp", "/import-claude", "/skills", "/plugins", "/agents", "/hooks", "/tools", "/fleet" } },
     .{ .title = "context & history", .names = &.{ "/compact", "/btw", "/doctor", "/debug", "/cache", "/trace", "/trajectory" } },
     .{ .title = "shell & images", .names = &.{ "/bash", "/image", "/images", "/paste" } },
@@ -62,7 +62,7 @@ pub fn render(out: *Io.Writer) !void {
         \\esc during a response interrupts the turn; streamed output remains in history.
         \\"always allow" answers persist to .harness/settings.json in the cwd.
         \\launch flags: --model <name> · --yolo · -p "prompt" · --json · --help · --version
-        \\subcommands: graff login [codex] · graff key set <provider> <key> · graff --schema
+        \\subcommands: graff login [codex|kimi|xai|zai] · graff key set <provider> <key> · graff --schema
         \\
     );
 }
@@ -87,4 +87,6 @@ test "render prints every section title, the peers blurb, and the exit footer" {
     for (sections) |sec| try std.testing.expect(std.mem.indexOf(u8, text, sec.title) != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "how hearing works") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "exit | /exit | /quit") != null);
+    const login = find("/login") orelse return error.MissingLogin;
+    try std.testing.expect(std.mem.indexOf(u8, text, login.usage) != null);
 }

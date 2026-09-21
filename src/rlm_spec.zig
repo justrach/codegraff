@@ -266,5 +266,6 @@ test "children never see the rlm discovery note (different prefix, different cac
     try std.testing.expect(std.mem.indexOf(u8, prompts.sub_system_prompt, "rlm(code)") == null);
     try std.testing.expect(std.mem.indexOf(u8, prompts.sub_system_prompt, "do not broaden") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompts.sub_system_prompt, "Do not narrate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompts.sub_system_prompt, "Files changed") != null);
     try std.testing.expect(prompts.sub_system_prompt.len < prompts.main_system_prompt.len);
 }

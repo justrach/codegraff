@@ -54,17 +54,40 @@ fn trimmableAgent(a: std.mem.Allocator, kind: @import("provider.zig").Provider.K
     return agent;
 }
 
-test "#1019: token-parse 500 emergency-trims instead of dying" {
+test "token-parse 500 is not overflow: no trim, no pin (ADR 0148 reverses #1019)" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
     var agent = try trimmableAgent(a, .responses, 131072);
-    const before = agent.fullRequestEstimateTokens();
+    const before = agent.messages.items.len;
     var retried = false;
-    try std.testing.expect(recoverContextOverflow(&agent, "Internal error during token parsing", null, &retried));
-    try std.testing.expect(retried);
+    try std.testing.expect(!recoverContextOverflow(&agent, "Internal error during token parsing", null, &retried));
+    try std.testing.expect(!retried);
+    try std.testing.expect(!agent.last_request_context_overflow);
+    try std.testing.expectEqual(@as(u64, 0), agent.last_context_tokens);
+    try std.testing.expectEqual(before, agent.messages.items.len); // history intact: the transient ladder resends it
+}
+
+test "token-parse 500 on an untrimmable history leaves the meter alone (ADR 0148)" {
+    // The observed symptom: a small chat with nothing to trim was pinned to the
+    // window and force-compacted at the next turn. A real overflow that cannot
+    // trim still pins (see the compaction-request test in agent_request_policy);
+    // a message that is not an overflow must never reach that code.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = try trimmableAgent(a, .openai, 500_000);
+    agent.messages.shrinkRetainingCapacity(1); // one clean user turn: emergencyTrim has nothing to drop
+    agent.context_local_tokens = agent.fullRequestEstimateTokens();
+    var retried = false;
+    try std.testing.expect(!recoverContextOverflow(&agent, "xai api error: Internal error during token parsing", null, &retried));
+    try std.testing.expect(!agent.last_request_context_overflow);
+    try std.testing.expectEqual(@as(u64, 0), agent.last_context_tokens);
+    // Contrast: the same untrimmable history with a REAL overflow phrasing pins
+    // so the between-turn compactOrRecover path engages (#174) — by design.
+    try std.testing.expect(!recoverContextOverflow(&agent, "This model's maximum prompt length is 500000 but the request contains 600000 tokens", null, &retried));
     try std.testing.expect(agent.last_request_context_overflow);
-    try std.testing.expect(agent.fullRequestEstimateTokens() < before);
+    try std.testing.expectEqual(agent.provider.context, agent.last_context_tokens);
 }
 
 test "recoverContextOverflow (#414): a Bedrock throttle rides the retry ladder instead of compacting" {

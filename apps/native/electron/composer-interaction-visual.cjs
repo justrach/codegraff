@@ -112,6 +112,8 @@ async function runComposerInteractions({ win, origin, output }) {
     assert.equal(await js('window.composerKeyboardProbe.fileClicks'), 2, 'Arrow-highlighted Tab opens the file chooser');
     assert.equal(await js('document.activeElement.tagName'), 'TEXTAREA', 'Engaged Tab is consumed and returns focus to the composer');
 
+    const recalled = 'Please inspect the folder mention selection behavior and explain why recalling this submitted message should not rearrange the entire compact composer while I edit it.';
+    await js(`localStorage.setItem('graff.native.prompt-history', JSON.stringify([${JSON.stringify(recalled)}]))`);
     await wc.loadURL(origin);
     await wait(`!!document.querySelector('textarea') && !document.querySelector('[aria-label="Choose model"]').textContent.includes('Loading')`);
     await js(`(()=>{
@@ -124,6 +126,21 @@ async function runComposerInteractions({ win, origin, output }) {
       };
       document.querySelector('input[type="file"]').addEventListener('click',event=>{event.preventDefault();window.fileChooserClicks++;});
     })()`);
+
+    await key('d', { metaKey: true });
+    await wait(`document.querySelectorAll('[data-chat]').length===2`);
+    const compactLayout = () => js(`(()=>{const input=document.querySelector('[data-chat][data-focused="true"] textarea'),model=input.parentElement.querySelector('[data-model-controls]');const a=input.getBoundingClientRect(),b=model.getBoundingClientRect();return {width:a.width,stacked:b.top>=a.bottom-1}})()`);
+    await js(`document.querySelector('[data-chat][data-focused="true"] textarea').focus()`);
+    const beforeRecall = await compactLayout();
+    await key('ArrowUp');
+    const afterRecall = await compactLayout();
+    assert.equal(await draft(await focused()), recalled, 'ArrowUp recalls the previous prompt in a split chat');
+    assert.equal(beforeRecall.stacked, true, `split composer starts stacked: ${JSON.stringify(beforeRecall)}`);
+    assert.equal(afterRecall.stacked, true, `split composer stays stacked after recall: ${JSON.stringify(afterRecall)}`);
+    assert.ok(Math.abs(afterRecall.width - beforeRecall.width) < 1, `history recall keeps the textarea width stable: ${JSON.stringify({ beforeRecall, afterRecall })}`);
+    await key('ArrowDown');
+    await js(`document.querySelector('[data-chat][data-focused="true"] [aria-label="Close this split"]').click()`);
+    await wait(`document.querySelectorAll('[data-chat]').length===1`);
 
     // Real pointer events must reach the portaled menu before it is dismissed.
     await pointer('[aria-label="Add attachments and sources"]');

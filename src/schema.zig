@@ -475,6 +475,7 @@ test "providerDisplayName & providerLoginKind: id mapping with sane fallbacks" {
     try std.testing.expectEqualStrings("codegraff_device", providerLoginKind("codegraff"));
     try std.testing.expectEqualStrings("codex_device", providerLoginKind("codex"));
     try std.testing.expectEqualStrings("kimi_device", providerLoginKind("kimi"));
+    try std.testing.expectEqualStrings("zai_cli", providerLoginKind("zai"));
     try std.testing.expectEqualStrings("api_key", providerLoginKind("openai"));
 }
 // isMetaName's own coverage, and #381's note_constraint catalog contract,
@@ -556,4 +557,12 @@ test "subagent_spec: run_in_background is a boolean, optional (not in required),
     defer parsed.deinit();
     const required = parsed.value.object.get("required").?.array.items;
     for (required) |r| try std.testing.expect(!std.mem.eql(u8, r.string, "run_in_background"));
+}
+
+test "subagent_spec: independent fan-out defaults to worktree, not shared_cwd" {
+    try std.testing.expect(std.mem.indexOf(u8, subagent_spec.schema, "fan-out children default to") != null);
+    try std.testing.expect(std.mem.indexOf(u8, subagent_spec.schema, "worktree") != null);
+    try std.testing.expect(std.mem.indexOf(u8, subagent_spec.schema, "Default shared_cwd") == null);
+    try std.testing.expect(std.mem.indexOf(u8, workflow_spec.schema, "fan-out tasks default to") != null);
+    try std.testing.expect(std.mem.indexOf(u8, workflow_spec.schema, "pipeline stages default to") != null);
 }

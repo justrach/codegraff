@@ -343,14 +343,16 @@ test "two logins split the tiers: k3 is mid, luna is the mechanical rung (#471)"
     // anthropic rung — paying for work a logged-in plan already covers.
     // The candidate list is derived from the specs' sub_login declaration.
     var saw_kimi = false;
+    var saw_zai = false;
     for (pin_mod.subscription_providers) |sid| {
-        try std.testing.expect(!std.mem.eql(u8, sid, "zai"));
         try std.testing.expect(!std.mem.eql(u8, sid, "vercel"));
         try std.testing.expect(!std.mem.eql(u8, sid, "openrouter"));
         try std.testing.expect(!std.mem.eql(u8, sid, "codegraff"));
         if (std.mem.eql(u8, sid, "kimi")) saw_kimi = true;
+        if (std.mem.eql(u8, sid, "zai")) saw_zai = true;
     }
     try std.testing.expect(saw_kimi);
+    try std.testing.expect(saw_zai);
 }
 
 test "a kimi root borrows codex's cheap rung: small -> luna when it is logged in (#471)" {

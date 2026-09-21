@@ -71,6 +71,7 @@ pub fn runExternal(self: *Agent, calls: []const ToolCall, ext_idx: []const usize
         .loop_deadline_ms = self.loop_deadline_ms,
         .agent_cwd = self.agent_cwd,
         .subagent_feedback = self.feedback,
+        .read_miss = &self.read_miss,
     };
     const esc_watch = !self.sub and self.in != null and main_mod.use_color and !main_mod.json_mode;
     var esc_tio: ?tty.RawState = null;
@@ -119,6 +120,7 @@ fn aborted() bool {
 }
 
 fn takeOutput(self: *Agent, call: ToolCall, output: ToolOutput, handle_threshold: usize, handle_target: tool_handle.Target) !ExecResult {
+    self.read_miss.noteOutput(call.name, call.input, output.text, output.is_error);
     try @import("pr_local_checks.zig").record(self, call, .{ .text = output.text, .is_error = output.is_error, .cancelled = output.cancelled });
     const handled = try tool_handle.forResult(self.gpa, self.arena, handle_target, output.text, handle_threshold);
     const text = try tool_handle.withFirstNote(self.arena, handled, &self.handle_note_shown);

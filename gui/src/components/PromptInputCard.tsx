@@ -75,8 +75,13 @@ export function PromptInputCard({
   // it — the highlight drifts away from the caret.
   const commandOverlayRef = useRef<HTMLDivElement | null>(null);
   const dropZoneRef = useRef<HTMLDivElement | null>(null);
-  const { attachments, addAttachments, removeAttachment, replaceAttachments } =
-    useAttachments(binding);
+  const {
+    attachmentScopeKey,
+    attachments,
+    addAttachments,
+    removeAttachment,
+    replaceAttachments,
+  } = useAttachments(binding);
   const { isActive: isDropActive } = useDropZone(dropZoneRef, (paths) => {
     const accepted = paths
       .map((path) => classifyPath(path))
@@ -125,12 +130,28 @@ export function PromptInputCard({
   const [attachmentsBeforeHistory, setAttachmentsBeforeHistory] = useState<
     Attachment[]
   >([]);
-  const promptHistoryLengthRef = useRef(promptHistory.length);
+  const [historyScope, setHistoryScope] = useState(() => ({
+    attachmentScopeKey,
+    historyLength: promptHistory.length,
+  }));
 
   function resetHistoryNavigation() {
     setHistoryCursor(null);
     setDraftBeforeHistory("");
     setAttachmentsBeforeHistory([]);
+  }
+
+  // Adjust state during render so a chat/workspace switch invalidates the
+  // previous scope's cursor and snapshots before another key event can run.
+  if (
+    historyScope.attachmentScopeKey !== attachmentScopeKey ||
+    historyScope.historyLength !== promptHistory.length
+  ) {
+    setHistoryScope({
+      attachmentScopeKey,
+      historyLength: promptHistory.length,
+    });
+    resetHistoryNavigation();
   }
 
   // Whether /fast actually changes harness behavior. The harness only applies
@@ -248,28 +269,31 @@ export function PromptInputCard({
       return false;
     }
 
+    // Once history browsing has started, arrows always move between recalled
+    // prompts. The line-boundary guard only protects multiline drafts before
+    // entering history; otherwise a recalled multiline prompt appears stuck.
     const textarea = event.currentTarget;
-    if (direction === "previous" && !isCaretOnFirstLine(textarea)) {
+    if (
+      historyCursor == null &&
+      direction === "previous" &&
+      !isCaretOnFirstLine(textarea)
+    ) {
       return false;
     }
-    if (direction === "next" && !isCaretOnLastLine(textarea)) {
+    if (
+      historyCursor == null &&
+      direction === "next" &&
+      !isCaretOnLastLine(textarea)
+    ) {
       return false;
     }
-
-    const didHistoryLengthChange =
-      promptHistoryLengthRef.current !== promptHistory.length;
-    const effectiveCursor = didHistoryLengthChange ? null : historyCursor;
-    const effectiveDraftBeforeHistory = didHistoryLengthChange
-      ? ""
-      : draftBeforeHistory;
-    promptHistoryLengthRef.current = promptHistory.length;
 
     const result = getPromptHistoryNavigationResult({
       direction,
       promptHistory,
-      cursor: effectiveCursor,
+      cursor: historyCursor,
       currentDraft: promptDraft,
-      draftBeforeHistory: effectiveDraftBeforeHistory,
+      draftBeforeHistory,
     });
     if (result == null) {
       return false;
@@ -280,7 +304,7 @@ export function PromptInputCard({
     // Mirror the draft preservation for attachments: snapshot the live tray when
     // entering history so ArrowDown back out restores it, and rehydrate the
     // attachment cards from the stored `Attached files:` block on each entry.
-    const enteringHistory = effectiveCursor == null && result.cursor != null;
+    const enteringHistory = historyCursor == null && result.cursor != null;
     if (enteringHistory) {
       setAttachmentsBeforeHistory(attachments);
     }

@@ -118,6 +118,8 @@ export type AssistantTurn = {
   /** A tool bracket landed after streamed text — the next text chunk starts a
    * new paragraph instead of fusing onto the previous sentence. */
   pendingBreak?: boolean;
+  /** Mid-stream engine retry. Activity only — never assistant prose. */
+  retryNotice?: string;
   status: TurnStatus;
 };
 

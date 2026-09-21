@@ -32,6 +32,7 @@ const unixMs = util.unixMs;
 const kimi_catalog = @import("kimi_catalog.zig");
 const pricing = @import("pricing.zig");
 const codegraff = @import("oauth_codegraff.zig");
+const zai = @import("oauth_zai.zig");
 const credential_store = @import("credential_store.zig");
 
 pub const CodexAuth = struct { token: []const u8, account: []const u8 };
@@ -495,6 +496,8 @@ pub fn loadXaiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, 
 
 pub const codegraffLogin = codegraff.login;
 pub const loadCodegraffKey = codegraff.loadKey;
+pub const zaiLogin = zai.login;
+pub const loadZaiOAuth = zai.loadZaiOAuth;
 
 test "b64url: url-safe base64 without padding" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);

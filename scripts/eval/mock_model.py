@@ -12,6 +12,11 @@ A reply is either:
     {"text": "..."}
     {"tool": "todo_write", "arguments": {...}}
     {"tool": "todo_write", "arguments": {...}, "text": "..."}
+    {"text": "...", "stream_error": {"type": "api_error", "message": "..."}}
+
+The last shape streams its text, then a terminal error frame instead of a
+finish - a provider that died mid-response - so a case can prove the harness
+retries rather than trims or dies.
 
 Past the end of the script every call answers with `exhausted_text` (default
 "done"), so a run that takes more turns than the case scripted still ends
@@ -112,6 +117,9 @@ class ScriptedModel:
                 return message
 
             def _whole(self, reply: dict[str, Any]) -> None:
+                if error := reply.get("stream_error"):
+                    self._send(json.dumps({"type": "error", "error": error}).encode(), "application/json")
+                    return
                 message = self._message(reply)
                 finish = "tool_calls" if "tool_calls" in message else "stop"
                 self._send(json.dumps({
@@ -147,6 +155,15 @@ class ScriptedModel:
                     if hook := getattr(model, "after_stream_delta", None):
                         self.wfile.flush()
                         hook(delta)
+                if error := reply.get("stream_error"):
+                    # A mid-stream server failure: the provider streamed output,
+                    # then sent a terminal {"type":"error"} frame (xAI's
+                    # "Internal error during token parsing" shape, ADR 0148).
+                    self.wfile.write(b"data: " + json.dumps({"type": "error", "error": error}).encode() + b"\n\n")
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    self.wfile.flush()
+                    self.close_connection = True
+                    return
                 self._chunk({
                     "choices": [{"index": 0, "delta": {}, "finish_reason": finish}],
                     "usage": {"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12},

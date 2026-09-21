@@ -45,7 +45,7 @@ fn contextWindowFor(provider_id: []const u8, model: []const u8) u64 {
 /// provider_specs; one additional OpenAI-compatible router may be loaded from
 /// `.graff/.config.router` at startup.
 pub const ProviderSpec = struct {
-    pub const LoginKind = enum { api_key, codegraff_device, codex_device, kimi_device, xai_device };
+    pub const LoginKind = enum { api_key, codegraff_device, codex_device, kimi_device, xai_device, zai_cli };
     pub const CatalogKind = enum { baked, codex, kimi, openai, anthropic };
 
     id: []const u8,
@@ -103,7 +103,7 @@ pub const provider_specs = [_]ProviderSpec{
     // `graff login xai` is a real device-code OAuth flow (oauth.zig), so xAI's
     // login is a SuperGrok plan while XAI_API_KEY is metered api.x.ai access.
     .{ .id = "xai", .display_name = "xAI", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.6", .login = .xai_device, .sub_login = true, .catalog = .openai, .models_url = "https://api.x.ai/v1/models" },
-    .{ .id = "zai", .display_name = "Z.AI", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.3", .catalog = .openai, .models_url = "https://api.z.ai/api/paas/v4/models", .takes_effort = true },
+    .{ .id = "zai", .display_name = "Z.AI", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.3", .login = .zai_cli, .sub_login = true, .catalog = .openai, .models_url = "https://api.z.ai/api/paas/v4/models", .takes_effort = true },
     // OpenAI-compatible Chat Completions with reasoning_effort support.
     .{ .id = "meta", .display_name = "Meta", .kind = .openai, .auth = .bearer, .url = "https://api.meta.ai/v1/chat/completions", .env_key = "META_API_KEY", .default_model = "muse-spark-1.2-contributor", .catalog = .openai, .models_url = "https://api.meta.ai/v1/models", .takes_effort = true },
     // Vercel AI Gateway: one key, live /models. Coding-agent surface marks
@@ -162,6 +162,7 @@ pub var g_xai_url_override: ?[]const u8 = null;
 pub var g_zai_url_override: ?[]const u8 = null;
 pub var g_vercel_url_override: ?[]const u8 = null;
 pub const zai_coding_url = "https://api.z.ai/api/coding/paas/v4/chat/completions";
+pub const zai_coding_models_url = "https://api.z.ai/api/coding/paas/v4/models";
 pub const vercel_v1_url = "https://ai-gateway.vercel.sh/v1/chat/completions";
 
 fn resolvedUrl(spec: ProviderSpec, model: []const u8) []const u8 {

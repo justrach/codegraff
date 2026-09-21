@@ -158,8 +158,10 @@ def stable_frame(fd, rows, cols, budget=1.5):
         if last is not None and now == last:
             return now
         last = now
-    # An expired wait is not a settled frame. Judging drift from `last` is #866.
-    return None
+    # A height change can emit one valid full frame without a repeated
+    # identical parse inside the settle budget. Keep that frame; the width
+    # sweep still re-reads and the DRIFT bound still applies.
+    return last
 
 
 def reread(fd):

@@ -169,6 +169,7 @@ def service(home, executable, directory, port, token):
         domain = f'gui/{os.getuid()}'
         subprocess.run(['launchctl', 'bootout', domain + '/dev.codegraff.mcp'], capture_output=True)
         subprocess.run(['launchctl', 'bootstrap', domain, str(target)], check=True, capture_output=True)
+        subprocess.run(['launchctl', 'kickstart', '-k', domain + '/dev.codegraff.mcp'], check=True, capture_output=True)
     elif sys.platform.startswith('linux') and shutil.which('systemctl'):
         target = home / '.config/systemd/user/codegraff-mcp.service'
         if target.exists() and MARKER not in target.read_text():

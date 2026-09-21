@@ -46,12 +46,22 @@ var g_items: [inbox_cap]Parked = undefined;
 var g_head: usize = 0;
 var g_len: usize = 0;
 var g_dropped: usize = 0;
+var g_gen: u64 = 0;
+
+pub fn generation() u64 {
+    return g_gen;
+}
+
+fn bumpGen() void {
+    g_gen +%= 1;
+}
 
 pub fn clear() void {
     for (0..g_len) |i| itemAt(i).deinit();
     g_head = 0;
     g_len = 0;
     g_dropped = 0;
+    bumpGen();
 }
 
 pub fn resetForTest() void {
@@ -68,6 +78,17 @@ pub fn dropped() usize {
 
 pub fn pending() bool {
     return g_len > 0 or g_dropped > 0;
+}
+
+/// True when any parked body starts with `want` (daddy directives).
+pub fn anyTextPrefixed(want: []const u8) bool {
+    var i: usize = 0;
+    while (i < g_len) : (i += 1) {
+        const text = textSlice(itemAt(i));
+        const t = std.mem.trimStart(u8, text, " \t\r\n");
+        if (std.mem.startsWith(u8, t, want)) return true;
+    }
+    return false;
 }
 
 /// Add saved loss after restoring the array, preserving any restore evictions.
@@ -115,6 +136,7 @@ pub fn parkHeard(local: []const Message, device: []const Message) usize {
         parkOne(m.from_session, m.text, m.to.len > 0, true);
         n += 1;
     }
+    if (n > 0) bumpGen();
     return n;
 }
 
@@ -382,6 +404,19 @@ test "formatList: title and saved-session base lead the line" {
     const text = formatList(a, &peers, "here");
     try testing.expect(std.mem.indexOf(u8, text, "Fixing login recovery [fixing-login-recovery] session--aaa pid 11 this-folder · recover login") != null);
     try testing.expect(std.mem.indexOf(u8, text, "device-local") != null);
+}
+
+test "generation is stable for the same bodies and anyTextPrefixed sees [daddy]" {
+    resetForTest();
+    defer resetForTest();
+    const empty = generation();
+    try testing.expectEqual(empty, generation());
+    _ = parkHeard(&.{msg("s-a", "[daddy] hold the tree", "")}, &.{});
+    const once = generation();
+    try testing.expect(once != empty);
+    try testing.expectEqual(once, generation());
+    try testing.expect(anyTextPrefixed("[daddy]"));
+    try testing.expect(!anyTextPrefixed("[peer]"));
 }
 
 test "inbox JSON round-trip: restoreJson rebuilds the ring" {
