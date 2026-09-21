@@ -80,15 +80,22 @@ process.on('SIGTERM', () => app.quit());
 process.on('SIGINT', () => app.quit());
 
 app.whenReady().then(async () => {
-  if (app.isPackaged && !developmentBuild && !process.env.GRAFF_ELECTRON_SMOKE) {
-    void require('./mcp-install.cjs').installMcp(path.join(resources, 'graff'), app.getPath('home'), { once: true })
-      .catch(error => dialog.showErrorBox('MCP setup incomplete', `${error.message}\nRetry from Tools → Configure MCP clients.`));
-  }
   await require('./shell-path.cjs').restoreShellPath();
   if (app.isPackaged && !process.env.GRAFF_ELECTRON_SMOKE) {
-    void require('./engine-launcher.cjs').installEngine(path.join(resources, 'graff'), app.getPath('home'))
-      .then(() => require('./mcp-install.cjs').installMcp(path.join(resources, 'graff'), app.getPath('home'), { once: true, version: app.getVersion() }))
-      .catch(error => dialog.showErrorBox('Command setup incomplete', `${error.message}\nRetry from Tools → Install codegraff terminal command.`));
+    const home = app.getPath('home');
+    const binary = path.join(resources, 'graff');
+    // One MCP install per launch. A second overlapping `graff mcp install` used
+    // to lose the installer lock (BlockingIOError / errno 35) and pop "MCP setup
+    // incomplete" while the first was still running.
+    void require('./mcp-install.cjs').installMcp(binary, home, { once: true, version: app.getVersion() })
+      .catch(error => dialog.showErrorBox('MCP setup incomplete', `${error.message}\nRetry from Tools → Configure MCP clients.`));
+    void require('./engine-launcher.cjs').installEngine(binary, home, {
+      extraBin: ['/opt/homebrew/bin', '/usr/local/bin', path.join(home, 'bin')],
+    }).then(() => {
+      const dir = path.join(home, '.local/bin');
+      const parts = (process.env.PATH || '').split(':').filter(Boolean);
+      if (!parts.includes(dir)) process.env.PATH = [dir, ...parts].join(':');
+    }).catch(error => dialog.showErrorBox('Command setup incomplete', `${error.message}\nRetry from Tools → Install codegraff terminal command.`));
   }
   app.setAccessibilitySupportEnabled(true);
   const passkeysConfigured = require('./webauthn.cjs').configureWebAuthn(app, resources);
@@ -249,7 +256,9 @@ app.whenReady().then(async () => {
       } catch (error) { dialog.showErrorBox('MCP setup', error.message); }
     } }, { label: 'Install codegraff terminal command…', enabled: app.isPackaged && process.platform === 'darwin', click: async () => {
       try {
-        await require('./engine-launcher.cjs').installEngine(path.join(resources, 'graff'), app.getPath('home'));
+        await require('./engine-launcher.cjs').installEngine(path.join(resources, 'graff'), app.getPath('home'), {
+          extraBin: ['/opt/homebrew/bin', '/usr/local/bin', path.join(app.getPath('home'), 'bin')],
+        });
         const installed = await require('./cli-launcher.cjs').installLauncher(path.resolve(app.getPath('exe'), '../../..'), app.getPath('home'));
         await dialog.showMessageBox(win, { message: 'Terminal command installed', detail: `Run graff for the CLI or codegraff . for the GUI. Open a new terminal to load the PATH update (${path.dirname(installed)}).` });
       } catch (error) { dialog.showErrorBox('Terminal command', error.message); }

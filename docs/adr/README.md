@@ -101,7 +101,7 @@ record only when you need the evidence or the edge cases.
 | [0088](0088-failed-children-return-partial-evidence.md) | Failed children return bounded partial evidence with error status intact, including an excerpt for workflow synthesis. |
 | [0089](0089-canonical-compaction-windows-survive-recovery.md) | Preserve standalone compaction windows across pruning and resume; opaque recovery uses the server or reports failure without discarding history. |
 | [0090](0090-project-constraints-require-explicit-scope.md) | Local steering stays local; durable project constraints require explicit scope and exact current-user text, while legacy unscoped records are reviewable. |
-| [0091](0091-persistent-jobs-honor-wait-ms.md) | Persistent `run_in_background` jobs honor `wait_ms` as a timeout; finite jobs still wait until exit (ADR 0010). |
+| [0091](0091-persistent-jobs-honor-wait-ms.md) | Superseded by [0152](0152-persistent-shells-snapshot-once.md) for persistent `wait_ms`; finite jobs still wait until exit (ADR 0010). |
 | [0092](0092-codedb-context-is-local-first.md) | Bare `codedb context` is `--local`; `--hybrid` / `--semantic` are opt-in remote rerank (and still refused under ADR 0084 policy). |
 | [0093](0093-project-layout-breadth-and-directory-hints.md) | Project layout favors breadth under its caps; missing directories offer bounded sibling hints without changing confinement or ADR 0090 constraint policy. |
 | [0094](0094-subagent-interrupt-is-a-cancel-file.md) | GUI Stop writes `{id}.cancel` in the activity dir; the child finishes failed even if the model returns. Not `session/cancel`. |
@@ -173,6 +173,8 @@ record only when you need the evidence or the edge cases.
 | [0149](0149-daddy-directives-are-explicit-control.md) | Ambient `[peer]` wakes are not a new task; `[daddy]` directives are explicit supervisor control. |
 | [0150](0150-subagent-briefs-are-structured.md) | Child briefs are headed sections plus a harness environment header; the judge stays a bare prompt. |
 | [0151](0151-zai-coding-plan-login.md) | Z.AI Coding Plan is a `sub_login` like Kimi/xAI: `graff login zai` uses ZCode's public CLI OAuth broker, then provisions a Graff-named API key onto `/api/coding/paas/v4`. |
+| [0152](0152-persistent-shells-snapshot-once.md) | Persistent shells snapshot immediately (`wait_ms` ignored) and stay on `/jobs`; do not poll. Finite jobs still wait until exit (ADR 0010). |
+| [0153](0153-task-workspaces-copy-and-scripts.md) | Task workspaces copy gitignored include files from the main checkout and run setup/run/archive scripts from `.graff/workspace.toml`. Finish is still not archive. |
 
 ## When to write one
 

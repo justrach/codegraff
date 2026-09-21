@@ -108,6 +108,9 @@ pub const CappedRunOptions = struct {
     /// Schedule overrides (tests run the real thresholds in milliseconds).
     pulse_first_ms: u64 = tool_pulse.first_silence_ms,
     pulse_interval_ms: u64 = tool_pulse.silence_interval_ms,
+    /// Clipboard export is not a user turn. Esc would kill osascript and
+    /// Ctrl-V would report `clipboard helper unavailable` (#1146).
+    ignore_cancel: bool = false,
 };
 
 /// #253: RLIMIT_NOFILE as this process actually observes it. main() calls
@@ -185,7 +188,7 @@ fn terminateTree(child: *std.process.Child, io: Io, job: *WindowsJobHandle, grou
 
 // A canceled POSIX wait closes the pipes and clears id without reaping.
 // Retain the id so the caller can still kill/reap after a deadline or Esc.
-fn waitForExit(child: *std.process.Child, io: Io, started: Io.Timestamp, deadline_ms: u64, cancelled: *bool, timed_out: *bool) !std.process.Child.Term {
+fn waitForExit(child: *std.process.Child, io: Io, started: Io.Timestamp, deadline_ms: u64, cancelled: *bool, timed_out: *bool, ignore_cancel: bool) !std.process.Child.Term {
     const id = child.id;
     const Event = union(enum) { term: std.process.Child.WaitError!std.process.Child.Term, tick: Io.Cancelable!void };
     var buffer: [2]Event = undefined;
@@ -214,7 +217,7 @@ fn waitForExit(child: *std.process.Child, io: Io, started: Io.Timestamp, deadlin
             },
             .tick => |result| try result,
         }
-        cancelled.* = Agent.esc_cancel.load(.acquire);
+        cancelled.* = !ignore_cancel and Agent.esc_cancel.load(.acquire);
         timed_out.* = deadline_ms > 0 and started.untilNow(io, .awake).toMilliseconds() >= deadline_ms;
         if (cancelled.* or timed_out.*) {
             while (select.cancel()) |event| switch (event) {
@@ -308,7 +311,7 @@ pub fn runCappedWithOptions(gpa: Allocator, io: Io, argv: []const []const u8, st
                 if (options.pulse) |pulse_fn| pulse_fn(options.stream_ctx, @intCast(@max(0, started.untilNow(io, .awake).toMilliseconds())));
         }
         if (eof) break :loop;
-        if (Agent.esc_cancel.load(.acquire)) {
+        if (!options.ignore_cancel and Agent.esc_cancel.load(.acquire)) {
             esc_killed = true;
             terminateTree(&child, io, &windows_job, group_id, options.kill_process_tree);
             cleanup_needed = false;
@@ -324,7 +327,7 @@ pub fn runCappedWithOptions(gpa: Allocator, io: Io, argv: []const []const u8, st
     if (!esc_killed and !timed_out) try multi_reader.checkAnyError();
 
     const term: std.process.Child.Term = if (esc_killed or timed_out) .{ .signal = .TERM } else blk: {
-        const term = try waitForExit(&child, io, started, deadline_ms, &esc_killed, &timed_out);
+        const term = try waitForExit(&child, io, started, deadline_ms, &esc_killed, &timed_out, options.ignore_cancel);
         if (esc_killed or timed_out) {
             terminateTree(&child, io, &windows_job, group_id, options.kill_process_tree);
             cleanup_needed = false;

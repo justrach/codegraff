@@ -35,15 +35,15 @@ pub const legacy_poll_ms: u64 = 30_000;
 /// * `> 0` on a finite job — wait until exit (or Esc), always `wait_cap_ms`.
 ///   Mid-range "safety timeouts" used to bounce the model every few minutes
 ///   (#640 / ADR 0010).
-/// * `> 0` on a persistent server (`run_in_background`) — honor `wait_ms` as
-///   a millisecond cap, then return a running snapshot (ADR 0091 / #810).
+/// * `> 0` on a persistent server (`run_in_background` or auto-parked) —
+///   snapshot now. `wait_ms` is ignored so a 15s/30s poll cannot hold the
+///   turn (ADR 0152). Unread bytes stay in the job until a later snapshot.
 pub fn resolveDeadline(wait_ms: u64) u64 {
     return resolveDeadlineFor(wait_ms, false);
 }
 
 pub fn resolveDeadlineFor(wait_ms: u64, persistent: bool) u64 {
-    if (wait_ms == 0) return 0;
-    if (persistent) return @min(wait_ms, wait_cap_ms);
+    if (wait_ms == 0 or persistent) return 0;
     return wait_cap_ms;
 }
 
@@ -73,9 +73,10 @@ test "resolveDeadline: 10h is 36_000_000 ms" {
     try std.testing.expectEqual(@as(u64, 36_000_000), wait_cap_ms);
 }
 
-test "resolveDeadlineFor: persistent jobs honor wait_ms as a timeout (#810)" {
+test "resolveDeadlineFor: persistent jobs snapshot immediately (ADR 0152)" {
     try std.testing.expectEqual(@as(u64, 0), resolveDeadlineFor(0, true));
-    try std.testing.expectEqual(@as(u64, 1000), resolveDeadlineFor(1000, true));
-    try std.testing.expectEqual(wait_cap_ms, resolveDeadlineFor(wait_cap_ms + 1, true));
+    try std.testing.expectEqual(@as(u64, 0), resolveDeadlineFor(1000, true));
+    try std.testing.expectEqual(@as(u64, 0), resolveDeadlineFor(legacy_poll_ms, true));
+    try std.testing.expectEqual(@as(u64, 0), resolveDeadlineFor(wait_cap_ms, true));
     try std.testing.expectEqual(wait_cap_ms, resolveDeadlineFor(1000, false));
 }

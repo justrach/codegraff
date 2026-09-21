@@ -25,3 +25,19 @@ test('failed GUI setup leaves no success receipt', async () => {
     await assert.rejects(fs.access(path.join(home, '.graff/mcp/gui-installed')));
   } finally { await fs.rm(home, {recursive:true, force:true}); }
 });
+
+test('overlapping GUI setup runs the engine once', async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'graff-mcp-gui-'));
+  try {
+    const binary = path.join(home, 'fake-graff');
+    const runs = path.join(home, 'runs');
+    await fs.writeFile(binary, `#!/bin/sh\necho x >> "${runs}"\nsleep 0.3\necho registered\n`, {mode:0o700});
+    const [a, b] = await Promise.all([
+      installMcp(binary, home, {once:true, version:'1'}),
+      installMcp(binary, home, {once:true, version:'1'}),
+    ]);
+    assert.match(a, /registered/);
+    assert.equal(b, 'MCP already configured');
+    assert.equal((await fs.readFile(runs, 'utf8')).trim().split('\n').length, 1);
+  } finally { await fs.rm(home, {recursive:true, force:true}); }
+});

@@ -1,4 +1,4 @@
-//! `graff worktree <list|merge|remove|prune>` and the per-turn worktree
+//! `graff worktree <list|create|run|archive|merge|remove|prune>` and the per-turn worktree
 //! checkpoint commit for `-w` sessions. Moved out of jobs.zig (600-line cap)
 //! when the background-job pool grew its idle lifecycle (#199); jobs.zig
 //! re-exports both entry points, so callers are unchanged.
@@ -68,9 +68,9 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
         return worktree_prune.listWithAge(gpa, io, arena, out);
     }
 
-    if (std.mem.eql(u8, action, "merge")) {
+    if (std.mem.eql(u8, action, "merge") or std.mem.eql(u8, action, "land")) {
         if (args.len < 2) {
-            try out.writeAll("usage: graff worktree merge <name>\n");
+            try out.writeAll("usage: graff worktree merge <name>\n       graff worktree land <name>\n");
             return;
         }
         const name = args[1];
@@ -177,6 +177,32 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
             return;
         };
         try out.print("✓ workspace {s}\n  path {s}\n  branch {s}\n", .{ wt.name, wt.path, wt.branch });
+        if (wt.copied > 0) try out.print("  copied {d} gitignored file(s)\n", .{wt.copied});
+        if (wt.setup_ran) try out.print("  setup {s}\n", .{if (wt.setup_ok) "ok" else "failed (workspace kept)"});
+        return;
+    }
+
+    if (std.mem.eql(u8, action, "run")) {
+        const name = if (args.len > 1) args[1] else "";
+        if (name.len == 0) {
+            try out.writeAll("usage: graff worktree run <name>\n");
+            return;
+        }
+        const dest = try std.fmt.allocPrint(arena, ".graff/worktrees/{s}", .{name});
+        if ((Io.Dir.cwd().statFile(io, dest, .{}) catch null) == null) {
+            try out.print("✗ no such task workspace {s} — `graff worktree list`\n", .{name});
+            return;
+        }
+        const path = blk: {
+            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const n = Io.Dir.cwd().realPathFile(io, dest, &path_buf) catch 0;
+            break :blk if (n > 0) try arena.dupe(u8, path_buf[0..n]) else dest;
+        };
+        if (!@import("workspace_prepare.zig").runNamed(gpa, io, arena, ".", path, name)) {
+            try out.writeAll("✗ no run script — add scripts.run to .graff/workspace.toml\n");
+            return;
+        }
+        try out.print("✓ run finished in {s}\n", .{path});
         return;
     }
 
@@ -204,7 +230,7 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
         return worktree_prune.pruneCommand(gpa, io, arena, out, args[1..]);
     }
 
-    try out.print("unknown worktree command '{s}' — use: graff worktree list | create <name> [base] | archive <name> | merge <name> | remove <name> | prune [older-than <days>]\n", .{action});
+    try out.print("unknown worktree command '{s}' — use: graff worktree list | create <name> [base] | run <name> | archive <name> | merge <name> | remove <name> | prune [older-than <days>]\n", .{action});
 }
 
 test { // split-out module: unreferenced, its tests silently never run

@@ -154,6 +154,35 @@ def ready(url, token):
         return False
 
 
+def run_managed(argv, check=True):
+    delay = 0.05
+    for attempt in range(6):
+        try:
+            return subprocess.run(argv, check=check, capture_output=True, stdin=subprocess.DEVNULL)
+        except BlockingIOError:
+            if attempt == 5:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.5)
+
+
+def acquire_install_lock(lock_path, timeout=12.0):
+    if lock_path.is_symlink():
+        raise ValueError('Refusing symlinked installer lock')
+    install_lock = open(lock_path, 'a')
+    os.chmod(lock_path, 0o600)
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(install_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return install_lock
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                install_lock.close()
+                raise ValueError('another MCP install is already running; retry from Tools → Configure MCP clients')
+            time.sleep(0.1)
+
+
 def service(home, executable, directory, port, token):
     state = home / '.graff/mcp'
     command = [str(executable), 'mcp', 'serve', '--http', '--port', str(port)]
@@ -167,9 +196,9 @@ def service(home, executable, directory, port, token):
                   'StandardOutPath': str(state / 'service.log'), 'StandardErrorPath': str(state / 'service.log')}
         atomic(target, plistlib.dumps(config).decode())
         domain = f'gui/{os.getuid()}'
-        subprocess.run(['launchctl', 'bootout', domain + '/dev.codegraff.mcp'], capture_output=True)
-        subprocess.run(['launchctl', 'bootstrap', domain, str(target)], check=True, capture_output=True)
-        subprocess.run(['launchctl', 'kickstart', '-k', domain + '/dev.codegraff.mcp'], check=True, capture_output=True)
+        run_managed(['launchctl', 'bootout', domain + '/dev.codegraff.mcp'], check=False)
+        run_managed(['launchctl', 'bootstrap', domain, str(target)])
+        run_managed(['launchctl', 'kickstart', '-k', domain + '/dev.codegraff.mcp'])
     elif sys.platform.startswith('linux') and shutil.which('systemctl'):
         target = home / '.config/systemd/user/codegraff-mcp.service'
         if target.exists() and MARKER not in target.read_text():
@@ -179,9 +208,9 @@ def service(home, executable, directory, port, token):
             'ExecStart=' + ' '.join(quote(part) for part in command) + '\n' +
             'WorkingDirectory=' + quote(directory) + '\nEnvironment=GRAFF_MCP_TOKEN=' + token +
             '\nRestart=on-failure\nRestartSec=10\n[Install]\nWantedBy=default.target\n')
-        subprocess.run(['systemctl', '--user', 'daemon-reload'], check=True, capture_output=True)
-        subprocess.run(['systemctl', '--user', 'enable', '--now', 'codegraff-mcp.service'], check=True, capture_output=True)
-        subprocess.run(['systemctl', '--user', 'restart', 'codegraff-mcp.service'], check=True, capture_output=True)
+        run_managed(['systemctl', '--user', 'daemon-reload'])
+        run_managed(['systemctl', '--user', 'enable', '--now', 'codegraff-mcp.service'])
+        run_managed(['systemctl', '--user', 'restart', 'codegraff-mcp.service'])
     else:
         raise ValueError('Automatic service setup needs macOS launchd or Linux user systemd')
 
@@ -212,11 +241,16 @@ def main():
         raise ValueError('Refusing symlinked service directory')
     os.chmod(state, 0o700)
     lock_path = state / 'install.lock'
-    if lock_path.is_symlink():
-        raise ValueError('Refusing symlinked installer lock')
-    install_lock = open(lock_path, 'a')
-    os.chmod(lock_path, 0o600)
-    fcntl.flock(install_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    url = f'http://127.0.0.1:{args.port}/mcp'
+    try:
+        install_lock = acquire_install_lock(lock_path)
+    except ValueError:
+        token_path = state / 'token'
+        token = token_path.read_text().strip() if token_path.exists() else ''
+        if token and ready(url, token):
+            print(f'MCP ready at {url}; another installer holds the lock.')
+            return
+        raise
     token_path = state / 'token'
     if token_path.is_symlink():
         raise ValueError('Refusing symlinked token')
@@ -224,7 +258,6 @@ def main():
     if not re.fullmatch('[0-9a-f]{64}', token):
         raise ValueError('Invalid stored service token')
     atomic(token_path, token + '\n')
-    url = f'http://127.0.0.1:{args.port}/mcp'
     service(home, binary, directory, args.port, token)
     for _ in range(30):
         if ready(url, token):

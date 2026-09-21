@@ -38,6 +38,8 @@ export default function TerminalPane({cwd,visible,onHide}:{cwd:string;visible:bo
       off=bridge.terminalSubscribe!(event=>{if(!ready)queued.push(event);else deliver(event);});
       const result=await request('open',{cwd});if(disposed){void request('detach',{id:result.id});return;}
       id.current=result.id;term.options.disableStdin=result.exit!==null;setStatus(result.exit===null?'Shell ready':`Shell exited (${result.exit})`);setError('');
+      const boot=sessionStorage.getItem('graff.terminal.command');
+      if(boot&&result.exit===null){sessionStorage.removeItem('graff.terminal.command');void send('input',{data:boot.endsWith('\n')?boot:`${boot}\n`});}
       if(result.history)term.write(result.history);
       ready=true;for(const event of queued)if(event.seq>result.seq)deliver(event);queued.length=0;
       const fitVisible=()=>{if(shown.current&&host.current?.clientWidth){fit.fit();void send('resize',{cols:term.cols,rows:term.rows});}};
@@ -46,6 +48,15 @@ export default function TerminalPane({cwd,visible,onHide}:{cwd:string;visible:bo
     return()=>{disposed=true;off();resize?.disconnect();theme?.disconnect();terminal.current?.dispose();terminal.current=null;if(id.current)void request('detach',{id:id.current});id.current=null;};
   },[cwd,generation,start]);
   useEffect(()=>{if(visible)terminal.current?.focus();},[visible]);
+  useEffect(()=>{
+    const onCommand=(event:Event)=>{
+      const command=(event as CustomEvent<{command?:string}>).detail?.command;
+      if(!command||!id.current)return;
+      void desktop()?.terminal?.('input',{id:id.current,data:command.endsWith('\n')?command:`${command}\n`});
+    };
+    window.addEventListener('graff-terminal-command',onCommand);
+    return()=>window.removeEventListener('graff-terminal-command',onCommand);
+  },[]);
   const end=async()=>{if(id.current)await desktop()?.terminal?.('close',{id:id.current});id.current=null;setGeneration(n=>n+1);};
   return <section data-workspace-terminal aria-label="Workspace terminal" hidden={!visible} className="relative shrink-0 overflow-hidden rounded-xl border border-line bg-page text-ink" style={{height,maxHeight:'65dvh'}}>
     <div role="separator" aria-label="Resize terminal" aria-orientation="horizontal" tabIndex={0} aria-valuenow={height} aria-valuemin={120} aria-valuemax={Math.round(innerHeight*.65)}

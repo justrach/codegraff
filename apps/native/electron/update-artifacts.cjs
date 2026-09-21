@@ -9,19 +9,18 @@ const feed = { provider: 'generic', url: 'https://github.com/justrach/codegraff/
 const bundleConfigRel = path.join('Contents', 'Resources', 'app-update.yml');
 // ditto --keepParent zips Codegraff.app itself, so this is the member path.
 const archiveMember = 'Codegraff.app/' + bundleConfigRel.split(path.sep).join('/');
+const { isReleaseVersion, toSemver } = require('./update-version.cjs');
 function writeManifest(version, archive, output) {
-  // Desktop bundles stay 3-part even though the CLI accepts 4-part hotfix
-  // versions (0.0.300.1): electron-updater compares feed versions as semver,
-  // which has no fourth segment, and the Apple chain (Info.plist marketing
-  // version, notarization, spctl) is only verified for 3-part. Ship desktop
-  // fixes as 3-part releases; 4-part tags are CLI-only and carry no desktop
-  // asset, so the desktop updaters below never see one.
-  if (!/^\d+\.\d+\.\d+$/.test(version)) throw Error('Only stable versions can enter the desktop update feed.');
+  // electron-updater compares feed versions as semver (no fourth numeric
+  // segment). 4-part hotfixes (0.0.302.3) still ship as desktop updates:
+  // the zip keeps the graff version in its name, and `version` in the feed
+  // is the mapped semver (0.302.3) so 0.0.302 apps see it as newer.
+  if (!isReleaseVersion(version)) throw Error('Only stable versions can enter the desktop update feed.');
   const url = path.basename(archive);
   if (url !== `Codegraff-${version}-macos-arm64.zip`) throw Error('Update archive name must match its version and architecture.');
   const bytes = fs.readFileSync(archive);
   const sha512 = crypto.createHash('sha512').update(bytes).digest('base64');
-  const manifest = { version, files: [{ url, sha512, size: bytes.length }], path: url, sha512, releaseDate: new Date().toISOString() };
+  const manifest = { version: toSemver(version), graffVersion: version, files: [{ url, sha512, size: bytes.length }], path: url, sha512, releaseDate: new Date().toISOString() };
   // JSON is valid YAML, and avoids escaping release-controlled filenames by hand.
   fs.writeFileSync(output, JSON.stringify(manifest, null, 2) + '\n');
   return manifest;

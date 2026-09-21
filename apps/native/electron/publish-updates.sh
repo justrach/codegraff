@@ -18,8 +18,9 @@ spctl --assess --type open --context context:primary-signature "$out/Codegraff-m
 bun -e '
 const fs=require("node:fs"),path=require("node:path"),crypto=require("node:crypto");
 const [tag,out]=process.argv.slice(1),m=JSON.parse(fs.readFileSync(path.join(out,"latest-mac.yml")));
-if("v"+m.version!==tag||m.files.length!==1)throw Error("Release version mismatch");
-const f=m.files[0];if(f.url!==`Codegraff-${m.version}-macos-arm64.zip`)throw Error("Invalid archive name");
+const graff=m.graffVersion||m.version;
+if("v"+graff!==tag||m.files.length!==1)throw Error("Release version mismatch");
+const f=m.files[0];if(f.url!==`Codegraff-${graff}-macos-arm64.zip`)throw Error("Invalid archive name");
 const bytes=fs.readFileSync(path.join(out,f.url));
 if(bytes.length!==f.size||crypto.createHash("sha512").update(bytes).digest("base64")!==f.sha512)throw Error("Update checksum mismatch");
 ' "$tag" "$out"

@@ -372,7 +372,7 @@ pub fn spawnJobOpts(gpa: Allocator, io: Io, cmd: []const u8, opts: SpawnOpts) !*
 
 /// bash_output: unread output + status. wait_ms=0 is a snapshot. wait_ms>0
 /// blocks until the job exits (or Esc) for finite jobs (ADR 0010). Persistent
-/// servers honor wait_ms as a millisecond cap (ADR 0091 / #810).
+/// servers snapshot immediately; wait_ms is ignored (ADR 0152).
 pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
     var waited: u64 = 0;
     var interrupted = false; // Esc: report what was waited, not the 10h cap (ADR 0061)

@@ -4,7 +4,10 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import subprocess
 import tempfile
+import threading
+import time
 import sys
 import unittest
 from unittest.mock import patch
@@ -101,6 +104,57 @@ class InstallTests(unittest.TestCase):
                 installer.service(self.home, Path('/bin/echo'), self.home, 7720, self.token)
             run.assert_not_called()
         self.assertEqual(path.read_bytes(), original)
+
+    def _hold_lock(self, lock_path):
+        holder = subprocess.Popen(
+            [sys.executable, '-c',
+             'import fcntl, sys, time\n'
+             'f = open(sys.argv[1], "a")\n'
+             'fcntl.flock(f.fileno(), fcntl.LOCK_EX)\n'
+             'sys.stdout.write("h")\n'
+             'sys.stdout.flush()\n'
+             'time.sleep(30)\n', str(lock_path)],
+            stdout=subprocess.PIPE,
+        )
+        self.addCleanup(holder.kill)
+        self.assertEqual(holder.stdout.read(1), b'h')
+        return holder
+
+    def test_lock_waits_for_holder(self):
+        lock_path = self.home / 'install.lock'
+        holder = self._hold_lock(lock_path)
+        got = []
+        def waiter():
+            handle = installer.acquire_install_lock(lock_path, timeout=2)
+            got.append(True)
+            handle.close()
+        thread = threading.Thread(target=waiter)
+        thread.start()
+        time.sleep(0.15)
+        self.assertEqual(got, [])
+        holder.kill()
+        holder.wait()
+        thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(got, [True])
+
+    def test_lock_timeout_is_not_blocking_io(self):
+        lock_path = self.home / 'install.lock'
+        self._hold_lock(lock_path)
+        with self.assertRaises(ValueError) as ctx:
+            installer.acquire_install_lock(lock_path, timeout=0.25)
+        self.assertIn('already running', str(ctx.exception))
+
+    def test_run_managed_retries_blocking_io(self):
+        calls = {'n': 0}
+        def fake(argv, **_kwargs):
+            calls['n'] += 1
+            if calls['n'] < 3:
+                raise BlockingIOError(35, 'Resource temporarily unavailable')
+            return subprocess.CompletedProcess(argv, 0)
+        with patch.object(installer.subprocess, 'run', fake):
+            installer.run_managed(['launchctl', 'bootstrap', 'x'])
+        self.assertEqual(calls['n'], 3)
 
 if __name__ == '__main__':
     unittest.main()

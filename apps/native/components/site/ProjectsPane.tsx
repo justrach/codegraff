@@ -2,6 +2,14 @@
 import { useState } from "react";
 import { IconFolder, IconPlusMedium } from "@/lib/icons";
 import { compareWorkspaceActivity, workspaceSourceLabel, type Workspace } from "@/lib/workspaces";
+import { archiveTaskWorkspace, landTaskWorkspace } from "./harness-task-workspace";
+
+function taskSlug(path: string): string | null {
+  const parts = path.replace(/\\/g, "/").split("/");
+  const i = parts.lastIndexOf("worktrees");
+  if (i >= 0 && parts[i - 1] === ".graff" && parts[i + 1]) return parts[i + 1];
+  return null;
+}
 
 export default function ProjectsPane({ workspaces, current, onOpen, onContinue, onNewChat, onClose }: {
   workspaces: Workspace[]; current: string | null; onOpen: () => void;
@@ -20,10 +28,14 @@ export default function ProjectsPane({ workspaces, current, onOpen, onContinue, 
       <div className="grid gap-3 xl:grid-cols-2">
         {shown.map(w => <article key={w.path} data-project-path={w.path} className="min-w-0 rounded-[14px] border border-line bg-surface p-4">
           <div className="flex items-center gap-2 text-ink"><IconFolder size={19} /><h2 className="min-w-0 flex-1 truncate font-medium">{w.name}</h2>{w.path === current && <span className="text-xs text-accent">Current</span>}</div>
-          <p className="my-3 break-all font-mono text-xs text-ink-3">{workspaceSourceLabel(w)} · {w.path}</p>
+          <p className="my-3 break-all font-mono text-xs text-ink-3">{workspaceSourceLabel(w)} · {w.path}{taskSlug(w.path) ? ` · worktree-${taskSlug(w.path)}` : ""}</p>
           <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={() => onContinue(w.path)} className="rounded-control bg-hover-2 px-3 py-2 text-sm text-ink">Continue conversation</button>
+            <button type="button" onClick={() => onContinue(w.path)} className="rounded-control bg-hover-2 px-3 py-2 text-sm text-ink">Open</button>
             <button type="button" onClick={() => onNewChat(w.path)} className="rounded-control px-3 py-2 text-sm text-ink-2 hover:bg-hover">New chat</button>
+            {taskSlug(w.path) && <>
+              <button type="button" onClick={() => void landTaskWorkspace(w.path).catch(err => window.alert(String(err.message || err)))} className="rounded-control px-3 py-2 text-sm text-ink-2 hover:bg-hover">Land</button>
+              <button type="button" onClick={() => void archiveTaskWorkspace(w.path).catch(err => window.alert(String(err.message || err)))} className="rounded-control px-3 py-2 text-sm text-ink-2 hover:bg-hover">Archive</button>
+            </>}
           </div>
         </article>)}
       </div>

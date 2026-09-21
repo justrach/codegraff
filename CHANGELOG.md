@@ -10,8 +10,16 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.302.3
+
+- Desktop first launch: one MCP install (no overlapping flock / “MCP setup incomplete”), and `graff` on login-shell PATH (zsh/bash login+interactive, Homebrew and `~/bin` shims).
+- Ctrl-V screenshot paste is not killed by a leftover Esc (`clipboard helper unavailable`).
+- Desktop auto-update accepts 4-part hotfix versions (`0.0.302.3`), not only `0.0.xxx`.
+- Task workspaces are graff-native (`.graff/workspace.toml`, `.worktreeinclude`, `GRAFF_WORKSPACE_*`). Copy gitignored files and run setup/run/archive scripts (ADR 0153). Desktop Tools: New task workspace, Run, Land, Archive. The agent does not delete a named tree.
+
 ## v0.0.302.2
 
+- Persistent `shell` / `bash_output` jobs snapshot immediately (`wait_ms` ignored) and stay on `/jobs`; the 15s still-running poll no longer holds the turn (ADR 0152). Finite jobs still wait until exit.
 - `graff login zai` (aliases `glm`, `z.ai`) signs in to a Z.AI Coding Plan and routes chat to `/api/coding/paas/v4` without `ZAI_CODING=1` (ADR 0151).
 - Native: clickable browser/chat links, folder-picker repeat submissions, composer history recall layout, prompt-history session/attachment scoping, saved-snapshot reopen, worktree path wrapping. Shutdown-fixture stalls dump renderer/backend/worker state (#1080, #1103, #1105, #1108, #1109, #1112, #1113).
 

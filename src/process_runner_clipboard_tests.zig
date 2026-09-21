@@ -30,6 +30,18 @@ fn cancelSoon(io: std.Io) void {
     @import("agent.zig").Agent.esc_cancel.store(true, .release);
 }
 
+test "clipboard helper ignores Esc so screenshot paste can write /tmp" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+    defer @import("agent.zig").Agent.esc_cancel.store(false, .release);
+    @import("agent.zig").Agent.esc_cancel.store(true, .release);
+    const result = try runner.runCappedWithOptions(std.testing.allocator, std.testing.io, &.{ "/bin/sh", "-c", "printf ok" }, 8, 8, 2000, .{ .ignore_cancel = true });
+    defer std.testing.allocator.free(result.stdout);
+    defer std.testing.allocator.free(result.stderr);
+    try std.testing.expect(runner.ranOk(result));
+    try std.testing.expectEqualStrings("ok", result.stdout);
+    try std.testing.expect(!result.cancelled and !result.timed_out);
+}
+
 test "clipboard runner Esc survives pipe EOF without deadline" {
     if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
     const io = std.testing.io;

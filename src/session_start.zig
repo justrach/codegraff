@@ -120,6 +120,7 @@ pub fn setupWorktreeAndBanner(
     // agents don't collide on files. Creates .graff/worktrees/<name> on branch
     // worktree-<name> from the remote base and enters it; reuses it if it exists.
     const task_workspace = @import("task_workspace.zig");
+    _ = @import("worktree_reap.zig").orphans(gpa, io, arena, ".");
     if (flags.worktree_flag) |wt| {
         // POSIX-only: the chdir below goes through libc's `chdir`, which Windows
         // builds don't link. -w is a parallel-agent dev workflow (mac/linux); on
