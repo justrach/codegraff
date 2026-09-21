@@ -1,6 +1,7 @@
 """Local-only GitHub CLI fixture for production dispatch regressions."""
 import json
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -66,6 +67,7 @@ def prepare(work, env, state):
     gh.chmod(0o755)
     subprocess.run(["git", "init", "-q", "-b", "fixture"], cwd=work, check=True, timeout=10)
     subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                    "-c", "commit.gpgsign=false",
                     "commit", "-q", "--allow-empty", "-m", "fixture"], cwd=work, check=True, timeout=10)
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=work, text=True, timeout=10).strip()
     fixture = dict(initial_head=head, **state)
@@ -78,12 +80,33 @@ def prepare(work, env, state):
         prepare_review(work, fixture["review_files"])
 
 
+def claim_ledger(work):
+    """Canonical claim file (Git common dir), then the legacy workspace copy."""
+    work = Path(work)
+    for args in (
+        ["git", "-C", str(work), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        ["git", "-C", str(work), "rev-parse", "--git-common-dir"],
+    ):
+        try:
+            raw = subprocess.check_output(args, text=True, timeout=10).strip()
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+        if not raw:
+            continue
+        common = Path(raw) if Path(raw).is_absolute() else (work / raw)
+        path = common / "artifact-claims.json"
+        if path.exists():
+            return path
+    return work / ".graff" / "artifact-claims.json"
+
+
 def prepare_review(work, files):
     """Give readiness fixtures an actual committed diff and resolvable base."""
     state = json.loads((work / "gh-state.json").read_text())
     state["base_sha"] = state["initial_head"]
     subprocess.run(["git", "add", "--", *files], cwd=work, check=True, timeout=10)
     subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                    "-c", "commit.gpgsign=false",
                     "commit", "-qm", "fixture reviewed change"], cwd=work, check=True, timeout=10)
     state["initial_head"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=work, text=True, timeout=10).strip()
     state["new_runs"] = "success"
