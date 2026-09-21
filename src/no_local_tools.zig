@@ -134,7 +134,7 @@ pub fn filterLeanSpecs(comptime Spec: type, arena: Allocator, specs: []const Spe
 /// not claim root bash/edit are approval-denied — that is true only when
 /// `unattended_note` is appended (`unattended and !yolo`). `-p --yolo`
 /// (evals) can act locally; the old lie forced extra child turns.
-pub const lean_subagent_desc = "Spawn a sidecar for a self-contained task. Child has bash, read_file, edit_file, write_file, codedb; it does NOT share your context — the prompt must say everything. Returns the final report. Keep the critical-path next step local; do not hand off the blocker and wait. Do file and command work yourself this turn; spawn only for independent work.";
+pub const lean_subagent_desc = "Spawn a sidecar for a self-contained task. Child has bash, read_file, edit_file, write_file, codedb; it does NOT share your context. Optional context/established_facts/scope/deliverable become headed sections; omit empties. Returns the final report. Keep the critical-path next step local; do not hand off the blocker and wait. Do file and command work yourself this turn; spawn only for independent work.";
 
 /// One-shot tool prose (ADR 0046). Same names and JSON schemas; shorter
 /// descriptions so flash models start and finish instead of rereading

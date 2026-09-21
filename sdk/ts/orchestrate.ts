@@ -71,6 +71,14 @@ export interface SubagentSpec {
   description?: string;
   /** Complete, self-contained task description for the child. */
   prompt: string;
+  /** Repo and hard constraints the child must not re-derive. */
+  context?: string;
+  /** Observed facts, paths, and line numbers the child must treat as given. */
+  establishedFacts?: string;
+  /** What not to touch or broaden into. */
+  scope?: string;
+  /** Required report shape; harness default is files changed / verified / skipped / open questions. */
+  deliverable?: string;
   /** Named persona the child runs with. */
   agent?: string;
   /** Replace the child's system prompt outright (overrides `agent`). */
@@ -150,6 +158,10 @@ export function subagentToolInput(spec: SubagentSpec): Record<string, unknown> {
     description: spec.description ?? spec.prompt.slice(0, 60),
     prompt: spec.prompt,
   };
+  if (spec.context) input.context = spec.context;
+  if (spec.establishedFacts) input.established_facts = spec.establishedFacts;
+  if (spec.scope) input.scope = spec.scope;
+  if (spec.deliverable) input.deliverable = spec.deliverable;
   if (spec.agent) input.agent = spec.agent;
   if (spec.systemPrompt) input.system_prompt = spec.systemPrompt;
   if (spec.isolation) input.isolation = spec.isolation;
