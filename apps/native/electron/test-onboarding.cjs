@@ -21,15 +21,10 @@ function installSessionPreload(session) {
 function installOnboardingSeed(win) {
   const session = win.webContents?.session;
   if (!session) return;
+  // Do not attach the debugger here. Overflow/links attach later and Electron
+  // throws "Debugger is already attached" — CI 6d47f20 failed on that after
+  // the previous seed started attaching on every test window.
   installSessionPreload(session);
-  const wc = win.webContents;
-  if (!wc?.debugger) return;
-  try {
-    if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
-    wc.debugger.sendCommand('Page.enable')
-      .then(() => wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: PAGE_SEED }))
-      .catch(() => {});
-  } catch { /* windows without a live debugger stay alone */ }
 }
 
 async function installPageWorldOnboardingSeed(wc) {

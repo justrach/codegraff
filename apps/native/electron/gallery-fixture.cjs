@@ -3,11 +3,6 @@ function installGalleryFixture() {
   const original = window.fetch;
   // Page unload must use the mocked fetch path too, never a real ACP beacon.
   navigator.sendBeacon = () => false;
-  localStorage.setItem('graff.native.browser.open', '0');
-  // Same flag the app writes after Skip/Done — empty-chat fixtures stay modal-free.
-  window.__GRAFF_ONBOARDED__ = true;
-  document.documentElement.dataset.graffOnboarded = '1';
-  localStorage.setItem('graff.onboarding.dismissed', 'true');
   const root = '/demo/field-notes';
   const catalog = { result: { current: { model: 'Graff', provider: '', effort: 'medium', fast: false, effortLevels: ['low', 'medium', 'high'] }, models: [
     { name: 'Decoy', provider: '', context: 128000, authenticated: true, cost: 'local', current: false },
@@ -17,8 +12,6 @@ function installGalleryFixture() {
   const delta = text => ({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'demo', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } } });
   const requestUrl = input => new URL(typeof input === 'string' || input instanceof URL ? input : input.url, location.origin);
   const requestMethod = (input, options) => (options?.method || (typeof input === 'object' && input && 'method' in input ? input.method : 'GET') || 'GET').toUpperCase();
-  let pass = original;
-  let depth = 0;
   const readBody = async (input, options) => {
     const raw = options?.body;
     if (typeof raw === 'string') return raw;
@@ -30,12 +23,7 @@ function installGalleryFixture() {
   };
   const mock = async (input, options) => {
     const url = requestUrl(input);
-    if (!url.pathname.startsWith('/api/')) {
-      if (depth > 0) return original(input, options);
-      depth += 1;
-      try { return await pass(input, options); }
-      finally { depth -= 1; }
-    }
+    if (!url.pathname.startsWith('/api/')) return original(input, options);
     if (url.pathname === '/api/account') return json({ signedIn: false, plan: null, provider: null });
     if (url.pathname === '/api/agents') return json({ agents: [
       { session: 'navigation', startId: '1', pid: 1, title: 'Refine navigation', task: 'Improve focus order and keyboard shortcuts', workspace: root, status: 'working', resources: null },
@@ -50,8 +38,6 @@ function installGalleryFixture() {
       return json({ root, branch: 'main', files: [{ path: 'palette.css', add: 3, del: 2, untracked: false, status: ' M', binary: false }], totalAdd: 3, totalDel: 2, commits: [], worktrees: [{ path: root, branch: 'main' }] });
     }
     if (url.pathname === '/api/acp') {
-      // Health is GET. Next may replace window.fetch or pass a Request; neither
-      // must fall through to the cancelled network path.
       if (requestMethod(input, options) === 'GET') return json({ ok: true, cwd: root, home: '/demo' });
       const raw = await readBody(input, options);
       if (!raw) return json({ ok: true, cwd: root, home: '/demo' });
@@ -73,14 +59,23 @@ function installGalleryFixture() {
     }
     return new Response('{}', { status: 404 });
   };
-  try {
-    Object.defineProperty(window, 'fetch', {
-      configurable: true,
-      get() { return mock; },
-      set(next) { if (typeof next === 'function' && next !== mock) pass = next; },
-    });
-  } catch {
-    window.fetch = mock;
+  // Document-start CDP scripts throw on localStorage (SecurityError). The
+  // previous getter never installed because setItem ran first and aborted the
+  // fixture — CI: world:true, dismissed:"", ACP unreachable. A getter also
+  // swallows later suite wraps (overflow/bootstrap). Assign fetch first.
+  window.fetch = mock;
+  window.__GRAFF_GALLERY__ = true;
+  const seed = () => {
+    window.__GRAFF_ONBOARDED__ = true;
+    try { document.documentElement.dataset.graffOnboarded = '1'; } catch { /* html not ready */ }
+    try {
+      localStorage.setItem('graff.native.browser.open', '0');
+      localStorage.setItem('graff.onboarding.dismissed', 'true');
+    } catch { /* storage is denied until the origin commits */ }
+  };
+  seed();
+  if (typeof document !== 'undefined' && document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', seed);
   }
 }
 module.exports = { installGalleryFixture };

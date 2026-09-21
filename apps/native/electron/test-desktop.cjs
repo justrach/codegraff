@@ -56,6 +56,7 @@ async function describeWorkspace(wc) {
         prompt: !!document.querySelector('textarea[aria-label="Prompt"]'),
         onboarded: document.documentElement.dataset.graffOnboarded || '',
         world: window.__GRAFF_ONBOARDED__ === true,
+        gallery: window.__GRAFF_GALLERY__ === true,
         dismissed: (() => { try { return localStorage.getItem('graff.onboarding.dismissed') || ''; } catch { return ''; } })(),
         onboard: !!document.querySelector('[data-onboarding]'),
         modal: document.querySelector('[aria-modal="true"]')?.getAttribute('aria-label') || '',

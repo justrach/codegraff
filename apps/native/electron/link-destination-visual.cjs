@@ -148,7 +148,7 @@ async function runLinkDestinationVisuals({ origin, output }) {
     assert.ok(await js(`!!document.querySelector('textarea[aria-label="Prompt"]')`), 'conversation survives routing');
   };
   try {
-    await wc.loadURL('about:blank'); wc.debugger.attach('1.3'); await wc.debugger.sendCommand('Page.enable');
+    await wc.loadURL('about:blank'); testDesktop.attachTestDebugger(wc); await wc.debugger.sendCommand('Page.enable');
     await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: `(${installGalleryFixture.toString()})();` });
     await wc.loadURL(origin); testDesktop.present(win); await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
     assert.equal(await js(`typeof window.graffDesktop.linkSettings`), 'function', 'real preload exposes linkSettings');

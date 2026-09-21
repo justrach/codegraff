@@ -15,6 +15,13 @@ test('the production seed writes the same dismissed flag the app persists', () =
   expect(fs.readFileSync(path.join(__dirname, 'gallery-fixture.cjs'), 'utf8')).toContain('dataset.graffOnboarded');
   expect(fs.readFileSync(PRELOAD, 'utf8')).toContain('dataset.graffOnboarded');
   expect(fs.readFileSync(PRELOAD, 'utf8')).toContain('executeInMainWorld');
+  expect(fs.readFileSync(PRELOAD, 'utf8')).toContain('DOMContentLoaded');
+  const gallery = fs.readFileSync(path.join(__dirname, 'gallery-fixture.cjs'), 'utf8');
+  expect(gallery).toContain('__GRAFF_GALLERY__');
+  expect(gallery).not.toContain("Object.defineProperty(window, 'fetch'");
+  expect(fs.readFileSync(path.join(__dirname, 'chat-overflow-visual.cjs'), 'utf8')).toContain('attachTestDebugger');
+  expect(fs.readFileSync(path.join(__dirname, 'chat-overflow-visual.cjs'), 'utf8')).not.toContain("wc.debugger.attach('1.3')");
+  expect(installOnboardingSeed.toString()).not.toMatch(/debugger\s*\.\s*attach/);
 });
 
 test('windows without a session are left alone', () => {
@@ -43,37 +50,75 @@ test('Electron 44 registers the page-world seed without replacing session preloa
   expect(registered).toEqual([{ type: 'frame', id: PRELOAD_ID, filePath: PRELOAD }]);
 });
 
-test('gallery fixture still answers ACP health after fetch is replaced', async () => {
-  const vm = require('node:vm');
-  const { installGalleryFixture } = require('./gallery-fixture.cjs');
+function gallerySandbox({ storage } = {}) {
   const native = async () => { throw new Error('native fetch must not run for /api'); };
   const store = new Map();
   const sandbox = {
     window: { fetch: native, galleryBenchmark: false },
-    document: { documentElement: { dataset: {} } },
-    localStorage: { setItem(key, value) { store.set(key, value); }, getItem(key) { return store.get(key) ?? null; } },
+    document: { documentElement: { dataset: {} }, readyState: 'complete', addEventListener() {} },
+    localStorage: storage ?? {
+      setItem(key, value) { store.set(key, value); },
+      getItem(key) { return store.get(key) ?? null; },
+    },
     navigator: { sendBeacon() { return false; } },
     location: { origin: 'http://127.0.0.1:1' },
     Response, Request, URL, TextEncoder, ReadableStream,
   };
+  const vm = require('node:vm');
   vm.createContext(sandbox);
-  vm.runInContext(`(${installGalleryFixture.toString()})()`, sandbox);
-  sandbox.window.fetch = native;
+  vm.runInContext(`(${require('./gallery-fixture.cjs').installGalleryFixture.toString()})()`, sandbox);
+  return sandbox;
+}
+
+test('gallery fixture installs fetch even when document-start storage throws', async () => {
+  const sandbox = gallerySandbox({
+    storage: {
+      setItem() { throw new Error('SecurityError: Access is denied for this document.'); },
+      getItem() { throw new Error('SecurityError: Access is denied for this document.'); },
+    },
+  });
+  expect(sandbox.window.__GRAFF_GALLERY__).toBe(true);
+  expect(sandbox.window.__GRAFF_ONBOARDED__).toBe(true);
   const acp = await (await sandbox.window.fetch('/api/acp', { method: 'GET', cache: 'no-store' })).json();
   expect(acp).toEqual({ ok: true, cwd: '/demo/field-notes', home: '/demo' });
   const viaRequest = await (await sandbox.window.fetch(new Request('http://127.0.0.1:1/api/acp', { method: 'GET' }))).json();
   expect(viaRequest.ok).toBe(true);
-  const account = await (await sandbox.window.fetch('/api/account')).json();
-  expect(account.signedIn).toBe(false);
-  const captured = sandbox.window.fetch;
-  sandbox.window.fetch = (input, options) => captured(input, options);
-  const wrapped = await (await sandbox.window.fetch('/api/acp', { method: 'GET', cache: 'no-store' })).json();
-  expect(wrapped.ok).toBe(true);
   const bootstrap = await (await sandbox.window.fetch(new Request('http://127.0.0.1:1/api/acp', {
     method: 'POST',
     body: JSON.stringify({ method: 'bootstrap' }),
   }))).json();
   expect(bootstrap.sessionId).toBe('demo');
+});
+
+test('gallery fixture assignment wraps stay visible to later suites', async () => {
+  const sandbox = gallerySandbox();
+  const previous = sandbox.window.fetch;
+  let seen = 0;
+  sandbox.window.fetch = async (input, options) => {
+    seen += 1;
+    return previous(input, options);
+  };
+  const wrapped = await (await sandbox.window.fetch('/api/acp', { method: 'GET', cache: 'no-store' })).json();
+  expect(wrapped.ok).toBe(true);
+  expect(seen).toBe(1);
+});
+
+test('window creation registers the preload and does not attach the debugger', () => {
+  const attached = [];
+  installOnboardingSeed({
+    webContents: {
+      debugger: {
+        isAttached: () => false,
+        attach() { attached.push('attach'); },
+        sendCommand() { attached.push('send'); return Promise.resolve({}); },
+      },
+      session: {
+        registerPreloadScript() { return PRELOAD_ID; },
+        getPreloadScripts() { return []; },
+      },
+    },
+  });
+  expect(attached).toEqual([]);
 });
 
 test('production chrome never mounts the welcome sheet once fixtures mark the page onboarded', () => {

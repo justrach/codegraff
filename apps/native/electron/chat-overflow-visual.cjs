@@ -190,7 +190,7 @@ async function runChatOverflow({ win, origin, output }) {
 
   try {
     await wc.loadURL('about:blank');
-    wc.debugger.attach('1.3');
+    testDesktop.attachTestDebugger(wc);
     await wc.debugger.sendCommand('Page.enable');
     await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', {
       source: `(${require('./gallery-fixture.cjs').installGalleryFixture.toString()})()`,
