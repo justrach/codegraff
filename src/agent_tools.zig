@@ -49,6 +49,7 @@ const schedule = @import("schedule.zig");
 const util = @import("util.zig"); // #225: unixMs, for the clock_sleep interrupted-elapsed measurement
 
 const cite_markup = @import("cite_markup.zig");
+const read_miss = @import("read_miss.zig");
 
 /// Run a batch of tool calls. Meta tools are handled inline (they mutate
 /// agent state); mutating file/shell calls run one at a time, otherwise
@@ -75,6 +76,16 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
     // Collect the indices of external (non-meta) calls for parallel exec.
     var ext_idx: std.ArrayList(usize) = .empty;
     defer ext_idx.deinit(self.gpa);
+    var hold_idx: std.ArrayList(usize) = .empty;
+    defer hold_idx.deinit(self.gpa);
+    var read_paths: std.ArrayList([]const u8) = .empty;
+    defer read_paths.deinit(self.gpa);
+    for (calls) |call| {
+        if (std.mem.eql(u8, call.name, "read_file")) {
+            if (read_miss.callPath(call.input)) |p| try read_paths.append(self.gpa, p);
+        }
+    }
+    var miss_batch = read_miss.Batch.init(read_paths.items);
     for (calls, 0..) |call, i| {
         if (eval_index) |verifier| if (i != verifier) {
             self.emitToolRejected(call, "verifier_boundary", eval_control.verifier_boundary);
@@ -100,14 +111,35 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             results[i] = try self.handleMeta(call);
         } else if (try self.gateTool(call)) |denied| {
             results[i] = denied;
-        } else {
-            try ext_idx.append(self.gpa, i);
+        } else switch (classifyRead(self, &miss_batch, call)) {
+            .refuse => results[i] = try refuseRead(self, call),
+            .hold => try hold_idx.append(self.gpa, i),
+            .run => try ext_idx.append(self.gpa, i),
         }
     }
 
     if (ext_idx.items.len > 0) {
         try @import("agent_tool_batch.zig").runExternal(self, calls, ext_idx.items, results);
         brief_diversity.noteSiblingBatch(self.arena, self.tracer, calls, ext_idx.items, results); // #382
+    }
+    if (hold_idx.items.len > 0) {
+        var wave2: std.ArrayList(usize) = .empty;
+        defer wave2.deinit(self.gpa);
+        for (hold_idx.items) |i| {
+            const path = read_miss.callPath(calls[i].input) orelse {
+                try wave2.append(self.gpa, i);
+                continue;
+            };
+            if (self.read_miss.shouldRefuse(path)) {
+                results[i] = try refuseRead(self, calls[i]);
+                continue;
+            }
+            try wave2.append(self.gpa, i);
+        }
+        if (wave2.items.len > 0) {
+            try @import("agent_tool_batch.zig").runExternal(self, calls, wave2.items, results);
+            brief_diversity.noteSiblingBatch(self.arena, self.tracer, calls, wave2.items, results);
+        }
     }
     if (defer_completion) if (eval_control.completionIndex(calls)) |i| {
         var verify_failed = ext_idx.items.len == 0;
@@ -129,10 +161,28 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
     return results;
 }
 
+fn classifyRead(self: *Agent, batch: *read_miss.Batch, call: ToolCall) read_miss.Wave {
+    if (!std.mem.eql(u8, call.name, "read_file")) return .run;
+    const path = read_miss.callPath(call.input) orelse return .run;
+    return batch.classify(&self.read_miss, path);
+}
+
+fn refuseRead(self: *Agent, call: ToolCall) !ExecResult {
+    const path = read_miss.callPath(call.input) orelse ".";
+    const message = try read_miss.refusalText(self.arena, path);
+    self.emitToolRejected(call, "read_miss", message);
+    return .{ .text = message, .is_error = true };
+}
+
 pub fn rejectToolCall(self: *Agent, call: ToolCall) !?ExecResult {
     if (!call.args_ok) {
         self.emitToolRejected(call, "invalid_arguments", tool_call_args.invalid_exec_message);
         return .{ .text = tool_call_args.invalid_exec_message, .is_error = true };
+    }
+    if (std.mem.eql(u8, call.name, "read_file")) {
+        if (read_miss.callPath(call.input)) |path| {
+            if (self.read_miss.shouldRefuse(path)) return try refuseRead(self, call);
+        }
     }
     if (self.sub) return null;
     if (self.review_mode) if (try review.rejectTool(self.arena, call)) |denied| {

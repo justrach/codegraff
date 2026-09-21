@@ -126,6 +126,7 @@ pub const Agent = struct {
     agent_cwd: ?[]const u8 = null, // subagent-only (#276 P0-1): absolute path of this agent's isolated git worktree, threaded through ToolCtx per tool call instead of a process-wide chdir — parallel siblings each keep their own
     tools_used: trace.ToolSink = .{}, // external tool calls this agent made (per turn for the root)
     tool_calls_this_turn: u64 = 0,
+    read_miss: @import("read_miss.zig").Tracker = .{}, // #1116: same-prefix / incrementing read_file misses
     model_calls_this_turn: u64 = 0,
     handle_note_shown: bool = false, // #541: the handle-protocol lesson rides this agent's FIRST handle, once
     seen_tool_keys: std.ArrayList([]const u8) = .empty, // root-only per-turn dedupe keys
@@ -331,9 +332,9 @@ pub const Agent = struct {
         var pending_work: empty_completion.PendingWork = .{};
         var bounced_answer: empty_completion.BounceAnswer = .{};
         self.completed = null;
+        self.read_miss.reset();
         self.mcp_context.begin(self.io);
         @import("named_work.zig").beginTurn(self);
-        if (!self.sub) @import("read_file_miss.zig").resetTurn();
         try self.ensureRootTools(self.provider.kind);
         var task_scope = @import("task_intent.zig").State.begin(self);
         if (!self.sub and !root_turn_prepared.swap(false, .acq_rel)) @import("cancel_source.zig").clear();
