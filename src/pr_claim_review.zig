@@ -60,7 +60,8 @@ pub fn review(self: *Agent, target: evidence.Target, base_name: ?[]const u8, cre
     if (!evidence.validSha(base)) return error.InvalidBase;
     const fork = try evidence.capture(self.gpa, self.io, self.arena, target, &.{ "git", "merge-base", base, head });
     const input = try inputs.gather(self.gpa, self.io, self.arena, target.cwd, fork, head, body);
-    const serialized = try std.json.Stringify.valueAlloc(self.arena, .{ .repository = repo, .base_tip = base, .input = input, .observed_local_checks = self.publication_checks.recent.items, .observed_head_ci = @tagName(ci) }, .{});
+    const pr_checks = if (creating) "" else evidence.capture(self.gpa, self.io, self.arena, target, &.{ "gh", "pr", "checks", target.selector }) catch "";
+    const serialized = try std.json.Stringify.valueAlloc(self.arena, .{ .repository = repo, .base_tip = base, .input = input, .observed_local_checks = self.publication_checks.recent.items, .observed_head_ci = @tagName(ci), .observed_pr_checks = pr_checks }, .{});
     var hash: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(serialized, &hash, .{});
     const key = std.fmt.bytesToHex(hash, .lower);
@@ -96,7 +97,7 @@ pub fn review(self: *Agent, target: evidence.Target, base_name: ?[]const u8, cre
         ,
     };
     defer judge.tools_used.deinit(self.gpa);
-    const packet = try std.json.Stringify.valueAlloc(self.arena, .{ .committed_inputs = serialized, .observed_local_checks = self.publication_checks.recent.items, .execution_limits = "head_after and tracked_tree_clean_after are post-run observations, not proof of immutable execution; missing history is unknown" }, .{});
+    const packet = try std.json.Stringify.valueAlloc(self.arena, .{ .committed_inputs = serialized, .observed_local_checks = self.publication_checks.recent.items, .observed_pr_checks = pr_checks, .execution_limits = "head_after and tracked_tree_clean_after are post-run observations, not proof of immutable execution; missing history is unknown" }, .{});
     try judge.messages.append(try @import("messages.zig").textMessage(self.arena, "user", packet));
     const response = try judge.request(null);
     const result = try parse(self.arena, @import("title.zig").assistantText(self.provider.kind, response));

@@ -12,9 +12,9 @@ pub const Input = struct {
     head: []const u8,
     body: []const u8,
     files: []const File,
-    // Changed files alone may omit a dispatch caller or an existing test.
-    // A reviewer must report unresolved when these inputs do not establish it.
-    scope: []const u8 = "changed committed files; transitive coverage is not established",
+    // Changed files plus unchanged callers/configuration that establish
+    // how those files are reached by the repository's test runners.
+    scope: []const u8 = "changed committed files plus unchanged callers/configuration that establish test reachability",
 };
 pub fn digest(arena: A, input: Input) ![64]u8 {
     const bytes = try std.json.Stringify.valueAlloc(arena, input, .{});
@@ -69,6 +69,24 @@ pub fn gather(gpa: A, io: std.Io, arena: A, cwd: []const u8, base: []const u8, h
         try files.append(arena, .{ .path = path, .before = before, .after = after });
     }
     if (files.items.len == 0) return error.NoChangedFiles;
+    const coverage = [_][]const u8{ "build.zig", "src/main.zig", "package.json", "scripts/eval/tier1-manifest.json" };
+    for (coverage) |path| {
+        if (files.items.len >= max_files) break;
+        var present = false;
+        for (files.items) |file| {
+            if (std.mem.eql(u8, file.path, path)) {
+                present = true;
+                break;
+            }
+        }
+        if (present) continue;
+        const after = try blob(gpa, io, arena, cwd, head, path);
+        if (after == null) continue;
+        size += after.?.len;
+        if (size > max_bytes) break;
+        const before = try blob(gpa, io, arena, cwd, base, path);
+        try files.append(arena, .{ .path = path, .before = before, .after = after });
+    }
     return .{ .base = base, .head = head, .body = body, .files = files.items };
 }
 
@@ -97,6 +115,34 @@ test "claim review reads committed blobs despite a repaired working tree" {
     try std.testing.expectEqual(@as(usize, 1), input.files.len);
     try std.testing.expect(input.files[0].before == null);
     try std.testing.expectEqualStrings("  broken dispatch\n\n", input.files[0].after.?);
+}
+
+test "claim review includes unchanged callers that establish test reachability" {
+    const io = std.testing.io;
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    var scratch = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer scratch.deinit();
+    const a = scratch.allocator();
+    var path: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = path[0..try temp.dir.realPath(io, &path)];
+    _ = try capture(std.testing.allocator, io, a, cwd, &.{ "git", "init", "-q" });
+    try temp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = "test { }\n" });
+    _ = try capture(std.testing.allocator, io, a, cwd, &.{ "git", "add", "build.zig" });
+    _ = try capture(std.testing.allocator, io, a, cwd, &.{ "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "base" });
+    const base = try capture(std.testing.allocator, io, a, cwd, &.{ "git", "rev-parse", "HEAD" });
+    try temp.dir.makePath(io, "src");
+    try temp.dir.writeFile(io, .{ .sub_path = "src/dispatch.zig", .data = "pub fn run() void {}\n" });
+    _ = try capture(std.testing.allocator, io, a, cwd, &.{ "git", "add", "src/dispatch.zig" });
+    _ = try capture(std.testing.allocator, io, a, cwd, &.{ "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "head" });
+    const head = try capture(std.testing.allocator, io, a, cwd, &.{ "git", "rev-parse", "HEAD" });
+    const input = try gather(std.testing.allocator, io, a, cwd, base, head, "claim");
+    var saw_caller = false;
+    for (input.files) |file| {
+        if (std.mem.eql(u8, file.path, "build.zig")) saw_caller = true;
+    }
+    try std.testing.expect(saw_caller);
+    try std.testing.expect(std.mem.indexOf(u8, input.scope, "unchanged callers") != null);
 }
 
 test "claim review digest invalidates changed body head and committed source" {
