@@ -15,9 +15,28 @@ function installGalleryFixture() {
   ] } };
   const json = body => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
   const delta = text => ({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'demo', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } } });
-  window.fetch = async (input, options) => {
-    const url = new URL(typeof input === 'string' ? input : input.url, location.origin);
-    if (!url.pathname.startsWith('/api/')) return original(input, options);
+  const requestUrl = input => new URL(typeof input === 'string' || input instanceof URL ? input : input.url, location.origin);
+  const requestMethod = (input, options) => (options?.method || (typeof input === 'object' && input && 'method' in input ? input.method : 'GET') || 'GET').toUpperCase();
+  let pass = original;
+  let depth = 0;
+  const readBody = async (input, options) => {
+    const raw = options?.body;
+    if (typeof raw === 'string') return raw;
+    if (raw != null && raw !== '') return '';
+    if (typeof input === 'object' && input && typeof input.clone === 'function') {
+      try { return await input.clone().text(); } catch { return ''; }
+    }
+    return '';
+  };
+  const mock = async (input, options) => {
+    const url = requestUrl(input);
+    if (!url.pathname.startsWith('/api/')) {
+      if (depth > 0) return original(input, options);
+      depth += 1;
+      try { return await pass(input, options); }
+      finally { depth -= 1; }
+    }
+    if (url.pathname === '/api/account') return json({ signedIn: false, plan: null, provider: null });
     if (url.pathname === '/api/agents') return json({ agents: [
       { session: 'navigation', startId: '1', pid: 1, title: 'Refine navigation', task: 'Improve focus order and keyboard shortcuts', workspace: root, status: 'working', resources: null },
       { session: 'review', startId: '2', pid: 2, title: 'Review accessibility', task: 'Check the updated sidebar', workspace: root, status: 'waiting', resources: null }
@@ -27,12 +46,16 @@ function installGalleryFixture() {
     if (url.pathname === '/api/themes') return json({ themes: [], issues: [] });
     if (url.pathname === '/api/title') return json({ title: 'A calmer workspace' });
     if (url.pathname === '/api/git') {
-      if (options?.method === 'POST') return json({ diff: 'diff --git a/palette.css b/palette.css\n--- a/palette.css\n+++ b/palette.css\n@@ -1,5 +1,6 @@\n :root {\n-  --paper: #ffffff;\n-  --ink: #000000;\n+  --paper: #f6eedf;\n+  --ink: #211e19;\n+  --accent: #567568;\n   --radius: 12px;\n }\n' });
+      if (requestMethod(input, options) === 'POST') return json({ diff: 'diff --git a/palette.css b/palette.css\n--- a/palette.css\n+++ b/palette.css\n@@ -1,5 +1,6 @@\n :root {\n-  --paper: #ffffff;\n-  --ink: #000000;\n+  --paper: #f6eedf;\n+  --ink: #211e19;\n+  --accent: #567568;\n   --radius: 12px;\n }\n' });
       return json({ root, branch: 'main', files: [{ path: 'palette.css', add: 3, del: 2, untracked: false, status: ' M', binary: false }], totalAdd: 3, totalDel: 2, commits: [], worktrees: [{ path: root, branch: 'main' }] });
     }
     if (url.pathname === '/api/acp') {
-      if (!options?.body) return json({ ok: true, cwd: root, home: '/demo' });
-      const body = JSON.parse(options.body);
+      // Health is GET. Next may replace window.fetch or pass a Request; neither
+      // must fall through to the cancelled network path.
+      if (requestMethod(input, options) === 'GET') return json({ ok: true, cwd: root, home: '/demo' });
+      const raw = await readBody(input, options);
+      if (!raw) return json({ ok: true, cwd: root, home: '/demo' });
+      const body = JSON.parse(raw);
       if (body.method === 'bootstrap') return json({ sessionId: 'demo', commands: [] });
       if (body.method === 'graff/models') return json(catalog);
       if (body.method === 'session/prompt') {
@@ -50,5 +73,14 @@ function installGalleryFixture() {
     }
     return new Response('{}', { status: 404 });
   };
+  try {
+    Object.defineProperty(window, 'fetch', {
+      configurable: true,
+      get() { return mock; },
+      set(next) { if (typeof next === 'function' && next !== mock) pass = next; },
+    });
+  } catch {
+    window.fetch = mock;
+  }
 }
 module.exports = { installGalleryFixture };

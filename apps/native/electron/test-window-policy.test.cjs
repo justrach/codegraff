@@ -14,7 +14,13 @@ function fixture(env = {}) {
       super();
       this.options = options;
       this.webContents = {
-        session: { preloads: [], getPreloads() { return this.preloads; }, setPreloads(list) { this.preloads = list; } },
+        session: {
+          preloads: [], registered: [],
+          getPreloads() { return this.preloads; },
+          setPreloads(list) { this.preloads = list; },
+          registerPreloadScript(script) { this.registered.push(script); return script.id; },
+          getPreloadScripts() { return this.registered; },
+        },
         isDestroyed() { return false; },
         setBackgroundThrottling() {},
       };
@@ -37,8 +43,8 @@ test('#832: every background test window rejects native activation, including cl
   const b = policy.createWindow({});
   expect(calls).toEqual(['prohibited']);
   expect(a.options).toMatchObject({ show: false, focusable: false, webPreferences: { sandbox: true, backgroundThrottling: false } });
-  expect(a.webContents.session.getPreloads()).toEqual([ONBOARDING_PRELOAD]);
-  expect(b.webContents.session.getPreloads()).toEqual([ONBOARDING_PRELOAD]);
+  expect(a.webContents.session.getPreloadScripts().map(script => script.filePath)).toEqual([ONBOARDING_PRELOAD]);
+  expect(b.webContents.session.getPreloadScripts().map(script => script.filePath)).toEqual([ONBOARDING_PRELOAD]);
   policy.present(a); policy.present(b);
   for (const action of ['show', 'showInactive', 'focus', 'restore', 'maximize', 'setFullScreen']) {
     expect(() => b[action](true)).toThrow('GRAFF_TEST_FOREGROUND=1');
