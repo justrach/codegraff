@@ -48,3 +48,5 @@ subagents already running (they keep their assigned tree). Project files
 - Process-wide chdir from a subagent (the tool refuses).
 - Treat this as `graff worktree merge` — that lands a `-w` scratch tab.
 - Invent a font or OSC sequence; the tree is a directory, not a theme.
+- Spawn a child to clean up a finished tree. Finish is not archive.
+  Keep dirty or unique-commit trees; an empty clean tree may be removed.

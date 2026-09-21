@@ -52,14 +52,12 @@ const orch_rows = @import("orchestration_rows.zig"); // #290: a scored tournamen
 const spawn_gate = @import("subagent_spawn.zig");
 
 pub fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
-    if (!spawn_gate.allowed(ctx.from_sub)) return .{
-        .text = try ctx.gpa.dupe(u8, "subagents cannot spawn subagents — do this work yourself"),
-        .is_error = true,
-    };
     const obj = tools.json_args.object(input) orelse return .{ .text = try ctx.gpa.dupe(u8, "subagent: arguments must be a JSON object with a \"prompt\" string"), .is_error = true };
     const label = tools.json_args.str(obj, "description") orelse "subagent";
     const prompt = tools.json_args.str(obj, "prompt") orelse "";
     if (prompt.len == 0) return .{ .text = try ctx.gpa.dupe(u8, "subagent: missing required \"prompt\" (a self-contained task)"), .is_error = true };
+    if (spawn_gate.refuse(ctx.from_sub, label, prompt, g_agent_jobs.active)) |why|
+        return .{ .text = try ctx.gpa.dupe(u8, why), .is_error = true };
     const sys_override = fleet.resolveOverride(obj);
     const niche = fleet.resolveNiche(obj);
     const isolation = fleet.resolveIsolation(obj);
