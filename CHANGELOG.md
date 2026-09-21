@@ -12,9 +12,10 @@ current is part of cutting a release.
 
 ## v0.0.302.3
 
+- Desktop first launch: one MCP install (no overlapping flock / “MCP setup incomplete”), and `graff` on login-shell PATH (zsh/bash login+interactive, Homebrew and `~/bin` shims).
 - Ctrl-V screenshot paste is not killed by a leftover Esc (`clipboard helper unavailable`).
 - Desktop auto-update accepts 4-part hotfix versions (`0.0.302.3`), not only `0.0.xxx`.
-- Task workspaces copy gitignored files (`.worktreeinclude` or `.graff/workspace.toml` `include`) and run setup/run/archive scripts (ADR 0153). Desktop Tools: New task workspace, Run, Archive.
+- Task workspaces are graff-native (`.graff/workspace.toml`, `.worktreeinclude`, `GRAFF_WORKSPACE_*`). Copy gitignored files and run setup/run/archive scripts (ADR 0153). Desktop Tools: New task workspace, Run, Archive.
 
 ## v0.0.302.2
 
