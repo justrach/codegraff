@@ -30,9 +30,9 @@ const ExecResult = tools_mod.ExecResult;
 const task_workspace = @import("task_workspace.zig");
 
 pub const tool_name = "workspace";
-pub const tool_desc = "List this repo's git worktrees, switch into one, or create a task workspace (fresh branch + worktree). action=list (default), use, or create. path is a worktree path, its last folder, or a unique name fragment. create needs name and optional base. File tools and bash follow the new cwd. Root session only — a subagent stays in its assigned tree. Do not bash-cd to switch.";
+pub const tool_desc = "List this repo's git worktrees, switch into one, create a task workspace, or gc unused trees when the user asks to free space. action=list (default), use, create, or gc. gc drops dead session trees and clean trees whose GitHub PR is MERGED; dirty trees stay. Root session only. Do not bash-cd to switch. Do not gc because a turn finished.";
 pub const tool_schema =
-    \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "use", "create"], "description": "list (default): the repo's git worktrees. use: chdir this session into one. create: mint a fresh branch and worktree from the remote base, then enter it."}, "path": {"type": "string", "description": "worktree path, last folder, or unique fragment (required for use)"}, "name": {"type": "string", "description": "task workspace name (required for create)"}, "base": {"type": "string", "description": "base branch or commit for create (default origin/main after fetch)"}}}
+    \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "use", "create", "gc"], "description": "list (default): the repo's git worktrees. use: chdir this session into one. create: mint a fresh branch and worktree from the remote base, then enter it. gc: free disk — dead session trees and clean merged-PR trees. Only when the user asked to clear space."}, "path": {"type": "string", "description": "worktree path, last folder, or unique fragment (required for use)"}, "name": {"type": "string", "description": "task workspace name (required for create)"}, "base": {"type": "string", "description": "base branch or commit for create (default origin/main after fetch)"}}}
 ;
 
 pub const Entry = struct {
@@ -248,8 +248,16 @@ fn run(gpa: Allocator, io: Io, arena: Allocator, from_sub: bool, action: []const
     if (std.mem.eql(u8, action, "create")) {
         return createAndEnter(gpa, io, arena, path, base);
     }
+    if (std.mem.eql(u8, action, "gc")) {
+        const n = @import("worktree_reap.zig").orphans(gpa, io, arena, ".");
+        const m = @import("worktree_reap.zig").mergedPulls(gpa, io, arena, ".");
+        return .{
+            .text = tryText(arena, "cleared {d} idle session tree(s) and {d} merged-PR tree(s). Dirty and unique-commit trees stayed.", .{ n, m }),
+            .is_error = false,
+        };
+    }
     if (!std.mem.eql(u8, action, "use")) return .{
-        .text = "workspace action must be list, use, or create",
+        .text = "workspace action must be list, use, create, or gc",
         .is_error = true,
     };
     if (path.len == 0) return .{
@@ -329,6 +337,8 @@ pub fn slashCommand(root: *Agent, arena: Allocator, line: []const u8, out: *Io.W
             action = "create";
         } else if (std.mem.eql(u8, rest, "list") or std.mem.eql(u8, rest, "ls")) {
             action = "list";
+        } else if (std.mem.eql(u8, rest, "gc") or std.mem.eql(u8, rest, "clean") or std.mem.eql(u8, rest, "clear")) {
+            action = "gc";
         } else {
             action = "use";
             path = rest;
@@ -487,6 +497,7 @@ test "run: subagent is refused; bad action and empty use name the fix" {
     try std.testing.expect(std.mem.indexOf(u8, sub.text, "root-session only") != null);
     const bad = run(gpa, io, a, false, "send", "", "");
     try std.testing.expect(bad.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, bad.text, "gc") != null);
     const empty = run(gpa, io, a, false, "use", "", "");
     try std.testing.expect(empty.is_error);
     try std.testing.expect(std.mem.indexOf(u8, empty.text, "action=list") != null);

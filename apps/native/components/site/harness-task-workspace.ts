@@ -33,6 +33,12 @@ export async function archiveTaskWorkspace(root?: string): Promise<void> {
   if (body.root) window.dispatchEvent(new CustomEvent("graff-open-workspace", { detail: { cwd: body.root } }));
 }
 
+export async function gcTaskWorkspaces(root?: string): Promise<void> {
+  if (!window.confirm("Clear unused task trees? Dead session checkouts and clean trees whose PR is merged go away. Dirty trees stay.")) return;
+  const body = await post("gc", root);
+  window.alert(body.output || "gc finished");
+}
+
 export async function updateTaskWorkspace(root?: string): Promise<void> {
   const body = await post("update", root);
   if (body.output) window.alert(body.output);
