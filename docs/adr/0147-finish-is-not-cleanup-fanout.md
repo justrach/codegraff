@@ -19,11 +19,12 @@ preemption was already out of scope (#430, ADR 0134).
   tree, and do not delete a tree and recreate the work with a fix-it child.
 - Live background fan-out is refused at the concurrency cap, not queued
   without bound.
-- `deliverInbound` parks inbound during a root turn. Paint and the
-  one-line `[peer]` wake wait until idle. Same latch on REPL, TUI, and
-  `graff acp`. A wake is never the newest authoritative user turn
-  while tools continue, and `attempt_completion` does not auto-run a
-  peer wake (#1137). The same unread generation is exposed at most once.
+- `deliverInbound` parks inbound during a root turn. The human tally
+  still paints at the step boundary (#469). The one-line `[peer]` wake
+  waits until idle. Same latch on REPL, TUI, and `graff acp`. A wake is
+  never the newest authoritative user turn while tools continue, and
+  `attempt_completion` does not auto-run a peer wake (#1137). The same
+  unread generation is exposed at most once.
 
 ## Consequences
 
