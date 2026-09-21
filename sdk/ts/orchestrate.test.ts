@@ -383,6 +383,10 @@ describe("wire-format helpers", () => {
     const input = subagentToolInput({
       description: "fix it",
       prompt: "fix the bug",
+      context: "repo is /tmp",
+      establishedFacts: "seat() lives in vision_ask.zig",
+      scope: "do not retouch workflow",
+      deliverable: "files changed, verified",
       agent: "implementer",
       systemPrompt: "be terse",
       isolation: "worktree",
@@ -392,6 +396,10 @@ describe("wire-format helpers", () => {
     expect(input).toEqual({
       description: "fix it",
       prompt: "fix the bug",
+      context: "repo is /tmp",
+      established_facts: "seat() lives in vision_ask.zig",
+      scope: "do not retouch workflow",
+      deliverable: "files changed, verified",
       agent: "implementer",
       system_prompt: "be terse",
       isolation: "worktree",
