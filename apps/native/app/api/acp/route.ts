@@ -13,6 +13,7 @@ import { prepareGuiPrompt } from "@/lib/gui-skill-context";
 import { attachmentStore } from "@/lib/attachment-store";
 
 import { retireWorker } from "@/lib/acp-retire";
+import { rememberAnswer, validateAnswer } from "@/lib/ask-answer";
 import { initializeWorker, serializeBootstrap } from "@/lib/acp-bootstrap";
 import { finishCancelledPrompt } from "@/lib/acp-cancel";
 import { armIdle, cancelIdle, forgetPark, forgetParkMatching, keepPark, parkedChats, takeParked, type ParkedWorker } from "@/lib/acp-idle";
@@ -44,6 +45,8 @@ type Slot = {
   restartReady: Promise<void> | null;
   /** Open session/idle SSE subscribers (peer pump). */
   idleListeners: number;
+  /** `session/answer` call_ids already delivered to this worker. */
+  answered: Set<string>;
 };
 
 const HANDSHAKE_MS = 120_000;
@@ -174,6 +177,7 @@ function spawnAgent(chat: string, opts: SpawnOpts): Slot {
     idleListeners: 0,
     restart: false,
     restartReady: null,
+    answered: new Set<string>(),
   };
   slot.transport = new AcpTransport(child, message => noteCommands(slot, message));
   child.on("error", (err) => {
@@ -353,12 +357,19 @@ export async function POST(req: NextRequest) {
       return Response.json({ ok: true });
     }
     if (method === "session/answer") {
-      try {
-        slot.transport.notify("session/answer", { ...body.params, sessionId: slot.sessionId });
-      } catch {
-        // a dead transport means the turn is over regardless
+      const checked = validateAnswer(body.params);
+      if (!checked.ok) return Response.json({ error: checked.error }, { status: 400 });
+      if (!slot.sessionId) return Response.json({ error: "session is no longer valid" }, { status: 409 });
+      if (rememberAnswer(slot.answered, checked.value.callId) === "repeat") {
+        return Response.json({ ok: true, callId: checked.value.callId });
       }
-      return Response.json({ ok: true });
+      try {
+        slot.transport.notify("session/answer", { ...checked.value, sessionId: slot.sessionId });
+      } catch (error) {
+        slot.answered.delete(checked.value.callId);
+        return Response.json({ error: error instanceof Error ? error.message : "notify failed" }, { status: 503 });
+      }
+      return Response.json({ ok: true, callId: checked.value.callId });
     }
     if (method === "session/idle") {
       slot.idleListeners += 1;
