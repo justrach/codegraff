@@ -141,7 +141,10 @@ test "flash and Gemini map default medium to low; grok and glm-5.3 stay medium" 
     try std.testing.expectEqualStrings("high", wireEffort("grok-4.6", "ultra"));
     try std.testing.expectEqualStrings("high", wireEffort("grok-4.6", "max"));
     try std.testing.expectEqualStrings("xhigh", wireEffort("grok-4.6", "xhigh"));
+    try std.testing.expectEqualStrings("xhigh", wireEffort("grok-4.7", "xhigh"));
+    try std.testing.expectEqualStrings("high", wireEffort("grok-4.7", "ultra"));
     try std.testing.expect(hidesMax("xai", "grok-4.6"));
+    try std.testing.expect(hidesMax("xai", "grok-4.7"));
     try std.testing.expect(!hidesMax("codex", "gpt-5.6-sol"));
     try std.testing.expect(!allows("xai", "grok-4.6", "max"));
     try std.testing.expect(allows("xai", "grok-4.6", "high"));

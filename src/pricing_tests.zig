@@ -126,10 +126,19 @@ test "grok-4.6 prices: low band under 200k, high band for the whole request at â
     try std.testing.expectApproxEqAbs(@as(f64, 0.25), pricing.usdFor(old, 200_000, 0, 0), 1e-12);
 }
 
-test "xAI default model is grok-4.6 and is catalogued" {
+test "xAI default model is grok-4.7 and is catalogued" {
     const spec = provider_mod.specFor("xai") orelse return error.MissingXaiSpec;
-    try std.testing.expectEqualStrings("grok-4.6", spec.default_model);
+    try std.testing.expectEqualStrings("grok-4.7", spec.default_model);
+    try std.testing.expect(pricing.providerModelInTable("xai", "grok-4.7"));
     try std.testing.expect(pricing.providerModelInTable("xai", "grok-4.6"));
+}
+
+test "grok-4.7 window and dual-band prices match 4.6" {
+    try std.testing.expectEqual(@as(u64, 500_000), pricing.contextFor("xai", "grok-4.7"));
+    const p = pricing.priceFor("grok-4.7") orelse return error.MissingGrok47Price;
+    try std.testing.expectEqual(@as(u64, 200_000), p.high_at);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.024), pricing.usdFor(p, 10_000, 2_000, 500), 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.812), pricing.usdFor(p, 200_000, 0, 1_000), 1e-12);
 }
 
 test "contextFor known model and default fallback" {

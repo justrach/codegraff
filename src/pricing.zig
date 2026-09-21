@@ -50,6 +50,7 @@ pub const price_table = [_]ModelPrice{
     .{ .name = "kimi-k2.6", .in = 0.95, .out = 4, .cache = 0.1 },
     .{ .name = "kimi-k2-thinking", .in = 0.6, .out = 2.5, .cache = 0.06 },
     .{ .name = "kimi-k2.5", .in = 0.6, .out = 3, .cache = 0.06 },
+    .{ .name = "grok-4.7", .in = 2, .out = 6, .cache = 0.5, .high_at = 200_000, .high_in = 4, .high_out = 12, .high_cache = 1 },
     .{ .name = "grok-4.6", .in = 2, .out = 6, .cache = 0.5, .high_at = 200_000, .high_in = 4, .high_out = 12, .high_cache = 1 },
     .{ .name = "muse-spark-1.2", .in = 1.25, .out = 4.25, .cache = 0.125 },
     .{ .name = "muse-spark-1.2-contributor", .in = 0.1, .out = 0.2, .cache = 0.01 },
@@ -287,6 +288,7 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "codegraff", .name = "gpt-5.6", .context = 1_050_000 },
     .{ .provider = "codegraff", .name = "gpt-5.5", .context = 400_000 },
     .{ .provider = "codegraff", .name = "kimi-k2.6", .context = 262_144 },
+    .{ .provider = "codegraff", .name = "grok-4.7", .context = 500_000 },
     .{ .provider = "codegraff", .name = "grok-4.6", .context = 500_000 },
     .{ .provider = "codegraff", .name = "grok-build", .context = 256_000 },
     .{ .provider = "codegraff", .name = "glm-5.2", .context = 204_800 },
@@ -307,6 +309,7 @@ pub const model_table = [_]ModelInfo{
     // Kimi Code's native `k3` row: `--model kimi-k3` with only MOONSHOT_API_KEY
     // must not rewrite onto the coding-plan login.
     .{ .provider = "moonshot", .name = "kimi-k3", .context = 1_048_576, .supports_reasoning = true, .support_efforts = &.{ "low", "high", "max" }, .default_effort = "max" },
+    .{ .provider = "xai", .name = "grok-4.7", .context = 500_000, .supports_reasoning = true },
     .{ .provider = "xai", .name = "grok-4.6", .context = 500_000, .supports_reasoning = true },
     .{ .provider = "xai", .name = "grok-4.3", .context = 1_000_000 },
     .{ .provider = "xai", .name = "grok-build", .context = 256_000 },
