@@ -26,6 +26,10 @@ pub fn configure(on: bool) void {
 }
 
 pub fn request(ctx: tools.ToolCtx) void {
+    // ACP and other unattended sessions have no prompt to hand back. Ending
+    // the turn here skips the model's next tool (the retention fixture's
+    // readiness check) and the desktop reports a finished turn too early.
+    if (@import("main.zig").unattended) return;
     if (ctx.interactive_children and !ctx.from_sub) requested.store(true, .release);
 }
 
