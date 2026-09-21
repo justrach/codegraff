@@ -89,7 +89,7 @@ test("unavailable storage shows onboarding instead of throwing", () => {
 test("the layout seed stays static so production `/` is not dynamized", () => {
   const seed = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../components/site/OnboardingFixtureSeed.tsx"), "utf8");
   assert.match(seed, /onboardingPromoteScript/);
-  assert.doesNotMatch(seed, /connection/);
+  assert.doesNotMatch(seed, /next\/server/);
   assert.doesNotMatch(seed, /fixtureSuppressesOnboarding/);
   assert.doesNotMatch(seed, /async function/);
 });

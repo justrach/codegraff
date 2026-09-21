@@ -47,7 +47,7 @@ export function onboardingDismissedScript(): string {
 
 /** Head script: copy an already-persisted Skip/Done flag into the page world.
  * Fresh profiles have nothing to promote, so production onboarding still shows.
- * Must stay synchronous — awaiting `connection()` dynamizes every `/` load. */
+ * Must stay synchronous — a request-time dynamic API dynamizes every `/` load. */
 export function onboardingPromoteScript(): string {
   return `try{if(localStorage.getItem(${JSON.stringify(ONBOARDING_KEY)})===${JSON.stringify(ONBOARDING_DISMISSED_VALUE)}||document.documentElement.dataset.${ONBOARDING_DOM_ATTR}==="1"){window.${ONBOARDING_WORLD_FLAG}=true;document.documentElement.dataset.${ONBOARDING_DOM_ATTR}="1"}}catch(e){}`;
 }
