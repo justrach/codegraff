@@ -10,14 +10,19 @@ test('release metadata can be read by the updater and identifies the exact archi
     writeManifest('1.2.3', file, manifest);
     const data = load(fs.readFileSync(manifest, 'utf8'));
     expect(data.version).toBe('1.2.3');
+    expect(data.graffVersion).toBe('1.2.3');
     expect(data.files[0].url).toBe(path.basename(file));
     expect(data.files[0].size).toBe(fs.statSync(file).size);
     expect(Buffer.from(data.files[0].sha512, 'base64').length).toBe(64);
     expect(load(JSON.stringify(feed)).url).toBe('https://github.com/justrach/codegraff/releases/latest/download/');
     expect(() => writeManifest('1.2.4', file, manifest)).toThrow('archive name');
     expect(() => writeManifest('1.2.3-beta.1', file, manifest)).toThrow('stable');
-    // Four-segment CLI hotfixes (0.0.300.1) never enter the desktop feed.
-    expect(() => writeManifest('1.2.3.4', file, manifest)).toThrow('stable');
+    const hotfixZip = path.join(dir, 'Codegraff-0.0.302.3-macos-arm64.zip'), hotfixManifest = path.join(dir, 'latest-mac-hotfix.yml');
+    fs.writeFileSync(hotfixZip, 'archive fixture');
+    const hotfix = writeManifest('0.0.302.3', hotfixZip, hotfixManifest);
+    expect(hotfix.version).toBe('0.302.3');
+    expect(hotfix.graffVersion).toBe('0.0.302.3');
+    expect(hotfix.files[0].url).toBe('Codegraff-0.0.302.3-macos-arm64.zip');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 // Minimal stored (uncompressed) zip writer: local headers, central

@@ -12,6 +12,8 @@ current is part of cutting a release.
 
 ## v0.0.302.3
 
+- Ctrl-V screenshot paste is not killed by a leftover Esc (`clipboard helper unavailable`).
+- Desktop auto-update accepts 4-part hotfix versions (`0.0.302.3`), not only `0.0.xxx`.
 - Task workspaces copy gitignored files (`.worktreeinclude` or Conductor `file_include_globs`) and run setup/run/archive scripts (ADR 0153). Desktop Tools: New task workspace, Run, Archive.
 
 ## v0.0.302.2

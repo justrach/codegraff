@@ -18,11 +18,9 @@ trap cleanup EXIT
 ditto "$source_app" "$app"
 bun "$here/release-identity.cjs" "$app"
 version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
-# Desktop stays 3-part while the CLI accepts 4-part hotfixes (0.0.300.1):
-# electron-updater compares the feed as semver and the notarization chain is
-# only verified for 3-part (see update-artifacts.cjs). 4-part tags are
-# CLI-only and must never reach distribution.
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Distribution requires a stable version.' >&2; exit 1; }
+# 3-part (0.0.302) or 4-part hotfix (0.0.302.3). The feed maps 4-part onto
+# semver so electron-updater can compare; the zip name keeps the graff version.
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo 'Distribution requires a stable version.' >&2; exit 1; }
 # Only distribution builds opt into online updates; include the feed in the signature.
 bun "$here/update-artifacts.cjs" config "$app/Contents/Resources/app-update.yml"
 bun "$here/sign-bundle.mjs" "$app"

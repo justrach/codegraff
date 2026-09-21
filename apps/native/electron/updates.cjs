@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const { displayVersion } = require('./update-version.cjs');
 
 const FIRST_CHECK_MS = 30_000;
 const POLL_MS = 6 * 60 * 60 * 1000;
@@ -51,17 +52,18 @@ function createUpdates({ updater, version, available = true, automatic = true, p
     updater.disableDifferentialDownload = true;
     updater.logger = null;
     updater.on('checking-for-update', () => emit({ status: 'checking', message: undefined }));
-    updater.on('update-available', info => emit({ status: 'downloading', version: info.version, percent: 0 }));
+    updater.on('update-available', info => emit({ status: 'downloading', version: displayVersion(info), percent: 0 }));
     updater.on('download-progress', progress => {
       const percent = Math.max(0, Math.min(100, Math.floor(progress.percent || 0)));
       if (percent !== state.percent) emit({ status: 'downloading', percent });
     });
     updater.on('update-not-available', () => emit({ status: 'current', version: undefined, percent: undefined }));
     updater.on('update-downloaded', info => {
-      emit({ status: 'ready', version: info.version, percent: 100 });
-      if (onReady && info.version && info.version !== state.prompted) {
-        state.prompted = info.version; // once per version: dismiss means Later, never a loop
-        onReady(info.version);
+      const shown = displayVersion(info);
+      emit({ status: 'ready', version: shown, percent: 100 });
+      if (onReady && shown && shown !== state.prompted) {
+        state.prompted = shown; // once per version: dismiss means Later, never a loop
+        onReady(shown);
       }
     });
     updater.on('error', () => emit({ status: 'error', message: 'Could not update. Check your connection and try again.' }));
