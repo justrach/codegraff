@@ -200,6 +200,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
         .bind_session = liveBind,
         .meter = liveMeter,
         .extra = liveModels,
+        .cwd = main_mod.g_cwd_display,
     };
     while (true) {
         const event = (inbox.wait(arena) catch break) orelse break;

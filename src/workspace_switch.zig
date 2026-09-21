@@ -27,11 +27,12 @@ const tool_spill = @import("tool_spill.zig");
 const Agent = agent_mod.Agent;
 const ToolCall = tools_mod.ToolCall;
 const ExecResult = tools_mod.ExecResult;
+const task_workspace = @import("task_workspace.zig");
 
 pub const tool_name = "workspace";
-pub const tool_desc = "List this repo's git worktrees or switch the session into one. action=list (default) or use. path is a worktree path, its last folder, or a unique name fragment. File tools and bash follow the new cwd. Root session only — a subagent stays in its assigned tree. Do not bash-cd to switch.";
+pub const tool_desc = "List this repo's git worktrees, switch into one, or create a task workspace (fresh branch + worktree). action=list (default), use, or create. path is a worktree path, its last folder, or a unique name fragment. create needs name and optional base. File tools and bash follow the new cwd. Root session only — a subagent stays in its assigned tree. Do not bash-cd to switch.";
 pub const tool_schema =
-    \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "use"], "description": "list (default): the repo's git worktrees. use: chdir this session into one."}, "path": {"type": "string", "description": "worktree path, last folder, or unique fragment (required for use)"}}}
+    \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "use", "create"], "description": "list (default): the repo's git worktrees. use: chdir this session into one. create: mint a fresh branch and worktree from the remote base, then enter it."}, "path": {"type": "string", "description": "worktree path, last folder, or unique fragment (required for use)"}, "name": {"type": "string", "description": "task workspace name (required for create)"}, "base": {"type": "string", "description": "base branch or commit for create (default origin/main after fetch)"}}}
 ;
 
 pub const Entry = struct {
@@ -215,7 +216,27 @@ fn enterPath(gpa: Allocator, io: Io, arena: Allocator, path: []const u8) ![]cons
     return abs;
 }
 
-fn run(gpa: Allocator, io: Io, arena: Allocator, from_sub: bool, action: []const u8, path: []const u8) ExecResult {
+fn createAndEnter(gpa: Allocator, io: Io, arena: Allocator, name: []const u8, base: []const u8) ExecResult {
+    if (name.len == 0) return .{
+        .text = "workspace create needs name — a short slug for the branch and checkout",
+        .is_error = true,
+    };
+    const wt = task_workspace.create(gpa, io, arena, .{ .slug = name, .base = base }) catch |err| return .{
+        .text = task_workspace.createFailureText(err),
+        .is_error = true,
+    };
+    const abs = enterPath(gpa, io, arena, wt.path) catch |err| return .{
+        .text = tryText(arena, "created {s} at {s} but could not enter it: {t}", .{ wt.branch, wt.path, err }),
+        .is_error = true,
+    };
+    main_mod.g_worktree_branch = gpa.dupe(u8, wt.branch) catch wt.branch;
+    return .{
+        .text = tryText(arena, "created workspace {s} at {s} (branch {s}) — read_file, edit_file, and bash use this tree", .{ wt.name, abs, wt.branch }),
+        .is_error = false,
+    };
+}
+
+fn run(gpa: Allocator, io: Io, arena: Allocator, from_sub: bool, action: []const u8, path: []const u8, base: []const u8) ExecResult {
     if (from_sub) return .{
         .text = "workspace switch is root-session only — a subagent stays in its assigned tree",
         .is_error = true,
@@ -224,8 +245,11 @@ fn run(gpa: Allocator, io: Io, arena: Allocator, from_sub: bool, action: []const
     if (std.mem.eql(u8, action, "list") or action.len == 0) {
         return .{ .text = formatList(arena, listEntries(gpa, io, arena), current, io), .is_error = false };
     }
+    if (std.mem.eql(u8, action, "create")) {
+        return createAndEnter(gpa, io, arena, path, base);
+    }
     if (!std.mem.eql(u8, action, "use")) return .{
-        .text = "workspace action must be list or use",
+        .text = "workspace action must be list, use, or create",
         .is_error = true,
     };
     if (path.len == 0) return .{
@@ -267,7 +291,10 @@ pub fn handle(self: *Agent, call: ToolCall) !ExecResult {
     const obj = tools_mod.json_args.object(call.input);
     const action = if (obj) |o| (tools_mod.json_args.str(o, "action") orelse "list") else "list";
     const path = if (obj) |o| (tools_mod.json_args.str(o, "path") orelse "") else "";
-    return run(self.gpa, self.io, self.arena, self.sub or self.agent_cwd != null, action, path);
+    const name = if (obj) |o| (tools_mod.json_args.str(o, "name") orelse "") else "";
+    const base = if (obj) |o| (tools_mod.json_args.str(o, "base") orelse "") else "";
+    const dest = if (std.mem.eql(u8, action, "create") and name.len > 0) name else path;
+    return run(self.gpa, self.io, self.arena, self.sub or self.agent_cwd != null, action, dest, base);
 }
 
 fn isSlash(line: []const u8) bool {
@@ -284,12 +311,22 @@ pub fn slashCommand(root: *Agent, arena: Allocator, line: []const u8, out: *Io.W
         std.mem.trim(u8, line["/ws".len..], " \t");
     var action: []const u8 = "list";
     var path: []const u8 = "";
+    var base: []const u8 = "";
     if (rest.len > 0) {
         if (std.mem.startsWith(u8, rest, "use ") or std.mem.startsWith(u8, rest, "cd ")) {
             action = "use";
             path = std.mem.trim(u8, rest[3..], " \t");
         } else if (std.mem.eql(u8, rest, "use") or std.mem.eql(u8, rest, "cd")) {
             action = "use";
+        } else if (std.mem.startsWith(u8, rest, "create ")) {
+            action = "create";
+            const spec = std.mem.trim(u8, rest["create ".len..], " \t");
+            if (std.mem.indexOfScalar(u8, spec, ' ')) |i| {
+                path = std.mem.trim(u8, spec[0..i], " \t");
+                base = std.mem.trim(u8, spec[i + 1 ..], " \t");
+            } else path = spec;
+        } else if (std.mem.eql(u8, rest, "create")) {
+            action = "create";
         } else if (std.mem.eql(u8, rest, "list") or std.mem.eql(u8, rest, "ls")) {
             action = "list";
         } else {
@@ -297,7 +334,7 @@ pub fn slashCommand(root: *Agent, arena: Allocator, line: []const u8, out: *Io.W
             path = rest;
         }
     }
-    const result = run(root.gpa, root.io, arena, false, action, path);
+    const result = run(root.gpa, root.io, arena, false, action, path, base);
     try out.writeAll(result.text);
     if (result.text.len == 0 or result.text[result.text.len - 1] != '\n') try out.writeAll("\n");
     try out.flush();
@@ -445,14 +482,17 @@ test "run: subagent is refused; bad action and empty use name the fix" {
     const a = arena_state.allocator();
     const io = std.testing.io;
     const gpa = std.testing.allocator;
-    const sub = run(gpa, io, a, true, "list", "");
+    const sub = run(gpa, io, a, true, "list", "", "");
     try std.testing.expect(sub.is_error);
     try std.testing.expect(std.mem.indexOf(u8, sub.text, "root-session only") != null);
-    const bad = run(gpa, io, a, false, "send", "");
+    const bad = run(gpa, io, a, false, "send", "", "");
     try std.testing.expect(bad.is_error);
-    const empty = run(gpa, io, a, false, "use", "");
+    const empty = run(gpa, io, a, false, "use", "", "");
     try std.testing.expect(empty.is_error);
     try std.testing.expect(std.mem.indexOf(u8, empty.text, "action=list") != null);
+    const no_name = run(gpa, io, a, false, "create", "", "");
+    try std.testing.expect(no_name.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, no_name.text, "name") != null);
 }
 
 test "enterPath: chdir then restore; display follows the new tree" {

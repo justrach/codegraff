@@ -308,15 +308,19 @@ fn holdInbound(sess: *accord.Session) void {
 fn dropInbound(sess: *accord.Session) void {
     const io = sess.io;
     const gpa = sess.gpa;
+    var owned = false;
     g_mu.lockUncancelable(io);
     for (g_ins.items, 0..) |item, i| {
         if (item == sess) {
             _ = g_ins.orderedRemove(i);
+            owned = true;
             break;
         }
     }
     g_mu.unlock(io);
-    sess.shutdown();
+    // stop() already shutdown every inbound and cleared the list. Accord's
+    // second close is BADF and Debug-aborts the process.
+    if (owned) sess.shutdown();
     gpa.destroy(sess);
 }
 

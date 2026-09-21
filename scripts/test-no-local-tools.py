@@ -211,6 +211,9 @@ def script(request: RecordedRequest) -> list[dict]:
                 {
                     "description": "probe the gate",
                     "prompt": "Try to run a shell command, then report what happened.",
+                    # This fixture is not a git repo; fan-out now defaults to
+                    # worktree and would fail spawn before the child requests.
+                    "isolation": "shared_cwd",
                 },
             ),
             tag,
