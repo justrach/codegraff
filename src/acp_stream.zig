@@ -380,6 +380,21 @@ test "translateEvent: reasoning and text become chunks" {
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "agent_message_chunk") != null);
 }
 
+test "translateEvent: a transient-retry text event is an agent_message_chunk" {
+    var buf: [1024]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const ev = try std.json.parseFromSlice(Value, a, "{\"type\":\"text\",\"text\":\"[provider error mid-response — retrying in 1s (1/3)]\"}", .{});
+    defer ev.deinit();
+    var id_buf: [64]u8 = @splat(0);
+    var next: u32 = 0;
+    try testing.expectEqual(.text, try translateEvent(&w, "s1", ev.value, &id_buf, &next));
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "agent_message_chunk") != null);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "provider error mid-response") != null);
+}
+
 test "translateEvent: tool_call then tool_result share a minted id" {
     var buf: [2048]u8 = undefined;
     var w: Io.Writer = .fixed(&buf);

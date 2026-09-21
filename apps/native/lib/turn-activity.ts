@@ -35,14 +35,28 @@ export function turnActivity(turn: AssistantTurn, now: number, opts?: { snapshot
   const mcpApps = turn.tools.filter(tool => tool.status === "running" && tool.mcpAppId).length;
   const missing = turn.tools.filter(tool => tool.status === "interrupted").length;
   const rate = running ? null : tokPerSec(estimateTokens(turn.text), elapsedMs);
-  if (turn.status === "error") return { state: "error", label: "Response interrupted", detail: `After ${duration}. ${turn.tools.some(tool => tool.status === "ok") ? "Completed tool results are kept. " : ""}Send a follow-up to continue.`, live: false };
+  if (turn.status === "error") return { state: "error", label: "Response interrupted", detail: `After ${duration}. ${turn.tools.some(tool => tool.status === "ok") ? "Completed tool results are kept. " : ""}Retry or send a follow-up to continue.`, live: false };
   if (turn.status === "ask") return { state: "input", label: "Waiting for your answer", detail: "", live: false };
   if (!live) {
     const wait = missing ? `${missing} tool ${missing === 1 ? "result" : "results"} not received` : rate;
     return { state: "done", label: turn.stopReason === "cancelled" ? "Stopped" : `Worked for ${duration}`, detail: turn.stopReason === "cancelled" ? `After ${duration}` : wait ?? "", live: false };
   }
-  const waitingOn = mcpApps ? `Waiting on ${mcpApps === 1 ? "MCP App" : "MCP Apps"}…` : running ? `Running ${running} ${running === 1 ? "tool" : "tools"}…` : "";
+  const waitingOn = mcpApps ? `Waiting on ${mcpApps === 1 ? "MCP App" : "MCP Apps"}…` : running ? `Running ${running} ${running === 1 ? "tool" : "tools"}…` : turn.retryNotice ? turn.retryNotice : "";
   const writing = !turn.connected ? "Starting…" : waitingOn || (turn.activityKind === "agent_thought_chunk" ? "Thinking…" : turn.activityKind === "agent_message_chunk" && idle < 2 ? "Writing…" : "");
   const detail = idle >= 15 ? joinDetail(writing, `No update for ${workDuration(idle)}`) : joinDetail(writing, waitingOn ? null : rate);
   return { state: idle >= 15 ? "waiting" : "working", label: `Working for ${duration}`, detail, live: true };
+}
+
+/** Human framing for a failed turn: who failed, then the provider's own words.
+ * The provider id is whatever prefixes the harness's `<provider> api error:`
+ * text (or the turn's spawn provider); nothing vendor-specific is hardcoded. */
+export function describeTurnError(error: string, provider?: string): { framing: string; message: string } {
+  const text = error.trim();
+  const api = /^(?:([a-z0-9][\w.-]*)\s+)?api error(?:\s*\([^)]*\))?\s*:\s*([\s\S]*)$/i.exec(text);
+  if (api) {
+    const who = api[1] ?? provider;
+    return { framing: who ? `${who} failed mid-response` : "The model provider failed mid-response", message: api[2].trim() || text };
+  }
+  if (/\b(exited|disconnected|closed|not running)\b/i.test(text)) return { framing: "The agent stopped before finishing", message: text };
+  return { framing: provider ? `${provider} failed mid-response` : "The request failed", message: text };
 }

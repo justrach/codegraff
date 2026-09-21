@@ -381,4 +381,6 @@ test {
     _ = @import("edit_worktree_tests.zig"); // #747: edit lands on the selected worktree
     _ = @import("mcp.zig");
     _ = @import("mcp_rpc.zig");
+    _ = @import("subagent_brief.zig"); // structured delegation brief + harness environment header
+    _ = @import("idle_wake_sources.zig"); // shared idle auto-turn sources for REPL / TUI / ACP
 }

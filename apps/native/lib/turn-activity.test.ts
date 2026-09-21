@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { emptyTurn, applyAcpUpdate, finishAcpTurn } from "./acp";
-import { turnActivity, workDuration } from "./turn-activity";
+import { describeTurnError, turnActivity, workDuration } from "./turn-activity";
 import { createTurnPainter } from "./turn-painter";
 test("a saved snapshot does not claim the turn finished here (#839)", () => {
   const turn = { ...emptyTurn(), status: "done" as const, startedAt: 1000 };
@@ -69,7 +69,6 @@ test("elapsed work freezes at completion across remounts and repeated finalizati
   expect(workDuration(60)).toBe("1m 0s");
   expect(workDuration(3601)).toBe("1h 0m");
 });
-
 test("streaming text reports tok/s; tools and MCP Apps wait instead", () => {
   const writing = {
     ...emptyTurn(), status: "streaming" as const, text: "x".repeat(80), connected: true,
@@ -83,4 +82,32 @@ test("streaming text reports tok/s; tools and MCP Apps wait instead", () => {
   expect(turnActivity(app, 1000).detail).toBe("Waiting on MCP App…");
   const done = finishAcpTurn({ ...writing, startedAt: 0 }, 1000);
   expect(turnActivity(done, 1000).detail).toMatch(/tok\/s/);
+});
+
+test("a mid-stream retry notice is live activity, not a failed turn", () => {
+  const turn = {
+    ...emptyTurn(),
+    status: "streaming" as const,
+    text: "",
+    retryNotice: "provider error mid-response — retrying in 1s (1/3)",
+    connected: true,
+    startedAt: 1000,
+    lastUpdateAt: 2000,
+    activityKind: "agent_message_chunk",
+  };
+  expect(turnActivity(turn, 2000)).toMatchObject({
+    live: true,
+    state: "working",
+    detail: "provider error mid-response — retrying in 1s (1/3)",
+  });
+});
+
+test("a failed turn names the provider from the harness error and keeps its words as detail", () => {
+  expect(describeTurnError("xai api error: Internal error during token parsing")).toEqual({ framing: "xai failed mid-response", message: "Internal error during token parsing" });
+  expect(describeTurnError("api error (rate_limit_error): Too many requests", "anthropic")).toEqual({ framing: "anthropic failed mid-response", message: "Too many requests" });
+  expect(describeTurnError("api error: quota").framing).toBe("The model provider failed mid-response");
+  expect(describeTurnError("graff acp exited with code 1")).toEqual({ framing: "The agent stopped before finishing", message: "graff acp exited with code 1" });
+  expect(describeTurnError("Preview inspection failed")).toEqual({ framing: "The request failed", message: "Preview inspection failed" });
+  const failed = finishAcpTurn({ ...emptyTurn(), status: "error", error: "xai api error: boom", startedAt: 1000 }, 13000);
+  expect(turnActivity(failed, 13000).detail).toMatch(/^After 12s\./);
 });

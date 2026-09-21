@@ -216,6 +216,39 @@ test "#1019: type:error token-parse frame yields failure.message" {
     }
 }
 
+// GPT-5.6 Programmatic Tool Calling adds output item types graff does not
+// implement: `program`, program-issued `function_call`s carrying `caller`, and
+// `program_output`. Unknown items must ride through the parser and
+// stepResponses as opaque history (they are valid next-turn input, so the
+// server keeps its `call_id`/`caller` pairing) without erroring or hiding the
+// final message.
+test "GPT-5.6 PTC: unknown `program` / `program_output` items are kept opaque, never an error" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = try @import("agent_request_body_responses.zig").testAgentFor(a, "openai", .responses, "gpt-5.6");
+    agent.sub = true; // no unstreamed-text surface in a test
+    const before = agent.messages.items.len;
+    const body =
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"program\",\"id\":\"prog_1\",\"code\":\"print(1)\",\"status\":\"completed\"}}\n" ++
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"program_output\",\"id\":\"po_1\",\"program_id\":\"prog_1\",\"output\":\"1\"}}\n" ++
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}}\n" ++
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"reasoning\":{\"effort\":\"medium\",\"context\":\"all_turns\"},\"usage\":{\"total_tokens\":7}}}\n";
+    const parsed = switch (try parseResponses(&agent, body)) {
+        .ok => |root| root,
+        .err => return error.TestUnexpectedResult,
+    };
+    try std.testing.expectEqual(@as(usize, 3), parsed.get("output").?.array.items.len);
+    try std.testing.expect(parsed.get("incomplete") == null);
+    const final = try agent.stepResponses(parsed);
+    try std.testing.expectEqualStrings("done", final.?);
+    // All three items are history now, verbatim (phase and program fields intact).
+    try std.testing.expectEqual(before + 3, agent.messages.items.len);
+    try std.testing.expectEqualStrings("program", agent.messages.items[before].object.get("type").?.string);
+    try std.testing.expectEqualStrings("program_output", agent.messages.items[before + 1].object.get("type").?.string);
+    try std.testing.expectEqualStrings("final_answer", agent.messages.items[before + 2].object.get("phase").?.string);
+}
+
 pub fn errorMessage(obj: std.json.ObjectMap) ?[]const u8 {
     if (obj.get("error")) |e| {
         if (e == .object) {

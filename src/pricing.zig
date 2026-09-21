@@ -17,9 +17,16 @@ pub const ModelPrice = struct { name: []const u8, in: f64, out: f64, cache: f64,
 pub const price_table = [_]ModelPrice{
     .{ .name = "deepseek-v4-pro", .in = 1.1, .out = 2.2, .cache = 0.11 },
     .{ .name = "deepseek-v4-flash", .in = 0.14, .out = 0.28, .cache = 0.028 },
-    .{ .name = "gpt-5.6", .in = 5, .out = 30, .cache = 0.5 }, // Sol / flagship (models.dev 2026-07-09)
-    .{ .name = "gpt-5.6-terra", .in = 2.5, .out = 15, .cache = 0.25 },
-    .{ .name = "gpt-5.6-luna", .in = 1, .out = 6, .cache = 0.1 },
+    // GPT-5.6 family (developers.openai.com model pages, read 2026-09-21).
+    // `gpt-5.6` is the API alias for `gpt-5.6-sol`; graff catalogs the direct
+    // sol slug only under codex (flat-rate, see provider.zig #294), so it has
+    // no row here on purpose — tier/pin logic relies on that. Sol's $4/$20 is
+    // promotional (at least through 2026-11-21; list was $5/$30). Requests
+    // above 272K input tokens bill 2× input and 1.5× output for the whole
+    // request — the `high_*` tier, as for grok-4.6.
+    .{ .name = "gpt-5.6", .in = 4, .out = 20, .cache = 0.4, .high_at = 272_000, .high_in = 8, .high_out = 30, .high_cache = 0.8 },
+    .{ .name = "gpt-5.6-terra", .in = 2, .out = 12, .cache = 0.2, .high_at = 272_000, .high_in = 4, .high_out = 18, .high_cache = 0.4 },
+    .{ .name = "gpt-5.6-luna", .in = 0.2, .out = 1.2, .cache = 0.02, .high_at = 272_000, .high_in = 0.4, .high_out = 1.8, .high_cache = 0.04 },
     .{ .name = "gpt-5.5", .in = 5, .out = 30, .cache = 0.5 },
     .{ .name = "gpt-5.5-codex", .in = 1.25, .out = 10, .cache = 0.125 },
     .{ .name = "gpt-5.4", .in = 2.5, .out = 15, .cache = 0.25 },

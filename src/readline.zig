@@ -52,7 +52,7 @@ const session = @import("session.zig");
 const Agent = agent_mod.Agent;
 const saveSession = session.saveSession;
 const shutdown_trace = @import("shutdown_trace.zig"); // #364: the quit path's first phase stamp
-const peer_idle = @import("peer_idle.zig");
+const idle_wake = @import("idle_wake_sources.zig");
 const rl_history = @import("readline_history.zig");
 const HistoryNav = rl_history.HistoryNav;
 const PasteStore = @import("readline_paste.zig").Store;
@@ -193,7 +193,7 @@ pub fn readLine(
                 const idle_ms: i32 = if (@import("presence_accord.zig").enabled()) 50 else 200;
                 while (!inputPendingTimed(idle_ms)) {
                     var wake_buf: [512]u8 = undefined;
-                    if (peer_idle.takeIdleWake(root.io, &wake_buf)) |wake| {
+                    if (idle_wake.takeIdleWake(root.io, root.session_name, &wake_buf)) |wake| {
                         buf.appendSlice(gpa, wake) catch break;
                         try out.writeAll("\r\n");
                         try out.flush();

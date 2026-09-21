@@ -16,6 +16,10 @@
 //!    / "Body must be valid JSON" (our stringify just succeeded on call 1).
 //!    That phrase is a flake; auth / quota / a real invalid prompt stay
 //!    fail-fast.
+//! 4. The transient-server ladder (overloaded / server_error, and xAI's
+//!    mid-stream "Internal error during token parsing" — ADR 0148): a 5xx that
+//!    surfaced in-band is retried 3× with 1·2·4 s backoff, never treated as
+//!    context overflow. Moved here from agent_request_policy.zig (600-line cap).
 
 const std = @import("std");
 const Agent = @import("agent.zig").Agent;
@@ -23,6 +27,8 @@ const http = @import("http.zig");
 const RetryPlan = http.RetryPlan;
 const util = @import("util.zig");
 const policy = @import("agent_request_policy.zig");
+const telemetry = @import("telemetry.zig");
+const main_mod = @import("main.zig");
 
 /// Per-request gateway-retry state; a fresh value lives for one request()
 /// call, so concurrent agents never share counters.
@@ -78,11 +84,11 @@ pub fn noteFlake(self: *Agent, state: *GatewayRetryState, err: anyerror) void {
     if (err == error.Timeout) state.transport_timeouts += 1;
 }
 
-/// One gate for the envelope-fatal paths: overload first, then a short
-/// Codegraff follow-up flake (ADR 0053 DeepSeek `-j 6` 110-byte / ~450ms)
-/// `api_error`), then the timeout-gated body-parse retry.
+/// One gate for the envelope-fatal paths: transient server error first (3-step
+/// ladder below), then a short Codegraff follow-up flake (ADR 0053 DeepSeek
+/// `-j 6` 110-byte / ~450ms `api_error`), then the timeout-gated body-parse retry.
 pub fn afterServerErrorOrParseReject(self: *Agent, etype: []const u8, code: ?[]const u8, msg: []const u8, server_retries: *usize, state: *GatewayRetryState) !bool {
-    if (try policy.retryTransientServerError(self, etype, code, msg, server_retries)) return true;
+    if (try retryTransientServerError(self, etype, code, msg, server_retries)) return true;
     if (try retryShortGatewayFlake(self, etype, code, msg, server_retries)) return true;
     return retryBodyParseAfterTimeouts(self, msg, state);
 }
@@ -97,10 +103,6 @@ pub fn isShortGatewayFlake(etype: []const u8, code: ?[]const u8, msg: []const u8
     // Gateway 110-byte follow-up. etype is often invalid_request_error, which
     // would otherwise hard-fail on the "invalid" needle. Auth/quota still die.
     if (isBodyParseRejection(msg)) return true;
-    // xAI 500s "Internal error during token parsing" on a fat prompt. The
-    // "internal" flake needle would resend the same body twice and then kill
-    // the turn; overflow recovery trims instead (agent_overflow.zig).
-    if (util.indexOfIgnoreCase(msg, "token parsing") != null) return false;
     const hard = [_][]const u8{ "invalid", "authentication", "unauthorized", "insufficient", "quota", "permission", "tool_choice", "not found" };
     for (hard) |n| {
         if (util.indexOfIgnoreCase(etype, n) != null) return false;
@@ -158,6 +160,88 @@ fn retryShortGatewayFlake(self: *Agent, etype: []const u8, code: ?[]const u8, ms
     return true;
 }
 
+pub const max_server_retries: usize = 3; // #opencode-parity: bounded retries for a transient in-stream server error
+
+/// #opencode-parity: an in-band error event (an SSE {"type":"error"} or a JSON
+/// error envelope) naming a TRANSIENT server condition — Anthropic overloaded_error,
+/// OpenAI server_error / server_is_overloaded, plain "overloaded", or xAI's
+/// mid-stream "Internal error during token parsing" (ADR 0148) — is a 5xx that
+/// surfaced mid-stream and should be retried, not hard-failed. Billing / quota /
+/// invalid-input errors are NOT transient and fall through to a hard fail.
+pub fn isTransientServerError(etype: []const u8, code: ?[]const u8, msg: []const u8) bool {
+    const needles = [_][]const u8{ "overloaded", "server_error", "server_is_overloaded", "token parsing" };
+    for (needles) |n| {
+        if (util.indexOfIgnoreCase(etype, n) != null) return true;
+        if (util.indexOfIgnoreCase(msg, n) != null) return true;
+        if (code) |c| if (util.indexOfIgnoreCase(c, n) != null) return true;
+    }
+    return false;
+}
+
+/// The user-facing name for the wait. xAI's token-parse 500 arrives after
+/// output began and is not an overload; calling it one misled #1019.
+fn transientServerLabel(msg: []const u8) []const u8 {
+    return if (util.indexOfIgnoreCase(msg, "token parsing") != null) "provider error mid-response" else "server overloaded";
+}
+
+/// A streamed error frame has no Retry-After header. Honor "try again in N" /
+/// "retry after N seconds" from the message when it names 1..60 s; otherwise
+/// the local 1·2·4 s ladder. Larger waits (rate-limit days) stay display-only.
+fn parseRetryAfterSeconds(msg: []const u8) ?u64 {
+    const needles = [_][]const u8{ "try again in ", "retry after " };
+    for (needles) |n| {
+        const pos = util.indexOfIgnoreCase(msg, n) orelse continue;
+        var i = pos + n.len;
+        while (i < msg.len and msg[i] == ' ') i += 1;
+        var j = i;
+        while (j < msg.len and std.ascii.isDigit(msg[j])) j += 1;
+        if (j == i) continue;
+        return std.fmt.parseInt(u64, msg[i..j], 10) catch continue;
+    }
+    return null;
+}
+
+fn serverRetryDelayMs(msg: []const u8) ?u64 {
+    const secs = parseRetryAfterSeconds(msg) orelse return null;
+    if (secs == 0 or secs > 60) return null;
+    return secs * 1000;
+}
+
+/// REPL: say(). TUI: session_notice on the bound sink (ADR 0041). ACP/--json:
+/// a `text` event, which EventSink already turns into agent_message_chunk.
+fn announceTransientRetry(self: *Agent, label: []const u8, delay_ms: u64, attempt: usize) !void {
+    var buf: [160]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "[{s} — retrying in {d}s ({d}/{d})]", .{
+        label, delay_ms / 1000, attempt, max_server_retries,
+    }) catch {
+        try self.say("[{s} — retrying in {d}s ({d}/{d})]\n", .{ label, delay_ms / 1000, attempt, max_server_retries });
+        return;
+    };
+    try self.say("{s}\n", .{line});
+    if (self.sink) |s| s.emit(self.io, .{ .session_notice = .{ .text = line, .tone = .dim } });
+    if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "text", .text = line });
+}
+
+/// If an in-stream error names a transient server condition, back off and retry
+/// the request (bounded), like a 5xx — returns true to signal the caller to
+/// `continue`. Partial text is cleared so the re-stream starts clean; the WS arm
+/// has already retired its socket on the terminal error frame, so the rebuild
+/// reconnects with full input. Esc during the backoff propagates as
+/// error.Interrupted. #opencode-parity.
+pub fn retryTransientServerError(self: *Agent, etype: []const u8, code: ?[]const u8, msg: []const u8, retries: *usize) !bool {
+    if (!isTransientServerError(etype, code, msg)) return false;
+    if (retries.* >= max_server_retries) return false;
+    retries.* += 1;
+    self.partial_text.clearRetainingCapacity(); // fresh re-stream after the retry, no concat
+    const delay_ms = serverRetryDelayMs(msg) orelse RetryPlan.delayMs(true, retries.* - 1); // 1·2·4s, or the provider's wait
+    const label = transientServerLabel(msg);
+    try announceTransientRetry(self, label, delay_ms, retries.*);
+    if (self.tracer) |tr| tr.note("retry", label);
+    if (telemetry.g_telem) |t| t.errorEvent("server_overloaded", if (msg.len > 0) msg else etype);
+    self.sleepInterruptible(delay_ms) catch return error.Interrupted;
+    return true;
+}
+
 /// The gate on the Agent: announce, trace, back off (1·2s — the gateway just
 /// answered, give it a beat), clear partial text for a fresh re-stream, and
 /// tell the caller to `continue`. Esc during the backoff still propagates.
@@ -198,7 +282,6 @@ test "shouldRetryBodyParseAfterTimeouts (#gateway-artifact): timeout history gat
 
 test "isShortGatewayFlake: internal/empty api_error retry; invalid/auth/quota do not" {
     try std.testing.expect(isShortGatewayFlake("api_error", null, "Internal Server Error"));
-    try std.testing.expect(!isShortGatewayFlake("api_error", null, "Internal error during token parsing"));
     try std.testing.expect(isShortGatewayFlake("api_error", null, ""));
     try std.testing.expect(isShortGatewayFlake("error", null, "   "));
     try std.testing.expect(isShortGatewayFlake("", null, "unknown error"));
@@ -213,14 +296,46 @@ test "isShortGatewayFlake: internal/empty api_error retry; invalid/auth/quota do
     try std.testing.expect(!isShortGatewayFlake("invalid_request_error", null, "invalid prompt"));
 }
 
-test "#1019: token-parse 500 is not a short gateway flake (WS etype empty)" {
+test "isTransientServerError (#opencode-parity): overload/server_error retry; quota/invalid/auth do not" {
+    // transient server conditions → retry like a 5xx
+    try std.testing.expect(isTransientServerError("overloaded_error", null, ""));
+    try std.testing.expect(isTransientServerError("api_error", "server_error", ""));
+    try std.testing.expect(isTransientServerError("", "server_is_overloaded", ""));
+    try std.testing.expect(isTransientServerError("", null, "The server is Overloaded, please try again")); // case-insensitive, in message
+    // billing / input / auth → NOT transient, must hard-fail
+    try std.testing.expect(!isTransientServerError("insufficient_quota", "insufficient_quota", "You exceeded your current quota"));
+    try std.testing.expect(!isTransientServerError("invalid_request_error", null, "invalid prompt"));
+    try std.testing.expect(!isTransientServerError("authentication_error", null, "invalid api key"));
+    // a bare "Internal Server Error" stays on the shorter gateway-flake ladder
+    try std.testing.expect(!isTransientServerError("api_error", null, "Internal Server Error"));
+}
+
+test "ADR 0148 (reverses #1019): token-parse 500 rides the transient server ladder, not overflow" {
     const msg = "Internal error during token parsing";
     // The Responses WS arm calls afterServerErrorOrParseReject with etype "".
-    try std.testing.expect(!isShortGatewayFlake("", null, msg));
-    try std.testing.expect(!isShortGatewayFlake("api_error", null, msg));
-    try std.testing.expect(!isShortGatewayFlake("", null, "xai api error: Internal error during token parsing"));
+    try std.testing.expect(isTransientServerError("", null, msg));
+    try std.testing.expect(isTransientServerError("api_error", null, msg));
+    try std.testing.expect(isTransientServerError("", null, "xai api error: Internal error during token parsing"));
+    // Never overflow: no trim, no meter pin — the same request body is resent.
+    try std.testing.expect(!@import("agent_overflow.zig").isContextOverflow(msg, null));
+    try std.testing.expect(!@import("agent_overflow.zig").isContextOverflow("xai api error: " ++ msg, null));
+    // Not a body-parse rejection either; and the no-carve-out flake gate agrees it is retryable.
     try std.testing.expect(!isBodyParseRejection(msg));
-    try std.testing.expect(isShortGatewayFlake("api_error", null, "Internal Server Error"));
+    try std.testing.expect(isShortGatewayFlake("", null, msg));
+    // Wording: the retry line names a mid-response provider error, not an overload.
+    try std.testing.expectEqualStrings("provider error mid-response", transientServerLabel(msg));
+    try std.testing.expectEqualStrings("server overloaded", transientServerLabel("The server is overloaded"));
+}
+
+test "serverRetryDelayMs honors try-again/retry-after seconds, ignores 0 and >60s" {
+    try std.testing.expectEqual(@as(u64, 3), parseRetryAfterSeconds("try again in 3 seconds").?);
+    try std.testing.expectEqual(@as(u64, 5), parseRetryAfterSeconds("Please Retry After 5s").?);
+    try std.testing.expectEqual(@as(u64, 12), parseRetryAfterSeconds("TRY AGAIN IN  12 seconds.").?);
+    try std.testing.expect(parseRetryAfterSeconds("Internal error during token parsing") == null);
+    try std.testing.expectEqual(@as(u64, 3000), serverRetryDelayMs("overloaded; try again in 3 seconds").?);
+    try std.testing.expect(serverRetryDelayMs("try again in 0 seconds") == null);
+    try std.testing.expect(serverRetryDelayMs("retry after 90 seconds") == null);
+    try std.testing.expect(serverRetryDelayMs("try again in 350000 seconds") == null);
 }
 
 test "#748: error-only SSE is not a truncated gateway body" {

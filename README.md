@@ -243,6 +243,14 @@ Vercel, OpenRouter, MiniMax, Xiaomi, Groq, Cerebras, Mistral, plus one
 workspace router in `.graff/.config.router`. `graff models refresh` pulls
 catalogs. Claude-subscription OAuth is deliberately not supported.
 
+OpenAI's GPT-5.6 family is `gpt-5.6` (the API alias for `gpt-5.6-sol`),
+`gpt-5.6-terra`, and `gpt-5.6-luna`, on the Responses wire via `openai`,
+`codex`, or the Codegraff gateway. `/effort` takes `low|medium|high|xhigh`
+plus the family's `max` (shown as Ultra; `medium` is the default). Reasoning
+replays from local history, so `reasoning.context` is never sent
+([ADR 0145](docs/adr/0145-gpt-5-6-reasoning-replays-from-local-history.md));
+`reasoning.mode: "pro"` is not exposed yet.
+
 </details>
 
 ## Evaluation results

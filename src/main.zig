@@ -564,7 +564,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = .{ @import("mcp_server_tests.zig"), @import("main_test.zig"), @import("artifact_claim_command.zig"), @import("cli_path_hint.zig"), @import("run_budget.zig"), @import("pr_review_input.zig"), @import("pr_claim_review.zig"), @import("tui_paste_transfer.zig") };
     _ = @import("session_catalog.zig");
     _ = @import("session_prompt.zig");
-    _ = @import("prompt_astra.zig");
+    _ = .{ @import("prompt_astra.zig"), @import("prompt_guidance.zig") }; // per-model guidance (Astra, GPT-5.6)
     _ = @import("agent_empty_completion.zig"); // #745: plain-final reconciliation
     _ = @import("agent_model_loop.zig");
     _ = @import("publication_policy_tests.zig");

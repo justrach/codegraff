@@ -2,6 +2,7 @@ import { htmlArtifactId } from "./html-artifacts";
 import { parseContextMeter } from "./context-meter";
 import { boundToolDetail } from "./tool-detail";
 import { stripCiteMarkup } from "./cite-markup";
+import { transientRetryNotice } from "./acp-retry-notice";
 import { mcpAppId, viewSnapshotId } from "./mcp-apps";
 /** ACP v1 session/update shapes the native harness renders. */
 
@@ -284,6 +285,10 @@ export function applyAcpUpdate(turn: AssistantTurn, update: AcpUpdate): Assistan
     }
     case "agent_message_chunk": {
       const text = stripCiteMarkup((update as { content?: AcpContent }).content?.text ?? "");
+      const retry = transientRetryNotice(text);
+      if (retry) {
+        return { ...turn, text: "", pendingBreak: false, status: "streaming", retryNotice: retry };
+      }
       const needsBreak = turn.pendingBreak && turn.text.length > 0 && !/\s$/.test(turn.text) && !/^\s/.test(text);
       return {
         ...turn,
