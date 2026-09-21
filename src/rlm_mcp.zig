@@ -31,15 +31,15 @@ pub fn looksMcp(name: []const u8) bool {
 pub fn isNativeHost(name: []const u8) bool {
     if (@import("shell_tool.zig").isFamily(name)) return true;
     const names = [_][]const u8{
-        "read_file",                 "edit_file",           "write_file",
-        "codedb",                    "webfetch",            "sleep_ms",
-        "llm_query",                 "subagent",            "skill",
-        "ask_user",                  "todo_write",          "todo_read",
-        "eval",                      "note_constraint",     "attempt_completion",
-        "load_tool_schemas",         "clock_sleep",         "workflow",
-        "agent_output",              "peer_message",        "workspace",
-        "imagegen",                  "learn_candidate",     "rlm",
-        "read_tool_result",          "render_html",         "mcp_search_tools",
+        "read_file",         "edit_file",       "write_file",
+        "codedb",            "webfetch",        "sleep_ms",
+        "llm_query",         "subagent",        "skill",
+        "ask_user",          "todo_write",      "todo_read",
+        "eval",              "note_constraint", "attempt_completion",
+        "load_tool_schemas", "clock_sleep",     "workflow",
+        "agent_output",      "peer_message",    "workspace",
+        "imagegen",          "learn_candidate", "rlm",
+        "read_tool_result",  "render_html",     "mcp_search_tools",
         "mcp_select_tool",
     };
     for (names) |n| {
@@ -312,7 +312,7 @@ test "#1016: native read_file is not remapped to an unloaded MCP short name" {
     var schema: std.json.ObjectMap = .empty;
     try schema.put(arena, "type", .{ .string = "object" });
     try schema.put(arena, "properties", .{ .object = props });
-    const colliding = [_]mcp.Tool{.{
+    var colliding = [_]mcp.Tool{.{
         .server_index = 0,
         .original_name = "read_file",
         .qualified_name = "mcp__wiki__read_file",
@@ -321,7 +321,7 @@ test "#1016: native read_file is not remapped to an unloaded MCP short name" {
     }};
     var registry = mcp.Registry.empty(gpa, io);
     defer registry.deinit();
-    registry.tools = &colliding;
+    registry.tools = colliding[0..];
     var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer dummy_client.deinit();
     const ctx: ToolCtx = .{

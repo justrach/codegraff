@@ -419,7 +419,7 @@ test "#1016: literal read_file stays native when an MCP short name collides" {
     var schema: std.json.ObjectMap = .empty;
     try schema.put(arena, "type", .{ .string = "object" });
     try schema.put(arena, "properties", .{ .object = props });
-    const colliding = [_]mcp.Tool{.{
+    var colliding = [_]mcp.Tool{.{
         .server_index = 0,
         .original_name = "read_file",
         .qualified_name = "mcp__wiki__read_file",
@@ -428,7 +428,7 @@ test "#1016: literal read_file stays native when an MCP short name collides" {
     }};
     var registry = mcp.Registry.empty(gpa, io);
     defer registry.deinit();
-    registry.tools = &colliding;
+    registry.tools = colliding[0..];
     var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer dummy_client.deinit();
     const saved = rlm.available;
