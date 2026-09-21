@@ -20,6 +20,14 @@ pub fn modelSupports(model: []const u8) bool {
     return std.mem.startsWith(u8, model, "gpt-6");
 }
 
+/// Who actually serves a Responses WebSocket. Platform OpenAI only for GPT-6
+/// (mid-turn `response.steer`); GPT-5.6 stays HTTP SSE. Codex/xAI/gateway
+/// keep their existing sockets. 426 still latches SSE.
+pub fn providerHasWs(id: []const u8, model: []const u8) bool {
+    if (std.mem.eql(u8, id, "codex") or std.mem.eql(u8, id, "xai") or std.mem.eql(u8, id, "codegraff")) return true;
+    return std.mem.eql(u8, id, "openai") and modelSupports(model);
+}
+
 pub const Session = struct {
     live_id: []const u8 = "",
     successor_id: []const u8 = "",
@@ -141,6 +149,16 @@ test "modelSupports is gpt-6 only" {
     try std.testing.expect(modelSupports("gpt-6"));
     try std.testing.expect(!modelSupports("gpt-5.6-sol"));
     try std.testing.expect(!modelSupports("gpt-5.6"));
+}
+
+test "providerHasWs: Platform OpenAI GPT-6 only; Codex always" {
+    try std.testing.expect(providerHasWs("openai", "gpt-6-astra"));
+    try std.testing.expect(!providerHasWs("openai", "gpt-5.6"));
+    try std.testing.expect(!providerHasWs("openai", "gpt-5.6-luna"));
+    try std.testing.expect(providerHasWs("codex", "gpt-5.6-sol"));
+    try std.testing.expect(providerHasWs("codex", "gpt-6-astra"));
+    try std.testing.expect(providerHasWs("xai", "grok-4.6"));
+    try std.testing.expect(providerHasWs("codegraff", "gpt-6-astra"));
 }
 
 test "buildSteerFrame is type + previous_response_id + input" {

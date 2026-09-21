@@ -21,10 +21,11 @@ unsupported parameter, so its supported automatic/keyed path must remain.
 
 ## Decision
 
-- OpenAI Platform Responses requests on `gpt-5.6*` prepend one stable developer
-  `input_text` cache anchor after top-level instructions and mark it with an
-  explicit breakpoint. Codex subscription, xAI, and older models receive
-  neither the anchor nor Platform-only options.
+- OpenAI Platform Responses requests on GPT-5.6 **and later** (`gpt-5.6*`,
+  `gpt-6-astra`, …) prepend one stable developer `input_text` cache anchor
+  after top-level instructions and mark it with an explicit breakpoint. Codex
+  subscription, xAI, and older models receive neither the anchor nor
+  Platform-only options.
 - Root sessions use `prompt_cache_options.mode = "implicit"`: the explicit
   stable prefix remains reusable while append-only conversation turns keep the
   useful latest-message checkpoint. Subagents use `mode = "explicit"` so their

@@ -485,6 +485,7 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     // negative value simply leaves this process's numbering alone.
     protocol_seq.restore(eventSeqFromSession(obj));
     if (cacheKeyFromSession(obj)) |k| http_headers.restoreSessionId(k);
+    if (promptCacheKeyFromSession(obj)) |k| http_headers.restoreProjectRootId(k);
 
     root.ensureStoredKeys(keys);
     if (std.mem.eql(u8, pid, "codex")) root.ensureModelCatalog(keys.*);
