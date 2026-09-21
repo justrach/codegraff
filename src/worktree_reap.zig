@@ -55,6 +55,53 @@ pub fn orphans(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8) usize 
     return removed;
 }
 
+fn prMerged(gpa: Allocator, io: Io, cwd: []const u8, branch: []const u8) bool {
+    const name = prune.shortBranch(branch);
+    const r = process_runner.runCappedWithOptions(gpa, io, &.{ "gh", "pr", "view", name, "--json", "state", "-q", ".state" }, 4096, 4096, 20_000, .{ .cwd = .{ .path = cwd } }) catch return false;
+    defer {
+        gpa.free(r.stdout);
+        gpa.free(r.stderr);
+    }
+    if (!process_runner.ranOk(r)) return false;
+    return std.mem.eql(u8, std.mem.trim(u8, r.stdout, " \t\r\n"), "MERGED");
+}
+
+fn treeDirty(gpa: Allocator, io: Io, path: []const u8) bool {
+    const st = runCapped(gpa, io, &.{ "git", "-C", path, "status", "--porcelain" }, 1 << 16, 8192, 15_000) catch return true;
+    defer {
+        gpa.free(st.stdout);
+        gpa.free(st.stderr);
+    }
+    if (!process_runner.ranOk(st)) return true;
+    return std.mem.trim(u8, st.stdout, " \t\r\n").len > 0;
+}
+
+/// Named task trees whose GitHub PR is MERGED and whose checkout is clean.
+/// Dirty trees stay. `gh` missing or offline is a no-op.
+pub fn mergedPulls(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8) usize {
+    const dir = if (cwd.len > 0) cwd else ".";
+    const listed = runCapped(gpa, io, &.{ "git", "-C", dir, "worktree", "list", "--porcelain" }, 1 << 18, 8192, 15_000) catch return 0;
+    defer {
+        gpa.free(listed.stdout);
+        gpa.free(listed.stderr);
+    }
+    const entries = prune.parseEntries(arena, listed.stdout) catch return 0;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const here_n = Io.Dir.cwd().realPathFile(io, ".", &buf) catch 0;
+    const here = if (here_n > 0) buf[0..here_n] else "";
+    var removed: usize = 0;
+    for (entries) |e| {
+        const name = prune.shortBranch(e.branch);
+        if (!std.mem.startsWith(u8, name, "worktree-")) continue;
+        if (sessionPid(e.branch) != null) continue;
+        if (here.len > 0 and std.mem.eql(u8, e.path, here)) continue;
+        if (treeDirty(gpa, io, e.path)) continue;
+        if (!prMerged(gpa, io, dir, e.branch)) continue;
+        if (prune.removeWorktree(gpa, io, e)) removed += 1;
+    }
+    return removed;
+}
+
 test "sessionPid: only auto-isolate session branches" {
     try std.testing.expectEqual(@as(?i32, 65043), sessionPid("refs/heads/worktree-session-65043-e9cc718d"));
     try std.testing.expectEqual(@as(?i32, 65043), sessionPid("worktree-session-65043-e9cc718d"));

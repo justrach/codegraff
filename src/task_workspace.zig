@@ -20,6 +20,7 @@ const workspace_prepare = @import("workspace_prepare.zig");
 
 pub const CreateError = error{ NotAGitRepo, InvalidName, NameCollision, CreateFailed, Unsupported };
 pub const ArchiveError = error{ InvalidName, NotFound, ArchiveFailed };
+pub const UpdateError = error{ InvalidName, NotFound, Dirty, MergeFailed };
 
 pub const AutoIsolate = union(enum) {
     skip,
@@ -264,6 +265,46 @@ pub fn ensure(gpa: Allocator, io: Io, arena: Allocator, opts: CreateOpts) (Creat
         };
     }
     return create(gpa, io, arena, opts);
+}
+
+/// Fetch the remote base and merge it into the task workspace. Dirty trees stay untouched.
+pub fn update(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8, slug: []const u8) (UpdateError || Allocator.Error)!Workspace {
+    const named = try names(arena, slug);
+    const dest = try joinCwd(arena, cwd, named.path);
+    if (!dirExists(io, dest)) return error.NotFound;
+    const path = try absPath(io, arena, dest);
+    const st = runCapped(gpa, io, &.{ "git", "-C", dest, "status", "--porcelain" }, 1 << 16, 8192, 30_000) catch return error.MergeFailed;
+    defer {
+        gpa.free(st.stdout);
+        gpa.free(st.stderr);
+    }
+    if (!ranOk(st)) return error.MergeFailed;
+    if (std.mem.trim(u8, st.stdout, " \t\r\n").len > 0) return error.Dirty;
+    const remote = resolveCreateBase(gpa, io, arena, cwd, "");
+    const base = if (remote.len > 0) remote else readHead(gpa, io, arena, cwd);
+    if (base.len == 0) return error.MergeFailed;
+    const m = runCapped(gpa, io, &.{ "git", "-C", dest, "merge", "--no-edit", base }, 1 << 16, 1 << 16, 60_000) catch return error.MergeFailed;
+    defer {
+        gpa.free(m.stdout);
+        gpa.free(m.stderr);
+    }
+    if (!ranOk(m)) return error.MergeFailed;
+    return .{
+        .name = named.name,
+        .path = path,
+        .branch = named.branch,
+        .base = readHead(gpa, io, arena, path),
+    };
+}
+
+pub fn updateFailureText(err: anyerror) []const u8 {
+    return switch (err) {
+        error.InvalidName => createFailureText(error.InvalidName),
+        error.NotFound => archiveFailureText(error.NotFound),
+        error.Dirty => "workspace has uncommitted changes — commit or stash them first, then update",
+        error.MergeFailed => "could not merge the remote base into this workspace (conflict or missing origin)",
+        else => "could not update the task workspace",
+    };
 }
 
 /// Archive removes a clean tree whose commits exist elsewhere. Dirty or unique-commit trees stay.

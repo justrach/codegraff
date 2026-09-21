@@ -339,6 +339,8 @@ pub const usage_text =
     \\  graff worktree archive <name>    remove a clean duplicate checkout; dirty or unique-commit trees stay
     \\  graff worktree merge <name>      squash-land worktree-<name> onto the current branch + clean up
     \\  graff worktree land <name>       same as merge
+    \\  graff worktree update <name>     merge the remote base into that workspace
+    \\  graff worktree gc                drop dead session trees and clean merged-PR trees
     \\  graff worktree remove <name>     discard worktree-<name> (drops its scratch work) + delete the branch
     \\  graff worktree prune             drop git registrations for worktrees whose dirs were deleted
     \\  graff servers                    background servers graff started (this session's or older): pid, port, age

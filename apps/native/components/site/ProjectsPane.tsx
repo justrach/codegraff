@@ -1,8 +1,8 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { IconFolder, IconPlusMedium } from "@/lib/icons";
 import { compareWorkspaceActivity, workspaceSourceLabel, type Workspace } from "@/lib/workspaces";
-import { archiveTaskWorkspace, landTaskWorkspace } from "./harness-task-workspace";
+import { archiveTaskWorkspace, landTaskWorkspace, updateTaskWorkspace, workspaceBytes } from "./harness-task-workspace";
 
 function taskSlug(path: string): string | null {
   const parts = path.replace(/\\/g, "/").split("/");
@@ -29,10 +29,12 @@ export default function ProjectsPane({ workspaces, current, onOpen, onContinue, 
         {shown.map(w => <article key={w.path} data-project-path={w.path} className="min-w-0 rounded-[14px] border border-line bg-surface p-4">
           <div className="flex items-center gap-2 text-ink"><IconFolder size={19} /><h2 className="min-w-0 flex-1 truncate font-medium">{w.name}</h2>{w.path === current && <span className="text-xs text-accent">Current</span>}</div>
           <p className="my-3 break-all font-mono text-xs text-ink-3">{workspaceSourceLabel(w)} · {w.path}{taskSlug(w.path) ? ` · worktree-${taskSlug(w.path)}` : ""}</p>
+          {taskSlug(w.path) && <TaskSize path={w.path} />}
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={() => onContinue(w.path)} className="rounded-control bg-hover-2 px-3 py-2 text-sm text-ink">Open</button>
             <button type="button" onClick={() => onNewChat(w.path)} className="rounded-control px-3 py-2 text-sm text-ink-2 hover:bg-hover">New chat</button>
             {taskSlug(w.path) && <>
+              <button type="button" onClick={() => void updateTaskWorkspace(w.path).catch(err => window.alert(String(err.message || err)))} className="rounded-control px-3 py-2 text-sm text-ink-2 hover:bg-hover">Update from main</button>
               <button type="button" onClick={() => void landTaskWorkspace(w.path).catch(err => window.alert(String(err.message || err)))} className="rounded-control px-3 py-2 text-sm text-ink-2 hover:bg-hover">Land</button>
               <button type="button" onClick={() => void archiveTaskWorkspace(w.path).catch(err => window.alert(String(err.message || err)))} className="rounded-control px-3 py-2 text-sm text-ink-2 hover:bg-hover">Archive</button>
             </>}
@@ -42,4 +44,17 @@ export default function ProjectsPane({ workspaces, current, onOpen, onContinue, 
       {!shown.length && <p className="py-8 text-center text-sm text-ink-3">{query ? "No projects match this search." : "Open a folder to start your first project."}</p>}
     </div>
   </section>;
+}
+
+function TaskSize({ path }: { path: string }) {
+  const [label, setLabel] = useState("");
+  useEffect(() => {
+    let alive = true;
+    void workspaceBytes(path).then(bytes => {
+      if (!alive || bytes <= 0) return;
+      setLabel(bytes >= 1_048_576 ? `${(bytes / 1_048_576).toFixed(1)} MB on disk` : `${Math.max(1, Math.round(bytes / 1024))} KB on disk`);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [path]);
+  return label ? <p className="mb-3 text-xs text-ink-3">{label}</p> : null;
 }

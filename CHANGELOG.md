@@ -10,6 +10,10 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.302.4
+
+- Task workspace housekeeping: `graff worktree update` merges the remote base; `gc` drops dead session trees and clean trees whose GitHub PR is MERGED (dirty trees stay). Desktop: Update from main, disk use on the projects card.
+
 ## v0.0.302.3
 
 - Desktop first launch: one MCP install (no overlapping flock / “MCP setup incomplete”), and `graff` on login-shell PATH (zsh/bash login+interactive, Homebrew and `~/bin` shims).

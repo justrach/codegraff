@@ -4,7 +4,7 @@ async function post(action: string, root: string | undefined, name?: string) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ action, root, name }),
   });
-  const body = await response.json() as { error?: string; path?: string; command?: string; output?: string; root?: string };
+  const body = await response.json() as { error?: string; path?: string; command?: string; output?: string; root?: string; bytes?: number };
   if (!response.ok) throw new Error(body.error || "Worktree request failed");
   return body;
 }
@@ -31,6 +31,16 @@ export async function archiveTaskWorkspace(root?: string): Promise<void> {
   const body = await post("archive", root);
   if (body.output && !body.output.startsWith("✓")) window.alert(body.output);
   if (body.root) window.dispatchEvent(new CustomEvent("graff-open-workspace", { detail: { cwd: body.root } }));
+}
+
+export async function updateTaskWorkspace(root?: string): Promise<void> {
+  const body = await post("update", root);
+  if (body.output) window.alert(body.output);
+}
+
+export async function workspaceBytes(root?: string): Promise<number> {
+  const body = await post("status", root);
+  return typeof body.bytes === "number" ? body.bytes : 0;
 }
 
 export async function landTaskWorkspace(root?: string): Promise<void> {

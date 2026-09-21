@@ -59,6 +59,20 @@ export async function POST(req: Request) {
       if (result.code !== 0) return Response.json({ error: result.stderr.trim() || result.stdout.trim() || "land failed" }, { status: 502 });
       return Response.json({ ok: true, output: result.stdout.trim(), root: repo });
     }
+    if (action === "update") {
+      const name = slug();
+      if (!name) return Response.json({ error: "not a task workspace" }, { status: 400 });
+      const result = await run(bin, ["worktree", "update", name], repo, 120_000);
+      if (result.code !== 0) return Response.json({ error: result.stderr.trim() || result.stdout.trim() || "update failed" }, { status: 502 });
+      return Response.json({ ok: true, output: result.stdout.trim() });
+    }
+    if (action === "status") {
+      const name = slug();
+      const checkout = name ? `${repo}/.graff/worktrees/${name}` : resolved.root;
+      const result = await run("du", ["-sk", checkout], repo, 15_000);
+      const kb = Number((result.stdout.trim().split(/\s+/)[0] ?? "").replace(/[^0-9]/g, ""));
+      return Response.json({ ok: true, name: name ?? null, bytes: Number.isFinite(kb) ? kb * 1024 : 0 });
+    }
     if (action === "run") {
       const name = slug();
       if (!name) return Response.json({ error: "not a task workspace" }, { status: 400 });
