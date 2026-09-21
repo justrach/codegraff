@@ -12,6 +12,7 @@ current is part of cutting a release.
 
 ## v0.0.302.4
 
+- Composer send/stop stays a circle: more inset so the 32px corner no longer clips it into a square (#1152).
 - New chat stays in the folder already open, on the desktop and through ACP. Worktrees and other GUI workspace changes have to match the ACP session; that rule is in AGENTS.md and docs/notices.
 - GUI transcript drag-selection paints, and each message has a copy icon at the bottom.
 
