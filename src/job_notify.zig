@@ -138,9 +138,9 @@ pub fn printRunning(w: *Io.Writer, id: u32, waited_ms: u64, interrupted: bool, p
     const el = tool_pulse.formatElapsed(&ebuf, waited_ms);
     if (persistent) {
         if (interrupted) {
-            try w.print("[job {d}: running · {s} waited, then interrupted — persistent server; wait_ms is a snapshot timeout, not wait-until-exit]", .{ id, el });
+            try w.print("[job {d}: running · {s} waited, then interrupted — persistent server; parked in the background. You are notified on exit; do not poll]", .{ id, el });
         } else {
-            try w.print("[job {d}: running · {s} elapsed — persistent server; wait_ms is a snapshot timeout. omit wait_ms for an immediate snapshot]", .{ id, el });
+            try w.print("[job {d}: running — persistent server; parked in the background. You are notified on exit; do not poll. action=output reads unread bytes]", .{id});
         }
         return;
     }
@@ -265,6 +265,17 @@ test "printRunning reports the wait that happened, not the deadline (ADR 0061)" 
     aw.clearRetainingCapacity();
     try printRunning(&aw.writer, 5, 125_000, false, false);
     try std.testing.expectEqualStrings("[job 5: running · 2m05s elapsed — you are notified on exit; do not call bash_output again]", aw.written());
+}
+
+test "printRunning parks a persistent server instead of inviting a wait_ms poll (ADR 0152)" {
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try printRunning(&aw.writer, 446, 180_000, false, true);
+    try std.testing.expectEqualStrings("[job 446: running — persistent server; parked in the background. You are notified on exit; do not poll. action=output reads unread bytes]", aw.written());
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "omit wait_ms") == null);
+    aw.clearRetainingCapacity();
+    try printRunning(&aw.writer, 446, 15_000, true, true);
+    try std.testing.expectEqualStrings("[job 446: running · 15s waited, then interrupted — persistent server; parked in the background. You are notified on exit; do not poll]", aw.written());
 }
 
 test "takeWake drains and formats the grok-build do-not-poll reminder" {

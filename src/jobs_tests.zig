@@ -109,17 +109,25 @@ test "isolated capped runs clean descendants after timeout and normal exit" {
     try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "completed-marker", .{}));
 }
 
-test "bash_output wait_ms on a persistent job is a snapshot timeout (#810)" {
+test "bash_output wait_ms on a persistent job snapshots immediately (ADR 0152)" {
     if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
     jobs.g_jobs = .{};
     const gpa = std.testing.allocator;
     const io = std.testing.io;
     const id = (try jobs.spawnJobOpts(gpa, io, "sleep 8", .{ .persistent = true })).id;
     defer jobs.jobsReap(gpa, io);
-    const snap = try jobs.jobOutput(gpa, io, id, 400);
+    const t0 = std.time.milliTimestamp();
+    const snap = try jobs.jobOutput(gpa, io, id, 5_000);
+    const elapsed = std.time.milliTimestamp() - t0;
     defer gpa.free(snap.text);
+    try std.testing.expect(elapsed < 800);
     try std.testing.expect(std.mem.indexOf(u8, snap.text, "running") != null);
     try std.testing.expect(std.mem.indexOf(u8, snap.text, "persistent server") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snap.text, "do not poll") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snap.text, "omit wait_ms") == null);
+    const again = try jobs.jobOutput(gpa, io, id, 30_000);
+    defer gpa.free(again.text);
+    try std.testing.expect(std.mem.indexOf(u8, again.text, "running") != null);
 }
 
 test "bash_output wait_ms>0 waits for exit, not the next byte (ADR 0010)" {

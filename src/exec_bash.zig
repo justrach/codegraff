@@ -76,11 +76,11 @@ fn startedText(gpa: Allocator, id: u32, cmd: []const u8, ssh: bool, auto_bg: boo
     const w = &aw.writer;
     try w.print("[job {d} started: {s}]\n", .{ id, cmd });
     if (@import("job_wait.zig").followup_pending.load(.acquire)) {
-        try w.print("Follow-up received while this was running; it was moved to the background so you can talk. Process is still running as job {d}. shell action=output wait_ms>0 waits until it exits; omit wait_ms for a snapshot. action=kill stops it.", .{id});
+        try w.print("Follow-up received while this was running; it was moved to the background so you can talk. Process is still running as job {d}. You are notified on exit — do not poll. action=output is a snapshot; action=kill stops it.", .{id});
     } else if (auto_bg) {
-        try w.print("Command exceeded the {d}s foreground wait and was automatically moved to the background. Process is still running. You are notified on exit — do not poll. shell action=output id {d} is a snapshot, not wait-until-exit; omit wait_ms for an immediate snapshot. Leave it on /jobs or action=kill it. Explicit run_in_background keeps wait-until-exit for intentional long work.", .{ wait_s, id });
+        try w.print("Command exceeded the {d}s foreground wait and was automatically moved to the background. Process is still running as job {d}. You are notified on exit — do not poll. action=output is a snapshot; leave it on /jobs or action=kill it.", .{ wait_s, id });
     } else {
-        try w.print("This is a persistent job. shell action=output wait_ms is a snapshot timeout, not wait-until-exit — omit wait_ms for an immediate snapshot. You are notified on exit — do not poll. action=output id {d} reads unread output. action=kill stops it.", .{id});
+        try w.print("This is a persistent server. It runs in the background across turns. You are notified on exit — do not poll. action=output id {d} reads unread output. action=kill stops it.", .{id});
     }
     if (ssh) try w.writeAll(" Killing the local SSH job cannot prove a detached remote process stopped; verify the remote host.");
     if (partial.len > 0) {
@@ -223,9 +223,20 @@ test "auto-promoted jobs snapshot instead of inheriting wait-until-exit" {
     const gpa = std.testing.allocator;
     const text = try startedText(gpa, 7, "find /", false, true, 15, "partial");
     defer gpa.free(text);
-    try std.testing.expect(std.mem.indexOf(u8, text, "wait-until-exit") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "do not poll") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "snapshot") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "waits until it exits") == null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "run_in_background") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "job 7") != null);
+}
+
+test "persistent start text parks the server and forbids polling" {
+    const gpa = std.testing.allocator;
+    const text = try startedText(gpa, 446, "npm run dev", false, false, 0, "");
+    defer gpa.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "[job 446 started: npm run dev]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "persistent server") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "do not poll") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "omit wait_ms") == null);
 }
 
 fn formatCapped(gpa: Allocator, cmd: []const u8, run: jobs.CappedRun) !ToolOutput {

@@ -1,6 +1,9 @@
 # 0091. Persistent bash jobs honor wait_ms as a timeout
 
-Status: accepted 2026-09-08
+Status: superseded 2026-09-21 by [0152](0152-persistent-shells-snapshot-once.md)
+
+Honoring `wait_ms` as a real timeout on servers produced the 15s
+`still running` poll flood. Persistent jobs now snapshot immediately.
 
 ## Context
 
