@@ -39,6 +39,7 @@ async function runNavigationPromptFocus({ win, origin }) {
     await click(`${sidebar} button[aria-label="Home"]`); await focused(first);
     await click(`${sidebar} button[aria-label="Projects"]`);
     await click(`${sidebar} button[aria-label="Home"]`); await focused(first);
+    for (const keyCode of 'return draft') await testDesktop.testInput(wc, { type: 'char', keyCode });
     await click(`${sidebar} button[aria-label="New chat"]`);
     const second = await active(); assert.notEqual(second, first); await focused(second);
     await click('[aria-label="Collapse sidebar"]');
@@ -46,6 +47,8 @@ async function runNavigationPromptFocus({ win, origin }) {
     await click('[data-workspace-toolbar] button[aria-label="New chat"]');
     const third = await active(); assert.notEqual(third, second); await focused(third);
     await click(tab(first)); await focused(first);
+    assert.deepEqual(await js(`(()=>{const prompt=document.querySelector('[data-chat="${first}"] textarea[aria-label="Prompt"]');return {value:prompt.value,start:prompt.selectionStart,end:prompt.selectionEnd};})()`),
+      { value: 'return draft', start: 12, end: 12 }, 'Returning to a chat restores its draft with the caret at the end');
     await click(tab(first)); await focused(first);
 
     await click('[aria-label="Expand sidebar"]');
