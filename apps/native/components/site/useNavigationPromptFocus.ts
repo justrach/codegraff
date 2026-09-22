@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { focusNavigationPrompt } from "@/lib/navigation-prompt-focus";
+import { flushSync } from "react-dom";
 
 /** Explicit navigation, not active-pane changes or draft renders, owns focus. */
 export function useNavigationPromptFocus() {
@@ -13,5 +14,11 @@ export function useNavigationPromptFocus() {
     // Run once in the navigation commit, never retry later during typing.
     if (prompt) focusNavigationPrompt(prompt);
   }, [request]);
-  return { promptFocusRoot: root, requestPromptFocus: (id: number) => setRequest({ id }) };
+  const requestPromptFocus = (id: number) => {
+    const navigation = document.querySelector<HTMLElement>("[data-navigation-panel]:popover-open");
+    if (!navigation) { setRequest({ id }); return; }
+    navigation.addEventListener("toggle", () => flushSync(() => setRequest({ id })), { once: true });
+    navigation.hidePopover();
+  };
+  return { promptFocusRoot: root, requestPromptFocus };
 }
