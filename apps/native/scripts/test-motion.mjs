@@ -1,5 +1,5 @@
 // Headless production motion checks. Never opens or focuses a native window.
-// Usage: node scripts/test-motion.mjs /absolute/app/root /absolute/output
+// Usage: node scripts/test-motion.mjs /absolute/app/root /absolute/output [--effort-only]
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,6 +14,7 @@ const { installGalleryFixture } = require('../electron/gallery-fixture.cjs');
 const { installMotionFixture } = require('../electron/motion-fixture.cjs');
 const root = path.resolve(process.argv[2] || path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
 const output = path.resolve(process.argv[3] || path.join(root, '../../zig-out/motion/current'));
+const effortOnly = process.argv.includes('--effort-only');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 let server, browser, context, page, video, complete = false, finishing = false;
 assert.ok(fs.existsSync(chromium.executablePath()), 'Install the Playwright Chromium runtime before running headless checks');
@@ -77,6 +78,7 @@ try {
     runtime: { chromium: browser.version(), headless: true }, checks: [],
     note: 'Headless Chromium, production build, fresh context, synthetic API responses and blocked API/network escape. Visibility checks dispatch synthetic document events; they do not verify native window throttling. Layout counters are observations, not a tight timing threshold.' };
   const passed = name => { report.checks.push(name); console.log('Motion:', name); };
+  checks: {
   await page.goto(origin);
   await wait(`!!document.querySelector('textarea[aria-label="Prompt"]') && document.querySelector('[aria-label="Choose model"]')?.textContent.includes('Graff')`);
   await js(`window.motionEvents=[];for(const type of ['keydown','mouseover','focusin'])document.addEventListener(type,event=>{window.motionEvents.push({type,key:event.key,row:event.target.closest?.('[data-motion-row]')?.dataset.motionRow,label:event.target.getAttribute?.('aria-label')});if(window.motionEvents.length>30)window.motionEvents.shift()},true)`);
@@ -151,11 +153,17 @@ try {
   for (let repeat = 0; repeat < 2; repeat++) {
     await click('[aria-label="Select effort"]');
     await wait(`!!document.querySelector('[aria-label="Reasoning effort"]')`);
+    await page.locator('[aria-label="Reasoning effort"]').evaluate(async element => { await Promise.all(element.getAnimations().map(animation => animation.finished)); });
+    if (repeat === 0) {
+      const renderedSize = await js(`(()=>{const dialog=document.querySelector('[aria-label=\"Reasoning effort\"]');const range=document.querySelector('[aria-label=\"Reasoning effort level\"]');return {dialogWidth:Math.round(dialog.getBoundingClientRect().width),rangeHeight:Math.round(range.getBoundingClientRect().height)}})()`);
+      assert.deepEqual(renderedSize, { dialogWidth: 200, rangeHeight: 20 }, 'The rendered effort control must keep the selected compact dimensions');
+    }
     await key('Escape');
     await wait(`!document.querySelector('[aria-label="Reasoning effort"]')`);
     assert.equal(await js('document.activeElement.getAttribute("aria-label")'), 'Choose model');
   }
-  passed('effort menu Escape, focus restoration and reopening');
+  passed('effort menu Escape, focus restoration, reopening and compact dimensions');
+  if (effortOnly) break checks;
 
   // Extend a production entrance to test the visibility listener and CSS gate.
   // Headless documents cannot reproduce native minimize/occlusion behavior.
@@ -247,6 +255,7 @@ try {
   await js("window.dispatchEvent(new CustomEvent('graff-desktop-action',{detail:'close'}))");
   await wait(`!document.querySelector('article') && !!document.querySelector('textarea[aria-label="Prompt"]')`);
   await sleep(700);
+  }
   assert.deepEqual(unexpected, [], 'Motion checks must not call real APIs or external services');
   report.unexpectedRequests = unexpected;
   fs.writeFileSync(path.join(output, 'motion-headless-report.json'), JSON.stringify(report, null, 2));
