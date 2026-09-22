@@ -384,10 +384,6 @@ pub const lean_work_note =
     \\
     \\For requested changes, apply the change and verify with the project's own
     \\tests in its OWN environment. Use named files and tests directly.
-    \\Batch a final verification shell call with attempt_completion only when
-    \\the answer needs no result-dependent detail. The harness blocks completion
-    \\if verification fails. If interpretation is needed, inspect results first.
-    \\Never rerun verification just to batch.
     \\Do not add unrequested tests. Never repeat a tool call with identical
     \\parameters. When a change request names a file, read it and edit that path
     \\before answering — do not describe a fix you have not applied.
