@@ -54,14 +54,10 @@ pub fn exec(ctx: tools.ToolCtx, input: std.json.Value) !tools.ToolOutput {
     const message = tools.strField(input, "message") orelse return tools.missingArg(ctx.gpa, "message");
     if (std.mem.trim(u8, message, " \t\r\n").len == 0 or message.len > @import("subagent_feedback.zig").max_message_bytes or !std.unicode.utf8ValidateSlice(message)) return refuse(ctx, "message must be valid UTF-8, nonempty and at most 16 KiB");
     if (!retained.budgetAllowed(state.record, ctx)) return refuse(ctx, "retained deadline or finite run budget is unavailable; exhausted limits cannot be renewed");
-    var provider = ctx.provider;
-    if (!std.mem.eql(u8, provider.id, state.record.provider)) {
-        provider = ctx.subagent_provider orelse return refuse(ctx, "original provider is unavailable; no provider switch was authorized");
-        if (!std.mem.eql(u8, provider.id, state.record.provider)) return refuse(ctx, "original provider is unavailable");
-    }
-    if (state.record.protocol) |kind| if (kind != provider.kind) return refuse(ctx, "original provider protocol is unavailable; cannot reinterpret saved history");
-    provider.model = state.record.model;
-    provider.context = state.record.context;
+    const provider = providerFor(state.record, ctx) catch |err| return refuse(ctx, switch (err) {
+        error.RetainedWorkerProviderUnavailable => "original provider is unavailable; no provider switch was authorized",
+        error.RetainedWorkerProtocolChanged => "original provider protocol is unavailable; cannot reinterpret saved history",
+    });
     var child = ctx;
     child.retained_worker = state;
     child.agent_cwd = state.record.cwd;
@@ -70,4 +66,19 @@ pub fn exec(ctx: tools.ToolCtx, input: std.json.Value) !tools.ToolOutput {
     const out = try subagent.spawnSubBackground(child, state.record.label, message, state.record.system_prompt, "", .shared_cwd, false, provider, state.record.reasoning, @import("vision_ask.zig").forPrompt(message));
     transferred = true;
     return out;
+}
+
+/// Restore the retained model on an authorized existing provider credential.
+pub fn providerFor(record: retained.Record, ctx: tools.ToolCtx) error{ RetainedWorkerProviderUnavailable, RetainedWorkerProtocolChanged }!Provider {
+    var provider = ctx.provider;
+    if (!std.mem.eql(u8, provider.id, record.provider)) {
+        provider = ctx.subagent_provider orelse return error.RetainedWorkerProviderUnavailable;
+        if (!std.mem.eql(u8, provider.id, record.provider)) return error.RetainedWorkerProviderUnavailable;
+    }
+    // The parent may now use another model with a different wire format.
+    // Validate the saved protocol against the saved model, not the parent.
+    provider = provider.withModel(record.model);
+    if (record.protocol) |kind| if (kind != provider.kind) return error.RetainedWorkerProtocolChanged;
+    provider.context = record.context;
+    return provider;
 }

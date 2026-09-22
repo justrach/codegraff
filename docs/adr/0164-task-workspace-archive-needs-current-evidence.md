@@ -21,6 +21,13 @@ is exactly the checkout's current commit. Missing or stale evidence keeps the
 checkout. Teardown runs only after the keep checks, and failure keeps the
 checkout. Kept work is returned with its reason.
 
+Age-based pruning is also distinct from an explicit discard. It retains the
+current checkout, release/hotfix branches, experiment pools (ADR 0037), locked
+trees, live or unverifiable
+auto-session processes, and registered live owners. A legacy owner record with
+no process start identity cannot prove the tree unused. Unreadable ownership
+evidence retains the tree; age never overrides the dirty/unique-commit checks.
+
 ## Consequences
 
 Old workspaces without recorded base metadata retain their existing explicit

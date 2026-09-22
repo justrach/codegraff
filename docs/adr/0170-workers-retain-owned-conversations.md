@@ -23,7 +23,9 @@ Resume shares the live parent's aggregate budget. A finite budget cannot safely
 be reconstructed after process restart because the parent may have spent more
 since the checkpoint, so such resumes fail closed. Unlimited histories may be
 restored by the same persisted parent session. Provider availability and retained
-workspace are checked again. A changed protocol is refused rather than reinterpreting
+workspace are checked again. Rebuild the saved model’s wire settings on the available
+original provider before checking its protocol; the parent may now use a different
+model. A changed protocol for the saved model is refused rather than reinterpreting
 saved messages. A restored text-only child retains that restriction, and an earlier
 loop deadline cannot be renewed by clearing the parent deadline. Completed jobs
 release the conversation arena immediately; only their compact reports stay live.

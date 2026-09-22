@@ -65,3 +65,54 @@ with tempfile.TemporaryDirectory(prefix="graff-workspace-lifecycle-") as tempora
     assert not git("branch", "--list", "worktree-task")
     assert (root / ".graff/archive-log").read_text() == "archive"
     print("Workspace lifecycle: setup/run cwd, base tracking, exact merged-head proof, dirty retention, explicit discard, teardown and branch cleanup passed")
+
+    # Retention must not treat a clean, live checkout as an unused directory.
+    # Isolate the owner registry as well as Git; never inspect real live sessions.
+    home = Path(temporary) / "home"
+    registry = home / ".graff/live"
+    registry.mkdir(parents=True)
+    env.update(HOME=str(home), USERPROFILE=str(home))
+
+    def checkout(name, branch):
+        path = Path(temporary) / name
+        git("worktree", "add", "-b", branch, str(path), "main")
+        return path
+
+    release = checkout("release", "release/fixture")
+    hotfix = checkout("hotfix", "hotfix/fixture")
+    live = checkout("live", f"worktree-session-{os.getpid()}-fixture")
+    owned = checkout("owned", "worktree-owned")
+    pool = checkout("pool", "graff/exp/fixture/1")
+    malformed = checkout("malformed", "worktree-session-invalid-fixture")
+    dirty = checkout("dirty", "worktree-dirty")
+    unique = checkout("unique", "worktree-unique")
+    scratch = checkout("scratch", "worktree-unused")
+    current = checkout("current", "worktree-current")
+    (dirty / "untracked").write_text("preserve me")
+    (unique / "file").write_text("unique commit\n")
+    git("add", "file", cwd=unique)
+    git("commit", "-qm", "unique", cwd=unique)
+    identity = git("rev-parse", "--path-format=absolute", "--git-dir", cwd=owned)
+    record = registry / "fixture.json"
+    record.write_text(json.dumps({"pid": os.getpid(), "start_id": 0, "identity": identity}))
+    result = subprocess.run([binary, "worktree", "prune", "older-than", "0"],
+                            cwd=current, env=env, text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert not scratch.exists(), result.stdout
+    for protected in (release, hotfix, live, owned, pool, malformed, dirty, unique, current):
+        assert protected.is_dir(), f"removed protected {protected.name}: {result.stdout}"
+    assert (dirty / "untracked").read_text() == "preserve me"
+    assert git("log", "-1", "--format=%s", cwd=unique) == "unique"
+    # Removing the fixture's legacy owner proves it alone prevented removal.
+    record.unlink()
+    assert "removed" in graff("prune", "older-than", "0")
+    assert not owned.exists()
+    unverified = checkout("unverified", "worktree-unverified")
+    for malformed_record in ({"pid": os.getpid()}, {"pid": -1, "identity": identity}):
+        record.write_text(json.dumps(malformed_record))
+        graff("prune", "older-than", "0")
+        assert unverified.exists(), "unverifiable owner record permitted removal"
+    record.unlink()
+    graff("prune", "older-than", "0")
+    assert not unverified.exists()
+    print("Worktree retention: release/hotfix, live PID, legacy owner, current cwd, dirty and unique work kept; unused tree removed")

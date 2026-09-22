@@ -312,3 +312,76 @@ test "retained worker cannot resume an expired deadline after parent clears it" 
     const record: Record = .{ .id = test_id, .family = "parent-family", .label = "worker", .provider = "fixture", .model = "fixture", .deadline_ms = 1 };
     try std.testing.expect(!budgetAllowed(record, ctx));
 }
+
+test "retained provider restores saved model wire after parent model changes" {
+    const select = @import("subagent_resume.zig").providerFor;
+    const keys: @import("provider.zig").Keys = .{ .values = @splat(null) };
+    const spec = @import("provider.zig").specFor("codegraff").?;
+    const chat = keys.build(spec, "test-key", "mimo-v2.5-pro");
+    const responses = chat.withModel("gpt-6-sol");
+    for ([_]@import("provider.zig").Provider{ chat, responses }, [_]@import("provider.zig").Provider{ responses, chat }) |current, original| {
+        var ctx = testContext();
+        ctx.provider = current;
+        ctx.provider.account = "parent-account";
+        ctx.provider.source = .environment;
+        const record: Record = .{ .id = test_id, .family = "parent-family", .label = "worker", .provider = original.id, .model = original.model, .protocol = original.kind, .context = 123456 };
+        const restored = try select(record, ctx);
+        try std.testing.expectEqual(original.kind, restored.kind);
+        try std.testing.expectEqualStrings(original.url, restored.url);
+        try std.testing.expectEqualStrings(original.model, restored.model);
+        try std.testing.expectEqualStrings(current.api_key, restored.api_key);
+        try std.testing.expectEqualStrings(ctx.provider.account, restored.account);
+        try std.testing.expectEqual(ctx.provider.source, restored.source);
+        try std.testing.expectEqual(original.auth, restored.auth);
+        try std.testing.expectEqual(@as(u64, 123456), restored.context);
+    }
+}
+
+test "retained provider still rejects actual saved protocol drift" {
+    const keys: @import("provider.zig").Keys = .{ .values = @splat(null) };
+    var ctx = testContext();
+    ctx.provider = keys.build(@import("provider.zig").specFor("codegraff").?, "key", "gpt-6-sol");
+    const record: Record = .{ .id = test_id, .family = "parent-family", .label = "worker", .provider = "codegraff", .model = "gpt-6-sol", .protocol = .openai };
+    try std.testing.expectError(error.RetainedWorkerProtocolChanged, @import("subagent_resume.zig").providerFor(record, ctx));
+}
+
+test "retained provider uses only available original credential" {
+    const keys: @import("provider.zig").Keys = .{ .values = @splat(null) };
+    var ctx = testContext();
+    const record: Record = .{ .id = test_id, .family = "parent-family", .label = "worker", .provider = "codegraff", .model = "gpt-6-sol", .protocol = .responses };
+    try std.testing.expectError(error.RetainedWorkerProviderUnavailable, @import("subagent_resume.zig").providerFor(record, ctx));
+    ctx.subagent_provider = keys.build(@import("provider.zig").specFor("codegraff").?, "worker-credential", "mimo-v2.5-pro");
+    ctx.subagent_provider.?.account = "worker-account";
+    ctx.subagent_provider.?.source = .environment;
+    const restored = try @import("subagent_resume.zig").providerFor(record, ctx);
+    try std.testing.expectEqualStrings("worker-account", restored.account);
+    try std.testing.expectEqual(ctx.subagent_provider.?.source, restored.source);
+    try std.testing.expectEqualStrings("worker-credential", restored.api_key);
+    try std.testing.expectEqual(@import("provider.zig").Provider.Kind.responses, restored.kind);
+    try std.testing.expectEqualStrings("https://gateway.codegraff.com/v1/responses", restored.url);
+}
+
+test "retained provider rebuilds auth and rejects changed live protocol for the saved model" {
+    const pricing = @import("pricing.zig");
+    const providers = @import("provider.zig");
+    const saved = pricing.active_model_table;
+    defer pricing.active_model_table = saved;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rows = [_]pricing.ModelInfo{
+        .{ .provider = "kimi", .name = "native", .context = 1000, .protocol = .kimi },
+        .{ .provider = "kimi", .name = "messages", .context = 1000, .protocol = .anthropic },
+    };
+    try std.testing.expect(pricing.activateKimiModels(arena.allocator(), &rows));
+    const keys: providers.Keys = .{ .values = @splat(null) };
+    var ctx = testContext();
+    ctx.provider = keys.build(providers.specFor("kimi").?, "same-credential", "native");
+    const record: Record = .{ .id = test_id, .family = "parent-family", .label = "worker", .provider = "kimi", .model = "messages", .protocol = .anthropic };
+    const resumed = try @import("subagent_resume.zig").providerFor(record, ctx);
+    try std.testing.expectEqual(providers.Provider.Auth.x_api_key, resumed.auth);
+    try std.testing.expectEqualStrings(providers.kimi_anthropic_url, resumed.url);
+    try std.testing.expectEqualStrings(ctx.provider.api_key, resumed.api_key);
+    rows[1].protocol = .kimi;
+    try std.testing.expect(pricing.activateKimiModels(arena.allocator(), &rows));
+    try std.testing.expectError(error.RetainedWorkerProtocolChanged, @import("subagent_resume.zig").providerFor(record, ctx));
+}
