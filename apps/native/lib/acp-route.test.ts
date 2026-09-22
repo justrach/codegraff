@@ -36,7 +36,7 @@ process.on('SIGTERM', () => {});
 const send = value => console.log(JSON.stringify(value));
 readline.createInterface({input:process.stdin}).on('line', line => {
   const req=JSON.parse(line);
-  if(req.method==='initialize') send({id:req.id,result:{}});
+  if(req.method==='initialize') send({id:req.id,result:{protocolVersion:1}});
   if(req.method==='session/new') {
     send({id:req.id,result:{sessionId:'saved-conversation'}});
     send({method:'session/update',params:{update:{sessionUpdate:'available_commands_update',availableCommands:[{name:'help'}]}}});
@@ -90,7 +90,7 @@ const send = value => console.log(JSON.stringify(value));
 let prompts = 0;
 readline.createInterface({input:process.stdin}).on('line', line => {
   const req = JSON.parse(line);
-  if(req.method==='initialize') send({id:req.id,result:{}});
+  if(req.method==='initialize') send({id:req.id,result:{protocolVersion:1}});
   if(req.method==='session/new') {
     send({id:req.id,result:{sessionId:'fixture'}});
     send({method:'session/update',params:{update:{sessionUpdate:'available_commands_update',availableCommands:[]}}});
@@ -146,7 +146,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
  if(req.method==='initialize') {
   if(stalled) fs.writeFileSync('stalled',String(process.pid));
   else if(failed) send({id:req.id,error:{code:-32603,message:'final bootstrap failure'}});
-  else send({id:req.id,result:{}});
+  else send({id:req.id,result:{protocolVersion:1}});
  }
  if(req.method==='session/new') {
   send({id:req.id,result:{sessionId:'replacement'}});
@@ -226,7 +226,7 @@ fs.appendFileSync('starts',String(process.pid)+'\\n');
 const send=value=>console.log(JSON.stringify(value));
 require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
  const req=JSON.parse(line);
- if(req.method==='initialize') send({id:req.id,result:{}});
+ if(req.method==='initialize') send({id:req.id,result:{protocolVersion:1}});
  if(req.method==='session/new') {
   fs.writeFileSync('initializing','yes');
   setTimeout(()=>{
@@ -277,7 +277,7 @@ const resumed=process.argv.includes('--resume');
 const send=value=>console.log(JSON.stringify(value));
 require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
   const req=JSON.parse(line);
-  if(req.method==='initialize') send({id:req.id,result:{}});
+  if(req.method==='initialize') send({id:req.id,result:{protocolVersion:1}});
   if(req.method==='session/new') {
     send({id:req.id,result:{sessionId:'saved-conversation'}});
     send({method:'session/update',params:{update:{sessionUpdate:'available_commands_update',availableCommands:[]}}});
@@ -326,7 +326,7 @@ fs.appendFileSync('starts', JSON.stringify(process.argv.slice(2))+'\\n');
 const send=value=>console.log(JSON.stringify(value));
 require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
   const req=JSON.parse(line);
-  if(req.method==='initialize') send({id:req.id,result:{}});
+  if(req.method==='initialize') send({id:req.id,result:{protocolVersion:1}});
   if(req.method==='session/new') {
     send({id:req.id,result:{sessionId:'closed-tab'}});
     send({method:'session/update',params:{update:{sessionUpdate:'available_commands_update',availableCommands:[]}}});
@@ -363,7 +363,7 @@ const fs=require('node:fs');
 const send=value=>console.log(JSON.stringify(value));
 require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
   const req=JSON.parse(line);
-  if(req.method==='initialize') send({id:req.id,result:{}});
+  if(req.method==='initialize') send({id:req.id,result:{protocolVersion:1}});
   if(req.method==='session/new') {
     send({id:req.id,result:{sessionId:'ask'}});
     send({method:'session/update',params:{update:{sessionUpdate:'available_commands_update',availableCommands:[]}}});
@@ -408,7 +408,7 @@ fs.writeFileSync('spawn.env', JSON.stringify({ cwd: process.cwd(), pwd: process.
 const send = value => console.log(JSON.stringify(value));
 require('node:readline').createInterface({input:process.stdin}).on('line', line => {
   const req = JSON.parse(line);
-  if (req.method === 'initialize') send({id:req.id,result:{}});
+  if (req.method === 'initialize') send({id:req.id,result:{protocolVersion:1}});
   if (req.method === 'session/new') {
     const checkout = process.env.GRAFF_REPORT_CWD || ${JSON.stringify(host)};
     send({id:req.id,result:{sessionId:'enroll',cwd:checkout}});

@@ -187,12 +187,16 @@ export function spawnAcp(opts: SpawnAcpOptions = {}): AcpConn {
 export async function acp(opts: SpawnAcpOptions = {}): Promise<AcpConn> {
   const conn = spawnAcp(opts);
   try {
-    await conn.request("initialize", {
+    const initialized = await conn.request("initialize", {
       protocolVersion: ACP_PROTOCOL_VERSION,
       clientCapabilities: { fs: {} },
-    });
+    }) as { protocolVersion?: unknown } | null;
+    if (initialized?.protocolVersion !== ACP_PROTOCOL_VERSION) {
+      throw new Error(`initialize returned an unsupported or missing protocolVersion; expected ${ACP_PROTOCOL_VERSION}`);
+    }
     const created = (await conn.request("session/new", {
       cwd: opts.cwd ?? process.cwd(),
+      mcpServers: [],
     })) as { sessionId?: string };
     if (!created?.sessionId) throw new Error("session/new returned no sessionId");
     conn.sessionId = created.sessionId;

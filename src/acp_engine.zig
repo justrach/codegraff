@@ -159,6 +159,7 @@ fn respondInitialize(w: *Io.Writer, req: proto.Request) !void {
             .loadSession = false,
             .promptCapabilities = proto.PromptCapabilities{},
         },
+        .agentInfo = proto.AgentImplementation{ .version = implementation_version },
         .agentImplementation = proto.AgentImplementation{ .version = implementation_version },
         .authMethods = acp_auth.advertised,
     });

@@ -74,7 +74,7 @@ const model = args.includes('--model') ? args[args.indexOf('--model') + 1] : 'ca
 const send = value => console.log(JSON.stringify(value));
 readline.createInterface({input:process.stdin}).on('line', line => {
   const req = JSON.parse(line);
-  if (req.method === 'initialize') send({id:req.id,result:{}});
+  if (req.method === 'initialize') send({id:req.id,result:{protocolVersion:1}});
   if (req.method === 'graff/models') send({id:req.id,result:{
     models: [
       {name:'catalog-zero',provider:'plan',authenticated:true,context:1,cost:'plan',current:false},

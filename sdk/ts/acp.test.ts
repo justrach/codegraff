@@ -34,7 +34,7 @@ describe("spawnAcp / acp", () => {
         clientCapabilities: { fs: {} },
       }),
     );
-    const created = (await deadline(conn.request("session/new", { cwd: "/tmp" }))) as { sessionId: string };
+    const created = (await deadline(conn.request("session/new", { cwd: "/tmp", mcpServers: [] }))) as { sessionId: string };
     expect(created.sessionId).toBe("acp-test-1");
     conn.sessionId = created.sessionId;
     expect((await deadline(commands)).sessionUpdate).toBe("available_commands_update");
@@ -57,13 +57,21 @@ describe("spawnAcp / acp", () => {
     expect(conn.sessionId).toBe("acp-test-1");
   });
 
+  for (const initialized of [{ protocolVersion: 2 }, { protocolVersion: 0 }, { protocolVersion: "1" }, {}, null]) {
+    test(`acp() rejects an incompatible initialization: ${JSON.stringify(initialized)}`, async () => {
+      await expect(deadline(acp({ command: [...command, JSON.stringify(initialized)] })))
+        .rejects.toThrow("unsupported or missing protocolVersion");
+    });
+  }
+
   test("request sends real ACP method names and surfaces JSON-RPC errors", async () => {
     const conn = spawnAcp({ command });
     live.push(conn);
     const init = (await deadline(
       conn.request("initialize", { protocolVersion: ACP_PROTOCOL_VERSION, clientCapabilities: { fs: {} } }),
-    )) as { protocolVersion: number; agentImplementation: { name: string } };
+    )) as { protocolVersion: number; agentInfo: { name: string }; agentImplementation: { name: string } };
     expect(init.protocolVersion).toBe(1);
+    expect(init.agentInfo.name).toBe("graff");
     expect(init.agentImplementation.name).toBe("graff");
 
     await expect(deadline(conn.request("session/load", { sessionId: "nope" }))).rejects.toThrow(
@@ -78,7 +86,7 @@ describe("spawnAcp / acp", () => {
     const conn = spawnAcp({ command });
     live.push(conn);
     conn.notify("session/cancel", { sessionId: "acp-test-1" });
-    const created = (await deadline(conn.request("session/new", { cwd: "/tmp" }))) as { sessionId: string };
+    const created = (await deadline(conn.request("session/new", { cwd: "/tmp", mcpServers: [] }))) as { sessionId: string };
     expect(created.sessionId).toBe("acp-test-1");
   });
 });

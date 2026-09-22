@@ -313,7 +313,7 @@ test "parseRequest: requests, notifications, and lines that are not ours" {
     try testing.expect(parseRequest(a, "{\"id\":1,\"result\":{}}") == null);
 }
 
-test "negotiateVersion takes the lower of the two proposals" {
+test "negotiateVersion returns the supported ACP v1 protocol" {
     var state = std.heap.ArenaAllocator.init(testing.allocator);
     defer state.deinit();
     const a = state.allocator();
@@ -323,7 +323,7 @@ test "negotiateVersion takes the lower of the two proposals" {
         }
     }.f;
     try testing.expectEqual(@as(i64, 1), negotiateVersion(parse(a, "{\"protocolVersion\":5}")));
-    try testing.expectEqual(@as(i64, 0), negotiateVersion(parse(a, "{\"protocolVersion\":0}")));
+    try testing.expectEqual(@as(i64, 1), negotiateVersion(parse(a, "{\"protocolVersion\":0}")));
     try testing.expectEqual(@as(i64, 1), negotiateVersion(parse(a, "{\"protocolVersion\":1}")));
     try testing.expectEqual(@as(i64, 1), negotiateVersion(parse(a, "{}")));
     try testing.expectEqual(@as(i64, 1), negotiateVersion(parse(a, "{\"protocolVersion\":\"1\"}")));
@@ -393,11 +393,15 @@ test "handleLine: initialize, session/new, then a prompt turn" {
     var w: Io.Writer = .fixed(&buf);
     var d: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .seed = 0xabc };
 
-    try handleLine(&d, a, &w, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":9,\"clientCapabilities\":{\"fs\":{}}}}");
+    try handleLine(&d, a, &w, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":0,\"clientCapabilities\":{\"fs\":{}}}}");
     const init_line = w.buffered();
     try testing.expect(std.mem.indexOf(u8, init_line, "\"protocolVersion\":1") != null);
     try testing.expect(std.mem.indexOf(u8, init_line, "\"embeddedContext\":true") != null);
     try testing.expect(std.mem.indexOf(u8, init_line, "\"name\":\"graff\"") != null);
+    const init_response = try std.json.parseFromSliceLeaky(Value, a, std.mem.trim(u8, init_line, "\n"), .{});
+    const init_result = init_response.object.get("result").?.object;
+    for ([_][]const u8{ "agentInfo", "agentImplementation" }) |field|
+        try testing.expectEqualStrings("graff", init_result.get(field).?.object.get("name").?.string);
     try testing.expect(std.mem.indexOf(u8, init_line, "\"loadSession\":false") != null);
     try testing.expect(std.mem.indexOf(u8, init_line, "graff-login") != null);
     try testing.expect(std.mem.indexOf(u8, init_line, "\"type\":\"terminal\"") != null);
@@ -412,11 +416,11 @@ test "handleLine: initialize, session/new, then a prompt turn" {
     try testing.expectEqualStrings("acp-abc-1", d.session_id.?);
 
     w = .fixed(&buf);
-    try handleLine(&d, a, &w, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"acp-abc-1\",\"prompt\":[{\"type\":\"text\",\"text\":\"ping\"}]}}");
+    try handleLine(&d, a, &w, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"acp-abc-1\",\"prompt\":[{\"type\":\"text\",\"text\":\"ping\"},{\"type\":\"resource\",\"resource\":{\"uri\":\"memory://draft\",\"text\":\"draft contents\"}}]}}");
     var lines = std.mem.splitScalar(u8, w.buffered(), '\n');
     const first = lines.next().?;
     try testing.expect(std.mem.indexOf(u8, first, "\"method\":\"session/update\"") != null);
-    try testing.expect(std.mem.indexOf(u8, first, "\"text\":\"echo:ping\"") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "\"text\":\"echo:ping\\nmemory://draft\\ndraft contents\"") != null);
     try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}", lines.next().?);
     try testing.expectEqualStrings("", lines.next().?);
     try testing.expect(lines.next() == null);

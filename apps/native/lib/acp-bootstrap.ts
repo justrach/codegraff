@@ -30,9 +30,12 @@ export async function initializeWorker(
 ): Promise<{ sessionId: string; cwd?: string }> {
   let phase = "initialize";
   try {
-    await transport.request(phase, { protocolVersion: 1, clientCapabilities: { fs: {} } }, timeoutMs);
+    const initialized = await transport.request(phase, { protocolVersion: 1, clientCapabilities: { fs: {} } }, timeoutMs) as { protocolVersion?: unknown } | null;
+    if (initialized?.protocolVersion !== 1) {
+      throw new Error("initialize returned an unsupported or missing protocolVersion; expected 1");
+    }
     phase = "session/new";
-    const created = await transport.request(phase, { cwd }, timeoutMs) as { sessionId?: unknown; cwd?: unknown } | null;
+    const created = await transport.request(phase, { cwd, mcpServers: [] }, timeoutMs) as { sessionId?: unknown; cwd?: unknown } | null;
     if (typeof created?.sessionId !== "string" || !created.sessionId) {
       throw new Error("session/new returned no sessionId");
     }
