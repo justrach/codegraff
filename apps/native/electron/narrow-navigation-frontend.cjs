@@ -14,6 +14,7 @@ async function runNarrowNavigation({win, output, click, until, report}) {
   };
   assert.equal(await js(`innerWidth < 1024`), true, 'Exercise the breakpoint that hid navigation');
   const first = await js(`document.querySelector('[data-chat][data-focused="true"]').dataset.chat`);
+  const firstDraft = await js(`document.querySelector('[data-chat][data-focused="true"] textarea[aria-label="Prompt"]').value`);
   await click('[title="New chat (⌘T)"]');
   const second = await js(`document.querySelector('[data-chat][data-focused="true"]').dataset.chat`);
   assert.notEqual(second, first);
@@ -22,7 +23,7 @@ async function runNarrowNavigation({win, output, click, until, report}) {
   await pointerClick(`[data-session-navigation="sidebar"] [data-tab-members="${first}"] button[aria-pressed]`);
   await desktop.testInput(wc, {type:'char',keyCode:'x'});
   await until(() => js(`!document.querySelector('[data-navigation-panel]:popover-open') && document.activeElement===document.querySelector('[data-chat="${first}"] textarea[aria-label="Prompt"]')`), 'chat selection dismisses navigation and focuses its prompt');
-  assert.equal(await js(`document.querySelector('[data-chat="${first}"] textarea[aria-label="Prompt"]').value`), 'x', 'the first character typed immediately after chat selection goes straight to its prompt');
+  assert.equal(await js(`document.querySelector('[data-chat="${first}"] textarea[aria-label="Prompt"]').value`), `${firstDraft}x`, 'the first character typed immediately after chat selection appends to its prompt');
   await click('[aria-label="Open navigation"]');
   await until(() => js(`!!document.querySelector('[data-navigation-panel]:popover-open')`), 'navigation reopens');
   await click('[data-workspace-trigger]');
