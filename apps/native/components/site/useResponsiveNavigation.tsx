@@ -6,15 +6,9 @@ import styles from "./ResponsiveNavigation.module.css";
  * layer, with light dismissal and Escape, instead of removing navigation. */
 export function useResponsiveNavigation() {
   const id = useId(), panel = useRef<HTMLDivElement>(null);
-  const afterClose = useRef<(() => void) | null>(null);
   const [narrow, setNarrow] = useState(false), [open, setOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const close = () => { if (panel.current?.matches(":popover-open")) panel.current.hidePopover(); };
-  const finishNavigation = (next: () => void) => {
-    if (!panel.current?.matches(":popover-open")) { next(); return; }
-    afterClose.current = next;
-    panel.current.hidePopover();
-  };
   useEffect(() => {
     const query = matchMedia("(width < 64rem)");
     const update = () => { if (!query.matches) close(); setNarrow(query.matches); };
@@ -35,17 +29,12 @@ export function useResponsiveNavigation() {
         // focus; opening an action menu must not refocus the sidebar close button.
         if (event.target !== event.currentTarget) return;
         const shown = panel.current?.matches(":popover-open") ?? false; setOpen(shown);
-        if (!shown && afterClose.current) {
-          const next = afterClose.current; afterClose.current = null; next();
-          return;
-        }
         // Native toggle delivery can follow an outside click. Do not take focus
         // back from the input or another control the user has already selected.
         if (shown && document.activeElement?.getAttribute("popovertarget") === id)
           panel.current?.querySelector<HTMLButtonElement>('[aria-label="Close navigation"]')?.focus();
       },
     },
-    finishNavigation,
     trigger: <button type="button" aria-label="Open navigation" title="Projects and conversations"
       aria-expanded={open} aria-controls={id} aria-haspopup="dialog" popoverTarget={id}
       className="flex size-7 shrink-0 items-center justify-center rounded-md text-ink-2 hover:bg-hover lg:hidden">

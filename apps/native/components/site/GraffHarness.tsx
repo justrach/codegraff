@@ -253,7 +253,7 @@ export default function GraffHarness() {
   };
 
   const selectStored = (id: number, cwd?: string) => {
-    focusChat(id, true, true); setFilesOpen(false); setFollowing(true);
+    focusChat(id); setFilesOpen(false); setFollowing(true);
   };
   const savedConversation = useSavedConversation({
     context: `${activePath ?? ""}:${activeId}`,
@@ -275,17 +275,14 @@ export default function GraffHarness() {
   const newChat = () => openChat((chatIdRef.current += 1));
 
   /** Focus a pane in place, or restore the selected workspace tab’s layout. */
-  const focusChat = (id: number, focusPrompt = true, fromNavigation = false) => {
+  const focusChat = (id: number, focusPrompt = true) => {
     setProjectsOpen(false); setAgentsOpen(false);
     setConversationsOpen(false);
     const folder = chatsRef.current.find(chat => chat.id === id)?.cwd;
     if (folder && folder !== activePathRef.current) activateWorkspace(folder);
     if (!columnIds.includes(id) || (zoomedPane !== null && zoomedPane !== id)) setZoomedPane(null);
     setActiveId(id);
-    if (focusPrompt) {
-      const focus = () => requestPromptFocus(id);
-      if (fromNavigation) navigation.finishNavigation(focus); else focus();
-    }
+    if (focusPrompt) requestPromptFocus(id);
   };
 
   const tabDrag = useTabDrag((id, drop) => {
@@ -466,7 +463,7 @@ export default function GraffHarness() {
           <p className="mb-1 px-4 text-[11px] font-medium text-ink-3">Open chats</p>
           <SessionTabs vertical chats={groups.tabs} activeId={groups.activeTab} agentsOpen={agentsOpen}
             busyIds={new Set(groups.groups.filter(group => group.ids.some(id => busyIds.has(id))).map(group => group.ids[0]))} unreadIds={unread}
-            focusChat={id => focusChat(groups.focusOf(id), true, true)} closeChat={closeTab}
+            focusChat={id => focusChat(groups.focusOf(id))} closeChat={closeTab}
             onTabPointerDown={tabDrag.begin} onTabClickCapture={tabDrag.suppressClick} />
         </div>}
         fill
