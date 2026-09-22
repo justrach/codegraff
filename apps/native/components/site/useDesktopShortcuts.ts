@@ -59,7 +59,7 @@ export function useDesktopShortcuts(actions: Actions) {
           if(k==='j'&&!e.shiftKey)handled=dispatch('terminal');
           else if(k==='l'&&!e.shiftKey)handled=dispatch('focus-prompt');
           else if(k==='n'&&!e.shiftKey)handled=dispatch('new');
-          else if(k==='t')handled=dispatch(e.shiftKey?'reopen':'new');
+          else if(k==='t'&&!(e.metaKey&&e.ctrlKey))handled=dispatch(e.shiftKey?'reopen':'new');
           else if(k==='w'&&!e.shiftKey)handled=dispatch('close');
           else if(k==='d')handled=dispatch(e.shiftKey?'split-down':'split-right');
           else if(k==='enter'&&e.shiftKey)handled=dispatch('split-zoom');
