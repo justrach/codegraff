@@ -61,6 +61,7 @@ pub const CostTally = struct {
     out_tokens: u64 = 0,
     api_calls: u64 = 0,
     sub_calls: u64 = 0, // subscription-billed (flat-rate; contribute $0)
+    missing_usage_calls: u64 = 0, // completed responses whose usage was absent
     unpriced_calls: u64 = 0, // no price_table row
 
     /// `billing` is the caller's already-classified seat (billing.forSeat): a
@@ -87,6 +88,13 @@ pub const CostTally = struct {
         }
     }
 
+    pub fn missingUsage(self: *CostTally, io: Io) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        self.api_calls +|= 1;
+        self.missing_usage_calls +|= 1;
+    }
+
     /// Consistent copy for rendering (taken under the lock).
     pub fn snap(self: *CostTally, io: Io) CostTally {
         self.mutex.lockUncancelable(io);
@@ -101,6 +109,7 @@ pub const CostTally = struct {
         try w.print("{d} api call(s) · {d} in ({d} cached, {d} cache writes) + {d} out tokens · ${d:.8}", .{
             c.api_calls, c.in_tokens +| c.cache_tokens, c.cache_tokens, c.cache_write_tokens, c.out_tokens, c.usd,
         });
+        if (c.missing_usage_calls > 0) try w.print(" · totals incomplete: {d} call(s) missing usage (tokens and cost unknown)", .{c.missing_usage_calls});
         if (c.sub_calls > 0) try w.print(" · {d} subscription call(s), flat-rate (not in $)", .{c.sub_calls});
         if (c.unpriced_calls > 0) try w.print(" · {d} call(s) on unpriced models", .{c.unpriced_calls});
     }
@@ -561,3 +570,17 @@ pub fn providerModelInTable(provider_id: []const u8, model: []const u8) bool {
 
 // Seat classification lives in billing.zig. Discovery / price-overlay / default
 // catalog tests live in pricing_tests.zig (600-line cap).
+
+test "completed response without usage marks totals incomplete without inventing tokens or cost" {
+    var tally: CostTally = .{};
+    tally.missingUsage(std.testing.io);
+    const snapshot = tally.snap(std.testing.io);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.api_calls);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.missing_usage_calls);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.in_tokens);
+    try std.testing.expectEqual(@as(f64, 0), snapshot.usd);
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try snapshot.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "totals incomplete: 1 call(s) missing usage (tokens and cost unknown)") != null);
+}

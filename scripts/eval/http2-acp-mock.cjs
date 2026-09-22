@@ -2,7 +2,7 @@
 const http2 = require('node:http2');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
-const [key, cert, log] = process.argv.slice(2);
+const [key, cert, log, completionMode] = process.argv.slice(2);
 const record = value => fs.appendFileSync(log, JSON.stringify(value) + '\n');
 const server = http2.createSecureServer({
   key: fs.readFileSync(key), cert: fs.readFileSync(cert), allowHTTP1: false,
@@ -28,6 +28,18 @@ server.on('stream', (stream, headers) => {
       stream: stream.id, method: headers[':method'], path: headers[':path'], body: JSON.parse(body) });
     stream.respond({ ':status': 200, 'content-type': 'text/event-stream' });
     const delta = text => `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: text }, finish_reason: null }] })}\n\n`;
+    if (completionMode) {
+      if (completionMode !== 'quiet-empty') stream.write(delta('OK'));
+      if (completionMode !== 'quiet-unterminated')
+        stream.write('data: {"choices": [{"index":0,"delta":{}, "finish_reason": "stop"}]}\n\n');
+      const usage = 'data: {"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":2,"total_tokens":22}}\n\n';
+      if (completionMode === 'done') stream.end(usage + 'data: [DONE]\n\n');
+      if (completionMode === 'quiet-usage') setTimeout(() => {
+        if (!stream.destroyed) stream.write(usage);
+      }, 100);
+      // Quiet cases deliberately send neither [DONE] nor END_STREAM.
+      return;
+    }
     if (request === 5) {
       const tool = { index: 0, id: 'fixture-child', type: 'function', function: {
         name: 'subagent', arguments: JSON.stringify({ description: 'Inspect fixture',

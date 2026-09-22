@@ -171,6 +171,14 @@ def usd_tools(counts: dict | None) -> float:
 
 def attach(rec: dict, inclusive: bool | None = None) -> dict:
     """Mutate `rec` with list-price fields. Returns rec."""
+    if rec.get("tok_missing_usage_calls") or rec.get("tok_usage_complete") is False:
+        # Known subtotals remain in tok_known_*; do not price unknown totals
+        # as zero or reinterpret a subtotal as complete subscription usage.
+        for key in ("ordinary", "cached", "out", "prompt", "tokens",
+                    "token_usd", "tool_usd", "usd", "high_band"):
+            rec["list_" + key] = None
+        rec["list_price_kind"] = "unavailable-missing-usage"
+        return rec
     if inclusive is None:
         inclusive = convention_for(rec)
     ordinary, cached = ordinary_and_cached(rec.get("tok_in"), rec.get("tok_cached"), inclusive)

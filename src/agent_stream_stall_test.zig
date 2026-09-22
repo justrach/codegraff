@@ -210,3 +210,79 @@ test "#680: each stall reconnect widens the between-lines wait the SSE reader ar
     try std.testing.expect(std.mem.indexOf(u8, msg, "for 1s") != null);
     try std.testing.expect(std.mem.indexOf(u8, msg, "after 2 reconnect attempts") != null);
 }
+
+const TrailerSrv = struct {
+    const Mode = enum { usage, missing, empty, unterminated };
+    const finish_line = "data: {\"choices\": [{\"index\":0, \"delta\": {}, \"finish_reason\": \"stop\"}]}\n\n";
+    const usage_line = "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":2,\"total_tokens\":22}}\n\n";
+    fn run(io: Io, server: *std.Io.net.Server, mode: Mode, done: *std.atomic.Value(bool)) void {
+        const c = server.accept(io) catch return;
+        defer c.close(io);
+        var rbuf: [8192]u8 = undefined;
+        var sr = std.Io.net.Stream.Reader.init(c, io, &rbuf);
+        while (true) {
+            const line = (sr.interface.takeDelimiter('\n') catch return) orelse return;
+            if (line.len == 0 or (line.len == 1 and line[0] == '\r')) break;
+        }
+        var wbuf: [1024]u8 = undefined;
+        var sw = std.Io.net.Stream.Writer.init(c, io, &wbuf);
+        sw.interface.writeAll("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n") catch return;
+        if (mode != .empty) sw.interface.writeAll(prose_line) catch return;
+        if (mode != .unterminated) sw.interface.writeAll(finish_line) catch return;
+        sw.interface.flush() catch return;
+        if (mode == .usage) {
+            io.sleep(.fromMilliseconds(100), .awake) catch return;
+            sw.interface.writeAll(usage_line) catch return;
+            sw.interface.flush() catch return;
+        }
+        while (!done.load(.acquire)) io.sleep(.fromMilliseconds(10), .awake) catch return;
+    }
+};
+
+test "Chat terminal marker keeps delayed usage and completes silent trailer; nonterminal still stalls" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const saved = http.stream_stall_ms;
+    http.stream_stall_ms = 250;
+    defer http.stream_stall_ms = saved;
+    for ([_]TrailerSrv.Mode{ .usage, .missing, .empty, .unterminated }) |mode| {
+        var addr = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:0");
+        var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
+        defer server.deinit(io);
+        var done: std.atomic.Value(bool) = .init(false);
+        var fut = io.async(TrailerSrv.run, .{ io, &server, mode, &done });
+        defer fut.await(io);
+        defer done.store(true, .release);
+        var arena_state = std.heap.ArenaAllocator.init(gpa);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const url = try std.fmt.allocPrint(arena, "http://127.0.0.1:{d}/v1/chat/completions", .{server.socket.address.getPort()});
+        var client: std.http.Client = .{ .allocator = gpa, .io = io };
+        defer client.deinit();
+        var child: Agent = .{
+            .gpa = gpa,
+            .arena = arena,
+            .io = io,
+            .client = &client,
+            .provider = testProvider(url),
+            .messages = std.json.Array.init(arena),
+            .sub = true,
+            .label = "child",
+            .out = null,
+        };
+        const start = nowMs(io);
+        const result = agent_stream.postStreamWithClient(&child, &client, "{}");
+        if (mode == .unterminated) {
+            try std.testing.expectError(error.StreamStalled, result);
+            continue;
+        }
+        const body = try result;
+        defer gpa.free(body);
+        const object = (try child.assembleOpenAI(body)).?;
+        try std.testing.expectEqual(mode == .usage, object.contains("usage"));
+        if (mode == .usage) try std.testing.expectEqual(@as(i64, 20), object.get("usage").?.object.get("prompt_tokens").?.integer);
+        try std.testing.expect(nowMs(io) - start >= 240);
+        try std.testing.expectEqual(@as(u64, 0), child.stall.tripped_ms);
+    }
+}

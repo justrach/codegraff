@@ -36,6 +36,17 @@ def graff_usage(stderr):
         result['metered_cost_usd'] = result.get('cost_usd')
         result['cost_usd'] = None
         result['cost_kind'] = 'metered-only-subscription-excluded'
+    missing = re.search(r'totals incomplete: (\d+) call\(s\) missing usage \(tokens and cost unknown\)', tail)
+    if missing and int(missing.group(1)):
+        result['missing_usage_calls'] = int(missing.group(1))
+        result['usage_complete'] = False
+        for key in ('in', 'cached', 'writes', 'out'):
+            result['known_' + key] = result[key]
+            result[key] = None
+        # The footer dollar amount is a subtotal, including when it is zero.
+        result['known_cost_usd'] = float(m.group(6)) if m.group(6) is not None else None
+        result['cost_usd'] = None
+        result['cost_kind'] = 'incomplete-missing-usage'
     return result
 
 

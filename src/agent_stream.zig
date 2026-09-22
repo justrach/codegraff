@@ -289,6 +289,10 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
                     return e;
                 },
                 .stall => |w| {
+                    if (w == .deadline and saw_done) {
+                        if (req.connection) |conn| conn.closing = true;
+                        break :stream;
+                    }
                     // A user Esc is a deliberate cancel; a `.deadline` is a dead or
                     // idle stream (silent past this read's budget) — end the turn as
                     // error.StreamStalled so it is never recorded as "[response
@@ -351,15 +355,7 @@ fn readErrIsClose(e: anyerror) bool {
     return e == error.ReadFailed or e == error.EndOfStream;
 }
 
-/// #133: a non-null string finish_reason marks an OpenAI-compatible response
-/// semantically complete, even when the provider omits the [DONE] sentinel.
-/// Content deltas escape their quotes, so this raw substring can only match the
-/// real key, never text. Used to set saw_done WITHOUT stopping the read (so a
-/// trailing usage-only chunk and [DONE] are still consumed).
-fn openaiComplete(raw_line: []const u8) bool {
-    const payload = ssePayload(raw_line) orelse return false;
-    return std.mem.indexOf(u8, payload, "\"finish_reason\":\"") != null;
-}
+pub const openaiComplete = @import("chat_stream_terminal.zig").complete;
 
 /// True if this SSE line is the provider's terminal event — after it no more
 /// content comes, so postStream can stop instead of waiting for the socket to

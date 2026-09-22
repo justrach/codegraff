@@ -464,6 +464,10 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     try sayTypedApiError(self, etype, ecode, emsg, errorRequestId(root));
                     return error.ApiError;
                 };
+                if (self.provider.kind == .openai) {
+                    const usage = root.get("usage");
+                    if (usage == null or usage.? != .object) @import("pricing.zig").g_cost.missingUsage(self.io);
+                }
                 self.recordUsage(root, body.len);
                 if (recoverBehavioralOverflow(self, root, &context_retried)) continue; // #414: silent overflow / upstream truncation → trim + retry
                 if (!self.compaction_request) self.compact_transport_failures = 0;

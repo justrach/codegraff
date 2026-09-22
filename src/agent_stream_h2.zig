@@ -15,6 +15,7 @@ const watchdogError = http.watchdogError;
 const deadlineStallTask = @import("http.zig").deadlineStallTask;
 
 const ssePayload = Agent.ssePayload;
+const openaiComplete = @import("agent_stream.zig").openaiComplete;
 const isStreamEnd = @import("agent_stream.zig").isStreamEnd;
 
 pub fn postStream(self: *Agent, body: []const u8) !?[]u8 {
@@ -76,7 +77,7 @@ pub fn postStream(self: *Agent, body: []const u8) !?[]u8 {
     var got_body = false;
     var saw_done = false;
 
-    while (true) {
+    stream: while (true) {
         const stall_budget = http_stall.interFrameBudgetMs(http.stream_stall_ms, got_body, self.partial_text.items.len != 0, self.stall.widen);
         read: {
             const ReadDone = union(enum) { line: anyerror!bool, stall: WatchdogFired };
@@ -129,6 +130,7 @@ pub fn postStream(self: *Agent, body: []const u8) !?[]u8 {
                     }
                 },
                 .stall => |w| {
+                    if (w == .deadline and saw_done) break :stream;
                     if (w == .deadline) self.stall.tripped_ms = stall_budget;
                     if (w == .deadline) sink.emit(self.io, .{ .transport_aborted = .{ .reason = .stalled, .turn_ending = false } }) else sink.emit(self.io, .{ .stream_aborted = .interrupted });
                     return watchdogError(w, error.StreamStalled);
@@ -168,9 +170,4 @@ pub fn postStream(self: *Agent, body: []const u8) !?[]u8 {
 fn lineTask(ls: *http_zig.conn.LineStream, dest: *std.ArrayList(u8), gpa: std.mem.Allocator) !bool {
     _ = gpa;
     return ls.readLine(dest);
-}
-
-fn openaiComplete(raw_line: []const u8) bool {
-    const payload = ssePayload(raw_line) orelse return false;
-    return std.mem.indexOf(u8, payload, "\"finish_reason\":\"") != null;
 }

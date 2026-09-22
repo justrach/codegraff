@@ -1,5 +1,7 @@
 """Offline checks for trustworthy cross-model receipts and routing isolation."""
 import json
+import contextlib
+import io
 import os
 from pathlib import Path
 import tempfile
@@ -9,6 +11,7 @@ from unittest.mock import patch
 import list_price
 import measurement
 import request_capture
+import report
 
 
 class MeasurementTests(unittest.TestCase):
@@ -30,6 +33,82 @@ class MeasurementTests(unittest.TestCase):
         self.assertIsNone(measurement.graff_usage(base + '2 call(s) on unpriced models')['cost_usd'])
         self.assertIsNone(measurement.graff_usage(base + '2 subscription call(s), flat-rate (not in $)')['cost_usd'])
         self.assertEqual(measurement.graff_usage(base + '2 subscription call(s), flat-rate (not in $)')['cost_kind'], 'metered-only-subscription-excluded')
+
+    def test_missing_usage_preserves_subtotals_without_claiming_complete_totals(self):
+        footer = ('[usage] 3 api call(s) · 80 in (40 cached, 5 cache writes) + 9 out tokens · $0.001234'
+                  ' · totals incomplete: 1 call(s) missing usage (tokens and cost unknown)')
+        usage = measurement.graff_usage(footer)
+        self.assertEqual(usage['calls'], 3)
+        self.assertEqual(usage['missing_usage_calls'], 1)
+        self.assertFalse(usage['usage_complete'])
+        for key, subtotal in [('in', 80), ('cached', 40), ('writes', 5), ('out', 9), ('cost_usd', .001234)]:
+            self.assertIsNone(usage[key])
+            self.assertEqual(usage['known_' + key], subtotal)
+        self.assertEqual(usage['cost_kind'], 'incomplete-missing-usage')
+        # Exercise the runner's actual receipt prefix and downstream pricing.
+        row = dict(model='grok-4.6', requested_provider='xai', harness='graff-dev',
+                   **{'tok_' + k: v for k, v in usage.items()})
+        list_price.attach(row)
+        for key in ('ordinary', 'cached', 'out', 'prompt', 'tokens', 'token_usd', 'tool_usd', 'usd', 'high_band'):
+            self.assertIsNone(row['list_' + key])
+        self.assertEqual(row['list_price_kind'], 'unavailable-missing-usage')
+        self.assertEqual(row['tok_known_in'], 80)
+
+    def test_all_missing_usage_zero_subtotals_and_subscription_are_unknown(self):
+        base = '[usage] 2 api call(s) · 0 in (0 cached) + 0 out tokens · $0.000000 · '
+        missing = 'totals incomplete: 2 call(s) missing usage (tokens and cost unknown)'
+        for classification in ('', '2 subscription call(s), flat-rate (not in $) · ',
+                               '2 call(s) on unpriced models · '):
+            with self.subTest(classification=classification):
+                usage = measurement.graff_usage(base + classification + missing)
+                self.assertEqual(usage['known_in'], 0)
+                self.assertEqual(usage['known_cost_usd'], 0)
+                self.assertIsNone(usage['in'])
+                self.assertIsNone(usage['cost_usd'])
+                self.assertEqual(usage['missing_usage_calls'], 2)
+                if classification.startswith('2 subscription'):
+                    self.assertEqual(usage['sub_calls'], 2)
+                elif classification:
+                    self.assertEqual(usage['unpriced_calls'], 2)
+
+    def test_incomplete_receipt_reporting_never_turns_missing_tokens_into_zero(self):
+        usage = measurement.graff_usage(
+            '[usage] 2 api call(s) · 80 in (40 cached) + 9 out tokens · $0.001234'
+            ' · totals incomplete: 1 call(s) missing usage (tokens and cost unknown)')
+        row = dict(harness='graff-dev', model='grok-4.6', outcome_ok=True,
+                   **{'tok_' + k: v for k, v in usage.items()})
+        list_price.attach(row)
+        complete = dict(harness='graff-dev', outcome_ok=True, tok_in=10, tok_cached=2,
+                        tok_out=3, tok_calls=1, tok_cost_usd=.01, list_usd=.02)
+        for suite in (None, 'live'):
+            grouped = report.bucket([row, complete], suite=suite)
+            bucket = grouped['graff-dev']
+            self.assertIsNone(bucket['tin'])
+            self.assertIsNone(bucket['usd'])
+            self.assertEqual(bucket['missing_usage_calls'], 1)
+            self.assertEqual(bucket['known_tin'], 50)
+            self.assertEqual(bucket['known_tcached'], 42)
+            self.assertEqual(bucket['known_tout'], 12)
+            # Only the complete row contributes its selected list-price estimate.
+            # The incomplete actual-route subtotal stays in the receipt.
+            self.assertEqual(bucket['known_usd'], .02)
+            self.assertEqual(row['tok_known_cost_usd'], .001234)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                report.print_table('fixture', grouped, suite=suite)
+            self.assertIn('unknown', output.getvalue())
+            self.assertIn('totals incomplete: 1 call(s)', output.getvalue())
+        self.assertIn('in=unknown', report.line(row))
+        self.assertIn('totals incomplete', report.line(row))
+
+    def test_complete_legacy_footer_receipt_stays_unchanged(self):
+        footer = '[usage] 1 api call(s) · 80 in (40 cached, 5 cache writes) + 9 out tokens · $0.001234'
+        self.assertEqual(measurement.graff_usage(footer),
+                         {'calls': 1, 'in': 80, 'cached': 40, 'writes': 5, 'out': 9,
+                          'cost_usd': .001234, 'cost_kind': 'harness-reported'})
+        missing = footer + ' · totals incomplete: 1 call(s) missing usage (tokens and cost unknown)'
+        self.assertIsNone(measurement.graff_usage(footer + '\n' + missing)['in'])
+        self.assertEqual(measurement.graff_usage(missing + '\n' + footer), measurement.graff_usage(footer))
 
     def test_multi_request_band_is_unavailable_not_mispriced(self):
         row = {'model': 'grok-4.6', 'tok_in': 250000, 'tok_calls': 2, 'tok_out': 100}
