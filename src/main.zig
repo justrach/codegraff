@@ -584,7 +584,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = .{ @import("acp_protocol.zig"), @import("subagent_mimo_tests.zig"), @import("gateway_picker_catalog.zig") };
     _ = @import("task_outcome.zig"); // goal-outcome telemetry events
     _ = @import("learn_delete.zig"); // #303: its tests were dead until listed here
-    _ = .{ @import("additional_tests.zig"), @import("req_stats.zig"), @import("exact_reply.zig") };
+    _ = .{ @import("additional_tests.zig"), @import("req_stats.zig"), @import("exact_reply.zig"), @import("rlm_order_tests.zig") };
     _ = @import("goal_pacing_autonomous_test.zig");
     _ = @import("goal_state.zig");
     _ = @import("goal_persist_tests.zig");

@@ -3,8 +3,8 @@
 //! On unless `--old` / `--no-rlm` / `GRAFF_OLD=1` / `GRAFF_RLM=0`. `--rlm`
 //! and `GRAFF_RLM=1` force it back on. Host functions: `read_file`, `codedb`
 //! (real graff tools), `sleep_ms` (overlap proof), `llm_query` (RLM tools-off
-//! sub-LM), `print` (answer), plus loaded MCP names (ADR 0029). Closed literal
-//! calls launch as the `code` argument streams (spec-ptc) and again at exec.
+//! sub-LM), `print` (answer), plus loaded MCP names (ADR 0029). Leading safe
+//! literal reads overlap while streaming; subsequent calls execute lexically.
 
 const std = @import("std");
 const Io = std.Io;
@@ -25,10 +25,10 @@ const mcp_shapes = @import("mcp_shapes.zig");
 const read_miss = @import("read_miss.zig");
 
 pub const tool_name = "rlm";
-pub const tool_desc = "Programmatic tool calling (RLM + sPTC). Functions ARE this session's tools. Literal read_file/codedb/bash/webfetch/sleep_ms/llm_query/subagent start as the script streams. Binds persist. subagent(\"task\") is sidecar-only (keep the critical-path next step local). Loaded MCP names are host functions after load_tool_schemas; tools.server.tool(...) is that name; each(arr, tool, field) maps a JSON array; len(x)/project(x, field) slim it. print() is the answer. Prefer one rlm over N tool calls.";
+pub const tool_desc = "Programmatic tool calling (RLM + sPTC). Functions ARE this session's tools. Leading read_file/codedb/sleep_ms/llm_query calls overlap as it streams; other calls run in order, stopping on error/cancel/pending. Binds persist. subagent(\"task\") is sidecar-only (keep the critical-path next step local). Loaded MCP names are host functions after load_tool_schemas; tools.server.tool(...) is that name; each(arr, tool, field) maps a JSON array; len(x)/project(x, field) slim it. print() is the answer. Prefer one rlm over N tool calls.";
 /// --lean catalog desc: same contract, no REPL essay. maybeAppend is after
 /// compactLeanSpecs, so this is the one-shot wire text.
-pub const lean_tool_desc = "Batch independent read_file/codedb/bash here. print(read_file(\"p\")) returns the file — do not catalog-read it again. Then edit_file/write_file/bash as catalog tools. Literal calls start as it streams. Binds persist. Loaded MCP names are host functions after load_tool_schemas.";
+pub const lean_tool_desc = "Batch independent read_file/codedb here. print(read_file(\"p\")) returns the file — do not catalog-read it again. Then edit_file/write_file/bash as catalog tools. Leading reads overlap; other calls run in order, stopping on error/cancel/pending. Binds persist. Loaded MCP names are host functions after load_tool_schemas.";
 pub const tool_schema =
     \\{"type": "object", "properties": {"code": {"type": "string", "description": "Python-like script: name = read_file(\"path\") / codedb(\"command\") / bash(\"cmd\") / sleep_ms(ms) / llm_query(\"prompt\") / subagent(\"task\") / loaded mcp__server__tool() or tools.server.tool(); each(arr, tool, field) maps a JSON array; len(x) and project(x, field) slim it; print(...) is the result. Assignments persist across rlm calls."}}, "required": ["code"]}
 ;
@@ -86,6 +86,7 @@ pub fn exec(ctx: ToolCtx, input: Value) !ToolOutput {
 }
 
 const Binding = rlm_spec.Binding;
+const order = @import("rlm_order.zig");
 
 pub fn runScript(ctx: ToolCtx, code: []const u8) !ToolOutput {
     sync();
@@ -103,30 +104,29 @@ pub fn runScript(ctx: ToolCtx, code: []const u8) !ToolOutput {
 
     const stmts = try spec_ptc.splitStatements(arena, code);
 
-    const calls = try spec_ptc.extractCalls(arena, stmts);
-    try speculate(ctx, arena, calls, &claimed);
-    // Observe only joined host results, including calls that began while the
-    // script streamed. The recorder serializes updates from concurrent scripts.
-    if (ctx.publication_observer) |observer| {
-        var observed = std.StringHashMap(void).init(arena);
-        for (calls) |call| {
-            const key = try call.key(arena);
-            if (try observed.fetchPut(key, {})) |_| continue;
-            const output = claimed.get(key) orelse continue;
-            const input_value = pathValue(arena, call.args_json);
-            try observer.record(observer.context, .{ .id = "rlm", .name = call.name, .input = input_value }, .{ .text = output.text, .is_error = output.is_error, .cancelled = output.cancelled, .pending = output.pending });
-        }
+    var leading: std.ArrayList(spec_ptc.Call) = .empty;
+    for (stmts) |stmt| {
+        const safe_calls = try order.leading(arena, stmt) orelse break;
+        try leading.appendSlice(arena, safe_calls);
     }
-
+    const calls = leading.items;
+    try speculate(ctx, arena, calls, &claimed);
     var binds: std.ArrayList(Binding) = .empty;
     try rlm_spec.seedBinds(ctx.gpa, ctx.io, arena, &binds);
     defer rlm_spec.commitBinds(ctx.gpa, ctx.io, binds.items) catch {};
     var printed: std.ArrayList(u8) = .empty;
     defer printed.deinit(ctx.gpa);
 
+    var barrier = false;
     for (stmts) |stmt| {
+        if (!barrier and try order.leading(arena, stmt) == null) {
+            barrier = true;
+            var old = claimed.valueIterator();
+            while (old.next()) |out| ctx.gpa.free(out.text);
+            claimed.clearRetainingCapacity();
+        }
         if (try evalStmt(ctx, arena, stmt, binds.items, &claimed, &printed, &binds)) |err| {
-            return .{ .text = err, .is_error = true };
+            return err;
         }
     }
     if (printed.items.len == 0) return .{ .text = try ctx.gpa.dupe(u8, "(rlm: script produced no print())") };
@@ -218,6 +218,15 @@ fn pathValue(arena: Allocator, args_json: []const u8) Value {
 }
 
 fn runHost(ctx: ToolCtx, call: spec_ptc.Call) ToolOutput {
+    const out = runHostRaw(ctx, call);
+    observe(ctx, call, out) catch {
+        ctx.gpa.free(out.text);
+        return .{ .text = ctx.gpa.dupe(u8, "rlm: could not record host result") catch &.{}, .is_error = true };
+    };
+    return out;
+}
+
+fn runHostRaw(ctx: ToolCtx, call: spec_ptc.Call) ToolOutput {
     if (std.mem.eql(u8, call.name, "sleep_ms") or std.mem.eql(u8, call.name, "llm_query")) {
         if (ctx.run_budget) |budget| if (budget.toolRefusal(ctx.gpa, ctx.tracer)) |denied| return denied;
     }
@@ -261,7 +270,7 @@ fn evalStmt(
     claimed: *std.StringHashMap(ToolOutput),
     printed: *std.ArrayList(u8),
     bind_out: *std.ArrayList(Binding),
-) !?[]u8 {
+) !?ToolOutput {
     switch (try rlm_mcp.evalEach(ctx, arena, stmt, binds, bind_out, runHost)) {
         .miss => {},
         .ok => return null,
@@ -270,23 +279,27 @@ fn evalStmt(
     switch (try rlm_reduce.evalStmt(arena, ctx.gpa, stmt, binds, bind_out)) {
         .miss => {},
         .ok => return null,
-        .fail => |e| return e,
+        .fail => |e| return .{ .text = e, .is_error = true },
     }
     const call = try spec_ptc.extractCall(arena, stmt);
     if (call) |c| {
         const key = try c.key(arena);
-        const out = claimed.get(key) orelse runHost(ctx, c);
-        if (out.is_error) return try ctx.gpa.dupe(u8, out.text);
+        const cached = claimed.get(key);
+        const out = cached orelse runHost(ctx, c);
+        defer if (cached == null) ctx.gpa.free(out.text);
+        if (order.stopped(out)) return try order.copy(ctx.gpa, out);
         if (assignName(stmt)) |nm| try bind_out.append(arena, .{ .name = try arena.dupe(u8, nm), .text = try arena.dupe(u8, out.text) });
         return null;
     }
     if (printArgs(stmt)) |inner| {
-        const text = try renderPrint(ctx, arena, inner, binds, claimed);
+        var status: ?ToolOutput = null;
+        const text = try renderPrint(ctx, arena, inner, binds, claimed, &status);
+        if (status) |out| return out;
         if (printed.items.len > 0) try printed.append(ctx.gpa, '\n');
         try printed.appendSlice(ctx.gpa, text);
         return null;
     }
-    return try std.fmt.allocPrint(ctx.gpa, "rlm: unsupported statement: {s}", .{stmt});
+    return .{ .text = try std.fmt.allocPrint(ctx.gpa, "rlm: unsupported statement: {s}", .{stmt}), .is_error = true };
 }
 
 fn assignName(stmt: []const u8) ?[]const u8 {
@@ -302,18 +315,19 @@ fn printArgs(stmt: []const u8) ?[]const u8 {
     return t["print(".len .. t.len - 1];
 }
 
-fn renderPrint(ctx: ToolCtx, arena: Allocator, inner: []const u8, binds: []const Binding, claimed: *std.StringHashMap(ToolOutput)) ![]const u8 {
+fn renderPrint(ctx: ToolCtx, arena: Allocator, inner: []const u8, binds: []const Binding, claimed: *std.StringHashMap(ToolOutput), status: *?ToolOutput) ![]const u8 {
     const parts = try spec_ptc.splitTopLevel(arena, inner, ',');
     if (parts.len == 0) return "";
     var out: std.ArrayList(u8) = .empty;
     for (parts, 0..) |part, i| {
         if (i > 0) try out.append(arena, '\n');
-        try out.appendSlice(arena, try renderPrintPart(ctx, arena, part, binds, claimed));
+        try out.appendSlice(arena, try renderPrintPart(ctx, arena, part, binds, claimed, status));
+        if (status.* != null) break;
     }
     return out.toOwnedSlice(arena);
 }
 
-fn renderPrintPart(ctx: ToolCtx, arena: Allocator, inner: []const u8, binds: []const Binding, claimed: *std.StringHashMap(ToolOutput)) ![]const u8 {
+fn renderPrintPart(ctx: ToolCtx, arena: Allocator, inner: []const u8, binds: []const Binding, claimed: *std.StringHashMap(ToolOutput), status: *?ToolOutput) ![]const u8 {
     const t = std.mem.trim(u8, inner, " \t");
     if (t.len >= 2 and (t[0] == '"' or t[0] == '\'') and t[t.len - 1] == t[0]) return t[1 .. t.len - 1];
     if (rlm_reduce.evalExpr(arena, t, binds)) |text| return maybeSlim(arena, text) else |_| {}
@@ -324,9 +338,13 @@ fn renderPrintPart(ctx: ToolCtx, arena: Allocator, inner: []const u8, binds: []c
     }
     if (try spec_ptc.extractCall(arena, t)) |c| {
         const key = try c.key(arena);
-        if (claimed.get(key)) |hit| return maybeSlim(arena, hit.text);
-        const out = runHost(ctx, c);
-        defer ctx.gpa.free(out.text);
+        const cached = claimed.get(key);
+        const out = cached orelse runHost(ctx, c);
+        defer if (cached == null) ctx.gpa.free(out.text);
+        if (order.stopped(out)) {
+            status.* = try order.copy(ctx.gpa, out);
+            return "";
+        }
         if (mcp_shapes.slim(arena, out.text)) |s| return s;
         return try arena.dupe(u8, out.text);
     }
@@ -335,4 +353,12 @@ fn renderPrintPart(ctx: ToolCtx, arena: Allocator, inner: []const u8, binds: []c
 
 fn maybeSlim(arena: Allocator, payload: []const u8) []const u8 {
     return mcp_shapes.slim(arena, payload) orelse payload;
+}
+
+fn observe(ctx: ToolCtx, call: spec_ptc.Call, out: ToolOutput) !void {
+    if (ctx.publication_observer) |observer| {
+        var arena = std.heap.ArenaAllocator.init(ctx.gpa);
+        defer arena.deinit();
+        try observer.record(observer.context, .{ .id = "rlm", .name = call.name, .input = pathValue(arena.allocator(), call.args_json) }, .{ .text = out.text, .is_error = out.is_error, .cancelled = out.cancelled, .pending = out.pending });
+    }
 }

@@ -198,6 +198,7 @@ record only when you need the evidence or the edge cases.
 | [0173](0173-loaded-tool-order-survives-resume.md) | Native and external schemas share admission order, which survives session save and restore. |
 
 | [0174](0174-completion-requires-terminal-tool-results.md) | Deferred completion rejects pending work and preserves background verification exit status. |
+| [0175](0175-rlm-preserves-dependent-tool-order.md) | RLM speculates only leading read-only calls, then preserves statement order and stopped tool results. |
 
 ## When to write one
 

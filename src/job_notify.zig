@@ -40,6 +40,15 @@ var count: usize = 0;
 var dismissed: [cap]u32 = undefined;
 var dismissed_len: usize = 0;
 
+/// Unit fixtures must join their job pumps before clearing notification state.
+pub fn resetForTest(io: Io) void {
+    if (!@import("builtin").is_test) @compileError("test-only notification reset");
+    mu.lockUncancelable(io);
+    defer mu.unlock(io);
+    count = 0;
+    dismissed_len = 0;
+}
+
 fn clipCmd(cmd: []const u8) struct { buf: [48]u8, len: u8 } {
     const t = std.mem.trim(u8, cmd, " \t\r\n");
     const keep: u8 = @intCast(@min(t.len, 48));

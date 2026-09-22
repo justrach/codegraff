@@ -152,6 +152,7 @@ fn firstField(reg: *mcp.Registry, qualified: []const u8) ?[]const u8 {
 }
 
 pub const StmtHit = union(enum) { miss, ok, fail: []u8 };
+pub const HostHit = union(enum) { miss, ok, fail: ToolOutput };
 
 /// `each(arr, tool, field)` — map a JSON array through one host tool.
 /// Smallest control flow that makes `for issue in list_issues(): list_comments(id)` honest.
@@ -162,30 +163,30 @@ pub fn evalEach(
     binds: []const rlm_spec.Binding,
     bind_out: *std.ArrayList(rlm_spec.Binding),
     run: *const fn (ToolCtx, spec_ptc.Call) ToolOutput,
-) !StmtHit {
+) !HostHit {
     const parsed = parseEach(arena, stmt) orelse return .miss;
     const arr_text = resolveBind(binds, parsed.arr) orelse parsed.arr;
     const tool = stripQuotes(parsed.tool);
     const field = stripQuotes(parsed.field);
     const items = jsonArray(arena, arr_text) catch {
-        return .{ .fail = try std.fmt.allocPrint(ctx.gpa, "rlm: each() needs a JSON array (got {s})", .{arr_text}) };
+        return .{ .fail = .{ .text = try std.fmt.allocPrint(ctx.gpa, "rlm: each() needs a JSON array (got {s})", .{arr_text}), .is_error = true } };
     };
     var out: std.ArrayList(u8) = .empty;
     try out.append(arena, '[');
     for (items, 0..) |item, i| {
         if (i > 0) try out.append(arena, ',');
         const val = fieldValue(arena, item, field) catch {
-            return .{ .fail = try std.fmt.allocPrint(ctx.gpa, "rlm: each() item missing field {s}", .{field}) };
+            return .{ .fail = .{ .text = try std.fmt.allocPrint(ctx.gpa, "rlm: each() item missing field {s}", .{field}), .is_error = true } };
         };
         const args = try std.fmt.allocPrint(arena, "{{\"arg\":{s}}}", .{val});
         const call: spec_ptc.Call = .{ .name = tool, .args_json = args };
         const ready = switch (prepare(ctx, arena, call)) {
-            .refuse => |r| return .{ .fail = r.text },
+            .refuse => |r| return .{ .fail = r },
             .run => |c| c,
         };
         const got = run(ctx, ready);
         defer ctx.gpa.free(got.text);
-        if (got.is_error) return .{ .fail = try ctx.gpa.dupe(u8, got.text) };
+        if (@import("rlm_order.zig").stopped(got)) return .{ .fail = try @import("rlm_order.zig").copy(ctx.gpa, got) };
         const piece = jsonOrString(arena, got.text);
         try out.appendSlice(arena, piece);
     }
