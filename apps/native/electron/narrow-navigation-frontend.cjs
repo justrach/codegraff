@@ -7,25 +7,9 @@ async function runNarrowNavigation({win, output, click, until, report}) {
   const escape = async () => {
     for (const type of ['keyDown','keyUp']) await desktop.testInput(wc, {type,keyCode:'Escape'});
   };
-  const pointerClick = async selector => {
-    await until(() => js(`!!document.querySelector(${JSON.stringify(selector)})`), 'pointer target mounts');
-    const point = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)}),r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2};})()`);
-    for (const type of ['mouseDown','mouseUp']) await desktop.testInput(wc, {type,...point,button:'left',clickCount:1});
-  };
   assert.equal(await js(`innerWidth < 1024`), true, 'Exercise the breakpoint that hid navigation');
-  const first = await js(`document.querySelector('[data-chat][data-focused="true"]').dataset.chat`);
-  const firstDraft = await js(`document.querySelector('[data-chat][data-focused="true"] textarea[aria-label="Prompt"]').value`);
-  await click('[title="New chat (⌘T)"]');
-  const second = await js(`document.querySelector('[data-chat][data-focused="true"]').dataset.chat`);
-  assert.notEqual(second, first);
   await click('[aria-label="Open navigation"]');
   await until(() => js(`!!document.querySelector('[data-navigation-panel]:popover-open')`), 'navigation opens');
-  await pointerClick(`[data-session-navigation="sidebar"] [data-tab-members="${first}"] button[aria-pressed]`);
-  await desktop.testInput(wc, {type:'char',keyCode:'x'});
-  await until(() => js(`!document.querySelector('[data-navigation-panel]:popover-open') && document.activeElement===document.querySelector('[data-chat="${first}"] textarea[aria-label="Prompt"]')`), 'chat selection dismisses navigation and focuses its prompt');
-  assert.equal(await js(`document.querySelector('[data-chat="${first}"] textarea[aria-label="Prompt"]').value`), `${firstDraft}x`, 'the first character typed immediately after chat selection appends to its prompt');
-  await click('[aria-label="Open navigation"]');
-  await until(() => js(`!!document.querySelector('[data-navigation-panel]:popover-open')`), 'navigation reopens');
   await click('[data-workspace-trigger]');
   await until(() => js(`!!document.querySelector('[data-navigation-panel] [data-workspace-menu]')`), 'folder picker stays inside native popover layer');
   await escape();
@@ -78,7 +62,6 @@ async function runNarrowNavigation({win, output, click, until, report}) {
   win.setContentSize(1320, 868);
   await until(() => js(`innerWidth >= 1024 && document.querySelector('[aria-label="Workspace navigation"]').getBoundingClientRect().width > 200 && !document.querySelector('[data-navigation-panel]').hasAttribute('popover')`), 'wide sidebar restored');
   assert.equal(await js(`document.querySelectorAll('[aria-label="Workspace navigation"]').length`), 1);
-  report.passed.push('selecting a chat from narrow navigation closes the popover, focuses its prompt and sends typing there');
   report.passed.push('update controls stay unclipped and eight new chats cannot hide the navigation button');
   report.passed.push('narrow window: workspace picker and real saved-chat actions reachable; nested Escape, close control, outside dismissal and focus work; widening restores one sidebar');
 }

@@ -18,8 +18,8 @@ export function useNavigationPromptFocus() {
   const requestPromptFocus = (id: number) => {
     const navigation = document.querySelector<HTMLElement>("[data-navigation-panel]:popover-open");
     if (!navigation) { setRequest({ id }); return; }
-    navigation.addEventListener("toggle", () => flushSync(() => setRequest({ id })), { once: true });
     navigation.hidePopover();
+    flushSync(() => setRequest({ id }));
   };
   return { promptFocusRoot: root, requestPromptFocus };
 }
