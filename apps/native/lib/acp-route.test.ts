@@ -132,19 +132,20 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   }
 }, 10000);
 
-test("superseded model bootstraps adopt the final replacement worker", async () => {
+test("superseded model bootstraps adopt the final replacement outcome", async () => {
   const temp = mkdtempSync(path.join(os.tmpdir(), "graff-acp-replacement-"));
   const binary = path.join(temp, "agent.cjs");
   const oldBin = process.env.GRAFF_BIN;
   writeFileSync(binary, `#!/usr/bin/env node
 const fs=require('node:fs');
-const stalled=process.argv.some(arg=>arg.startsWith('stalled'));
+const stalled=process.argv.some(arg=>arg.startsWith('stalled')),failed=process.argv.includes('failed');
 fs.appendFileSync('starts',String(process.pid)+'\\n');
 const send=value=>console.log(JSON.stringify(value));
 require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
  const req=JSON.parse(line);
  if(req.method==='initialize') {
   if(stalled) fs.writeFileSync('stalled',String(process.pid));
+  else if(failed) send({id:req.id,error:{code:-32603,message:'final bootstrap failure'}});
   else send({id:req.id,result:{}});
  }
  if(req.method==='session/new') {
@@ -154,9 +155,12 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
 }).on('close',()=>process.exit(0));
 `, {mode:0o700});
   const chat = `replacement-test-${path.basename(temp)}`;
-  const call = (method: string, params = {}) => deadline(POST(new NextRequest("http://localhost/api/acp", {
-    method:"POST",body:JSON.stringify({chat,method,params}),
+  const failedChat = `replacement-failure-${path.basename(temp)}`;
+  const callFor = (target: string, method: string, params = {}) => deadline(POST(new NextRequest("http://localhost/api/acp", {
+    method:"POST",body:JSON.stringify({chat:target,method,params}),
   })), method);
+  const call = (method: string, params = {}) => callFor(chat, method, params);
+  const failedCall = (method: string, params = {}) => callFor(failedChat, method, params);
   try {
     process.env.GRAFF_BIN = binary;
     const waitForStalled = (previous?: string) => deadline((async()=>{
@@ -188,8 +192,24 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
     expect(()=>process.kill(started[0],0)).toThrow();
     expect(()=>process.kill(started[1],0)).toThrow();
     expect(()=>process.kill(started[2],0)).not.toThrow();
+
+    const previousStalled = readFileSync(path.join(temp,"stalled"),"utf8");
+    const failedOlder = failedCall("bootstrap", {cwd:temp,model:"stalled-one",mcp:true});
+    const nextStalled = await waitForStalled(previousStalled);
+    const failedMiddle = failedCall("bootstrap", {cwd:temp,model:"stalled-two",mcp:true});
+    await waitForStalled(nextStalled);
+    const failedNewest = failedCall("bootstrap", {cwd:temp,model:"failed",mcp:true});
+    for (const response of await Promise.all([failedOlder, failedMiddle, failedNewest])) {
+      expect(response.status).toBe(502);
+      const error = (await response.json()).error as string;
+      expect(error).toContain("final bootstrap failure");
+      expect(error).not.toContain("worker retired");
+    }
+    const retry = await failedCall("bootstrap", {cwd:temp,model:"replacement",mcp:true});
+    expect(retry.status).toBe(200);
+    expect((await retry.json()).sessionId).toBe("replacement");
   } finally {
-    await call("dispose");
+    await Promise.all([call("dispose"), failedCall("dispose")]);
     if(oldBin===undefined)delete process.env.GRAFF_BIN;else process.env.GRAFF_BIN=oldBin;
     rmSync(temp,{recursive:true,force:true});
   }
