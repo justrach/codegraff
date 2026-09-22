@@ -23,6 +23,13 @@ async function runNavigationKeyboard({win, origin}) {
   await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   wc.send('desktop-action', 'new');
   await wait(`document.querySelectorAll('[aria-label="Close tab"]').length===2`);
+  wc.send('desktop-action', 'close');
+  await wait(`document.querySelectorAll('[aria-label="Close tab"]').length===1`);
+  await key('T', ['meta', 'control', 'shift']);
+  assert.equal((await tabs()).length, 1, 'Cmd+Control+Shift+T does not reopen a closed tab');
+  await key('T', ['meta', 'shift']);
+  await wait(`document.querySelectorAll('[aria-label="Close tab"]').length===2`);
+  assert.equal((await tabs()).length, 2, 'Cmd+Shift+T reopens the most recently closed tab');
   const originalTabs = await tabs();
   const opener = 'button[aria-label="Open folder…"]';
   await click(opener);
