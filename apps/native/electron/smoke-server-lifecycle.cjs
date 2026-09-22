@@ -27,7 +27,9 @@ exports.run = async ({win, backend}) => {
       backendOrigin: backend.origin, writePhase: phase });
     throw Error(`Shutdown fixture timed out: ${label}`);
   };
-  await until(() => js(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`), 'composer');
+  const composer = '[data-chat][data-focused="true"] textarea[aria-label="Prompt"]';
+  const send = '[data-chat][data-focused="true"] [aria-label="Send"]';
+  await until(() => js(`!!document.querySelector('[data-workspace-ready="true"] ${composer}')`), 'composer');
   phase('composer ready');
   // Same click + wait-for-value + Send path as frontend-runtime.cjs. Return
   // after a missed click left the composer empty and every worker idle at
@@ -38,22 +40,31 @@ exports.run = async ({win, backend}) => {
     await desktop.testInput(win.webContents, {type:'mouseUp',button:'left',clickCount:1,...box});
   }
   async function submit(text) {
-    const ready = () => js(`document.querySelector('textarea[aria-label="Prompt"]').value === ${JSON.stringify(text)} && !document.querySelector('[aria-label="Send"]').disabled`);
-    for (let attempt = 0; attempt < 2 && !(await ready()); attempt++) {
-      await click('textarea[aria-label="Prompt"]');
-      await until(() => js(`document.activeElement === document.querySelector('textarea[aria-label="Prompt"]')`), 'composer focus');
-      for (const keyCode of text) await desktop.testInput(win.webContents, {type:'char',keyCode});
-      const end = Date.now() + 8000;
-      while (Date.now() < end && !(await ready())) await sleep(50);
-      if (!(await ready()) && attempt === 0) phase('typed prompt missed; retrying');
+    const focused = () => js(`document.activeElement === document.querySelector(${JSON.stringify(composer)})`);
+    const ready = () => js(`document.querySelector(${JSON.stringify(composer)}).value === ${JSON.stringify(text)} && !document.querySelector(${JSON.stringify(send)}).disabled`);
+    let hasFocus = false;
+    for (let attempt = 0; attempt < 2 && !hasFocus; attempt++) {
+      await click(composer);
+      const end = Date.now() + 2000;
+      while (Date.now() < end && !(hasFocus = await focused())) await sleep(50);
+      if (!hasFocus && attempt === 0) phase('composer focus missed; retrying');
     }
+    if (!hasFocus) {
+      await timeouts.dumpTimeout({ label: 'composer focus', waitedMs: 4000, outer, output, workspace, js,
+        capturePage: () => win.webContents.capturePage().then(page => page.toPNG()),
+        backendOrigin: backend.origin, writePhase: phase });
+      throw Error('Shutdown fixture failed to focus the composer');
+    }
+    for (const keyCode of text) await desktop.testInput(win.webContents, {type:'char',keyCode});
+    const end = Date.now() + 8000;
+    while (Date.now() < end && !(await ready())) await sleep(50);
     if (!(await ready())) {
       await timeouts.dumpTimeout({ label: 'typed prompt ready', waitedMs: 8000, outer, output, workspace, js,
         capturePage: () => win.webContents.capturePage().then(page => page.toPNG()),
         backendOrigin: backend.origin, writePhase: phase });
       throw Error('Shutdown fixture failed to land the composer text');
     }
-    await click('[aria-label="Send"]');
+    await click(send);
   }
   await submit('Start the isolated listener, check its socket, and report readiness.');
   phase('prompt submitted');
