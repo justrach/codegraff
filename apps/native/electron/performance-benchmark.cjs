@@ -74,7 +74,9 @@ app.whenReady().then(async () => {
   console.log('Benchmark: loading renderer');
   await wc.loadURL(origin);
   console.log('Benchmark: waiting for composer');
-  await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+  // The textarea mounts before workspace restoration can replace its chat.
+  // Type only after the production surface declares that restoration complete.
+  await wait(`!!document.querySelector('[data-workspace-ready="true"] [data-chat][data-focused="true"] textarea[aria-label="Prompt"]')`);
   await js('document.fonts.ready.then(()=>true)');
   const metrics = async () => Object.fromEntries((await wc.debugger.sendCommand('Performance.getMetrics')).metrics.map(({ name, value }) => [name, value]));
   const memory = async () => {
@@ -87,9 +89,9 @@ app.whenReady().then(async () => {
       processMetrics: app.getAppMetrics().map(item => ({ type: item.type, rssMiB: item.memory.workingSetSize / 1024 })) };
   };
   const send = async name => {
-    await js(`(()=>{window.benchmarkCase=${JSON.stringify(name)};const input=document.querySelector('textarea[aria-label="Prompt"]');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'Run the synthetic '+window.benchmarkCase+' workload');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
-    await wait(`!document.querySelector('[aria-label="Send"]').disabled`);
-    await js(`document.querySelector('[aria-label="Send"]').click()`);
+    await js(`(()=>{window.benchmarkCase=${JSON.stringify(name)};const chat=document.querySelector('[data-chat][data-focused="true"]'),input=chat.querySelector('textarea[aria-label="Prompt"]');input.focus();Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'Run the synthetic '+window.benchmarkCase+' workload');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+    await wait(`(()=>{const chat=document.querySelector('[data-chat][data-focused="true"]'),button=chat?.querySelector('[aria-label="Send"]');return !!button&&!button.disabled})()`);
+    await js(`document.querySelector('[data-chat][data-focused="true"] [aria-label="Send"]').click()`);
     await wait(`!!document.querySelector('article[aria-busy="true"]')`);
     await wait(`!document.querySelector('article[aria-busy="true"]')`);
   };
