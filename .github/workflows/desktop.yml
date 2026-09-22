@@ -4,14 +4,14 @@ on:
   pull_request:
     paths: ['apps/native/**', 'src/**', 'scripts/test-server-retention.py', 'scripts/eval/frontend_model.py', 'scripts/eval/mock_model.py', 'scripts/eval/test_mock_model.py', 'scripts/*zig-ci.py', '.github/actions/setup-codegraff-zig/**', '.github/workflows/desktop.yml']
   push:
-    branches: [main, 'release/**', 'cursor/**']
+    branches: [main, 'release/**']
     paths: ['apps/native/**', 'src/**', 'scripts/test-server-retention.py', 'scripts/eval/frontend_model.py', 'scripts/eval/mock_model.py', 'scripts/eval/test_mock_model.py', 'scripts/*zig-ci.py', '.github/actions/setup-codegraff-zig/**', '.github/workflows/desktop.yml']
 permissions:
   contents: read
 
-# Push covers same-repo main, release, and cursor branches. Other feature
-# branches and forks still use pull_request. Cancel stacked runs on the same
-# ref so macos runners are not queued behind a superseded SHA.
+# Push already covers same-repo PRs whose head is main or release/*.
+# Feature-branch PRs and forks still use pull_request. Cancel stacked runs on
+# the same ref so macos runners are not queued behind a superseded SHA.
 concurrency:
   group: desktop-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
