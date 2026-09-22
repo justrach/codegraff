@@ -7,6 +7,7 @@ import ThinkingState from "@/components/primitives/ThinkingState";
 import ToolChips, { type LiveDiff } from "@/components/primitives/ToolChips";
 import ApprovalCard from "@/components/primitives/ApprovalCard";
 import TurnActivity from "./TurnActivity";
+import CopyResponse from "./CopyResponse";
 import HtmlArtifact from "./HtmlArtifact";
 import McpAppResult from "./McpAppResult";
 import SnapshotView from "./SnapshotView";
@@ -223,6 +224,7 @@ export const AssistantBody = memo(function AssistantBody({
           />
         </div>
       )}
+      <CopyResponse text={turn.text} />
       {!snapshot && <TurnActivity turn={turn} onRetry={turn.status === "error" ? onRetry : undefined} promptIndex={promptIndex} retryDisabled={retryDisabled} />}
       {turn.recap && turn.status === "done" && (
         <p className="mt-3 text-[12px] text-ink-3">{turn.recap}</p>
