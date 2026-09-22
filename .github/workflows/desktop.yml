@@ -39,6 +39,7 @@ jobs:
       - run: bunx playwright install chromium
       - name: Compact reasoning effort control
         run: node scripts/test-motion.mjs "$PWD" ../../zig-out/motion/effort-picker --effort-only
+      - run: bun run test:keyboard
       - run: bun run test:queue
       - run: bun run test:turns
       - run: bun run test:tab-drag

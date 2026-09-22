@@ -8,10 +8,14 @@ async function runNavigationKeyboard({win, origin}) {
     for (let attempt = 0; attempt < 120; attempt++) { if (await js(code)) return; await pause(); }
     throw Error(`Keyboard navigation check timed out: ${code}`);
   };
-  // Real input is essential: synthetic KeyboardEvents do not move Tab focus.
+  // Chromium input dispatch is essential: synthetic DOM KeyboardEvents do not move Tab focus.
   const key = async (keyCode, modifiers = []) => {
-    await testDesktop.testInput(wc, {type: 'keyDown', keyCode, modifiers});
-    await testDesktop.testInput(wc, {type: 'keyUp', keyCode, modifiers});
+    await testDesktop.focusTestPage(wc); testDesktop.attachTestDebugger(wc);
+    const modifierBits = modifiers.reduce((bits, name) => bits | ({alt:1,control:2,ctrl:2,meta:4,shift:8}[name] ?? 0), 0);
+    const virtualKeyCode = {Tab:9,Escape:27}[keyCode] ?? keyCode.toUpperCase().charCodeAt(0);
+    for (const type of ['keyDown','keyUp']) await wc.debugger.sendCommand('Input.dispatchKeyEvent', {
+      type, key:keyCode, code:keyCode.length===1?`Key${keyCode.toUpperCase()}`:keyCode, windowsVirtualKeyCode:virtualKeyCode, modifiers:modifierBits,
+    });
     await pause();
   };
   const click = selector => js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.focus();e.click();})()`);
@@ -23,6 +27,13 @@ async function runNavigationKeyboard({win, origin}) {
   await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   wc.send('desktop-action', 'new');
   await wait(`document.querySelectorAll('[aria-label="Close tab"]').length===2`);
+  wc.send('desktop-action', 'close');
+  await wait(`document.querySelectorAll('[aria-label="Close tab"]').length===1`);
+  await key('T', ['meta', 'control', 'shift']);
+  assert.equal((await tabs()).length, 1, 'Cmd+Control+Shift+T does not reopen a closed tab');
+  await key('T', ['meta', 'shift']);
+  await wait(`document.querySelectorAll('[aria-label="Close tab"]').length===2`);
+  assert.equal((await tabs()).length, 2, 'Cmd+Shift+T reopens a closed tab');
   const originalTabs = await tabs();
   const opener = 'button[aria-label="Open folder…"]';
   await click(opener);
