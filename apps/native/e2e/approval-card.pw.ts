@@ -95,8 +95,10 @@ test("multi-question radio and checkbox answers require explicit progression", a
 
 test("Answers sent waits for acknowledgement and keeps the selection after a failed delivery", async ({ page }) => {
   const card = page.getByRole("region", { name: "Acknowledged approval" });
+  const send = card.getByRole("button", { name: "Send" });
   await card.getByRole("button", { name: "Yes" }).click();
-  await card.getByRole("button", { name: "Send" }).click();
+  await expect(send).toBeEnabled();
+  await send.click();
   await expect(card.getByText("Sending…")).toBeVisible();
   await expect(card.getByText("Answers sent")).toHaveCount(0);
   await expect(card.getByRole("alert")).toHaveText("notify failed");
