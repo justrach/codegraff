@@ -3,7 +3,6 @@ import SessionTabs from "./SessionTabs";
 import type {SplitTree} from "@/lib/split-tree";
 import ActionMenu from "@/components/primitives/ActionMenu";
 import AppSettings from "./AppSettings";
-import { IconSidebarLeftOpen } from "@/lib/icons";
 import type { PointerEvent, MouseEvent, ReactNode } from "react";
 import type { Chat } from "./harness-types";
 import reviewStyles from "./ChangesPane.module.css";
@@ -71,11 +70,6 @@ export default function HarnessChrome({navigationToggle, sidebarVisible = false,
           <button type="button" aria-label="Conversations" aria-pressed={conversationsOpen} onClick={openConversations}>All conversations</button>
           <button type="button" onClick={onFolder}>Open a folder…</button>
         </ActionMenu>
-        {!sidebarVisible && <button type="button" aria-label="Expand sidebar" title="Expand sidebar (⌘B)"
-          onClick={() => window.dispatchEvent(new CustomEvent("graff-toggle-sidebar"))}
-          className="hidden size-7 shrink-0 items-center justify-center rounded-full text-ink-3 hover:bg-hover hover:text-ink lg:flex">
-          <IconSidebarLeftOpen size={16} />
-        </button>}
         {!sidebarVisible && <AppSettings />}
         <div data-desktop-update-slot className="shrink-0" />
         </div>
