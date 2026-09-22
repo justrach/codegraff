@@ -578,8 +578,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("agent_ws_steer.zig");
     _ = @import("agent_ws_signal.zig");
     _ = @import("agent_ws_prewarm.zig");
-    _ = @import("http2_pool.zig");
-    _ = @import("agent_stream_h2.zig");
+    _ = .{ @import("http2_pool.zig"), @import("agent_stream_h2.zig"), @import("agent_stream_h2_transport_test.zig") }; // h2 stream path, and graff's request/response contract over the pinned http-zig
     _ = @import("tui_acp_updates.zig");
     _ = @import("acp_preauth.zig"); // credential-free ACP loop must stay in the test root
     _ = @import("task_outcome.zig"); // goal-outcome telemetry events
