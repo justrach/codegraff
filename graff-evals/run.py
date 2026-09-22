@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from list_price import attach as attach_list_price
 import report as eval_report
 import measurement
+import request_capture
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(ROOT)
@@ -363,6 +364,8 @@ def one_run(hname, harness, task, model, rep, live=False):
            for k, v in harness.get("env", {}).items()}})
     if harness.get("_provider"):
         env = measurement.provider_environment(harness["_provider"], sandbox, model=model)
+    if harness.get("_capture_requests"):
+        request_capture.configure(env, sandbox)
     try:
         p = subprocess.Popen(cmd, cwd=sandbox, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, stdin=subprocess.PIPE if stdin_body is not None else None,
@@ -470,6 +473,8 @@ def one_run(hname, harness, task, model, rep, live=False):
            "sandbox_bytes": dir_bytes(sandbox)}
     rec.update({f"tok_{k}": v for k, v in usage.items()})
     rec.update(measurement.receipt(cmd, harness, task))
+    if harness.get("_capture_requests"):
+        rec.update(request_capture.receipt(sandbox))
     rec["verifiers_unchanged"] = verifiers_ok
     if harness.get("_provider"):
         rec.update(measurement.trace_routing(sandbox, harness["_provider"], model))
@@ -507,6 +512,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--harness", default="graff", help="comma-separated harness names (see harnesses.json)")
     ap.add_argument("--output-root", help="new private directory for receipts and isolated sandboxes")
+    ap.add_argument("--capture-requests", action="store_true", help="save private wire evidence for cache analysis")
     ap.add_argument("--binary", help="explicit graff executable for this arm")
     ap.add_argument("--arm", default="baseline", help="comparison arm recorded in every result")
     ap.add_argument("--provider", help="explicit graff provider; no automatic provider selection")
@@ -543,10 +549,10 @@ def main():
         picked[tid] = t
     work = []
     for hname in args.harness.split(","):
-        harness = dict(harnesses[hname], _arm=args.arm, _provider=args.provider, _receipt=code_receipt)
-        if args.provider or args.binary:
+        harness = dict(harnesses[hname], _arm=args.arm, _provider=args.provider, _receipt=code_receipt, _capture_requests=args.capture_requests)
+        if args.provider or args.binary or args.capture_requests:
             if not hname.startswith("graff"):
-                ap.error("--provider/--binary require a graff harness")
+                ap.error("--provider/--binary/--capture-requests require a graff harness")
             if args.provider and args.provider not in measurement.CREDENTIALS:
                 ap.error("--provider requires a supported credential route")
             if args.provider and not os.environ.get(measurement.CREDENTIALS[args.provider]):

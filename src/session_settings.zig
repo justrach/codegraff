@@ -149,7 +149,7 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     // (the MCP half of the same switch) — a "0" still means lean, by design.
     if (environ_map.get("GRAFF_LEAN") != null) no_local_tools.lean = true;
     // GRAFF_REQ_STATS: presence-based request-anatomy print (req_stats).
-    @import("req_stats.zig").g_armed = environ_map.get("GRAFF_REQ_STATS") != null;
+    try @import("req_stats.zig").configure(arena, environ_map.get("GRAFF_REQ_STATS") != null, environ_map.get("GRAFF_REQ_DUMP_DIR"));
     // GRAFF_CODEX_FULL_RESEND: presence-based — never chain previous_response_id
     // (codex_chain); the opencode-shape experiment for cache-hit measurement.
     if (environ_map.get("GRAFF_CODEX_FULL_RESEND") != null) @import("codex_chain.zig").g_force_full_resend = true;

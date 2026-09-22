@@ -161,10 +161,9 @@ python3 graff-evals/run.py --suite swe --task config-parse \
 
 Use the identical command with the candidate binary, candidate arm, and a new
 output directory. Match build optimization and effort across arms. Start with
-one case each for Astra, MiMo Pro, Claude, and Gemini to check transport and
-measurement completeness, then expand to all available aliases and six SWE
-fixtures. Availability failures remain failed/incomplete cells, never zero-cost
-wins. Interleave baseline/candidate repetitions to reduce cache/order bias.
+a fixed, explicitly selected model set to check transport and measurement
+completeness, then expand the task set while keeping those model routes fixed.
+Availability failures remain failed/incomplete cells, never zero-cost wins. Interleave baseline/candidate repetitions to reduce cache/order bias.
 
 Receipts include binary SHA-256, evaluation-working-tree revision and patch
 hash, untracked source hashes, task hash, requested provider/model, arm, wall
@@ -196,3 +195,20 @@ classmethod semantics, collection wrapping examples, and empty-Invalid
 short-circuit checks. Its held-out checker independently verifies these and
 remaining named contract behaviors. Compare both harness arms on the same task
 version; do not pool v1 and v2 passes or rewrite earlier raw results.
+
+### Actual request capture
+
+Add `--capture-requests` to retain serialized request bodies in a private
+`requests/` directory beside the sandboxes. Each harness process uses a unique
+subdirectory. The receipt records body and rendered instruction/tool fingerprints;
+it does not contain the request text. Require `capture_evidence_ok` before using
+these fingerprints: empty, malformed, or gapped captures fail this check. Sequence
+order is per-process body construction, not global HTTP attempt order; transport
+retries can reuse a body. Capture is opt-in and identical in both
+arms; do not publish raw request files. Standalone harness diagnostics use
+`GRAFF_REQ_STATS=1` plus `GRAFF_REQ_DUMP_DIR`; statistics alone do not write files.
+
+A matching fingerprint establishes only matching request components. Prove cache
+reuse with returned cached-token usage. For warm-prefix comparisons, predetermine
+warmups, preserve their costs separately, alternate arm order, and retain every
+measured failure. Neither a warmup nor a stable cache key guarantees a hit.

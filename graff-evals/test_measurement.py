@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import list_price
 import measurement
+import request_capture
 
 
 class MeasurementTests(unittest.TestCase):
@@ -108,6 +109,77 @@ class MeasurementTests(unittest.TestCase):
             receipt = measurement.revision(temp)
             self.assertIn('new.zig', receipt['untracked_source_sha256'])
             self.assertEqual(len(receipt['untracked_source_sha256']['new.zig']), 64)
+
+    def test_wire_captures_are_private_isolated_and_include_rendered_guidance(self):
+        with tempfile.TemporaryDirectory() as temp:
+            first = Path(temp) / 'sandboxes' / 'first'
+            second = Path(temp) / 'sandboxes' / 'second'
+            env = {'CODEGRAFF_API_KEY': 'fixture'}
+            request_capture.configure(env, first)
+            self.assertEqual(env['GRAFF_REQ_STATS'], '1')
+            self.assertEqual(Path(env['GRAFF_REQ_DUMP_DIR']).stat().st_mode & 0o777, 0o700)
+            request_capture.configure({}, second)
+            self.assertNotEqual(request_capture.directory(first), request_capture.directory(second))
+            run = request_capture.directory(first) / 'run-fixture'
+            run.mkdir()
+            body = {'model': 'fixture', 'instructions': 'base + rendered guidance', 'tools': [],
+                    'input': [{'role': 'user', 'content': 'first task'}], 'prompt_cache_key': 'lane'}
+            (run / 'body-001.json').write_text(json.dumps(body))
+            body['input'][0]['content'] = 'different task'
+            (run / 'body-002.json').write_text(json.dumps(body))
+            body['instructions'] = 'base + different rendered guidance'
+            (run / 'body-003.json').write_text(json.dumps(body))
+            receipt = request_capture.receipt(first)['request_capture']
+            self.assertEqual(receipt['count'], 3)
+            a, b, c = receipt['requests']
+            self.assertEqual(a['prefix_components_sha256'], b['prefix_components_sha256'])
+            self.assertNotEqual(a['body_sha256'], b['body_sha256'])
+            self.assertNotEqual(b['prefix_components_sha256'], c['prefix_components_sha256'])
+            self.assertEqual(request_capture.receipt(second)['request_capture']['count'], 0)
+            self.assertNotIn('rendered guidance', json.dumps(receipt))
+            (run / 'body-004.json').write_text('broken')
+            self.assertIn('capture_error', request_capture.receipt(first)['request_capture']['requests'][-1])
+
+    def test_capture_evidence_requires_nonempty_parseable_contiguous_bodies(self):
+        with tempfile.TemporaryDirectory() as temp:
+            sandbox = Path(temp) / 'sandboxes' / 'case'
+            request_capture.configure({}, sandbox)
+            current = lambda: request_capture.receipt(sandbox)['request_capture']
+            self.assertFalse(current()['capture_evidence_ok'])
+            run = request_capture.directory(sandbox) / 'run-fixture'
+            run.mkdir()
+            (run / 'body-001.json').write_text('{"model":"fixture"}')
+            self.assertTrue(current()['capture_evidence_ok'])
+            (run / 'body-003.json').write_text('{"model":"fixture"}')
+            self.assertFalse(current()['capture_evidence_ok'])
+            (run / 'body-002.json').write_text('broken')
+            self.assertFalse(current()['capture_evidence_ok'])
+            self.assertEqual(current()['valid_count'], 2)
+            (run / 'body-002.json').write_text('{"model":"fixture"}')
+            self.assertTrue(current()['capture_evidence_ok'])
+            (run / 'body-000.json').write_text('{}')
+            self.assertFalse(current()['capture_evidence_ok'])
+
+    def test_capture_order_is_numeric_with_independent_run_sequences(self):
+        with tempfile.TemporaryDirectory() as temp:
+            sandbox = Path(temp) / 'sandboxes' / 'case'
+            request_capture.configure({}, sandbox)
+            root = request_capture.directory(sandbox)
+            for name, count in [('run-z', 1001), ('run-a', 2)]:
+                run = root / name
+                run.mkdir()
+                for number in reversed(range(1, count + 1)):
+                    (run / f'body-{number:03d}.json').write_text('{"model":"fixture"}')
+            captured = request_capture.receipt(sandbox)['request_capture']
+            self.assertTrue(captured['capture_evidence_ok'])
+            self.assertEqual(captured['order_scope'], 'per_run_body_build')
+            self.assertEqual(captured['count'], 1003)
+            for name, count in [('run-z', 1001), ('run-a', 2)]:
+                rows = [r for r in captured['requests'] if r['run_id'] == name]
+                self.assertEqual([r['sequence'] for r in rows], list(range(1, count + 1)))
+            (root / 'run-a' / 'body-002.json').unlink()
+            (root / 'run-a' / 'body-004.json').write_text('{}')
+            self.assertFalse(request_capture.receipt(sandbox)['request_capture']['capture_evidence_ok'])
 
     def test_isolation_refuses_reusing_or_overwriting_a_run(self):
         with tempfile.TemporaryDirectory() as temp:
