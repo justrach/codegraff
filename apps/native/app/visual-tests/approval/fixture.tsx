@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ApprovalCard from "@/components/primitives/ApprovalCard";
 import { AssistantBody } from "@/components/site/ChatBubbles";
 import { emptyTurn, type AssistantTurn } from "@/lib/acp";
@@ -31,9 +31,11 @@ export default function ApprovalFixture() {
   const [ackKey, setAckKey] = useState(0);
   const ackFails = useRef(1);
   const [ackSubmissions, setAckSubmissions] = useState(0);
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => setHydrated(true), []);
 
   return (
-    <main className="min-h-screen bg-page p-8 text-ink">
+    <main data-approval-hydrated={hydrated} className="min-h-screen bg-page p-8 text-ink">
       <div className="mx-auto grid max-w-[900px] gap-10 md:grid-cols-2">
         <section aria-label="Single-question approval" className="space-y-4">
           <div className="flex items-center justify-between gap-3">
