@@ -33,6 +33,7 @@ pub const ExecResult = struct {
     text: []const u8,
     is_error: bool,
     cancelled: bool = false, // ended by user Esc, not by failing (#266)
+    pending: bool = false, // asynchronous work has no terminal result yet
     ms: i64 = 0, // wall-clock of the tool exec (external tools only; --timing)
 };
 
@@ -80,6 +81,7 @@ pub const ToolOutput = struct {
     text: []u8 = &.{}, // gpa-owned
     is_error: bool = false,
     cancelled: bool = false, // ended by user Esc, not by failing (#266)
+    pending: bool = false, // asynchronous work has no terminal result yet
     ms: i64 = 0, // set by execTool
 };
 

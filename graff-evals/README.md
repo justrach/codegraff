@@ -184,3 +184,15 @@ and saved-selection path applies. Subscription calls are labelled separately;
 the metered subtotal is retained, while total USD stays unknown rather than
 presenting a flat subscription as free inference. API list-price estimates
 require a separately validated model/rate snapshot.
+
+### Validated fixture versions
+
+`validated` (v1) remains frozen for existing result comparisons. Its visible and
+held-out checks do not cover every SPEC requirement, including the `Validated`
+export and empty-error `Invalid` combinations; a v1 pass is limited to that grader.
+
+`validated-contract-v2` is a separate task and fixture with explicit alias
+classmethod semantics, collection wrapping examples, and empty-Invalid
+short-circuit checks. Its held-out checker independently verifies these and
+remaining named contract behaviors. Compare both harness arms on the same task
+version; do not pool v1 and v2 passes or rewrite earlier raw results.

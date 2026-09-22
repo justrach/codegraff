@@ -52,7 +52,7 @@ pub fn batchBlocksCompletion(calls: []const ToolCall) bool {
             std.mem.eql(u8, call.name, "write_file") or
             std.mem.eql(u8, call.name, "rlm") or
             std.mem.eql(u8, call.name, "subagent")) return true;
-        if (std.mem.startsWith(u8, call.name, "mcp__")) return !companionReadOnly(call.name, call.input);
+        if (std.mem.startsWith(u8, call.name, "mcp__") and !companionReadOnly(call.name, call.input)) return true;
     }
     return false;
 }
@@ -80,4 +80,4 @@ pub const completion_with_mutation =
     "attempt_completion must be a separate post-verification action; this batch also contains a workspace-changing tool";
 
 pub const completion_verify_failed =
-    "attempt_completion was not accepted: a verify tool in this batch failed. Fix that result, then complete.";
+    "attempt_completion was not accepted: a verify tool in this batch failed or is still pending. Resolve that result, then complete.";

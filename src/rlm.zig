@@ -114,7 +114,7 @@ pub fn runScript(ctx: ToolCtx, code: []const u8) !ToolOutput {
             if (try observed.fetchPut(key, {})) |_| continue;
             const output = claimed.get(key) orelse continue;
             const input_value = pathValue(arena, call.args_json);
-            try observer.record(observer.context, .{ .id = "rlm", .name = call.name, .input = input_value }, .{ .text = output.text, .is_error = output.is_error, .cancelled = output.cancelled });
+            try observer.record(observer.context, .{ .id = "rlm", .name = call.name, .input = input_value }, .{ .text = output.text, .is_error = output.is_error, .cancelled = output.cancelled, .pending = output.pending });
         }
     }
 

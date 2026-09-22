@@ -195,6 +195,10 @@ record only when you need the evidence or the edge cases.
 | [0171](0171-cost-rates-belong-to-the-provider-route.md) | Cost estimates use the actual provider route, preserve cache and long-context rates, and leave unknown tariffs unpriced. |
 | [0172](0172-model-guidance-is-request-scoped.md) | Model guidance is composed once per request from the current model, with root-only delegation and stable repeated prefixes. |
 
+| [0173](0173-loaded-tool-order-survives-resume.md) | Native and external schemas share admission order, which survives session save and restore. |
+
+| [0174](0174-completion-requires-terminal-tool-results.md) | Deferred completion rejects pending work and preserves background verification exit status. |
+
 ## When to write one
 
 Write an ADR when a decision is load-bearing and non-obvious: it was reached

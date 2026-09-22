@@ -145,7 +145,7 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
     if (defer_completion) if (eval_control.completionIndex(calls)) |i| {
         var verify_failed = ext_idx.items.len == 0;
         for (ext_idx.items) |j| {
-            if (results[j].is_error or results[j].cancelled) verify_failed = true;
+            if (results[j].is_error or results[j].cancelled or results[j].pending) verify_failed = true;
         }
         if (verify_failed) {
             self.emitToolRejected(calls[i], "eval_stale", eval_control.completion_verify_failed);

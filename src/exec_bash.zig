@@ -340,7 +340,7 @@ fn execUnchecked(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
         }) catch |err| return .{ .text = try spawnFailText(gpa, err), .is_error = true };
         if (bg) {
             @import("subagent_interactive.zig").request(ctx);
-            return .{ .text = try startedText(gpa, job.id, job.cmd, ssh, false, 0, "") };
+            return .{ .text = try startedText(gpa, job.id, job.cmd, ssh, false, 0, ""), .pending = true };
         }
         const wait_ms = rootWaitMsFor(input, ctx.interactive_children);
         const waited = jobs.waitForeground(gpa, io, job.id, wait_ms) catch |err| return .{
@@ -356,7 +356,7 @@ fn execUnchecked(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
                 defer gpa.free(r.output);
                 jobs.markPersistent(io, r.id);
                 @import("subagent_interactive.zig").request(ctx);
-                break :blk .{ .text = try startedText(gpa, r.id, cmd, ssh, true, wait_ms / 1000, r.output) };
+                break :blk .{ .text = try startedText(gpa, r.id, cmd, ssh, true, wait_ms / 1000, r.output), .pending = true };
             },
             .cancelled => |c| blk: {
                 defer jobs.reapFinished(gpa, io, c.id);

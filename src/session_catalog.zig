@@ -154,7 +154,10 @@ fn connected(root: *const Agent) []const Tool {
 
 pub fn mixFingerprint(root: *const Agent, f: anytype) void {
     f.flag(native.listed());
-    for (native.loadedNames()) |name| f.text(name);
+    for (native.loadedNames()) |name| {
+        f.text(name);
+        f.num(native.loadSeq(name).?);
+    }
     for (connected(root)) |tool| {
         if (gate.loadSeq(tool.qualified_name)) |seq| {
             f.text(tool.qualified_name);
@@ -172,7 +175,7 @@ pub fn write(root: *const Agent, s: *std.json.Stringify) !void {
     try s.write(native.listed());
     try s.objectField("mcp");
     try s.beginArray();
-    // Match the existing native-first, MCP-by-sequence catalog tail.
+    // Preserve legacy fields for older readers; order below unifies both kinds.
     var previous: usize = 0;
     while (true) {
         var next: ?Tool = null;
@@ -189,6 +192,30 @@ pub fn write(root: *const Agent, s: *std.json.Stringify) !void {
         previous = best;
     }
     try s.endArray();
+    try s.objectField("order");
+    try s.beginArray();
+    previous = 0;
+    while (true) {
+        var next: ?[]const u8 = null;
+        var best: usize = std.math.maxInt(usize);
+        for (native.loadedNames()) |name| {
+            const seq = native.loadSeq(name).?;
+            if (seq > previous and seq < best) {
+                next = name;
+                best = seq;
+            }
+        }
+        for (connected(root)) |tool| {
+            const seq = gate.loadSeq(tool.qualified_name) orelse continue;
+            if (seq > previous and seq < best) {
+                next = tool.qualified_name;
+                best = seq;
+            }
+        }
+        try s.write(next orelse break);
+        previous = best;
+    }
+    try s.endArray();
     try s.endObject();
 }
 
@@ -201,25 +228,33 @@ pub fn restore(root: *Agent, obj: std.json.ObjectMap) !void {
     if (saved.object.get("rlm_showcased")) |v| {
         if (v == .bool and v.bool) native.showcaseRlm();
     }
-    if (saved.object.get("native")) |names| {
-        if (names == .array) for (names.array.items) |name| {
-            if (name != .string or !native.isFolded(name.string)) continue;
-            if (try native.findRootSpec(root.arena, name.string) != null)
-                native.markLoaded(name.string);
-        };
+    if (saved.object.get("order")) |names| {
+        if (names == .array) {
+            for (names.array.items) |name| try restoreName(root, name);
+            return;
+        }
     }
-    if (saved.object.get("mcp")) |names| {
-        if (names == .array) for (names.array.items) |name| {
-            if (name != .string) continue;
-            for (connected(root)) |tool| {
-                if (!std.mem.eql(u8, tool.qualified_name, name.string)) continue;
-                var input: std.json.ObjectMap = .empty;
-                var list: std.json.Array = .init(root.arena);
-                try list.append(name);
-                try input.put(root.arena, "tools", .{ .array = list });
-                _ = try gate.loadInto(root.arena, connected(root), .{ .object = input });
-                break;
-            }
-        };
+    // Legacy snapshots predate interleaving and rendered natives first.
+    for ([_][]const u8{ "native", "mcp" }) |field| {
+        if (saved.object.get(field)) |names| {
+            if (names == .array) for (names.array.items) |name| try restoreName(root, name);
+        }
+    }
+}
+
+fn restoreName(root: *Agent, name: std.json.Value) !void {
+    if (name != .string) return;
+    if (native.isFolded(name.string)) {
+        if (try native.findRootSpec(root.arena, name.string) != null) native.markLoaded(name.string);
+        return;
+    }
+    for (connected(root)) |tool| {
+        if (!std.mem.eql(u8, tool.qualified_name, name.string)) continue;
+        var input: std.json.ObjectMap = .empty;
+        var list: std.json.Array = .init(root.arena);
+        try list.append(name);
+        try input.put(root.arena, "tools", .{ .array = list });
+        _ = try gate.loadInto(root.arena, connected(root), .{ .object = input });
+        break;
     }
 }

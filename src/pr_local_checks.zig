@@ -80,7 +80,7 @@ pub fn record(root: anytype, call: ToolCall, result: ExecResult) !void {
     const target = ev.Target{ .cwd = cwd, .selector = "" };
     const head = ev.localHead(root.gpa, root.io, root.arena, target) catch "";
     const dirty = ev.capture(root.gpa, root.io, root.arena, target, &.{ "git", "status", "--porcelain", "--untracked-files=no" }) catch "unknown";
-    try root.publication_checks.recordReceipt(root.arena, .{ .repository = repository, .command = command, .head_after = head, .tracked_tree_clean_after = dirty.len == 0, .output = result.text, .failed = result.is_error or result.cancelled, .completed = std.mem.indexOf(u8, result.text, "[job ") == null });
+    try root.publication_checks.recordReceipt(root.arena, .{ .repository = repository, .command = command, .head_after = head, .tracked_tree_clean_after = dirty.len == 0, .output = result.text, .failed = result.is_error or result.cancelled, .completed = !result.pending and std.mem.indexOf(u8, result.text, "[job ") == null });
 }
 
 pub fn batchGate(root: anytype, calls: []const ToolCall, call: ToolCall) !?ExecResult {
@@ -135,11 +135,11 @@ pub const State = struct {
         const command = std.mem.trim(u8, raw, " \t\r\n");
         for (self.failed.items, 0..) |entry, i| {
             if (!std.mem.eql(u8, entry.cwd, cwd) or !std.mem.eql(u8, entry.command, command)) continue;
-            if (!result.is_error and !result.cancelled and std.mem.indexOf(u8, result.text, "[job ") == null)
+            if (!result.is_error and !result.cancelled and !result.pending and std.mem.indexOf(u8, result.text, "[job ") == null)
                 _ = self.failed.orderedRemove(i);
             return;
         }
-        if (!result.is_error and !result.cancelled and std.mem.indexOf(u8, result.text, "[job ") == null) return;
+        if (!result.is_error and !result.cancelled and !result.pending and std.mem.indexOf(u8, result.text, "[job ") == null) return;
         try self.failed.append(arena, .{ .cwd = try arena.dupe(u8, cwd), .command = try arena.dupe(u8, command), .repository = try arena.dupe(u8, repository) });
     }
 
@@ -198,6 +198,8 @@ test "observed failed check survives unrelated success and clears only on its su
     try state.observe(a, "/fixture", .{ .id = "inspect", .name = "bash", .input = unrelated }, .{ .text = "", .is_error = false });
     try std.testing.expect(state.unresolved("/fixture") != null);
     try state.observe(a, "/fixture", call, .{ .text = "[job 1 started]", .is_error = false });
+    try std.testing.expect(state.unresolved("/fixture") != null);
+    try state.observe(a, "/fixture", call, .{ .text = "exit 0", .is_error = false, .pending = true });
     try std.testing.expect(state.unresolved("/fixture") != null);
     try state.observe(a, "/fixture", call, .{ .text = "OK", .is_error = false });
     try std.testing.expect(state.unresolved("/fixture") == null);

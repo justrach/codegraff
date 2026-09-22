@@ -140,14 +140,14 @@ fn aborted() bool {
 
 fn takeOutput(self: *Agent, call: ToolCall, output: ToolOutput, handle_threshold: usize, handle_target: tool_handle.Target) !ExecResult {
     self.read_miss.noteOutput(call.name, call.input, output.text, output.is_error);
-    try @import("pr_local_checks.zig").record(self, call, .{ .text = output.text, .is_error = output.is_error, .cancelled = output.cancelled });
+    try @import("pr_local_checks.zig").record(self, call, .{ .text = output.text, .is_error = output.is_error, .cancelled = output.cancelled, .pending = output.pending });
     const handled = try tool_handle.forResult(self.gpa, self.arena, handle_target, output.text, handle_threshold);
     const text = try tool_handle.withFirstNote(self.arena, handled, &self.handle_note_shown);
     if (self.eval_cmd != null and eval_control.toolInvalidatesEval(call)) {
         self.eval_verified = false;
         self.eval_repair_pending = false;
     }
-    return .{ .text = text, .is_error = output.is_error, .cancelled = output.cancelled, .ms = output.ms };
+    return .{ .text = text, .is_error = output.is_error, .cancelled = output.cancelled, .pending = output.pending, .ms = output.ms };
 }
 
 fn handleTarget(self: *Agent) tool_handle.Target {

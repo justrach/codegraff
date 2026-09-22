@@ -358,10 +358,10 @@ pub const parallel_tools_note = parallel_core_note ++ parallel_examples_note ++ 
 pub const lean_local_tools_note =
     \\
     \\read_file before editing; prefer edit_file for existing files and
-    \\write_file only for new files. Navigate with codedb (context, around,
+    \\write_file only for new files. Use the smallest unique edit spans and
+    \\preserve terminal-newline state. Navigate with codedb (context, around,
     \\callpath, list_dir, status).
     \\Independent reads belong in ONE response, not a chain of turns.
-    \\A passing verify command and attempt_completion belong in ONE response.
 ;
 
 /// --lean swap-in for `parallel_core_note`. The long Parallelize / fan-out
@@ -371,20 +371,23 @@ pub const lean_parallel_note =
     \\
     \\Independent reads and checks belong in ONE response; they run concurrently.
     \\A call that needs an earlier result, or two writes to the same file, stays
-    \\in its own turn. A passing verify and attempt_completion share a response.
+    \\in its own turn.
 ;
 
 pub const lean_intro_note =
     \\You are a coding agent. Use the cataloged tools; never invent one.
     \\A file change described in prose is not done — call edit_file or write_file.
     \\Independent reads belong in ONE response, not one per turn.
-    \\For requested changes, a passing test and attempt_completion belong in ONE response.
 ++ @import("task_intent.zig").guidance;
 
 pub const lean_work_note =
     \\
     \\For requested changes, apply the change and verify with the project's own
     \\tests in its OWN environment. Use named files and tests directly.
+    \\Batch a final verification shell call with attempt_completion only when
+    \\the answer needs no result-dependent detail. The harness blocks completion
+    \\if verification fails. If interpretation is needed, inspect results first.
+    \\Never rerun verification just to batch.
     \\Do not add unrequested tests. Never repeat a tool call with identical
     \\parameters. When a change request names a file, read it and edit that path
     \\before answering — do not describe a fix you have not applied.

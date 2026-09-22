@@ -417,8 +417,9 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
             const text = try aw.toOwnedSlice();
             job.cursor = job.buf.items.len;
             if (job.done) job_notify.dismiss(io, id); // the exit was just read here; no wake for it (ADR 0061)
+            const result: ToolOutput = .{ .text = text, .pending = !job.done, .is_error = job.done and (job.stopped_idle or job.killed or (job.exit_code orelse 1) != 0), .cancelled = job.killed };
             g_jobs.mutex.unlock(io);
-            return .{ .text = text };
+            return result;
         }
         g_jobs.mutex.unlock(io);
         if (Agent.esc_cancel.load(.acquire)) {

@@ -182,6 +182,7 @@ test "#850: a bounded promote leaves the child on bash_output and bash_kill" {
     const snap = try jobs.jobOutput(gpa, io, id, 0);
     defer gpa.free(snap.text);
     try std.testing.expect(std.mem.indexOf(u8, snap.text, "running") != null);
+    try std.testing.expect(snap.pending and !snap.is_error);
     const killed = try jobs.jobKill(gpa, io, id);
     defer gpa.free(killed.text);
     try std.testing.expect(!killed.is_error);
@@ -189,6 +190,7 @@ test "#850: a bounded promote leaves the child on bash_output and bash_kill" {
     const after = try jobs.jobOutput(gpa, io, id, 2_000);
     defer gpa.free(after.text);
     try std.testing.expect(std.mem.indexOf(u8, after.text, "running") == null);
+    try std.testing.expect(after.cancelled and after.is_error and !after.pending);
 }
 
 test "ADR 0152: auto-parked job output ignores wait_ms" {

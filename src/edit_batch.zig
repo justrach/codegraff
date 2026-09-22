@@ -20,14 +20,16 @@ const ToolOutput = tools.ToolOutput;
 const Value = std.json.Value;
 
 /// The `edits`-array arm of edit_file; exec.zig routes here when the input
-/// carries a non-null `edits` field. Same confinement and worktree
+/// carries an `edits` field. Same confinement and worktree
 /// resolution as edit_verify.execEdit.
 pub fn execBatch(ctx: ToolCtx, input: Value) !ToolOutput {
     const gpa = ctx.gpa;
     const path = tools.strField(input, "path") orelse return tools.missingArg(gpa, "path");
     if (!approvals.confinedPath(path) or !approvals.noSymlinkEscape(ctx.io, path, ctx.agent_cwd))
         return .{ .text = try std.fmt.allocPrint(gpa, "{s} is outside the working directory — edit_file stays inside it", .{path}), .is_error = true };
-    const list = input.object.get("edits").?.array;
+    const edits = input.object.get("edits") orelse return tools.missingArg(gpa, "edits");
+    if (edits != .array) return .{ .text = try gpa.dupe(u8, "edits must be an array of edit span objects"), .is_error = true };
+    const list = edits.array;
     if (list.items.len == 0) return .{ .text = try gpa.dupe(u8, "edits must contain at least one span"), .is_error = true };
 
     // #747: same absolute selected-tree path as execEdit (write + verify).
@@ -89,4 +91,36 @@ test "execBatch: two spans apply in one call; a bad span reports its index and p
     try std.testing.expect(std.mem.indexOf(u8, err.text, "1 earlier span(s) DID apply") != null);
     const after = try tmp.dir.readFileAlloc(io, "f.txt", a, .limited(4096));
     try std.testing.expect(std.mem.indexOf(u8, after, "3 three") != null); // span 1 landed
+}
+
+test "execBatch dispatch rejects malformed edits then accepts a corrected array" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "f.txt", .data = "alpha\nbeta\n" });
+    const rel = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/f.txt", .{&tmp.sub_path});
+    var client: std.http.Client = undefined;
+    const ctx: ToolCtx = .{ .gpa = a, .io = io, .client = &client, .provider = undefined, .registry = null, .from_sub = false, .approvals = null, .tracer = null };
+    for ([_][]const u8{ "\"serialized edits\"", "null", "{}", "true", "7" }) |bad| {
+        const encoded = try std.fmt.allocPrint(a, "{{\"path\":\"P\",\"edits\":{s}}}", .{bad});
+        var input = try std.json.parseFromSliceLeaky(Value, a, encoded, .{ .allocate = .alloc_always });
+        try input.object.put(a, "path", .{ .string = rel });
+        const out = @import("exec.zig").execTool(ctx, .{ .id = "bad-edit", .name = "edit_file", .input = input });
+        try std.testing.expect(out.is_error);
+        try std.testing.expect(std.mem.indexOf(u8, out.text, "edits must be an array") != null);
+        const unchanged = try tmp.dir.readFileAlloc(io, "f.txt", a, .limited(4096));
+        try std.testing.expectEqualStrings("alpha\nbeta\n", unchanged);
+    }
+    var input = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"path":"P","edits":[{"old_string":"alpha","new_string":"ALPHA"},{"old_string":"beta","new_string":"BETA"}]}
+    , .{ .allocate = .alloc_always });
+    try input.object.put(a, "path", .{ .string = rel });
+    const out = @import("exec.zig").execTool(ctx, .{ .id = "corrected-edit", .name = "edit_file", .input = input });
+    try std.testing.expect(!out.is_error);
+    const changed = try tmp.dir.readFileAlloc(io, "f.txt", a, .limited(4096));
+    try std.testing.expectEqualStrings("ALPHA\nBETA\n", changed);
 }
