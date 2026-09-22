@@ -184,6 +184,9 @@ record only when you need the evidence or the edge cases.
 
 | [0159](0159-picker-catalog-refresh-is-bounded.md) | Opening a model surface refreshes only the gateway catalog, with a short deadline and the existing snapshot as fallback. |
 | [0160](0160-model-picks-wait-for-next-prompt.md) | Running model picks stay per chat and apply only at the next prompt boundary without cancelling the current response. |
+| [0161](0161-default-model-stays-on-selected-provider.md) | Default model preferences stay on the selected provider; explicit and saved choices win. |
+
+| [0162](0162-http2-streams-own-exclusive-sessions.md) | HTTP/2 requests exclusively lease active sessions; the process pool owns only one idle connection. |
 
 ## When to write one
 

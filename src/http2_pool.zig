@@ -1,5 +1,5 @@
-//! Process-wide HTTP/2 session for HTTPS SSE (http-zig). GRAFF_HTTP2=0|off
-//! latches HTTP/1.1. One session per origin; peer close redials inside Session.
+//! One idle HTTP/2 session for HTTPS SSE (http-zig). Active requests own
+//! exclusive leases: Conn is not a concurrent stream multiplexer.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -9,9 +9,6 @@ const main_mod = @import("main.zig");
 
 var mu: Io.Mutex = .init;
 var session: ?*http_zig.Session = null;
-var host_buf: [256]u8 = undefined;
-var host_len: usize = 0;
-var port: u16 = 0;
 
 pub fn enabled() bool {
     return main_mod.g_http2;
@@ -32,44 +29,49 @@ pub fn parseOrigin(url: []const u8) !Origin {
     return .{ .host = u.host, .port = u.port, .path = u.path };
 }
 
-pub fn sessionFor(gpa: std.mem.Allocator, io: Io, host: []const u8, p: u16) !*http_zig.Session {
-    mu.lockUncancelable(io);
-    defer mu.unlock(io);
-    if (session) |s| {
-        if (p == port and host_len == host.len and std.mem.eql(u8, host_buf[0..host_len], host))
-            return s;
-        s.close();
-        session = null;
+pub const Lease = struct {
+    session: *http_zig.Session,
+
+    pub fn release(self: Lease, keep: bool) void {
+        if (!keep) {
+            self.session.close();
+            return;
+        }
+        const io = self.session.io;
+        mu.lockUncancelable(io);
+        const occupied = session != null;
+        if (!occupied) session = self.session;
+        mu.unlock(io);
+        if (occupied) self.session.close();
     }
-    if (host.len > host_buf.len) return error.NameTooLong;
-    @memcpy(host_buf[0..host.len], host);
-    host_len = host.len;
-    port = p;
-    const s = try http_zig.Session.open(gpa, io, host, p);
-    session = s;
-    return s;
+};
+
+fn takeIdle(io: Io, host: []const u8, p: u16) ?*http_zig.Session {
+    mu.lockUncancelable(io);
+    const idle = session;
+    session = null;
+    mu.unlock(io);
+    if (idle) |s| {
+        if (p == s.port and std.mem.eql(u8, s.host, host)) return s;
+        s.close();
+    }
+    return null;
 }
 
-/// Drop the process-wide session. Tests allocate it with `std.testing.allocator`.
+pub fn acquire(gpa: std.mem.Allocator, io: Io, host: []const u8, p: u16) !Lease {
+    // Dial outside the mutex: concurrent root/child requests need separate
+    // transports, and cancellation of one must not invalidate another.
+    return .{ .session = takeIdle(io, host, p) orelse try http_zig.Session.open(gpa, io, host, p) };
+}
+
+/// Tests release every active lease before clearing the idle pool.
 pub fn resetForTest() void {
     if (!builtin.is_test) return;
-    const live = session orelse return;
-    const io = live.io;
-    mu.lockUncancelable(io);
-    defer mu.unlock(io);
-    if (session) |current| current.close();
+    mu.lockUncancelable(std.testing.io);
+    const idle = session;
     session = null;
-    host_len = 0;
-}
-
-/// Drop the pooled session. A stream that did not reach END_STREAM must not
-/// be reused: the next turn would read the previous frame.
-pub fn invalidate(io: Io) void {
-    mu.lockUncancelable(io);
-    defer mu.unlock(io);
-    if (session) |s| s.close();
-    session = null;
-    host_len = 0;
+    mu.unlock(std.testing.io);
+    if (idle) |s| s.close();
 }
 
 pub fn keepAfter(ended: bool) bool {
@@ -125,4 +127,45 @@ test "want is https-only" {
     try std.testing.expect(!want("http://127.0.0.1/"));
     main_mod.g_http2 = false;
     try std.testing.expect(!want("https://api.x.ai/v1/responses"));
+}
+
+fn testSession(host: []const u8) !*http_zig.Session {
+    const gpa = std.testing.allocator;
+    const s = try gpa.create(http_zig.Session);
+    errdefer gpa.destroy(s);
+    s.* = .{ .gpa = gpa, .io = std.testing.io, .host = try gpa.dupe(u8, host), .port = 443 };
+    return s;
+}
+
+test "HTTP2 leases exclusively own same-origin and different-origin sessions" {
+    defer resetForTest();
+    const root = try testSession("localhost");
+    (Lease{ .session = root }).release(true);
+    const active = try acquire(std.testing.allocator, std.testing.io, "localhost", 443);
+    try std.testing.expectEqual(root, active.session);
+    try std.testing.expect(takeIdle(std.testing.io, "localhost", 443) == null);
+    try std.testing.expect(takeIdle(std.testing.io, "other.localhost", 443) == null);
+    // Neither another checkout nor clearing the idle pool can close root.
+    resetForTest();
+    try std.testing.expectEqualStrings("localhost", active.session.host);
+    active.release(true);
+    const reused = try acquire(std.testing.allocator, std.testing.io, "localhost", 443);
+    try std.testing.expectEqual(root, reused.session);
+    reused.release(false);
+}
+
+test "HTTP2 cancellation closes only its lease while another session is idle" {
+    defer resetForTest();
+    const cancelled = Lease{ .session = try testSession("localhost") };
+    const healthy = try testSession("other.localhost");
+    (Lease{ .session = healthy }).release(true);
+    cancelled.release(false);
+    const reused = try acquire(std.testing.allocator, std.testing.io, "other.localhost", 443);
+    try std.testing.expectEqual(healthy, reused.session);
+    reused.release(true);
+    // A concurrent completed request cannot replace or free the idle winner.
+    (Lease{ .session = try testSession("localhost") }).release(true);
+    const winner = try acquire(std.testing.allocator, std.testing.io, "other.localhost", 443);
+    try std.testing.expectEqual(healthy, winner.session);
+    winner.release(false);
 }

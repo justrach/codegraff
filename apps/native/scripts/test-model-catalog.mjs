@@ -55,6 +55,7 @@ try {
     await page.keyboard.press('Escape');
   };
   await setEffort('End');
+  await checkEffortTransitions(page);
   await page.waitForFunction(() => document.querySelector('[aria-label="Select effort"]')?.textContent?.includes('High'));
   const first = await page.locator('[data-tab-id]').first().getAttribute('data-tab-id');
   await page.getByRole('button', { name: 'New chat', exact: true }).click();
@@ -66,6 +67,17 @@ try {
   await page.waitForFunction(() => document.querySelector('[aria-label="Select effort"]')?.textContent?.includes('High'));
   await page.locator(`[data-tab-id="${second}"]`).click();
   await page.waitForFunction(() => document.querySelector('[aria-label="Select effort"]')?.textContent?.includes('Light'));
+  await page.evaluate(() => { window.holdEffort = true; });
+  await effort.click(); await page.getByRole('slider', { name: 'Reasoning effort level' }).press('ArrowRight');
+  await page.waitForFunction(() => window.effortReplies.length === 1);
+  await page.keyboard.press('Escape'); await page.locator(`[data-tab-id="${first}"]`).click();
+  assert.match(await effort.innerText(), /High/);
+  await page.evaluate(() => window.effortReplies.shift()(false));
+  await page.locator(`[data-tab-id="${second}"]`).click();
+  await page.waitForFunction(() => document.querySelector('[aria-label="Select effort"]')?.textContent?.includes('Medium'));
+  await page.locator(`[data-tab-id="${first}"]`).click(); assert.match(await effort.innerText(), /High/);
+  await page.locator(`[data-tab-id="${second}"]`).click();
+  await page.evaluate(() => { window.holdEffort = false; }); await setEffort('Home');
   const composer = page.getByRole('textbox', { name: 'Prompt', exact: true });
   await composer.fill('hold fixture'); await composer.press('Enter');
   await page.waitForFunction(() => typeof window.finishCatalogTurn === 'function');
@@ -87,12 +99,59 @@ try {
   console.log('Model catalog UI: retry, capability refresh, per-chat effort, and queued next-model selection passed');
 } finally { await browser.close(); server?.kill('SIGTERM'); }
 
+async function checkEffortTransitions(page) {
+  const effort = page.getByRole('button', { name: 'Select effort', exact: true });
+  const range = page.getByRole('slider', { name: 'Reasoning effort level' });
+  const resets = () => page.evaluate(() => window.catalogCalls.filter(call => ['bootstrap', 'session/cancel'].includes(call.method)).length);
+  const before = await resets();
+  await page.evaluate(() => { window.holdEffort = true; });
+  await effort.click(); await range.press('Home');
+  await page.waitForFunction(() => window.effortReplies.length === 1);
+  const stable = async (name, value) => {
+    const frames = await page.evaluate(async () => {
+      const samples = [];
+      for (let i = 0; i < 8; i++) {
+        await new Promise(requestAnimationFrame);
+        const input = document.querySelector('[aria-label="Reasoning effort level"]');
+        samples.push({ label: document.querySelector('[aria-label="Select effort"]')?.textContent, value: input?.value, disabled: input?.disabled, opacity: input ? getComputedStyle(input.parentElement).opacity : null });
+      }
+      return samples;
+    });
+    for (const frame of frames) {
+      assert.ok(frame.label.includes(name), JSON.stringify(frame));
+      assert.equal(frame.value, value); assert.equal(frame.disabled, false); assert.equal(frame.opacity, '1');
+    }
+  };
+  await stable('Light', '0');
+  await page.keyboard.press('Escape'); await effort.click();
+  await stable('Light', '0');
+  await range.press('End');
+  await stable('High', '2');
+  await page.evaluate(() => window.effortReplies.shift()(false));
+  await page.waitForFunction(() => window.effortReplies.length === 1);
+  await stable('High', '2');
+  await page.evaluate(() => window.effortReplies.shift()(true));
+  await page.getByRole('alert').filter({ hasText: 'fixture rejected' }).waitFor();
+  await stable('Light', '0');
+  await range.press('End');
+  await page.waitForFunction(() => window.effortReplies.length === 1);
+  await stable('High', '2');
+  await page.evaluate(() => window.effortReplies.shift()(false));
+  await page.waitForFunction(() => !document.querySelector('[role="status"]')?.textContent?.includes('Saving'));
+  await page.keyboard.press('Escape'); await effort.click(); await stable('High', '2');
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => { window.holdEffort = false; });
+  assert.equal(await resets(), before, 'Effort changes must not restart or cancel the chat');
+  assert.equal(await page.evaluate(() => window.catalogCalls.findLast(call => call.method === 'graff/models')?.params?.refresh), false, 'Confirmation must skip provider discovery');
+}
+
 function installCatalogFixture() {
   const fallback = window.fetch;
   let fail = true;
   const chats = new Map();
   window.catalogCalls = [];
   window.catalogReads = 0;
+  window.effortReplies = [];
   const json = body => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
   const catalog = state => ({ result: {
     models: ['gpt-astra', 'gpt-sol'].map(name => ({ name, provider: 'codex', authenticated: true, context: 1000, cost: 'plan', current: name === state.model, effortLevels: ['low', 'medium', 'high'] })),
@@ -121,6 +180,10 @@ function installCatalogFixture() {
           controller.enqueue(encode({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Still working' } } } }));
           window.finishCatalogTurn = () => { controller.enqueue(encode({ jsonrpc: '2.0', id: 1, result: { stopReason: 'end_turn' } })); controller.close(); delete window.finishCatalogTurn; };
         } }));
+        if (text.startsWith('/effort ') && window.holdEffort) {
+          const rejected = await new Promise(resolve => window.effortReplies.push(resolve));
+          if (rejected) return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'fixture rejected' } }) + '\n');
+        }
         if (text.startsWith('/effort ')) chats.get(body.chat).effort = text.split(' ')[1];
         return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { stopReason: 'end_turn' } }) + '\n');
       }

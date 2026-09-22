@@ -45,8 +45,10 @@ OpenSSL, and the fetched dependencies. The local provider requires TLS with
 HTTP/2 and exercises streamed ACP updates, a follow-up on the same connection,
 and flow control in both directions. A stalled response is cancelled through
 ACP, must return `stopReason: "cancelled"`, and must release its stream before
-another prompt succeeds on the same ACP session. Untrusted certificates and
-mismatched hostnames must fail before a provider request is accepted.
+another prompt succeeds on the same ACP session. A background child and its
+parent must both reach the provider before either response completes, with
+independent HTTP/2 transports. Untrusted certificates and mismatched hostnames
+must fail before a provider request is accepted.
 
 The test verifies the pinned dependency's content hash, then builds a temporary
 harness with one additive test-CA load in a private dependency copy. System

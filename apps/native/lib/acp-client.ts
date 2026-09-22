@@ -242,8 +242,8 @@ type GraffModelsResult = {
  * with live credentials, already in the agent's election order. The same
  * model name can be served by several providers; the highest-ranked seat
  * wins its row (spawn-by-name resolves through graff's own routing anyway). */
-export async function fetchModels(chat?: ChatHandle, root?: string): Promise<{ models: ModelChoice[]; current: string | null; commands?: AcpCommand[] }> {
-  const res = chat ? await rpc(chat, "graff/models") : await fetch(`/api/models?${new URLSearchParams(root ? { root } : {})}`, { cache: "no-store" });
+export async function fetchModels(chat?: ChatHandle, root?: string, refresh = true): Promise<{ models: ModelChoice[]; current: string | null; commands?: AcpCommand[] }> {
+  const res = chat ? await rpc(chat, "graff/models", { refresh }) : await fetch(`/api/models?${new URLSearchParams(root ? { root } : {})}`, { cache: "no-store" });
   const body = (await res.json()) as { result?: GraffModelsResult; error?: string };
   if (!body.result) throw new Error(body.error ?? "graff/models failed");
   return modelChoices(body.result);

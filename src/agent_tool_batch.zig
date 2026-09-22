@@ -28,7 +28,7 @@ pub const skipped_text = "tool execution skipped because the operation was abort
 /// Write / edit / imagegen serialize the whole batch so a later edit cannot
 /// race a write on the same path. Mixing bash with write/edit still
 /// serializes, because write/edit do. Shell-only batches stay parallel
-/// (#266) but join on the caller thread (#1166).
+/// (#266); the parent joins all results before converting/freeing them (#1166).
 pub fn isSequential(name: []const u8) bool {
     if (std.mem.eql(u8, name, "write_file")) return true;
     if (std.mem.eql(u8, name, "edit_file")) return true;
@@ -40,8 +40,9 @@ fn isShellName(name: []const u8) bool {
     return std.mem.eql(u8, name, "shell") or std.mem.eql(u8, name, "bash");
 }
 
-/// Shell job reaping is not safe on pool threads: fast parallel completions
-/// corrupted a free block after every result was already persisted (#1166).
+/// Preserve the async scheduling policy introduced for #1166. This is not
+/// thread affinity: Threaded Io may run async work on its pool too. Safety
+/// relies on owned outputs and joining every future before result cleanup.
 pub fn batchNeedsCooperative(calls: []const ToolCall, idx: []const usize) bool {
     for (idx) |i| {
         if (isShellName(calls[i].name)) return true;
@@ -186,8 +187,8 @@ fn runParallel(self: *Agent, ctx: ToolCtx, calls: []const ToolCall, ext_idx: []c
     defer self.gpa.free(outputs);
     const cooperative = batchNeedsCooperative(calls, spawn_at.items);
     for (spawn_at.items, futures) |i, *fut| {
-        // Shell batches start together cooperatively so #266 still holds, but
-        // they do not share io.concurrent worker threads (#1166).
+        // Async may fall back to inline execution under saturation; it does
+        // not guarantee execution on the caller thread (Threaded Io).
         fut.* = if (cooperative)
             self.io.async(execTool, .{ ctx, calls[i] })
         else

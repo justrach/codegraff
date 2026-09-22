@@ -21,21 +21,29 @@ export default function ModelEffortButtons({ model, buttonRef, modelOpen, openMo
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const savingRef = useRef(false);
-  const blocked = busy || pending || saving || !onCommand;
+  const requestRef = useRef(0);
+  const [desired, setDesired] = useState<string | null>(null);
+  const blocked = busy || pending || !onCommand;
   const [position, setPosition] = useState({ left: 0, bottom: 0 });
   const [draft, setDraft] = useState(0);
   const panel = useRef<HTMLDivElement>(null);
   const effortButton = useRef<HTMLButtonElement>(null);
   const levels = model.effortLevels ?? [];
   const index = Math.max(0, levels.indexOf(model.effort ?? "medium"));
+  const confirmed = useRef(index); confirmed.current = index;
   const show = () => {
     const rect = effortButton.current?.getBoundingClientRect();
     if (rect) setPosition({ left: Math.max(effortPanelMargin, Math.min(window.innerWidth - effortPanelWidth - effortPanelMargin, rect.right - effortPanelWidth)), bottom: window.innerHeight - rect.top + 10 });
     if (modelOpen) openModel();
-    setDraft(index); setOpen(true);
+    setDraft(Math.max(0, levels.indexOf(desired ?? model.effort ?? "medium"))); setOpen(true);
   };
-  useEffect(() => { setDraft(index); }, [index]);
+  useEffect(() => {
+    if (desired === null) setDraft(index);
+    else if (!saving && model.effort === desired) setDesired(null);
+  }, [index, model.effort, desired, saving]);
+  useEffect(() => {
+    requestRef.current++; setDesired(null); setSaving(false); setError(""); setDraft(index);
+  }, [model.key]);
   useEffect(() => {
     const button = buttonRef.current;
     const listener = () => show(); button?.addEventListener("graff-effort-open", listener);
@@ -49,13 +57,25 @@ export default function ModelEffortButtons({ model, buttonRef, modelOpen, openMo
     return () => { document.removeEventListener("pointerdown", dismiss); document.removeEventListener("keydown", escape); };
   }, [open, buttonRef]);
   const change = async (command: string) => {
-    if (blocked || savingRef.current || !onCommand) return;
-    savingRef.current = true; setSaving(true); setError("");
+    if (blocked || !onCommand) return;
+    const request = ++requestRef.current;
+    if (command.startsWith("/effort ")) {
+      const effort = command.slice(8);
+      setDesired(effort); setDraft(Math.max(0, levels.indexOf(effort)));
+    }
+    setSaving(true); setError("");
     try { await onCommand(command); }
-    catch (err) { setDraft(index); setError(err instanceof Error ? err.message : "Could not save. Try again."); }
-    finally { savingRef.current = false; setSaving(false); }
+    catch (err) {
+      if (request === requestRef.current) {
+        setDesired(null); setDraft(confirmed.current);
+        setError(err instanceof Error ? err.message : "Could not save. Try again.");
+      }
+    } finally { if (request === requestRef.current) setSaving(false); }
   };
-  const apply = () => { if (levels[draft] && levels[draft] !== model.effort) void change(`/effort ${levels[draft]}`); };
+  const apply = (value: string) => {
+    const effort = levels[Number(value)];
+    if (effort && effort !== (desired ?? model.effort)) void change(`/effort ${effort}`);
+  };
   const progress = levels.length > 1 ? draft / (levels.length - 1) : 0;
   const displayName = model.name.replace(/^gpt-/i, "GPT-").replace(/-(astra|sol|terra|luna)$/i, (_, name: string) => ` ${name[0].toUpperCase()}${name.slice(1)}`);
   return <div data-model-controls className={`flex w-full min-w-0 items-center gap-0.5 ${wide ? "col-start-2 row-start-2 justify-self-start" : "col-start-3 row-start-1"}`}>
@@ -65,13 +85,13 @@ export default function ModelEffortButtons({ model, buttonRef, modelOpen, openMo
       <span className="truncate" title={pending ? `Next message: ${displayName}` : displayName}>{displayName}{pending && <span className="text-ink-3"> · Next</span>}</span><span className="shrink-0"><Chevron /></span>
     </button>
     {levels.length > 0 && <button ref={effortButton} type="button" aria-label="Select effort" aria-expanded={open} onClick={show}
-      className="flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2 text-xs text-ink-3 hover:bg-hover">{labels[model.effort ?? ""] ?? "Effort"}<Chevron /></button>}
+      className="flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2 text-xs text-ink-3 hover:bg-hover">{labels[desired ?? model.effort ?? ""] ?? "Effort"}<Chevron /></button>}
     {model.key && levels.length === 0 && <span className="shrink-0 px-2 text-xs text-ink-3" title={model.effortLevels ? "This model does not offer configurable reasoning effort." : "Reasoning settings will appear after this model's capabilities are loaded."}>{model.effortLevels ? "Fixed reasoning" : "Reasoning pending"}</span>}
     {showContextMeter && <ContextMeter reading={contextMeter} />}
     {open && createPortal(<div ref={panel} role="dialog" aria-label="Reasoning effort" style={{ ...position, width: effortPanelWidth }}
       className="motion-surface fixed z-[100] max-w-[calc(100vw-24px)] rounded-window border border-line bg-page px-2 pb-[7px] pt-1.5 text-ink shadow-[0_8px_24px_-8px_rgb(0_0_0/18%)]">
       <div className="flex h-[25px] items-center justify-between gap-1.5">
-        <button type="button" aria-label="Fast mode" aria-pressed={!!model.fast} disabled={blocked || !model.fastSupported}
+        <button type="button" aria-label="Fast mode" aria-pressed={!!model.fast} disabled={blocked || saving || !model.fastSupported}
           title={model.fastSupported ? "Priority service for lower latency; may use more of your allowance" : "Fast mode is available for Codex models"}
           onClick={() => void change(`/fast ${model.fast ? "off" : "on"}`)}
           className={`flex size-5 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-30 [&_svg]:size-3.5 ${model.fast ? "bg-accent-tint text-accent" : "text-ink-3 hover:bg-hover"}`}><Bolt filled={!!model.fast} /></button>
@@ -82,7 +102,7 @@ export default function ModelEffortButtons({ model, buttonRef, modelOpen, openMo
         <div aria-hidden="true" className={styles.track}><div className={styles.fill} style={{ width: draft === 0 ? 0 : `calc(10px + (100% - 20px) * ${progress})` }} /></div>
         <div aria-hidden="true" className={styles.stops}>{levels.map((level, i) => <span key={level} className={`${styles.stop} ${i < draft ? styles.passed : ""}`} style={{ left: `${i / Math.max(1, levels.length - 1) * 100}%` }} />)}</div>
         <input type="range" aria-label="Reasoning effort level" aria-valuetext={labels[levels[draft]] ?? levels[draft]} min={0} max={Math.max(0, levels.length - 1)} step={1} value={draft} disabled={blocked}
-        onChange={event => setDraft(Number(event.target.value))} onPointerUp={apply} onKeyUp={apply}
+        onChange={event => setDraft(Number(event.target.value))} onPointerUp={event => apply(event.currentTarget.value)} onKeyUp={event => apply(event.currentTarget.value)}
         className={styles.range} />
       </div>
       {error && <p role="alert" className="mt-2 text-xs text-red">{error}</p>}

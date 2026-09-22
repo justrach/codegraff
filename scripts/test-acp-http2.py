@@ -228,11 +228,25 @@ def exercise(root, binary, name, cert, host, success):
                 assert all(r['alpn'] == 'h2' for r in records if r['event'] == 'session')
                 assert requests[3]['session'] != requests[2]['session'], 'Incomplete HTTP/2 connection was reused'
                 print('PASS ACP TLS HTTP/2: stalled cancellation, stream closure, same-session recovery', flush=True)
+                result, updates = call('session/prompt', {'sessionId': sid, 'prompt': [
+                    {'type': 'text', 'text': 'Run the concurrent fixture child and continue the root.'}]}, 7, timeout=30)
+                assert result.get('result', {}).get('stopReason') == 'end_turn', result
+                assert 'root complete' in response_text(updates), 'Root response missing after child launch'
+                records = [json.loads(line) for line in log.read_text().splitlines()]
+                ready = next(r for r in records if r['event'] == 'concurrent-ready')
+                assert sorted(ready['roles']) == [False, True], 'Root and child did not overlap'
+                assert len(set(ready['sessions'])) == 2, 'Root and child shared a mutable HTTP/2 transport'
+                assert len([r for r in records if r['event'] == 'request']) == 7, 'Concurrent requests retried unexpectedly'
+                print('PASS ACP TLS HTTP/2: simultaneous root and background child streams', flush=True)
             print(f'PASS ACP TLS HTTP/2: {name}', flush=True)
         except Exception:
             stderr.flush()
             print('Server observations:', [(r.get('event'), r.get('request'), r.get('stream')) for r in
                                            (json.loads(line) for line in log.read_text().splitlines())])
+            records = [json.loads(line) for line in log.read_text().splitlines()]
+            for record in records:
+                if record['event'] == 'request' and record['request'] >= 6:
+                    print('Concurrent fixture tool results:', [m.get('content') for m in record['body'].get('messages', []) if m.get('role') == 'tool'][-2:])
             print((case/'stderr').read_text()[-5000:])
             raise
         finally:

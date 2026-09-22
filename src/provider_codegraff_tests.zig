@@ -234,6 +234,7 @@ test "the gateway still serves the startup default when it is the only credentia
     try std.testing.expect(keys.set("codegraff", "gateway-key", .login));
     const got = try keys.defaultProvider();
     try std.testing.expectEqualStrings("codegraff", got.id);
+    try std.testing.expectEqualStrings("mimo-v2.6-pro", got.model);
 
     const none: provider.Keys = .{ .values = @splat(null) };
     try std.testing.expectError(error.MissingKey, none.defaultProvider());

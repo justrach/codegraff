@@ -280,3 +280,28 @@ test "OpenRouter defaults to Claude Sonnet 4.6 on the chat completions surface" 
     try std.testing.expect(pricing.providerModelInTable("openrouter", "anthropic/claude-sonnet-4.6"));
     try std.testing.expectEqual(@as(u64, 1_000_000), pricing.contextFor("openrouter", "anthropic/claude-sonnet-4.6"));
 }
+
+test "startup preference stays on providers that advertise the preferred model" {
+    const saved = pricing.active_model_table;
+    defer pricing.active_model_table = saved;
+    const rows = [_]pricing.ModelInfo{
+        .{ .provider = "codegraff", .name = "mimo-v2.6-pro", .context = 1_048_576 },
+        .{ .provider = "xiaomi", .name = "mimo-v2.6-pro", .context = 1_048_576 },
+        .{ .provider = "codex", .name = "gpt-5.6-sol", .context = 272_000 },
+    };
+    pricing.active_model_table = &rows;
+    try std.testing.expectEqualStrings("mimo-v2.6-pro", pricing.providerDefaultModel("codegraff", "old-default"));
+    try std.testing.expectEqualStrings("mimo-v2.6-pro", pricing.providerDefaultModel("xiaomi", "old-default"));
+    try std.testing.expectEqualStrings("gpt-5.6-sol", pricing.providerDefaultModel("codex", "old-default"));
+    try std.testing.expectEqualStrings("deepseek-v4-pro", pricing.providerDefaultModel("deepseek", "deepseek-v4-pro"));
+}
+
+test "provider defaults preserve explicit model selection" {
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    try std.testing.expect(keys.set("codegraff", "test-key", .login));
+    try std.testing.expectEqualStrings("mimo-v2.6-pro", (try keys.defaultProvider()).model);
+    try std.testing.expectEqualStrings("deepseek-v4-pro", (try keys.providerById("codegraff", "deepseek-v4-pro")).model);
+    try std.testing.expect(keys.set("xiaomi", "test-key", .environment));
+    try std.testing.expectEqualStrings("xiaomi", (try keys.defaultProvider()).id);
+    try std.testing.expectEqualStrings("mimo-v2.6-pro", (try keys.defaultProvider()).model);
+}

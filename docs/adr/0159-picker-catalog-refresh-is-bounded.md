@@ -15,7 +15,9 @@ gateway catalog using existing credentials. Limit the request to 500 ms and
 2 MiB, and retry no more than once per 30 seconds in a harness process.
 Replace only that provider's rows after a successful, nonempty parse. Keep
 the previous catalog after transport errors, bad responses, or timeout.
-Catalog refresh does not change the selected provider or model.
+Catalog refresh does not change the selected provider or model. Setting
+confirmations request local state with `refresh: false` so they do not wait
+for unrelated provider discovery; initial and picker-open requests refresh.
 
 Other providers retain local cache hydration. The explicit full catalog
 refresh command remains the way to refresh all providers.

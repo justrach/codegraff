@@ -74,7 +74,10 @@ test "MiMo gateway preference requires live catalog availability and keeps crede
     try std.testing.expectEqualStrings("codegraff", frontier.provider.?.id);
     try std.testing.expectEqualStrings("mimo-v2.6-pro", frontier.provider.?.model);
     try std.testing.expectEqualStrings(base.api_key, frontier.provider.?.api_key);
-    pricing.active_model_table = &pricing.model_table;
+    const unavailable = [_]pricing.ModelInfo{
+        .{ .provider = "codegraff", .name = "gpt-5.6-luna", .context = 272_000 },
+    };
+    pricing.active_model_table = &unavailable;
     try std.testing.expectEqualStrings("deepseek-v4-flash", ladder.forModel("codegraff", base.model).?.small.?);
 }
 

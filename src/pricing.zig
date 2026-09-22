@@ -299,6 +299,8 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "codegraff", .name = "grok-build", .context = 256_000 },
     .{ .provider = "codegraff", .name = "glm-5.2", .context = 204_800 },
     .{ .provider = "codegraff", .name = "glm-5.3-flash", .context = 202_752 },
+    .{ .provider = "codegraff", .name = "mimo-v2.6-pro", .context = 1_048_576 },
+    .{ .provider = "codegraff", .name = "mimo-v2.6-flash", .context = 1_048_576 },
     .{ .provider = "codegraff", .name = "mimo-v2.5", .context = 128_000 },
     .{ .provider = "codegraff", .name = "mimo-v2.5-pro", .context = 128_000 },
     // Kimi Code offline fallback. Authenticated startup replaces this slice
@@ -402,6 +404,8 @@ fn pureKimiGeneration(name: []const u8) ?u32 {
 /// the newest explicit pure generation (`k3`, then future `k4`, etc.) over
 /// compatibility aliases and K2 point-release ids.
 pub fn providerDefaultModel(provider_id: []const u8, fallback: []const u8) []const u8 {
+    for (models()) |model| if (std.mem.eql(u8, model.provider, provider_id) and
+        std.mem.eql(u8, model.name, "mimo-v2.6-pro")) return model.name;
     if (std.mem.eql(u8, provider_id, "codex")) {
         for (models()) |model| if (std.mem.eql(u8, model.provider, "codex")) return model.name;
         return fallback;

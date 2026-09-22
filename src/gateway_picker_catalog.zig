@@ -8,6 +8,27 @@ const util = @import("util.zig");
 
 var last_attempt: ?i64 = null;
 
+/// Setting confirmations need current local state, not provider discovery.
+pub fn requested(params: ?std.json.Value) bool {
+    const value = params orelse return true;
+    if (value != .object) return true;
+    const flag = value.object.get("refresh") orelse return true;
+    return flag != .bool or flag.bool;
+}
+
+test "gateway refresh is skipped only by explicit false" {
+    const a = std.testing.allocator;
+    try std.testing.expect(requested(null));
+    for ([_][]const u8{ "{}", "null", "{\"refresh\":true}", "{\"refresh\":\"false\"}" }) |input| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, a, input, .{});
+        defer parsed.deinit();
+        try std.testing.expect(requested(parsed.value));
+    }
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, "{\"refresh\":false}", .{});
+    defer parsed.deinit();
+    try std.testing.expect(!requested(parsed.value));
+}
+
 pub fn refresh(gpa: Allocator, io: Io, arena: Allocator, keys: provider.Keys) void {
     const key = keys.get("codegraff") orelse return;
     const now = util.unixMs(io);

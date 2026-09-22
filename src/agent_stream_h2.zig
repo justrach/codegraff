@@ -47,9 +47,10 @@ pub fn postStream(self: *Agent, body: []const u8) !?[]u8 {
         n += 1;
     }
 
-    const sess = http2_pool.sessionFor(gpa, self.io, origin.host, origin.port) catch return null;
+    const lease = http2_pool.acquire(gpa, self.io, origin.host, origin.port) catch return null;
+    const sess = lease.session;
     var keep = false;
-    defer if (!keep) http2_pool.invalidate(self.io);
+    defer lease.release(keep);
     var lines = sess.startLines(.{
         .method = "POST",
         .scheme = "https",

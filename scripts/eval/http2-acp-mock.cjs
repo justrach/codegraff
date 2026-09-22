@@ -8,6 +8,7 @@ const server = http2.createSecureServer({
   key: fs.readFileSync(key), cert: fs.readFileSync(cert), allowHTTP1: false,
 });
 let sessions = 0, requests = 0;
+const concurrent = [];
 server.on('session', session => {
   session.fixtureId = ++sessions;
   record({ event: 'session', session: sessions, alpn: session.socket.alpnProtocol });
@@ -27,6 +28,31 @@ server.on('stream', (stream, headers) => {
       stream: stream.id, method: headers[':method'], path: headers[':path'], body: JSON.parse(body) });
     stream.respond({ ':status': 200, 'content-type': 'text/event-stream' });
     const delta = text => `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: text }, finish_reason: null }] })}\n\n`;
+    if (request === 5) {
+      const tool = { index: 0, id: 'fixture-child', type: 'function', function: {
+        name: 'subagent', arguments: JSON.stringify({ description: 'Inspect fixture',
+          prompt: 'CHILD-CONCURRENCY-FIXTURE: return child complete, no tools required.',
+          run_in_background: true, isolation: 'shared_cwd', model: JSON.parse(body).model }) } };
+      stream.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [tool] }, finish_reason: null }] })}\n\n` +
+        'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n');
+      return;
+    }
+    if (request > 5) {
+      const messages = JSON.parse(body).messages;
+      const lastUser = messages.filter(m => m.role === 'user').at(-1);
+      const child = JSON.stringify(lastUser).includes('CHILD-CONCURRENCY-FIXTURE');
+      concurrent.push({ stream, session, child, delta });
+      record({ event: 'concurrent-arrival', session, child });
+      // Neither response completes until root and child are both reading.
+      // Sharing one non-multiplexing Conn corrupts or deadlocks this boundary.
+      if (concurrent.length === 2) {
+        record({ event: 'concurrent-ready', sessions: concurrent.map(c => c.session),
+          roles: concurrent.map(c => c.child) });
+        for (const c of concurrent) c.stream.end(c.delta(c.child ? 'child complete' : 'root complete') +
+          'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+      }
+      return;
+    }
     if (request === 3) {
       // No END_STREAM or completion event: only ACP cancellation can finish
       // this turn within the test deadline. The next request remains usable.

@@ -20,7 +20,7 @@ export function useQuietSettings(options: {
         // Graff handles these commands before the model loop and session history.
         // Consume the confirmation without creating a conversation turn.
         for await (const _ of prompt(options.handleOf(id), session, command)) { /* drain */ }
-        const catalog = await fetchModels(options.handleOf(id));
+        const catalog = await fetchModels(options.handleOf(id), undefined, false);
         const selected = catalog.models.find(model => model.key === catalog.current);
         const [setting, value] = command.slice(1).split(" ");
         if (setting === "effort" ? selected?.effort !== value : selected?.fast !== (value === "on")) throw Error("Graff did not apply this setting. Try again.");

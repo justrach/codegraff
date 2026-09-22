@@ -133,7 +133,7 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
         live.local_catalog_loaded = true;
     }
     const er = @import("effort_route.zig");
-    @import("gateway_picker_catalog.zig").refresh(root.gpa, root.io, root.arena, keys.*);
+    if (@import("gateway_picker_catalog.zig").requested(req.params)) @import("gateway_picker_catalog.zig").refresh(root.gpa, root.io, root.arena, keys.*);
     const catalog = pricing.models();
     const Row = struct {
         name: []const u8,
