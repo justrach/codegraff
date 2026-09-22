@@ -7,6 +7,11 @@ async function runNarrowNavigation({win, output, click, until, report}) {
   const escape = async () => {
     for (const type of ['keyDown','keyUp']) await desktop.testInput(wc, {type,keyCode:'Escape'});
   };
+  const pointerClick = async selector => {
+    await until(() => js(`!!document.querySelector(${JSON.stringify(selector)})`), 'pointer target mounts');
+    const point = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)}),r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2};})()`);
+    for (const type of ['mouseDown','mouseUp']) await desktop.testInput(wc, {type,...point,button:'left',clickCount:1});
+  };
   assert.equal(await js(`innerWidth < 1024`), true, 'Exercise the breakpoint that hid navigation');
   const first = await js(`document.querySelector('[data-chat][data-focused="true"]').dataset.chat`);
   await click('[title="New chat (⌘T)"]');
@@ -14,7 +19,7 @@ async function runNarrowNavigation({win, output, click, until, report}) {
   assert.notEqual(second, first);
   await click('[aria-label="Open navigation"]');
   await until(() => js(`!!document.querySelector('[data-navigation-panel]:popover-open')`), 'navigation opens');
-  await click(`[data-session-navigation="sidebar"] [data-tab-members="${first}"] button[aria-pressed]`);
+  await pointerClick(`[data-session-navigation="sidebar"] [data-tab-members="${first}"] button[aria-pressed]`);
   await until(() => js(`!document.querySelector('[data-navigation-panel]:popover-open') && document.activeElement===document.querySelector('[data-chat="${first}"] textarea[aria-label="Prompt"]')`), 'chat selection dismisses navigation and focuses its prompt');
   const draftLength = await js(`document.activeElement.value.length`);
   await desktop.testInput(wc, {type:'char',keyCode:'x'});
