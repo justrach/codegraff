@@ -43,9 +43,11 @@ pub fn clipboardPasteSource(io: Io, gpa: Allocator, supports_vision: bool, is_ma
 
 pub fn pasteFailMessage(kind: FailKind) []const u8 {
     return switch (kind) {
-        .access => "clipboard read failed — retry Copy; use Edit > Paste for text or /image <path>",
-        .denied => "macOS denied clipboard access — use Edit > Paste for text or /image <path>",
-        .unavailable => "clipboard helper unavailable — use Edit > Paste for text or /image <path>",
+        .access => "clipboard read failed — retry Copy, or save it and use /image <path>",
+        .denied => "macOS denied clipboard access — grant permission, or save it and use /image <path>",
+        .unavailable => "clipboard helper failed — use /image <path>",
+        .spawn => "image paste needs the system osascript helper — use /image <path>",
+        .cancelled => "clipboard read was cancelled — try again, or use /image <path>",
         .timeout => "clipboard read timed out — copy again, or save it and use /image <path>",
         .changed => "clipboard changed while reading — copy again and retry, or use /image <path>",
         .extract => "the clipboard image could not be exported — try Copy again, or save it and /image <path>",
@@ -109,6 +111,8 @@ test "pasteMessage: empty clipboard and extraction failure are distinct (#843)" 
         .{ .failed = .access },
         .{ .failed = .denied },
         .{ .failed = .unavailable },
+        .{ .failed = .spawn },
+        .{ .failed = .cancelled },
         .{ .failed = .timeout },
         .{ .failed = .changed },
         .{ .failed = .extract },
@@ -121,4 +125,8 @@ test "pasteMessage: empty clipboard and extraction failure are distinct (#843)" 
     }
     try std.testing.expectEqualStrings(no_vision_message, pasteMessage(.no_vision));
     try std.testing.expectEqualStrings(pasteFailMessage(.extract), pasteMessage(.{ .failed = .extract }));
+    try std.testing.expectEqualStrings(pasteFailMessage(.spawn), pasteMessage(.{ .failed = .spawn }));
+    try std.testing.expect(std.mem.indexOf(u8, pasteFailMessage(.spawn), "osascript") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pasteFailMessage(.unavailable), "Edit > Paste") == null);
+    try std.testing.expect(std.mem.indexOf(u8, pasteFailMessage(.cancelled), "Edit > Paste") == null);
 }

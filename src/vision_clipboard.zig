@@ -53,7 +53,7 @@ pub const Flavor = enum {
 
 /// Why a clipboard extraction failed without yielding an image (#843).
 /// Categories stay privacy-safe: they never include clipboard contents.
-pub const FailKind = enum { access, denied, unavailable, timeout, changed, extract, convert };
+pub const FailKind = enum { access, denied, unavailable, spawn, cancelled, timeout, changed, extract, convert };
 
 /// Result of one pasteboard grab. Null used to mean both "nothing there"
 /// and "osascript/sips failed", which Ctrl-V then reported as an empty
