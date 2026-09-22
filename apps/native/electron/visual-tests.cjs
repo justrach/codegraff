@@ -132,6 +132,8 @@ app.whenReady().then(async () => {
     }
   }
   if (process.env.GRAFF_VISUAL_SUITE === 'turns') {
+    await require('./copy-response-visual.cjs').testCopyResponse({ win });
+    results.push('copy response');
     assert.deepEqual(apiRequests, []);
     fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: results, apiRequests }, null, 2));
     return;
