@@ -198,3 +198,40 @@ test "rlm order unresolved print argument prevents speculative tail reads" {
     try std.testing.expect(try order.leading(arena.allocator(), "print(bash(command=cmd), read_file(\"x\"))") == null);
     try std.testing.expect(try order.leading(arena.allocator(), "print(read_file(\"a\"), read_file(\"b\"))") != null);
 }
+
+test "rlm unsupported indexed print refuses before executing its nested command or tail" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    const out = try f.run("print(bash(\"printf ran > nested-marker\")[\"stdout\"])\nx = write_file(path=\"marker\", content=\"ran\")");
+    defer gpa.free(out.text);
+    try std.testing.expect(out.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, out.text, "host results are text") != null);
+    try std.testing.expectError(error.FileNotFound, f.tmp.dir.openFile(io, "nested-marker", .{}));
+    try std.testing.expectError(error.FileNotFound, f.tmp.dir.openFile(io, "marker", .{}));
+}
+
+test "rlm unsupported bound field access reports text contract without rerunning host" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    for ([_][]const u8{ "r[\"stdout\"]", "r.get(\"exit_code\")" }) |expr| {
+        const code = try std.fmt.allocPrint(gpa, "r = bash(\"printf x >> target.txt\")\nprint({s})", .{expr});
+        defer gpa.free(code);
+        const out = try f.run(code);
+        defer gpa.free(out.text);
+        try std.testing.expect(out.is_error);
+        try std.testing.expect(std.mem.indexOf(u8, out.text, "assign then print(name)") != null);
+    }
+    const out = try f.run("print(read_file(\"target.txt\"))");
+    defer gpa.free(out.text);
+    try std.testing.expectEqualStrings("oldxx", out.text);
+}
+
+test "rlm print keeps literals known and missing binds and supported reducers" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    try f.tmp.dir.writeFile(io, .{ .sub_path = "items.json", .data = "[{\"id\":1},{\"id\":2}]" });
+    const out = try f.run("items = read_file(\"items.json\")\ncount = len(items)\nids = project(items, \"id\")\nprint(\"literal [data]\", 'quoted', count, ids, len(items), project(items, \"id\"), missing_bind)");
+    defer gpa.free(out.text);
+    try std.testing.expect(!out.is_error);
+    try std.testing.expectEqualStrings("literal [data]\nquoted\n2\n[1,2]\n2\n[1,2]\nmissing_bind", out.text);
+}

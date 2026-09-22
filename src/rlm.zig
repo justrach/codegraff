@@ -334,7 +334,10 @@ fn renderPrintPart(ctx: ToolCtx, arena: Allocator, inner: []const u8, binds: []c
     var i = binds.len;
     while (i > 0) {
         i -= 1;
-        if (std.mem.eql(u8, binds[i].name, t)) return maybeSlim(arena, binds[i].text);
+        const name = binds[i].name;
+        if (std.mem.eql(u8, name, t)) return maybeSlim(arena, binds[i].text);
+        if (std.mem.startsWith(u8, t, name) and t.len > name.len and
+            (t[name.len] == '[' or t[name.len] == '.')) return unsupportedPrint(ctx, status);
     }
     if (try spec_ptc.extractCall(arena, t)) |c| {
         const key = try c.key(arena);
@@ -348,7 +351,16 @@ fn renderPrintPart(ctx: ToolCtx, arena: Allocator, inner: []const u8, binds: []c
         if (mcp_shapes.slim(arena, out.text)) |s| return s;
         return try arena.dupe(u8, out.text);
     }
+    // Preserve the historical missing-bind echo, but do not pretend an
+    // unevaluated expression is a successful tool result.
+    if (t.len == 0) return unsupportedPrint(ctx, status);
+    for (t) |c| if (!std.ascii.isAlphanumeric(c) and c != '_') return unsupportedPrint(ctx, status);
     return try arena.dupe(u8, t);
+}
+
+fn unsupportedPrint(ctx: ToolCtx, status: *?ToolOutput) ![]const u8 {
+    status.* = .{ .text = try ctx.gpa.dupe(u8, "rlm: unsupported print expression; host results are text, so assign then print(name)."), .is_error = true };
+    return "";
 }
 
 fn maybeSlim(arena: Allocator, payload: []const u8) []const u8 {
