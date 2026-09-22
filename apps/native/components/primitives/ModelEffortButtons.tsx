@@ -5,6 +5,8 @@ import type { ModelChoice } from "@/lib/acp-client";
 import styles from "./EffortPicker.module.css";
 import ContextMeter from "./ContextMeter";
 const labels: Record<string, string> = { low: "Light", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max", ultra: "Ultra" };
+const effortPanelWidth = 200;
+const effortPanelMargin = 12;
 function Bolt({ filled = false }: { filled?: boolean }) {
   return <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill={filled ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="m13.3 2-9 12h7L10.7 22l9-12h-7L13.3 2Z" /></svg>;
 }
@@ -29,7 +31,7 @@ export default function ModelEffortButtons({ model, buttonRef, modelOpen, openMo
   const index = Math.max(0, levels.indexOf(model.effort ?? "medium"));
   const show = () => {
     const rect = effortButton.current?.getBoundingClientRect();
-    if (rect) setPosition({ left: Math.max(12, Math.min(window.innerWidth - 332, rect.right - 320)), bottom: window.innerHeight - rect.top + 10 });
+    if (rect) setPosition({ left: Math.max(effortPanelMargin, Math.min(window.innerWidth - effortPanelWidth - effortPanelMargin, rect.right - effortPanelWidth)), bottom: window.innerHeight - rect.top + 10 });
     if (modelOpen) openModel();
     setDraft(index); setOpen(true);
   };
@@ -65,18 +67,18 @@ export default function ModelEffortButtons({ model, buttonRef, modelOpen, openMo
     {levels.length > 0 && <button ref={effortButton} type="button" aria-label="Select effort" aria-expanded={open} onClick={show}
       className="flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2 text-xs text-ink-3 hover:bg-hover">{labels[model.effort ?? ""] ?? "Effort"}<Chevron /></button>}
     {showContextMeter && <ContextMeter reading={contextMeter} />}
-    {open && createPortal(<div ref={panel} role="dialog" aria-label="Reasoning effort" style={position}
-      className="motion-surface fixed z-[100] w-80 max-w-[calc(100vw-24px)] rounded-[22px] border border-line bg-page px-4 pb-4 pt-3 text-ink shadow-[0_8px_24px_-8px_rgb(0_0_0/18%)]">
-      <div className="flex items-center justify-between gap-3">
+    {open && createPortal(<div ref={panel} role="dialog" aria-label="Reasoning effort" style={{ ...position, width: effortPanelWidth }}
+      className="motion-surface fixed z-[100] max-w-[calc(100vw-24px)] rounded-window border border-line bg-page px-2 pb-[7px] pt-1.5 text-ink shadow-[0_8px_24px_-8px_rgb(0_0_0/18%)]">
+      <div className="flex h-[25px] items-center justify-between gap-1.5">
         <button type="button" aria-label="Fast mode" aria-pressed={!!model.fast} disabled={blocked || !model.fastSupported}
           title={model.fastSupported ? "Priority service for lower latency; may use more of your allowance" : "Fast mode is available for Codex models"}
           onClick={() => void change(`/fast ${model.fast ? "off" : "on"}`)}
-          className={`flex size-8 shrink-0 items-center justify-center rounded-[10px] transition-colors disabled:opacity-30 ${model.fast ? "bg-accent-tint text-accent" : "text-ink-3 hover:bg-hover"}`}><Bolt filled={!!model.fast} /></button>
-        <div className="min-w-0 text-center"><div className="text-[17px] font-medium leading-6 text-accent">{labels[levels[draft]] ?? levels[draft]}</div><div className="mt-0.5 truncate text-[13px] leading-5 text-ink-3">{saving ? <span role="status">Saving…</span> : displayName}</div></div>
-        <button type="button" aria-label="Reset effort to medium" title="Reset effort to medium" disabled={blocked || !levels.includes("medium")} onClick={() => { setDraft(levels.indexOf("medium")); void change("/effort medium"); }} className="flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-3 hover:bg-hover disabled:opacity-30"><svg aria-hidden="true" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M4 10a8 8 0 1 1 0 5M4 4v6h6" /></svg></button>
+          className={`flex size-5 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-30 [&_svg]:size-3.5 ${model.fast ? "bg-accent-tint text-accent" : "text-ink-3 hover:bg-hover"}`}><Bolt filled={!!model.fast} /></button>
+        <div className="min-w-0 text-center"><div className="text-xs font-medium leading-3 text-accent">{labels[levels[draft]] ?? levels[draft]}</div><div className="mt-px truncate text-[9px] leading-2.5 text-ink-3">{saving ? <span role="status">Saving…</span> : displayName}</div></div>
+        <button type="button" aria-label="Reset effort to medium" title="Reset effort to medium" disabled={blocked || !levels.includes("medium")} onClick={() => { setDraft(levels.indexOf("medium")); void change("/effort medium"); }} className="flex size-5 shrink-0 items-center justify-center rounded-full text-ink-3 hover:bg-hover disabled:opacity-30 [&_svg]:size-3.5"><svg aria-hidden="true" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M4 10a8 8 0 1 1 0 5M4 4v6h6" /></svg></button>
       </div>
       <div className={styles.slider}>
-        <div aria-hidden="true" className={styles.track}><div className={styles.fill} style={{ width: draft === 0 ? 0 : `calc(20px + (100% - 40px) * ${progress})` }} /></div>
+        <div aria-hidden="true" className={styles.track}><div className={styles.fill} style={{ width: draft === 0 ? 0 : `calc(10px + (100% - 20px) * ${progress})` }} /></div>
         <div aria-hidden="true" className={styles.stops}>{levels.map((level, i) => <span key={level} className={`${styles.stop} ${i < draft ? styles.passed : ""}`} style={{ left: `${i / Math.max(1, levels.length - 1) * 100}%` }} />)}</div>
         <input type="range" aria-label="Reasoning effort level" aria-valuetext={labels[levels[draft]] ?? levels[draft]} min={0} max={Math.max(0, levels.length - 1)} step={1} value={draft} disabled={blocked}
         onChange={event => setDraft(Number(event.target.value))} onPointerUp={apply} onKeyUp={apply}

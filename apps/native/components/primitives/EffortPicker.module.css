@@ -1,11 +1,11 @@
 .slider {
   position: relative;
-  height: 40px;
-  margin-top: 20px;
+  height: 20px;
+  margin-top: 6px;
 }
 .track {
   position: absolute;
-  inset: 4px 0;
+  inset: 2px 0;
   overflow: hidden;
   border-radius: 999px;
   background: color-mix(in srgb, var(--ink) 10%, var(--page));
@@ -18,13 +18,13 @@
 }
 .stops {
   position: absolute;
-  inset: 0 20px;
+  inset: 0 10px;
 }
 .stop {
   position: absolute;
   top: 50%;
-  width: 5px;
-  height: 5px;
+  width: 3px;
+  height: 3px;
   border-radius: 50%;
   background: color-mix(in srgb, var(--ink) 24%, transparent);
   transform: translate(-50%, -50%);
@@ -37,19 +37,19 @@
   inset: 0;
   margin: 0;
   width: 100%;
-  height: 40px;
+  height: 20px;
   background: transparent;
   cursor: pointer;
   outline: none;
   border-radius: 999px;
 }
-.range::-webkit-slider-runnable-track { height: 40px; background: transparent; }
-.range::-moz-range-track { height: 40px; background: transparent; }
+.range::-webkit-slider-runnable-track { height: 20px; background: transparent; }
+.range::-moz-range-track { height: 20px; background: transparent; }
 .range::-webkit-slider-thumb {
   appearance: none;
   -webkit-appearance: none;
-  width: 40px;
-  height: 40px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   background: #fff;
   border: 1px solid rgb(0 0 0 / 10%);
@@ -57,8 +57,8 @@
 }
 .range::-moz-range-thumb {
   box-sizing: border-box;
-  width: 40px;
-  height: 40px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   background: #fff;
   border: 1px solid rgb(0 0 0 / 10%);
