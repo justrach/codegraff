@@ -277,7 +277,10 @@ app.whenReady().then(async () => {
     return;
   }
   const narrowNavigation = Boolean(process.env.GRAFF_NARROW_NAV_TEST);
-  if (narrowNavigation) await require('./narrow-navigation-frontend.cjs').runNarrowNavigation({ win, output, click, until, report });
+  if (narrowNavigation) {
+    await require('./chat-prompt-focus-frontend.cjs').runChatPromptFocus({ win, click, until, report });
+    await require('./narrow-navigation-frontend.cjs').runNarrowNavigation({ win, output, click, until, report });
+  }
   await require('./attachment-lifetime-frontend.cjs').runAttachments({win,origin,temp,output,requests,workspace,send,click,until,report});
   if (narrowNavigation) return;
   await require('./browser-focus-frontend.cjs').runBrowserFocus({ win, output, click, until, report });
