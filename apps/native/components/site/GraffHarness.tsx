@@ -244,7 +244,7 @@ export default function GraffHarness() {
     const next = [...chatsRef.current, { id, title: null, messages: [], model: ws?.model ?? model ?? undefined, session, cwd }];
     chatsRef.current = next; setChats(next);
     setZoomedPane(null);
-    setActiveId(id); requestPromptFocus(id);
+    setActiveId(id); navigation.finishNavigation(() => requestPromptFocus(id));
     setFilesOpen(false);
     setConversationsOpen(false);
     setFollowing(true);
@@ -282,7 +282,7 @@ export default function GraffHarness() {
     if (folder && folder !== activePathRef.current) activateWorkspace(folder);
     if (!columnIds.includes(id) || (zoomedPane !== null && zoomedPane !== id)) setZoomedPane(null);
     setActiveId(id);
-    if (focusPrompt) requestPromptFocus(id);
+    if (focusPrompt) navigation.finishNavigation(() => requestPromptFocus(id));
   };
 
   const tabDrag = useTabDrag((id, drop) => {
@@ -478,7 +478,7 @@ export default function GraffHarness() {
         onSeeAll={openConversations}
         activeNav={agentsOpen ? "agents" : projectsOpen ? "projects" : filesOpen ? (fileRequest?.changes ? "changes" : "workspace") : browserOpen ? "browser" : conversationsOpen ? "conversations" : "home"}
         onNavigate={(key) => {
-          if (key === "home") requestPromptFocus(activeId);
+          if (key === "home") navigation.finishNavigation(() => requestPromptFocus(activeId));
           if (key === "agents") {
             setProjectsOpen(false); setFilesOpen(false); setBrowserOpen(false); setConversationsOpen(false);
             setAgentsOpen(open => !open);
