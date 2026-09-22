@@ -144,7 +144,9 @@ pub fn adoptSessionId(id: []const u8) void {
     while (session_id_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
     defer session_id_lock.store(false, .release);
     if (session_id_len != 0) return;
-    @memcpy(session_id_buf[0..36], id[0..36]);
+    // copyForwards, not @memcpy: a caller may hand back a slice of the
+    // static buffer itself (round-trip restore), which aliases dest.
+    std.mem.copyForwards(u8, session_id_buf[0..36], id[0..36]);
     session_id_len = 36;
 }
 
@@ -154,7 +156,7 @@ pub fn restoreSessionId(id: []const u8) void {
     if (id.len != 36) return;
     while (session_id_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
     defer session_id_lock.store(false, .release);
-    @memcpy(session_id_buf[0..36], id[0..36]);
+    std.mem.copyForwards(u8, session_id_buf[0..36], id[0..36]);
     session_id_len = 36;
 }
 
@@ -164,7 +166,7 @@ pub fn restoreProjectRootId(id: []const u8) void {
     if (id.len != 36) return;
     while (project_id_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
     defer project_id_lock.store(false, .release);
-    @memcpy(project_id_buf[0..36], id[0..36]);
+    std.mem.copyForwards(u8, project_id_buf[0..36], id[0..36]);
     project_id_len = 36;
 }
 

@@ -1,6 +1,7 @@
 //! HTTPS SSE over http-zig. Returns null to keep the std.http/1.1 path.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Agent = @import("agent.zig").Agent;
 const main_mod = @import("main.zig");
@@ -18,6 +19,10 @@ const ssePayload = Agent.ssePayload;
 const isStreamEnd = @import("agent_stream.zig").isStreamEnd;
 
 pub fn postStream(self: *Agent, body: []const u8) !?[]u8 {
+    // Unit tests stay on HTTP/1.1: real H2 sessions would open live sockets
+    // (and extra redial connections) against count-limited localhost mocks,
+    // hanging the suite. Live coverage comes from the http-zig probes.
+    if (builtin.is_test) return null;
     if (!http2_pool.want(self.provider.url)) return null;
     const origin = http2_pool.parseOrigin(self.provider.url) catch return null;
     const gpa = self.gpa;
