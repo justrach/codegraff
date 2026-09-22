@@ -24,7 +24,19 @@ pub const Prep = union(enum) {
 };
 
 pub fn looksMcp(name: []const u8) bool {
-    return mcp.Registry.isMcp(name);
+    return mcp.Registry.isMcp(name) or codeModeParts(name) != null;
+}
+
+/// `tools.server.tool` or `server.tool` — OpenCode's call shape, no JS heap.
+pub fn codeModeParts(name: []const u8) ?struct { server: []const u8, tool: []const u8 } {
+    var rest = name;
+    if (std.mem.startsWith(u8, rest, "tools.")) rest = rest["tools.".len..];
+    const dot = std.mem.indexOfScalar(u8, rest, '.') orelse return null;
+    if (dot == 0 or std.mem.indexOfScalar(u8, rest[dot + 1 ..], '.') != null) return null;
+    const server = rest[0..dot];
+    const tool = rest[dot + 1 ..];
+    if (server.len == 0 or tool.len == 0) return null;
+    return .{ .server = server, .tool = tool };
 }
 
 /// Catalog natives stay native even when an MCP short name collides (#1016).
@@ -52,6 +64,14 @@ pub fn resolve(ctx: ToolCtx, name: []const u8) ?[]const u8 {
     if (isNativeHost(name)) return null;
     if (mcp.Registry.isMcp(name)) return name;
     const reg = ctx.registry orelse return null;
+    if (codeModeParts(name)) |parts| {
+        for (reg.tools) |t| {
+            if (!std.mem.eql(u8, t.original_name, parts.tool)) continue;
+            if (!serverOf(t.qualified_name, parts.server)) continue;
+            return t.qualified_name;
+        }
+        return null;
+    }
     var hit: ?[]const u8 = null;
     for (reg.tools) |t| {
         if (!std.mem.eql(u8, shortName(t.qualified_name), name)) continue;
@@ -59,6 +79,13 @@ pub fn resolve(ctx: ToolCtx, name: []const u8) ?[]const u8 {
         hit = t.qualified_name;
     }
     return hit;
+}
+
+fn serverOf(qualified: []const u8, server: []const u8) bool {
+    if (!std.mem.startsWith(u8, qualified, "mcp__")) return false;
+    const rest = qualified["mcp__".len..];
+    const sep = std.mem.indexOf(u8, rest, "__") orelse return false;
+    return std.mem.eql(u8, rest[0..sep], server);
 }
 
 fn shortName(qualified: []const u8) []const u8 {
@@ -290,6 +317,44 @@ test "unloaded MCP name is refused; loaded name is prepared for exec" {
         },
         .run => return error.ShouldRefuseWhenOff,
     }
+}
+
+test "tools.server.tool resolves to the loaded MCP name" {
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    mcp_schema_gate.reset();
+    defer mcp_schema_gate.reset();
+    var schema: std.json.ObjectMap = .empty;
+    try schema.put(arena, "type", .{ .string = "object" });
+    var tool = [_]mcp.Tool{.{
+        .server_index = 0,
+        .original_name = "ask_wiki_question",
+        .qualified_name = "mcp__deepwiki__ask_wiki_question",
+        .description = "ask",
+        .input_schema = .{ .object = schema },
+    }};
+    var registry = mcp.Registry.empty(gpa, io);
+    defer registry.deinit();
+    registry.tools = tool[0..];
+    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer dummy_client.deinit();
+    const ctx: ToolCtx = .{
+        .gpa = gpa,
+        .io = io,
+        .client = &dummy_client,
+        .provider = undefined,
+        .registry = &registry,
+        .from_sub = false,
+        .approvals = null,
+        .tracer = null,
+    };
+    try std.testing.expectEqualStrings("mcp__deepwiki__ask_wiki_question", resolve(ctx, "tools.deepwiki.ask_wiki_question").?);
+    try std.testing.expectEqualStrings("mcp__deepwiki__ask_wiki_question", resolve(ctx, "deepwiki.ask_wiki_question").?);
+    try std.testing.expect(looksMcp("tools.missing.nope"));
+    try std.testing.expect(resolve(ctx, "tools.missing.nope") == null);
 }
 
 test "MCP-inside-rlm host functions are on by default" {
