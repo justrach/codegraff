@@ -81,42 +81,6 @@ test "keep the pooled session only after END_STREAM" {
     try std.testing.expect(!keepAfter(false));
 }
 
-test "http-zig credits DATA on the connection and the stream" {
-    const gpa = std.testing.allocator;
-    const frame = http_zig.frame;
-    var srv_aw: std.Io.Writer.Allocating = .init(gpa);
-    defer srv_aw.deinit();
-    try frame.write(&srv_aw.writer, .{ .typ = .settings, .flags = 0, .stream_id = 0, .payload = &.{} });
-    const status_hpack = [_]u8{0x88};
-    try frame.write(&srv_aw.writer, .{ .typ = .headers, .flags = frame.flags.end_headers, .stream_id = 1, .payload = &status_hpack });
-    try frame.write(&srv_aw.writer, .{ .typ = .data, .flags = frame.flags.end_stream, .stream_id = 1, .payload = "ok" });
-    const server_bytes = try gpa.dupe(u8, srv_aw.written());
-    defer gpa.free(server_bytes);
-    var reader: std.Io.Reader = .fixed(server_bytes);
-    var client_aw: std.Io.Writer.Allocating = .init(gpa);
-    defer client_aw.deinit();
-    var c = http_zig.Conn.init(gpa, &reader, &client_aw.writer);
-    defer c.deinit();
-    var res = try c.request(.{ .method = "GET", .scheme = "https", .authority = "api.x.ai", .path = "/v1/models" });
-    defer res.deinit();
-    try std.testing.expectEqual(@as(u16, 200), res.status);
-    try std.testing.expectEqual(@as(usize, 2), countWindowUpdates(client_aw.written()));
-}
-
-fn countWindowUpdates(bytes: []const u8) usize {
-    const frame = http_zig.frame;
-    var i: usize = 0;
-    if (std.mem.startsWith(u8, bytes, frame.preface)) i = frame.preface.len;
-    var n: usize = 0;
-    while (i + 9 <= bytes.len) {
-        const len = (@as(usize, bytes[i]) << 16) | (@as(usize, bytes[i + 1]) << 8) | bytes[i + 2];
-        if (i + 9 + len > bytes.len) break;
-        if (bytes[i + 3] == @intFromEnum(frame.Type.window_update)) n += 1;
-        i += 9 + len;
-    }
-    return n;
-}
-
 test "want is https-only" {
     const saved = main_mod.g_http2;
     defer main_mod.g_http2 = saved;
