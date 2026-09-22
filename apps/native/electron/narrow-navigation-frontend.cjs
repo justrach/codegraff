@@ -20,10 +20,9 @@ async function runNarrowNavigation({win, output, click, until, report}) {
   await click('[aria-label="Open navigation"]');
   await until(() => js(`!!document.querySelector('[data-navigation-panel]:popover-open')`), 'navigation opens');
   await pointerClick(`[data-session-navigation="sidebar"] [data-tab-members="${first}"] button[aria-pressed]`);
-  await until(() => js(`!document.querySelector('[data-navigation-panel]:popover-open') && document.activeElement===document.querySelector('[data-chat="${first}"] textarea[aria-label="Prompt"]')`), 'chat selection dismisses navigation and focuses its prompt');
-  const draftLength = await js(`document.activeElement.value.length`);
   await desktop.testInput(wc, {type:'char',keyCode:'x'});
-  assert.equal(await js(`document.querySelector('[data-chat="${first}"] textarea[aria-label="Prompt"]').value.length`), draftLength + 1, 'typing after chat selection goes straight to its prompt');
+  await until(() => js(`!document.querySelector('[data-navigation-panel]:popover-open') && document.activeElement===document.querySelector('[data-chat="${first}"] textarea[aria-label="Prompt"]')`), 'chat selection dismisses navigation and focuses its prompt');
+  assert.equal(await js(`document.querySelector('[data-chat="${first}"] textarea[aria-label="Prompt"]').value`), 'x', 'the first character typed immediately after chat selection goes straight to its prompt');
   await click('[aria-label="Open navigation"]');
   await until(() => js(`!!document.querySelector('[data-navigation-panel]:popover-open')`), 'navigation reopens');
   await click('[data-workspace-trigger]');
