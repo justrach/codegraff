@@ -39,11 +39,17 @@ export function useChatClose(props: Props) {
   const { openChat, focusChat, openStored, newChat, refreshStored, unwatchIdle } = props;
   // Closed tabs, oldest first, for the reopen shortcut.
   const closedRef = useRef<{ session: string | null; cwd?: string; resumable: boolean }[]>([]);
+  // Activation order is independent of tab and split-pane order (ADR 0081).
+  const activeHistoryRef = useRef<number[]>([activeId]);
   const [dontAskAgain, setDontAskAgain] = useState(false);
   const [pendingClose, setPendingClose] = useState<{ ids: number[]; workers: number; after?: () => void } | null>(null);
   useEffect(() => {
     setDontAskAgain(readCloseDontAsk(window.localStorage));
   }, []);
+  useEffect(() => {
+    const live = new Set(chatsRef.current.map(chat => chat.id));
+    activeHistoryRef.current = [...activeHistoryRef.current.filter(id => id !== activeId && live.has(id)), activeId];
+  }, [activeId, chatsRef]);
 
   const dropChat = (id: number) => {
     sessionsRef.current.delete(id);
@@ -76,9 +82,12 @@ export function useChatClose(props: Props) {
       dropChat(id);
     }
     const remaining = chatsRef.current.filter(c => !ids.includes(c.id));
+    const live = new Set(remaining.map(chat => chat.id));
+    const recent = [...activeHistoryRef.current].reverse().find(id => live.has(id));
+    activeHistoryRef.current = activeHistoryRef.current.filter(id => live.has(id));
     chatsRef.current = remaining; setChats(remaining);
     if (!remaining.length) { openChat(++chatIdRef.current); return; }
-    if (ids.includes(activeId)) focusChat(visible[0] ?? remaining[remaining.length - 1].id);
+    if (ids.includes(activeId)) focusChat(recent ?? visible[0] ?? remaining[remaining.length - 1].id);
   };
 
   const closeChats = (ids: number[], after?: () => void) => {
