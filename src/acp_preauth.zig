@@ -88,7 +88,17 @@ test "pre-auth answers multiple initialize requests from the shared engine" {
     , &buf);
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, output, "\"authMethods\""));
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, output, "graff-login"));
-    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, output, "preauth-test"));
+    var replies = std.mem.tokenizeScalar(u8, output, '\n');
+    var count: usize = 0;
+    while (replies.next()) |line| {
+        const reply = try std.json.parseFromSliceLeaky(std.json.Value, state.allocator(), line, .{});
+        const result = reply.object.get("result").?.object;
+        for ([_][]const u8{ "agentInfo", "agentImplementation" }) |field| {
+            try std.testing.expectEqualStrings("preauth-test", result.get(field).?.object.get("version").?.string);
+        }
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), count);
 }
 
 test "pre-auth ignores invalid input and continues serving requests" {
