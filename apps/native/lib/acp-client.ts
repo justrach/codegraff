@@ -231,6 +231,8 @@ type GraffModelsResult = {
     authenticated: boolean;
     cost: string;
     current: boolean;
+    effortLevels?: string[];
+    fastSupported?: boolean;
   }[];
   current?: { model: string; provider: string; effort?: string; fast?: boolean; effortLevels?: string[]; fastSupported?: boolean };
   commands?: AcpCommand[];
@@ -261,6 +263,8 @@ export function modelChoices(result: GraffModelsResult): { models: ModelChoice[]
       context: m.context,
       cost: m.cost,
       current: m.current,
+      effortLevels: m.effortLevels,
+      fastSupported: m.fastSupported,
     });
   }
   const current = result.current;

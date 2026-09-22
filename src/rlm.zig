@@ -105,6 +105,18 @@ pub fn runScript(ctx: ToolCtx, code: []const u8) !ToolOutput {
 
     const calls = try spec_ptc.extractCalls(arena, stmts);
     try speculate(ctx, arena, calls, &claimed);
+    // Observe only joined host results, including calls that began while the
+    // script streamed. The recorder serializes updates from concurrent scripts.
+    if (ctx.publication_observer) |observer| {
+        var observed = std.StringHashMap(void).init(arena);
+        for (calls) |call| {
+            const key = try call.key(arena);
+            if (try observed.fetchPut(key, {})) |_| continue;
+            const output = claimed.get(key) orelse continue;
+            const input_value = pathValue(arena, call.args_json);
+            try observer.record(observer.context, .{ .id = "rlm", .name = call.name, .input = input_value }, .{ .text = output.text, .is_error = output.is_error, .cancelled = output.cancelled });
+        }
+    }
 
     var binds: std.ArrayList(Binding) = .empty;
     try rlm_spec.seedBinds(ctx.gpa, ctx.io, arena, &binds);

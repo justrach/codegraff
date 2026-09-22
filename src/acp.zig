@@ -124,6 +124,16 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
     if (req.id == null) return true;
     const keys = live.keys;
     const root = live.root;
+    // Hydrate deferred local metadata without network refresh or MCP startup.
+    root.ensureStoredKeys(keys);
+    if (root.model_catalog) |*cached|
+        cached.ensureCached(root.io, root.gpa, root.arena, root.home, keys.get("codex") orelse "", keys.codex_account);
+    if (!live.local_catalog_loaded) {
+        if (root.home.len > 0) @import("router_catalog.zig").loadCachedAll(root.io, root.arena, root.home);
+        live.local_catalog_loaded = true;
+    }
+    const er = @import("effort_route.zig");
+    @import("gateway_picker_catalog.zig").refresh(root.gpa, root.io, root.arena, keys.*);
     const catalog = pricing.models();
     const Row = struct {
         name: []const u8,
@@ -132,6 +142,8 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
         authenticated: bool,
         cost: []const u8,
         current: bool,
+        effortLevels: []const []const u8,
+        fastSupported: bool,
     };
     const ranked = try arena.alloc(models_rank.Scored, catalog.len);
     for (catalog, 0..) |m, i| ranked[i] = .{
@@ -145,6 +157,10 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
     const rows = try arena.alloc(Row, catalog.len);
     for (ranked, rows) |r, *row| {
         const m = catalog[r.idx];
+        const supports_effort = if (provider_mod.specFor(m.provider)) |spec|
+            @import("schema.zig").providerTakesEffort(spec.kind, m.provider, m.name)
+        else
+            false;
         row.* = .{
             .name = m.name,
             .provider = m.provider,
@@ -152,9 +168,10 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
             .authenticated = keys.get(m.provider) != null,
             .cost = billing.costFor(m.provider, keys.source(m.provider)).badge(),
             .current = std.mem.eql(u8, m.name, root.provider.model) and std.mem.eql(u8, m.provider, root.provider.id),
+            .effortLevels = if (supports_effort) er.levels(m.provider, m.name) else &.{},
+            .fastSupported = std.mem.eql(u8, m.provider, "codex"),
         };
     }
-    const er = @import("effort_route.zig");
     const levels: []const []const u8 = if (!root.effortApplies()) &.{} else er.levels(root.provider.id, root.provider.model);
     try proto.writeResult(w, req.id, .{
         .models = rows,
@@ -526,6 +543,11 @@ test "OpenAI effort menu omits Max and keeps Ultra on the Responses wire" {
         aw.clearRetainingCapacity();
         try handleLine(&d, a, &aw.writer, "{\"id\":1,\"method\":\"graff/models\"}");
         const result = try std.json.parseFromSliceLeaky(Value, a, aw.writer.buffered(), .{});
+        for (result.object.get("result").?.object.get("models").?.array.items) |row| {
+            const fields = row.object;
+            try testing.expect(fields.get("effortLevels").? == .array);
+            try testing.expect(fields.get("fastSupported").? == .bool);
+        }
         const current = result.object.get("result").?.object.get("current").?.object;
         try testing.expectEqualStrings("ultra", current.get("effort").?.string);
         const levels = current.get("effortLevels").?.array.items;

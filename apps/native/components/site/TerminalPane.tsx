@@ -3,7 +3,7 @@ import {useEffect,useRef,useState} from 'react';
 import type {Terminal} from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import {desktop,type TerminalEvent} from '@/lib/desktop';
-import { useCommandGlyph } from '@/lib/shortcut-glyph';
+import { shortcutModifiers, useCommandGlyph } from '@/lib/shortcut-glyph';
 
 export default function TerminalPane({cwd,visible,onHide}:{cwd:string;visible:boolean;onHide():void}) {
   const host=useRef<HTMLDivElement>(null),terminal=useRef<Terminal|null>(null),id=useRef<string|null>(null);
@@ -32,7 +32,7 @@ export default function TerminalPane({cwd,visible,onHide}:{cwd:string;visible:bo
       term.onResize(({cols,rows})=>{if(id.current)void send('resize',{cols,rows});});
       term.attachCustomKeyEventHandler(event=>{
         const mac=/Mac|iPhone|iPad/.test(navigator.platform);
-        const command=mac?event.metaKey:(event.ctrlKey||event.metaKey);
+        const {command}=shortcutModifiers(event,navigator.platform);
         if(command&&!event.altKey&&!event.shiftKey&&event.key.toLowerCase()==='k'){if(event.type==='keydown')term.clear();event.preventDefault();return false;}
         return mac?!event.metaKey:true;
       });

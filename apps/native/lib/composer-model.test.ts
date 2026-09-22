@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { modelChoices } from "./acp-client";
-import { liveComposerKey, paneComposerKey, pillFromAcp, resolveComposerModel, sameModels } from "./composer-model";
+import { liveComposerKey, paneComposerKey, pillFromAcp, resolveComposerModel, sameModels, rememberChatCatalog, sharedModelChoices } from "./composer-model";
 
 test("the pill keeps an unknown live key instead of catalog[0]", () => {
   const decoy = { key: "catalog-zero", name: "catalog-zero" };
@@ -28,6 +28,25 @@ test("sameModels ignores a new array of the same rows", () => {
   const row = { key: "running-live", name: "running-live" };
   expect(sameModels([row], [{ ...row }])).toBe(true);
   expect(sameModels([row], [{ key: "other", name: "other" }])).toBe(false);
+});
+
+test("catalog refresh keeps changes to effort, fast mode, and capability metadata", () => {
+  const row = { key: "gpt-example", name: "gpt-example", effort: "medium", fast: false, effortLevels: ["low", "medium"] };
+  expect(sameModels([row], [{ ...row, effort: "high" }])).toBe(false);
+  expect(sameModels([row], [{ ...row, fast: true }])).toBe(false);
+  expect(sameModels([row], [{ ...row, effortLevels: ["low", "medium", "high"] }])).toBe(false);
+});
+
+test("two chats using the same model retain independent effort and fast settings", () => {
+  const first = [{ key: "gpt-example", name: "gpt-example", effort: "low", fast: false, effortLevels: ["low", "high"] }];
+  const second = [{ ...first[0], effort: "high", fast: true }];
+  const catalogs = rememberChatCatalog(rememberChatCatalog({}, 1, first), 2, second);
+  expect(catalogs[1][0].effort).toBe("low");
+  expect(catalogs[2][0].effort).toBe("high");
+  expect(catalogs[1][0].fast).toBe(false);
+  expect(sharedModelChoices(second)[0].effort).toBeUndefined();
+  expect(sharedModelChoices(second)[0].fast).toBeUndefined();
+  expect(sharedModelChoices(second)[0].effortLevels).toEqual(["low", "high"]);
 });
 
 function askAcpModels(binary: string, model: string): Promise<unknown> {

@@ -21,10 +21,11 @@ type Props = {
   setBusyFor(id: number, on: boolean): void; setHistory: Setter<string[]>;
   pinsRef: Ref<Record<number, BrowserPin[]>>; handleOf(id: number): string;
   setPins(id: number, pins: BrowserPin[]): void; requireSession(id: number): Promise<string>;
+  prepareModel(id: number): Promise<void>;
   adoptCatalog(id: number): Promise<void>; refreshStored(): Promise<void>;
   takeQueuedPrompt(id: number): QueuedPrompt | undefined;
 };
-export function createPromptRunner({onStarted, onCompleted, runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError}: Props) {
+export function createPromptRunner({onStarted, onCompleted, runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, prepareModel, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError}: Props) {
   const patchAssistant = (chatId: number, msgId: number, next: AssistantTurn) => {
     setChats((current) =>
       current.map((c) =>
@@ -45,7 +46,7 @@ export function createPromptRunner({onStarted, onCompleted, runningRef, steerer,
     steerer.begin(chatId);
     setFollowing(true);
     const thread = chatsRef.current.find((c) => c.id === chatId);
-    const spawnModel = thread?.model ?? model ?? undefined;
+    const spawnModel = thread?.nextModel ?? thread?.model ?? model ?? undefined;
     const userId = (msgIdRef.current += 1);
     const asstId = (msgIdRef.current += 1);
     const title = thread?.title ?? (trimmed.length > 30 ? `${trimmed.slice(0, 30).trimEnd()}…` : trimmed);
@@ -95,6 +96,7 @@ export function createPromptRunner({onStarted, onCompleted, runningRef, steerer,
     const painter = createTurnPainter<AssistantTurn>(next => patchAssistant(chatId, asstId, next));
     const startedAt = Date.now();
     try {
+      await prepareModel(chatId);
       const id = await requireSession(chatId);
       if (editN) {
         for await (const _ of prompt(handleOf(chatId), id, `/edit ${editN} ${trimmed}`)) { /* rewind only */ }

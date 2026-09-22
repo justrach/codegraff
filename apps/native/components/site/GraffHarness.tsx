@@ -184,7 +184,7 @@ export default function GraffHarness() {
     setPinsByChat(pinsRef.current);
   };
 
-  const { adoptCatalog, requireSession, refreshStored, projectsReady, unwatchIdle } = useHarnessSessions({
+  const { adoptCatalog, requireSession, refreshStored, projectsReady, unwatchIdle, chatCatalogs, catalogStatus, applyCatalog } = useHarnessSessions({
     sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal,
     pendingPick: () => pendingPickRef.current ?? pendingModel,
   });
@@ -212,16 +212,16 @@ export default function GraffHarness() {
     openChanges();
   }, [filesOpen, fileRequest, openChanges]);
 
-  const { changeModel, cancelPending, confirmPending } = createModelSwitcher({
+  const { changeModel, cancelPending, confirmPending, prepareModel } = createModelSwitcher({
     chatsRef, runningRef, pendingPickRef, activeChatId: () => chatThread.id,
-    requireSession, setChatModel, setCancelError, setPendingModel,
+    requireSession, setChatModel, setChats, setCancelError, setPendingModel,
   });
   const modelLabel = (key: string | null | undefined) => modelDisplayName(models, key);
 
   const runPrompt = createPromptRunner({ onStarted: started, onCompleted: completed,
-    runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError
+    runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, prepareModel, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError
   });
-  const settings = useQuietSettings({ requireSession, handleOf, running: runningRef.current, apply: (catalog) => setModels(catalog.models) });
+  const settings = useQuietSettings({ requireSession, handleOf, running: runningRef.current, apply: applyCatalog });
 
   const send = async (text: string, forChat?: number) => {
     const trimmed = text.trim();
@@ -402,7 +402,7 @@ export default function GraffHarness() {
     },
   }, chats.map(c => c.id));
 
-  const columnBody = (thread: Chat) => <ChatColumn key={thread.id} thread={thread}
+  const columnBody = (thread: Chat) => <ChatColumn key={thread.id} thread={thread} catalogStatus={catalogStatus[thread.id]} retryCatalog={() => void adoptCatalog(thread.id)}
     compact={columnIds.length > 1 || navigation.focusedMode || filesOpen || browserOpen || agentsOpen || reviewsOpen || !!(fileRequest?.changes)} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
     onOpenPath={threadCallbacks(thread.id).onOpenPath} onReview={openChanges}
     onAnswer={threadCallbacks(thread.id).onAnswer}
@@ -415,9 +415,9 @@ export default function GraffHarness() {
       const next = chatsRef.current.map(c => c.id === thread.id ? { ...c, snapshot: false } : c);
       chatsRef.current = next; setChats(next);
     }}
-    prompt={{ demo: false, models, commands: commands[thread.id] ?? catalogCommands,
-      root: cwdOf(thread), modelKey: paneComposerKey(thread.model, model, sessionsRef.current.has(thread.id), pendingModel, thread.id),
-      onModelChange: key => changeModel(key, thread.id), onSend: text => void send(text, thread.id),
+    prompt={{ demo: false, models: chatCatalogs[thread.id] ?? models, commands: commands[thread.id] ?? catalogCommands,
+      root: cwdOf(thread), modelPending: !!thread.nextModel, modelKey: thread.nextModel ?? paneComposerKey(thread.model, model, sessionsRef.current.has(thread.id), pendingModel, thread.id),
+      onModelOpen: () => void adoptCatalog(thread.id), onModelChange: key => changeModel(key, thread.id), onSend: text => void send(text, thread.id),
       onSetting: text => settings.change(thread.id, text),
       onSteerQueued: () => steerOrInterrupt(queuesRef.current[thread.id]?.[0], runningRef.current.has(thread.id), id => steerQueued(thread.id, id), () => {
         const live = sessionsRef.current.get(thread.id);

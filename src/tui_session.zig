@@ -89,13 +89,24 @@ pub fn resumeCb(ctx_ptr: ?*anyopaque, gpa: Allocator, raw: []const u8, out: *tui
     out.goal = if (root.goal) |goal| gpa.dupe(u8, goal.objective) catch return failure(gpa, out, error.OutOfMemory) else "";
     out.strict = root.strict;
     out.ultracode = root.ultracode_mode;
-    out.note = if (resumed.branched)
+    out.note = resumeNote(gpa, resumed);
+    return true;
+}
+
+fn resumeNote(gpa: Allocator, resumed: session_branch.Result) []const u8 {
+    if (resumed.enter_failed) return std.fmt.allocPrint(gpa, "resumed {s}; saved workspace unavailable, tools remain in the current directory", .{resumed.target}) catch &.{};
+    return if (resumed.branched)
         std.fmt.allocPrint(gpa, "branched {s} → {s}", .{ resumed.source, resumed.target }) catch &.{}
     else if (resumed.entered)
         std.fmt.allocPrint(gpa, "resumed {s} at {s}", .{ resumed.source, resumed.workspace }) catch &.{}
     else
         std.fmt.allocPrint(gpa, "resumed {s}", .{resumed.source}) catch &.{};
-    return true;
+}
+
+test "TUI resume reports a missing workspace instead of implying tools moved" {
+    const note = resumeNote(std.testing.allocator, .{ .source = "old", .target = "restored", .branched = true, .workspace = "/missing", .enter_failed = true });
+    defer std.testing.allocator.free(note);
+    try std.testing.expectEqualStrings("resumed restored; saved workspace unavailable, tools remain in the current directory", note);
 }
 
 pub fn sessionsCb(ctx_ptr: ?*anyopaque, gpa: Allocator) ?[]const u8 {

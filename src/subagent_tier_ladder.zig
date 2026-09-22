@@ -75,6 +75,7 @@ pub const ladders = [_]TierLadder{
     // session actually starts on; small descends to flash instead of hopping
     // to Codex luna. Flash-as-root is off-ladder and inherits.
     .{ .provider = "deepseek", .frontier = "deepseek-v4-pro", .small = "deepseek-v4-flash" },
+    .{ .provider = "xiaomi", .frontier = "mimo-v2.6-pro", .small = "mimo-v2.6-flash" },
     // Same family through the gateway login: stay on DeepSeek, do not dump
     // mechanical workers onto a logged-in Codex luna.
     .{ .provider = "codegraff", .frontier = "deepseek-v4-pro", .small = "deepseek-v4-flash" },
@@ -137,6 +138,23 @@ pub fn forProvider(provider_id: []const u8) ?TierLadder {
     };
     for (ladders) |l| if (std.mem.eql(u8, l.provider, provider_id)) return seatChecked(l);
     return null;
+}
+
+/// The multi-vendor catalog may serve MiMo without changing the transport.
+/// Preserve DeepSeek sessions; otherwise prefer the current MiMo pair only
+/// when both names are actually present on this provider's live catalog.
+pub fn forModel(provider_id: []const u8, model: []const u8) ?TierLadder {
+    if (!std.mem.startsWith(u8, model, "deepseek")) {
+        var pro: ?[]const u8 = null;
+        var flash: ?[]const u8 = null;
+        for (pricing.models()) |entry| {
+            if (!std.mem.eql(u8, entry.provider, provider_id)) continue;
+            if (pricing.modelAliasEquals(entry.name, "mimo-v2.6-pro")) pro = entry.name;
+            if (pricing.modelAliasEquals(entry.name, "mimo-v2.6-flash")) flash = entry.name;
+        }
+        if (pro != null and flash != null) return .{ .provider = provider_id, .frontier = pro.?, .small = flash.? };
+    }
+    return forProvider(provider_id);
 }
 
 test "subagent tier ladder: every rung is a real model on its own provider (#291)" {

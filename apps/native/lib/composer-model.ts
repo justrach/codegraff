@@ -61,5 +61,13 @@ export function pillFromAcp(
 }
 
 export function sameModels(a: ModelChoice[], b: ModelChoice[]): boolean {
-  return a.length === b.length && a.every((m, i) => m.key === b[i]?.key && m.name === b[i]?.name);
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+export function rememberChatCatalog(catalogs: Record<number, ModelChoice[]>, id: number, models: ModelChoice[]): Record<number, ModelChoice[]> {
+  return sameModels(catalogs[id] ?? [], models) ? catalogs : { ...catalogs, [id]: models };
+}
+
+export function sharedModelChoices(models: ModelChoice[]): ModelChoice[] {
+  return models.map(({ effort: _effort, fast: _fast, current: _current, ...row }) => row);
 }

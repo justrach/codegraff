@@ -17,7 +17,7 @@ export default function EmptyState({
   health,
   models,
   modelKey,
-  onModelChange,
+  onModelChange, onModelOpen,
   history,
   cwd,
   commands, compact = false,
@@ -27,7 +27,7 @@ export default function EmptyState({
   health: Health | null;
   models: PromptModel[];
   modelKey?: string;
-  onModelChange: (key: string) => void;
+  onModelChange: (key: string) => void; onModelOpen?: () => void;
   /** Earlier prompts for ArrowUp recall in the composer. */
   history?: readonly string[];
   /** This tab's workspace; absent, the server's default from `health`. */
@@ -64,7 +64,7 @@ export default function EmptyState({
           placeholder={compact ? "Ask graff…" : "Ask graff to read, edit, or review this workspace…"}
           models={models}
           modelKey={modelKey}
-          onModelChange={onModelChange}
+          onModelChange={onModelChange} onModelOpen={onModelOpen}
           onSend={onSend} onSetting={onSetting}
           disabled={health !== null && !health.ok}
           history={history}

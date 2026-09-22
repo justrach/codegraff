@@ -23,6 +23,11 @@ elif args[:2]==['run','list']:
     if state.get('unavailable'):sys.exit(1)
     sha=args[args.index('--commit')+1]
     status=state.get('runs','success') if sha==state['initial_head'] else state.get('new_runs','failure')
+    if state.get('run_sequence'):
+        sample=state.get('run_sample',0)
+        status=state['run_sequence'][min(sample,len(state['run_sequence'])-1)]
+        state['run_sample']=sample+1
+        (root/'gh-state.json').write_text(json.dumps(state))
     if status=='malformed': print('invalid');sys.exit()
     if status=='none': print('[]');sys.exit()
     print(json.dumps([{'status':'queued' if status=='pending' else 'completed','conclusion':None if status=='pending' else status}]))

@@ -180,6 +180,11 @@ record only when you need the evidence or the edge cases.
 | [0156](0156-linux-desktop-sandbox-fallback.md) | Linux desktop uses system window decorations, a POSIX terminal, and a sandbox fallback when user namespaces or the setuid helper are unavailable. |
 | [0157](0157-linux-desktop-release-is-the-unsigned-deb.md) | Tag releases upload the unsigned Linux `.deb` (and AppImage when the packager built one). macOS stays notarized; do not skip the Linux upload for lack of a signature. |
 
+| [0158](0158-mimo-workers-prefer-local-flash.md) | MiMo workers use local Pro/Flash defaults; live catalog and price checks still apply, and benchmark scores are never invented. |
+
+| [0159](0159-picker-catalog-refresh-is-bounded.md) | Opening a model surface refreshes only the gateway catalog, with a short deadline and the existing snapshot as fallback. |
+| [0160](0160-model-picks-wait-for-next-prompt.md) | Running model picks stay per chat and apply only at the next prompt boundary without cancelling the current response. |
+
 ## When to write one
 
 Write an ADR when a decision is load-bearing and non-obvious: it was reached

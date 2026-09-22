@@ -36,11 +36,7 @@ fn observe(self: *Agent, cmd: []const u8) !?ExecResult {
                 ev.head_sha = evmod.remoteHead(self.gpa, self.io, self.arena, target, head) catch "";
             }
             if (evmod.validSha(ev.head_sha)) {
-                const json = evmod.capture(self.gpa, self.io, self.arena, target, &.{ "gh", "run", "list", "--commit", ev.head_sha, "--json", "conclusion,status", "--limit", "1000" }) catch "";
-                ev.head_status = pr_publish.headStatusFromRunList(json);
-                // This cap must not silently hide a failing/pending older run.
-                const parsed = std.json.parseFromSliceLeaky(std.json.Value, self.arena, json, .{}) catch .null;
-                if (parsed == .array and parsed.array.items.len >= 1000) ev.head_status = .unknown;
+                ev.head_status = headStatus(self, target, ev.head_sha);
             }
             ev.body = command.flag("--body", "-b") orelse "";
             if (command.flag("--body-file", "-F")) |body_file| {
@@ -52,6 +48,14 @@ fn observe(self: *Agent, cmd: []const u8) !?ExecResult {
             ev = .{ .head_sha = receipt.head, .head_status = receipt.status, .body = receipt.body };
         }
     }
+    if (!draft and ev.head_status == .pending) {
+        var poll: PendingPoll = .{ .agent = self, .target = target, .creating = creating, .alternate_head = command.flag("--head", "-H"), .initial = ev, .started = std.Io.Timestamp.now(self.io, .awake) };
+        ev = waitPending(&poll, ev) catch |err| return .{
+            .text = if (err == error.Interrupted) "PR publication preflight: waiting for CI was cancelled; write NOT performed." else "PR publication preflight: the head changed or readiness could not be refreshed while waiting; write NOT performed.",
+            .is_error = true,
+            .cancelled = err == error.Interrupted,
+        };
+    }
     if (pr_publish.decide(draft, ev) != .allow) return .{ .text = pr_publish.refuseText(self.arena, cmd, ev), .is_error = true };
     if (!draft) {
         const review = @import("pr_claim_review.zig").review(self, target, command.flag("--base", "-B"), creating, ev.head_sha, ev.body, ev.head_status) catch
@@ -60,6 +64,104 @@ fn observe(self: *Agent, cmd: []const u8) !?ExecResult {
     }
     @import("pr_verify.zig").arm(self, target, creating and command.flag("--head", "-H") == null) catch return .{ .text = "PR publication preflight: could not persist the CI verification obligation; write NOT performed", .is_error = true };
     return null;
+}
+
+fn headStatus(self: *Agent, target: @import("pr_evidence.zig").Target, head: []const u8) pr_publish.HeadStatus {
+    const json = @import("pr_evidence.zig").capture(self.gpa, self.io, self.arena, target, &.{ "gh", "run", "list", "--commit", head, "--json", "conclusion,status", "--limit", "1000" }) catch return .unknown;
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, self.arena, json, .{}) catch return .unknown;
+    if (parsed == .array and parsed.array.items.len >= 1000) return .unknown;
+    return pr_publish.headStatusFromRunList(json);
+}
+
+const PendingPoll = struct {
+    agent: *Agent,
+    target: @import("pr_evidence.zig").Target,
+    creating: bool,
+    alternate_head: ?[]const u8,
+    initial: pr_publish.Evidence,
+    started: std.Io.Timestamp,
+
+    fn expired(self: *PendingPoll) bool {
+        return self.started.untilNow(self.agent.io, .awake).toMilliseconds() >= 60_000;
+    }
+    fn cancelled(self: *PendingPoll) bool {
+        return Agent.esc_cancel.load(.acquire) or if (self.agent.loop_deadline_ms) |deadline| @import("util.zig").unixMs(self.agent.io) >= deadline else false;
+    }
+    fn pause(self: *PendingPoll) !void {
+        for (0..8) |_| {
+            if (self.cancelled()) return error.Interrupted;
+            if (self.expired()) return;
+            try self.agent.io.sleep(.fromMilliseconds(250), .awake);
+        }
+    }
+    fn read(self: *PendingPoll) !pr_publish.Evidence {
+        const ev = @import("pr_evidence.zig");
+        const a = self.agent;
+        if (!self.creating) {
+            const latest = try ev.pr(a.gpa, a.io, a.arena, self.target);
+            return .{ .head_sha = latest.head, .head_status = latest.status, .body = latest.body };
+        }
+        const status = headStatus(a, self.target, self.initial.head_sha);
+        const current = if (self.alternate_head) |branch|
+            try ev.remoteHead(a.gpa, a.io, a.arena, self.target, branch)
+        else
+            try ev.localHead(a.gpa, a.io, a.arena, self.target);
+        return .{ .head_sha = current, .head_status = status, .body = self.initial.body };
+    }
+};
+
+// The poller is injectable so expiry, cancellation and head changes are tested
+// without delaying the unit suite. Missing runs after a pending sample are not
+// proof of completion; only an observed terminal result resolves that wait.
+fn waitPending(poll: anytype, initial: pr_publish.Evidence) !pr_publish.Evidence {
+    var current = initial;
+    while (current.head_status == .pending) {
+        if (poll.cancelled()) return error.Interrupted;
+        if (poll.expired()) return current;
+        try poll.pause();
+        if (poll.cancelled()) return error.Interrupted;
+        if (poll.expired()) return current;
+        current = try poll.read();
+        if (poll.cancelled()) return error.Interrupted;
+        if (!std.mem.eql(u8, initial.head_sha, current.head_sha)) return error.HeadChanged;
+        if (current.head_status == .none) current.head_status = .unknown;
+    }
+    return current;
+}
+
+test "pending publication waits for exact-head terminal evidence and fails closed" {
+    const Poll = struct {
+        samples: []const pr_publish.Evidence,
+        at: usize = 0,
+        stop: bool = false,
+        elapsed: bool = false,
+        fn expired(self: *@This()) bool {
+            return self.elapsed;
+        }
+        fn cancelled(self: *@This()) bool {
+            return self.stop;
+        }
+        fn pause(_: *@This()) !void {}
+        fn read(self: *@This()) !pr_publish.Evidence {
+            const result = self.samples[self.at];
+            self.at += 1;
+            return result;
+        }
+    };
+    const initial: pr_publish.Evidence = .{ .head_sha = "a", .head_status = .pending };
+    for ([_]pr_publish.HeadStatus{ .passed, .failed, .unknown, .none }) |status| {
+        const samples = [_]pr_publish.Evidence{ initial, .{ .head_sha = "a", .head_status = status } };
+        var poll: Poll = .{ .samples = &samples };
+        try std.testing.expectEqual(if (status == .none) pr_publish.HeadStatus.unknown else status, (try waitPending(&poll, initial)).head_status);
+        try std.testing.expectEqual(@as(usize, 2), poll.at);
+    }
+    var moved: Poll = .{ .samples = &.{.{ .head_sha = "b", .head_status = .passed }} };
+    try std.testing.expectError(error.HeadChanged, waitPending(&moved, initial));
+    var stopped: Poll = .{ .samples = &.{}, .stop = true };
+    try std.testing.expectError(error.Interrupted, waitPending(&stopped, initial));
+    var expired: Poll = .{ .samples = &.{}, .elapsed = true };
+    try std.testing.expectEqual(pr_publish.HeadStatus.pending, (try waitPending(&expired, initial)).head_status);
+    try std.testing.expectEqual(@as(usize, 0), expired.at);
 }
 
 pub fn bash(self: *Agent, cmd: []const u8) !?ExecResult {
@@ -95,8 +197,8 @@ pub fn beforeExec(ctx: tools_mod.ToolCtx, cmd: []const u8) !?tools_mod.ToolOutpu
     if (!artifact_claim.isClaimedMutation(cmd)) return null;
     var scratch = std.heap.ArenaAllocator.init(ctx.gpa);
     defer scratch.deinit();
-    var agent: Agent = .{ .gpa = ctx.gpa, .arena = scratch.allocator(), .io = ctx.io, .client = ctx.client, .provider = ctx.provider, .messages = undefined, .sub = ctx.from_sub, .label = "", .out = null, .agent_cwd = ctx.agent_cwd, .run_budget = ctx.run_budget, .depth = ctx.depth, .tracer = ctx.tracer, .publication_checks = ctx.publication_checks, .loop_deadline_ms = ctx.loop_deadline_ms };
-    if (try bash(&agent, cmd)) |denied| return .{ .text = try ctx.gpa.dupe(u8, denied.text), .is_error = true };
+    var agent: Agent = .{ .gpa = ctx.gpa, .arena = scratch.allocator(), .io = ctx.io, .client = ctx.client, .provider = ctx.provider, .messages = undefined, .sub = ctx.from_sub, .label = "", .out = null, .agent_cwd = ctx.agent_cwd, .run_budget = ctx.run_budget, .depth = ctx.depth, .tracer = ctx.tracer, .publication_checks = if (ctx.publication_observer) |observer| try observer.state.snapshot(scratch.allocator(), ctx.io) else ctx.publication_checks, .loop_deadline_ms = ctx.loop_deadline_ms };
+    if (try bash(&agent, cmd)) |denied| return .{ .text = try ctx.gpa.dupe(u8, denied.text), .is_error = true, .cancelled = denied.cancelled };
     return null;
 }
 

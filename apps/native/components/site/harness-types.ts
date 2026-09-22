@@ -6,7 +6,7 @@ export type Msg =
 /** `model` is what this tab's own agent was spawned with; the harness-level
  * model is only the default a new tab inherits. `cwd` is the workspace the
  * tab's agent runs in — fixed at spawn, like the model. */
-export type Chat = { id: number; title: string | null; messages: Msg[]; model?: string; session?: string; cwd?: string;
+export type Chat = { id: number; title: string | null; messages: Msg[]; model?: string; nextModel?: string; preparingModel?: string; session?: string; cwd?: string;
   /** The model named this tab from its first prompt: the session poller,
    * which reads graff's own saved title, must leave it alone. */
   titledByModel?: boolean;

@@ -14,7 +14,7 @@ import { overlayClearancePx } from "@/lib/follow-scroll";
 
 export default function ChatColumn({ thread, compact, following, register, onOpenPath, onReview, onAnswer, onEditPrompt,
   prompt, queue, pins, onShowPins, onClearPins, health, onOpenProject, onProjects, onConversations,
-  onRefresh, onContinue }: {
+  onRefresh, onContinue, catalogStatus, retryCatalog }: {
   thread: Chat; compact: boolean; following: boolean;
   register: (element: HTMLDivElement | null) => void;
   onOpenPath: (path: string) => void; onReview: () => void;
@@ -24,6 +24,7 @@ export default function ChatColumn({ thread, compact, following, register, onOpe
   pins: number; onShowPins: () => void; onClearPins: () => void;
   health: Health | null; onOpenProject: () => void; onProjects: () => void; onConversations: () => void;
   onRefresh: (loaded: Awaited<ReturnType<typeof loadSession>>) => void; onContinue: () => void;
+  catalogStatus?: { loading: boolean; error?: string }; retryCatalog?: () => void;
 }) {
   const measured = thread.messages.findLast(message => message.role === "assistant" && message.turn.contextMeter);
   const contextMeter = measured?.role === "assistant" ? measured.turn.contextMeter : undefined;
@@ -38,13 +39,16 @@ export default function ChatColumn({ thread, compact, following, register, onOpe
     observer.observe(overlay);
     return () => observer.disconnect();
   }, []);
+  const catalogNotice = catalogStatus?.error ? <div role="alert" className="px-4 py-2 text-xs text-ink-2">Could not refresh models. <button type="button" onClick={retryCatalog} className="underline">Retry</button></div> : catalogStatus?.loading ? <div role="status" className="px-4 py-2 text-xs text-ink-3">Loading models…</div> : null;
   if (!thread.messages.length && !thread.snapshot) return <div className="min-h-0 flex-1 overflow-y-auto">
+    {catalogNotice}
     <EmptyState compact={compact} onOpenProject={onOpenProject} onProjects={onProjects}
       onContinue={onConversations} onReview={onReview} onSend={prompt.onSend} onSetting={prompt.onSetting}
       health={health} history={prompt.history} cwd={prompt.root} models={prompt.models}
-      modelKey={prompt.modelKey} onModelChange={prompt.onModelChange} commands={prompt.commands} />
+      modelKey={prompt.modelKey} onModelOpen={prompt.onModelOpen} onModelChange={prompt.onModelChange} commands={prompt.commands} />
   </div>;
   return <div ref={hostRef} className="relative flex min-h-0 flex-1 flex-col">
+    {catalogNotice}
     <ChatTranscript messages={thread.messages} register={register} following={following}
       onOpenPath={onOpenPath} onReview={onReview} onAnswer={onAnswer} snapshot={thread.snapshot} onEditPrompt={onEditPrompt} busy={prompt.busy} />
     <div ref={composerRef} data-chat-composer className={`pointer-events-none absolute inset-x-0 bottom-0 z-10 px-4 ${composer.dock} ${compact ? "py-2" : "pt-16 pb-6 sm:px-8"}`}>

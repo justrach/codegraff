@@ -18,6 +18,13 @@ in the same execution directory clears its record; unrelated successful commands
 Non-draft publication is refused while an applicable record remains unresolved.
 Draft creation remains available.
 
+The advertised `shell` run action and its `bash` alias share this collector,
+including host calls consumed through RLM. Successful recognized checks retain
+bounded output and the post-run Git head and tracked-tree status for claim
+review. These observations do not prove immutable execution. Build, typecheck,
+lint, direct test-runner scripts and literal environment prefixes are recognized
+alongside the existing test commands; output/kill actions are not new runs.
+
 A non-draft publication must occupy its own tool batch. It cannot race a check
 or edit requested in the same model response.
 

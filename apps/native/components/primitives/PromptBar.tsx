@@ -6,7 +6,7 @@ import ModelPicker from "./ModelPicker";
 import layout from "./PromptBar.module.css";
 import ModelEffortButtons from "./ModelEffortButtons";
 import type { ModelChoice } from "@/lib/acp-client";
-import { resolveComposerModel } from "@/lib/composer-model";
+import { resolveComposerModel, sameModels } from "@/lib/composer-model";
 import { shouldPickComposerRow } from "@/lib/composer-keyboard";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ComposerMenu from "./ComposerMenu";
@@ -45,8 +45,8 @@ export default function PromptBar({
   onSend, onSetting, onSteerQueued,
   models,
   commands,
-  modelKey,
-  onModelChange,
+  modelKey, modelPending,
+  onModelChange, onModelOpen,
   disabled,
   busy = false,
   onStop,
@@ -68,8 +68,8 @@ export default function PromptBar({
   /** The slash commands the agent advertised. Empty until it answers —
    * an empty menu beats inventing commands this build may not service. */
   commands?: AcpCommand[];
-  modelKey?: string;
-  onModelChange?: (key: string) => void;
+  modelKey?: string; modelPending?: boolean;
+  onModelChange?: (key: string) => void; onModelOpen?: () => void;
   disabled?: boolean;
   /** A turn is running: the send arrow morphs into a stop square. */
   busy?: boolean;
@@ -101,16 +101,13 @@ export default function PromptBar({
   const [plusOpen, setPlusOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [model, setModel] = useState<PromptModel>(() => resolveComposerModel(catalog, modelKey));
-  /* Live surfaces load their catalog async (graff/models); once it lands, or
-   * the owner re-points modelKey, the picked entry must follow — the initial
-   * useState snapshot is stale by then. Unknown keys keep their own name. */
+  // Follow both selection and metadata refreshes; unknown keys keep their name.
   useEffect(() => {
     const next = resolveComposerModel(catalog, modelKey);
-    setModel((cur) => (cur.key === next.key && cur.name === next.name ? cur : next));
+    setModel((cur) => (sameModels([cur], [next]) ? cur : next));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelKey, models]);
   const [dragging, setDragging] = useState(false);
-  /* Workspace files matching the current @ query — live surfaces only. */
   const [fileRows, setFileRows] = useState<{ key: string; name: string; desc: string }[]>([]);
   const [connected, setConnected] = useState(false);
   const [active, setActive] = useState(0);
@@ -545,9 +542,9 @@ export default function PromptBar({
             }`}
           />
 
-          <ModelEffortButtons model={model} buttonRef={modelRef} modelOpen={modelOpen} wide={wide} pill={pill} busy={busy}
+          <ModelEffortButtons model={model} pending={modelPending} buttonRef={modelRef} modelOpen={modelOpen} wide={wide} pill={pill} busy={busy}
             contextMeter={contextMeter} showContextMeter={!demo}
-            onCommand={onSetting} openModel={() => { setPlusOpen(false); setModelOpen(current => !current); }} />
+            onCommand={onSetting} openModel={() => { setPlusOpen(false); if (!modelOpen) onModelOpen?.(); setModelOpen(current => !current); }} />
 
           {/* Keep cancellation available while a follow-up is being drafted. */}
           <button

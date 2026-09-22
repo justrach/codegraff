@@ -104,7 +104,7 @@ The desktop and terminal use the same Graff harness.
 [![CodeGraff's bright desktop, framed in rice paper with workshop artwork](docs/images/desktop-chat-studio.png)](docs/images/desktop-chat-light.png)
 
 - **Keep track of work:** tabs distinguish running, finished, interrupted, and unread conversations.
-- **Control the next step:** choose a model and effort level, or steer a queued follow-up with Cmd+Enter.
+- **Control the next step:** choose a model and effort level, or steer a queued follow-up with Cmd+Enter on macOS or Ctrl+Enter on Windows and Linux.
 - **See what fits:** the composer shows remaining context and attachment previews.
 - **Choose an appearance:** White, Black, Website, CodeGraff, or a custom theme through `$gui-theme`.
 

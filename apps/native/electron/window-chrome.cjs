@@ -13,7 +13,8 @@ function mainWindowChrome({ platform = process.platform, liveGlass = false, titl
 }
 
 function revealWindowButtons(win, platform = process.platform) {
-  if (platform === 'darwin') win.setWindowButtonVisibility(true);
+  if (platform !== 'darwin' || typeof win.setWindowButtonVisibility !== 'function') return;
+  try { win.setWindowButtonVisibility(true); } catch { /* optional native chrome must not prevent launch */ }
 }
 
 module.exports = { mainWindowChrome, revealWindowButtons };

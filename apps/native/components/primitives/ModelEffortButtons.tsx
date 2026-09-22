@@ -13,16 +13,16 @@ function Bolt({ filled = false }: { filled?: boolean }) {
 function Chevron() {
   return <svg aria-hidden="true" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m4 6 4 4 4-4" /></svg>;
 }
-export default function ModelEffortButtons({ model, buttonRef, modelOpen, openModel, wide, pill, onCommand, busy, contextMeter, showContextMeter }: {
+export default function ModelEffortButtons({ model, buttonRef, modelOpen, openModel, wide, pill, onCommand, busy, pending, contextMeter, showContextMeter }: {
   model: ModelChoice; buttonRef: RefObject<HTMLButtonElement | null>; modelOpen: boolean; openModel(): void;
   wide: boolean; pill: boolean; onCommand?: (text: string) => Promise<void>; busy?: boolean;
-  contextMeter?: import("@/lib/context-meter").ContextMeter; showContextMeter?: boolean;
+  pending?: boolean; contextMeter?: import("@/lib/context-meter").ContextMeter; showContextMeter?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const savingRef = useRef(false);
-  const blocked = busy || saving || !onCommand;
+  const blocked = busy || pending || saving || !onCommand;
   const [position, setPosition] = useState({ left: 0, bottom: 0 });
   const [draft, setDraft] = useState(0);
   const panel = useRef<HTMLDivElement>(null);
@@ -59,13 +59,14 @@ export default function ModelEffortButtons({ model, buttonRef, modelOpen, openMo
   const progress = levels.length > 1 ? draft / (levels.length - 1) : 0;
   const displayName = model.name.replace(/^gpt-/i, "GPT-").replace(/-(astra|sol|terra|luna)$/i, (_, name: string) => ` ${name[0].toUpperCase()}${name.slice(1)}`);
   return <div data-model-controls className={`flex w-full min-w-0 items-center gap-0.5 ${wide ? "col-start-2 row-start-2 justify-self-start" : "col-start-3 row-start-1"}`}>
-    <button ref={buttonRef} type="button" aria-expanded={modelOpen} aria-label="Choose model" data-model={model.key} disabled={saving || busy} onClick={openModel}
+    <button ref={buttonRef} type="button" aria-expanded={modelOpen} aria-label="Choose model" data-model={model.key} disabled={saving} onClick={openModel}
       className={`flex h-7 min-w-0 items-center gap-1 px-1.5 text-[12px] font-medium text-ink-2 hover:bg-hover hover:text-ink ${pill ? "rounded-full" : "rounded-lg"}`}>
       {model.fast && model.fastSupported && <span className="text-accent [&_svg]:size-3.5" aria-label="Fast mode enabled"><Bolt filled /></span>}
-      <span className="truncate" title={displayName}>{displayName}</span><span className="shrink-0"><Chevron /></span>
+      <span className="truncate" title={pending ? `Next message: ${displayName}` : displayName}>{displayName}{pending && <span className="text-ink-3"> · Next</span>}</span><span className="shrink-0"><Chevron /></span>
     </button>
     {levels.length > 0 && <button ref={effortButton} type="button" aria-label="Select effort" aria-expanded={open} onClick={show}
       className="flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2 text-xs text-ink-3 hover:bg-hover">{labels[model.effort ?? ""] ?? "Effort"}<Chevron /></button>}
+    {model.key && levels.length === 0 && <span className="shrink-0 px-2 text-xs text-ink-3" title={model.effortLevels ? "This model does not offer configurable reasoning effort." : "Reasoning settings will appear after this model's capabilities are loaded."}>{model.effortLevels ? "Fixed reasoning" : "Reasoning pending"}</span>}
     {showContextMeter && <ContextMeter reading={contextMeter} />}
     {open && createPortal(<div ref={panel} role="dialog" aria-label="Reasoning effort" style={{ ...position, width: effortPanelWidth }}
       className="motion-surface fixed z-[100] max-w-[calc(100vw-24px)] rounded-window border border-line bg-page px-2 pb-[7px] pt-1.5 text-ink shadow-[0_8px_24px_-8px_rgb(0_0_0/18%)]">

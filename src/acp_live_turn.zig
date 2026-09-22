@@ -21,6 +21,7 @@ pub const LiveTurn = struct {
     out: *Io.Writer,
     session_id: []const u8 = "",
     saw_text: bool = false,
+    local_catalog_loaded: bool = false,
     prev_turn_id: u64 = 0,
     prev_prompt_fp: [16]u8 = @splat(0),
     inbox: ?*@import("acp_inbox.zig").Inbox = null,

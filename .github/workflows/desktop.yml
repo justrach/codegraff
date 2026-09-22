@@ -37,6 +37,8 @@ jobs:
           bun run test:webauthn
       - run: bun run build
       - run: bunx playwright install chromium
+      - name: Model catalog retry and per-chat reasoning controls
+        run: node scripts/test-model-catalog.mjs
       - name: Compact reasoning effort control
         run: node scripts/test-motion.mjs "$PWD" ../../zig-out/motion/effort-picker --effort-only
       - run: bun run test:keyboard

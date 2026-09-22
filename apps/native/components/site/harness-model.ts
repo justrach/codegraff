@@ -12,6 +12,7 @@ export function createModelSwitcher(opts: {
   activeChatId(): number;
   requireSession(id: number, reset?: boolean, key?: string): Promise<string>;
   setChatModel(id: number, key: string): void;
+  setChats: Dispatch<SetStateAction<Chat[]>>;
   setCancelError: Dispatch<SetStateAction<Record<number, string>>>;
   setPendingModel: Dispatch<SetStateAction<PendingModel | null>>;
 }) {
@@ -32,9 +33,28 @@ export function createModelSwitcher(opts: {
         }
       });
   };
+  const patch = (chatId: number, fields: Partial<Chat>) => {
+    opts.chatsRef.current = opts.chatsRef.current.map(chat => chat.id === chatId ? { ...chat, ...fields } : chat);
+    opts.setChats(current => current.map(chat => chat.id === chatId ? { ...chat, ...fields } : chat));
+  };
+  const stage = (chatId: number, key?: string) => patch(chatId, { nextModel: key });
+  const prepareModel = async (chatId: number) => {
+    const key = opts.chatsRef.current.find(chat => chat.id === chatId)?.nextModel;
+    if (!key) return;
+    patch(chatId, { preparingModel: key });
+    try {
+      await opts.requireSession(chatId, true, key);
+      opts.setChatModel(chatId, key);
+      if (opts.chatsRef.current.find(chat => chat.id === chatId)?.nextModel === key) stage(chatId);
+    } finally { patch(chatId, { preparingModel: undefined }); }
+  };
   const changeModel = (key: string, forChat?: number) => {
     const chatId = forChat ?? opts.activeChatId();
     const chat = opts.chatsRef.current.find((c) => c.id === chatId);
+    if (opts.runningRef.current.has(chatId) || chat?.nextModel) {
+      stage(chatId, key === chat?.model && !chat?.preparingModel ? undefined : key);
+      return;
+    }
     lock({ key, chatId });
     if (shouldConfirmModelSwitch(chat?.messages.length ?? 0, opts.runningRef.current.has(chatId))) {
       opts.setPendingModel({ key, chatId });
@@ -50,5 +70,5 @@ export function createModelSwitcher(opts: {
     opts.setPendingModel(null);
     applyModel(picked.key, picked.chatId);
   };
-  return { applyModel, changeModel, cancelPending, confirmPending };
+  return { applyModel, changeModel, cancelPending, confirmPending, prepareModel };
 }

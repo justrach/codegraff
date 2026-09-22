@@ -68,8 +68,14 @@ pub fn modelForProvider(provider_id: []const u8, query: []const u8) ?[]const u8 
 /// `tier: small` still seats luna for cheap search. A Sol root still drops
 /// one rung onto terra.
 fn defaultLadderModel(root: provider_mod.Provider) ?[]const u8 {
-    const ladder = tier_ladder.forProvider(root.id) orelse return null;
+    const ladder = tier_ladder.forModel(root.id, root.model) orelse return null;
     if (std.mem.startsWith(u8, root.model, "gpt-6")) return null;
+    if (ladder.small) |small| {
+        if (pricing.modelAliasEquals(small, "mimo-v2.6-flash")) {
+            if (!pricing.modelAliasEquals(root.model, small) and @import("subagent_pin.zig").rungAffordableOn(root, small)) return small;
+            return null;
+        }
+    }
     if (std.mem.eql(u8, root.model, ladder.frontier) or std.mem.eql(u8, root.model, "gpt-5.6-sol"))
         return ladder.mid orelse ladder.small;
     if (ladder.mid) |mid| {

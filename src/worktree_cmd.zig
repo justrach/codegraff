@@ -22,6 +22,13 @@ const codegraff_coauthor = "Co-Authored-By: Codegraff <blackfloofie@codegraff.co
 // identity) live in their own modules: jobs.zig is at the 600-line cap.
 const worktree_prune = @import("worktree_prune.zig");
 
+fn landSourceClean(gpa: Allocator, io: Io, path: []const u8) bool {
+    const status = runCapped(gpa, io, &.{ "git", "-C", path, "status", "--porcelain", "--untracked-files=all" }, 1 << 16, 8192, 30_000) catch return false;
+    defer gpa.free(status.stdout);
+    defer gpa.free(status.stderr);
+    return ranOk(status) and std.mem.trim(u8, status.stdout, " \t\r\n").len == 0;
+}
+
 /// Per-turn checkpoint commit for `-w` sessions. The worktree branch is a
 /// throwaway scratch branch, so committing every turn is free and gives durable
 /// rewind points across restarts; `graff worktree merge` later --squashes the
@@ -77,6 +84,13 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
         const wt_path = try std.fmt.allocPrint(arena, ".graff/worktrees/{s}", .{name});
         const wt_branch = try std.fmt.allocPrint(arena, "worktree-{s}", .{name});
 
+        // Squash reads committed history, not this checkout's local edits.
+        // Refuse before touching the destination, including untracked files.
+        if (!landSourceClean(gpa, io, wt_path)) {
+            try out.writeAll("✗ workspace has uncommitted files or could not be verified — commit or stash its changes before landing\n");
+            return;
+        }
+
         // Refuse to land into a dirty tree: the conflict-recovery below resets
         // tracked files, which would eat uncommitted work. Untracked files (the
         // worktrees, traces) are fine — reset --hard leaves them be.
@@ -121,10 +135,18 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
         }
 
         // 3) clean up: remove the worktree dir, then delete its now-free branch.
-        if (runCapped(gpa, io, &.{ "git", "worktree", "remove", "--force", wt_path }, 8192, 8192, 30_000)) |r| {
+        if (runCapped(gpa, io, &.{ "git", "worktree", "remove", wt_path }, 8192, 8192, 30_000)) |r| {
+            const removed = ranOk(r);
             gpa.free(r.stdout);
             gpa.free(r.stderr);
-        } else |_| {}
+            if (!removed) {
+                try out.writeAll("✓ landed committed changes; workspace checkout and branch kept because removal was refused\n");
+                return;
+            }
+        } else |_| {
+            try out.writeAll("✓ landed committed changes; workspace checkout and branch kept because removal failed\n");
+            return;
+        }
         if (runCapped(gpa, io, &.{ "git", "branch", "-D", wt_branch }, 8192, 8192, 30_000)) |r| {
             gpa.free(r.stdout);
             gpa.free(r.stderr);
@@ -260,6 +282,41 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
     }
 
     try out.print("unknown worktree command '{s}' — use: graff worktree list | create <name> [base] | run <name> | update <name> | land <name> | archive <name> | merge <name> | remove <name> | gc | prune [older-than <days>]\n", .{action});
+}
+
+test "land source gate preserves untracked staged and unstaged work and fails closed" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(path);
+    const Git = struct {
+        fn run(a: Allocator, test_io: Io, cwd: []const u8, args: []const []const u8) !void {
+            var argv: std.ArrayList([]const u8) = .empty;
+            defer argv.deinit(a);
+            try argv.appendSlice(a, &.{ "git", "-C", cwd });
+            try argv.appendSlice(a, args);
+            const result = try runCapped(a, test_io, argv.items, 8192, 8192, 30_000);
+            defer a.free(result.stdout);
+            defer a.free(result.stderr);
+            try std.testing.expect(ranOk(result));
+        }
+    };
+    try std.testing.expect(!landSourceClean(gpa, io, path));
+    try Git.run(gpa, io, path, &.{ "init", "-q" });
+    try std.testing.expect(landSourceClean(gpa, io, path));
+    try tmp.dir.writeFile(io, .{ .sub_path = "work.txt", .data = "original\n" });
+    try std.testing.expect(!landSourceClean(gpa, io, path));
+    try Git.run(gpa, io, path, &.{ "add", "work.txt" });
+    try std.testing.expect(!landSourceClean(gpa, io, path));
+    try Git.run(gpa, io, path, &.{ "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "initial" });
+    try std.testing.expect(landSourceClean(gpa, io, path));
+    try tmp.dir.writeFile(io, .{ .sub_path = "work.txt", .data = "keep this edit\n" });
+    try std.testing.expect(!landSourceClean(gpa, io, path));
+    const retained = try tmp.dir.readFileAlloc(io, "work.txt", gpa, .limited(1024));
+    defer gpa.free(retained);
+    try std.testing.expectEqualStrings("keep this edit\n", retained);
 }
 
 test { // split-out module: unreferenced, its tests silently never run

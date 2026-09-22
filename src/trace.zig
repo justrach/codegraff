@@ -403,14 +403,16 @@ pub const ToolSink = struct {
     mutex: Io.Mutex = .init,
     entries: std.ArrayList(Entry) = .empty,
 
-    const Entry = struct { name: []const u8, err: bool };
+    const Entry = struct { name: []const u8, err: bool, allocator: Allocator };
     const cap = 64;
 
     pub fn add(self: *ToolSink, io: Io, gpa: Allocator, name: []const u8, err: bool) void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         if (self.entries.items.len >= cap) return;
-        self.entries.append(gpa, .{ .name = name, .err = err }) catch {};
+        // RLM host names can belong to a short-lived script arena.
+        const owned = gpa.dupe(u8, name) catch return;
+        self.entries.append(gpa, .{ .name = owned, .err = err, .allocator = gpa }) catch gpa.free(owned);
     }
 
     /// "read_file,edit_file!,bash" — `!` marks a failed call. Allocated from
@@ -443,13 +445,31 @@ pub const ToolSink = struct {
     pub fn clear(self: *ToolSink, io: Io) void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
+        for (self.entries.items) |entry| entry.allocator.free(entry.name);
         self.entries.clearRetainingCapacity();
     }
 
     pub fn deinit(self: *ToolSink, gpa: Allocator) void {
+        for (self.entries.items) |entry| entry.allocator.free(entry.name);
         self.entries.deinit(gpa);
     }
 };
+
+test "ToolSink owns transient script names until clear or deinit" {
+    const gpa = std.testing.allocator;
+    var sink: ToolSink = .{};
+    defer sink.deinit(gpa);
+    var name = [_]u8{ 'b', 'a', 's', 'h' };
+    sink.add(std.testing.io, gpa, &name, false);
+    @memset(&name, 'x');
+    const rendered = sink.render(gpa);
+    defer gpa.free(rendered);
+    try std.testing.expectEqualStrings("bash", rendered);
+    sink.clear(std.testing.io);
+    try std.testing.expectEqual(@as(u64, 0), sink.count());
+    sink.add(std.testing.io, gpa, "shell", true);
+    try std.testing.expectEqual(@as(u64, 1), sink.errorCount());
+}
 
 test "ToolSink.count: total calls independent of render()'s joined-string shape, including failures (#276 P0-3)" {
     var sink: ToolSink = .{};

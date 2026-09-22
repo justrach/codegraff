@@ -1,6 +1,7 @@
-import { closeSync, existsSync, fstatSync, openSync, readdirSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { withoutGuiSkillContext } from "./gui-skills";
 
 /** Same layout `src/session_index.zig` owns. Header fields land before
@@ -207,22 +208,31 @@ function newerFirst(a: StoredSessionRow, b: StoredSessionRow): number {
   return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
 }
 
-/** Auto-isolate trees live here (ADR 0146). Other git worktrees are listed
- *  by the engine via `git worktree list`. */
+/** Match engine discovery, including linked trees outside the repository. */
 export function extraWorktreeRoots(cwd: string): string[] {
-  const root = path.join(cwd, ".graff", "worktrees");
-  if (!existsSync(root)) return [];
+  const roots = new Set<string>();
   try {
-    return readdirSync(root, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => path.join(root, entry.name));
-  } catch {
-    return [];
-  }
+    const current = realpathSync(cwd);
+    const listed = execFileSync("git", ["-C", cwd, "worktree", "list", "--porcelain", "-z"], {
+      encoding: "utf8", timeout: 2000, maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "ignore"],
+    });
+    for (const field of listed.split("\0")) {
+      if (!field.startsWith("worktree ")) continue;
+      const tree = field.slice("worktree ".length);
+      if (path.isAbsolute(tree) && !sameWorkspace(tree, current) && existsSync(tree)) roots.add(tree);
+    }
+  } catch { /* Non-git folders still expose local auto-isolate saves. */ }
+  const root = path.join(cwd, ".graff", "worktrees");
+  try {
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (entry.isDirectory()) roots.add(path.join(root, entry.name));
+    }
+  } catch { /* The auto-isolate directory need not exist. */ }
+  return [...roots];
 }
 
 /** Cwd saves first (they win on the same base name), then linked worktrees
- *  under `.graff/worktrees` (#1151), then `~/.graff/sessions` when that tree
+ *  including external linked trees (#1151), then `~/.graff/sessions` when that tree
  *  is a different workspace. ADR 0059 / #712. */
 export function listSessionRows(cwd: string, home = homeDir()): StoredSessionRow[] {
   const cwdDir = path.join(cwd, SESSIONS_DIR);

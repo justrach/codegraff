@@ -79,6 +79,7 @@ pub fn runExternal(self: *Agent, calls: []const ToolCall, ext_idx: []const usize
         .tracer = self.tracer,
         .run_budget = self.run_budget,
         .publication_checks = self.publication_checks,
+        .publication_observer = .{ .context = self, .state = &self.publication_checks, .record = @import("pr_local_checks.zig").observeOutput },
         .depth = self.depth,
         .snapshots = self.snapshots,
         .tools_used = &self.tools_used,

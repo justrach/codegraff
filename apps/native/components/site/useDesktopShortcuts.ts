@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useRef } from 'react';
 import { desktop } from '@/lib/desktop';
+import { isFullscreenShortcut, shortcutModifiers } from '@/lib/shortcut-glyph';
 type Actions = {
   newChat():void; closeChat(id:number):void; reopenClosed():void; toggleSplit():void;
   split(direction:'row'|'column'):void; focusChat(id:number):void; zoomPane():void;
@@ -39,13 +40,10 @@ export function useDesktopShortcuts(actions: Actions) {
     const onKey=(e:KeyboardEvent)=>{
       // Dialogs own their typing and navigation. Escape and Tab remain local.
       if(e.isComposing||e.keyCode===229)return;
-      const mac=/Mac|iPhone|iPad/.test(navigator.platform);
-      const shortcut=e.metaKey||(!mac&&e.ctrlKey);
-      if(e.target instanceof Element&&e.target.closest('[data-workspace-terminal]')&&!shortcut)return;
+      const {command,resize:chord}=shortcutModifiers(e,navigator.platform);
+      if(e.target instanceof Element&&e.target.closest('[data-workspace-terminal]')&&!command)return;
       if(document.querySelector('[role="dialog"]'))return;
       const a=ref.current,k=e.key.toLowerCase();let handled=false;
-      const command=e.metaKey||e.ctrlKey;
-      const chord=mac?e.metaKey&&e.ctrlKey:e.ctrlKey&&e.altKey;
       const focus=(id:number)=>{
         a.focusChat(id);
         requestAnimationFrame(()=>{
@@ -71,7 +69,7 @@ export function useDesktopShortcuts(actions: Actions) {
           else if(k==='b'&&!e.shiftKey){window.dispatchEvent(new CustomEvent('graff-toggle-sidebar'));handled=true;}
           else if(['[',']','{','}'].includes(k)){cycle(e.shiftKey?a.chats.map(c=>c.id):a.columns,k==='['||k==='{'?-1:1);handled=true;}
           else if(!e.shiftKey&&/^[1-9]$/.test(k)){const chat=k==='9'?a.chats.at(-1):a.chats[Number(k)-1];if(chat)focus(chat.id);handled=true;}
-          else if(k==='enter'||(e.ctrlKey&&k==='f')){void desktop()?.windowControl?.('fullscreen');handled=true;}
+          else if(isFullscreenShortcut(e,navigator.platform)){void desktop()?.windowControl?.('fullscreen');handled=true;}
           else if(['=','+','-','0'].includes(k)){void desktop()?.windowControl?.(k==='0'?'reset-zoom':k==='-'?'zoom-out':'zoom-in');handled=true;}
         }
       }
