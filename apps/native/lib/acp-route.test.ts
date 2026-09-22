@@ -132,13 +132,13 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   }
 }, 10000);
 
-test("an older failed bootstrap cannot retire a newer chat worker", async () => {
+test("superseded model bootstraps adopt the final replacement worker", async () => {
   const temp = mkdtempSync(path.join(os.tmpdir(), "graff-acp-replacement-"));
   const binary = path.join(temp, "agent.cjs");
   const oldBin = process.env.GRAFF_BIN;
   writeFileSync(binary, `#!/usr/bin/env node
 const fs=require('node:fs');
-const stalled=process.argv.includes('stalled');
+const stalled=process.argv.some(arg=>arg.startsWith('stalled'));
 fs.appendFileSync('starts',String(process.pid)+'\\n');
 const send=value=>console.log(JSON.stringify(value));
 require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
@@ -159,26 +159,35 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
   })), method);
   try {
     process.env.GRAFF_BIN = binary;
-    const older = call("bootstrap", {cwd:temp,model:"stalled",mcp:true});
-    await deadline((async()=>{
+    const waitForStalled = (previous?: string) => deadline((async()=>{
       for(;;) {
-        try { readFileSync(path.join(temp,"stalled")); return; } catch {}
+        try {
+          const current = readFileSync(path.join(temp,"stalled"),"utf8");
+          if (current !== previous) return current;
+        } catch {}
         await new Promise(resolve=>setTimeout(resolve,10));
       }
     })(),"stalled child ready");
-    const newer = await call("bootstrap", {cwd:temp,model:"replacement",mcp:true});
-    expect(newer.status).toBe(200);
-    const failed = await older;
-    expect(failed.status).toBe(502);
-    expect((await failed.json()).error).toContain("ACP startup failed during initialize");
+    const older = call("bootstrap", {cwd:temp,model:"stalled-one",mcp:true});
+    const firstStalled = await waitForStalled();
+    const middle = call("bootstrap", {cwd:temp,model:"stalled-two",mcp:true});
+    await waitForStalled(firstStalled);
+    const newest = await call("bootstrap", {cwd:temp,model:"replacement",mcp:true});
+    expect(newest.status).toBe(200);
+    const [olderResult, middleResult] = await Promise.all([older, middle]);
+    expect(olderResult.status).toBe(200);
+    expect(middleResult.status).toBe(200);
+    expect((await olderResult.json()).sessionId).toBe("replacement");
+    expect((await middleResult.json()).sessionId).toBe("replacement");
     const reused = await call("bootstrap", {cwd:temp,model:"replacement",mcp:true});
     expect(reused.status).toBe(200);
     expect((await reused.json()).sessionId).toBe("replacement");
     expect((await call("initialize")).status).toBe(200);
     const started = readFileSync(path.join(temp,"starts"),"utf8").trim().split("\n").map(Number);
-    expect(started.length).toBe(2);
+    expect(started.length).toBe(3);
     expect(()=>process.kill(started[0],0)).toThrow();
-    expect(()=>process.kill(started[1],0)).not.toThrow();
+    expect(()=>process.kill(started[1],0)).toThrow();
+    expect(()=>process.kill(started[2],0)).not.toThrow();
   } finally {
     await call("dispose");
     if(oldBin===undefined)delete process.env.GRAFF_BIN;else process.env.GRAFF_BIN=oldBin;
