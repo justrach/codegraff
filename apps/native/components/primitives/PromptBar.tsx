@@ -415,7 +415,7 @@ export default function PromptBar({
         className={`relative isolate flex flex-col overflow-hidden border ${layout.glass} transition-[border-color,border-radius] duration-150 focus-within:border-line-strong ${
           dragging ? "border-accent-ink" : "border-line"
         } ${
-          tall ? "gap-2.5 p-3.5" : "gap-1.5 p-1.5"
+          tall ? "gap-2.5 p-3.5" : "gap-1.5 pt-1.5 pl-1.5 pr-2.5 pb-2.5"
         } ${
           "rounded-composer"
         }`}
@@ -576,10 +576,11 @@ export default function PromptBar({
           {/* send — circular; while a turn runs it morphs into stop */}
           <button
             type="button"
+            data-composer-send
             aria-label={showStop ? "Stop" : "Send"}
             disabled={showStop ? !onStop : !canSend}
             onClick={showStop ? onStop : send}
-            className={`flex size-7 shrink-0 items-center justify-center rounded-full disabled:opacity-30 disabled:cursor-not-allowed transition-[background-color,color,transform] duration-200 enabled:active:scale-[0.94] ${wide ? "col-start-5 row-start-2" : "col-start-5 row-start-1"}`}
+            className={`flex size-7 shrink-0 items-center justify-center justify-self-end rounded-full disabled:opacity-30 disabled:cursor-not-allowed transition-[background-color,color,transform] duration-200 enabled:active:scale-[0.94] ${wide ? "col-start-5 row-start-2" : "col-start-5 row-start-1"}`}
             style={{
               background: showStop || canSend ? "var(--ink)" : "var(--line-strong)",
               color: showStop || canSend ? "var(--surface)" : "var(--ink-2)",
