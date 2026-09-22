@@ -81,9 +81,10 @@ function mcpOffPath(): string {
 // child's history; `dispose`/`dispose-page` reap children on tab close and
 // page unload. Kept on globalThis so dev-server module reloads don't orphan
 // running agents.
-const g = globalThis as typeof globalThis & { __graffAcpSlots?: Map<string, Slot>; __graffAcpBootstraps?: Map<string, Promise<Slot>>; __graffAcpRetirements?: Map<string, Promise<void>>; __graffAcpShuttingDown?: boolean };
+const g = globalThis as typeof globalThis & { __graffAcpSlots?: Map<string, Slot>; __graffAcpBootstraps?: Map<string, Promise<Slot>>; __graffAcpBootstrapReplacements?: WeakMap<Promise<Slot>, Promise<Slot>>; __graffAcpRetirements?: Map<string, Promise<void>>; __graffAcpShuttingDown?: boolean };
 const slots = (g.__graffAcpSlots ??= new Map<string, Slot>());
 const bootstraps = (g.__graffAcpBootstraps ??= new Map<string, Promise<Slot>>());
+const bootstrapReplacements = (g.__graffAcpBootstrapReplacements ??= new WeakMap<Promise<Slot>, Promise<Slot>>());
 const retirements = (g.__graffAcpRetirements ??= new Map<string, Promise<void>>());
 const DEFAULT_CHAT = "default";
 // Session names become a CLI argument and a filename under .graff/sessions.
@@ -258,8 +259,18 @@ function bootstrap(chat: string, opts: BootstrapOpts): Promise<Slot> {
   const live = slots.get(chat);
   // Explicit changes can replace a stalled handshake. Ordinary concurrent
   // requests must wait instead of killing the worker they are about to use.
-  if (opts.reset || (live && !matchesBootstrap(live, opts))) bootstraps.delete(chat);
-  return serializeBootstrap(bootstraps, chat, () => bootstrapNow(chat, opts));
+  const replacing = opts.reset || (live !== undefined && !matchesBootstrap(live, opts));
+  const previous = replacing ? bootstraps.get(chat) : undefined;
+  if (replacing) bootstraps.delete(chat);
+  const serialized = serializeBootstrap(bootstraps, chat, () => bootstrapNow(chat, opts));
+  const generation = bootstraps.get(chat);
+  const result = serialized.catch(error => {
+    const replacement = generation ? bootstrapReplacements.get(generation) : undefined;
+    if (replacement) return replacement;
+    throw error;
+  });
+  if (previous) bootstrapReplacements.set(previous, result);
+  return result;
 }
 
 async function bootstrapNow(chat: string, opts: BootstrapOpts): Promise<Slot> {
