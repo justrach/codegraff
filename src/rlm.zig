@@ -218,6 +218,9 @@ fn pathValue(arena: Allocator, args_json: []const u8) Value {
 }
 
 fn runHost(ctx: ToolCtx, call: spec_ptc.Call) ToolOutput {
+    if (std.mem.eql(u8, call.name, "sleep_ms") or std.mem.eql(u8, call.name, "llm_query")) {
+        if (ctx.run_budget) |budget| if (budget.toolRefusal(ctx.gpa, ctx.tracer)) |denied| return denied;
+    }
     if (std.mem.eql(u8, call.name, "sleep_ms")) return runSleep(ctx, call.args_json);
     if (std.mem.eql(u8, call.name, "llm_query")) return rlm_query.run(ctx, call.args_json);
     if (std.mem.eql(u8, call.name, "each") or std.mem.eql(u8, call.name, "len") or std.mem.eql(u8, call.name, "project")) {

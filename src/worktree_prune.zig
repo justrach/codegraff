@@ -213,6 +213,12 @@ pub fn keepReasonFor(gpa: Allocator, io: Io, e: Entry) KeepReason {
 /// the tree is clean, so git's own refusal is a second belt — #112 must not
 /// turn `prune` into a data-loss command.
 pub fn removeWorktree(gpa: Allocator, io: Io, e: Entry) bool {
+    const common = runCapped(gpa, io, &.{ "git", "-C", e.path, "rev-parse", "--path-format=absolute", "--git-common-dir" }, 8192, 8192, 15_000) catch return false;
+    defer gpa.free(common.stdout);
+    defer gpa.free(common.stderr);
+    if (!ranOk(common)) return false;
+    const git_dir = std.mem.trim(u8, common.stdout, " \t\r\n");
+    if (git_dir.len == 0) return false;
     const rm = runCapped(gpa, io, &.{ "git", "-C", e.path, "worktree", "remove", e.path }, 8192, 8192, 60_000) catch return false;
     defer {
         gpa.free(rm.stdout);
@@ -220,7 +226,7 @@ pub fn removeWorktree(gpa: Allocator, io: Io, e: Entry) bool {
     }
     if (!ranOk(rm)) return false;
     if (isGraffScratchBranch(e.branch)) {
-        if (runCapped(gpa, io, &.{ "git", "-C", e.path, "branch", "-D", shortBranch(e.branch) }, 8192, 8192, 30_000)) |b| {
+        if (runCapped(gpa, io, &.{ "git", "--git-dir", git_dir, "branch", "-D", shortBranch(e.branch) }, 8192, 8192, 30_000)) |b| {
             gpa.free(b.stdout);
             gpa.free(b.stderr);
         } else |_| {}

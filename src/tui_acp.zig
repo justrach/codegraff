@@ -102,7 +102,7 @@ fn writeUpdate(w: *Io.Writer, session_id: []const u8, ev: engine_events.EngineEv
                 .sessionId = session_id,
                 .update = .{
                     .sessionUpdate = "tool_call",
-                    .toolCallId = "call-1",
+                    .toolCallId = c.id,
                     .title = toolTitle(c.name, c.input),
                     .kind = acp_stream.kindFor(c.name),
                     .status = "in_progress",
@@ -113,15 +113,30 @@ fn writeUpdate(w: *Io.Writer, session_id: []const u8, ev: engine_events.EngineEv
         },
         .tool_result => |r| {
             if (label.skipTranscript(r.name)) return;
-            try acp_stream.writeToolDone(w, session_id, "call-1", r.is_error, r.text);
+            try writeOutcome(w, session_id, r.id, r.name, r.is_error, false, r.ms, r.text);
         },
         .tool_rejected => |r| {
             if (label.skipTranscript(r.name)) return;
-            try acp_stream.writeToolDone(w, session_id, "call-1", true, r.message);
+            try writeOutcome(w, session_id, r.id, r.name, true, true, 0, r.message);
         },
         .session_notice => |n| try acp_stream.writeThought(w, session_id, n.text),
         else => {},
     }
+}
+
+fn writeOutcome(w: *Io.Writer, session_id: []const u8, id: []const u8, name: []const u8, failed: bool, denied: bool, ms: i64, text: []const u8) !void {
+    try proto.writeNotification(w, "session/update", .{
+        .sessionId = session_id,
+        .update = .{
+            .sessionUpdate = "tool_call_update",
+            .toolCallId = id,
+            .name = name,
+            .status = if (failed) "failed" else "completed",
+            .denied = denied,
+            .durationMs = @max(0, ms),
+            .content = .{.{ .type = "content", .content = .{ .type = "text", .text = text } }},
+        },
+    });
 }
 
 const Fanout = struct {
@@ -266,6 +281,7 @@ pub fn turn(
 
     const rstream = liveStream(stream);
     var apply: Apply = .{ .queue = events, .stream = rstream, .show_thinking = params.thinking };
+    defer apply.deinit(gpa);
     var transcript: Transcript = .{ .gpa = gpa, .session_id = session.session_id, .apply = &apply };
     var bridge: tui_sink.Bridge = .{
         .queue = events,
@@ -279,6 +295,9 @@ pub fn turn(
     };
     engine_sink.bindTurnSink(.{ .ctx = @ptrCast(&fan), .vt = &fan_vt });
     defer engine_sink.unbindTurnSink();
+    const permission = @import("engine_permission.zig");
+    const previous_permission = permission.bind(.{ .ctx = events, .request = requestPermission });
+    defer _ = permission.bind(previous_permission);
 
     acp_engine.cancel_flag.store(false, .release);
     session.pending = .{
@@ -335,6 +354,7 @@ test "transcript sink: tool_call keeps the catalog name, title is the path" {
     var buf: [32]u8 = undefined;
     var stream: repl.StreamBuf = .{ .buf = &buf };
     var a: Apply = .{ .queue = &q, .stream = &stream };
+    defer a.deinit(std.testing.allocator);
     var t: Transcript = .{ .gpa = std.testing.allocator, .session_id = "s1", .apply = &a };
     const sink: engine_sink.EngineSink = .{ .ctx = @ptrCast(&t), .vt = &transcript_vt };
     var input_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -355,6 +375,7 @@ test "transcript sink: EngineEvent text becomes a session/update on the stream" 
     var buf: [64]u8 = undefined;
     var stream: repl.StreamBuf = .{ .buf = &buf };
     var a: Apply = .{ .queue = &q, .stream = &stream };
+    defer a.deinit(std.testing.allocator);
     var t: Transcript = .{ .gpa = std.testing.allocator, .session_id = "s1", .apply = &a };
     const sink: engine_sink.EngineSink = .{ .ctx = @ptrCast(&t), .vt = &transcript_vt };
     sink.emit(undefined, .{ .text_delta = .{ .text = "hello" } });
@@ -370,6 +391,7 @@ test "session/prompt echo reaches the TUI stream as agent_message_chunk" {
     var buf: [64]u8 = undefined;
     var stream: repl.StreamBuf = .{ .buf = &buf };
     var a: Apply = .{ .queue = &q, .stream = &stream };
+    defer a.deinit(std.testing.allocator);
     var s: Session = undefined;
     s.init(std.testing.allocator, 0xac01);
     s.dispatch.turn = echoTurn;
@@ -406,6 +428,7 @@ test "transcript sink: citations in reasoning answer and completion args reset o
     var buf: [256]u8 = undefined;
     var stream: repl.StreamBuf = .{ .buf = &buf };
     var a: Apply = .{ .queue = &q, .stream = &stream, .show_thinking = true };
+    defer a.deinit(std.testing.allocator);
     var t: Transcript = .{ .gpa = std.testing.allocator, .session_id = "s1", .apply = &a };
     const sink: engine_sink.EngineSink = .{ .ctx = @ptrCast(&t), .vt = &transcript_vt };
     sink.emit(undefined, .stream_begin);
@@ -426,4 +449,83 @@ test "transcript sink: citations in reasoning answer and completion args reset o
     defer aw.deinit();
     try writeUpdate(&aw.writer, "s1", .{ .text_delta = .{ .text = answer } });
     try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "\u{E200}") != null);
+}
+
+test "transcript sink correlates parallel results using original engine call IDs" {
+    var q: tui.EventQueue = .{};
+    q.attach(std.testing.allocator);
+    defer q.deinit();
+    var buf: [32]u8 = undefined;
+    var stream: repl.StreamBuf = .{ .buf = &buf };
+    var apply: Apply = .{ .queue = &q, .stream = &stream };
+    defer apply.deinit(std.testing.allocator);
+    var transcript: Transcript = .{ .gpa = std.testing.allocator, .session_id = "test", .apply = &apply };
+    const sink: engine_sink.EngineSink = .{ .ctx = @ptrCast(&transcript), .vt = &transcript_vt };
+    sink.emit(undefined, .{ .tool_call_announced = .{ .id = "read-a", .name = "read_file", .input = .{ .object = .empty } } });
+    sink.emit(undefined, .{ .tool_call_announced = .{ .id = "shell-b", .name = "shell", .input = .{ .object = .empty } } });
+    sink.emit(undefined, .{ .tool_result = .{ .id = "read-a", .name = "read_file", .text = "read output", .is_error = false } });
+    sink.emit(undefined, .{ .tool_result = .{ .id = "shell-b", .name = "shell", .text = "shell output", .is_error = false, .ms = 42 } });
+    const events = q.drain();
+    defer q.free(events);
+    try std.testing.expectEqual(@as(usize, 4), events.len);
+    try std.testing.expectEqualStrings("read_file", events[2].tool_finished.name);
+    try std.testing.expectEqualStrings("read output", events[2].tool_finished.detail);
+    try std.testing.expectEqualStrings("shell", events[3].tool_finished.name);
+    try std.testing.expectEqualStrings("shell output", events[3].tool_finished.detail);
+    try std.testing.expectEqual(@as(u64, 42), events[3].tool_finished.ms);
+}
+
+fn requestPermission(ctx: *anyopaque, io: Io, req: @import("engine_permission.zig").Request) @import("engine_permission.zig").Decision {
+    const queue: *tui.EventQueue = @ptrCast(@alignCast(ctx));
+    const id = queue.permission.begin(req.description) orelse return .deny;
+    defer queue.permission.retire(id);
+    while (!liveCancelled() and !acp_engine.cancel_flag.load(.acquire)) {
+        if (queue.permission.poll(id)) |answer| return switch (answer) {
+            .allow_once => .allow_once,
+            .deny => .deny,
+        };
+        io.sleep(.fromMilliseconds(20), .awake) catch return .deny;
+    }
+    return .deny;
+}
+
+test "TUI permission wait resumes once and cancellation retires the request" {
+    const Fixture = struct {
+        queue: tui.EventQueue = .{},
+        decision: @import("engine_permission.zig").Decision = .deny,
+        done: std.atomic.Value(bool) = .init(false),
+        fn run(self: *@This()) void {
+            self.decision = requestPermission(&self.queue, std.testing.io, .{ .call_id = "call", .tool = "write_file", .description = "write a file" });
+            self.done.store(true, .release);
+        }
+    };
+    const old_esc = agent_mod.Agent.esc_cancel.swap(false, .acq_rel);
+    defer agent_mod.Agent.esc_cancel.store(old_esc, .release);
+    const old_cancel = acp_engine.cancel_flag.swap(false, .acq_rel);
+    defer acp_engine.cancel_flag.store(old_cancel, .release);
+    for ([_]bool{ false, true }) |cancelled| {
+        acp_engine.cancel_flag.store(false, .release);
+        var fixture: Fixture = .{};
+        const thread = try std.Thread.spawn(.{}, Fixture.run, .{&fixture});
+        defer thread.join();
+        defer acp_engine.cancel_flag.store(true, .release);
+        var request_id: ?u64 = null;
+        for (0..1000) |_| {
+            if (fixture.queue.permission.peek()) |request| {
+                request_id = request.id;
+                break;
+            }
+            try std.testing.io.sleep(.fromMilliseconds(1), .awake);
+        }
+        const id = request_id orelse return error.PermissionNotDelivered;
+        if (cancelled) acp_engine.cancel_flag.store(true, .release) else try std.testing.expect(fixture.queue.permission.respond(id, .allow_once));
+        for (0..1000) |_| {
+            if (fixture.done.load(.acquire)) break;
+            try std.testing.io.sleep(.fromMilliseconds(1), .awake);
+        }
+        try std.testing.expect(fixture.done.load(.acquire));
+        try std.testing.expectEqual(if (cancelled) @import("engine_permission.zig").Decision.deny else .allow_once, fixture.decision);
+        try std.testing.expect(fixture.queue.permission.peek() == null);
+        acp_engine.cancel_flag.store(false, .release);
+    }
 }

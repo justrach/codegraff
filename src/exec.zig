@@ -84,6 +84,7 @@ fn learningArgv(argv: *[10][]const u8, exe_path: []const u8, contribute: bool) u
 }
 
 pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
+    if (ctx.run_budget) |budget| if (budget.toolRefusal(ctx.gpa, ctx.tracer)) |denied| return denied;
     const t0: Io.Timestamp = .now(ctx.io, .awake);
     // #255: reserved before any gate/dispatch runs so tool_started/
     // tool_finished bracket the whole call, including a gate denial below.
@@ -159,7 +160,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         if (shell_tool.runCommand(call)) |cmd| if (!Approvals.readOnlyAllowed(cmd)) {
             // The root may have approved this external read-only path this
             // session (#64); subagents (from_sub) never get the external hatch.
-            const ext_ok = !ctx.from_sub and if (ctx.approvals) |ap| ap.planReadAllowed(ctx.io, cmd) else false;
+            const ext_ok = !ctx.from_sub and if (ctx.approvals) |ap| ((if (ctx.plan_read_owner) |owner| ap.consumePlanReadOnce(ctx.io, owner, call.id, cmd) else false) or ap.planReadAllowed(ctx.io, cmd)) else false;
             if (!ext_ok) return .{
                 .text = try gpa.dupe(u8, "plan mode is on — only read-only commands run; describe this command in the plan instead"),
                 .is_error = true,
@@ -380,6 +381,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         if (id < 0 or id > std.math.maxInt(u32)) return .{ .text = try gpa.dupe(u8, "invalid agent id"), .is_error = true };
         return @import("subagent_interactive.zig").output(ctx, @intCast(id), @intCast(@max(wait_ms, 0)));
     }
+    if (std.mem.eql(u8, call.name, "subagent_resume")) return @import("subagent_resume.zig").exec(ctx, input);
     if (std.mem.eql(u8, call.name, "agent_message")) return @import("subagent_messaging.zig").send(ctx, input);
     return .{ .text = try std.fmt.allocPrint(gpa, "unknown tool: {s}", .{call.name}), .is_error = true };
 }

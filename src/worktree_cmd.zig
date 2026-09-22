@@ -90,6 +90,17 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
         const wt_path = try std.fmt.allocPrint(arena, ".graff/worktrees/{s}", .{name});
         const wt_branch = try std.fmt.allocPrint(arena, "worktree-{s}", .{name});
 
+        const metadata = @import("worktree_base.zig");
+        const base = metadata.read(gpa, io, arena, ".", wt_branch);
+        if (base.len > 0 and !std.mem.eql(u8, base, metadata.branch(gpa, io, arena, "."))) {
+            try out.print("✗ workspace targets {s} — land from that branch's checkout\n", .{base});
+            return;
+        }
+        if (!std.mem.eql(u8, wt_branch, metadata.branch(gpa, io, arena, wt_path))) {
+            try out.writeAll("✗ workspace branch changed — restore its owned branch before landing\n");
+            return;
+        }
+
         // Squash reads committed history, not this checkout's local edits.
         // Refuse before touching the destination, including untracked files.
         if (!landSourceClean(gpa, io, wt_path)) {
@@ -140,7 +151,11 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
             return;
         }
 
-        // 3) clean up: remove the worktree dir, then delete its now-free branch.
+        // 3) teardown, then remove the checkout before deleting its branch.
+        if (!@import("workspace_prepare.zig").beforeArchive(gpa, io, arena, ".", wt_path, name)) {
+            try out.writeAll("✓ landed committed changes; archive script failed, checkout and branch kept\n");
+            return;
+        }
         if (runCapped(gpa, io, &.{ "git", "worktree", "remove", wt_path }, 8192, 8192, 30_000)) |r| {
             const removed = ranOk(r);
             gpa.free(r.stdout);
@@ -165,6 +180,10 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
     if (std.mem.eql(u8, action, "remove") or std.mem.eql(u8, action, "rm")) {
         if (args.len < 2) {
             try out.writeAll("usage: graff worktree remove <name>\n");
+            return;
+        }
+        if (args.len < 3 or !std.mem.eql(u8, args[2], "--discard")) {
+            try out.writeAll("✗ removal may discard unique work — confirm with `graff worktree remove <name> --discard`, or use archive to keep unmerged changes\n");
             return;
         }
         const name = args[1];
@@ -227,20 +246,21 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
             break :blk if (n > 0) try arena.dupe(u8, path_buf[0..n]) else dest;
         };
         if (!@import("workspace_prepare.zig").runNamed(gpa, io, arena, ".", path, name)) {
-            try out.writeAll("✗ no run script — add scripts.run to .graff/workspace.toml\n");
+            try out.writeAll("✗ run script missing or failed — check scripts.run in .graff/workspace.toml\n");
             return;
         }
         try out.print("✓ run finished in {s}\n", .{path});
         return;
     }
 
-    if (std.mem.eql(u8, action, "archive")) {
+    if (std.mem.eql(u8, action, "archive") or std.mem.eql(u8, action, "archive-merged")) {
         if (args.len < 2) {
             try out.writeAll("usage: graff worktree archive <name>\n");
             return;
         }
         const tw = @import("task_workspace.zig");
-        const result = tw.archive(gpa, io, arena, ".", args[1]) catch |err| {
+        const operation = if (std.mem.eql(u8, action, "archive-merged")) &tw.archiveMerged else &tw.archive;
+        const result = operation(gpa, io, arena, ".", args[1]) catch |err| {
             try out.print("✗ {s}\n", .{tw.archiveFailureText(err)});
             return;
         };

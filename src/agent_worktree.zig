@@ -52,7 +52,11 @@ pub fn agentWorktreeNames(arena: Allocator, sub_id: []const u8, nonce: []const u
 }
 
 pub fn agentWorktreeCreate(gpa: Allocator, io: Io, arena: Allocator, sub_id: []const u8) (AgentWorktreeError || Allocator.Error)!AgentWorktree {
-    const probe = runCapped(gpa, io, &.{ "git", "rev-parse", "--is-inside-work-tree" }, 4096, 4096, 15_000) catch return error.NotAGitRepo;
+    return agentWorktreeCreateAt(gpa, io, arena, sub_id, ".");
+}
+
+pub fn agentWorktreeCreateAt(gpa: Allocator, io: Io, arena: Allocator, sub_id: []const u8, cwd: []const u8) (AgentWorktreeError || Allocator.Error)!AgentWorktree {
+    const probe = runCapped(gpa, io, &.{ "git", "-C", cwd, "rev-parse", "--is-inside-work-tree" }, 4096, 4096, 15_000) catch return error.NotAGitRepo;
     defer {
         gpa.free(probe.stdout);
         gpa.free(probe.stderr);
@@ -62,8 +66,12 @@ pub fn agentWorktreeCreate(gpa: Allocator, io: Io, arena: Allocator, sub_id: []c
     var raw: [4]u8 = undefined;
     io.random(&raw);
     const nonce = std.fmt.bytesToHex(raw, .lower);
-    const names = try agentWorktreeNames(arena, sub_id, &nonce);
-    const add = runCapped(gpa, io, &.{ "git", "worktree", "add", names.path, "-b", names.branch }, 8192, 8192, 60_000) catch return error.CreateFailed;
+    var names = try agentWorktreeNames(arena, sub_id, &nonce);
+    names.path = try std.fs.path.join(arena, &.{ cwd, names.path });
+    var absolute: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd_abs = absolute[0 .. Io.Dir.cwd().realPathFile(io, cwd, &absolute) catch return error.NotAGitRepo];
+    names.path = try std.fs.path.resolve(arena, &.{ cwd_abs, ".graff/worktrees", std.fs.path.basename(names.path) });
+    const add = runCapped(gpa, io, &.{ "git", "-C", cwd, "worktree", "add", names.path, "-b", names.branch }, 8192, 8192, 60_000) catch return error.CreateFailed;
     defer {
         gpa.free(add.stdout);
         gpa.free(add.stderr);

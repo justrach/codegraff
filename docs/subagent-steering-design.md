@@ -1,13 +1,17 @@
 # Subagent steering: merged design for #417 and #392
 
-Status: broader retained-worker design remains proposed. Live background-child
-feedback is implemented as `agent_message`; see [usage](subagent-feedback.md)
-and [ADR 0116](adr/0116-live-subagent-feedback-is-queued.md). It reuses the
-existing numeric background handle and live registry, without introducing a
-second identity or retention scheme. Completed-worker resumption, aliases,
-and durable feedback queues below remain unimplemented. The historical
-source inventory below predates the handle ledger in ADR 0068; that ledger
-retains status but cannot reattach a live worker after process loss.
+Status: opt-in retained worker history, queue-only feedback and explicit
+completed-worker continuation are implemented; see [ADR 0170](adr/0170-workers-retain-owned-conversations.md).
+Set `retained: true` on a direct subagent call, then use its opaque `task_id`
+with `agent_message` (queue only) or `subagent_resume` (start continuation).
+Unretained workers preserve their existing behavior. Live background-child
+feedback also remains available through numeric handles; see [ADR 0116](adr/0116-live-subagent-feedback-is-queued.md).
+The broader identity unification, aliases, append-only registry, sibling
+addressing and unified trigger API below remain proposed. The implementation
+uses owned atomic checkpoints, not the proposed registry/transcript format.
+Finite-budget continuation across process restart is refused because the live
+shared budget cannot safely be reconstructed. Historical source inventory
+below describes the pre-implementation state.
 
 The broader proposal supersedes the separate proposals in #417
 (retained, addressable subagents with parent-child steer messaging) and #392

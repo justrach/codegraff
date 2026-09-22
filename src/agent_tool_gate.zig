@@ -189,6 +189,14 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
             if (Approvals.readOnlyAllowed(cmd)) return null;
             if (Approvals.readOnlyExternal(cmd)) {
                 if (approvals.planReadAllowed(self.io, cmd)) return null;
+                if (self.permission) |handler| {
+                    const description = try std.fmt.allocPrint(self.arena, "plan mode — read outside the project: {s}", .{cmd});
+                    if (handler.ask(self.io, .{ .call_id = call.id, .tool = call.name, .description = description }) == .allow_once) {
+                        try approvals.approvePlanReadOnce(self.io, self.arena, self, call.id, cmd);
+                        return null;
+                    }
+                    return .{ .text = try self.arena.dupe(u8, "plan mode — read-only access outside the project was declined"), .is_error = true };
+                }
                 if (self.in) |in| if (self.out) |w| {
                     try w.print("  ⚠ plan mode — read outside the project: {s}\n  [a]llow read-only access to these paths this session · [n]o › ", .{cmd});
                     try w.flush();
@@ -295,6 +303,11 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
         else
             std.fmt.bufPrint(&line_buf, "call MCP tool {s}", .{call.name}) catch call.name;
     } else return null;
+
+    if (self.permission) |handler| {
+        if (handler.ask(self.io, .{ .call_id = call.id, .tool = call.name, .description = prompt_line }) == .allow_once) return null;
+        return .{ .text = try self.arena.dupe(u8, "user declined this tool call; do not retry it or a reworded equivalent. Continue with approved work or report the blocker."), .is_error = true };
+    }
 
     // #369: a denial that just says "not pre-approved" strands the model —
     // observed spirals: probing .harness/settings.json, retrying the same
@@ -433,4 +446,49 @@ test "#851 isolated git -C target does not use the caller worktree identity" {
     try std.testing.expect(presence.sharedTreeGateApplies(gpa, std.testing.io, a, cmd_a));
     try std.testing.expect(presence.sharedTreeGateApplies(gpa, std.testing.io, a, cmd_sub));
     try std.testing.expect(presence.sharedTreeGateApplies(gpa, std.testing.io, a, "git cherry-pick abc"));
+}
+
+test "plan frontend allow once reaches actual dispatch without a reusable grant" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "proof.txt", .data = "approved read proof" });
+    const path = try tmp.dir.realPathFileAlloc(io, "proof.txt", arena.allocator());
+    const command = try std.fmt.allocPrint(arena.allocator(), "cat {s}", .{path});
+    try std.testing.expect(Approvals.readOnlyExternal(command));
+    const Fixture = struct {
+        calls: usize = 0,
+        fn ask(ptr: *anyopaque, _: std.Io, _: @import("engine_permission.zig").Request) @import("engine_permission.zig").Decision {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.calls += 1;
+            return .allow_once;
+        }
+    };
+    var fixture: Fixture = .{};
+    var approvals: Approvals = .{};
+    const saved_plan = main_mod.plan_mode;
+    defer main_mod.plan_mode = saved_plan;
+    main_mod.plan_mode = true;
+    var agent: Agent = .{ .gpa = gpa, .arena = arena.allocator(), .io = io, .client = undefined, .provider = .{ .id = "fixture", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "fixture", .context = 1000 }, .messages = .init(arena.allocator()), .sub = false, .label = "root", .out = null, .approvals = &approvals, .permission = .{ .ctx = &fixture, .request = Fixture.ask } };
+    defer agent.tools_used.deinit(gpa);
+    var args: std.json.ObjectMap = .empty;
+    try args.put(arena.allocator(), "command", .{ .string = command });
+    const call: ToolCall = .{ .id = "one-read", .name = "bash", .input = .{ .object = args } };
+    const results = try agent.runTools(&.{call});
+    try std.testing.expectEqual(@as(usize, 1), fixture.calls);
+    try std.testing.expect(!results[0].is_error);
+    try std.testing.expect(std.mem.indexOf(u8, results[0].text, "approved read proof") != null);
+    try std.testing.expect(!approvals.planReadAllowed(io, command));
+    const ctx: tools_mod.ToolCtx = .{ .gpa = gpa, .io = io, .client = undefined, .provider = agent.provider, .registry = null, .from_sub = false, .approvals = &approvals, .tracer = null, .plan_read_owner = &agent };
+    const repeated = @import("exec.zig").execTool(ctx, call);
+    defer gpa.free(repeated.text);
+    try std.testing.expect(repeated.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, repeated.text, "plan mode") != null);
+    // An approved call cancelled before dispatch cannot carry consent forward.
+    try approvals.approvePlanReadOnce(io, arena.allocator(), &agent, call.id, command);
+    _ = try agent.runTools(&.{});
+    try std.testing.expect(!approvals.consumePlanReadOnce(io, &agent, call.id, command));
 }

@@ -185,8 +185,15 @@ record only when you need the evidence or the edge cases.
 | [0159](0159-picker-catalog-refresh-is-bounded.md) | Opening a model surface refreshes only the gateway catalog, with a short deadline and the existing snapshot as fallback. |
 | [0160](0160-model-picks-wait-for-next-prompt.md) | Running model picks stay per chat and apply only at the next prompt boundary without cancelling the current response. |
 | [0161](0161-default-model-stays-on-selected-provider.md) | Default model preferences stay on the selected provider; explicit and saved choices win. |
-
 | [0162](0162-http2-streams-own-exclusive-sessions.md) | HTTP/2 requests exclusively lease active sessions; the process pool owns only one idle connection. |
+| [0163](0163-restored-tool-results-use-wire-normalization.md) | Restore and request admission share tool-result repairs while preserving typed blocks. |
+| [0164](0164-task-workspace-archive-needs-current-evidence.md) | Task archive requires current commit evidence; live writers and failed teardown keep the checkout visible. |
+| [0167](0167-workflow-isolation-belongs-to-dependent-chains.md) | Dependent stages share a worktree; pipeline items stay isolated and retained edits are explicitly delivered. |
+| [0168](0168-tui-permission-input-belongs-to-the-frontend.md) | Normal TUI tool approvals use frontend-owned typed requests and once-only responses. |
+| [0169](0169-aggregate-tool-limits-share-descendant-admission.md) | Invocation tool limits reserve atomically across descendants; legacy per-turn root limits keep their meaning. |
+| [0170](0170-workers-retain-owned-conversations.md) | Workers retain owned conversation state; queue-only messages and explicit resume have distinct semantics. |
+| [0171](0171-cost-rates-belong-to-the-provider-route.md) | Cost estimates use the actual provider route, preserve cache and long-context rates, and leave unknown tariffs unpriced. |
+| [0172](0172-model-guidance-is-request-scoped.md) | Model guidance is composed once per request from the current model, with root-only delegation and stable repeated prefixes. |
 
 ## When to write one
 

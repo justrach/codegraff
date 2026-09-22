@@ -76,11 +76,11 @@ pub fn afterCreate(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8, de
     return report;
 }
 
-pub fn beforeArchive(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8, dest: []const u8, name: []const u8) void {
+pub fn beforeArchive(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8, dest: []const u8, name: []const u8) bool {
     const root = mainCheckout(gpa, io, arena, cwd);
     const scripts = loadScripts(arena, io, root);
-    if (scripts.archive.len == 0) return;
-    _ = runScript(gpa, io, arena, scripts.archive, dest, root, name, archive_ms);
+    if (scripts.archive.len == 0) return true;
+    return runScript(gpa, io, arena, scripts.archive, dest, root, name, archive_ms);
 }
 
 pub fn runNamed(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8, dest: []const u8, name: []const u8) bool {
@@ -222,6 +222,13 @@ fn runScript(
     defer {
         gpa.free(r.stdout);
         gpa.free(r.stderr);
+    }
+    if (!@import("main.zig").json_mode) {
+        var output_buffer: [4096]u8 = undefined;
+        var output = Io.File.stdout().writer(io, &output_buffer);
+        output.interface.writeAll(r.stdout) catch {};
+        output.interface.writeAll(r.stderr) catch {};
+        output.interface.flush() catch {};
     }
     return ranOk(r);
 }

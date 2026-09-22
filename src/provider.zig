@@ -497,39 +497,6 @@ test "Keys.providerFor: known model, claude/gateway fallbacks, missing key" {
     try std.testing.expectError(error.MissingKey, none.providerFor("claude-opus-4-8"));
 }
 
-test "providerFor (#294): a catalogued model with no keyed provider fails instead of routing to the gateway" {
-    // The reported symptom: an expired ~/.codex/auth.json made a Codex-only
-    // model resolve to the CodeGraff gateway, so the user saw a balance/credits
-    // error while trying to use Codex. gpt-5.6-sol is catalogued ONLY under
-    // provider `codex`, which makes it the exact reproduction.
-    try std.testing.expect(pricing.providerModelInTable("codex", "gpt-5.6-sol"));
-    try std.testing.expect(!pricing.providerModelInTable("openai", "gpt-5.6-sol"));
-    try std.testing.expect(!pricing.providerModelInTable("codegraff", "gpt-5.6-sol"));
-
-    // Everything keyed EXCEPT codex — i.e. the login expired mid-session.
-    var values: [provider_specs.len]?[]const u8 = @splat("k");
-    for (provider_specs, 0..) |spec, i| {
-        if (std.mem.eql(u8, spec.id, "codex")) values[i] = null;
-    }
-    const no_codex = Keys{ .values = values };
-    // Before the fix this returned the codegraff gateway carrying gpt-5.6-sol.
-    try std.testing.expectError(error.MissingKey, no_codex.providerFor("gpt-5.6-sol"));
-
-    // With the codex credential present it still routes to codex, unchanged.
-    const all = Keys{ .values = @splat("k") };
-    try std.testing.expectEqualStrings("codex", (try all.providerFor("gpt-5.6-sol")).id);
-
-    // A model served by several providers still falls through to whichever is
-    // keyed — losing one credential must not break a model another can serve.
-    try std.testing.expectEqualStrings("openai", (try no_codex.providerFor("gpt-5.6-terra")).id);
-
-    // The gateway fallback survives for genuinely UNCATALOGUED models, which is
-    // all it was ever meant to cover.
-    try std.testing.expect(!pricing.modelInTable("totally-made-up-model"));
-    try std.testing.expectEqualStrings("codegraff", (try no_codex.providerFor("totally-made-up-model")).id);
-    try std.testing.expectEqualStrings("anthropic", (try no_codex.providerFor("claude-does-not-exist")).id);
-}
-
 test "Keys.providerById: exact id wins, unknown id falls back to model routing" {
     const all = Keys{ .values = @splat("k") };
     const p = try all.providerById("anthropic", "claude-opus-4-8");

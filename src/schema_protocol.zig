@@ -25,6 +25,7 @@ pub const flags =
     \\  {"flag": "--system-prompt", "arg": "text", "description": "replace the built-in system prompt (cwd project-instructions file is still appended)"},
     \\  {"flag": "--append-system-prompt", "arg": "text", "description": "append extra text to the end of the system prompt"},
     \\  {"flag": "--json", "arg": null, "description": "structured stdio protocol (JSON in, JSONL events out)"},
+    \\  {"flag": "--max-run-tool-calls", "arg": "N", "description": "aggregate invocation-wide tool ceiling shared with descendants; zero refuses all tool dispatch"},
     \\  {"flag": "--max-tool-calls", "arg": "N", "description": "hard per-turn root tool-call budget; rejected calls emit tool_rejected/tool_result"},
     \\  {"flag": "--max-model-calls", "arg": "N", "description": "opt-in invocation-wide provider-call ceiling shared by root, review, subagents, retries, title, compaction, and judges; default unlimited"},
     \\  {"flag": "--dedupe-tool-calls", "arg": null, "description": "reject duplicate root tool name+normalized-input calls per turn"},

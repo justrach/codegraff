@@ -103,6 +103,9 @@ pub const ToolCtx = struct {
     subagent_provider: ?Provider = null,
     subagent_cross_provider: bool = false,
     subagent_feedback: ?*@import("subagent_feedback.zig").Inbox = null,
+    worker_family: []const u8 = "",
+    worker_id: ?[]const u8 = null,
+    retained_worker: ?*@import("subagent_retained.zig").State = null,
     interactive_children: bool = false,
     session_name: []const u8 = "",
     registry: ?*mcp.Registry,
@@ -110,6 +113,7 @@ pub const ToolCtx = struct {
     from_sub: bool,
     has_eval: bool = false, // the root's --eval loop: escalation's strongest verifier
     approvals: ?*Approvals,
+    plan_read_owner: ?*const anyopaque = null,
     tracer: ?*Tracer,
     run_budget: ?*run_budget_mod.RunBudget = null,
     publication_checks: @import("pr_local_checks.zig").State = .{},

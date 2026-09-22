@@ -12,9 +12,6 @@ const main_mod = @import("main.zig");
 const Agent = @import("agent.zig").Agent;
 
 const messages_mod = @import("messages.zig");
-const sanitizeMessagesUtf8 = messages_mod.sanitizeMessagesUtf8;
-const normalizeResponsesHistory = messages_mod.normalizeResponsesHistory;
-const normalizeOpenAIHistory = messages_mod.normalizeOpenAIHistory;
 
 const http = @import("http.zig");
 const http_headers = @import("http_headers.zig");
@@ -148,9 +145,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     policy.refreshLoginKeyBeforeSend(self);
     // #95: scrub any malformed function_call_output before it hits the wire.
     const message_arena = self.messageMutationAlloc();
-    sanitizeMessagesUtf8(message_arena, &self.messages); // invalid UTF-8 (any source/format) -> '?' so content never serializes as a byte-int array the API rejects
-    if (self.provider.kind == .responses) normalizeResponsesHistory(message_arena, &self.messages);
-    if (self.provider.kind == .openai) normalizeOpenAIHistory(message_arena, &self.messages); // #99: chat-completions sibling of the above
+    @import("history_wire.zig").prepare(message_arena, self.provider.kind, &self.messages);
     // #193 follow-up: bound any single oversized tool output (an uncapped MCP
     // result, a huge fetch on a small-window model) before send. The responses
     // path already hard-caps output above (normalizeResponsesHistory); this is the

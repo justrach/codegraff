@@ -36,7 +36,7 @@ pub fn openaiGptFamily(model: []const u8) bool {
 }
 
 test "Codegraff Responses allowlist matches the public gateway contract" {
-    for ([_][]const u8{ "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "gpt-6.5", "grok-4.6" }) |model|
+    for ([_][]const u8{ "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "gpt-6-sol", "gpt-6.5", "grok-4.6" }) |model|
         try std.testing.expect(usesResponses("codegraff", model));
 
     for ([_][]const u8{ "gpt-5.5", "gpt-4o", "gpt-oss-120b", "grok-4.3", "claude-opus-4.8", "gemini-3.7-flash", "glm-5.3-flash" }) |model|

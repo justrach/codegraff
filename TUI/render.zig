@@ -83,7 +83,11 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     // wrapped lines and the frame takes a SLICE of them (layout_cache.zig).
     const cache: ?*layout_cache.Cache = if (overlay_body or welcome_pane) null else layout_cache.ensure(self, inner);
     const slash = try chrome.slashMenu(self, a, width);
-    const prompt = try chrome.promptBox(self, a, inner);
+    const permission = if (self.pending) |job| job.events.permission.peek() else null;
+    const prompt = if (permission) |req|
+        try theme_mod.wrapToWidth(a, try std.fmt.allocPrint(a, "Permission: {s}\n[y] allow once  [n] deny  [Esc] cancel", .{req.description()}), inner)
+    else
+        try chrome.promptBox(self, a, inner);
     const status = try chrome.statusBar(self, a, inner);
     // Overlay / slash panels dock on the composer — no gap, or they float.
     const gap: usize = if (overlay_body or slash.len > 0) 0 else pads.vpad;

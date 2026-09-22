@@ -137,6 +137,20 @@ pub fn build(b: *std.Build) void {
     const acp_startup_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-startup.py" });
     acp_startup_test.addArtifactArg(exe);
     test_step.dependOn(&acp_startup_test.step);
+    const workflow_isolation_test = b.addSystemCommand(&.{ "python3", "scripts/test-workflow-isolation.py" });
+    workflow_isolation_test.addArtifactArg(exe);
+    test_step.dependOn(&workflow_isolation_test.step);
+    const workspace_lifecycle_test = b.addSystemCommand(&.{ "python3", "scripts/test-workspace-lifecycle.py" });
+    workspace_lifecycle_test.addArtifactArg(exe);
+    test_step.dependOn(&workspace_lifecycle_test.step);
+    const run_tool_budget_test = b.addSystemCommand(&.{ "python3", "scripts/test-run-tool-budget.py" });
+    run_tool_budget_test.addArtifactArg(exe);
+    test_step.dependOn(&run_tool_budget_test.step);
+    const subagent_resume_test = b.addSystemCommand(&.{ "python3", "scripts/test-subagent-resume.py" });
+    subagent_resume_test.addArtifactArg(exe);
+    test_step.dependOn(&subagent_resume_test.step);
+    test_step.dependOn(&b.addSystemCommand(&.{ "python3", "graff-evals/test_measurement.py" }).step);
+    test_step.dependOn(&b.addSystemCommand(&.{ "python3", "scripts/test-eval-cache-affinity.py" }).step);
 
     // Learning kit: the adapter/suite files `graff learn init` materializes
     // into a workspace so zero-configuration learning needs no repo checkout.

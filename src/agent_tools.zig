@@ -56,6 +56,7 @@ const read_miss = @import("read_miss.zig");
 /// external calls fan out across the Io thread pool. Results are returned
 /// in call order, arena-owned.
 pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
+    defer if (self.approvals) |ap| ap.clearPlanReadOnce(self.io, self);
     if (!self.sub and calls.len >= 4) {
         var names: [32][]const u8 = undefined;
         const n = @min(calls.len, names.len);
@@ -183,6 +184,12 @@ pub fn rejectToolCall(self: *Agent, call: ToolCall) !?ExecResult {
         if (read_miss.callPath(call.input)) |path| {
             if (self.read_miss.shouldRefuse(path)) return try refuseRead(self, call);
         }
+    }
+    if (isMetaName(call.name) or local_tools.isInstall(call.name) or schedule.isName(call.name) or std.mem.eql(u8, call.name, "structured_output")) {
+        if (self.run_budget) |budget| if (budget.toolRefusal(self.arena, self.tracer)) |denied| {
+            self.emitToolRejected(call, "exhausted", denied.text);
+            return .{ .text = denied.text, .is_error = true };
+        };
     }
     if (self.sub) return null;
     if (self.review_mode) if (try review.rejectTool(self.arena, call)) |denied| {

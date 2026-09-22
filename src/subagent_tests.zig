@@ -425,3 +425,27 @@ test "background children own approvals and provider strings after parent turn e
     try std.testing.expectEqualStrings("http://localhost", copy.provider.url);
     try std.testing.expect(copy.tools_used == null);
 }
+
+test "completed retained worker releases its history arena before job reap" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const retained = @import("subagent_retained.zig");
+    const state = try gpa.create(retained.State);
+    state.* = .{ .arena = .init(gpa), .record = undefined, .path = "" };
+    _ = try state.arena.allocator().alloc(u8, 1024 * 1024);
+    var budget: @import("run_budget.zig").RunBudget = .{ .max_depth = 0 };
+    const ctx: @import("tools.zig").ToolCtx = .{ .gpa = gpa, .io = io, .client = undefined, .provider = undefined, .registry = null, .from_sub = false, .approvals = null, .tracer = null, .run_budget = &budget, .retained_worker = state };
+    const saved = subagent.g_agent_jobs;
+    subagent.g_agent_jobs = .{ .active = 1 };
+    defer subagent.g_agent_jobs = saved;
+    var label = [_]u8{'x'};
+    var job: subagent.AgentJob = .{ .id = std.math.maxInt(u32), .label = &label, .prompt = &label, .niche = &label, .isolation = .shared_cwd, .isolation_fallback = false, .ctx = ctx };
+    defer job.feedback.deinit(gpa);
+    subagent.agentJobPump(&job, gpa, io);
+    defer gpa.free(job.result);
+    try std.testing.expect(job.done and job.is_error);
+    try std.testing.expect(job.ctx.retained_worker == null);
+    try std.testing.expectEqual(@as(u32, 0), subagent.g_agent_jobs.active);
+    try std.testing.expect(std.mem.indexOf(u8, job.result, "depth limit") != null);
+    // The testing allocator also checks that the megabyte history is gone.
+}

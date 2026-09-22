@@ -305,3 +305,85 @@ test "provider defaults preserve explicit model selection" {
     try std.testing.expectEqualStrings("xiaomi", (try keys.defaultProvider()).id);
     try std.testing.expectEqualStrings("mimo-v2.6-pro", (try keys.defaultProvider()).model);
 }
+
+test "pricing Astra has metered catalog entries and cache write premium" {
+    try std.testing.expect(pricing.providerModelInTable("openai", "gpt-6-astra"));
+    try std.testing.expect(pricing.providerModelInTable("codegraff", "gpt-6-astra"));
+    const p = pricing.priceForProvider("openai", "gpt-6-astra").?;
+    try std.testing.expectApproxEqAbs(@as(f64, 1.25), pricing.usdForUsage(p, p.name, 0, 0, 100_000, 0), 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 13.5), pricing.usdForUsage(p, p.name, 300_000, 0, 0, 100_000), 1e-9);
+}
+
+test "pricing gateway aliases do not inherit vendor rates or cache writes" {
+    const gateway = pricing.priceForProvider("codegraff", "gpt-5.5").?;
+    const direct = pricing.priceForProvider("openai", "gpt-5.5").?;
+    try std.testing.expectEqual(@as(f64, 4), gateway.in);
+    try std.testing.expectEqual(@as(f64, 5), direct.in);
+    const astra = pricing.priceForProvider("codegraff", "gpt-6-astra").?;
+    try std.testing.expectApproxEqAbs(@as(f64, 1), pricing.usdForUsage(astra, astra.name, 0, 0, 100_000, 0), 1e-9);
+}
+
+test "pricing gateway tally respects priced and free rows without vendor fallback" {
+    var tally: pricing.CostTally = .{};
+    tally.addForProvider(std.testing.io, .priced, "codegraff", "deepseek-v4-pro", 100_000, 100_000, 0, 100_000);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.13086), tally.usd, 1e-9);
+    const zero = pricing.priceForProvider("codegraff", "ling-3.0-flash-fin").?;
+    try std.testing.expectEqual(@as(f64, 0), pricing.usdFor(zero, 100, 100, 100));
+    try std.testing.expect(pricing.priceForProvider("codegraff", "gpt-6-sol") == null);
+}
+
+test "pricing gateway overrides name-only runtime prices and long bands" {
+    const old = pricing.price_overlay;
+    defer pricing.price_overlay = old;
+    pricing.price_overlay = &.{.{ .name = "grok-4.7", .in = 99, .out = 99, .cache = 99 }};
+    const gateway = pricing.priceForProvider("codegraff", "grok-4.7").?;
+    try std.testing.expectApproxEqAbs(@as(f64, 2), pricing.usdFor(gateway, 200_000, 0, 100_000), 1e-9);
+    try std.testing.expectEqual(@as(f64, 99), pricing.priceFor("grok-4.7").?.in);
+}
+
+test "pricing cached overlay preserves long context tariff" {
+    const old = pricing.price_overlay;
+    const old_context = pricing.context_overlay;
+    defer {
+        pricing.price_overlay = old;
+        pricing.context_overlay = old_context;
+    }
+    pricing.price_overlay = &.{};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try tmp.dir.writeFile(io, .{ .sub_path = ".codegraff-models.json", .data = "{\"models\":[{\"name\":\"gpt-6-astra\",\"in\":10,\"out\":50,\"cache\":1}]}" });
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", arena.allocator());
+    @import("models_cache.zig").loadOverlay(io, arena.allocator(), home);
+    const p = pricing.priceFor("gpt-6-astra").?;
+    try std.testing.expectEqual(@as(u64, 272_000), p.high_at);
+    try std.testing.expectApproxEqAbs(@as(f64, 13.5), pricing.usdForUsage(p, p.name, 300_000, 0, 0, 100_000), 1e-9);
+}
+
+test "pricing footer preserves small nonzero metered costs" {
+    var tally: pricing.CostTally = .{};
+    tally.addForProvider(std.testing.io, .priced, "codegraff", "mimo-v2.6-flash", 29, 8064, 0, 21);
+    const snapshot = tally.snap(std.testing.io);
+    var buf: [512]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    try pricing.CostTally.render(snapshot, &writer);
+    const text = writer.buffered();
+    const dollar = std.mem.indexOfScalar(u8, text, '$') orelse return error.MissingCost;
+    const reported = try std.fmt.parseFloat(f64, text[dollar + 1 ..]);
+    try std.testing.expect(reported > 0);
+    try std.testing.expectApproxEqAbs(snapshot.usd, reported, 5e-9);
+}
+
+test "pricing Astra resolves using only a gateway credential" {
+    const previous = pricing.active_model_table;
+    defer pricing.active_model_table = previous;
+    pricing.active_model_table = &pricing.model_table;
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    _ = keys.set("codegraff", "fixture", .environment);
+    const resolved = try keys.providerFor("gpt-6-astra");
+    try std.testing.expectEqualStrings("codegraff", resolved.id);
+    try std.testing.expectEqual(@as(u64, 1_050_000), resolved.context);
+    try std.testing.expectEqual(@import("billing.zig").Billing.priced, @import("billing.zig").forProvider(resolved));
+}

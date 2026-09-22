@@ -75,6 +75,20 @@ pub fn handle(self: *Model, k: Key) Effect {
     }
     if (k == .mouse) return mouseKey(self, k.mouse);
 
+    if (self.pending) |job| if (job.events.permission.peek()) |request| {
+        if (isCtrl(k, 'q') or isCtrl(k, 'd')) {
+            _ = job.events.permission.respond(request.id, .deny);
+            if (engine.g_cancel_fn) |cancel| cancel(engine.g_turn_ctx);
+            return .quit;
+        }
+        if (isChar(k, 'y') or isChar(k, 'Y')) {
+            _ = job.events.permission.respond(request.id, .allow_once);
+        } else if (isChar(k, 'n') or isChar(k, 'N') or k == .escape or isCtrl(k, 'c')) {
+            _ = job.events.permission.respond(request.id, .deny);
+            if (k == .escape or isCtrl(k, 'c')) if (engine.g_cancel_fn) |cancel| cancel(engine.g_turn_ctx);
+        }
+        return .stay;
+    };
     if (@import("nav.zig").handle(self, k)) |e| return e;
     // Job-control wins overlays so Ctrl+C always does something.
     if (isCtrl(k, 'c')) return ctrlC(self);

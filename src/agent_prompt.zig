@@ -106,8 +106,8 @@ fn standing(self: *const Agent) engine_events.StandingWork {
 /// unpriced, and only then is a real figure snapshotted.
 fn cost(self: *Agent) engine_events.CostMeter {
     if (!main_mod.show_cost) return .hidden;
-    if (std.mem.eql(u8, self.provider.id, "codex")) return .subscription;
-    if (pricing.priceFor(self.provider.model) == null) return .unpriced;
+    if (@import("billing.zig").forProvider(self.provider) == .sub) return .subscription;
+    if (pricing.priceForProvider(self.provider.id, self.provider.model) == null) return .unpriced;
     return .{ .usd = pricing.g_cost.snap(self.io).usd };
 }
 

@@ -391,6 +391,7 @@ pub const usage_text =
     \\  --timing         show per-tool wall-clock on result lines
     \\  --cost           show running session spend in the prompt
     \\  --json           structured stdio protocol (JSON in, JSONL events out)
+    \\  --max-run-tool-calls N  aggregate root/descendant tool ceiling for this invocation
     \\  --max-tool-calls N  reject root tool calls after N per turn (JSON-safe budget)
     \\  --max-model-calls N total provider calls allowed across this run (default 0 = unlimited; includes children/title/judges)
     \\  --dedupe-tool-calls reject duplicate root tool name+input calls per turn

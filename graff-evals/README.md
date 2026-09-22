@@ -142,3 +142,45 @@ Authoring rules that keep results comparable:
 - Planted values (sums, counts, code words) live in the fixture, not the
   prompt, so the model must actually do the work.
 - One behavior per task; keep prompts short and unambiguous.
+
+## Paired model measurements
+
+For gateway comparisons, supply `CODEGRAFF_API_KEY` through the environment
+without putting the key in commands or reports. Both arms use fresh HOME
+folders containing the explicit saved provider/model selection; the runner
+removes `--model` so production startup loads that provider's catalog. No
+other provider credentials, user skills, saved sessions, or MCP configuration
+are inherited. Root API trace model identity must match for a run to qualify.
+
+```sh
+python3 graff-evals/run.py --suite swe --task config-parse \
+  --harness graff-dev --provider codegraff --model gpt-6-astra \
+  --binary /path/to/baseline/graff --arm baseline --reps 3 -j 1 \
+  --output-root /tmp/graff-astra-baseline
+```
+
+Use the identical command with the candidate binary, candidate arm, and a new
+output directory. Match build optimization and effort across arms. Start with
+one case each for Astra, MiMo Pro, Claude, and Gemini to check transport and
+measurement completeness, then expand to all available aliases and six SWE
+fixtures. Availability failures remain failed/incomplete cells, never zero-cost
+wins. Interleave baseline/candidate repetitions to reduce cache/order bias.
+
+Receipts include binary SHA-256, evaluation-working-tree revision and patch
+hash, untracked source hashes, task hash, requested provider/model, arm, wall
+time, and harness usage. Raw logs stay in private run directories. Visible
+verifiers must remain unchanged; held-out graders run from outside the task
+workspace after the model exits. The final cumulative `[usage]` footer supplies
+metered cost; dollars in tool output or prose are ignored. Missing/unpriced
+usage stays unknown. Direct-provider list prices are not applied to gateway
+calls, and aggregate multi-request tokens cannot determine long-context price
+bands. Compare costs only when both binaries use the same validated accounting.
+
+For an existing Codex subscription, use `--provider codex` and supply
+`CODEX_HOME` as the explicit authentication-directory path. The runner checks
+that its `auth.json` exists without reading or copying its contents, inherits
+only that path, and excludes gateway and other API keys. The same fresh HOME
+and saved-selection path applies. Subscription calls are labelled separately;
+the metered subtotal is retained, while total USD stays unknown rather than
+presenting a flat subscription as free inference. API list-price estimates
+require a separately validated model/rate snapshot.

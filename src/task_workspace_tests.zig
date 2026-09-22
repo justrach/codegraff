@@ -80,6 +80,7 @@ test "create: two task workspaces get distinct checkouts and index.lock paths" {
     const two = try ws.create(a, io, ar, .{ .slug = "agent-two", .cwd = root });
     try std.testing.expect(!std.mem.eql(u8, one.path, two.path));
     try std.testing.expect(!std.mem.eql(u8, one.branch, two.branch));
+    try std.testing.expectEqualStrings("main", @import("worktree_base.zig").read(a, io, ar, root, one.branch));
     const git_one = ws.gitDirAt(a, io, ar, one.path);
     const git_two = ws.gitDirAt(a, io, ar, two.path);
     try std.testing.expect(git_one.len > 0 and git_two.len > 0);

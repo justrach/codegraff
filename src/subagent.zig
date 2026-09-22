@@ -72,8 +72,17 @@ pub fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     // #380: vision-aware seat + honesty flag (this file is at the cap).
     const ask = vision_ask.seat(ctx, base, obj, cell, label, prompt, sys_override, niche);
     if (ask.blocked) return .{ .text = try vision_ask.blockMessage(ctx.gpa, ask), .is_error = true };
-    if (ctx.interactive_children or tools.json_args.flag(input, "run_in_background")) return spawnSubBackground(ctx, label, prompt, sys_override, niche, isolation, isolation_fallback, ask.pin.provider, ask.pin.effort, ask);
-    const run = try runSub(ctx, "subagent", label, prompt, sys_override, niche, isolation, isolation_fallback, ask.pin.provider, ask.pin.effort);
+    const keep = tools.json_args.flag(input, "retained");
+    if (ctx.interactive_children or tools.json_args.flag(input, "run_in_background")) {
+        var child = ctx;
+        if (keep) child.retained_worker = try @import("subagent_retained.zig").create(ctx, label);
+        errdefer if (keep) child.retained_worker.?.deinit(ctx.gpa, ctx.io);
+        return spawnSubBackground(child, label, prompt, sys_override, niche, isolation, isolation_fallback, ask.pin.provider, ask.pin.effort, ask);
+    }
+    const run = if (keep)
+        try @import("subagent_resume.zig").foreground(ctx, label, prompt, sys_override, niche, isolation, isolation_fallback, ask.pin.provider, ask.pin.effort)
+    else
+        try runSub(ctx, "subagent", label, prompt, sys_override, niche, isolation, isolation_fallback, ask.pin.provider, ask.pin.effort);
     return vision_ask.flagReport(ctx.gpa, run.output, ask);
 }
 
@@ -186,7 +195,7 @@ pub fn admitOneLocked(registry: *AgentJobs) ?*AgentJob {
 /// every job's pump (drain the next queued one) — a small self-perpetuating
 /// worker chain, no separate ticker task needed. Never called with the
 /// mutex held.
-fn admitNext(gpa: Allocator, io: Io) void {
+pub fn admitNext(gpa: Allocator, io: Io) void {
     while (true) {
         g_agent_jobs.mutex.lockUncancelable(io);
         const job = admitOneLocked(&g_agent_jobs);
@@ -209,7 +218,7 @@ fn admitNext(gpa: Allocator, io: Io) void {
 /// records the structured completion (status/result/usage — never silent,
 /// even on failure), then drains the next queued spawn. Mirrors jobPump's
 /// shape in jobs.zig.
-fn agentJobPump(job: *AgentJob, gpa: Allocator, io: Io) void {
+pub fn agentJobPump(job: *AgentJob, gpa: Allocator, io: Io) void {
     const t0: Io.Timestamp = .now(io, .awake);
     var ctx = job.ctx;
     ctx.subagent_feedback = &job.feedback;
@@ -230,8 +239,11 @@ fn agentJobPump(job: *AgentJob, gpa: Allocator, io: Io) void {
     job.is_error = run.output.is_error;
     job.usage = run.usage;
     job.done = true;
+    const retained_state = job.ctx.retained_worker;
+    job.ctx.retained_worker = null; // completed jobs retain reports, not full conversation arenas
     g_agent_jobs.active -= 1;
     g_agent_jobs.mutex.unlock(io);
+    if (retained_state) |state| state.deinit(gpa, io);
     ledger.finish(gpa, io, job.id, job.is_error, job.result, job.usage);
     admitNext(gpa, io);
 }
@@ -240,68 +252,7 @@ fn agentJobPump(job: *AgentJob, gpa: Allocator, io: Io) void {
 /// job and return immediately with its id; the child runs on the pool.
 /// Never blocks on a free concurrency slot — a spawn beyond the cap is
 /// queued, not failed; admitNext drains it once room frees up.
-pub fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool, pin: ?Provider, effort: ?main_mod.ReasoningEffort, ask: vision_ask.Ask) !ToolOutput {
-    const gpa = ctx.gpa;
-    const label_c = try gpa.dupe(u8, label);
-    errdefer gpa.free(label_c);
-    const prompt_c = try gpa.dupe(u8, prompt);
-    errdefer gpa.free(prompt_c);
-    const sys_c: ?[]u8 = if (sys_override) |s| try gpa.dupe(u8, s) else null;
-    errdefer if (sys_c) |s| gpa.free(s);
-    const niche_c = try gpa.dupe(u8, niche);
-    errdefer gpa.free(niche_c);
-
-    const owned = try gpa.create(@import("subagent_owned.zig").Owned);
-    owned.* = .init(gpa);
-    errdefer {
-        owned.arena.deinit();
-        gpa.destroy(owned);
-    }
-    const owned_ctx = try owned.context(ctx);
-    const owned_pin = if (pin) |p| try owned.provider(p) else null;
-    const owner = if (ctx.interactive_children) try owned.arena.allocator().dupe(u8, ctx.session_name) else null;
-    const job = try gpa.create(AgentJob);
-    job.* = .{
-        .id = 0,
-        .label = label_c,
-        .prompt = prompt_c,
-        .sys_override = sys_c,
-        .niche = niche_c,
-        .isolation = isolation,
-        .isolation_fallback = isolation_fallback,
-        .pin = owned_pin,
-        .effort = effort,
-        .owned = owned,
-        .owner = owner,
-        .ask = ask.rebased(prompt_c), // the caller's arena dies with this call
-        .ctx = owned_ctx,
-    };
-
-    g_agent_jobs.mutex.lockUncancelable(ctx.io);
-    job.id = g_agent_jobs.next_id;
-    g_agent_jobs.next_id += 1;
-    const appended = blk: {
-        g_agent_jobs.list.append(gpa, job) catch break :blk false;
-        break :blk true;
-    };
-    g_agent_jobs.mutex.unlock(ctx.io);
-    if (!appended) {
-        gpa.free(label_c);
-        gpa.free(prompt_c);
-        if (sys_c) |s| gpa.free(s);
-        gpa.free(niche_c);
-        gpa.destroy(job);
-        return error.OutOfMemory;
-    }
-    admitNext(gpa, ctx.io);
-    ledger.remember(gpa, ctx.io, job.id, job.label);
-    @import("subagent_interactive.zig").request(ctx);
-    return .{ .text = try std.fmt.allocPrint(
-        gpa,
-        "[agent {d} started: {s}]\nIt runs in the background across turns. Do not poll. Interactive REPL calls release the prompt and notify you on completion; agent_output(id {d}) returns a snapshot. Headless agent_output(wait_ms>0) waits until it finishes. Send mid-task feedback with agent_message using the same id; it does not interrupt the current tool. After completion, agent_output keeps returning the same result.",
-        .{ job.id, job.label, job.id },
-    ) };
-}
+pub const spawnSubBackground = @import("subagent_spawn_job.zig").spawnSubBackground;
 
 /// Programmatic fire-and-forget spawn for harness-internal reporters (the
 /// codedbpro failure → issue filer): no tool-call input to parse, no persona,
@@ -382,6 +333,7 @@ pub fn agentJobsReap(gpa: Allocator, io: Io) void {
     for (list) |job| {
         if (job.admitted) job.future.await(io);
         job.feedback.deinit(gpa);
+        if (job.ctx.retained_worker) |state| state.deinit(gpa, io);
         if (job.owned) |owned| {
             owned.arena.deinit();
             gpa.destroy(owned);
