@@ -183,6 +183,22 @@ def acquire_install_lock(lock_path, timeout=12.0):
             time.sleep(0.1)
 
 
+def linux_user_systemd():
+    if not shutil.which('systemctl'):
+        return False
+    return run_managed(['systemctl', '--user', 'show-environment'], check=False).returncode == 0
+
+
+def start_detached(command, directory, token, log_path):
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log = open(log_path, 'ab')
+    env = os.environ.copy()
+    env['GRAFF_MCP_TOKEN'] = token
+    subprocess.Popen(command, cwd=str(directory), env=env, stdin=subprocess.DEVNULL,
+                     stdout=log, stderr=log, start_new_session=True)
+    log.close()
+
+
 def service(home, executable, directory, port, token):
     state = home / '.graff/mcp'
     command = [str(executable), 'mcp', 'serve', '--http', '--port', str(port)]
@@ -199,7 +215,8 @@ def service(home, executable, directory, port, token):
         run_managed(['launchctl', 'bootout', domain + '/dev.codegraff.mcp'], check=False)
         run_managed(['launchctl', 'bootstrap', domain, str(target)])
         run_managed(['launchctl', 'kickstart', '-k', domain + '/dev.codegraff.mcp'])
-    elif sys.platform.startswith('linux') and shutil.which('systemctl'):
+        return
+    if sys.platform.startswith('linux'):
         target = home / '.config/systemd/user/codegraff-mcp.service'
         if target.exists() and MARKER not in target.read_text():
             raise ValueError('Existing service is not managed by Codegraff')
@@ -208,11 +225,15 @@ def service(home, executable, directory, port, token):
             'ExecStart=' + ' '.join(quote(part) for part in command) + '\n' +
             'WorkingDirectory=' + quote(directory) + '\nEnvironment=GRAFF_MCP_TOKEN=' + token +
             '\nRestart=on-failure\nRestartSec=10\n[Install]\nWantedBy=default.target\n')
-        run_managed(['systemctl', '--user', 'daemon-reload'])
-        run_managed(['systemctl', '--user', 'enable', '--now', 'codegraff-mcp.service'])
-        run_managed(['systemctl', '--user', 'restart', 'codegraff-mcp.service'])
-    else:
-        raise ValueError('Automatic service setup needs macOS launchd or Linux user systemd')
+        if linux_user_systemd():
+            run_managed(['systemctl', '--user', 'daemon-reload'])
+            run_managed(['systemctl', '--user', 'enable', '--now', 'codegraff-mcp.service'])
+            run_managed(['systemctl', '--user', 'restart', 'codegraff-mcp.service'])
+            return
+    if sys.platform.startswith('linux'):
+        start_detached(command, directory, token, home / '.graff/mcp/service.log')
+        return
+    raise ValueError('Automatic service setup needs macOS launchd or Linux user systemd')
 
 
 def main():

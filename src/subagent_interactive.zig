@@ -32,7 +32,10 @@ pub fn request(ctx: tools.ToolCtx) void {
 /// The next model request will be replaced by the yield notice. Job completion
 /// must stay queued for the idle auto-turn instead of landing in a turn that
 /// is about to return without another model call (#1154).
+/// Unattended sessions (ACP, one-shot) have no prompt to hand back. Yielding
+/// there ends the turn before the model's next tool.
 pub fn armYield() void {
+    if (@import("main.zig").unattended) return;
     if (enabled.load(.acquire)) requested.store(true, .release);
 }
 

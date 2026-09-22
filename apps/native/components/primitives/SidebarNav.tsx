@@ -18,6 +18,7 @@ import {
 } from "@/lib/icons";
 import CodeGraffMark from "./CodeGraffMark";
 import GlideMenu from "@/components/primitives/GlideMenu";
+import { useCommandGlyph } from "@/lib/shortcut-glyph";
 import ActionMenu from "./ActionMenu";
 import WorkspaceMenu from "./WorkspaceMenu";
 
@@ -199,6 +200,7 @@ export default function SidebarNav({
   onSeeAll,
   agentsCount = 0,
 }: SidebarNavProps) {
+  const mod = useCommandGlyph();
   const [collapsed, setCollapsed] = useState(false);
   useEffect(() => { onCollapsedChange?.(collapsed); }, [collapsed, onCollapsedChange]);
   useEffect(() => {
@@ -318,7 +320,7 @@ export default function SidebarNav({
             ref={collapseButtonRef}
             type="button"
             aria-label={onCloseNavigation ? "Close navigation" : "Collapse sidebar"}
-            title={onCloseNavigation ? "Close navigation" : "Collapse sidebar (⌘B)"}
+            title={onCloseNavigation ? "Close navigation" : `Collapse sidebar (${mod}B)`}
             aria-hidden={collapsed}
             tabIndex={collapsed ? -1 : 0}
             onClick={collapse}
@@ -330,7 +332,7 @@ export default function SidebarNav({
             ref={expandButtonRef}
             type="button"
             aria-label="Expand sidebar"
-            title="Expand sidebar (⌘B)"
+            title={`Expand sidebar (${mod}B)`}
             aria-hidden={!collapsed}
             tabIndex={collapsed ? 0 : -1}
             onClick={() => { setCollapsed(false); requestAnimationFrame(() => collapseButtonRef.current?.focus()); }}

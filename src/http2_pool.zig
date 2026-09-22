@@ -2,6 +2,7 @@
 //! latches HTTP/1.1. One session per origin; peer close redials inside Session.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const http_zig = @import("http_zig");
 const main_mod = @import("main.zig");
@@ -47,6 +48,18 @@ pub fn sessionFor(gpa: std.mem.Allocator, io: Io, host: []const u8, p: u16) !*ht
     const s = try http_zig.Session.open(gpa, io, host, p);
     session = s;
     return s;
+}
+
+/// Drop the process-wide session. Tests allocate it with `std.testing.allocator`.
+pub fn resetForTest() void {
+    if (!builtin.is_test) return;
+    const live = session orelse return;
+    const io = live.io;
+    mu.lockUncancelable(io);
+    defer mu.unlock(io);
+    if (session) |current| current.close();
+    session = null;
+    host_len = 0;
 }
 
 /// Drop the pooled session. A stream that did not reach END_STREAM must not

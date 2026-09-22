@@ -7,8 +7,15 @@ const { execFileSync } = require('node:child_process');
 
 async function main() {
   const output = process.argv[2];
-  if (!output) throw new Error('Provide the output .icns path.');
+  const sizeArg = Number(process.argv[3] || 0);
+  if (!output) throw new Error('Provide the output icon path.');
   const source = path.join(__dirname, '../desktop/icon.svg');
+  if (output.endsWith('.png')) {
+    const size = sizeArg || 256;
+    await sharp(source).resize(size, size).png().toFile(path.resolve(output));
+    return;
+  }
+  if (!output.endsWith('.icns')) throw new Error('Provide an .icns or .png output path.');
   const work = await fs.mkdtemp(path.join(os.tmpdir(), 'graff-icon-'));
   const iconset = path.join(work, 'Codegraff.iconset');
   try {

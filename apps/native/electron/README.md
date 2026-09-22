@@ -197,6 +197,10 @@ score. Chromium chooses its supported GPU backend; no forced driver flags or
 custom Metal pipeline are needed for the current DOM-based interface.
 See [repeatable performance scenarios](VISUAL-TESTS.md) for the model-free runner.
 
+## Linux desktop
+
+`build.sh` on Linux writes an unpacked app at `zig-out/electron/codegraff`, a `.deb`, and an AppImage when `appimagetool` is installed. Launch with `codegraff` in that directory. The window uses system decorations. The terminal helper is a POSIX PTY. macOS activity, Liquid Glass, and computer use stay out of the bundle. The launcher uses the setuid sandbox helper when the deb install sets it, a user namespace when `unshare --user` works, and `--no-sandbox` otherwise so the app still opens.
+
 ## Building a distribution disk image
 
 `build.sh` produces a development app with a local signature. For public downloads,
@@ -246,3 +250,17 @@ are attached. Every latest stable release must carry `latest-mac.yml` and its
 versioned ZIP alongside the DMG; a CLI-only latest release cannot serve a desktop
 update. Publish the complete release atomically. Versions older than the first
 updater-enabled release need one manual DMG installation.
+
+The tag workflow also builds this tree on Linux and uploads the unsigned
+package next to the CLI tarballs:
+
+```sh
+GRAFF_VERSION=VERSION bash apps/native/electron/build.sh
+bash apps/native/electron/publish-linux.sh vVERSION zig-out/electron
+```
+
+That attaches `Codegraff-linux-amd64.deb` (or `arm64`) and
+`Codegraff-linux-<arch>-SHA256SUMS`. An AppImage is included when
+`appimagetool` was on `PATH` during the build. There is no notarization step
+on Linux; the upload is the unsigned `.deb` `build.sh` wrote. A development
+bundle (`GRAFF_DEV=1`) is not a release asset.

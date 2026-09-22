@@ -348,6 +348,12 @@ test "interactive children yield once without cancellation or a model request" {
     interactive.request(ctx); // headless callers retain wait-until-exit behavior
     try std.testing.expect((try interactive.beforeRequest(&root)) == null);
     ctx.interactive_children = true;
+    const main_mod = @import("main.zig");
+    const saved_unattended = main_mod.unattended;
+    main_mod.unattended = true;
+    interactive.request(ctx);
+    try std.testing.expect((try interactive.beforeRequest(&root)) == null);
+    main_mod.unattended = saved_unattended;
     interactive.request(ctx);
     const text = (try interactive.beforeRequest(&root)).?;
     try std.testing.expect(std.mem.indexOf(u8, text, "keep using the prompt") != null);

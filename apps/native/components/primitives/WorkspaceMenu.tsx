@@ -2,11 +2,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { monogram, compareWorkspaceActivity, workspaceSourceLabel, type Workspace } from '@/lib/workspaces';
+import { useCommandGlyph } from '@/lib/shortcut-glyph';
 type Row = Workspace;
 export default function WorkspaceMenu({position,current,rows,onSwitch,onNew,onSettings,onClose}:{
   position:{top:number;left:number};current?:string;rows:Row[];onSwitch?:(path:string)=>void;onNew?:()=>void;onSettings?:()=>void;onClose:()=>void;
 }) {
   const [query,setQuery]=useState('');const input=useRef<HTMLInputElement>(null);const menu=useRef<HTMLDivElement>(null);
+  const mod = useCommandGlyph();
   const close=useRef(onClose);close.current=onClose;
   useEffect(()=>{const previous=document.activeElement as HTMLElement|null;input.current?.focus();const escape=(e:KeyboardEvent)=>{if(e.key==='Escape'){e.preventDefault();close.current();}};window.addEventListener('keydown',escape);return()=>{window.removeEventListener('keydown',escape);previous?.focus();};},[]);
   const list=rows.filter(row=>`${row.name} ${row.path}`.toLowerCase().includes(query.toLowerCase())).sort((a,b)=>Number(b.path===current)-Number(a.path===current)||compareWorkspaceActivity(a,b));
@@ -31,7 +33,7 @@ export default function WorkspaceMenu({position,current,rows,onSwitch,onNew,onSe
       {!list.length&&<p className="p-3 text-sm text-ink-3">{query?'No matching workspaces.':'Open a folder to start a workspace.'}</p>}
     </div>
     <div className="shrink-0 border-t border-line p-1.5">
-      <button type="button" onClick={pick(onNew)} className="flex w-full justify-between rounded-lg px-3 py-2 text-sm text-ink hover:bg-hover">Open a folder…<kbd className="text-xs text-ink-3">⌘O</kbd></button>
+      <button type="button" onClick={pick(onNew)} className="flex w-full justify-between rounded-lg px-3 py-2 text-sm text-ink hover:bg-hover">Open a folder…<kbd className="text-xs text-ink-3">{mod}O</kbd></button>
       <button type="button" onClick={pick(onSettings)} className="w-full rounded-lg px-3 py-2 text-left text-sm text-ink hover:bg-hover">Project settings…</button>
     </div>
   </div>,document.querySelector('[data-navigation-panel]:popover-open') ?? document.body);

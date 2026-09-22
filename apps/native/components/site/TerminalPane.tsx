@@ -3,15 +3,17 @@ import {useEffect,useRef,useState} from 'react';
 import type {Terminal} from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import {desktop,type TerminalEvent} from '@/lib/desktop';
+import { useCommandGlyph } from '@/lib/shortcut-glyph';
 
 export default function TerminalPane({cwd,visible,onHide}:{cwd:string;visible:boolean;onHide():void}) {
   const host=useRef<HTMLDivElement>(null),terminal=useRef<Terminal|null>(null),id=useRef<string|null>(null);
   const [height,setHeight]=useState(240),[generation,setGeneration]=useState(0),[error,setError]=useState(''),[status,setStatus]=useState('Starting shell…');
   const shown=useRef(visible);shown.current=visible;
+  const mod=useCommandGlyph();
   const start=visible||id.current!==null;
   useEffect(()=>{
     if(!start)return;
-    const bridge=desktop();if(!bridge?.terminal||!bridge.terminalSubscribe){setError('The workspace terminal is available in the macOS desktop app.');return;}
+    const bridge=desktop();if(!bridge?.terminal||!bridge.terminalSubscribe){setError('The workspace terminal is available in the desktop app.');return;}
     let disposed=false,off=()=>{},resize:ResizeObserver|undefined,theme:MutationObserver|undefined;
     const request=bridge.terminal;
     const send=(action:string,params:Record<string,unknown>={})=>request(action,{id:id.current,...params}).catch(e=>{if(!disposed)setError(String(e.message||e));});
@@ -28,7 +30,12 @@ export default function TerminalPane({cwd,visible,onHide}:{cwd:string;visible:bo
       applyTheme();theme=new MutationObserver(applyTheme);theme.observe(document.documentElement,{attributes:true,attributeFilter:['data-theme','style','class']});
       term.onData(data=>{if(id.current)void send('input',{data});});
       term.onResize(({cols,rows})=>{if(id.current)void send('resize',{cols,rows});});
-      term.attachCustomKeyEventHandler(event=>{if(event.metaKey&&event.key.toLowerCase()==='k'){if(event.type==='keydown')term.clear();event.preventDefault();return false;}return !event.metaKey;});
+      term.attachCustomKeyEventHandler(event=>{
+        const mac=/Mac|iPhone|iPad/.test(navigator.platform);
+        const command=mac?event.metaKey:(event.ctrlKey||event.metaKey);
+        if(command&&!event.altKey&&!event.shiftKey&&event.key.toLowerCase()==='k'){if(event.type==='keydown')term.clear();event.preventDefault();return false;}
+        return mac?!event.metaKey:true;
+      });
       let ready=false;const queued:TerminalEvent[]=[];
       const deliver=(event:TerminalEvent)=>{
         if(event.id!==id.current)return;
@@ -67,9 +74,9 @@ export default function TerminalPane({cwd,visible,onHide}:{cwd:string;visible:bo
       onPointerUp={event=>event.currentTarget.releasePointerCapture(event.pointerId)} />
     <header className="flex h-9 items-center gap-3 border-b border-line px-3 text-xs">
       <strong className="font-medium">Terminal</strong><span title={cwd} className="min-w-0 flex-1 truncate text-ink-3">{cwd.split('/').pop()||cwd}</span><span role="status" className="text-ink-3">{status}</span>
-      <button onClick={()=>terminal.current?.clear()} title="Clear terminal (⌘K)" className="hover:text-accent-ink">Clear</button>
+      <button onClick={()=>terminal.current?.clear()} title={`Clear terminal (${mod}K)`} className="hover:text-accent-ink">Clear</button>
       <button onClick={()=>{if(id.current)void desktop()?.terminal?.('close',{id:id.current});if(terminal.current)terminal.current.options.disableStdin=true;setStatus('Shell exited');}} className="hover:text-accent-ink">End session</button>
-      <button aria-label="Hide terminal" title="Hide terminal (⌘J)" onClick={onHide} className="px-1 hover:text-accent-ink">×</button>
+      <button aria-label="Hide terminal" title={`Hide terminal (${mod}J)`} onClick={onHide} className="px-1 hover:text-accent-ink">×</button>
     </header>
     {error&&<div role="alert" className="absolute inset-x-2 top-10 z-10 rounded bg-surface p-3 text-xs text-red">{error}<button onClick={()=>void end()} className="ml-3 underline">Retry</button></div>}
     {status.startsWith('Shell exited')&&<button onClick={()=>void end()} className="absolute right-4 top-11 z-10 rounded bg-surface px-3 py-1 text-xs shadow-hairline">New session</button>}

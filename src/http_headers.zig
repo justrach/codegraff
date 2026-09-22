@@ -164,7 +164,10 @@ pub fn restoreProjectRootId(id: []const u8) void {
     if (id.len != 36) return;
     while (project_id_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
     defer project_id_lock.store(false, .release);
-    @memcpy(project_id_buf[0..36], id[0..36]);
+    // `id` may be a slice of `project_id_buf` (resume of the live key).
+    var tmp: [36]u8 = undefined;
+    @memcpy(&tmp, id[0..36]);
+    @memcpy(&project_id_buf, &tmp);
     project_id_len = 36;
 }
 
