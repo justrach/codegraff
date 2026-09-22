@@ -127,6 +127,10 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit and subprocess integration tests");
     test_step.dependOn(&run_tests.step);
+    // Reachability only needs the binary. Running the suite here as well made
+    // pre-push spend its 600s budget before the tests check started.
+    const test_bin = b.step("test-bin", "Compile unit tests without running them");
+    test_bin.dependOn(&unit_tests.step);
     const acp_preauth_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-preauth.py" });
     acp_preauth_test.addArtifactArg(exe);
     test_step.dependOn(&acp_preauth_test.step);
