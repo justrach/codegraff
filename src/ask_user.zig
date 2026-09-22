@@ -22,6 +22,7 @@ const protocol_seq = @import("protocol_seq.zig");
 const vision = @import("vision.zig");
 const vision_queue = @import("vision_queue.zig");
 const acp_ask = @import("acp_ask.zig");
+const style = &@import("ansi.zig").style;
 
 /// Block the root agent for an ask_user reply; subagents have no stdin.
 pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
@@ -60,8 +61,9 @@ pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
         .is_error = true,
     };
     const w = self.out.?;
-    // Skip the re-print only when the question streamed live in full.
-    if (!self.argStreamedFully(call)) try w.print("\n❓ {s}\n", .{question});
+    // Named tool row even when the question streamed: announce is silent for
+    // streamed args, and the result line used to skip this meta tool.
+    try w.print("  {s}⚙{s} ask_user  {s}\n", .{ style.accent, style.reset, question });
     if (tools_mod.json_args.object(call.input)) |o| if (tools_mod.json_args.arrayOf(o, "options")) |opts| {
         for (opts, 1..) |opt, n| try w.print("   {d}) {s}\n", .{ n, tools_mod.json_args.text(opt) orelse "(non-text option)" });
     };

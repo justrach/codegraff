@@ -55,7 +55,7 @@ fn treePrefix() []const u8 {
 /// Default session is result-only — announce lines doubled the visual weight.
 pub fn toolUseLine(a: *Agent, t: ToolInvocation) void {
     _ = a;
-    if (t.arg_streamed) return;
+    if (t.arg_streamed and !t.ask_user) return;
     var vbuf: [16]u8 = undefined;
     var dbuf: [128]u8 = undefined;
     const v = label.verb(t.name, t.input, &vbuf);
@@ -132,7 +132,7 @@ pub fn liveOutput(a: *Agent, text: []const u8) void {
 /// writes straight to the writer — it never ended a tick-gate row.
 pub fn toolResultLine(a: *Agent, r: ToolOutcome) void {
     const w = a.out orelse return;
-    if (r.meta) return;
+    if (r.meta and !r.ask_user) return;
     if (label.skipLineRepl(r.name)) return;
     const all = std.mem.trim(u8, r.text, " \t\r\n");
     if (r.is_error) {
@@ -567,4 +567,20 @@ test "blank Enter reveals hidden tool results newest-first and terminal-safe" {
     aw.clearRetainingCapacity();
     try std.testing.expect(disclosure.handleInput(a.io, &aw.writer, ""));
     try std.testing.expectEqualStrings("", aw.writer.buffered());
+}
+
+test "ask_user keeps a named row after streamed arguments" {
+    const saved = ansi.style;
+    ansi.style = .{};
+    defer ansi.style = saved;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = testAgent(&aw.writer);
+    const input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"question\":\"Which one?\"}", .{});
+    toolUseLine(&a, .{ .name = "ask_user", .input = input, .ask_user = true, .arg_streamed = true });
+    try std.testing.expectEqualStrings("", aw.writer.buffered());
+    toolResultLine(&a, .{ .name = "ask_user", .text = "yes", .is_error = false, .meta = true, .ask_user = true });
+    try std.testing.expectEqualStrings("  ✓ ask  Which one?  yes\n", aw.writer.buffered());
 }
