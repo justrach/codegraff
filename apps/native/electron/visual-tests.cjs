@@ -1,4 +1,5 @@
 const testDesktop = require('./test-desktop.cjs');
+const { runNavigationVisuals } = require('./navigation-visual.cjs');
 const { app, BrowserWindow, ipcMain } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
@@ -66,7 +67,7 @@ app.whenReady().then(async () => {
     return;
   }
   if (['projects', 'folder-picker', 'splits', 'interactions', 'tagged', 'tab-drag', 'session-navigation'].includes(process.env.GRAFF_VISUAL_SUITE)) {
-    await require('./navigation-visual.cjs').runNavigationVisuals({ win, origin, output });
+    await runNavigationVisuals({ win, origin, output });
     if (!['folder-picker', 'interactions', 'tagged', 'tab-drag', 'session-navigation'].includes(process.env.GRAFF_VISUAL_SUITE)) {
       await require('./browser-visual.cjs').runBrowserVisuals({ win, origin, output });
       await require('./dev-preview-visual.cjs').runDevPreview({ output });
