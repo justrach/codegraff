@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState } from "react";
+import { focusNavigationPrompt } from "@/lib/navigation-prompt-focus";
 
 /** Explicit navigation, not active-pane changes or draft renders, owns focus. */
 export function useNavigationPromptFocus() {
@@ -10,9 +11,7 @@ export function useNavigationPromptFocus() {
       `[data-chat="${request.id}"] textarea[aria-label="Prompt"]`,
     );
     // Run once in the navigation commit, never retry later during typing.
-    if (prompt && !prompt.disabled && prompt.getClientRects().length) {
-      prompt.focus({ preventScroll: true });
-    }
+    if (prompt) focusNavigationPrompt(prompt);
   }, [request]);
   return { promptFocusRoot: root, requestPromptFocus: (id: number) => setRequest({ id }) };
 }
