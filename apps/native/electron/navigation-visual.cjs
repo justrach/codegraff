@@ -1,4 +1,5 @@
 const testDesktop = require('./test-desktop.cjs');
+const { runNavigationPromptFocus } = require('./navigation-prompt-focus-visual.cjs');
 const {BrowserWindow,ipcMain}=require('electron');
 const {installGalleryFixture}=require('./gallery-fixture.cjs');
 const {installWindowState}=require('./window-state.cjs');
@@ -34,7 +35,7 @@ async function runNavigationVisuals({win:fixtureWindow,origin,output}) {
     if(process.env.GRAFF_VISUAL_SUITE==='tab-drag'){await js(`document.querySelector('[aria-label="Collapse sidebar"]').click()`);await wait(`!!document.querySelector('[data-session-navigation="tabs"]')`);await require('./tab-drag-visual.cjs').runTabDrag({win,origin,output});return;}
     if(process.env.GRAFF_VISUAL_SUITE==='splits'){await require('./split-focus-visual.cjs').runSplitFocus({win,origin,output});return;}
     const interactions = async () => {
-      await require('./navigation-prompt-focus-visual.cjs').runNavigationPromptFocus({win,origin});
+      await runNavigationPromptFocus({win,origin});
       await require('./navigation-keyboard-visual.cjs').runNavigationKeyboard({win,origin});
       await require('./composer-interaction-visual.cjs').runComposerInteractions({win,origin,output});
       await require('./files-recovery-visual.cjs').runFilesRecovery({win,origin,output});
