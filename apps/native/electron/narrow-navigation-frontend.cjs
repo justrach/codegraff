@@ -73,6 +73,7 @@ async function runNarrowNavigation({win, output, click, until, report}) {
   win.setContentSize(1320, 868);
   await until(() => js(`innerWidth >= 1024 && document.querySelector('[aria-label="Workspace navigation"]').getBoundingClientRect().width > 200 && !document.querySelector('[data-navigation-panel]').hasAttribute('popover')`), 'wide sidebar restored');
   assert.equal(await js(`document.querySelectorAll('[aria-label="Workspace navigation"]').length`), 1);
+  report.passed.push('selecting a chat from narrow navigation closes the popover, focuses its prompt and sends typing there');
   report.passed.push('update controls stay unclipped and eight new chats cannot hide the navigation button');
   report.passed.push('narrow window: workspace picker and real saved-chat actions reachable; nested Escape, close control, outside dismissal and focus work; widening restores one sidebar');
 }
