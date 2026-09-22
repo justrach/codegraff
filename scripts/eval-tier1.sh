@@ -202,7 +202,11 @@ if wanted tests; then
     # binary finished; process_guard's cap is 1800s.
     out=$(python3 scripts/eval/process_guard.py --timeout 1800 zig build test --summary all 2>&1)
     status=$?
-    printf '%s\n' "$out" | tail -4
+    if ((status != 0)); then
+      printf '%s\n' "$out"
+    else
+      printf '%s\n' "$out" | tail -4
+    fi
     if ((status != 0)); then
       printf '    fix: the failing test names are above; rerun one with\n'
       printf '         zig build test -Dtest-filter="<part of the name>"\n'

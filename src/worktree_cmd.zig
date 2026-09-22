@@ -23,6 +23,12 @@ const codegraff_coauthor = "Co-Authored-By: Codegraff <blackfloofie@codegraff.co
 const worktree_prune = @import("worktree_prune.zig");
 
 fn landSourceClean(gpa: Allocator, io: Io, path: []const u8) bool {
+    // A leftover directory can resolve to its parent repository. It is not
+    // the source checkout unless Git reports this path as its own root.
+    const prefix = runCapped(gpa, io, &.{ "git", "-C", path, "rev-parse", "--show-prefix" }, 8192, 8192, 30_000) catch return false;
+    defer gpa.free(prefix.stdout);
+    defer gpa.free(prefix.stderr);
+    if (!ranOk(prefix) or std.mem.trim(u8, prefix.stdout, " \t\r\n").len != 0) return false;
     const status = runCapped(gpa, io, &.{ "git", "-C", path, "status", "--porcelain", "--untracked-files=all" }, 1 << 16, 8192, 30_000) catch return false;
     defer gpa.free(status.stdout);
     defer gpa.free(status.stderr);
@@ -312,8 +318,13 @@ test "land source gate preserves untracked staged and unstaged work and fails cl
     try std.testing.expect(!landSourceClean(gpa, io, path));
     try Git.run(gpa, io, path, &.{ "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "initial" });
     try std.testing.expect(landSourceClean(gpa, io, path));
+    try tmp.dir.createDir(io, "not-a-worktree", .default_dir);
+    const nested = try std.fs.path.join(gpa, &.{ path, "not-a-worktree" });
+    defer gpa.free(nested);
+    try std.testing.expect(!landSourceClean(gpa, io, nested)); // clean parent
     try tmp.dir.writeFile(io, .{ .sub_path = "work.txt", .data = "keep this edit\n" });
     try std.testing.expect(!landSourceClean(gpa, io, path));
+    try std.testing.expect(!landSourceClean(gpa, io, nested)); // dirty parent
     const retained = try tmp.dir.readFileAlloc(io, "work.txt", gpa, .limited(1024));
     defer gpa.free(retained);
     try std.testing.expectEqualStrings("keep this edit\n", retained);
