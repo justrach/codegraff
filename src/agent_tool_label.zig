@@ -67,7 +67,7 @@ fn namedDetailField(name: []const u8, input: std.json.Value) ?[]const u8 {
     return null;
 }
 
-const fallback_fields = [_][]const u8{ "command", "path", "query", "url", "pattern", "file", "prompt", "uri", "text" };
+const fallback_fields = [_][]const u8{ "command", "path", "query", "url", "pattern", "file", "prompt", "uri", "text", "question" };
 
 fn fallbackDetail(input: std.json.Value) []const u8 {
     for (fallback_fields) |field| {
@@ -182,6 +182,7 @@ pub fn verb(name: []const u8, input: std.json.Value, buf: []u8) []const u8 {
     if (std.mem.eql(u8, name, "subagent") or std.mem.eql(u8, name, "workflow")) return "scout";
     if (std.mem.eql(u8, name, "imagegen")) return "image";
     if (std.mem.eql(u8, name, "read_tool_result")) return "inspect";
+    if (std.mem.eql(u8, name, "ask_user")) return "ask";
     const leaf = mcpLeaf(name);
     if (std.mem.eql(u8, leaf, "batch")) return "inspect";
     if (std.mem.startsWith(u8, name, "mcp")) {

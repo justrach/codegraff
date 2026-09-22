@@ -26,12 +26,26 @@ const eval_control = @import("agent_eval_control.zig");
 pub const skipped_text = "tool execution skipped because the operation was aborted";
 
 /// Write / edit / imagegen serialize the whole batch so a later edit cannot
-/// race a write on the same path. Shell-only batches stay parallel (#266).
-/// Mixing bash with write/edit still serializes, because write/edit do.
+/// race a write on the same path. Mixing bash with write/edit still
+/// serializes, because write/edit do. Shell-only batches stay parallel
+/// (#266) but join on the caller thread (#1166).
 pub fn isSequential(name: []const u8) bool {
     if (std.mem.eql(u8, name, "write_file")) return true;
     if (std.mem.eql(u8, name, "edit_file")) return true;
     if (std.mem.eql(u8, name, imagegen.tool_name)) return true;
+    return false;
+}
+
+fn isShellName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "shell") or std.mem.eql(u8, name, "bash");
+}
+
+/// Shell job reaping is not safe on pool threads: fast parallel completions
+/// corrupted a free block after every result was already persisted (#1166).
+pub fn batchNeedsCooperative(calls: []const ToolCall, idx: []const usize) bool {
+    for (idx) |i| {
+        if (isShellName(calls[i].name)) return true;
+    }
     return false;
 }
 
@@ -169,8 +183,15 @@ fn runParallel(self: *Agent, ctx: ToolCtx, calls: []const ToolCall, ext_idx: []c
     defer self.gpa.free(futures);
     const outputs = try self.gpa.alloc(ToolOutput, spawn_at.items.len);
     defer self.gpa.free(outputs);
-    for (spawn_at.items, futures) |i, *fut|
-        fut.* = self.io.concurrent(execTool, .{ ctx, calls[i] }) catch self.io.async(execTool, .{ ctx, calls[i] });
+    const cooperative = batchNeedsCooperative(calls, spawn_at.items);
+    for (spawn_at.items, futures) |i, *fut| {
+        // Shell batches start together cooperatively so #266 still holds, but
+        // they do not share io.concurrent worker threads (#1166).
+        fut.* = if (cooperative)
+            self.io.async(execTool, .{ ctx, calls[i] })
+        else
+            self.io.concurrent(execTool, .{ ctx, calls[i] }) catch self.io.async(execTool, .{ ctx, calls[i] });
+    }
     for (futures, outputs) |*fut, *output| output.* = fut.await(self.io);
     defer for (outputs) |output| self.gpa.free(output.text);
 
@@ -206,8 +227,17 @@ test "batchNeedsSerial: file mutations serialize; bash-only stays parallel" {
     try std.testing.expect(batchNeedsSerial(&only_write, &.{0}));
     const two_bash = [_]ToolCall{ bash, bash };
     try std.testing.expect(!batchNeedsSerial(&two_bash, &.{ 0, 1 }));
+    try std.testing.expect(batchNeedsCooperative(&two_bash, &.{ 0, 1 }));
     const bash_write = [_]ToolCall{ bash, write };
     try std.testing.expect(batchNeedsSerial(&bash_write, &.{ 0, 1 }));
+    try std.testing.expect(!batchNeedsCooperative(&reads, &.{ 0, 1 }));
+}
+
+test "isShellName: bash and shell, not reads" {
+    try std.testing.expect(isShellName("bash"));
+    try std.testing.expect(isShellName("shell"));
+    try std.testing.expect(!isShellName("read_file"));
+    try std.testing.expect(!isShellName("webfetch"));
 }
 
 test "skipped_text is a stable model-facing sentence" {

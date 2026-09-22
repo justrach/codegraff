@@ -65,6 +65,17 @@ describe("browserLinkSegments", () => {
     ]) assert.deepEqual(browserLinkSegments(text), [{ kind: "text", value: text }]);
   });
 
+  it("does not treat a missing space after a sentence period as a bare domain", () => {
+    const text = "I will finish.The next step is verification.";
+    assert.equal(normalizeBrowserTarget("finish.The"), null);
+    assert.deepEqual(browserLinkSegments(text), [{ kind: "text", value: text }]);
+    assert.deepEqual(browserLinkSegments("See example.com after finish.The check."), [
+      { kind: "text", value: "See " },
+      { kind: "link", label: "example.com", href: "https://example.com/" },
+      { kind: "text", value: " after finish.The check." },
+    ]);
+  });
+
   it("recognizes the reported local preview URL and bare IPv6 destinations exactly", () => {
     const url = "http://localhost:3090/visual-tests/radius-preview";
     assert.deepEqual(browserLinkSegments(url), [{ kind: "link", label: url, href: url }]);

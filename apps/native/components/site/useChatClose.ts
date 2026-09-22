@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { disposeSession } from "@/lib/acp-client";
 import { browserClose } from "@/lib/browser-client";
+import { focusAfterClose, rememberActivation } from "@/lib/chat-activation";
 import { closeWorkerCount, readCloseDontAsk, shouldConfirmTabClose, writeCloseDontAsk } from "@/lib/close-confirm";
 import { removeSession, type StoredSession } from "@/lib/sessions";
 import type { AcpCommand } from "@/lib/acp";
@@ -39,11 +40,20 @@ export function useChatClose(props: Props) {
   const { openChat, focusChat, openStored, newChat, refreshStored, unwatchIdle } = props;
   // Closed tabs, oldest first, for the reopen shortcut.
   const closedRef = useRef<{ session: string | null; cwd?: string; resumable: boolean }[]>([]);
+  // Activation order is independent of tab and split-pane order.
+  const activeHistoryRef = useRef<number[]>([activeId]);
   const [dontAskAgain, setDontAskAgain] = useState(false);
   const [pendingClose, setPendingClose] = useState<{ ids: number[]; workers: number; after?: () => void } | null>(null);
   useEffect(() => {
     setDontAskAgain(readCloseDontAsk(window.localStorage));
   }, []);
+  useEffect(() => {
+    activeHistoryRef.current = rememberActivation(
+      activeHistoryRef.current,
+      activeId,
+      chatsRef.current.map(chat => chat.id),
+    );
+  }, [activeId, chatsRef]);
 
   const dropChat = (id: number) => {
     sessionsRef.current.delete(id);
@@ -76,9 +86,12 @@ export function useChatClose(props: Props) {
       dropChat(id);
     }
     const remaining = chatsRef.current.filter(c => !ids.includes(c.id));
+    const live = remaining.map(chat => chat.id);
+    const recent = focusAfterClose(activeHistoryRef.current, live, visible, remaining);
+    activeHistoryRef.current = activeHistoryRef.current.filter(id => live.includes(id));
     chatsRef.current = remaining; setChats(remaining);
     if (!remaining.length) { openChat(++chatIdRef.current); return; }
-    if (ids.includes(activeId)) focusChat(visible[0] ?? remaining[remaining.length - 1].id);
+    if (ids.includes(activeId) && recent != null) focusChat(recent);
   };
 
   const closeChats = (ids: number[], after?: () => void) => {
