@@ -41,6 +41,7 @@ jobs:
       - run: bun run test:turns
       - run: bun run test:tab-drag
       - run: bun run test:session-navigation
+      - run: bun run test:keyboard
       - run: bun run test:stream-performance
       - run: bun run test:history-performance
       - run: bun run test:browser-resources

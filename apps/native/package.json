@@ -16,6 +16,7 @@
     "test:webauthn": "node scripts/test-webauthn.mjs",
     "test:desktop": "bun test lib ./electron/*.test.cjs",
     "test:session-navigation": "GRAFF_VISUAL_SUITE=session-navigation bun scripts/test-visual.mjs",
+    "test:keyboard": "GRAFF_VISUAL_SUITE=keyboard bun scripts/test-visual.mjs",
     "test:tab-drag": "GRAFF_VISUAL_SUITE=tab-drag bun scripts/test-visual.mjs",
     "test:turns": "GRAFF_VISUAL_SUITE=turns bun scripts/test-visual.mjs",
     "test:visual": "bun scripts/test-visual.mjs",
