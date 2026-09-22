@@ -134,6 +134,7 @@ export default function GraffHarness() {
   const [pinsByChat, setPinsByChat] = useState<Record<number, BrowserPin[]>>({});
   const pinsRef = useRef<Record<number, BrowserPin[]>>({});
   const { promptFocusRoot, requestPromptFocus } = useNavigationPromptFocus();
+  const activateChat = (id: number) => { setActiveId(id); requestPromptFocus(id); };
   const chatIdRef = useRef(1);
   const msgIdRef = useRef(0);
   // Split view: ordered visible chats, independent of focus. Each keeps its
@@ -244,7 +245,7 @@ export default function GraffHarness() {
     const next = [...chatsRef.current, { id, title: null, messages: [], model: ws?.model ?? model ?? undefined, session, cwd }];
     chatsRef.current = next; setChats(next);
     setZoomedPane(null);
-    setActiveId(id); requestPromptFocus(id);
+    activateChat(id);
     setFilesOpen(false);
     setConversationsOpen(false);
     setFollowing(true);
