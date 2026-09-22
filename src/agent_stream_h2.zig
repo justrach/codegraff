@@ -48,6 +48,8 @@ pub fn postStream(self: *Agent, body: []const u8) !?[]u8 {
     }
 
     const sess = http2_pool.sessionFor(gpa, self.io, origin.host, origin.port) catch return null;
+    var keep = false;
+    defer if (!keep) http2_pool.invalidate(self.io);
     var lines = sess.startLines(.{
         .method = "POST",
         .scheme = "https",
@@ -99,7 +101,10 @@ pub fn postStream(self: *Agent, body: []const u8) !?[]u8 {
                     }
                     return e;
                 };
-                if (!more) break;
+                if (!more) {
+                    keep = http2_pool.keepAfter(lines.ended);
+                    break;
+                }
                 break :read;
             };
             const first = rsel.await() catch |e| {
@@ -117,7 +122,10 @@ pub fn postStream(self: *Agent, body: []const u8) !?[]u8 {
                         }
                         return e;
                     };
-                    if (!more) break;
+                    if (!more) {
+                        keep = http2_pool.keepAfter(lines.ended);
+                        break;
+                    }
                 },
                 .stall => |w| {
                     if (w == .deadline) self.stall.tripped_ms = stall_budget;
@@ -139,6 +147,12 @@ pub fn postStream(self: *Agent, body: []const u8) !?[]u8 {
         if (self.provider.kind == .openai and openaiComplete(line.items)) saw_done = true;
         if (isStreamEnd(self.scratchAlloc(), self.provider.kind, line.items)) {
             saw_done = true;
+            if (lines.ended) {
+                var junk: std.ArrayList(u8) = .empty;
+                defer junk.deinit(gpa);
+                while (lines.readLine(&junk) catch false) {}
+                keep = true;
+            }
             break;
         }
         if (self.sub and Agent.esc_cancel.load(.acquire)) {

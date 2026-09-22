@@ -198,7 +198,9 @@ if wanted tests; then
       printf '    fix: skipped tests must count toward the suite ratchet (#794)\n'
       record_fail tests
     else
-    out=$(python3 scripts/eval/process_guard.py --timeout 600 zig build test --summary all 2>&1)
+    # One full run. 600s killed a green suite on a warm tree before the
+    # binary finished; process_guard's cap is 1800s.
+    out=$(python3 scripts/eval/process_guard.py --timeout 1800 zig build test --summary all 2>&1)
     status=$?
     printf '%s\n' "$out" | tail -4
     if ((status != 0)); then
@@ -269,7 +271,7 @@ if wanted invariants; then
     inv_ok=1
     if ! python3 scripts/eval/tier1_test_binary.py resolve >/dev/null 2>&1; then
       printf '  no test artifact yet; compiling the unfiltered suite once\n'
-      if ! python3 scripts/eval/process_guard.py --timeout 600 zig build test --summary all >/dev/null; then
+      if ! python3 scripts/eval/process_guard.py --timeout 1800 zig build test --summary all >/dev/null; then
         inv_ok=0
         record_fail invariants
       fi
