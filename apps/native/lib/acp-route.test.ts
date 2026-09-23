@@ -327,7 +327,7 @@ fs.appendFileSync('starts', JSON.stringify(process.argv.slice(2))+'\\n');
 const send=value=>console.log(JSON.stringify(value));
 require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
   const req=JSON.parse(line);
-  if(req.method==='initialize') send({id:req.id,result:{}});
+  if(req.method==='initialize') send({id:req.id,result:{protocolVersion:1}});
   if(req.method==='session/new') {
     send({id:req.id,result:{sessionId:'kept-alive'}});
     send({method:'session/update',params:{update:{sessionUpdate:'available_commands_update',availableCommands:[]}}});
@@ -374,7 +374,7 @@ const resumed=process.argv.includes('--resume');
 const send=value=>console.log(JSON.stringify(value));
 require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
   const req=JSON.parse(line);
-  if(req.method==='initialize') send({id:req.id,result:{}});
+  if(req.method==='initialize') send({id:req.id,result:{protocolVersion:1}});
   if(req.method==='session/new') {
     send({id:req.id,result:{sessionId:'saved-conversation'}});
     send({method:'session/update',params:{update:{sessionUpdate:'available_commands_update',availableCommands:[]}}});
