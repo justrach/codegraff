@@ -203,6 +203,8 @@ record only when you need the evidence or the edge cases.
 | [0177](0177-owned-async-tool-execution.md) | Direct read-only async jobs own their lifetime, preserve order, and join before the next request. |
 | [0178](0178-batched-edits-preflight-before-commit.md) | Preflight every edit span in memory, then perform one verified replacement; an invalid later span leaves the file unchanged. |
 
+| [0179](0179-durable-shell-handles.md) | Reserve durable JS-exact shell handles before spawning; stale handles never target new jobs. |
+
 ## When to write one
 
 Write an ADR when a decision is load-bearing and non-obvious: it was reached

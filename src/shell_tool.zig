@@ -107,12 +107,12 @@ pub fn exec(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         .output => {
             const id = intField(call.input, "id") orelse return missingArg(gpa, "id");
             const wait_ms = intField(call.input, "wait_ms") orelse 0;
-            if (id < 0 or id > std.math.maxInt(u32)) return .{ .text = try gpa.dupe(u8, "invalid job id"), .is_error = true };
+            if (id < 0 or id > @import("shell_identity.zig").last) return .{ .text = try gpa.dupe(u8, "invalid job id"), .is_error = true };
             return jobs.jobOutput(gpa, ctx.io, @intCast(id), @intCast(@max(wait_ms, 0)));
         },
         .kill => {
             const id = intField(call.input, "id") orelse return missingArg(gpa, "id");
-            if (id < 0 or id > std.math.maxInt(u32)) return .{ .text = try gpa.dupe(u8, "invalid job id"), .is_error = true };
+            if (id < 0 or id > @import("shell_identity.zig").last) return .{ .text = try gpa.dupe(u8, "invalid job id"), .is_error = true };
             return jobs.jobKill(gpa, ctx.io, @intCast(id));
         },
     }
@@ -202,4 +202,28 @@ test "catalog advertises shell, not the three bash names" {
         }
     }
     try std.testing.expect(saw_shell);
+}
+
+test "shell controls preserve JS exact handles and reject out of range integers" {
+    const gpa = std.testing.allocator;
+    var client: std.http.Client = undefined;
+    const ctx: ToolCtx = .{ .gpa = gpa, .io = std.testing.io, .client = &client, .provider = undefined, .registry = null, .from_sub = false, .approvals = null, .tracer = null };
+    for ([_][]const u8{ "bash_output", "bash_kill" }) |name| {
+        for ([_]i64{ 4294967296, 9007199254740991, -1, 9007199254740992 }) |id| {
+            const input = try std.fmt.allocPrint(gpa, "{{\"id\":{d}}}", .{id});
+            defer gpa.free(input);
+            var c = try parseCall(gpa, name, input);
+            defer c.parsed.deinit();
+            const out = try exec(ctx, c.call);
+            defer gpa.free(out.text);
+            try std.testing.expect(out.is_error);
+            if (id < 0 or id > @import("shell_identity.zig").last) {
+                try std.testing.expectEqualStrings("invalid job id", out.text);
+            } else {
+                const expected = try std.fmt.allocPrint(gpa, "background job {d} has no live owner", .{id});
+                defer gpa.free(expected);
+                try std.testing.expect(std.mem.startsWith(u8, out.text, expected));
+            }
+        }
+    }
 }

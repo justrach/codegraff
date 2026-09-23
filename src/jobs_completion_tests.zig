@@ -7,7 +7,7 @@ const cancel = @import("cancel_source.zig");
 const Agent = @import("agent.zig").Agent;
 var hook_failed: bool = false;
 
-fn consumeBeforePublish(io: std.Io, id: u32) void {
+fn consumeBeforePublish(io: std.Io, id: u64) void {
     const result = jobs.jobOutput(std.testing.allocator, io, id, 0) catch {
         hook_failed = true;
         return;

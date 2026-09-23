@@ -264,7 +264,7 @@ test "#199: output keeps a job alive past the budget; a pinned job is never idle
     try std.testing.expectEqual(@as(?bool, true), jobs.setPinned(io, pinned, true));
     try std.testing.expectEqual(@as(?bool, null), jobs.setPinned(io, 9999, true));
     io.sleep(.fromMilliseconds(1_000), .awake) catch {};
-    for ([_]u32{ chatty, pinned }) |id| {
+    for ([_]u64{ chatty, pinned }) |id| {
         const snap = try jobs.jobOutput(gpa, io, id, 0);
         defer gpa.free(snap.text);
         try std.testing.expect(std.mem.indexOf(u8, snap.text, "running") != null);

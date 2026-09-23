@@ -27,7 +27,7 @@ cd "$repo_root"
 # processes discover their repo from their cwd like they expect.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
 
-CHECKS=(fmt lines spec reach build tests tui tuiguard invariants sdk)
+CHECKS=(fmt lines spec reach build shell tests tui tuiguard invariants sdk)
 
 usage() {
   cat <<'EOF'
@@ -39,6 +39,7 @@ checks, in order:
   spec        spec/conformance.py (kernel properties + fixture staleness)
   reach       every file that declares tests is reachable from the test root
   build       zig build
+  shell       durable shell IDs and stale-handle isolation after a crash
   tests       zig build test, and the suite count never shrinks
   tui         zig build tui-test (the TUI suite was ungated until the 2026-08 bug wave)
   tuiguard    real-binary pty probes: lifecycle invariants (tui-pty-guard.py)
@@ -168,6 +169,28 @@ fi
 skip_dependent() {
   printf '\n  \033[33mskipped\033[0m %s (zig build failed above)\n' "$1"
 }
+
+# --- shell -------------------------------------------------------------
+if wanted shell; then
+  if ((!build_ok)); then
+    skip_dependent shell
+  else
+    announce shell "durable reservations and stale handles cannot target new jobs"
+    if (
+      probe_dir=$(mktemp -d) || exit 1
+      trap 'rm -rf "$probe_dir"' EXIT
+      if [[ $(uname -s) == Darwin && -z ${SDKROOT:-} ]]; then
+        SDKROOT=$(xcrun --sdk macosx --show-sdk-path) || exit 1
+        export SDKROOT
+      fi
+      python3 scripts/eval/process_guard.py --timeout 180 zig build-exe src/shell_identity_probe.zig -lc -femit-bin="$probe_dir/identity" &&
+      python3 scripts/eval/process_guard.py --timeout 60 python3 scripts/test-shell-identity.py "$probe_dir/identity" &&
+      python3 scripts/eval/process_guard.py --timeout 90 python3 scripts/test-shell-restart.py zig-out/bin/graff
+    ); then :; else
+      record_fail shell
+    fi
+  fi
+fi
 
 # --- tests -------------------------------------------------------------
 suite_count() {

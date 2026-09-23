@@ -297,7 +297,7 @@ pub const EngineEvent = union(enum) {
     tool_output_delta: struct { name: []const u8, stderr: bool = false, text: []const u8 },
     /// A background bash job finished (grok-build TaskCompleted). Pulse:
     /// the model learns via the injected wake, not a durable wire id.
-    job_completed: struct { id: u32, exit_code: ?u8 = null, killed: bool = false },
+    job_completed: struct { id: u64, exit_code: ?u8 = null, killed: bool = false },
     /// A live transport attempt was cut; the payload says how and whether
     /// the turn ends with it (slice 1b). Distinct from stream_aborted: no
     /// partial answer is in flight, so sinks notice without flushing.

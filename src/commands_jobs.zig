@@ -31,7 +31,7 @@ pub fn tryHandle(root: *Agent, line: []const u8, out: *Io.Writer) !bool {
 fn control(root: *Agent, rest: []const u8, out: *Io.Writer) !void {
     var it = std.mem.tokenizeAny(u8, rest, " \t");
     const verb = it.next() orelse return out.print("{s}\n", .{usage});
-    const id = std.fmt.parseInt(u32, it.next() orelse "", 10) catch return out.print("{s}\n", .{usage});
+    const id = std.fmt.parseInt(u64, it.next() orelse "", 10) catch return out.print("{s}\n", .{usage});
     if (std.mem.eql(u8, verb, "keep") or std.mem.eql(u8, verb, "unkeep")) {
         const keep = verb[0] == 'k';
         const ok = jobs.setPinned(root.io, id, keep) orelse return out.print("no background job {d} — /jobs lists them\n", .{id});
@@ -60,7 +60,7 @@ fn control(root: *Agent, rest: []const u8, out: *Io.Writer) !void {
 }
 
 const Row = struct {
-    id: u32,
+    id: u64,
     pid: i32,
     running: bool,
     status: []const u8,
