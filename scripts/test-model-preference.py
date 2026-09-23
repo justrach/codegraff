@@ -147,8 +147,8 @@ def main() -> None:
             session.wait_for_prompt()
             clean_exit(session)
 
-        # A removed rollout stays on the selected provider when that login is
-        # healthy and the live catalog advertises a replacement model.
+        # A temporary catalog omission keeps the exact saved selection when
+        # that provider's credential remains available.
         cache.write_text(
             json.dumps(
                 {
@@ -160,8 +160,7 @@ def main() -> None:
             encoding="utf-8",
         )
         with launch(str(cwd), env, codex_home=str(codex_home)) as session:
-            session.wait_for_literal("saved preference kept")
-            session.wait_for_literal("gpt-5.6-luna · Medium · ~/repo · Fallback")
+            session.wait_for_literal("gpt-5.6-sol · Medium")
             session.wait_for_prompt()
             clean_exit(session)
         assert preference.read_text(encoding="utf-8") == "codex\ngpt-5.6-sol\n"

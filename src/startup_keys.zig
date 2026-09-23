@@ -58,7 +58,7 @@ test "saved startup pair survives a transient catalog omission and reaches the r
     try std.testing.expect(std.mem.indexOf(u8, body, "\"model\":\"gpt-6-astra\"") == null);
 }
 
-test "saved startup pair fails closed when its provider credential disappears" {
+test "saved startup pair does not borrow another provider credential" {
     var keys: provider_mod.Keys = .{ .values = @splat(null) };
     try std.testing.expect(keys.set("codegraff", "unrelated-key", .session));
     try std.testing.expectError(error.MissingKey, savedProvider(keys, .{ .pid = "codex", .model = "gpt-6-luna" }));
@@ -290,7 +290,7 @@ pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map
         models_cache.loadOverlay(io, arena, home);
     }
     var default_provider = keys.defaultProvider() catch return null;
-    const stale_saved_model: ?[]const u8 = null;
+    var stale_saved_model: ?[]const u8 = null;
     var preferred_provider: ?[]const u8 = null;
     // `--model <name|provider>` pins the startup model (same resolution as /model).
     if (model_flag) |mname| pick: {
@@ -328,12 +328,14 @@ pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map
         };
     } else if (saved_model) |saved| {
         preferred_provider = saved.pid;
-        // The saved pair remains the user's route even when a dynamic catalog
-        // briefly omits it. If its credential disappeared, stop before a paid
-        // request instead of using another provider or a different model.
+        // A catalog omission alone must not change the selected model. When
+        // its credential is gone, retain the preference and let the existing
+        // cross-provider consent gate control the fallback session.
         default_provider = savedProvider(keys, saved) catch |err| switch (err) {
-            error.UnknownProvider => std.process.fatal("saved provider '{s}' is unavailable — choose `--model <provider/model>` or see /models", .{saved.pid}),
-            error.MissingKey => std.process.fatal("no key/login for saved model '{s}/{s}' — sign in to {s} or choose `--model <provider/model>`", .{ saved.pid, saved.model, saved.pid }),
+            error.UnknownProvider, error.MissingKey => fallback: {
+                stale_saved_model = std.fmt.allocPrint(arena, "{s}/{s}", .{ saved.pid, saved.model }) catch saved.model;
+                break :fallback default_provider;
+            },
         };
     }
     return .{ .keys = @import("bench_priors.zig").noteKeysAtStartup(keys, io, arena, keys_cli.homeEnv(environ_map)), .default_provider = default_provider, .stale_saved_model = stale_saved_model, .preferred_provider = preferred_provider, .codex_account = codex_account, .model_catalog = model_catalog, .stored_keys_loaded = stored_keys_loaded };
