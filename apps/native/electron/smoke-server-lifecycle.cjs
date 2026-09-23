@@ -52,11 +52,57 @@ exports.run = async ({win, backend}) => {
     }
     throw Error('Shutdown fixture Send click did not reach its button');
   }
+  let skipFirstComposerClick = process.env.GRAFF_SHUTDOWN_SKIP_FIRST_COMPOSER_CLICK === '1';
+  async function focusComposer() {
+    // A hidden macOS window can report a visible hit point while Chromium
+    // drops the first trusted press. Retry only before any text was entered.
+    const observations = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await js(`(() => {
+        window.__shutdownComposerEvents={down:false,click:false};
+        window.__shutdownComposerObserver=e=>{
+          if(!e.isTrusted || !e.target?.closest?.('textarea[aria-label="Prompt"]'))return;
+          window.__shutdownComposerEvents[e.type==='pointerdown'?'down':'click']=true;
+        };
+        document.addEventListener('pointerdown',window.__shutdownComposerObserver,true);
+        document.addEventListener('click',window.__shutdownComposerObserver,true);
+      })()`);
+      try {
+        if (skipFirstComposerClick) skipFirstComposerClick = false;
+        else await click('textarea[aria-label="Prompt"]');
+        const end = Date.now() + 1000;
+        while (Date.now() < end) {
+          const state = await js(`(() => {
+            const e=document.querySelector('textarea[aria-label="Prompt"]');
+            return {down:window.__shutdownComposerEvents.down,
+              click:window.__shutdownComposerEvents.click,
+              focused:document.activeElement===e};
+          })()`);
+          observations[attempt] = {attempt:attempt + 1,...state};
+          if (state.down && state.click && state.focused) {
+            fs.appendFileSync(path.join(output, 'composer-clicks.jsonl'), JSON.stringify(observations)+'\n');
+            return;
+          }
+          await sleep(50);
+        }
+      } finally {
+        await js(`(() => {
+          document.removeEventListener('pointerdown',window.__shutdownComposerObserver,true);
+          document.removeEventListener('click',window.__shutdownComposerObserver,true);
+        })()`);
+      }
+      phase(`composer trusted click missed; retrying ${attempt + 1}`);
+    }
+    fs.appendFileSync(path.join(output, 'composer-clicks.jsonl'), JSON.stringify(observations)+'\n');
+    await timeouts.dumpTimeout({ label: 'composer focus', waitedMs: 3000, outer, output, workspace, js,
+      capturePage: () => win.webContents.capturePage().then(page => page.toPNG()),
+      backendOrigin: backend.origin, writePhase: phase });
+    throw Error('Shutdown fixture trusted composer click did not focus its textarea');
+  }
   async function submit(text) {
     const ready = () => js(`document.querySelector('textarea[aria-label="Prompt"]').value === ${JSON.stringify(text)} && !document.querySelector('[aria-label="Send"]').disabled`);
     for (let attempt = 0; attempt < 2 && !(await ready()); attempt++) {
-      await click('textarea[aria-label="Prompt"]');
-      await until(() => js(`document.activeElement === document.querySelector('textarea[aria-label="Prompt"]')`), 'composer focus');
+      await focusComposer();
       for (const keyCode of text) await desktop.testInput(win.webContents, {type:'char',keyCode});
       const end = Date.now() + 8000;
       while (Date.now() < end && !(await ready())) await sleep(50);
