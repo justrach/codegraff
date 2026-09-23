@@ -31,15 +31,19 @@ const Peer = struct {
             .responses => "{\"type\":\"response.output_text.delta\",\"delta\":\"I will wait for your reply.\\n\"}",
             .interactions => "{\"delta\":{\"type\":\"text\",\"text\":\"I will wait for your reply.\\n\"}}",
         };
-        for (0..1000) |_| {
+        std.debug.assert(raw.len < 126); // mock's short WebSocket frame encoding
+        // The detector trips on the thirteenth repeated line. Queue exactly
+        // that many events and flush once: the client then closes its socket,
+        // so a later peer write would race that close on Windows.
+        for (0..13) |_| {
             if (websocket) {
-                mock.Mock.writeTextFrame(&sw.interface, raw) catch return;
+                sw.interface.writeAll(&[_]u8{ 0x81, @intCast(raw.len) }) catch return;
+                sw.interface.writeAll(raw) catch return;
             } else {
                 sw.interface.print("data: {s}\n\n", .{raw}) catch return;
-                sw.interface.flush() catch return;
             }
-            io.sleep(.fromMilliseconds(2), .awake) catch return;
         }
+        sw.interface.flush() catch return;
         // No terminal event. A missing guard would wait for the stall budget.
         mock.Mock.idle(io, done);
     }

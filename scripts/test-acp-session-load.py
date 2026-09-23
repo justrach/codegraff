@@ -2,12 +2,13 @@
 """Offline two-process ACP v1 load: replay, context, and stale shell handles."""
 import json
 import os
+import queue
 import re
-import selectors
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -24,14 +25,28 @@ class Acp:
                    GRAFF_NO_TELEMETRY="1", GRAFF_NO_SMOLIFY="1",
                    GRAFF_BEHAVIOR_UPLOAD="off", NO_COLOR="1")
         self.err = open(cwd / f"acp-{time.time_ns()}.stderr", "w")
-        self.proc = subprocess.Popen([str(binary), "acp", "--yolo", "--old", "--model", "vercel"],
-                                     cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=self.err, start_new_session=True)
-        self.selector = selectors.DefaultSelector()
-        self.selector.register(self.proc.stdout, selectors.EVENT_READ)
+        try:
+            self.proc = subprocess.Popen([str(binary), "acp", "--yolo", "--old", "--model", "vercel"],
+                                         cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=self.err, start_new_session=True)
+        except BaseException:
+            self.err.close()
+            raise
+        self.chunks = queue.SimpleQueue()
+        self.reader = threading.Thread(target=self._read_stdout, daemon=True)
+        self.reader.start()
         self.pending = b""
         self.next_id = 0
         self.events = []
+
+    def _read_stdout(self):
+        try:
+            while chunk := os.read(self.proc.stdout.fileno(), 65536):
+                self.chunks.put(chunk)
+        except OSError:
+            pass
+        finally:
+            self.chunks.put(None)
 
     def request(self, method, params=None, timeout=25):
         self.next_id += 1
@@ -42,10 +57,11 @@ class Acp:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if b"\n" not in self.pending:
-                if not self.selector.select(.1):
+                try:
+                    chunk = self.chunks.get(timeout=.1)
+                except queue.Empty:
                     continue
-                chunk = os.read(self.proc.stdout.fileno(), 65536)
-                if not chunk:
+                if chunk is None:
                     raise AssertionError(f"ACP exited during {method}")
                 self.pending += chunk
             while b"\n" in self.pending:
@@ -57,21 +73,34 @@ class Acp:
         raise AssertionError(f"ACP {method} timed out")
 
     def close(self):
-        self.selector.close()
-        if self.proc.poll() is None:
-            self.proc.stdin.close()
+        try:
+            if self.proc.stdin and not self.proc.stdin.closed:
+                try:
+                    self.proc.stdin.close()
+                except OSError:
+                    pass
             try:
                 self.proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                os.killpg(self.proc.pid, signal.SIGTERM)
+                if os.name == "nt":
+                    self.proc.terminate()
+                else:
+                    os.killpg(self.proc.pid, signal.SIGTERM)
                 try:
                     self.proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
-                    pass
-            if self.proc.poll() is None:
-                os.killpg(self.proc.pid, signal.SIGKILL)
-                self.proc.wait(timeout=3)
-        self.err.close()
+                    if os.name == "nt":
+                        self.proc.kill()
+                    else:
+                        os.killpg(self.proc.pid, signal.SIGKILL)
+                    self.proc.wait(timeout=3)
+        finally:
+            try:
+                self.reader.join(timeout=3)
+                if self.proc.stdout:
+                    self.proc.stdout.close()
+            finally:
+                self.err.close()
 
 
 def tool_text(body):
