@@ -393,6 +393,7 @@ pub const Runtime = struct {
 
         self.recovery.shutdown();
         _ = self.warm_future.await(await_io);
+        @import("http2_pool.zig").shutdown(self.io);
 
         g_lifecycle_mutex.lockUncancelable(self.io);
         g_client_ready = null;

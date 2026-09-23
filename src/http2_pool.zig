@@ -10,6 +10,35 @@ const main_mod = @import("main.zig");
 var mu: Io.Mutex = .init;
 var session: ?*http_zig.Session = null;
 
+/// Origins that answered without h2 (ALPN picked http/1.1 or none). Skipping
+/// them saves a throwaway TCP + TLS dial on every request to that origin.
+const H1Origin = struct { host: [255]u8 = undefined, len: u8 = 0, port: u16 = 0 };
+var h1_origins: [8]H1Origin = @splat(.{});
+var h1_next: usize = 0;
+
+fn isOrigin(o: *const H1Origin, host: []const u8, port: u16) bool {
+    return o.len != 0 and o.port == port and std.ascii.eqlIgnoreCase(o.host[0..o.len], host);
+}
+
+pub fn knownH1(io: Io, host: []const u8, port: u16) bool {
+    mu.lockUncancelable(io);
+    defer mu.unlock(io);
+    for (&h1_origins) |*o| if (isOrigin(o, host, port)) return true;
+    return false;
+}
+
+pub fn noteH1(io: Io, host: []const u8, port: u16) void {
+    if (host.len == 0 or host.len > 255) return;
+    mu.lockUncancelable(io);
+    defer mu.unlock(io);
+    for (&h1_origins) |*o| if (isOrigin(o, host, port)) return;
+    const slot = &h1_origins[h1_next % h1_origins.len];
+    h1_next += 1;
+    @memcpy(slot.host[0..host.len], host);
+    slot.len = @intCast(host.len);
+    slot.port = port;
+}
+
 pub fn enabled() bool {
     return main_mod.g_http2;
 }
@@ -64,14 +93,25 @@ pub fn acquire(gpa: std.mem.Allocator, io: Io, host: []const u8, p: u16) !Lease 
     return .{ .session = takeIdle(io, host, p) orelse try http_zig.Session.open(gpa, io, host, p) };
 }
 
+/// Close the idle session. Called when the HTTP runtime shuts down so the
+/// kept-alive connection (socket, TLS buffers, CA bundle, HPACK table) is not
+/// left for the leak checker at exit.
+pub fn shutdown(io: Io) void {
+    mu.lockUncancelable(io);
+    const idle = session;
+    session = null;
+    mu.unlock(io);
+    if (idle) |s| s.close();
+}
+
 /// Tests release every active lease before clearing the idle pool.
 pub fn resetForTest() void {
     if (!builtin.is_test) return;
+    shutdown(std.testing.io);
     mu.lockUncancelable(std.testing.io);
-    const idle = session;
-    session = null;
+    h1_origins = @splat(.{});
+    h1_next = 0;
     mu.unlock(std.testing.io);
-    if (idle) |s| s.close();
 }
 
 pub fn keepAfter(ended: bool) bool {
@@ -117,6 +157,20 @@ fn countWindowUpdates(bytes: []const u8) usize {
         i += 9 + len;
     }
     return n;
+}
+
+test "an origin that answered without h2 is remembered, case-insensitively and per port" {
+    defer resetForTest();
+    const io = std.testing.io;
+    try std.testing.expect(!knownH1(io, "old.example", 443));
+    noteH1(io, "old.example", 443);
+    noteH1(io, "old.example", 443);
+    try std.testing.expect(knownH1(io, "OLD.example", 443));
+    try std.testing.expect(!knownH1(io, "old.example", 8443));
+    // The table is bounded: the oldest origin is evicted, never overflowed.
+    var buf: [16]u8 = undefined;
+    for (0..h1_origins.len) |i| noteH1(io, try std.fmt.bufPrint(&buf, "h{d}.example", .{i}), 443);
+    try std.testing.expect(!knownH1(io, "old.example", 443));
 }
 
 test "want is https-only" {
