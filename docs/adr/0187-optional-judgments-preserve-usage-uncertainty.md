@@ -15,13 +15,17 @@ model credential. The engine owns the behavior for both terminal and ACP
 sessions. If the login is absent or the request fails, skip the judgment
 without retrying it in the same session.
 
-Count reported tokens from a successful response, but leave its unsettled
-charge unknown. Mark a completed response without valid usage as missing
-usage, and a failed request attempt as uncertain. The session tally carries
-those distinctions to the terminal summary and ACP usage notification.
-Scripted mock judgments never affect the tally.
+Count reported tokens from a successful response. Count a charge only when
+the authenticated gateway response carries its server-owned, confirmed
+settlement receipt in integer micro-USD; never infer a settled charge from a
+catalog rate. Without that receipt, leave the charge unknown. Mark a
+completed response without valid usage as missing usage, and a failed
+request attempt as uncertain. The session tally carries those distinctions
+to the terminal summary and ACP usage notification. Scripted mock judgments
+never affect the tally.
 
 ## Validation
 
-`src/jev_tool.zig` and `src/acp_usage.zig` tests cover successful usage,
-missing usage, failed attempts, unknown cost, and mock isolation.
+`src/jev_tool.zig` and `src/acp_usage.zig` tests cover confirmed receipts,
+successful usage without a receipt, missing usage, failed attempts, unknown
+cost, and mock isolation.

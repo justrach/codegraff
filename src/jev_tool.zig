@@ -14,7 +14,7 @@ const pricing = @import("pricing.zig");
 const buffered_https = @import("http2_buffered.zig");
 
 pub const name = "jev_judge";
-pub const description = "Ask Jev one closed-form judgment about a SHORT, NON-SENSITIVE state. Requires a Codegraff login and an eligible GPT-6 or MiMo model. Use for yes/no (noul), a choice, or an ordered score, not writing or open-ended reasoning. Never send source code, secrets, customer data, paths, or unrelated context. A low-confidence verdict escalates to you. If Jev fails once, this tool skips all later Jev calls for this session; decide yourself instead.";
+pub const description = "Ask Jev one closed-form judgment about a SHORT, NON-SENSITIVE state. Requires a Codegraff login and an eligible GPT-6 or MiMo v2.6 model. Use for yes/no (noul), a choice, or an ordered score, not writing or open-ended reasoning. Never send source code, secrets, customer data, paths, or unrelated context. A low-confidence verdict escalates to you. If Jev fails once, this tool skips all later Jev calls for this session; decide yourself instead.";
 pub const input_schema =
     \\{"type":"object","properties":{"state":{"type":"string","description":"Short non-sensitive facts needed for this judgment only; no code, paths or secrets"},"question":{"type":"string","description":"One closed-form question about state"},"type":{"type":"string","enum":["noul","choice","score"],"description":"noul=yes/no probability; choice=one option; score=ordered level"},"options":{"type":"array","items":{"type":"string"},"description":"Required for choice: 2-16 distinct labels"},"levels":{"type":"array","items":{"type":"string"},"description":"Required for score: 2-10 ordered descriptions"}},"required":["state","question","type"]}
 ;
@@ -182,6 +182,19 @@ fn usageCount(v: Value) ?i64 {
     return if (v == .integer and v.integer >= 0) v.integer else null;
 }
 
+fn settledCharge(body: Value) ?u64 {
+    if (body != .object) return null;
+    const receipt = body.object.get("codegraff_billing") orelse return null;
+    if (receipt != .object) return null;
+    const settled = receipt.object.get("settled") orelse return null;
+    const currency = receipt.object.get("currency") orelse return null;
+    const charge = receipt.object.get("charge_micro_usd") orelse return null;
+    if (settled != .bool or !settled.bool or currency != .string or
+        !std.mem.eql(u8, currency.string, "USD") or charge != .integer or
+        charge.integer < 0 or charge.integer > 9_007_199_254_740_991) return null;
+    return @intCast(charge.integer);
+}
+
 fn noteGatewayUsage(io: Io, tally: *pricing.CostTally, arena: Allocator, raw: []const u8) void {
     const parsed = std.json.parseFromSliceLeaky(Value, arena, raw, .{}) catch {
         tally.missingUsage(io);
@@ -192,9 +205,13 @@ fn noteGatewayUsage(io: Io, tally: *pricing.CostTally, arena: Allocator, raw: []
         const input = usageCount(usage.object.get("input_tokens") orelse .null);
         const output = usageCount(usage.object.get("output_tokens") orelse .null);
         if (input != null and output != null) {
-            // The gateway returns token usage but no settled charge. Preserve
-            // known tokens while keeping the dollar total explicitly unknown.
-            tally.addForProvider(io, .unpriced, "codegraff", "jev-latest", input.?, 0, 0, output.?);
+            // This parser is called only for the authenticated gateway endpoint.
+            // A published list rate cannot replace a confirmed charge receipt.
+            if (settledCharge(parsed)) |charge| {
+                tally.addSettled(io, input.?, output.?, charge);
+            } else {
+                tally.addForProvider(io, .unpriced, "codegraff", "jev-latest", input.?, 0, 0, output.?);
+            }
             return;
         }
     }
@@ -258,7 +275,7 @@ fn verdict(arena: Allocator, input: Value, raw: []const u8) ![]const u8 {
 pub fn execute(ctx: ToolCtx, input: Value) !ToolOutput {
     if (ctx.from_sub) return invalid(ctx.gpa, "jev_judge is available only to the root agent");
     if (!state.codegraff_login.load(.acquire)) return invalid(ctx.gpa, "jev_judge requires a Codegraff login (`graff login`)");
-    if (!scope.eligible(ctx.provider)) return invalid(ctx.gpa, "jev_judge is available only with Codex/OpenAI GPT-6 or Xiaomi MiMo models");
+    if (!scope.eligible(ctx.provider)) return invalid(ctx.gpa, "jev_judge is available only with Codex/OpenAI GPT-6 or Xiaomi MiMo v2.6 models");
     if (state.down.load(.acquire)) return skipped(ctx.gpa);
     if (input != .object) return invalid(ctx.gpa, "jev_judge needs state, question and type");
     var temp = std.heap.ArenaAllocator.init(ctx.gpa);
@@ -445,4 +462,45 @@ test "native Jev gateway usage preserves tokens but marks unsettled cost unknown
     c = tally.snap(io);
     try std.testing.expectEqual(@as(u64, 1), c.unreported_failed_attempts);
     try std.testing.expectEqual(@as(u64, 4), c.api_calls); // failed attempts are separate
+}
+
+test "native Jev gateway confirmed receipt records exact charge once" {
+    const io = std.testing.io;
+    var tally: pricing.CostTally = .{};
+    var temp = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer temp.deinit();
+    noteGatewayUsage(io, &tally, temp.allocator(), "{\"usage\":{\"input_tokens\":296,\"output_tokens\":20},\"codegraff_billing\":{\"settled\":true,\"charge_micro_usd\":12,\"currency\":\"USD\"}}");
+    const c = tally.snap(io);
+    try std.testing.expectEqual(@as(u64, 1), c.api_calls);
+    try std.testing.expectEqual(@as(u64, 296), c.in_tokens);
+    try std.testing.expectEqual(@as(u64, 20), c.out_tokens);
+    try std.testing.expectEqual(@as(u64, 0), c.unpriced_calls);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.000012), c.usd, 1e-12);
+    var wire: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer wire.deinit();
+    try @import("acp_usage.zig").write(&wire.writer, "fixture", &tally, io);
+    const event = try std.json.parseFromSliceLeaky(Value, temp.allocator(), wire.written(), .{});
+    const usage = event.object.get("params").?.object.get("usage").?.object;
+    try std.testing.expect(usage.get("usage_complete").?.bool);
+    try std.testing.expect(usage.get("cost_complete").?.bool);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.000012), usage.get("cost_usd").?.float, 1e-12);
+}
+
+test "native Jev gateway refuses malformed and unconfirmed charge claims" {
+    const io = std.testing.io;
+    var tally: pricing.CostTally = .{};
+    var temp = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer temp.deinit();
+    for ([_][]const u8{
+        "{\"usage\":{\"input_tokens\":20,\"output_tokens\":5},\"codegraff_billing\":{\"settled\":false,\"charge_micro_usd\":1,\"currency\":\"USD\"}}",
+        "{\"usage\":{\"input_tokens\":20,\"output_tokens\":5},\"codegraff_billing\":{\"settled\":true,\"charge_micro_usd\":-1,\"currency\":\"USD\"}}",
+        "{\"usage\":{\"input_tokens\":20,\"output_tokens\":5},\"codegraff_billing\":{\"settled\":true,\"charge_micro_usd\":1.5,\"currency\":\"USD\"}}",
+        "{\"usage\":{\"input_tokens\":20,\"output_tokens\":5},\"codegraff_billing\":{\"settled\":true,\"charge_micro_usd\":1,\"currency\":\"EUR\"}}",
+        "{\"usage\":{\"input_tokens\":20,\"output_tokens\":5},\"codegraff_billing\":{\"settled\":true,\"charge_micro_usd\":9007199254740992,\"currency\":\"USD\"}}",
+    }) |raw| noteGatewayUsage(io, &tally, temp.allocator(), raw);
+    const c = tally.snap(io);
+    try std.testing.expectEqual(@as(u64, 5), c.api_calls);
+    try std.testing.expectEqual(@as(u64, 5), c.unpriced_calls);
+    try std.testing.expectEqual(@as(u64, 100), c.in_tokens);
+    try std.testing.expectEqual(@as(f64, 0), c.usd);
 }
