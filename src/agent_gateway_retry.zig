@@ -88,12 +88,20 @@ pub fn noteFlake(self: *Agent, state: *GatewayRetryState, err: anyerror) void {
 /// ladder below), then a short Codegraff follow-up flake (ADR 0053 DeepSeek
 /// `-j 6` 110-byte / ~450ms `api_error`), then the timeout-gated body-parse retry.
 pub fn afterServerErrorOrParseReject(self: *Agent, etype: []const u8, code: ?[]const u8, msg: []const u8, server_retries: *usize, state: *GatewayRetryState) !bool {
+    // A structured terminal code outranks transient wording in the message.
+    // In particular, do not retry a model the gateway cannot serve even if
+    // its diagnostic also mentions capacity or a request-body parse error.
+    if (isModelUnavailable(code)) return false;
     if (try retryTransientServerError(self, etype, code, msg, server_retries)) return true;
     if (try retryShortGatewayFlake(self, etype, code, msg, server_retries)) return true;
     return retryBodyParseAfterTimeouts(self, msg, state);
 }
 
 pub const max_short_flake_retries: usize = 2;
+
+fn isModelUnavailable(code: ?[]const u8) bool {
+    return if (code) |c| std.mem.eql(u8, c, "model_unavailable") else false;
+}
 
 /// Tiny / generic envelopes that are not a real client bug. The DeepSeek
 /// SWE `-j 6` follow-up was ~110 bytes, ~450 ms, `is_error`, no
@@ -102,7 +110,7 @@ pub const max_short_flake_retries: usize = 2;
 pub fn isShortGatewayFlake(etype: []const u8, code: ?[]const u8, msg: []const u8) bool {
     // Gateway 110-byte follow-up. etype is often invalid_request_error, which
     // would otherwise hard-fail on the "invalid" needle. Auth/quota still die.
-    if (code) |c| if (std.mem.eql(u8, c, "model_unavailable")) return false;
+    if (isModelUnavailable(code)) return false;
     if (isBodyParseRejection(msg)) return true;
     const hard = [_][]const u8{ "invalid", "authentication", "unauthorized", "insufficient", "quota", "permission", "tool_choice", "not found" };
     for (hard) |n| {
@@ -170,6 +178,7 @@ pub const max_server_retries: usize = 3; // #opencode-parity: bounded retries fo
 /// surfaced mid-stream and should be retried, not hard-failed. Billing / quota /
 /// invalid-input errors are NOT transient and fall through to a hard fail.
 pub fn isTransientServerError(etype: []const u8, code: ?[]const u8, msg: []const u8) bool {
+    if (isModelUnavailable(code)) return false;
     const needles = [_][]const u8{ "overloaded", "server_error", "server_is_overloaded", "token parsing" };
     for (needles) |n| {
         if (util.indexOfIgnoreCase(etype, n) != null) return true;
@@ -293,6 +302,7 @@ test "isShortGatewayFlake: internal/empty api_error retry; invalid/auth/quota do
     try std.testing.expect(!isShortGatewayFlake("insufficient_quota", null, "You exceeded your current quota"));
     try std.testing.expect(!isShortGatewayFlake("api_error", null, "model not found"));
     try std.testing.expect(!isShortGatewayFlake("service_unavailable", "model_unavailable", "Codegraff cannot serve this model right now"));
+    try std.testing.expect(!isShortGatewayFlake("service_unavailable", "model_unavailable", "Malformed JSON in request body"));
     try std.testing.expect(isShortGatewayFlake("invalid_request_error", null, "Body must be valid JSON"));
     try std.testing.expect(isShortGatewayFlake("api_error", null, "Malformed JSON in request body"));
     try std.testing.expect(!isShortGatewayFlake("invalid_request_error", null, "invalid prompt"));
@@ -308,6 +318,7 @@ test "isTransientServerError (#opencode-parity): overload/server_error retry; qu
     try std.testing.expect(!isTransientServerError("insufficient_quota", "insufficient_quota", "You exceeded your current quota"));
     try std.testing.expect(!isTransientServerError("invalid_request_error", null, "invalid prompt"));
     try std.testing.expect(!isTransientServerError("authentication_error", null, "invalid api key"));
+    try std.testing.expect(!isTransientServerError("service_unavailable", "model_unavailable", "server overloaded; retry after 3 seconds"));
     // a bare "Internal Server Error" stays on the shorter gateway-flake ladder
     try std.testing.expect(!isTransientServerError("api_error", null, "Internal Server Error"));
 }
