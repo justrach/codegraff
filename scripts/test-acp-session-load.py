@@ -18,15 +18,17 @@ from mock_model import ScriptedModel
 
 
 class Acp:
-    def __init__(self, binary, cwd, home, port):
+    def __init__(self, binary, cwd, home, port, extra_env=None, extra_args=()):
         env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY") and not k.startswith(("GRAFF_", "HARNESS_"))}
         env.update(HOME=str(home), AI_GATEWAY_API_KEY="local", GRAFF_FLEET="off",
                    GRAFF_VERCEL_URL=f"http://127.0.0.1:{port}/v1/chat/completions",
                    GRAFF_NO_TELEMETRY="1", GRAFF_NO_SMOLIFY="1",
                    GRAFF_BEHAVIOR_UPLOAD="off", NO_COLOR="1")
+        if extra_env:
+            env.update(extra_env)
         self.err = open(cwd / f"acp-{time.time_ns()}.stderr", "w")
         try:
-            self.proc = subprocess.Popen([str(binary), "acp", "--yolo", "--old", "--model", "vercel"],
+            self.proc = subprocess.Popen([str(binary), "acp", "--yolo", "--old", "--model", "vercel", *extra_args],
                                          cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                          stderr=self.err, start_new_session=True)
         except BaseException:

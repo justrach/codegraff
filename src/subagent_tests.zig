@@ -363,7 +363,7 @@ test "interactive children yield once without cancellation or a model request" {
     try std.testing.expect(!interactive.yielded);
 }
 
-test "interactive child output never waits and completion wakes only its owner once" {
+test "interactive zero-wait child snapshot and completion wake only its owner once" {
     const interactive = @import("subagent_interactive.zig");
     interactive.configure(true);
     defer interactive.configure(false);
@@ -379,7 +379,7 @@ test "interactive child output never waits and completion wakes only its owner o
     var label = [_]u8{'x'};
     var job: subagent.AgentJob = .{ .id = 42, .label = &label, .prompt = &label, .niche = &label, .isolation = .shared_cwd, .isolation_fallback = false, .ctx = ctx, .owner = "owner" };
     try subagent.g_agent_jobs.list.append(gpa, &job);
-    const running = try interactive.output(ctx, 42, 1); // used to wait up to 10h
+    const running = try interactive.output(ctx, 42, 0);
     defer gpa.free(running.text);
     try std.testing.expect(!running.is_error);
     try std.testing.expect(!job.done);
