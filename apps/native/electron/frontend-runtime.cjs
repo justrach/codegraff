@@ -196,10 +196,34 @@ app.whenReady().then(async () => {
         if (!missed) break;
       }
     } else {
-      await desktop.testInput(wc, { type: 'mouseDown', button: 'left', clickCount: 1, ...p });
-      // Focusing a control can scroll the transcript between press and release.
-      const release = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return null;const r=e.getBoundingClientRect(),x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2);return e.contains(document.elementFromPoint(x,y))?{x,y}:null})()`);
-      await desktop.testInput(wc, { type: 'mouseUp', button: 'left', clickCount: 1, ...p, ...release });
+      // A missed Send press leaves the draft intact. Retry only when no click
+      // reached that button to avoid resending an accepted prompt.
+      const attempts = selector === '[aria-label="Send"]' ? 2 : 1;
+      for (let attempt = 0; attempt < attempts; attempt++) {
+        if (attempt) await stableTarget();
+        if (attempts > 1) await js(`(()=>{
+          window.__sendClickSeen=false;
+          window.__sendClickObserver=event=>{if(event.target.closest('[aria-label="Send"]'))window.__sendClickSeen=true};
+          document.addEventListener('click',window.__sendClickObserver,true);
+        })()`);
+        try {
+          await desktop.testInput(wc, { type: 'mouseDown', button: 'left', clickCount: 1, ...p });
+          // Focusing a control can scroll the transcript between press and release.
+          const release = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return null;const r=e.getBoundingClientRect(),x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2);return e.contains(document.elementFromPoint(x,y))?{x,y}:null})()`);
+          await desktop.testInput(wc, { type: 'mouseUp', button: 'left', clickCount: 1, ...p, ...release });
+          if (attempts > 1) {
+            try {
+              await until(() => js('window.__sendClickSeen'), 'trusted Send click delivery', attempt ? 1000 : 300);
+            } catch (error) {
+              if (attempt + 1 === attempts) throw error;
+              continue;
+            }
+          }
+        } finally {
+          if (attempts > 1) await js("document.removeEventListener('click',window.__sendClickObserver,true)");
+        }
+        break;
+      }
     }
   };
   const send = async text => {
