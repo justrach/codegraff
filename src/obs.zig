@@ -327,7 +327,7 @@ pub fn renderHud(w: *Io.Writer) !void {
     // uses — never from the event ring (which has no output tokens or USD).
     if (g_io) |io| {
         const c = pricing.g_cost.snap(io);
-        if (c.api_calls > 0) {
+        if (c.api_calls > 0 or c.missing_usage_calls > 0 or c.unreported_failed_attempts > 0) {
             try w.writeAll("  usage      ");
             try pricing.CostTally.render(c, w);
             try w.writeByte('\n');
@@ -348,7 +348,7 @@ pub fn renderHud(w: *Io.Writer) !void {
 pub fn renderUsage(w: *Io.Writer) !void {
     if (g_io) |io| {
         const c = pricing.g_cost.snap(io);
-        if (c.api_calls == 0) {
+        if (c.api_calls == 0 and c.missing_usage_calls == 0 and c.unreported_failed_attempts == 0) {
             try w.writeAll("no API calls yet this session\n");
             return;
         }
