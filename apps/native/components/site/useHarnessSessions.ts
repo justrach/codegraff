@@ -132,7 +132,7 @@ export function useHarnessSessions({onPermission, sessionsRef, sessionNamesRef, 
     const spawnModel = key ?? chat?.model ?? ws?.model ?? model ?? undefined;
     const cached = catalogForSpawn.current[chatId];
     const { sessionId: id, commands, cwd: checkout } = await startWithSelectedModel(spawnModel,
-      cached?.cwd === cwd ? cached.models : [], async () => {
+      cached && cached.cwd === cwd ? cached.models : [], async () => {
         // A changed workspace needs its own transient catalog, not the old
         // chat worker's model list. This query does not send a prompt.
         const catalog = await fetchModels(undefined, cwd);
