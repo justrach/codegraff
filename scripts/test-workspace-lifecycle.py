@@ -16,10 +16,10 @@ with tempfile.TemporaryDirectory(prefix="graff-workspace-lifecycle-") as tempora
     fixtures.mkdir()
     proof = Path(temporary) / "proof.json"
     proof.write_text("{}")
+    gh = fixtures / ("gh.cmd" if os.name == "nt" else "gh")
     if os.name == "nt":
-        (fixtures / "gh.cmd").write_text('@type "%GRAFF_TEST_PR_PROOF%"\n')
+        gh.write_text('@echo off\ntype "%GRAFF_TEST_PR_PROOF%"\n')
     else:
-        gh = fixtures / "gh"
         gh.write_text("#!/bin/sh\ncat \"$GRAFF_TEST_PR_PROOF\"\n")
         gh.chmod(0o755)
     env.update(PATH=f"{fixtures}{os.pathsep}{env['PATH']}", GRAFF_TEST_PR_PROOF=str(proof))
@@ -40,9 +40,10 @@ with tempfile.TemporaryDirectory(prefix="graff-workspace-lifecycle-") as tempora
     git("add", ".")
     git("commit", "-qm", "initial")
     (root / ".graff").mkdir()
+    cwd_command = "python3 -c 'import os; print(os.getcwd())'"
     (root / ".graff/workspace.toml").write_text(
-        '[scripts]\nsetup = "printf setup >> .graff/setup; python3 -c \'import os; print(os.getcwd())\' > .graff/setup-cwd"\n'
-        'run = "python3 -c \'import os; print(os.getcwd())\' > .graff/run-cwd"\n'
+        f'[scripts]\nsetup = "printf setup >> .graff/setup; {cwd_command} > .graff/setup-cwd"\n'
+        f'run = "{cwd_command} > .graff/run-cwd"\n'
         'archive = """python3 -c \'import os,pathlib; pathlib.Path(os.environ["GRAFF_ROOT_PATH"],".graff/archive-log").write_text("archive")\'"""\n'
     )
     # Ensure the fixture's setup directory exists in each checkout before writing.
@@ -51,18 +52,9 @@ with tempfile.TemporaryDirectory(prefix="graff-workspace-lifecycle-") as tempora
     assert "setup ok" in graff("create", "task", "main")
     tree = root / ".graff/worktrees/task"
     assert git("config", "branch.worktree-task.graff-base") == "main"
-    def recorded_cwd(name):
-        value = (tree / f'.graff/{name}-cwd').read_text().strip()
-        # Git Bash pwd uses /d/... while Python on Windows uses D:\\... .
-        if os.name == 'nt' and value.startswith('/'):
-            drive, separator, rest = value[1:].partition('/')
-            if separator and len(drive) == 1 and drive.isalpha():
-                value = f'{drive}:/{rest}'
-        return Path(value).resolve()
-
-    assert recorded_cwd('setup') == tree.resolve()
+    assert Path((tree / ".graff/setup-cwd").read_text().strip()).resolve() == tree.resolve()
     assert "run finished" in graff("run", "task")
-    assert recorded_cwd('run') == tree.resolve()
+    assert Path((tree / ".graff/run-cwd").read_text().strip()).resolve() == tree.resolve()
     (tree / "file").write_text("task\n")
     git("add", "file", cwd=tree)
     git("commit", "-qm", "task", cwd=tree)
