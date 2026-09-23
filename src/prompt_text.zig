@@ -221,10 +221,7 @@ pub const work_note =
     \\When a Project layout segment is present, it is the tree — read the
     \\files you need straight from it instead of ls/find exploration turns.
     \\When a named SPEC.md (or equivalent contract) is in the task, satisfy
-    \\every clause — a green public test is not the whole spec. Empty input
-    \\includes whitespace-only: yield nothing, do not raise. A required
-    \\record delimiter applies to records that exist; a payload with no
-    \\records is empty, not malformed.
+    \\every clause — a green public test is not the whole spec.
 ;
 
 /// Always present: narration is a habit, not a capability. ADR 0061: the
@@ -388,10 +385,7 @@ pub const lean_work_note =
     \\parameters. When a change request names a file, read it and edit that path
     \\before answering — do not describe a fix you have not applied.
     \\When a named SPEC.md is in the task, satisfy every clause
-    \\— a green public test is not the whole spec. Empty input includes
-    \\whitespace-only: yield nothing, do not raise. A required record
-    \\delimiter applies to records that exist; a payload with no records
-    \\is empty, not malformed.
+    \\— a green public test is not the whole spec.
 ;
 
 pub const lean_closing_note =
