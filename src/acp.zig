@@ -17,7 +17,6 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
-
 const args = @import("args.zig");
 const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
@@ -37,7 +36,6 @@ const vision_queue = @import("vision_queue.zig");
 const pricing = @import("pricing.zig");
 const billing = @import("billing.zig");
 const models_rank = @import("models_rank");
-
 pub const protocol_version = proto.protocol_version;
 pub const err_method_not_found = proto.err_method_not_found;
 pub const err_internal = proto.err_internal;
@@ -247,7 +245,10 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
                 std.debug.print("acp: idle wake failed: {t}\n", .{err});
             },
             .line => |line| {
-                handleLine(&d, arena, out, line) catch |err| { std.debug.print("acp: dispatch failed: {t}\n", .{err}); break; };
+                handleLine(&d, arena, out, line) catch |err| {
+                    std.debug.print("acp: dispatch failed: {t}\n", .{err});
+                    break;
+                };
                 @import("acp_idle.zig").startupEffortNotice(&d, root, out) catch break;
             },
         }
