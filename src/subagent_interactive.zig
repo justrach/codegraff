@@ -1,5 +1,6 @@
-//! Interactive parents yield after delegation; children own the work until a
-//! completion wake or a new user turn. No cancellation signal is involved.
+//! Prompt-based interactive parents may yield after delegation and wake on
+//! completion. Explicit positive waits instead honor agent_output's joined
+//! completion contract, including cancellation.
 const std = @import("std");
 const tools = @import("tools.zig");
 const subagent = @import("subagent.zig");
@@ -89,7 +90,11 @@ pub fn rename(io: std.Io, old: []const u8, new: []const u8) void {
 }
 
 pub fn output(ctx: tools.ToolCtx, id: u32, wait_ms: u64) !tools.ToolOutput {
-    if (!ctx.interactive_children or ctx.from_sub) return subagent.agentOutput(ctx.gpa, ctx.io, id, wait_ms);
+    // A positive wait is an explicit completion wait (ADR 0010), including
+    // ACP/TUI roots. Only a zero-wait snapshot should park the interactive
+    // parent and arrange a later wake; ignoring wait_ms spends model turns
+    // polling a still-running child.
+    if (!ctx.interactive_children or ctx.from_sub or wait_ms > 0) return subagent.agentOutput(ctx.gpa, ctx.io, id, wait_ms);
     const result = try subagent.agentOutput(ctx.gpa, ctx.io, id, 0);
     const registry = &subagent.g_agent_jobs;
     registry.mutex.lockUncancelable(ctx.io);
