@@ -2,7 +2,7 @@ import type { PermissionRequest } from "@/lib/acp-permission";
 import { useEffect, useRef, useState, type MutableRefObject, type Dispatch, type SetStateAction } from "react";
 import { bindMcpAppChat, checkHealth, disposePage, ensureSession, fetchModels, type Health } from "@/lib/acp-client";
 import { shouldReapPage } from "@/lib/acp-terminate";
-import { catalogMayWriteChatModel, catalogMayWriteGlobalKey, sameModels, rememberChatCatalog, sharedModelChoices } from "@/lib/composer-model";
+import { catalogMayWriteChatModel, catalogMayWriteGlobalKey, sameModels, rememberChatCatalog, sharedModelChoices, startWithSelectedModel } from "@/lib/composer-model";
 import { pumpIdlePeerTurns } from "./idle-peer-turns";
 import type { AcpCommand } from "@/lib/acp";
 import type { PromptModel } from "@/components/primitives/PromptBar";
@@ -29,10 +29,15 @@ const SIDEBAR_PAGE = 12;
 export function useHarnessSessions({onPermission, sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal, pendingPick}: Props) {
   const [projectsReady, setProjectsReady] = useState(false);
   const [chatCatalogs, setChatCatalogs] = useState<Record<number, PromptModel[]>>({});
+  const catalogForSpawn = useRef<Record<number, { cwd?: string; models: PromptModel[] }>>({});
   const [catalogStatus, setCatalogStatus] = useState<Record<number, { loading: boolean; error?: string }>>({});
   const catalogPending = useRef(new Map<number, Promise<void>>());
   const applyCatalog = (chatId: number, catalog: Awaited<ReturnType<typeof fetchModels>>) => {
     if (!catalog.models.length) return;
+    catalogForSpawn.current[chatId] = {
+      cwd: chatsRef.current.find(chat => chat.id === chatId)?.cwd ?? activePathRef.current ?? undefined,
+      models: catalog.models,
+    };
     setChatCatalogs(old => rememberChatCatalog(old, chatId, catalog.models));
     // Effort and fast settings belong to the replying worker, never another chat.
     const common = sharedModelChoices(catalog.models);
@@ -122,14 +127,22 @@ export function useHarnessSessions({onPermission, sessionsRef, sessionNamesRef, 
     const cwd = chat?.cwd ?? activePathRef.current ?? undefined;
     const ws = findWorkspace(workspacesRef.current, cwd);
     const spawnModel = key ?? chat?.model ?? ws?.model ?? model ?? undefined;
-    const { sessionId: id, commands, cwd: checkout } = await ensureSession(handleOf(chatId), {
-      model: spawnModel,
-      reset,
-      resume: sessionNamesRef.current.get(chatId),
-      cwd,
-      yolo: ws?.yolo,
-      mcp: ws?.mcp,
-    });
+    const cached = catalogForSpawn.current[chatId];
+    const { sessionId: id, commands, cwd: checkout } = await startWithSelectedModel(spawnModel,
+      cached?.cwd === cwd ? cached.models : [], async () => {
+        // A changed workspace needs its own transient catalog, not the old
+        // chat worker's model list. This query does not send a prompt.
+        const catalog = await fetchModels(undefined, cwd);
+        applyCatalog(chatId, catalog);
+        return catalog.models;
+      }, selected => ensureSession(handleOf(chatId), {
+        model: selected,
+        reset,
+        resume: sessionNamesRef.current.get(chatId),
+        cwd,
+        yolo: ws?.yolo,
+        mcp: ws?.mcp,
+      }));
     if (checkout && checkout !== cwd) {
       const next = chatsRef.current.map((c) => (c.id === chatId ? { ...c, cwd: checkout } : c));
       chatsRef.current = next;

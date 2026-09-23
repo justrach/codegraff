@@ -251,7 +251,7 @@ type GraffModelsResult = {
 /** The models THIS install can reach: `graff/models` filtered to providers
  * with live credentials, already in the agent's election order. The same
  * model name can be served by several providers; the highest-ranked seat
- * wins its row (spawn-by-name resolves through graff's own routing anyway). */
+ * wins its row, and the desktop passes that row's provider at worker startup. */
 export async function fetchModels(chat?: ChatHandle, root?: string, refresh = true): Promise<{ models: ModelChoice[]; current: string | null; commands?: AcpCommand[] }> {
   const res = chat ? await rpc(chat, "graff/models", { refresh }) : await fetch(`/api/models?${new URLSearchParams(root ? { root } : {})}`, { cache: "no-store" });
   const body = (await res.json()) as { result?: GraffModelsResult; error?: string };

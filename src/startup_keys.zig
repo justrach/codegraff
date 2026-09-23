@@ -31,6 +31,36 @@ fn explicitProvider(model_flag: ?[]const u8) ?[]const u8 {
     return catalog_selection.explicitProvider(model_flag orelse return null);
 }
 
+fn qualifiedProvider(keys: provider_mod.Keys, query: []const u8) error{ MissingKey, UnknownModel }!?provider_mod.Provider {
+    const slash = std.mem.indexOfScalar(u8, query, '/') orelse return null;
+    const pid = query[0..slash];
+    const spec = provider_mod.specFor(pid) orelse return null;
+    const model = query[slash + 1 ..];
+    if (model.len == 0 or (!keys_cli.isLocalUrl(spec.url) and !pricing.providerModelInTable(pid, model)))
+        return error.UnknownModel;
+    return try keys.providerById(pid, model);
+}
+
+test "qualified startup model keeps its catalog provider and validates the exact row" {
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    for (provider_mod.provider_specs, &keys.values) |spec, *value| {
+        if (std.mem.eql(u8, spec.id, "xiaomi") or std.mem.eql(u8, spec.id, "codegraff")) value.* = "test";
+    }
+    const direct = (try qualifiedProvider(keys, "xiaomi/mimo-v2.6-pro-ultraspeed")).?;
+    try std.testing.expectEqualStrings("xiaomi", direct.id);
+    try std.testing.expectEqualStrings("mimo-v2.6-pro-ultraspeed", direct.model);
+    const gateway = (try qualifiedProvider(keys, "codegraff/mimo-v2.6-pro")).?;
+    try std.testing.expectEqualStrings("codegraff", gateway.id);
+    try std.testing.expectEqualStrings("mimo-v2.6-pro", gateway.model);
+    try std.testing.expectError(error.UnknownModel, qualifiedProvider(keys, "xiaomi/not-a-real-model"));
+    try std.testing.expectError(error.UnknownModel, qualifiedProvider(keys, "xiaomi/"));
+    try std.testing.expect((try qualifiedProvider(keys, "mimo-v2.6-pro")) == null);
+    for (provider_mod.provider_specs, &keys.values) |spec, *value| {
+        if (std.mem.eql(u8, spec.id, "xiaomi")) value.* = null;
+    }
+    try std.testing.expectError(error.MissingKey, qualifiedProvider(keys, "xiaomi/mimo-v2.6-pro-ultraspeed"));
+}
+
 /// Whether one stored credential can affect an explicit startup selection:
 /// provider ids need one key; exact catalog models need only providers that
 /// serve them (aliases/fuzzy retain the full scan); --subagent-provider (worker_hint) is
@@ -232,6 +262,17 @@ pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map
                 default_provider = p;
                 break :pick;
             } else |_| std.process.fatal("no key/login for provider '{s}' (--model)", .{mname});
+        }
+        // `/model provider/model` pins the route. Keep the same meaning at
+        // startup, including ACP launches from a desktop model selection.
+        if (qualifiedProvider(keys, mname)) |qualified| {
+            if (qualified) |p| {
+                default_provider = p;
+                break :pick;
+            }
+        } else |err| switch (err) {
+            error.UnknownModel => std.process.fatal("unknown --model '{s}' for its provider — run `graff models refresh` or see /models", .{mname}),
+            error.MissingKey => std.process.fatal("no key/login for --model '{s}'", .{mname}),
         }
         const nm = pricing.resolveModelName(keys, mname) orelse std.process.fatal("unknown --model '{s}' — run `graff models refresh` or see /models", .{mname});
         default_provider = keys.providerFor(nm) catch {
