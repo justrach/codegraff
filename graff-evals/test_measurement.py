@@ -34,6 +34,32 @@ class MeasurementTests(unittest.TestCase):
         self.assertIsNone(measurement.graff_usage(base + '2 subscription call(s), flat-rate (not in $)')['cost_usd'])
         self.assertEqual(measurement.graff_usage(base + '2 subscription call(s), flat-rate (not in $)')['cost_kind'], 'metered-only-subscription-excluded')
 
+    def test_known_subtotal_from_unknown_cost_keeps_measured_tokens(self):
+        footer = ('[usage] known subtotal: 2 api call(s) · 80 in (40 cached, 5 cache writes)'
+                  ' + 9 out tokens · $0.001234 · 1 call(s) with unknown cost')
+        usage = measurement.graff_usage(footer)
+        self.assertTrue(usage['usage_complete'])
+        self.assertEqual((usage['in'], usage['cached'], usage['writes'], usage['out']), (80, 40, 5, 9))
+        self.assertEqual(usage['known_cost_usd'], .001234)
+        self.assertIsNone(usage['cost_usd'])
+        self.assertEqual(usage['unpriced_calls'], 1)
+        self.assertEqual(usage['cost_kind'], 'incomplete-unpriced')
+        legacy = measurement.graff_usage(footer.replace('with unknown cost', 'on unpriced models'))
+        self.assertEqual(legacy, usage)
+
+    def test_unknown_cost_does_not_hide_missing_or_failed_usage(self):
+        base = ('[usage] known subtotal: 2 api call(s) · 80 in (40 cached) + 9 out tokens · $0.001234'
+                ' · 1 call(s) with unknown cost')
+        for suffix in (' · totals incomplete: 1 call(s) missing usage (tokens and cost unknown)',
+                       ' · totals incomplete: 1 failed request attempt(s) without usage (tokens and cost unknown)',
+                       ' · future unexplained footer'):
+            with self.subTest(suffix=suffix):
+                usage = measurement.graff_usage(base + suffix)
+                self.assertFalse(usage['usage_complete'])
+                self.assertIsNone(usage['in'])
+                self.assertEqual(usage['known_in'], 80)
+                self.assertIsNone(usage['cost_usd'])
+
     def test_missing_usage_preserves_subtotals_without_claiming_complete_totals(self):
         footer = ('[usage] 3 api call(s) · 80 in (40 cached, 5 cache writes) + 9 out tokens · $0.001234'
                   ' · totals incomplete: 1 call(s) missing usage (tokens and cost unknown)')

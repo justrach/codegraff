@@ -26,7 +26,8 @@ def graff_usage(stderr):
         result['cost_usd'] = float(m.group(6))
         result['cost_kind'] = 'harness-reported'
     tail = m.group(7)
-    for key, pattern in [('sub_calls', r'(\d+) subscription call'), ('unpriced_calls', r'(\d+) call\(s\) on unpriced models')]:
+    for key, pattern in [('sub_calls', r'(\d+) subscription call'),
+                         ('unpriced_calls', r'(\d+) call\(s\) (?:on unpriced models|with unknown cost)')]:
         if hit := re.search(pattern, tail):
             result[key] = int(hit.group(1))
     if result.get('unpriced_calls'):
@@ -45,7 +46,13 @@ def graff_usage(stderr):
     # The prefix alone is sufficient evidence of incompleteness, even if a
     # newer runtime introduces an unfamiliar explanation in the tail.
     subtotal = re.match(r'^\[usage\]\s+known subtotal:', m.group(0)) is not None
-    if subtotal or result.get('missing_usage_calls') or result.get('unreported_failed_attempts'):
+    cost_only_subtotal = subtotal and result.get('unpriced_calls') and re.fullmatch(
+        r'\s*(?:·\s*\d+ subscription call\(s\), flat-rate \(not in \$\)\s*)?'
+        r'·\s*\d+ call\(s\) (?:on unpriced models|with unknown cost)\s*', tail)
+    if cost_only_subtotal:
+        result['usage_complete'] = True
+        result['known_cost_usd'] = float(m.group(6)) if m.group(6) is not None else None
+    elif subtotal or result.get('missing_usage_calls') or result.get('unreported_failed_attempts'):
         result['usage_complete'] = False
         for key in ('in', 'cached', 'writes', 'out'):
             result['known_' + key] = result[key]
