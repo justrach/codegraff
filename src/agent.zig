@@ -2,7 +2,6 @@
 //! split into `agent_*.zig` siblings and member-aliased back into the struct.
 //! Live process/session globals are reached through main_mod; focused helpers
 //! are imported directly from their owning modules.
-
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -25,25 +24,21 @@ const no_local_tools = @import("no_local_tools.zig"); // #330: --no-local-tools 
 const models_cache = @import("models_cache.zig");
 const keys_cli = @import("keys_cli.zig");
 const run_budget_mod = @import("run_budget.zig");
-
 // agent_prompt.zig owns the width-budgeted status line (#209); aliased below.
 const prompt_ui = @import("agent_prompt.zig");
 const agent_tests = @import("agent_tests.zig");
 const empty_completion = @import("agent_empty_completion.zig");
 const goal_state = @import("goal_state.zig");
 const turn_inbox = @import("turn_inbox.zig");
-
 pub const TodoItem = struct {
     content: []const u8,
     status: []const u8,
     epoch: u64 = 0, // the goal epoch that authored this item (#318); 0 = no goal
     retired: bool = false, // a LATER user ask retired this finished item (#394): kept as the session's archive, invisible to every epoch-scoped query
 };
-
 /// Governed-run status for a standing /goal (#223). Only `.active` steers turns;
 /// pause/resume and the /loop continuation gate (#226) key off the others.
 pub const GoalStatus = enum { active, paused, blocked, complete };
-
 /// A structured standing objective: the /goal text plus its lifecycle status and
 /// created/updated timestamps. Replaces the bare `?[]const u8` so /goal can
 /// pause/resume/report and persist a real state machine across resumes. The
@@ -68,6 +63,8 @@ pub const Agent = struct {
     publication_checks: @import("pr_local_checks.zig").State = .{},
     gpa: Allocator,
     arena: Allocator,
+    async_tools_armed: bool = false,
+    async_tools: ?*@import("agent_async_tools.zig").State = null,
     /// #124: per-turn parse garbage (SSE envelopes, isStreamEnd) lives here and
     /// is reset each request() so the root session arena stays bounded. Null on
     /// subagents/one-shots (scratchAlloc() falls back to arena).
@@ -330,6 +327,9 @@ pub const Agent = struct {
     }
 
     pub fn runTurn(self: *Agent) anyerror![]const u8 {
+        self.async_tools_armed = !self.sub and self.eval_cmd == null;
+        defer self.async_tools_armed = false;
+        defer @import("agent_async_tools.zig").reset(self);
         if (!self.sub) @import("peer_idle.zig").noteTurnStart();
         defer if (!self.sub) @import("peer_idle.zig").noteTurnEnd();
         var pending_work: empty_completion.PendingWork = .{};

@@ -56,6 +56,7 @@ const read_miss = @import("read_miss.zig");
 /// external calls fan out across the Io thread pool. Results are returned
 /// in call order, arena-owned.
 pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
+    defer @import("agent_async_tools.zig").reset(self);
     defer if (self.approvals) |ap| ap.clearPlanReadOnce(self.io, self);
     if (!self.sub and calls.len >= 4) {
         var names: [32][]const u8 = undefined;
@@ -88,6 +89,10 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
     }
     var miss_batch = read_miss.Batch.init(read_paths.items);
     for (calls, 0..) |call, i| {
+        if (try @import("agent_async_tools.zig").claim(self, call)) |result| {
+            results[i] = result;
+            continue;
+        }
         if (eval_index) |verifier| if (i != verifier) {
             self.emitToolRejected(call, "verifier_boundary", eval_control.verifier_boundary);
             results[i] = .{ .text = eval_control.verifier_boundary, .is_error = true };
@@ -388,6 +393,7 @@ pub fn sayToolUse(self: *Agent, call: ToolCall) !void {
 /// the wire still emits their correlated completion status so clients can
 /// close the announced row without duplicating the result body.
 pub fn sayToolResult(self: *Agent, call: ToolCall, r: ExecResult) void {
+    @import("agent_async_tools.zig").presented(self, call);
     const name = call.name;
     if (self.out == null and self.sink == null) return;
     const ev: engine_events.ToolOutcome = .{

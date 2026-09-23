@@ -71,8 +71,9 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
             }
             break :blk next;
         };
+        const async_payload = try @import("async_tool_policy.zig").decorate(self.scratchAlloc(), self.provider, payload, self.async_tools_armed and !self.sub and !self.compaction_request and !self.server_compaction_request);
         try s.objectField("tools");
-        try serde.writeOpenAITools(s, self.scratchAlloc(), payload); // #261 follow-up
+        try serde.writeOpenAITools(s, self.scratchAlloc(), async_payload); // #261 follow-up
         try s.objectField("tool_choice");
         try s.write(if (force_tool) "required" else "auto");
         try s.objectField("parallel_tool_calls");

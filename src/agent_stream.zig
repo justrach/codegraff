@@ -436,6 +436,7 @@ pub fn stallGiveUpMessage(self: *Agent, retries: usize) ?[]const u8 {
 /// typed events through the sink. Best-effort: parse failures are ignored
 /// (the buffered body is parsed afterwards).
 pub fn printDelta(self: *Agent, raw_line: []const u8) void {
+    @import("agent_async_tools.zig").onLine(self, raw_line);
     const no_ui = self.out == null and self.sink == null;
     if (no_ui and !rlm_spec.available and !(main_mod.unattended and !main_mod.json_mode)) return;
     const payload = ssePayload(raw_line) orelse return;

@@ -57,13 +57,8 @@ pub fn batchNeedsSerial(calls: []const ToolCall, ext_idx: []const usize) bool {
     return false;
 }
 
-pub fn runExternal(self: *Agent, calls: []const ToolCall, ext_idx: []const usize, results: []ExecResult) !void {
-    if (ext_idx.len == 0) return;
-    const serial = batchNeedsSerial(calls, ext_idx);
-    if (ext_idx.len > 1 and !self.sub and !serial) {
-        engine_sink.forAgent(self).emit(self.io, .{ .parallel_batch_started = .{ .count = ext_idx.len } });
-    }
-    const ctx: ToolCtx = .{
+pub fn context(self: *Agent) ToolCtx {
+    return .{
         .gpa = self.gpa,
         .io = self.io,
         .client = self.client,
@@ -92,6 +87,15 @@ pub fn runExternal(self: *Agent, calls: []const ToolCall, ext_idx: []const usize
         .subagent_feedback = self.feedback,
         .read_miss = &self.read_miss,
     };
+}
+
+pub fn runExternal(self: *Agent, calls: []const ToolCall, ext_idx: []const usize, results: []ExecResult) !void {
+    if (ext_idx.len == 0) return;
+    const serial = batchNeedsSerial(calls, ext_idx);
+    if (ext_idx.len > 1 and !self.sub and !serial) {
+        engine_sink.forAgent(self).emit(self.io, .{ .parallel_batch_started = .{ .count = ext_idx.len } });
+    }
+    const ctx = context(self);
     const esc_watch = !self.sub and self.in != null and main_mod.use_color and !main_mod.json_mode;
     var esc_tio: ?tty.RawState = null;
     var esc_fut: ?Io.Future(void) = null;
@@ -138,7 +142,7 @@ fn aborted() bool {
     return Agent.esc_cancel.load(.acquire);
 }
 
-fn takeOutput(self: *Agent, call: ToolCall, output: ToolOutput, handle_threshold: usize, handle_target: tool_handle.Target) !ExecResult {
+pub fn takeOutput(self: *Agent, call: ToolCall, output: ToolOutput, handle_threshold: usize, handle_target: tool_handle.Target) !ExecResult {
     self.read_miss.noteOutput(call.name, call.input, output.text, output.is_error);
     try @import("pr_local_checks.zig").record(self, call, .{ .text = output.text, .is_error = output.is_error, .cancelled = output.cancelled, .pending = output.pending });
     const handled = try tool_handle.forResult(self.gpa, self.arena, handle_target, output.text, handle_threshold);
@@ -150,7 +154,7 @@ fn takeOutput(self: *Agent, call: ToolCall, output: ToolOutput, handle_threshold
     return .{ .text = text, .is_error = output.is_error, .cancelled = output.cancelled, .pending = output.pending, .ms = output.ms };
 }
 
-fn handleTarget(self: *Agent) tool_handle.Target {
+pub fn handleTarget(self: *Agent) tool_handle.Target {
     return .{
         .io = self.io,
         .dir = .cwd(),

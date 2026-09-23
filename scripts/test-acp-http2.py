@@ -74,7 +74,10 @@ def build(root):
     injection = '\n        try self.ca.addCertsFromFilePathAbsolute(self.gpa, self.io, now, ' + json.dumps(str(root/'ca.pem')) + ');'
     session.write_text(original.replace(seam, seam + injection))
     print('Building isolated ACP binary; only trust-source injection differs', flush=True)
-    run(['zig', 'build', '--system', str(isolated), '-p', str(root/'install')], cwd=REPO, timeout=240)
+    # Each injected trust source must have its own build graph cache. Reusing
+    # the repository cache can retain an earlier --system package directory.
+    run(['zig', 'build', '--system', str(isolated), '--cache-dir', str(root/'cache'),
+         '-p', str(root/'install')], cwd=REPO, timeout=240)
     return root/'install/bin/graff'
 
 

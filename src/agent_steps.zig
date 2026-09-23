@@ -83,6 +83,7 @@ pub fn stepResponses(self: *Agent, response: std.json.ObjectMap) !?[]const u8 {
 
     for (output.array.items) |item| {
         if (item != .object) continue;
+        if (@import("agent_async_tools.zig").duplicateItem(self, item)) continue;
         try self.messages.append(item); // valid as next-turn input
         const itype = if (item.object.get("type")) |t| (if (t == .string) t.string else "") else "";
         if (@import("codex_tool_search.zig").isServerSideItem(itype)) {

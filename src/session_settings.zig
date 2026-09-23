@@ -148,6 +148,7 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     // GRAFF_LEAN: presence-based, matching session_start.leanMode
     // (the MCP half of the same switch) — a "0" still means lean, by design.
     if (environ_map.get("GRAFF_LEAN") != null) no_local_tools.lean = true;
+    @import("async_tool_policy.zig").configure(environ_map.get("GRAFF_ASYNC_TOOLS"));
     // GRAFF_REQ_STATS: presence-based request-anatomy print (req_stats).
     try @import("req_stats.zig").configure(arena, environ_map.get("GRAFF_REQ_STATS") != null, environ_map.get("GRAFF_REQ_DUMP_DIR"));
     // GRAFF_CODEX_FULL_RESEND: presence-based — never chain previous_response_id

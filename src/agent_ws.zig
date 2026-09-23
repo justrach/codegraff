@@ -118,6 +118,7 @@ pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
     }
     if (!wsEligible(self)) return self.postStream(body);
     const response = postResponsesWs(self, body) catch |e| {
+        if (@import("agent_async_tools.zig").started(self)) return e;
         if (e == error.Interrupted or e == error.StreamStalled or e == error.ModelLoop) return e;
         // Preemptive idle expiry is not a failed transport attempt; it only asks
         // request() to rebuild the already-created delta as full input.
@@ -548,6 +549,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
         if (frames_seen == 1) if (self.tracer) |tr| tr.note("ws", "first frame");
         if (fbuf.items.len == 0) continue :stream;
         try loop_guard.event(self, fbuf.items, false);
+        @import("agent_async_tools.zig").onLine(self, fbuf.items);
         // …and THIS is the budget signal: visible prose, from EITHER event that
         // grows partial_text on SSE — an output-text delta, or the streamed
         // arguments of a whitelisted meta call (attempt_completion / ask_user),

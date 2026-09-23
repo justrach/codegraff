@@ -200,6 +200,7 @@ record only when you need the evidence or the edge cases.
 | [0174](0174-completion-requires-terminal-tool-results.md) | Deferred completion rejects pending work and preserves background verification exit status. |
 | [0175](0175-rlm-preserves-dependent-tool-order.md) | RLM speculates only leading read-only calls, then preserves statement order and stopped tool results. |
 | [0176](0176-completed-streams-do-not-replay-on-trailer-timeout.md) | A trailer deadline after valid completion returns buffered output; missing usage stays explicitly unknown. |
+| [0177](0177-owned-async-tool-execution.md) | Direct read-only async jobs own their lifetime, preserve order, and join before the next request. |
 
 ## When to write one
 
