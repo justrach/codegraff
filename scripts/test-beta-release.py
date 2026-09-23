@@ -63,6 +63,8 @@ class BetaReleaseTests(unittest.TestCase):
         self.assertEqual(stable_workflow.count("scripts/check-release-tag.py"), 2)
         self.assertNotIn("install.sh", beta_workflow)
         self.assertIn("--prerelease --latest=false", beta_workflow)
+        self.assertIn("scripts/beta-release.py notes", beta_workflow)
+        self.assertIn("--notes-file beta-notes.md", beta_workflow)
 
     def test_stale_publication_is_a_clean_skip_but_remote_error_fails(self):
         argv = ["beta-release.py", "guard", "--branch", "release/v0.0.302.4", "--sha", "old"]
@@ -75,6 +77,44 @@ class BetaReleaseTests(unittest.TestCase):
                 with mock.patch.object(beta, "remote_heads", side_effect=subprocess.CalledProcessError(1, "git ls-remote")):
                     with self.assertRaises(subprocess.CalledProcessError):
                         beta.main()
+
+    def test_beta_notes_use_exact_release_section_and_preserve_source(self):
+        changelog = """# Changelog
+## v0.0.302.3
+Earlier notes.
+
+## v0.0.302.4
+
+### Changes
+- A current change.
+- Another current change.
+
+## v0.0.303
+Later notes.
+"""
+        notes = beta.beta_notes("release/v0.0.302.4", "a" * 40, "v0.0.302.4-beta.20.1", changelog)
+        self.assertIn("v0.0.302.4-beta.20.1", notes)
+        self.assertIn("release/v0.0.302.4", notes)
+        self.assertIn("`" + "a" * 40 + "`", notes)
+        self.assertIn("This is not the stable release.", notes)
+        self.assertIn("## Changes for v0.0.302.4", notes)
+        self.assertIn("### Changes\n- A current change.\n- Another current change.", notes)
+        self.assertNotIn("Earlier notes", notes)
+        self.assertNotIn("Later notes", notes)
+
+    def test_beta_notes_fall_back_for_missing_section_or_file(self):
+        branch, sha, tag = "release/v0.0.302.4", "b" * 40, "v0.0.302.4-beta.20.1"
+        self.assertIn("not yet listed", beta.beta_notes(branch, sha, tag, "## v0.0.302.3\nOlder"))
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory) / "notes.md"
+            argv = ["beta-release.py", "notes", "--branch", branch, "--sha", sha,
+                    "--tag", tag, "--changelog", str(pathlib.Path(directory) / "missing.md"),
+                    "--output", str(output)]
+            with mock.patch.object(sys, "argv", argv), mock.patch.object(beta, "remote_heads", side_effect=AssertionError("network")):
+                beta.main()
+            self.assertIn("not yet listed", output.read_text())
+        with self.assertRaises(ValueError):
+            beta.beta_notes(branch, sha, "v0.0.303-beta.20.1", "")
 
 
 if __name__ == "__main__":

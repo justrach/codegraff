@@ -131,6 +131,14 @@ jobs:
       - name: Recheck release branch head
         id: fresh
         run: python3 scripts/beta-release.py guard --branch "$GITHUB_REF_NAME" --sha "$GITHUB_SHA"
+      - name: Prepare beta notes
+        if: steps.fresh.outputs.publish == 'true'
+        env:
+          BETA_TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          python3 scripts/beta-release.py notes \
+            --branch "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" \
+            --tag "$BETA_TAG" --output beta-notes.md
       - name: Publish beta prerelease
         if: steps.fresh.outputs.publish == 'true'
         env:
@@ -142,4 +150,4 @@ jobs:
           test -f beta-assets/Codegraff-linux-amd64.deb
           gh release create "$BETA_TAG" beta-assets/* \
             --target "$GITHUB_SHA" --prerelease --latest=false \
-            --title "$BETA_TAG" --notes 'Beta build from the latest release branch.'
+            --title "$BETA_TAG" --notes-file beta-notes.md
