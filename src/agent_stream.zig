@@ -103,8 +103,6 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     self.md_table.clearRetainingCapacity();
     self.partial_text.clearRetainingCapacity(); // fresh Esc-interrupt capture
 
-    if (try @import("agent_stream_h2.zig").postStream(self, body)) |full| return full;
-
     // Esc-interrupt: while the root's request is on a TTY, stdin sits in raw
     // non-blocking no-echo mode — from *before* the connect, so Esc pressed
     // during a slow time-to-first-token wait neither echoes ^[ nor leaks into
@@ -120,6 +118,9 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
         _ = drainSteerStdin(true);
         restoreStdin(o);
     };
+    // HTTP/2 first, under the same raw-stdin window so Esc and steering work
+    // there too; null means "not sent, use HTTP/1.1".
+    if (try @import("agent_stream_h2.zig").postStream(self, body, orig_tio != null)) |full| return full;
     var req = transport.request(.POST, try std.Uri.parse(provider.url), .{
         .redirect_behavior = .unhandled,
         .headers = .{
