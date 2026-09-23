@@ -45,6 +45,21 @@ class OutcomeIntegrity(unittest.TestCase):
         run.requests[0]['messages'].append({'role': 'assistant', 'tool_calls': [{'function': {'name': 'edit_file'}}]})
         self.assertTrue(tier2.evaluate(case, run))
 
+    def test_oneshot_assertions_require_actual_wire_count_and_exact_stdout(self):
+        case = {'assert': [{'request_count': 1}, {'stdout_equals': 'pong\n'}]}
+        run = tier2.Run([], [{}], '', 0, stdout='pong\n')
+        self.assertEqual([], tier2.evaluate(case, run))
+        for count in (0, 2):
+            run.requests = [{}] * count
+            self.assertTrue(tier2.evaluate(case, run))
+        run.requests = [{}]
+        for output in ('', 'pong', 'pong\nextra\n'):
+            run.stdout = output
+            self.assertTrue(tier2.evaluate(case, run))
+        run.stdout = 'pong\n'
+        run.requests = []
+        self.assertEqual([], tier2.evaluate(case, run, live=True))
+
 
 if __name__ == '__main__':
     unittest.main()

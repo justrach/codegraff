@@ -4,7 +4,6 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${GRAFF_SIGN_IDENTITY:?Set a Developer ID Application identity}"
 : "${GRAFF_NOTARY_PROFILE:?Set a notarytool keychain profile}"
-: "${GRAFF_WEBAUTHN_PROFILE:?Set a macOS provisioning profile authorizing the app and WebAuthn keychain group}"
 source_app="${1:?Usage: distribute.sh /path/Codegraff.app /path/output}"
 out="${2:?Provide a new output directory}"
 mkdir -p "$out"
@@ -17,12 +16,20 @@ cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
 ditto "$source_app" "$app"
 bun "$here/release-identity.cjs" "$app"
-version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
-# 3-part (0.0.302) or 4-part hotfix (0.0.302.3). The feed maps 4-part onto
-# semver so electron-updater can compare; the zip name keeps the graff version.
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo 'Distribution requires a stable version.' >&2; exit 1; }
-# Only distribution builds opt into online updates; include the feed in the signature.
-bun "$here/update-artifacts.cjs" config "$app/Contents/Resources/app-update.yml"
+version="$(bun -p 'require(require("node:path").resolve(process.argv[1])).version' "$app/Contents/Resources/app/package.json")"
+# Beta distributions use the same signing and notarization gates, but must
+# never carry the stable update feed. Stable releases retain its manifest.
+beta=0
+if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?-beta\.[0-9]+\.[0-9]+$ ]]; then
+  beta=1
+elif [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+  echo 'Distribution requires a stable or beta version.' >&2; exit 1
+fi
+if [[ "$beta" == 0 ]]; then
+  bun "$here/update-artifacts.cjs" config "$app/Contents/Resources/app-update.yml"
+else
+  rm -f "$app/Contents/Resources/app-update.yml"
+fi
 bun "$here/sign-bundle.mjs" "$app"
 codesign --verify --deep --strict "$app"
 ditto -c -k --keepParent "$app" "$work/app.zip"
@@ -34,11 +41,13 @@ spctl --assess --type execute --verbose=2 "$app"
 # Squirrel.Mac needs a ZIP of the signed, stapled app, not a disk image.
 archive="$out/Codegraff-$version-macos-arm64.zip"
 ditto -c -k --keepParent "$app" "$archive"
-bun "$here/update-artifacts.cjs" "$version" "$archive" "$out/latest-mac.yml"
+if [[ "$beta" == 0 ]]; then
+  bun "$here/update-artifacts.cjs" "$version" "$archive" "$out/latest-mac.yml"
 # The 0.0.299 zip passed every gate below yet installed an app that never
 # checked for updates: its bundle had no app-update.yml. Prove the upload
 # bytes carry the feed config before anything else touches this directory.
-bun "$here/update-artifacts.cjs" verify-bundle "$app" "$archive"
+  bun "$here/update-artifacts.cjs" verify-bundle "$app" "$archive"
+fi
 bash "$here/create-dmg.sh" "$app" "$dmg"
 codesign --sign "$GRAFF_SIGN_IDENTITY" --timestamp "$dmg"
 xcrun notarytool submit "$dmg" --keychain-profile "$GRAFF_NOTARY_PROFILE" --wait --output-format json > "$out/dmg-notary.json"

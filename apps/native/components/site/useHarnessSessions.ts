@@ -1,7 +1,9 @@
+import type { PermissionRequest } from "@/lib/acp-permission";
 import { useEffect, useRef, useState, type MutableRefObject, type Dispatch, type SetStateAction } from "react";
 import { bindMcpAppChat, checkHealth, disposePage, ensureSession, fetchModels, type Health } from "@/lib/acp-client";
 import { shouldReapPage } from "@/lib/acp-terminate";
-import { catalogMayWriteChatModel, catalogMayWriteGlobalKey, sameModels } from "@/lib/composer-model";
+import { catalogMayWriteChatModel, catalogMayWriteGlobalKey, sameModels, rememberChatCatalog, sharedModelChoices, startWithSelectedModel } from "@/lib/composer-model";
+import { refreshAfterPendingCatalog } from "@/lib/catalog-refresh";
 import { pumpIdlePeerTurns } from "./idle-peer-turns";
 import type { AcpCommand } from "@/lib/acp";
 import type { PromptModel } from "@/components/primitives/PromptBar";
@@ -12,6 +14,7 @@ import { newSessionName, type Chat } from "./harness-types";
 type Ref<T> = MutableRefObject<T>;
 type Setter<T> = Dispatch<SetStateAction<T>>;
 type Props = {
+  onPermission?(chat: number, request: PermissionRequest | null): void;
   sessionsRef: Ref<Map<number, string>>; sessionNamesRef: Ref<Map<number, string>>;
   chatsRef: Ref<Chat[]>; workspacesRef: Ref<Workspace[]>; activePathRef: Ref<string | null>;
   pageRef: Ref<string>; runningRef: Ref<Set<number>>; model: string | null; activeId: number;
@@ -24,8 +27,21 @@ type Props = {
   pendingPick(): { key: string; chatId: number } | null;
 };
 const SIDEBAR_PAGE = 12;
-export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal, pendingPick}: Props) {
+export function useHarnessSessions({onPermission, sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal, pendingPick}: Props) {
   const [projectsReady, setProjectsReady] = useState(false);
+  const [chatCatalogs, setChatCatalogs] = useState<Record<number, PromptModel[]>>({});
+  const catalogForSpawn = useRef<Record<number, { cwd?: string; models: PromptModel[] }>>({});
+  const [catalogStatus, setCatalogStatus] = useState<Record<number, { loading: boolean; error?: string }>>({});
+  const catalogPending = useRef(new Map<number, Promise<void>>());
+  const cwdOf = (chatId: number) => chatsRef.current.find(chat => chat.id === chatId)?.cwd ?? activePathRef.current ?? undefined;
+  const applyCatalog = (chatId: number, catalog: Awaited<ReturnType<typeof fetchModels>>, source?: { cwd?: string }) => {
+    if (!catalog.models.length) return;
+    if (source) catalogForSpawn.current[chatId] = { cwd: source.cwd, models: catalog.models };
+    setChatCatalogs(old => rememberChatCatalog(old, chatId, catalog.models));
+    // Effort and fast settings belong to the replying worker, never another chat.
+    const common = sharedModelChoices(catalog.models);
+    setModels(old => sameModels(old, common) ? old : common);
+  };
   const pendingRef = useRef(pendingPick);
   pendingRef.current = pendingPick;
   const idleCtl = useRef(new Map<number, AbortController>());
@@ -34,7 +50,7 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
     const ac = new AbortController();
     idleCtl.current.set(chatId, ac);
     void pumpIdlePeerTurns({
-      chatId, handle: handleOf(chatId), sessionId, signal: ac.signal,
+      onPermission, chatId, handle: handleOf(chatId), sessionId, signal: ac.signal,
       // Every pump pauses while ANY turn runs: the six-slot HTTP/1.1 pool is
       // per origin, so one chat's turn frees the idle streams of all the
       // others or a mid-turn attach never starts.
@@ -47,12 +63,20 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
     idleCtl.current.get(chatId)?.abort();
     idleCtl.current.delete(chatId);
   };
-  const adoptCatalog = async (chatId: number) => {
+  const fetchCatalog = async (chatId: number) => {
     // Pill follows this chat's agent. A transient /api/models process is not that agent.
-    const handle = sessionsRef.current.has(chatId) ? handleOf(chatId) : undefined;
+    const sessionId = sessionsRef.current.get(chatId);
+    const handle = sessionId ? handleOf(chatId) : undefined;
+    const cwd = cwdOf(chatId);
+    setCatalogStatus(old => ({ ...old, [chatId]: { loading: true } }));
     try {
-      const { models: live, current, commands: available } = await fetchModels(handle, activePathRef.current ?? undefined);
-      if (live.length > 0) setModels((prev) => (sameModels(prev, live) ? prev : live));
+      const catalog = await fetchModels(handle, cwd);
+      if (cwdOf(chatId) !== cwd || sessionsRef.current.get(chatId) !== sessionId || !chatsRef.current.some(chat => chat.id === chatId)) {
+        setCatalogStatus(old => ({ ...old, [chatId]: { loading: false } }));
+        return;
+      }
+      const { current, commands: available } = catalog;
+      applyCatalog(chatId, catalog, { cwd });
       if (available?.length) { setCatalogCommands(available); setCommands(old => ({ ...old, [chatId]: available })); }
       if (current && handle) {
         const chat = chatsRef.current.find((c) => c.id === chatId);
@@ -62,10 +86,24 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
       } else if (current && catalogMayWriteGlobalKey(false)) {
         setModelKey((key) => key ?? current);
       }
-    } catch {
-      // Keep the spawn model. A failed catalog must not fail the session.
+      setCatalogStatus(old => ({ ...old, [chatId]: { loading: false } }));
+    } catch (error) {
+      setCatalogStatus(old => ({ ...old, [chatId]: { loading: false, error: error instanceof Error ? error.message : "Could not load models" } }));
     }
   };
+  const adoptCatalog = (chatId: number): Promise<void> => {
+    const pending = catalogPending.current.get(chatId);
+    if (pending) return pending;
+    const task = fetchCatalog(chatId).finally(() => {
+      if (catalogPending.current.get(chatId) === task) catalogPending.current.delete(chatId);
+    });
+    catalogPending.current.set(chatId, task);
+    return task;
+  };
+  const refreshChangedCatalog = (chatId: number, sessionId: string): Promise<void> =>
+    refreshAfterPendingCatalog(catalogPending.current.get(chatId),
+      () => sessionsRef.current.get(chatId) === sessionId && chatsRef.current.some(chat => chat.id === chatId),
+      () => adoptCatalog(chatId));
 
   // Refresh the catalog on focus. If its agent was
   // not up yet, or the page outlived a restart — would show the fallback
@@ -98,14 +136,23 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
     const cwd = chat?.cwd ?? activePathRef.current ?? undefined;
     const ws = findWorkspace(workspacesRef.current, cwd);
     const spawnModel = key ?? chat?.model ?? ws?.model ?? model ?? undefined;
-    const { sessionId: id, commands, cwd: checkout } = await ensureSession(handleOf(chatId), {
-      model: spawnModel,
-      reset,
-      resume: sessionNamesRef.current.get(chatId),
-      cwd,
-      yolo: ws?.yolo,
-      mcp: ws?.mcp,
-    });
+    const cached = catalogForSpawn.current[chatId];
+    const { sessionId: id, commands, cwd: checkout } = await startWithSelectedModel(spawnModel,
+      cached && cached.cwd === cwd ? cached.models : [], async () => {
+        // A changed workspace needs its own transient catalog, not the old
+        // chat worker's model list. This query does not send a prompt.
+        const catalog = await fetchModels(undefined, cwd);
+        if (cwdOf(chatId) !== cwd) throw new Error("Workspace changed while loading models. Retry the model choice.");
+        applyCatalog(chatId, catalog, { cwd });
+        return catalog.models;
+      }, selected => ensureSession(handleOf(chatId), {
+        model: selected,
+        reset,
+        resume: sessionNamesRef.current.get(chatId),
+        cwd,
+        yolo: ws?.yolo,
+        mcp: ws?.mcp,
+      }));
     if (checkout && checkout !== cwd) {
       const next = chatsRef.current.map((c) => (c.id === chatId ? { ...c, cwd: checkout } : c));
       chatsRef.current = next;
@@ -122,6 +169,7 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
       setChatModel(chatId, spawnModel);
       setModelKey(spawnModel);
     }
+    await catalogPending.current.get(chatId);
     await adoptCatalog(chatId);
     return id;
   };
@@ -210,5 +258,5 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
   };
 
   catalogRef.current = { adopt: (id: number) => { if (!runningRef.current.has(id)) void adoptCatalog(id).catch(() => undefined); }, activeId };
-  return { adoptCatalog, requireSession, refreshStored, projectsReady, unwatchIdle };
+  return { adoptCatalog, refreshChangedCatalog, requireSession, refreshStored, projectsReady, unwatchIdle, chatCatalogs, catalogStatus, applyCatalog };
 }

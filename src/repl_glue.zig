@@ -505,7 +505,7 @@ pub fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fas
 }
 
 /// Load persisted thinking controls into the root agent at startup:
-/// {"effort": "low|medium|high|xhigh|max|ultra"} and {"fast": true}. Best-effort — a missing
+/// {"effort": "none|low|medium|high|xhigh|max|ultra"} and {"fast": true}. Best-effort — a missing
 /// or garbled file just leaves the defaults (medium, off).
 pub fn loadThinkingSettings(io: Io, arena: Allocator, root: *Agent) void {
     root.fallback_allow = fallback_config.load(io, arena);
@@ -529,6 +529,12 @@ pub fn loadThinkingSettings(io: Io, arena: Allocator, root: *Agent) void {
     };
     if (v.object.get("session_recap")) |rv| {
         if (rv == .bool) root.ai_recap = rv.bool;
+    }
+    if (root.reasoning == .none and !@import("effort_route.zig").mimoRoute(root.provider.id, root.provider.model)) {
+        root.reasoning = .medium;
+        root.startup_effort_notice = "Saved reasoning Off is unsupported by this model; reset to Medium.";
+        std.log.warn("{s}", .{root.startup_effort_notice.?});
+        _ = saveThinkingSettings(io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
     }
 }
 

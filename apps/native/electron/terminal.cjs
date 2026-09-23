@@ -2,12 +2,18 @@ const {spawn}=require('node:child_process');
 const {realpathSync,statSync}=require('node:fs');
 const {StringDecoder}=require('node:string_decoder');
 const os=require('node:os');
+const {isWorkspacePath}=require('./workspace-path.cjs');
 const LIMIT=128*1024;
+function loginShell(){
+  if(process.env.SHELL)return process.env.SHELL;
+  try{if(os.userInfo().shell)return os.userInfo().shell;}catch{}
+  return process.platform==='darwin'?'/bin/zsh':'/bin/bash';
+}
 function frame(kind,payload){const header=Buffer.alloc(5);header[0]=kind;header.writeUInt32LE(payload.length,1);return Buffer.concat([header,payload]);}
 class Terminals {
-  constructor(binary,emit,options={}){this.binary=binary;this.emit=emit;this.shell=options.shell||os.userInfo().shell||'/bin/zsh';this.sessions=new Map();}
+  constructor(binary,emit,options={}){this.binary=binary;this.emit=emit;this.shell=options.shell||loginShell();this.sessions=new Map();}
   open(cwd){
-    if(typeof cwd!=='string'||!cwd.startsWith('/')||cwd.includes('\0'))throw Error('Choose a workspace folder first.');
+    if(!isWorkspacePath(cwd))throw Error('Choose a workspace folder first.');
     const id=realpathSync(cwd);if(!statSync(id).isDirectory())throw Error('Workspace is not a folder.');
     let slot=this.sessions.get(id);
     if(!slot){

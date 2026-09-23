@@ -105,13 +105,16 @@ test "seatFor: family-alias spelling seats the sub, exact names hold, unknown mi
 }
 
 test "seatFor: catalogued model with no serving credential reports no_credential, not a gateway seat" {
+    const saved = pricing.active_model_table;
+    defer pricing.active_model_table = saved;
+    pricing.active_model_table = &.{.{ .provider = "codex", .name = "native-only-fixture", .context = 270_000 }};
     var values: [provider_mod.provider_specs.len]?[]const u8 = @splat(null);
     for (provider_mod.provider_specs, 0..) |spec, i| {
         if (std.mem.eql(u8, spec.id, "codegraff")) values[i] = "k";
     }
     const only_gateway = provider_mod.Keys{ .values = values };
-    // gpt-5.6-sol is catalogued only under codex (#294): with just a gateway
+    // native-only-fixture is catalogued only under codex (#294): with just a gateway
     // key it must surface as a credential problem, not silently seat there.
-    const a = seatFor(only_gateway, "gpt-5.6-sol");
-    try std.testing.expectEqualStrings("gpt-5.6-sol", a.no_credential);
+    const a = seatFor(only_gateway, "native-only-fixture");
+    try std.testing.expectEqualStrings("native-only-fixture", a.no_credential);
 }

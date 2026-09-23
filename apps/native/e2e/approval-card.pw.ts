@@ -4,6 +4,7 @@ const oldAutoSubmitDelay = 480;
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/visual-tests/approval");
+  await expect(page.locator("[data-approval-ready]")).toHaveAttribute("data-approval-ready", "true");
 });
 
 test("a radio click waits for Send, submits the latest selection once, and ignores repeated activation", async ({ page }) => {
@@ -95,10 +96,14 @@ test("multi-question radio and checkbox answers require explicit progression", a
 
 test("Answers sent waits for acknowledgement and keeps the selection after a failed delivery", async ({ page }) => {
   const card = page.getByRole("region", { name: "Acknowledged approval" });
+  const send = card.getByRole("button", { name: "Send" });
   await card.getByRole("button", { name: "Yes" }).click();
-  await card.getByRole("button", { name: "Send" }).click();
+  await expect(send).toBeEnabled();
+  await send.click();
   await expect(card.getByText("Sending…")).toBeVisible();
   await expect(card.getByText("Answers sent")).toHaveCount(0);
+  await expect(card.getByLabel("Acknowledged submissions")).toHaveText("0");
+  await card.getByRole("button", { name: "Reject pending acknowledgement" }).click();
   await expect(card.getByRole("alert")).toHaveText("notify failed");
   await expect(card.getByRole("button", { name: "Yes" })).toHaveAttribute("aria-pressed", "true");
   await expect(card.getByLabel("Acknowledged submissions")).toHaveText("0");

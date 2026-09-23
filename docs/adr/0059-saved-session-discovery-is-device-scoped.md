@@ -2,6 +2,9 @@
 
 Status: accepted 2026-09-01
 
+The no-chdir rule below still applies to **`$HOME` origin** saves. Linked
+git worktrees re-enter on resume ([0155](0155-resume-reenters-saved-worktree.md)).
+
 ## Context
 
 Bare `/resume` and `/sessions` only opened `.graff/sessions` under the

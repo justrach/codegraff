@@ -13,57 +13,8 @@ const util = @import("util.zig");
 /// (codex, claude) bill via subscription, not per token — recordCost treats
 /// them as $0 ("sub") regardless of this table. Models absent here have no
 /// known price and contribute 0 to the running cost (shown as ~).
-pub const ModelPrice = struct { name: []const u8, in: f64, out: f64, cache: f64, high_at: u64 = 0, high_in: f64 = 0, high_out: f64 = 0, high_cache: f64 = 0 };
-pub const price_table = [_]ModelPrice{
-    .{ .name = "deepseek-v4-pro", .in = 1.1, .out = 2.2, .cache = 0.11 },
-    .{ .name = "deepseek-v4-flash", .in = 0.14, .out = 0.28, .cache = 0.028 },
-    // GPT-5.6 family (developers.openai.com model pages, read 2026-09-21).
-    // `gpt-5.6` is the API alias for `gpt-5.6-sol`; graff catalogs the direct
-    // sol slug only under codex (flat-rate, see provider.zig #294), so it has
-    // no row here on purpose — tier/pin logic relies on that. Sol's $4/$20 is
-    // promotional (at least through 2026-11-21; list was $5/$30). Requests
-    // above 272K input tokens bill 2× input and 1.5× output for the whole
-    // request — the `high_*` tier, as for grok-4.6.
-    .{ .name = "gpt-5.6", .in = 4, .out = 20, .cache = 0.4, .high_at = 272_000, .high_in = 8, .high_out = 30, .high_cache = 0.8 },
-    .{ .name = "gpt-5.6-terra", .in = 2, .out = 12, .cache = 0.2, .high_at = 272_000, .high_in = 4, .high_out = 18, .high_cache = 0.4 },
-    .{ .name = "gpt-5.6-luna", .in = 0.2, .out = 1.2, .cache = 0.02, .high_at = 272_000, .high_in = 0.4, .high_out = 1.8, .high_cache = 0.04 },
-    .{ .name = "gpt-5.5", .in = 5, .out = 30, .cache = 0.5 },
-    .{ .name = "gpt-5.5-codex", .in = 1.25, .out = 10, .cache = 0.125 },
-    .{ .name = "gpt-5.4", .in = 2.5, .out = 15, .cache = 0.25 },
-    .{ .name = "gpt-5.4-mini", .in = 0.75, .out = 4.5, .cache = 0.075 },
-    .{ .name = "gpt-5.3-codex", .in = 1.75, .out = 14, .cache = 0.175 },
-    .{ .name = "gpt-5.2", .in = 1.75, .out = 14, .cache = 0.175 },
-    .{ .name = "gpt-5-codex", .in = 1.25, .out = 10, .cache = 0.125 },
-    .{ .name = "claude-fable-5", .in = 10, .out = 50, .cache = 1 }, // pricier than opus-5; unpriced it read as a cheap rung
-    .{ .name = "claude-opus-5", .in = 5, .out = 25, .cache = 0.5 },
-    .{ .name = "claude-sonnet-5", .in = 2, .out = 10, .cache = 0.2 }, // introductory, $3/$15 from 2026-09-01
-    .{ .name = "claude-opus-4-8", .in = 5, .out = 25, .cache = 0.5 },
-    .{ .name = "claude-opus-4.8", .in = 5, .out = 25, .cache = 0.5 },
-    .{ .name = "claude-sonnet-4-6", .in = 3, .out = 15, .cache = 0.3 },
-    .{ .name = "claude-sonnet-4.6", .in = 3, .out = 15, .cache = 0.3 },
-    .{ .name = "claude-haiku-4-5", .in = 1, .out = 5, .cache = 0.1 },
-    .{ .name = "MiniMax-M3", .in = 0.3, .out = 1.2, .cache = 0.06 },
-    .{ .name = "minimax-m3", .in = 0.3, .out = 1.2, .cache = 0.06 },
-    .{ .name = "mimo-v2.5-pro", .in = 0.435, .out = 0.87, .cache = 0.0036 },
-    .{ .name = "mimo-v2.5", .in = 0.14, .out = 0.28, .cache = 0.0028 },
-    .{ .name = "kimi-k2.7", .in = 0.95, .out = 4, .cache = 0.1 },
-    .{ .name = "kimi-k2.6", .in = 0.95, .out = 4, .cache = 0.1 },
-    .{ .name = "kimi-k2-thinking", .in = 0.6, .out = 2.5, .cache = 0.06 },
-    .{ .name = "kimi-k2.5", .in = 0.6, .out = 3, .cache = 0.06 },
-    .{ .name = "grok-4.6", .in = 2, .out = 6, .cache = 0.5, .high_at = 200_000, .high_in = 4, .high_out = 12, .high_cache = 1 },
-    .{ .name = "muse-spark-1.2", .in = 1.25, .out = 4.25, .cache = 0.125 },
-    .{ .name = "muse-spark-1.2-contributor", .in = 0.1, .out = 0.2, .cache = 0.01 },
-    .{ .name = "grok-4.3", .in = 1.25, .out = 2.5, .cache = 0.3 },
-    .{ .name = "grok-build", .in = 1, .out = 2, .cache = 0.1 },
-    .{ .name = "glm-5.3", .in = 1.4, .out = 4.4, .cache = 0.26 },
-    .{ .name = "glm-5.2", .in = 1.4, .out = 4.4, .cache = 0.26 },
-    .{ .name = "glm-5", .in = 1, .out = 3.2, .cache = 0.2 },
-    .{ .name = "glm-5-turbo", .in = 1.2, .out = 4.0, .cache = 0.24 },
-    .{ .name = "glm-5v-turbo", .in = 1.2, .out = 4.0, .cache = 0.24 },
-    .{ .name = "glm-4.7", .in = 0.6, .out = 2.2, .cache = 0.11 },
-    .{ .name = "glm-4.5", .in = 0.6, .out = 2.2, .cache = 0.11 },
-    .{ .name = "alibaba/qwen3.8-27b", .in = 0.55, .out = 3.3, .cache = 0.11 },
-};
+pub const ModelPrice = struct { name: []const u8, in: f64, out: f64, cache: f64, high_at: u64 = 0, high_in: f64 = 0, high_out: f64 = 0, high_cache: f64 = 0, cache_write_multiplier: ?f64 = null };
+pub const price_table = @import("pricing_table.zig").rows;
 
 /// Runtime price overlay populated by `graff models refresh` (models.dev
 /// cache, see models_cache.zig): consulted before the baked-in table so a
@@ -77,8 +28,15 @@ pub fn priceFor(model: []const u8) ?ModelPrice {
     return null;
 }
 
+/// Gateway aliases have their own prices; vendor overlays must not replace them.
+pub fn priceForProvider(provider: []const u8, model: []const u8) ?ModelPrice {
+    if (std.mem.eql(u8, provider, "codegraff")) return @import("pricing_gateway.zig").find(model);
+    return priceFor(model);
+}
+
 /// Billing class of one API call: a flat-rate subscription login bills nothing
-/// per token, price_table rows bill per token, anything else is unpriced.
+/// per token, price_table rows bill per token, anything without a reliable
+/// settled charge is unpriced for the session tally.
 /// Classifying a SEAT is billing.zig's job — it needs the provider spec and the
 /// credential source, neither of which belongs in a price sheet.
 pub const Billing = enum { sub, priced, unpriced };
@@ -104,12 +62,17 @@ pub const CostTally = struct {
     out_tokens: u64 = 0,
     api_calls: u64 = 0,
     sub_calls: u64 = 0, // subscription-billed (flat-rate; contribute $0)
-    unpriced_calls: u64 = 0, // no price_table row
+    unreported_failed_attempts: u64 = 0, // not successful calls; billing is unknown
+    missing_usage_calls: u64 = 0, // completed responses whose usage was absent
+    unpriced_calls: u64 = 0, // no reliable settled charge (or no price_table row)
 
     /// `billing` is the caller's already-classified seat (billing.forSeat): a
     /// flat-rate login and a metered env key on the SAME provider+model are
     /// different classes, so the tally cannot derive it itself (#471).
     pub fn add(self: *CostTally, io: Io, billing: Billing, model: []const u8, ordinary_in: i64, cache_in: i64, cache_write_in: i64, out: i64) void {
+        self.addForProvider(io, billing, "", model, ordinary_in, cache_in, cache_write_in, out);
+    }
+    pub fn addForProvider(self: *CostTally, io: Io, billing: Billing, provider: []const u8, model: []const u8, ordinary_in: i64, cache_in: i64, cache_write_in: i64, out: i64) void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         self.api_calls +|= 1;
@@ -122,9 +85,26 @@ pub const CostTally = struct {
             .unpriced => self.unpriced_calls +|= 1,
             // No `.?`: the class comes from the caller; a dropped row falls back.
             .priced => {
-                if (priceFor(model)) |p| self.usd += usdForUsage(p, model, ordinary_in, cache_in, cache_write_in, out) else self.unpriced_calls +|= 1;
+                if (priceForProvider(provider, model)) |p| self.usd += usdForUsage(p, model, ordinary_in, cache_in, cache_write_in, out) else self.unpriced_calls +|= 1;
             },
         }
+    }
+
+    pub fn addSettled(self: *CostTally, io: Io, input: i64, output: i64, charge_micro_usd: u64) void {
+        @import("pricing_settled.zig").add(self, io, input, output, charge_micro_usd);
+    }
+
+    pub fn missingUsage(self: *CostTally, io: Io) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        self.api_calls +|= 1;
+        self.missing_usage_calls +|= 1;
+    }
+
+    pub fn failedWithoutUsage(self: *CostTally, io: Io, count: u64) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        self.unreported_failed_attempts +|= count;
     }
 
     /// Consistent copy for rendering (taken under the lock).
@@ -138,11 +118,14 @@ pub const CostTally = struct {
 
     /// One-line summary shared by /cost and the one-shot stderr report.
     pub fn render(c: CostTally, w: *Io.Writer) !void {
-        try w.print("{d} api call(s) · {d} in ({d} cached, {d} cache writes) + {d} out tokens · ${d:.4}", .{
+        if (c.missing_usage_calls > 0 or c.unreported_failed_attempts > 0 or c.unpriced_calls > 0) try w.writeAll("known subtotal: ");
+        try w.print("{d} api call(s) · {d} in ({d} cached, {d} cache writes) + {d} out tokens · ${d:.8}", .{
             c.api_calls, c.in_tokens +| c.cache_tokens, c.cache_tokens, c.cache_write_tokens, c.out_tokens, c.usd,
         });
+        if (c.missing_usage_calls > 0) try w.print(" · totals incomplete: {d} call(s) missing usage (tokens and cost unknown)", .{c.missing_usage_calls});
+        if (c.unreported_failed_attempts > 0) try w.print(" · totals incomplete: {d} failed request attempt(s) without usage (tokens and cost unknown)", .{c.unreported_failed_attempts});
         if (c.sub_calls > 0) try w.print(" · {d} subscription call(s), flat-rate (not in $)", .{c.sub_calls});
-        if (c.unpriced_calls > 0) try w.print(" · {d} call(s) on unpriced models", .{c.unpriced_calls});
+        if (c.unpriced_calls > 0) try w.print(" · {d} call(s) with unknown cost", .{c.unpriced_calls});
     }
 };
 
@@ -215,6 +198,9 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "deepseek", .name = "deepseek-v4-flash", .context = 1_000_000 },
     .{ .provider = "deepseek", .name = "deepseek-chat", .context = 1_000_000 },
     .{ .provider = "deepseek", .name = "deepseek-reasoner", .context = 1_000_000 },
+    .{ .provider = "openai", .name = "gpt-6-astra", .context = 1_050_000 },
+    .{ .provider = "openai", .name = "gpt-6-sol", .context = 1_050_000 },
+    .{ .provider = "openai", .name = "gpt-6-luna", .context = 1_050_000 },
     .{ .provider = "openai", .name = "gpt-5.6", .context = 1_050_000 },
     .{ .provider = "openai", .name = "gpt-5.6-terra", .context = 1_050_000 },
     .{ .provider = "openai", .name = "gpt-5.6-luna", .context = 1_050_000 },
@@ -227,6 +213,9 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "minimax", .name = "MiniMax-M3", .context = 512_000 },
     .{ .provider = "minimax", .name = "MiniMax-M2.7", .context = 204_800 },
     .{ .provider = "minimax", .name = "MiniMax-M2.5", .context = 204_800 },
+    .{ .provider = "xiaomi", .name = "mimo-v2.6-pro", .context = 1_048_576 },
+    .{ .provider = "xiaomi", .name = "mimo-v2.6-flash", .context = 1_048_576 },
+    .{ .provider = "xiaomi", .name = "mimo-v2.6-pro-ultraspeed", .context = 1_048_576 },
     .{ .provider = "xiaomi", .name = "mimo-v2.5-pro", .context = 1_048_576 },
     .{ .provider = "xiaomi", .name = "mimo-v2.5", .context = 1_048_576 },
     .{ .provider = "xiaomi", .name = "mimo-v2.5-pro-ultraspeed", .context = 1_048_576 },
@@ -236,6 +225,7 @@ pub const model_table = [_]ModelInfo{
     // Keep this usable when auth/discovery is unavailable: these are the
     // visible rows and advertised windows from the 2026-07-10 Codex catalog.
     .{ .provider = "codex", .name = "gpt-6-astra", .context = 272_000 },
+    .{ .provider = "codex", .name = "gpt-6-sol", .context = 272_000 },
     .{ .provider = "codex", .name = "gpt-5.6-sol", .context = 272_000 },
     .{ .provider = "codex", .name = "gpt-5.6-terra", .context = 272_000 },
     .{ .provider = "codegraff", .name = "muse-spark-1.2", .context = 262_144 },
@@ -284,13 +274,20 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "codegraff", .name = "deepseek-v4-pro", .context = 1_000_000 },
     .{ .provider = "codegraff", .name = "deepseek-v4-flash", .context = 1_000_000 },
     .{ .provider = "codegraff", .name = "minimax-m3", .context = 1_000_000 },
+    .{ .provider = "codegraff", .name = "gpt-6-astra", .context = 1_050_000 },
+    .{ .provider = "codegraff", .name = "gpt-5.6-sol", .context = 1_050_000 },
+    .{ .provider = "codegraff", .name = "gpt-5.6-terra", .context = 1_050_000 },
+    .{ .provider = "codegraff", .name = "gpt-5.6-luna", .context = 1_050_000 },
     .{ .provider = "codegraff", .name = "gpt-5.6", .context = 1_050_000 },
-    .{ .provider = "codegraff", .name = "gpt-5.5", .context = 400_000 },
+    .{ .provider = "codegraff", .name = "gpt-5.5", .context = 1_050_000 },
     .{ .provider = "codegraff", .name = "kimi-k2.6", .context = 262_144 },
+    .{ .provider = "codegraff", .name = "grok-4.7", .context = 500_000 },
     .{ .provider = "codegraff", .name = "grok-4.6", .context = 500_000 },
     .{ .provider = "codegraff", .name = "grok-build", .context = 256_000 },
     .{ .provider = "codegraff", .name = "glm-5.2", .context = 204_800 },
     .{ .provider = "codegraff", .name = "glm-5.3-flash", .context = 202_752 },
+    .{ .provider = "codegraff", .name = "mimo-v2.6-pro", .context = 1_048_576 },
+    .{ .provider = "codegraff", .name = "mimo-v2.6-flash", .context = 1_048_576 },
     .{ .provider = "codegraff", .name = "mimo-v2.5", .context = 128_000 },
     .{ .provider = "codegraff", .name = "mimo-v2.5-pro", .context = 128_000 },
     // Kimi Code offline fallback. Authenticated startup replaces this slice
@@ -307,6 +304,7 @@ pub const model_table = [_]ModelInfo{
     // Kimi Code's native `k3` row: `--model kimi-k3` with only MOONSHOT_API_KEY
     // must not rewrite onto the coding-plan login.
     .{ .provider = "moonshot", .name = "kimi-k3", .context = 1_048_576, .supports_reasoning = true, .support_efforts = &.{ "low", "high", "max" }, .default_effort = "max" },
+    .{ .provider = "xai", .name = "grok-4.7", .context = 500_000, .supports_reasoning = true },
     .{ .provider = "xai", .name = "grok-4.6", .context = 500_000, .supports_reasoning = true },
     .{ .provider = "xai", .name = "grok-4.3", .context = 1_000_000 },
     .{ .provider = "xai", .name = "grok-build", .context = 256_000 },
@@ -393,6 +391,8 @@ fn pureKimiGeneration(name: []const u8) ?u32 {
 /// the newest explicit pure generation (`k3`, then future `k4`, etc.) over
 /// compatibility aliases and K2 point-release ids.
 pub fn providerDefaultModel(provider_id: []const u8, fallback: []const u8) []const u8 {
+    for (models()) |model| if (std.mem.eql(u8, model.provider, provider_id) and
+        std.mem.eql(u8, model.name, "mimo-v2.6-pro")) return model.name;
     if (std.mem.eql(u8, provider_id, "codex")) {
         for (models()) |model| if (std.mem.eql(u8, model.provider, "codex")) return model.name;
         return fallback;
@@ -584,3 +584,16 @@ pub fn providerModelInTable(provider_id: []const u8, model: []const u8) bool {
 
 // Seat classification lives in billing.zig. Discovery / price-overlay / default
 // catalog tests live in pricing_tests.zig (600-line cap).
+test "completed response without usage marks totals incomplete without inventing tokens or cost" {
+    var tally: CostTally = .{};
+    tally.missingUsage(std.testing.io);
+    const snapshot = tally.snap(std.testing.io);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.api_calls);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.missing_usage_calls);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.in_tokens);
+    try std.testing.expectEqual(@as(f64, 0), snapshot.usd);
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try snapshot.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "totals incomplete: 1 call(s) missing usage (tokens and cost unknown)") != null);
+}

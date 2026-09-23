@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { previewDocument } from '@/lib/html-preview';
+import { copyText } from '@/lib/ui-sounds';
 
 type Artifact = { title: string; html: string };
 export default function HtmlArtifact({ id }: { id: string }) {
@@ -36,7 +37,7 @@ export default function HtmlArtifact({ id }: { id: string }) {
   return <section ref={root} data-html-artifact={id} className="my-3 overflow-hidden rounded-window border border-line bg-surface" aria-label="Saved HTML explanation">
     <header className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-3 py-2">
       <div className="min-w-0"><div className="truncate text-sm font-medium">{data?.title || 'HTML explanation'}</div><div className="text-[10px] text-ink-3">Static HTML · scripts and external resources are disabled</div></div>
-      <div className="flex gap-1"><button data-html-preview aria-pressed={!source} className={button(!source)} onClick={()=>setSource(false)}>Preview</button><button data-html-source aria-pressed={source} className={button(source)} onClick={()=>setSource(true)}>HTML</button><button data-html-copy disabled={!data} className={button()} onClick={async()=>{try{await navigator.clipboard.writeText(data!.html);setCopied(true);}catch{setError('Copy failed. You can select the source from HTML.');}}}>{copied?'Copied':'Copy'}</button><button data-html-hide aria-expanded={!hidden} className={button()} onClick={()=>setHidden(!hidden)}>{hidden?'Show':'Hide'}</button></div>
+      <div className="flex gap-1"><button data-html-preview aria-pressed={!source} className={button(!source)} onClick={()=>setSource(false)}>Preview</button><button data-html-source aria-pressed={source} className={button(source)} onClick={()=>setSource(true)}>HTML</button><button data-html-copy disabled={!data} className={button()} onClick={async()=>{try{await copyText(data!.html);setCopied(true);}catch{setError('Copy failed. You can select the source from HTML.');}}}>{copied?'Copied':'Copy'}</button><button data-html-hide aria-expanded={!hidden} className={button()} onClick={()=>setHidden(!hidden)}>{hidden?'Show':'Hide'}</button></div>
     </header>
     {!hidden && <div className="min-h-[440px]">
       {error && <p role="status" className="p-4 text-sm text-ink-3">{error}</p>}

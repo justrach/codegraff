@@ -133,6 +133,7 @@ pub const Queue = struct {
     /// Events refused because the queue was full or a copy failed. Surfaced
     /// rather than swallowed: silent loss here is how a tool row goes missing.
     dropped: usize = 0,
+    permission: @import("permission.zig").Mailbox = .{},
 
     fn acquire(self: *Queue) void {
         while (self.lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();

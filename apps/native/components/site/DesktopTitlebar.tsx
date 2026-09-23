@@ -2,7 +2,16 @@
 import { useEffect, useState, type CSSProperties } from "react";
 export default function DesktopTitlebar() {
   const [enabled, setEnabled] = useState(false);
-  useEffect(() => { if (window.graffDesktop) { setEnabled(true); document.documentElement.dataset.desktop = "true"; } }, []);
+  useEffect(() => {
+    const bridge = window.graffDesktop;
+    if (!bridge) return;
+    document.documentElement.dataset.desktop = "true";
+    if (bridge.frame === "system") {
+      document.documentElement.dataset.desktopFrame = "system";
+      return;
+    }
+    setEnabled(true);
+  }, []);
   return enabled ? <><style>{`
     html[data-desktop="true"] { --desktop-title-height: 36px; }
     html[data-desktop-fullscreen="true"] { --desktop-title-height: 0px; }

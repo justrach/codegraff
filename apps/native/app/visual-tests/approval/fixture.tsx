@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ApprovalCard from "@/components/primitives/ApprovalCard";
 import { AssistantBody } from "@/components/site/ChatBubbles";
 import { emptyTurn, type AssistantTurn } from "@/lib/acp";
@@ -23,6 +23,8 @@ const multiQuestions = [
 ];
 
 export default function ApprovalFixture() {
+  const [ready, setReady] = useState(false);
+  useEffect(() => setReady(true), []);
   const [singleKey, setSingleKey] = useState(0);
   const [singleSubmissions, setSingleSubmissions] = useState<string[]>([]);
   const [singleCancellations, setSingleCancellations] = useState(0);
@@ -30,10 +32,12 @@ export default function ApprovalFixture() {
   const [multiSubmissions, setMultiSubmissions] = useState<string[][]>([]);
   const [ackKey, setAckKey] = useState(0);
   const ackFails = useRef(1);
+  const rejectPendingAck = useRef<(() => void) | null>(null);
+  const [ackPending, setAckPending] = useState(false);
   const [ackSubmissions, setAckSubmissions] = useState(0);
 
   return (
-    <main className="min-h-screen bg-page p-8 text-ink">
+    <main data-approval-ready={ready} className="min-h-screen bg-page p-8 text-ink">
       <div className="mx-auto grid max-w-[900px] gap-10 md:grid-cols-2">
         <section aria-label="Single-question approval" className="space-y-4">
           <div className="flex items-center justify-between gap-3">
@@ -98,13 +102,28 @@ export default function ApprovalFixture() {
             <button
               type="button"
               onClick={() => {
+                rejectPendingAck.current?.();
+                rejectPendingAck.current = null;
                 setAckKey((key) => key + 1);
                 ackFails.current = 1;
+                setAckPending(false);
                 setAckSubmissions(0);
               }}
               className="rounded bg-field px-3 py-1.5 text-xs"
             >
               Reset acknowledgement
+            </button>
+            <button
+              type="button"
+              disabled={!ackPending}
+              onClick={() => {
+                const reject = rejectPendingAck.current;
+                rejectPendingAck.current = null;
+                reject?.();
+              }}
+              className="rounded bg-field px-3 py-1.5 text-xs"
+            >
+              Reject pending acknowledgement
             </button>
           </div>
           <ApprovalCard
@@ -112,10 +131,12 @@ export default function ApprovalFixture() {
             resettable={false}
             questions={[{ q: "Ship pistachio?", type: "radio", options: ["Yes", "No"] }]}
             onSubmitted={async (answers) => {
-              await new Promise((resolve) => setTimeout(resolve, 80));
               if (ackFails.current > 0) {
                 ackFails.current -= 1;
-                throw new Error("notify failed");
+                await new Promise<void>((_resolve, reject) => {
+                  rejectPendingAck.current = () => reject(new Error("notify failed"));
+                  setAckPending(true);
+                }).finally(() => setAckPending(false));
               }
               setAckSubmissions((count) => count + 1);
               void answers;

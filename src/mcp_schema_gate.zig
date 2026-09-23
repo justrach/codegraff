@@ -174,7 +174,7 @@ fn publish(arena: Allocator, name: []const u8, rendered: []const u8) !*Node {
 }
 
 var g_seq: usize = 0;
-fn nextSeq() usize {
+pub fn nextSeq() usize {
     g_seq += 1;
     return g_seq;
 }

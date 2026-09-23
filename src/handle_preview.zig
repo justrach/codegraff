@@ -1,6 +1,6 @@
 //! Notable-line excerpt for a #440 handle preview.
 //!
-//! The first payload a spill returns is the HEAD of the result. A needle in
+//! The first payload a spill returns includes the head and tail. A needle in
 //! the middle (a single FAILED line in a 168 KiB log) is invisible there, so
 //! the model pays a follow-up page. This file pulls a bounded set of
 //! error-shaped lines into that first payload so the common "what broke?"
@@ -50,32 +50,38 @@ fn lineIsNotable(line: []const u8) bool {
 /// Lines after `skip_before` that look like failures, capped. Empty when
 /// nothing qualifies or `budget` cannot hold the header plus one line.
 pub fn notableExcerpt(arena: Allocator, text: []const u8, skip_before: usize, budget: usize) ![]const u8 {
-    if (budget < 40 or skip_before >= text.len) return "";
-    var lines: std.ArrayList([]const u8) = .empty;
-    var i = skip_before;
-    if (i > 0 and text[i - 1] != '\n') {
-        if (std.mem.indexOfScalar(u8, text[i..], '\n')) |n| i += n + 1 else return "";
-    }
-    while (i < text.len and lines.items.len < max_notable_lines) {
+    return notableRange(arena, text, skip_before, text.len, budget);
+}
+
+/// Only select lines intersecting the omitted source range. A partially
+/// visible boundary line may be repeated in full so its evidence is not lost.
+pub fn notableRange(arena: Allocator, text: []const u8, from: usize, until: usize, budget: usize) ![]const u8 {
+    const end = @min(until, text.len);
+    if (budget < 40 or from >= end) return "";
+    var lines: [max_notable_lines][]const u8 = undefined;
+    var count: usize = 0;
+    const header_reserve = "[notable lines, 8 matches]\n".len;
+    var remaining = budget - header_reserve;
+    var i = lineBounds(text, from).lo;
+    while (i < end and count < max_notable_lines) {
         const nl = std.mem.indexOfScalar(u8, text[i..], '\n');
-        const end = if (nl) |n| i + n else text.len;
-        const line = text[i..end];
-        if (lineIsNotable(line)) try lines.append(arena, line);
+        const line_end = if (nl) |n| i + n else text.len;
+        const line = text[i..line_end];
+        if (line_end > from and line.len < remaining and lineIsNotable(line)) {
+            lines[count] = line;
+            count += 1;
+            remaining -= line.len + 1;
+        }
         i = if (nl) |n| i + n + 1 else text.len;
     }
-    if (lines.items.len == 0) return "";
-
+    if (count == 0) return "";
     var body: std.Io.Writer.Allocating = .init(arena);
-    try body.writer.print("[notable lines, {d} match", .{lines.items.len});
-    if (lines.items.len != 1) try body.writer.writeByte('e');
-    try body.writer.writeAll("]\n");
-    for (lines.items) |line| {
+    try body.writer.print("[notable lines, {d} {s}]\n", .{ count, if (count == 1) "match" else "matches" });
+    for (lines[0..count]) |line| {
         try body.writer.writeAll(line);
         try body.writer.writeByte('\n');
     }
-    const out = body.writer.buffered();
-    if (out.len > budget) return "";
-    return out;
+    return body.writer.buffered();
 }
 
 test "lineBounds includes the whole line, not an 80-byte pad" {
@@ -138,12 +144,27 @@ fn takeLines(text: []const u8, from_start: bool, max_lines: usize, max_bytes: us
 
 /// First/last excerpt for a spilled result. Empty when `budget` cannot hold
 /// a useful head. The full bytes stay on the handle.
+pub const Preview = struct {
+    text: []const u8,
+    omitted_start: usize,
+    omitted_end: usize,
+};
+
+pub fn prefixPreview(text: []const u8, budget: usize) Preview {
+    const prefix = utilUtf8Prefix(text, budget);
+    return .{ .text = prefix, .omitted_start = prefix.len, .omitted_end = text.len };
+}
+
 pub fn compactPreview(arena: Allocator, text: []const u8, budget: usize) ![]const u8 {
-    if (budget < 80) return utilUtf8Prefix(text, budget);
+    return (try compactPreviewRanges(arena, text, budget)).text;
+}
+
+pub fn compactPreviewRanges(arena: Allocator, text: []const u8, budget: usize) !Preview {
+    if (budget < 80) return prefixPreview(text, budget);
     const head = takeLines(text, true, head_lines, @min(head_bytes, budget / 2));
     const tail = takeLines(text, false, tail_lines, @min(tail_bytes, budget / 4));
     if (tail.len == 0 or std.mem.endsWith(u8, head, tail) or head.len + tail.len >= text.len)
-        return arena.dupe(u8, utilUtf8Prefix(text, budget));
+        return prefixPreview(text, budget);
     const gap = "[... {d} bytes omitted; page with read_tool_result(handle, offset, limit) or query ...]\n";
     const omitted = text.len - head.len - tail.len;
     var aw: std.Io.Writer.Allocating = .init(arena);
@@ -152,8 +173,8 @@ pub fn compactPreview(arena: Allocator, text: []const u8, budget: usize) ![]cons
     try aw.writer.print(gap, .{omitted});
     try aw.writer.writeAll(tail);
     const out = aw.writer.buffered();
-    if (out.len > budget) return arena.dupe(u8, utilUtf8Prefix(text, budget));
-    return out;
+    if (out.len > budget) return prefixPreview(text, budget);
+    return .{ .text = out, .omitted_start = head.len, .omitted_end = text.len - tail.len };
 }
 
 fn utilUtf8Prefix(text: []const u8, n: usize) []const u8 {

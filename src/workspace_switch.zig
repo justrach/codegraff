@@ -30,9 +30,9 @@ const ExecResult = tools_mod.ExecResult;
 const task_workspace = @import("task_workspace.zig");
 
 pub const tool_name = "workspace";
-pub const tool_desc = "List this repo's git worktrees, switch into one, or create a task workspace (fresh branch + worktree). action=list (default), use, or create. path is a worktree path, its last folder, or a unique name fragment. create needs name and optional base. File tools and bash follow the new cwd. Root session only — a subagent stays in its assigned tree. Do not bash-cd to switch.";
+pub const tool_desc = "List this repo's git worktrees, switch into one, create a task workspace, or gc unused trees when the user asks to free space. action=list (default), use, create, or gc. gc drops dead session trees and clean trees whose GitHub PR is MERGED; dirty trees stay. Root session only. Do not bash-cd to switch. Do not gc because a turn finished.";
 pub const tool_schema =
-    \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "use", "create"], "description": "list (default): the repo's git worktrees. use: chdir this session into one. create: mint a fresh branch and worktree from the remote base, then enter it."}, "path": {"type": "string", "description": "worktree path, last folder, or unique fragment (required for use)"}, "name": {"type": "string", "description": "task workspace name (required for create)"}, "base": {"type": "string", "description": "base branch or commit for create (default origin/main after fetch)"}}}
+    \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "use", "create", "gc"], "description": "list (default): the repo's git worktrees. use: chdir this session into one. create: mint a fresh branch and worktree from the remote base, then enter it. gc: free disk — dead session trees and clean merged-PR trees. Only when the user asked to clear space."}, "path": {"type": "string", "description": "worktree path, last folder, or unique fragment (required for use)"}, "name": {"type": "string", "description": "task workspace name (required for create)"}, "base": {"type": "string", "description": "base branch or commit for create (default origin/main after fetch)"}}}
 ;
 
 pub const Entry = struct {
@@ -82,7 +82,7 @@ fn own(arena: Allocator, s: []const u8) []const u8 {
 
 /// Parse `git worktree list --porcelain`. Ignores bare/detached/locked extras.
 ///
-/// Every row OWNS its bytes. `listEntries` frees git's stdout as soon as it
+/// Every row OWNS its bytes. `listWorktrees` frees git's stdout as soon as it
 /// returns, so borrowing out of `text` left each path and branch pointing at
 /// released memory (#715): reused pages read back as NUL, which printed blank
 /// rows for `action=list` and made `action=use` match neither the name nor the
@@ -193,7 +193,7 @@ fn currentAbs(io: Io, arena: Allocator) []const u8 {
     return arena.dupe(u8, buf[0..n]) catch main_mod.g_cwd_display;
 }
 
-fn listEntries(gpa: Allocator, io: Io, arena: Allocator) []Entry {
+pub fn listWorktrees(gpa: Allocator, io: Io, arena: Allocator) []Entry {
     const listed = jobs.runCapped(gpa, io, &.{ "git", "worktree", "list", "--porcelain" }, 64 * 1024, 4096, 15_000) catch return &.{};
     defer {
         gpa.free(listed.stdout);
@@ -203,7 +203,7 @@ fn listEntries(gpa: Allocator, io: Io, arena: Allocator) []Entry {
     return parsePorcelain(arena, listed.stdout);
 }
 
-fn enterPath(gpa: Allocator, io: Io, arena: Allocator, path: []const u8) ![]const u8 {
+pub fn enterPath(gpa: Allocator, io: Io, arena: Allocator, path: []const u8) ![]const u8 {
     if (builtin.os.tag == .windows) return error.Unsupported;
     const z = try arena.dupeSentinel(u8, path, 0);
     if (std.posix.system.chdir(z.ptr) != 0) return error.ChdirFailed;
@@ -243,20 +243,28 @@ fn run(gpa: Allocator, io: Io, arena: Allocator, from_sub: bool, action: []const
     };
     const current = currentAbs(io, arena);
     if (std.mem.eql(u8, action, "list") or action.len == 0) {
-        return .{ .text = formatList(arena, listEntries(gpa, io, arena), current, io), .is_error = false };
+        return .{ .text = formatList(arena, listWorktrees(gpa, io, arena), current, io), .is_error = false };
     }
     if (std.mem.eql(u8, action, "create")) {
         return createAndEnter(gpa, io, arena, path, base);
     }
+    if (std.mem.eql(u8, action, "gc")) {
+        const n = @import("worktree_reap.zig").orphans(gpa, io, arena, ".");
+        const m = @import("worktree_reap.zig").mergedPulls(gpa, io, arena, ".");
+        return .{
+            .text = tryText(arena, "cleared {d} idle session tree(s) and {d} merged-PR tree(s). Dirty and unique-commit trees stayed.", .{ n, m }),
+            .is_error = false,
+        };
+    }
     if (!std.mem.eql(u8, action, "use")) return .{
-        .text = "workspace action must be list, use, or create",
+        .text = "workspace action must be list, use, create, or gc",
         .is_error = true,
     };
     if (path.len == 0) return .{
         .text = "workspace use needs path — a worktree folder or unique fragment. action=list to see them.",
         .is_error = true,
     };
-    const entries = listEntries(gpa, io, arena);
+    const entries = listWorktrees(gpa, io, arena);
     return switch (resolve(arena, entries, path, current, io)) {
         .none => .{
             .text = tryText(arena, "no worktree matches \"{s}\" — action=list to see them", .{path}),
@@ -329,6 +337,8 @@ pub fn slashCommand(root: *Agent, arena: Allocator, line: []const u8, out: *Io.W
             action = "create";
         } else if (std.mem.eql(u8, rest, "list") or std.mem.eql(u8, rest, "ls")) {
             action = "list";
+        } else if (std.mem.eql(u8, rest, "gc") or std.mem.eql(u8, rest, "clean") or std.mem.eql(u8, rest, "clear")) {
+            action = "gc";
         } else {
             action = "use";
             path = rest;
@@ -377,7 +387,7 @@ test "parsePorcelain: path, short branch, ignores extras" {
 }
 
 test "#715: rows outlive the git output they were parsed from" {
-    // `listEntries` frees git's stdout the moment it returns. While rows
+    // `listWorktrees` frees git's stdout the moment it returns. While rows
     // borrowed their bytes out of that buffer, every path and branch pointed at
     // released memory: reused pages read back as NUL, so `action=list` printed
     // blank rows and `action=use` matched neither the name nor the exact path
@@ -409,7 +419,7 @@ test "#715: rows outlive the git output they were parsed from" {
     }
 }
 
-test "#715: real git rows survive listEntries freeing git's stdout" {
+test "#715: real git rows survive listWorktrees freeing git's stdout" {
     // Every other test here parses a comptime literal, which lives in .rodata
     // and can never be freed — which is exactly why the dangling rows in #715
     // went unnoticed. This one walks the production path: spawn git, parse,
@@ -420,7 +430,7 @@ test "#715: real git rows survive listEntries freeing git's stdout" {
     defer arena_state.deinit();
     const a = arena_state.allocator();
 
-    const rows = listEntries(gpa, std.testing.io, a);
+    const rows = listWorktrees(gpa, std.testing.io, a);
     if (rows.len == 0) return error.SkipZigTest; // not a git worktree here
 
     for (rows) |e| {
@@ -487,6 +497,7 @@ test "run: subagent is refused; bad action and empty use name the fix" {
     try std.testing.expect(std.mem.indexOf(u8, sub.text, "root-session only") != null);
     const bad = run(gpa, io, a, false, "send", "", "");
     try std.testing.expect(bad.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, bad.text, "gc") != null);
     const empty = run(gpa, io, a, false, "use", "", "");
     try std.testing.expect(empty.is_error);
     try std.testing.expect(std.mem.indexOf(u8, empty.text, "action=list") != null);

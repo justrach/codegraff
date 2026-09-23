@@ -153,32 +153,78 @@ app.whenReady().then(async () => {
     if (selector !== '[aria-label="Open navigation"]' && await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)}), panel=document.querySelector('[data-navigation-panel]:popover-open');if(!e||!panel||panel.contains(e))return false;const r=e.getBoundingClientRect();return panel.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));})()`)) {
       await click('[aria-label="Close navigation"]');
     }
-    let p, previous;
-    await until(async () => {
-      p = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return null;e.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});const r=e.getBoundingClientRect();const x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2);return {x,y,hit:e.contains(document.elementFromPoint(x,y))}})()`);
-      const settled = p?.hit && previous?.x === p.x && previous?.y === p.y;
-      previous = p; return settled;
-    }, `stable pointer target: ${selector}`, 5000);
+    let p;
+    const stableTarget = async () => {
+      let previous;
+      await until(async () => {
+        p = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return null;e.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});const r=e.getBoundingClientRect();const x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2);return {x,y,hit:e.contains(document.elementFromPoint(x,y))}})()`);
+        const settled = p?.hit && previous?.x === p.x && previous?.y === p.y;
+        previous = p; return settled;
+      }, `stable pointer target: ${selector}`, 5000);
+    };
+    await stableTarget();
     if (computer) {
       const bounds = win.getContentBounds();
-      await js(`(()=>{
-        window.__nativeClickCleanup?.();
-        const target=document.querySelector(${JSON.stringify(selector)});
-        const trace=window.__nativeClickTrace={expected:${JSON.stringify(p)},events:[]};
-        const record=event=>trace.events.push({type:event.type,x:event.clientX,y:event.clientY,
-          target:event.target.tagName,label:event.target.getAttribute('aria-label'),matches:target.contains(event.target)});
-        const types=['pointerdown','pointerup','click'];
-        types.forEach(type=>document.addEventListener(type,record,true));
-        window.__nativeClickCleanup=()=>types.forEach(type=>document.removeEventListener(type,record,true));
-      })()`);
-      try {
-        await computer.command('click', { pid: process.pid, x: bounds.x+p.x, y: bounds.y+p.y });
-        await until(()=>js(`window.__nativeClickTrace.events.some(event=>event.type==='click'&&event.matches)`), `native click delivery: ${selector}`, 3000);
-      } finally {
-        report.nativePointer={bounds,trace:await js('window.__nativeClickTrace')};
-        await js('window.__nativeClickCleanup()');
+      // Moving the system pointer can shift a small chat layout before mouse-down.
+      // Retry only a missed composer click; duplicate clicks on buttons are unsafe.
+      const attempts = selector === 'textarea[aria-label="Prompt"]' ? 2 : 1;
+      for (let attempt = 0; attempt < attempts; attempt++) {
+        if (attempt) await stableTarget();
+        await js(`(()=>{
+          window.__nativeClickCleanup?.();
+          const target=document.querySelector(${JSON.stringify(selector)});
+          const trace=window.__nativeClickTrace={expected:${JSON.stringify(p)},events:[]};
+          const record=event=>trace.events.push({type:event.type,x:event.clientX,y:event.clientY,
+            target:event.target.tagName,label:event.target.getAttribute('aria-label'),matches:target.contains(event.target)});
+          const types=['pointerdown','pointerup','click'];
+          types.forEach(type=>document.addEventListener(type,record,true));
+          window.__nativeClickCleanup=()=>types.forEach(type=>document.removeEventListener(type,record,true));
+        })()`);
+        let missed = false;
+        try {
+          await computer.command('click', { pid: process.pid, x: bounds.x+p.x, y: bounds.y+p.y });
+          try {
+            await until(()=>js(`window.__nativeClickTrace.events.some(event=>event.type==='click'&&event.matches)`), `native click delivery: ${selector}`, attempt + 1 < attempts ? 1000 : 3000);
+          } catch (error) {
+            if (attempt + 1 === attempts) throw error;
+            missed = true;
+          }
+        } finally {
+          report.nativePointer={bounds,trace:await js('window.__nativeClickTrace')};
+          await js('window.__nativeClickCleanup()');
+        }
+        if (!missed) break;
       }
-    } else for (const type of ['mouseDown', 'mouseUp']) await desktop.testInput(wc, { type, button: 'left', clickCount: 1, ...p });
+    } else {
+      // A missed Send press leaves the draft intact. Retry only when no click
+      // reached that button to avoid resending an accepted prompt.
+      const attempts = selector === '[aria-label="Send"]' ? 2 : 1;
+      for (let attempt = 0; attempt < attempts; attempt++) {
+        if (attempt) await stableTarget();
+        if (attempts > 1) await js(`(()=>{
+          window.__sendClickSeen=false;
+          window.__sendClickObserver=event=>{if(event.target.closest('[aria-label="Send"]'))window.__sendClickSeen=true};
+          document.addEventListener('click',window.__sendClickObserver,true);
+        })()`);
+        try {
+          await desktop.testInput(wc, { type: 'mouseDown', button: 'left', clickCount: 1, ...p });
+          // Focusing a control can scroll the transcript between press and release.
+          const release = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return null;const r=e.getBoundingClientRect(),x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2);return e.contains(document.elementFromPoint(x,y))?{x,y}:null})()`);
+          await desktop.testInput(wc, { type: 'mouseUp', button: 'left', clickCount: 1, ...p, ...release });
+          if (attempts > 1) {
+            try {
+              await until(() => js('window.__sendClickSeen'), 'trusted Send click delivery', attempt ? 1000 : 300);
+            } catch (error) {
+              if (attempt + 1 === attempts) throw error;
+              continue;
+            }
+          }
+        } finally {
+          if (attempts > 1) await js("document.removeEventListener('click',window.__sendClickObserver,true)");
+        }
+        break;
+      }
+    }
   };
   const send = async text => {
     await click('textarea[aria-label="Prompt"]');
@@ -276,9 +322,13 @@ app.whenReady().then(async () => {
     report.passed.push('bounded split churn, resize, cancellation and memory checks');
     return;
   }
-  if (process.env.GRAFF_NARROW_NAV_TEST) await require('./narrow-navigation-frontend.cjs').runNarrowNavigation({ win, output, click, until, report });
+  const narrowNavigation = Boolean(process.env.GRAFF_NARROW_NAV_TEST);
+  if (narrowNavigation) {
+    await require('./chat-prompt-focus-frontend.cjs').runChatPromptFocus({ win, click, until, report });
+    await require('./narrow-navigation-frontend.cjs').runNarrowNavigation({ win, output, click, until, report });
+  }
   await require('./attachment-lifetime-frontend.cjs').runAttachments({win,origin,temp,output,requests,workspace,send,click,until,report});
-  if (process.env.GRAFF_NARROW_NAV_TEST) return;
+  if (narrowNavigation) return;
   await require('./browser-focus-frontend.cjs').runBrowserFocus({ win, output, click, until, report });
   await require('./tab-drag-visual.cjs').runTabDrag({ win, origin, output });
   report.passed.push('trusted pointer and keyboard: tab reorder, horizontal/vertical splits, draft retention, Escape and four-pane limit');

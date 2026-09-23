@@ -192,8 +192,9 @@ pub fn readLine(
             if (buf.items.len == 0) {
                 const idle_ms: i32 = if (@import("presence_accord.zig").enabled()) 50 else 200;
                 while (!inputPendingTimed(idle_ms)) {
-                    var wake_buf: [512]u8 = undefined;
+                    var wake_buf: [4096]u8 = undefined;
                     if (idle_wake.takeIdleWake(root.io, root.session_name, &wake_buf)) |wake| {
+                        @import("subagent_interactive.zig").line_notice = true;
                         buf.appendSlice(gpa, wake) catch break;
                         try out.writeAll("\r\n");
                         try out.flush();

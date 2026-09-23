@@ -27,8 +27,76 @@ pub const ResolvedKeys = struct {
     stored_keys_loaded: bool,
 };
 
+/// A remembered provider/model is an exact user selection. A transient
+/// catalog omission must not replace it with the provider default; the
+/// backend can reject the selected model without silently changing routes.
+pub fn savedProvider(keys: provider_mod.Keys, saved: serde.SavedModel) error{ UnknownProvider, MissingKey }!provider_mod.Provider {
+    if (provider_mod.specFor(saved.pid) == null) return error.UnknownProvider;
+    return keys.providerById(saved.pid, saved.model);
+}
+
+test "saved startup pair survives a transient catalog omission and reaches the request body" {
+    const original = pricing.active_model_table;
+    defer pricing.active_model_table = original;
+    const only_astra = [_]pricing.ModelInfo{.{ .provider = "codex", .name = "gpt-6-astra", .context = 272_000 }};
+    pricing.active_model_table = &only_astra;
+    try std.testing.expect(!pricing.providerModelInTable("codex", "gpt-6-luna"));
+
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    try std.testing.expect(keys.set("codex", "test-token", .session));
+    const selected = try savedProvider(keys, .{ .pid = "codex", .model = "gpt-6-luna" });
+    try std.testing.expectEqualStrings("codex", selected.id);
+    try std.testing.expectEqualStrings("gpt-6-luna", selected.model);
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var agent = try @import("agent_request_body_responses.zig").testAgentFor(arena_state.allocator(), "codex", .responses, "placeholder");
+    agent.provider = selected;
+    const body = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"model\":\"gpt-6-luna\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"model\":\"gpt-6-astra\"") == null);
+}
+
+test "saved startup pair does not borrow another provider credential" {
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    try std.testing.expect(keys.set("codegraff", "unrelated-key", .session));
+    try std.testing.expectError(error.MissingKey, savedProvider(keys, .{ .pid = "codex", .model = "gpt-6-luna" }));
+    try std.testing.expectError(error.UnknownProvider, savedProvider(keys, .{ .pid = "removed-provider", .model = "old-model" }));
+}
+
 fn explicitProvider(model_flag: ?[]const u8) ?[]const u8 {
     return catalog_selection.explicitProvider(model_flag orelse return null);
+}
+
+fn qualifiedProvider(keys: provider_mod.Keys, query: []const u8) error{ MissingKey, UnknownModel }!?provider_mod.Provider {
+    const slash = std.mem.indexOfScalar(u8, query, '/') orelse return null;
+    const pid = query[0..slash];
+    const spec = provider_mod.specFor(pid) orelse return null;
+    const model = query[slash + 1 ..];
+    if (model.len == 0 or (!keys_cli.isLocalUrl(spec.url) and !pricing.providerModelInTable(pid, model)))
+        return error.UnknownModel;
+    return try keys.providerById(pid, model);
+}
+
+test "qualified startup model keeps its catalog provider and validates the exact row" {
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    for (provider_mod.provider_specs, &keys.values) |spec, *value| {
+        if (std.mem.eql(u8, spec.id, "xiaomi") or std.mem.eql(u8, spec.id, "codegraff")) value.* = "test";
+    }
+    const direct = (try qualifiedProvider(keys, "xiaomi/mimo-v2.6-pro-ultraspeed")).?;
+    try std.testing.expectEqualStrings("xiaomi", direct.id);
+    try std.testing.expectEqualStrings("mimo-v2.6-pro-ultraspeed", direct.model);
+    const gateway = (try qualifiedProvider(keys, "codegraff/mimo-v2.6-pro")).?;
+    try std.testing.expectEqualStrings("codegraff", gateway.id);
+    try std.testing.expectEqualStrings("mimo-v2.6-pro", gateway.model);
+    try std.testing.expectError(error.UnknownModel, qualifiedProvider(keys, "xiaomi/not-a-real-model"));
+    try std.testing.expectError(error.UnknownModel, qualifiedProvider(keys, "xiaomi/"));
+    try std.testing.expect((try qualifiedProvider(keys, "mimo-v2.6-pro")) == null);
+    for (provider_mod.provider_specs, &keys.values) |spec, *value| {
+        if (std.mem.eql(u8, spec.id, "xiaomi")) value.* = null;
+    }
+    try std.testing.expectError(error.MissingKey, qualifiedProvider(keys, "xiaomi/mimo-v2.6-pro-ultraspeed"));
 }
 
 /// Whether one stored credential can affect an explicit startup selection:
@@ -113,7 +181,7 @@ test "Kimi catalog loads at startup only when selection can observe it" {
 /// Resolves API keys/credentials (env vars → codegraff/codex/kimi on-disk
 /// logins → the `harness key set` store, env always wins — same precedence
 /// as before) and picks the startup model (--model flag, else the
-/// last-saved model if it's still in the catalog). Carved out of main()'s
+/// last-saved provider/model). Carved out of main()'s
 /// former inline credential-loading block verbatim; fatals via
 /// std.process.fatal exactly as that block did (no key found, or a bad
 /// --model value).
@@ -233,6 +301,17 @@ pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map
                 break :pick;
             } else |_| std.process.fatal("no key/login for provider '{s}' (--model)", .{mname});
         }
+        // `/model provider/model` pins the route. Keep the same meaning at
+        // startup, including ACP launches from a desktop model selection.
+        if (qualifiedProvider(keys, mname)) |qualified| {
+            if (qualified) |p| {
+                default_provider = p;
+                break :pick;
+            }
+        } else |err| switch (err) {
+            error.UnknownModel => std.process.fatal("unknown --model '{s}' for its provider — run `graff models refresh` or see /models", .{mname}),
+            error.MissingKey => std.process.fatal("no key/login for --model '{s}'", .{mname}),
+        }
         const nm = pricing.resolveModelName(keys, mname) orelse std.process.fatal("unknown --model '{s}' — run `graff models refresh` or see /models", .{mname});
         default_provider = keys.providerFor(nm) catch {
             // #294: name the credential that actually needs repair. A Codex-only
@@ -249,25 +328,15 @@ pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map
         };
     } else if (saved_model) |saved| {
         preferred_provider = saved.pid;
-        // No --model flag: resume the model chosen last session only if that
-        // exact provider/model pair is still in the catalog; model names can be
-        // shared by providers with different support.
-        if (pricing.providerModelInTable(saved.pid, saved.model)) {
-            if (keys.providerById(saved.pid, saved.model)) |p| {
-                default_provider = p;
-            } else |_| {
+        // A catalog omission alone must not change the selected model. When
+        // its credential is gone, retain the preference and let the existing
+        // cross-provider consent gate control the fallback session.
+        default_provider = savedProvider(keys, saved) catch |err| switch (err) {
+            error.UnknownProvider, error.MissingKey => fallback: {
                 stale_saved_model = std.fmt.allocPrint(arena, "{s}/{s}", .{ saved.pid, saved.model }) catch saved.model;
-            }
-        } else {
-            stale_saved_model = std.fmt.allocPrint(arena, "{s}/{s}", .{ saved.pid, saved.model }) catch saved.model;
-            // A rollout may remove only this model while the provider login is
-            // still healthy. Prefer that provider's current dynamic default
-            // before crossing provider/account boundaries.
-            if (provider_mod.specFor(saved.pid)) |spec| {
-                const replacement = pricing.providerDefaultModel(spec.id, spec.default_model);
-                if (keys.providerById(spec.id, replacement)) |p| default_provider = p else |_| {}
-            }
-        }
+                break :fallback default_provider;
+            },
+        };
     }
     return .{ .keys = @import("bench_priors.zig").noteKeysAtStartup(keys, io, arena, keys_cli.homeEnv(environ_map)), .default_provider = default_provider, .stale_saved_model = stale_saved_model, .preferred_provider = preferred_provider, .codex_account = codex_account, .model_catalog = model_catalog, .stored_keys_loaded = stored_keys_loaded };
 }

@@ -11,6 +11,13 @@
     -webkit-user-drag: none;
 }
 
+/* The webview's system highlight does not paint on a drag, so selection has
+   its own color. Ancestors must not set user-select: none over chat text. */
+::selection {
+    background-color: color-mix(in srgb, var(--foreground) 28%, var(--background));
+    color: var(--foreground);
+}
+
 /* Syntax-highlight token colors for the local code-block renderer (CodeBlock.tsx
    + highlight/). github-light defaults, github-dark under `.dark`. */
 :root {

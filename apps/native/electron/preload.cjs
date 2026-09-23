@@ -1,5 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('graffDesktop', {
+  frame: process.platform === 'darwin' ? 'inset' : 'system',
+  platform: process.platform,
   workspaceSubscribe: callback => {
     const listener = (_event, target) => callback(target);
     ipcRenderer.on('workspace-open', listener);

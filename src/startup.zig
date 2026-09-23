@@ -227,10 +227,20 @@ pub fn resolveKeysOrRunAcpPreAuth(io: Io, gpa: Allocator, arena: Allocator, init
     return null;
 }
 
+/// `graff models` lists, `graff refresh` is `graff models refresh`, `graff route` dry-runs seating.
+pub const CatalogCommand = enum { none, list, refresh, route };
+
+pub fn catalogCommand(name: []const u8) CatalogCommand {
+    if (std.mem.eql(u8, name, "models")) return .list;
+    if (std.mem.eql(u8, name, "refresh")) return .refresh;
+    if (std.mem.eql(u8, name, "route")) return .route;
+    return .none;
+}
+
 /// The early subcommand/flag branches that exit before any credential
 /// resolution or Agent construction happens — `--help`/`--version`, `key`,
 /// `mcp add`, `login`, `serve`, `update`, `worktree` (list/merge), `sandboxes`,
-/// `cube`, and `--schema`. Moved verbatim out of main() (600-line goal,
+/// `cube`, `refresh`, and `--schema`. Moved verbatim out of main() (600-line goal,
 /// #123 follow-up). Returns true when a branch handled the run and main()
 /// should return immediately without going any further (credential
 /// resolution, Agent construction, the REPL/turn loop, ...).
@@ -397,16 +407,17 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         return true;
     }
 
-    // `graff models [refresh]` / `graff route <model>…`: print the catalog or
-    // pull fresh metadata; route dry-runs provider seating on the same caches.
-    if (flags.positionals.items.len > 0 and (std.mem.eql(u8, flags.positionals.items[0], "models") or std.mem.eql(u8, flags.positionals.items[0], "route"))) {
+    // `graff models [refresh]` / `graff refresh` / `graff route <model>…`:
+    // print the catalog or pull fresh metadata; route dry-runs seating.
+    const catalog = if (flags.positionals.items.len > 0) catalogCommand(flags.positionals.items[0]) else .none;
+    if (catalog != .none) {
         const home = keys_cli.homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
         const codex_home = oauth.codexHomeDir(arena, home) orelse "";
         const codex_auth = oauth.loadCodexAuthFrom(io, arena, codex_home);
-        const refreshing = flags.positionals.items.len > 1 and
+        const refreshing = catalog == .refresh or (flags.positionals.items.len > 1 and
             (std.mem.eql(u8, flags.positionals.items[1], "refresh") or
                 std.mem.eql(u8, flags.positionals.items[1], "--refresh") or
-                std.mem.eql(u8, flags.positionals.items[1], "update"));
+                std.mem.eql(u8, flags.positionals.items[1], "update")));
         models_cache.loadCodexCatalog(
             io,
             gpa,
@@ -465,7 +476,13 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
             router_keys.router_source = if (router_keys.router_value != null) .stored else .none;
         }
         router_catalog.loadAll(io, gpa, arena, home, router_keys, refreshing);
-        if (std.mem.eql(u8, flags.positionals.items[0], "route")) try @import("route_check.zig").command(io, gpa, arena, init.environ_map, flags.positionals.items[1..]) else try models_cache.command(io, gpa, arena, home, flags.positionals.items[1..]);
+        const refresh_args = [_][]const u8{"refresh"};
+        switch (catalog) {
+            .route => try @import("route_check.zig").command(io, gpa, arena, init.environ_map, flags.positionals.items[1..]),
+            .refresh => try models_cache.command(io, gpa, arena, home, &refresh_args),
+            .list => try models_cache.command(io, gpa, arena, home, flags.positionals.items[1..]),
+            .none => unreachable,
+        }
         return true;
     }
 

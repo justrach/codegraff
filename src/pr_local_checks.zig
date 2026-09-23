@@ -3,6 +3,18 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ToolCall = @import("tools.zig").ToolCall;
 const ExecResult = @import("tools.zig").ExecResult;
+const shell = @import("shell_tool.zig");
+
+pub const Observer = struct {
+    context: *anyopaque,
+    state: *State,
+    record: *const fn (*anyopaque, ToolCall, ExecResult) anyerror!void,
+};
+
+pub fn observeOutput(context: *anyopaque, call: ToolCall, result: ExecResult) !void {
+    const root: *@import("agent.zig").Agent = @ptrCast(@alignCast(context));
+    try record(root, call, result);
+}
 
 fn checkTail(command: []const u8) []const u8 {
     var rest = std.mem.trim(u8, command, " \t\r\n");
@@ -15,9 +27,16 @@ fn checkTail(command: []const u8) []const u8 {
 
 pub fn isCheck(command: []const u8) bool {
     var words = std.mem.tokenizeAny(u8, checkTail(command), " \t\r\n");
-    const executable = std.fs.path.basename(words.next() orelse return false);
+    var name = words.next() orelse return false;
+    if (std.mem.eql(u8, name, "env")) name = words.next() orelse return false;
+    while (std.mem.indexOfScalar(u8, name, '=')) |_| name = words.next() orelse return false;
+    const executable = std.fs.path.basename(name);
     if (std.mem.eql(u8, executable, "pytest") or std.mem.startsWith(u8, executable, "eval-tier")) return true;
     const first = words.next() orelse return false;
+    if (std.mem.eql(u8, executable, "node") or std.mem.eql(u8, executable, "bun")) {
+        const script = std.fs.path.basename(first);
+        if (std.mem.startsWith(u8, script, "test-") or std.mem.startsWith(u8, script, "test_") or std.mem.eql(u8, first, "--test")) return true;
+    }
     if (std.mem.eql(u8, executable, "python") or std.mem.eql(u8, executable, "python3")) {
         if (std.mem.eql(u8, first, "-m")) {
             const module = words.next() orelse return false;
@@ -27,10 +46,11 @@ pub fn isCheck(command: []const u8) bool {
         return std.mem.startsWith(u8, script, "test-") or std.mem.startsWith(u8, script, "test_") or std.mem.startsWith(u8, script, "eval-tier");
     }
     if (std.mem.eql(u8, executable, "zig"))
-        return std.mem.eql(u8, first, "test") or (std.mem.eql(u8, first, "build") and std.mem.startsWith(u8, words.next() orelse "", "test"));
+        return std.mem.eql(u8, first, "test") or std.mem.eql(u8, first, "build");
     for ([_][]const u8{ "cargo", "go", "bun", "npm", "pnpm", "yarn", "make" }) |runner| {
         if (!std.mem.eql(u8, executable, runner)) continue;
-        return std.mem.eql(u8, first, "test") or (std.mem.eql(u8, first, "run") and std.mem.startsWith(u8, words.next() orelse "", "test"));
+        const task = if (std.mem.eql(u8, first, "run")) words.next() orelse return false else first;
+        return std.mem.startsWith(u8, task, "test") or std.mem.eql(u8, task, "build") or std.mem.eql(u8, task, "check") or std.mem.eql(u8, task, "typecheck") or std.mem.eql(u8, task, "lint");
     }
     return false;
 }
@@ -38,14 +58,20 @@ pub fn isCheck(command: []const u8) bool {
 pub fn repositoryRoot(root: anytype, cwd: []const u8) ![]const u8 {
     const ev = @import("pr_evidence.zig");
     const found = ev.capture(root.gpa, root.io, root.arena, .{ .cwd = cwd, .selector = "" }, &.{ "git", "rev-parse", "--show-toplevel" }) catch return cwd;
-    return if (std.fs.path.isAbsolute(found)) found else cwd;
+    if (!std.fs.path.isAbsolute(found)) return cwd;
+    var dir = std.Io.Dir.cwd().openDir(root.io, found, .{}) catch return cwd;
+    defer dir.close(root.io);
+    var path: [std.fs.max_path_bytes]u8 = undefined;
+    const len = dir.realPath(root.io, &path) catch return cwd;
+    return root.arena.dupe(u8, path[0..len]);
 }
 
 pub fn record(root: anytype, call: ToolCall, result: ExecResult) !void {
-    if (root.sub or !std.mem.eql(u8, call.name, "bash") or call.input != .object) return;
-    const command = call.input.object.get("command") orelse return;
-    if (command != .string) return;
-    const parsed = @import("pr_command.zig").literal(root.arena, command.string) catch return;
+    if (root.sub or !shell.isFamily(call.name)) return;
+    const command = shell.runCommand(call) orelse return;
+    root.publication_checks.observation_mutex.lockUncancelable(root.io);
+    defer root.publication_checks.observation_mutex.unlock(root.io);
+    const parsed = @import("pr_command.zig").literal(root.arena, command) catch return;
     if (!isCheck(try std.mem.join(root.arena, " ", parsed.argv))) return;
     const base = root.agent_cwd orelse ".";
     const path = if (parsed.cwd) |cwd| if (std.fs.path.isAbsolute(cwd)) cwd else try std.fs.path.join(root.arena, &.{ base, cwd }) else base;
@@ -54,19 +80,18 @@ pub fn record(root: anytype, call: ToolCall, result: ExecResult) !void {
     var buffer: [std.fs.max_path_bytes]u8 = undefined;
     const cwd = buffer[0..try dir.realPath(root.io, &buffer)];
     const repository = try repositoryRoot(root, cwd);
-    try root.publication_checks.observeKnown(root.arena, cwd, repository, command.string, result);
+    try root.publication_checks.observeKnown(root.arena, cwd, repository, command, result);
     const ev = @import("pr_evidence.zig");
     const target = ev.Target{ .cwd = cwd, .selector = "" };
     const head = ev.localHead(root.gpa, root.io, root.arena, target) catch "";
     const dirty = ev.capture(root.gpa, root.io, root.arena, target, &.{ "git", "status", "--porcelain", "--untracked-files=no" }) catch "unknown";
-    try root.publication_checks.recordReceipt(root.arena, .{ .repository = repository, .command = command.string, .head_after = head, .tracked_tree_clean_after = dirty.len == 0, .output = result.text, .failed = result.is_error or result.cancelled, .completed = std.mem.indexOf(u8, result.text, "[job ") == null });
+    try root.publication_checks.recordReceipt(root.arena, .{ .repository = repository, .command = command, .head_after = head, .tracked_tree_clean_after = dirty.len == 0, .output = result.text, .failed = result.is_error or result.cancelled, .completed = !result.pending and std.mem.indexOf(u8, result.text, "[job ") == null });
 }
 
 pub fn batchGate(root: anytype, calls: []const ToolCall, call: ToolCall) !?ExecResult {
-    if (calls.len <= 1 or !std.mem.eql(u8, call.name, "bash") or call.input != .object) return null;
-    const raw = call.input.object.get("command") orelse return null;
-    if (raw != .string) return null;
-    const command = @import("pr_command.zig").parse(root.arena, raw.string) catch return null;
+    if (calls.len <= 1 or !shell.isFamily(call.name)) return null;
+    const raw = shell.runCommand(call) orelse return null;
+    const command = @import("pr_command.zig").parse(root.arena, raw) catch return null;
     if (!std.mem.eql(u8, command.verb, "create") and !std.mem.eql(u8, command.verb, "ready")) return null;
     if (std.mem.eql(u8, command.verb, "create") and command.draft()) return null;
     const text = "PR publication preflight: run non-draft publication in a separate tool call after other work finishes; write NOT performed.";
@@ -77,8 +102,18 @@ pub fn batchGate(root: anytype, calls: []const ToolCall, call: ToolCall) !?ExecR
 pub const State = struct {
     const Entry = struct { cwd: []const u8, command: []const u8, repository: ?[]const u8 = null };
     pub const Receipt = struct { repository: []const u8, command: []const u8, head_after: []const u8, tracked_tree_clean_after: bool, output: []const u8, failed: bool, completed: bool, output_truncated: bool = false };
+    observation_mutex: std.Io.Mutex = .init,
     failed: std.ArrayList(Entry) = .empty,
     recent: std.ArrayList(Receipt) = .empty,
+
+    pub fn snapshot(self: *State, arena: Allocator, io: std.Io) !State {
+        self.observation_mutex.lockUncancelable(io);
+        defer self.observation_mutex.unlock(io);
+        var copy: State = .{};
+        try copy.failed.appendSlice(arena, self.failed.items);
+        try copy.recent.appendSlice(arena, self.recent.items);
+        return copy;
+    }
 
     pub fn recordReceipt(self: *State, arena: Allocator, receipt: Receipt) !void {
         var owned = receipt;
@@ -95,21 +130,21 @@ pub const State = struct {
     }
 
     pub fn observe(self: *State, arena: Allocator, cwd: []const u8, call: ToolCall, result: ExecResult) !void {
-        if (!std.mem.eql(u8, call.name, "bash") or call.input != .object) return;
-        const raw = call.input.object.get("command") orelse return;
-        if (raw != .string or !isCheck(raw.string)) return;
-        try self.observeKnown(arena, cwd, cwd, raw.string, result);
+        if (!shell.isFamily(call.name)) return;
+        const raw = shell.runCommand(call) orelse return;
+        if (!isCheck(raw)) return;
+        try self.observeKnown(arena, cwd, cwd, raw, result);
     }
 
     fn observeKnown(self: *State, arena: Allocator, cwd: []const u8, repository: []const u8, raw: []const u8, result: ExecResult) !void {
         const command = std.mem.trim(u8, raw, " \t\r\n");
         for (self.failed.items, 0..) |entry, i| {
             if (!std.mem.eql(u8, entry.cwd, cwd) or !std.mem.eql(u8, entry.command, command)) continue;
-            if (!result.is_error and !result.cancelled and std.mem.indexOf(u8, result.text, "[job ") == null)
+            if (!result.is_error and !result.cancelled and !result.pending and std.mem.indexOf(u8, result.text, "[job ") == null)
                 _ = self.failed.orderedRemove(i);
             return;
         }
-        if (!result.is_error and !result.cancelled and std.mem.indexOf(u8, result.text, "[job ") == null) return;
+        if (!result.is_error and !result.cancelled and !result.pending and std.mem.indexOf(u8, result.text, "[job ") == null) return;
         try self.failed.append(arena, .{ .cwd = try arena.dupe(u8, cwd), .command = try arena.dupe(u8, command), .repository = try arena.dupe(u8, repository) });
     }
 
@@ -169,6 +204,8 @@ test "observed failed check survives unrelated success and clears only on its su
     try std.testing.expect(state.unresolved("/fixture") != null);
     try state.observe(a, "/fixture", call, .{ .text = "[job 1 started]", .is_error = false });
     try std.testing.expect(state.unresolved("/fixture") != null);
+    try state.observe(a, "/fixture", call, .{ .text = "exit 0", .is_error = false, .pending = true });
+    try std.testing.expect(state.unresolved("/fixture") != null);
     try state.observe(a, "/fixture", call, .{ .text = "OK", .is_error = false });
     try std.testing.expect(state.unresolved("/fixture") == null);
 }
@@ -178,8 +215,51 @@ test "check classification excludes prose and ordinary inspection" {
     try std.testing.expect(isCheck("zig build test"));
     try std.testing.expect(isCheck("cd apps/native && bun run test:desktop"));
     try std.testing.expect(isCheck("scripts/eval-tier1.sh --only reach"));
+    try std.testing.expect(isCheck("SDKROOT=/fixture bun run test:desktop"));
+    try std.testing.expect(isCheck("node scripts/test-motion.mjs /fixture --effort-only"));
+    try std.testing.expect(isCheck("bun run build"));
+    try std.testing.expect(isCheck("env CI=1 npm run typecheck"));
     try std.testing.expect(!isCheck("echo pytest failed"));
     try std.testing.expect(!isCheck("git diff"));
+}
+
+test "publication receipts record successful shell checks at the observed Git head" {
+    const io = std.testing.io;
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var path: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = path[0..try temp.dir.realPath(io, &path)];
+    const ev = @import("pr_evidence.zig");
+    const target: ev.Target = .{ .cwd = cwd, .selector = "" };
+    _ = try ev.capture(std.testing.allocator, io, a, target, &.{ "git", "init", "-q" });
+    _ = try ev.capture(std.testing.allocator, io, a, target, &.{ "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "base" });
+    const head = try ev.localHead(std.testing.allocator, io, a, target);
+    var root: @import("agent.zig").Agent = undefined;
+    root.gpa = std.testing.allocator;
+    root.arena = a;
+    root.io = io;
+    root.sub = false;
+    root.agent_cwd = cwd;
+    root.publication_checks = .{};
+    const input = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"action\":\"run\",\"command\":\"node scripts/test-motion.mjs\"}", .{});
+    const call: ToolCall = .{ .id = "check", .name = "shell", .input = input };
+    try record(&root, call, .{ .text = "rendered dimensions passed", .is_error = false });
+    try std.testing.expectEqual(@as(usize, 1), root.publication_checks.recent.items.len);
+    const receipt = root.publication_checks.recent.items[0];
+    try std.testing.expectEqualStrings(head, receipt.head_after);
+    try std.testing.expectEqualStrings("rendered dimensions passed", receipt.output);
+    try std.testing.expect(receipt.tracked_tree_clean_after and receipt.completed and !receipt.failed);
+    const repository = try repositoryRoot(&root, cwd);
+    try record(&root, call, .{ .text = "FAIL", .is_error = true });
+    try std.testing.expect(root.publication_checks.unresolved(repository) != null);
+    try record(&root, call, .{ .text = "passed", .is_error = false });
+    try std.testing.expect(root.publication_checks.unresolved(repository) == null);
+    const output = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"action\":\"output\",\"command\":\"node scripts/test-motion.mjs\"}", .{});
+    try record(&root, .{ .id = "poll", .name = "shell", .input = output }, .{ .text = "passed", .is_error = false });
+    try std.testing.expectEqual(@as(usize, 3), root.publication_checks.recent.items.len);
 }
 
 test "failed checks survive serialization and malformed state is not a clean resume" {

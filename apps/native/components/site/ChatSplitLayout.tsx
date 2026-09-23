@@ -6,6 +6,7 @@ import { createComposerDraft, type ComposerDraftStore } from "@/lib/composer-dra
 import SplitDivider from "./SplitDivider";
 import paneStyles from "./chat-pane.module.css";
 import {flatSplit,pruneSplit,splitGeometry,paneStyle,type SplitTree} from "@/lib/split-tree";
+import { useCommandGlyph } from "@/lib/shortcut-glyph";
 export default function ChatSplitLayout({ threads, liveChatIds, activeId, direction, layout, onLayoutChange, onFocus, onClose, folder, body, split, claims = [] }: {
   threads: Chat[]; activeId: number; direction: "row" | "column"; layout?: SplitTree;
   liveChatIds?: number[];
@@ -13,6 +14,7 @@ export default function ChatSplitLayout({ threads, liveChatIds, activeId, direct
   folder(thread: Chat): { name: string; path?: string }; body(thread: Chat): ReactNode; split: boolean;
   claims?: { kind: string; key: string; session: string }[];
 }) {
+  const mod = useCommandGlyph();
   const drafts = useRef(new Map<number, ComposerDraftStore>());
   const liveKey = liveChatIds?.join(",");
   useEffect(() => {
@@ -53,7 +55,7 @@ export default function ChatSplitLayout({ threads, liveChatIds, activeId, direct
             <span key={`${claim.kind}:${claim.key}`} title={`${claim.kind} ${claim.key}`} className="max-w-[45%] truncate rounded-full bg-inset px-2 py-0.5 text-[10px] text-ink-3">{claim.kind === "pull_request" ? `PR ${claim.key}` : claim.kind === "issue" ? `#${claim.key}` : claim.key}</span>
           )}
           {split && <span title={folder(thread).path} className="flex min-w-0 max-w-[40%] items-center gap-1 text-[11px] text-ink-3"><IconFolder size={13}/><span className="truncate">{folder(thread).name}</span></span>}
-          {split && <button type="button" aria-label="Close this split" title="Close this chat (⌘W)" onClick={()=>onClose(thread.id)} className="flex size-6 shrink-0 items-center justify-center rounded text-ink-3 hover:bg-hover hover:text-ink">×</button>}
+          {split && <button type="button" aria-label="Close this split" title={`Close this chat (${mod}W)`} onClick={()=>onClose(thread.id)} className="flex size-6 shrink-0 items-center justify-center rounded text-ink-3 hover:bg-hover hover:text-ink">×</button>}
         </header>}
         <ComposerDraftContext.Provider value={draftFor(thread.id)}>{body(thread)}</ComposerDraftContext.Provider>
       </section>

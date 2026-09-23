@@ -34,10 +34,9 @@ const vision_queue = @import("vision_queue.zig");
 pub const Policy = struct {
     /// main.plan_mode for the length of the turn: read-only, writes denied.
     plan: bool,
-    /// Approvals.yolo. On for the non-plan modes because these frontends have
-    /// no approval prompt (in = null) — off would deny every unsaved tool
-    /// rather than ask. Plan mode does not need it: its gate runs BEFORE the
-    /// approval gate and is what refuses the writes.
+    /// Normal TUI turns ask through their frontend permission handler.
+    /// Headless legacy callers retain their unattended policy. Plan mode's
+    /// read-only gate runs before approvals; always-approve remains explicit.
     yolo: bool,
     /// Agent.strict — systemPrompt() picks sys_strict/sys_ultra_strict.
     strict: bool,
@@ -45,7 +44,7 @@ pub const Policy = struct {
     pub fn from(params: repl.Params) Policy {
         return .{
             .plan = params.mode == .plan,
-            .yolo = params.mode != .plan,
+            .yolo = params.mode == .always_approve or (params.mode == .normal and @import("engine_permission.zig").get() == null),
             .strict = params.strict,
         };
     }
@@ -85,6 +84,7 @@ pub fn turnAgent(
         .tracer = c.tracer,
         .run_budget = c.run_budget,
         .approvals = approvals,
+        .permission = @import("engine_permission.zig").get(),
         // #551: a frontend that wants the engine's TYPED events installs its
         // sink for this thread's turn (engine_sink.bindTurnSink). Null for
         // `graff repl` and every headless caller, which keeps the process-mode
@@ -100,6 +100,7 @@ pub fn turnAgent(
             .xhigh => .xhigh,
             .max => .max,
             .ultra => .ultra,
+            .none => .none,
         },
         .fast = params.fast,
         .fallback_allow = c.fallback_allow,
@@ -237,6 +238,7 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
     var approvals: Approvals = .{ .yolo = policy.yolo };
     var agent = turnAgent(c, gpa, arena, params, &sink.writer, &approvals) catch return null;
     defer agent.tools_used.deinit(gpa);
+    defer @import("agent_render_cleanup.zig").deinit(&agent);
     borrowHistory(c, &agent, history, arena, &scratch_state) catch return null;
     defer {
         c.provider = agent.provider;
@@ -521,4 +523,53 @@ test "/strict selects the strict system prompt on the turn's agent (#551)" {
     var both = try turnAgent(&c, testing.allocator, arena, .{ .strict = true, .ultracode = true }, &discarding.writer, &approvals);
     defer both.tools_used.deinit(testing.allocator);
     try testing.expectEqualStrings(both.sys_ultra_strict, both.systemPrompt());
+}
+
+test "frontend permission callback gates normal turns without stdin and preserves plan and yolo" {
+    const permission = @import("engine_permission.zig");
+    const Fixture = struct {
+        decision: permission.Decision = .deny,
+        calls: usize = 0,
+        fn ask(ctx: *anyopaque, _: Io, req: permission.Request) permission.Decision {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            std.debug.assert(std.mem.eql(u8, req.call_id, "permission-call"));
+            self.calls += 1;
+            return self.decision;
+        }
+    };
+    var fixture: Fixture = .{};
+    const previous = permission.bind(.{ .ctx = &fixture, .request = Fixture.ask });
+    defer _ = permission.bind(previous);
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    var client: std.http.Client = undefined;
+    var c = testCtx(&client);
+    var buf: [64]u8 = undefined;
+    var out: Io.Writer.Discarding = .init(&buf);
+    var approvals: Approvals = .{ .yolo = Policy.from(.{ .mode = .normal }).yolo };
+    var agent = try turnAgent(&c, testing.allocator, arena_state.allocator(), .{ .mode = .normal }, &out.writer, &approvals);
+    defer agent.tools_used.deinit(testing.allocator);
+    const saved_plan = main_mod.plan_mode;
+    defer main_mod.plan_mode = saved_plan;
+    main_mod.plan_mode = false;
+    const call: @import("tools.zig").ToolCall = .{ .id = "permission-call", .name = "write_file", .input = .{ .object = .empty } };
+    try testing.expect(!approvals.yolo);
+    try testing.expect((try agent.gateTool(call)).?.is_error);
+    fixture.decision = .allow_once;
+    try testing.expect(try agent.gateTool(call) == null);
+    try testing.expectEqual(@as(usize, 2), fixture.calls);
+    main_mod.plan_mode = true;
+    try testing.expect((try agent.gateTool(call)).?.is_error);
+    var outside: std.json.ObjectMap = .empty;
+    try outside.put(arena_state.allocator(), "command", .{ .string = "cat /tmp/permission-outside.txt" });
+    const read: @import("tools.zig").ToolCall = .{ .id = "permission-call", .name = "bash", .input = .{ .object = outside } };
+    fixture.decision = .deny;
+    try testing.expect((try agent.gateTool(read)).?.is_error);
+    fixture.decision = .allow_once;
+    try testing.expect(try agent.gateTool(read) == null);
+    try testing.expectEqual(@as(usize, 4), fixture.calls);
+    main_mod.plan_mode = false;
+    approvals.yolo = Policy.from(.{ .mode = .always_approve }).yolo;
+    try testing.expect(try agent.gateTool(call) == null);
+    try testing.expectEqual(@as(usize, 4), fixture.calls);
 }

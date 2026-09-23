@@ -196,7 +196,10 @@ fn unmark(name: []const u8) void {
     var i: usize = 0;
     while (i < g_loaded_len) : (i += 1) {
         if (std.mem.eql(u8, g_loaded[i], name)) {
-            if (i + 1 < g_loaded_len) g_loaded[i] = g_loaded[g_loaded_len - 1];
+            if (i + 1 < g_loaded_len) {
+                g_loaded[i] = g_loaded[g_loaded_len - 1];
+                g_loaded_seq[i] = g_loaded_seq[g_loaded_len - 1];
+            }
             g_loaded_len -= 1;
             return;
         }
@@ -217,6 +220,7 @@ pub fn anyFolded() bool {
 
 var g_loaded: [folded.len][]const u8 = undefined;
 var g_loaded_len: usize = 0;
+var g_loaded_seq: [folded.len]usize = undefined;
 
 pub fn isLoaded(name: []const u8) bool {
     for (g_loaded[0..g_loaded_len]) |n| {
@@ -234,6 +238,7 @@ pub fn markLoaded(name: []const u8) void {
     for (folded) |tool| {
         if (std.mem.eql(u8, name, tool)) {
             g_loaded[g_loaded_len] = tool;
+            g_loaded_seq[g_loaded_len] = mcp_schema_gate.nextSeq();
             g_loaded_len += 1;
             return;
         }
@@ -255,34 +260,46 @@ pub fn clearLoadedSession() void {
 
 /// The session's loaded folded natives, in load order (schema.zig's stable
 /// tail appends them after the stable head — load order keeps it append-only).
+pub fn loadSeq(name: []const u8) ?usize {
+    for (loadedNames(), g_loaded_seq[0..g_loaded_len]) |loaded, seq| {
+        if (std.mem.eql(u8, name, loaded)) return seq;
+    }
+    return null;
+}
+
 pub fn loadedNames() []const []const u8 {
     return g_loaded[0..g_loaded_len];
 }
 
 /// GRAFF_STABLE_CATALOG tail (schema.zig renderRootTools, #476): every tool
 /// whose schema has loaded this session, appended in LOAD ORDER after the
-/// stable catalog head — folded natives first, then MCP tools by gate seq.
+/// stable catalog head — natives and MCP tools share one admission sequence.
 /// Append-only is the point: a load changes only the tools array's tail
 /// bytes, and the provider's prefix cache (tools serialize before messages)
 /// survives what a mid-array re-insertion would bust.
 pub fn renderLoadedTail(s: *std.json.Stringify, kind: @import("provider.zig").Provider.Kind, out: Allocator, mcp_tools: []const @import("mcp.zig").Tool) !void {
     const schema_mod = @import("schema.zig");
     const mcp = @import("mcp.zig");
-    for (loadedNames()) |name| {
-        // #868: available rlm is already in the catalog head.
+    const Entry = struct { seq: usize, native: ?[]const u8 = null, external: ?mcp.Tool = null };
+    var loaded: std.ArrayList(Entry) = .empty;
+    for (loadedNames(), g_loaded_seq[0..g_loaded_len]) |name, seq| {
         if (std.mem.eql(u8, name, "rlm") and @import("rlm_spec.zig").available) continue;
-        const spec = (try findRootSpec(out, name)) orelse continue;
-        try schema_mod.writeToolEntry(s, kind, spec.name, spec.desc, .{ .raw = spec.schema });
+        try loaded.append(out, .{ .seq = seq, .native = name });
     }
-    var loaded: std.ArrayList(mcp.Tool) = .empty;
-    for (mcp_tools) |m| if (mcp_schema_gate.policyDeferred(mcp_tools, m) and mcp_schema_gate.loadSeq(m.qualified_name) != null)
-        try loaded.append(out, m);
-    std.mem.sort(mcp.Tool, loaded.items, {}, struct {
-        fn lt(_: void, a: mcp.Tool, b: mcp.Tool) bool {
-            return mcp_schema_gate.loadSeq(a.qualified_name).? < mcp_schema_gate.loadSeq(b.qualified_name).?;
+    for (mcp_tools) |m| if (mcp_schema_gate.policyDeferred(mcp_tools, m)) {
+        if (mcp_schema_gate.loadSeq(m.qualified_name)) |seq| try loaded.append(out, .{ .seq = seq, .external = m });
+    };
+    std.mem.sort(Entry, loaded.items, {}, struct {
+        fn lt(_: void, a: Entry, b: Entry) bool {
+            return a.seq < b.seq;
         }
     }.lt);
-    for (loaded.items) |m| try schema_mod.writeToolEntry(s, kind, m.qualified_name, m.description, .{ .value = m.input_schema });
+    for (loaded.items) |entry| {
+        if (entry.native) |name| {
+            const spec = (try findRootSpec(out, name)) orelse continue;
+            try schema_mod.writeToolEntry(s, kind, spec.name, spec.desc, .{ .raw = spec.schema });
+        } else if (entry.external) |m| try schema_mod.writeToolEntry(s, kind, m.qualified_name, m.description, .{ .value = m.input_schema });
+    }
 }
 
 /// Whether the root catalog skips this native spec at render: folded and not
@@ -499,10 +516,12 @@ test "explicit native loads rebuild the active provider catalog (#492)" {
 
     const saved_enabled = enabled;
     const saved_loaded = g_loaded;
+    const saved_seq = g_loaded_seq;
     const saved_loaded_len = g_loaded_len;
     defer {
         enabled = saved_enabled;
         g_loaded = saved_loaded;
+        g_loaded_seq = saved_seq;
         g_loaded_len = saved_loaded_len;
     }
     enabled = true;

@@ -9,8 +9,8 @@
 
 export const HARNESS_VERSION = "0.13";
 
-export type ModelName = "MiniMax-M2.5" | "MiniMax-M2.7" | "MiniMax-M3" | "accounts/fireworks/models/deepseek-v4-flash" | "accounts/fireworks/models/deepseek-v4-pro" | "accounts/fireworks/models/glm-5p2" | "accounts/fireworks/models/gpt-oss-120b" | "accounts/fireworks/models/kimi-k2p6" | "accounts/fireworks/models/kimi-k2p7-code" | "accounts/fireworks/models/minimax-m3" | "accounts/fireworks/models/qwen3p7-plus" | "alibaba/qwen3.8-27b" | "anthropic/claude-sonnet-4.6" | "claude-fable-5" | "claude-haiku-4-5" | "claude-opus-4-5" | "claude-opus-4-6" | "claude-opus-4-7" | "claude-opus-4-8" | "claude-opus-4.8" | "claude-opus-5" | "claude-sonnet-4-5" | "claude-sonnet-4-6" | "claude-sonnet-4.6" | "claude-sonnet-5" | "deepseek-chat" | "deepseek-reasoner" | "deepseek-v4-flash" | "deepseek-v4-pro" | "fugu" | "fugu-ultra" | "fugu-ultra-20260615" | "gemini-3-flash-preview" | "gemini-3.1-flash-lite" | "gemini-3.1-pro-preview" | "gemini-3.5-flash" | "gemini-3.5-flash-lite" | "gemini-3.6-flash" | "gemini-3.7-flash" | "gemini-3.8-flash" | "gemma-4-26b-a4b-it" | "gemma-4-31b" | "gemma-4-31b-it" | "glm-4.5" | "glm-4.7" | "glm-5" | "glm-5-turbo" | "glm-5.2" | "glm-5.3" | "glm-5.3-flash" | "glm-5v-turbo" | "gpt-5-codex" | "gpt-5.2" | "gpt-5.3-codex-spark" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.4-pro" | "gpt-5.5" | "gpt-5.6" | "gpt-5.6-luna" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-6-astra" | "gpt-oss-120b" | "grok-4.3" | "grok-4.6" | "grok-build" | "k3" | "kilo-auto/small" | "kimi-for-coding" | "kimi-for-coding-highspeed" | "kimi-k2.6" | "kimi-k2.7-code" | "kimi-k3" | "kimi-latest" | "lmstudio" | "mimo-v2-flash" | "mimo-v2.5" | "mimo-v2.5-pro" | "mimo-v2.5-pro-ultraspeed" | "minimax-m3" | "mistral-medium-latest" | "mlx-community/Qwen3.6-27B-OptiQ-4bit" | "muse-spark-1.2" | "muse-spark-1.2-contributor" | "openai/gpt-oss-120b" | (string & {});
-export type ToolName = "shell" | "read_file" | "edit_file" | "write_file" | "webfetch" | "skill" | "codedb" | "read_tool_result" | "render_html" | "todo_write" | "todo_read" | "eval" | "note_constraint" | "ask_user" | "attempt_completion" | "load_tool_schemas" | "mcp_search_tools" | "mcp_select_tool" | "clock_sleep" | "subagent" | "workflow" | "agent_output" | "agent_message" | "learn_candidate" | "peer_message" | "workspace" | "imagegen" | "rlm";
+export type ModelName = "MiniMax-M2.5" | "MiniMax-M2.7" | "MiniMax-M3" | "accounts/fireworks/models/deepseek-v4-flash" | "accounts/fireworks/models/deepseek-v4-pro" | "accounts/fireworks/models/glm-5p2" | "accounts/fireworks/models/gpt-oss-120b" | "accounts/fireworks/models/kimi-k2p6" | "accounts/fireworks/models/kimi-k2p7-code" | "accounts/fireworks/models/minimax-m3" | "accounts/fireworks/models/qwen3p7-plus" | "alibaba/qwen3.8-27b" | "anthropic/claude-sonnet-4.6" | "claude-fable-5" | "claude-haiku-4-5" | "claude-opus-4-5" | "claude-opus-4-6" | "claude-opus-4-7" | "claude-opus-4-8" | "claude-opus-4.8" | "claude-opus-5" | "claude-sonnet-4-5" | "claude-sonnet-4-6" | "claude-sonnet-4.6" | "claude-sonnet-5" | "deepseek-chat" | "deepseek-reasoner" | "deepseek-v4-flash" | "deepseek-v4-pro" | "fugu" | "fugu-ultra" | "fugu-ultra-20260615" | "gemini-3-flash-preview" | "gemini-3.1-flash-lite" | "gemini-3.1-pro-preview" | "gemini-3.5-flash" | "gemini-3.5-flash-lite" | "gemini-3.6-flash" | "gemini-3.7-flash" | "gemini-3.8-flash" | "gemma-4-26b-a4b-it" | "gemma-4-31b" | "gemma-4-31b-it" | "glm-4.5" | "glm-4.7" | "glm-5" | "glm-5-turbo" | "glm-5.2" | "glm-5.3" | "glm-5.3-flash" | "glm-5v-turbo" | "gpt-5-codex" | "gpt-5.2" | "gpt-5.3-codex-spark" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.4-pro" | "gpt-5.5" | "gpt-5.6" | "gpt-5.6-luna" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-6-astra" | "gpt-6-luna" | "gpt-6-sol" | "gpt-oss-120b" | "grok-4.3" | "grok-4.6" | "grok-4.7" | "grok-build" | "k3" | "kilo-auto/small" | "kimi-for-coding" | "kimi-for-coding-highspeed" | "kimi-k2.6" | "kimi-k2.7-code" | "kimi-k3" | "kimi-latest" | "lmstudio" | "mimo-v2-flash" | "mimo-v2.5" | "mimo-v2.5-pro" | "mimo-v2.5-pro-ultraspeed" | "mimo-v2.6-flash" | "mimo-v2.6-pro" | "mimo-v2.6-pro-ultraspeed" | "minimax-m3" | "mistral-medium-latest" | "mlx-community/Qwen3.6-27B-OptiQ-4bit" | "muse-spark-1.2" | "muse-spark-1.2-contributor" | "openai/gpt-oss-120b" | (string & {});
+export type ToolName = "shell" | "read_file" | "edit_file" | "write_file" | "webfetch" | "skill" | "codedb" | "read_tool_result" | "render_html" | "todo_write" | "todo_read" | "eval" | "note_constraint" | "ask_user" | "attempt_completion" | "load_tool_schemas" | "mcp_search_tools" | "mcp_select_tool" | "clock_sleep" | "subagent" | "workflow" | "agent_output" | "agent_message" | "subagent_resume" | "learn_candidate" | "peer_message" | "workspace" | "imagegen" | "rlm";
 export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "google" | "minimax" | "xiaomi" | "kilo" | "groq" | "cerebras" | "mistral" | "kimi" | "moonshot" | "xai" | "zai" | "meta" | "vercel" | "openrouter" | "fugu" | "fireworks" | "mlx" | "lmstudio" | "codex";
 
 /** Events streamed by the bridge (same `--json` contract as the stdio SDK).
@@ -35,7 +35,7 @@ export type Event =
   | { seq: number; type: "agent_usage"; id: string; ok: boolean; duration_ms: number; tool_calls: number; context_tokens: number; cache_read_tokens: number }
   | { seq: number; type: "finalizing" }
   | { seq: number; type: "session_recap"; text: string; status: "needs_input" | "completed" | "failed"; source: "heuristic" | "model" }
-  | { seq: number; type: "turn"; text: string; context_tokens: number; cost_usd: number; input_tokens: number; uncached_input_tokens: number; cache_read_tokens: number; output_tokens: number; api_calls: number; subscription_calls: number; unpriced_calls: number; complete?: boolean; metadata_complete?: boolean }
+  | { seq: number; type: "turn"; text: string; context_tokens: number; cost_usd: number; input_tokens: number; uncached_input_tokens: number; cache_read_tokens: number; output_tokens: number; api_calls: number; usage_complete?: boolean; missing_usage_calls?: number; unreported_failed_attempts?: number; subscription_calls: number; unpriced_calls: number; complete?: boolean; metadata_complete?: boolean }
   | { seq: number; type: "system_prompt"; ok: boolean; append: boolean; chars: number }
   | { seq: number; type: "model"; ok: boolean; provider: string; model: string; context: number; note: string }
   | { seq: number; type: "compact"; ok: boolean; chars: number }
@@ -118,8 +118,8 @@ export interface AnswerOptions {
   callId?: string;
 }
 
-/** Reasoning effort levels accepted by setEffort (protocol set_effort). */
-export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+/** Reasoning effort levels for setEffort; `none` requires a supported model route. */
+export type EffortLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 /** Structured result of one turn: the final assistant text plus the usage
  *  the harness reported on the terminal `turn` event. */
@@ -128,7 +128,7 @@ export interface AskResult {
   text: string;
   /** Server-reported context size at turn end. */
   contextTokens: number;
-  /** Turn cost in USD. */
+  /** Known turn cost in USD; check usageComplete before treating it as a total. */
   costUsd: number;
   inputTokens: number;
   uncachedInputTokens: number;
@@ -143,6 +143,10 @@ export interface AskResult {
   /** False when the turn finished incomplete (interrupted/stalled). */
   complete?: boolean;
   metadataComplete?: boolean;
+  /** False means token/cost values are known subtotals only; absent on older servers. */
+  usageComplete?: boolean;
+  missingUsageCalls?: number;
+  unreportedFailedAttempts?: number;
 }
 
 export interface RunAgentRemoteOptions extends RemoteOptions {
@@ -375,6 +379,9 @@ export class RemoteHarness {
           unpricedCalls: ev.unpriced_calls,
           complete: ev.complete,
           metadataComplete: ev.metadata_complete,
+          usageComplete: ev.usage_complete,
+          missingUsageCalls: ev.missing_usage_calls,
+          unreportedFailedAttempts: ev.unreported_failed_attempts,
         };
       }
       if (ev.type === "error") throw new Error(ev.message);
@@ -521,5 +528,5 @@ export async function* runAgentRemote(opts: RunAgentRemoteOptions): AsyncGenerat
   }
 }
 
-export const MODELS: ModelName[] = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "accounts/fireworks/models/deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/kimi-k2p6", "accounts/fireworks/models/kimi-k2p7-code", "accounts/fireworks/models/minimax-m3", "accounts/fireworks/models/qwen3p7-plus", "alibaba/qwen3.8-27b", "anthropic/claude-sonnet-4.6", "claude-fable-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-opus-5", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "claude-sonnet-5", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "fugu", "fugu-ultra", "fugu-ultra-20260615", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemma-4-26b-a4b-it", "gemma-4-31b", "gemma-4-31b-it", "glm-4.5", "glm-4.7", "glm-5", "glm-5-turbo", "glm-5.2", "glm-5.3", "glm-5.3-flash", "glm-5v-turbo", "gpt-5-codex", "gpt-5.2", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5", "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-oss-120b", "grok-4.3", "grok-4.6", "grok-build", "k3", "kilo-auto/small", "kimi-for-coding", "kimi-for-coding-highspeed", "kimi-k2.6", "kimi-k2.7-code", "kimi-k3", "kimi-latest", "lmstudio", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "minimax-m3", "mistral-medium-latest", "mlx-community/Qwen3.6-27B-OptiQ-4bit", "muse-spark-1.2", "muse-spark-1.2-contributor", "openai/gpt-oss-120b"];
-export const TOOLS: ToolName[] = ["shell", "read_file", "edit_file", "write_file", "webfetch", "skill", "codedb", "read_tool_result", "render_html", "todo_write", "todo_read", "eval", "note_constraint", "ask_user", "attempt_completion", "load_tool_schemas", "mcp_search_tools", "mcp_select_tool", "clock_sleep", "subagent", "workflow", "agent_output", "agent_message", "learn_candidate", "peer_message", "workspace", "imagegen", "rlm"];
+export const MODELS: ModelName[] = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "accounts/fireworks/models/deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/kimi-k2p6", "accounts/fireworks/models/kimi-k2p7-code", "accounts/fireworks/models/minimax-m3", "accounts/fireworks/models/qwen3p7-plus", "alibaba/qwen3.8-27b", "anthropic/claude-sonnet-4.6", "claude-fable-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-opus-5", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "claude-sonnet-5", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "fugu", "fugu-ultra", "fugu-ultra-20260615", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemma-4-26b-a4b-it", "gemma-4-31b", "gemma-4-31b-it", "glm-4.5", "glm-4.7", "glm-5", "glm-5-turbo", "glm-5.2", "glm-5.3", "glm-5.3-flash", "glm-5v-turbo", "gpt-5-codex", "gpt-5.2", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5", "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-oss-120b", "grok-4.3", "grok-4.6", "grok-4.7", "grok-build", "k3", "kilo-auto/small", "kimi-for-coding", "kimi-for-coding-highspeed", "kimi-k2.6", "kimi-k2.7-code", "kimi-k3", "kimi-latest", "lmstudio", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed", "minimax-m3", "mistral-medium-latest", "mlx-community/Qwen3.6-27B-OptiQ-4bit", "muse-spark-1.2", "muse-spark-1.2-contributor", "openai/gpt-oss-120b"];
+export const TOOLS: ToolName[] = ["shell", "read_file", "edit_file", "write_file", "webfetch", "skill", "codedb", "read_tool_result", "render_html", "todo_write", "todo_read", "eval", "note_constraint", "ask_user", "attempt_completion", "load_tool_schemas", "mcp_search_tools", "mcp_select_tool", "clock_sleep", "subagent", "workflow", "agent_output", "agent_message", "subagent_resume", "learn_candidate", "peer_message", "workspace", "imagegen", "rlm"];

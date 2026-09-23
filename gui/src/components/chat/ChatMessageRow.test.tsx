@@ -103,10 +103,10 @@ async function flushUpdates(delayMs = 10) {
 }
 
 describe("chat response copy dispatch", () => {
-  test("the thread adds the action only to assistant messages", () => {
+  test("the thread adds the copy action to user and assistant messages", () => {
     const messages: Array<[TranscriptMessage, boolean]> = [
       [contentMessage("assistant", "Answer"), true],
-      [contentMessage("user", "Question"), false],
+      [contentMessage("user", "Question"), true],
       [contentMessage("reasoning", "Private reasoning"), false],
       [
         {

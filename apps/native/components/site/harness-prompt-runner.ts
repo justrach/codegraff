@@ -1,3 +1,4 @@
+import type { PermissionRequest } from "@/lib/acp-permission";
 import type { MutableRefObject, Dispatch, SetStateAction } from "react";
 import { createTurnPainter } from "@/lib/turn-painter";
 import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AssistantTurn } from "@/lib/acp";
@@ -9,9 +10,11 @@ import { pushHistory, saveHistory } from "@/lib/prompt-history";
 import type { QueuedPrompt } from "@/lib/prompt-queue";
 import type { createQueueSteerer } from "@/lib/prompt-queue-steer";
 import type { Chat } from "./harness-types";
+import { playUiSound } from "@/lib/ui-sounds";
 type Ref<T> = MutableRefObject<T>;
 type Setter<T> = Dispatch<SetStateAction<T>>;
 type Props = {
+  onPermission?(chatId: number, request: PermissionRequest | null): void;
   onStarted(id: number): void;
   onCompleted(id: number): void;
   runningRef: Ref<Set<number>>; steerer: ReturnType<typeof createQueueSteerer>; setFollowing: Setter<boolean>;
@@ -20,10 +23,13 @@ type Props = {
   setBusyFor(id: number, on: boolean): void; setHistory: Setter<string[]>;
   pinsRef: Ref<Record<number, BrowserPin[]>>; handleOf(id: number): string;
   setPins(id: number, pins: BrowserPin[]): void; requireSession(id: number): Promise<string>;
-  adoptCatalog(id: number): Promise<void>; refreshStored(): Promise<void>;
+  sessionIsCurrent(id: number, sessionId: string): boolean;
+  prepareModel(id: number): Promise<void>;
+  adoptCatalog(id: number): Promise<void>; refreshChangedCatalog(id: number, sessionId: string): Promise<void>;
+  refreshStored(): Promise<void>;
   takeQueuedPrompt(id: number): QueuedPrompt | undefined;
 };
-export function createPromptRunner({onStarted, onCompleted, runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError}: Props) {
+export function createPromptRunner({onPermission, onStarted, onCompleted, runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, sessionIsCurrent, prepareModel, adoptCatalog, refreshChangedCatalog, refreshStored, takeQueuedPrompt, setCancelError}: Props) {
   const patchAssistant = (chatId: number, msgId: number, next: AssistantTurn) => {
     setChats((current) =>
       current.map((c) =>
@@ -44,7 +50,7 @@ export function createPromptRunner({onStarted, onCompleted, runningRef, steerer,
     steerer.begin(chatId);
     setFollowing(true);
     const thread = chatsRef.current.find((c) => c.id === chatId);
-    const spawnModel = thread?.model ?? model ?? undefined;
+    const spawnModel = thread?.nextModel ?? thread?.model ?? model ?? undefined;
     const userId = (msgIdRef.current += 1);
     const asstId = (msgIdRef.current += 1);
     const title = thread?.title ?? (trimmed.length > 30 ? `${trimmed.slice(0, 30).trimEnd()}…` : trimmed);
@@ -82,7 +88,8 @@ export function createPromptRunner({onStarted, onCompleted, runningRef, steerer,
     // so the agent can drive the same page; they are spent on send. Behind,
     // not ahead: graff titles the session from the message's first line.
     let wire = trimmed;
-    const pins = /^\/(effort|reasoning|fast)(?:\s|$)/.test(trimmed) ? [] : pinsRef.current[chatId] ?? [];
+    const settingsCommand = /^\/(effort|reasoning|fast)(?:\s|$)/.test(trimmed);
+    const pins = settingsCommand ? [] : pinsRef.current[chatId] ?? [];
     if (pins.length > 0) {
       const handle = await browserHandle(handleOf(chatId)).catch(() => null);
       const blocks = [annotationsBlock(pins.filter((p) => p.source !== "extension"), handle),
@@ -93,14 +100,21 @@ export function createPromptRunner({onStarted, onCompleted, runningRef, steerer,
     let turn: AssistantTurn = { ...emptyTurn(), model: spawnModel, startedAt: Date.now() };
     const painter = createTurnPainter<AssistantTurn>(next => patchAssistant(chatId, asstId, next));
     const startedAt = Date.now();
+    let sessionId: string | null = null;
+    let configChanged = false;
+    let promptCompleted = false;
     try {
+      await prepareModel(chatId);
       const id = await requireSession(chatId);
+      sessionId = id;
       if (editN) {
         for await (const _ of prompt(handleOf(chatId), id, `/edit ${editN} ${trimmed}`)) { /* rewind only */ }
       }
       turn = { ...turn, connected: true, lastUpdateAt: Date.now() };
       painter.update(turn);
       for await (const update of prompt(handleOf(chatId), id, wire)) {
+        if (update.sessionUpdate === "gui_permission") { onPermission?.(chatId, update.permission as PermissionRequest); continue; }
+        if (update.sessionUpdate === "config_option_update") configChanged = true;
         // The bridge acknowledges prompt dispatch before model output, so
         // queued steering can cancel even during a slow first response.
         if (update.sessionUpdate === "gui_turn_end") steerer.finish(chatId);
@@ -109,21 +123,32 @@ export function createPromptRunner({onStarted, onCompleted, runningRef, steerer,
         if (turn.thoughtMs === undefined && turn.status !== "thinking") turn = { ...turn, thoughtMs: Date.now() - startedAt };
         painter.update(turn);
       }
+      promptCompleted = true;
       // The turn carried pins, so the agent most likely changed the page:
       // reload the chat's tab so the pane shows the result without a click.
       if (pins.length > 0) void browserNav(handleOf(chatId), "reload").catch(() => undefined);
-      if (/^\/(effort|reasoning|fast)(?:\s|$)/.test(trimmed)) void adoptCatalog(chatId);
       turn = finishAcpTurn(turn);
       painter.finish(turn);
-      if (turn.status === "done" && !turn.error) onCompleted(chatId);
+      if (turn.status === "done" && !turn.error) {
+        onCompleted(chatId);
+        if (!trimmed.startsWith("/")) playUiSound("ready");
+      } else if (turn.error) playUiSound("error");
     } catch (err) {
       turn = finishAcpTurn({ ...turn, error: err instanceof Error ? err.message : String(err), status: "error" });
       painter.finish(turn);
+      playUiSound("error");
     } finally {
+      onPermission?.(chatId, null);
       painter.dispose();
       steerer.finish(chatId);
       runningRef.current.delete(chatId);
       setBusyFor(chatId, false);
+      // A turn may change effort without a slash command. Refresh once after
+      // its stream ends, even on cancellation or a later transport error.
+      if (sessionId && sessionIsCurrent(chatId, sessionId)) {
+        if (configChanged) void refreshChangedCatalog(chatId, sessionId).catch(() => undefined);
+        else if (settingsCommand && promptCompleted) void adoptCatalog(chatId).catch(() => undefined);
+      }
       void refreshStored();
       setTimeout(() => void refreshStored(), 2500);
       const next = takeQueuedPrompt(chatId);

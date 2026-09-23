@@ -80,7 +80,7 @@ pub fn extractCall(arena: Allocator, stmt: []const u8) !?Call {
     const call_src = afterOptionalAssign(trimmed) orelse return null;
     const open = std.mem.indexOfScalar(u8, call_src, '(') orelse return null;
     const name = std.mem.trim(u8, call_src[0..open], " \t");
-    if (!isIdent(name)) return null;
+    if (!isCallName(name)) return null;
     if (std.mem.eql(u8, name, "print")) return null;
     const close = lastParen(call_src) orelse return null;
     const inner = call_src[open + 1 .. close];
@@ -161,6 +161,17 @@ fn isIdent(s: []const u8) bool {
     if (!identStart(s[0])) return false;
     for (s[1..]) |c| if (!identCont(c)) return false;
     return true;
+}
+
+/// `name(...)` or Code Mode `tools.server.tool(...)` / `server.tool(...)`.
+/// Not a general dotted expression — two idents, optional `tools.` prefix.
+fn isCallName(s: []const u8) bool {
+    if (isIdent(s)) return true;
+    var rest = s;
+    if (std.mem.startsWith(u8, rest, "tools.")) rest = rest["tools.".len..];
+    const dot = std.mem.indexOfScalar(u8, rest, '.') orelse return false;
+    if (std.mem.indexOfScalar(u8, rest[dot + 1 ..], '.') != null) return false;
+    return isIdent(rest[0..dot]) and isIdent(rest[dot + 1 ..]);
 }
 
 fn identStart(c: u8) bool {
@@ -450,6 +461,9 @@ test "extractCall reads positional and keyword literals; print and names are ski
     const q = (try extractCall(a, "n = llm_query(\"summarize this chunk\")")).?;
     try std.testing.expectEqualStrings("llm_query", q.name);
     try std.testing.expectEqualStrings("{\"prompt\":\"summarize this chunk\"}", q.args_json);
+    const dotted = (try extractCall(a, "tools.deepwiki.ask_wiki_question(repoName=\"anomalyco/opencode\", question=\"how\")")).?;
+    try std.testing.expectEqualStrings("tools.deepwiki.ask_wiki_question", dotted.name);
+    try std.testing.expect(std.mem.indexOf(u8, dotted.args_json, "anomalyco/opencode") != null);
     try std.testing.expect(try extractCall(a, "print(x)") == null);
     try std.testing.expect(try extractCall(a, "read_file(path)") == null);
     try std.testing.expect(try extractCall(a, "# just a comment") == null);

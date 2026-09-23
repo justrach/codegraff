@@ -17,6 +17,10 @@ async function runSessionNavigation({ win, output }) {
   };
   const active = () => js(`Number(document.querySelector('[data-chat][data-focused="true"]').dataset.chat)`);
   const ids = () => js(`Array.from(document.querySelectorAll('[data-tab-id]'),e=>Number(e.dataset.tabId))`);
+  const shortcut = async (keyCode, modifiers) => {
+    for (const type of ['keyDown','keyUp']) await desktop.testInput(wc,{type,keyCode,modifiers});
+    await pause(80);
+  };
   const capture = async name => {
     await js('document.fonts.ready.then(()=>true)'); await pause(320);
     fs.writeFileSync(path.join(output,name+'.png'),(await wc.capturePage()).toPNG());
@@ -41,8 +45,25 @@ async function runSessionNavigation({ win, output }) {
   const drafted = await active();
   for (const keyCode of 'Keep this draft') await desktop.testInput(wc,{type:'char',keyCode});
   await click('[aria-label="Workspace navigation"] button[aria-label="New chat"]');
-  const last = await active(), before = await ids();
+  let last = await active(), before = await ids();
   assert.equal(before.length,3);
+  const first = before[0];
+  await click(`[data-tab-id="${drafted}"] button[aria-pressed]`);
+  await click(`[data-tab-id="${first}"] button[aria-pressed]`);
+  await click(`[data-tab-id="${first}"] button[aria-label="Close tab"]`);
+  await wait(`!document.querySelector('[data-tab-id="${first}"]')`);
+  assert.equal(await active(),drafted,'close control returns to the previously active chat');
+  await shortcut('t',['meta','shift']);
+  await wait(`document.querySelectorAll('[data-tab-id]').length===3`);
+  last = await active();
+  await click(`[data-tab-id="${drafted}"] button[aria-pressed]`);
+  await click(`[data-tab-id="${last}"] button[aria-pressed]`);
+  await shortcut('w',['meta']);
+  await wait(`!document.querySelector('[data-tab-id="${last}"]')`);
+  assert.equal(await active(),drafted,'Cmd+W returns to the previously active chat');
+  await shortcut('t',['meta','shift']);
+  await wait(`document.querySelectorAll('[data-tab-id]').length===3`);
+  last = await active(); before = await ids();
   await click(`[data-tab-id="${drafted}"] button[aria-pressed]`);
   assert.equal(await js(`document.querySelector('[data-chat="${drafted}"] textarea').value`),'Keep this draft');
   await capture('sidebar-open');

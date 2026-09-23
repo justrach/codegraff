@@ -1,44 +1,40 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-
 use anyhow::Context;
 use diesel::connection::SimpleConnection;
 use diesel::prelude::*;
 use diesel::sql_types::{BigInt, Nullable, Text};
 use diesel::{QueryableByName, RunQueryDsl, SqliteConnection, sql_query};
 use uuid::Uuid;
-
 #[path = "project_store_support.rs"]
 mod support;
 use support::*;
-
+#[path = "project_store_tasks.rs"]
+mod tasks;
+pub use tasks::TaskWorkspaceRecord;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegisteredWorkspaceKind {
     Project,
     ManagedChat,
 }
-
 #[derive(Debug, Clone)]
 pub struct RegisteredWorkspace {
     pub kind: RegisteredWorkspaceKind,
     pub path: PathBuf,
     pub display_name: Option<String>,
 }
-
 #[derive(Debug, Clone)]
 pub struct RegisteredWorkspaceMetadata {
     pub kind: RegisteredWorkspaceKind,
     pub display_name: Option<String>,
 }
-
 #[derive(Debug)]
 pub struct ProjectStore {
     db_path: PathBuf,
     managed_chats_root: PathBuf,
     connection_lock: Mutex<()>,
 }
-
 #[derive(Debug, Clone, QueryableByName)]
 pub struct SavedWorkspaceSummaryRecord {
     #[diesel(sql_type = Text)]
@@ -48,7 +44,6 @@ pub struct SavedWorkspaceSummaryRecord {
     #[diesel(sql_type = BigInt)]
     pub updated_at: i64,
 }
-
 #[derive(Debug, Clone, QueryableByName)]
 pub struct SavedWorkspaceRecord {
     #[diesel(sql_type = Text)]
@@ -60,7 +55,6 @@ pub struct SavedWorkspaceRecord {
     #[diesel(sql_type = BigInt)]
     pub updated_at: i64,
 }
-
 impl ProjectStore {
     pub fn new(db_path: PathBuf, managed_chats_root: PathBuf) -> anyhow::Result<Self> {
         let store = Self {
@@ -461,6 +455,7 @@ impl ProjectStore {
         })
     }
 
+
     fn init(&self) -> anyhow::Result<()> {
         if let Some(parent) = self.db_path.parent() {
             fs::create_dir_all(parent).with_context(|| {
@@ -503,6 +498,21 @@ impl ProjectStore {
                   layout_json TEXT NOT NULL,
                   updated_at INTEGER NOT NULL,
                   FOREIGN KEY(workspace_id) REFERENCES saved_workspaces(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS task_workspaces (
+                  path TEXT PRIMARY KEY,
+                  branch TEXT NOT NULL,
+                  base_branch TEXT NOT NULL,
+                  base_commit TEXT NOT NULL,
+                  setup_script TEXT,
+                  run_script TEXT,
+                  teardown_script TEXT,
+                  setup_ran INTEGER NOT NULL DEFAULT 0,
+                  setup_error TEXT,
+                  run_error TEXT,
+                  keep_reason TEXT,
+                  merged_back INTEGER NOT NULL DEFAULT 0
                 );
                 ",
             )?;

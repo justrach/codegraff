@@ -20,6 +20,8 @@ fn resetCost(io: Io) void {
     c.api_calls = 0;
     c.sub_calls = 0;
     c.unpriced_calls = 0;
+    c.missing_usage_calls = 0;
+    c.unreported_failed_attempts = 0;
 }
 
 fn renderCost(io: Io, buf: []u8) []const u8 {
@@ -81,7 +83,7 @@ test "usage/debug match the cost-tally renderer and add turn/decision extras" {
     var cost2_buf: [384]u8 = undefined;
     const cost2 = renderCost(io, &cost2_buf);
     try std.testing.expect(contains(cost2, "subscription"));
-    try std.testing.expect(contains(cost2, "unpriced"));
+    try std.testing.expect(contains(cost2, "unknown cost"));
 
     var usage2_buf: [512]u8 = undefined;
     var usage2_w: Io.Writer = .fixed(&usage2_buf);
@@ -170,4 +172,46 @@ test "live emit path fills HUD and OTLP like a real turn" {
     try std.testing.expect(contains(otlp, "prompt_length"));
     try std.testing.expect(!contains(otlp, "/Users/secret"));
     try std.testing.expect(!contains(otlp, "/etc/passwd"));
+}
+
+fn expectUncertainSurfaces(with_success: bool) !void {
+    const io = std.testing.io;
+    resetCost(io);
+    defer resetCost(io);
+    obs.reset();
+    defer obs.reset();
+    obs.attach(io);
+    pricing.g_cost.failedWithoutUsage(io, 1);
+    if (with_success) pricing.g_cost.add(io, .priced, "gpt-5.5", 1000, 200, 0, 50);
+
+    var expected_buf: [1024]u8 = undefined;
+    const expected = renderCost(io, &expected_buf);
+    try std.testing.expect(contains(expected, "known subtotal:"));
+    try std.testing.expect(contains(expected, "1 failed request attempt(s) without usage"));
+    const snapshot = pricing.g_cost.snap(io);
+    try std.testing.expectEqual(@as(u64, if (with_success) 1 else 0), snapshot.api_calls);
+    try std.testing.expectEqual(@as(u64, if (with_success) 50 else 0), snapshot.out_tokens);
+    if (with_success) try std.testing.expect(snapshot.usd > 0);
+
+    var repl_buf: [2048]u8 = undefined;
+    var repl: Io.Writer = .fixed(&repl_buf);
+    try @import("commands_misc.zig").renderSessionUsage(snapshot, &repl);
+    var usage_buf: [2048]u8 = undefined;
+    var usage: Io.Writer = .fixed(&usage_buf);
+    try obs.renderUsage(&usage);
+    var debug_buf: [4096]u8 = undefined;
+    var debug: Io.Writer = .fixed(&debug_buf);
+    try obs.renderHud(&debug);
+    for ([_][]const u8{ repl.buffered(), usage.buffered(), debug.buffered() }) |text| {
+        try std.testing.expect(contains(text, expected));
+        try std.testing.expect(!contains(text, "no API calls yet"));
+    }
+}
+
+test "usage surfaces preserve failed-only unknown accounting" {
+    try expectUncertainSurfaces(false);
+}
+
+test "usage surfaces preserve unknown attempts alongside known successful usage" {
+    try expectUncertainSurfaces(true);
 }

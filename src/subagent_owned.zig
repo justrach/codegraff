@@ -27,6 +27,10 @@ pub const Owned = struct {
         if (source.subagent_provider) |p| copy.subagent_provider = try self.provider(p);
         if (source.agent_cwd) |cwd| copy.agent_cwd = try a.dupe(u8, cwd);
         copy.tools_used = null;
+        copy.plan_read_owner = null;
+        copy.worker_family = try a.dupe(u8, source.worker_family);
+        copy.session_name = try a.dupe(u8, source.session_name);
+        if (source.worker_id) |id| copy.worker_id = try a.dupe(u8, id);
         if (source.approvals) |ap| {
             ap.mutex.lockUncancelable(source.io);
             defer ap.mutex.unlock(source.io);

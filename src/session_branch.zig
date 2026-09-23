@@ -8,6 +8,7 @@ const agent_mod = @import("agent.zig");
 const provider_mod = @import("provider.zig");
 const providers = @import("providers.zig");
 const session = @import("session.zig");
+const session_discovery = @import("session_discovery.zig");
 const http_headers = @import("http_headers.zig");
 const prompts = @import("prompts.zig");
 const goal_flow = @import("goal_flow.zig");
@@ -23,6 +24,9 @@ pub const Result = struct {
     source: []const u8,
     target: []const u8,
     branched: bool,
+    workspace: []const u8 = "",
+    entered: bool = false,
+    enter_failed: bool = false,
 };
 
 pub const Spec = struct { source: []const u8, branch: ?[]const u8 };
@@ -45,6 +49,7 @@ pub fn restore(root: *agent_mod.Agent, keys: *provider_mod.Keys, arena: Allocato
     const source = try arena.dupe(u8, source_raw);
     if (!session.validSessionName(source)) return Error.InvalidSessionName;
     const branch = if (branch_raw) |raw| try arena.dupe(u8, raw) else null;
+    const origin = session_discovery.enterOrigin(root, arena, source);
     var reserved_path: ?[]const u8 = null;
     if (branch) |dest| {
         if (!session.validSessionName(dest)) return Error.InvalidSessionName;
@@ -87,7 +92,14 @@ pub fn restore(root: *agent_mod.Agent, keys: *provider_mod.Keys, arena: Allocato
         root.pending_goal_note = goal_flow.reapplyFlagGoal(arena, root, g, util.unixMs(root.io)) catch null;
         prompts.pinStandingGoal(root, arena);
     }
-    return .{ .source = source, .target = root.session_name, .branched = branch != null };
+    return .{
+        .source = source,
+        .target = root.session_name,
+        .branched = branch != null,
+        .workspace = origin.workspace,
+        .entered = origin.kind == .entered,
+        .enter_failed = origin.kind == .failed,
+    };
 }
 
 test "--model outranks the model a resumed session saved" {

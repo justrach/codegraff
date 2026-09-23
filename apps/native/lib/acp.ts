@@ -1,3 +1,4 @@
+import { parseAcpUsage } from "./acp-usage";
 import { htmlArtifactId } from "./html-artifacts";
 import { parseContextMeter } from "./context-meter";
 import { boundToolDetail } from "./tool-detail";
@@ -40,6 +41,7 @@ export type AcpUpdate =
   | { sessionUpdate: string; [key: string]: unknown };
 
 export type JsonRpcLine =
+  | { jsonrpc?: string; method: "_codegraff/usage"; params: { sessionId: string; usage: Record<string, unknown> } }
   | { jsonrpc?: string; method: "session/update"; params: { sessionId?: string; update: AcpUpdate } }
   | { jsonrpc?: string; id: number | string; result: unknown }
   | { jsonrpc?: string; id: number | string; error: { code: number; message: string } };
@@ -168,7 +170,8 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
         ? "error"
         : "running"
     : (prev?.status ?? "running");
-  const rawInput = update.rawInput && typeof update.rawInput === "object" ? update.rawInput : {};
+  const hasInput = !!update.rawInput && typeof update.rawInput === "object";
+  const rawInput = hasInput ? update.rawInput! : {};
   // codedbpro-style tools say `file`, catalog tools say `path`.
   const path =
     typeof rawInput.path === "string"
@@ -176,17 +179,17 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
       : typeof rawInput.file === "string"
         ? rawInput.file
         : prev?.path;
-  const contentItems = "content" in update && Array.isArray(update.content) ? update.content : [];
+  const hasContent = "content" in update && Array.isArray(update.content);
+  const contentItems = hasContent ? update.content! : [];
   const contentText = contentItems
     .map((item) => item.content?.text)
     .filter((t): t is string => typeof t === "string")
     .join("\n");
-  const fromInput = detailFromInput(rawInput);
-  const detail = contentText
-    ? [...(prev?.detail ?? fromInput), { text: contentText }]
-    : fromInput.length
-      ? fromInput
-      : (prev?.detail ?? []);
+  const inputDetail = hasInput ? boundToolDetail(detailFromInput(rawInput)) : (prev?.acpDetail?.input ?? []);
+  const contentDetail = hasContent
+    ? boundToolDetail(contentText ? [{ text: contentText }] : [])
+    : (prev?.acpDetail?.content ?? (prev && !prev.acpDetail ? prev.detail : []));
+  const detail = [...inputDetail, ...contentDetail];
   const mcp = mcpParts(title);
   const label = prev && !kind ? prev.name : labelForKind(kind, title);
   const command = typeof rawInput.command === "string" ? firstLine(rawInput.command) : undefined;
@@ -201,6 +204,7 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
     chip: chipRaw === label || humanize(chipRaw) === label ? "" : chipRaw,
     status,
     detail: boundToolDetail(detail),
+    acpDetail: { input: inputDetail, content: contentDetail },
     mcpAppId: mcpAppId(contentText) ?? prev?.mcpAppId,
     htmlArtifactId: htmlArtifactId(contentText) ?? prev?.htmlArtifactId,
     htmlArtifactTool: !!htmlPreview,
@@ -227,7 +231,7 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
     pendingBreak: turn.text.length > 0 ? true : turn.pendingBreak,
     status: status === "running" || turn.status === "thinking" || turn.status === "ask" ? "streaming" : turn.status,
   };
-  if ((merged.icon === "write" || kind === "edit") && (status === "ok" || status === "error")) {
+  if ((merged.icon === "write" || kind === "edit") && status === "ok") {
     return { ...next, diffs: mergeDiff(next, merged, contentText) };
   }
   return next;
@@ -273,6 +277,7 @@ export function turnBlocks(text: string, tools: ToolRow[]): TurnBlock[] {
 export function applyAcpUpdate(turn: AssistantTurn, update: AcpUpdate): AssistantTurn {
   turn = { ...turn, lastUpdateAt: Date.now(), activityKind: update.sessionUpdate, connected: true };
   switch (update.sessionUpdate) {
+    case "gui_usage": return { ...turn, usage: parseAcpUsage(update), costUsd: undefined };
     case "gui_context_meter": return { ...turn, contextMeter: parseContextMeter(update) };
     case "gui_turn_end": return { ...turn, stopReason: typeof update.stopReason === "string" ? update.stopReason : "end_turn" };
     case "agent_thought_chunk": {
@@ -287,7 +292,7 @@ export function applyAcpUpdate(turn: AssistantTurn, update: AcpUpdate): Assistan
       const text = stripCiteMarkup((update as { content?: AcpContent }).content?.text ?? "");
       const retry = transientRetryNotice(text);
       if (retry) {
-        return { ...turn, text: "", pendingBreak: false, status: "streaming", retryNotice: retry };
+        return { ...turn, text: retry.startsWith("network error:") ? turn.text : "", pendingBreak: false, status: "streaming", retryNotice: retry };
       }
       const needsBreak = turn.pendingBreak && turn.text.length > 0 && !/\s$/.test(turn.text) && !/^\s/.test(text);
       return {

@@ -55,7 +55,7 @@ fn parseMins(v: []const u8) ?u64 {
 }
 
 /// The one dim chrome line at the warn threshold.
-pub fn warnLine(buf: []u8, id: u32, idle_ms: u64, stop_ms: u64, cmd: []const u8) []const u8 {
+pub fn warnLine(buf: []u8, id: u64, idle_ms: u64, stop_ms: u64, cmd: []const u8) []const u8 {
     var a: [16]u8 = undefined;
     var b: [16]u8 = undefined;
     return std.fmt.bufPrint(buf, "· job {d} idle {s} ({s}) · stops after {s} idle · /jobs keep {d} pins it", .{
@@ -64,14 +64,14 @@ pub fn warnLine(buf: []u8, id: u32, idle_ms: u64, stop_ms: u64, cmd: []const u8)
 }
 
 /// Pump thread: paint the warn line (hosted sink or line-REPL stdout).
-pub fn warn(io: Io, id: u32, idle_ms: u64, cmd: []const u8) void {
+pub fn warn(io: Io, id: u64, idle_ms: u64, cmd: []const u8) void {
     var buf: [160]u8 = undefined;
     const line = warnLine(&buf, id, idle_ms, policy.stop_ms, cmd);
     if (line.len > 0) tool_pulse.emitNotice(io, "{s}", .{line});
 }
 
 /// The bash_output status line for a job the policy stopped.
-pub fn printStopped(w: *Io.Writer, id: u32, stop_ms: u64) !void {
+pub fn printStopped(w: *Io.Writer, id: u64, stop_ms: u64) !void {
     var b: [16]u8 = undefined;
     try w.print("[job {d}: stopped after {s} with no output and no reads — rerun it if it is still needed; the user pins a long-lived server with /jobs keep {d}]", .{ id, tool_pulse.formatElapsed(&b, stop_ms), id });
 }

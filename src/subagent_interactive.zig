@@ -1,5 +1,6 @@
-//! Interactive parents yield after delegation; children own the work until a
-//! completion wake or a new user turn. No cancellation signal is involved.
+//! Prompt-based interactive parents may yield after delegation and wake on
+//! completion. Explicit positive waits instead honor agent_output's joined
+//! completion contract, including cancellation.
 const std = @import("std");
 const tools = @import("tools.zig");
 const subagent = @import("subagent.zig");
@@ -26,14 +27,28 @@ pub fn configure(on: bool) void {
 }
 
 pub fn request(ctx: tools.ToolCtx) void {
-    if (ctx.interactive_children and !ctx.from_sub) requested.store(true, .release);
+    if (ctx.interactive_children and !ctx.from_sub) armYield();
+}
+
+/// The next model request will be replaced by the yield notice. Job completion
+/// must stay queued for the idle auto-turn instead of landing in a turn that
+/// is about to return without another model call (#1154).
+/// Unattended sessions (ACP, one-shot) have no prompt to hand back. Yielding
+/// there ends the turn before the model's next tool.
+pub fn armYield() void {
+    if (@import("main.zig").unattended) return;
+    if (enabled.load(.acquire)) requested.store(true, .release);
+}
+
+pub fn yieldPending() bool {
+    return enabled.load(.acquire) and requested.load(.acquire);
 }
 
 pub fn beforeRequest(root: anytype) !?[]const u8 {
     if (root.sub or !enabled.load(.acquire)) return null;
     yielded = requested.swap(false, .acq_rel);
     if (!yielded) return null;
-    const text = "Subagents launched; their work continues separately. You can keep using the prompt; completed results will be surfaced automatically.";
+    const text = "Background work continues separately. You can keep using the prompt; completed shell jobs and subagents will be surfaced automatically.";
     return try root.arena.dupe(u8, text);
 }
 
@@ -75,11 +90,27 @@ pub fn rename(io: std.Io, old: []const u8, new: []const u8) void {
 }
 
 pub fn output(ctx: tools.ToolCtx, id: u32, wait_ms: u64) !tools.ToolOutput {
-    if (!ctx.interactive_children or ctx.from_sub) return subagent.agentOutput(ctx.gpa, ctx.io, id, wait_ms);
+    // A positive wait is an explicit completion wait (ADR 0010), including
+    // ACP/TUI roots. Only a zero-wait snapshot should park the interactive
+    // parent and arrange a later wake; ignoring wait_ms spends model turns
+    // polling a still-running child.
+    if (!ctx.interactive_children or ctx.from_sub or wait_ms > 0) return subagent.agentOutput(ctx.gpa, ctx.io, id, wait_ms);
     const result = try subagent.agentOutput(ctx.gpa, ctx.io, id, 0);
     const registry = &subagent.g_agent_jobs;
     registry.mutex.lockUncancelable(ctx.io);
     defer registry.mutex.unlock(ctx.io);
     if (registry.find(id)) |job| if (!job.done) request(ctx);
     return result;
+}
+
+test "beforeRequest yields so parked shell jobs free the prompt" {
+    configure(true);
+    defer configure(false);
+    requested.store(true, .release);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const Fake = struct { sub: bool = false, arena: std.mem.Allocator };
+    const text = (try beforeRequest(Fake{ .arena = arena_state.allocator() })) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, text, "keep using the prompt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "shell jobs") != null);
 }

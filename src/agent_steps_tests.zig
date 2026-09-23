@@ -4,6 +4,94 @@
 const std = @import("std");
 const Agent = @import("agent.zig").Agent;
 
+fn streamedCalls(arena: std.mem.Allocator, body: []const u8) !std.json.Array {
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = arena,
+        .io = undefined,
+        .client = undefined,
+        .provider = undefined,
+        .messages = undefined,
+        .sub = false,
+        .label = "test",
+        .out = null,
+    };
+    const root = (try agent.assembleOpenAI(body)).?;
+    return root.get("choices").?.array.items[0].object.get("message").?.object.get("tool_calls").?.array;
+}
+
+test "same-index fresh IDs retain complete replacement after incomplete read_file" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const calls = try streamedCalls(
+        arena,
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"old\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\": \"}}]}}]}\n" ++
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"new\",\"function\":{\"name\":\"rlm\",\"arguments\":\"{\\\"code\\\":\\\"print(1)\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n",
+    );
+    try std.testing.expectEqual(@as(usize, 2), calls.items.len);
+    const first = calls.items[0].object;
+    const second = calls.items[1].object;
+    try std.testing.expectEqualStrings("old", first.get("id").?.string);
+    try std.testing.expectEqualStrings("new", second.get("id").?.string);
+    const args = @import("tool_call_args.zig");
+    try std.testing.expect(!args.parse(arena, first.get("function").?.object.get("arguments").?.string).valid);
+    const clean = args.parse(arena, second.get("function").?.object.get("arguments").?.string);
+    try std.testing.expect(clean.valid);
+    try std.testing.expectEqualStrings("print(1)", clean.input.object.get("code").?.string);
+}
+
+test "same-index complete calls preserve both; repeated ID fragments and indexes interleave" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const calls = try streamedCalls(
+        arena,
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"a\"}}]}}]}\n" ++
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"b\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"b\\\"}\"}}]}}]}\n" ++
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"arguments\":\"\\\"}\"}}]}}]}\n" ++
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"c\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n",
+    );
+    try std.testing.expectEqual(@as(usize, 3), calls.items.len);
+    const expected = [_][]const u8{ "a", "b", "c" };
+    for (calls.items, expected) |call, id| {
+        try std.testing.expectEqualStrings(id, call.object.get("id").?.string);
+        const parsed = @import("tool_call_args.zig").parse(arena, call.object.get("function").?.object.get("arguments").?.string);
+        try std.testing.expect(parsed.valid);
+        try std.testing.expectEqualStrings(id, parsed.input.object.get("path").?.string);
+    }
+}
+
+test "empty first call is guarded when a fresh ID restarts the index" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const calls = try streamedCalls(
+        arena,
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"old\",\"function\":{\"name\":\"read_file\"}}]}}]}\n" ++
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"new\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"next.txt\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n",
+    );
+    try std.testing.expectEqual(@as(usize, 2), calls.items.len);
+    const parse = @import("tool_call_args.zig").parse;
+    try std.testing.expect(!parse(arena, calls.items[0].object.get("function").?.object.get("arguments").?.string).valid);
+    const next = parse(arena, calls.items[1].object.get("function").?.object.get("arguments").?.string);
+    try std.testing.expect(next.valid);
+    try std.testing.expectEqualStrings("next.txt", next.input.object.get("path").?.string);
+}
+
+test "same ID with contradictory function names remains non-executable" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const calls = try streamedCalls(
+        arena,
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"a\\\"}\"}}]}}]}\n" ++
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"shell\"}}]},\"finish_reason\":\"tool_calls\"}]}\n",
+    );
+    try std.testing.expectEqual(@as(usize, 1), calls.items.len);
+    try std.testing.expect(!@import("tool_call_args.zig").parse(arena, calls.items[0].object.get("function").?.object.get("arguments").?.string).valid);
+}
+
 test "assembleOpenAI preserves streamed reasoning and Gemini echo fields" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();

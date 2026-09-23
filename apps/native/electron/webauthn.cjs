@@ -60,7 +60,7 @@ async function showPasskeyHelp({ window, browser, dialog, shell, configured }) {
   } catch { /* No active web page. */ }
   const { response } = await dialog.showMessageBox(window, {
     type: 'info', title: 'Browser passkeys', message: 'Having trouble signing in with a passkey?',
-    detail: `${configured ? 'This signed app is configured for device-bound Touch ID passkeys on supported Macs.' : 'Touch ID passkeys are not configured in this build. Use a signed distribution on a supported Mac.'} Existing iCloud Keychain passkeys are not available here. Use the site’s password or another sign-in method, or open the page in your default browser. Signing in there does not sign you in here.`,
+    detail: `${configured ? 'This signed app is configured for device-bound Touch ID passkeys on supported Macs.' : 'Touch ID passkeys are unavailable in this build.'} Existing iCloud Keychain passkeys are not available here. Use the site’s password or another sign-in method, or open the page in your default browser. Signing in there does not sign you in here.`,
     buttons: url ? ['Close', 'Open page in default browser'] : ['Close'], defaultId: 0, cancelId: 0, noLink: true,
   });
   if (response === 1 && url && !window.isDestroyed()) await shell.openExternal(url);

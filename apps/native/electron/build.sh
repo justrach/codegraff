@@ -25,6 +25,12 @@ elif [[ ! -x "$root/zig-out/bin/graff" ]]; then
   echo "No built graff executable to reuse. Run without GRAFF_REUSE_ENGINE." >&2
   exit 1
 fi
+if [[ "$(uname -s)" == "Linux" ]]; then
+  # shellcheck disable=SC1091
+  source "$here/build-linux.sh"
+  stage_linux_app
+  exit 0
+fi
 mkdir -p "$out"
 # This directory is an isolated build artifact, never the installed application.
 rm -rf "$bundle"
@@ -38,6 +44,8 @@ printf '{"name":"codegraff","productName":"%s","version":"%s","main":"main.cjs"}
 ditto "$ui/.next/standalone" "$resources/ui"
 ditto "$ui/.next/static" "$resources/ui/.next/static"
 [[ ! -d "$ui/public" ]] || ditto "$ui/public" "$resources/ui/public"
+cp "$ui/THIRD_PARTY_NOTICES.md" "$resources/THIRD_PARTY_NOTICES.md"
+ditto "$ui/third-party" "$resources/third-party"
 bun "$here/prepare-bundle.cjs" "$resources/ui"
 rm -rf "$resources/ui/node_modules/@img"
 cp "$(command -v bun)" "$resources/bun"
@@ -54,8 +62,16 @@ xcrun clang -O2 -bundle -undefined dynamic_lookup -mmacosx-version-min=14.0 \
 bun "$here/check-native-symbols.cjs" "$resources/native"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $bundle_id" "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName $app_name" "$bundle/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $version" "$bundle/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$bundle/Contents/Info.plist"
+plist_version="$version"
+plist_build="$version"
+if [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(\.[0-9]+)?-beta\.([0-9]+)\.([0-9]+)$ ]]; then
+  # Apple bundle fields are numeric; the full beta version remains in the
+  # packaged app metadata and CLI binary.
+  plist_version="${BASH_REMATCH[1]}"
+  plist_build="${BASH_REMATCH[3]}.${BASH_REMATCH[4]}"
+fi
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $plist_build" "$bundle/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $plist_version" "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :LSMinimumSystemVersion 14.0' "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $app_name" "$bundle/Contents/Info.plist" 2>/dev/null || true
 macos="$bundle/Contents/MacOS"

@@ -14,7 +14,7 @@ pub const Result = union(enum) {
 
 pub fn classify(r: runner.CappedRun) Result {
     if (r.timed_out) return .{ .failed = .timeout };
-    if (r.cancelled) return .{ .failed = .unavailable };
+    if (r.cancelled) return .{ .failed = .cancelled };
     if (!runner.ranOk(r)) {
         // Only the system's explicit Apple Event denial code warrants a
         // permission category. Never show raw stderr (it may contain paths).
@@ -32,4 +32,40 @@ pub fn classify(r: runner.CappedRun) Result {
             return .{ .image = flavor };
     }
     return .{ .failed = .extract };
+}
+
+test "#1146 helper-exit and cancel stay distinct" {
+    var empty: [0]u8 = .{};
+    var helper = "helper crashed".*;
+    var denied = "err (-1743)".*;
+    const cancel = classify(.{
+        .term = .{ .exited = 0 },
+        .stdout = &empty,
+        .stderr = &empty,
+        .stdout_truncated = false,
+        .stderr_truncated = false,
+        .timed_out = false,
+        .cancelled = true,
+    });
+    const helper_exit = classify(.{
+        .term = .{ .exited = 1 },
+        .stdout = &empty,
+        .stderr = &helper,
+        .stdout_truncated = false,
+        .stderr_truncated = false,
+        .timed_out = false,
+        .cancelled = false,
+    });
+    const apple = classify(.{
+        .term = .{ .exited = 1 },
+        .stdout = &empty,
+        .stderr = &denied,
+        .stdout_truncated = false,
+        .stderr_truncated = false,
+        .timed_out = false,
+        .cancelled = false,
+    });
+    try std.testing.expectEqual(clip.FailKind.cancelled, cancel.failed);
+    try std.testing.expectEqual(clip.FailKind.unavailable, helper_exit.failed);
+    try std.testing.expectEqual(clip.FailKind.denied, apple.failed);
 }

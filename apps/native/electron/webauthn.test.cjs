@@ -90,7 +90,7 @@ test('fallback explains credential limitations and opens only after explicit con
         dialog: { showMessageBox: async (_parent, options) => {
           assert.match(options.detail, /iCloud Keychain passkeys are not available/);
           assert.match(options.detail, /Signing in there does not sign you in here/);
-          assert.match(options.detail, configured ? /device-bound/ : /not configured/);
+          assert.match(options.detail, configured ? /device-bound/ : /unavailable in this build/);
           return { response };
         } }, shell: { openExternal: async url => opened.push(url) },
       });

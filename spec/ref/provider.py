@@ -37,7 +37,7 @@ SPECS: list[dict] = [
     row("openai", "responses", "bearer"),
     row("google", "interactions", "goog_api_key", catalog="openai", takes_effort=True),
     row("minimax", "anthropic", "bearer"),
-    row("xiaomi", "openai", "bearer"),
+    row("xiaomi", "openai", "bearer", catalog="openai"),
     row("kilo", "openai", "bearer"),
     row("groq", "openai", "bearer"),
     row("cerebras", "openai", "bearer", catalog="openai", takes_effort=True),

@@ -72,20 +72,21 @@ permission UI and release updater are follow-up distribution work.
 
 ## Browser passkeys
 
-Developer ID signing writes the Touch ID keychain group into both the main app's
-entitlements and `Contents/Resources/webauthn.json`. Startup configures Electron
-from that signed resource before creating browser pages. The group uses the
-signing team and bundle identifier; keep both stable across releases so existing
-credentials remain accessible. If the signing identity is a certificate hash,
-set `GRAFF_SIGN_TEAM_ID` to its ten-character Apple team identifier.
+Touch ID passkeys are optional in Developer ID distributions. Set
+`GRAFF_WEBAUTHN_PROFILE` to enable them: the signer validates the macOS profile
+for the signing team and actual bundle identifier, then embeds it and adds the
+authorized application identifier and keychain group to the main app. It also
+writes the group to signed `Contents/Resources/webauthn.json`, which configures
+Electron before browser creation. Keep the team and bundle identifier stable
+across releases so existing device credentials remain accessible. If the
+signing identity is a certificate hash, set `GRAFF_SIGN_TEAM_ID` to its
+ten-character Apple team identifier.
 
-Signing also requires `GRAFF_WEBAUTHN_PROFILE`: a valid macOS provisioning profile
-for that signing certificate/team and bundle identifier, authorizing the
-`keychain-access-groups` value (an authorized team wildcard is also accepted).
-The signer checks its platform, expiration, app identifier and group, then embeds
-it and supplies the matching `com.apple.application-identifier`. A bare keychain
-entitlement without an authorizing profile can pass signature verification but
-be rejected by macOS at launch. Do not omit this provisioning step.
+Without `GRAFF_WEBAUTHN_PROFILE`, the signer removes any stale embedded profile
+and passkey resource and omits their restricted entitlements. The app can still
+be signed and notarized, but in-app Touch ID passkeys are unavailable. A
+provided profile must authorize the group (a team wildcard is accepted); an
+invalid one fails signing rather than falling back to this mode.
 
 On supported Macs, this enables device-bound Touch ID credentials created in
 Codegraff's persistent browser partition. It does **not** expose existing iCloud
@@ -197,20 +198,26 @@ score. Chromium chooses its supported GPU backend; no forced driver flags or
 custom Metal pipeline are needed for the current DOM-based interface.
 See [repeatable performance scenarios](VISUAL-TESTS.md) for the model-free runner.
 
+## Linux desktop
+
+`build.sh` on Linux writes an unpacked app at `zig-out/electron/codegraff`, a `.deb`, and an AppImage when `appimagetool` is installed. Launch with `codegraff` in that directory. The window uses system decorations. The terminal helper is a POSIX PTY. macOS activity, Liquid Glass, and computer use stay out of the bundle. The launcher uses the setuid sandbox helper when the deb install sets it, a user namespace when `unshare --user` works, and `--no-sandbox` otherwise so the app still opens.
+
 ## Building a distribution disk image
 
 `build.sh` produces a development app with a local signature. For public downloads,
-run `distribute.sh` with a Developer ID Application identity, an authorizing
-macOS provisioning profile (see Browser passkeys above), and a `notarytool`
-keychain profile. Bun installs the pinned Electron signing utility with the other
-development dependencies.
+run `distribute.sh` with a Developer ID Application identity and a `notarytool`
+keychain profile. Add `GRAFF_WEBAUTHN_PROFILE` only when enabling in-app Touch ID
+passkeys (see Browser passkeys above). Bun installs the pinned Electron signing
+utility with the other development dependencies.
 
 ```sh
 GRAFF_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 GRAFF_NOTARY_PROFILE="notary-local" \
-GRAFF_WEBAUTHN_PROFILE="signing/Codegraff.provisionprofile" \
 bash apps/native/electron/distribute.sh zig-out/electron/Codegraff.app zig-out/distribution
 ```
+
+For a passkey-enabled build, set `GRAFF_WEBAUTHN_PROFILE` to an authorizing
+profile when running the same command.
 
 The command signs nested executables, notarizes and staples the app, creates the
 Finder drag-to-Applications layout, then signs, notarizes and staples the DMG.
@@ -246,3 +253,42 @@ are attached. Every latest stable release must carry `latest-mac.yml` and its
 versioned ZIP alongside the DMG; a CLI-only latest release cannot serve a desktop
 update. Publish the complete release atomically. Versions older than the first
 updater-enabled release need one manual DMG installation.
+
+The tag workflow also builds this tree on Linux and uploads the unsigned
+package next to the CLI tarballs:
+
+```sh
+GRAFF_VERSION=VERSION bash apps/native/electron/build.sh
+bash apps/native/electron/publish-linux.sh vVERSION zig-out/electron
+```
+
+That attaches `Codegraff-linux-amd64.deb` (or `arm64`) and
+`Codegraff-linux-<arch>-SHA256SUMS`. An AppImage is included when
+`appimagetool` was on `PATH` during the build. There is no notarization step
+on Linux; the upload is the unsigned `.deb` `build.sh` wrote. A development
+bundle (`GRAFF_DEV=1`) is not a release asset.
+
+## Beta builds
+
+Every push to the newest numeric `release/v...` branch starts the beta workflow.
+The prerelease tag includes the branch version, workflow run number and attempt
+(for example `v0.0.302.4-beta.20.1`). CI publishes CLI tarballs and an unsigned
+Linux desktop package to a GitHub prerelease. The macOS job saves its built
+`Codegraff.app` as a short-lived workflow artifact for signing. It is not a
+download in the prerelease until a configured Mac signs and notarizes it.
+The beta CLI has no `install.sh` asset: download the tarball from its specific
+prerelease, since the general installer selects the latest stable release.
+
+On that Mac, download and extract the matching `beta-macos-build` workflow
+artifact. With the same signing environment used for stable releases, run:
+
+```sh
+GRAFF_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+GRAFF_NOTARY_PROFILE="notary-local" \
+bash apps/native/electron/distribute.sh Codegraff.app zig-out/beta-distribution
+bash apps/native/electron/publish-beta-macos.sh vVERSION-beta.RUN.ATTEMPT zig-out/beta-distribution
+```
+
+The beta DMG receives the same signing, notarization and Gatekeeper checks as
+stable releases. Beta apps carry no stable update feed, and beta releases never
+become GitHub's stable Latest release. Install a later release manually.

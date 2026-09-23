@@ -1,5 +1,6 @@
 /** Park an idle `graff acp` child after a quiet period. Off by default:
- *  an open GUI tab keeps its worker. Set `GRAFF_ACP_IDLE_MS` to shed it;
+ *  an open GUI tab keeps its worker so a background command can still
+ *  resume the turn when it exits. Set `GRAFF_ACP_IDLE_MS` to shed it;
  *  the session file stays on disk and the next bootstrap uses `--resume`.
  *
  *  Do not park while a prompt, session/idle subscriber, or other busy

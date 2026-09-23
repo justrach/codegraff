@@ -32,6 +32,14 @@ pub fn run(ctx: ToolCtx, args_json: []const u8) ToolOutput {
     if (prompt.len == 0) {
         return .{ .text = ctx.gpa.dupe(u8, "rlm: llm_query prompt is empty") catch &.{}, .is_error = true };
     }
+    var permit: ?@import("run_budget.zig").Permit = null;
+    if (ctx.run_budget) |budget| {
+        permit = budget.acquire(ctx.io, ctx.depth, .child) catch |err| return .{
+            .text = std.fmt.allocPrint(ctx.gpa, "rlm: llm_query refused: {s}", .{@errorName(err)}) catch unreachable,
+            .is_error = true,
+        };
+    }
+    defer if (permit) |*p| p.release();
     const body = buildBody(ctx.gpa, ctx.provider, prompt) catch {
         return .{ .text = ctx.gpa.dupe(u8, "rlm: llm_query could not build request") catch &.{}, .is_error = true };
     };
@@ -156,4 +164,18 @@ test "llm_query extract reads assistant text from each wire shape" {
     defer gpa.free(out_r.text);
     try std.testing.expect(!out_r.is_error);
     try std.testing.expectEqualStrings("ok", out_r.text);
+}
+
+test "llm_query cannot bypass exhausted aggregate model budget" {
+    const a = std.testing.allocator;
+    var client: std.http.Client = .{ .allocator = a, .io = std.testing.io };
+    defer client.deinit();
+    var budget: @import("run_budget.zig").RunBudget = .{ .max_model_calls = 1 };
+    var first = try budget.acquire(std.testing.io, 0, .root);
+    first.release();
+    const out = run(.{ .gpa = a, .io = std.testing.io, .client = &client, .provider = undefined, .registry = null, .from_sub = true, .approvals = null, .tracer = null, .run_budget = &budget }, "{\"prompt\":\"never contact a provider\"}");
+    defer a.free(out.text);
+    try std.testing.expect(out.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, out.text, "RunBudgetExhausted") != null);
+    try std.testing.expectEqual(@as(u64, 1), budget.used());
 }

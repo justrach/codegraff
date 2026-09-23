@@ -1,3 +1,5 @@
+import { usageUpdate } from "./acp-usage";
+import { permissionRequest } from "./acp-permission";
 import { parseRpcLine, type AcpCommand, type AcpUpdate, type JsonRpcLine } from "./acp";
 import { liveAppearanceTokens } from "./appearance-note";
 import { readAnswerResponse, validateAnswer } from "./ask-answer";
@@ -117,6 +119,10 @@ export async function* prompt(
   }, true);
   let terminal = false;
   for await (const line of ndjson(res)) {
+    const usage = usageUpdate(line, sessionId);
+    if (usage) { yield usage; continue; }
+    const permission = permissionRequest(line);
+    if (permission) { yield { sessionUpdate: "gui_permission", permission }; continue; }
     if ("method" in line && line.method === "session/update") {
       yield line.params.update;
       continue;
@@ -151,6 +157,10 @@ export async function* idleUpdates(
     throw new Error(`ACP session/idle → ${res.status}: ${detail.slice(0, 240)}`);
   }
   for await (const line of ndjson(res)) {
+    const usage = usageUpdate(line, sessionId);
+    if (usage) { yield usage; continue; }
+    const permission = permissionRequest(line);
+    if (permission) { yield { sessionUpdate: "gui_permission", permission }; continue; }
     if ("method" in line && line.method === "session/update") yield line.params.update;
   }
 }
@@ -231,6 +241,8 @@ type GraffModelsResult = {
     authenticated: boolean;
     cost: string;
     current: boolean;
+    effortLevels?: string[];
+    fastSupported?: boolean;
   }[];
   current?: { model: string; provider: string; effort?: string; fast?: boolean; effortLevels?: string[]; fastSupported?: boolean };
   commands?: AcpCommand[];
@@ -239,9 +251,9 @@ type GraffModelsResult = {
 /** The models THIS install can reach: `graff/models` filtered to providers
  * with live credentials, already in the agent's election order. The same
  * model name can be served by several providers; the highest-ranked seat
- * wins its row (spawn-by-name resolves through graff's own routing anyway). */
-export async function fetchModels(chat?: ChatHandle, root?: string): Promise<{ models: ModelChoice[]; current: string | null; commands?: AcpCommand[] }> {
-  const res = chat ? await rpc(chat, "graff/models") : await fetch(`/api/models?${new URLSearchParams(root ? { root } : {})}`, { cache: "no-store" });
+ * wins its row, and the desktop passes that row's provider at worker startup. */
+export async function fetchModels(chat?: ChatHandle, root?: string, refresh = true): Promise<{ models: ModelChoice[]; current: string | null; commands?: AcpCommand[] }> {
+  const res = chat ? await rpc(chat, "graff/models", { refresh }) : await fetch(`/api/models?${new URLSearchParams(root ? { root } : {})}`, { cache: "no-store" });
   const body = (await res.json()) as { result?: GraffModelsResult; error?: string };
   if (!body.result) throw new Error(body.error ?? "graff/models failed");
   return modelChoices(body.result);
@@ -261,6 +273,8 @@ export function modelChoices(result: GraffModelsResult): { models: ModelChoice[]
       context: m.context,
       cost: m.cost,
       current: m.current,
+      effortLevels: m.effortLevels,
+      fastSupported: m.fastSupported,
     });
   }
   const current = result.current;

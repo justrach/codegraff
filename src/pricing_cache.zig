@@ -12,7 +12,7 @@ pub fn usdForUsage(p: anytype, model: []const u8, ordinary_in: i64, cache_in: i6
     const prompt: u64 = @as(u64, @intCast(ui)) +| @as(u64, @intCast(ci)) +| @as(u64, @intCast(wi));
     const high = p.high_at > 0 and prompt >= p.high_at;
     const input_rate = if (high) p.high_in else p.in;
-    const write_multiplier: f64 = if (std.mem.startsWith(u8, model, "gpt-5.6") or std.mem.startsWith(u8, model, "claude-")) 1.25 else 1.0;
+    const write_multiplier: f64 = p.cache_write_multiplier orelse if (std.mem.startsWith(u8, model, "gpt-5.6") or std.mem.startsWith(u8, model, "gpt-6-") or std.mem.startsWith(u8, model, "claude-")) 1.25 else 1.0;
     const fi: f64 = @floatFromInt(ui);
     const fc: f64 = @floatFromInt(ci);
     const fw: f64 = @floatFromInt(wi);

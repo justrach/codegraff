@@ -80,6 +80,7 @@ test "create: two task workspaces get distinct checkouts and index.lock paths" {
     const two = try ws.create(a, io, ar, .{ .slug = "agent-two", .cwd = root });
     try std.testing.expect(!std.mem.eql(u8, one.path, two.path));
     try std.testing.expect(!std.mem.eql(u8, one.branch, two.branch));
+    try std.testing.expectEqualStrings("main", @import("worktree_base.zig").read(a, io, ar, root, one.branch));
     const git_one = ws.gitDirAt(a, io, ar, one.path);
     const git_two = ws.gitDirAt(a, io, ar, two.path);
     try std.testing.expect(git_one.len > 0 and git_two.len > 0);
@@ -237,6 +238,38 @@ test "archive: keeps dirty and unique-commit trees, removes a clean duplicate" {
     const dropped = try ws.archive(a, io, ar, root, "clean");
     try std.testing.expect(dropped.removed);
     try std.testing.expectEqual(agent_worktree.KeepReason.removed, dropped.reason);
+}
+
+test "update: merges new main commits into a clean workspace" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(tmp_root);
+    const root = try std.fmt.allocPrint(a, "{s}/repo", .{tmp_root});
+    defer a.free(root);
+    try Io.Dir.cwd().createDirPath(io, root);
+    try git(io, a, &.{ "init", "-q", "-b", "main", root });
+    try git(io, a, &.{ "-C", root, "config", "user.email", "t@t" });
+    try git(io, a, &.{ "-C", root, "config", "user.name", "t" });
+    const tracked = try std.fs.path.join(a, &.{ root, "f" });
+    defer a.free(tracked);
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = tracked, .data = "old\n" });
+    try git(io, a, &.{ "-C", root, "add", "f" });
+    try git(io, a, &.{ "-C", root, "commit", "-m", "old" });
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const ar = arena.allocator();
+    const wt = try ws.create(a, io, ar, .{ .slug = "behind", .cwd = root });
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = tracked, .data = "new\n" });
+    try git(io, a, &.{ "-C", root, "add", "f" });
+    try git(io, a, &.{ "-C", root, "commit", "-m", "new" });
+    _ = try ws.update(a, io, ar, root, "behind");
+    const got = try Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(ar, &.{ wt.path, "f" }), a, .limited(64));
+    defer a.free(got);
+    try std.testing.expectEqualStrings("new\n", got);
 }
 
 fn headAt(io: Io, a: Allocator, arena: Allocator, path: []const u8) ![]const u8 {

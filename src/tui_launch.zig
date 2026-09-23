@@ -480,6 +480,8 @@ test "hudCb usage/debug use the cost-tally renderer, not chars" {
     c.api_calls = 0;
     c.sub_calls = 0;
     c.unpriced_calls = 0;
+    c.missing_usage_calls = 0;
+    c.unreported_failed_attempts = 0;
     c.mutex.unlock(io);
     defer {
         c.mutex.lockUncancelable(io);
@@ -490,6 +492,8 @@ test "hudCb usage/debug use the cost-tally renderer, not chars" {
         c.api_calls = 0;
         c.sub_calls = 0;
         c.unpriced_calls = 0;
+        c.missing_usage_calls = 0;
+        c.unreported_failed_attempts = 0;
         c.mutex.unlock(io);
     }
     obs.reset();

@@ -3,6 +3,7 @@ import { readdirSync, createReadStream, statSync } from "node:fs";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { filePreview } from "@/lib/file-preview";
+import { hostOpenCommand } from "@/lib/host-open";
 import { NextRequest } from "next/server";
 import { resolveRoot } from "@/lib/server-root";
 
@@ -144,16 +145,11 @@ export async function POST(req: NextRequest) {
   const root = resolved.root;
   const target = resolveInRoot(root, body.path ?? "");
   if (!target) return Response.json({ error: "path escapes the workspace" }, { status: 400 });
-  if (process.platform !== "darwin") {
-    return Response.json({ error: "open/reveal is macOS-only here" }, { status: 501 });
+  const command = hostOpenCommand(body.action ?? "", target);
+  if (!command) {
+    if (body.action === "reveal" || body.action === "open") return Response.json({ error: "open/reveal is unavailable on this system" }, { status: 501 });
+    return Response.json({ error: `unknown action: ${body.action}` }, { status: 400 });
   }
-  if (body.action === "reveal") {
-    spawn("open", ["-R", target], { stdio: "ignore", detached: true }).unref();
-    return Response.json({ ok: true });
-  }
-  if (body.action === "open") {
-    spawn("open", [target], { stdio: "ignore", detached: true }).unref();
-    return Response.json({ ok: true });
-  }
-  return Response.json({ error: `unknown action: ${body.action}` }, { status: 400 });
+  spawn(command.bin, command.args, { stdio: "ignore", detached: true }).unref();
+  return Response.json({ ok: true });
 }

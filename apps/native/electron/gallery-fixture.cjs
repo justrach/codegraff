@@ -5,9 +5,9 @@ function installGalleryFixture() {
   navigator.sendBeacon = () => false;
   localStorage.setItem('graff.native.browser.open', '0');
   const root = '/demo/field-notes';
-  const catalog = { result: { current: { model: 'Graff', provider: '', effort: 'medium', fast: false, effortLevels: ['low', 'medium', 'high'] }, models: [
-    { name: 'Decoy', provider: '', context: 128000, authenticated: true, cost: 'local', current: false },
-    { name: 'Graff', provider: '', context: 128000, authenticated: true, cost: 'local', current: true },
+  const catalog = { result: { current: { model: 'Graff', provider: 'codegraff', effort: 'medium', fast: false, effortLevels: ['low', 'medium', 'high'] }, models: [
+    { name: 'Decoy', provider: 'codegraff', context: 128000, authenticated: true, cost: 'local', current: false },
+    { name: 'Graff', provider: 'codegraff', context: 128000, authenticated: true, cost: 'local', current: true },
   ] } };
   const json = body => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
   const delta = text => ({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'demo', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } } });

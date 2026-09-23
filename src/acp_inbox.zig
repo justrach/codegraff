@@ -7,6 +7,7 @@ const cancel_source = @import("cancel_source.zig");
 const acp_ask = @import("acp_ask.zig");
 
 pub const Inbox = struct {
+    permission: ?*@import("acp_permission.zig").Bridge = null,
     gpa: std.mem.Allocator,
     io: Io,
     reader: *Io.Reader,
@@ -71,6 +72,16 @@ pub const Inbox = struct {
         return null;
     }
 
+    /// A finished background job wants a turn now. Safe from the pump thread:
+    /// it only sets the tick the idle loop already drains.
+    pub fn nudge(self: *Inbox) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.eof) return;
+        self.tick = true;
+        self.ready.broadcast(self.io);
+    }
+
     /// Called after prepareRootTurn, under the same lock as incoming cancel.
     pub fn begin(self: *Inbox) void {
         self.mutex.lockUncancelable(self.io);
@@ -91,6 +102,10 @@ pub const Inbox = struct {
     fn accept(self: *Inbox, line: []const u8) !void {
         var arena = std.heap.ArenaAllocator.init(self.gpa);
         defer arena.deinit();
+        if (self.permission) |bridge| {
+            const value = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), line, .{}) catch .null;
+            if (bridge.accept(value)) return;
+        }
         const req = proto.parseRequest(arena.allocator(), line);
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -107,6 +122,7 @@ pub const Inbox = struct {
                         self.cancelled = true;
                         if (self.active) cancel_source.cancel(.acp_cancel);
                         acp_ask.cancelIfWaiting();
+                        if (self.permission) |bridge| bridge.cancel();
                     }
                 }
                 return;
@@ -140,6 +156,7 @@ pub const Inbox = struct {
         }
         self.mutex.lockUncancelable(self.io);
         self.eof = true;
+        if (self.permission) |bridge| bridge.cancel();
         self.ready.broadcast(self.io);
         self.mutex.unlock(self.io);
     }
@@ -243,4 +260,24 @@ test "#1007 wait returns a tick when idle" {
     defer arena.deinit();
     const ev = (try inbox.wait(arena.allocator())) orelse return error.ExpectedTick;
     try std.testing.expect(ev == .tick);
+}
+
+test "session config selection during a turn queues an ordinary request without steering" {
+    Agent.esc_cancel.store(false, .release);
+    var reader: Io.Reader = .fixed("");
+    var inbox: Inbox = .{ .gpa = std.testing.allocator, .io = std.testing.io, .reader = &reader };
+    defer inbox.deinit();
+    defer Agent.esc_cancel.store(false, .release);
+    try inbox.accept("{\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"s\"}}");
+    inbox.begin();
+    try inbox.accept("{\"id\":2,\"method\":\"session/set_config_option\",\"params\":{\"sessionId\":\"s\",\"configId\":\"thought_level\",\"value\":\"high\"}}");
+    try std.testing.expect(!Agent.esc_cancel.load(.acquire));
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const first = (try inbox.wait(arena.allocator())) orelse return error.ExpectedLine;
+    try std.testing.expect(std.mem.indexOf(u8, first.line, "session/prompt") != null);
+    inbox.end();
+    const second = (try inbox.wait(arena.allocator())) orelse return error.ExpectedLine;
+    try std.testing.expect(std.mem.indexOf(u8, second.line, "session/set_config_option") != null);
+    try std.testing.expect(std.mem.indexOf(u8, second.line, "session/prompt") == null);
 }

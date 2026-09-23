@@ -178,7 +178,7 @@ pub const SessionSaved = struct { name: []const u8, ext: []const u8 };
 // mistranslation.
 
 /// Reasoning depth, when the provider takes one at all (main.ReasoningEffort).
-pub const ReasoningEffort = enum { low, medium, high, xhigh, max, ultra };
+pub const ReasoningEffort = enum { low, medium, high, xhigh, max, ultra, none };
 
 /// The federated-learning privacy ceiling (learning_privacy.Mode).
 pub const PrivacyTier = enum { local, aggregate, templates, examples };
@@ -297,7 +297,7 @@ pub const EngineEvent = union(enum) {
     tool_output_delta: struct { name: []const u8, stderr: bool = false, text: []const u8 },
     /// A background bash job finished (grok-build TaskCompleted). Pulse:
     /// the model learns via the injected wake, not a durable wire id.
-    job_completed: struct { id: u32, exit_code: ?u8 = null, killed: bool = false },
+    job_completed: struct { id: u64, exit_code: ?u8 = null, killed: bool = false },
     /// A live transport attempt was cut; the payload says how and whether
     /// the turn ends with it (slice 1b). Distinct from stream_aborted: no
     /// partial answer is in flight, so sinks notice without flushing.

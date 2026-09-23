@@ -150,3 +150,27 @@ test "eval steering carries controller state and local belief memory" {
     try std.testing.expect(std.mem.indexOf(u8, note, "prior plan is dropped") != null);
     try std.testing.expect(std.mem.indexOf(u8, note, "compiler failed") != null);
 }
+
+test "read-only MCP never hides a later mutation from completion policy" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const read = try call(arena, "mcp__codedbpro__read", "{}");
+    const done = try call(arena, "attempt_completion", "{\"result\":\"done\"}");
+    for ([_][]const u8{ "edit_file", "write_file", "rlm", "subagent", "mcp__codedbpro__edit" }) |name| {
+        const mutation = try call(arena, name, "{}");
+        const orders = [_][3]ToolCall{
+            .{ read, mutation, done }, .{ read, done, mutation },
+            .{ mutation, read, done }, .{ mutation, done, read },
+            .{ done, read, mutation }, .{ done, mutation, read },
+        };
+        for (orders) |batch| {
+            try std.testing.expect(eval_control.batchBlocksCompletion(&batch));
+            try std.testing.expect(!eval_control.shouldDeferCompletion(&batch));
+        }
+    }
+    for ([_][2]ToolCall{ .{ read, done }, .{ done, read } }) |batch| {
+        try std.testing.expect(!eval_control.batchBlocksCompletion(&batch));
+        try std.testing.expect(eval_control.shouldDeferCompletion(&batch));
+    }
+}

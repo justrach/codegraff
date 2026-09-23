@@ -177,3 +177,19 @@ test "errorFrameAction classifies every actual error frame and ignores quoted pr
     try std.testing.expectEqual(ErrorFrameAction.none, errorFrameAction(a, "{\"type\":\"response.output_text.delta\",\"delta\":\"quoted \\\"type\\\":\\\"error\\\"\"}"));
     try std.testing.expectEqual(ErrorFrameAction.none, errorFrameAction(a, "not json: error"));
 }
+
+/// Latch HTTPS SSE: 426, a stalled first handshake, or two transport failures.
+/// Mid-stream HungRequest on a held socket is not a setup stall.
+pub fn shouldLatchSse(setup_stall: bool, err: anyerror, failures: u8) bool {
+    if (err == error.UpgradeRequired) return true;
+    if (setup_stall) return true;
+    return failures >= 2;
+}
+
+test "shouldLatchSse: 426 and connect stall latch now; 500 handshake still retries once" {
+    try std.testing.expect(shouldLatchSse(false, error.UpgradeRequired, 1));
+    try std.testing.expect(shouldLatchSse(true, error.HungRequest, 1));
+    try std.testing.expect(!shouldLatchSse(false, error.HungRequest, 1));
+    try std.testing.expect(!shouldLatchSse(false, error.HandshakeFailed, 1));
+    try std.testing.expect(shouldLatchSse(false, error.HandshakeFailed, 2));
+}

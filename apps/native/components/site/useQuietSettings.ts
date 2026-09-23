@@ -6,7 +6,7 @@ export function useQuietSettings(options: {
   requireSession(id: number): Promise<string>;
   handleOf(id: number): ChatHandle;
   running: Set<number>;
-  apply(catalog: Awaited<ReturnType<typeof fetchModels>>): void;
+  apply(id: number, catalog: Awaited<ReturnType<typeof fetchModels>>): void;
 }) {
   const pending = useRef(new Map<number, Promise<void>>());
   return {
@@ -20,11 +20,11 @@ export function useQuietSettings(options: {
         // Graff handles these commands before the model loop and session history.
         // Consume the confirmation without creating a conversation turn.
         for await (const _ of prompt(options.handleOf(id), session, command)) { /* drain */ }
-        const catalog = await fetchModels(options.handleOf(id));
+        const catalog = await fetchModels(options.handleOf(id), undefined, false);
         const selected = catalog.models.find(model => model.key === catalog.current);
         const [setting, value] = command.slice(1).split(" ");
         if (setting === "effort" ? selected?.effort !== value : selected?.fast !== (value === "on")) throw Error("Graff did not apply this setting. Try again.");
-        options.apply(catalog);
+        options.apply(id, catalog);
       })();
       pending.current.set(id, task);
       void task.finally(() => { if (pending.current.get(id) === task) pending.current.delete(id); }).catch(() => {});

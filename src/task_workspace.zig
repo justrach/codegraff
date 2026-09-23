@@ -19,7 +19,8 @@ const worktree_prune = @import("worktree_prune.zig");
 const workspace_prepare = @import("workspace_prepare.zig");
 
 pub const CreateError = error{ NotAGitRepo, InvalidName, NameCollision, CreateFailed, Unsupported };
-pub const ArchiveError = error{ InvalidName, NotFound, ArchiveFailed };
+pub const ArchiveError = error{ InvalidName, NotFound, ArchiveFailed, TeardownFailed };
+pub const UpdateError = error{ InvalidName, NotFound, Dirty, MergeFailed };
 
 pub const AutoIsolate = union(enum) {
     skip,
@@ -236,6 +237,7 @@ pub fn create(gpa: Allocator, io: Io, arena: Allocator, opts: CreateOpts) (Creat
     }
     const base = resolveCreateBase(gpa, io, arena, opts.cwd, opts.base);
     try mintOnce(gpa, io, arena, opts.cwd, named.path, named.branch, base);
+    @import("worktree_base.zig").record(gpa, io, arena, opts.cwd, named.branch, base);
     const path = try absPath(io, arena, dest);
     const prep = workspace_prepare.afterCreate(gpa, io, arena, opts.cwd, path, named.name);
     return .{
@@ -266,13 +268,63 @@ pub fn ensure(gpa: Allocator, io: Io, arena: Allocator, opts: CreateOpts) (Creat
     return create(gpa, io, arena, opts);
 }
 
+/// Fetch the remote base and merge it into the task workspace. Dirty trees stay untouched.
+pub fn update(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8, slug: []const u8) (UpdateError || Allocator.Error)!Workspace {
+    const named = try names(arena, slug);
+    const dest = try joinCwd(arena, cwd, named.path);
+    if (!dirExists(io, dest)) return error.NotFound;
+    const path = try absPath(io, arena, dest);
+    const st = runCapped(gpa, io, &.{ "git", "-C", dest, "status", "--porcelain" }, 1 << 16, 8192, 30_000) catch return error.MergeFailed;
+    defer {
+        gpa.free(st.stdout);
+        gpa.free(st.stderr);
+    }
+    if (!ranOk(st)) return error.MergeFailed;
+    if (std.mem.trim(u8, st.stdout, " \t\r\n").len > 0) return error.Dirty;
+    const stored_base = @import("worktree_base.zig").read(gpa, io, arena, cwd, named.branch);
+    const remote = resolveCreateBase(gpa, io, arena, cwd, stored_base);
+    const base = if (remote.len > 0) remote else readHead(gpa, io, arena, cwd);
+    if (base.len == 0) return error.MergeFailed;
+    const m = runCapped(gpa, io, &.{ "git", "-C", dest, "merge", "--no-edit", base }, 1 << 16, 1 << 16, 60_000) catch return error.MergeFailed;
+    defer {
+        gpa.free(m.stdout);
+        gpa.free(m.stderr);
+    }
+    if (!ranOk(m)) return error.MergeFailed;
+    return .{
+        .name = named.name,
+        .path = path,
+        .branch = named.branch,
+        .base = readHead(gpa, io, arena, path),
+    };
+}
+
+pub fn updateFailureText(err: anyerror) []const u8 {
+    return switch (err) {
+        error.InvalidName => createFailureText(error.InvalidName),
+        error.NotFound => archiveFailureText(error.NotFound),
+        error.Dirty => "workspace has uncommitted changes — commit or stash them first, then update",
+        error.MergeFailed => "could not merge the remote base into this workspace (conflict or missing origin)",
+        else => "could not update the task workspace",
+    };
+}
+
 /// Archive removes a clean tree whose commits exist elsewhere. Dirty or unique-commit trees stay.
 pub fn archive(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8, slug: []const u8) (ArchiveError || Allocator.Error)!ArchiveResult {
+    return archiveChecked(gpa, io, arena, cwd, slug, false);
+}
+
+pub fn archiveMerged(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8, slug: []const u8) (ArchiveError || Allocator.Error)!ArchiveResult {
+    return archiveChecked(gpa, io, arena, cwd, slug, true);
+}
+
+fn archiveChecked(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8, slug: []const u8, merged_only: bool) (ArchiveError || Allocator.Error)!ArchiveResult {
     const named = try names(arena, slug);
     const dest = try joinCwd(arena, cwd, named.path);
     if (!dirExists(io, dest)) return error.NotFound;
     const path = try absPath(io, arena, dest);
     const kept = ArchiveResult{ .removed = false, .reason = .unverifiable, .path = path, .branch = named.branch };
+    if (!std.mem.eql(u8, @import("worktree_base.zig").branch(gpa, io, arena, dest), named.branch)) return kept;
     const st = runCapped(gpa, io, &.{ "git", "-C", dest, "status", "--porcelain" }, 1 << 16, 8192, 30_000) catch return kept;
     defer {
         gpa.free(st.stdout);
@@ -285,10 +337,12 @@ pub fn archive(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8, slug: 
         gpa.free(refs.stdout);
         gpa.free(refs.stderr);
     }
-    const contained = ranOk(refs) and worktree_prune.containedElsewhere(refs.stdout, own);
+    const merged = merged_only and @import("worktree_reap.zig").prMerged(gpa, io, cwd, named.branch, head);
+    if (merged_only and !merged) return .{ .removed = false, .reason = .committed, .path = path, .branch = named.branch };
+    const contained = merged or (ranOk(refs) and worktree_prune.containedElsewhere(refs.stdout, own));
     const reason = agent_worktree.worktreeKeepReason(ranOk(st), st.stdout, worktree_prune.containmentBase(head, contained), head);
     if (reason != .removed) return .{ .removed = false, .reason = reason, .path = path, .branch = named.branch };
-    workspace_prepare.beforeArchive(gpa, io, arena, cwd, path, named.name);
+    if (!workspace_prepare.beforeArchive(gpa, io, arena, cwd, path, named.name)) return error.TeardownFailed;
     if (runCapped(gpa, io, &.{ "git", "-C", cwd, "worktree", "remove", dest }, 8192, 8192, 30_000)) |r| {
         defer {
             gpa.free(r.stdout);
@@ -363,6 +417,7 @@ pub fn archiveFailureText(err: anyerror) []const u8 {
         error.InvalidName => createFailureText(error.InvalidName),
         error.NotFound => "no such task workspace — `graff worktree list` to see them",
         error.ArchiveFailed => "git worktree remove failed — the checkout was kept",
+        error.TeardownFailed => "archive script failed; workspace kept",
         else => "could not archive the task workspace",
     };
 }

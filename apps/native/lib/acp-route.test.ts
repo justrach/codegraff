@@ -36,7 +36,7 @@ process.on('SIGTERM', () => {});
 const send = value => console.log(JSON.stringify(value));
 readline.createInterface({input:process.stdin}).on('line', line => {
   const req=JSON.parse(line);
-  if(req.method==='initialize') send({id:req.id,result:{}});
+  if(req.method==='initialize') send({id:req.id,result:{protocolVersion:1}});
   if(req.method==='session/new') {
     send({id:req.id,result:{sessionId:'saved-conversation'}});
     send({method:'session/update',params:{update:{sessionUpdate:'available_commands_update',availableCommands:[{name:'help'}]}}});
@@ -90,7 +90,7 @@ const send = value => console.log(JSON.stringify(value));
 let prompts = 0;
 readline.createInterface({input:process.stdin}).on('line', line => {
   const req = JSON.parse(line);
-  if(req.method==='initialize') send({id:req.id,result:{}});
+  if(req.method==='initialize') send({id:req.id,result:{protocolVersion:1}});
   if(req.method==='session/new') {
     send({id:req.id,result:{sessionId:'fixture'}});
     send({method:'session/update',params:{update:{sessionUpdate:'available_commands_update',availableCommands:[]}}});
@@ -132,20 +132,21 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   }
 }, 10000);
 
-test("an older failed bootstrap cannot retire a newer chat worker", async () => {
+test("superseded model bootstraps adopt the final replacement outcome", async () => {
   const temp = mkdtempSync(path.join(os.tmpdir(), "graff-acp-replacement-"));
   const binary = path.join(temp, "agent.cjs");
   const oldBin = process.env.GRAFF_BIN;
   writeFileSync(binary, `#!/usr/bin/env node
 const fs=require('node:fs');
-const stalled=process.argv.includes('stalled');
+const stalled=process.argv.some(arg=>arg.startsWith('stalled')),failed=process.argv.includes('failed');
 fs.appendFileSync('starts',String(process.pid)+'\\n');
 const send=value=>console.log(JSON.stringify(value));
 require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
  const req=JSON.parse(line);
  if(req.method==='initialize') {
   if(stalled) fs.writeFileSync('stalled',String(process.pid));
-  else send({id:req.id,result:{}});
+  else if(failed) send({id:req.id,error:{code:-32603,message:'final bootstrap failure'}});
+  else send({id:req.id,result:{protocolVersion:1}});
  }
  if(req.method==='session/new') {
   send({id:req.id,result:{sessionId:'replacement'}});
@@ -154,33 +155,61 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
 }).on('close',()=>process.exit(0));
 `, {mode:0o700});
   const chat = `replacement-test-${path.basename(temp)}`;
-  const call = (method: string, params = {}) => deadline(POST(new NextRequest("http://localhost/api/acp", {
-    method:"POST",body:JSON.stringify({chat,method,params}),
+  const failedChat = `replacement-failure-${path.basename(temp)}`;
+  const callFor = (target: string, method: string, params = {}) => deadline(POST(new NextRequest("http://localhost/api/acp", {
+    method:"POST",body:JSON.stringify({chat:target,method,params}),
   })), method);
+  const call = (method: string, params = {}) => callFor(chat, method, params);
+  const failedCall = (method: string, params = {}) => callFor(failedChat, method, params);
   try {
     process.env.GRAFF_BIN = binary;
-    const older = call("bootstrap", {cwd:temp,model:"stalled",mcp:true});
-    await deadline((async()=>{
+    const waitForStalled = (previous?: string) => deadline((async()=>{
       for(;;) {
-        try { readFileSync(path.join(temp,"stalled")); return; } catch {}
+        try {
+          const current = readFileSync(path.join(temp,"stalled"),"utf8");
+          if (current !== previous) return current;
+        } catch {}
         await new Promise(resolve=>setTimeout(resolve,10));
       }
     })(),"stalled child ready");
-    const newer = await call("bootstrap", {cwd:temp,model:"replacement",mcp:true});
-    expect(newer.status).toBe(200);
-    const failed = await older;
-    expect(failed.status).toBe(502);
-    expect((await failed.json()).error).toContain("ACP startup failed during initialize");
+    const older = call("bootstrap", {cwd:temp,model:"stalled-one",mcp:true});
+    const firstStalled = await waitForStalled();
+    const middle = call("bootstrap", {cwd:temp,model:"stalled-two",mcp:true});
+    await waitForStalled(firstStalled);
+    const newest = await call("bootstrap", {cwd:temp,model:"replacement",mcp:true});
+    expect(newest.status).toBe(200);
+    const [olderResult, middleResult] = await Promise.all([older, middle]);
+    expect(olderResult.status).toBe(200);
+    expect(middleResult.status).toBe(200);
+    expect((await olderResult.json()).sessionId).toBe("replacement");
+    expect((await middleResult.json()).sessionId).toBe("replacement");
     const reused = await call("bootstrap", {cwd:temp,model:"replacement",mcp:true});
     expect(reused.status).toBe(200);
     expect((await reused.json()).sessionId).toBe("replacement");
     expect((await call("initialize")).status).toBe(200);
     const started = readFileSync(path.join(temp,"starts"),"utf8").trim().split("\n").map(Number);
-    expect(started.length).toBe(2);
+    expect(started.length).toBe(3);
     expect(()=>process.kill(started[0],0)).toThrow();
-    expect(()=>process.kill(started[1],0)).not.toThrow();
+    expect(()=>process.kill(started[1],0)).toThrow();
+    expect(()=>process.kill(started[2],0)).not.toThrow();
+
+    const previousStalled = readFileSync(path.join(temp,"stalled"),"utf8");
+    const failedOlder = failedCall("bootstrap", {cwd:temp,model:"stalled-one",mcp:true});
+    const nextStalled = await waitForStalled(previousStalled);
+    const failedMiddle = failedCall("bootstrap", {cwd:temp,model:"stalled-two",mcp:true});
+    await waitForStalled(nextStalled);
+    const failedNewest = failedCall("bootstrap", {cwd:temp,model:"failed",mcp:true});
+    for (const response of await Promise.all([failedOlder, failedMiddle, failedNewest])) {
+      expect(response.status).toBe(502);
+      const error = (await response.json()).error as string;
+      expect(error).toContain("final bootstrap failure");
+      expect(error).not.toContain("worker retired");
+    }
+    const retry = await failedCall("bootstrap", {cwd:temp,model:"replacement",mcp:true});
+    expect(retry.status).toBe(200);
+    expect((await retry.json()).sessionId).toBe("replacement");
   } finally {
-    await call("dispose");
+    await Promise.all([call("dispose"), failedCall("dispose")]);
     if(oldBin===undefined)delete process.env.GRAFF_BIN;else process.env.GRAFF_BIN=oldBin;
     rmSync(temp,{recursive:true,force:true});
   }
@@ -197,7 +226,7 @@ fs.appendFileSync('starts',String(process.pid)+'\\n');
 const send=value=>console.log(JSON.stringify(value));
 require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
  const req=JSON.parse(line);
- if(req.method==='initialize') send({id:req.id,result:{}});
+ if(req.method==='initialize') send({id:req.id,result:{protocolVersion:1}});
  if(req.method==='session/new') {
   fs.writeFileSync('initializing','yes');
   setTimeout(()=>{
@@ -248,7 +277,7 @@ const resumed=process.argv.includes('--resume');
 const send=value=>console.log(JSON.stringify(value));
 require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
   const req=JSON.parse(line);
-  if(req.method==='initialize') send({id:req.id,result:{}});
+  if(req.method==='initialize') send({id:req.id,result:{protocolVersion:1}});
   if(req.method==='session/new') {
     send({id:req.id,result:{sessionId:'saved-conversation'}});
     send({method:'session/update',params:{update:{sessionUpdate:'available_commands_update',availableCommands:[]}}});
@@ -298,7 +327,7 @@ fs.appendFileSync('starts', JSON.stringify(process.argv.slice(2))+'\\n');
 const send=value=>console.log(JSON.stringify(value));
 require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
   const req=JSON.parse(line);
-  if(req.method==='initialize') send({id:req.id,result:{}});
+  if(req.method==='initialize') send({id:req.id,result:{protocolVersion:1}});
   if(req.method==='session/new') {
     send({id:req.id,result:{sessionId:'kept-alive'}});
     send({method:'session/update',params:{update:{sessionUpdate:'available_commands_update',availableCommands:[]}}});
@@ -345,7 +374,7 @@ const resumed=process.argv.includes('--resume');
 const send=value=>console.log(JSON.stringify(value));
 require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
   const req=JSON.parse(line);
-  if(req.method==='initialize') send({id:req.id,result:{}});
+  if(req.method==='initialize') send({id:req.id,result:{protocolVersion:1}});
   if(req.method==='session/new') {
     send({id:req.id,result:{sessionId:'saved-conversation'}});
     send({method:'session/update',params:{update:{sessionUpdate:'available_commands_update',availableCommands:[]}}});
@@ -398,7 +427,7 @@ fs.appendFileSync('starts', JSON.stringify(process.argv.slice(2))+'\\n');
 const send=value=>console.log(JSON.stringify(value));
 require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
   const req=JSON.parse(line);
-  if(req.method==='initialize') send({id:req.id,result:{}});
+  if(req.method==='initialize') send({id:req.id,result:{protocolVersion:1}});
   if(req.method==='session/new') {
     send({id:req.id,result:{sessionId:'closed-tab'}});
     send({method:'session/update',params:{update:{sessionUpdate:'available_commands_update',availableCommands:[]}}});
@@ -435,7 +464,7 @@ const fs=require('node:fs');
 const send=value=>console.log(JSON.stringify(value));
 require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
   const req=JSON.parse(line);
-  if(req.method==='initialize') send({id:req.id,result:{}});
+  if(req.method==='initialize') send({id:req.id,result:{protocolVersion:1}});
   if(req.method==='session/new') {
     send({id:req.id,result:{sessionId:'ask'}});
     send({method:'session/update',params:{update:{sessionUpdate:'available_commands_update',availableCommands:[]}}});
@@ -480,7 +509,7 @@ fs.writeFileSync('spawn.env', JSON.stringify({ cwd: process.cwd(), pwd: process.
 const send = value => console.log(JSON.stringify(value));
 require('node:readline').createInterface({input:process.stdin}).on('line', line => {
   const req = JSON.parse(line);
-  if (req.method === 'initialize') send({id:req.id,result:{}});
+  if (req.method === 'initialize') send({id:req.id,result:{protocolVersion:1}});
   if (req.method === 'session/new') {
     const checkout = process.env.GRAFF_REPORT_CWD || ${JSON.stringify(host)};
     send({id:req.id,result:{sessionId:'enroll',cwd:checkout}});

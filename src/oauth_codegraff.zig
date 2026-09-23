@@ -69,7 +69,7 @@ pub fn login(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !void {
                 return;
             };
             try writeKey(io, arena, home, key);
-            try out.print("{s}✓{s} logged into codegraff — key saved to ~/{s}. /model deepseek-v4-pro\n", .{ style.green, style.reset, key_file });
+            try out.print("{s}✓{s} logged into codegraff — key saved to ~/{s}. /model mimo-v2.6-pro\n", .{ style.green, style.reset, key_file });
             try out.flush();
             return;
         } else if (std.mem.eql(u8, status, "denied")) {

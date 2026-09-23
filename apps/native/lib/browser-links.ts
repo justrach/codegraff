@@ -60,6 +60,15 @@ function looksFilelikeHostname(hostname: string, raw: string, explicit: boolean)
   return FILELIKE_SUFFIXES.has(labels.at(-1) ?? "");
 }
 
+/** Unprefixed `word.Word` after a missing space is sentence punctuation, not a host. */
+function looksSentenceHostname(raw: string, explicit: boolean): boolean {
+  if (explicit || raw.toLowerCase().startsWith("www.")) return false;
+  const host = raw.split(/[/:?#]/)[0] ?? raw;
+  const labels = host.split(".");
+  const tld = labels.at(-1) ?? "";
+  return /[A-Z]/.test(tld);
+}
+
 /** Turn text that clearly names a browser destination into a safe HTTP(S) href.
  * Bare public hosts use HTTPS; localhost and numeric addresses use HTTP. */
 export function normalizeBrowserTarget(raw: string): string | null {
@@ -72,7 +81,7 @@ export function normalizeBrowserTarget(raw: string): string | null {
   try {
     const url = new URL(explicit ? value : `${local ? "http" : "https"}://${value}`);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || !url.hostname) return null;
-    if (!hasValidIpv4(url.hostname) || looksFilelikeHostname(url.hostname, value, explicit)) return null;
+    if (!hasValidIpv4(url.hostname) || looksFilelikeHostname(url.hostname, value, explicit) || looksSentenceHostname(value, explicit)) return null;
     return url.href;
   } catch {
     return null;

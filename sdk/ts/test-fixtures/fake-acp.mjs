@@ -19,18 +19,26 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   }
   const { id, method, params } = msg;
   if (method === "initialize") {
-    const requested = params?.protocolVersion ?? 1;
+    if (process.argv[2]) {
+      result(id, JSON.parse(process.argv[2]));
+      return;
+    }
     result(id, {
-      protocolVersion: Math.min(Number(requested) || 1, 1),
+      protocolVersion: 1,
       agentCapabilities: {
         loadSession: false,
         promptCapabilities: { image: false, audio: false, embeddedContext: true },
       },
+      agentInfo: { name: "graff", title: "graff", version: "test" },
       agentImplementation: { name: "graff", title: "graff", version: "test" },
     });
     return;
   }
   if (method === "session/new") {
+    if (!Array.isArray(params?.mcpServers)) {
+      fail(id, -32602, "session/new requires mcpServers");
+      return;
+    }
     sessionId = "acp-test-1";
     result(id, { sessionId });
     update(sessionId, {

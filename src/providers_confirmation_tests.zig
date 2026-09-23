@@ -13,6 +13,7 @@ const serde = @import("serde.zig");
 fn agent(arena: std.mem.Allocator, home: []const u8, p: Provider) !Agent {
     var root: Agent = undefined;
     root.io = std.testing.io;
+    root.jev_effort_pending = .{};
     root.home = home;
     root.provider = p;
     root.subagent_provider = null;

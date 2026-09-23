@@ -239,10 +239,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     // One-shot returns here, before the REPL cleanup defer below is even
     // registered, so free the root's gpa-backed buffers explicitly (else a
     // tool-using one-shot leaks its tool log / render buffers on exit).
-    root.md_buf.deinit(gpa);
-    root.md_word.deinit(gpa);
-    for (root.md_table.items) |r| gpa.free(r);
-    root.md_table.deinit(gpa);
+    @import("agent_render_cleanup.zig").deinit(root);
     root.tools_used.deinit(gpa);
     // Presence announced this session at boot (#469); a one-shot returns
     // before finalizeSession, so retire + free its gpa-owned globals here or
@@ -433,8 +430,10 @@ pub fn restoreResumedSession(arena: Allocator, out: *Io.Writer, root: *agent_mod
                 // Prefer the saved AI summary; fall back to the first user
                 // message only for older sessions that have no saved title.
                 const restored_title = root.session_title orelse title_mod.firstUserTitle(arena, root.messages);
-                title_mod.setTerminalTitle(out, restored_title, cwd_display);
-                try title_mod.printSessionHeader(out, restored_title, cwd_display);
+                const cwd_now = @import("main.zig").g_cwd_display;
+                const cwd_shown = if (cwd_now.len > 0) cwd_now else cwd_display;
+                title_mod.setTerminalTitle(out, restored_title, cwd_shown);
+                try title_mod.printSessionHeader(out, restored_title, cwd_shown);
                 root.tui_header_shown = true;
                 if (flags.branch_flag) |dest|
                     try out.print("↩ branched {s}{s} → {s}{s} — {d} message(s) on {s}\n", .{ source, session.session_ext, dest, session.session_ext, root.messages.items.len, root.provider.model })

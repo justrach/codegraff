@@ -48,9 +48,9 @@ def main() -> int:
     # first - unfiltered, which is also what makes the artifact we want exist -
     # and let a compile failure surface as a compile failure.
     try:
-        build = bounded_run(["zig", "build", "test"], cwd=ROOT, capture_output=True, text=True, timeout=600)
+        build = bounded_run(["zig", "build", "test-bin"], cwd=ROOT, capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired:
-        print("reachability: Zig test deadline exceeded after 600s; owned processes stopped", file=sys.stderr)
+        print("reachability: Zig test compile deadline exceeded after 600s; owned processes stopped", file=sys.stderr)
         return 1
     if build.returncode != 0:
         sys.stderr.write("zig build test failed; reachability not checked\n")

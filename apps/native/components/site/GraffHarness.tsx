@@ -1,4 +1,5 @@
 "use client";
+import { useAcpPermissions } from "./useAcpPermissions";
 import SessionTabs from "./SessionTabs";
 import { useResponsiveNavigation } from "./useResponsiveNavigation";
 import { useNavigationPromptFocus } from "./useNavigationPromptFocus";
@@ -134,6 +135,7 @@ export default function GraffHarness() {
   const [pinsByChat, setPinsByChat] = useState<Record<number, BrowserPin[]>>({});
   const pinsRef = useRef<Record<number, BrowserPin[]>>({});
   const { promptFocusRoot, requestPromptFocus } = useNavigationPromptFocus();
+  const activateChat = (id: number) => { setActiveId(id); requestPromptFocus(id); };
   const chatIdRef = useRef(1);
   const msgIdRef = useRef(0);
   // Split view: ordered visible chats, independent of focus. Each keeps its
@@ -168,6 +170,7 @@ export default function GraffHarness() {
   const { paneRef, tailing } = useChatScroll(chats, columnKey);
   const sessionId = sessionIds[chatThread.id] ?? null;
   const handleOf = (chatId: number) => chatHandle(pageRef.current, chatId);
+  const permissions = useAcpPermissions(handleOf);
   const setBusyFor = (chatId: number, on: boolean) =>
     setBusyIds((current) => {
       if (current.has(chatId) === on) return current;
@@ -184,7 +187,7 @@ export default function GraffHarness() {
     setPinsByChat(pinsRef.current);
   };
 
-  const { adoptCatalog, requireSession, refreshStored, projectsReady, unwatchIdle } = useHarnessSessions({
+  const { adoptCatalog, refreshChangedCatalog, requireSession, refreshStored, projectsReady, unwatchIdle, chatCatalogs, catalogStatus, applyCatalog } = useHarnessSessions({ onPermission: permissions.update,
     sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal,
     pendingPick: () => pendingPickRef.current ?? pendingModel,
   });
@@ -212,17 +215,18 @@ export default function GraffHarness() {
     openChanges();
   }, [filesOpen, fileRequest, openChanges]);
 
-  const { changeModel, cancelPending, confirmPending } = createModelSwitcher({
+  const { changeModel, cancelPending, confirmPending, prepareModel } = createModelSwitcher({
     chatsRef, runningRef, pendingPickRef, activeChatId: () => chatThread.id,
-    requireSession, setChatModel, setCancelError, setPendingModel,
+    requireSession, setChatModel, setChats, setCancelError, setPendingModel,
   });
   const modelLabel = (key: string | null | undefined) => modelDisplayName(models, key);
 
-  const runPrompt = createPromptRunner({ onStarted: started, onCompleted: completed,
-    runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError
+  const runPrompt = createPromptRunner({ onPermission: permissions.update, onStarted: started, onCompleted: completed,
+    runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession,
+    sessionIsCurrent: (id, sessionId) => sessionsRef.current.get(id) === sessionId && chatsRef.current.some(chat => chat.id === id),
+    prepareModel, adoptCatalog, refreshChangedCatalog, refreshStored, takeQueuedPrompt, setCancelError
   });
-  const settings = useQuietSettings({ requireSession, handleOf, running: runningRef.current, apply: (catalog) => setModels(catalog.models) });
-
+  const settings = useQuietSettings({ requireSession, handleOf, running: runningRef.current, apply: applyCatalog });
   const send = async (text: string, forChat?: number) => {
     const trimmed = text.trim();
     const chatId = forChat ?? chatThread.id;
@@ -235,16 +239,16 @@ export default function GraffHarness() {
     await runPrompt(chatId, trimmed);
   };
 
-  const openChat = (id: number) => {
+  const openChat = (id: number, folder?: string) => {
     setProjectsOpen(false); setAgentsOpen(false);
     const session = newSessionName();
     sessionNamesRef.current.set(id, session);
-    const cwd = activePathRef.current ?? undefined;
+    const cwd = folder ?? activePathRef.current ?? undefined;
     const ws = findWorkspace(workspacesRef.current, cwd);
     const next = [...chatsRef.current, { id, title: null, messages: [], model: ws?.model ?? model ?? undefined, session, cwd }];
     chatsRef.current = next; setChats(next);
     setZoomedPane(null);
-    setActiveId(id); requestPromptFocus(id);
+    activateChat(id);
     setFilesOpen(false);
     setConversationsOpen(false);
     setFollowing(true);
@@ -272,7 +276,11 @@ export default function GraffHarness() {
   });
   const openStored = (name: string, cwd = activePathRef.current ?? undefined) => savedConversation.open(name, cwd);
 
-  const newChat = () => openChat((chatIdRef.current += 1));
+  const newChat = () => {
+    const folder = chatsRef.current.find(c => c.id === activeIdRef.current)?.cwd;
+    if (folder && folder !== activePathRef.current) activateWorkspace(folder);
+    openChat((chatIdRef.current += 1), folder ?? activePathRef.current ?? undefined);
+  };
 
   /** Focus a pane in place, or restore the selected workspace tab’s layout. */
   const focusChat = (id: number, focusPrompt = true) => {
@@ -314,7 +322,7 @@ export default function GraffHarness() {
     }
     setSplitNotice(null);
     const id = (chatIdRef.current += 1);
-    openChat(id);
+    openChat(id, chatsRef.current.find(c => c.id === activeIdRef.current)?.cwd ?? activePathRef.current ?? undefined);
     groups.split(id,activeId,direction === "row" ? "right" : "bottom");
   };
 
@@ -348,9 +356,7 @@ export default function GraffHarness() {
 
   const recents = sidebarRecents(stored, chats, unread);
 
-  // The tab bar's folder chip is the *tab's* workspace; the sidebar's
-  // switcher is the *active* one (where new tabs open). They differ only
-  // after a switch, and each says so on hover.
+  // The folder chip is the tab's workspace. New chat opens there.
   const cwdOf = (thread: Chat) => thread.cwd ?? activePath ?? health?.cwd;
   const workspaceNameOf = (thread: Chat) => {
     const dir = cwdOf(thread);
@@ -400,7 +406,7 @@ export default function GraffHarness() {
     },
   }, chats.map(c => c.id));
 
-  const columnBody = (thread: Chat) => <ChatColumn key={thread.id} thread={thread}
+  const columnBody = (thread: Chat) => <ChatColumn key={thread.id} thread={thread} catalogStatus={catalogStatus[thread.id]} retryCatalog={() => void adoptCatalog(thread.id)}
     compact={columnIds.length > 1 || navigation.focusedMode || filesOpen || browserOpen || agentsOpen || reviewsOpen || !!(fileRequest?.changes)} following={tailing[thread.id] ?? true} register={paneRef(thread.id)}
     onOpenPath={threadCallbacks(thread.id).onOpenPath} onReview={openChanges}
     onAnswer={threadCallbacks(thread.id).onAnswer}
@@ -413,9 +419,9 @@ export default function GraffHarness() {
       const next = chatsRef.current.map(c => c.id === thread.id ? { ...c, snapshot: false } : c);
       chatsRef.current = next; setChats(next);
     }}
-    prompt={{ demo: false, models, commands: commands[thread.id] ?? catalogCommands,
-      root: cwdOf(thread), modelKey: paneComposerKey(thread.model, model, sessionsRef.current.has(thread.id), pendingModel, thread.id),
-      onModelChange: key => changeModel(key, thread.id), onSend: text => void send(text, thread.id),
+    prompt={{ demo: false, models: chatCatalogs[thread.id] ?? models, commands: commands[thread.id] ?? catalogCommands,
+      root: cwdOf(thread), modelPending: !!thread.nextModel, modelKey: thread.nextModel ?? paneComposerKey(thread.model, model, sessionsRef.current.has(thread.id), pendingModel, thread.id),
+      onModelOpen: () => void adoptCatalog(thread.id), onModelChange: key => changeModel(key, thread.id), onSend: text => void send(text, thread.id),
       onSetting: text => settings.change(thread.id, text),
       onSteerQueued: () => steerOrInterrupt(queuesRef.current[thread.id]?.[0], runningRef.current.has(thread.id), id => steerQueued(thread.id, id), () => {
         const live = sessionsRef.current.get(thread.id);
@@ -449,14 +455,13 @@ export default function GraffHarness() {
     resizePane: delta => groups.resize(delta/4),
     toggleTerminal, equalize: groups.balance, openWorkspace: () => setDialog({ mode: "new" }),
   });
-
   const paneTodos = lastAssistant?.turn.todos ?? [];
   // Zoom only changes visibility; the split order is retained.
   const columns = (zoomedPane !== null ? [zoomedPane] : columnIds).map((id) => chats.find((c) => c.id === id)).filter((c): c is Chat => c !== undefined);
 
-
   return (
     <main ref={promptFocusRoot} data-graff-main data-workspace-ready={projectsReady} className="flex h-[100dvh] gap-0 bg-canvas p-2.5 text-ink lg:pl-0">
+      {permissions.dialog}
       <div {...navigation.panelProps}><SidebarNav
         onCloseNavigation={navigation.close} onCollapsedChange={navigation.onCollapsedChange}
         openSessions={navigation.sidebarVisible && <div className="mb-4">

@@ -73,10 +73,11 @@ fn check(comptime replies: []const Reply, expected: clip.GrabAttempt) !void {
     switch (expected) {
         .failed => |kind| {
             try std.testing.expectEqual(kind, got.failed);
-            if (kind == .access or kind == .unavailable) {
+            if (kind == .access or kind == .unavailable or kind == .spawn or kind == .cancelled) {
                 const message = paste.pasteMessage(.{ .failed = got.failed });
                 try std.testing.expect(std.mem.indexOf(u8, message, "Automation") == null);
                 try std.testing.expect(std.mem.indexOf(u8, message, "synthetic helper error") == null);
+                try std.testing.expect(std.mem.indexOf(u8, message, "Edit > Paste") == null);
             }
         },
         .empty => {},
@@ -92,8 +93,8 @@ fn check(comptime replies: []const Reply, expected: clip.GrabAttempt) !void {
     }
 }
 
-test "#883 missing clipboard executable is unavailable" {
-    try check(&.{.{ .missing = true }}, .{ .failed = .unavailable });
+test "#1146 missing clipboard executable is a spawn failure" {
+    try check(&.{.{ .missing = true }}, .{ .failed = .spawn });
 }
 
 test "#883 clipboard timeout takes precedence over helper reply" {
@@ -142,7 +143,7 @@ test "#883 clipboard retry cannot accept stale output" {
 
 test "#883 truncated denial and cancellation never imply permission failure" {
     try check(&.{.{ .exit_code = 1, .stderr = "error (-1743)", .stderr_truncated = true }}, .{ .failed = .unavailable });
-    try check(&.{.{ .stdout = "ok:png", .cancelled = true, .file = clip.png_magic }}, .{ .failed = .unavailable });
+    try check(&.{.{ .stdout = "ok:png", .cancelled = true, .file = clip.png_magic }}, .{ .failed = .cancelled });
 }
 
 test "#883 empty clipboard removes partial file" {

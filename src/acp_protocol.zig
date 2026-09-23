@@ -18,8 +18,8 @@ pub const err_auth_required: i32 = -32000;
 
 /// ACP v1 `promptCapabilities` (https://agentclientprotocol.com/protocol/v1/schema).
 /// Missing keys default to false; we send the three named fields so a client
-/// does not have to guess. `embeddedContext` is on because flattenPrompt
-/// already lifts `resource_link` blocks into the user text.
+/// does not have to guess. `embeddedContext` includes nested resource contents;
+/// resource links are baseline ACP support, independent of this capability.
 pub const PromptCapabilities = struct {
     image: bool = false,
     audio: bool = false,
@@ -59,14 +59,10 @@ pub fn parseRequest(arena: Allocator, line: []const u8) ?Request {
 }
 
 pub fn negotiateVersion(params: ?Value) i64 {
-    const p = params orelse return protocol_version;
-    if (p != .object) return protocol_version;
-    const v = p.object.get("protocolVersion") orelse return protocol_version;
-    return switch (v) {
-        .integer => |n| @min(n, protocol_version),
-        .float => |f| @min(@as(i64, @intFromFloat(f)), protocol_version),
-        else => protocol_version,
-    };
+    // ACP requires the requested version if supported, otherwise our latest.
+    // We implement only v1: echoing an older number would promise other shapes.
+    _ = params;
+    return protocol_version;
 }
 
 fn blockText(block: Value) ?[]const u8 {
@@ -88,12 +84,68 @@ pub fn flattenPrompt(arena: Allocator, prompt: ?Value) ![]const u8 {
     };
     var buf: std.array_list.Managed(u8) = .init(arena);
     for (blocks.items) |block| {
+        if (block == .object and std.mem.eql(u8, util.strFieldObj(block.object, "type") orelse "", "resource")) {
+            const resource = block.object.get("resource") orelse continue;
+            if (resource != .object) continue;
+            const o = resource.object;
+            const text = util.strFieldObj(o, "text");
+            const blob = util.strFieldObj(o, "blob");
+            if (text == null and blob == null) continue;
+            if (buf.items.len != 0) try buf.append('\n');
+            if (util.strFieldObj(o, "uri")) |uri| {
+                try buf.appendSlice(uri);
+                try buf.append('\n');
+            }
+            if (text) |content| {
+                try buf.appendSlice(content);
+            } else if (blob) |content| {
+                // Preserve opaque bytes in their wire encoding, never as UTF-8.
+                try buf.appendSlice("[base64");
+                if (util.strFieldObj(o, "mimeType")) |mime| {
+                    try buf.appendSlice(" ");
+                    try buf.appendSlice(mime);
+                }
+                try buf.appendSlice("]\n");
+                try buf.appendSlice(content);
+            }
+            continue;
+        }
         const text = blockText(block) orelse continue;
         if (text.len == 0) continue;
         if (buf.items.len != 0) try buf.append('\n');
         try buf.appendSlice(text);
     }
     return buf.items;
+}
+
+test "ACP v1 rejects unsupported version claims without numeric conversion" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    for ([_][]const u8{ "0", "-1", "2", "1.5", "1e100" }) |version| {
+        const json = try std.fmt.allocPrint(arena.allocator(), "{{\"protocolVersion\":{s}}}", .{version});
+        const value = try std.json.parseFromSliceLeaky(Value, arena.allocator(), json, .{});
+        try std.testing.expectEqual(protocol_version, negotiateVersion(value));
+    }
+}
+
+test "ACP embedded resources preserve URI and text alongside prompt blocks" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const value = try std.json.parseFromSliceLeaky(Value, a,
+        \\[{"type":"text","text":"Review this"},{"type":"resource","resource":{"uri":"file:///draft.zig","mimeType":"text/plain","text":"const draft = 1;\n"}},{"type":"resource_link","uri":"file:///related.zig"}]
+    , .{});
+    try std.testing.expectEqualStrings("Review this\nfile:///draft.zig\nconst draft = 1;\n\nfile:///related.zig", try flattenPrompt(a, value));
+}
+
+test "ACP embedded blobs retain encoding and malformed resources are skipped" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const value = try std.json.parseFromSliceLeaky(Value, a,
+        \\[{"type":"resource"},{"type":"resource","resource":4},{"type":"resource","resource":{"text":3}},{"type":"resource","resource":{"uri":"memory://bytes","mimeType":"application/octet-stream","blob":"AAEC"}}]
+    , .{});
+    try std.testing.expectEqualStrings("memory://bytes\n[base64 application/octet-stream]\nAAEC", try flattenPrompt(a, value));
 }
 
 pub fn writeResult(w: *Io.Writer, id: ?Value, result: anytype) !void {

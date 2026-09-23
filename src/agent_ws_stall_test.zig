@@ -361,10 +361,10 @@ test "#401: a stalled dial fails the turn fast and traces `connect stall` (produ
     const ms = nowMs(io) - t0;
     if (r) |ok| gpa.free(ok) else |_| {}
 
-    // HungRequest, not StreamStalled: a dial that never upgraded is a transport
-    // failure, so postLive retries one fresh socket and only then latches SSE,
-    // rather than spending a slot of request()'s 2-slot stall budget.
-    try std.testing.expectError(error.HungRequest, r);
+    // WsConnectStalled (not StreamStalled): a dial that never upgraded is a
+    // setup failure, so postLive latches HTTPS SSE instead of burning a stall
+    // slot or a second handshake.
+    try std.testing.expectError(error.WsConnectStalled, r);
     try std.testing.expect(ms < 10_000); // unguarded, this never returned at all
     try std.testing.expect(ms >= 200); // the watchdog, not the pool-exhausted shortcut
     try std.testing.expect(traced(&tw, "\"detail\":\"connecting\""));

@@ -21,19 +21,12 @@ def main():
     assert got[0] == "10", got
     assert set(got[1:]) == {"1e", "NaN"}
 
-    got = sort_labels(["+2", "2"])
-    assert got == ["+2", "2"] or got == ["2", "+2"]
-    # equal numeric value → natural tie-break
-    assert sort_labels(["2", "+2"])[0] in ("+2", "2")
-    assert _natural_first("+2", "2")
+    # Equal typed values use the SPEC's digit-run natural comparator.
+    assert sort_labels(["+2", "2"]) == ["2", "+2"]
+    assert sort_labels(["2", "+2"]) == ["2", "+2"]
+    assert sort_labels(["100", "1e2"]) == ["1e2", "100"]
 
     print("HIDDEN_OK")
-
-
-def _natural_first(a, b):
-    got = sort_labels([b, a])
-    # "+2" < "2" lexicographically after equal numeric
-    return got == ["+2", "2"]
 
 
 if __name__ == "__main__":

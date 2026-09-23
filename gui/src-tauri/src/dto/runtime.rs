@@ -453,6 +453,45 @@ pub struct HandoffChatInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename = "TaskWorkspaceAction")]
+pub enum TaskWorkspaceActionDto {
+    Create,
+    Archive,
+    Discard,
+    MergeBack,
+    UpdateFromBase,
+    SyncMerged,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename = "TaskWorkspaceActionInput")]
+pub struct TaskWorkspaceActionInput {
+    pub action: TaskWorkspaceActionDto,
+    pub source_workspace_path: Option<String>,
+    pub workspace_path: Option<String>,
+    pub branch_name: Option<String>,
+    pub base_branch: Option<String>,
+    pub setup_script: Option<String>,
+    pub run_script: Option<String>,
+    pub teardown_script: Option<String>,
+    pub delete_branch: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename = "TaskWorkspaceReview")]
+pub struct TaskWorkspaceReviewDto {
+    pub workspace_path: String,
+    pub branch: String,
+    pub base_branch: String,
+    pub stat: String,
+    pub patch: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename = "CloneRepositoryInput")]
 pub struct CloneRepositoryInput {

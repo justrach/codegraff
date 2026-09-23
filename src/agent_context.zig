@@ -193,7 +193,7 @@ pub fn usageInt(obj: std.json.ObjectMap, name: []const u8) i64 {
 /// obtained — a flat-rate login (codex/kimi/xai) tallies as sub_calls and adds
 /// $0, while an env key on that same provider is metered like any other.
 pub fn recordCost(self: *Agent, ordinary_in: i64, cache_in: i64, cache_write_in: i64, out: i64) void {
-    g_cost.add(self.io, billing.forProvider(self.provider), self.provider.model, ordinary_in, cache_in, cache_write_in, out);
+    g_cost.addForProvider(self.io, billing.forProvider(self.provider), self.provider.id, self.provider.model, ordinary_in, cache_in, cache_write_in, out);
     if (!self.sub) @import("prompt_cache_hud.zig").noteUsage(@intCast(@max(cache_in, 0)), @intCast(@max(cache_write_in, 0)));
 }
 
@@ -443,11 +443,11 @@ test "inputOverCompactThreshold (#260): a fresh Base64 image is vision context, 
 }
 
 pub fn recordUsageResponses(self: *Agent, response: std.json.ObjectMap, req_body_len: usize) void {
+    const usage_known = @import("request_usage_attempts.zig").noteResponsesUsage(self.io, g_cost, response);
     self.last_cache_read = 0;
     self.last_usage_includes_output = false;
-    // Fallback estimate from the serialized request body, with inline Base64
-    // images charged as bounded vision tokens rather than text. This keeps the
-    // context meter live when Codex omits usage without compacting fresh images.
+    // Estimate serialized input with bounded vision tokens for inline images.
+    // Preserve the context meter when the provider omits usage.
     const est = requestBodyEstimateTokens(self, req_body_len);
     // A held Codex WS sends only previous_response_id + the unsent delta, so
     // body/4 can be tiny even when the preceding response reported a near-full
@@ -488,7 +488,7 @@ pub fn recordUsageResponses(self: *Agent, response: std.json.ObjectMap, req_body
         cache_write = usageInt(d.object, "cache_write_tokens");
         if (cached > 0) self.last_cache_read = @intCast(cached);
     };
-    self.recordCost(@max(in_tokens - cached - cache_write, 0), cached, cache_write, out_tokens);
+    if (usage_known) self.recordCost(@max(in_tokens - cached - cache_write, 0), cached, cache_write, out_tokens);
 }
 
 test "recordUsageResponses: usage fallbacks never lower an authoritative meter" {

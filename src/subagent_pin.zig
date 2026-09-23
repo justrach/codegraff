@@ -12,15 +12,14 @@
 //!   2. One `subagent` call may pin `model` / `tier` for that spawn only.
 //!
 //! The same two grains can pin reasoning EFFORT — frontmatter `effort: max`
-//! or an `effort` param on the call (low|medium|high|xhigh|max — the /effort
+//! or an `effort` param on the call (low|medium|high|xhigh|max|none — the /effort
 //! vocabulary minus `ultra`, which is the ultracode prompt switch, not a
 //! depth a worker should inherit). Effort is an INDEPENDENT AXIS from
 //! model/tier: each falls through spawn → persona → session default on its
 //! own, so an effort-only override keeps the persona's model pin (and vice
-//! versa). Unlike a model pin it needs no catalog resolution — a model that
-//! rejects reasoning_effort already degrades per request (effort_rejected in
-//! agent_request.zig) — so an effort pin is either applied as stated or
-//! reported off-vocabulary, never provider-dependent.
+//! versa). An explicit `none` is only supported by known binary-thinking
+//! routes; an unsupported worker pin is refused before inference. Other
+//! valid efforts retain the existing per-request rejection fallback.
 //!
 //! PRECEDENCE (what the tool schema advertises, implemented by `requested`
 //! and `resolve` below):
@@ -140,12 +139,14 @@ pub const EffortOutcome = enum {
     none,
     pinned,
     unknown_effort,
+    unsupported_effort,
 
     pub fn describe(self: EffortOutcome) []const u8 {
         return switch (self) {
             .none => "",
             .pinned => "effort pin applied",
-            .unknown_effort => "effort pin ignored: expected low, medium, high, xhigh or max — kept the session default",
+            .unknown_effort => "effort pin ignored: expected low, medium, high, xhigh, max or supported none — kept the session default",
+            .unsupported_effort => "Off is unsupported by this model; choose a supported effort",
         };
     }
 };
@@ -238,7 +239,7 @@ pub fn resolveIn(base: Provider, pin: Pin, cell: Cell) Resolved {
     const pin_src: Source = if (pin.from_persona) .persona else .explicit_pin;
     if (pin.model) |query| return finish(base, selection.modelForProvider(base.id, query), pin_src);
     if (pin.tier) |tier| {
-        const ladder = tier_ladder.forProvider(base.id) orelse return .{ .outcome = .no_ladder };
+        const ladder = tier_ladder.forModel(base.id, base.model) orelse return .{ .outcome = .no_ladder };
         const rung = ladder.modelFor(tier) orelse return .{ .outcome = .no_rung };
         // A ladder rung is still checked against the LIVE catalog: `graff
         // models refresh` can drop a model the compiled ladder names, and a
@@ -305,6 +306,15 @@ fn deepseekFamily(p: Provider) bool {
 /// When several subs serve the rung, the bench sheet's score picks.
 fn subscriptionRung(tier: Tier, base: Provider) ?Resolved {
     if (deepseekFamily(base)) return null;
+    // MiMo's explicit budget policy is independent of the older benchmark
+    // snapshot. Keep Pro/Flash workers local instead of selecting Luna merely
+    // because a subscription is also signed in. Explicit model pins still win.
+    if (std.mem.eql(u8, base.id, "xiaomi") or std.mem.startsWith(u8, base.model, "mimo-")) return null;
+    if (tier_ladder.forModel(base.id, base.model)) |local| {
+        if (local.modelFor(tier)) |rung| {
+            if ((pricing.modelAliasEquals(rung, "mimo-v2.6-flash") or pricing.modelAliasEquals(rung, "mimo-v2.6-pro")) and rungAffordableOn(base, rung)) return null;
+        }
+    }
     const keys = bench_priors.g_keys orelse return null;
     var best: ?Resolved = null;
     var best_score: f64 = -1;
@@ -424,8 +434,12 @@ pub fn forSpawnIn(base: Provider, obj: std.json.ObjectMap, sub_ok: bool, cell: C
         break :blk resolveIn(base, pin, cell);
     };
     if (pin.effort) |e| {
-        out.effort = e;
-        out.effort_outcome = .pinned;
+        if (e == .none and !@import("effort_route.zig").mimoRoute((out.provider orelse base).id, (out.provider orelse base).model)) {
+            out.effort_outcome = .unsupported_effort;
+        } else {
+            out.effort = e;
+            out.effort_outcome = .pinned;
+        }
     } else if (pin.bad_effort) out.effort_outcome = .unknown_effort;
     return out;
 }

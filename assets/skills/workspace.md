@@ -31,9 +31,11 @@ A new independent task is `workspace action=create`.
    `include` in `.graff/workspace.toml`, else `.env*`) from the main checkout,
    then runs `scripts.setup` from `.graff/workspace.toml`.
    `graff worktree run <name>` is the run script. The user lands or archives;
-   do not spawn a child to delete a tree. `graff worktree land <name>` squash-lands
-   onto the base branch and removes the checkout. `archive` removes a clean
-   duplicate only. Desktop Tools: New task workspace, Run, Land, Archive.
+   do not spawn a child to delete a tree. When the user asks to free disk or
+   clear unused trees, the harness unfolds `workspace` and you call
+   `action=gc` (or `/workspace gc`). That drops
+   dead session trees and clean trees whose GitHub PR is MERGED. Dirty trees
+   stay. Do not gc because a turn finished.
 4. If the match is ambiguous, name more of the path. Do not guess.
 
 Do not paste every worktree path into the next user turn. The list result is

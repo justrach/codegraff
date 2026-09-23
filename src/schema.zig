@@ -131,7 +131,7 @@ const meta_specs = [_]ToolSpec{
     },
     .{
         .name = "attempt_completion",
-        .desc = "Signal that the task is complete. Put your final answer to the user in the result field. In strict mode this is the only way to end a turn. Completing also closes the standing /goal; if its checklist still has open items you will be asked once to finish or confirm.",
+        .desc = "Signal that the task is complete. Put the complete final answer to the user only in the result field; do not repeat it in accompanying prose. In strict mode this is the only way to end a turn. Completing also closes the standing /goal; if its checklist still has open items you will be asked once to finish or confirm.",
         .schema =
         \\{"type": "object", "properties": {"result": {"type": "string", "description": "Final answer to present to the user"}}, "required": ["result"]}
         ,
@@ -167,7 +167,7 @@ const learn_candidate_spec = ToolSpec{
 
 const peer_spec = ToolSpec{ .name = peer_channel.tool_name, .desc = peer_channel.tool_desc, .schema = peer_channel.tool_schema };
 const workspace_spec = ToolSpec{ .name = workspace_switch.tool_name, .desc = workspace_switch.tool_desc, .schema = workspace_switch.tool_schema };
-pub const root_specs = base_specs ++ meta_specs ++ [_]ToolSpec{ subagent_spec, workflow_spec, agent_output_spec, agent_message_spec, learn_candidate_spec, peer_spec, workspace_spec };
+pub const root_specs = base_specs ++ meta_specs ++ [_]ToolSpec{ subagent_spec, workflow_spec, agent_output_spec, agent_message_spec, @import("schema_agents.zig").subagent_resume_spec, learn_candidate_spec, peer_spec, workspace_spec };
 /// The root catalog minus the named optional entries, built once at compile
 /// time. The length check is the guard: each name must match EXACTLY one
 /// spec, so a rename or a duplicated entry is a compile error rather than a
@@ -379,6 +379,7 @@ fn providerLoginKind(id: []const u8) []const u8 {
 /// turns out to reject it.
 pub fn providerTakesEffort(kind: Provider.Kind, id: []const u8, model: []const u8) bool {
     if (std.mem.startsWith(u8, model, "grok")) return std.mem.eql(u8, id, "xai");
+    if (@import("effort_route.zig").mimoRoute(id, model)) return true;
     return kind == .responses or
         (std.mem.eql(u8, id, "kimi") and pricing.kimiSupportsThinking(model)) or
         (if (provider_mod.specFor(id)) |spec| spec.takes_effort else false);

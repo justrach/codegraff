@@ -112,6 +112,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const arg = std.mem.trim(u8, line["/model".len..], " \t");
         providers.ensureModelQueryCatalogs(root, keys.*, arg);
         if (arg.len == 0) {
+            @import("gateway_picker_catalog.zig").refresh(root.gpa, root.io, root.arena, keys.*);
             if (main_mod.use_color) { // interactive TTY → fuzzy picker
                 if (modelPicker(root, keys, arena, out)) |idx| {
                     const m = pricing.models()[idx];

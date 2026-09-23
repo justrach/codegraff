@@ -33,6 +33,8 @@ const Knob = struct { name: []const u8, value: []const u8 };
 /// adding it here is fine (this list is a floor, not a ceiling); REMOVING the
 /// parse while the knob is still documented is what this catches.
 const knobs = [_]Knob{
+    .{ .name = "GRAFF_REQ_STATS", .value = "1" },
+    .{ .name = "GRAFF_REQ_DUMP_DIR", .value = "/tmp/unused-request-dump-knob" },
     .{ .name = "GRAFF_NO_CODEDB_GUARD", .value = "1" },
     .{ .name = "GRAFF_FORCE_STALL_ONCE", .value = "1" },
     .{ .name = "GRAFF_FORCE_DROP_ONCE", .value = "1" },
@@ -86,6 +88,8 @@ const RecordingEnv = struct {
 /// runs next — the exact failure mode that made #391's note store segfault
 /// three unrelated tests during the same integration.
 const Saved = struct {
+    req_armed: bool,
+    req_dump_dir: ?[]const u8,
     codedb_guard: bool,
     stall_once: bool,
     drop_once: bool,
@@ -116,6 +120,8 @@ const Saved = struct {
 
     fn capture() Saved {
         return .{
+            .req_armed = @import("req_stats.zig").g_armed,
+            .req_dump_dir = @import("req_stats.zig").g_dump_dir,
             .codedb_guard = main_mod.g_codedb_guard,
             .stall_once = main_mod.g_force_stall_once,
             .drop_once = main_mod.g_force_drop_once,
@@ -147,6 +153,8 @@ const Saved = struct {
     }
 
     fn restore(s: Saved) void {
+        @import("req_stats.zig").g_armed = s.req_armed;
+        @import("req_stats.zig").g_dump_dir = s.req_dump_dir;
         main_mod.g_codedb_guard = s.codedb_guard;
         main_mod.g_force_stall_once = s.stall_once;
         main_mod.g_force_drop_once = s.drop_once;

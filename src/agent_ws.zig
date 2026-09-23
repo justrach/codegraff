@@ -51,12 +51,9 @@ const rawNonblockStdin = Agent.rawNonblockStdin;
 const drainSteerStdin = Agent.drainSteerStdin;
 
 /// WS: root Responses turns when enabled and not fallen back this session
-/// (codex + xai + Codegraff gateway; Platform OpenAI has no WS endpoint).
+/// (codex + xai + Codegraff; Platform OpenAI GPT-6 for `response.steer`).
 pub fn wsEligible(self: *Agent) bool {
-    // Provider id is a production filter on top of the spec'd kind/flag
-    // algebra: only these providers actually serve a WS endpoint.
-    const has_ws = std.mem.eql(u8, self.provider.id, "codex") or std.mem.eql(u8, self.provider.id, "xai") or std.mem.eql(u8, self.provider.id, "codegraff");
-    return has_ws and transport_gate.eligible(.{ .kind = self.provider.kind, .is_sub = self.sub, .codex_ws = main_mod.g_codex_ws, .ws_off = self.ws_off, .has_out = self.out != null, .quiet = self.stream_quiet });
+    return @import("agent_ws_steer.zig").providerHasWs(self.provider.id, self.provider.model) and transport_gate.eligible(.{ .kind = self.provider.kind, .is_sub = self.sub, .codex_ws = main_mod.g_codex_ws, .ws_off = self.ws_off, .has_out = self.out != null, .quiet = self.stream_quiet });
 }
 
 /// (#codex-ws) Idle limit on the held WS (never reuse a socket the server
@@ -121,25 +118,17 @@ pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
     }
     if (!wsEligible(self)) return self.postStream(body);
     const response = postResponsesWs(self, body) catch |e| {
+        if (@import("agent_async_tools.zig").started(self)) return e;
         if (e == error.Interrupted or e == error.StreamStalled or e == error.ModelLoop) return e;
         // Preemptive idle expiry is not a failed transport attempt; it only asks
         // request() to rebuild the already-created delta as full input.
         if (e == error.CodexWsReanchor) return e;
         self.closeCodexWs();
         self.ws_transport_failures +|= 1;
-        // (#427) A 426 is the server answering authoritatively — it will not
-        // upgrade this endpoint — so the ladder's free retry would only redial
-        // the same refusal. Latch now (openai/codex: FallbackToHttp).
+        // 426, a stalled first handshake, or two failures → HTTPS SSE. A delta
+        // body died with the socket — never replay previous_response_id on HTTP.
         const declined = e == error.UpgradeRequired;
-        const fallback = declined or wsShouldFallback(self.ws_transport_failures);
-        // (#codex-ws) A delta body is anchored to the WS session that just
-        // died (HTTP rejects previous_response_id; the response died with the
-        // socket) — never replay it over SSE. closeCodexWs's errdefer already
-        // reset codex_ws/codex_prev_id/codex_sent_upto by
-        // the time we get here; call it again defensively (idempotent) so a
-        // rebuilt body definitely carries full input with no prior-id, and ask
-        // request() to rebuild + retry (a fresh WS re-anchors with full history)
-        // instead of falling back to a stale SSE replay.
+        const fallback = signal.shouldLatchSse(e == error.WsConnectStalled, e, self.ws_transport_failures);
         if (std.mem.indexOf(u8, body, "\"previous_response_id\"") != null) {
             if (fallback) self.ws_off = true;
             if (self.tracer) |tr| tr.note("ws", if (fallback)
@@ -153,7 +142,8 @@ pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
             return error.CodexWsReanchor;
         }
         self.ws_off = true;
-        if (self.tracer) |tr| tr.note("ws", if (declined) "426 upgrade required — using persistent prewarmed SSE for this session" else "transport failed twice — using persistent prewarmed SSE for this session");
+        engine_sink.forAgent(self).emit(self.io, .{ .session_notice = .{ .text = "using HTTPS SSE", .tone = .dim } });
+        if (self.tracer) |tr| tr.note("ws", if (declined) "426 upgrade required — using persistent prewarmed SSE for this session" else if (e == error.WsConnectStalled) "connect stall — using persistent prewarmed SSE for this session" else "transport failed twice — using persistent prewarmed SSE for this session");
         return self.postStream(body);
     };
     self.ws_transport_failures = 0;
@@ -427,18 +417,13 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     const reused = self.codex_ws != null;
     if (self.codex_ws == null) {
         self.codex_ws = connectWatched(gpa, self.io, url, headers, orig_tio != null) catch |e| {
-            // HungRequest, matching connectWatched's deadline error — NOT
-            // StreamStalled, which the guard stopped returning when it moved to
-            // the SSE guard's transport-flake semantics. An arm naming the wrong
-            // error is unreachable, and a stalled dial then traces a bare
-            // "HungRequest" instead of saying the dial is where it stalled (the
-            // observability #401 was filed about).
+            // HungRequest here is the dial watchdog — not a mid-stream stall.
             if (self.tracer) |tr| tr.note("ws", switch (e) {
                 error.HungRequest => "connect stall",
                 error.Interrupted => "esc",
                 else => @errorName(e),
             });
-            return e;
+            return if (e == error.HungRequest) error.WsConnectStalled else e;
         };
         self.codex_ws_opened_ms = nowAwakeMs(self.io); // 25-min server cap starts now
         self.codex_ws_used_ms = self.codex_ws_opened_ms; // fresh socket = fresh idle window (#codex-ws)
@@ -564,6 +549,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
         if (frames_seen == 1) if (self.tracer) |tr| tr.note("ws", "first frame");
         if (fbuf.items.len == 0) continue :stream;
         try loop_guard.event(self, fbuf.items, false);
+        @import("agent_async_tools.zig").onLine(self, fbuf.items);
         // …and THIS is the budget signal: visible prose, from EITHER event that
         // grows partial_text on SSE — an output-text delta, or the streamed
         // arguments of a whitelisted meta call (attempt_completion / ask_user),

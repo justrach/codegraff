@@ -182,6 +182,7 @@ test "#850: a bounded promote leaves the child on bash_output and bash_kill" {
     const snap = try jobs.jobOutput(gpa, io, id, 0);
     defer gpa.free(snap.text);
     try std.testing.expect(std.mem.indexOf(u8, snap.text, "running") != null);
+    try std.testing.expect(snap.pending and !snap.is_error);
     const killed = try jobs.jobKill(gpa, io, id);
     defer gpa.free(killed.text);
     try std.testing.expect(!killed.is_error);
@@ -189,6 +190,21 @@ test "#850: a bounded promote leaves the child on bash_output and bash_kill" {
     const after = try jobs.jobOutput(gpa, io, id, 2_000);
     defer gpa.free(after.text);
     try std.testing.expect(std.mem.indexOf(u8, after.text, "running") == null);
+    try std.testing.expect(after.cancelled and after.is_error and !after.pending);
+}
+
+test "ADR 0152: auto-parked job output ignores wait_ms" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+    jobs.g_jobs = .{};
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const id = (try jobs.spawnJob(gpa, io, "sleep 8; printf never")).id;
+    defer jobs.jobsReap(gpa, io);
+    jobs.markPersistent(io, id);
+    const snap = try jobs.jobOutput(gpa, io, id, 30_000);
+    defer gpa.free(snap.text);
+    try std.testing.expect(std.mem.indexOf(u8, snap.text, "running") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snap.text, "do not poll") != null);
 }
 
 test "#620: a short foreground command finishes as done, not a job" {
@@ -248,7 +264,7 @@ test "#199: output keeps a job alive past the budget; a pinned job is never idle
     try std.testing.expectEqual(@as(?bool, true), jobs.setPinned(io, pinned, true));
     try std.testing.expectEqual(@as(?bool, null), jobs.setPinned(io, 9999, true));
     io.sleep(.fromMilliseconds(1_000), .awake) catch {};
-    for ([_]u32{ chatty, pinned }) |id| {
+    for ([_]u64{ chatty, pinned }) |id| {
         const snap = try jobs.jobOutput(gpa, io, id, 0);
         defer gpa.free(snap.text);
         try std.testing.expect(std.mem.indexOf(u8, snap.text, "running") != null);

@@ -3,7 +3,6 @@ import {
   ChevronDownIcon,
   MapIcon,
   SparklesIcon,
-  SquareIcon,
   ZapIcon,
 } from "lucide-react";
 
@@ -83,7 +82,7 @@ export function PromptControlBar({
           breaking its shared borders — it scrolls instead. Without the min-w-0
           the w-fit group refuses to shrink and pushes Send outside the card,
           where a narrow window clips it with no way to scroll to it. */}
-      <div className="-mb-1.5 min-w-0 flex-1 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="min-w-0 flex-1 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <ButtonGroup aria-label="Prompt controls">
           <DropdownMenu
             open={isModelMenuOpen}
@@ -282,7 +281,13 @@ export function PromptControlBar({
         onClick={onPrimaryAction}
         disabled={isWorking ? false : isSubmitDisabled}
       >
-        {isWorking && isSubmitDisabled ? <SquareIcon /> : <ArrowUpIcon />}
+        {isWorking && isSubmitDisabled ? (
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+            <rect x="5" y="5" width="14" height="14" rx="3" />
+          </svg>
+        ) : (
+          <ArrowUpIcon />
+        )}
       </Button>
     </CardFooter>
   );

@@ -19,9 +19,11 @@ const pricing_db = @import("pricing_db.zig"); // #557: LiteLLM price/context ove
 const provider = @import("provider.zig");
 const serde = @import("serde.zig");
 const util = @import("util.zig");
+const buffered_http = @import("http2_buffered.zig");
 
 /// Router catalogs change on the order of weeks; favour instant startup.
 const cache_ttl_ms: i64 = 6 * 60 * 60 * 1000;
+const catalog_page_limit = 16 * 1024 * 1024; // Full provider lists may be much larger than the picker response.
 var attempted: [provider.provider_specs.len]bool = @splat(false);
 var additional_attempted = false;
 
@@ -264,17 +266,13 @@ fn containsName(rows: []const pricing.ModelInfo, name: []const u8) bool {
 fn fetchPage(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource, url: []const u8) ?Snapshot {
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
-    var aw: Io.Writer.Allocating = .init(arena);
     var headers_buf: [4]std.http.Header = undefined;
     const headers = catalogHeaders(arena, spec, key, source, &headers_buf) orelse return null;
-    const res = client.fetch(.{
-        .location = .{ .url = url },
-        .method = .GET,
-        .response_writer = &aw.writer,
-        .extra_headers = headers,
-    }) catch return null;
-    if (@intFromEnum(res.status) != 200) return null;
-    return parseModels(arena, spec.id, aw.writer.buffered());
+    // Each page is independently bounded; a later failure leaves any valid
+    // earlier pages in fetch()'s prefix, and cached rows remain offline fallback.
+    const res = buffered_http.get(gpa, arena, io, &client, url, headers, catalog_page_limit, 15_000) catch return null;
+    if (res.status != 200) return null;
+    return parseModels(arena, spec.id, res.body);
 }
 
 /// Fetch the COMPLETE model list. The Models API pages with after_id +
@@ -283,7 +281,7 @@ fn fetchPage(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSp
 /// A failed later page keeps the rows already gathered rather than
 /// discarding a valid prefix; the page cap only guards against a server
 /// that always answers has_more.
-fn fetch(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource) ?Snapshot {
+pub fn fetch(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource) ?Snapshot {
     const base = modelsUrl(spec);
     if (base.len == 0) return null;
     var rows: std.ArrayList(pricing.ModelInfo) = .empty;

@@ -109,6 +109,11 @@ the line REPL, the fullscreen TUI, and the desktop GUI (`graff acp`). Surface
 chrome can differ; the engine path cannot. If you add a wake, a latch, or a
 delivery rule, wire it on all three in the same change.
 
+Worktrees and changes to the GUI must be 1:1 with ACP. A new-chat folder
+rule, a worktree handoff, or a session cwd that exists only in desktop chrome
+is not done — wire the same behavior through the ACP session in the same
+change. The workspace the agent runs in is not chrome.
+
 ## Tests must be reachable
 
 - `zig build test` only runs the tests in files the test root pulls in. A new module's `test {}` blocks compile to nothing until something references it, and the suite still reports green.
@@ -120,6 +125,28 @@ delivery rule, wire it on all three in the same change.
 If asked to merge open PRs onto the **release branch**, merge **only** that branch. Do not merge them into `main` unless that was explicitly asked.
 
 `gh pr merge` uses the PR's base, which is usually `main`. That is not landing on `release/v…`. Cherry-pick or merge the PR head into the named release branch instead.
+
+## Release branch beta versions
+
+The newest numeric `release/vX.Y.Z` or `release/vX.Y.Z.W` branch is the beta
+source. Compare numeric components, treating a missing fourth component as
+zero; do not use lexical branch order or assume releases always have three
+components. Every push to the current branch builds a unique
+`v<branch-version>-beta.<workflow-run>.<attempt>` prerelease from that exact
+commit. A queued build must recheck the remote branch and commit before it
+publishes. Older release branches and superseded commits cannot replace the
+latest beta.
+
+Beta releases are GitHub prereleases and must explicitly remain outside the
+stable `latest` pointer and desktop updater feed. The stable tag workflow is
+restricted to numeric stable tags. The beta CLI release has no installer;
+download the versioned tarball from the specific prerelease. CI can publish
+the CLI and unsigned Linux desktop package; macOS
+desktop distribution still requires the repository's Developer ID signing,
+provisioning profile, and notarization on a configured Mac. Its CI build is an
+intermediate artifact only. Attach a signed beta DMG to that same prerelease
+with `publish-beta-macos.sh` after `distribute.sh` passes its gates. Never upload
+an unsigned macOS app as a release download or add `latest-mac.yml` to a beta.
 
 ## Before you push
 

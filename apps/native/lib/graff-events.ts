@@ -56,6 +56,8 @@ export type ToolRow = {
   chip: string;
   status: "running" | "ok" | "error" | "interrupted";
   detail: { text: string; tone?: "add" }[];
+  /** ACP updates replace content independently of input; both stay bounded. */
+  acpDetail?: { input: { text: string; tone?: "add" }[]; content: { text: string; tone?: "add" }[] };
   path?: string;
   /** Wall-clock bracket, measured client-side — rows tick while running. */
   startedAt?: number;
@@ -93,6 +95,7 @@ export function parseAskOptions(input: unknown): string[] {
 export type TurnStatus = "thinking" | "streaming" | "ask" | "done" | "error" | "snapshot";
 
 export type AssistantTurn = {
+  usage?: import("./acp-usage").AcpUsage;
   contextMeter?: import("./context-meter").ContextMeter;
   endedAt?: number;
   startedAt?: number;

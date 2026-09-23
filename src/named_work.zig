@@ -68,6 +68,10 @@ pub fn beginTurn(self: *Agent) void {
         if (fold.noticeExplicit(taskOf(self))) {
             self.invalidateRootTools();
         }
+        if (@import("worktree_reap.zig").userAskedToFreeTrees(taskOf(self))) {
+            fold.markLoaded("workspace");
+            self.invalidateRootTools();
+        }
     }
 }
 

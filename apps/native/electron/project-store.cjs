@@ -1,9 +1,10 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { isWorkspacePath } = require('./workspace-path.cjs');
 function validate(value) {
   if (!value || !Array.isArray(value.list) || value.list.length > 50) throw Error('Invalid project list');
   const list = value.list.map(row => {
-    if (!row || typeof row.path !== 'string' || !path.isAbsolute(row.path) || row.path.length > 4096 || typeof row.name !== 'string' || row.name.length > 512) throw Error('Invalid project');
+    if (!row || !isWorkspacePath(row.path) || typeof row.name !== 'string' || row.name.length > 512) throw Error('Invalid project');
     return { path: row.path, name: row.name, ...(typeof row.model === 'string' ? { model: row.model.slice(0, 256) } : {}),
       ...(typeof row.yolo === 'boolean' ? { yolo: row.yolo } : {}), ...(typeof row.mcp === 'boolean' ? { mcp: row.mcp } : {}) };
   });

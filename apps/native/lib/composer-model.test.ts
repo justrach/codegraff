@@ -4,7 +4,39 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { modelChoices } from "./acp-client";
-import { liveComposerKey, paneComposerKey, pillFromAcp, resolveComposerModel, sameModels } from "./composer-model";
+import { liveComposerKey, paneComposerKey, pillFromAcp, resolveComposerModel, sameModels, rememberChatCatalog, sharedModelChoices, startWithSelectedModel } from "./composer-model";
+
+test("ACP startup waits for this workspace's catalog and keeps the selected route", async () => {
+  const calls: string[] = [];
+  const catalog = [
+    { key: "xiaomi/mimo-v2.6-pro-ultraspeed", name: "MiMo", provider: "codegraff" },
+    { key: "mimo-v2.6-pro-ultraspeed", name: "MiMo Direct", provider: "xiaomi" },
+  ];
+  const load = async () => { calls.push("catalog"); return catalog; };
+  const start = async (model?: string) => { calls.push(`start:${model}`); return model; };
+  expect(await startWithSelectedModel(catalog[0].key, [], load, start)).toBe("codegraff/xiaomi/mimo-v2.6-pro-ultraspeed");
+  expect(calls).toEqual(["catalog", "start:codegraff/xiaomi/mimo-v2.6-pro-ultraspeed"]);
+  expect(await startWithSelectedModel(catalog[1].key, catalog, load, start)).toBe("xiaomi/mimo-v2.6-pro-ultraspeed");
+  expect(calls.filter(call => call === "catalog")).toHaveLength(1);
+  await expect(startWithSelectedModel("saved-legacy-model", [], async () => [], start)).rejects.toThrow("Could not verify model");
+  expect(calls).toHaveLength(3);
+  expect(await startWithSelectedModel(undefined, [], load, start)).toBeUndefined();
+  expect(calls.at(-1)).toBe("start:undefined");
+
+  let releaseCatalog!: () => void;
+  const waiting = new Promise<void>(resolve => { releaseCatalog = resolve; });
+  let workspace = "/first";
+  const startsBeforeMove = calls.length;
+  const moved = startWithSelectedModel(catalog[0].key, [], async () => {
+    await waiting;
+    if (workspace !== "/first") throw new Error("Workspace changed while loading models.");
+    return catalog;
+  }, start);
+  workspace = "/second";
+  releaseCatalog();
+  await expect(moved).rejects.toThrow("Workspace changed");
+  expect(calls).toHaveLength(startsBeforeMove);
+});
 
 test("the pill keeps an unknown live key instead of catalog[0]", () => {
   const decoy = { key: "catalog-zero", name: "catalog-zero" };
@@ -28,6 +60,25 @@ test("sameModels ignores a new array of the same rows", () => {
   const row = { key: "running-live", name: "running-live" };
   expect(sameModels([row], [{ ...row }])).toBe(true);
   expect(sameModels([row], [{ key: "other", name: "other" }])).toBe(false);
+});
+
+test("catalog refresh keeps changes to effort, fast mode, and capability metadata", () => {
+  const row = { key: "gpt-example", name: "gpt-example", effort: "medium", fast: false, effortLevels: ["low", "medium"] };
+  expect(sameModels([row], [{ ...row, effort: "high" }])).toBe(false);
+  expect(sameModels([row], [{ ...row, fast: true }])).toBe(false);
+  expect(sameModels([row], [{ ...row, effortLevels: ["low", "medium", "high"] }])).toBe(false);
+});
+
+test("two chats using the same model retain independent effort and fast settings", () => {
+  const first = [{ key: "gpt-example", name: "gpt-example", effort: "low", fast: false, effortLevels: ["low", "high"] }];
+  const second = [{ ...first[0], effort: "high", fast: true }];
+  const catalogs = rememberChatCatalog(rememberChatCatalog({}, 1, first), 2, second);
+  expect(catalogs[1][0].effort).toBe("low");
+  expect(catalogs[2][0].effort).toBe("high");
+  expect(catalogs[1][0].fast).toBe(false);
+  expect(sharedModelChoices(second)[0].effort).toBeUndefined();
+  expect(sharedModelChoices(second)[0].fast).toBeUndefined();
+  expect(sharedModelChoices(second)[0].effortLevels).toEqual(["low", "high"]);
 });
 
 function askAcpModels(binary: string, model: string): Promise<unknown> {
@@ -74,7 +125,7 @@ const model = args.includes('--model') ? args[args.indexOf('--model') + 1] : 'ca
 const send = value => console.log(JSON.stringify(value));
 readline.createInterface({input:process.stdin}).on('line', line => {
   const req = JSON.parse(line);
-  if (req.method === 'initialize') send({id:req.id,result:{}});
+  if (req.method === 'initialize') send({id:req.id,result:{protocolVersion:1}});
   if (req.method === 'graff/models') send({id:req.id,result:{
     models: [
       {name:'catalog-zero',provider:'plan',authenticated:true,context:1,cost:'plan',current:false},

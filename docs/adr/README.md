@@ -12,7 +12,7 @@ record only when you need the evidence or the edge cases.
 | ADR | The rule |
 |---|---|
 | [0001](0001-structured-outputs-are-a-formatting-step.md) | Structured output is a final formatting step. Never constrain the agentic phase with a schema grammar, and do not use `--output-schema` unless a program consumes the result. |
-| [0002](0002-xai-defaults-to-the-responses-wire.md) | xAI runs on the Responses wire by default (WS turns). Compaction is the client summarizer, not xAI's blob endpoint. `GRAFF_XAI_WIRE=chat` opts out. |
+| [0002](0002-xai-defaults-to-the-responses-wire.md) | xAI runs on the Responses wire by default (WS turns + on-socket `previous_response_id`). Compaction is the client summarizer, not xAI's blob endpoint. `GRAFF_XAI_WIRE=chat` opts out. |
 | [0003](0003-codegraff-wire-follows-model-capability.md) | Codegraff uses Responses + WS for GPT-5.6+ (incl. GPT-6 Astra / Codex `gpt-5.6-*`) and grok-4.6; Claude, Gemini, and other aliases stay on Chat Completions. |
 | [0004](0004-peer-speech-is-a-working-set.md) | Peer speech is pull: a one-line `[peer]` wake in history, bodies in the inbox ring; compact drops spent injects and never treats them as the human. |
 | [0005](0005-standing-goal-lives-in-the-prefix.md) | Standing goal is one prefix line; the user-message essay injects on change only, never every N turns. |
@@ -69,7 +69,7 @@ record only when you need the evidence or the edge cases.
 | [0056](0056-composer-image-chips-sync-on-delete.md) | Composer image chips sync on delete and reuse `#N`; `clipboard_paste` MIME/bytes wait until send. |
 | [0057](0057-peer-title-is-an-address.md) | `peer_message` resolves exact title / saved-session base before opaque id or goal. |
 | [0058](0058-compact-cut-stalls-on-no-progress.md) | Same unresolved `compact_cut` pin that does not shrink stops after two tries. |
-| [0059](0059-saved-session-discovery-is-device-scoped.md) | `/resume` and `/sessions` list cwd then `~/.graff/sessions`; resume keeps tools in the current cwd. |
+| [0059](0059-saved-session-discovery-is-device-scoped.md) | `/resume` and `/sessions` list cwd then `~/.graff/sessions`; home-origin resume keeps tools in the current cwd. Linked worktrees: [0155](0155-resume-reenters-saved-worktree.md). |
 | [0060](0060-named-source-gate-is-per-unanswered-mention.md) | The named-source nudge is per unanswered mention; identical user turns do not replay (#714). |
 | [0061](0061-tool-only-turns-narrate-and-ask-in-band.md) | Heads-up text rides in the same response as the tool calls; a choice for the user is an `ask_user` call; a job exit the model already read never wakes it. |
 | [0062](0062-background-servers-idle-lifecycle-and-ownership-record.md) | A background job silent and unread for 2h is stopped with its command kept; `/jobs keep` pins one (retained at exit); every job has an ownership record `graff servers` can list and stop, verified by start identity (#199). |
@@ -175,6 +175,50 @@ record only when you need the evidence or the edge cases.
 | [0151](0151-zai-coding-plan-login.md) | Z.AI Coding Plan is a `sub_login` like Kimi/xAI: `graff login zai` uses ZCode's public CLI OAuth broker, then provisions a Graff-named API key onto `/api/coding/paas/v4`. |
 | [0152](0152-persistent-shells-snapshot-once.md) | Persistent shells snapshot immediately (`wait_ms` ignored) and stay on `/jobs`; do not poll. Finite jobs still wait until exit (ADR 0010). |
 | [0153](0153-task-workspaces-copy-and-scripts.md) | Task workspaces copy gitignored include files from the main checkout and run setup/run/archive scripts from `.graff/workspace.toml`. Finish is still not archive. |
+| [0154](0154-parked-shells-yield-the-parent.md) | Interactive parked shells yield the parent like subagents: 15s foreground wait, then the prompt is yours until the job-exit wake. |
+| [0155](0155-resume-reenters-saved-worktree.md) | Resume of a linked-worktree save re-enters that tree; `$HOME` origin stays history-only. |
+| [0156](0156-linux-desktop-sandbox-fallback.md) | Linux desktop uses system window decorations, a POSIX terminal, and a sandbox fallback when user namespaces or the setuid helper are unavailable. |
+| [0157](0157-linux-desktop-release-is-the-unsigned-deb.md) | Tag releases upload the unsigned Linux `.deb` (and AppImage when the packager built one). macOS stays notarized; do not skip the Linux upload for lack of a signature. |
+
+| [0158](0158-mimo-workers-prefer-local-flash.md) | MiMo workers use local Pro/Flash defaults; live catalog and price checks still apply, and benchmark scores are never invented. |
+
+| [0159](0159-picker-catalog-refresh-is-bounded.md) | Opening a model surface refreshes only the gateway catalog, with a short deadline and the existing snapshot as fallback. |
+| [0160](0160-model-picks-wait-for-next-prompt.md) | Running model picks stay per chat and apply only at the next prompt boundary without cancelling the current response. |
+| [0161](0161-default-model-stays-on-selected-provider.md) | Default model preferences stay on the selected provider; explicit and saved choices win. |
+| [0162](0162-http2-streams-own-exclusive-sessions.md) | HTTP/2 requests exclusively lease active sessions; the process pool owns only one idle connection. |
+| [0163](0163-restored-tool-results-use-wire-normalization.md) | Restore and request admission share tool-result repairs while preserving typed blocks. |
+| [0164](0164-task-workspace-archive-needs-current-evidence.md) | Task archive requires current commit evidence; live writers and failed teardown keep the checkout visible. |
+| [0167](0167-workflow-isolation-belongs-to-dependent-chains.md) | Dependent stages share a worktree; pipeline items stay isolated and retained edits are explicitly delivered. |
+| [0168](0168-tui-permission-input-belongs-to-the-frontend.md) | Normal TUI tool approvals use frontend-owned typed requests and once-only responses. |
+| [0169](0169-aggregate-tool-limits-share-descendant-admission.md) | Invocation tool limits reserve atomically across descendants; legacy per-turn root limits keep their meaning. |
+| [0170](0170-workers-retain-owned-conversations.md) | Workers retain owned conversation state; queue-only messages and explicit resume have distinct semantics. |
+| [0171](0171-cost-rates-belong-to-the-provider-route.md) | Cost estimates use the actual provider route, preserve cache and long-context rates, and leave unknown tariffs unpriced. |
+| [0172](0172-model-guidance-is-request-scoped.md) | Model guidance is composed once per request from the current model, with root-only delegation and stable repeated prefixes. |
+
+| [0173](0173-loaded-tool-order-survives-resume.md) | Native and external schemas share admission order, which survives session save and restore. |
+
+| [0174](0174-completion-requires-terminal-tool-results.md) | Deferred completion rejects pending work and preserves background verification exit status. |
+| [0175](0175-rlm-preserves-dependent-tool-order.md) | RLM speculates only leading read-only calls, then preserves statement order and stopped tool results. |
+| [0176](0176-completed-streams-do-not-replay-on-trailer-timeout.md) | A trailer deadline after valid completion returns buffered output; missing usage stays explicitly unknown. |
+| [0177](0177-owned-async-tool-execution.md) | Direct read-only async jobs own their lifetime, preserve order, and join before the next request. |
+| [0178](0178-batched-edits-preflight-before-commit.md) | Preflight every edit span in memory, then perform one verified replacement; an invalid later span leaves the file unchanged. |
+
+| [0179](0179-durable-shell-handles.md) | Reserve durable JS-exact shell handles before spawning; stale handles never target new jobs. |
+
+| [0180](0180-acp-permissions-belong-to-the-client.md) | ACP permission decisions belong to the active client and request; cancellation never grants approval. |
+| [0181](0181-acp-load-replays-saved-conversation.md) | Live ACP loads saved conversations in their selected workspace and replays history without rerunning tools. |
+| [0182](0182-acp-connection-usage-is-an-extension.md) | Connection-scoped ACP usage preserves unknown totals through a custom notification; network retries remain activity indicators. |
+| [0183](0183-request-policy-owns-ambiguous-retries.md) | Ambiguous HTTP/2 failures return to the request retry policy so attempts and unknown usage remain observable. |
+| [0184](0184-directory-scan-budgets-count-examined-entries.md) | Directory scan limits count examined entries before filtering; truncated listings and suggestions remain explicitly partial. |
+| [0185](0185-input-semantics-belong-to-the-task-contract.md) | Empty-input, whitespace, and record-framing semantics come from the task contract, not global work instructions. |
+| [0186](0186-tool-previews-use-original-source-ranges.md) | Tool previews select whole diagnostic lines from original omitted ranges within byte and line budgets. |
+| [0187](0187-optional-judgments-preserve-usage-uncertainty.md) | Optional judgments use an independent gateway login; tokens and unsettled cost remain distinct in CLI and ACP usage. |
+| [0188](0188-streamed-tool-calls-retain-identity.md) | Streamed tool calls use explicit IDs; reused indexes keep incomplete predecessors invalid, and prose is not execution evidence. |
+| [0189](0189-bounded-buffered-http2-posts.md) | Buffered HTTP/2 posts cap body growth, use exclusive pooled leases with durable transport allocation, join deadlines, and never replay ambiguous sends. |
+| [0190](0190-catalog-gets-share-bounded-http2-transport.md) | Catalog GETs use bounded HTTP/2 pages with joined deadlines, shared redirect limits, and credentials scoped to the original origin. |
+| [0191](0191-acp-effort-is-session-configuration.md) | ACP thought-level options follow the active model and share `/effort` state; changes received during a turn apply after that turn. |
+| [0192](0192-mimo-thinking-is-a-binary-setting.md) | MiMo exposes Off/On, preserves legacy positive settings as On, and uses the documented thinking control on each wire. |
+| [0193](0193-jev-selects-effort-only.md) | Optional Jev selects only supported session effort at the next request boundary; arbitrary judgments are not exposed. |
 
 ## When to write one
 

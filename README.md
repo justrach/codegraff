@@ -39,6 +39,17 @@ The signed and notarized app includes its runtime; no developer tools or local
 server are needed. [Verify the download checksum](https://github.com/justrach/codegraff/releases/latest/download/Codegraff-DMG-SHA256SUMS).
 For a `graff` command in your terminal, install the CLI below.
 
+### Desktop for Linux
+
+x86_64
+
+1. [Download the package](https://github.com/justrach/codegraff/releases/latest/download/Codegraff-linux-amd64.deb).
+2. Install it with `sudo apt install ./Codegraff-linux-amd64.deb`.
+3. Open **Codegraff** from the app menu, or run `codegraff`.
+
+[Verify the download checksum](https://github.com/justrach/codegraff/releases/latest/download/Codegraff-linux-amd64-SHA256SUMS).
+The package is unsigned. It includes its runtime.
+
 ### Terminal
 
 On macOS or Linux:
@@ -93,7 +104,7 @@ The desktop and terminal use the same Graff harness.
 [![CodeGraff's bright desktop, framed in rice paper with workshop artwork](docs/images/desktop-chat-studio.png)](docs/images/desktop-chat-light.png)
 
 - **Keep track of work:** tabs distinguish running, finished, interrupted, and unread conversations.
-- **Control the next step:** choose a model and effort level, or steer a queued follow-up with Cmd+Enter.
+- **Control the next step:** choose a model and effort level, or steer a queued follow-up with Cmd+Enter on macOS or Ctrl+Enter on Windows and Linux.
 - **See what fits:** the composer shows remaining context and attachment previews.
 - **Choose an appearance:** White, Black, Website, CodeGraff, or a custom theme through `$gui-theme`.
 

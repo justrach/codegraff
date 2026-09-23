@@ -1,4 +1,5 @@
 const testDesktop = require('./test-desktop.cjs');
+const { runNavigationVisuals } = require('./navigation-visual.cjs');
 const { app, BrowserWindow, ipcMain } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
@@ -65,15 +66,15 @@ app.whenReady().then(async () => {
     assert.deepEqual(apiRequests, [], 'Browser fixtures never call engine or model APIs');
     return;
   }
-  if (['projects', 'folder-picker', 'splits', 'interactions', 'tagged', 'tab-drag', 'session-navigation'].includes(process.env.GRAFF_VISUAL_SUITE)) {
-    await require('./navigation-visual.cjs').runNavigationVisuals({ win, origin, output });
-    if (!['folder-picker', 'interactions', 'tagged', 'tab-drag', 'session-navigation'].includes(process.env.GRAFF_VISUAL_SUITE)) {
+  if (['projects', 'folder-picker', 'splits', 'interactions', 'keyboard', 'tagged', 'tab-drag', 'session-navigation'].includes(process.env.GRAFF_VISUAL_SUITE)) {
+    await runNavigationVisuals({ win, origin, output });
+    if (!['folder-picker', 'interactions', 'keyboard', 'tagged', 'tab-drag', 'session-navigation'].includes(process.env.GRAFF_VISUAL_SUITE)) {
       await require('./browser-visual.cjs').runBrowserVisuals({ win, origin, output });
       await require('./dev-preview-visual.cjs').runDevPreview({ output });
       await require('./link-destination-visual.cjs').runLinkDestinationVisuals({ origin, output });
     }
     assert.deepEqual(apiRequests, [], 'Project fixtures never call engine or model APIs');
-    fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: [process.env.GRAFF_VISUAL_SUITE === 'tagged' ? 'saved snapshots, optional Tasks and split limit' : process.env.GRAFF_VISUAL_SUITE === 'interactions' ? 'keyboard, composer, files and reading' : process.env.GRAFF_VISUAL_SUITE === 'folder-picker' ? 'folder picker repeated Enter' : 'projects and navigation'], skipped: [...require('./test-window.cjs').skippedChecks], apiRequests }, null, 2));
+    fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: [process.env.GRAFF_VISUAL_SUITE === 'tagged' ? 'saved snapshots, optional Tasks and split limit' : process.env.GRAFF_VISUAL_SUITE === 'interactions' ? 'keyboard, composer, files and reading' : process.env.GRAFF_VISUAL_SUITE === 'keyboard' ? 'desktop keyboard shortcuts' : process.env.GRAFF_VISUAL_SUITE === 'folder-picker' ? 'folder picker repeated Enter' : 'projects and navigation'], skipped: [...require('./test-window.cjs').skippedChecks], apiRequests }, null, 2));
     return;
   }
   if (process.env.GRAFF_VISUAL_SUITE === 'stress') {
@@ -132,6 +133,8 @@ app.whenReady().then(async () => {
     }
   }
   if (process.env.GRAFF_VISUAL_SUITE === 'turns') {
+    await require('./copy-response-visual.cjs').testCopyResponse({ win });
+    results.push('copy response');
     assert.deepEqual(apiRequests, []);
     fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: results, apiRequests }, null, 2));
     return;

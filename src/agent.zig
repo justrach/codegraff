@@ -2,7 +2,6 @@
 //! split into `agent_*.zig` siblings and member-aliased back into the struct.
 //! Live process/session globals are reached through main_mod; focused helpers
 //! are imported directly from their owning modules.
-
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -25,25 +24,21 @@ const no_local_tools = @import("no_local_tools.zig"); // #330: --no-local-tools 
 const models_cache = @import("models_cache.zig");
 const keys_cli = @import("keys_cli.zig");
 const run_budget_mod = @import("run_budget.zig");
-
 // agent_prompt.zig owns the width-budgeted status line (#209); aliased below.
 const prompt_ui = @import("agent_prompt.zig");
 const agent_tests = @import("agent_tests.zig");
 const empty_completion = @import("agent_empty_completion.zig");
 const goal_state = @import("goal_state.zig");
 const turn_inbox = @import("turn_inbox.zig");
-
 pub const TodoItem = struct {
     content: []const u8,
     status: []const u8,
     epoch: u64 = 0, // the goal epoch that authored this item (#318); 0 = no goal
     retired: bool = false, // a LATER user ask retired this finished item (#394): kept as the session's archive, invisible to every epoch-scoped query
 };
-
 /// Governed-run status for a standing /goal (#223). Only `.active` steers turns;
 /// pause/resume and the /loop continuation gate (#226) key off the others.
 pub const GoalStatus = enum { active, paused, blocked, complete };
-
 /// A structured standing objective: the /goal text plus its lifecycle status and
 /// created/updated timestamps. Replaces the bare `?[]const u8` so /goal can
 /// pause/resume/report and persist a real state machine across resumes. The
@@ -68,6 +63,8 @@ pub const Agent = struct {
     publication_checks: @import("pr_local_checks.zig").State = .{},
     gpa: Allocator,
     arena: Allocator,
+    async_tools_armed: bool = false,
+    async_tools: ?*@import("agent_async_tools.zig").State = null,
     /// #124: per-turn parse garbage (SSE envelopes, isStreamEnd) lives here and
     /// is reset each request() so the root session arena stays bounded. Null on
     /// subagents/one-shots (scratchAlloc() falls back to arena).
@@ -111,6 +108,7 @@ pub const Agent = struct {
     sink: ?@import("engine_sink.zig").EngineSink = null,
     registry: ?*mcp.Registry = null,
     mcp_context: @import("mcp_turn_context.zig").State = .{},
+    permission: ?@import("engine_permission.zig").Handler = null,
     approvals: ?*approvals_mod.Approvals = null, // shared bash-approval state, set by main()
     tracer: ?*trace.Tracer = null, // shared JSONL event trace, set by main()
     run_budget: ?*run_budget_mod.RunBudget = null, // shared invocation-wide call/concurrency ceiling
@@ -151,6 +149,7 @@ pub const Agent = struct {
     stored_keys_loaded: bool = true, // false after an explicit-provider launch; model surfaces fill the remaining Keychain slots
     keep_context: bool = true, // carry the conversation across wire-format model switches (/keepcontext)
     reasoning: ReasoningEffort = .medium, // reasoning/thinking depth — xai, codex, deepseek, codegraff (/effort, /reasoning)
+    jev_effort_pending: @import("jev_effort_state.zig").Pending = .{},
     fast: bool = false, // codex "fast" mode → priority service_tier (/fast)
     fallback_allow: []const []const u8 = &.{}, // explicit cross-provider allowlist from .harness/settings.json
     fallback_active: bool = false, // current provider/model is a temporary fallback, not the saved preference
@@ -164,12 +163,15 @@ pub const Agent = struct {
     goal_note_fp: u64 = 0, // last-injected standing-goal note fingerprint (goal_state.steeringGate, #318)
     goal_note_age: u32 = 0, // turns since that note was last injected (refresh interval)
     pending_goal_note: ?[]const u8 = null, // one-shot supersession note for the next turn (/goal replace|clear)
+    startup_effort_notice: ?[]const u8 = null, // ACP presents a corrected stale effort setting after session/new
     completion_gate_armed: bool = false, // attempt_completion was refused; the promised second call closes the goal. Persists ACROSS turns (a model emits one per turn) until the checklist or goal changes (#318)
     completion_refused: bool = false, // a refused attempt_completion this turn: work the model must react to, so /loop must not read the turn as zero-tool (#318)
     todos_dirty: bool = false, // todo_write ran in THIS process: a checklist restored from disk is persisted state, never evidence that the current prompt is done (#318)
     goal_flag: ?[]const u8 = null, // --goal objective verbatim: re-applied over EVERY loadSession, including /resume, so the flag's contract survives restores (#318)
     loop_deadline_ms: ?i64 = null, // the running /loop's wall-clock deadline (goal_pacing.LoopClock); read by the subagent spawn path so a child inherits it. Run-local: never saved, cleared on stop/steer
     history_rewrites: u32 = 0, // bumped by compact()/emergencyTrim; state pasted into the dead history (e.g. the /loop checklist copy) must be re-carried (#318)
+    worker_family: ?[]const u8 = null,
+    worker_id: ?[]const u8 = null,
     session_name: []const u8 = "last", // autosave/resume target (<name>.session.json)
     session_parent: ?[]const u8 = null, // clone-on-write ancestry: this session branched from <parent>
     session_title: ?[]const u8 = null, // human-readable title/rename metadata
@@ -267,8 +269,8 @@ pub const Agent = struct {
 
     /// Whether the active provider honors a reasoning-effort hint: the
     /// Responses API (codex, native xAI) via reasoning.effort, and the
-    /// OpenAI-compatible providers that normalize reasoning_effort — native
-    /// xAI chat, the codegraff gateway, and deepseek. Everything else ignores it.
+    /// OpenAI-compatible providers that expose a thinking or effort control,
+    /// including native xAI chat, MiMo, the codegraff gateway, and deepseek.
     pub fn effortApplies(self: *const Agent) bool {
         return schema.providerTakesEffort(self.provider.kind, self.provider.id, self.provider.model);
     }
@@ -287,13 +289,10 @@ pub const Agent = struct {
     pub fn toolsJson(self: *const Agent) []const u8 {
         return @import("agent_catalog.zig").toolsJson(self);
     }
-
     pub fn ensureRootTools(self: *Agent, kind: Provider.Kind) !void {
         return @import("agent_catalog.zig").ensureRootTools(self, kind);
     }
-
     pub const invalidateRootTools = @import("agent_catalog.zig").invalidateRootTools;
-
     pub noinline fn ensureModelCatalog(self: *Agent, keys: provider_mod.Keys) void {
         if (self.model_catalog) |*catalog|
             catalog.ensure(self.io, self.gpa, self.arena, self.home, keys.get("codex") orelse "", keys.codex_account);
@@ -327,6 +326,11 @@ pub const Agent = struct {
     }
 
     pub fn runTurn(self: *Agent) anyerror![]const u8 {
+        defer @import("jev_effort_state.zig").finishTurn(self);
+        errdefer self.jev_effort_pending.invalidate(self.io);
+        self.async_tools_armed = !self.sub and self.eval_cmd == null;
+        defer self.async_tools_armed = false;
+        defer @import("agent_async_tools.zig").reset(self);
         if (!self.sub) @import("peer_idle.zig").noteTurnStart();
         defer if (!self.sub) @import("peer_idle.zig").noteTurnEnd();
         var pending_work: empty_completion.PendingWork = .{};

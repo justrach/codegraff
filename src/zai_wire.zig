@@ -44,6 +44,14 @@ pub fn isDeepseekFamily(provider_id: []const u8, model: []const u8) bool {
 /// OpenAI-chat extras after `prompt_cache_key`: Z.AI thinking, Vercel
 /// `reasoning.effort`, DeepSeek thinking on/off, then `reasoning_effort`.
 pub fn writeChatExtras(s: *std.json.Stringify, provider_id: []const u8, model: []const u8, send_effort: bool, requested: []const u8) !void {
+    if (@import("effort_route.zig").mimoRoute(provider_id, model)) {
+        try s.objectField("thinking");
+        try s.beginObject();
+        try s.objectField("type");
+        try s.write(if (std.mem.eql(u8, requested, "none")) "disabled" else "enabled");
+        try s.endObject();
+        return;
+    }
     const is_zai = std.mem.eql(u8, provider_id, "zai");
     const is_vercel = std.mem.eql(u8, provider_id, "vercel");
     if (is_zai) {

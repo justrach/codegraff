@@ -76,7 +76,52 @@ pub fn gitRootOf(io: Io, cwd_abs: []const u8, buf: []u8) ?[]const u8 {
 /// Seed hashed into the durable project cache id. Repo trees share the git
 /// root; a temp dir with no `.git` uses `scratch_seed`.
 pub fn affinitySeed(io: Io, cwd_abs: []const u8, buf: []u8) []const u8 {
-    return gitRootOf(io, cwd_abs, buf) orelse scratch_seed;
+    const checkout = gitRootOf(io, cwd_abs, buf) orelse return scratch_seed;
+    var primary_buf: [4096]u8 = undefined;
+    const primary = linkedPrimary(io, checkout, &primary_buf) orelse return checkout;
+    if (primary.len > buf.len) return checkout;
+    @memcpy(buf[0..primary.len], primary);
+    return buf[0..primary.len];
+}
+
+/// Resolve only a verified linked-worktree administrative directory. Ordinary
+/// .git directories retain their historical key; submodules, bare repositories,
+/// damaged pointers and unrelated repositories keep their checkout partition.
+fn linkedPrimary(io: Io, checkout: []const u8, out: []u8) ?[]const u8 {
+    var storage: [32768]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&storage);
+    const a = fixed.allocator();
+    const pointer = std.fs.path.join(a, &.{ checkout, ".git" }) catch return null;
+    if ((Io.Dir.cwd().statFile(io, pointer, .{}) catch return null).kind != .file) return null;
+    const text = Io.Dir.cwd().readFileAlloc(io, pointer, a, .limited(4096)) catch return null;
+    const line = std.mem.trim(u8, text, " \t\r\n");
+    if (!std.mem.startsWith(u8, line, "gitdir:")) return null;
+    const raw = std.mem.trim(u8, line[7..], " \t");
+    if (raw.len == 0 or std.mem.indexOfAny(u8, raw, "\r\n\x00") != null) return null;
+    const gitdir_path = std.fs.path.resolve(a, &.{ checkout, raw }) catch return null;
+    const gitdir = Io.Dir.cwd().realPathFileAlloc(io, gitdir_path, a) catch return null;
+    const marker = std.fs.path.join(a, &.{ gitdir, "commondir" }) catch return null;
+    const data = Io.Dir.cwd().readFileAlloc(io, marker, a, .limited(4096)) catch return null;
+    const common_raw = std.mem.trim(u8, data, " \t\r\n");
+    if (common_raw.len == 0 or std.mem.indexOfAny(u8, common_raw, "\r\n\x00") != null) return null;
+    const common_path = std.fs.path.resolve(a, &.{ gitdir, common_raw }) catch return null;
+    const common = Io.Dir.cwd().realPathFileAlloc(io, common_path, a) catch return null;
+    if (!std.mem.eql(u8, std.fs.path.basename(common), ".git")) return null;
+    const worktrees = std.fs.path.join(a, &.{ common, "worktrees" }) catch return null;
+    if (!std.mem.eql(u8, std.fs.path.dirname(gitdir) orelse return null, worktrees)) return null;
+    // Git's backlink must identify this checkout, not another repository's
+    // administrative entry. This also rejects partially moved/broken metadata.
+    const backlink_path = std.fs.path.join(a, &.{ gitdir, "gitdir" }) catch return null;
+    const backlink = Io.Dir.cwd().readFileAlloc(io, backlink_path, a, .limited(4096)) catch return null;
+    const back = std.mem.trim(u8, backlink, " \t\r\n");
+    const back_path = std.fs.path.resolve(a, &.{ gitdir, back }) catch return null;
+    const back_real = Io.Dir.cwd().realPathFileAlloc(io, back_path, a) catch return null;
+    const pointer_real = Io.Dir.cwd().realPathFileAlloc(io, pointer, a) catch return null;
+    if (!std.mem.eql(u8, back_real, pointer_real)) return null;
+    const primary = std.fs.path.dirname(common) orelse return null;
+    if (primary.len > out.len) return null;
+    @memcpy(out[0..primary.len], primary);
+    return out[0..primary.len];
 }
 
 test "affinity: nested dirs under one repo share the git root" {
@@ -193,4 +238,113 @@ test "affinity: nested repo dirs share one project cache id" {
     try std.testing.expectEqualStrings(projectIdForCwd(io, root, &id_root), projectIdForCwd(io, child, &id_child));
     // Old hash of the leaf path would have missed the root's warm prefix.
     try std.testing.expect(!std.mem.eql(u8, projectIdFromSeed(child, &id_leaf), projectIdForCwd(io, child, &id_child)));
+}
+
+test "affinity: real linked worktrees share primary checkout key without merging unrelated repos" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmp.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(base);
+    const primary = try std.fs.path.join(a, &.{ base, "primary" });
+    defer a.free(primary);
+    const sibling = try std.fs.path.join(a, &.{ base, "sibling" });
+    defer a.free(sibling);
+    const unrelated = try std.fs.path.join(a, &.{ base, "other" });
+    defer a.free(unrelated);
+    try affinityGit(&.{ "init", "-q", primary });
+    try affinityGit(&.{ "-C", primary, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "fixture" });
+    try affinityGit(&.{ "-C", primary, "worktree", "add", "-q", "--detach", sibling });
+    try affinityGit(&.{ "init", "-q", unrelated });
+    var primary_key: [36]u8 = undefined;
+    var sibling_key: [36]u8 = undefined;
+    var old_primary: [36]u8 = undefined;
+    var other_key: [36]u8 = undefined;
+    try std.testing.expectEqualStrings(projectIdFromSeed(primary, &old_primary), projectIdForCwd(io, primary, &primary_key));
+    try std.testing.expectEqualStrings(projectIdForCwd(io, primary, &primary_key), projectIdForCwd(io, sibling, &sibling_key));
+    try std.testing.expect(!std.mem.eql(u8, projectIdForCwd(io, primary, &primary_key), projectIdForCwd(io, unrelated, &other_key)));
+    // Finding the checkout remains a separate operation from finding affinity.
+    var checkout_buf: [4096]u8 = undefined;
+    try std.testing.expectEqualStrings(sibling, gitRootOf(io, sibling, &checkout_buf).?);
+    try expectStableRequests(&primary_key, &sibling_key);
+    // Git also accepts relative .git pointers; canonicalization must agree.
+    // Windows marks Git-owned worktree pointers read-only, so do not overwrite one there.
+    if (@import("builtin").os.tag != .windows) {
+        const relative_pointer = try std.fs.path.join(a, &.{ sibling, ".git" });
+        defer a.free(relative_pointer);
+        try Io.Dir.cwd().writeFile(io, .{ .sub_path = relative_pointer, .data = "gitdir: ../primary/.git/worktrees/sibling\n" });
+        try std.testing.expectEqualStrings(projectIdForCwd(io, primary, &primary_key), projectIdForCwd(io, sibling, &sibling_key));
+    }
+    const nested = try std.fs.path.join(a, &.{ sibling, "nested" });
+    defer a.free(nested);
+    try affinityGit(&.{ "init", "-q", nested });
+    try std.testing.expect(!std.mem.eql(u8, projectIdForCwd(io, primary, &primary_key), projectIdForCwd(io, nested, &other_key)));
+}
+
+fn affinityGit(args: []const []const u8) !void {
+    const runner = @import("process_runner.zig");
+    var argv: [24][]const u8 = undefined;
+    argv[0] = "git";
+    @memcpy(argv[1 .. args.len + 1], args);
+    const result = try runner.runCapped(std.testing.allocator, std.testing.io, argv[0 .. args.len + 1], 4096, 4096, 15_000);
+    defer std.testing.allocator.free(result.stdout);
+    defer std.testing.allocator.free(result.stderr);
+    try std.testing.expect(runner.ranOk(result));
+}
+
+test "affinity: malformed common directory and foreign backlinks preserve checkout isolation" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const base = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const primary = try std.fs.path.join(a, &.{ base, "primary" });
+    const sibling = try std.fs.path.join(a, &.{ base, "sibling" });
+    try tmp.dir.createDirPath(io, "primary/.git/worktrees/sibling");
+    try tmp.dir.createDirPath(io, "sibling");
+    try tmp.dir.writeFile(io, .{ .sub_path = "sibling/.git", .data = "gitdir: ../primary/.git/worktrees/sibling\n" });
+    const backlink = try std.fmt.allocPrint(a, "{s}/.git\n", .{sibling});
+    try tmp.dir.writeFile(io, .{ .sub_path = "primary/.git/worktrees/sibling/gitdir", .data = backlink });
+    var key: [36]u8 = undefined;
+    var expected: [36]u8 = undefined;
+    for ([_][]const u8{ "", "../../missing", "../..\n../other", "../../../../other/.git" }) |bad| {
+        try tmp.dir.writeFile(io, .{ .sub_path = "primary/.git/worktrees/sibling/commondir", .data = bad });
+        try std.testing.expectEqualStrings(projectIdFromSeed(sibling, &expected), projectIdForCwd(io, sibling, &key));
+    }
+    try tmp.dir.writeFile(io, .{ .sub_path = "primary/.git/worktrees/sibling/commondir", .data = "../..\n" });
+    try std.testing.expectEqualStrings(projectIdFromSeed(primary, &expected), projectIdForCwd(io, sibling, &key));
+    try tmp.dir.writeFile(io, .{ .sub_path = "primary/.git/worktrees/sibling/gitdir", .data = try std.fmt.allocPrint(a, "{s}/.git\n", .{primary}) });
+    try std.testing.expectEqualStrings(projectIdFromSeed(sibling, &expected), projectIdForCwd(io, sibling, &key));
+}
+
+/// Actual request serialization must preserve both the key and stable prefix.
+/// MiMo's automatic upstream cache may ignore this key; no hit-rate claim here.
+fn expectStableRequests(primary: []const u8, sibling: []const u8) !void {
+    const headers = @import("http_headers.zig");
+    var saved: [36]u8 = undefined;
+    @memcpy(&saved, headers.projectRootId(std.testing.io));
+    defer headers.restoreProjectRootId(&saved);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const routes = [_]struct { provider: []const u8, model: []const u8 }{
+        .{ .provider = "openai", .model = "gpt-6-astra" },
+        .{ .provider = "codex", .model = "gpt-6-astra" },
+        .{ .provider = "xai", .model = "grok-4.7" },
+        .{ .provider = "codegraff", .model = "mimo-v2.6-flash" },
+    };
+    for (routes) |route| for ([_]bool{ false, true }) |child| {
+        var agent = try @import("agent_request_body_responses.zig").testAgentFor(arena.allocator(), route.provider, .responses, route.model);
+        agent.sub = child;
+        agent.label = if (child) "implement" else "main";
+        headers.restoreProjectRootId(primary);
+        const first = try agent.buildBody("[]", false, true, true);
+        defer std.testing.allocator.free(first);
+        headers.restoreProjectRootId(sibling);
+        const second = try agent.buildBody("[]", false, true, true);
+        defer std.testing.allocator.free(second);
+        try std.testing.expectEqualStrings(first, second);
+    };
 }

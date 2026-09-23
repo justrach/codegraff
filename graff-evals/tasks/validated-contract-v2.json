@@ -1,0 +1,13 @@
+{
+  "id": "validated-contract-v2",
+  "suite": "swe",
+  "category": "swe",
+  "source": "https://deepswe.datacurve.ai/run \u2014 returns-validated-error-accumulation (distilled, no Harbor)",
+  "files_dir": "fixtures/validated-contract-v2",
+  "prompt": "Valid/Invalid do not implement the complete contract. Read SPEC.md and validated.py, then make `python3 test_validated.py` print OK. Do not edit tests. Export Validated with the specified classmethods; wrap collection-valued errors as one item; preserve Invalid even when its error tuple is empty.",
+  "check": "python3 test_validated.py && python3 \"$TASK_ROOT/hidden/validated-contract-v2.py\" --source validated.py",
+  "timeout_s": 300,
+  "fixture_version": 2,
+  "contract_version": "validated-contract-v2",
+  "supersedes": "validated"
+}

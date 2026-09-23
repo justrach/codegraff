@@ -25,6 +25,13 @@ current remote head/check data and compares the local head where applicable.
 Draft handoff is labelled unverified. It cannot record verified task success.
 This extends ADR 0100; a prose review remains heuristic, not proof of coverage.
 
+When an exact-head observation is pending, publication now rechecks it every
+two seconds with a sixty-second polling budget before refusing. In-flight
+observations retain their individual timeouts. Cancellation and the turn
+deadline stop subsequent polling. A changed head invalidates the observation; disappearing
+runs are unknown, and failures still block. The wait does not grant permission
+to publish a draft or move verification after the write.
+
 Claims use a stable lock inode, bounded contention retry, fresh reads, and
 atomic data replacement. Failed storage does not report a successful handoff.
 The common bash executor repeats the check after earlier permission checks.

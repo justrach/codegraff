@@ -393,3 +393,65 @@ test "tool_desc stays JSON-escape-free (it is spliced into a raw schema string)"
     defer ph.deinit();
     try testing.expectEqualStrings("object", ph.value.object.get("type").?.string);
 }
+
+test "mixed native MCP loads preserve earlier emitted tool entries" {
+    withDefaults();
+    defer withDefaults();
+    const fold = @import("native_fold.zig");
+    const saved_enabled = fold.enabled;
+    const saved_stable = gate.g_stable_catalog;
+    fold.enabled = true;
+    gate.g_stable_catalog = true;
+    gate.g_policy.budget = 1;
+    fold.clearLoadedSession();
+    defer {
+        fold.clearLoadedSession();
+        fold.enabled = saved_enabled;
+        gate.g_stable_catalog = saved_stable;
+    }
+    var state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer state.deinit();
+    const a = state.allocator();
+    const fat = try fixture(a, "fat", 3, 2000);
+    const schema = @import("schema.zig");
+    const specs = [_]schema.ToolSpec{.{ .name = gate.tool_name, .desc = gate.tool_desc, .schema = gate.tool_schema }};
+    const load = try std.json.parseFromSliceLeaky(Value, a, "{\"tools\":[\"mcp__fat__t0\"]}", .{});
+    const loaded = try gate.loadInto(a, fat, load);
+    try testing.expectEqual(@as(usize, 1), loaded.loaded);
+    const routes = [_]struct { id: []const u8, kind: @import("provider.zig").Provider.Kind, model: []const u8 }{
+        .{ .id = "codegraff", .kind = .openai, .model = "mimo-v2.5" },
+        .{ .id = "xai", .kind = .responses, .model = "grok-4.6" },
+        .{ .id = "codex", .kind = .responses, .model = "gpt-6-sol" },
+    };
+    var before: [routes.len][]const u8 = undefined;
+    var catalogs: [routes.len][]const u8 = undefined;
+    for (routes, 0..) |route, i| {
+        var agent = try @import("agent_request_body_responses.zig").testAgentFor(a, route.id, route.kind, route.model);
+        catalogs[i] = try schema.renderRootTools(a, route.kind, &specs, fat);
+        const body = try agent.buildBody(catalogs[i], false, true, true);
+        defer testing.allocator.free(body);
+        const parsed = try std.json.parseFromSliceLeaky(Value, a, body, .{ .allocate = .alloc_always });
+        before[i] = try std.json.Stringify.valueAlloc(a, parsed.object.get("tools").?, .{});
+    }
+    fold.markLoaded("todo_read");
+    for (routes, 0..) |route, i| {
+        var agent = try @import("agent_request_body_responses.zig").testAgentFor(a, route.id, route.kind, route.model);
+        const catalog = try schema.renderRootTools(a, route.kind, &specs, fat);
+        try testing.expect(std.mem.startsWith(u8, catalog, catalogs[i][0 .. catalogs[i].len - 1]));
+        const body = try agent.buildBody(catalog, false, true, true);
+        defer testing.allocator.free(body);
+        const parsed = try std.json.parseFromSliceLeaky(Value, a, body, .{ .allocate = .alloc_always });
+        const entries = parsed.object.get("tools").?.array.items;
+        const earlier = try std.json.parseFromSliceLeaky(Value, a, before[i], .{});
+        // Hosted provider tools may follow the catalog; require every existing
+        // catalog entry to retain its relative position ahead of the new native.
+        const old_tools = earlier.array.items;
+        try testing.expectEqual(old_tools.len + 1, entries.len);
+        const added = if (route.kind == .openai) entries[2].object.get("function").? else entries[2];
+        try testing.expectEqualStrings("todo_read", added.object.get("name").?.string);
+        for (old_tools[0..2], entries[0..2]) |old, new| {
+            try testing.expectEqualStrings(try std.json.Stringify.valueAlloc(a, old, .{}), try std.json.Stringify.valueAlloc(a, new, .{}));
+        }
+        try testing.expect(std.mem.indexOf(u8, body, "todo_read") != null);
+    }
+}

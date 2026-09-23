@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { copyText } from "@/lib/ui-sounds";
 
 /* ─────────────────────────────────────────────────────────
  * CODE BLOCK
@@ -49,10 +50,10 @@ export default function CodeBlock() {
   }, [count, done]);
 
   const copy = useCallback(() => {
-    navigator.clipboard.writeText(RAW).then(() => {
+    void copyText(RAW).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    });
+    }).catch(() => {});
   }, []);
 
   return (

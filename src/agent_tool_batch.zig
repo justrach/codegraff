@@ -26,12 +26,33 @@ const eval_control = @import("agent_eval_control.zig");
 pub const skipped_text = "tool execution skipped because the operation was aborted";
 
 /// Write / edit / imagegen serialize the whole batch so a later edit cannot
-/// race a write on the same path. Shell-only batches stay parallel (#266).
-/// Mixing bash with write/edit still serializes, because write/edit do.
+/// race a write on the same path. Mixing bash with write/edit still
+/// serializes, because write/edit do. Shell-only batches stay parallel
+/// (#266); the parent joins all results before converting/freeing them (#1166).
 pub fn isSequential(name: []const u8) bool {
+    if (std.mem.eql(u8, name, @import("jev_tool.zig").name)) return true;
     if (std.mem.eql(u8, name, "write_file")) return true;
     if (std.mem.eql(u8, name, "edit_file")) return true;
     if (std.mem.eql(u8, name, imagegen.tool_name)) return true;
+    return false;
+}
+
+test "optional effort selections serialize in model call order" {
+    try std.testing.expect(isSequential(@import("jev_tool.zig").name));
+    try std.testing.expect(!isSequential("shell"));
+}
+
+fn isShellName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "shell") or std.mem.eql(u8, name, "bash");
+}
+
+/// Preserve the async scheduling policy introduced for #1166. This is not
+/// thread affinity: Threaded Io may run async work on its pool too. Safety
+/// relies on owned outputs and joining every future before result cleanup.
+pub fn batchNeedsCooperative(calls: []const ToolCall, idx: []const usize) bool {
+    for (idx) |i| {
+        if (isShellName(calls[i].name)) return true;
+    }
     return false;
 }
 
@@ -42,17 +63,13 @@ pub fn batchNeedsSerial(calls: []const ToolCall, ext_idx: []const usize) bool {
     return false;
 }
 
-pub fn runExternal(self: *Agent, calls: []const ToolCall, ext_idx: []const usize, results: []ExecResult) !void {
-    if (ext_idx.len == 0) return;
-    const serial = batchNeedsSerial(calls, ext_idx);
-    if (ext_idx.len > 1 and !self.sub and !serial) {
-        engine_sink.forAgent(self).emit(self.io, .{ .parallel_batch_started = .{ .count = ext_idx.len } });
-    }
-    const ctx: ToolCtx = .{
+pub fn context(self: *Agent) ToolCtx {
+    return .{
         .gpa = self.gpa,
         .io = self.io,
         .client = self.client,
         .provider = self.provider,
+        .jev_effort_pending = &self.jev_effort_pending,
         .subagent_provider = self.subagent_provider,
         .subagent_cross_provider = self.subagent_cross_provider,
         .mcp_context = self.mcp_context.value,
@@ -60,11 +77,15 @@ pub fn runExternal(self: *Agent, calls: []const ToolCall, ext_idx: []const usize
         .from_sub = self.sub,
         .interactive_children = !self.sub and @import("subagent_interactive.zig").enabled.load(.acquire),
         .session_name = self.session_name,
+        .worker_family = self.worker_family orelse @import("http_headers.zig").sessionId(self.io),
+        .worker_id = self.worker_id,
         .has_eval = self.eval_cmd != null,
         .approvals = self.approvals,
+        .plan_read_owner = self,
         .tracer = self.tracer,
         .run_budget = self.run_budget,
         .publication_checks = self.publication_checks,
+        .publication_observer = .{ .context = self, .state = &self.publication_checks, .record = @import("pr_local_checks.zig").observeOutput },
         .depth = self.depth,
         .snapshots = self.snapshots,
         .tools_used = &self.tools_used,
@@ -73,6 +94,15 @@ pub fn runExternal(self: *Agent, calls: []const ToolCall, ext_idx: []const usize
         .subagent_feedback = self.feedback,
         .read_miss = &self.read_miss,
     };
+}
+
+pub fn runExternal(self: *Agent, calls: []const ToolCall, ext_idx: []const usize, results: []ExecResult) !void {
+    if (ext_idx.len == 0) return;
+    const serial = batchNeedsSerial(calls, ext_idx);
+    if (ext_idx.len > 1 and !self.sub and !serial) {
+        engine_sink.forAgent(self).emit(self.io, .{ .parallel_batch_started = .{ .count = ext_idx.len } });
+    }
+    const ctx = context(self);
     const esc_watch = !self.sub and self.in != null and main_mod.use_color and !main_mod.json_mode;
     var esc_tio: ?tty.RawState = null;
     var esc_fut: ?Io.Future(void) = null;
@@ -119,19 +149,19 @@ fn aborted() bool {
     return Agent.esc_cancel.load(.acquire);
 }
 
-fn takeOutput(self: *Agent, call: ToolCall, output: ToolOutput, handle_threshold: usize, handle_target: tool_handle.Target) !ExecResult {
+pub fn takeOutput(self: *Agent, call: ToolCall, output: ToolOutput, handle_threshold: usize, handle_target: tool_handle.Target) !ExecResult {
     self.read_miss.noteOutput(call.name, call.input, output.text, output.is_error);
-    try @import("pr_local_checks.zig").record(self, call, .{ .text = output.text, .is_error = output.is_error, .cancelled = output.cancelled });
+    try @import("pr_local_checks.zig").record(self, call, .{ .text = output.text, .is_error = output.is_error, .cancelled = output.cancelled, .pending = output.pending });
     const handled = try tool_handle.forResult(self.gpa, self.arena, handle_target, output.text, handle_threshold);
     const text = try tool_handle.withFirstNote(self.arena, handled, &self.handle_note_shown);
     if (self.eval_cmd != null and eval_control.toolInvalidatesEval(call)) {
         self.eval_verified = false;
         self.eval_repair_pending = false;
     }
-    return .{ .text = text, .is_error = output.is_error, .cancelled = output.cancelled, .ms = output.ms };
+    return .{ .text = text, .is_error = output.is_error, .cancelled = output.cancelled, .pending = output.pending, .ms = output.ms };
 }
 
-fn handleTarget(self: *Agent) tool_handle.Target {
+pub fn handleTarget(self: *Agent) tool_handle.Target {
     return .{
         .io = self.io,
         .dir = .cwd(),
@@ -169,8 +199,15 @@ fn runParallel(self: *Agent, ctx: ToolCtx, calls: []const ToolCall, ext_idx: []c
     defer self.gpa.free(futures);
     const outputs = try self.gpa.alloc(ToolOutput, spawn_at.items.len);
     defer self.gpa.free(outputs);
-    for (spawn_at.items, futures) |i, *fut|
-        fut.* = self.io.concurrent(execTool, .{ ctx, calls[i] }) catch self.io.async(execTool, .{ ctx, calls[i] });
+    const cooperative = batchNeedsCooperative(calls, spawn_at.items);
+    for (spawn_at.items, futures) |i, *fut| {
+        // Async may fall back to inline execution under saturation; it does
+        // not guarantee execution on the caller thread (Threaded Io).
+        fut.* = if (cooperative)
+            self.io.async(execTool, .{ ctx, calls[i] })
+        else
+            self.io.concurrent(execTool, .{ ctx, calls[i] }) catch self.io.async(execTool, .{ ctx, calls[i] });
+    }
     for (futures, outputs) |*fut, *output| output.* = fut.await(self.io);
     defer for (outputs) |output| self.gpa.free(output.text);
 
@@ -206,8 +243,17 @@ test "batchNeedsSerial: file mutations serialize; bash-only stays parallel" {
     try std.testing.expect(batchNeedsSerial(&only_write, &.{0}));
     const two_bash = [_]ToolCall{ bash, bash };
     try std.testing.expect(!batchNeedsSerial(&two_bash, &.{ 0, 1 }));
+    try std.testing.expect(batchNeedsCooperative(&two_bash, &.{ 0, 1 }));
     const bash_write = [_]ToolCall{ bash, write };
     try std.testing.expect(batchNeedsSerial(&bash_write, &.{ 0, 1 }));
+    try std.testing.expect(!batchNeedsCooperative(&reads, &.{ 0, 1 }));
+}
+
+test "isShellName: bash and shell, not reads" {
+    try std.testing.expect(isShellName("bash"));
+    try std.testing.expect(isShellName("shell"));
+    try std.testing.expect(!isShellName("read_file"));
+    try std.testing.expect(!isShellName("webfetch"));
 }
 
 test "skipped_text is a stable model-facing sentence" {

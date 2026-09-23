@@ -12,9 +12,6 @@ const main_mod = @import("main.zig");
 const Agent = @import("agent.zig").Agent;
 
 const messages_mod = @import("messages.zig");
-const sanitizeMessagesUtf8 = messages_mod.sanitizeMessagesUtf8;
-const normalizeResponsesHistory = messages_mod.normalizeResponsesHistory;
-const normalizeOpenAIHistory = messages_mod.normalizeOpenAIHistory;
 
 const http = @import("http.zig");
 const http_headers = @import("http_headers.zig");
@@ -88,6 +85,17 @@ fn sayTypedApiError(self: *Agent, etype: []const u8, ecode: ?[]const u8, emsg: [
 }
 
 pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
+    // Pool-thread Jev results become session state only on this owner thread.
+    if (Agent.esc_cancel.load(.acquire) or @import("acp_engine.zig").cancel_flag.load(.acquire))
+        self.jev_effort_pending.invalidate(self.io)
+    else
+        @import("jev_effort_state.zig").apply(self);
+    var usage_attempts: @import("request_usage_attempts.zig").Ledger = .{};
+    defer usage_attempts.finish(self.io, &@import("pricing.zig").g_cost);
+    errdefer {
+        if (@import("agent_async_tools.zig").started(self)) self.closeCodexWs();
+        @import("agent_async_tools.zig").reset(self);
+    }
     // Root and title requests rendezvous after launch-time CA loading.
     http.waitForClientReady(self.io);
     if (http.takeCaWarmFailure()) if (self.tracer) |tr| tr.note("ca_prewarm_failed", "CA bundle rescan failed; request will use lazy TLS initialization");
@@ -116,7 +124,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     // so the model lands a text answer now instead of asking for a tool the
     // budget can never pay for — which is how the audit smoke died narrating.
     // compaction/title requests pass tools=null already and skip this whole.
-    var tools = tools_in;
+    var tools = try @import("jev_tool.zig").refreshCatalogForRequest(self, tools_in);
     if (self.tracer) |tr| {
         if (tools) |t| if (t.len == 0) tr.note("tools", "empty catalog at request time (#695)");
     }
@@ -148,9 +156,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     policy.refreshLoginKeyBeforeSend(self);
     // #95: scrub any malformed function_call_output before it hits the wire.
     const message_arena = self.messageMutationAlloc();
-    sanitizeMessagesUtf8(message_arena, &self.messages); // invalid UTF-8 (any source/format) -> '?' so content never serializes as a byte-int array the API rejects
-    if (self.provider.kind == .responses) normalizeResponsesHistory(message_arena, &self.messages);
-    if (self.provider.kind == .openai) normalizeOpenAIHistory(message_arena, &self.messages); // #99: chat-completions sibling of the above
+    @import("history_wire.zig").prepare(message_arena, self.provider.kind, &self.messages);
     // #193 follow-up: bound any single oversized tool output (an uncapped MCP
     // result, a huge fetch on a small-window model) before send. The responses
     // path already hard-caps output above (normalizeResponsesHistory); this is the
@@ -196,6 +202,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     const max_openai404_retries: usize = 2;
     var gw_retry = policy.GatewayRetryState{}; // #gateway-artifact state (agent_gateway_retry.zig)
     rebuild: while (true) {
+        if (@import("agent_async_tools.zig").started(self)) return error.AsyncToolStreamFailed;
         const live = self.usesLiveTransport();
         self.streamed_text = false;
         self.streamed_args = .none;
@@ -227,11 +234,13 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             while (true) : (attempt += 1) {
                 var conv_buf: [96]u8 = undefined;
                 const conv = http_headers.promptCacheKey(self.io, self.label, self, &conv_buf);
+                usage_attempts.begin();
                 const attempt_body = if (live)
                     self.postLive(body)
                 else
                     postWatched(self.gpa, self.io, self.client, self.provider, body, conv);
                 if (attempt_body) |ok| break :blk ok else |err| {
+                    if (@import("agent_async_tools.zig").started(self)) return err;
                     if (err == error.ModelLoop) return err; // #743: repeated prose ends the turn WITHOUT retry (tier2 model-loop-bounded-prose)
                     if (self.streamed_text) if (self.out) |w| {
                         w.writeAll("\n") catch {};
@@ -353,7 +362,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                             const delay_ms = RetryPlan.delayMs(throttled, attempt);
                             @import("turn_chrome.zig").emitRetryNotice(self.io, @errorName(err), attempt + 1, max_attempts);
                             if (scratch.showRecoveredTransportRetry(self.call_kind))
-                                try self.say("[network error: {t} — retrying in {d}ms ({d}/{d})]\n", .{ err, delay_ms, attempt + 1, max_attempts });
+                                try scratch.announceNetworkRetry(self, err, delay_ms, attempt + 1, max_attempts);
                             // Same trace breadcrumb the 429/5xx branch leaves: a
                             // transport-flake retry is otherwise invisible in the
                             // session trace, hiding how flaky a provider really is.
@@ -390,7 +399,9 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             switch (r) {
                 .ok => |obj| {
                     if (!self.compaction_request) self.compact_transport_failures = 0;
+                    usage_attempts.completed();
                     self.recordUsageResponses(obj, body.len);
+                    try @import("agent_async_tools.zig").join(self);
                     // #414: an empty output whose usage already fills the window
                     // is an overflow the provider never reported. Re-anchor like
                     // the error branch above: the recovery trims full history.
@@ -408,6 +419,10 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     const ws_error_frame = self.ws_api_error_pending;
                     self.ws_api_error_pending = false;
                     const diagnostic = try responses.failureDiagnostic(self.arena, self.provider.id, failure);
+                    if (@import("agent_async_tools.zig").started(self)) {
+                        try self.sayApiError("{s}", .{diagnostic});
+                        return error.ApiError;
+                    }
                     if (ws_error_frame) if (self.tracer) |tr| tr.note("ws_api_error", diagnostic);
                     if (codex_chain.shouldReanchorRequest(body, msg, failure.code)) {
                         self.closeCodexWs();
@@ -469,6 +484,11 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     try sayTypedApiError(self, etype, ecode, emsg, errorRequestId(root));
                     return error.ApiError;
                 };
+                if (self.provider.kind == .openai) {
+                    const usage = root.get("usage");
+                    if (usage == null or usage.? != .object) @import("pricing.zig").g_cost.missingUsage(self.io);
+                }
+                usage_attempts.completed();
                 self.recordUsage(root, body.len);
                 if (recoverBehavioralOverflow(self, root, &context_retried)) continue; // #414: silent overflow / upstream truncation → trim + retry
                 if (!self.compaction_request) self.compact_transport_failures = 0;
@@ -563,6 +583,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             return error.ApiError;
         }
 
+        usage_attempts.completed();
         self.recordUsage(root, body.len);
         if (recoverBehavioralOverflow(self, root, &context_retried)) continue; // #414: same, on the non-streamed body
         if (!self.compaction_request) self.compact_transport_failures = 0;

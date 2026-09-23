@@ -6,6 +6,16 @@ export function resolveComposerModel(catalog: ModelChoice[], modelKey?: string |
   return catalog[0] ?? { key: "", name: "Loading graff models…" };
 }
 
+/** Resolve the selected route before starting a worker; an unavailable catalog cannot choose it. */
+export async function startWithSelectedModel<T>(key: string | undefined, catalog: ModelChoice[],
+  loadCatalog: () => Promise<ModelChoice[]>, start: (model?: string) => Promise<T>): Promise<T> {
+  if (!key) return start();
+  const rows = catalog.length ? catalog : await loadCatalog();
+  const provider = rows.find(model => model.key === key)?.provider;
+  if (!provider) throw new Error(`Could not verify model '${key}' in this workspace's catalog. Refresh models and retry.`);
+  return start(`${provider}/${key}`);
+}
+
 /** Display key: this chat's ACP model. Global inherit is only for a tab with no agent yet. */
 export function liveComposerKey(
   threadModel: string | undefined,
@@ -61,5 +71,13 @@ export function pillFromAcp(
 }
 
 export function sameModels(a: ModelChoice[], b: ModelChoice[]): boolean {
-  return a.length === b.length && a.every((m, i) => m.key === b[i]?.key && m.name === b[i]?.name);
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+export function rememberChatCatalog(catalogs: Record<number, ModelChoice[]>, id: number, models: ModelChoice[]): Record<number, ModelChoice[]> {
+  return sameModels(catalogs[id] ?? [], models) ? catalogs : { ...catalogs, [id]: models };
+}
+
+export function sharedModelChoices(models: ModelChoice[]): ModelChoice[] {
+  return models.map(({ effort: _effort, fast: _fast, current: _current, ...row }) => row);
 }

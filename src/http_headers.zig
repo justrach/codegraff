@@ -96,13 +96,13 @@ var project_id_buf: [36]u8 = undefined;
 var project_id_len: usize = 0;
 var project_id_lock: std.atomic.Value(bool) = .init(false);
 
-/// Durable per-project id (affinity-seed UUIDv5, no state to persist). A new
-/// session in the same repo reuses the bucket the last session wrote, so
-/// turn 1 can hit the warm system+tools prefix if the provider still has
-/// it. Different models do not share a cache (the server keys by model);
-/// they each get this same routing id so *their* later sessions can find
-/// *their* prefix. Same-project conversation tails may evict each other;
-/// the expensive prefix still hits.
+/// Durable per-project id (affinity-seed UUIDv5). A new session in the same
+/// repo reuses the bucket the last session wrote, so turn 1 can hit the warm
+/// system+tools prefix if the provider still has it. `/resume` restores a
+/// saved `prompt_cache_key` (see `restoreProjectRootId`) when cwd would hash
+/// differently — idle-park, worktree move. Different models do not share a
+/// cache (the server keys by model); they each get this same routing id so
+/// *their* later sessions can find *their* prefix.
 pub fn projectRootId(io: Io) []const u8 {
     while (project_id_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
     defer project_id_lock.store(false, .release);
@@ -144,7 +144,9 @@ pub fn adoptSessionId(id: []const u8) void {
     while (session_id_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
     defer session_id_lock.store(false, .release);
     if (session_id_len != 0) return;
-    @memcpy(session_id_buf[0..36], id[0..36]);
+    // copyForwards, not @memcpy: a caller may hand back a slice of the
+    // static buffer itself (round-trip restore), which aliases dest.
+    std.mem.copyForwards(u8, session_id_buf[0..36], id[0..36]);
     session_id_len = 36;
 }
 
@@ -154,8 +156,18 @@ pub fn restoreSessionId(id: []const u8) void {
     if (id.len != 36) return;
     while (session_id_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
     defer session_id_lock.store(false, .release);
-    @memcpy(session_id_buf[0..36], id[0..36]);
+    std.mem.copyForwards(u8, session_id_buf[0..36], id[0..36]);
     session_id_len = 36;
+}
+
+/// `/resume` / idle-park: keep the persisted `prompt_cache_key` even if this
+/// process already hashed cwd. Length-checked like `restoreSessionId`.
+pub fn restoreProjectRootId(id: []const u8) void {
+    if (id.len != 36) return;
+    while (project_id_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
+    defer project_id_lock.store(false, .release);
+    std.mem.copyForwards(u8, project_id_buf[0..36], id[0..36]);
+    project_id_len = 36;
 }
 
 pub fn userAgent(provider: Provider) std.http.Client.Request.Headers.Value {
@@ -447,6 +459,16 @@ test "restoreSessionId overwrites a minted id so a parked worker keeps cache aff
     try std.testing.expectEqualStrings("00000000-0000-4000-8000-000000000001", sessionId(io));
     restoreSessionId("short");
     try std.testing.expectEqualStrings("00000000-0000-4000-8000-000000000001", sessionId(io));
+}
+
+test "restoreProjectRootId overwrites a minted id so resume keeps the prompt-cache partition" {
+    const io = std.testing.io;
+    const before = projectRootId(io);
+    restoreProjectRootId("22222222-2222-4222-8222-222222222222");
+    try std.testing.expectEqualStrings("22222222-2222-4222-8222-222222222222", projectRootId(io));
+    restoreProjectRootId("short");
+    try std.testing.expectEqualStrings("22222222-2222-4222-8222-222222222222", projectRootId(io));
+    restoreProjectRootId(before);
 }
 
 fn headerValue(headers: []const std.http.Header, name: []const u8) ?[]const u8 {

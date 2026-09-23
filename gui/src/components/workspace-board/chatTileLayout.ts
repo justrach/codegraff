@@ -85,7 +85,11 @@ function generateTerminalKey(): string {
  * (spanning beneath chat + side panes) with the stable key "1"; subsequent ones are
  * added as sibling tabs in the same bottom group, each with its own PTY key.
  */
-export function addTerminalTab(api: DockviewApi, binding: ChatBinding): void {
+export function addTerminalTab(
+  api: DockviewApi,
+  binding: ChatBinding,
+  initialCommand?: string,
+): void {
   if (api.getPanel(CHAT_PANE_ID) == null) {
     buildDefaultChatTileLayout(api, binding);
   }
@@ -109,6 +113,7 @@ export function addTerminalTab(api: DockviewApi, binding: ChatBinding): void {
       kind: "terminal",
       label: title,
       terminalKey,
+      initialCommand,
     },
     // Keep every terminal tab mounted when inactive so switching tabs doesn't tear
     // down its PTY (dockview's default `onlyWhenVisible` would unmount it).

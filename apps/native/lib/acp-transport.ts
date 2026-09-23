@@ -1,12 +1,24 @@
+import { randomUUID } from "node:crypto";
+import { permissionRequest } from "./acp-permission";
 import type { ChildProcessByStdio } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 type Child = ChildProcessByStdio<Writable, Readable, null>;
-type Message = { id?: number; method?: string; params?: unknown; result?: unknown; error?: { message?: string } };
+type Message = { id?: number | string; method?: string; params?: unknown; result?: unknown; error?: { message?: string } };
 type Pending = { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>; onLine?: (line: string) => void };
 
 /** Exactly one stdout reader. RPCs never consume another request's notifications. */
 export class AcpTransport {
+  private permissions = new Map<string, { id: number | string; session: string; options: Set<string> }>();
+  clearPermissions() { this.permissions.clear(); }
+  respondPermission(token: string, session: string, optionId: string | null): boolean {
+    const request = this.permissions.get(token);
+    if (!request || request.session !== session || (optionId !== null && !request.options.has(optionId)) || this.failure) return false;
+    this.permissions.delete(token);
+    const outcome = optionId === null ? { outcome: "cancelled" } : { outcome: "selected", optionId };
+    this.child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { outcome } }) + "\n");
+    return true;
+  }
   private nextId = 1;
   private buffer = "";
   private decoder = new StringDecoder("utf8");
@@ -26,9 +38,22 @@ export class AcpTransport {
     let newline;
     while ((newline = this.buffer.indexOf("\n")) >= 0) {
       if (newline > 8 * 1024 * 1024) { this.fail(new Error("ACP line exceeds limit")); return; }
-      const line = this.buffer.slice(0, newline); this.buffer = this.buffer.slice(newline + 1);
+      let line = this.buffer.slice(0, newline); this.buffer = this.buffer.slice(newline + 1);
       let message: Message;
       try { message = JSON.parse(line); } catch { continue; }
+      if (message.method === "session/request_permission" && (typeof message.id === "string" || typeof message.id === "number")) {
+        const permission = permissionRequest({ ...message, id: String(message.id) });
+        if (permission) {
+          const token = randomUUID();
+          this.permissions.set(token, { id: message.id, session: permission.sessionId, options: new Set(permission.options.map(o => o.optionId)) });
+          message = { ...message, id: token };
+          line = JSON.stringify(message);
+        }
+      }
+      if (message.method === "session/update") {
+        const params = message.params as { update?: { sessionUpdate?: string } };
+        if (params?.update?.sessionUpdate === "gui_turn_end") this.clearPermissions();
+      }
       if (message.method) {
         this.notification(message);
         for (const listener of this.listeners) listener(line);
@@ -45,6 +70,7 @@ export class AcpTransport {
   private fail(error: Error) {
     if (this.failure) return;
     this.failure = error;
+    this.clearPermissions();
     this.buffer = "";
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
     this.pending.clear(); this.listeners.clear();
@@ -56,6 +82,7 @@ export class AcpTransport {
     return () => { this.listeners.delete(fn); };
   }
   notify(method: string, params?: unknown) {
+    if (method === "session/cancel") this.clearPermissions();
     if (this.failure) throw this.failure;
     this.child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n");
   }

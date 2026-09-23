@@ -54,6 +54,7 @@ import {
   type PaneResizeTween,
   type ResizeAxis,
 } from "./paneResizeAnimation";
+import { TASK_RUN_EVENT, takeTaskRun } from "../task-workspace/taskRun";
 import { applySavedConversationLayout } from "./utils/savedLayout";
 import "./chat-tile-dockview.css";
 
@@ -79,6 +80,19 @@ export function ChatTile({
   const shellRef = useRef<HTMLElement | null>(null);
   const paneTweenRef = useRef<PaneResizeTween | null>(null);
   const innerApiRef = useRef<DockviewApi | null>(null);
+  useEffect(() => {
+    function openQueuedRun() {
+      const request = takeTaskRun(binding.workspacePath);
+      const api = innerApiRef.current;
+      if (request == null || api == null) {
+        return;
+      }
+      addTerminalTab(api, binding, request.command);
+    }
+    window.addEventListener(TASK_RUN_EVENT, openQueuedRun);
+    openQueuedRun();
+    return () => window.removeEventListener(TASK_RUN_EVENT, openQueuedRun);
+  }, [binding]);
   const innerDisposablesRef = useRef<Array<{ dispose(): void }>>([]);
   const fallbackToDefaultLayoutRef = useRef(false);
   const draggedPanelRef = useRef<IDockviewPanel | null>(null);

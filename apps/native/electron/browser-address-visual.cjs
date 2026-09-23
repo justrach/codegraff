@@ -1,12 +1,13 @@
 const assert = require('node:assert/strict');
-async function runBrowserAddress({ wc, browser, destination, guard, wait, delayOpenReply, openReplySent }) {
+async function runBrowserAddress({ wc, browser, destination, guard, wait, browserOpens, errors, delayOpenReply, openReplySent, delayAbortedReply, abortedReplySent, delayUnreplacedAbort, unreplacedAbortSent }) {
   const js = code => wc.executeJavaScript(code);
-  const searches = [];
+  const searches = [], attempted = [];
   const safe = guard(destination);
   // Redirect only the expected search URL to local HTML before any network I/O.
   const query = 'how to center a div 世界';
   const expected = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
   browser.session.webRequest.onBeforeRequest((details, callback) => {
+    if (attempted.length < 12) attempted.push(details.url);
     if (details.url === expected) { searches.push(details.url); callback({ redirectURL: destination }); }
     else safe(details, callback);
   });
@@ -21,7 +22,13 @@ async function runBrowserAddress({ wc, browser, destination, guard, wait, delayO
   };
   delayOpenReply();
   await submit(query);
-  await wait(() => searches.length === 1, 'ordinary words reach the search URL');
+  try {
+    await wait(() => searches.length === 1, 'ordinary words reach the search URL');
+  } catch (error) {
+    const address = await js(`document.querySelector('input[aria-label="Address"]')?.value`);
+    const visible = browser.tabs.get(browser.visible)?.view?.webContents?.getURL();
+    throw new Error(`${error.message}; address=${JSON.stringify(address)}; browser opens=${JSON.stringify(browserOpens)}; attempted requests=${JSON.stringify(attempted)}; IPC errors=${JSON.stringify(errors)}; visible page=${JSON.stringify(visible)}`, { cause: error });
+  }
   await wait(() => {
     const page = browser.tabs.get(browser.visible)?.view?.webContents;
     return page && !page.isLoading() && page.getURL() === destination + '/';
@@ -34,6 +41,24 @@ async function runBrowserAddress({ wc, browser, destination, guard, wait, delayO
   await js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   assert.deepEqual(searches, [expected]);
   assert.equal(await js(`!!document.querySelector('aside [role="alert"]')`), false, 'Search terms do not show Invalid URL');
+  // A successful replacement page can precede an ERR_ABORTED IPC reply for
+  // the original navigation. The late error must not cover that page.
+  delayAbortedReply();
+  const redirected = destination + '/late-reply';
+  await submit(redirected);
+  await wait(() => {
+    const page = browser.tabs.get(browser.visible)?.view?.webContents;
+    return page && !page.isLoading() && page.getURL() === redirected;
+  }, 'replacement page finished before its rejected reply');
+  await wait(abortedReplySent, 'late aborted reply delivered');
+  await js('new Promise(resolve=>setTimeout(resolve,100))');
+  assert.equal(await js(`!!document.querySelector('aside [role="alert"]')`), false, 'superseded abort does not show a navigation error');
+  // Without a completed replacement, the same abort remains visible.
+  delayUnreplacedAbort();
+  await submit(destination + '/no-replacement');
+  await wait(unreplacedAbortSent, 'unreplaced abort delivered');
+  await wait(`document.querySelector('aside [role="alert"]')?.textContent.includes('ERR_ABORTED')`);
+  assert.equal(browser.tabs.get(browser.visible).view.webContents.getURL(), redirected);
   // Check scheme rejection in the real IPC path without treating it as a search.
   const oldURL = browser.tabs.get(browser.visible).view.webContents.getURL();
   await submit('javascript:alert(1)');
