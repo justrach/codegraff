@@ -24,6 +24,10 @@ printed GRAFF_EVAL_SET_FILE / GRAFF_EVAL_SET_HASH / GRAFF_REPLAY_JUDGE.
 
 Usage:
     python3 examples/dgm_loop.py "summarize src/main.zig's Telemetry struct" 3
+
+Optional shared-harness formal gate (prompt correctness still comes from the
+held-out replay judge): create an external pin with dgm_formal_gate.py --pin,
+then set GRAFF_DGM_FORMAL_PIN and GRAFF_SCORE_KEY_FILE before this command.
 """
 import collections
 import hashlib
@@ -36,9 +40,11 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "sdk", "py"))
 from harness_sdk import Harness, prompt_fingerprint, verify_score  # noqa: E402
+from dgm_formal_gate import FormalGate  # noqa: E402
 
 ARCHIVE_DIR = os.path.join(".graff", "trajectories")
 LEGACY_ARCHIVE = "harness.trajectory.jsonl"
+_replay_env = None
 
 
 def archive_paths():
@@ -75,7 +81,7 @@ SEED = ("You are a focused agent. Do exactly what the task asks, verify your "
         "result before reporting, and report it plainly with evidence.")
 
 
-def load_archive():
+def load_archive(gate=None):
     """genomes: sha → prompt text; scores: sha → [values]; children: sha → n.
 
     When GRAFF_SCORE_KEY_FILE is set, score rows must carry a valid HMAC or
@@ -95,6 +101,12 @@ def load_archive():
                     if key is not None and not verify_score(key, o):
                         rejected += 1
                         continue
+                    if gate is not None and o.get("judge_id") == "replay-v1+formal-v1":
+                        try:
+                            gate.verify_score_receipt(o, genomes.get(o.get("prompt_sha")))
+                        except Exception:
+                            rejected += 1
+                            continue
                     scores[o["prompt_sha"]].append(o["score"])
                     p = o.get("parent_sha")
                     if p and (p, o["prompt_sha"]) not in seen_edges:
@@ -127,7 +139,7 @@ def replay_eval(child_prompt):
     the editable tree; falls back to the in-tree copy with a warning).
     Returns the judge's JSON verdict, or None on ANY failure — the caller
     must treat None as fail-closed, not as a free pass."""
-    judge_path = os.environ.get("GRAFF_REPLAY_JUDGE")
+    judge_path = (_replay_env or os.environ).get("GRAFF_REPLAY_JUDGE")
     if not judge_path:
         judge_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                   "replay_judge.py")
@@ -136,7 +148,7 @@ def replay_eval(child_prompt):
     try:
         r = subprocess.run([sys.executable, judge_path],
                            input=child_prompt, text=True,
-                           stdout=subprocess.PIPE, timeout=1800)
+                           stdout=subprocess.PIPE, timeout=1800, env=_replay_env)
         if r.returncode != 0:
             return None
         return json.loads(r.stdout)
@@ -184,38 +196,57 @@ def judge(h, task, report, child):
           f"efficiency {efficiency:.3f}, ${res.get('total_cost', 0):.4f}")
     return 0.9 + 0.1 * efficiency, res["eval_set_hash"]
 def main():
+    global _replay_env
+    _replay_env = None
     if len(sys.argv) < 2:
         sys.exit(__doc__)
     task = sys.argv[1]
     iters = int(sys.argv[2]) if len(sys.argv) > 2 else 3
-    h = Harness(yolo=True)
-    for gen in range(iters):
-        genomes, scores, children = load_archive()
-        parent_sha = select_parent(genomes, scores, children)
-        parent = genomes.get(parent_sha, SEED)
-        # Modify: the meta step — the harness's own model mutates the genome.
-        child = h.ask(
-            "Rewrite this agent system prompt to perform better on tasks "
-            f"like: {task}\nChange ONE meaningful behavior. Keep it under "
-            f"120 words. Reply with ONLY the new prompt.\n---\n{parent}")
-        # Spawn the child as a prompt variant; its run (incl. tool sequence)
-        # lands in the archive automatically.
-        report = h.ask(
-            f'Call the subagent tool exactly once: description "dgm gen {gen}", '
-            f'prompt {json.dumps(task)}, system_prompt {json.dumps(child)}. '
-            "Then reply with the subagent report verbatim.")
-        s, eval_hash = judge(h, task, report, child)
-        # Evaluate write-back with the lineage edge + signed provenance:
-        # who judged (judge_id), what artifact (report sha), on which pinned
-        # eval set — all folded into the record's HMAC (Step 0).
-        h.score(child, s, notes=f"gen {gen}", parent=parent_sha or SEED,
-                judge_id="replay-v1",
-                artifact_sha=hashlib.sha256(report.encode()).hexdigest()[:16],
-                eval_set_hash=eval_hash)
-        print(f"gen {gen}: parent={parent_sha or 'seed'} "
-              f"child={prompt_fingerprint(child)} score={s:.2f}"
-              f"{' [PASSING]' if s >= 0.9 else ' [failing]'}")
-    h.close()
+    gate = FormalGate(os.environ["GRAFF_DGM_FORMAL_PIN"]) if "GRAFF_DGM_FORMAL_PIN" in os.environ else None
+    child_env = None
+    if gate is not None:
+        gate.ensure_checked()  # before the first model call
+        child_env = dict(os.environ)
+        child_env.update(gate.replay_env())
+        child_env.pop("GRAFF_DGM_FORMAL_PIN", None)
+        _replay_env = child_env
+    h = Harness(yolo=True, binary=gate.binary if gate else None, env=child_env,
+                model=gate.main_model if gate else None)
+    try:
+        for gen in range(iters):
+            if gate:
+                gate.ensure_checked()  # stop drift before a new mutation call
+            genomes, scores, children = load_archive(gate)
+            parent_sha = select_parent(genomes, scores, children)
+            parent = genomes.get(parent_sha, SEED)
+            # The genome is a prompt, not a change to harness source or model.
+            child = h.ask(
+                "Rewrite this agent system prompt to perform better on tasks "
+                f"like: {task}\nChange ONE meaningful behavior. Keep it under "
+                f"120 words. Reply with ONLY the new prompt.\n---\n{parent}")
+            prepared = gate.prepare_candidate(child) if gate else None
+            # The optional gate runs before the costly child and replay eval.
+            report = h.ask(
+                f'Call the subagent tool exactly once: description "dgm gen {gen}", '
+                f'prompt {json.dumps(task)}, system_prompt {json.dumps(child)}. '
+                "Then reply with the subagent report verbatim.")
+            s, eval_hash = judge(h, task, report, child)
+            if gate:
+                if s >= 0.9 and not eval_hash:
+                    raise RuntimeError("promotable score has no pinned replay receipt")
+                artifact_sha = gate.finish_candidate(prepared, child, report, eval_hash)
+            else:
+                artifact_sha = hashlib.sha256(report.encode()).hexdigest()[:16]
+            # The signed eval_set_hash stays the original held-out digest;
+            # the opt-in signed artifact digest binds formal-check evidence.
+            h.score(child, s, notes=f"gen {gen}", parent=parent_sha or SEED,
+                    judge_id="replay-v1+formal-v1" if gate else "replay-v1",
+                    artifact_sha=artifact_sha, eval_set_hash=eval_hash)
+            print(f"gen {gen}: parent={parent_sha or 'seed'} "
+                  f"child={prompt_fingerprint(child)} score={s:.2f}"
+                  f"{' [PASSING]' if s >= 0.9 else ' [failing]'}")
+    finally:
+        h.close()
     print(f"archive: {ARCHIVE_DIR} — rerun to keep evolving; /trajectory to inspect")
 
 

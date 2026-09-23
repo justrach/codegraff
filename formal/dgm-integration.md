@@ -46,6 +46,46 @@ identity. Preserve the original replay suite hash and bind the formal receipt
 into score provenance. Retain formal failure separately from replay failure,
 unknown measurement and an ordinary low efficiency score.
 
+## Python example opt-in
+
+Create a new verifier directory outside the candidate checkout using
+`examples/dgm_formal_gate.py --pin`, supplying the harness executable, Java,
+TLC archive, and explicit mutation and replay model selectors. Set
+`GRAFF_DGM_FORMAL_PIN` to the resulting pin file and `GRAFF_SCORE_KEY_FILE`
+to the existing signing key before running `examples/dgm_loop.py`. The helper
+checks the pinned formal bundle once per unchanged identity. Normal mode remains
+unchanged when no formal pin is configured.
+
+Mutation and replay roles may intentionally use different model selectors;
+record both rather than silently conflating them. Selectors and binary hashes
+are not proof of the provider route actually served during inference. Historical
+scores remain possible parents, but do not become formally checked ancestry.
+Only new evaluations admitted through formal mode carry its evidence.
+
+```sh
+python3 examples/dgm_formal_gate.py --pin "$PIN_DIR" \
+  --binary "$HARNESS_BINARY" --java "$JAVA" --jar "$TLA2TOOLS" \
+  --main-model "$MAIN_MODEL" --replay-model "$REPLAY_MODEL"
+GRAFF_DGM_FORMAL_PIN="$PIN_DIR/pin.json" \
+  GRAFF_SCORE_KEY_FILE="$SCORE_KEY_FILE" \
+  python3 examples/dgm_loop.py "Your evaluation task" 3
+```
+
+The pin directory must be new and outside the source checkout. Set the model
+selectors explicitly for the mutation and replay roles. Receipts and bounded
+checker logs stay private. To audit an archived signed score, set the same
+signing-key environment variable and run:
+
+```sh
+python3 examples/dgm_formal_gate.py --verify-row "$SCORE_ROW_JSON" \
+  --pin-file "$PIN_DIR/pin.json"
+```
+
+Formal score rows resolve to `score-<artifact digest>.json` receipts. Validation
+checks the signature, prompt/report hashes, original held-out hash, preflight
+receipt, pinned identity and archived checker evidence. It also runs the current
+pinned model checks; their raw output need not match an earlier successful log.
+
 ## Other native promotion paths
 
 The repository also has native learning and persona promotion paths. Integrating
