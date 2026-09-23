@@ -23,9 +23,9 @@ counterexamples, and runtime regressions.
 See the [ranked extension plan](roadmap.md) for the next ownership, retry,
 budget, and session properties to model.
 
-The [DGM integration design](dgm-integration.md) separates formal admission
-from task correctness and measured fitness, and identifies the native promotion
-paths that need their own integration.
+The [DGM integration guide](dgm-integration.md) separates formal admission
+from task correctness and measured fitness, covers the optional Python and
+native learning gates, and identifies the remaining ungated promotion path.
 
 ## Scope
 
