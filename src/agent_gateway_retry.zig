@@ -102,6 +102,7 @@ pub const max_short_flake_retries: usize = 2;
 pub fn isShortGatewayFlake(etype: []const u8, code: ?[]const u8, msg: []const u8) bool {
     // Gateway 110-byte follow-up. etype is often invalid_request_error, which
     // would otherwise hard-fail on the "invalid" needle. Auth/quota still die.
+    if (code) |c| if (std.mem.eql(u8, c, "model_unavailable")) return false;
     if (isBodyParseRejection(msg)) return true;
     const hard = [_][]const u8{ "invalid", "authentication", "unauthorized", "insufficient", "quota", "permission", "tool_choice", "not found" };
     for (hard) |n| {
@@ -291,6 +292,7 @@ test "isShortGatewayFlake: internal/empty api_error retry; invalid/auth/quota do
     try std.testing.expect(!isShortGatewayFlake("authentication_error", null, "invalid api key"));
     try std.testing.expect(!isShortGatewayFlake("insufficient_quota", null, "You exceeded your current quota"));
     try std.testing.expect(!isShortGatewayFlake("api_error", null, "model not found"));
+    try std.testing.expect(!isShortGatewayFlake("service_unavailable", "model_unavailable", "Codegraff cannot serve this model right now"));
     try std.testing.expect(isShortGatewayFlake("invalid_request_error", null, "Body must be valid JSON"));
     try std.testing.expect(isShortGatewayFlake("api_error", null, "Malformed JSON in request body"));
     try std.testing.expect(!isShortGatewayFlake("invalid_request_error", null, "invalid prompt"));
