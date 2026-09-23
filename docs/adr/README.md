@@ -205,6 +205,9 @@ record only when you need the evidence or the edge cases.
 
 | [0179](0179-durable-shell-handles.md) | Reserve durable JS-exact shell handles before spawning; stale handles never target new jobs. |
 
+| [0180](0180-acp-permissions-belong-to-the-client.md) | ACP permission decisions belong to the active client and request; cancellation never grants approval. |
+| [0181](0181-acp-load-replays-saved-conversation.md) | Live ACP loads saved conversations in their selected workspace and replays history without rerunning tools. |
+
 ## When to write one
 
 Write an ADR when a decision is load-bearing and non-obvious: it was reached

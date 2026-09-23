@@ -1,3 +1,4 @@
+import type { PermissionRequest } from "@/lib/acp-permission";
 import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AssistantTurn } from "@/lib/acp";
 import { idleUpdates, type ChatHandle } from "@/lib/acp-client";
 import { holdIdleUntilAbort } from "@/lib/idle-http";
@@ -9,6 +10,7 @@ import { playUiSound } from "@/lib/ui-sounds";
  *  or other POST during one chat's turn can use the origin's connection slots
  *  no matter how many background tabs hold streams (#1068). */
 export async function pumpIdlePeerTurns(opts: {
+  onPermission?(chat: number, request: PermissionRequest | null): void;
   chatId: number;
   handle: ChatHandle;
   sessionId: string;
@@ -19,6 +21,8 @@ export async function pumpIdlePeerTurns(opts: {
   let asstId: number | undefined;
   const paint = (update: Parameters<typeof applyAcpUpdate>[1]) => {
     if (opts.running() || opts.signal.aborted) return;
+    if (update.sessionUpdate === "gui_permission") { opts.onPermission?.(opts.chatId, update.permission as PermissionRequest); return; }
+    if (update.sessionUpdate === "gui_turn_end") opts.onPermission?.(opts.chatId, null);
     let cue: "error" | "ready" | null = null;
     opts.setChats(current => current.map(chat => {
       if (chat.id !== opts.chatId) return chat;

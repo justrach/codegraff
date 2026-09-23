@@ -15,9 +15,10 @@ chips (ADR [0032](adr/0032-acp-streams-mid-turn.md)). `graff serve` is not
 required.
 
 Methods and shapes below are what `src/acp.zig` / `src/acp_protocol.zig`
-actually implement. `session/load` and `session/request_permission` are not
-implemented; unattended + `--yolo` is how a host that wants tools from the
-first call runs the agent.
+actually implement. Live agents support `session/load` for saved conversations
+and send `session/request_permission` when tool approval is required. Unattended
+hosts may use `--yolo`; interactive hosts must answer permission requests.
+See [client behavior and limits](acp-client-parity.md).
 
 ## `graff acp`
 
@@ -33,7 +34,8 @@ session/prompt →  session/update*  then  { stopReason }
 
 `initialize` params: `{ protocolVersion: 1, clientCapabilities: { fs: {} } }`.
 Negotiated version is `min(client, 1)`. Capabilities today:
-`loadSession: false`, `promptCapabilities: { image: false, audio: false,
+`loadSession: true` for the authenticated live CLI (`false` for the in-process
+embed and pre-auth startup), `promptCapabilities: { image: false, audio: false,
 embeddedContext: true }`.
 
 `session/new` params may include `cwd`. After the result, the agent advertises

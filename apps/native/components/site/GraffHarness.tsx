@@ -1,4 +1,5 @@
 "use client";
+import { useAcpPermissions } from "./useAcpPermissions";
 import SessionTabs from "./SessionTabs";
 import { useResponsiveNavigation } from "./useResponsiveNavigation";
 import { useNavigationPromptFocus } from "./useNavigationPromptFocus";
@@ -169,6 +170,7 @@ export default function GraffHarness() {
   const { paneRef, tailing } = useChatScroll(chats, columnKey);
   const sessionId = sessionIds[chatThread.id] ?? null;
   const handleOf = (chatId: number) => chatHandle(pageRef.current, chatId);
+  const permissions = useAcpPermissions(handleOf);
   const setBusyFor = (chatId: number, on: boolean) =>
     setBusyIds((current) => {
       if (current.has(chatId) === on) return current;
@@ -185,7 +187,7 @@ export default function GraffHarness() {
     setPinsByChat(pinsRef.current);
   };
 
-  const { adoptCatalog, requireSession, refreshStored, projectsReady, unwatchIdle, chatCatalogs, catalogStatus, applyCatalog } = useHarnessSessions({
+  const { adoptCatalog, requireSession, refreshStored, projectsReady, unwatchIdle, chatCatalogs, catalogStatus, applyCatalog } = useHarnessSessions({ onPermission: permissions.update,
     sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal,
     pendingPick: () => pendingPickRef.current ?? pendingModel,
   });
@@ -219,11 +221,10 @@ export default function GraffHarness() {
   });
   const modelLabel = (key: string | null | undefined) => modelDisplayName(models, key);
 
-  const runPrompt = createPromptRunner({ onStarted: started, onCompleted: completed,
+  const runPrompt = createPromptRunner({ onPermission: permissions.update, onStarted: started, onCompleted: completed,
     runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, prepareModel, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError
   });
   const settings = useQuietSettings({ requireSession, handleOf, running: runningRef.current, apply: applyCatalog });
-
   const send = async (text: string, forChat?: number) => {
     const trimmed = text.trim();
     const chatId = forChat ?? chatThread.id;
@@ -452,14 +453,13 @@ export default function GraffHarness() {
     resizePane: delta => groups.resize(delta/4),
     toggleTerminal, equalize: groups.balance, openWorkspace: () => setDialog({ mode: "new" }),
   });
-
   const paneTodos = lastAssistant?.turn.todos ?? [];
   // Zoom only changes visibility; the split order is retained.
   const columns = (zoomedPane !== null ? [zoomedPane] : columnIds).map((id) => chats.find((c) => c.id === id)).filter((c): c is Chat => c !== undefined);
 
-
   return (
     <main ref={promptFocusRoot} data-graff-main data-workspace-ready={projectsReady} className="flex h-[100dvh] gap-0 bg-canvas p-2.5 text-ink lg:pl-0">
+      {permissions.dialog}
       <div {...navigation.panelProps}><SidebarNav
         onCloseNavigation={navigation.close} onCollapsedChange={navigation.onCollapsedChange}
         openSessions={navigation.sidebarVisible && <div className="mb-4">

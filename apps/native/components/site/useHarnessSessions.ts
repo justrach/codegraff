@@ -1,3 +1,4 @@
+import type { PermissionRequest } from "@/lib/acp-permission";
 import { useEffect, useRef, useState, type MutableRefObject, type Dispatch, type SetStateAction } from "react";
 import { bindMcpAppChat, checkHealth, disposePage, ensureSession, fetchModels, type Health } from "@/lib/acp-client";
 import { shouldReapPage } from "@/lib/acp-terminate";
@@ -12,6 +13,7 @@ import { newSessionName, type Chat } from "./harness-types";
 type Ref<T> = MutableRefObject<T>;
 type Setter<T> = Dispatch<SetStateAction<T>>;
 type Props = {
+  onPermission?(chat: number, request: PermissionRequest | null): void;
   sessionsRef: Ref<Map<number, string>>; sessionNamesRef: Ref<Map<number, string>>;
   chatsRef: Ref<Chat[]>; workspacesRef: Ref<Workspace[]>; activePathRef: Ref<string | null>;
   pageRef: Ref<string>; runningRef: Ref<Set<number>>; model: string | null; activeId: number;
@@ -24,7 +26,7 @@ type Props = {
   pendingPick(): { key: string; chatId: number } | null;
 };
 const SIDEBAR_PAGE = 12;
-export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal, pendingPick}: Props) {
+export function useHarnessSessions({onPermission, sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal, pendingPick}: Props) {
   const [projectsReady, setProjectsReady] = useState(false);
   const [chatCatalogs, setChatCatalogs] = useState<Record<number, PromptModel[]>>({});
   const [catalogStatus, setCatalogStatus] = useState<Record<number, { loading: boolean; error?: string }>>({});
@@ -44,7 +46,7 @@ export function useHarnessSessions({sessionsRef, sessionNamesRef, chatsRef, work
     const ac = new AbortController();
     idleCtl.current.set(chatId, ac);
     void pumpIdlePeerTurns({
-      chatId, handle: handleOf(chatId), sessionId, signal: ac.signal,
+      onPermission, chatId, handle: handleOf(chatId), sessionId, signal: ac.signal,
       // Every pump pauses while ANY turn runs: the six-slot HTTP/1.1 pool is
       // per origin, so one chat's turn frees the idle streams of all the
       // others or a mid-turn attach never starts.

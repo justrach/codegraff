@@ -32,6 +32,7 @@ pub const TurnFn = *const fn (ctx: *anyopaque, arena: Allocator, text: []const u
 pub const SlashFn = *const fn (ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror!?[]const u8;
 pub const AfterUserFn = *const fn (ctx: *anyopaque, arena: Allocator, text: []const u8) void;
 pub const BindSessionFn = *const fn (ctx: *anyopaque, session_id: []const u8) void;
+pub const LoadSessionFn = *const fn (ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request) anyerror!void;
 /// Optional per-turn context meter: used and window tokens for the
 /// `gui_context_meter` update available to clients.
 /// Null when the embed has no live agent (pure in-process loop, tests).
@@ -50,6 +51,9 @@ pub const Dispatch = struct {
     slash: ?SlashFn = null,
     after_user: ?AfterUserFn = null,
     bind_session: ?BindSessionFn = null,
+    load_session: ?LoadSessionFn = null,
+    /// Live CLI saves under this stable name; embeds retain generated IDs.
+    durable_session_id: ?[]const u8 = null,
     meter: ?MeterFn = null,
     extra: ?ExtraFn = null,
     error_message: ?*const fn (ctx: *anyopaque, err: anyerror) []const u8 = null,
@@ -152,11 +156,11 @@ test "slash commands refresh occupancy before their terminal response" {
     try std.testing.expect(meter_pos < end_pos);
 }
 
-fn respondInitialize(w: *Io.Writer, req: proto.Request) !void {
+fn respondInitialize(w: *Io.Writer, req: proto.Request, can_load: bool) !void {
     return respond(w, req, .{
         .protocolVersion = negotiateVersion(req.params),
         .agentCapabilities = .{
-            .loadSession = false,
+            .loadSession = can_load,
             .promptCapabilities = proto.PromptCapabilities{},
         },
         .agentInfo = proto.AgentImplementation{ .version = implementation_version },
@@ -169,18 +173,18 @@ fn respondInitialize(w: *Io.Writer, req: proto.Request) !void {
 /// engine response; every request that needs a live Agent is auth-gated.
 pub fn handlePreAuthLine(arena: Allocator, w: *Io.Writer, line: []const u8) !void {
     const req = parseRequest(arena, line) orelse return;
-    if (std.mem.eql(u8, req.method, "initialize")) return respondInitialize(w, req);
+    if (std.mem.eql(u8, req.method, "initialize")) return respondInitialize(w, req, false);
     return respondError(w, req, err_auth_required, acp_auth.required_message);
 }
 
 pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u8) !void {
     const req = parseRequest(arena, line) orelse return;
-    if (std.mem.eql(u8, req.method, "initialize")) return respondInitialize(w, req);
+    if (std.mem.eql(u8, req.method, "initialize")) return respondInitialize(w, req, d.load_session != null);
     if (std.mem.eql(u8, req.method, "authenticate"))
         return respondError(w, req, err_method_not_found, "terminal auth is out of band: re-spawn graff login");
     if (std.mem.eql(u8, req.method, "session/new")) {
         d.created += 1;
-        d.session_id = try std.fmt.allocPrint(arena, "acp-{x}-{d}", .{ d.seed, d.created });
+        d.session_id = d.durable_session_id orelse try std.fmt.allocPrint(arena, "acp-{x}-{d}", .{ d.seed, d.created });
         if (d.cwd.len > 0)
             try respond(w, req, .{ .sessionId = d.session_id.?, .cwd = d.cwd })
         else
@@ -188,11 +192,21 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
         try proto.writeAvailableCommands(w, d.session_id.?, proto.slashCommands());
         return;
     }
+    if (d.load_session != null and (std.mem.eql(u8, req.method, "session/prompt") or std.mem.eql(u8, req.method, "session/cancel"))) {
+        const params = req.params orelse return respondError(w, req, -32602, "Invalid session ID");
+        if (params != .object) return respondError(w, req, -32602, "Invalid session ID");
+        const sid = util.strFieldObj(params.object, "sessionId") orelse return respondError(w, req, -32602, "Invalid session ID");
+        if (d.session_id == null or !std.mem.eql(u8, sid, d.session_id.?))
+            return respondError(w, req, -32602, "Unknown session ID");
+    }
     if (std.mem.eql(u8, req.method, "session/cancel")) {
         cancel_flag.store(true, .release);
         if (on_cancel) |hook| hook();
         if (req.id != null) return respond(w, req, .{});
         return;
+    }
+    if (std.mem.eql(u8, req.method, "session/load")) {
+        if (d.load_session) |load| return load(d.ctx, arena, w, req);
     }
     if (std.mem.eql(u8, req.method, "session/prompt")) return promptTurn(d, arena, w, req);
     if (d.extra) |extra| if (try extra(d.ctx, arena, w, req)) return;

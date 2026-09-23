@@ -20,7 +20,8 @@ and the host recipe stays [embedding.md](embedding.md). Replace those with
 | Provider login | `graff login` / keychain / env keys. Not ACP `authenticate`. |
 | `initialize.authMethods` | **Shipped.** `graff-login` / `type: "terminal"` / `args: ["login"]`. `authenticate` stays unused — the client re-spawns `graff login`. |
 | Credential-free startup | **Shipped.** A clean `graff acp` initializes, then returns ACP `auth_required` until login and respawn. |
-| `session/load`, `session/request_permission` | Not implemented. Unattended + `--yolo` is the host path. |
+| `session/load` | Live CLI restores saved conversations in the selected workspace and replays retained history. |
+| `session/request_permission` | Interactive clients answer tool approval requests; unattended `--yolo` remains available. See [client behavior](acp-client-parity.md). |
 
 A stale comment on #613 said #612 was still open. It is not: streaming is on
 the tagged v0.0.279 cut. The final in-repo registry prerequisite was startup

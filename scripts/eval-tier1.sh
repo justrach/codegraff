@@ -186,7 +186,9 @@ if wanted shell; then
       python3 scripts/eval/process_guard.py --timeout 180 zig build-exe src/shell_identity_probe.zig -lc -femit-bin="$probe_dir/identity" &&
       python3 scripts/eval/process_guard.py --timeout 60 python3 scripts/test-shell-identity.py "$probe_dir/identity" &&
       python3 scripts/eval/process_guard.py --timeout 90 python3 scripts/test-shell-restart.py zig-out/bin/graff &&
-      python3 scripts/eval/process_guard.py --timeout 90 python3 scripts/test-acp-released-fixes.py zig-out/bin/graff
+      python3 scripts/eval/process_guard.py --timeout 90 python3 scripts/test-acp-released-fixes.py zig-out/bin/graff &&
+      python3 scripts/eval/process_guard.py --timeout 120 python3 scripts/test-acp-permissions.py zig-out/bin/graff &&
+      python3 scripts/eval/process_guard.py --timeout 90 python3 scripts/test-acp-session-load.py zig-out/bin/graff
     ); then :; else
       record_fail shell
     fi
