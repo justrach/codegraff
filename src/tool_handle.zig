@@ -143,8 +143,9 @@ pub fn forResult(gpa: Allocator, arena: Allocator, target: Target, text: []const
     const preview_cap = @min(room, @as(usize, 4096));
     const excerpt_budget = @min(handle_preview.max_notable_bytes, preview_cap / 4);
     const head_budget = if (preview_cap > excerpt_budget) preview_cap - excerpt_budget else preview_cap;
-    const head = handle_preview.compactPreview(arena, text, head_budget) catch util.utf8Prefix(text, head_budget);
-    const excerpt = handle_preview.notableExcerpt(arena, text, head.len, excerpt_budget) catch "";
+    const preview = handle_preview.compactPreviewRanges(arena, text, head_budget) catch handle_preview.prefixPreview(text, head_budget);
+    const head = preview.text;
+    const excerpt = handle_preview.notableRange(arena, text, preview.omitted_start, preview.omitted_end, excerpt_budget) catch "";
     if (excerpt.len == 0) return .{
         .text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ head, marker }),
         .path = path,
