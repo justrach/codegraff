@@ -12,15 +12,14 @@
 //!   2. One `subagent` call may pin `model` / `tier` for that spawn only.
 //!
 //! The same two grains can pin reasoning EFFORT — frontmatter `effort: max`
-//! or an `effort` param on the call (low|medium|high|xhigh|max — the /effort
+//! or an `effort` param on the call (low|medium|high|xhigh|max|none — the /effort
 //! vocabulary minus `ultra`, which is the ultracode prompt switch, not a
 //! depth a worker should inherit). Effort is an INDEPENDENT AXIS from
 //! model/tier: each falls through spawn → persona → session default on its
 //! own, so an effort-only override keeps the persona's model pin (and vice
-//! versa). Unlike a model pin it needs no catalog resolution — a model that
-//! rejects reasoning_effort already degrades per request (effort_rejected in
-//! agent_request.zig) — so an effort pin is either applied as stated or
-//! reported off-vocabulary, never provider-dependent.
+//! versa). An explicit `none` is only supported by known binary-thinking
+//! routes; an unsupported worker pin is refused before inference. Other
+//! valid efforts retain the existing per-request rejection fallback.
 //!
 //! PRECEDENCE (what the tool schema advertises, implemented by `requested`
 //! and `resolve` below):
@@ -146,7 +145,7 @@ pub const EffortOutcome = enum {
         return switch (self) {
             .none => "",
             .pinned => "effort pin applied",
-            .unknown_effort => "effort pin ignored: expected low, medium, high, xhigh or max — kept the session default",
+            .unknown_effort => "effort pin ignored: expected low, medium, high, xhigh, max or supported none — kept the session default",
             .unsupported_effort => "Off is unsupported by this model; choose a supported effort",
         };
     }

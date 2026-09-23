@@ -3,6 +3,19 @@ const provider = @import("provider.zig");
 const schema = @import("schema.zig");
 const fixtures = @import("agent_request_body_responses.zig");
 
+test "worker tool schema exposes supported Off and describes route rejection" {
+    const raw = @import("schema_agents.zig").subagent_spec.schema;
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, raw, .{});
+    defer parsed.deinit();
+    const effort = parsed.value.object.get("properties").?.object.get("effort").?.object;
+    var offered = false;
+    for (effort.get("enum").?.array.items) |value| {
+        if (std.mem.eql(u8, value.string, "none")) offered = true;
+    }
+    try std.testing.expect(offered);
+    try std.testing.expect(std.mem.indexOf(u8, effort.get("description").?.string, "rejected before child inference elsewhere") != null);
+}
+
 test "MiMo Chat uses the documented binary thinking switch on direct and gateway routes" {
     var state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer state.deinit();
