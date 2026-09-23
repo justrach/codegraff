@@ -121,7 +121,8 @@ fn fill(w: *Walk, node: *Node, rel: []const u8) !void {
         if (dir.openFile(w.io, ".gitignore", .{ .follow_symlinks = false })) |file| {
             defer file.close(w.io);
             if ((try file.stat(w.io)).kind == .file) {
-                var reader = file.reader(w.io, &.{});
+                var buffer: [4096]u8 = undefined;
+                var reader = file.readerStreaming(w.io, &buffer);
                 const text = try reader.interface.allocRemaining(w.arena, .limited(64 * 1024));
                 const extra = try gitignore.parse(w.arena, text, abs);
                 try w.rules.appendSlice(w.arena, extra);

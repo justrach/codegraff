@@ -67,14 +67,7 @@ pub fn matchesPrefix(cmd: []const u8, prefix: []const u8) bool {
 /// the auto-allowed seed commands (cat, grep, …) reading inside cwd.
 pub fn escapesCwd(cmd: []const u8) bool {
     var it = std.mem.tokenizeAny(u8, cmd, " \t");
-    while (it.next()) |tok| {
-        if (tok.len == 0) continue;
-        if (tok[0] == '/' or tok[0] == '~') return true;
-        if (std.mem.indexOf(u8, tok, "=/") != null) return true;
-        if (std.mem.indexOf(u8, tok, "=~") != null) return true;
-        var pit = std.mem.tokenizeScalar(u8, tok, '/');
-        while (pit.next()) |comp| if (std.mem.eql(u8, comp, "..")) return true;
-    }
+    while (it.next()) |tok| if (flaggedPath(tok) != null) return true;
     return false;
 }
 
@@ -103,12 +96,19 @@ pub fn readOnlyExternal(cmd: []const u8) bool {
 
 /// The escaping path a token carries, or null if it stays in cwd. Mirrors
 /// escapesCwd's token classification exactly so cwd tokens are skipped.
+fn windowsAbsolute(path: []const u8) bool {
+    return path.len >= 3 and std.ascii.isAlphabetic(path[0]) and path[1] == ':' and
+        (path[2] == '/' or path[2] == '\\');
+}
+
 pub fn flaggedPath(tok: []const u8) ?[]const u8 {
     if (tok.len == 0) return null;
-    if (tok[0] == '/' or tok[0] == '~') return tok;
-    if (std.mem.indexOf(u8, tok, "=/")) |i| return tok[i + 1 ..];
-    if (std.mem.indexOf(u8, tok, "=~")) |i| return tok[i + 1 ..];
-    var pit = std.mem.tokenizeScalar(u8, tok, '/');
+    if (tok[0] == '/' or tok[0] == '~' or tok[0] == '\\' or windowsAbsolute(tok)) return tok;
+    if (std.mem.indexOfScalar(u8, tok, '=')) |i| {
+        const value = tok[i + 1 ..];
+        if (value.len > 0 and (value[0] == '/' or value[0] == '~' or value[0] == '\\' or windowsAbsolute(value))) return value;
+    }
+    var pit = std.mem.tokenizeAny(u8, tok, "/\\");
     while (pit.next()) |comp| if (std.mem.eql(u8, comp, "..")) return tok;
     return null;
 }
@@ -116,11 +116,11 @@ pub fn flaggedPath(tok: []const u8) ?[]const u8 {
 /// True if `path` sits at or under one approved root (with a '/' boundary).
 /// Any `..` component fails outright — blocks `<root>/../../etc` smuggling.
 pub fn pathUnderRoots(path: []const u8, roots: []const []const u8) bool {
-    var pit = std.mem.tokenizeScalar(u8, path, '/');
+    var pit = std.mem.tokenizeAny(u8, path, "/\\");
     while (pit.next()) |comp| if (std.mem.eql(u8, comp, "..")) return false;
     for (roots) |root| {
         if (root.len == 0 or !std.mem.startsWith(u8, path, root)) continue;
-        if (path.len == root.len or path[root.len] == '/') return true;
+        if (path.len == root.len or path[root.len] == '/' or path[root.len] == '\\') return true;
     }
     return false;
 }
@@ -277,6 +277,8 @@ test "readOnlyAllowed: only simple, in-cwd, seed-listed commands pass in plan mo
 test "readOnlyExternal: read-only verb reading outside cwd, simple only (#64)" {
     try std.testing.expect(readOnlyExternal("ls ~/projects/merjs"));
     try std.testing.expect(readOnlyExternal("cat /abs/file"));
+    try std.testing.expect(readOnlyExternal("cat C:\\repo\\proof.txt"));
+    try std.testing.expect(!readOnlyAllowed("cat C:\\repo\\proof.txt"));
     try std.testing.expect(!readOnlyExternal("cat src/main.zig")); // in cwd
     try std.testing.expect(!readOnlyExternal("rm -rf /x")); // mutating verb
     try std.testing.expect(!readOnlyExternal("zig fmt /x.zig")); // not read-only-seeded
@@ -286,6 +288,10 @@ test "readOnlyExternal: read-only verb reading outside cwd, simple only (#64)" {
 test "planReadMatch: reads under an approved root pass; escapes/mutations/smuggling do not (#64)" {
     const r: []const []const u8 = &.{ "~/projects/merjs", "/opt/data" };
     try std.testing.expect(planReadMatch("ls ~/projects/merjs", r));
+    const windows_roots: []const []const u8 = &.{"C:\\repo"};
+    try std.testing.expect(planReadMatch("cat C:\\repo\\proof.txt", windows_roots));
+    try std.testing.expect(!planReadMatch("cat C:\\repo-other\\proof.txt", windows_roots));
+    try std.testing.expect(!planReadMatch("cat C:\\repo\\..\\secret.txt", windows_roots));
     try std.testing.expect(planReadMatch("ls ~/projects/merjs/src", r));
     try std.testing.expect(planReadMatch("cat ~/projects/merjs/README.md", r));
     try std.testing.expect(planReadMatch("grep foo /opt/data/x.txt", r));
