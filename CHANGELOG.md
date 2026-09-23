@@ -74,6 +74,7 @@ current is part of cutting a release.
 
 ### Release and verification
 
+- Notarized macOS distributions can omit optional platform-passkey configuration; supplied profiles remain strictly validated.
 - Pushes to the latest versioned release branch build beta prereleases. Publication checks the current branch head again so an older queued build cannot replace a newer beta.
 - Beta release pages include the matching changelog section and identify their exact source commit. `graff --version` shows current release highlights.
 - Beta versions remain separate from the stable update channel. Packaging includes CLI archives and checksums across supported targets, plus the Linux desktop package; a macOS build artifact alone is not a signed installer.
