@@ -27,6 +27,44 @@ pub const ResolvedKeys = struct {
     stored_keys_loaded: bool,
 };
 
+/// A remembered provider/model is an exact user selection. A transient
+/// catalog omission must not replace it with the provider default; the
+/// backend can reject the selected model without silently changing routes.
+pub fn savedProvider(keys: provider_mod.Keys, saved: serde.SavedModel) error{ UnknownProvider, MissingKey }!provider_mod.Provider {
+    if (provider_mod.specFor(saved.pid) == null) return error.UnknownProvider;
+    return keys.providerById(saved.pid, saved.model);
+}
+
+test "saved startup pair survives a transient catalog omission and reaches the request body" {
+    const original = pricing.active_model_table;
+    defer pricing.active_model_table = original;
+    const only_astra = [_]pricing.ModelInfo{.{ .provider = "codex", .name = "gpt-6-astra", .context = 272_000 }};
+    pricing.active_model_table = &only_astra;
+    try std.testing.expect(!pricing.providerModelInTable("codex", "gpt-6-luna"));
+
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    try std.testing.expect(keys.set("codex", "test-token", .session));
+    const selected = try savedProvider(keys, .{ .pid = "codex", .model = "gpt-6-luna" });
+    try std.testing.expectEqualStrings("codex", selected.id);
+    try std.testing.expectEqualStrings("gpt-6-luna", selected.model);
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var agent = try @import("agent_request_body_responses.zig").testAgentFor(arena_state.allocator(), "codex", .responses, "placeholder");
+    agent.provider = selected;
+    const body = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"model\":\"gpt-6-luna\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"model\":\"gpt-6-astra\"") == null);
+}
+
+test "saved startup pair fails closed when its provider credential disappears" {
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    try std.testing.expect(keys.set("codegraff", "unrelated-key", .session));
+    try std.testing.expectError(error.MissingKey, savedProvider(keys, .{ .pid = "codex", .model = "gpt-6-luna" }));
+    try std.testing.expectError(error.UnknownProvider, savedProvider(keys, .{ .pid = "removed-provider", .model = "old-model" }));
+}
+
 fn explicitProvider(model_flag: ?[]const u8) ?[]const u8 {
     return catalog_selection.explicitProvider(model_flag orelse return null);
 }
@@ -143,7 +181,7 @@ test "Kimi catalog loads at startup only when selection can observe it" {
 /// Resolves API keys/credentials (env vars → codegraff/codex/kimi on-disk
 /// logins → the `harness key set` store, env always wins — same precedence
 /// as before) and picks the startup model (--model flag, else the
-/// last-saved model if it's still in the catalog). Carved out of main()'s
+/// last-saved provider/model). Carved out of main()'s
 /// former inline credential-loading block verbatim; fatals via
 /// std.process.fatal exactly as that block did (no key found, or a bad
 /// --model value).
@@ -252,7 +290,7 @@ pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map
         models_cache.loadOverlay(io, arena, home);
     }
     var default_provider = keys.defaultProvider() catch return null;
-    var stale_saved_model: ?[]const u8 = null;
+    const stale_saved_model: ?[]const u8 = null;
     var preferred_provider: ?[]const u8 = null;
     // `--model <name|provider>` pins the startup model (same resolution as /model).
     if (model_flag) |mname| pick: {
@@ -290,25 +328,13 @@ pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map
         };
     } else if (saved_model) |saved| {
         preferred_provider = saved.pid;
-        // No --model flag: resume the model chosen last session only if that
-        // exact provider/model pair is still in the catalog; model names can be
-        // shared by providers with different support.
-        if (pricing.providerModelInTable(saved.pid, saved.model)) {
-            if (keys.providerById(saved.pid, saved.model)) |p| {
-                default_provider = p;
-            } else |_| {
-                stale_saved_model = std.fmt.allocPrint(arena, "{s}/{s}", .{ saved.pid, saved.model }) catch saved.model;
-            }
-        } else {
-            stale_saved_model = std.fmt.allocPrint(arena, "{s}/{s}", .{ saved.pid, saved.model }) catch saved.model;
-            // A rollout may remove only this model while the provider login is
-            // still healthy. Prefer that provider's current dynamic default
-            // before crossing provider/account boundaries.
-            if (provider_mod.specFor(saved.pid)) |spec| {
-                const replacement = pricing.providerDefaultModel(spec.id, spec.default_model);
-                if (keys.providerById(spec.id, replacement)) |p| default_provider = p else |_| {}
-            }
-        }
+        // The saved pair remains the user's route even when a dynamic catalog
+        // briefly omits it. If its credential disappeared, stop before a paid
+        // request instead of using another provider or a different model.
+        default_provider = savedProvider(keys, saved) catch |err| switch (err) {
+            error.UnknownProvider => std.process.fatal("saved provider '{s}' is unavailable — choose `--model <provider/model>` or see /models", .{saved.pid}),
+            error.MissingKey => std.process.fatal("no key/login for saved model '{s}/{s}' — sign in to {s} or choose `--model <provider/model>`", .{ saved.pid, saved.model, saved.pid }),
+        };
     }
     return .{ .keys = @import("bench_priors.zig").noteKeysAtStartup(keys, io, arena, keys_cli.homeEnv(environ_map)), .default_provider = default_provider, .stale_saved_model = stale_saved_model, .preferred_provider = preferred_provider, .codex_account = codex_account, .model_catalog = model_catalog, .stored_keys_loaded = stored_keys_loaded };
 }
