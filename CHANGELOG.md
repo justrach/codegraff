@@ -51,6 +51,7 @@ current is part of cutting a release.
 
 ### ACP and desktop integration
 
+- The [ACP compatibility contract](docs/acp-compatibility.md) records the stable protocol target, supported capabilities, extensions and client acceptance checks.
 - ACP initialization and embedded resources follow protocol v1. Initialization metadata is validated per response, and duplicate live session creation cannot replace existing history.
 - `session/new` and `session/load` expose supported effort options. `session/set_config_option` changes the same effort state as `/effort`; updates during a prompt apply after the active turn.
 - Agent-originated model and effort changes publish configuration updates for clients. The desktop picker uses capability-derived values and labels.
