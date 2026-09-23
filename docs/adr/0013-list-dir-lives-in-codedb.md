@@ -30,3 +30,6 @@ extra schema bytes beat this subcommand.
 - `codedb ls` / `tree` stay index queries.
 - The model has to read the codedb description (or the prompt sentence) to
   find `list_dir`; that is the cost of not growing the catalog.
+
+The in-process scan budget and partial-result contract are refined by
+[0184](0184-directory-scan-budgets-count-examined-entries.md).
