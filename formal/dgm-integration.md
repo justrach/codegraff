@@ -86,25 +86,26 @@ checks the signature, prompt/report hashes, original held-out hash, preflight
 receipt, pinned identity and archived checker evidence. It also runs the current
 pinned model checks; their raw output need not match an earlier successful log.
 
-## Other native promotion paths
+## Native learning and remaining promotion paths
 
-The repository also has native learning and persona promotion paths. Integrating
-the Python example alone does not gate all of them:
+Native `graff learn` has a separate opt-in `formal_check` configuration; see
+[local learning](../docs/local-learning.md) for setup and its trust boundary.
+`src/learn_formal.zig` checks the pinned baseline before mutation and binds
+evidence to the parent or selected prompt. The existing tournament and holdout
+rules still decide candidate eligibility.
 
-- `src/learn_tournament.zig` selects one primary winner and applies holdout
-  eligibility. Formal evidence belongs in admission and final eligibility,
-  without allowing it to rescue a primary or holdout rejection.
-- `src/learn_run.zig` persists checkpoints and comparison records. A resumed run
-  needs the same checked identity; a receipt from an earlier source cannot be
-  reused merely because the prompt genome matches.
-- `src/learn_receipt.zig` signs aggregate learning evidence. Adding a formal
-  receipt to this path requires a versioned signed schema and validation.
-- `src/fleet.zig` promotes local archive champions. Historical scores without
-  formal evidence cannot be represented as formally checked evaluations.
+Formal-enabled runs use pending-record version 2 and run-record version 4.
+Resume and both manual and automatic promotion recheck the stored evidence and
+pinned identity. Legacy records remain readable but cannot satisfy formal-mode
+promotion. The manifest's executable must also be a pinned input and argument
+to both learning adapters; this records the adapter contract, not a proof that
+an arbitrary adapter executes that argument.
 
-These are separate integration points, not properties established by the
-Python gate. A rollout must identify which entry points enforce formal mode,
-and preserve explicit distinction between unchecked and checked archives.
+Native formal-enabled runs stay local: explicit submission is rejected, and
+automatic learning omits contribution. The signed aggregate receipt format
+does not yet bind formal evidence. The separate `src/fleet.zig` persona archive
+promotion path remains ungated. Historical scores must not be presented as
+formally checked merely because a newer evaluation enables this option.
 
 ## Performance evidence remains separate
 
