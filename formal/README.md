@@ -8,10 +8,24 @@ are difficult to reproduce with ordinary tests.
   changes, cancellation, and owner-boundary application.
 - [Async tools](async-tools.md): early admission, call identity, ordering
   barriers, result ownership, joining, and cancellation.
+- [ACP permissions](acp-permissions.md): transport-owned GUI tokens, replaced
+  workers, offered choices, and responses racing with cancellation.
+- [HTTP/2 leases](http2-leases.md): exclusive ownership, idle pooling,
+  cancellation, shutdown, and reuse only after stream completion.
 
 Each model has a normal configuration and a deliberately broken configuration.
 The negative control must fail the intended invariant. A syntax error, timeout,
 or unrelated failure is not a successful negative control.
+
+See [change evidence](change-evidence.md) for connecting source diffs, model
+counterexamples, and runtime regressions.
+
+See the [ranked extension plan](roadmap.md) for the next ownership, retry,
+budget, and session properties to model.
+
+The [DGM integration design](dgm-integration.md) separates formal admission
+from task correctness and measured fitness, and identifies the native promotion
+paths that need their own integration.
 
 ## Scope
 

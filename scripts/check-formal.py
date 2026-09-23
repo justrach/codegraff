@@ -23,6 +23,13 @@ CASES = (
     ("AsyncTools.tla", "AsyncToolsNoJoin.cfg", "JoinedBeforeNextRequest"),
     ("AsyncTools.tla", "AsyncToolsNoDedup.cfg", "AtMostOnceExecution"),
     ("AsyncTools.tla", "AsyncToolsNoBarrier.cfg", "NoLateAdmission"),
+    ("AcpPermissions.tla", "AcpPermissions.cfg", None),
+    ("AcpPermissions.tla", "AcpPermissionsNoTokenOwner.cfg", "StaleTransportNeverGrants"),
+    ("AcpPermissions.tla", "AcpPermissionsNoCancelGuard.cfg", "CancelNeverGrantsLate"),
+    ("AcpPermissions.tla", "AcpPermissionsNoConsume.cfg", "TokenConsumedAtMostOnce"),
+    ("Http2Leases.tla", "Http2Leases.cfg", None),
+    ("Http2Leases.tla", "Http2LeasesRetainIdle.cfg", "IdleActiveDisjoint"),
+    ("Http2Leases.tla", "Http2LeasesEarlyReuse.cfg", "OnlyEndedIdle"),
 )
 
 
