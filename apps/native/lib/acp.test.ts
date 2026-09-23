@@ -18,6 +18,65 @@ describe("parseRpcLine", () => {
 });
 
 describe("applyAcpUpdate", () => {
+  it("replaces ACP tool content, preserves omitted fields, and honors an empty content array", () => {
+    let turn = applyAcpUpdate(emptyTurn(), {
+      sessionUpdate: "tool_call", toolCallId: "snapshot-tool", title: "shell",
+      kind: "execute", status: "in_progress", rawInput: { command: "echo fixture" },
+    });
+    const output = (text: string) => ({
+      sessionUpdate: "tool_call_update", toolCallId: "snapshot-tool", status: "in_progress",
+      content: [{ type: "content", content: { type: "text" as const, text } }],
+    });
+    turn = applyAcpUpdate(turn, output("first snapshot"));
+    turn = applyAcpUpdate(turn, output("second snapshot"));
+    turn = applyAcpUpdate(turn, output("second snapshot"));
+    assert.deepEqual(turn.tools[0]?.detail.map(d => d.text), ["echo fixture", "second snapshot"]);
+    turn = applyAcpUpdate(turn, { sessionUpdate: "tool_call_update", toolCallId: "snapshot-tool", status: "completed", rawInput: null });
+    assert.deepEqual(turn.tools[0]?.detail.map(d => d.text), ["echo fixture", "second snapshot"]);
+    assert.equal(turn.tools[0]?.status, "ok");
+    turn = applyAcpUpdate(turn, { sessionUpdate: "tool_call_update", toolCallId: "snapshot-tool", content: [] });
+    assert.deepEqual(turn.tools[0]?.detail.map(d => d.text), ["echo fixture"]);
+    assert.equal(turn.tools[0]?.status, "ok");
+  });
+
+  it("keeps a rejected edit visible without claiming a file change", () => {
+    let turn = applyAcpUpdate(emptyTurn(), {
+      sessionUpdate: "tool_call", toolCallId: "batch-rejected", title: "fixture.txt",
+      kind: "edit", status: "in_progress",
+      rawInput: { path: "fixture.txt", edits: [{ old_string: "old", new_string: "new" }] },
+    });
+    turn = applyAcpUpdate(turn, {
+      sessionUpdate: "tool_call_update", toolCallId: "batch-rejected", status: "failed",
+      content: [{ type: "content", content: { type: "text", text: "edit span 2/2 failed (no batch changes written)" } }],
+    });
+    assert.equal(turn.tools[0]?.status, "error");
+    assert.match(turn.tools[0]?.detail.at(-1)?.text ?? "", /no batch changes written/);
+    assert.deepEqual(turn.diffs, []);
+  });
+
+  it("does not replace an earlier successful diff with a later edit failure", () => {
+    let turn = applyAcpUpdate(emptyTurn(), {
+      sessionUpdate: "tool_call", toolCallId: "first-edit", title: "fixture.txt",
+      kind: "edit", status: "in_progress", rawInput: { path: "fixture.txt", old_string: "old", new_string: "new" },
+    });
+    turn = applyAcpUpdate(turn, {
+      sessionUpdate: "tool_call_update", toolCallId: "first-edit", status: "completed",
+      content: [{ type: "content", content: { type: "text", text: "replaced 1 span" } }],
+    });
+    const successful = turn.diffs;
+    turn = applyAcpUpdate(turn, {
+      sessionUpdate: "tool_call", toolCallId: "second-edit", title: "fixture.txt",
+      kind: "edit", status: "in_progress", rawInput: { path: "fixture.txt" },
+    });
+    turn = applyAcpUpdate(turn, {
+      sessionUpdate: "tool_call_update", toolCallId: "second-edit", status: "failed",
+      content: [{ type: "content", content: { type: "text", text: "old_string not found (no batch changes written)" } }],
+    });
+    assert.equal(turn.tools[1]?.status, "error");
+    assert.deepEqual(turn.diffs, successful);
+    assert.equal(turn.diffs.length, 1);
+  });
+
   it("surfaces gui_ask_user as an ask with options", () => {
     const turn = applyAcpUpdate(emptyTurn(), {
       sessionUpdate: "gui_ask_user",

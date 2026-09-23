@@ -15,6 +15,7 @@
     "test:electron": "bun test electron/policy.test.cjs electron/computer.test.cjs",
     "test:webauthn": "node scripts/test-webauthn.mjs",
     "test:desktop": "bun test lib ./electron/*.test.cjs",
+    "test:acp-recovery": "bun scripts/test-acp-recovery.mjs",
     "test:session-navigation": "GRAFF_VISUAL_SUITE=session-navigation bun scripts/test-visual.mjs",
     "test:keyboard": "GRAFF_VISUAL_SUITE=keyboard bun scripts/test-visual.mjs",
     "test:tab-drag": "GRAFF_VISUAL_SUITE=tab-drag bun scripts/test-visual.mjs",

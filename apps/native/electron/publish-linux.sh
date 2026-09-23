@@ -19,20 +19,21 @@ fi
 tag="${1:?Usage: publish-linux.sh vVERSION package-directory}"
 src="${2:?Provide the directory that contains the .deb}"
 ver="${tag#v}"
+package_ver="${ver/-beta./~beta.}"
 if [[ "$tag" == "$ver" || -z "$ver" ]]; then
   echo "tag must look like v0.0.1" >&2
   exit 1
 fi
 
 shopt -s nullglob
-debs=("$src"/codegraff_"${ver}"_*.deb)
+debs=("$src"/codegraff_"${package_ver}"_*.deb)
 if [[ ${#debs[@]} -ne 1 ]]; then
-  echo "expected one codegraff_${ver}_*.deb in $src" >&2
+  echo "expected one codegraff_${package_ver}_*.deb in $src" >&2
   exit 1
 fi
 deb="${debs[0]}"
 base="$(basename "$deb")"
-arch="${base#codegraff_${ver}_}"
+arch="${base#codegraff_${package_ver}_}"
 arch="${arch%.deb}"
 case "$arch" in
   amd64|arm64) ;;

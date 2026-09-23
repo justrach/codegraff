@@ -62,8 +62,16 @@ xcrun clang -O2 -bundle -undefined dynamic_lookup -mmacosx-version-min=14.0 \
 bun "$here/check-native-symbols.cjs" "$resources/native"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $bundle_id" "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName $app_name" "$bundle/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $version" "$bundle/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$bundle/Contents/Info.plist"
+plist_version="$version"
+plist_build="$version"
+if [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(\.[0-9]+)?-beta\.([0-9]+)\.([0-9]+)$ ]]; then
+  # Apple bundle fields are numeric; the full beta version remains in the
+  # packaged app metadata and CLI binary.
+  plist_version="${BASH_REMATCH[1]}"
+  plist_build="${BASH_REMATCH[3]}.${BASH_REMATCH[4]}"
+fi
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $plist_build" "$bundle/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $plist_version" "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :LSMinimumSystemVersion 14.0' "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $app_name" "$bundle/Contents/Info.plist" 2>/dev/null || true
 macos="$bundle/Contents/MacOS"

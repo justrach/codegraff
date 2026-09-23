@@ -7,6 +7,7 @@ const cancel_source = @import("cancel_source.zig");
 const acp_ask = @import("acp_ask.zig");
 
 pub const Inbox = struct {
+    permission: ?*@import("acp_permission.zig").Bridge = null,
     gpa: std.mem.Allocator,
     io: Io,
     reader: *Io.Reader,
@@ -101,6 +102,10 @@ pub const Inbox = struct {
     fn accept(self: *Inbox, line: []const u8) !void {
         var arena = std.heap.ArenaAllocator.init(self.gpa);
         defer arena.deinit();
+        if (self.permission) |bridge| {
+            const value = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), line, .{}) catch .null;
+            if (bridge.accept(value)) return;
+        }
         const req = proto.parseRequest(arena.allocator(), line);
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -117,6 +122,7 @@ pub const Inbox = struct {
                         self.cancelled = true;
                         if (self.active) cancel_source.cancel(.acp_cancel);
                         acp_ask.cancelIfWaiting();
+                        if (self.permission) |bridge| bridge.cancel();
                     }
                 }
                 return;
@@ -150,6 +156,7 @@ pub const Inbox = struct {
         }
         self.mutex.lockUncancelable(self.io);
         self.eof = true;
+        if (self.permission) |bridge| bridge.cancel();
         self.ready.broadcast(self.io);
         self.mutex.unlock(self.io);
     }

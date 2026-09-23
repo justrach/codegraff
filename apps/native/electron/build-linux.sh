@@ -61,6 +61,9 @@ EOF
 
 package_linux_deb() {
   local app="$1" arch
+  # Debian sorts a tilde prerelease before its matching stable version.
+  # Keep the app and graff binary on the canonical -beta version.
+  local deb_version="${version/-beta./~beta.}"
   case "$(uname -m)" in
     x86_64) arch=amd64 ;;
     aarch64|arm64) arch=arm64 ;;
@@ -84,7 +87,7 @@ EOF
   ln -s /opt/codegraff/codegraff "$stage/usr/bin/codegraff"
   cat > "$stage/DEBIAN/control" <<EOF
 Package: codegraff
-Version: ${version}
+Version: ${deb_version}
 Section: devel
 Priority: optional
 Architecture: ${arch}
@@ -107,7 +110,7 @@ fi
 exit 0
 EOF
   chmod 755 "$stage/DEBIAN/postinst"
-  dpkg-deb --root-owner-group --build "$stage" "$out/codegraff_${version}_${arch}.deb"
+  dpkg-deb --root-owner-group --build "$stage" "$out/codegraff_${deb_version}_${arch}.deb"
 }
 
 package_linux_appimage() {

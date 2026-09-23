@@ -1,3 +1,4 @@
+import type { PermissionRequest } from "@/lib/acp-permission";
 import type { MutableRefObject, Dispatch, SetStateAction } from "react";
 import { createTurnPainter } from "@/lib/turn-painter";
 import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AssistantTurn } from "@/lib/acp";
@@ -13,6 +14,7 @@ import { playUiSound } from "@/lib/ui-sounds";
 type Ref<T> = MutableRefObject<T>;
 type Setter<T> = Dispatch<SetStateAction<T>>;
 type Props = {
+  onPermission?(chatId: number, request: PermissionRequest | null): void;
   onStarted(id: number): void;
   onCompleted(id: number): void;
   runningRef: Ref<Set<number>>; steerer: ReturnType<typeof createQueueSteerer>; setFollowing: Setter<boolean>;
@@ -25,7 +27,7 @@ type Props = {
   adoptCatalog(id: number): Promise<void>; refreshStored(): Promise<void>;
   takeQueuedPrompt(id: number): QueuedPrompt | undefined;
 };
-export function createPromptRunner({onStarted, onCompleted, runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, prepareModel, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError}: Props) {
+export function createPromptRunner({onPermission, onStarted, onCompleted, runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, prepareModel, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError}: Props) {
   const patchAssistant = (chatId: number, msgId: number, next: AssistantTurn) => {
     setChats((current) =>
       current.map((c) =>
@@ -104,6 +106,7 @@ export function createPromptRunner({onStarted, onCompleted, runningRef, steerer,
       turn = { ...turn, connected: true, lastUpdateAt: Date.now() };
       painter.update(turn);
       for await (const update of prompt(handleOf(chatId), id, wire)) {
+        if (update.sessionUpdate === "gui_permission") { onPermission?.(chatId, update.permission as PermissionRequest); continue; }
         // The bridge acknowledges prompt dispatch before model output, so
         // queued steering can cancel even during a slow first response.
         if (update.sessionUpdate === "gui_turn_end") steerer.finish(chatId);
@@ -127,6 +130,7 @@ export function createPromptRunner({onStarted, onCompleted, runningRef, steerer,
       painter.finish(turn);
       playUiSound("error");
     } finally {
+      onPermission?.(chatId, null);
       painter.dispose();
       steerer.finish(chatId);
       runningRef.current.delete(chatId);

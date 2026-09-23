@@ -25,6 +25,7 @@ pub const LiveTurn = struct {
     prev_turn_id: u64 = 0,
     prev_prompt_fp: [16]u8 = @splat(0),
     inbox: ?*@import("acp_inbox.zig").Inbox = null,
+    dispatch: ?*@import("acp_engine.zig").Dispatch = null,
 
     pub fn errorMessage(ctx: *anyopaque, err: anyerror) []const u8 {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
@@ -38,8 +39,14 @@ pub const LiveTurn = struct {
         // upstream (client dispatch / bootstrap / transport), not in the turn.
         if (self.root.tracer) |tr| tr.note("acp_prompt", self.session_id);
         agent_mod.Agent.prepareRootTurn(); // #753: a prior stream cancel must not steal the continuation
-        if (self.inbox) |inbox| inbox.begin();
-        defer if (self.inbox) |inbox| inbox.end();
+        if (self.inbox) |inbox| {
+            if (inbox.permission) |bridge| bridge.begin(self.session_id);
+            inbox.begin();
+        }
+        defer if (self.inbox) |inbox| {
+            if (inbox.permission) |bridge| bridge.cancel();
+            inbox.end();
+        };
         const review_prompt = review.promptFromLine(text);
         const parent_override = self.root.sys_override;
         const parent_review_mode = self.root.review_mode;
