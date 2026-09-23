@@ -57,7 +57,7 @@ p = Path('.graff/traces'); p.mkdir(parents=True)
 print('CACHE_OK')
 print({FOOTER!r}, file=__import__('sys').stderr)
 # {arm}
-''')
+''', encoding='utf-8')
                 binary.chmod(0o700)
             out = root / 'result'
             env = dict(os.environ, CODEGRAFF_API_KEY='offline-fixture-only', OPENAI_API_KEY='must-not-inherit')

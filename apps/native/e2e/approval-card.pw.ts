@@ -4,6 +4,7 @@ const oldAutoSubmitDelay = 480;
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/visual-tests/approval");
+  await expect(page.locator("[data-approval-ready]")).toHaveAttribute("data-approval-ready", "true");
 });
 
 test("a radio click waits for Send, submits the latest selection once, and ignores repeated activation", async ({ page }) => {

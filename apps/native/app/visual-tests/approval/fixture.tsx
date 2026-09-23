@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ApprovalCard from "@/components/primitives/ApprovalCard";
 import { AssistantBody } from "@/components/site/ChatBubbles";
 import { emptyTurn, type AssistantTurn } from "@/lib/acp";
@@ -23,6 +23,8 @@ const multiQuestions = [
 ];
 
 export default function ApprovalFixture() {
+  const [ready, setReady] = useState(false);
+  useEffect(() => setReady(true), []);
   const [singleKey, setSingleKey] = useState(0);
   const [singleSubmissions, setSingleSubmissions] = useState<string[]>([]);
   const [singleCancellations, setSingleCancellations] = useState(0);
@@ -33,7 +35,7 @@ export default function ApprovalFixture() {
   const [ackSubmissions, setAckSubmissions] = useState(0);
 
   return (
-    <main className="min-h-screen bg-page p-8 text-ink">
+    <main data-approval-ready={ready} className="min-h-screen bg-page p-8 text-ink">
       <div className="mx-auto grid max-w-[900px] gap-10 md:grid-cols-2">
         <section aria-label="Single-question approval" className="space-y-4">
           <div className="flex items-center justify-between gap-3">

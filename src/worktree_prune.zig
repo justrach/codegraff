@@ -219,7 +219,8 @@ pub fn removeWorktree(gpa: Allocator, io: Io, e: Entry) bool {
     if (!ranOk(common)) return false;
     const git_dir = std.mem.trim(u8, common.stdout, " \t\r\n");
     if (git_dir.len == 0) return false;
-    const rm = runCapped(gpa, io, &.{ "git", "-C", e.path, "worktree", "remove", e.path }, 8192, 8192, 60_000) catch return false;
+    // Do not make the child process use the directory it must remove as its cwd (Windows locks it).
+    const rm = runCapped(gpa, io, &.{ "git", "--git-dir", git_dir, "worktree", "remove", e.path }, 8192, 8192, 60_000) catch return false;
     defer {
         gpa.free(rm.stdout);
         gpa.free(rm.stderr);
