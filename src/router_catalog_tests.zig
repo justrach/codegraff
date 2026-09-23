@@ -339,6 +339,57 @@ test "Models-API cursor pagination is followed 1:1 with the docs" {
     try std.testing.expectEqualStrings("base", pageUrl(arena, "base", null) orelse return error.TestUnexpectedResult);
 }
 
+test "catalog HTTP/1.1 keeps auth, cursor pagination, and a valid prefix after a failed page" {
+    const io = std.testing.io;
+    var address = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:0");
+    var server = try std.Io.net.IpAddress.listen(&address, io, .{});
+    defer server.deinit(io);
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveCatalogPages, .{ io, &server });
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    var spec = provider.specFor("anthropic") orelse return error.TestUnexpectedResult;
+    spec.models_url = try std.fmt.allocPrint(state.allocator(), "http://127.0.0.1:{d}/v1/models?limit=1000", .{server.socket.address.getPort()});
+    const complete = rc.fetch(io, std.testing.allocator, state.allocator(), spec, "test-key", .environment) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 2), complete.models.len);
+    try std.testing.expectEqualStrings("first", complete.models[0].name);
+    try std.testing.expectEqualStrings("second", complete.models[1].name);
+    const prefix = rc.fetch(io, std.testing.allocator, state.allocator(), spec, "test-key", .environment) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 1), prefix.models.len);
+    try std.testing.expectEqualStrings("first", prefix.models[0].name);
+    const retried = rc.fetch(io, std.testing.allocator, state.allocator(), spec, "test-key", .environment) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 2), retried.models.len);
+    try std.testing.expectEqualStrings("second", retried.models[1].name);
+}
+
+fn serveCatalogPages(io: std.Io, server: *std.Io.net.Server) void {
+    const first = "{\"data\":[{\"id\":\"first\"}],\"has_more\":true,\"last_id\":\"first\"}";
+    const second = "{\"data\":[{\"id\":\"second\"}],\"has_more\":false}";
+    for (0..6) |i| {
+        const stream = server.accept(io) catch return;
+        defer stream.close(io);
+        var read_buffer: [4096]u8 = undefined;
+        var reader = std.Io.net.Stream.Reader.init(stream, io, &read_buffer);
+        const line = reader.interface.takeDelimiter('\n') catch return;
+        const expected = if (i % 2 == 0) "GET /v1/models?limit=1000 HTTP/1.1\r" else "GET /v1/models?limit=1000&after_id=first HTTP/1.1\r";
+        if (!std.mem.eql(u8, line orelse return, expected)) return;
+        var key = false;
+        var version = false;
+        while (reader.interface.takeDelimiter('\n') catch null) |header| {
+            if (std.ascii.eqlIgnoreCase(header, "x-api-key: test-key\r")) key = true;
+            if (std.ascii.eqlIgnoreCase(header, "anthropic-version: " ++ @import("main.zig").anthropic_version ++ "\r")) version = true;
+            if (std.mem.eql(u8, header, "\r") or header.len == 0) break;
+        }
+        if (!key or !version) return;
+        const body = if (i % 2 == 1) second else first;
+        var write_buffer: [4096]u8 = undefined;
+        var writer = std.Io.net.Stream.Writer.init(stream, io, &write_buffer);
+        writer.interface.print("HTTP/1.1 {s}\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ if (i == 3) "500 Error" else "200 OK", body.len, body }) catch return;
+        writer.interface.flush() catch return;
+    }
+}
+
 test "router discovery replaces only its provider slice" {
     const saved = pricing.active_model_table;
     defer pricing.active_model_table = saved;
