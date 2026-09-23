@@ -90,6 +90,10 @@ pub const CostTally = struct {
         }
     }
 
+    pub fn addSettled(self: *CostTally, io: Io, input: i64, output: i64, charge_micro_usd: u64) void {
+        @import("pricing_settled.zig").add(self, io, input, output, charge_micro_usd);
+    }
+
     pub fn missingUsage(self: *CostTally, io: Io) void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
@@ -580,7 +584,6 @@ pub fn providerModelInTable(provider_id: []const u8, model: []const u8) bool {
 
 // Seat classification lives in billing.zig. Discovery / price-overlay / default
 // catalog tests live in pricing_tests.zig (600-line cap).
-
 test "completed response without usage marks totals incomplete without inventing tokens or cost" {
     var tally: CostTally = .{};
     tally.missingUsage(std.testing.io);
