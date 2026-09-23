@@ -172,6 +172,15 @@ def exercise(root, binary, name, cert, host, success):
             assert init['result']['protocolVersion'] == 1
             created, _ = call('session/new', {'cwd': str(case), 'mcpServers': []}, 2)
             sid = created['result']['sessionId']
+            initial = created['result']['configOptions']
+            assert len(initial) == 1 and initial[0]['category'] == 'thought_level', initial
+            assert initial[0]['currentValue'] == 'medium', initial
+            selected, _ = call('session/set_config_option', {
+                'sessionId': sid, 'configId': 'thought_level', 'value': 'high'}, 8)
+            options = selected['result']['configOptions']
+            assert len(options) == 1 and options[0]['currentValue'] == 'high', selected
+            assert not [r for r in (json.loads(line) for line in log.read_text().splitlines())
+                        if r['event'] == 'request'], 'Effort selection made a network request'
             for number in range(1, 3 if success else 2):
                 try:
                     result, updates = call('session/prompt', {'sessionId': sid, 'prompt': [
@@ -190,9 +199,20 @@ def exercise(root, binary, name, cert, host, success):
                 text = response_text(updates)
                 assert text == expected_text(number), (number, len(text))
                 assert len(requests) == number, requests
+                assert requests[0]['body']['reasoning']['effort'] == 'high', requests[0]['body'].get('reasoning')
                 assert all(r['method'] == 'POST' and r['path'] == '/v1/chat/completions' for r in requests)
                 assert all(r['alpn'] == 'h2' for r in records if r['event'] == 'session')
+                if number == 1:
+                    changed, updates = call('session/prompt', {'sessionId': sid, 'prompt': [
+                        {'type': 'text', 'text': '/effort low'}]}, 9)
+                    assert changed['result']['stopReason'] == 'end_turn', changed
+                    changes = [e['params']['update'] for e in updates if e.get('method') == 'session/update'
+                               and e['params']['update']['sessionUpdate'] == 'config_option_update']
+                    assert len(changes) == 1 and changes[0]['configOptions'][0]['currentValue'] == 'low', changes
+                    assert len([r for r in (json.loads(line) for line in log.read_text().splitlines())
+                                if r['event'] == 'request']) == 1, 'Slash effort change made a network request'
                 if number == 2:
+                    assert requests[1]['body']['reasoning']['effort'] == 'low', requests[1]['body'].get('reasoning')
                     assert requests[0]['session'] == requests[1]['session'], 'Follow-up did not reuse HTTP/2 connection'
                     assert [r['stream'] for r in requests] == [1, 3], 'HTTP/2 stream IDs did not advance'
                     assert len(json.dumps(requests[1]['body'])) > 65535, 'Follow-up did not exercise upload flow control'

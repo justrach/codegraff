@@ -261,3 +261,23 @@ test "#1007 wait returns a tick when idle" {
     const ev = (try inbox.wait(arena.allocator())) orelse return error.ExpectedTick;
     try std.testing.expect(ev == .tick);
 }
+
+test "session config selection during a turn queues an ordinary request without steering" {
+    Agent.esc_cancel.store(false, .release);
+    var reader: Io.Reader = .fixed("");
+    var inbox: Inbox = .{ .gpa = std.testing.allocator, .io = std.testing.io, .reader = &reader };
+    defer inbox.deinit();
+    defer Agent.esc_cancel.store(false, .release);
+    try inbox.accept("{\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"s\"}}");
+    inbox.begin();
+    try inbox.accept("{\"id\":2,\"method\":\"session/set_config_option\",\"params\":{\"sessionId\":\"s\",\"configId\":\"thought_level\",\"value\":\"high\"}}");
+    try std.testing.expect(!Agent.esc_cancel.load(.acquire));
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const first = (try inbox.wait(arena.allocator())) orelse return error.ExpectedLine;
+    try std.testing.expect(std.mem.indexOf(u8, first.line, "session/prompt") != null);
+    inbox.end();
+    const second = (try inbox.wait(arena.allocator())) orelse return error.ExpectedLine;
+    try std.testing.expect(std.mem.indexOf(u8, second.line, "session/set_config_option") != null);
+    try std.testing.expect(std.mem.indexOf(u8, second.line, "session/prompt") == null);
+}
