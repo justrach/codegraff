@@ -12,21 +12,72 @@ current is part of cutting a release.
 
 ## v0.0.302.4
 
-- Xiaomi's model list follows `https://api.xiaomimimo.com/v1/models` (same 6h cache and `graff models refresh` as the other live catalogs). Offline fallback and the default are MiMo-V2.6.
-- `graff refresh` is the short form of `graff models refresh`.
-- `rlm` accepts `tools.server.tool(...)` for a loaded MCP tool. Same Zig caller, not a JavaScript heap.
-- A background command that exits resumes the same session with its exit status and output, instead of waiting for another message (#1154).
-- Desktop interface sounds are optional and off until turned on. Cuelume notices ship with the app bundle.
-- Desktop task workspaces get their own Git checkouts, with a keep gate so dirty or unique trees are not dropped.
-- OpenAI Platform prompt-cache breakpoints cover GPT-5.6 and later. Platform GPT-6 can use the Responses WebSocket. Resume restores the saved prompt-cache key.
-- Composer send/stop stays a circle: more inset so the 32px corner no longer clips it into a square (#1152).
-- New chat stays in the folder already open, on the desktop and through ACP. Worktrees and other GUI workspace changes have to match the ACP session; that rule is in AGENTS.md and docs/notices.
-- GUI transcript drag-selection paints, and each message has a copy icon at the bottom.
+### Harness execution and recovery
 
-- Task workspace housekeeping: `graff worktree update` merges the remote base; `gc` drops dead session trees and clean trees whose GitHub PR is MERGED (dirty trees stay). Desktop: Update from main, Clear unused trees. Asking to free space unfolds `workspace` so `action=gc` is callable this turn.
-- xAI Responses WS chains `previous_response_id` on the held socket (store:false in-memory cache) and `generate:false` prewarms a fresh socket. A stalled first handshake or 426 latches HTTPS SSE for the session; chrome shows a dim `using HTTPS SSE` notice. `GRAFF_XAI_WS_CHAIN=0` opts out.
-- HTTPS SSE prefers HTTP/2 (`justrach/http-zig`): connection reuse, ALPN `h2`, first-failure HTTP/1.1 latch. `GRAFF_HTTP2=0` forces 1.1. A finished turn keeps that connection; the socket is flushed and DATA windows are credited so the next stream is not stuck. A stream that does not end is dropped instead of reused.
-- grok-4.7 is the xAI default (500k, same dual-band $2/$6 and 200k high band as 4.6; efforts still low|medium|high|xhigh).
+- Independent, read-only lookups can start while a supported response is still streaming. Each job owns its arguments, cancellation and result; the harness joins jobs before the next request and delivers each result once.
+- RLM preserves dependent tool order and stopped results. Only leading read-only work may run speculatively; mutations retain their order. Unsupported script output expressions return a recoverable error.
+- Completion waits for terminal tool results and retains failed background verification status. Pending work cannot be reported as completed verification.
+- Positive `agent_output` waits now wait for a worker to finish, including unattended ACP sessions. A zero wait still returns a snapshot, and cancellation remains interruptible.
+- Background command completion resumes the owning session with its exit status and output. Durable shell handles prevent a stale reference from targeting a newer job.
+- Worker resume preserves conversation ownership and settings. Queueing a message and explicitly resuming a worker remain distinct operations.
+- Aggregate tool limits apply across descendants. Dependent workflow stages share their intended workspace; independent workflow items stay isolated.
+- Streamed tool calls retain their explicit identities when numeric indexes are reused. Incomplete predecessors remain invalid instead of absorbing a later call's arguments.
+- Batched edits validate every span before replacing a file, so a later invalid span cannot leave a partially applied batch.
+- Directory scans count examined entries before filtering and mark truncated results as partial. Bounded tool previews retain useful whole diagnostic lines from the original source ranges.
+- Empty-input, whitespace and record-framing rules come from the task's contract rather than a global interpretation.
+- Loaded MCP tools are callable through `tools.server.tool(...)` in RLM. Loaded tool ordering survives session save and restore.
+
+### Transport and request errors
+
+- Streaming HTTPS, bounded buffered POST requests and model-catalog GET requests use the shared HTTP/2 transport where supported. `GRAFF_HTTP2=0` retains the HTTP/1.1 opt-out.
+- Active streams exclusively lease their connections. Transport allocations outlive individual request arenas, completed connections can be reused, and unfinished or failed streams are discarded safely.
+- Request deadlines join their work before cleanup; cancellation, body-size limits and flow-control handling are covered by local transport fixtures.
+- Ambiguous send failures return to the request retry policy instead of silently replaying the request in the transport. Attempts without reported usage remain uncertain.
+- A trailer timeout after a valid completed response no longer replays the completed generation. Missing usage remains explicitly unknown.
+- Catalog redirects have bounded hops and pages. Credentials remain scoped to the original origin.
+- Unavailable-model errors stop across retry paths instead of repeatedly sending a request that cannot succeed.
+- WebSocket-capable routes retain their supported connection and cache behavior, with observable HTTPS streaming fallback where applicable.
+
+### Model selection and effort controls
+
+- Opening the model picker refreshes its gateway catalog through a bounded request with a cached fallback. `graff refresh` is a short form of `graff models refresh`.
+- Saved and explicit model selections retain their provider route even when a refreshed catalog omits the model. Fallback remains an explicit selection rather than a silent route change.
+- Default and worker model preferences stay within the selected provider. Catalog results and startup selection remain scoped to the current workspace.
+- Model guidance is composed for the current request, with delegation guidance limited to the root agent and stable repeated prompt prefixes.
+- Effort controls reflect the active model's supported values. Binary thinking models expose Off/On rather than an artificial intensity ladder; legacy positive settings normalize to On.
+- Explicit Off requests on unsupported routes are rejected before inference, including worker overrides. Switching to an incompatible model visibly resets an unsupported saved Off setting.
+- Worker effort schemas and generated SDK types match the supported control values.
+- The optional effort-selection tool replaces the general judgment tool. It accepts a short task summary, selects only a supported effort value, and queues the change for the owning session; it does not judge answers, approve actions or run automatically on every turn. Failed or malformed selections leave effort unchanged.
+
+### ACP and desktop integration
+
+- ACP initialization and embedded resources follow protocol v1. Initialization metadata is validated per response, and duplicate live session creation cannot replace existing history.
+- `session/new` and `session/load` expose supported effort options. `session/set_config_option` changes the same effort state as `/effort`; updates during a prompt apply after the active turn.
+- Agent-originated model and effort changes publish configuration updates for clients. The desktop picker uses capability-derived values and labels.
+- Loading a saved ACP session restores its workspace and conversation without rerunning historical tools. Tool permissions belong to the active client and request; cancellation never grants approval.
+- Tool outcomes survive protocol updates. Connection usage notifications preserve unreported usage rather than presenting a partial subtotal as complete.
+- Superseded desktop session bootstraps redirect their waiting callers to the replacement session.
+- Chat selection and navigation restore composer focus and caret position; closing a chat returns to the most recently used chat. Reopen-tab shortcuts require the intended modifiers.
+- Transcript selection and response copying are supported without copying extra interface text. The redundant sidebar toggle is removed, and effort controls use a compact layout.
+- A completed browser navigation no longer shows a stale aborted-load error over the replacement page. Real navigation failures remain visible.
+- Composer send/stop controls retain their circular shape. Optional interface sounds are off by default.
+- Linux desktop startup, local service installation and package handling have platform-specific recovery paths.
+
+### Workspaces and accounting
+
+- Desktop task workspaces use separate Git checkouts. Update and garbage-collection operations retain dirty, unique or actively written worktrees; archive and landing checks require current repository evidence.
+- Workspace switches remain aligned with the ACP session. Windows worktree removal runs from a stable Git directory.
+- Usage views distinguish reported tokens, cache hits, unreported attempts and incomplete totals. Cost estimates use the actual request route and leave unknown tariffs unpriced.
+- Optional effort-selection charges are recorded as settled only when an authenticated response includes a validated settlement receipt. Missing receipts remain unknown; mock requests do not affect billing totals.
+- Saved prompt-cache identities are restored safely, and supported request paths retain their cache controls.
+
+### Release and verification
+
+- Pushes to the latest versioned release branch build beta prereleases. Publication checks the current branch head again so an older queued build cannot replace a newer beta.
+- Beta release pages include the matching changelog section and identify their exact source commit. `graff --version` shows current release highlights.
+- Beta versions remain separate from the stable update channel. Packaging includes CLI archives and checksums across supported targets, plus the Linux desktop package; a macOS build artifact alone is not a signed installer.
+- Offline checks cover formatting, source limits, test reachability, the test-count floor, generated SDK consistency, terminal behavior and desktop regressions.
+- Scripted harness behavior cases and local HTTP/2/ACP fixtures exercise ordering, identity, retries, cancellation, usage uncertainty and effort configuration without requiring live service calls.
 
 ## v0.0.302.3
 
