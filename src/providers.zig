@@ -492,8 +492,9 @@ test "applyProviderInner preserves the server meter on an exact model re-selecti
     defer arena_state.deinit();
     const a = arena_state.allocator();
     const p: Provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 270_000 };
-
     var root: Agent = undefined;
+    root.io = std.testing.io;
+    root.jev_effort_pending = .{};
     root.provider = p;
     root.subagent_provider = null;
     root.subagent_provider_explicit = true; // this test is about the meter, not #371 re-derivation
@@ -538,7 +539,6 @@ test "applyProviderInner preserves the server meter on an exact model re-selecti
     try std.testing.expect(!root.effort_rejected);
     try std.testing.expect(!root.ws_off);
     try std.testing.expectEqual(@as(u8, 0), root.ws_transport_failures);
-
     var changed_format = changed;
     changed_format.id = "deepseek";
     changed_format.kind = .openai;
