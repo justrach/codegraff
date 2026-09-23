@@ -10,7 +10,7 @@ import subprocess
 import uuid
 
 ANSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
-FOOTER = re.compile(r'^\[usage\]\s+(\d+) api call\(s\)\s*·\s*(\d+) in \((\d+) cached(?:, (\d+) cache writes)?\)\s*\+\s*(\d+) out tokens(?:\s*·\s*\$([0-9]+(?:\.[0-9]+)?))?(.*)$')
+FOOTER = re.compile(r'^\[usage\]\s+(?:known subtotal:\s*)?(\d+) api call\(s\)\s*·\s*(\d+) in \((\d+) cached(?:, (\d+) cache writes)?\)\s*\+\s*(\d+) out tokens(?:\s*·\s*\$([0-9]+(?:\.[0-9]+)?))?(.*)$')
 
 
 def graff_usage(stderr):
@@ -37,8 +37,15 @@ def graff_usage(stderr):
         result['cost_usd'] = None
         result['cost_kind'] = 'metered-only-subscription-excluded'
     missing = re.search(r'totals incomplete: (\d+) call\(s\) missing usage \(tokens and cost unknown\)', tail)
+    failed = re.search(r'totals incomplete: (\d+) failed request attempt\(s\) without usage \(tokens and cost unknown\)', tail)
     if missing and int(missing.group(1)):
         result['missing_usage_calls'] = int(missing.group(1))
+    if failed and int(failed.group(1)):
+        result['unreported_failed_attempts'] = int(failed.group(1))
+    # The prefix alone is sufficient evidence of incompleteness, even if a
+    # newer runtime introduces an unfamiliar explanation in the tail.
+    subtotal = re.match(r'^\[usage\]\s+known subtotal:', m.group(0)) is not None
+    if subtotal or result.get('missing_usage_calls') or result.get('unreported_failed_attempts'):
         result['usage_complete'] = False
         for key in ('in', 'cached', 'writes', 'out'):
             result['known_' + key] = result[key]
@@ -46,7 +53,9 @@ def graff_usage(stderr):
         # The footer dollar amount is a subtotal, including when it is zero.
         result['known_cost_usd'] = float(m.group(6)) if m.group(6) is not None else None
         result['cost_usd'] = None
-        result['cost_kind'] = 'incomplete-missing-usage'
+        result['cost_kind'] = ('incomplete-missing-usage' if result.get('missing_usage_calls') else
+                               'incomplete-unreported-failed-attempts' if result.get('unreported_failed_attempts') else
+                               'incomplete-known-subtotal')
     return result
 
 

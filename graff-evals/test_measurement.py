@@ -110,6 +110,56 @@ class MeasurementTests(unittest.TestCase):
         self.assertIsNone(measurement.graff_usage(footer + '\n' + missing)['in'])
         self.assertEqual(measurement.graff_usage(missing + '\n' + footer), measurement.graff_usage(footer))
 
+    def test_released_known_subtotal_prefix_and_failed_attempt_tail(self):
+        for calls, ordinary, dollars in [(0, 0, 0), (1, 80, .001234)]:
+            with self.subTest(calls=calls):
+                footer = (f'[usage] known subtotal: {calls} api call(s) · {ordinary} in (0 cached) + 0 out tokens · ${dollars:.6f}'
+                          ' · totals incomplete: 2 failed request attempt(s) without usage (tokens and cost unknown)')
+                usage = measurement.graff_usage(footer)
+                self.assertEqual(usage['calls'], calls)
+                self.assertEqual(usage['unreported_failed_attempts'], 2)
+                self.assertFalse(usage['usage_complete'])
+                self.assertEqual(usage['known_in'], ordinary)
+                self.assertEqual(usage['known_cost_usd'], dollars)
+                for key in ('in', 'cached', 'writes', 'out', 'cost_usd'):
+                    self.assertIsNone(usage[key])
+                row = dict(model='grok-4.6', requested_provider='xai', harness='graff-dev',
+                           **{'tok_' + k: v for k, v in usage.items()})
+                list_price.attach(row)
+                self.assertIsNone(row['list_usd'])
+                self.assertEqual(row['list_price_kind'], 'unavailable-missing-usage')
+                self.assertIsNone(report.bucket([row])['graff-dev']['usd'])
+
+    def test_missing_and_failed_usage_counters_remain_distinct(self):
+        base = '[usage] known subtotal: 3 api call(s) · 80 in (40 cached, 5 cache writes) + 9 out tokens · $0.001234'
+        for extra in ('', ' · 2 subscription call(s), flat-rate (not in $)',
+                      ' · 2 call(s) on unpriced models'):
+            with self.subTest(extra=extra):
+                usage = measurement.graff_usage(base + extra +
+                    ' · totals incomplete: 1 call(s) missing usage (tokens and cost unknown)' +
+                    ' · totals incomplete: 2 failed request attempt(s) without usage (tokens and cost unknown)')
+                self.assertEqual(usage['missing_usage_calls'], 1)
+                self.assertEqual(usage['unreported_failed_attempts'], 2)
+                self.assertEqual(usage['calls'], 3)
+                self.assertEqual(usage['known_cached'], 40)
+                self.assertEqual(usage['known_writes'], 5)
+                self.assertEqual(usage['known_cost_usd'], .001234)
+                self.assertIsNone(usage['cost_usd'])
+                self.assertIsNone(usage['in'])
+
+    def test_subtotal_marker_is_fail_closed_and_last_footer_wins(self):
+        complete = '[usage] 1 api call(s) · 80 in (40 cached) + 9 out tokens · $0.001234'
+        subtotal = complete.replace('[usage] ', '[usage] known subtotal: ')
+        partial = measurement.graff_usage(complete + '\n' + subtotal)
+        self.assertFalse(partial['usage_complete'])
+        self.assertIsNone(partial['cost_usd'])
+        self.assertEqual(partial['known_in'], 80)
+        self.assertEqual(measurement.graff_usage(subtotal + '\n' + complete),
+                         measurement.graff_usage(complete))
+        # Recognize the failed-attempt suffix even without the newer prefix.
+        failed = complete + ' · totals incomplete: 1 failed request attempt(s) without usage (tokens and cost unknown)'
+        self.assertFalse(measurement.graff_usage(failed)['usage_complete'])
+
     def test_multi_request_band_is_unavailable_not_mispriced(self):
         row = {'model': 'grok-4.6', 'tok_in': 250000, 'tok_calls': 2, 'tok_out': 100}
         list_price.attach(row)
