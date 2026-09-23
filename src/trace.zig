@@ -124,6 +124,22 @@ pub const Tracer = struct {
             behavior.recordApiMetric(from_subagent, ms, req_bytes, resp_bytes, context_tokens, cache_read, is_error)
         else
             0;
+        if (is_error) {
+            // Failed calls did not report usage. Omit it rather than claiming
+            // an observed zero; request/response byte counts remain known.
+            self.write(.{
+                .t = self.elapsedMs(),
+                .ev = "api",
+                .turn = behavior_turn,
+                .agent = label,
+                .model = model,
+                .ms = ms,
+                .req_bytes = req_bytes,
+                .resp_bytes = resp_bytes,
+                .is_error = true,
+            });
+            return;
+        }
         self.write(.{
             .t = self.elapsedMs(),
             .ev = "api",
@@ -498,6 +514,30 @@ test "writeJsonLine: one complete newline-terminated JSON record per call" {
         try std.testing.expectEqual(@as(i64, 42), p.value.object.get("pid").?.integer);
         try std.testing.expectEqualStrings("session-a", p.value.object.get("session_id").?.string);
     }
+}
+
+test "failed api trace leaves unavailable usage unknown, successful zero stays zero" {
+    const io = std.testing.io;
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var tracer: Tracer = .{
+        .io = io,
+        .gpa = std.testing.allocator,
+        .out = &aw.writer,
+        .start = Io.Timestamp.now(io, .awake),
+    };
+    tracer.api("repl", false, "model", 20, 100, 0, 0, 0, true);
+    tracer.api("repl", false, "model", 20, 100, 80, 0, 0, false);
+    var it = std.mem.splitScalar(u8, std.mem.trimEnd(u8, aw.writer.buffered(), "\n"), '\n');
+    var failure = try std.json.parseFromSlice(Value, std.testing.allocator, it.next().?, .{});
+    defer failure.deinit();
+    try std.testing.expect(failure.value.object.get("is_error").?.bool);
+    try std.testing.expect(failure.value.object.get("context_tokens") == null);
+    try std.testing.expect(failure.value.object.get("cache_read_tokens") == null);
+    var success = try std.json.parseFromSlice(Value, std.testing.allocator, it.next().?, .{});
+    defer success.deinit();
+    try std.testing.expectEqual(@as(i64, 0), success.value.object.get("context_tokens").?.integer);
+    try std.testing.expectEqual(@as(i64, 0), success.value.object.get("cache_read_tokens").?.integer);
 }
 
 test "operational tool outcomes carry monotonic call ids without rich tracing (#602)" {

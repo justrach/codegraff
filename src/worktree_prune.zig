@@ -219,7 +219,9 @@ pub fn removeWorktree(gpa: Allocator, io: Io, e: Entry) bool {
     if (!ranOk(common)) return false;
     const git_dir = std.mem.trim(u8, common.stdout, " \t\r\n");
     if (git_dir.len == 0) return false;
-    const rm = runCapped(gpa, io, &.{ "git", "-C", e.path, "worktree", "remove", e.path }, 8192, 8192, 60_000) catch return false;
+    // Removing a worktree from inside itself fails on Windows; launch Git from
+    // the common directory rather than inheriting the target worktree's cwd.
+    const rm = process_runner.runCappedWithOptions(gpa, io, &.{ "git", "--git-dir", git_dir, "worktree", "remove", e.path }, 8192, 8192, 60_000, .{ .cwd = .{ .path = git_dir } }) catch return false;
     defer {
         gpa.free(rm.stdout);
         gpa.free(rm.stderr);

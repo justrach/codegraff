@@ -44,7 +44,7 @@ class ProbeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             for arm in ('before', 'after'):
-                binary = root / arm
+                binary = root / f'{arm}.py'
                 binary.write_text(f'''#!{sys.executable}
 import json, os
 from pathlib import Path
@@ -57,12 +57,12 @@ p = Path('.graff/traces'); p.mkdir(parents=True)
 print('CACHE_OK')
 print({FOOTER!r}, file=__import__('sys').stderr)
 # {arm}
-''')
+''', encoding='utf-8')
                 binary.chmod(0o700)
             out = root / 'result'
             env = dict(os.environ, CODEGRAFF_API_KEY='offline-fixture-only', OPENAI_API_KEY='must-not-inherit')
-            p = subprocess.run([sys.executable, str(SCRIPT), '--before', str(root/'before'),
-                                '--after', str(root/'after'), '--model', 'fixture', '--repeats', '2',
+            p = subprocess.run([sys.executable, str(SCRIPT), '--before', str(root/'before.py'),
+                                '--after', str(root/'after.py'), '--model', 'fixture', '--repeats', '2',
                                 '--out', str(out)], env=env, capture_output=True, text=True, timeout=30)
             self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
             pairs = json.loads((out/'pairs.json').read_text())
@@ -71,9 +71,11 @@ print({FOOTER!r}, file=__import__('sys').stderr)
             self.assertEqual(json.loads((out/'summary.json').read_text())['fixture']['valid_pairs'], 2)
             for pair in pairs:
                 self.assertEqual(pair['before']['linked']['prompt_sha256'], pair['after']['linked']['prompt_sha256'])
-            self.assertEqual(out.stat().st_mode & 0o777, 0o700)
-            for path in out.rglob('*'):
-                self.assertEqual(path.stat().st_mode & 0o077, 0, str(path))
+            # NTFS ACLs, not POSIX mode bits, govern access on Windows.
+            if os.name != 'nt':
+                self.assertEqual(out.stat().st_mode & 0o777, 0o700)
+                for path in out.rglob('*'):
+                    self.assertEqual(path.stat().st_mode & 0o077, 0, str(path))
 
 
 if __name__ == '__main__':

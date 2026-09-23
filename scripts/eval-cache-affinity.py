@@ -18,6 +18,7 @@ import shutil
 import signal
 import statistics
 import subprocess
+import sys
 import time
 
 HELPERS = Path(__file__).resolve().parents[1] / 'graff-evals' / 'measurement.py'
@@ -134,7 +135,12 @@ def run(binary, cwd, artifacts, model, prompt, timeout, source_env):
     env = measurement.provider_environment('codegraff', str(artifacts), source_env, model)
     env['PWD'] = str(cwd)
     env['GRAFF_LEARNING_PRIVACY'] = 'local'
-    argv = [str(binary), '--no-local-tools', '--yolo', '--max-model-calls', '2',
+    with binary.open('rb') as executable:
+        shebang = executable.readline(256)
+    # Windows cannot launch Python scripts through CreateProcess by shebang.
+    launcher = [sys.executable] if os.name == 'nt' and (binary.suffix.lower() == '.py' or
+                (shebang.startswith(b'#!') and b'python' in shebang.lower())) else []
+    argv = [*launcher, str(binary), '--no-local-tools', '--yolo', '--max-model-calls', '2',
             '--no-telemetry', '-p', prompt]
     expected_hash = digest(binary)
     started = time.monotonic_ns()
@@ -145,11 +151,17 @@ def run(binary, cwd, artifacts, model, prompt, timeout, source_env):
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
-        os.killpg(proc.pid, signal.SIGTERM)
+        if os.name == 'nt':
+            proc.terminate()
+        else:
+            os.killpg(proc.pid, signal.SIGTERM)
         try:
             stdout, stderr = proc.communicate(timeout=5)
         except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
+            if os.name == 'nt':
+                proc.kill()
+            else:
+                os.killpg(proc.pid, signal.SIGKILL)
             stdout, stderr = proc.communicate()
     wall_ns = time.monotonic_ns() - started
     measurement.private_logs(str(artifacts), stdout, stderr)
@@ -224,7 +236,7 @@ def main():
         if not source.is_file() or not os.access(source, os.X_OK):
             ap.error(f'{arm} must be an executable file')
         before_hash = digest(source)
-        dest = binaries / arm
+        dest = binaries / f'{arm}{source.suffix}'
         shutil.copyfile(source, dest)
         dest.chmod(0o500)
         if digest(dest) != before_hash or digest(source) != before_hash:

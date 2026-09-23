@@ -118,10 +118,16 @@ fn fill(w: *Walk, node: *Node, rel: []const u8) !void {
 
     // Load rules before the bounded scan, regardless of directory entry order.
     if (rel.len > 0) {
-        if (dir.openFile(w.io, ".gitignore", .{ .follow_symlinks = false })) |file| {
+        if (dir.openFile(w.io, ".gitignore", .{ .follow_symlinks = false })) |opened| {
+            var file = opened;
             defer file.close(w.io);
+            // Zig opens no-follow files asynchronously on Windows but marks the
+            // returned handle synchronous. Positional reads need the actual mode
+            // and an explicit offset; streaming reads on that handle fail.
+            if (@import("builtin").os.tag == .windows) file.flags.nonblocking = true;
             if ((try file.stat(w.io)).kind == .file) {
-                var reader = file.reader(w.io, &.{});
+                var buffer: [4096]u8 = undefined;
+                var reader = file.reader(w.io, &buffer);
                 const text = try reader.interface.allocRemaining(w.arena, .limited(64 * 1024));
                 const extra = try gitignore.parse(w.arena, text, abs);
                 try w.rules.appendSlice(w.arena, extra);

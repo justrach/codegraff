@@ -33,9 +33,24 @@ exports.run = async ({win, backend}) => {
   // after a missed click left the composer empty and every worker idle at
   // recipe (native CI, pinned shutdown pass).
   async function click(selector) {
-    const box = await js(`(() => { const e=document.querySelector(${JSON.stringify(selector)});e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
-    await desktop.testInput(win.webContents, {type:'mouseDown',button:'left',clickCount:1,...box});
-    await desktop.testInput(win.webContents, {type:'mouseUp',button:'left',clickCount:1,...box});
+    const send = selector === '[aria-label="Send"]';
+    for (let attempt = 0; attempt < (send ? 2 : 1); attempt++) {
+      const box = await js(`(() => { const e=document.querySelector(${JSON.stringify(selector)});e.scrollIntoView({block:'center',behavior:'instant'});const r=e.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;return {x,y,hit:e.contains(document.elementFromPoint(x,y))}; })()`);
+      if (!box.hit) { if (attempt === 0 && send) { await sleep(100); continue; } throw Error(`Click target obscured: ${selector}`); }
+      if (send) await js(`(() => { window.__shutdownSendClick=false;window.__shutdownSendObserver=e=>{if(e.target.closest('[aria-label="Send"]'))window.__shutdownSendClick=true};document.addEventListener('click',window.__shutdownSendObserver,true); })()`);
+      try {
+        await desktop.testInput(win.webContents, {type:'mouseDown',button:'left',clickCount:1,...box});
+        const release = await js(`(() => { const e=document.querySelector(${JSON.stringify(selector)}),r=e.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;return e.contains(document.elementFromPoint(x,y))?{x,y}:null; })()`);
+        await desktop.testInput(win.webContents, {type:'mouseUp',button:'left',clickCount:1,...box,...release});
+        if (!send) return;
+        const end = Date.now() + (attempt ? 1000 : 300);
+        while (Date.now() < end && !(await js('window.__shutdownSendClick'))) await sleep(50);
+        if (await js('window.__shutdownSendClick')) return;
+      } finally {
+        if (send) await js("document.removeEventListener('click',window.__shutdownSendObserver,true)");
+      }
+    }
+    throw Error('Shutdown fixture Send click did not reach its button');
   }
   async function submit(text) {
     const ready = () => js(`document.querySelector('textarea[aria-label="Prompt"]').value === ${JSON.stringify(text)} && !document.querySelector('[aria-label="Send"]').disabled`);

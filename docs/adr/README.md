@@ -212,6 +212,8 @@ record only when you need the evidence or the edge cases.
 | [0184](0184-directory-scan-budgets-count-examined-entries.md) | Directory scan limits count examined entries before filtering; truncated listings and suggestions remain explicitly partial. |
 | [0185](0185-input-semantics-belong-to-the-task-contract.md) | Empty-input, whitespace, and record-framing semantics come from the task contract, not global work instructions. |
 | [0186](0186-tool-previews-use-original-source-ranges.md) | Tool previews select whole diagnostic lines from original omitted ranges within byte and line budgets. |
+| [0187](0187-optional-judgments-preserve-usage-uncertainty.md) | Optional judgments use an independent gateway login; tokens and unsettled cost remain distinct in CLI and ACP usage. |
+| [0188](0188-streamed-tool-calls-retain-identity.md) | Streamed tool calls use explicit IDs; reused indexes keep incomplete predecessors invalid, and prose is not execution evidence. |
 
 ## When to write one
 

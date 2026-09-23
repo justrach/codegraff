@@ -46,6 +46,7 @@ const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: the load_tool_s
 const native_fold = @import("native_fold.zig"); // folded native power tools: load_tool_schemas's native half
 const local_tools = @import("local_tools.zig");
 const schedule = @import("schedule.zig");
+const jev_tool = @import("jev_tool.zig");
 const util = @import("util.zig"); // #225: unixMs, for the clock_sleep interrupted-elapsed measurement
 
 const cite_markup = @import("cite_markup.zig");
@@ -146,6 +147,10 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             try @import("agent_tool_batch.zig").runExternal(self, calls, wave2.items, results);
             brief_diversity.noteSiblingBatch(self.arena, self.tracer, calls, wave2.items, results);
         }
+    }
+    if (!self.sub and jev_tool.takeCatalogRefresh()) {
+        self.invalidateRootTools();
+        try self.ensureRootTools(self.provider.kind);
     }
     if (defer_completion) if (eval_control.completionIndex(calls)) |i| {
         var verify_failed = ext_idx.items.len == 0;

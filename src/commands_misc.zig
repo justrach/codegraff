@@ -500,7 +500,7 @@ pub fn renderSessionUsage(c: pricing.CostTally, out: *Io.Writer) !void {
         try out.print("{s}session usage{s}\n", .{ style.bold, style.reset });
         try out.print("  api calls: {d}", .{c.api_calls});
         if (c.sub_calls > 0) try out.print(" ({d} subscription, flat-rate)", .{c.sub_calls});
-        if (c.unpriced_calls > 0) try out.print(" ({d} on unpriced models)", .{c.unpriced_calls});
+        if (c.unpriced_calls > 0) try out.print(" ({d} with unknown cost)", .{c.unpriced_calls});
         try out.print("\n  tokens:    {d} in ({d} cached) + {d} out\n", .{ c.in_tokens + c.cache_tokens, c.cache_tokens, c.out_tokens });
         try out.print("  cost:      {s}${d:.4}{s}{s}\n", .{
             style.green,                                                                                     c.usd, style.reset,

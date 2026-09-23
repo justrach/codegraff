@@ -40,17 +40,17 @@ export default function ChatColumn({ thread, compact, following, register, onOpe
     return () => observer.disconnect();
   }, []);
   const catalogNotice = catalogStatus?.error ? <div role="alert" className="px-4 py-2 text-xs text-ink-2">Could not refresh models. <button type="button" onClick={retryCatalog} className="underline">Retry</button></div> : catalogStatus?.loading ? <div role="status" className="px-4 py-2 text-xs text-ink-3">Loading models…</div> : null;
-  if (!thread.messages.length && !thread.snapshot) return <div className="min-h-0 flex-1 overflow-y-auto">
-    {catalogNotice}
+  if (!thread.messages.length && !thread.snapshot) return <div className="relative min-h-0 flex-1 overflow-y-auto">
+    {catalogNotice && <div className="absolute inset-x-0 top-0 z-20 bg-page">{catalogNotice}</div>}
     <EmptyState compact={compact} onOpenProject={onOpenProject} onProjects={onProjects}
       onContinue={onConversations} onReview={onReview} onSend={prompt.onSend} onSetting={prompt.onSetting}
       health={health} history={prompt.history} cwd={prompt.root} models={prompt.models}
       modelKey={prompt.modelKey} onModelOpen={prompt.onModelOpen} onModelChange={prompt.onModelChange} commands={prompt.commands} />
   </div>;
   return <div ref={hostRef} className="relative flex min-h-0 flex-1 flex-col">
-    {catalogNotice}
     <ChatTranscript messages={thread.messages} register={register} following={following}
       onOpenPath={onOpenPath} onReview={onReview} onAnswer={onAnswer} snapshot={thread.snapshot} onEditPrompt={onEditPrompt} busy={prompt.busy} />
+    {catalogNotice && <div className="pointer-events-auto absolute inset-x-0 top-0 z-20 bg-page">{catalogNotice}</div>}
     <div ref={composerRef} data-chat-composer className={`pointer-events-none absolute inset-x-0 bottom-0 z-10 px-4 ${composer.dock} ${compact ? "py-2" : "pt-16 pb-6 sm:px-8"}`}>
       <div className="pointer-events-auto mx-auto max-w-[720px]">
         {thread.snapshot && thread.session ? <SavedSnapshot name={thread.session} cwd={thread.cwd} model={prompt.modelKey}

@@ -41,6 +41,8 @@ try {
   await page.waitForFunction(before => window.catalogReads > before, beforeOpen);
   await page.getByRole('option').filter({ hasText: 'gpt-sol' }).click();
   await page.waitForFunction(() => document.querySelector('[aria-label="Choose model"]')?.getAttribute('data-model') === 'gpt-sol');
+  await page.waitForFunction(() => window.catalogCalls.some(call => call.method === 'bootstrap' && call.params?.model === 'codex/gpt-sol'));
+  assert.equal(await page.evaluate(() => window.catalogCalls.findLast(call => call.method === 'bootstrap')?.params?.model), 'codex/gpt-sol', 'Startup keeps the selected provider route');
   await effort.waitFor();
   const setEffort = async key => {
     await effort.click();
@@ -93,7 +95,7 @@ try {
   await page.waitForFunction(() => window.catalogCalls.some(call => call.method === 'session/prompt' && call.params.prompt[0]?.text === 'queued next model'));
   const calls = await page.evaluate(() => window.catalogCalls.filter(call => ['bootstrap', 'session/cancel', 'session/prompt'].includes(call.method)));
   const queued = calls.findIndex(call => call.method === 'session/prompt' && call.params.prompt[0]?.text === 'queued next model');
-  assert.equal(calls.slice(0, queued).findLast(call => call.method === 'bootstrap')?.params.model, 'gpt-astra');
+  assert.equal(calls.slice(0, queued).findLast(call => call.method === 'bootstrap')?.params.model, 'codex/gpt-astra');
   assert.equal(calls.filter(call => call.method === 'session/cancel').length, 0);
   await page.waitForFunction(() => !document.querySelector('[aria-label="Choose model"]')?.textContent?.includes('Next'));
   console.log('Model catalog UI: retry, capability refresh, per-chat effort, and queued next-model selection passed');
@@ -169,7 +171,7 @@ function installCatalogFixture() {
     }
     if (url.pathname === '/api/acp' && body) {
       if (body.method === 'bootstrap') {
-        if (!chats.has(body.chat) || body.params?.reset) chats.set(body.chat, { model: body.params?.model || 'gpt-sol', effort: 'medium' });
+        if (!chats.has(body.chat) || body.params?.reset) chats.set(body.chat, { model: body.params?.model?.replace(/^codex\//, '') || 'gpt-sol', effort: 'medium' });
         return json({ sessionId: body.chat, commands: [] });
       }
       if (body.method === 'graff/models') { window.catalogReads++; return json(catalog(chats.get(body.chat))); }

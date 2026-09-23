@@ -35,7 +35,8 @@ pub fn priceForProvider(provider: []const u8, model: []const u8) ?ModelPrice {
 }
 
 /// Billing class of one API call: a flat-rate subscription login bills nothing
-/// per token, price_table rows bill per token, anything else is unpriced.
+/// per token, price_table rows bill per token, anything without a reliable
+/// settled charge is unpriced for the session tally.
 /// Classifying a SEAT is billing.zig's job — it needs the provider spec and the
 /// credential source, neither of which belongs in a price sheet.
 pub const Billing = enum { sub, priced, unpriced };
@@ -63,7 +64,7 @@ pub const CostTally = struct {
     sub_calls: u64 = 0, // subscription-billed (flat-rate; contribute $0)
     unreported_failed_attempts: u64 = 0, // not successful calls; billing is unknown
     missing_usage_calls: u64 = 0, // completed responses whose usage was absent
-    unpriced_calls: u64 = 0, // no price_table row
+    unpriced_calls: u64 = 0, // no reliable settled charge (or no price_table row)
 
     /// `billing` is the caller's already-classified seat (billing.forSeat): a
     /// flat-rate login and a metered env key on the SAME provider+model are
@@ -113,14 +114,14 @@ pub const CostTally = struct {
 
     /// One-line summary shared by /cost and the one-shot stderr report.
     pub fn render(c: CostTally, w: *Io.Writer) !void {
-        if (c.missing_usage_calls > 0 or c.unreported_failed_attempts > 0) try w.writeAll("known subtotal: ");
+        if (c.missing_usage_calls > 0 or c.unreported_failed_attempts > 0 or c.unpriced_calls > 0) try w.writeAll("known subtotal: ");
         try w.print("{d} api call(s) · {d} in ({d} cached, {d} cache writes) + {d} out tokens · ${d:.8}", .{
             c.api_calls, c.in_tokens +| c.cache_tokens, c.cache_tokens, c.cache_write_tokens, c.out_tokens, c.usd,
         });
         if (c.missing_usage_calls > 0) try w.print(" · totals incomplete: {d} call(s) missing usage (tokens and cost unknown)", .{c.missing_usage_calls});
         if (c.unreported_failed_attempts > 0) try w.print(" · totals incomplete: {d} failed request attempt(s) without usage (tokens and cost unknown)", .{c.unreported_failed_attempts});
         if (c.sub_calls > 0) try w.print(" · {d} subscription call(s), flat-rate (not in $)", .{c.sub_calls});
-        if (c.unpriced_calls > 0) try w.print(" · {d} call(s) on unpriced models", .{c.unpriced_calls});
+        if (c.unpriced_calls > 0) try w.print(" · {d} call(s) with unknown cost", .{c.unpriced_calls});
     }
 };
 

@@ -435,25 +435,14 @@ pub fn assembleAnthropic(self: *Agent, body: []const u8) !?std.json.ObjectMap {
     return (try util.dupeJsonValue(result_arena, .{ .object = r })).object;
 }
 
-/// One in-flight tool call while reassembling an OpenAI chat stream;
-/// id and function.name arrive on the first fragment, arguments
-/// accumulate across fragments keyed by index.
-const CallAcc = struct {
-    id: []const u8 = "",
-    name: []const u8 = "",
-    args: std.ArrayList(u8) = .empty,
-    thought_signature: []const u8 = "",
-    /// Google hangs the signature off the CALL (extra_content.google.thought_signature);
-    /// echoing it on the message alone drops the binding, so keep it where it came from.
-    extra_content: ?Value = null,
-};
+const chat_tool_calls = @import("chat_tool_calls.zig");
 
 pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
     const result_arena = self.messageMutationAlloc();
     var content: std.ArrayList(u8) = .empty;
     var reasoning_content: std.ArrayList(u8) = .empty;
     var reasoning: std.ArrayList(u8) = .empty;
-    var calls: std.ArrayList(CallAcc) = .empty;
+    var calls: chat_tool_calls.Calls = .{};
     var role: []const u8 = "assistant";
     var finish: ?Value = null;
     var usage: ?Value = null;
@@ -522,17 +511,7 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
         if (d.object.get("tool_calls")) |tcs| if (tcs == .array) {
             for (tcs.array.items) |tc| {
                 if (tc != .object) continue;
-                const idx: usize = blk: {
-                    if (tc.object.get("index")) |ix| if (ix == .integer and ix.integer >= 0) break :blk @intCast(ix.integer);
-                    // No index: a fresh id opens a new call, otherwise
-                    // the fragment continues the latest one.
-                    break :blk if (tc.object.get("id") != null or calls.items.len == 0) calls.items.len else calls.items.len - 1;
-                };
-                while (calls.items.len <= idx) try calls.append(result_arena, .{});
-                const acc = &calls.items[idx];
-                if (tc.object.get("id")) |x| if (x == .string and x.string.len > 0) {
-                    acc.id = x.string;
-                };
+                const acc = try calls.forFragment(result_arena, tc);
                 if (tc.object.get("thought_signature")) |x| if (x == .string and x.string.len > 0) {
                     acc.thought_signature = x.string;
                 };
@@ -542,7 +521,7 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
                 }
                 if (tc.object.get("function")) |f| if (f == .object) {
                     if (f.object.get("name")) |x| if (x == .string and x.string.len > 0) {
-                        acc.name = x.string;
+                        acc.acceptName(x.string);
                     };
                     if (f.object.get("arguments")) |x| if (x == .string) try acc.args.appendSlice(result_arena, x.string);
                 };
@@ -563,13 +542,13 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
     try message.put(result_arena, "content", if (content.items.len > 0) Value{ .string = content.items } else .null);
     if (reasoning_content.items.len > 0) try message.put(result_arena, "reasoning_content", .{ .string = reasoning_content.items });
     if (reasoning.items.len > 0) try message.put(result_arena, "reasoning", .{ .string = reasoning.items });
-    if (calls.items.len > 0) {
+    if (calls.items.items.len > 0) {
         var tcs = std.json.Array.init(result_arena);
-        for (calls.items) |c| {
+        for (calls.items.items) |c| {
             if (c.id.len == 0 and c.name.len == 0) continue;
             var function: std.json.ObjectMap = .empty;
             try function.put(result_arena, "name", .{ .string = try result_arena.dupe(u8, c.name) }); // #124: dupe off the scratch parse tree
-            try function.put(result_arena, "arguments", .{ .string = c.args.items });
+            try function.put(result_arena, "arguments", .{ .string = c.arguments() });
             var tc: std.json.ObjectMap = .empty;
             try tc.put(result_arena, "id", .{ .string = try result_arena.dupe(u8, c.id) }); // #124: dupe off the scratch parse tree
             try tc.put(result_arena, "type", .{ .string = "function" });

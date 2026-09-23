@@ -75,8 +75,25 @@ def check(binary, phases):
             trees = list((root/'.graff/worktrees').glob('agent-workflow-*'))
             assert len(trees) == len(expected), trees
             assert sorted((tree/'result.txt').read_text() for tree in trees) == expected
+            def values(item):
+                if isinstance(item, str):
+                    yield item
+                elif isinstance(item, dict):
+                    for value in item.values():
+                        yield from values(value)
+                elif isinstance(item, list):
+                    for value in item:
+                        yield from values(value)
+
+            def path_text(value):
+                if os.name == 'nt':
+                    return value.replace(chr(92) * 2, chr(92)).replace(chr(92), '/').casefold()
+                return value
+
+            delivered = path_text('\n'.join(values(tool_results)))
             for tree in trees:
-                assert str(tree) in text, 'retained path was not delivered'
+                expected_path = path_text(str(tree))
+                assert expected_path in delivered, 'retained path was not delivered'
                 branch = subprocess.check_output(['git', '-C', str(tree), 'branch', '--show-current'], text=True).strip()
                 assert branch in text, 'retained branch was not delivered'
             print(f'PASS {"phases" if phases else "pipeline"}: dependent reads, isolated items, committed trees retained and delivered')
