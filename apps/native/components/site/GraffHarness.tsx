@@ -187,7 +187,7 @@ export default function GraffHarness() {
     setPinsByChat(pinsRef.current);
   };
 
-  const { adoptCatalog, requireSession, refreshStored, projectsReady, unwatchIdle, chatCatalogs, catalogStatus, applyCatalog } = useHarnessSessions({ onPermission: permissions.update,
+  const { adoptCatalog, refreshChangedCatalog, requireSession, refreshStored, projectsReady, unwatchIdle, chatCatalogs, catalogStatus, applyCatalog } = useHarnessSessions({ onPermission: permissions.update,
     sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal,
     pendingPick: () => pendingPickRef.current ?? pendingModel,
   });
@@ -224,7 +224,7 @@ export default function GraffHarness() {
   const runPrompt = createPromptRunner({ onPermission: permissions.update, onStarted: started, onCompleted: completed,
     runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession,
     sessionIsCurrent: (id, sessionId) => sessionsRef.current.get(id) === sessionId && chatsRef.current.some(chat => chat.id === id),
-    prepareModel, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError
+    prepareModel, adoptCatalog, refreshChangedCatalog, refreshStored, takeQueuedPrompt, setCancelError
   });
   const settings = useQuietSettings({ requireSession, handleOf, running: runningRef.current, apply: applyCatalog });
   const send = async (text: string, forChat?: number) => {

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type MutableRefObject, type Dispatch, type
 import { bindMcpAppChat, checkHealth, disposePage, ensureSession, fetchModels, type Health } from "@/lib/acp-client";
 import { shouldReapPage } from "@/lib/acp-terminate";
 import { catalogMayWriteChatModel, catalogMayWriteGlobalKey, sameModels, rememberChatCatalog, sharedModelChoices, startWithSelectedModel } from "@/lib/composer-model";
+import { refreshAfterPendingCatalog } from "@/lib/catalog-refresh";
 import { pumpIdlePeerTurns } from "./idle-peer-turns";
 import type { AcpCommand } from "@/lib/acp";
 import type { PromptModel } from "@/components/primitives/PromptBar";
@@ -99,6 +100,10 @@ export function useHarnessSessions({onPermission, sessionsRef, sessionNamesRef, 
     catalogPending.current.set(chatId, task);
     return task;
   };
+  const refreshChangedCatalog = (chatId: number, sessionId: string): Promise<void> =>
+    refreshAfterPendingCatalog(catalogPending.current.get(chatId),
+      () => sessionsRef.current.get(chatId) === sessionId && chatsRef.current.some(chat => chat.id === chatId),
+      () => adoptCatalog(chatId));
 
   // Refresh the catalog on focus. If its agent was
   // not up yet, or the page outlived a restart — would show the fallback
@@ -253,5 +258,5 @@ export function useHarnessSessions({onPermission, sessionsRef, sessionNamesRef, 
   };
 
   catalogRef.current = { adopt: (id: number) => { if (!runningRef.current.has(id)) void adoptCatalog(id).catch(() => undefined); }, activeId };
-  return { adoptCatalog, requireSession, refreshStored, projectsReady, unwatchIdle, chatCatalogs, catalogStatus, applyCatalog };
+  return { adoptCatalog, refreshChangedCatalog, requireSession, refreshStored, projectsReady, unwatchIdle, chatCatalogs, catalogStatus, applyCatalog };
 }

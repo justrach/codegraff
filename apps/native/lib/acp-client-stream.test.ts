@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {prompt} from './acp-client';
 import {createPromptRunner} from '../components/site/harness-prompt-runner';
 import {createQueueSteerer} from './prompt-queue-steer';
+import {refreshAfterPendingCatalog} from './catalog-refresh';
 const chunk = {method:'session/update',params:{sessionId:'test',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Visible partial reply'}}}};
 async function withWire(lines:unknown[], body:(received:unknown[])=>Promise<void>) {
   const original=globalThis.fetch, received:unknown[]=[];
@@ -89,6 +90,9 @@ test('prompt catalog refresh follows configuration updates once after this chat 
         prepareModel: async () => {}, adoptCatalog: async () => {
           assert.equal(runningRef.current.has(1), false, 'refresh starts after turn cleanup');
           refreshes++;
+        }, refreshChangedCatalog: async () => {
+          assert.equal(runningRef.current.has(1), false, 'refresh starts after turn cleanup');
+          refreshes++;
         }, refreshStored: async () => {}, takeQueuedPrompt: () => undefined,
       });
       await runner(1, text);
@@ -108,4 +112,24 @@ test('prompt catalog refresh follows configuration updates once after this chat 
     globalThis.requestAnimationFrame = savedFrame;
     globalThis.cancelAnimationFrame = savedCancelFrame;
   }
+});
+
+test('configuration refresh waits out an older catalog fetch and checks session ownership', async () => {
+  let finish!: () => void;
+  const pending = new Promise<void>(resolve => { finish = resolve; });
+  let refreshed = 0;
+  const next = refreshAfterPendingCatalog(pending, () => true, async () => { refreshed++; });
+  assert.equal(refreshed, 0, 'old focus fetch must finish first');
+  finish();
+  await next;
+  assert.equal(refreshed, 1, 'one fresh fetch follows the old snapshot');
+
+  let owned = true;
+  let finishStale!: () => void;
+  const stale = new Promise<void>(resolve => { finishStale = resolve; });
+  const ignored = refreshAfterPendingCatalog(stale, () => owned, async () => { refreshed++; });
+  owned = false;
+  finishStale();
+  await ignored;
+  assert.equal(refreshed, 1, 'closed or replaced session cannot refresh the picker');
 });

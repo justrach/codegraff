@@ -25,10 +25,11 @@ type Props = {
   setPins(id: number, pins: BrowserPin[]): void; requireSession(id: number): Promise<string>;
   sessionIsCurrent(id: number, sessionId: string): boolean;
   prepareModel(id: number): Promise<void>;
-  adoptCatalog(id: number): Promise<void>; refreshStored(): Promise<void>;
+  adoptCatalog(id: number): Promise<void>; refreshChangedCatalog(id: number, sessionId: string): Promise<void>;
+  refreshStored(): Promise<void>;
   takeQueuedPrompt(id: number): QueuedPrompt | undefined;
 };
-export function createPromptRunner({onPermission, onStarted, onCompleted, runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, sessionIsCurrent, prepareModel, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError}: Props) {
+export function createPromptRunner({onPermission, onStarted, onCompleted, runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, sessionIsCurrent, prepareModel, adoptCatalog, refreshChangedCatalog, refreshStored, takeQueuedPrompt, setCancelError}: Props) {
   const patchAssistant = (chatId: number, msgId: number, next: AssistantTurn) => {
     setChats((current) =>
       current.map((c) =>
@@ -144,8 +145,9 @@ export function createPromptRunner({onPermission, onStarted, onCompleted, runnin
       setBusyFor(chatId, false);
       // A turn may change effort without a slash command. Refresh once after
       // its stream ends, even on cancellation or a later transport error.
-      if ((configChanged || (settingsCommand && promptCompleted)) && sessionId && sessionIsCurrent(chatId, sessionId)) {
-        void adoptCatalog(chatId).catch(() => undefined);
+      if (sessionId && sessionIsCurrent(chatId, sessionId)) {
+        if (configChanged) void refreshChangedCatalog(chatId, sessionId).catch(() => undefined);
+        else if (settingsCommand && promptCompleted) void adoptCatalog(chatId).catch(() => undefined);
       }
       void refreshStored();
       setTimeout(() => void refreshStored(), 2500);
