@@ -222,7 +222,9 @@ export default function GraffHarness() {
   const modelLabel = (key: string | null | undefined) => modelDisplayName(models, key);
 
   const runPrompt = createPromptRunner({ onPermission: permissions.update, onStarted: started, onCompleted: completed,
-    runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession, prepareModel, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError
+    runningRef, steerer, setFollowing, chatsRef, model, msgIdRef, setChats, setBusyFor, setHistory, pinsRef, handleOf, setPins, requireSession,
+    sessionIsCurrent: (id, sessionId) => sessionsRef.current.get(id) === sessionId && chatsRef.current.some(chat => chat.id === id),
+    prepareModel, adoptCatalog, refreshStored, takeQueuedPrompt, setCancelError
   });
   const settings = useQuietSettings({ requireSession, handleOf, running: runningRef.current, apply: applyCatalog });
   const send = async (text: string, forChat?: number) => {

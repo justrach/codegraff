@@ -64,12 +64,13 @@ export function useHarnessSessions({onPermission, sessionsRef, sessionNamesRef, 
   };
   const fetchCatalog = async (chatId: number) => {
     // Pill follows this chat's agent. A transient /api/models process is not that agent.
-    const handle = sessionsRef.current.has(chatId) ? handleOf(chatId) : undefined;
+    const sessionId = sessionsRef.current.get(chatId);
+    const handle = sessionId ? handleOf(chatId) : undefined;
     const cwd = cwdOf(chatId);
     setCatalogStatus(old => ({ ...old, [chatId]: { loading: true } }));
     try {
       const catalog = await fetchModels(handle, cwd);
-      if (cwdOf(chatId) !== cwd) {
+      if (cwdOf(chatId) !== cwd || sessionsRef.current.get(chatId) !== sessionId || !chatsRef.current.some(chat => chat.id === chatId)) {
         setCatalogStatus(old => ({ ...old, [chatId]: { loading: false } }));
         return;
       }
