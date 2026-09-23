@@ -16,9 +16,12 @@ with tempfile.TemporaryDirectory(prefix="graff-workspace-lifecycle-") as tempora
     fixtures.mkdir()
     proof = Path(temporary) / "proof.json"
     proof.write_text("{}")
-    gh = fixtures / "gh"
-    gh.write_text("#!/bin/sh\ncat \"$GRAFF_TEST_PR_PROOF\"\n")
-    gh.chmod(0o755)
+    gh = fixtures / ("gh.cmd" if os.name == "nt" else "gh")
+    if os.name == "nt":
+        gh.write_text('@echo off\ntype "%GRAFF_TEST_PR_PROOF%"\n')
+    else:
+        gh.write_text("#!/bin/sh\ncat \"$GRAFF_TEST_PR_PROOF\"\n")
+        gh.chmod(0o755)
     env.update(PATH=f"{fixtures}{os.pathsep}{env['PATH']}", GRAFF_TEST_PR_PROOF=str(proof))
 
     def git(*args, cwd=root):
