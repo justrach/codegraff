@@ -68,4 +68,25 @@ test "native Jev catalog refreshes on eligible and ineligible model switches" {
     try std.testing.expect(std.mem.indexOf(u8, root.tools_openai, jev_tool.name) == null);
     _ = try providers.applyProviderInner(&root, a, gpt6, false);
     try std.testing.expect(std.mem.indexOf(u8, root.tools_responses, jev_tool.name) != null);
+    // The OpenAI-format slot was cached above without Jev. Switching from
+    // one eligible provider to another must rebuild that older slot.
+    const eligible_openai = mimo;
+    _ = try providers.applyProviderInner(&root, a, eligible_openai, false);
+    try std.testing.expect(std.mem.indexOf(u8, root.tools_openai, jev_tool.name) != null);
+
+    jev_tool.configure(struct {
+        pub fn get(_: @This(), key: []const u8) ?[]const u8 {
+            return if (std.mem.eql(u8, key, "JEV_BACKEND")) "mock-fail" else null;
+        }
+    }{});
+    _ = jev_tool.setCodegraffLogin(true);
+    const old_catalog = root.toolsJson();
+    const input = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"state\":\"10 tests passed\",\"question\":\"Did CI pass?\",\"type\":\"noul\"}", .{});
+    var client: std.http.Client = undefined;
+    const ctx: @import("tools.zig").ToolCtx = .{ .gpa = std.testing.allocator, .io = std.testing.io, .client = &client, .provider = eligible_openai, .registry = null, .from_sub = false, .approvals = null, .tracer = null };
+    const failed = try jev_tool.execute(ctx, input);
+    defer std.testing.allocator.free(failed.text);
+    const next_catalog = (try jev_tool.refreshCatalogForRequest(&root, old_catalog)).?;
+    try std.testing.expect(std.mem.indexOf(u8, next_catalog, jev_tool.name) == null);
+    try std.testing.expect(std.mem.indexOf(u8, old_catalog, jev_tool.name) != null);
 }

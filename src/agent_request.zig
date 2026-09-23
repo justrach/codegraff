@@ -119,7 +119,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     // so the model lands a text answer now instead of asking for a tool the
     // budget can never pay for — which is how the audit smoke died narrating.
     // compaction/title requests pass tools=null already and skip this whole.
-    var tools = tools_in;
+    var tools = try @import("jev_tool.zig").refreshCatalogForRequest(self, tools_in);
     if (self.tracer) |tr| {
         if (tools) |t| if (t.len == 0) tr.note("tools", "empty catalog at request time (#695)");
     }

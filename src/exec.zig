@@ -443,6 +443,11 @@ test "native Jev dispatch rejects other models and latches off after one failed 
     try std.testing.expect(older_model.is_error);
     ctx.provider.model = "gpt-6-sol";
     try std.testing.expect(jev.available(ctx.provider)); // ineligible attempts did not trip the circuit
+    ctx.from_sub = true;
+    const worker = try execToolInner(ctx, call);
+    defer std.testing.allocator.free(worker.text);
+    try std.testing.expect(worker.is_error);
+    ctx.from_sub = false;
     const first = try execToolInner(ctx, call);
     defer std.testing.allocator.free(first.text);
     const second = try execToolInner(ctx, call);

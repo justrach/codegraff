@@ -14,7 +14,7 @@ const scope = @import("jev_model_scope.zig");
 pub const name = "jev_judge";
 pub const description = "Ask Jev one closed-form judgment about a SHORT, NON-SENSITIVE state. Requires a Codegraff login and an eligible GPT-6 or MiMo model. Use for yes/no (noul), a choice, or an ordered score, not writing or open-ended reasoning. Never send source code, secrets, customer data, paths, or unrelated context. A low-confidence verdict escalates to you. If Jev fails once, this tool skips all later Jev calls for this session; decide yourself instead.";
 pub const input_schema =
-    \\{"type":"object","properties":{"state":{"type":"string","description":"Short non-sensitive facts needed for this judgment only; no code, paths or secrets"},"question":{"type":"string","description":"One closed-form question about state"},"type":{"type":"string","enum":["noul","choice","score"],"description":"noul=yes/no probability; choice=one option; score=ordered level"},"options":{"type":"array","items":{"type":"string"},"description":"Required for choice: 2-16 distinct labels"},"levels":{"type":"array","items":{"type":"string"},"description":"Required for score: 2-16 ordered descriptions"}},"required":["state","question","type"]}
+    \\{"type":"object","properties":{"state":{"type":"string","description":"Short non-sensitive facts needed for this judgment only; no code, paths or secrets"},"question":{"type":"string","description":"One closed-form question about state"},"type":{"type":"string","enum":["noul","choice","score"],"description":"noul=yes/no probability; choice=one option; score=ordered level"},"options":{"type":"array","items":{"type":"string"},"description":"Required for choice: 2-16 distinct labels"},"levels":{"type":"array","items":{"type":"string"},"description":"Required for score: 2-10 ordered descriptions"}},"required":["state","question","type"]}
 ;
 const spec = ToolSpec{ .name = name, .desc = description, .schema = input_schema };
 const endpoint = "https://api.typesafe.ai/v1/systemone";
@@ -56,7 +56,11 @@ pub fn available(provider: Provider) bool {
 
 /// A model switch can change Jev visibility even when the wire format stays the same.
 pub fn updateProvider(root: anytype, p: Provider) void {
-    if (available(root.provider) != available(p)) root.invalidateRootTools();
+    // Each wire format has its own cached catalog. An older catalog for the
+    // destination format may have been built before Jev became available.
+    if (available(root.provider) != available(p) or
+        (root.provider.kind != p.kind and (available(root.provider) or available(p))))
+        root.invalidateRootTools();
     root.provider = p;
 }
 
@@ -66,6 +70,15 @@ pub fn catalogExtras(provider: Provider) []const ToolSpec {
 
 pub fn takeCatalogRefresh() bool {
     return state.refresh.swap(false, .acq_rel);
+}
+
+pub fn refreshCatalogForRequest(root: anytype, tools_in: ?[]const u8) !?[]const u8 {
+    // RLM calls host tools directly, so runTools may not observe a failed
+    // Jev call. Replace the caller's pre-refresh catalog snapshot here.
+    if (root.sub or !takeCatalogRefresh()) return tools_in;
+    root.invalidateRootTools();
+    try root.ensureRootTools(root.provider.kind);
+    return if (tools_in == null) null else root.toolsJson();
 }
 
 fn skipped(gpa: Allocator) !ToolOutput {
@@ -88,8 +101,8 @@ fn number(v: Value) ?f64 {
     };
 }
 
-fn listValid(v: Value) bool {
-    if (v != .array or v.array.items.len < 2 or v.array.items.len > 16) return false;
+fn listValid(v: Value, max: usize) bool {
+    if (v != .array or v.array.items.len < 2 or v.array.items.len > max) return false;
     for (v.array.items, 0..) |item, i| {
         const label = string(item) orelse return false;
         if (label.len == 0 or label.len > 120) return false;
@@ -110,13 +123,13 @@ fn makeBody(arena: Allocator, input: Value) ![]const u8 {
     try q.put(arena, "instructions", .{ .string = question });
     if (std.mem.eql(u8, kind, "choice")) {
         const options = obj.get("options") orelse return error.InvalidInput;
-        if (!listValid(options)) return error.InvalidInput;
+        if (!listValid(options, 16)) return error.InvalidInput;
         var labels = std.json.ObjectMap.empty;
         for (options.array.items) |item| try labels.put(arena, item.string, item);
         try q.put(arena, "criteria", .{ .object = labels });
     } else if (std.mem.eql(u8, kind, "score")) {
         const levels = obj.get("levels") orelse return error.InvalidInput;
-        if (!listValid(levels)) return error.InvalidInput;
+        if (!listValid(levels, 10)) return error.InvalidInput;
         try q.put(arena, "criteria", levels);
     } else if (!std.mem.eql(u8, kind, "noul")) return error.InvalidInput;
     var questions = std.json.ObjectMap.empty;
@@ -133,31 +146,31 @@ fn makeBody(arena: Allocator, input: Value) ![]const u8 {
 
 fn mockResponse(arena: Allocator, input: Value) ![]const u8 {
     const kind = input.object.get("type").?.string;
-    if (std.mem.eql(u8, kind, "noul")) return "{\"answers\":{\"q1\":{\"noul\":0.98}}}";
-    if (std.mem.eql(u8, kind, "score")) return "{\"answers\":{\"q1\":{\"score\":0.9,\"confidence\":0.95}}}";
+    if (std.mem.eql(u8, kind, "noul")) return "{\"answers\":{\"q1\":{\"type\":\"noul\",\"noul\":0.98}}}";
+    if (std.mem.eql(u8, kind, "score")) return "{\"answers\":{\"q1\":{\"type\":\"score\",\"score\":0.9,\"confidence\":0.95}}}";
     const label = input.object.get("options").?.array.items[0].string;
     var aw: Io.Writer.Allocating = .init(arena);
     var s: std.json.Stringify = .{ .writer = &aw.writer };
-    try s.write(.{ .answers = .{ .q1 = .{ .choice = label, .confidence = 0.95 } } });
+    try s.write(.{ .answers = .{ .q1 = .{ .type = "choice", .choice = label, .confidence = 0.95 } } });
     return aw.writer.buffered();
 }
 
 fn fetch(ctx: ToolCtx, arena: Allocator, body: []const u8) ![]const u8 {
     const bearer = try std.fmt.allocPrint(arena, "Bearer {s}", .{state.key});
-    var aw: Io.Writer.Allocating = .init(arena);
+    var aw = Io.Writer.fixed(try arena.alloc(u8, 64 * 1024));
     const res = try ctx.client.fetch(.{
         .location = .{ .url = endpoint },
         .method = .POST,
         .payload = body,
-        .response_writer = &aw.writer,
+        .response_writer = &aw,
         .redirect_behavior = .unhandled,
         .headers = .{
             .content_type = .{ .override = "application/json" },
             .authorization = .{ .override = bearer },
         },
     });
-    if (@intFromEnum(res.status) != 200 or aw.writer.buffered().len > 64 * 1024) return error.JevUnavailable;
-    return aw.writer.buffered();
+    if (@intFromEnum(res.status) != 200) return error.JevUnavailable;
+    return aw.buffered();
 }
 
 fn verdict(arena: Allocator, input: Value, raw: []const u8) ![]const u8 {
@@ -168,6 +181,8 @@ fn verdict(arena: Allocator, input: Value, raw: []const u8) ![]const u8 {
     const answer = answers.object.get("q1") orelse return error.InvalidResponse;
     if (answer != .object) return error.InvalidResponse;
     const kind = input.object.get("type").?.string;
+    const answer_type = string(answer.object.get("type") orelse return error.InvalidResponse) orelse return error.InvalidResponse;
+    if (!std.mem.eql(u8, kind, answer_type)) return error.InvalidResponse;
     const value: Value = if (std.mem.eql(u8, kind, "noul")) answer.object.get("noul") orelse return error.InvalidResponse else if (std.mem.eql(u8, kind, "choice")) answer.object.get("choice") orelse return error.InvalidResponse else answer.object.get("score") orelse return error.InvalidResponse;
     if (std.mem.eql(u8, kind, "choice")) {
         const label = string(value) orelse return error.InvalidResponse;
@@ -180,9 +195,11 @@ fn verdict(arena: Allocator, input: Value, raw: []const u8) ![]const u8 {
         if (!found) return error.InvalidResponse;
     } else {
         const n = number(value) orelse return error.InvalidResponse;
-        if (n < 0 or (std.mem.eql(u8, kind, "noul") and n > 1)) return error.InvalidResponse;
+        const max: f64 = if (std.mem.eql(u8, kind, "score")) @floatFromInt(input.object.get("levels").?.array.items.len - 1) else 1;
+        if (n < 0 or n > max) return error.InvalidResponse;
     }
-    const reported = if (answer.object.get("confidence")) |v| number(v) else null;
+    const reported = if (answer.object.get("confidence")) |v| number(v) orelse return error.InvalidResponse else null;
+    if (!std.mem.eql(u8, kind, "noul") and reported == null) return error.InvalidResponse;
     if (reported) |c| if (c < 0 or c > 1) return error.InvalidResponse;
     const estimated: f64 = if (std.mem.eql(u8, kind, "noul")) 2 * @abs(number(value).? - 0.5) else 0;
     const confidence = reported orelse estimated;
@@ -194,6 +211,7 @@ fn verdict(arena: Allocator, input: Value, raw: []const u8) ![]const u8 {
 }
 
 pub fn execute(ctx: ToolCtx, input: Value) !ToolOutput {
+    if (ctx.from_sub) return invalid(ctx.gpa, "jev_judge is available only to the root agent");
     if (!state.codegraff_login.load(.acquire)) return invalid(ctx.gpa, "jev_judge requires a Codegraff login (`graff login`)");
     if (!scope.eligible(ctx.provider)) return invalid(ctx.gpa, "jev_judge is available only with Codex/OpenAI GPT-6 or Xiaomi MiMo models");
     if (state.backend == .typesafe and state.key.len == 0) return skipped(ctx.gpa);
@@ -291,4 +309,16 @@ test "native Jev mock uses TypeSafe wire and returns a typed verdict" {
     try std.testing.expect(@abs(number(result.object.get("answer").?).? - 0.98) < 0.0001);
     try std.testing.expect(!result.object.get("escalate").?.bool);
     try std.testing.expectEqual(@as(usize, 1), state.attempts.load(.acquire));
+}
+
+test "native Jev rejects out-of-range scores and malformed confidence" {
+    var temp = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer temp.deinit();
+    const a = temp.allocator();
+    const input = try std.json.parseFromSliceLeaky(Value, a, "{\"state\":\"build passed\",\"question\":\"How complete?\",\"type\":\"score\",\"levels\":[\"none\",\"some\",\"all\"]}", .{});
+    try std.testing.expectError(error.InvalidResponse, verdict(a, input, "{\"answers\":{\"q1\":{\"type\":\"score\",\"score\":2.5,\"confidence\":0.9}}}"));
+    try std.testing.expectError(error.InvalidResponse, verdict(a, input, "{\"answers\":{\"q1\":{\"type\":\"score\",\"score\":1.5,\"confidence\":\"certain\"}}}"));
+    try std.testing.expectError(error.InvalidResponse, verdict(a, input, "{\"answers\":{\"q1\":{\"type\":\"choice\",\"score\":1.5,\"confidence\":0.9}}}"));
+    const good = try verdict(a, input, "{\"answers\":{\"q1\":{\"type\":\"score\",\"score\":1.5,\"confidence\":0.9}}}");
+    try std.testing.expect(std.mem.indexOf(u8, good, "\"answer\":1.5") != null);
 }
