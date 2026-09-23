@@ -21,6 +21,7 @@ pub const max_suite_bytes = model.max_suite_bytes;
 pub const max_pairs = model.max_pairs;
 pub const PinnedFile = model.PinnedFile;
 pub const Program = model.Program;
+pub const FormalCheck = model.FormalCheck;
 pub const Suite = model.Suite;
 pub const Limits = model.Limits;
 pub const Gate = model.Gate;

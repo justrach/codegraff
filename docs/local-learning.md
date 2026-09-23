@@ -316,6 +316,43 @@ as immutable. Unknown JSON fields are rejected.
 Cohort fields are exact labels used to prevent unlike evaluations from being
 compared as though they were interchangeable.
 
+### Optional pinned formal baseline
+
+An operator can add `formal_check` to an explicit configuration to require a
+local model-check result before mutation, after selecting a candidate, and on
+checkpoint resume or promotion. It is disabled by default. The checker uses
+the read-only `--check` interface described in
+[the formal harness](../formal/README.md), with a pinned manifest and helper:
+
+```json
+"formal_check": {
+  "checker": {
+    "program": "/absolute/python3",
+    "sha256": "<Python executable SHA-256>",
+    "args": ["/absolute/dgm_formal_gate.py"],
+    "inputs": [{"path": "/absolute/dgm_formal_gate.py", "sha256": "<helper SHA-256>"}]
+  },
+  "pin": {"path": "/absolute/formal-pin.json", "sha256": "<manifest SHA-256>"},
+  "timeout_ms": 900000
+}
+```
+
+The manifest's `binary.path` and SHA-256 must match a pinned input passed as
+an argument to both the mutator and evaluator. The normal adapter runner
+copies those verified bytes into private scratch space. Set
+`GRAFF_SCORE_KEY_FILE` to an absolute path for the helper's pinned signing-key
+identity check; a missing key fails the trial before mutation. The checker and
+manifest are operator trust inputs, and the formal result describes the
+shared engine model at that pinned binary, not the candidate prompt's behavior.
+
+Formal trials write `pending.v2` and `run.v4` records with immutable evidence
+IDs. Resume and promotion reject mismatches and re-run the checker. This adds
+local compute time and does not change the statistical or holdout gates.
+Formal trials cannot use `run --submit` or `learn submit` because the current
+signed receipt does not bind formal evidence; background auto trials remain
+local even when aggregate contribution is enabled. Legacy fleet persona
+promotion is a separate path and is not covered by this gate.
+
 ### Pinned program snapshots
 
 The engine does not hash a tool and then reopen that original pathname for
