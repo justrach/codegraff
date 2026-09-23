@@ -65,6 +65,8 @@ fn spawnFailText(gpa: Allocator, err: anyerror) ![]u8 {
     // #122: backgrounding costs MORE fds (pipes + pump task), so the generic
     // "run it in the foreground" advice is right for every error except the
     // fd-quota ones. #253: SYSTEM-wide exhaustion is not a ulimit problem.
+    if (err == error.ShellIdentityHomeRequired or err == error.ShellIdentityStoreInvalid or err == error.ShellIdentityExhausted or err == error.ShellIdentityUnavailable)
+        return std.fmt.allocPrint(gpa, "could not reserve a durable shell handle ({t}); no command was started. Check HOME and its .codegraff directory permissions. Preserve existing shell-id files when repairing storage.", .{err});
     return if (err == error.ProcessFdQuotaExceeded)
         try gpa.dupe(u8, "could not start background job (ProcessFdQuotaExceeded) — graff hit its open-file limit. Wait for running jobs/tools to finish, then retry with less parallel fan-out; if it recurs, raise the limit (`ulimit -n 4096`) before starting graff.")
     else if (err == error.SystemFdQuotaExceeded)
@@ -73,7 +75,7 @@ fn spawnFailText(gpa: Allocator, err: anyerror) ![]u8 {
         try std.fmt.allocPrint(gpa, "could not start background job ({t}) — run it in the foreground instead", .{err});
 }
 
-fn startedText(gpa: Allocator, id: u32, cmd: []const u8, ssh: bool, auto_bg: bool, wait_s: u64, partial: []const u8) ![]u8 {
+fn startedText(gpa: Allocator, id: u64, cmd: []const u8, ssh: bool, auto_bg: bool, wait_s: u64, partial: []const u8) ![]u8 {
     var aw: Io.Writer.Allocating = .init(gpa);
     errdefer aw.deinit();
     const w = &aw.writer;

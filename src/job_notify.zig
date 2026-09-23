@@ -14,7 +14,7 @@ const Agent = agent_mod.Agent;
 const output_cap: usize = 3072;
 
 pub const Notice = struct {
-    id: u32,
+    id: u64,
     exit_code: ?u8 = null,
     killed: bool = false,
     idle: bool = false, // the idle policy stopped it (#199): no auto-turn wake
@@ -37,7 +37,7 @@ var count: usize = 0;
 /// Legacy bounded dismiss-before-record credits (ADR 0061). The production
 /// pump no longer relies on these: done + queue and consumption share the
 /// jobs mutex, so eviction cannot resurrect a consumed completion (#728).
-var dismissed: [cap]u32 = undefined;
+var dismissed: [cap]u64 = undefined;
 var dismissed_len: usize = 0;
 
 /// Unit fixtures must join their job pumps before clearing notification state.
@@ -95,7 +95,7 @@ fn wakeLine(buf: []u8, n: Notice) []const u8 {
 /// Standalone notification convenience (tests). The job pump MUST split
 /// queue (under jobs mutex) from publish (outside it); calling this after
 /// exposing done reintroduces #728. Publication is UI, not a model wake.
-pub fn record(io: Io, id: u32, exit_code: ?u8, killed: bool, cmd: []const u8, idle: bool) void {
+pub fn record(io: Io, id: u64, exit_code: ?u8, killed: bool, cmd: []const u8, idle: bool) void {
     queue(io, id, exit_code, killed, cmd, idle, "");
     publish(io, id, exit_code, killed);
 }
@@ -103,7 +103,7 @@ pub fn record(io: Io, id: u32, exit_code: ?u8, killed: bool, cmd: []const u8, id
 /// Queue while holding the jobs mutex, in the same critical section as done.
 /// Consumers hold jobs -> notification mutex in that same order. Never call
 /// a frontend here: it may re-enter jobOutput.
-pub fn queue(io: Io, id: u32, exit_code: ?u8, killed: bool, cmd: []const u8, idle: bool, output: []const u8) void {
+pub fn queue(io: Io, id: u64, exit_code: ?u8, killed: bool, cmd: []const u8, idle: bool, output: []const u8) void {
     const clipped = clipCmd(cmd);
     const tail = clipOutput(output);
     const n = Notice{
@@ -120,7 +120,7 @@ pub fn queue(io: Io, id: u32, exit_code: ?u8, killed: bool, cmd: []const u8, idl
     mu.lockUncancelable(io);
     var queued = false;
     if (dismissedIndex(id)) |i| {
-        std.mem.copyForwards(u32, dismissed[i .. dismissed_len - 1], dismissed[i + 1 .. dismissed_len]);
+        std.mem.copyForwards(u64, dismissed[i .. dismissed_len - 1], dismissed[i + 1 .. dismissed_len]);
         dismissed_len -= 1;
     } else {
         if (count == cap) {
@@ -136,14 +136,14 @@ pub fn queue(io: Io, id: u32, exit_code: ?u8, killed: bool, cmd: []const u8, idl
 }
 
 /// Frontend-only publication AFTER releasing the jobs mutex. No wake is queued.
-pub fn publish(io: Io, id: u32, exit_code: ?u8, killed: bool) void {
+pub fn publish(io: Io, id: u64, exit_code: ?u8, killed: bool) void {
     if (engine_sink.hostedSink()) |sink| {
         sink.emit(io, .{ .job_completed = .{ .id = id, .exit_code = exit_code, .killed = killed } });
     }
 }
 
 /// Caller holds `mu`.
-fn dismissedIndex(id: u32) ?usize {
+fn dismissedIndex(id: u64) ?usize {
     for (dismissed[0..dismissed_len], 0..) |d, i| if (d == id) return i;
     return null;
 }
@@ -154,7 +154,7 @@ fn dismissedIndex(id: u32) ?usize {
 /// turn, which the model then spends on a `bash_output` snapshot that says
 /// "(no new output)". Drop the queued notice; if the pump has not queued it
 /// yet, remember the id so `record` skips it. ADR 0061.
-pub fn dismiss(io: Io, id: u32) void {
+pub fn dismiss(io: Io, id: u64) void {
     mu.lockUncancelable(io);
     defer mu.unlock(io);
     var i: usize = 0;
@@ -170,7 +170,7 @@ pub fn dismiss(io: Io, id: u32) void {
     }
     if (found or dismissedIndex(id) != null) return;
     if (dismissed_len == cap) {
-        std.mem.copyForwards(u32, dismissed[0 .. cap - 1], dismissed[1..cap]);
+        std.mem.copyForwards(u64, dismissed[0 .. cap - 1], dismissed[1..cap]);
         dismissed_len = cap - 1;
     }
     dismissed[dismissed_len] = id;
@@ -180,7 +180,7 @@ pub fn dismiss(io: Io, id: u32) void {
 /// The tool result for a bash_output wait that ended before the job did.
 /// An Esc used to be rendered by setting the elapsed counter to the 10-hour
 /// deadline, so the model read "36000s elapsed" for a 36-second wait.
-pub fn printRunning(w: *Io.Writer, id: u32, waited_ms: u64, interrupted: bool, persistent: bool) !void {
+pub fn printRunning(w: *Io.Writer, id: u64, waited_ms: u64, interrupted: bool, persistent: bool) !void {
     var ebuf: [16]u8 = undefined;
     const el = tool_pulse.formatElapsed(&ebuf, waited_ms);
     if (persistent) {
@@ -202,7 +202,7 @@ pub fn printRunning(w: *Io.Writer, id: u32, waited_ms: u64, interrupted: bool, p
 /// wait runs long (#607). ADR 0010 keeps the wait single-hop; this only tells
 /// the human it is alive. Presentation pulse: --json drops it, and a session
 /// with no bound sink (subagents) stays quiet.
-pub fn stillRunning(io: Io, id: u32, waited_ms: u64, unread: usize) void {
+pub fn stillRunning(io: Io, id: u64, waited_ms: u64, unread: usize) void {
     var ebuf: [16]u8 = undefined;
     tool_pulse.emitNotice(io, "· bash_output · job {d} still running · {s} · {d} unread byte(s)", .{ id, tool_pulse.formatElapsed(&ebuf, waited_ms), unread });
 }

@@ -24,6 +24,18 @@ Workspace binding belongs in the operation contract before cross-turn RLM jobs
 are enabled. Do not promise exactly-once external side effects: a process can die
 after an effect occurs but before its completion is durably recorded.
 
+## Implemented safeguards
+
+- [ADR 0179](../adr/0179-durable-shell-handles.md) closes shell-handle reuse
+  after restart: reserve durable identities before dispatch, and reject stale
+  output/kill requests. This does not yet provide terminal receipts or reattach
+  surviving operations. The offline crash and reservation regressions run in
+  `scripts/eval-tier1.sh --only shell`.
+- [ADR 0178](../adr/0178-batched-edits-preflight-before-commit.md) prevents an
+  invalid later edit span from leaving earlier spans written. Valid batches
+  use one staged replacement and exact verification. This is a correctness
+  safeguard; lower model latency or token usage remains unproven.
+
 ## Source comparison
 
 Source review is pinned to Unreal Agent revision

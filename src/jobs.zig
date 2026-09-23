@@ -55,7 +55,7 @@ pub const KeepReason = agent_worktree.KeepReason;
 pub const keepReasonText = agent_worktree.keepReasonText;
 
 const Job = struct { // session-global; pump drains pipes; survives Esc
-    id: u32,
+    id: u64,
     cmd: []u8,
     child: std.process.Child,
     // #199 idle lifecycle + ownership record (job_idle.zig, job_registry.zig)
@@ -101,10 +101,9 @@ const posix_groups = builtin.os.tag != .windows and builtin.os.tag != .wasi;
 const Jobs = struct {
     mutex: Io.Mutex = .init,
     list: std.ArrayList(*Job) = .empty,
-    next_id: u32 = 1,
 
     /// Caller holds the mutex.
-    fn find(self: *Jobs, id: u32) ?*Job {
+    fn find(self: *Jobs, id: u64) ?*Job {
         for (self.list.items) |j| if (j.id == id) return j;
         return null;
     }
@@ -112,14 +111,14 @@ const Jobs = struct {
 
 pub var g_jobs: Jobs = .{};
 
-pub fn markPersistent(io: Io, id: u32) void {
+pub fn markPersistent(io: Io, id: u64) void {
     g_jobs.mutex.lockUncancelable(io);
     defer g_jobs.mutex.unlock(io);
     if (g_jobs.find(id)) |job| job.persistent = true;
 }
 
 /// Deterministic test pause after done becomes observable, before UI publish.
-pub var completion_test_hook: ?*const fn (Io, u32) void = null;
+pub var completion_test_hook: ?*const fn (Io, u64) void = null;
 
 /// Drain MultiReader bytes into the job buffer; drop oldest unread past the cap.
 fn jobDrain(job: *Job, gpa: Allocator, readers: []const *Io.Reader, now_ms: i64) void {
@@ -247,7 +246,7 @@ fn recordOf(io: Io, job: *Job) job_registry.Record {
 
 /// /jobs keep|unkeep (#199): exempt from the idle stop, retained at session
 /// end. Null for an unknown id, false for one that already finished.
-pub fn setPinned(io: Io, id: u32, pinned: bool) ?bool {
+pub fn setPinned(io: Io, id: u64, pinned: bool) ?bool {
     g_jobs.mutex.lockUncancelable(io);
     defer g_jobs.mutex.unlock(io);
     const job = g_jobs.find(id) orelse return null;
@@ -260,7 +259,7 @@ pub fn setPinned(io: Io, id: u32, pinned: bool) ?bool {
 
 /// /jobs restart (#199): rerun a finished job's command in its cwd, as a new
 /// job. The finished record stays listed until reaped.
-pub fn restartJob(gpa: Allocator, io: Io, id: u32) !*Job {
+pub fn restartJob(gpa: Allocator, io: Io, id: u64) !*Job {
     var cmd: []const u8 = "";
     var cwd: ?[]const u8 = null;
     {
@@ -303,6 +302,7 @@ pub fn spawnJob(gpa: Allocator, io: Io, cmd: []const u8) !*Job {
 }
 
 pub fn spawnJobOpts(gpa: Allocator, io: Io, cmd: []const u8, opts: SpawnOpts) !*Job {
+    const id = try @import("shell_identity.zig").forJob(io);
     const argv = shellArgv(cmd);
     var child = try std.process.spawn(io, .{
         .argv = &argv,
@@ -336,8 +336,7 @@ pub fn spawnJobOpts(gpa: Allocator, io: Io, cmd: []const u8, opts: SpawnOpts) !*
         .last_active_ms = nowMs(io),
     };
     g_jobs.mutex.lockUncancelable(io);
-    job.id = g_jobs.next_id;
-    g_jobs.next_id += 1;
+    job.id = id;
     const appended = blk: {
         g_jobs.list.append(gpa, job) catch break :blk false;
         break :blk true;
@@ -373,7 +372,7 @@ pub fn spawnJobOpts(gpa: Allocator, io: Io, cmd: []const u8, opts: SpawnOpts) !*
 /// bash_output: unread output + status. wait_ms=0 is a snapshot. wait_ms>0
 /// blocks until the job exits (or Esc) for finite jobs (ADR 0010). Persistent
 /// servers snapshot immediately; wait_ms is ignored (ADR 0152).
-pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
+pub fn jobOutput(gpa: Allocator, io: Io, id: u64, wait_ms: u64) !ToolOutput {
     var waited: u64 = 0;
     var interrupted = false; // Esc: report what was waited, not the 10h cap (ADR 0061)
     var still = tool_pulse.Pulse{ .interval_ms = 15_000 }; // #807: pulse often enough to tell hang from work
@@ -382,7 +381,7 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
         g_jobs.mutex.lockUncancelable(io);
         const job = g_jobs.find(id) orelse {
             g_jobs.mutex.unlock(io);
-            return .{ .text = try std.fmt.allocPrint(gpa, "no background job {d} — it may never have started; /jobs lists them", .{id}), .is_error = true };
+            return .{ .text = try std.fmt.allocPrint(gpa, "background job {d} has no live owner in this process — interrupted or unknown outcome; do not assume it never ran or rerun it automatically; /jobs lists current jobs", .{id}), .is_error = true };
         };
         browser_guard.touch(job, nowMs(io)); // a read or a blocking wait is activity (#199)
         const deadline = job_wait.resolveDeadlineFor(wait_ms, job.persistent);
@@ -438,11 +437,11 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
 /// bash_kill: flag the job and wait (bounded) for the pump to kill + reap it.
 /// The pump's future is never awaited here — jobsReap owns it — so two
 /// racing kills are harmless.
-pub fn jobKill(gpa: Allocator, io: Io, id: u32) !ToolOutput {
+pub fn jobKill(gpa: Allocator, io: Io, id: u64) !ToolOutput {
     {
         g_jobs.mutex.lockUncancelable(io);
         defer g_jobs.mutex.unlock(io);
-        const job = g_jobs.find(id) orelse return .{ .text = try std.fmt.allocPrint(gpa, "no background job {d} — /jobs lists them", .{id}), .is_error = true };
+        const job = g_jobs.find(id) orelse return .{ .text = try std.fmt.allocPrint(gpa, "background job {d} has no live owner in this process — interrupted or unknown outcome; no process was stopped; /jobs lists current jobs", .{id}), .is_error = true };
         if (job.done) {
             job_notify.dismiss(io, id); // already-finished also reports the exit
             const unread = job.buf.items.len - job.cursor;
@@ -471,7 +470,7 @@ pub fn jobKill(gpa: Allocator, io: Io, id: u32) !ToolOutput {
 
 /// Outcome of a root foreground wait (#620 / grok-build auto-background).
 pub const FgDone = struct { exit_code: ?u8, killed: bool, output: []u8, dropped: bool };
-pub const FgPartial = struct { id: u32, output: []u8, dropped: bool };
+pub const FgPartial = struct { id: u64, output: []u8, dropped: bool };
 pub const FgWait = union(enum) { done: FgDone, running: FgPartial, cancelled: FgPartial };
 
 fn takeUnread(gpa: Allocator, job: *Job) error{OutOfMemory}!struct { []u8, bool } {
@@ -492,7 +491,7 @@ fn freeJob(gpa: Allocator, io: Io, job: *Job) void {
     gpa.destroy(job);
 }
 
-pub fn reapFinished(gpa: Allocator, io: Io, id: u32) void {
+pub fn reapFinished(gpa: Allocator, io: Io, id: u64) void {
     g_jobs.mutex.lockUncancelable(io);
     var found: ?*Job = null;
     for (g_jobs.list.items, 0..) |j, i| {
@@ -509,7 +508,7 @@ pub fn reapFinished(gpa: Allocator, io: Io, id: u32) void {
     if (found) |job| freeJob(gpa, io, job);
 }
 
-pub fn waitForeground(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !FgWait {
+pub fn waitForeground(gpa: Allocator, io: Io, id: u64, wait_ms: u64) !FgWait {
     const deadline = if (wait_ms == 0) job_wait.wait_cap_ms else @min(wait_ms, job_wait.wait_cap_ms);
     var waited: u64 = 0;
     var still = tool_pulse.Pulse{};

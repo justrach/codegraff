@@ -17,7 +17,7 @@ const jobs_mod = @import("jobs.zig");
 const posix_groups = builtin.os.tag != .windows and builtin.os.tag != .wasi;
 
 pub const JobView = struct {
-    id: u32 = 0,
+    id: u64 = 0,
     done: bool = false,
     shares_root_pgid: bool = false,
 };
@@ -98,7 +98,7 @@ fn jobStateLine(arena: Allocator, jobs: []const JobView) Allocator.Error!Check {
 
 fn jobSharesRoot(arena: Allocator, jobs: []const JobView) Allocator.Error!?Check {
     var n: usize = 0;
-    var first: u32 = 0;
+    var first: u64 = 0;
     for (jobs) |j| {
         if (!j.shares_root_pgid) continue;
         if (n == 0) first = j.id;
