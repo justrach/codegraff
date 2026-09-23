@@ -1,5 +1,6 @@
 "use client";
 
+import { usageCaption } from "@/lib/acp-usage";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import Markdown from "@/components/primitives/Markdown";
 import { BrowserLinkText } from "@/components/primitives/BrowserLinks";
@@ -229,7 +230,10 @@ export const AssistantBody = memo(function AssistantBody({
       {turn.recap && turn.status === "done" && (
         <p className="mt-3 text-[12px] text-ink-3">{turn.recap}</p>
       )}
-      {turn.costUsd !== undefined && turn.status === "done" && (
+      {turn.usage && (turn.status === "done" || turn.status === "error") && (
+        <p aria-label="Usage since connection" className="mt-1 font-mono text-[11px] text-ink-3">{usageCaption(turn.usage)}</p>
+      )}
+      {!turn.usage && turn.costUsd !== undefined && turn.status === "done" && (
         <p className="mt-1 font-mono text-[11px] text-ink-3">${turn.costUsd.toFixed(4)}</p>
       )}
       {turn.status === "done" && turn.diffs.length > 0 && onReview && (

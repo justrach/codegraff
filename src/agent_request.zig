@@ -357,7 +357,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                             const delay_ms = RetryPlan.delayMs(throttled, attempt);
                             @import("turn_chrome.zig").emitRetryNotice(self.io, @errorName(err), attempt + 1, max_attempts);
                             if (scratch.showRecoveredTransportRetry(self.call_kind))
-                                try self.say("[network error: {t} — retrying in {d}ms ({d}/{d})]\n", .{ err, delay_ms, attempt + 1, max_attempts });
+                                try scratch.announceNetworkRetry(self, err, delay_ms, attempt + 1, max_attempts);
                             // Same trace breadcrumb the 429/5xx branch leaves: a
                             // transport-flake retry is otherwise invisible in the
                             // session trace, hiding how flaky a provider really is.

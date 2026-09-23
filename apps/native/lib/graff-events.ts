@@ -95,6 +95,7 @@ export function parseAskOptions(input: unknown): string[] {
 export type TurnStatus = "thinking" | "streaming" | "ask" | "done" | "error" | "snapshot";
 
 export type AssistantTurn = {
+  usage?: import("./acp-usage").AcpUsage;
   contextMeter?: import("./context-meter").ContextMeter;
   endedAt?: number;
   startedAt?: number;
