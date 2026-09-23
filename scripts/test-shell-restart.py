@@ -35,6 +35,7 @@ class Model(ScriptedModel):
         super().__init__([])
         self.directory, self.name, self.old = directory, name, old
         self.ready, self.release = threading.Event(), threading.Event()
+        self.checked_ready = threading.Event()
         self.handle, self.error, self.checked = None, None, {}
 
     def next_reply(self, body):
@@ -67,6 +68,7 @@ class Model(ScriptedModel):
                 self.checked['output_rejected'] = rejected(self.checked['stale_output'])
                 self.checked['kill_rejected'] = rejected(self.checked['stale_kill'])
                 self.checked['b_output_disclosed'] = 'ONLY-B-' in self.checked['stale_output']
+                self.checked_ready.set()
                 return {'text': 'isolation checked'}
             return {'text': 'done'}
         except Exception as exc:
@@ -132,7 +134,7 @@ for _ in range(1200):
         b = Model(directory, 'B', a.handle); models.append(b)
         process_b, out_b, err_b = start(binary, directory, b); running.append((process_b, out_b, err_b))
         wait_until(lambda: bool(b.checked.get('stale_kill')) or b.error is not None, 25)
-        wait_until(lambda: 'b_alive_after_stale_kill' in b.checked or b.error is not None, 5)
+        wait_until(lambda: b.checked_ready.is_set() or b.error is not None, 5)
         assert not b.error, b.error
         passed = bool(b.handle != a.handle and b.checked['output_rejected'] and b.checked['kill_rejected'] and
                       b.checked['b_alive_after_stale_kill'] and not b.checked['b_output_disclosed'])
