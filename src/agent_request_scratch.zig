@@ -29,6 +29,16 @@ pub fn showRecoveredTransportRetry(kind: run_budget_mod.CallKind) bool {
     return kind != .recap;
 }
 
+/// Preserve the existing notice in JSON/ACP, where say() is deliberately silent.
+pub fn announceNetworkRetry(self: *Agent, err: anyerror, delay_ms: u64, attempt: usize, limit: usize) !void {
+    try self.say("[network error: {t} — retrying in {d}ms ({d}/{d})]\n", .{ err, delay_ms, attempt, limit });
+    if (@import("main.zig").json_mode and !self.sub) {
+        var buf: [192]u8 = undefined;
+        const text = try std.fmt.bufPrint(&buf, "[network error: {t} — retrying in {d}ms ({d}/{d})]", .{ err, delay_ms, attempt, limit });
+        self.emit(.{ .type = "text", .text = text });
+    }
+}
+
 /// A response body of only SSE comment lines (`: OPENROUTER PROCESSING` …)
 /// means the gateway queued us and never produced tokens — back off and re-ask
 /// like a 5xx instead of dying on an "unparseable" JSON parse.
