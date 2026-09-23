@@ -126,6 +126,26 @@ If asked to merge open PRs onto the **release branch**, merge **only** that bran
 
 `gh pr merge` uses the PR's base, which is usually `main`. That is not landing on `release/v…`. Cherry-pick or merge the PR head into the named release branch instead.
 
+## Release branch beta versions
+
+The newest numeric `release/vX.Y.Z` or `release/vX.Y.Z.W` branch is the beta
+source. Compare numeric components, treating a missing fourth component as
+zero; do not use lexical branch order or assume releases always have three
+components. Every push to the current branch builds a unique
+`v<branch-version>-beta.<workflow-run>.<attempt>` prerelease from that exact
+commit. A queued build must recheck the remote branch and commit before it
+publishes. Older release branches and superseded commits cannot replace the
+latest beta.
+
+Beta releases are GitHub prereleases and must explicitly remain outside the
+stable `latest` pointer and desktop updater feed. The stable tag workflow is
+unchanged. CI can publish the CLI and unsigned Linux desktop package; macOS
+desktop distribution still requires the repository's Developer ID signing,
+provisioning profile, and notarization on a configured Mac. Its CI build is an
+intermediate artifact only. Attach a signed beta DMG to that same prerelease
+with `publish-beta-macos.sh` after `distribute.sh` passes its gates. Never upload
+an unsigned macOS app as a release download or add `latest-mac.yml` to a beta.
+
 ## Before you push
 
 Install the tracked hooks once, and the checks run themselves:
