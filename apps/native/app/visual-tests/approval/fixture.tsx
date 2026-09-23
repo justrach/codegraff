@@ -32,6 +32,8 @@ export default function ApprovalFixture() {
   const [multiSubmissions, setMultiSubmissions] = useState<string[][]>([]);
   const [ackKey, setAckKey] = useState(0);
   const ackFails = useRef(1);
+  const rejectPendingAck = useRef<(() => void) | null>(null);
+  const [ackPending, setAckPending] = useState(false);
   const [ackSubmissions, setAckSubmissions] = useState(0);
 
   return (
@@ -100,13 +102,28 @@ export default function ApprovalFixture() {
             <button
               type="button"
               onClick={() => {
+                rejectPendingAck.current?.();
+                rejectPendingAck.current = null;
                 setAckKey((key) => key + 1);
                 ackFails.current = 1;
+                setAckPending(false);
                 setAckSubmissions(0);
               }}
               className="rounded bg-field px-3 py-1.5 text-xs"
             >
               Reset acknowledgement
+            </button>
+            <button
+              type="button"
+              disabled={!ackPending}
+              onClick={() => {
+                const reject = rejectPendingAck.current;
+                rejectPendingAck.current = null;
+                reject?.();
+              }}
+              className="rounded bg-field px-3 py-1.5 text-xs"
+            >
+              Reject pending acknowledgement
             </button>
           </div>
           <ApprovalCard
@@ -114,10 +131,12 @@ export default function ApprovalFixture() {
             resettable={false}
             questions={[{ q: "Ship pistachio?", type: "radio", options: ["Yes", "No"] }]}
             onSubmitted={async (answers) => {
-              await new Promise((resolve) => setTimeout(resolve, 80));
               if (ackFails.current > 0) {
                 ackFails.current -= 1;
-                throw new Error("notify failed");
+                await new Promise<void>((_resolve, reject) => {
+                  rejectPendingAck.current = () => reject(new Error("notify failed"));
+                  setAckPending(true);
+                }).finally(() => setAckPending(false));
               }
               setAckSubmissions((count) => count + 1);
               void answers;

@@ -102,6 +102,8 @@ test("Answers sent waits for acknowledgement and keeps the selection after a fai
   await send.click();
   await expect(card.getByText("Sending…")).toBeVisible();
   await expect(card.getByText("Answers sent")).toHaveCount(0);
+  await expect(card.getByLabel("Acknowledged submissions")).toHaveText("0");
+  await card.getByRole("button", { name: "Reject pending acknowledgement" }).click();
   await expect(card.getByRole("alert")).toHaveText("notify failed");
   await expect(card.getByRole("button", { name: "Yes" })).toHaveAttribute("aria-pressed", "true");
   await expect(card.getByLabel("Acknowledged submissions")).toHaveText("0");
