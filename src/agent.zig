@@ -149,6 +149,7 @@ pub const Agent = struct {
     stored_keys_loaded: bool = true, // false after an explicit-provider launch; model surfaces fill the remaining Keychain slots
     keep_context: bool = true, // carry the conversation across wire-format model switches (/keepcontext)
     reasoning: ReasoningEffort = .medium, // reasoning/thinking depth — xai, codex, deepseek, codegraff (/effort, /reasoning)
+    jev_effort_pending: @import("jev_effort_state.zig").Pending = .{},
     fast: bool = false, // codex "fast" mode → priority service_tier (/fast)
     fallback_allow: []const []const u8 = &.{}, // explicit cross-provider allowlist from .harness/settings.json
     fallback_active: bool = false, // current provider/model is a temporary fallback, not the saved preference
@@ -288,13 +289,10 @@ pub const Agent = struct {
     pub fn toolsJson(self: *const Agent) []const u8 {
         return @import("agent_catalog.zig").toolsJson(self);
     }
-
     pub fn ensureRootTools(self: *Agent, kind: Provider.Kind) !void {
         return @import("agent_catalog.zig").ensureRootTools(self, kind);
     }
-
     pub const invalidateRootTools = @import("agent_catalog.zig").invalidateRootTools;
-
     pub noinline fn ensureModelCatalog(self: *Agent, keys: provider_mod.Keys) void {
         if (self.model_catalog) |*catalog|
             catalog.ensure(self.io, self.gpa, self.arena, self.home, keys.get("codex") orelse "", keys.codex_account);
@@ -328,6 +326,8 @@ pub const Agent = struct {
     }
 
     pub fn runTurn(self: *Agent) anyerror![]const u8 {
+        defer @import("jev_effort_state.zig").finishTurn(self);
+        errdefer self.jev_effort_pending.invalidate(self.io);
         self.async_tools_armed = !self.sub and self.eval_cmd == null;
         defer self.async_tools_armed = false;
         defer @import("agent_async_tools.zig").reset(self);

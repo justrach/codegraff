@@ -1,24 +1,25 @@
-# Native Jev judgment tool (experiment)
+# Optional Jev effort selection
 
-Graff offers `jev_judge` as a **native tool**, not an MCP server, when the
-active model is a GPT-6-series model on Codex/OpenAI or a Xiaomi MiMo model
-(including matching Codegraff gateway aliases), **and** the user has a
-persisted Codegraff login from `graff login`. A Codex login or
-`CODEGRAFF_API_KEY` alone does not satisfy that gate. Graff checks the
-recognized local login store; it does not probe the account online. Direct
-dispatch enforces the same rules. Model switches and an in-session
-`/login codegraff` refresh the root tool catalog.
+Graff offers `jev_effort` as a native, optional tool for a root session using
+GPT-6 on Codex/OpenAI or MiMo v2.6 on Xiaomi, including those eligible models
+through the Codegraff gateway. A persisted Codegraff login from `graff login`
+is required independently of the active model login. Model switches and an
+in-session login refresh the catalog. Subagents cannot invoke the tool.
 
-The tool sends only its explicitly supplied short `state` and one typed
-`question` to Codegraff's `/v1/systemone` endpoint using the persisted login;
-it never automatically uploads repository context. No separate upstream key is
-needed.
-Do not put code, paths, secrets, or customer data in a tool call. Use
-`JEV_BACKEND=mock` for a no-network wiring check.
+The tool accepts only `task`, a short, non-sensitive summary of the next work.
+It constructs a fixed choice from the active model's `/effort` options. GPT-6
+uses its existing effort ladder; MiMo v2.6 offers Off and On. It does not
+accept a caller-written question, candidate options, generic judgment, or
+source code. Do not send paths, secrets, or customer data. `JEV_BACKEND=mock`
+checks the path without a network request.
 
-Jev answers `noul` (yes/no probability), `choice`, or ordered `score`
-questions. Low-confidence answers tell the main model to decide. Any failed
-Jev request or malformed Jev response opens a one-strike, process-session
-circuit: later calls skip the network and return control to the main model.
-The tool disappears from the root catalog after that first failure. There is
-no retry, automatic routing, MCP permission, or claim of a measured speedup.
+A validated, allowlisted selection changes the session's effort
+at the next model request boundary; ACP receives the normal thought-level
+configuration update. It may change the cached request prefix. A failed,
+invalid, canceled, or stale-route selection leaves effort unchanged. One
+failed upstream request opens a session-long circuit with no retry. The tool
+never evaluates whether an answer or action was correct and never runs
+automatically on every turn.
+
+Usage and charges follow [ADR 0187](../adr/0187-optional-judgments-preserve-usage-uncertainty.md):
+only a confirmed gateway settlement receipt supplies a known charge.

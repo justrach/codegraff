@@ -422,10 +422,15 @@ test "native Jev dispatch rejects other models and latches off after one failed 
         }
     }{});
     const base: @import("provider.zig").Provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-6-sol", .context = 100_000 };
-    var ctx: ToolCtx = .{ .gpa = std.testing.allocator, .io = std.testing.io, .client = undefined, .provider = base, .registry = null, .from_sub = false, .approvals = null, .tracer = null };
-    const parsed = try std.json.parseFromSlice(Value, std.testing.allocator, "{\"state\":\"10 tests passed\",\"question\":\"Did CI pass?\",\"type\":\"noul\"}", .{});
+    var pending: @import("jev_effort_state.zig").Pending = .{};
+    var ctx: ToolCtx = .{ .gpa = std.testing.allocator, .io = std.testing.io, .client = undefined, .provider = base, .jev_effort_pending = &pending, .registry = null, .from_sub = false, .approvals = null, .tracer = null };
+    const parsed = try std.json.parseFromSlice(Value, std.testing.allocator, "{\"task\":\"choose effort for a test fix\"}", .{});
     defer parsed.deinit();
     const call: ToolCall = .{ .id = "1", .name = jev.name, .input = parsed.value };
+    const old_call: ToolCall = .{ .id = "old", .name = "jev_judge", .input = parsed.value };
+    const old = try execToolInner(ctx, old_call);
+    defer std.testing.allocator.free(old.text);
+    try std.testing.expect(old.is_error);
     const no_login = try execToolInner(ctx, call);
     defer std.testing.allocator.free(no_login.text);
     try std.testing.expect(no_login.is_error);

@@ -85,6 +85,11 @@ fn sayTypedApiError(self: *Agent, etype: []const u8, ecode: ?[]const u8, emsg: [
 }
 
 pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
+    // Pool-thread Jev results become session state only on this owner thread.
+    if (Agent.esc_cancel.load(.acquire) or @import("acp_engine.zig").cancel_flag.load(.acquire))
+        self.jev_effort_pending.invalidate(self.io)
+    else
+        @import("jev_effort_state.zig").apply(self);
     var usage_attempts: @import("request_usage_attempts.zig").Ledger = .{};
     defer usage_attempts.finish(self.io, &@import("pricing.zig").g_cost);
     errdefer {

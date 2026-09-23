@@ -30,10 +30,16 @@ pub const skipped_text = "tool execution skipped because the operation was abort
 /// serializes, because write/edit do. Shell-only batches stay parallel
 /// (#266); the parent joins all results before converting/freeing them (#1166).
 pub fn isSequential(name: []const u8) bool {
+    if (std.mem.eql(u8, name, @import("jev_tool.zig").name)) return true;
     if (std.mem.eql(u8, name, "write_file")) return true;
     if (std.mem.eql(u8, name, "edit_file")) return true;
     if (std.mem.eql(u8, name, imagegen.tool_name)) return true;
     return false;
+}
+
+test "optional effort selections serialize in model call order" {
+    try std.testing.expect(isSequential(@import("jev_tool.zig").name));
+    try std.testing.expect(!isSequential("shell"));
 }
 
 fn isShellName(name: []const u8) bool {
@@ -63,6 +69,7 @@ pub fn context(self: *Agent) ToolCtx {
         .io = self.io,
         .client = self.client,
         .provider = self.provider,
+        .jev_effort_pending = &self.jev_effort_pending,
         .subagent_provider = self.subagent_provider,
         .subagent_cross_provider = self.subagent_cross_provider,
         .mcp_context = self.mcp_context.value,

@@ -1,9 +1,8 @@
 //! Lookup-shape detector. Used to decide a prompt is Q&A vs mutation.
-//! The harness does NOT auto-flip `reasoning_effort` — that field is part
-//! of the cached prefix on Codex, OpenAI, xAI, DeepSeek, and the codegraff
-//! gateway. Changing it mid-conversation misses the cache and drops the
-//! WS chain (codex_chain.propsFp). An explicit /effort or a worker
-//! `effort:` pin is the only way effort moves.
+//! The harness does NOT infer low effort from prompt shape: effort is part of
+//! the cached prefix and a change may miss the cache and reset the WS chain.
+//! Explicit /effort, a worker effort pin, or an optional jev_effort call may
+//! change it; Jev applies only at the next request boundary.
 
 const std = @import("std");
 

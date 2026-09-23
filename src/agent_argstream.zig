@@ -44,6 +44,7 @@ fn toolCtx(self: *Agent) tools_mod.ToolCtx {
         .io = self.io,
         .client = self.client,
         .provider = self.provider,
+        .jev_effort_pending = &self.jev_effort_pending,
         .subagent_provider = self.subagent_provider,
         .subagent_cross_provider = self.subagent_cross_provider,
         .mcp_context = self.mcp_context.value,

@@ -35,6 +35,7 @@ pub fn set(ctx: *anyopaque, value: []const u8) anyerror!bool {
     const canonical = er.normalize(root.provider.id, root.provider.model, value);
     if (!root.effortApplies() or !er.allows(root.provider.id, root.provider.model, canonical)) return false;
     root.reasoning = std.meta.stringToEnum(ReasoningEffort, canonical) orelse return false;
+    root.jev_effort_pending.invalidate(root.io);
     _ = @import("repl_glue.zig").saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
     return true;
 }
@@ -70,6 +71,11 @@ test "MiMo thought-level discovery names Off and On and normalizes saved positiv
     var root = try @import("agent_request_body_responses.zig").testAgentFor(arena, "xiaomi", .openai, "mimo-v2.6-flash");
     var keys: @import("provider.zig").Keys = .{ .values = @splat(null) };
     var live: LiveTurn = .{ .root = &root, .keys = &keys, .out = undefined };
+    root.reasoning = .low;
+    const pending = root.jev_effort_pending.begin(root.io, root.provider).?;
+    try std.testing.expect(root.jev_effort_pending.commit(root.io, pending, .none));
+    try std.testing.expect(@import("jev_effort_state.zig").applyToState(&root));
+    try std.testing.expectEqualStrings("none", (try option(&live, arena)).?.currentValue);
     root.reasoning = .low;
     const on = (try option(&live, arena)).?;
     try std.testing.expectEqualStrings("high", on.currentValue);

@@ -102,6 +102,7 @@ pub const ToolCtx = struct {
     io: Io,
     client: *std.http.Client,
     provider: Provider,
+    jev_effort_pending: ?*@import("jev_effort_state.zig").Pending = null,
     subagent_provider: ?Provider = null,
     subagent_cross_provider: bool = false,
     subagent_feedback: ?*@import("subagent_feedback.zig").Inbox = null,

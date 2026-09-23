@@ -13,6 +13,8 @@ test "native Jev catalog refreshes on eligible and ineligible model switches" {
 
     var root: Agent = undefined;
     root.provider = p;
+    root.io = std.testing.io;
+    root.jev_effort_pending = .{};
     root.subagent_provider = null;
     root.subagent_provider_explicit = true;
     root.arena = a;
@@ -52,7 +54,9 @@ test "native Jev catalog refreshes on eligible and ineligible model switches" {
     gpt6.model = "gpt-6-sol";
     _ = try providers.applyProviderInner(&root, a, gpt6, false);
     try std.testing.expect(std.mem.indexOf(u8, root.tools_responses, jev_tool.name) != null);
+    const old_selection = root.jev_effort_pending.begin(std.testing.io, gpt6).?;
     _ = try providers.applyProviderInner(&root, a, p, false);
+    try std.testing.expect(!root.jev_effort_pending.commit(std.testing.io, old_selection, .high));
     try std.testing.expect(std.mem.indexOf(u8, root.tools_responses, jev_tool.name) == null);
 
     var mimo = p;
@@ -81,9 +85,10 @@ test "native Jev catalog refreshes on eligible and ineligible model switches" {
     }{});
     _ = jev_tool.setCodegraffLoginKey(std.testing.io, "synthetic-login");
     const old_catalog = root.toolsJson();
-    const input = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"state\":\"10 tests passed\",\"question\":\"Did CI pass?\",\"type\":\"noul\"}", .{});
+    const input = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"task\":\"choose effort for a test fix\"}", .{});
     var client: std.http.Client = undefined;
-    const ctx: @import("tools.zig").ToolCtx = .{ .gpa = std.testing.allocator, .io = std.testing.io, .client = &client, .provider = eligible_openai, .registry = null, .from_sub = false, .approvals = null, .tracer = null };
+    var pending: @import("jev_effort_state.zig").Pending = .{};
+    const ctx: @import("tools.zig").ToolCtx = .{ .gpa = std.testing.allocator, .io = std.testing.io, .client = &client, .provider = eligible_openai, .jev_effort_pending = &pending, .registry = null, .from_sub = false, .approvals = null, .tracer = null };
     const failed = try jev_tool.execute(ctx, input);
     defer std.testing.allocator.free(failed.text);
     const next_catalog = (try jev_tool.refreshCatalogForRequest(&root, old_catalog)).?;

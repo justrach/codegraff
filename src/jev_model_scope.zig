@@ -1,4 +1,4 @@
-//! Native Jev judgments are limited to GPT-6 on Codex/OpenAI and Xiaomi
+//! Native Jev effort selection is limited to GPT-6 on Codex/OpenAI and Xiaomi
 //! MiMo v2.6, including those model ids served through the Codegraff gateway.
 const std = @import("std");
 const Provider = @import("provider.zig").Provider;

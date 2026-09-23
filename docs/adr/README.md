@@ -218,6 +218,7 @@ record only when you need the evidence or the edge cases.
 | [0190](0190-catalog-gets-share-bounded-http2-transport.md) | Catalog GETs use bounded HTTP/2 pages with joined deadlines, shared redirect limits, and credentials scoped to the original origin. |
 | [0191](0191-acp-effort-is-session-configuration.md) | ACP thought-level options follow the active model and share `/effort` state; changes received during a turn apply after that turn. |
 | [0192](0192-mimo-thinking-is-a-binary-setting.md) | MiMo exposes Off/On, preserves legacy positive settings as On, and uses the documented thinking control on each wire. |
+| [0193](0193-jev-selects-effort-only.md) | Optional Jev selects only supported session effort at the next request boundary; arbitrary judgments are not exposed. |
 
 ## When to write one
 
