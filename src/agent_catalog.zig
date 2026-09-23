@@ -11,15 +11,18 @@ const Provider = @import("provider.zig").Provider;
 const Agent = @import("agent.zig").Agent;
 const local_tools = @import("local_tools.zig");
 const schedule = @import("schedule.zig");
+const jev_tool = @import("jev_tool.zig");
 
-fn withExtras(arena: Allocator, base: []const schema.ToolSpec) ![]const schema.ToolSpec {
+fn withExtras(arena: Allocator, base: []const schema.ToolSpec, provider: Provider) ![]const schema.ToolSpec {
     const a = local_tools.catalogExtras(arena);
     const b = schedule.catalogExtras(arena);
-    if (a.len == 0 and b.len == 0) return base;
-    const out = try arena.alloc(schema.ToolSpec, base.len + a.len + b.len);
+    const c = jev_tool.catalogExtras(provider);
+    if (a.len == 0 and b.len == 0 and c.len == 0) return base;
+    const out = try arena.alloc(schema.ToolSpec, base.len + a.len + b.len + c.len);
     @memcpy(out[0..base.len], base);
     @memcpy(out[base.len..][0..a.len], a);
-    @memcpy(out[base.len + a.len ..], b);
+    @memcpy(out[base.len + a.len ..][0..b.len], b);
+    @memcpy(out[base.len + a.len + b.len ..], c);
     return out;
 }
 
@@ -63,7 +66,7 @@ pub fn ensureRootTools(self: *Agent, kind: Provider.Kind) !void {
     const specs = if (self.sub)
         try surface.filterSpecs(@TypeOf(schema.base_specs[0]), self.arena, schema.base_specs[0..])
     else
-        try withExtras(self.arena, try schema.effectiveRootSpecs(self.arena));
+        try withExtras(self.arena, try schema.effectiveRootSpecs(self.arena), self.provider);
     const connected: []const mcp.Tool = if (self.registry) |registry|
         (if (self.sub) try surface.filterWorkerMcp(self.arena, registry.tools) else registry.tools)
     else

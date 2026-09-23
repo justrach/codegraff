@@ -62,6 +62,7 @@ pub fn lazyRootTools(comptime Agent: type) !void {
     var agent: Agent = undefined;
     agent.arena = arena;
     agent.sub = false;
+    agent.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-6-sol", .context = 100_000 };
     agent.registry = &registry;
     agent.tools_anthropic = "";
     agent.tools_openai = "";

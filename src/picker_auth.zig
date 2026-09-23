@@ -11,6 +11,7 @@ const style = &ansi.style;
 const term = @import("term.zig");
 const tty = term.tty;
 const oauth = @import("oauth.zig");
+const jev_tool = @import("jev_tool.zig");
 const oauth_helpers = @import("oauth_helpers.zig"); // the test pins g_codex_home, the resolver startup sets
 const policy = @import("agent_request_policy.zig");
 const providers = @import("providers.zig");
@@ -42,6 +43,7 @@ pub const PickerFn = *const fn (
 /// the startup loaders.
 pub fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, provider_id: []const u8) void {
     const home = root.home;
+    var codegraff_reloaded = false;
     for (provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
         if (!std.mem.eql(u8, spec.id, provider_id)) continue;
         var reloaded = false;
@@ -50,6 +52,7 @@ pub fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, provider_id: 
                 value.* = k;
                 source.* = .login;
                 reloaded = true;
+                codegraff_reloaded = true;
             }
         } else if (std.mem.eql(u8, provider_id, "kimi")) {
             if (oauth.loadKimiOAuth(root.io, root.gpa, arena, home, false, null)) |k| {
@@ -96,6 +99,8 @@ pub fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, provider_id: 
             root.closeCodexWs(); // the held socket was dialed with the stale bearer
         };
     }
+    if (std.mem.eql(u8, provider_id, "codegraff") and jev_tool.setCodegraffLogin(codegraff_reloaded))
+        root.invalidateRootTools();
     if (std.mem.eql(u8, provider_id, "codex") and keys.get("codex") != null)
         root.reloadModelCatalog(keys.*);
 }
@@ -342,4 +347,54 @@ pub fn offerProviderAuth(
         return;
     };
     try switchProvider(root, arena, provider, out);
+}
+
+test "in-session Codegraff login refreshes native Jev visibility on a GPT-6 session" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home = real_buf[0..try tmp.dir.realPath(io, &real_buf)];
+    jev_tool.configure(struct {
+        pub fn get(_: @This(), key: []const u8) ?[]const u8 {
+            return if (std.mem.eql(u8, key, "JEV_BACKEND")) "mock" else null;
+        }
+    }{});
+    defer jev_tool.configure(struct {
+        pub fn get(_: @This(), _: []const u8) ?[]const u8 {
+            return null;
+        }
+    }{});
+    var root: Agent = undefined;
+    root.io = io;
+    root.gpa = std.testing.allocator;
+    root.arena = arena;
+    root.home = home;
+    root.sub = false;
+    root.registry = null;
+    root.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-6-sol", .context = 100_000 };
+    root.tools_anthropic = "";
+    root.tools_openai = "";
+    root.tools_responses = "";
+    root.tools_interactions = "";
+    var keys: Keys = .{ .values = @splat(null) };
+    try root.ensureRootTools(.responses);
+    try std.testing.expect(std.mem.indexOf(u8, root.tools_responses, jev_tool.name) == null);
+    try Io.Dir.cwd().writeFile(io, .{
+        .sub_path = try std.fmt.allocPrint(arena, "{s}/.simple-harness-codegraff.json", .{home}),
+        .data = "{\"api_key\":\"synthetic-login\"}",
+    });
+    reloadLoginKey(&root, &keys, arena, "codegraff");
+    try std.testing.expectEqual(Keys.CredentialSource.login, keys.source("codegraff"));
+    try std.testing.expectEqual(@as(usize, 0), root.tools_responses.len);
+    try root.ensureRootTools(.responses);
+    try std.testing.expect(std.mem.indexOf(u8, root.tools_responses, jev_tool.name) != null);
+    try tmp.dir.deleteFile(io, ".simple-harness-codegraff.json");
+    reloadLoginKey(&root, &keys, arena, "codegraff");
+    try std.testing.expectEqual(@as(usize, 0), root.tools_responses.len);
+    try root.ensureRootTools(.responses);
+    try std.testing.expect(std.mem.indexOf(u8, root.tools_responses, jev_tool.name) == null);
 }

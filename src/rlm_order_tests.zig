@@ -36,10 +36,14 @@ const Fixture = struct {
 test "rlm order applies native edit before dependent verification" {
     var f = try Fixture.init();
     defer f.deinit();
-    const out = try f.run("e = edit_file(path=\"target.txt\", old_string=\"old\", new_string=\"new\")\nv = read_file(\"target.txt\")\nprint(v)");
+    const code = if (@import("builtin").os.tag == .windows)
+        "e = edit_file(path=\"target.txt\", old_string=\"old\", new_string=\"new\")\nv = bash(\"type target.txt\")\nprint(v)"
+    else
+        "e = edit_file(path=\"target.txt\", old_string=\"old\", new_string=\"new\")\nv = bash(\"test $(cat target.txt) = new && printf VERIFIED\")\nprint(v)";
+    const out = try f.run(code);
     defer gpa.free(out.text);
     try std.testing.expect(!out.is_error and !out.pending);
-    try std.testing.expectEqualStrings("new", out.text);
+    try std.testing.expectEqualStrings(if (@import("builtin").os.tag == .windows) "new" else "VERIFIED", std.mem.trim(u8, out.text, "\r\n"));
 }
 
 test "rlm order failed edit prevents following verification side effects" {

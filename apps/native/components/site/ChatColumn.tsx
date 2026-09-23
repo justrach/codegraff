@@ -48,11 +48,11 @@ export default function ChatColumn({ thread, compact, following, register, onOpe
       modelKey={prompt.modelKey} onModelOpen={prompt.onModelOpen} onModelChange={prompt.onModelChange} commands={prompt.commands} />
   </div>;
   return <div ref={hostRef} className="relative flex min-h-0 flex-1 flex-col">
-    {catalogNotice}
     <ChatTranscript messages={thread.messages} register={register} following={following}
       onOpenPath={onOpenPath} onReview={onReview} onAnswer={onAnswer} snapshot={thread.snapshot} onEditPrompt={onEditPrompt} busy={prompt.busy} />
     <div ref={composerRef} data-chat-composer className={`pointer-events-none absolute inset-x-0 bottom-0 z-10 px-4 ${composer.dock} ${compact ? "py-2" : "pt-16 pb-6 sm:px-8"}`}>
       <div className="pointer-events-auto mx-auto max-w-[720px]">
+        {catalogNotice}
         {thread.snapshot && thread.session ? <SavedSnapshot name={thread.session} cwd={thread.cwd} model={prompt.modelKey}
           onRefresh={onRefresh} onContinue={onContinue} /> : <>
           <ComposerAgents root={prompt.root} session={thread.session} />

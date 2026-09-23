@@ -283,6 +283,8 @@ test "readOnlyAllowed: only simple, in-cwd, seed-listed commands pass in plan mo
 test "readOnlyExternal: read-only verb reading outside cwd, simple only (#64)" {
     try std.testing.expect(readOnlyExternal("ls ~/projects/merjs"));
     try std.testing.expect(readOnlyExternal("cat /abs/file"));
+    try std.testing.expect(readOnlyExternal("cat C:\\repo\\proof.txt"));
+    try std.testing.expect(!readOnlyAllowed("cat C:\\repo\\proof.txt"));
     try std.testing.expect(!readOnlyExternal("cat src/main.zig")); // in cwd
     try std.testing.expect(!readOnlyExternal("rm -rf /x")); // mutating verb
     try std.testing.expect(!readOnlyExternal("zig fmt /x.zig")); // not read-only-seeded
@@ -294,6 +296,10 @@ test "readOnlyExternal: read-only verb reading outside cwd, simple only (#64)" {
 test "planReadMatch: reads under an approved root pass; escapes/mutations/smuggling do not (#64)" {
     const r: []const []const u8 = &.{ "~/projects/merjs", "/opt/data" };
     try std.testing.expect(planReadMatch("ls ~/projects/merjs", r));
+    const windows_roots: []const []const u8 = &.{"C:\\repo"};
+    try std.testing.expect(planReadMatch("cat C:\\repo\\proof.txt", windows_roots));
+    try std.testing.expect(!planReadMatch("cat C:\\repo-other\\proof.txt", windows_roots));
+    try std.testing.expect(!planReadMatch("cat C:\\repo\\..\\secret.txt", windows_roots));
     try std.testing.expect(planReadMatch("ls ~/projects/merjs/src", r));
     try std.testing.expect(planReadMatch("cat ~/projects/merjs/README.md", r));
     try std.testing.expect(planReadMatch("grep foo /opt/data/x.txt", r));
@@ -304,10 +310,10 @@ test "planReadMatch: reads under an approved root pass; escapes/mutations/smuggl
     try std.testing.expect(!planReadMatch("rm -rf ~/projects/merjs", r)); // mutating verb
     try std.testing.expect(!planReadMatch("ls ~/projects/merjs; rm x", r)); // metachar
     try std.testing.expect(!planReadMatch("ls ~/projects/merjs", &.{})); // nothing approved
-    const windows_roots: []const []const u8 = &.{"C:\\safe"};
-    try std.testing.expect(planReadMatch("cat C:\\safe\\proof.txt", windows_roots));
-    try std.testing.expect(!planReadMatch("cat C:\\safe\\..\\secret.txt", windows_roots));
-    try std.testing.expect(!planReadMatch("cat C:\\safely\\proof.txt", windows_roots));
+    const safe_roots: []const []const u8 = &.{"C:\\safe"};
+    try std.testing.expect(planReadMatch("cat C:\\safe\\proof.txt", safe_roots));
+    try std.testing.expect(!planReadMatch("cat C:\\safe\\..\\secret.txt", safe_roots));
+    try std.testing.expect(!planReadMatch("cat C:\\safely\\proof.txt", safe_roots));
 }
 
 test "isInterpreter: flags first words that grant arbitrary code execution" {

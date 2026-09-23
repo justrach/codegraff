@@ -11,6 +11,8 @@ async function runTabDrag({win, origin, output}) {
   const wait=async code=>{for(let i=0;i<100;i++){if(await js(code))return;await new Promise(r=>setTimeout(r,50));}throw Error(`Tab drag condition failed: ${code}`);};
   const ready=async()=>{
     await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
+    // setSize returns before the responsive navigation has committed wide mode.
+    await wait(`innerWidth>=1024 && !!document.querySelector('[data-navigation-panel]:not([popover])')`);
     if(await js(`!!document.querySelector('[aria-label="Collapse sidebar"]')?.checkVisibility()`))await click('[aria-label="Collapse sidebar"]');
     await wait(`!!document.querySelector('[data-session-navigation="tabs"]')`);
   };

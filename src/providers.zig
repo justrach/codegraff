@@ -92,7 +92,7 @@ pub fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: 
             note = "history cleared — /keepcontext on to carry it across formats";
         }
     }
-    root.provider = p;
+    @import("jev_tool.zig").updateProvider(root, p);
     // #371: the #291 worker default resolved once at startup; without this a
     // /model switch left children on the OLD provider's rung (root on codex,
     // workers silently still on kimi — a cost and consent surprise) or with

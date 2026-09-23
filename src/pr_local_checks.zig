@@ -58,7 +58,12 @@ pub fn isCheck(command: []const u8) bool {
 pub fn repositoryRoot(root: anytype, cwd: []const u8) ![]const u8 {
     const ev = @import("pr_evidence.zig");
     const found = ev.capture(root.gpa, root.io, root.arena, .{ .cwd = cwd, .selector = "" }, &.{ "git", "rev-parse", "--show-toplevel" }) catch return cwd;
-    return if (std.fs.path.isAbsolute(found)) found else cwd;
+    if (!std.fs.path.isAbsolute(found)) return cwd;
+    var dir = std.Io.Dir.cwd().openDir(root.io, found, .{}) catch return cwd;
+    defer dir.close(root.io);
+    var path: [std.fs.max_path_bytes]u8 = undefined;
+    const len = dir.realPath(root.io, &path) catch return cwd;
+    return root.arena.dupe(u8, path[0..len]);
 }
 
 pub fn record(root: anytype, call: ToolCall, result: ExecResult) !void {
