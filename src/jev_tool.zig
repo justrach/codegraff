@@ -182,6 +182,19 @@ fn usageCount(v: Value) ?i64 {
     return if (v == .integer and v.integer >= 0) v.integer else null;
 }
 
+fn settledCharge(body: Value) ?u64 {
+    if (body != .object) return null;
+    const receipt = body.object.get("codegraff_billing") orelse return null;
+    if (receipt != .object) return null;
+    const settled = receipt.object.get("settled") orelse return null;
+    const currency = receipt.object.get("currency") orelse return null;
+    const charge = receipt.object.get("charge_micro_usd") orelse return null;
+    if (settled != .bool or !settled.bool or currency != .string or
+        !std.mem.eql(u8, currency.string, "USD") or charge != .integer or
+        charge.integer < 0 or charge.integer > 9_007_199_254_740_991) return null;
+    return @intCast(charge.integer);
+}
+
 fn noteGatewayUsage(io: Io, tally: *pricing.CostTally, arena: Allocator, raw: []const u8) void {
     const parsed = std.json.parseFromSliceLeaky(Value, arena, raw, .{}) catch {
         tally.missingUsage(io);
@@ -192,9 +205,13 @@ fn noteGatewayUsage(io: Io, tally: *pricing.CostTally, arena: Allocator, raw: []
         const input = usageCount(usage.object.get("input_tokens") orelse .null);
         const output = usageCount(usage.object.get("output_tokens") orelse .null);
         if (input != null and output != null) {
-            // The gateway returns token usage but no settled charge. Preserve
-            // known tokens while keeping the dollar total explicitly unknown.
-            tally.addForProvider(io, .unpriced, "codegraff", "jev-latest", input.?, 0, 0, output.?);
+            // This parser is called only for the authenticated gateway endpoint.
+            // A published list rate cannot replace a confirmed charge receipt.
+            if (settledCharge(parsed)) |charge| {
+                tally.addSettled(io, input.?, output.?, charge);
+            } else {
+                tally.addForProvider(io, .unpriced, "codegraff", "jev-latest", input.?, 0, 0, output.?);
+            }
             return;
         }
     }
@@ -445,4 +462,46 @@ test "native Jev gateway usage preserves tokens but marks unsettled cost unknown
     c = tally.snap(io);
     try std.testing.expectEqual(@as(u64, 1), c.unreported_failed_attempts);
     try std.testing.expectEqual(@as(u64, 4), c.api_calls); // failed attempts are separate
+}
+
+test "native Jev gateway confirmed receipt records exact charge once" {
+    const io = std.testing.io;
+    var tally: pricing.CostTally = .{};
+    var temp = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer temp.deinit();
+    noteGatewayUsage(io, &tally, temp.allocator(),
+        "{\"usage\":{\"input_tokens\":296,\"output_tokens\":20},\"codegraff_billing\":{\"settled\":true,\"charge_micro_usd\":12,\"currency\":\"USD\"}}");
+    const c = tally.snap(io);
+    try std.testing.expectEqual(@as(u64, 1), c.api_calls);
+    try std.testing.expectEqual(@as(u64, 296), c.in_tokens);
+    try std.testing.expectEqual(@as(u64, 20), c.out_tokens);
+    try std.testing.expectEqual(@as(u64, 0), c.unpriced_calls);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.000012), c.usd, 1e-12);
+    var wire: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer wire.deinit();
+    try @import("acp_usage.zig").write(&wire.writer, "fixture", &tally, io);
+    const event = try std.json.parseFromSliceLeaky(Value, temp.allocator(), wire.written(), .{});
+    const usage = event.object.get("params").?.object.get("usage").?.object;
+    try std.testing.expect(usage.get("usage_complete").?.bool);
+    try std.testing.expect(usage.get("cost_complete").?.bool);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.000012), usage.get("cost_usd").?.float, 1e-12);
+}
+
+test "native Jev gateway refuses malformed and unconfirmed charge claims" {
+    const io = std.testing.io;
+    var tally: pricing.CostTally = .{};
+    var temp = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer temp.deinit();
+    for ([_][]const u8{
+        "{\"usage\":{\"input_tokens\":20,\"output_tokens\":5},\"codegraff_billing\":{\"settled\":false,\"charge_micro_usd\":1,\"currency\":\"USD\"}}",
+        "{\"usage\":{\"input_tokens\":20,\"output_tokens\":5},\"codegraff_billing\":{\"settled\":true,\"charge_micro_usd\":-1,\"currency\":\"USD\"}}",
+        "{\"usage\":{\"input_tokens\":20,\"output_tokens\":5},\"codegraff_billing\":{\"settled\":true,\"charge_micro_usd\":1.5,\"currency\":\"USD\"}}",
+        "{\"usage\":{\"input_tokens\":20,\"output_tokens\":5},\"codegraff_billing\":{\"settled\":true,\"charge_micro_usd\":1,\"currency\":\"EUR\"}}",
+        "{\"usage\":{\"input_tokens\":20,\"output_tokens\":5},\"codegraff_billing\":{\"settled\":true,\"charge_micro_usd\":9007199254740992,\"currency\":\"USD\"}}",
+    }) |raw| noteGatewayUsage(io, &tally, temp.allocator(), raw);
+    const c = tally.snap(io);
+    try std.testing.expectEqual(@as(u64, 5), c.api_calls);
+    try std.testing.expectEqual(@as(u64, 5), c.unpriced_calls);
+    try std.testing.expectEqual(@as(u64, 100), c.in_tokens);
+    try std.testing.expectEqual(@as(f64, 0), c.usd);
 }
