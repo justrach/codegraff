@@ -1,9 +1,9 @@
 //! HTTPS SSE over http-zig. Returns null to keep the std.http/1.1 path, but
-//! only while the request provably never reached the server: the dial or the
-//! send failed, the server did not pick h2 via ALPN, or it answered GOAWAY /
+//! only while the request provably never reached the server: the dial failed,
+//! the server did not pick h2 via ALPN, or it answered GOAWAY /
 //! REFUSED_STREAM for our stream (RFC 9113 §8.7). Once the request is on the
 //! wire any other failure is an error for request()'s retry loop -- falling
-//! back would POST the same prompt twice and bill two generations.
+//! back would silently resend an ambiguously delivered request.
 
 const std = @import("std");
 const Io = std.Io;
@@ -219,18 +219,25 @@ fn raceHead(io: Io, head: *Head, poll_stdin: bool) !HeadResult {
 }
 
 /// Falling back to HTTP/1.1 re-sends the POST, so it is allowed only when
-/// the server cannot have acted on it: the body never fully left (dial or
-/// send failed), or it said so -- GOAWAY above our stream id, REFUSED_STREAM.
+/// the server cannot have acted on it: dial failed, ALPN selected H1, or the
+/// peer said so -- GOAWAY above our stream id, REFUSED_STREAM. A send-phase
+/// error can occur after the complete POST reached the peer.
 fn mayResendOnH1(phase: Phase, err: anyerror) bool {
     if (err == error.Canceled) return false;
-    if (phase != .wait) return true;
+    if (phase == .dial) return true;
+    if (err == error.H1NoStream) return true;
     return err == error.GoAway or err == error.StreamRefused;
 }
 
 test "HTTP/1.1 fallback only when the request provably never reached the server" {
     try std.testing.expect(mayResendOnH1(.dial, error.ConnectionRefused));
     try std.testing.expect(mayResendOnH1(.dial, error.H1NoStream));
-    try std.testing.expect(mayResendOnH1(.send, error.WriteFailed));
+    try std.testing.expect(mayResendOnH1(.send, error.H1NoStream));
+    try std.testing.expect(mayResendOnH1(.send, error.GoAway));
+    try std.testing.expect(mayResendOnH1(.send, error.StreamRefused));
+    try std.testing.expect(!mayResendOnH1(.send, error.WriteFailed));
+    try std.testing.expect(!mayResendOnH1(.send, error.EndOfStream));
+    try std.testing.expect(!mayResendOnH1(.send, error.InvalidGoAway));
     try std.testing.expect(mayResendOnH1(.wait, error.GoAway));
     try std.testing.expect(mayResendOnH1(.wait, error.StreamRefused));
     // Sent and possibly generating: retry via request(), never a silent re-POST.

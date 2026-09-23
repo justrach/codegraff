@@ -161,6 +161,7 @@ fn respondInitialize(w: *Io.Writer, req: proto.Request, can_load: bool) !void {
         .protocolVersion = negotiateVersion(req.params),
         .agentCapabilities = .{
             .loadSession = can_load,
+            ._meta = .{ .@"codegraff/usage" = can_load },
             .promptCapabilities = proto.PromptCapabilities{},
         },
         .agentInfo = proto.AgentImplementation{ .version = implementation_version },

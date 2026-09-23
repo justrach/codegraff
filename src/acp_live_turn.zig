@@ -90,6 +90,15 @@ pub const LiveTurn = struct {
         turn_trace.recordLive(self.root, text, turn_id, self.prev_turn_id);
         const started = Io.Timestamp.now(self.root.io, .awake);
         const result = providers.runTurnWithFallback(self.root, self.keys, arena, null);
+        // Supplemental metadata must not replace the turn outcome or prevent
+        // trace/session persistence if the client disconnects. Emit on exit,
+        // after the durable work below, while retaining whole-message locking.
+        defer {
+            sink.writer.flush() catch {};
+            main_mod.g_gui_mu.lockUncancelable(self.root.io);
+            defer main_mod.g_gui_mu.unlock(self.root.io);
+            @import("acp_usage.zig").writeBestEffort(self.out, self.session_id, &@import("pricing.zig").g_cost, self.root.io);
+        }
         turn_trace.record(self.root, self.root.io, arena, text, turn_id, started, result, self.root.effectiveContextTokens(), before, &self.prev_turn_id, &self.prev_prompt_fp);
         const isolated = context.restore(self.root);
         if (isolated) {

@@ -1,3 +1,4 @@
+import { parseAcpUsage } from "./acp-usage";
 import { htmlArtifactId } from "./html-artifacts";
 import { parseContextMeter } from "./context-meter";
 import { boundToolDetail } from "./tool-detail";
@@ -40,6 +41,7 @@ export type AcpUpdate =
   | { sessionUpdate: string; [key: string]: unknown };
 
 export type JsonRpcLine =
+  | { jsonrpc?: string; method: "_codegraff/usage"; params: { sessionId: string; usage: Record<string, unknown> } }
   | { jsonrpc?: string; method: "session/update"; params: { sessionId?: string; update: AcpUpdate } }
   | { jsonrpc?: string; id: number | string; result: unknown }
   | { jsonrpc?: string; id: number | string; error: { code: number; message: string } };
@@ -275,6 +277,7 @@ export function turnBlocks(text: string, tools: ToolRow[]): TurnBlock[] {
 export function applyAcpUpdate(turn: AssistantTurn, update: AcpUpdate): AssistantTurn {
   turn = { ...turn, lastUpdateAt: Date.now(), activityKind: update.sessionUpdate, connected: true };
   switch (update.sessionUpdate) {
+    case "gui_usage": return { ...turn, usage: parseAcpUsage(update), costUsd: undefined };
     case "gui_context_meter": return { ...turn, contextMeter: parseContextMeter(update) };
     case "gui_turn_end": return { ...turn, stopReason: typeof update.stopReason === "string" ? update.stopReason : "end_turn" };
     case "agent_thought_chunk": {
@@ -289,7 +292,7 @@ export function applyAcpUpdate(turn: AssistantTurn, update: AcpUpdate): Assistan
       const text = stripCiteMarkup((update as { content?: AcpContent }).content?.text ?? "");
       const retry = transientRetryNotice(text);
       if (retry) {
-        return { ...turn, text: "", pendingBreak: false, status: "streaming", retryNotice: retry };
+        return { ...turn, text: retry.startsWith("network error:") ? turn.text : "", pendingBreak: false, status: "streaming", retryNotice: retry };
       }
       const needsBreak = turn.pendingBreak && turn.text.length > 0 && !/\s$/.test(turn.text) && !/^\s/.test(text);
       return {
