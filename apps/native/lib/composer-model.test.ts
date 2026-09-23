@@ -22,6 +22,20 @@ test("ACP startup waits for this workspace's catalog and keeps the selected rout
   expect(calls).toHaveLength(3);
   expect(await startWithSelectedModel(undefined, [], load, start)).toBeUndefined();
   expect(calls.at(-1)).toBe("start:undefined");
+
+  let releaseCatalog!: () => void;
+  const waiting = new Promise<void>(resolve => { releaseCatalog = resolve; });
+  let workspace = "/first";
+  const startsBeforeMove = calls.length;
+  const moved = startWithSelectedModel(catalog[0].key, [], async () => {
+    await waiting;
+    if (workspace !== "/first") throw new Error("Workspace changed while loading models.");
+    return catalog;
+  }, start);
+  workspace = "/second";
+  releaseCatalog();
+  await expect(moved).rejects.toThrow("Workspace changed");
+  expect(calls).toHaveLength(startsBeforeMove);
 });
 
 test("the pill keeps an unknown live key instead of catalog[0]", () => {

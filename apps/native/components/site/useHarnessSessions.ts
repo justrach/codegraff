@@ -32,12 +32,10 @@ export function useHarnessSessions({onPermission, sessionsRef, sessionNamesRef, 
   const catalogForSpawn = useRef<Record<number, { cwd?: string; models: PromptModel[] }>>({});
   const [catalogStatus, setCatalogStatus] = useState<Record<number, { loading: boolean; error?: string }>>({});
   const catalogPending = useRef(new Map<number, Promise<void>>());
-  const applyCatalog = (chatId: number, catalog: Awaited<ReturnType<typeof fetchModels>>) => {
+  const cwdOf = (chatId: number) => chatsRef.current.find(chat => chat.id === chatId)?.cwd ?? activePathRef.current ?? undefined;
+  const applyCatalog = (chatId: number, catalog: Awaited<ReturnType<typeof fetchModels>>, source?: { cwd?: string }) => {
     if (!catalog.models.length) return;
-    catalogForSpawn.current[chatId] = {
-      cwd: chatsRef.current.find(chat => chat.id === chatId)?.cwd ?? activePathRef.current ?? undefined,
-      models: catalog.models,
-    };
+    if (source) catalogForSpawn.current[chatId] = { cwd: source.cwd, models: catalog.models };
     setChatCatalogs(old => rememberChatCatalog(old, chatId, catalog.models));
     // Effort and fast settings belong to the replying worker, never another chat.
     const common = sharedModelChoices(catalog.models);
@@ -67,11 +65,16 @@ export function useHarnessSessions({onPermission, sessionsRef, sessionNamesRef, 
   const fetchCatalog = async (chatId: number) => {
     // Pill follows this chat's agent. A transient /api/models process is not that agent.
     const handle = sessionsRef.current.has(chatId) ? handleOf(chatId) : undefined;
+    const cwd = cwdOf(chatId);
     setCatalogStatus(old => ({ ...old, [chatId]: { loading: true } }));
     try {
-      const catalog = await fetchModels(handle, chatsRef.current.find(chat => chat.id === chatId)?.cwd ?? activePathRef.current ?? undefined);
+      const catalog = await fetchModels(handle, cwd);
+      if (cwdOf(chatId) !== cwd) {
+        setCatalogStatus(old => ({ ...old, [chatId]: { loading: false } }));
+        return;
+      }
       const { current, commands: available } = catalog;
-      applyCatalog(chatId, catalog);
+      applyCatalog(chatId, catalog, { cwd });
       if (available?.length) { setCatalogCommands(available); setCommands(old => ({ ...old, [chatId]: available })); }
       if (current && handle) {
         const chat = chatsRef.current.find((c) => c.id === chatId);
@@ -133,7 +136,8 @@ export function useHarnessSessions({onPermission, sessionsRef, sessionNamesRef, 
         // A changed workspace needs its own transient catalog, not the old
         // chat worker's model list. This query does not send a prompt.
         const catalog = await fetchModels(undefined, cwd);
-        applyCatalog(chatId, catalog);
+        if (cwdOf(chatId) !== cwd) throw new Error("Workspace changed while loading models. Retry the model choice.");
+        applyCatalog(chatId, catalog, { cwd });
         return catalog.models;
       }, selected => ensureSession(handleOf(chatId), {
         model: selected,
