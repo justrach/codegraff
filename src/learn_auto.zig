@@ -228,7 +228,10 @@ pub fn maybeStart(gpa: Allocator, arena: Allocator, io: Io, environ: *const std.
     // Contribution needs a signing key as well as consent. Asking for
     // `--submit` without one fails the whole trial in preflight, so a machine
     // that cannot sign simply learns locally.
-    const contribute = options.contribute and scoring.loadScoreKey(io, arena, environ) != null;
+    // Formal evidence is not represented by the current signed remote receipt.
+    // Keep this trial local even when ordinary aggregate contribution is on.
+    const contribute = config.value.formal_check == null and options.contribute and
+        scoring.loadScoreKey(io, arena, environ) != null;
     const resumed = hasPendingTrial(&store);
     const exe_path = std.process.executablePathAlloc(io, gpa) catch return .{ .skipped = .unconfigured };
     defer gpa.free(exe_path);

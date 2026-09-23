@@ -219,6 +219,7 @@ record only when you need the evidence or the edge cases.
 | [0191](0191-acp-effort-is-session-configuration.md) | ACP thought-level options follow the active model and share `/effort` state; changes received during a turn apply after that turn. |
 | [0192](0192-mimo-thinking-is-a-binary-setting.md) | MiMo exposes Off/On, preserves legacy positive settings as On, and uses the documented thinking control on each wire. |
 | [0193](0193-jev-selects-effort-only.md) | Optional Jev selects only supported session effort at the next request boundary; arbitrary judgments are not exposed. |
+| [0194](0194-native-learning-formal-baseline.md) | Optional native learning admits and promotes only with a fresh pinned formal baseline check bound to the evaluated binary; remote submission waits for a compatible signed receipt. |
 
 ## When to write one
 

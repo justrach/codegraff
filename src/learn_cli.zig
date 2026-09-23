@@ -15,6 +15,7 @@ const diagnostics = @import("learn_diagnostics.zig");
 const mutation_verify = @import("learn_mutation_verify.zig");
 const primary = @import("learn_primary.zig");
 const learn_run = @import("learn_run.zig");
+const formal_gate = @import("learn_formal.zig");
 const learn_delete = @import("learn_delete.zig");
 const submit = @import("learn_submit.zig");
 const tournament = @import("learn_tournament.zig");
@@ -239,8 +240,10 @@ pub fn parse(args: []const []const u8) !Parsed {
 }
 
 fn verifyRun(
+    gpa: Allocator,
     arena: Allocator,
     io: Io,
+    environ: *const std.process.Environ.Map,
     store: *store_mod.Store,
     config: store_mod.LoadedConfig,
     run_id: []const u8,
@@ -259,7 +262,8 @@ fn verifyRun(
     _ = try store.readGenome(arena, run.parent_genome_id, config.value.limits.genome_bytes);
     try learn_init.verifyPins(io, arena, config.value);
 
-    const current_schema = std.mem.eql(u8, run.schema, eval.run_schema);
+    const current_schema = std.mem.eql(u8, run.schema, eval.run_schema) or
+        std.mem.eql(u8, run.schema, eval.formal_run_schema);
     var baseline_response: ?eval.PrimaryBaselineResponse = null;
     if (current_schema) if (run.primary_baseline) |baseline| {
         baseline_response = try primary.verifyBaseline(
@@ -342,6 +346,13 @@ fn verifyRun(
     if (primary_winner) |id| if (!std.mem.eql(u8, id, run.primary_winner_genome_id.?)) return error.SelectionMismatch;
     if ((finalized.selected_genome_id == null) != (run.selected_genome_id == null)) return error.SelectionMismatch;
     if (finalized.selected_genome_id) |id| if (!std.mem.eql(u8, id, run.selected_genome_id.?)) return error.SelectionMismatch;
+    if (config.value.formal_check) |formal| {
+        if (!std.mem.eql(u8, run.schema, eval.formal_run_schema)) return error.FormalRunRequired;
+        try formal_gate.verify(gpa, arena, io, environ, store, formal, run.formal_admission_evidence_id orelse return error.FormalEvidenceMissing, &config.id, run.trial_id, "admission", try store.readGenome(arena, run.parent_genome_id, config.value.limits.genome_bytes));
+        if (finalized.selected_genome_id) |selected| {
+            try formal_gate.verify(gpa, arena, io, environ, store, formal, run.formal_selection_evidence_id orelse return error.FormalEvidenceMissing, &config.id, run.trial_id, "selection", try store.readGenome(arena, selected, config.value.limits.genome_bytes));
+        }
+    } else if (std.mem.eql(u8, run.schema, eval.formal_run_schema)) return error.FormalConfigRequired;
     return .{ .run = run, .selected = finalized.selected_genome_id };
 }
 
@@ -364,6 +375,7 @@ fn runCommand(gpa: Allocator, arena: Allocator, io: Io, environ: *const std.proc
 
     if (args.auto and !config.value.auto.enabled) return error.AutoNotEnabled;
     if (args.auto and config.value.holdout_suite == null) return error.AutoRequiresHoldout;
+    if (args.submit and config.value.formal_check != null) return error.FormalReceiptUnsupported;
     if (args.submit) try submit.preflight(io, arena, environ);
 
     // The adapters see a scrubbed environment, so a `graff login` credential
@@ -383,7 +395,7 @@ fn runCommand(gpa: Allocator, arena: Allocator, io: Io, environ: *const std.proc
     if (result.selected_genome_id) |genome_id| {
         try out.print("selected {s}\n", .{genome_id});
         if (args.auto) {
-            const verified = try verifyRun(arena, io, &store, config, &result.run_id);
+            const verified = try verifyRun(gpa, arena, io, environ, &store, config, &result.run_id);
             if (verified.selected == null or !std.mem.eql(u8, verified.selected.?, genome_id)) return error.SelectionMismatch;
             const current = try store.loadActive(arena, config);
             if (!activeMatchesRun(current.ref, verified.run)) return error.ActiveParentChanged;
@@ -395,7 +407,7 @@ fn runCommand(gpa: Allocator, arena: Allocator, io: Io, environ: *const std.proc
     } else try out.writeAll("no unique candidate produced primary evidence; active genome unchanged\n");
 }
 
-fn statusCommand(arena: Allocator, io: Io, timeout_ms: u64, out: *Io.Writer, verify_all: bool) !void {
+fn statusCommand(gpa: Allocator, arena: Allocator, io: Io, environ: *const std.process.Environ.Map, timeout_ms: u64, out: *Io.Writer, verify_all: bool) !void {
     var store = try store_mod.Store.openAt(io, Io.Dir.cwd());
     defer store.deinit();
     var lock = try store.acquireLock(timeout_ms);
@@ -405,7 +417,13 @@ fn statusCommand(arena: Allocator, io: Io, timeout_ms: u64, out: *Io.Writer, ver
     const pending = try checkpoint.load(arena, &store);
     if (verify_all) {
         try learn_init.verifyPins(io, arena, config.value);
-        if (pending) |item| _ = try learn_run.restorePending(arena, io, &store, config, active, item);
+        if (pending) |item| {
+            if (config.value.formal_check) |formal| {
+                const id = item.formal_admission_evidence_id orelse return error.FormalEvidenceMissing;
+                try formal_gate.verify(gpa, arena, io, environ, &store, formal, id, &config.id, item.trial_id, "admission", active.genome);
+            } else if (std.mem.eql(u8, item.schema, checkpoint.formal_schema)) return error.FormalConfigRequired;
+            _ = try learn_run.restorePending(arena, io, &store, config, active, item);
+        }
     }
     const Status = struct {
         schema: []const u8 = "codegraff.learn.status.v1",
@@ -446,14 +464,14 @@ fn countCompleted(candidates: []const eval.CandidateRecord, holdouts: bool) usiz
     return count;
 }
 
-fn promoteCommand(gpa: Allocator, arena: Allocator, io: Io, args: PromoteArgs, out: *Io.Writer) !void {
+fn promoteCommand(gpa: Allocator, arena: Allocator, io: Io, environ: *const std.process.Environ.Map, args: PromoteArgs, out: *Io.Writer) !void {
     var store = try store_mod.Store.openAt(io, Io.Dir.cwd());
     defer store.deinit();
     var lock = try store.acquireLock(args.lock_timeout_ms);
     defer lock.deinit();
     const config = try store.loadConfig(arena);
     const active = try store.loadActive(arena, config);
-    const verified = try verifyRun(arena, io, &store, config, args.run_id);
+    const verified = try verifyRun(gpa, arena, io, environ, &store, config, args.run_id);
     const selected = verified.selected orelse return error.NoPromotableCandidate;
     if (!activeMatchesRun(active.ref, verified.run)) return error.ActiveParentChanged;
     try store.activate(gpa, active.ref, &config.id, selected, args.run_id, "promote", config.value.limits.genome_bytes, util.unixMs(io));
@@ -466,7 +484,8 @@ fn submitCommand(gpa: Allocator, arena: Allocator, io: Io, environ: *const std.p
     var lock = try store.acquireLock(args.lock_timeout_ms);
     defer lock.deinit();
     const config = try store.loadConfig(arena);
-    const verified = try verifyRun(arena, io, &store, config, args.run_id);
+    if (config.value.formal_check != null) return error.FormalReceiptUnsupported;
+    const verified = try verifyRun(gpa, arena, io, environ, &store, config, args.run_id);
     const sent = try submit.submitVerifiedRun(io, gpa, arena, environ, config.value, args.run_id, verified.run);
     try out.print("submitted {d} signed aggregate grade(s) for run {s}; prompt text stayed local\n", .{ sent.grades, args.run_id });
 }
@@ -520,11 +539,11 @@ pub fn command(io: Io, gpa: Allocator, arena: Allocator, init: std.process.Init,
         else
             try learn_init.fromPaths(gpa, arena, io, args, out),
         .run => |args| try runCommand(gpa, arena, io, init.environ_map, args, out),
-        .status => |args| try statusCommand(arena, io, args.lock_timeout_ms, out, false),
+        .status => |args| try statusCommand(gpa, arena, io, init.environ_map, args.lock_timeout_ms, out, false),
         .submit => |args| try submitCommand(gpa, arena, io, init.environ_map, args, out),
         .delete_remote => |args| try learn_delete.command(io, gpa, arena, init.environ_map, args.run_id, args.lock_timeout_ms, out),
-        .verify => |args| try statusCommand(arena, io, args.lock_timeout_ms, out, true),
-        .promote => |args| try promoteCommand(gpa, arena, io, args, out),
+        .verify => |args| try statusCommand(gpa, arena, io, init.environ_map, args.lock_timeout_ms, out, true),
+        .promote => |args| try promoteCommand(gpa, arena, io, init.environ_map, args, out),
         .rollback => |args| try rollbackCommand(gpa, arena, io, args, out),
         .hash => |args| {
             const digest = try store_mod.hashFileNoFollow(io, args.path);
