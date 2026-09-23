@@ -22,8 +22,11 @@ selected worker's generation. `ActiveAdmissionIsCurrent` and the guarded
 `Begin` action capture first-admission ownership of the slot.
 `ManualWins` ensures a manual change cannot be overwritten by an older
 worker; a fresh admitted choice may supersede it. `OwnerOnlyWritesEffort`
-uses a ghost owner copy to check that worker completion does not mutate the
-setting. `AllowedJevApplication` checks the route's allowlist at application.
+compares a ghost owner copy as an abstraction sanity check. Owner-thread
+confinement is assumed by the modeled owner actions and the worker actions'
+`UNCHANGED` clauses; this equality does not independently establish that the
+implementation confines writes to its owner. `AllowedJevApplication` checks
+the route's allowlist at application.
 
 `SelectedEventuallyConsumed` is checked only with weak fairness for
 `OwnerBoundary`: if a selection remains pending, the owner eventually reaches
