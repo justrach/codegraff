@@ -209,6 +209,7 @@ record only when you need the evidence or the edge cases.
 | [0181](0181-acp-load-replays-saved-conversation.md) | Live ACP loads saved conversations in their selected workspace and replays history without rerunning tools. |
 | [0182](0182-acp-connection-usage-is-an-extension.md) | Connection-scoped ACP usage preserves unknown totals through a custom notification; network retries remain activity indicators. |
 | [0183](0183-request-policy-owns-ambiguous-retries.md) | Ambiguous HTTP/2 failures return to the request retry policy so attempts and unknown usage remain observable. |
+| [0184](0184-directory-scan-budgets-count-examined-entries.md) | Directory scan limits count examined entries before filtering; truncated listings and suggestions remain explicitly partial. |
 
 ## When to write one
 

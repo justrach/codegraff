@@ -36,7 +36,7 @@ const root_truncation_notice =
 
 const walk_truncation_notice =
     \\
-    \\Note: there are more than 20000 items in the directory, so not all files may be shown.
+    \\Note: the 20000-entry scan limit was reached; the listing and subtree counts may be incomplete.
 ;
 
 const Node = struct {
@@ -48,6 +48,7 @@ const Node = struct {
     file_count: usize,
     ext: std.StringHashMap(usize),
     expanded: bool,
+    partial: bool = false,
 };
 
 fn newNode(arena: Allocator, name: []const u8, is_dir: bool, depth: usize, parent: ?*Node) !*Node {
@@ -101,6 +102,7 @@ const Walk = struct {
     root_abs: []const u8,
     rules: std.ArrayList(gitignore.Rule),
     items: usize = 0,
+    scanned: usize = 0,
     truncated: bool = false,
 };
 
@@ -111,41 +113,43 @@ fn skip(w: *Walk, abs: []const u8, is_dir: bool) !bool {
 
 fn fill(w: *Walk, node: *Node, rel: []const u8) !void {
     const abs = if (rel.len == 0) w.root_abs else try join(w.arena, w.root_abs, rel);
-    var dir = Io.Dir.cwd().openDir(w.io, abs, .{ .iterate = true, .follow_symlinks = false }) catch return;
+    var dir = try Io.Dir.cwd().openDir(w.io, abs, .{ .iterate = true, .follow_symlinks = false });
     defer dir.close(w.io);
 
-    var names: std.ArrayList(struct { name: []const u8, is_dir: bool }) = .empty;
-    var it = dir.iterate();
-    var saw_ignore = false;
-    while (it.next(w.io) catch null) |ent| {
-        if (ent.kind == .sym_link) continue;
-        const name = try w.arena.dupe(u8, ent.name);
-        if (std.mem.eql(u8, name, ".gitignore") and rel.len > 0) saw_ignore = true;
-        const is_dir = ent.kind == .directory;
-        try names.append(w.arena, .{ .name = name, .is_dir = is_dir });
-    }
-    if (saw_ignore) {
-        const gi = try join(w.arena, abs, ".gitignore");
-        const text = Io.Dir.cwd().readFileAlloc(w.io, gi, w.arena, .limited(64 * 1024)) catch null;
-        if (text) |t| {
-            const extra = gitignore.parse(w.arena, t, abs) catch &.{};
-            w.rules.appendSlice(w.arena, extra) catch {};
+    // Load rules before the bounded scan, regardless of directory entry order.
+    if (rel.len > 0) {
+        if (dir.openFile(w.io, ".gitignore", .{ .follow_symlinks = false })) |file| {
+            defer file.close(w.io);
+            if ((try file.stat(w.io)).kind == .file) {
+                var reader = file.reader(w.io, &.{});
+                const text = try reader.interface.allocRemaining(w.arena, .limited(64 * 1024));
+                const extra = try gitignore.parse(w.arena, text, abs);
+                try w.rules.appendSlice(w.arena, extra);
+            }
+        } else |err| switch (err) {
+            error.FileNotFound, error.SymLinkLoop => {},
+            else => return err,
         }
     }
-
-    for (names.items) |e| {
-        if (isGitComponent(e.name)) continue;
-        const child_rel = if (rel.len == 0) e.name else try join(w.arena, rel, e.name);
-        const child_abs = try join(w.arena, w.root_abs, child_rel);
-        if (try skip(w, child_abs, e.is_dir)) continue;
-        const child = try newNode(w.arena, e.name, e.is_dir, node.depth + 1, node);
-        try node.kids.append(w.arena, child);
-        if (!e.is_dir) try addFile(w.arena, node, e.name);
-        w.items += 1;
-        if (w.items >= max_walk_items) {
+    var it = dir.iterate();
+    while (true) {
+        // Count physical entries, including ignored entries and symlinks. Do not
+        // enumerate or allocate an unbounded directory before applying the cap.
+        if (w.scanned >= max_walk_items) {
             w.truncated = true;
             return;
         }
+        const ent = (try it.next(w.io)) orelse return;
+        w.scanned += 1;
+        if (ent.kind == .sym_link or isGitComponent(ent.name)) continue;
+        const is_dir = ent.kind == .directory;
+        const child_abs = try join(w.arena, abs, ent.name);
+        if (try skip(w, child_abs, is_dir)) continue;
+        const name = try w.arena.dupe(u8, ent.name);
+        const child = try newNode(w.arena, name, is_dir, node.depth + 1, node);
+        try node.kids.append(w.arena, child);
+        if (!is_dir) try addFile(w.arena, node, name);
+        w.items += 1;
     }
 }
 
@@ -163,9 +167,10 @@ fn nameLess(_: void, a: *Node, b: *Node) bool {
     return an.len < bn.len;
 }
 
-fn sortTree(n: *Node) void {
+fn sortTree(n: *Node, partial: bool) void {
+    n.partial = partial;
     std.mem.sort(*Node, n.kids.items, {}, nameLess);
-    for (n.kids.items) |k| sortTree(k);
+    for (n.kids.items) |k| sortTree(k, partial);
 }
 
 const ExtPair = struct { k: []const u8, n: usize };
@@ -184,7 +189,8 @@ fn summary(arena: Allocator, n: *Node) ![]const u8 {
     const take = @min(pairs.items.len, top_k_exts);
     var aw: Io.Writer.Allocating = .init(arena);
     const word: []const u8 = if (n.file_count == 1) "file" else "files";
-    try aw.writer.print("[{d} {s} in subtree: ", .{ n.file_count, word });
+    if (n.partial) try aw.writer.writeAll("[at least ") else try aw.writer.writeByte('[');
+    try aw.writer.print("{d} {s} in subtree: ", .{ n.file_count, word });
     var shown: usize = 0;
     for (pairs.items[0..take], 0..) |p, i| {
         if (i > 0) try aw.writer.writeAll(", ");
@@ -307,7 +313,7 @@ fn walkTree(io: Io, arena: Allocator, abs: []const u8) !struct { root: *Node, tr
             if (k.is_dir) try q.append(arena, .{ .n = k, .rel = try join(arena, item.rel, k.name) });
         }
     }
-    sortTree(root);
+    sortTree(root, w.truncated);
     return .{ .root = root, .truncated = w.truncated };
 }
 
@@ -502,4 +508,78 @@ test "empty directory is a header only" {
     const abs = try tmpAbs(io, &tmp, &buf);
     const out = try listAbs(io, arena_state.allocator(), abs, "empty");
     try std.testing.expectEqualStrings("- empty/", out);
+}
+
+test "directory enumeration cannot exceed remaining walk budget" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    for (0..8) |i| {
+        var name: [32]u8 = undefined;
+        try tmp.dir.writeFile(io, .{ .sub_path = try std.fmt.bufPrint(&name, "entry-{d}.txt", .{i}), .data = "x" });
+    }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path_len = try tmp.dir.realPath(io, &path_buf);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var walk: Walk = .{ .io = io, .arena = arena.allocator(), .root_abs = path_buf[0..path_len], .rules = .empty, .items = max_walk_items - 1, .scanned = max_walk_items - 1 };
+    const root = try newNode(arena.allocator(), "", true, 0, null);
+    try fill(&walk, root, "");
+    try std.testing.expectEqual(max_walk_items, walk.scanned);
+    try std.testing.expectEqual(@as(usize, 1), root.kids.items.len);
+    try std.testing.expect(walk.truncated);
+}
+
+test "bounded nested scan loads ignore rules first and labels partial counts" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "nested");
+    try tmp.dir.writeFile(io, .{ .sub_path = "nested/hidden.log", .data = "x" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "nested/.gitignore", .data = "*.log\n" });
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path_len = try tmp.dir.realPath(io, &path_buf);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var walk: Walk = .{ .io = io, .arena = arena.allocator(), .root_abs = path_buf[0..path_len], .rules = .empty, .scanned = max_walk_items - 2 };
+    const root = try newNode(arena.allocator(), "", true, 0, null);
+    try fill(&walk, root, "nested");
+    try std.testing.expectEqual(max_walk_items, walk.scanned);
+    try std.testing.expect(walk.truncated);
+    try std.testing.expectEqual(@as(usize, 1), root.kids.items.len);
+    try std.testing.expectEqualStrings(".gitignore", root.kids.items[0].name);
+    sortTree(root, walk.truncated);
+    try std.testing.expect(std.mem.startsWith(u8, try summary(arena.allocator(), root), "[at least 1 file"));
+}
+
+test "nested ignore symlinks stay skipped and unreadable rules fail explicitly" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "nested");
+    try tmp.dir.writeFile(io, .{ .sub_path = "rules", .data = "*.log\n" });
+    try tmp.dir.symLink(io, "../rules", "nested/.gitignore", .{});
+    try tmp.dir.writeFile(io, .{ .sub_path = "nested/keep.log", .data = "x" });
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path_len = try tmp.dir.realPath(io, &path_buf);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var walk: Walk = .{ .io = io, .arena = arena.allocator(), .root_abs = path_buf[0..path_len], .rules = .empty };
+    const root = try newNode(arena.allocator(), "", true, 0, null);
+    try fill(&walk, root, "nested");
+    try std.testing.expectEqual(@as(usize, 1), root.kids.items.len);
+    try std.testing.expectEqualStrings("keep.log", root.kids.items[0].name);
+    try tmp.dir.deleteFile(io, "nested/.gitignore");
+    const large = try arena.allocator().alloc(u8, 64 * 1024 + 1);
+    @memset(large, 'x');
+    try tmp.dir.writeFile(io, .{ .sub_path = "nested/.gitignore", .data = large });
+    try std.testing.expectError(error.StreamTooLong, fill(&walk, root, "nested"));
+    try std.testing.expectError(error.FileNotFound, fill(&walk, root, "missing"));
+    try tmp.dir.deleteFile(io, "nested/.gitignore");
+    try tmp.dir.createDirPath(io, "nested/.gitignore");
+    const directory_root = try newNode(arena.allocator(), "", true, 0, null);
+    try fill(&walk, directory_root, "nested");
+    sortTree(directory_root, false);
+    try std.testing.expectEqualStrings(".gitignore", directory_root.kids.items[0].name);
+    try std.testing.expect(directory_root.kids.items[0].is_dir);
 }
