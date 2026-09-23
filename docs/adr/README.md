@@ -214,6 +214,7 @@ record only when you need the evidence or the edge cases.
 | [0186](0186-tool-previews-use-original-source-ranges.md) | Tool previews select whole diagnostic lines from original omitted ranges within byte and line budgets. |
 | [0187](0187-optional-judgments-preserve-usage-uncertainty.md) | Optional judgments use an independent gateway login; tokens and unsettled cost remain distinct in CLI and ACP usage. |
 | [0188](0188-streamed-tool-calls-retain-identity.md) | Streamed tool calls use explicit IDs; reused indexes keep incomplete predecessors invalid, and prose is not execution evidence. |
+| [0189](0189-bounded-buffered-http2-posts.md) | Buffered HTTP/2 posts cap body growth, use exclusive pooled leases with durable transport allocation, join deadlines, and never replay ambiguous sends. |
 
 ## When to write one
 
