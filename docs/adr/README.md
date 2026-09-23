@@ -211,6 +211,7 @@ record only when you need the evidence or the edge cases.
 | [0183](0183-request-policy-owns-ambiguous-retries.md) | Ambiguous HTTP/2 failures return to the request retry policy so attempts and unknown usage remain observable. |
 | [0184](0184-directory-scan-budgets-count-examined-entries.md) | Directory scan limits count examined entries before filtering; truncated listings and suggestions remain explicitly partial. |
 | [0185](0185-input-semantics-belong-to-the-task-contract.md) | Empty-input, whitespace, and record-framing semantics come from the task contract, not global work instructions. |
+| [0186](0186-tool-previews-use-original-source-ranges.md) | Tool previews select whole diagnostic lines from original omitted ranges within byte and line budgets. |
 
 ## When to write one
 

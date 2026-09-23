@@ -565,7 +565,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = .{ @import("prompt_astra.zig"), @import("prompt_guidance.zig") }; // per-model guidance (Astra, GPT-5.6)
     _ = .{ @import("agent_empty_completion.zig"), @import("agent_model_loop.zig"), @import("publication_policy_tests.zig"), @import("jobs_completion_tests.zig") };
     _ = .{ @import("provider_routing_tests.zig"), @import("history_wire.zig"), @import("readline_paste_number_tests.zig"), @import("test_hooks.zig"), @import("peer_wake_loop.zig") };
-    _ = @import("list_dir_nearmiss.zig");
+    _ = .{ @import("list_dir_nearmiss.zig"), @import("tool_preview_tests.zig") };
     _ = @import("repo_map.zig");
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests
     _ = @import("agent_gateway_retry.zig"); // #1019: flake vs overflow classification must stay reachable
