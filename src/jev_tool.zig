@@ -11,6 +11,7 @@ const ToolOutput = @import("tools.zig").ToolOutput;
 const ToolSpec = @import("schema.zig").ToolSpec;
 const scope = @import("jev_model_scope.zig");
 const pricing = @import("pricing.zig");
+const buffered_https = @import("http2_buffered.zig");
 
 pub const name = "jev_judge";
 pub const description = "Ask Jev one closed-form judgment about a SHORT, NON-SENSITIVE state. Requires a Codegraff login and an eligible GPT-6 or MiMo model. Use for yes/no (noul), a choice, or an ordered score, not writing or open-ended reasoning. Never send source code, secrets, customer data, paths, or unrelated context. A low-confidence verdict escalates to you. If Jev fails once, this tool skips all later Jev calls for this session; decide yourself instead.";
@@ -202,30 +203,19 @@ fn noteGatewayUsage(io: Io, tally: *pricing.CostTally, arena: Allocator, raw: []
 
 fn fetch(ctx: ToolCtx, arena: Allocator, body: []const u8) ![]const u8 {
     const bearer = try gatewayBearer(arena, state.key);
-    var aw = Io.Writer.fixed(try arena.alloc(u8, 64 * 1024));
     var completed = false;
     defer if (!completed) pricing.g_cost.failedWithoutUsage(ctx.io, 1);
-    const res = try ctx.client.fetch(.{
-        .location = .{ .url = endpoint },
-        .method = .POST,
-        .payload = body,
-        .response_writer = &aw,
-        .redirect_behavior = .unhandled,
-        .headers = .{
-            .content_type = .{ .override = "application/json" },
-            .authorization = .{ .override = bearer },
-        },
-    });
-    switch (@intFromEnum(res.status)) {
+    const res = try buffered_https.post(arena, ctx.io, ctx.client, endpoint, bearer, body, 10_000);
+    switch (res.status) {
         200 => {},
         401, 403 => return error.JevUnauthorized,
         402 => return error.JevNoCredits,
         429 => return error.JevRateLimited,
         else => return error.JevUnavailable,
     }
-    noteGatewayUsage(ctx.io, &pricing.g_cost, arena, aw.buffered());
+    noteGatewayUsage(ctx.io, &pricing.g_cost, arena, res.body);
     completed = true;
-    return aw.buffered();
+    return res.body;
 }
 
 fn verdict(arena: Allocator, input: Value, raw: []const u8) ![]const u8 {

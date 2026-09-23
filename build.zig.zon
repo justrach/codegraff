@@ -8,8 +8,8 @@
             .hash = "accord-0.0.0-aQy1J3iBAgADDHWM0hIAXhISKtQ0zasFN7TyLhI_tkI8",
         },
         .http_zig = .{
-            .url = "git+https://github.com/justrach/http-zig#459e8eb2a6227cce937549a6d656ca5049d4fe63",
-            .hash = "http_zig-0.1.0-2CB7ExwFAwBn4Hk9aRpSLLkhMyIAruz65-IpVlCmHtn8",
+            .url = "git+https://github.com/justrach/http-zig#b875fed4741b947e731b86f430f532895f13c1de",
+            .hash = "http_zig-0.1.0-2CB7E-ERAwBIvemDRdHHwUIk68jZJY0rlfQgNoi8rnqX",
         },
     },
     .paths = .{""},
