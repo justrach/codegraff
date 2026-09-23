@@ -38,6 +38,19 @@ test "resolveKeys does not load Kimi/xAI OAuth credentials for an explicit unrel
     var real_buf: [std.fs.max_path_bytes]u8 = undefined;
     const real_len = try tmp.dir.realPath(io, &real_buf);
     const home = try arena.dupe(u8, real_buf[0..real_len]);
+    const pricing = @import("pricing.zig");
+    const saved_models = pricing.active_model_table;
+    defer pricing.active_model_table = saved_models;
+    defer @import("http2_pool.zig").shutdown(io);
+    defer @import("router_catalog.zig").shutdown(io);
+
+    // This test checks credential scope, so seed a fresh local catalog. It
+    // must not turn a synthetic key into a real provider GET during tier 1.
+    const catalog = @import("router_catalog.zig");
+    const spec = @import("provider.zig").specFor("codegraff") orelse return error.TestUnexpectedResult;
+    const cached_rows = [_]pricing.ModelInfo{.{ .provider = spec.id, .name = spec.default_model, .context = 128_000 }};
+    const cached = catalog.cacheDocument(io, arena, spec, &cached_rows) orelse return error.TestUnexpectedResult;
+    try tmp.dir.writeFile(io, .{ .sub_path = ".codegraff-codegraff-models.json", .data = cached });
 
     try tmp.dir.createDirPath(io, ".kimi/credentials");
     const now_s = @divTrunc(Io.Timestamp.now(io, .real).nanoseconds, 1_000_000_000);
