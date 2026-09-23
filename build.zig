@@ -140,6 +140,9 @@ pub fn build(b: *std.Build) void {
     const acp_effort_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-effort-config.py" });
     acp_effort_test.addArtifactArg(exe);
     test_step.dependOn(&acp_effort_test.step);
+    const acp_agent_wait_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-agent-output-wait.py" });
+    acp_agent_wait_test.addArtifactArg(exe);
+    test_step.dependOn(&acp_agent_wait_test.step);
     const workflow_isolation_test = b.addSystemCommand(&.{ "python3", "scripts/test-workflow-isolation.py" });
     workflow_isolation_test.addArtifactArg(exe);
     test_step.dependOn(&workflow_isolation_test.step);
