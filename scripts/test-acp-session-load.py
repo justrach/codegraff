@@ -126,6 +126,8 @@ def run(binary):
             assert init["result"]["agentCapabilities"]["loadSession"] is True
             sid = a.request("session/new", {"cwd": str(cwd), "mcpServers": []})["result"]["sessionId"]
             assert "/" not in sid and "\\" not in sid
+            duplicate = a.request("session/new", {"cwd": str(cwd), "mcpServers": []})
+            assert duplicate["error"]["code"] == -32000
             turn = a.request("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text": "Original human request."}]}, 35)
             assert turn["result"]["stopReason"] == "end_turn"
             old_result = tool_text(first_model.requests[1])[-1]
@@ -166,6 +168,8 @@ def run(binary):
             before = len(b.events)
             loaded = b.request("session/load", {"sessionId": sid, "cwd": str(cwd), "mcpServers": []})
             assert loaded.get("result") == {}, (created, loaded)
+            duplicate_after_load = b.request("session/new", {"cwd": str(cwd), "mcpServers": []})
+            assert duplicate_after_load["error"]["code"] == -32000
             replay = b.events[before:]
             updates = [event["params"]["update"] for event in replay if event.get("method") == "session/update"]
             assert any(u.get("sessionUpdate") == "user_message_chunk" and u["content"].get("text") == "Original human request." for u in updates)

@@ -183,6 +183,8 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
     if (std.mem.eql(u8, req.method, "authenticate"))
         return respondError(w, req, err_method_not_found, "terminal auth is out of band: re-spawn graff login");
     if (std.mem.eql(u8, req.method, "session/new")) {
+        if (d.load_session != null and d.session_id != null)
+            return respondError(w, req, -32000, "This ACP process already owns a session");
         d.created += 1;
         d.session_id = d.durable_session_id orelse try std.fmt.allocPrint(arena, "acp-{x}-{d}", .{ d.seed, d.created });
         if (d.cwd.len > 0)
@@ -256,6 +258,20 @@ test "session/new reports an isolated checkout when Dispatch.cwd is set" {
     try handleLine(&d, state.allocator(), &w, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/new\"}");
     try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"sessionId\":\"acp-11-1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"cwd\":\"/repo/.graff/worktrees/session-1\"") != null);
+}
+
+test "in-process embed can still create a second session" {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    const a = state.allocator();
+    var buf: [32768]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    var d: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .seed = 0x22 };
+    try handleLine(&d, a, &w, "{\"id\":1,\"method\":\"session/new\"}");
+    try std.testing.expectEqualStrings("acp-22-1", d.session_id.?);
+    w = .fixed(&buf);
+    try handleLine(&d, a, &w, "{\"id\":2,\"method\":\"session/new\"}");
+    try std.testing.expectEqualStrings("acp-22-2", d.session_id.?);
 }
 
 test "authenticate names the out-of-band terminal login" {
