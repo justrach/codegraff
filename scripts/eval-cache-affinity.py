@@ -18,6 +18,7 @@ import shutil
 import signal
 import statistics
 import subprocess
+import sys
 import time
 
 HELPERS = Path(__file__).resolve().parents[1] / 'graff-evals' / 'measurement.py'
@@ -134,7 +135,7 @@ def run(binary, cwd, artifacts, model, prompt, timeout, source_env):
     env = measurement.provider_environment('codegraff', str(artifacts), source_env, model)
     env['PWD'] = str(cwd)
     env['GRAFF_LEARNING_PRIVACY'] = 'local'
-    argv = [str(binary), '--no-local-tools', '--yolo', '--max-model-calls', '2',
+    argv = ([sys.executable] if binary.suffix == '.py' else []) + [str(binary), '--no-local-tools', '--yolo', '--max-model-calls', '2',
             '--no-telemetry', '-p', prompt]
     expected_hash = digest(binary)
     started = time.monotonic_ns()
@@ -224,7 +225,7 @@ def main():
         if not source.is_file() or not os.access(source, os.X_OK):
             ap.error(f'{arm} must be an executable file')
         before_hash = digest(source)
-        dest = binaries / arm
+        dest = binaries / f'{arm}{source.suffix}'
         shutil.copyfile(source, dest)
         dest.chmod(0o500)
         if digest(dest) != before_hash or digest(source) != before_hash:

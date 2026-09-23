@@ -246,7 +246,8 @@ class MeasurementTests(unittest.TestCase):
             env = {'CODEGRAFF_API_KEY': 'fixture'}
             request_capture.configure(env, first)
             self.assertEqual(env['GRAFF_REQ_STATS'], '1')
-            self.assertEqual(Path(env['GRAFF_REQ_DUMP_DIR']).stat().st_mode & 0o777, 0o700)
+            if os.name != 'nt':  # Windows mode bits do not represent inherited ACLs.
+                self.assertEqual(Path(env['GRAFF_REQ_DUMP_DIR']).stat().st_mode & 0o777, 0o700)
             request_capture.configure({}, second)
             self.assertNotEqual(request_capture.directory(first), request_capture.directory(second))
             run = request_capture.directory(first) / 'run-fixture'
@@ -318,7 +319,8 @@ class MeasurementTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 measurement.isolated_paths(target)
             measurement.private_logs(sandboxes, 'fixture stdout', 'fixture stderr')
-            self.assertEqual((Path(sandboxes) / '.eval-stdout.txt').stat().st_mode & 0o777, 0o600)
+            if os.name != 'nt':  # Windows mode bits do not represent inherited ACLs.
+                self.assertEqual((Path(sandboxes) / '.eval-stdout.txt').stat().st_mode & 0o777, 0o600)
 
 
 if __name__ == '__main__':
