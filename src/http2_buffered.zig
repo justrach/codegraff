@@ -207,16 +207,25 @@ const Exchange = struct {
     }
 };
 
+fn literalHost(uri: std.Uri) ?[]const u8 {
+    const host = uri.host orelse return null;
+    const bytes = switch (host) {
+        .raw, .percent_encoded => |value| value,
+    };
+    // Treat encoded hosts as a changed origin instead of equating distinct
+    // spellings without a canonical DNS name. That can only drop credentials.
+    if (bytes.len == 0 or std.mem.indexOfScalar(u8, bytes, '%') != null) return null;
+    return bytes;
+}
+
 fn sameOrigin(a_url: []const u8, b_url: []const u8) bool {
     const a = std.Uri.parse(a_url) catch return false;
     const b = std.Uri.parse(b_url) catch return false;
     if (!std.ascii.eqlIgnoreCase(a.scheme, b.scheme)) return false;
-    var a_buf: [std.Io.net.HostName.max_len]u8 = undefined;
-    var b_buf: [std.Io.net.HostName.max_len]u8 = undefined;
-    const a_host = std.Io.net.HostName.fromUri(a, &a_buf) catch return false;
-    const b_host = std.Io.net.HostName.fromUri(b, &b_buf) catch return false;
+    const a_host = literalHost(a) orelse return false;
+    const b_host = literalHost(b) orelse return false;
     const default_port: u16 = if (std.ascii.eqlIgnoreCase(a.scheme, "https")) 443 else 80;
-    return a_host.eql(b_host) and (a.port orelse default_port) == (b.port orelse default_port);
+    return std.ascii.eqlIgnoreCase(a_host, b_host) and (a.port orelse default_port) == (b.port orelse default_port);
 }
 
 fn resolveLocation(gpa: Allocator, current: []const u8, location: []const u8) ![]u8 {
@@ -357,6 +366,7 @@ test "catalog redirect origin includes scheme, host, and port" {
     try std.testing.expect(!sameOrigin("https://example.test/models", "https://example.test:444/next"));
     try std.testing.expect(!sameOrigin("https://example.test/models", "http://example.test/next"));
     try std.testing.expect(!sameOrigin("https://example.test/models", "https://other.test/next"));
+    try std.testing.expect(!sameOrigin("https://example.test/models", "https://%65xample.test/next"));
     try std.testing.expect(!redirects(304));
     try std.testing.expect(redirects(308));
 }
