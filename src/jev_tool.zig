@@ -14,7 +14,7 @@ const pricing = @import("pricing.zig");
 const buffered_https = @import("http2_buffered.zig");
 
 pub const name = "jev_judge";
-pub const description = "Ask Jev one closed-form judgment about a SHORT, NON-SENSITIVE state. Requires a Codegraff login and an eligible GPT-6 or MiMo model. Use for yes/no (noul), a choice, or an ordered score, not writing or open-ended reasoning. Never send source code, secrets, customer data, paths, or unrelated context. A low-confidence verdict escalates to you. If Jev fails once, this tool skips all later Jev calls for this session; decide yourself instead.";
+pub const description = "Ask Jev one closed-form judgment about a SHORT, NON-SENSITIVE state. Requires a Codegraff login and an eligible GPT-6 or MiMo v2.6 model. Use for yes/no (noul), a choice, or an ordered score, not writing or open-ended reasoning. Never send source code, secrets, customer data, paths, or unrelated context. A low-confidence verdict escalates to you. If Jev fails once, this tool skips all later Jev calls for this session; decide yourself instead.";
 pub const input_schema =
     \\{"type":"object","properties":{"state":{"type":"string","description":"Short non-sensitive facts needed for this judgment only; no code, paths or secrets"},"question":{"type":"string","description":"One closed-form question about state"},"type":{"type":"string","enum":["noul","choice","score"],"description":"noul=yes/no probability; choice=one option; score=ordered level"},"options":{"type":"array","items":{"type":"string"},"description":"Required for choice: 2-16 distinct labels"},"levels":{"type":"array","items":{"type":"string"},"description":"Required for score: 2-10 ordered descriptions"}},"required":["state","question","type"]}
 ;
@@ -275,7 +275,7 @@ fn verdict(arena: Allocator, input: Value, raw: []const u8) ![]const u8 {
 pub fn execute(ctx: ToolCtx, input: Value) !ToolOutput {
     if (ctx.from_sub) return invalid(ctx.gpa, "jev_judge is available only to the root agent");
     if (!state.codegraff_login.load(.acquire)) return invalid(ctx.gpa, "jev_judge requires a Codegraff login (`graff login`)");
-    if (!scope.eligible(ctx.provider)) return invalid(ctx.gpa, "jev_judge is available only with Codex/OpenAI GPT-6 or Xiaomi MiMo models");
+    if (!scope.eligible(ctx.provider)) return invalid(ctx.gpa, "jev_judge is available only with Codex/OpenAI GPT-6 or Xiaomi MiMo v2.6 models");
     if (state.down.load(.acquire)) return skipped(ctx.gpa);
     if (input != .object) return invalid(ctx.gpa, "jev_judge needs state, question and type");
     var temp = std.heap.ArenaAllocator.init(ctx.gpa);
