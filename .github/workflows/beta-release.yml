@@ -54,7 +54,6 @@ jobs:
             rm -r "$name"
           done
           (cd beta-cli && sha256sum graff-*.tar.gz > SHA256SUMS)
-          cp install.sh beta-cli/
       - uses: actions/upload-artifact@v7
         with:
           name: beta-cli
@@ -129,13 +128,16 @@ jobs:
         with:
           name: beta-linux
           path: beta-assets
+      - name: Recheck release branch head
+        id: fresh
+        run: python3 scripts/beta-release.py guard --branch "$GITHUB_REF_NAME" --sha "$GITHUB_SHA"
       - name: Publish beta prerelease
+        if: steps.fresh.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           BETA_TAG: ${{ needs.plan.outputs.tag }}
         run: |
           set -euo pipefail
-          python3 scripts/beta-release.py guard --branch "$GITHUB_REF_NAME" --sha "$GITHUB_SHA"
           test -f beta-assets/SHA256SUMS
           test -f beta-assets/Codegraff-linux-amd64.deb
           gh release create "$BETA_TAG" beta-assets/* \

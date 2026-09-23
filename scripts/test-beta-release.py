@@ -1,11 +1,19 @@
 import importlib.util
+import os
 import pathlib
+import subprocess
+import sys
+import tempfile
 import unittest
+from unittest import mock
 
 module_path = pathlib.Path(__file__).with_name("beta-release.py")
 spec = importlib.util.spec_from_file_location("beta_release", module_path)
 beta = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(beta)
+tag_spec = importlib.util.spec_from_file_location("release_tag", module_path.with_name("check-release-tag.py"))
+release_tag = importlib.util.module_from_spec(tag_spec)
+tag_spec.loader.exec_module(release_tag)
 
 
 class BetaReleaseTests(unittest.TestCase):
@@ -43,6 +51,30 @@ class BetaReleaseTests(unittest.TestCase):
             self.assertIsNone(beta.version_key(branch))
             with self.assertRaises(ValueError):
                 beta.current_beta(branch, "sha", {"release/v0.0.302.4": "sha"})
+
+    def test_stable_and_beta_channels_remain_separate(self):
+        self.assertTrue(release_tag.is_stable_tag("v0.0.302"))
+        self.assertTrue(release_tag.is_stable_tag("v0.0.302.4"))
+        for tag in ("v0.0.302.4-beta.20.1", "v0.0.302-rc.1", "v0.0.302.4.1", "vnext"):
+            self.assertFalse(release_tag.is_stable_tag(tag))
+        stable_workflow = (module_path.parent.parent / ".github/workflows/release.yml").read_text()
+        beta_workflow = (module_path.parent.parent / ".github/workflows/beta-release.yml").read_text()
+        self.assertIn('"!v*-*"', stable_workflow)
+        self.assertEqual(stable_workflow.count("scripts/check-release-tag.py"), 2)
+        self.assertNotIn("install.sh", beta_workflow)
+        self.assertIn("--prerelease --latest=false", beta_workflow)
+
+    def test_stale_publication_is_a_clean_skip_but_remote_error_fails(self):
+        argv = ["beta-release.py", "guard", "--branch", "release/v0.0.302.4", "--sha", "old"]
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory) / "output"
+            with mock.patch.object(sys, "argv", argv), mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}):
+                with mock.patch.object(beta, "remote_heads", return_value={"release/v0.0.302.4": "new"}):
+                    beta.main()
+                self.assertEqual(output.read_text(), "publish=false\n")
+                with mock.patch.object(beta, "remote_heads", side_effect=subprocess.CalledProcessError(1, "git ls-remote")):
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        beta.main()
 
 
 if __name__ == "__main__":

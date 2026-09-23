@@ -5,7 +5,7 @@ name: release
 # version baked into `--version` comes from the tag via -Dversion.
 on:
   push:
-    tags: ["v*"]
+    tags: ["v*", "!v*-*"]
 
 permissions:
   contents: write
@@ -15,6 +15,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
+      - name: Validate stable release tag
+        run: python3 scripts/check-release-tag.py "$GITHUB_REF_NAME"
 
       - name: Install Zig
         uses: ./.github/actions/setup-codegraff-zig
@@ -88,6 +91,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
+      - name: Validate stable release tag
+        run: python3 scripts/check-release-tag.py "$GITHUB_REF_NAME"
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.2"

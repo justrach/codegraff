@@ -50,6 +50,13 @@ def plan(branch, sha, run_number, run_attempt, heads):
     return {"version": version, "tag": f"v{version}"}
 
 
+def write_output(values):
+    output = os.environ.get("GITHUB_OUTPUT")
+    if output:
+        with open(output, "a", encoding="utf-8") as stream:
+            stream.writelines(f"{key}={value}\n" for key, value in values.items())
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", choices=("plan", "guard"))
@@ -60,17 +67,15 @@ def main():
     args = parser.parse_args()
     heads = remote_heads()
     if args.mode == "guard":
-        if not current_beta(args.branch, args.sha, heads):
-            raise SystemExit("Release branch or commit is no longer current; beta publication skipped")
+        fresh = current_beta(args.branch, args.sha, heads)
+        write_output({"publish": "true" if fresh else "false"})
+        if not fresh:
+            print("Release branch or commit is no longer current; beta publication skipped")
         return
     result = plan(args.branch, args.sha, args.run_number, args.run_attempt, heads)
     if result is None:
         print("This push is not the latest release branch head; beta build skipped")
-    output = os.environ["GITHUB_OUTPUT"]
-    with open(output, "a", encoding="utf-8") as stream:
-        stream.write(f"build={'true' if result else 'false'}\n")
-        if result:
-            stream.writelines(f"{key}={value}\n" for key, value in result.items())
+    write_output({"build": "true" if result else "false", **(result or {})})
 
 
 if __name__ == "__main__":

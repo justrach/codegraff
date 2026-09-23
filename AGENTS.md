@@ -139,7 +139,9 @@ latest beta.
 
 Beta releases are GitHub prereleases and must explicitly remain outside the
 stable `latest` pointer and desktop updater feed. The stable tag workflow is
-unchanged. CI can publish the CLI and unsigned Linux desktop package; macOS
+restricted to numeric stable tags. The beta CLI release has no installer;
+download the versioned tarball from the specific prerelease. CI can publish
+the CLI and unsigned Linux desktop package; macOS
 desktop distribution still requires the repository's Developer ID signing,
 provisioning profile, and notarization on a configured Mac. Its CI build is an
 intermediate artifact only. Attach a signed beta DMG to that same prerelease
