@@ -43,7 +43,7 @@ pub const PickerFn = *const fn (
 /// the startup loaders.
 pub fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, provider_id: []const u8) void {
     const home = root.home;
-    var codegraff_reloaded = false;
+    var codegraff_key: ?[]const u8 = null;
     for (provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
         if (!std.mem.eql(u8, spec.id, provider_id)) continue;
         var reloaded = false;
@@ -52,7 +52,9 @@ pub fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, provider_id: 
                 value.* = k;
                 source.* = .login;
                 reloaded = true;
-                codegraff_reloaded = true;
+                // The caller's arena may be scoped to this command. Jev keeps
+                // its own session-lifetime copy for later root tool calls.
+                codegraff_key = root.arena.dupe(u8, k) catch null;
             }
         } else if (std.mem.eql(u8, provider_id, "kimi")) {
             if (oauth.loadKimiOAuth(root.io, root.gpa, arena, home, false, null)) |k| {
@@ -99,7 +101,7 @@ pub fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, provider_id: 
             root.closeCodexWs(); // the held socket was dialed with the stale bearer
         };
     }
-    if (std.mem.eql(u8, provider_id, "codegraff") and jev_tool.setCodegraffLogin(codegraff_reloaded))
+    if (std.mem.eql(u8, provider_id, "codegraff") and jev_tool.setCodegraffLoginKey(root.io, codegraff_key))
         root.invalidateRootTools();
     if (std.mem.eql(u8, provider_id, "codex") and keys.get("codex") != null)
         root.reloadModelCatalog(keys.*);

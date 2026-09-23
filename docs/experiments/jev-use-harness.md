@@ -9,9 +9,10 @@ recognized local login store; it does not probe the account online. Direct
 dispatch enforces the same rules. Model switches and an in-session
 `/login codegraff` refresh the root tool catalog.
 
-Set `TYPESAFE_API_KEY` in Graff's environment to opt in as well. The tool sends only
-its explicitly supplied short `state` and one typed `question` to TypeSafe's
-`/v1/systemone` endpoint; it never automatically uploads repository context.
+The tool sends only its explicitly supplied short `state` and one typed
+`question` to Codegraff's `/v1/systemone` endpoint using the persisted login;
+it never automatically uploads repository context. No separate upstream key is
+needed.
 Do not put code, paths, secrets, or customer data in a tool call. Use
 `JEV_BACKEND=mock` for a no-network wiring check.
 

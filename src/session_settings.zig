@@ -266,14 +266,14 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     }
 }
 
-fn codegraffLoginPresent(io: Io, arena: Allocator, environ_map: anytype) bool {
-    const home = keys_cli.homeEnv(environ_map) orelse return false;
-    return oauth.loadCodegraffKey(io, arena, home) != null;
+fn codegraffLoginKey(io: Io, arena: Allocator, environ_map: anytype) ?[]const u8 {
+    const home = keys_cli.homeEnv(environ_map) orelse return null;
+    return oauth.loadCodegraffKey(io, arena, home);
 }
 
 pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: *Io.Writer, flags: args.Flags, use_color: bool, json_mode: bool, cwd_display: []const u8) !ThemeSetup {
     try applyEnvKnobs(arena, environ_map);
-    _ = jev_tool.setCodegraffLogin(codegraffLoginPresent(io, arena, environ_map));
+    _ = jev_tool.setCodegraffLoginKey(io, codegraffLoginKey(io, arena, environ_map));
     skills.loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     anim.loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
     anim.loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme
@@ -371,12 +371,12 @@ test "Jev startup gate requires a persisted Codegraff login, not an env API key"
             return null;
         }
     }{ .home = home };
-    try std.testing.expect(!codegraffLoginPresent(io, arena, env));
+    try std.testing.expect(codegraffLoginKey(io, arena, env) == null);
     try Io.Dir.cwd().writeFile(io, .{
         .sub_path = try std.fmt.allocPrint(arena, "{s}/.simple-harness-codegraff.json", .{home}),
         .data = "{\"api_key\":\"synthetic-login\"}",
     });
-    try std.testing.expect(codegraffLoginPresent(io, arena, env));
+    try std.testing.expectEqualStrings("synthetic-login", codegraffLoginKey(io, arena, env).?);
     try tmp.dir.deleteFile(io, ".simple-harness-codegraff.json");
-    try std.testing.expect(!codegraffLoginPresent(io, arena, env));
+    try std.testing.expect(codegraffLoginKey(io, arena, env) == null);
 }

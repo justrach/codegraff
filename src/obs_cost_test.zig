@@ -83,7 +83,7 @@ test "usage/debug match the cost-tally renderer and add turn/decision extras" {
     var cost2_buf: [384]u8 = undefined;
     const cost2 = renderCost(io, &cost2_buf);
     try std.testing.expect(contains(cost2, "subscription"));
-    try std.testing.expect(contains(cost2, "unpriced"));
+    try std.testing.expect(contains(cost2, "unknown cost"));
 
     var usage2_buf: [512]u8 = undefined;
     var usage2_w: Io.Writer = .fixed(&usage2_buf);

@@ -429,7 +429,7 @@ test "native Jev dispatch rejects other models and latches off after one failed 
     const no_login = try execToolInner(ctx, call);
     defer std.testing.allocator.free(no_login.text);
     try std.testing.expect(no_login.is_error);
-    _ = jev.setCodegraffLogin(true);
+    _ = jev.setCodegraffLoginKey(std.testing.io, "synthetic-login");
     try std.testing.expect(jev.available(ctx.provider)); // no upstream attempt before login
     ctx.provider.id = "xai";
     ctx.provider.model = "grok-4.7";

@@ -46,7 +46,7 @@ test "native Jev catalog refreshes on eligible and ineligible model switches" {
             return null;
         }
     }{});
-    _ = jev_tool.setCodegraffLogin(true);
+    _ = jev_tool.setCodegraffLoginKey(std.testing.io, "synthetic-login");
 
     var gpt6 = p;
     gpt6.model = "gpt-6-sol";
@@ -79,7 +79,7 @@ test "native Jev catalog refreshes on eligible and ineligible model switches" {
             return if (std.mem.eql(u8, key, "JEV_BACKEND")) "mock-fail" else null;
         }
     }{});
-    _ = jev_tool.setCodegraffLogin(true);
+    _ = jev_tool.setCodegraffLoginKey(std.testing.io, "synthetic-login");
     const old_catalog = root.toolsJson();
     const input = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"state\":\"10 tests passed\",\"question\":\"Did CI pass?\",\"type\":\"noul\"}", .{});
     var client: std.http.Client = undefined;
