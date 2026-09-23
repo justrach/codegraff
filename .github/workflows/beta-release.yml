@@ -1,0 +1,145 @@
+name: beta release
+
+on:
+  push:
+    branches: ['release/v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Publication is serialized across every release branch. The guard checks the
+# remote head again after the builds, so queued work cannot revive an old beta.
+concurrency:
+  group: beta-release
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.beta.outputs.build }}
+      version: ${{ steps.beta.outputs.version }}
+      tag: ${{ steps.beta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Select the latest release branch head
+        id: beta
+        run: |
+          python3 scripts/beta-release.py plan \
+            --branch "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" \
+            --run-number "$GITHUB_RUN_NUMBER" --run-attempt "$GITHUB_RUN_ATTEMPT"
+
+  cli:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-codegraff-zig
+      - name: Cross-compile beta CLI
+        env:
+          BETA_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p beta-cli
+          for target in aarch64-macos x86_64-macos x86_64-linux aarch64-linux x86_64-windows aarch64-windows; do
+            zig build graff -Doptimize=ReleaseFast -Dtarget="$target" -Dversion="$BETA_VERSION"
+            name="graff-$target"
+            mkdir "$name"
+            case "$target" in *-windows) bin=graff.exe ;; *) bin=graff ;; esac
+            cp "zig-out/bin/$bin" "$name/$bin"
+            cp README.md LICENSE "$name/"
+            tar -czf "beta-cli/$name.tar.gz" "$name"
+            rm -r "$name"
+          done
+          (cd beta-cli && sha256sum graff-*.tar.gz > SHA256SUMS)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: beta-cli
+          path: beta-cli/
+          if-no-files-found: error
+
+  desktop-linux:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - uses: ./.github/actions/setup-codegraff-zig
+      - name: Package beta Linux desktop
+        env:
+          BETA_VERSION: ${{ needs.plan.outputs.version }}
+          BETA_TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          GRAFF_VERSION="$BETA_VERSION" bash apps/native/electron/build.sh
+          deb_version="${BETA_VERSION/-beta./~beta.}"
+          dpkg --compare-versions "$deb_version" lt "${BETA_VERSION%%-beta.*}"
+          test "$(dpkg-deb --field "zig-out/electron/codegraff_${deb_version}_amd64.deb" Version)" = "$deb_version"
+          bash apps/native/electron/publish-linux.sh --prepare beta-linux "$BETA_TAG" zig-out/electron
+      - uses: actions/upload-artifact@v7
+        with:
+          name: beta-linux
+          path: beta-linux/
+          if-no-files-found: error
+
+  desktop-macos:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - uses: ./.github/actions/setup-codegraff-zig
+      - name: Build beta macOS app for signing
+        env:
+          GRAFF_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          bash apps/native/electron/build.sh
+          ditto -c -k --keepParent zig-out/electron/Codegraff.app beta-macos-build.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: beta-macos-build
+          path: beta-macos-build.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [plan, cli, desktop-linux, desktop-macos]
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          name: beta-cli
+          path: beta-assets
+      - uses: actions/download-artifact@v7
+        with:
+          name: beta-linux
+          path: beta-assets
+      - name: Recheck release branch head
+        id: fresh
+        run: python3 scripts/beta-release.py guard --branch "$GITHUB_REF_NAME" --sha "$GITHUB_SHA"
+      - name: Publish beta prerelease
+        if: steps.fresh.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BETA_TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          test -f beta-assets/SHA256SUMS
+          test -f beta-assets/Codegraff-linux-amd64.deb
+          gh release create "$BETA_TAG" beta-assets/* \
+            --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "$BETA_TAG" --notes 'Beta build from the latest release branch.'

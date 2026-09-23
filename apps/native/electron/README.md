@@ -264,3 +264,29 @@ That attaches `Codegraff-linux-amd64.deb` (or `arm64`) and
 `appimagetool` was on `PATH` during the build. There is no notarization step
 on Linux; the upload is the unsigned `.deb` `build.sh` wrote. A development
 bundle (`GRAFF_DEV=1`) is not a release asset.
+
+## Beta builds
+
+Every push to the newest numeric `release/v...` branch starts the beta workflow.
+The prerelease tag includes the branch version, workflow run number and attempt
+(for example `v0.0.302.4-beta.20.1`). CI publishes CLI tarballs and an unsigned
+Linux desktop package to a GitHub prerelease. The macOS job saves its built
+`Codegraff.app` as a short-lived workflow artifact for signing. It is not a
+download in the prerelease until a configured Mac signs and notarizes it.
+The beta CLI has no `install.sh` asset: download the tarball from its specific
+prerelease, since the general installer selects the latest stable release.
+
+On that Mac, download and extract the matching `beta-macos-build` workflow
+artifact. With the same signing environment used for stable releases, run:
+
+```sh
+GRAFF_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+GRAFF_NOTARY_PROFILE="notary-local" \
+GRAFF_WEBAUTHN_PROFILE="signing/Codegraff.provisionprofile" \
+bash apps/native/electron/distribute.sh Codegraff.app zig-out/beta-distribution
+bash apps/native/electron/publish-beta-macos.sh vVERSION-beta.RUN.ATTEMPT zig-out/beta-distribution
+```
+
+The beta DMG receives the same signing, notarization and Gatekeeper checks as
+stable releases. Beta apps carry no stable update feed, and beta releases never
+become GitHub's stable Latest release. Install a later release manually.

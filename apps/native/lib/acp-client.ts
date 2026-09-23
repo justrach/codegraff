@@ -1,3 +1,4 @@
+import { permissionRequest } from "./acp-permission";
 import { parseRpcLine, type AcpCommand, type AcpUpdate, type JsonRpcLine } from "./acp";
 import { liveAppearanceTokens } from "./appearance-note";
 import { readAnswerResponse, validateAnswer } from "./ask-answer";
@@ -117,6 +118,8 @@ export async function* prompt(
   }, true);
   let terminal = false;
   for await (const line of ndjson(res)) {
+    const permission = permissionRequest(line);
+    if (permission) { yield { sessionUpdate: "gui_permission", permission }; continue; }
     if ("method" in line && line.method === "session/update") {
       yield line.params.update;
       continue;
@@ -151,6 +154,8 @@ export async function* idleUpdates(
     throw new Error(`ACP session/idle → ${res.status}: ${detail.slice(0, 240)}`);
   }
   for await (const line of ndjson(res)) {
+    const permission = permissionRequest(line);
+    if (permission) { yield { sessionUpdate: "gui_permission", permission }; continue; }
     if ("method" in line && line.method === "session/update") yield line.params.update;
   }
 }

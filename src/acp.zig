@@ -210,7 +210,11 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     engine.implementation_version = main_mod.harness_version;
     engine.cancel_flag.store(false, .release);
     engine.on_cancel = syncEscCancel;
-    var inbox: @import("acp_inbox.zig").Inbox = .{ .gpa = gpa, .io = io, .reader = in };
+    var permission_bridge: @import("acp_permission.zig").Bridge = .{ .io = io, .out = out };
+    const previous_permission = root.permission;
+    root.permission = permission_bridge.handler();
+    defer root.permission = previous_permission;
+    var inbox: @import("acp_inbox.zig").Inbox = .{ .gpa = gpa, .io = io, .reader = in, .permission = &permission_bridge };
     try inbox.start();
     defer inbox.deinit();
     acp_inbox_nudge = &inbox;
@@ -235,6 +239,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
         .extra = liveModels,
         .cwd = if (std.fs.path.isAbsolute(main_mod.g_cwd_display)) main_mod.g_cwd_display else "",
     };
+    @import("acp_session_load.zig").configure(&d, &live);
     while (true) {
         const event = (inbox.wait(arena) catch break) orelse break;
         switch (event) {

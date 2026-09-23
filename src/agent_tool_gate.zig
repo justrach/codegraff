@@ -305,7 +305,14 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
     } else return null;
 
     if (self.permission) |handler| {
-        if (handler.ask(self.io, .{ .call_id = call.id, .tool = call.name, .description = prompt_line }) == .allow_once) return null;
+        switch (handler.ask(self.io, .{ .call_id = call.id, .tool = call.name, .description = prompt_line, .allow_always = true, .always_label = try std.fmt.allocPrint(self.arena, "Always allow {s}", .{key}) })) {
+            .allow_once => return null,
+            .allow_always => {
+                try approvals.approve(self.io, self.gpa, key);
+                return null;
+            },
+            .deny => {},
+        }
         return .{ .text = try self.arena.dupe(u8, "user declined this tool call; do not retry it or a reworded equivalent. Continue with approved work or report the blocker."), .is_error = true };
     }
 
