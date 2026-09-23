@@ -178,7 +178,7 @@ pub const SessionSaved = struct { name: []const u8, ext: []const u8 };
 // mistranslation.
 
 /// Reasoning depth, when the provider takes one at all (main.ReasoningEffort).
-pub const ReasoningEffort = enum { low, medium, high, xhigh, max, ultra };
+pub const ReasoningEffort = enum { low, medium, high, xhigh, max, ultra, none };
 
 /// The federated-learning privacy ceiling (learning_privacy.Mode).
 pub const PrivacyTier = enum { local, aggregate, templates, examples };

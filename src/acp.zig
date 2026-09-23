@@ -246,9 +246,9 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
             .tick => @import("acp_idle.zig").maybeWake(&d, arena, out, io, root.session_name) catch |err| {
                 std.debug.print("acp: idle wake failed: {t}\n", .{err});
             },
-            .line => |line| handleLine(&d, arena, out, line) catch |err| {
-                std.debug.print("acp: dispatch failed: {t}\n", .{err});
-                break;
+            .line => |line| {
+                handleLine(&d, arena, out, line) catch |err| { std.debug.print("acp: dispatch failed: {t}\n", .{err}); break; };
+                @import("acp_idle.zig").startupEffortNotice(&d, root, out) catch break;
             },
         }
         out.flush() catch break;

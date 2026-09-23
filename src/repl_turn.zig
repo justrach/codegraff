@@ -100,6 +100,7 @@ pub fn turnAgent(
             .xhigh => .xhigh,
             .max => .max,
             .ultra => .ultra,
+            .none => .none,
         },
         .fast = params.fast,
         .fallback_allow = c.fallback_allow,

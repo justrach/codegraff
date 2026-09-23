@@ -18,7 +18,6 @@ const router_catalog = @import("router_catalog.zig");
 
 const serde = @import("serde.zig");
 const saveModel = serde.saveModel;
-
 const messages_mod = @import("messages.zig");
 const textMessage = messages_mod.textMessage;
 const engine_sink = @import("engine_sink.zig"); // #429: the failover notice is a typed event, not a print
@@ -93,11 +92,12 @@ pub fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: 
         }
     }
     @import("jev_tool.zig").updateProvider(root, p);
-    // #371: the #291 worker default resolved once at startup; without this a
-    // /model switch left children on the OLD provider's rung (root on codex,
-    // workers silently still on kimi — a cost and consent surprise) or with
-    // no ladder descent at all. Only the DERIVED default follows the root;
-    // explicit --subagent-* choices stay exactly as the user stated them.
+    if (root.reasoning == .none and !@import("effort_route.zig").mimoRoute(p.id, p.model)) {
+        root.reasoning = .medium;
+        if (persist) _ = @import("repl_glue.zig").saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
+        note = try std.fmt.allocPrint(arena, "{s}; reasoning reset to Medium (Off unsupported by this model)", .{note});
+    }
+    // #371: only a derived worker default follows a model switch; explicit pins remain.
     if (!root.subagent_provider_explicit) if (@import("bench_priors.zig").g_keys) |k| {
         root.subagent_provider = @import("subagent_selection.zig").resolveSubagentProvider(k.*, p, null, null, false, false);
     };

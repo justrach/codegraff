@@ -239,7 +239,7 @@ pub fn run(ctx: *Ctx) !void {
             if (std.mem.eql(u8, rtype, "set_effort")) {
                 const level = if (parsed.object.get("level")) |v| (if (v == .string) v.string else "") else "";
                 ctx.root.reasoning = std.meta.stringToEnum(main_mod.ReasoningEffort, @import("effort_route.zig").normalize(ctx.root.provider.id, ctx.root.provider.model, level)) orelse {
-                    ctx.root.emit(.{ .type = "error", .message = "set_effort needs level low|medium|high|xhigh|max|ultra" });
+                    ctx.root.emit(.{ .type = "error", .message = "set_effort needs a level supported by the current model" });
                     continue;
                 };
                 _ = repl_glue.saveThinkingSettings(ctx.root.io, ctx.root.gpa, ctx.root.reasoning, ctx.root.fast, ctx.root.ultracode_mode, ctx.root.show_thinking, ctx.root.ai_title);

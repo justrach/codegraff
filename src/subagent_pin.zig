@@ -140,12 +140,14 @@ pub const EffortOutcome = enum {
     none,
     pinned,
     unknown_effort,
+    unsupported_effort,
 
     pub fn describe(self: EffortOutcome) []const u8 {
         return switch (self) {
             .none => "",
             .pinned => "effort pin applied",
             .unknown_effort => "effort pin ignored: expected low, medium, high, xhigh or max — kept the session default",
+            .unsupported_effort => "Off is unsupported by this model; choose a supported effort",
         };
     }
 };
@@ -433,8 +435,12 @@ pub fn forSpawnIn(base: Provider, obj: std.json.ObjectMap, sub_ok: bool, cell: C
         break :blk resolveIn(base, pin, cell);
     };
     if (pin.effort) |e| {
-        out.effort = e;
-        out.effort_outcome = .pinned;
+        if (e == .none and !@import("effort_route.zig").mimoRoute((out.provider orelse base).id, (out.provider orelse base).model)) {
+            out.effort_outcome = .unsupported_effort;
+        } else {
+            out.effort = e;
+            out.effort_outcome = .pinned;
+        }
     } else if (pin.bad_effort) out.effort_outcome = .unknown_effort;
     return out;
 }

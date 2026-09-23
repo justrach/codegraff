@@ -12,6 +12,26 @@ const idle_wake = @import("idle_wake_sources.zig");
 const peer_idle = @import("peer_idle.zig");
 const peer_inbox = @import("peer_inbox.zig");
 
+pub fn startupEffortNotice(d: *engine.Dispatch, root: anytype, w: *Io.Writer) !void {
+    const sid = d.session_id orelse return;
+    const notice = root.startup_effort_notice orelse return;
+    try engine.writeSessionUpdate(w, sid, notice);
+    root.startup_effort_notice = null;
+}
+
+test "stale effort reset reaches ACP once after session creation" {
+    var root = struct { startup_effort_notice: ?[]const u8 = "Off reset to Medium." }{};
+    var d: engine.Dispatch = .{ .turn = echoTurn, .ctx = undefined, .session_id = "s" };
+    var buf: [512]u8 = undefined;
+    var writer: Io.Writer = .fixed(&buf);
+    try startupEffortNotice(&d, &root, &writer);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "Off reset to Medium.") != null);
+    try std.testing.expect(root.startup_effort_notice == null);
+    const first_len = writer.buffered().len;
+    try startupEffortNotice(&d, &root, &writer);
+    try std.testing.expectEqual(first_len, writer.buffered().len);
+}
+
 pub fn maybeWake(d: *engine.Dispatch, arena: Allocator, w: *Io.Writer, io: Io, session_name: []const u8) !void {
     const sid = d.session_id orelse return;
     if (sid.len == 0) return;

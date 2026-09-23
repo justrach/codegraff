@@ -90,7 +90,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     try s.objectField("effort");
     // #379: compaction summaries run at low — a high-effort reasoner can
     // complete with only reasoning items and zero output text.
-    try s.write(if (self.compaction_request or self.server_compaction_request) "low" else @import("effort_route.zig").wireEffort(self.provider.model, @tagName(self.reasoning)));
+    try s.write(if ((self.compaction_request or self.server_compaction_request) and !@import("effort_route.zig").mimoRoute(self.provider.id, self.provider.model)) "low" else @import("effort_route.zig").wireEffort(self.provider.id, self.provider.model, @tagName(self.reasoning)));
     // summary:auto streams reasoning_summary_text.delta (reasoningDelta already parses it); without it silent reasoning emits NO frames — the stall watchdog cannot tell thinking from a dead socket.
     if (is_codex) {
         try s.objectField("summary");
