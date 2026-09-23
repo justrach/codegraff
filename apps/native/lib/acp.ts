@@ -168,7 +168,8 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
         ? "error"
         : "running"
     : (prev?.status ?? "running");
-  const rawInput = update.rawInput && typeof update.rawInput === "object" ? update.rawInput : {};
+  const hasInput = !!update.rawInput && typeof update.rawInput === "object";
+  const rawInput = hasInput ? update.rawInput! : {};
   // codedbpro-style tools say `file`, catalog tools say `path`.
   const path =
     typeof rawInput.path === "string"
@@ -176,17 +177,17 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
       : typeof rawInput.file === "string"
         ? rawInput.file
         : prev?.path;
-  const contentItems = "content" in update && Array.isArray(update.content) ? update.content : [];
+  const hasContent = "content" in update && Array.isArray(update.content);
+  const contentItems = hasContent ? update.content! : [];
   const contentText = contentItems
     .map((item) => item.content?.text)
     .filter((t): t is string => typeof t === "string")
     .join("\n");
-  const fromInput = detailFromInput(rawInput);
-  const detail = contentText
-    ? [...(prev?.detail ?? fromInput), { text: contentText }]
-    : fromInput.length
-      ? fromInput
-      : (prev?.detail ?? []);
+  const inputDetail = hasInput ? boundToolDetail(detailFromInput(rawInput)) : (prev?.acpDetail?.input ?? []);
+  const contentDetail = hasContent
+    ? boundToolDetail(contentText ? [{ text: contentText }] : [])
+    : (prev?.acpDetail?.content ?? (prev && !prev.acpDetail ? prev.detail : []));
+  const detail = [...inputDetail, ...contentDetail];
   const mcp = mcpParts(title);
   const label = prev && !kind ? prev.name : labelForKind(kind, title);
   const command = typeof rawInput.command === "string" ? firstLine(rawInput.command) : undefined;
@@ -201,6 +202,7 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
     chip: chipRaw === label || humanize(chipRaw) === label ? "" : chipRaw,
     status,
     detail: boundToolDetail(detail),
+    acpDetail: { input: inputDetail, content: contentDetail },
     mcpAppId: mcpAppId(contentText) ?? prev?.mcpAppId,
     htmlArtifactId: htmlArtifactId(contentText) ?? prev?.htmlArtifactId,
     htmlArtifactTool: !!htmlPreview,
@@ -227,7 +229,7 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
     pendingBreak: turn.text.length > 0 ? true : turn.pendingBreak,
     status: status === "running" || turn.status === "thinking" || turn.status === "ask" ? "streaming" : turn.status,
   };
-  if ((merged.icon === "write" || kind === "edit") && (status === "ok" || status === "error")) {
+  if ((merged.icon === "write" || kind === "edit") && status === "ok") {
     return { ...next, diffs: mergeDiff(next, merged, contentText) };
   }
   return next;
