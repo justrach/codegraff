@@ -239,10 +239,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     // One-shot returns here, before the REPL cleanup defer below is even
     // registered, so free the root's gpa-backed buffers explicitly (else a
     // tool-using one-shot leaks its tool log / render buffers on exit).
-    root.md_buf.deinit(gpa);
-    root.md_word.deinit(gpa);
-    for (root.md_table.items) |r| gpa.free(r);
-    root.md_table.deinit(gpa);
+    @import("agent_render_cleanup.zig").deinit(root);
     root.tools_used.deinit(gpa);
     // Presence announced this session at boot (#469); a one-shot returns
     // before finalizeSession, so retire + free its gpa-owned globals here or

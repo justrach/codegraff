@@ -489,10 +489,7 @@ pub fn main(init: std.process.Init) !void {
         for (history.items) |h| gpa.free(h);
         history.deinit(gpa);
         linebuf.deinit(gpa);
-        root.md_buf.deinit(gpa); // streamed-markdown line buffer
-        root.md_word.deinit(gpa); // streamed-markdown wrap word buffer
-        for (root.md_table.items) |r| gpa.free(r);
-        root.md_table.deinit(gpa);
+        @import("agent_render_cleanup.zig").deinit(&root);
         root.tools_used.deinit(gpa);
     }
     const interactive = use_color and !json_mode; // stdout is a TTY → enable line editing
@@ -588,6 +585,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("goal_pacing_autonomous_test.zig");
     _ = @import("goal_state.zig");
     _ = @import("goal_persist_tests.zig");
+    _ = @import("agent_render_cleanup.zig");
     _ = @import("goal_flow.zig");
     _ = @import("goal_todo.zig");
     _ = @import("goal_pacing.zig");

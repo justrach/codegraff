@@ -237,6 +237,7 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
     var approvals: Approvals = .{ .yolo = policy.yolo };
     var agent = turnAgent(c, gpa, arena, params, &sink.writer, &approvals) catch return null;
     defer agent.tools_used.deinit(gpa);
+    defer @import("agent_render_cleanup.zig").deinit(&agent);
     borrowHistory(c, &agent, history, arena, &scratch_state) catch return null;
     defer {
         c.provider = agent.provider;
