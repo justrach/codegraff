@@ -1,5 +1,6 @@
 mod clipboard_files;
 mod commands;
+mod task_workspace;
 mod cli_install;
 mod debug_bridge;
 mod desktop_open;
@@ -32,6 +33,7 @@ use commands::{
     create_git_branch, create_managed_chat, create_saved_workspace, delete_saved_workspace,
     ensure_conversation_view, export_workflow_draft, get_conversation_layout, get_prompt_settings,
     get_runtime_status, get_saved_workspace, get_session_snapshot, handoff_chat, import_mcp_config,
+    task_workspace_action, task_workspace_review,
     list_commands, list_mcp_servers, list_providers, login_mcp_server, logout_mcp_server,
     open_external_url, open_in_target, open_path_default, open_path_for_edit, open_path_in_target,
     open_workspace,
@@ -122,6 +124,8 @@ pub fn run() {
             start_new_chat,
             create_managed_chat,
             handoff_chat,
+            task_workspace_action,
+            task_workspace_review,
             send_prompt,
             compact_conversation,
             run_slash_command,

@@ -348,6 +348,12 @@ test "interactive children yield once without cancellation or a model request" {
     interactive.request(ctx); // headless callers retain wait-until-exit behavior
     try std.testing.expect((try interactive.beforeRequest(&root)) == null);
     ctx.interactive_children = true;
+    const main_mod = @import("main.zig");
+    const saved_unattended = main_mod.unattended;
+    main_mod.unattended = true;
+    interactive.request(ctx);
+    try std.testing.expect((try interactive.beforeRequest(&root)) == null);
+    main_mod.unattended = saved_unattended;
     interactive.request(ctx);
     const text = (try interactive.beforeRequest(&root)).?;
     try std.testing.expect(std.mem.indexOf(u8, text, "keep using the prompt") != null);
@@ -357,7 +363,7 @@ test "interactive children yield once without cancellation or a model request" {
     try std.testing.expect(!interactive.yielded);
 }
 
-test "interactive child output never waits and completion wakes only its owner once" {
+test "interactive zero-wait child snapshot and completion wake only its owner once" {
     const interactive = @import("subagent_interactive.zig");
     interactive.configure(true);
     defer interactive.configure(false);
@@ -373,7 +379,7 @@ test "interactive child output never waits and completion wakes only its owner o
     var label = [_]u8{'x'};
     var job: subagent.AgentJob = .{ .id = 42, .label = &label, .prompt = &label, .niche = &label, .isolation = .shared_cwd, .isolation_fallback = false, .ctx = ctx, .owner = "owner" };
     try subagent.g_agent_jobs.list.append(gpa, &job);
-    const running = try interactive.output(ctx, 42, 1); // used to wait up to 10h
+    const running = try interactive.output(ctx, 42, 0);
     defer gpa.free(running.text);
     try std.testing.expect(!running.is_error);
     try std.testing.expect(!job.done);
@@ -418,4 +424,28 @@ test "background children own approvals and provider strings after parent turn e
     try std.testing.expectEqualStrings("fixture", copy.provider.model);
     try std.testing.expectEqualStrings("http://localhost", copy.provider.url);
     try std.testing.expect(copy.tools_used == null);
+}
+
+test "completed retained worker releases its history arena before job reap" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const retained = @import("subagent_retained.zig");
+    const state = try gpa.create(retained.State);
+    state.* = .{ .arena = .init(gpa), .record = undefined, .path = "" };
+    _ = try state.arena.allocator().alloc(u8, 1024 * 1024);
+    var budget: @import("run_budget.zig").RunBudget = .{ .max_depth = 0 };
+    const ctx: @import("tools.zig").ToolCtx = .{ .gpa = gpa, .io = io, .client = undefined, .provider = undefined, .registry = null, .from_sub = false, .approvals = null, .tracer = null, .run_budget = &budget, .retained_worker = state };
+    const saved = subagent.g_agent_jobs;
+    subagent.g_agent_jobs = .{ .active = 1 };
+    defer subagent.g_agent_jobs = saved;
+    var label = [_]u8{'x'};
+    var job: subagent.AgentJob = .{ .id = std.math.maxInt(u32), .label = &label, .prompt = &label, .niche = &label, .isolation = .shared_cwd, .isolation_fallback = false, .ctx = ctx };
+    defer job.feedback.deinit(gpa);
+    subagent.agentJobPump(&job, gpa, io);
+    defer gpa.free(job.result);
+    try std.testing.expect(job.done and job.is_error);
+    try std.testing.expect(job.ctx.retained_worker == null);
+    try std.testing.expectEqual(@as(u32, 0), subagent.g_agent_jobs.active);
+    try std.testing.expect(std.mem.indexOf(u8, job.result, "depth limit") != null);
+    // The testing allocator also checks that the megabyte history is gone.
 }

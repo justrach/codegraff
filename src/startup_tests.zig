@@ -9,6 +9,14 @@ const builtin = @import("builtin");
 
 const resolveKeys = @import("startup.zig").resolveKeys;
 
+test "graff refresh is the short catalog pull, not a new command" {
+    const startup = @import("startup.zig");
+    try std.testing.expectEqual(startup.CatalogCommand.refresh, startup.catalogCommand("refresh"));
+    try std.testing.expectEqual(startup.CatalogCommand.list, startup.catalogCommand("models"));
+    try std.testing.expectEqual(startup.CatalogCommand.route, startup.catalogCommand("route"));
+    try std.testing.expectEqual(startup.CatalogCommand.none, startup.catalogCommand("update"));
+}
+
 test "resolveKeys does not load Kimi/xAI OAuth credentials for an explicit unrelated provider" {
     // #274: loadKimiOAuth/loadXaiOAuth refresh in place (a synchronous
     // network round-trip) when the stored credential is near expiry. Before
@@ -30,6 +38,19 @@ test "resolveKeys does not load Kimi/xAI OAuth credentials for an explicit unrel
     var real_buf: [std.fs.max_path_bytes]u8 = undefined;
     const real_len = try tmp.dir.realPath(io, &real_buf);
     const home = try arena.dupe(u8, real_buf[0..real_len]);
+    const pricing = @import("pricing.zig");
+    const saved_models = pricing.active_model_table;
+    defer pricing.active_model_table = saved_models;
+    defer @import("http2_pool.zig").shutdown(io);
+    defer @import("router_catalog.zig").shutdown(io);
+
+    // This test checks credential scope, so seed a fresh local catalog. It
+    // must not turn a synthetic key into a real provider GET during tier 1.
+    const catalog = @import("router_catalog.zig");
+    const spec = @import("provider.zig").specFor("codegraff") orelse return error.TestUnexpectedResult;
+    const cached_rows = [_]pricing.ModelInfo{.{ .provider = spec.id, .name = spec.default_model, .context = 128_000 }};
+    const cached = catalog.cacheDocument(io, arena, spec, &cached_rows) orelse return error.TestUnexpectedResult;
+    try tmp.dir.writeFile(io, .{ .sub_path = ".codegraff-codegraff-models.json", .data = cached });
 
     try tmp.dir.createDirPath(io, ".kimi/credentials");
     const now_s = @divTrunc(Io.Timestamp.now(io, .real).nanoseconds, 1_000_000_000);

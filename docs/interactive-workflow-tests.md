@@ -37,3 +37,21 @@ Evidence exports contain requests, responses, actual file outcomes, verifier
 results, saved sessions, and available harness traces and trajectory records.
 Keep these files private. A live-provider run needs separate authentication and
 assessment; passing the scripted suite does not establish live-model coverage.
+
+## ACP over TLS and HTTP/2
+
+Run `python3 scripts/test-acp-http2.py` on a POSIX host with Zig, Node.js,
+OpenSSL, and the fetched dependencies. The local provider requires TLS with
+HTTP/2 and exercises streamed ACP updates, a follow-up on the same connection,
+and flow control in both directions. A stalled response is cancelled through
+ACP, must return `stopReason: "cancelled"`, and must release its stream before
+another prompt succeeds on the same ACP session. A background child and its
+parent must both reach the provider before either response completes, with
+independent HTTP/2 transports. Untrusted certificates and mismatched hostnames
+must fail before a provider request is accepted.
+
+The test verifies the pinned dependency's content hash, then builds a temporary
+harness with one additive test-CA load in a private dependency copy. System
+trust, hostname verification, production binaries, and cached dependency files
+remain unchanged. This validates the production transport with a test trust
+source; it does not establish connectivity to an external provider.

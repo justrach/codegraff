@@ -9,7 +9,7 @@ fn build(model: []const u8) provider.Provider {
 }
 
 test "Codegraff selects the gateway wire and endpoint per model" {
-    for ([_][]const u8{ "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "grok-4.6" }) |model| {
+    for ([_][]const u8{ "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "gpt-6-sol", "grok-4.6" }) |model| {
         const got = build(model);
         try std.testing.expectEqual(provider.Provider.Kind.responses, got.kind);
         try std.testing.expectEqualStrings("https://gateway.codegraff.com/v1/responses", got.url);
@@ -56,7 +56,7 @@ test "Codegraff Responses aliases pin a sticky prompt_cache_key" {
         break :blk obj;
     } });
 
-    for ([_][]const u8{ "gpt-5.6", "gpt-6-astra", "grok-4.6" }) |model| {
+    for ([_][]const u8{ "gpt-5.6", "gpt-6-astra", "gpt-6-sol", "grok-4.6" }) |model| {
         var root: Agent = .{
             .gpa = std.testing.allocator,
             .arena = arena,
@@ -234,7 +234,26 @@ test "the gateway still serves the startup default when it is the only credentia
     try std.testing.expect(keys.set("codegraff", "gateway-key", .login));
     const got = try keys.defaultProvider();
     try std.testing.expectEqualStrings("codegraff", got.id);
+    try std.testing.expectEqualStrings("mimo-v2.6-pro", got.model);
 
     const none: provider.Keys = .{ .values = @splat(null) };
     try std.testing.expectError(error.MissingKey, none.defaultProvider());
+}
+
+test "GPT6 Sol fallback routes preserve explicit provider and existing defaults" {
+    const pricing = @import("pricing.zig");
+    const saved = pricing.active_model_table;
+    defer pricing.active_model_table = saved;
+    pricing.active_model_table = &pricing.model_table;
+    var keys: provider.Keys = .{ .values = @splat(null) };
+    _ = keys.set("openai", "fixture", .environment);
+    _ = keys.set("codex", "fixture", .login);
+    for ([_][]const u8{ "openai", "codex" }) |id| {
+        try std.testing.expect(pricing.providerModelInTable(id, "gpt-6-sol"));
+        const selected = try keys.providerById(id, "gpt-6-sol");
+        try std.testing.expectEqualStrings(id, selected.id);
+        try std.testing.expectEqualStrings("gpt-6-sol", selected.model);
+        try std.testing.expectEqual(provider.Provider.Kind.responses, selected.kind);
+    }
+    try std.testing.expect(!pricing.providerModelInTable("codegraff", "gpt-6-sol"));
 }

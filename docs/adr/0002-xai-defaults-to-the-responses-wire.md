@@ -1,6 +1,6 @@
 # 0002. xAI defaults to the Responses wire (WS; client compact)
 
-Status: accepted 2026-08-15; compaction arm amended 2026-09-05
+Status: accepted 2026-08-15; compaction arm amended 2026-09-05; WS chaining on 2026-09-19
 
 ## Context
 
@@ -34,9 +34,10 @@ opts a session back onto chat completions.
 - WS eligibility stays an explicit provider list (codex, xai, and Codegraff
   when its selected alias is Responses-kind) — Platform OpenAI has no WS
   server and must never probe one.
-- Chaining via previous_response_id stays codex-only: xAI's store:false +
-  previous_response_id stalls server-side (probed live), so xai rides
-  full-resend over the held socket.
+- xAI WS chaining is on: `previous_response_id` + delta input on the held
+  socket, matching the published store:false / ZDR in-memory cache. A
+  not-found, 25-minute cap, or drop re-anchors with full input (append-only
+  history; compact rewrites drop the chain). `GRAFF_XAI_WS_CHAIN=0` opts out.
 - Revisit if xAI's wire diverges from OpenAI Responses semantics or the
   compact endpoint's blob replay pricing changes the cost picture.
 - Hosted `x_search` rides this wire by default (ADR

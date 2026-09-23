@@ -100,7 +100,7 @@ pub fn costFor(provider_id: []const u8, source: CredentialSource) CostClass {
 /// The billing class of one API call on this seat.
 pub fn forSeat(provider_id: []const u8, model: []const u8, source: CredentialSource) Billing {
     if (source == .login and subscriptionLogin(provider_id)) return .sub;
-    return if (pricing.priceFor(model) != null) .priced else .unpriced;
+    return if (pricing.priceForProvider(provider_id, model) != null) .priced else .unpriced;
 }
 
 /// The class of a resolved `Provider`, which already carries both inputs.
@@ -135,7 +135,7 @@ test "a flat-rate login and a metered key on the same seat bill differently (#47
     // A metered vendor's login (none exists today) would still be priced, and
     // the codegraff gateway's device login draws on credits, not a plan.
     try std.testing.expectEqual(Billing.priced, forSeat("anthropic", "claude-sonnet-4-6", .login));
-    try std.testing.expectEqual(Billing.priced, forSeat("codegraff", "claude-sonnet-4-6", .login));
+    try std.testing.expectEqual(Billing.priced, forSeat("codegraff", "claude-sonnet-5", .login));
 
     // Unpriced stays unpriced: no plan, no price row.
     try std.testing.expectEqual(Billing.unpriced, forSeat("openai", "mystery-model", .environment));

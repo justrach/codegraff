@@ -15,7 +15,7 @@
     "src/repl.zig",
     "TUI/root.zig"
   ],
-  "test_count_baseline": 2484,
+  "test_count_baseline": 2776,
   "test_count_slack": 25,
   "required_invariants": [
     {
@@ -77,6 +77,16 @@
       "id": "edit-selected-worktree",
       "test": "#747: editing the same relative name after a tree switch lands on the selected root",
       "why": "#747: an edit could report success while the selected worktree stayed unchanged."
+    },
+    {
+      "id": "http2-window",
+      "test": "http-zig credits DATA on the connection and the stream",
+      "why": "A second HTTP/2 stream stalls after 64KB if DATA is not credited."
+    },
+    {
+      "id": "http2-reuse",
+      "test": "keep the pooled session only after END_STREAM",
+      "why": "Reusing a half-read HTTP/2 session feeds the next turn the previous frame."
     }
   ],
   "docs_only_paths": [

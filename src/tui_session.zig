@@ -89,11 +89,24 @@ pub fn resumeCb(ctx_ptr: ?*anyopaque, gpa: Allocator, raw: []const u8, out: *tui
     out.goal = if (root.goal) |goal| gpa.dupe(u8, goal.objective) catch return failure(gpa, out, error.OutOfMemory) else "";
     out.strict = root.strict;
     out.ultracode = root.ultracode_mode;
-    out.note = if (resumed.branched)
+    out.note = resumeNote(gpa, resumed);
+    return true;
+}
+
+fn resumeNote(gpa: Allocator, resumed: session_branch.Result) []const u8 {
+    if (resumed.enter_failed) return std.fmt.allocPrint(gpa, "resumed {s}; saved workspace unavailable, tools remain in the current directory", .{resumed.target}) catch &.{};
+    return if (resumed.branched)
         std.fmt.allocPrint(gpa, "branched {s} → {s}", .{ resumed.source, resumed.target }) catch &.{}
+    else if (resumed.entered)
+        std.fmt.allocPrint(gpa, "resumed {s} at {s}", .{ resumed.source, resumed.workspace }) catch &.{}
     else
         std.fmt.allocPrint(gpa, "resumed {s}", .{resumed.source}) catch &.{};
-    return true;
+}
+
+test "TUI resume reports a missing workspace instead of implying tools moved" {
+    const note = resumeNote(std.testing.allocator, .{ .source = "old", .target = "restored", .branched = true, .workspace = "/missing", .enter_failed = true });
+    defer std.testing.allocator.free(note);
+    try std.testing.expectEqualStrings("resumed restored; saved workspace unavailable, tools remain in the current directory", note);
 }
 
 pub fn sessionsCb(ctx_ptr: ?*anyopaque, gpa: Allocator) ?[]const u8 {
@@ -102,7 +115,7 @@ pub fn sessionsCb(ctx_ptr: ?*anyopaque, gpa: Allocator) ?[]const u8 {
     var arena_inst = std.heap.ArenaAllocator.init(gpa);
     defer arena_inst.deinit();
     const arena = arena_inst.allocator();
-    const entries = session.listSavedSessions(root, arena);
+    const entries = session.listSavedSessionsAll(root, arena);
     if (entries.items.len == 0) return gpa.dupe(u8, "") catch null;
     var out: std.ArrayList(u8) = .empty;
     for (entries.items, 0..) |e, i| {
@@ -112,12 +125,16 @@ pub fn sessionsCb(ctx_ptr: ?*anyopaque, gpa: Allocator) ?[]const u8 {
         };
         const age = session.sessionAge(arena, root.io, e.updated_ms);
         const title = e.title orelse e.base;
-        const desc = if (e.title == null)
-            age
-        else if (age.len > 0)
-            std.fmt.allocPrint(arena, "{s} · {s}", .{ age, e.base }) catch e.base
-        else
-            e.base;
+        const where = if (e.local) "" else session.displayWorkspace(arena, e.workspace, root.home);
+        const desc = blk: {
+            if (!e.local and where.len > 0) {
+                if (age.len > 0) break :blk std.fmt.allocPrint(arena, "{s} · {s} · {s}", .{ age, e.base, where }) catch e.base;
+                break :blk std.fmt.allocPrint(arena, "{s} · {s}", .{ e.base, where }) catch e.base;
+            }
+            if (e.title == null) break :blk age;
+            if (age.len > 0) break :blk std.fmt.allocPrint(arena, "{s} · {s}", .{ age, e.base }) catch e.base;
+            break :blk e.base;
+        };
         const line = std.fmt.allocPrint(arena, "{s}\t{s}\t{s}", .{ e.base, title, desc }) catch continue;
         out.appendSlice(gpa, line) catch {
             out.deinit(gpa);

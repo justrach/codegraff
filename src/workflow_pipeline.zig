@@ -104,6 +104,18 @@ pub fn pipelinePrompt(arena: Allocator, raw: []const u8, item: []const u8, prev:
 /// ends the chain with a terse marker plus a capped one-line excerpt of its
 /// error (#248), rather than feeding the whole error downstream.
 fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec, stats: []pipeline_score.StageStat) ToolOutput {
+    if (stages[0].isolation != .worktree) return pipelineChainShared(ctx, item, stages, stats);
+    var scope = @import("workflow_workspace.zig").Scope.init(ctx) catch |err| {
+        if (!stages[0].isolation_fallback) return failure(ctx.gpa, err);
+        const out = pipelineChainShared(ctx, item, stages, stats);
+        defer ctx.gpa.free(out.text);
+        return .{ .text = std.fmt.allocPrint(ctx.gpa, "{s}\n[note: workflow isolation failed; explicit isolation_fallback allowed shared cwd]", .{out.text}) catch return failure(ctx.gpa, error.OutOfMemory), .is_error = out.is_error };
+    };
+    defer scope.deinit();
+    return scope.finish(pipelineChainShared(scope.context(ctx), item, stages, stats)) catch |err| return failure(ctx.gpa, err);
+}
+
+fn pipelineChainShared(ctx: ToolCtx, item: []const u8, stages: []const StageSpec, stats: []pipeline_score.StageStat) ToolOutput {
     const gpa = ctx.gpa;
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -119,7 +131,7 @@ fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec, stat
         // Counters only — the fitness fold happens per STAGE after run()'s
         // join (#296), never here where it would be a per-item row (#290).
         stat.noteAttempt();
-        var out = if (runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback, st.seat.pin, null)) |r| r.output else |e| failure(gpa, e);
+        var out = if (runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche, .shared_cwd, st.isolation_fallback, st.seat.pin, null)) |r| r.output else |e| failure(gpa, e);
         if (out.is_error) {
             // Only spend the one retry (#2) when the harness's own
             // classification hasn't already ruled it out (auth, invalid
@@ -129,7 +141,7 @@ fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec, stat
                 gpa.free(out.text);
                 // The SAME seat: a retry that changed model would break the
                 // stage uniformity the fitness row attributes to.
-                out = if (runSub(ctx, "workflow_retry", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback, st.seat.pin, null)) |r| r.output else |e| failure(gpa, e);
+                out = if (runSub(ctx, "workflow_retry", st.label, prompt, st.override, st.niche, .shared_cwd, st.isolation_fallback, st.seat.pin, null)) |r| r.output else |e| failure(gpa, e);
             }
             if (out.is_error) {
                 // #248 — excerpt the stage's own error BEFORE freeing it, so
@@ -160,7 +172,7 @@ fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec, stat
 
 /// Comptime-formatted refusal message for a worktree-isolated stage past 0.
 fn stageIsoMsg(comptime n: usize) []const u8 {
-    return std.fmt.comptimePrint("pipeline stage {d} requests worktree isolation, but a pipeline is a dependent chain over one item -- stage {d} must see what earlier stages did, and worktree isolation would silently hide that work. Only stage 0 may isolate with its own worktree. If you wanted real per-item isolation, use phases instead (phases run independently, with no such dependency).", .{ n, n });
+    return std.fmt.comptimePrint("pipeline stage {d} requests worktree isolation, but a pipeline is a dependent chain over one item -- stage {d} must see what earlier stages did, and worktree isolation would silently hide that work. Set isolation:worktree on pipeline or stage 0; that one tree is shared by every stage of the item.", .{ n, n });
 }
 
 /// Pure guard-rail predicate for pipeline-stage isolation: a pipeline chains
@@ -237,7 +249,7 @@ pub fn run(ctx: ToolCtx, pv: Value, outer_context: []const u8) !ToolOutput {
         sp.override = fleet.resolveOverride(so);
         const an = fleet.resolveNiche(so);
         sp.niche = if (an.len > 0) an else sp.label;
-        sp.isolation = fleet.resolveIsolationWithDefault(so, .shared_cwd);
+        sp.isolation = if (stage_index == 0 and fleet.resolveIsolationWithDefault(pv.object, .shared_cwd) == .worktree) .worktree else fleet.resolveIsolationWithDefault(so, .shared_cwd);
         // A pipeline is a dependent chain over one item: stage 2+ must see
         // what earlier stages did, which worktree isolation would silently
         // hide (#295 territory). Reject rather than run the chain wrong.

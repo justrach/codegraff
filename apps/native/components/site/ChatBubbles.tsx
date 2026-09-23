@@ -1,5 +1,6 @@
 "use client";
 
+import { usageCaption } from "@/lib/acp-usage";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import Markdown from "@/components/primitives/Markdown";
 import { BrowserLinkText } from "@/components/primitives/BrowserLinks";
@@ -7,6 +8,7 @@ import ThinkingState from "@/components/primitives/ThinkingState";
 import ToolChips, { type LiveDiff } from "@/components/primitives/ToolChips";
 import ApprovalCard from "@/components/primitives/ApprovalCard";
 import TurnActivity from "./TurnActivity";
+import CopyResponse from "./CopyResponse";
 import HtmlArtifact from "./HtmlArtifact";
 import McpAppResult from "./McpAppResult";
 import SnapshotView from "./SnapshotView";
@@ -223,11 +225,15 @@ export const AssistantBody = memo(function AssistantBody({
           />
         </div>
       )}
+      <CopyResponse text={turn.text} />
       {!snapshot && <TurnActivity turn={turn} onRetry={turn.status === "error" ? onRetry : undefined} promptIndex={promptIndex} retryDisabled={retryDisabled} />}
       {turn.recap && turn.status === "done" && (
         <p className="mt-3 text-[12px] text-ink-3">{turn.recap}</p>
       )}
-      {turn.costUsd !== undefined && turn.status === "done" && (
+      {turn.usage && (turn.status === "done" || turn.status === "error") && (
+        <p aria-label="Usage since connection" className="mt-1 font-mono text-[11px] text-ink-3">{usageCaption(turn.usage)}</p>
+      )}
+      {!turn.usage && turn.costUsd !== undefined && turn.status === "done" && (
         <p className="mt-1 font-mono text-[11px] text-ink-3">${turn.costUsd.toFixed(4)}</p>
       )}
       {turn.status === "done" && turn.diffs.length > 0 && onReview && (

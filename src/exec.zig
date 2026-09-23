@@ -38,6 +38,7 @@ const workflow = @import("workflow.zig");
 const execWorkflow = workflow.execWorkflow;
 
 const mcp = @import("mcp.zig");
+const jev_tool = @import("jev_tool.zig");
 const approvals_mod = @import("approvals.zig");
 const Approvals = approvals_mod.Approvals;
 const confinedPath = approvals_mod.confinedPath;
@@ -84,6 +85,7 @@ fn learningArgv(argv: *[10][]const u8, exe_path: []const u8, contribute: bool) u
 }
 
 pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
+    if (ctx.run_budget) |budget| if (budget.toolRefusal(ctx.gpa, ctx.tracer)) |denied| return denied;
     const t0: Io.Timestamp = .now(ctx.io, .awake);
     // #255: reserved before any gate/dispatch runs so tool_started/
     // tool_finished bracket the whole call, including a gate denial below.
@@ -159,7 +161,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         if (shell_tool.runCommand(call)) |cmd| if (!Approvals.readOnlyAllowed(cmd)) {
             // The root may have approved this external read-only path this
             // session (#64); subagents (from_sub) never get the external hatch.
-            const ext_ok = !ctx.from_sub and if (ctx.approvals) |ap| ap.planReadAllowed(ctx.io, cmd) else false;
+            const ext_ok = !ctx.from_sub and if (ctx.approvals) |ap| ((if (ctx.plan_read_owner) |owner| ap.consumePlanReadOnce(ctx.io, owner, call.id, cmd) else false) or ap.planReadAllowed(ctx.io, cmd)) else false;
             if (!ext_ok) return .{
                 .text = try gpa.dupe(u8, "plan mode is on — only read-only commands run; describe this command in the plan instead"),
                 .is_error = true,
@@ -196,6 +198,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     }
 
     const input = call.input;
+    if (std.mem.eql(u8, call.name, jev_tool.name)) return jev_tool.execute(ctx, input);
     if (std.mem.eql(u8, call.name, "learn_candidate")) {
         if (ctx.from_sub) return .{
             .text = try gpa.dupe(u8, "learning is root-only — subagents cannot run mutators, evaluators, or publish grades"),
@@ -380,6 +383,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         if (id < 0 or id > std.math.maxInt(u32)) return .{ .text = try gpa.dupe(u8, "invalid agent id"), .is_error = true };
         return @import("subagent_interactive.zig").output(ctx, @intCast(id), @intCast(@max(wait_ms, 0)));
     }
+    if (std.mem.eql(u8, call.name, "subagent_resume")) return @import("subagent_resume.zig").exec(ctx, input);
     if (std.mem.eql(u8, call.name, "agent_message")) return @import("subagent_messaging.zig").send(ctx, input);
     return .{ .text = try std.fmt.allocPrint(gpa, "unknown tool: {s}", .{call.name}), .is_error = true };
 }
@@ -403,6 +407,58 @@ test "preserveMode restores bits via handle chmod so Windows cannot panic (#179/
         const after = try tmp.dir.statFile(io, "x.sh", .{});
         try std.testing.expectEqual(@as(std.posix.mode_t, 0o755), after.permissions.toMode() & 0o777);
     }
+}
+
+test "native Jev dispatch rejects other models and latches off after one failed attempt" {
+    const jev = @import("jev_tool.zig");
+    jev.configure(struct {
+        pub fn get(_: @This(), key: []const u8) ?[]const u8 {
+            return if (std.mem.eql(u8, key, "JEV_BACKEND")) "mock-fail" else null;
+        }
+    }{});
+    defer jev.configure(struct {
+        pub fn get(_: @This(), _: []const u8) ?[]const u8 {
+            return null;
+        }
+    }{});
+    const base: @import("provider.zig").Provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-6-sol", .context = 100_000 };
+    var pending: @import("jev_effort_state.zig").Pending = .{};
+    var ctx: ToolCtx = .{ .gpa = std.testing.allocator, .io = std.testing.io, .client = undefined, .provider = base, .jev_effort_pending = &pending, .registry = null, .from_sub = false, .approvals = null, .tracer = null };
+    const parsed = try std.json.parseFromSlice(Value, std.testing.allocator, "{\"task\":\"choose effort for a test fix\"}", .{});
+    defer parsed.deinit();
+    const call: ToolCall = .{ .id = "1", .name = jev.name, .input = parsed.value };
+    const old_call: ToolCall = .{ .id = "old", .name = "jev_judge", .input = parsed.value };
+    const old = try execToolInner(ctx, old_call);
+    defer std.testing.allocator.free(old.text);
+    try std.testing.expect(old.is_error);
+    const no_login = try execToolInner(ctx, call);
+    defer std.testing.allocator.free(no_login.text);
+    try std.testing.expect(no_login.is_error);
+    _ = jev.setCodegraffLoginKey(std.testing.io, "synthetic-login");
+    try std.testing.expect(jev.available(ctx.provider)); // no upstream attempt before login
+    ctx.provider.id = "xai";
+    ctx.provider.model = "grok-4.7";
+    const other_provider = try execToolInner(ctx, call);
+    defer std.testing.allocator.free(other_provider.text);
+    try std.testing.expect(other_provider.is_error);
+    ctx.provider.id = "codex";
+    ctx.provider.model = "gpt-5.6";
+    const older_model = try execToolInner(ctx, call);
+    defer std.testing.allocator.free(older_model.text);
+    try std.testing.expect(older_model.is_error);
+    ctx.provider.model = "gpt-6-sol";
+    try std.testing.expect(jev.available(ctx.provider)); // ineligible attempts did not trip the circuit
+    ctx.from_sub = true;
+    const worker = try execToolInner(ctx, call);
+    defer std.testing.allocator.free(worker.text);
+    try std.testing.expect(worker.is_error);
+    ctx.from_sub = false;
+    const first = try execToolInner(ctx, call);
+    defer std.testing.allocator.free(first.text);
+    const second = try execToolInner(ctx, call);
+    defer std.testing.allocator.free(second.text);
+    try std.testing.expect(!first.is_error and !second.is_error);
+    try std.testing.expectEqualStrings(first.text, second.text);
 }
 
 test "internal learning respects the parent privacy ceiling" {

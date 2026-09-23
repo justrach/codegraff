@@ -11,9 +11,17 @@ async function runNavigationPromptFocus({ win, origin }) {
     throw Error(`Navigation prompt focus timeout: ${source}`);
   };
   const click = async selector => {
-    const point = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw Error('Missing click target');const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);
-    for (const type of ['mouseDown', 'mouseUp']) await testDesktop.testInput(wc, { type, ...point, button: 'left', clickCount: 1 });
-    await pause();
+    const composer = selector.includes('textarea[aria-label="Prompt"]');
+    for (let attempt = 0; attempt < (composer ? 2 : 1); attempt++) {
+      const point = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw Error('Missing click target');if(${composer})e.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});const r=e.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;return {x,y,hit:e.contains(document.elementFromPoint(x,y))};})()`);
+      if (composer && !point.hit) { await pause(); continue; }
+      await testDesktop.testInput(wc, { type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
+      const release = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return null;const r=e.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;return e.contains(document.elementFromPoint(x,y))?{x,y}:null;})()`);
+      await testDesktop.testInput(wc, { type: 'mouseUp', ...point, ...release, button: 'left', clickCount: 1 });
+      await pause();
+      if (!composer || await js(`document.activeElement===document.querySelector(${JSON.stringify(selector)})`)) return;
+    }
+    throw Error(`Composer click did not focus ${selector}`);
   };
   const focused = id => wait(`document.activeElement===document.querySelector('[data-chat="${id}"] textarea[aria-label="Prompt"]') && document.activeElement?.tagName==='TEXTAREA'`);
   const active = () => js(`document.querySelector('[data-chat][data-focused="true"]').dataset.chat`);
@@ -39,6 +47,7 @@ async function runNavigationPromptFocus({ win, origin }) {
     await click(`${sidebar} button[aria-label="Home"]`); await focused(first);
     await click(`${sidebar} button[aria-label="Projects"]`);
     await click(`${sidebar} button[aria-label="Home"]`); await focused(first);
+    for (const keyCode of 'return draft') await testDesktop.testInput(wc, { type: 'char', keyCode });
     await click(`${sidebar} button[aria-label="New chat"]`);
     const second = await active(); assert.notEqual(second, first); await focused(second);
     await click('[aria-label="Collapse sidebar"]');
@@ -46,6 +55,8 @@ async function runNavigationPromptFocus({ win, origin }) {
     await click('[data-workspace-toolbar] button[aria-label="New chat"]');
     const third = await active(); assert.notEqual(third, second); await focused(third);
     await click(tab(first)); await focused(first);
+    assert.deepEqual(await js(`(()=>{const prompt=document.querySelector('[data-chat="${first}"] textarea[aria-label="Prompt"]');return {value:prompt.value,start:prompt.selectionStart,end:prompt.selectionEnd};})()`),
+      { value: 'return draft', start: 12, end: 12 }, 'Returning to a chat restores its draft with the caret at the end');
     await click(tab(first)); await focused(first);
 
     await click('[aria-label="Expand sidebar"]');

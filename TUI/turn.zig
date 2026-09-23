@@ -74,7 +74,7 @@ pub fn maybeJobWake(self: *Model) void {
     if (self.pending != null or self.bg != null) return;
     if (self.input.getValue().len > 0 or self.images.items.len > 0 or self.steer_queue.items.len > 0) return;
     const f = engine.g_idle_wake_fn orelse return;
-    var buf: [512]u8 = undefined;
+    var buf: [4096]u8 = undefined;
     const text = f(engine.g_turn_ctx, &buf) orelse return;
     self.push(.system, text) catch return;
     self.history.items[self.history.items.len - 1].notification = true;

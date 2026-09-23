@@ -451,7 +451,14 @@ pub fn loadOverlay(io: Io, arena: Allocator, home: []const u8) void {
         const out = numField(item.object, "out") orelse 0;
         const cache = numField(item.object, "cache") orelse 0;
         const context = u64Field(item.object, "context");
-        if (in > 0 or out > 0) prices.append(arena, .{ .name = nm, .in = in, .out = out, .cache = cache }) catch {};
+        if (in > 0 or out > 0) {
+            var price = pricing.priceFor(name) orelse pricing.ModelPrice{ .name = nm, .in = 0, .out = 0, .cache = 0 };
+            price.name = nm;
+            price.in = in;
+            price.out = out;
+            price.cache = cache;
+            prices.append(arena, price) catch {};
+        }
         if (context > 0) ctxs.append(arena, .{ .provider = "", .name = nm, .context = context }) catch {};
     }
     if (prices.items.len > 0) pricing.price_overlay = prices.toOwnedSlice(arena) catch pricing.price_overlay;
@@ -546,7 +553,7 @@ pub fn list(out: *Io.Writer) !void {
             try out.print("  {s:<34}{d:>10} ctx   (unpriced)\n", .{ m.name, ctx });
         }
     }
-    try out.writeAll("\nrefresh Codex catalog + models.dev metadata:  graff models refresh\n");
+    try out.writeAll("\nrefresh live catalogs:  graff refresh\n");
     try out.flush();
 }
 

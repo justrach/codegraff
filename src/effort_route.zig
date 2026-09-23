@@ -1,9 +1,8 @@
 //! Lookup-shape detector. Used to decide a prompt is Q&A vs mutation.
-//! The harness does NOT auto-flip `reasoning_effort` — that field is part
-//! of the cached prefix on Codex, OpenAI, xAI, DeepSeek, and the codegraff
-//! gateway. Changing it mid-conversation misses the cache and drops the
-//! WS chain (codex_chain.propsFp). An explicit /effort or a worker
-//! `effort:` pin is the only way effort moves.
+//! The harness does NOT infer low effort from prompt shape: effort is part of
+//! the cached prefix and a change may miss the cache and reset the WS chain.
+//! Explicit /effort, a worker effort pin, or an optional jev_effort call may
+//! change it; Jev applies only at the next request boundary.
 
 const std = @import("std");
 
@@ -65,6 +64,17 @@ pub fn grokFamily(model: []const u8) bool {
     return std.mem.startsWith(u8, model, "grok");
 }
 
+/// MiMo's current APIs expose thinking as a binary switch. Gateway catalog
+/// rows may include a family prefix; inspect the final model component.
+pub fn mimoFamily(model: []const u8) bool {
+    const name = if (std.mem.lastIndexOfScalar(u8, model, '/')) |slash| model[slash + 1 ..] else model;
+    return std.ascii.startsWithIgnoreCase(name, "mimo-");
+}
+
+pub fn mimoRoute(provider_id: []const u8, model: []const u8) bool {
+    return (std.mem.eql(u8, provider_id, "xiaomi") or std.mem.eql(u8, provider_id, "codegraff")) and mimoFamily(model);
+}
+
 /// Hide Max/Ultra in the picker when the current seat cannot take them.
 pub fn hidesMax(provider_id: []const u8, model: []const u8) bool {
     return std.mem.eql(u8, provider_id, "xai") or grokFamily(model);
@@ -78,6 +88,7 @@ fn openaiFamily(provider_id: []const u8, model: []const u8) bool {
 /// Picker tags, not API values: OpenAI's maximum is exposed as Ultra.
 /// Keep xAI's stricter allow-list ahead of model-family detection.
 pub fn levels(provider_id: []const u8, model: []const u8) []const []const u8 {
+    if (mimoRoute(provider_id, model)) return &.{ "none", "high" };
     if (hidesMax(provider_id, model)) return &.{ "low", "medium", "high", "xhigh" };
     if (openaiFamily(provider_id, model)) return &.{ "low", "medium", "high", "xhigh", "ultra" };
     return &.{ "low", "medium", "high", "xhigh", "max", "ultra" };
@@ -86,6 +97,13 @@ pub fn levels(provider_id: []const u8, model: []const u8) []const []const u8 {
 /// Accept old saved/typed Max settings without putting Max back in the UI.
 /// Ultra keeps its existing wire mapping to `max` and delegation guidance.
 pub fn normalize(provider_id: []const u8, model: []const u8, requested: []const u8) []const u8 {
+    if (mimoRoute(provider_id, model)) {
+        if (std.mem.eql(u8, requested, "none") or std.mem.eql(u8, requested, "off")) return "none";
+        for ([_][]const u8{ "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "on" }) |positive|
+            if (std.mem.eql(u8, requested, positive)) return "high";
+        return requested;
+    }
+    if (std.mem.eql(u8, requested, "none")) return ""; // unsupported outside MiMo
     if (!hidesMax(provider_id, model) and openaiFamily(provider_id, model) and std.mem.eql(u8, requested, "max")) return "ultra";
     return requested;
 }
@@ -98,7 +116,8 @@ pub fn allows(provider_id: []const u8, model: []const u8, tag: []const u8) bool 
 /// Wire `reasoning_effort` for an effort-capable provider. Flash / Gemini
 /// default `medium` becomes `low`. grok maps max/ultra → high (xAI rejects
 /// `max`). Other seats still send ultra as `max` (including OpenAI).
-pub fn wireEffort(model: []const u8, requested: []const u8) []const u8 {
+pub fn wireEffort(provider_id: []const u8, model: []const u8, requested: []const u8) []const u8 {
+    if (mimoRoute(provider_id, model)) return if (std.mem.eql(u8, requested, "none")) "none" else "high";
     if (std.mem.eql(u8, requested, "medium") and omitsDefaultFlashEffort(model)) return "low";
     if (grokFamily(model)) {
         if (std.mem.eql(u8, requested, "max") or std.mem.eql(u8, requested, "ultra")) return "high";
@@ -132,16 +151,19 @@ test "flash and Gemini map default medium to low; grok and glm-5.3 stay medium" 
     try std.testing.expect(!omitsDefaultFlashEffort("glm-5.3"));
     try std.testing.expect(!omitsDefaultFlashEffort("deepseek-v4-pro"));
     try std.testing.expect(!omitsDefaultFlashEffort("gpt-6-astra"));
-    try std.testing.expectEqualStrings("medium", wireEffort("gpt-6-astra", "medium"));
-    try std.testing.expectEqualStrings("high", wireEffort("gpt-5.6-sol", "high"));
-    try std.testing.expectEqualStrings("high", wireEffort("gpt-6-astra", "high"));
-    try std.testing.expectEqualStrings("low", wireEffort("glm-5.3-flash", "medium"));
-    try std.testing.expectEqualStrings("high", wireEffort("glm-5.3-flash", "high"));
-    try std.testing.expectEqualStrings("medium", wireEffort("grok-4.6", "medium"));
-    try std.testing.expectEqualStrings("high", wireEffort("grok-4.6", "ultra"));
-    try std.testing.expectEqualStrings("high", wireEffort("grok-4.6", "max"));
-    try std.testing.expectEqualStrings("xhigh", wireEffort("grok-4.6", "xhigh"));
+    try std.testing.expectEqualStrings("medium", wireEffort("openai", "gpt-6-astra", "medium"));
+    try std.testing.expectEqualStrings("high", wireEffort("openai", "gpt-5.6-sol", "high"));
+    try std.testing.expectEqualStrings("high", wireEffort("openai", "gpt-6-astra", "high"));
+    try std.testing.expectEqualStrings("low", wireEffort("zai", "glm-5.3-flash", "medium"));
+    try std.testing.expectEqualStrings("high", wireEffort("zai", "glm-5.3-flash", "high"));
+    try std.testing.expectEqualStrings("medium", wireEffort("xai", "grok-4.6", "medium"));
+    try std.testing.expectEqualStrings("high", wireEffort("xai", "grok-4.6", "ultra"));
+    try std.testing.expectEqualStrings("high", wireEffort("xai", "grok-4.6", "max"));
+    try std.testing.expectEqualStrings("xhigh", wireEffort("xai", "grok-4.6", "xhigh"));
+    try std.testing.expectEqualStrings("xhigh", wireEffort("xai", "grok-4.7", "xhigh"));
+    try std.testing.expectEqualStrings("high", wireEffort("xai", "grok-4.7", "ultra"));
     try std.testing.expect(hidesMax("xai", "grok-4.6"));
+    try std.testing.expect(hidesMax("xai", "grok-4.7"));
     try std.testing.expect(!hidesMax("codex", "gpt-5.6-sol"));
     try std.testing.expect(!allows("xai", "grok-4.6", "max"));
     try std.testing.expect(allows("xai", "grok-4.6", "high"));
@@ -164,11 +186,33 @@ test "GPT-5.6 family: max is accepted (as Ultra) and wired as max; grok still fo
         try std.testing.expectEqualStrings("ultra", normalize(s.id, s.model, "max"));
         try std.testing.expect(allows(s.id, s.model, "ultra"));
         try std.testing.expect(allows(s.id, s.model, "xhigh"));
-        try std.testing.expectEqualStrings("max", wireEffort(s.model, "ultra"));
-        try std.testing.expectEqualStrings("xhigh", wireEffort(s.model, "xhigh"));
-        try std.testing.expectEqualStrings("medium", wireEffort(s.model, "medium")); // not a flash/Astra seat: default medium is sent as-is
+        try std.testing.expectEqualStrings("max", wireEffort("openai", s.model, "ultra"));
+        try std.testing.expectEqualStrings("xhigh", wireEffort("openai", s.model, "xhigh"));
+        try std.testing.expectEqualStrings("medium", wireEffort("openai", s.model, "medium")); // not a flash/Astra seat: default medium is sent as-is
     }
     try std.testing.expectEqualStrings("max", normalize("xai", "grok-4.6", "max")); // untouched, then refused
     try std.testing.expect(!allows("xai", "grok-4.6", "max"));
     try std.testing.expect(!allows("xai", "grok-4.6", "ultra"));
+}
+
+test "MiMo exposes only Off and On while legacy positive settings remain On" {
+    for ([_][]const u8{ "mimo-v2.6-flash", "MiMo-V2.6-Pro", "xiaomi/mimo-v2.6-pro" }) |model| {
+        try std.testing.expect(mimoFamily(model));
+        const offered = levels("codegraff", model);
+        try std.testing.expectEqual(@as(usize, 2), offered.len);
+        try std.testing.expectEqualStrings("none", offered[0]);
+        try std.testing.expectEqualStrings("high", offered[1]);
+        try std.testing.expectEqualStrings("none", normalize("xiaomi", model, "off"));
+        try std.testing.expectEqualStrings("none", wireEffort("codegraff", model, "none"));
+        for ([_][]const u8{ "low", "medium", "high", "xhigh", "max", "ultra" }) |legacy| {
+            try std.testing.expectEqualStrings("high", normalize("xiaomi", model, legacy));
+            try std.testing.expectEqualStrings("high", wireEffort("codegraff", model, legacy));
+        }
+    }
+    try std.testing.expectEqualStrings("", normalize("openai", "gpt-6-astra", "none"));
+    try std.testing.expect(!allows("openai", "gpt-6-astra", "none"));
+    try std.testing.expect(!allows("custom", "mimo-v2.6-flash", "none"));
+    try std.testing.expectEqualStrings("", normalize("custom", "mimo-v2.6-flash", "none"));
+    try std.testing.expectEqualStrings("low", wireEffort("custom", "mimo-v2.6-flash", "low"));
+    try std.testing.expectEqualStrings("low", wireEffort("zai", "glm-5.3-flash", "medium"));
 }

@@ -71,8 +71,9 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
             }
             break :blk next;
         };
+        const async_payload = try @import("async_tool_policy.zig").decorate(self.scratchAlloc(), self.provider, payload, self.async_tools_armed and !self.sub and !self.compaction_request and !self.server_compaction_request);
         try s.objectField("tools");
-        try serde.writeOpenAITools(s, self.scratchAlloc(), payload); // #261 follow-up
+        try serde.writeOpenAITools(s, self.scratchAlloc(), async_payload); // #261 follow-up
         try s.objectField("tool_choice");
         try s.write(if (force_tool) "required" else "auto");
         try s.objectField("parallel_tool_calls");
@@ -89,7 +90,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     try s.objectField("effort");
     // #379: compaction summaries run at low — a high-effort reasoner can
     // complete with only reasoning items and zero output text.
-    try s.write(if (self.compaction_request or self.server_compaction_request) "low" else @import("effort_route.zig").wireEffort(self.provider.model, @tagName(self.reasoning)));
+    try s.write(if ((self.compaction_request or self.server_compaction_request) and !@import("effort_route.zig").mimoRoute(self.provider.id, self.provider.model)) "low" else @import("effort_route.zig").wireEffort(self.provider.id, self.provider.model, @tagName(self.reasoning)));
     // summary:auto streams reasoning_summary_text.delta (reasoningDelta already parses it); without it silent reasoning emits NO frames — the stall watchdog cannot tell thinking from a dead socket.
     if (is_codex) {
         try s.objectField("summary");
@@ -113,7 +114,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
 }
 
 fn supportsExplicitPromptCache(self: *const Agent) bool {
-    return std.mem.eql(u8, self.provider.id, "openai") and std.mem.startsWith(u8, self.provider.model, "gpt-5.6");
+    return std.mem.eql(u8, self.provider.id, "openai") and @import("provider_codegraff.zig").openaiGptFamily(self.provider.model);
 }
 
 fn writeCacheAnchor(s: *std.json.Stringify) !void {
@@ -369,36 +370,8 @@ test "#695: an empty catalog string is omitted from the body, never serialized a
     try std.testing.expect(std.mem.indexOf(u8, lb, "\"name\":\"bash\"") != null);
 }
 
-test "GPT-5.6 Platform marks the stable prefix; Codex and older routes do not" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    var oai = try testAgentFor(a, "openai", .responses, "gpt-5.6");
-    const ob = try oai.buildBody(null, false, true, true);
-    defer std.testing.allocator.free(ob);
-    try std.testing.expect(std.mem.indexOf(u8, ob, "\"prompt_cache_key\":\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ob, "\"prompt_cache_options\":{\"mode\":\"implicit\",\"ttl\":\"30m\"}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ob, "\"role\":\"developer\",\"content\":[{\"type\":\"input_text\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ob, "\"prompt_cache_breakpoint\":{\"mode\":\"explicit\"}") != null);
-
-    var worker = try testAgentFor(a, "openai", .responses, "gpt-5.6-luna");
-    worker.sub = true;
-    worker.label = "implement";
-    const wb = try worker.buildBody(null, false, true, true);
-    defer std.testing.allocator.free(wb);
-    try std.testing.expect(std.mem.indexOf(u8, wb, "\"prompt_cache_options\":{\"mode\":\"explicit\",\"ttl\":\"30m\"}") != null);
-
-    var codex = try testAgentFor(a, "codex", .responses, "gpt-5.6-sol");
-    const cb = try codex.buildBody(null, false, true, true);
-    defer std.testing.allocator.free(cb);
-    try std.testing.expect(std.mem.indexOf(u8, cb, "prompt_cache_options") == null);
-    try std.testing.expect(std.mem.indexOf(u8, cb, "prompt_cache_breakpoint") == null);
-
-    var older = try testAgentFor(a, "openai", .responses, "gpt-5.5");
-    const old = try older.buildBody(null, false, true, true);
-    defer std.testing.allocator.free(old);
-    try std.testing.expect(std.mem.indexOf(u8, old, "prompt_cache_breakpoint") == null);
-    try std.testing.expect(std.mem.indexOf(u8, old, "prompt_cache_options") == null);
+test {
+    _ = @import("agent_request_body_cache_test.zig");
 }
 
 test "xai Responses body is bearer-clean: no codex-isms, xAI-legal fields only (#502)" {

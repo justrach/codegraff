@@ -373,6 +373,10 @@ fn hostedEmit(a: *Agent, ev: EngineEvent) void {
                 w.print("{s} {s}\n", .{ mark, shortTool(r.name) }) catch {};
             w.flush() catch {};
         },
+        .session_notice => |n| {
+            w.print("{s}\n", .{n.text}) catch {};
+            w.flush() catch {};
+        },
         else => {},
     }
 }

@@ -27,7 +27,7 @@ cd "$repo_root"
 # processes discover their repo from their cwd like they expect.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
 
-CHECKS=(fmt lines spec reach build tests tui tuiguard invariants sdk)
+CHECKS=(fmt lines spec reach build shell tests tui tuiguard invariants sdk)
 
 usage() {
   cat <<'EOF'
@@ -39,6 +39,7 @@ checks, in order:
   spec        spec/conformance.py (kernel properties + fixture staleness)
   reach       every file that declares tests is reachable from the test root
   build       zig build
+  shell       durable shell IDs and stale-handle isolation after a crash
   tests       zig build test, and the suite count never shrinks
   tui         zig build tui-test (the TUI suite was ungated until the 2026-08 bug wave)
   tuiguard    real-binary pty probes: lifecycle invariants (tui-pty-guard.py)
@@ -169,6 +170,31 @@ skip_dependent() {
   printf '\n  \033[33mskipped\033[0m %s (zig build failed above)\n' "$1"
 }
 
+# --- shell -------------------------------------------------------------
+if wanted shell; then
+  if ((!build_ok)); then
+    skip_dependent shell
+  else
+    announce shell "durable reservations and stale handles cannot target new jobs"
+    if (
+      probe_dir=$(mktemp -d) || exit 1
+      trap 'rm -rf "$probe_dir"' EXIT
+      if [[ $(uname -s) == Darwin && -z ${SDKROOT:-} ]]; then
+        SDKROOT=$(xcrun --sdk macosx --show-sdk-path) || exit 1
+        export SDKROOT
+      fi
+      python3 scripts/eval/process_guard.py --timeout 180 zig build-exe src/shell_identity_probe.zig -lc -femit-bin="$probe_dir/identity" &&
+      python3 scripts/eval/process_guard.py --timeout 60 python3 scripts/test-shell-identity.py "$probe_dir/identity" &&
+      python3 scripts/eval/process_guard.py --timeout 90 python3 scripts/test-shell-restart.py zig-out/bin/graff &&
+      python3 scripts/eval/process_guard.py --timeout 90 python3 scripts/test-acp-released-fixes.py zig-out/bin/graff &&
+      python3 scripts/eval/process_guard.py --timeout 120 python3 scripts/test-acp-permissions.py zig-out/bin/graff &&
+      python3 scripts/eval/process_guard.py --timeout 90 python3 scripts/test-acp-session-load.py zig-out/bin/graff
+    ); then :; else
+      record_fail shell
+    fi
+  fi
+fi
+
 # --- tests -------------------------------------------------------------
 suite_count() {
   # `--summary all` prints "P/T tests passed (S skipped)" when the run step
@@ -198,9 +224,15 @@ if wanted tests; then
       printf '    fix: skipped tests must count toward the suite ratchet (#794)\n'
       record_fail tests
     else
-    out=$(python3 scripts/eval/process_guard.py --timeout 600 zig build test --summary all 2>&1)
+    # One full run. 600s killed a green suite on a warm tree before the
+    # binary finished; process_guard's cap is 1800s.
+    out=$(python3 scripts/eval/process_guard.py --timeout 1800 zig build test --summary all 2>&1)
     status=$?
-    printf '%s\n' "$out" | tail -4
+    if ((status != 0)); then
+      printf '%s\n' "$out"
+    else
+      printf '%s\n' "$out" | tail -4
+    fi
     if ((status != 0)); then
       printf '    fix: the failing test names are above; rerun one with\n'
       printf '         zig build test -Dtest-filter="<part of the name>"\n'
@@ -269,7 +301,7 @@ if wanted invariants; then
     inv_ok=1
     if ! python3 scripts/eval/tier1_test_binary.py resolve >/dev/null 2>&1; then
       printf '  no test artifact yet; compiling the unfiltered suite once\n'
-      if ! python3 scripts/eval/process_guard.py --timeout 600 zig build test --summary all >/dev/null; then
+      if ! python3 scripts/eval/process_guard.py --timeout 1800 zig build test --summary all >/dev/null; then
         inv_ok=0
         record_fail invariants
       fi

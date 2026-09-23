@@ -267,7 +267,7 @@ test "pipelineIsolationError: stage 0 may isolate, stage 1+ worktree is refused 
     // cannot see what the prior stage did.
     const msg1 = pipelineIsolationError(1, .worktree) orelse return error.TestExpectedNonNull;
     try std.testing.expect(std.mem.indexOf(u8, msg1, "stage 1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, msg1, "phases") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg1, "pipeline") != null);
 
     const msg3 = pipelineIsolationError(3, .worktree) orelse return error.TestExpectedNonNull;
     try std.testing.expect(std.mem.indexOf(u8, msg3, "stage 3") != null);

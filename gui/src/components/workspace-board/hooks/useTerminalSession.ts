@@ -329,6 +329,13 @@ export function useTerminalSession(
 
       openedRef.current = true;
       setStatus(null);
+      const initialCommand = params.initialCommand?.trim();
+      if (initialCommand) {
+        await desktopClient.writeTerminal({
+          terminalId,
+          data: `${initialCommand}\n`,
+        });
+      }
 
       const resolvedSize = normalizeTerminalSize(session.cols, session.rows);
       syncedBackendSize = resolvedSize;

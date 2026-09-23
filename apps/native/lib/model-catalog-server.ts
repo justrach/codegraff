@@ -41,8 +41,15 @@ export function readModelCatalog(cwd: string): Promise<unknown> {
     child.stdin.on("error", error => finish(error));
     child.stdin.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n{"jsonrpc":"2.0","id":2,"method":"graff/models"}\n');
   });
-  queries.set(cwd, { expires: Date.now() + 10000, result });
-  void result.catch(() => queries.delete(cwd));
-  if (queries.size > 16) queries.delete(queries.keys().next().value!);
+  const entry = { expires: Infinity, result };
+  queries.set(cwd, entry);
+  void result.then(() => { entry.expires = Date.now() + 10000; }, () => {
+    if (queries.get(cwd) === entry) queries.delete(cwd);
+  });
+  if (queries.size > 16) {
+    for (const [key, value] of queries) {
+      if (value.expires !== Infinity && key !== cwd) { queries.delete(key); break; }
+    }
+  }
   return result;
 }

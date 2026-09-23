@@ -25,9 +25,16 @@ def test_nan_is_untyped():
     assert "NaN" in got[1:]
 
 
+def test_equal_numeric_natural_ties():
+    assert sort_labels(["+2", "2"]) == ["2", "+2"]
+    assert sort_labels(["2", "+2"]) == ["2", "+2"]
+    assert sort_labels(["100", "1e2"]) == ["1e2", "100"]
+
+
 if __name__ == "__main__":
     test_numeric_and_inf()
     test_leading_ws_first()
     test_ipv4_before_ipv6()
     test_nan_is_untyped()
+    test_equal_numeric_natural_ties()
     print("OK")

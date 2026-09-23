@@ -9,6 +9,7 @@ const turn = (text) => emit({
   input_tokens: 10, uncached_input_tokens: 4, cache_read_tokens: 6,
   output_tokens: 3, api_calls: 2, subscription_calls: 1,
   unpriced_calls: 0, complete: true, metadata_complete: true,
+  usage_complete: false, missing_usage_calls: 0, unreported_failed_attempts: 1,
 });
 
 createInterface({ input: process.stdin }).on("line", (line) => {

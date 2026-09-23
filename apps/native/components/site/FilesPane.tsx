@@ -10,6 +10,7 @@ import {
 } from "@/lib/fs-client";
 import { IconCrossSmall, IconFolder } from "@/lib/icons";
 import { useFilesPane, type FileRequest } from "./useFilesPane";
+import { copyText } from "@/lib/ui-sounds";
 
 /* ─────────────────────────────────────────────────────────
  * FILES PANE
@@ -61,10 +62,10 @@ function TextViewer({ file }: { file: FsFile }) {
   const [wrap, setWrap] = useState(false);
   const [copied, setCopied] = useState(false);
   const copy = useCallback(() => {
-    navigator.clipboard.writeText(file.text).then(() => {
+    void copyText(file.text).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    });
+    }).catch(() => {});
   }, [file.text]);
   const lines = file.text.split("\n");
   if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();

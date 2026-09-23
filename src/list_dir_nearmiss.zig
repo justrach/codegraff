@@ -74,6 +74,10 @@ fn byName(_: void, a: Entry, b: Entry) bool {
 /// read. `resolved` is the path that failed; `display` is what the model
 /// typed (its parent is echoed back so the next command can be copied).
 pub fn suggest(io: Io, arena: Allocator, resolved: []const u8, display: []const u8, agent_cwd: ?[]const u8) ?[]const u8 {
+    return suggestBudget(io, arena, resolved, display, agent_cwd, max_scanned);
+}
+
+fn suggestBudget(io: Io, arena: Allocator, resolved: []const u8, display: []const u8, agent_cwd: ?[]const u8, scan_budget: usize) ?[]const u8 {
     const target = std.mem.trimEnd(u8, resolved, "/");
     const leaf = std.fs.path.basename(target);
     if (leaf.len == 0) return null;
@@ -88,16 +92,28 @@ pub fn suggest(io: Io, arena: Allocator, resolved: []const u8, display: []const 
     const rules = gitignore.loadClimb(io, arena, root_abs) catch return null;
     var entries: std.ArrayList(Entry) = .empty;
     var it = dir.iterate();
-    while (it.next(io) catch null) |entry| {
+    var scanned: usize = 0;
+    var limited = false;
+    while (true) {
+        // The budget counts physical entries, including ignored names and
+        // symlinks. Never enumerate a huge parent just to find a few matches.
+        if (scanned == scan_budget) {
+            limited = true;
+            break;
+        }
+        const entry = (it.next(io) catch return null) orelse break;
+        scanned += 1;
         if (entry.kind == .sym_link or std.mem.eql(u8, entry.name, ".git")) continue;
-        if (entries.items.len == max_scanned) break;
         const is_dir = entry.kind == .directory;
         const child_abs = std.fmt.allocPrint(arena, "{s}/{s}", .{ root_abs, entry.name }) catch return null;
         if (gitignore.ignored(arena, rules, root_abs, child_abs, is_dir) catch return null) continue;
         const shown = std.fmt.allocPrint(arena, "{s}{s}", .{ entry.name, if (is_dir) "/" else "" }) catch return null;
         entries.append(arena, .{ .shown = shown, .is_dir = is_dir, .dist = distance(leaf, entry.name) }) catch return null;
     }
-    if (entries.items.len == 0) return null;
+    if (entries.items.len == 0) {
+        if (!limited) return null;
+        return std.fmt.allocPrint(arena, " Scan stopped after {d} entries in {s}; no visible entries were found among those scanned. Other matches may exist.", .{ scanned, parent_display }) catch null;
+    }
 
     var aw: Io.Writer.Allocating = .init(arena);
     const w = &aw.writer;
@@ -105,13 +121,16 @@ pub fn suggest(io: Io, arena: Allocator, resolved: []const u8, display: []const 
     var close: usize = 0;
     for (entries.items) |e| {
         if (e.dist > threshold(leaf) or close == max_close) break;
-        w.print("{s}{s}", .{ if (close == 0) " Closest match: " else ", ", e.shown }) catch return null;
+        w.print("{s}{s}", .{ if (close == 0) (if (limited) " Closest among scanned entries: " else " Closest match: ") else ", ", e.shown }) catch return null;
         close += 1;
     }
     if (close > 0) w.writeAll(".") catch return null;
 
     std.mem.sort(Entry, entries.items, {}, byName);
-    w.print(" Entries in {s} ({d}): ", .{ parent_display, entries.items.len }) catch return null;
+    if (limited)
+        w.print(" Visible entries among {d} scanned in {s} ({d}): ", .{ scanned, parent_display, entries.items.len }) catch return null
+    else
+        w.print(" Entries in {s} ({d}): ", .{ parent_display, entries.items.len }) catch return null;
     var bytes: usize = 0;
     var listed: usize = 0;
     for (entries.items) |e| {
@@ -122,6 +141,7 @@ pub fn suggest(io: Io, arena: Allocator, resolved: []const u8, display: []const 
     }
     if (listed < entries.items.len) w.print(", … {d} more", .{entries.items.len - listed}) catch return null;
     w.writeAll(".") catch return null;
+    if (limited) w.print(" Scan stopped after {d} entries; other matches may exist.", .{scanned}) catch return null;
     return aw.writer.buffered();
 }
 
@@ -160,4 +180,44 @@ test "not found: names the closest sibling and lists the parent" {
     const none = suggest(io, arena, unrelated, "sub/zzz", null) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, none, "Closest match") == null);
     try std.testing.expect(std.mem.startsWith(u8, none, " Entries in sub (4): "));
+}
+
+test "near-miss scan budget counts ignored entries and still reports an empty partial scan" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = ".gitignore", .data = "*\n" });
+    for (0..4) |i| {
+        var name: [16]u8 = undefined;
+        try tmp.dir.writeFile(io, .{ .sub_path = try std.fmt.bufPrint(&name, "ignored-{d}", .{i}), .data = "x" });
+    }
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &path_buf);
+    const missing = try std.fmt.allocPrint(arena, "{s}/missing", .{path_buf[0..n]});
+    const hint = suggestBudget(io, arena, missing, "missing", null, 2) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, hint, "Scan stopped after 2 entries") != null);
+    try std.testing.expect(std.mem.indexOf(u8, hint, "no visible entries") != null);
+    try std.testing.expect(std.mem.indexOf(u8, hint, "Closest match") == null);
+}
+
+test "near-miss partial scan never claims a global closest match" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "a");
+    try tmp.dir.createDirPath(io, "b");
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &path_buf);
+    const missing = try std.fmt.allocPrint(arena, "{s}/ax", .{path_buf[0..n]});
+    const hint = suggestBudget(io, arena, missing, "ax", null, 1) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, hint, "Closest among scanned entries:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, hint, "Visible entries among 1 scanned") != null);
+    try std.testing.expect(std.mem.indexOf(u8, hint, "other matches may exist") != null);
+    try std.testing.expect(std.mem.indexOf(u8, hint, "Closest match:") == null);
 }

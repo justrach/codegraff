@@ -25,6 +25,7 @@ pub use runtime::{
     ChatHandoffTargetDto, CheckoutGitBranchInput, CloneRepositoryInput, CommitGitChangesInput,
     CompleteProviderAuthInput, CreateGitBranchInput, CreateSavedWorkspaceInput,
     GitWorkspaceKindDto, HandoffChatInput, ProviderEnvOverrideDto, PromptModelOptionDto,
+    TaskWorkspaceActionDto, TaskWorkspaceActionInput, TaskWorkspaceReviewDto,
     PromptSettingsDto, ProviderAuthMethodDto, ProviderAuthMethodKindDto, ProviderAuthSessionDto,
     ProviderAuthSessionKindDto, ProviderOAuthCallbackDto, ProviderSummaryDto, ProviderUrlParamDto,
     ProviderUrlParamValueDto, QuickStartProjectInput, QuickStartVisibility, RemoveProviderInput,
@@ -35,7 +36,7 @@ pub use session::{
     ChatBindingDto, ConversationSessionSummaryDto, ConversationViewSnapshotDto,
     SavedWorkspaceDetailDto, SavedWorkspaceSummaryDto, SessionMessageDto, SessionRecapDto,
     SessionRecapSourceDto, SessionRecapStatusDto, SessionSnapshotDto, SessionTodoDto,
-    SessionTodoStatusDto, WorkspaceKindDto, WorkspaceSessionDto,
+    SessionTodoStatusDto, TaskWorkspaceSummaryDto, WorkspaceKindDto, WorkspaceSessionDto,
 };
 pub use terminal::{
     TerminalCloseInput, TerminalErrorEventDto, TerminalExitEventDto, TerminalOpenInput,

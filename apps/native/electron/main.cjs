@@ -90,7 +90,9 @@ app.whenReady().then(async () => {
     void require('./mcp-install.cjs').installMcp(binary, home, { once: true, version: app.getVersion() })
       .catch(error => dialog.showErrorBox('MCP setup incomplete', `${error.message}\nRetry from Tools → Configure MCP clients.`));
     void require('./engine-launcher.cjs').installEngine(binary, home, {
-      extraBin: ['/opt/homebrew/bin', '/usr/local/bin', path.join(home, 'bin')],
+      extraBin: process.platform === 'darwin'
+        ? ['/opt/homebrew/bin', '/usr/local/bin', path.join(home, 'bin')]
+        : [path.join(home, 'bin')],
     }).then(() => {
       const dir = path.join(home, '.local/bin');
       const parts = (process.env.PATH || '').split(':').filter(Boolean);
@@ -102,9 +104,7 @@ app.whenReady().then(async () => {
   const token = randomBytes(32).toString('hex');
   const liveGlass = process.platform === 'darwin' && !testDesktop;
   let glassOn = false;
-  win = createWindow({ width: 1440, height: 920, minWidth: 900, minHeight: 600,
-    title: appName, titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 11 },
-    transparent: liveGlass, backgroundColor: liveGlass ? '#00000000' : '#fafaf9', show: false,
+  win = createWindow({ ...require('./window-chrome.cjs').mainWindowChrome({ liveGlass, title: appName }),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), partition: 'persist:app',
       contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: !process.env.GRAFF_ELECTRON_SMOKE } });
   const projects = require('./project-store.cjs').projectStore(app.getPath('userData'));
@@ -242,7 +242,7 @@ app.whenReady().then(async () => {
   win.on('restore', () => win.webContents.send('browser-event', { type: 'layout' }));
   const updateMenu = require('./updates.cjs').installUpdates({ app, win, ipcMain, trusted, resources });
   Menu.setApplicationMenu(Menu.buildFromTemplate([
-    { label: appName, submenu: [{ role: 'about' }, ...updateMenu, { type: 'separator' }, { label: 'Activity…', accelerator: 'CmdOrCtrl+,', click: () => void activity().catch(error => dialog.showErrorBox('Activity', error.message)) }, { label: 'Computer use…', click: () => void computer.configure().catch(error => dialog.showErrorBox('Computer use', error.message)) }, { type: 'separator' }, { role: 'quit' }] },
+    { label: appName, submenu: [{ role: 'about' }, ...updateMenu, { type: 'separator' }, { label: 'Activity…', accelerator: 'CmdOrCtrl+,', click: () => void activity().catch(error => dialog.showErrorBox('Activity', error.message)) }, { label: 'Computer use…', visible: process.platform === 'darwin', click: () => void computer.configure().catch(error => dialog.showErrorBox('Computer use', error.message)) }, { type: 'separator' }, { role: 'quit' }] },
     { label: 'File', submenu: [
       ['New chat', 'CmdOrCtrl+N', 'new'], ['New tab', 'CmdOrCtrl+T', 'new'],
       ['Close chat', 'CmdOrCtrl+W', 'close'], ['Reopen closed chat', 'CmdOrCtrl+Shift+T', 'reopen'],
@@ -254,12 +254,15 @@ app.whenReady().then(async () => {
         const detail = await require('./mcp-install.cjs').installMcp(path.join(resources, 'graff'), app.getPath('home'));
         await dialog.showMessageBox(win, { message: 'MCP clients configured', detail });
       } catch (error) { dialog.showErrorBox('MCP setup', error.message); }
-    } }, { label: 'Install codegraff terminal command…', enabled: app.isPackaged && process.platform === 'darwin', click: async () => {
+    } }, { label: 'Install codegraff terminal command…', enabled: app.isPackaged && (process.platform === 'darwin' || process.platform === 'linux'), click: async () => {
       try {
         await require('./engine-launcher.cjs').installEngine(path.join(resources, 'graff'), app.getPath('home'), {
-          extraBin: ['/opt/homebrew/bin', '/usr/local/bin', path.join(app.getPath('home'), 'bin')],
+          extraBin: process.platform === 'darwin'
+            ? ['/opt/homebrew/bin', '/usr/local/bin', path.join(app.getPath('home'), 'bin')]
+            : [path.join(app.getPath('home'), 'bin')],
         });
-        const installed = await require('./cli-launcher.cjs').installLauncher(path.resolve(app.getPath('exe'), '../../..'), app.getPath('home'));
+        const launch = require('./cli-launcher.cjs');
+        const installed = await launch.installLauncher(launch.bundleRoot(app.getPath('exe')), app.getPath('home'));
         await dialog.showMessageBox(win, { message: 'Terminal command installed', detail: `Run graff for the CLI or codegraff . for the GUI. Open a new terminal to load the PATH update (${path.dirname(installed)}).` });
       } catch (error) { dialog.showErrorBox('Terminal command', error.message); }
     } }, { label: 'Browser passkey help…', click: () => void require('./webauthn.cjs').showPasskeyHelp({
@@ -278,7 +281,8 @@ app.whenReady().then(async () => {
     ] },
     { role: 'windowMenu' },
   ]));
-  await win.loadURL(backend.origin); win.setWindowButtonVisibility(true);
+  await win.loadURL(backend.origin);
+  require('./window-chrome.cjs').revealWindowButtons(win);
   if (process.platform === 'darwin') {
     try {
       const native = require(path.join(resources, 'native/activity.node'));

@@ -72,6 +72,7 @@ class FakeBridge {
       return this.stream([{
         type: "turn", text: `${type}:${text}`, context_tokens: 9,
         cost_usd: 0.1, input_tokens: 5, uncached_input_tokens: 2,
+        usage_complete: false, missing_usage_calls: 1, unreported_failed_attempts: 2,
         cache_read_tokens: 3, output_tokens: 4, api_calls: 1,
         subscription_calls: 1, unpriced_calls: 0, complete: true,
         metadata_complete: true,
@@ -126,6 +127,9 @@ describe("RemoteHarness transport", () => {
 
     expect(result.text).toBe("user:one");
     expect(result.cacheReadTokens).toBe(3);
+    expect(result.usageComplete).toBe(false);
+    expect(result.missingUsageCalls).toBe(1);
+    expect(result.unreportedFailedAttempts).toBe(2);
     expect(bridge.requests.slice(0, 4)).toEqual(["user", "set_model", "set_effort", "compact"]);
     expect(bridge.readerCancels).toBeGreaterThanOrEqual(4);
   });

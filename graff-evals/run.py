@@ -22,6 +22,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from list_price import attach as attach_list_price
 import report as eval_report
+import measurement
+import request_capture
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(ROOT)
@@ -88,6 +90,8 @@ def _resolve_model(harness, model):
 def build_cmd(harness, task, model, sandbox=""):
     subst = {"prompt": task["prompt"], "model": _resolve_model(harness, model), "repo": REPO, "sandbox": sandbox}
     cmd = [part.format(**subst) for part in harness["cmd"]]
+    if harness.get("_provider"):
+        cmd = measurement.provider_command(cmd)
     if "output-schema" in task.get("requires", []):
         schema = json.dumps(task["schema"], separators=(",", ":"))
         cmd += [part.format(schema=schema, **subst) for part in harness.get("schema_args", [])]
@@ -272,17 +276,7 @@ def parse_answer_and_usage(harness, stdout, stderr, sandbox=""):
         if not usage.get("calls"):
             usage["calls"] = 1
     if harness.get("usage") == "graff-stderr":
-        m = GRAFF_USAGE_RE.search(stderr)
-        if m:
-            usage = {"calls": int(m.group(1)), "in": int(m.group(2)),
-                     "cached": int(m.group(3)), "writes": int(m.group(4) or 0),
-                     "out": int(m.group(5))}
-        cost_m = re.search(r"\$([0-9.]+)", stderr)
-        if cost_m:
-            usage["cost_usd"] = float(cost_m.group(1))
-        sub_m = re.search(r"(\d+) subscription call\(s\)", stderr)
-        if sub_m:
-            usage["sub_calls"] = int(sub_m.group(1))
+        usage = measurement.graff_usage(stderr)
     return answer, usage
 
 
@@ -357,6 +351,7 @@ def one_run(hname, harness, task, model, rep, live=False):
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         return {"harness": hname, "task": task["id"], "suite": task.get("suite", "core"),
                 "rep": rep, "error": f"environment setup failed: {error}", "outcome_ok": False}
+    verifier_receipt = measurement.verifier_snapshot(sandbox, task, ROOT)
     cmd, stdin_body = build_cmd(harness, task, model, sandbox)
     timeout = task.get("timeout_s", 240)
     t0 = time.monotonic()
@@ -365,12 +360,17 @@ def one_run(hname, harness, task, model, rep, live=False):
     rss_peak = 0
     cpu_sample = 0.0
     ru0 = _rusage_children()
+    env = ({**os.environ, "PWD": sandbox, **{k: str(v).replace("{repo}", REPO).replace("{sandbox}", sandbox)
+           for k, v in harness.get("env", {}).items()}})
+    if harness.get("_provider"):
+        env = measurement.provider_environment(harness["_provider"], sandbox, model=model)
+    if harness.get("_capture_requests"):
+        request_capture.configure(env, sandbox)
     try:
         p = subprocess.Popen(cmd, cwd=sandbox, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, stdin=subprocess.PIPE if stdin_body is not None else None,
                              text=True, start_new_session=True,
-                             env={**os.environ, "PWD": sandbox, **{k: str(v).replace("{repo}", REPO).replace("{sandbox}", sandbox)
-                                                                   for k, v in harness.get("env", {}).items()}})
+                             env=env)
         if stdin_body is not None and p.stdin is not None:
             try:
                 p.stdin.write(stdin_body)
@@ -440,10 +440,7 @@ def one_run(hname, harness, task, model, rep, live=False):
     ru1 = _rusage_children()
     stdout, stderr = "".join(stdout_parts), "".join(stderr_parts)
     wall = round(time.monotonic() - t0, 2)
-    if task.get("requires_clean_exit"):
-        for name, text in (("stdout", stdout), ("stderr", stderr)):
-            fd = os.open(os.path.join(sandbox, f".eval-{name}.txt"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w") as log: log.write(text)
+    measurement.private_logs(sandbox, stdout, stderr)
     answer, usage = parse_answer_and_usage(harness, stdout, stderr, sandbox)
     with open(os.path.join(sandbox, ".eval-answer.txt"), "w") as f:
         f.write(answer)
@@ -459,6 +456,8 @@ def one_run(hname, harness, task, model, rep, live=False):
     except subprocess.TimeoutExpired:
         check_note = f"check timed out after {check_timeout}s"
         check_ok = False
+    verifiers_ok = measurement.verifiers_unchanged(verifier_receipt)
+    check_ok = check_ok and verifiers_ok
     artifact_ok = check_ok
     if task.get("requires_clean_exit"):
         check_ok = check_ok and rc == 0 and not timed_out
@@ -473,6 +472,13 @@ def one_run(hname, harness, task, model, rep, live=False):
            "cpu_sample_s": round(cpu_sample, 3),
            "sandbox_bytes": dir_bytes(sandbox)}
     rec.update({f"tok_{k}": v for k, v in usage.items()})
+    rec.update(measurement.receipt(cmd, harness, task))
+    if harness.get("_capture_requests"):
+        rec.update(request_capture.receipt(sandbox))
+    rec["verifiers_unchanged"] = verifiers_ok
+    if harness.get("_provider"):
+        rec.update(measurement.trace_routing(sandbox, harness["_provider"], model))
+        rec["outcome_ok"] = rec["outcome_ok"] and rec["routing_ok"]
     pin = learn_pin_info(sandbox)
     if pin is not None:
         rec["learn_pin"] = pin
@@ -505,6 +511,11 @@ def interactive(tasks, harnesses):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--harness", default="graff", help="comma-separated harness names (see harnesses.json)")
+    ap.add_argument("--output-root", help="new private directory for receipts and isolated sandboxes")
+    ap.add_argument("--capture-requests", action="store_true", help="save private wire evidence for cache analysis")
+    ap.add_argument("--binary", help="explicit graff executable for this arm")
+    ap.add_argument("--arm", default="baseline", help="comparison arm recorded in every result")
+    ap.add_argument("--provider", help="explicit graff provider; no automatic provider selection")
     ap.add_argument("--model", default=None, help="model id (default: per-harness default_model)")
     ap.add_argument("--task", action="append", help="task id filter (repeatable)")
     ap.add_argument("--suite", default="all",
@@ -521,9 +532,9 @@ def main():
         interactive(tasks, harnesses)
         return
 
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    out_path = os.path.join(RESULTS_DIR, f"run-{stamp}.jsonl")
+    global SANDBOX_DIR
+    out_path, SANDBOX_DIR = measurement.isolated_paths(args.output_root)
+    code_receipt = measurement.revision(REPO)
     suites = {s.strip() for s in args.suite.split(",") if s.strip()}
     if "all" in suites:
         suites.update({"core", "rlm", "swe"})
@@ -538,7 +549,16 @@ def main():
         picked[tid] = t
     work = []
     for hname in args.harness.split(","):
-        harness = harnesses[hname]
+        harness = dict(harnesses[hname], _arm=args.arm, _provider=args.provider, _receipt=code_receipt, _capture_requests=args.capture_requests)
+        if args.provider or args.binary or args.capture_requests:
+            if not hname.startswith("graff"):
+                ap.error("--provider/--binary/--capture-requests require a graff harness")
+            if args.provider and args.provider not in measurement.CREDENTIALS:
+                ap.error("--provider requires a supported credential route")
+            if args.provider and not os.environ.get(measurement.CREDENTIALS[args.provider]):
+                ap.error("selected provider credential is not supplied in the environment")
+            if args.binary:
+                harness["cmd"] = [os.path.abspath(args.binary), *harness["cmd"][1:]]
         model = args.model or harness.get("default_model", "")
         for task in picked.values():
             missing = [c for c in task.get("requires", []) if c not in harness.get("capabilities", [])]

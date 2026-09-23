@@ -171,6 +171,14 @@ def usd_tools(counts: dict | None) -> float:
 
 def attach(rec: dict, inclusive: bool | None = None) -> dict:
     """Mutate `rec` with list-price fields. Returns rec."""
+    if rec.get("tok_missing_usage_calls") or rec.get("tok_usage_complete") is False:
+        # Known subtotals remain in tok_known_*; do not price unknown totals
+        # as zero or reinterpret a subtotal as complete subscription usage.
+        for key in ("ordinary", "cached", "out", "prompt", "tokens",
+                    "token_usd", "tool_usd", "usd", "high_band"):
+            rec["list_" + key] = None
+        rec["list_price_kind"] = "unavailable-missing-usage"
+        return rec
     if inclusive is None:
         inclusive = convention_for(rec)
     ordinary, cached = ordinary_and_cached(rec.get("tok_in"), rec.get("tok_cached"), inclusive)
@@ -179,7 +187,13 @@ def attach(rec: dict, inclusive: bool | None = None) -> dict:
     model = rec.get("model") or ""
     tools = rec.get("tok_tools") or {}
     p = rates_for(model)
-    token_usd = usd_tokens(model, ordinary, cached, out, writes)
+    # Aggregate token sums cannot identify per-request long-context bands.
+    # Nor can one root model price mixed-provider descendant work faithfully.
+    band_unknown = bool(p and p["high_at"] > 0 and ordinary + cached + writes >= p["high_at"] and rec.get("tok_calls") != 1)
+    provider_mismatch = bool(rec.get("requested_provider") and rec["requested_provider"] not in ("xai", "moonshot", "gemini"))
+    if band_unknown or provider_mismatch:
+        p = None
+    token_usd = usd_tokens(model, ordinary, cached, out, writes) if p else 0.0
     tool_usd = usd_tools(tools)
     rec["list_ordinary"] = ordinary
     rec["list_cached"] = cached
@@ -195,7 +209,7 @@ def attach(rec: dict, inclusive: bool | None = None) -> dict:
         rec["list_price_kind"] = "xai-list"
     else:
         rec["list_usd"] = None
-        rec["list_price_kind"] = "none"
+        rec["list_price_kind"] = "unavailable-request-pricing" if band_unknown or provider_mismatch else "none"
     rec["list_high_band"] = bool(p and p["high_at"] > 0 and rec["list_prompt"] >= p["high_at"])
     return rec
 

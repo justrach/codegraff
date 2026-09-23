@@ -130,9 +130,11 @@ test "real malformed TLS handshakes traverse both production constructor catches
     var server = try std.Io.net.IpAddress.listen(&address, io, .{});
     defer server.deinit(io);
     var accepted: std.atomic.Value(usize) = .init(0);
-    var server_future = io.async(serveInvalidTls, .{ io, &server, 2, &accepted });
+    // The stream constructor probes HTTP/2 before std.http, so it accepts twice.
+    var server_future = io.async(serveInvalidTls, .{ io, &server, 3, &accepted });
     defer server_future.await(io);
     defer releaseAccept(io, &server);
+    defer @import("http2_pool.zig").resetForTest();
 
     var url_buf: [64]u8 = undefined;
     const url = try std.fmt.bufPrint(&url_buf, "https://127.0.0.1:{d}/v1/test", .{server.socket.address.getPort()});
@@ -148,7 +150,7 @@ test "real malformed TLS handshakes traverse both production constructor catches
     root.sub = false;
     try std.testing.expectError(error.TlsRequestConstructionFailed, root.postStreamWithClient(&runtime.client, "{}"));
     try std.testing.expectEqual(@as(u64, 2), runtime.recovery.stats().active_id);
-    try std.testing.expectEqual(@as(usize, 2), accepted.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 3), accepted.load(.acquire));
 }
 
 test "TUI turn agent and actual runSub child share the recovered generation" {

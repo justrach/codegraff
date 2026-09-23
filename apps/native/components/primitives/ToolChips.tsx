@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
+import { shortPath } from "@/lib/diff-chip-label";
+import DiffChipStrip from "./DiffChipStrip";
 import ToolOutput from "./ToolOutput";
 
 /* ─────────────────────────────────────────────────────────
@@ -55,33 +56,34 @@ const ROWS: { icon: string; label: string; chip: string; mono: boolean; detailMo
 ];
 
 const DIFFS = [
-  { file: "flavors.css", add: 13, del: 0 },
-  { file: "ChurnSchedule.tsx", add: 74, del: 41 },
-  { file: "menu.ts", add: 8, del: 2 },
+  {
+    file: "flavors.css", add: 13, del: 0,
+    lines: [
+      { text: ".scoop-card {", tone: "ctx" as const },
+      { text: "  gap: 14px;", tone: "del" as const },
+      { text: "  gap: 12px;", tone: "add" as const },
+      { text: "  container-type: inline-size;", tone: "add" as const },
+      { text: "}", tone: "ctx" as const },
+    ],
+  },
+  {
+    file: "ChurnSchedule.tsx", add: 74, del: 41,
+    lines: [
+      { text: "const slots = coldSlots(week);", tone: "ctx" as const },
+      { text: "const windows = slots;", tone: "del" as const },
+      { text: "const windows = slots.filter(", tone: "add" as const },
+      { text: "  (s) => s.temp <= -12,", tone: "add" as const },
+      { text: ");", tone: "add" as const },
+    ],
+  },
+  {
+    file: "menu.ts", add: 8, del: 2,
+    lines: [
+      { text: "export const hero = \"mint-chip\";", tone: "del" as const },
+      { text: "export const hero = \"pistachio\";", tone: "add" as const },
+    ],
+  },
 ];
-
-/* hovering a file chip opens its diff — green added, red removed */
-type DiffLine = { text: string; tone: "add" | "del" | "ctx" };
-const DIFF_LINES: Record<string, DiffLine[]> = {
-  "flavors.css": [
-    { text: ".scoop-card {", tone: "ctx" },
-    { text: "  gap: 14px;", tone: "del" },
-    { text: "  gap: 12px;", tone: "add" },
-    { text: "  container-type: inline-size;", tone: "add" },
-    { text: "}", tone: "ctx" },
-  ],
-  "ChurnSchedule.tsx": [
-    { text: "const slots = coldSlots(week);", tone: "ctx" },
-    { text: "const windows = slots;", tone: "del" },
-    { text: "const windows = slots.filter(", tone: "add" },
-    { text: "  (s) => s.temp <= -12,", tone: "add" },
-    { text: ");", tone: "add" },
-  ],
-  "menu.ts": [
-    { text: "export const hero = \"mint-chip\";", tone: "del" },
-    { text: "export const hero = \"pistachio\";", tone: "add" },
-  ],
-};
 
 export type LiveToolRow = {
   id?: string;
@@ -126,9 +128,9 @@ export default function ToolChips({
   const live = liveRows !== undefined;
   const rows = live ? liveRows : ROWS;
   const diffs = live ? (liveDiffs ?? []) : DIFFS;
-  const diffLines: Record<string, { text: string; tone: "add" | "del" | "ctx" }[]> = live
-    ? Object.fromEntries((liveDiffs ?? []).map((d) => [d.file, d.lines ?? []]))
-    : DIFF_LINES;
+  const pathPeers = rows.flatMap((row) =>
+    "path" in row && row.path && row.chip === row.path ? [row.path] : [],
+  );
   const [step, setStep] = useState(0);
   const [page, setPage] = useState(0);
   const pageSize = 50;
@@ -145,28 +147,6 @@ export default function ToolChips({
   // Disclosure belongs to the reader. New calls and completion never change it.
   const showHeader = true;
   const [openRows, setOpenRows] = useState<Set<string>>(new Set());
-  /* Rendered in a body portal so animated/translated reply wrappers cannot
-   * redefine the fixed-position coordinate system. */
-  const [preview, setPreview] = useState<{
-    file: string;
-    x: number;
-    top?: number;
-    bottom?: number;
-  } | null>(null);
-  const openPreview = (file: string) => (event: React.SyntheticEvent) => {
-    const rect = (event.currentTarget as Element).closest("[data-diffchip]")!.getBoundingClientRect();
-    const previewHeight = 38 + (diffLines[file]?.length ?? 0) * 19;
-    const fitsBelow = rect.bottom + 6 + previewHeight <= window.innerHeight - 12;
-    setPreview({
-      file,
-      x: Math.max(12, Math.min(rect.left, window.innerWidth - 300)),
-      ...(fitsBelow
-        ? { top: rect.bottom + 6 }
-        : { bottom: window.innerHeight - rect.top + 6 }),
-    });
-  };
-  const closePreview = (file: string) => () =>
-    setPreview((current) => (current?.file === file ? null : current));
   const total = live ? rows.length : ROWS.length + 1; // rows, then diff chips
 
   useEffect(() => {
@@ -284,7 +264,7 @@ export default function ToolChips({
                         text-[12px] text-ink shadow-hairline transition-colors duration-100 hover:bg-hover-2
                         ${row.mono ? "font-mono" : ""} ${onOpenPath && "path" in row && row.path ? "cursor-pointer" : ""}`}
                     >
-                      {row.chip}
+                      {"path" in row && row.path && row.chip === row.path ? shortPath(row.path, pathPeers) : row.chip}
                     </span>
                   </>
                 ) : (
@@ -312,76 +292,9 @@ export default function ToolChips({
         </div>
       </div>}
 
-      {/* file-diff chips — sit outside the disclosure so a collapsed run still shows what changed */}
+      {/* A few short names. A long edit list folds; the full paths stay on hover. */}
       {(live ? diffs.length > 0 : step >= total) && (
-        <div className="mt-2.5 flex max-w-full flex-wrap gap-1.5 border-t border-line pt-2.5">
-          {diffs.map((d, i) => (
-            <span
-              key={d.file}
-              data-diffchip
-              className="relative"
-              onMouseEnter={openPreview(d.file)}
-              onMouseLeave={closePreview(d.file)}
-            >
-              <button
-                type="button"
-                aria-expanded={preview?.file === d.file}
-                aria-label={`Show diff for ${d.file}`}
-                onFocus={openPreview(d.file)}
-                onBlur={closePreview(d.file)}
-                onClick={onOpenPath ? () => onOpenPath(d.file) : undefined}
-                className="inline-flex h-7 max-w-full items-center gap-1.5 rounded-chip
-                  bg-surface px-2 font-mono text-[11.5px] text-ink shadow-btn
-                  transition-colors duration-100 hover:bg-hover"
-                style={{ animation: `pop-in 250ms cubic-bezier(0.23,1,0.32,1) ${i * 80}ms both` }}
-              >
-                <span className="min-w-0 truncate">{d.file}</span>
-                <span className="shrink-0 text-green tabular-nums">+{d.add}</span>
-                {d.del > 0 && <span className="shrink-0 text-red tabular-nums">−{d.del}</span>}
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-      {preview && typeof document !== "undefined" && createPortal(
-        <div
-          className="fixed z-50 w-72 overflow-hidden rounded-[10px] bg-surface shadow-overlay"
-          style={{
-            left: preview.x,
-            top: preview.top,
-            bottom: preview.bottom,
-            animation: "pop-in 160ms cubic-bezier(0.23,1,0.32,1) both",
-            transformOrigin: preview.top === undefined ? "bottom left" : "top left",
-          }}
-        >
-          <div className="flex items-center justify-between border-b border-line px-2.5 py-1.5 font-mono text-[11px]">
-            <span className="min-w-0 truncate text-ink-2">{preview.file}</span>
-            <span className="shrink-0 tabular-nums">
-              <span className="text-green">+{diffs.find((diff) => diff.file === preview.file)?.add}</span>
-              {(diffs.find((diff) => diff.file === preview.file)?.del ?? 0) > 0 && (
-                <span className="text-red"> −{diffs.find((diff) => diff.file === preview.file)?.del}</span>
-              )}
-            </span>
-          </div>
-          <div className="py-1 font-mono text-[11px] leading-[1.8]">
-            {(diffLines[preview.file] ?? []).map((line, index) => (
-              <div
-                key={index}
-                className={`flex gap-2 px-2.5 whitespace-pre ${
-                  line.tone === "add"
-                    ? "bg-green-tint text-green"
-                    : line.tone === "del"
-                      ? "bg-red-tint text-red"
-                      : "text-ink-2"
-                }`}
-              >
-                <span className="w-3 shrink-0 select-none">{line.tone === "add" ? "+" : line.tone === "del" ? "−" : " "}</span>
-                <span className="min-w-0 truncate">{line.text}</span>
-              </div>
-            ))}
-          </div>
-        </div>,
-        document.body,
+        <DiffChipStrip diffs={diffs} onOpenPath={onOpenPath} />
       )}
     </div>
   );

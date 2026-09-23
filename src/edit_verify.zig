@@ -31,11 +31,11 @@ const runCapped = @import("jobs.zig").runCapped;
 const codedbpro_report = @import("codedbpro_report.zig"); // persistent-daemon splice fast path
 
 /// Whole-file read ceiling for the splice source (unchanged from exec.zig).
-const edit_read_cap: usize = 1024 * 1024;
+pub const edit_read_cap: usize = 1024 * 1024;
 /// The verification re-read is deliberately looser than the source cap: a
 /// `replace_all` can grow a file past it, and a re-read that failed on size
 /// alone would report a false "did not persist".
-const verify_read_cap: usize = 16 * 1024 * 1024;
+pub const verify_read_cap: usize = 16 * 1024 * 1024;
 
 /// The companion binary the premium splice shells out to. `pub var` purely so
 /// a test can point it at a stub that CLAIMS success without writing — the
@@ -168,7 +168,7 @@ fn verifyOnDisk(
 /// Has anything touched the file since `prev` was taken? Size or mtime is
 /// enough: an in-place truncate changes the size, an atomic tmp+rename changes
 /// the mtime. A missing baseline (the stat failed) can never claim drift.
-fn drifted(io: Io, resolved: []const u8, prev: ?Io.Dir.Stat) bool {
+pub fn drifted(io: Io, resolved: []const u8, prev: ?Io.Dir.Stat) bool {
     const base = prev orelse return false;
     const now = Io.Dir.cwd().statFile(io, resolved, .{}) catch return false;
     return now.size != base.size or now.mtime.nanoseconds != base.mtime.nanoseconds;

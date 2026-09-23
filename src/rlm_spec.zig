@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 
 const spec_ptc = @import("spec_ptc.zig");
 const tools = @import("tools.zig");
+const order = @import("rlm_order.zig");
 const ToolCtx = tools.ToolCtx;
 const ToolOutput = tools.ToolOutput;
 
@@ -22,7 +23,7 @@ pub var run_host: ?*const fn (ToolCtx, spec_ptc.Call) ToolOutput = null;
 /// `subagent("task")` is Prime-style recursion via graff's existing subagent
 /// tool. v1 is synchronous; speculate() still overlaps independent calls.
 /// Keyword `run_in_background=true` returns an agent id (a handle).
-pub const system_note = "\n\nrlm(code): session tools as a script. Literal read_file/codedb/bash/llm_query/subagent start as it streams. Binds persist until /new or /clear. subagent(\"task\") is sidecar-only; keep the critical-path next step local. Loaded MCP names are host functions; each() maps a JSON array; len/project slim it. print(...) is the answer.";
+pub const system_note = "\n\nrlm(code): tools as script. Leading reads overlap; other calls run in order, stopping on error/cancel/pending. Binds persist until /new or /clear. subagent() is sidecar-only; keep critical-path local. Loaded MCP names are functions (tools.server.tool too). each maps arrays; len/project slim them. print() returns the answer.";
 
 /// One REPL assignment. `runScript` seeds these from the process-local store
 /// so a later `rlm` call can `print(prev)` without re-reading. Owned by the
@@ -110,6 +111,7 @@ const Inflight = struct {
 const Live = struct {
     mu: Io.Mutex = .init,
     ready: bool = false,
+    barrier: bool = false,
     seg: spec_ptc.Segmenter = .{},
     launched: std.StringHashMap(void) = undefined,
     inflight: std.ArrayList(Inflight) = .empty,
@@ -166,6 +168,7 @@ pub fn takeLive(ctx: ToolCtx, claimed: *std.StringHashMap(ToolOutput), arena: Al
     live.launched.clearRetainingCapacity();
     live.seg.deinit(ctx.gpa);
     live.seg = .{};
+    live.barrier = false;
 }
 
 fn liveInit(gpa: Allocator) void {
@@ -191,6 +194,7 @@ fn resetUnlocked(gpa: Allocator, io: Io) void {
     }
     live.seg.deinit(gpa);
     live.seg = .{};
+    live.barrier = false;
 }
 
 fn runHostThunk(ctx: ToolCtx, call: spec_ptc.Call) ToolOutput {
@@ -206,14 +210,18 @@ fn launchStmts(ctx: ToolCtx, stmts: []const []const u8) void {
     for (stmts) |stmt| {
         const pieces = spec_ptc.splitStatements(arena, stmt) catch continue;
         for (pieces) |piece| {
-            launchOne(ctx, arena, piece);
+            if (live.barrier) continue;
+            const calls = (order.leading(arena, piece) catch null) orelse {
+                live.barrier = true;
+                continue;
+            };
+            for (calls) |call| launchOne(ctx, arena, call);
         }
     }
 }
 
-fn launchOne(ctx: ToolCtx, arena: Allocator, stmt: []const u8) void {
+fn launchOne(ctx: ToolCtx, arena: Allocator, call: spec_ptc.Call) void {
     if (run_host == null) return;
-    const call = (spec_ptc.extractCall(arena, stmt) catch return) orelse return;
     const key = call.key(arena) catch return;
     if (live.launched.contains(key) or live.done.contains(key)) return;
     const owned_key = ctx.gpa.dupe(u8, key) catch return;

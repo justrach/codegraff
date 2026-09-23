@@ -19,6 +19,9 @@ const agent_mod = @import("agent.zig");
 const http = @import("http.zig");
 const http_stall = @import("http_stall.zig");
 const plugins = @import("plugins.zig");
+const jev_tool = @import("jev_tool.zig");
+const oauth = @import("oauth.zig");
+const keys_cli = @import("keys_cli.zig");
 const job_idle = @import("job_idle.zig"); // #199: GRAFF_JOB_IDLE_WARN_MINS / GRAFF_JOB_IDLE_STOP_MINS
 const ws = @import("ws.zig");
 const agent_ws = @import("agent_ws.zig"); // codex_ws_idle_ms override (#codex-ws)
@@ -66,6 +69,7 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     // auto-detection above it, NOT arbitrary workspace config.
     main_mod.g_path_env = try arena.dupe(u8, environ_map.get("PATH") orelse "");
     plugins.applyEnv(environ_map);
+    jev_tool.configure(environ_map);
     main_mod.g_codedb_guard = environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
     job_idle.applyEnv(environ_map); // #199: background-job idle warn/stop, minutes (0 = off)
     main_mod.g_force_stall_once = environ_map.get("GRAFF_FORCE_STALL_ONCE") != null; // #134 test seam
@@ -108,6 +112,9 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     if (environ_map.get("GRAFF_CODEX_WS")) |v| {
         main_mod.g_codex_ws = !(std.ascii.eqlIgnoreCase(v, "off") or std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "no"));
     }
+    if (environ_map.get("GRAFF_HTTP2")) |v| {
+        main_mod.g_http2 = !(std.ascii.eqlIgnoreCase(v, "off") or std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "no"));
+    }
     // #225 GRAFF_CLOCK_SLEEP (root-only clock_sleep meta tool) and #330
     // GRAFF_NO_LOCAL_TOOLS (the hard local-execution gate): both are
     // affirmative-only (1|true|on|yes), like GRAFF_WS_FORCE_FAIL_ONCE below,
@@ -145,8 +152,9 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     // GRAFF_LEAN: presence-based, matching session_start.leanMode
     // (the MCP half of the same switch) — a "0" still means lean, by design.
     if (environ_map.get("GRAFF_LEAN") != null) no_local_tools.lean = true;
+    @import("async_tool_policy.zig").configure(environ_map.get("GRAFF_ASYNC_TOOLS"));
     // GRAFF_REQ_STATS: presence-based request-anatomy print (req_stats).
-    @import("req_stats.zig").g_armed = environ_map.get("GRAFF_REQ_STATS") != null;
+    try @import("req_stats.zig").configure(arena, environ_map.get("GRAFF_REQ_STATS") != null, environ_map.get("GRAFF_REQ_DUMP_DIR"));
     // GRAFF_CODEX_FULL_RESEND: presence-based — never chain previous_response_id
     // (codex_chain); the opencode-shape experiment for cache-hit measurement.
     if (environ_map.get("GRAFF_CODEX_FULL_RESEND") != null) @import("codex_chain.zig").g_force_full_resend = true;
@@ -240,9 +248,11 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
         if (v.len > 0) provider_mod.g_vercel_url_override = v;
     }
     ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
-    // #502 follow-up: opt-in xAI on-socket chaining (see codex_chain.g_xai_ws_chain).
-    if (environ_map.get("GRAFF_XAI_WS_CHAIN")) |v|
-        @import("codex_chain.zig").g_xai_ws_chain = std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "true");
+    // xAI on-socket chaining is on (ADR 0002). GRAFF_XAI_WS_CHAIN=0/off/false opts out.
+    if (environ_map.get("GRAFF_XAI_WS_CHAIN")) |v| {
+        const off = std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "off") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "no");
+        @import("codex_chain.zig").g_xai_ws_chain = !off;
+    }
     // GRAFF_WS_FORCE_FAIL_ONCE proves a clean retry; the counted sibling proves
     // that two consecutive failures latch the SSE fallback. Test seams only.
     if (environ_map.get("GRAFF_WS_FORCE_FAIL_ONCE")) |v| {
@@ -256,8 +266,14 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     }
 }
 
+fn codegraffLoginKey(io: Io, arena: Allocator, environ_map: anytype) ?[]const u8 {
+    const home = keys_cli.homeEnv(environ_map) orelse return null;
+    return oauth.loadCodegraffKey(io, arena, home);
+}
+
 pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: *Io.Writer, flags: args.Flags, use_color: bool, json_mode: bool, cwd_display: []const u8) !ThemeSetup {
     try applyEnvKnobs(arena, environ_map);
+    _ = jev_tool.setCodegraffLoginKey(io, codegraffLoginKey(io, arena, environ_map));
     skills.loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     anim.loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
     anim.loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme
@@ -336,4 +352,31 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
     }
     anim.loadDevSpinnerOptOut(io, arena, environ_map);
     return .{ .theme_on = theme_on, .limyuxi_glam = limyuxi_glam, .should_exit = false };
+}
+
+test "Jev startup gate requires a persisted Codegraff login, not an env API key" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home = real_buf[0..try tmp.dir.realPath(io, &real_buf)];
+    const env = struct {
+        home: []const u8,
+        pub fn get(self: @This(), key: []const u8) ?[]const u8 {
+            if (std.mem.eql(u8, key, "HOME")) return self.home;
+            if (std.mem.eql(u8, key, "CODEGRAFF_API_KEY")) return "env-only-key";
+            return null;
+        }
+    }{ .home = home };
+    try std.testing.expect(codegraffLoginKey(io, arena, env) == null);
+    try Io.Dir.cwd().writeFile(io, .{
+        .sub_path = try std.fmt.allocPrint(arena, "{s}/.simple-harness-codegraff.json", .{home}),
+        .data = "{\"api_key\":\"synthetic-login\"}",
+    });
+    try std.testing.expectEqualStrings("synthetic-login", codegraffLoginKey(io, arena, env).?);
+    try tmp.dir.deleteFile(io, ".simple-harness-codegraff.json");
+    try std.testing.expect(codegraffLoginKey(io, arena, env) == null);
 }

@@ -6,5 +6,5 @@ const TRANSIENT_RETRY =
 /** Inner notice for TurnActivity, or null when the chunk is ordinary prose. */
 export function transientRetryNotice(text: string): string | null {
   const line = text.trim();
-  return TRANSIENT_RETRY.test(line) ? line.slice(1, -1) : null;
+  return (TRANSIENT_RETRY.test(line) || /^\[network error: [A-Za-z0-9_]+ — retrying in \d+ms \(\d+\/\d+\)\]$/.test(line)) ? line.slice(1, -1) : null;
 }

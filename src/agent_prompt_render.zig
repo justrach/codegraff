@@ -28,6 +28,7 @@ pub fn reasoningLabel(effort: anytype) []const u8 {
         .xhigh => "Extra high",
         .max => "Max",
         .ultra => "Ultra",
+        .none => "Off",
     };
 }
 
@@ -39,6 +40,7 @@ pub fn reasoningColor(effort: anytype) []const u8 {
         .xhigh => style.accent,
         .max => style.red,
         .ultra => style.accent,
+        .none => style.green,
     };
 }
 
@@ -165,13 +167,14 @@ fn line(w: *Io.Writer, st: PromptStatus, cols: usize) !void {
 }
 
 test "reasoning prompt label uses picker wording" {
-    const Effort = enum { low, medium, high, xhigh, max, ultra };
+    const Effort = enum { low, medium, high, xhigh, max, ultra, none };
     try std.testing.expectEqualStrings("Low", reasoningLabel(Effort.low));
     try std.testing.expectEqualStrings("Medium", reasoningLabel(Effort.medium));
     try std.testing.expectEqualStrings("High", reasoningLabel(Effort.high));
     try std.testing.expectEqualStrings("Extra high", reasoningLabel(Effort.xhigh));
     try std.testing.expectEqualStrings("Max", reasoningLabel(Effort.max));
     try std.testing.expectEqualStrings("Ultra", reasoningLabel(Effort.ultra));
+    try std.testing.expectEqualStrings("Off", reasoningLabel(Effort.none));
 }
 
 test "compact token counts keep prompt usage readable" {

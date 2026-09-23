@@ -14,7 +14,7 @@ async function worker(mode: string) {
     const send = value => console.log(JSON.stringify(value));
     require('node:readline').createInterface({input:process.stdin}).on('line', line => {
       const req=JSON.parse(line);
-      if(req.method==='initialize' && mode!=='initialize') send({id:req.id,result:{}});
+      if(req.method==='initialize' && mode!=='initialize') send({id:req.id,result:{protocolVersion:1}});
       if(req.method==='session/new' && mode!=='session/new') send({id:req.id,result:mode==='invalid'?{}:mode==='isolated'?{sessionId:'ready',cwd:'/isolated/tree'}:{sessionId:'ready'}});
     });
     console.log('ready');
@@ -23,6 +23,37 @@ async function worker(mode: string) {
   await once(child.stdout, "data");
   return { child, transport };
 }
+
+for (const initialized of [{ protocolVersion: 2 }, { protocolVersion: 0 }, { protocolVersion: "1" }, {}, null]) {
+  test(`unsupported initialize response retires worker before session/new: ${JSON.stringify(initialized)}`, async () => {
+    const calls: string[] = [];
+    let retired = false;
+    let aborted = false;
+    const transport = {
+      request: async (method: string) => { calls.push(method); return initialized; },
+      abort: () => { aborted = true; },
+    } as unknown as AcpTransport;
+    await expect(initializeWorker(transport, "/workspace", async () => { retired = true; }, 1000))
+      .rejects.toThrow("unsupported or missing protocolVersion");
+    expect(calls).toEqual(["initialize"]);
+    expect(aborted).toBe(true);
+    expect(retired).toBe(true);
+  });
+}
+
+test("session/new supplies the required empty MCP server list", async () => {
+  const calls: Array<{ method: string; params: unknown }> = [];
+  const transport = {
+    request: async (method: string, params: unknown) => {
+      calls.push({ method, params });
+      return method === "initialize" ? { protocolVersion: 1 } : { sessionId: "ready" };
+    },
+  } as unknown as AcpTransport;
+  expect(await initializeWorker(transport, "/workspace", async () => {
+    throw new Error("A successful handshake must not retire its child");
+  }, 1000)).toEqual({ sessionId: "ready" });
+  expect(calls[1]).toEqual({ method: "session/new", params: { cwd: "/workspace", mcpServers: [] } });
+});
 
 for (const mode of ["initialize", "session/new", "invalid"]) {
   test(`failed ACP ${mode} retires its child and a fresh worker succeeds`, async () => {

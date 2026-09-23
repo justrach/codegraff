@@ -24,11 +24,13 @@ const serde = @import("serde.zig");
 
 const WatchdogFired = http.WatchdogFired;
 
-/// Should this fresh connection prewarm? Codex brand, session start (nothing
-/// sent, no chain anchor), and not under the full-resend experiment (seeding
-/// the chain would fight the flag's premise).
+/// Should this fresh connection prewarm? Codex or xAI (on-socket chain),
+/// session start (nothing sent, no chain anchor), and not under the full-resend
+/// experiment (seeding the chain would fight the flag's premise).
 pub fn eligible(self: *const Agent) bool {
-    if (!std.mem.eql(u8, self.provider.id, "codex")) return false;
+    const brand = std.mem.eql(u8, self.provider.id, "codex") or
+        (std.mem.eql(u8, self.provider.id, "xai") and codex_chain.g_xai_ws_chain);
+    if (!brand) return false;
     if (codex_chain.g_force_full_resend) return false;
     return self.codex_ws != null and self.codex_prev_id == null and self.codex_sent_upto == 0;
 }
@@ -191,6 +193,31 @@ test "stripTransportFields: WS frames omit the SSE-only stream field" {
     const clean = try gpa.dupe(u8, "{\"type\":\"response.create\",\"model\":\"m\"}");
     defer gpa.free(clean);
     try stdt.testing.expectEqualStrings(clean, stripTransportFields(clean));
+}
+
+test "eligible: xAI session start when chaining is on" {
+    const stdt = std;
+    var arena_state = stdt.heap.ArenaAllocator.init(stdt.testing.allocator);
+    defer arena_state.deinit();
+    var agent = Agent{
+        .io = stdt.testing.io,
+        .client = undefined,
+        .provider = .{ .id = "xai", .kind = .responses, .auth = .bearer, .url = "https://api.x.ai/v1/responses", .api_key = "k", .model = "grok-4.6", .context = 500_000 },
+        .messages = stdt.json.Array.init(arena_state.allocator()),
+        .sub = false,
+        .label = "main",
+        .out = null,
+        .arena = arena_state.allocator(),
+        .gpa = stdt.testing.allocator,
+    };
+    var held: ws.WsClient = undefined;
+    agent.codex_ws = &held;
+    const saved = codex_chain.g_xai_ws_chain;
+    defer codex_chain.g_xai_ws_chain = saved;
+    codex_chain.g_xai_ws_chain = true;
+    try stdt.testing.expect(eligible(&agent));
+    codex_chain.g_xai_ws_chain = false;
+    try stdt.testing.expect(!eligible(&agent));
 }
 
 test "eligible: codex session start only" {

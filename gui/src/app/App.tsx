@@ -132,8 +132,8 @@ function AppShell() {
   const [isSidebarAnimating, setIsSidebarAnimating] = useState(false);
   const sidebarAnimateTimeoutRef = useRef<number | null>(null);
   // Holds the latest openNewChat from the always-mounted NewChatTrigger so the
-  // global Cmd/Ctrl+N shortcut can invoke it (including its git-worktree choice
-  // dialog) no matter what's visible.
+  // global Cmd/Ctrl+N shortcut opens a chat in the current folder no matter
+  // what's visible.
   const newChatRef = useRef<(() => void) | null>(null);
   // Briefly enable a width transition on the panels so toggling the sidebar
   // slides smoothly (like the artifacts drawer) instead of snapping. Kept off
@@ -229,8 +229,8 @@ function AppShell() {
     };
   }, []);
 
-  // Global Cmd/Ctrl+N → new chat. Reuses NewChatTrigger's openNewChat (captured
-  // in newChatRef) so the git-worktree choice dialog flows through identically.
+  // Global Cmd/Ctrl+N → new chat in the folder already open. Reuses
+  // NewChatTrigger's openNewChat (captured in newChatRef).
   // Skipped while a settings view or dialog is open or while the session is
   // mid-bootstrap, and ignores key presses originating inside an input/textarea
   // so it never fights typing — though Cmd+N is uncommon enough to be safe.

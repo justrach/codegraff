@@ -23,13 +23,16 @@ Copied from Beautiful UI:
 Dropped:
 
 - **posthog** / `instrumentation-client.ts` / email capture
-- **cuelume** interaction sounds
 - **dialkit** tuning overlay
 - **`@central-icons-react`** — commercial; `CENTRAL_LICENSE_KEY` is not set
   here, so SidebarNav uses the free stroke set in `lib/icons.tsx`
 - Ice-cream `SCENARIOS` / `matchScenario` demo data
 
-Kept (free): `tailwindcss` v4, `shadow-plugin`, `iconoir-react`, `liveline`.
+Kept (free): `tailwindcss` v4, `shadow-plugin`, `iconoir-react`, `liveline`,
+and optional [cuelume](https://github.com/Danilaa1/cuelume) interface sounds
+(MIT, off by default). See `THIRD_PARTY_NOTICES.md` and
+`third-party/cuelume/`.
+
 The prompt-bar feedback uses a short native browser animation; it does not
 allocate a shader canvas.
 
@@ -116,7 +119,7 @@ the workspace root (`cwd` / `?root=`) and fall back to the default from
 
 ## Split view and tab names
 
-`⌘D` (or the split button in the tab bar) opens another chat beside the
+`⌘D` on macOS or `Ctrl+D` on Windows/Linux (or the split button in the tab bar) opens another chat beside the
 ones on screen, up to four columns. Each has its own transcript,
 composer, model and scroll position, and each split names the chat and
 the folder it runs in, since a split can be in a different workspace
@@ -152,33 +155,35 @@ Graff, including `/compact`. New tabs inherit it before starting a coding sessio
 Command behavior belongs to the engine; terminal display settings retain their
 terminal meaning. Menus remain inside the window and scroll independently.
 
-The desktop adapts familiar Ghostty bindings to chats and split panes:
+The desktop adapts familiar Ghostty bindings to chats and split panes.
+The menus and in-app shortcut hints display the host platform's modifier.
 
-| Keys | Action |
-|---|---|
-| `⌘N` / `⌘T` | New chat |
-| `⌘W` | Close the active chat |
-| `⇧⌘T` | Reopen the last closed chat |
-| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous chat |
-| `⇧⌘]` / `⇧⌘[` | Next / previous chat |
-| `⌘1`…`⌘8` / `⌘9` | Select a tab / select the last tab |
-| `⌘D` / `⇧⌘D` | Split right / down, up to four panes |
-| `⌘]` / `⌘[` or `⌥⌘` + arrow | Focus the next / previous split |
-| `⇧⌘Enter` | Zoom the active split / restore all splits |
-| `Ctrl+⌘` + arrow | Resize the active split |
-| `Ctrl+⌘=` | Equalize split sizes |
-| `⌘\` | Toggle splits |
-| `⌘O` | Open a workspace folder |
-| `⌘J` | Show / hide the workspace terminal |
-| `⌘K` in the terminal | Clear the visible terminal |
-| `⌘Enter` / `Ctrl+⌘F` | Toggle fullscreen |
-| `⌘+` / `⌘−` / `⌘0` | Increase / decrease / reset interface zoom |
+| macOS | Windows / Linux | Action |
+|---|---|---|
+| `⌘N` / `⌘T` | `Ctrl+N` / `Ctrl+T` | New chat |
+| `⌘W` | `Ctrl+W` | Close the active chat |
+| `⇧⌘T` | `Ctrl+Shift+T` | Reopen the last closed chat |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous chat |
+| `⇧⌘]` / `⇧⌘[` | `Ctrl+Shift+]` / `Ctrl+Shift+[` | Next / previous chat |
+| `⌘1`…`⌘8` / `⌘9` | `Ctrl+1`…`Ctrl+8` / `Ctrl+9` | Select a tab / select the last tab |
+| `⌘D` / `⇧⌘D` | `Ctrl+D` / `Ctrl+Shift+D` | Split right / down, up to four panes |
+| `⌘]` / `⌘[` or `⌥⌘` + arrow | `Ctrl+]` / `Ctrl+[` | Focus the next / previous split |
+| `⇧⌘Enter` | `Ctrl+Shift+Enter` | Zoom the active split / restore all splits |
+| `Ctrl+⌘` + arrow | `Ctrl+Alt` + arrow | Resize the active split |
+| `Ctrl+⌘=` | `Ctrl+Alt+=` | Equalize split sizes |
+| `⌘\` | `Ctrl+\` | Toggle splits |
+| `⌘O` | `Ctrl+O` | Open a workspace folder |
+| `⌘L` | `Ctrl+L` | Focus the prompt |
+| `⌘J` | `Ctrl+J` | Show / hide the workspace terminal |
+| `⌘K` in the terminal | `Ctrl+K` in the terminal | Clear the visible terminal |
+| `⌘Enter` / `Ctrl+⌘F` | `Ctrl+Enter` | Toggle fullscreen |
+| `⌘+` / `⌘−` / `⌘0` | `Ctrl++` / `Ctrl+-` / `Ctrl+0` | Increase / decrease / reset interface zoom |
 
 The File menu lists the main actions. Standard copy, paste, undo and text selection
 remain native. Terminal-only actions such as sending escape sequences have no
 chat equivalent. A web browser reserves some shortcuts for its own tabs.
 
-The macOS workspace terminal opens your login shell in the active folder. Drag
+The macOS workspace terminal opens your login shell in the active folder. On Linux it opens `$SHELL` through a POSIX PTY. Drag
 its top edge to resize it. Hiding it preserves the session; **End session** stops
 it. Up to four workspace shells can stay open, with bounded output history.
 

@@ -31,6 +31,8 @@ Assertions a case can make:
   {"events_at_most":  {"match": {...}, "count": N}}
   {"request_contains": {"index": -1, "text": "..."}}   what the harness sent
   {"request_lacks":    {"index": -1, "text": "..."}}
+  {"request_count": N}                     exact captured wire count (scripted only)
+  {"stdout_equals": "..."}                 exact raw stdout, including newlines
   {"final_text_contains": "..."}
   {"file_equals": {"path": "relative/file", "content": "exact bytes"}}
   {"stderr_contains": "..."}                what the harness printed to stderr
@@ -102,10 +104,11 @@ class Run:
     """One harness run: the events it emitted and the requests it sent."""
 
     def __init__(self, events: list[dict[str, Any]], requests: list[dict[str, Any]],
-                 stderr: str, exit_code: int | None, files=None, verification=None) -> None:
+                 stderr: str, exit_code: int | None, files=None, verification=None, stdout="") -> None:
         self.events = events
         self.requests = requests
         self.stderr = stderr
+        self.stdout = stdout
         self.exit_code = exit_code
         self.files = files or {}
         self.verification = verification
@@ -256,13 +259,13 @@ def execute(case: dict[str, Any], graff: str, port: int,
                 destination.mkdir(parents=True, exist_ok=True, mode=0o700)
                 (destination / "result.json").write_text(json.dumps(dict(
                     events=events, requests=list(scripted.requests), files=files,
-                    verification=verification, exit_code=code), indent=2))
+                    verification=verification, exit_code=code, stdout=stdout), indent=2))
                 (destination / "stderr.log").write_text(stderr)
                 for folder in ("traces", "trajectories", "sessions"):
                     source = pathlib.Path(workspace) / ".graff" / folder
                     if source.exists():
                         shutil.copytree(source, destination / folder, dirs_exist_ok=True)
-            return Run(events, list(scripted.requests), stderr, code, files, verification)
+            return Run(events, list(scripted.requests), stderr, code, files, verification, stdout)
     finally:
         if peer is not None:
             peer.kill()
@@ -322,6 +325,12 @@ def evaluate(case: dict[str, Any], run: Run, live: bool = False) -> list[str]:
             if kind == "request_lacks" and present:
                 failures.append(
                     f"request[{spec.get('index', -1)}] mentioned {spec['text']!r} and should not have")
+        elif kind == "request_count":
+            if not live and len(run.requests) != spec:
+                failures.append(f"captured {len(run.requests)} requests, wanted exactly {spec}")
+        elif kind == "stdout_equals":
+            if run.stdout != spec:
+                failures.append(f"stdout was {run.stdout!r}, wanted exactly {spec!r}")
         elif kind == "final_text_contains":
             if spec not in run.final_text():
                 failures.append(f"the final answer was {run.final_text()!r}, wanted {spec!r}")
@@ -388,7 +397,7 @@ def main() -> None:
         if args.dump:
             print(json.dumps({"events": run.events, "requests": run.requests,
                               "exit_code": run.exit_code, "stderr": run.stderr[-2000:],
-                              "files": run.files, "verification": run.verification},
+                              "files": run.files, "verification": run.verification, "stdout": run.stdout},
                              indent=2))
             return
         problems = evaluate(case, run, live=bool(args.provider))

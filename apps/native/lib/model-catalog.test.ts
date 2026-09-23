@@ -13,3 +13,10 @@ test("model choices retain graff election order and deduplicate model names", ()
   const result = modelChoices({ models: [row, { ...row, provider: "api", cost: "api" }] });
   assert.equal(result.models.length, 1); assert.equal(result.models[0].provider, "plan");
 });
+
+test("non-current models retain their configurable effort capabilities", () => {
+  const row = { name: "gpt-sol", provider: "codex", authenticated: true, context: 1000, cost: "plan", current: false, effortLevels: ["low", "medium", "high"], fastSupported: true };
+  const { models } = modelChoices({ models: [row], current: { model: "gpt-astra", provider: "codex", effort: "high", effortLevels: ["low", "high"] } });
+  assert.deepEqual(models.find(model => model.key === "gpt-sol")?.effortLevels, row.effortLevels);
+  assert.equal(models.find(model => model.key === "gpt-sol")?.effort, undefined);
+});

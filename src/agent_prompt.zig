@@ -106,8 +106,8 @@ fn standing(self: *const Agent) engine_events.StandingWork {
 /// unpriced, and only then is a real figure snapshotted.
 fn cost(self: *Agent) engine_events.CostMeter {
     if (!main_mod.show_cost) return .hidden;
-    if (std.mem.eql(u8, self.provider.id, "codex")) return .subscription;
-    if (pricing.priceFor(self.provider.model) == null) return .unpriced;
+    if (@import("billing.zig").forProvider(self.provider) == .sub) return .subscription;
+    if (pricing.priceForProvider(self.provider.id, self.provider.model) == null) return .unpriced;
     return .{ .usd = pricing.g_cost.snap(self.io).usd };
 }
 
@@ -122,6 +122,7 @@ fn effortTier(effort: main_mod.ReasoningEffort) engine_events.ReasoningEffort {
         .xhigh => .xhigh,
         .max => .max,
         .ultra => .ultra,
+        .none => .none,
     };
 }
 
@@ -138,7 +139,7 @@ fn effectiveEffort(self: *Agent) ?engine_events.ReasoningEffort {
     }
     if (!self.effortApplies()) return null;
     const er = @import("effort_route.zig");
-    const wire = er.wireEffort(self.provider.model, @tagName(self.reasoning));
+    const wire = er.wireEffort(self.provider.id, self.provider.model, @tagName(self.reasoning));
     const display = er.normalize(self.provider.id, self.provider.model, wire);
     inline for (std.meta.tags(main_mod.ReasoningEffort)) |tag| {
         if (std.mem.eql(u8, @tagName(tag), display)) return effortTier(tag);

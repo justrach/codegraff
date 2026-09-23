@@ -1,8 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import {
   decodeCursor,
   displayWorkspace,
@@ -34,6 +35,25 @@ describe("displayWorkspace / sameWorkspace", () => {
 });
 
 describe("listSessionRows", () => {
+  it("discovers external linked worktrees from either checkout", () => {
+    const temp = realpathSync(mkdtempSync(path.join(tmpdir(), "graff-linked-session-")));
+    const cwd = path.join(temp, "main"), tree = path.join(temp, "external tree"), home = path.join(temp, "home");
+    mkdirSync(cwd); mkdirSync(home);
+    const git = (...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { stdio: "pipe" });
+    try {
+      git("init");
+      git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture");
+      git("worktree", "add", "--detach", tree);
+      writeSession(cwd, "main-chat", { title: "Main", updated_ms: 1, workspace: cwd });
+      writeSession(tree, "tree-chat", { title: "External", updated_ms: 2, workspace: tree });
+      assert.equal(listSessionRows(cwd, home).find(row => row.name === "tree-chat")?.workspace, tree);
+      assert.equal(findSessionFile(cwd, "tree-chat", home)?.workspace, tree);
+      assert.equal(listSessionRows(tree, home).find(row => row.name === "main-chat")?.workspace, cwd);
+      writeSession(cwd, "tree-chat", { title: "Local wins", updated_ms: 0, workspace: cwd });
+      assert.equal(findSessionFile(cwd, "tree-chat", home)?.workspace, cwd);
+    } finally { rmSync(temp, { recursive: true, force: true }); }
+  });
+
   it("lists cwd, then home, and cwd wins on the same name", () => {
     const cwd = mkdtempSync(path.join(tmpdir(), "graff-cwd-"));
     const home = mkdtempSync(path.join(tmpdir(), "graff-home-"));
@@ -52,6 +72,23 @@ describe("listSessionRows", () => {
     const notes = rows.find((r) => r.name === "notes");
     assert.equal(notes?.local, false);
     assert.equal(notes?.origin, "~");
+  });
+
+  it("lists an isolated worktree save and cwd still wins on the same name", () => {
+    const cwd = mkdtempSync(path.join(tmpdir(), "graff-cwd-"));
+    const home = mkdtempSync(path.join(tmpdir(), "graff-home-"));
+    const wt = path.join(cwd, ".graff", "worktrees", "session-a");
+    writeSession(cwd, "shared", { title: "Main copy", updated_ms: 20 });
+    writeSession(wt, "shared", { title: "Tree copy", updated_ms: 90 });
+    writeSession(wt, "isolated", { title: "Only tree", updated_ms: 40, workspace: wt });
+    const rows = listSessionRows(cwd, home);
+    assert.equal(rows.find((r) => r.name === "shared")?.title, "Main copy");
+    assert.equal(rows.find((r) => r.name === "shared")?.local, true);
+    const isolated = rows.find((r) => r.name === "isolated");
+    assert.equal(isolated?.title, "Only tree");
+    assert.equal(isolated?.local, false);
+    assert.equal(isolated?.workspace, wt);
+    assert.equal(findSessionFile(cwd, "isolated", home)?.workspace, wt);
   });
 });
 

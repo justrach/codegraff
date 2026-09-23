@@ -2,17 +2,42 @@ const desktop = require('./test-desktop.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-async function runTabDrag({win, origin, output}) {
+async function runTabDrag({win, origin, output, injectMissedCollapseClick=false}) {
   const wc=win.webContents, js=code=>wc.executeJavaScript(code);
   desktop.attachTestDebugger(wc);
   console.log('Host reduced motion:', await js(`matchMedia('(prefers-reduced-motion: reduce)').matches`));
   // Both motion modes are explicit test inputs, independent of runner settings.
   await wc.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'no-preference'}]});
   const wait=async code=>{for(let i=0;i<100;i++){if(await js(code))return;await new Promise(r=>setTimeout(r,50));}throw Error(`Tab drag condition failed: ${code}`);};
+  const collapseObservations=[];
+  let missedCollapseInjected=false;
   const ready=async()=>{
     await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
-    if(await js(`!!document.querySelector('[aria-label="Collapse sidebar"]')?.checkVisibility()`))await click('[aria-label="Collapse sidebar"]');
-    await wait(`!!document.querySelector('[data-session-navigation="tabs"]')`);
+    // setSize returns before the responsive navigation has committed wide mode.
+    await wait(`innerWidth>=1024 && !!document.querySelector('[data-navigation-panel]:not([popover])')`);
+    const tabs=`!!document.querySelector('[data-session-navigation="tabs"]')`;
+    if(await js(tabs))return;
+    // A hidden Electron window can hit-test the collapse control before its
+    // trusted click is delivered. Observe delivery and retry only while the
+    // sidebar still owns navigation; never toggle an already-collapsed one.
+    for(let attempt=0;attempt<3;attempt++){
+      const expanded=await js(`!!document.querySelector('[aria-label="Collapse sidebar"]:not([aria-hidden="true"])')?.checkVisibility()`);
+      if(!expanded)break;
+      await js(`(()=>{window.__tabCollapseClick=false;window.__tabCollapseObserver=e=>{if(e.isTrusted&&e.target?.closest?.('[aria-label="Collapse sidebar"]'))window.__tabCollapseClick=true};document.addEventListener('click',window.__tabCollapseObserver,true)})()`);
+      const skipped=injectMissedCollapseClick&&!missedCollapseInjected;
+      if(skipped)missedCollapseInjected=true;
+      try{
+        if(!skipped)await click('[aria-label="Collapse sidebar"]');
+        const end=Date.now()+1000;
+        while(Date.now()<end&&!await js(tabs))await new Promise(r=>setTimeout(r,50));
+        const state={attempt:attempt+1,skipped,clicked:await js('window.__tabCollapseClick'),tabs:await js(tabs)};
+        collapseObservations.push(state);
+        fs.writeFileSync(path.join(output,'tab-navigation-readiness.json'),JSON.stringify(collapseObservations));
+        if(state.tabs&&state.clicked)return;
+        if(state.tabs)break;
+      }finally{await js(`document.removeEventListener('click',window.__tabCollapseObserver,true)`);}
+    }
+    throw Error(`Tab navigation did not accept a trusted collapse click: ${JSON.stringify(collapseObservations.at(-1))}`);
   };
   const tabs=()=>js(`Array.from(document.querySelectorAll('[data-tab-id]')).map(t=>Number(t.dataset.tabId))`);
   const panes=()=>js(`Array.from(document.querySelectorAll('[data-chat]')).map(t=>Number(t.dataset.chat))`);
@@ -163,6 +188,7 @@ async function runTabDrag({win, origin, output}) {
     await up(bottom);await wait(`document.querySelectorAll('[data-chat]').length===2`);
     assert.equal(await js(`Array.from(document.querySelectorAll('[data-chat], [data-tab-id]')).flatMap(p=>p.getAnimations()).filter(a=>Number(a.effect.getTiming().duration)>1).length`),0, 'Reduced motion must skip pane and tab settling; global instant color transitions are allowed');
   } finally { await wc.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[]}); }
+  if(injectMissedCollapseClick)assert.ok(collapseObservations.some(row=>row.skipped&&!row.clicked&&!row.tabs)&&collapseObservations.some(row=>row.clicked&&row.tabs),'missed collapse click must recover through trusted input');
   console.log('PASS pointer tab drag: reorder, right/below splits, preserved draft, Escape cancellation, reduced motion and settled geometry');
 }
 module.exports={runTabDrag};

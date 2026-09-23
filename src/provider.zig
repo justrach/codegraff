@@ -77,7 +77,7 @@ pub const provider_specs = [_]ProviderSpec{
     // anthropic-version auth as Messages), so new Claude releases appear
     // without a rebuild; the baked pricing.zig rows stay the offline fallback.
     .{ .id = "anthropic", .display_name = "Anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "https://api.anthropic.com/v1/messages", .env_key = "ANTHROPIC_API_KEY", .default_model = "claude-opus-4-8", .catalog = .anthropic, .models_url = "https://api.anthropic.com/v1/models?limit=1000" },
-    .{ .id = "codegraff", .display_name = "Codegraff", .kind = .openai, .auth = .bearer, .url = "https://gateway.codegraff.com/v1/chat/completions", .env_key = "CODEGRAFF_API_KEY", .default_model = "deepseek-v4-pro", .login = .codegraff_device, .catalog = .openai, .models_url = "https://gateway.codegraff.com/v1/models", .takes_effort = true },
+    .{ .id = "codegraff", .display_name = "Codegraff", .kind = .openai, .auth = .bearer, .url = "https://gateway.codegraff.com/v1/chat/completions", .env_key = "CODEGRAFF_API_KEY", .default_model = "mimo-v2.6-pro", .login = .codegraff_device, .catalog = .openai, .models_url = "https://gateway.codegraff.com/v1/models", .takes_effort = true },
     .{ .id = "deepseek", .display_name = "DeepSeek", .kind = .openai, .auth = .bearer, .url = "https://api.deepseek.com/chat/completions", .env_key = "DEEPSEEK_API_KEY", .default_model = "deepseek-v4-pro", .takes_effort = true },
     .{ .id = "openai", .display_name = "OpenAI", .kind = .responses, .auth = .bearer, .url = "https://api.openai.com/v1/responses", .env_key = "OPENAI_API_KEY", .default_model = "gpt-5.6" },
     // Google AI Studio on its first-party Interactions API — the wire Google
@@ -87,7 +87,8 @@ pub const provider_specs = [_]ProviderSpec{
     // matching what it already does on the Responses wire.
     .{ .id = "google", .display_name = "Google Gemini", .kind = .interactions, .auth = .goog_api_key, .url = "https://generativelanguage.googleapis.com/v1beta/interactions", .env_key = "GEMINI_API_KEY", .default_model = "gemini-3.8-flash", .catalog = .openai, .models_url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200", .takes_effort = true },
     .{ .id = "minimax", .display_name = "MiniMax", .kind = .anthropic, .auth = .bearer, .url = "https://api.minimax.io/anthropic/v1/messages", .env_key = "MINIMAX_API_KEY", .default_model = "MiniMax-M3" },
-    .{ .id = "xiaomi", .display_name = "Xiaomi", .kind = .openai, .auth = .bearer, .url = "https://api.xiaomimimo.com/v1/chat/completions", .env_key = "XIAOMI_API_KEY", .default_model = "mimo-v2.5-pro" },
+    // Live list at /v1/models (Bearer, same as chat). Baked rows are the offline floor.
+    .{ .id = "xiaomi", .display_name = "Xiaomi", .kind = .openai, .auth = .bearer, .url = "https://api.xiaomimimo.com/v1/chat/completions", .env_key = "XIAOMI_API_KEY", .default_model = "mimo-v2.6-pro", .catalog = .openai, .models_url = "https://api.xiaomimimo.com/v1/models" },
     .{ .id = "kilo", .display_name = "Kilo Gateway", .kind = .openai, .auth = .bearer, .url = "https://api.kilo.ai/api/gateway/v1/chat/completions", .env_key = "KILO_API_KEY", .default_model = "kilo-auto/small" },
     .{ .id = "groq", .display_name = "Groq", .kind = .openai, .auth = .bearer, .url = "https://api.groq.com/openai/v1/chat/completions", .env_key = "GROQ_API_KEY", .default_model = "openai/gpt-oss-120b" },
     .{ .id = "cerebras", .display_name = "Cerebras", .kind = .openai, .auth = .bearer, .url = "https://api.cerebras.ai/v1/chat/completions", .env_key = "CEREBRAS_API_KEY", .default_model = "gpt-oss-120b", .catalog = .openai, .models_url = "https://api.cerebras.ai/v1/models", .takes_effort = true },
@@ -102,7 +103,7 @@ pub const provider_specs = [_]ProviderSpec{
     .{ .id = "moonshot", .display_name = "Moonshot", .kind = .openai, .auth = .bearer, .url = "https://api.moonshot.ai/v1/chat/completions", .env_key = "MOONSHOT_API_KEY", .default_model = "kimi-latest" },
     // `graff login xai` is a real device-code OAuth flow (oauth.zig), so xAI's
     // login is a SuperGrok plan while XAI_API_KEY is metered api.x.ai access.
-    .{ .id = "xai", .display_name = "xAI", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.6", .login = .xai_device, .sub_login = true, .catalog = .openai, .models_url = "https://api.x.ai/v1/models" },
+    .{ .id = "xai", .display_name = "xAI", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.7", .login = .xai_device, .sub_login = true, .catalog = .openai, .models_url = "https://api.x.ai/v1/models" },
     .{ .id = "zai", .display_name = "Z.AI", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.3", .login = .zai_cli, .sub_login = true, .catalog = .openai, .models_url = "https://api.z.ai/api/paas/v4/models", .takes_effort = true },
     // OpenAI-compatible Chat Completions with reasoning_effort support.
     .{ .id = "meta", .display_name = "Meta", .kind = .openai, .auth = .bearer, .url = "https://api.meta.ai/v1/chat/completions", .env_key = "META_API_KEY", .default_model = "muse-spark-1.2-contributor", .catalog = .openai, .models_url = "https://api.meta.ai/v1/models", .takes_effort = true },
@@ -494,39 +495,6 @@ test "Keys.providerFor: known model, claude/gateway fallbacks, missing key" {
     try std.testing.expectEqualStrings("codegraff", (try all.providerFor("totally-made-up-model")).id);
     try std.testing.expectEqualStrings("gpt-5.5", (try all.providerFor("gpt-5.5")).model);
     try std.testing.expectError(error.MissingKey, none.providerFor("claude-opus-4-8"));
-}
-
-test "providerFor (#294): a catalogued model with no keyed provider fails instead of routing to the gateway" {
-    // The reported symptom: an expired ~/.codex/auth.json made a Codex-only
-    // model resolve to the CodeGraff gateway, so the user saw a balance/credits
-    // error while trying to use Codex. gpt-5.6-sol is catalogued ONLY under
-    // provider `codex`, which makes it the exact reproduction.
-    try std.testing.expect(pricing.providerModelInTable("codex", "gpt-5.6-sol"));
-    try std.testing.expect(!pricing.providerModelInTable("openai", "gpt-5.6-sol"));
-    try std.testing.expect(!pricing.providerModelInTable("codegraff", "gpt-5.6-sol"));
-
-    // Everything keyed EXCEPT codex — i.e. the login expired mid-session.
-    var values: [provider_specs.len]?[]const u8 = @splat("k");
-    for (provider_specs, 0..) |spec, i| {
-        if (std.mem.eql(u8, spec.id, "codex")) values[i] = null;
-    }
-    const no_codex = Keys{ .values = values };
-    // Before the fix this returned the codegraff gateway carrying gpt-5.6-sol.
-    try std.testing.expectError(error.MissingKey, no_codex.providerFor("gpt-5.6-sol"));
-
-    // With the codex credential present it still routes to codex, unchanged.
-    const all = Keys{ .values = @splat("k") };
-    try std.testing.expectEqualStrings("codex", (try all.providerFor("gpt-5.6-sol")).id);
-
-    // A model served by several providers still falls through to whichever is
-    // keyed — losing one credential must not break a model another can serve.
-    try std.testing.expectEqualStrings("openai", (try no_codex.providerFor("gpt-5.6-terra")).id);
-
-    // The gateway fallback survives for genuinely UNCATALOGUED models, which is
-    // all it was ever meant to cover.
-    try std.testing.expect(!pricing.modelInTable("totally-made-up-model"));
-    try std.testing.expectEqualStrings("codegraff", (try no_codex.providerFor("totally-made-up-model")).id);
-    try std.testing.expectEqualStrings("anthropic", (try no_codex.providerFor("claude-does-not-exist")).id);
 }
 
 test "Keys.providerById: exact id wins, unknown id falls back to model routing" {

@@ -145,3 +145,14 @@ pub fn openaiCompletion(openai_complete: anytype) !void {
     // Escaped content must not false-match a finish_reason field.
     try std.testing.expect(!openai_complete("data: {\"choices\":[{\"delta\":{\"content\":\"\\\"finish_reason\\\":\\\"x\"}}]}"));
 }
+
+test "Chat finish marker is structurally parsed including whitespace and empty output" {
+    const complete = @import("agent_stream.zig").openaiComplete;
+    try std.testing.expect(complete("data: {\"choices\": [{\"delta\": {}, \"finish_reason\": \"stop\"}]}"));
+    try std.testing.expect(!complete("data: {\"finish_reason\":\"stop\",\"choices\":[]}"));
+    try std.testing.expect(!complete("data: {\"choices\":[{\"delta\":{\"finish_reason\":\"stop\"}}]}"));
+    try std.testing.expect(!complete("data: {\"choices\":[{\"finish_reason\":\"\"}]}"));
+    try std.testing.expect(!complete("data: {\"choices\":[{\"finish_reason\":42}]}"));
+    try std.testing.expect(complete("data: {\"choices\":[{\"delta\":{\"finish_reason\":null},\"finish_reason\":\"stop\"}]}"));
+    try std.testing.expect(!complete("data: {\"choices\":[{\"finish_reason\":\"stop\"}]"));
+}

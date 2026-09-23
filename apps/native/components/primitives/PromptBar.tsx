@@ -6,7 +6,7 @@ import ModelPicker from "./ModelPicker";
 import layout from "./PromptBar.module.css";
 import ModelEffortButtons from "./ModelEffortButtons";
 import type { ModelChoice } from "@/lib/acp-client";
-import { resolveComposerModel } from "@/lib/composer-model";
+import { resolveComposerModel, sameModels } from "@/lib/composer-model";
 import { shouldPickComposerRow } from "@/lib/composer-keyboard";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ComposerMenu from "./ComposerMenu";
@@ -24,6 +24,7 @@ import {
   withAttachmentMarkers,
 } from "@/lib/attachments";
 import { entryAt, historyKeyIntent, stepHistory } from "@/lib/prompt-history";
+import { playUiSound } from "@/lib/ui-sounds";
 
 /* ─────────────────────────────────────────────────────────
  * PROMPT BAR
@@ -44,8 +45,8 @@ export default function PromptBar({
   onSend, onSetting, onSteerQueued,
   models,
   commands,
-  modelKey,
-  onModelChange,
+  modelKey, modelPending,
+  onModelChange, onModelOpen,
   disabled,
   busy = false,
   onStop,
@@ -67,8 +68,8 @@ export default function PromptBar({
   /** The slash commands the agent advertised. Empty until it answers —
    * an empty menu beats inventing commands this build may not service. */
   commands?: AcpCommand[];
-  modelKey?: string;
-  onModelChange?: (key: string) => void;
+  modelKey?: string; modelPending?: boolean;
+  onModelChange?: (key: string) => void; onModelOpen?: () => void;
   disabled?: boolean;
   /** A turn is running: the send arrow morphs into a stop square. */
   busy?: boolean;
@@ -100,16 +101,13 @@ export default function PromptBar({
   const [plusOpen, setPlusOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [model, setModel] = useState<PromptModel>(() => resolveComposerModel(catalog, modelKey));
-  /* Live surfaces load their catalog async (graff/models); once it lands, or
-   * the owner re-points modelKey, the picked entry must follow — the initial
-   * useState snapshot is stale by then. Unknown keys keep their own name. */
+  // Follow both selection and metadata refreshes; unknown keys keep their name.
   useEffect(() => {
     const next = resolveComposerModel(catalog, modelKey);
-    setModel((cur) => (cur.key === next.key && cur.name === next.name ? cur : next));
+    setModel((cur) => (sameModels([cur], [next]) ? cur : next));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelKey, models]);
   const [dragging, setDragging] = useState(false);
-  /* Workspace files matching the current @ query — live surfaces only. */
   const [fileRows, setFileRows] = useState<{ key: string; name: string; desc: string }[]>([]);
   const [connected, setConnected] = useState(false);
   const [active, setActive] = useState(0);
@@ -304,7 +302,7 @@ export default function PromptBar({
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         setFailedAttaches((current) => [...current, { id, name: file.name || "attachment", error, file }]);
-        setAttachError(error);
+        setAttachError(error); playUiSound("error");
       } finally { setUploads(count => count - 1); }
     }));
     if (inputRef.current?.closest("[data-promptbar]")?.contains(document.activeElement)) inputRef.current.focus();
@@ -339,7 +337,7 @@ export default function PromptBar({
   const send = () => {
     if (!canSend) return;
     if (/^\/(effort|reasoning)$/.test(draft.trim()) && model.effortLevels?.length) { modelRef.current?.dispatchEvent(new Event("graff-effort-open")); setDraft(""); return; }
-    onSend?.(withAttachmentMarkers(draft.trim(), attachments));
+    playUiSound("press"); onSend?.(withAttachmentMarkers(draft.trim(), attachments));
     releaseAttachments(attachments);
     setDraft("");
     setAttachments([]);
@@ -414,7 +412,7 @@ export default function PromptBar({
         className={`relative isolate flex flex-col overflow-hidden border ${layout.glass} transition-[border-color,border-radius] duration-150 focus-within:border-line-strong ${
           dragging ? "border-accent-ink" : "border-line"
         } ${
-          tall ? "gap-2.5 p-3.5" : "gap-1.5 p-1.5"
+          tall ? "gap-2.5 p-3.5" : "gap-1.5 pt-1.5 pl-1.5 pr-2.5 pb-2.5"
         } ${
           "rounded-composer"
         }`}
@@ -544,9 +542,9 @@ export default function PromptBar({
             }`}
           />
 
-          <ModelEffortButtons model={model} buttonRef={modelRef} modelOpen={modelOpen} wide={wide} pill={pill} busy={busy}
+          <ModelEffortButtons model={model} pending={modelPending} buttonRef={modelRef} modelOpen={modelOpen} wide={wide} pill={pill} busy={busy}
             contextMeter={contextMeter} showContextMeter={!demo}
-            onCommand={onSetting} openModel={() => { setPlusOpen(false); setModelOpen(current => !current); }} />
+            onCommand={onSetting} openModel={() => { setPlusOpen(false); if (!modelOpen) onModelOpen?.(); setModelOpen(current => !current); }} />
 
           {/* Keep cancellation available while a follow-up is being drafted. */}
           <button
@@ -575,10 +573,11 @@ export default function PromptBar({
           {/* send — circular; while a turn runs it morphs into stop */}
           <button
             type="button"
+            data-composer-send
             aria-label={showStop ? "Stop" : "Send"}
             disabled={showStop ? !onStop : !canSend}
             onClick={showStop ? onStop : send}
-            className={`flex size-7 shrink-0 items-center justify-center rounded-full disabled:opacity-30 disabled:cursor-not-allowed transition-[background-color,color,transform] duration-200 enabled:active:scale-[0.94] ${wide ? "col-start-5 row-start-2" : "col-start-5 row-start-1"}`}
+            className={`flex size-7 shrink-0 items-center justify-center justify-self-end rounded-full disabled:opacity-30 disabled:cursor-not-allowed transition-[background-color,color,transform] duration-200 enabled:active:scale-[0.94] ${wide ? "col-start-5 row-start-2" : "col-start-5 row-start-1"}`}
             style={{
               background: showStop || canSend ? "var(--ink)" : "var(--line-strong)",
               color: showStop || canSend ? "var(--surface)" : "var(--ink-2)",

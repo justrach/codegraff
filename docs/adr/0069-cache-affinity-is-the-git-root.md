@@ -31,3 +31,16 @@ The offline guard is `affinity: two scratch sandboxes share one project
 cache id` (tier 1 `cache-affinity-scratch`): two `/tmp` leaves must mint
 the same UUID `projectRootId` would send. Hashing the leaf cwd is a
 forced miss, asserted separately. No provider call.
+
+Linked worktrees (2026-09-23): a `.git` file names a checkout, not the
+shared cache partition. Affinity follows its verified administrative directory
+and `commondir` back to the primary checkout, retaining the primary checkout's
+existing key. The administrative backlink must point to the current checkout.
+Malformed or unsupported metadata falls back to the checkout key; independent
+nested repositories stay separate. `gitRootOf` still returns the actual checkout.
+A real-Git regression covers primary/linked equality, unchanged primary keys,
+relative pointers, independent nested repositories, and malformed metadata.
+Request serialization is byte-identical across those sibling keys for the
+supported root and child lanes. This establishes cache eligibility, not a
+provider cache-hit or latency guarantee; automatic-cache providers may ignore
+the routing key and live comparisons must measure their returned usage.

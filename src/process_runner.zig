@@ -109,7 +109,7 @@ pub const CappedRunOptions = struct {
     pulse_first_ms: u64 = tool_pulse.first_silence_ms,
     pulse_interval_ms: u64 = tool_pulse.silence_interval_ms,
     /// Clipboard export is not a user turn. Esc would kill osascript and
-    /// Ctrl-V would report `clipboard helper unavailable` (#1146).
+    /// Ctrl-V would report a cancelled clipboard read (#1146).
     ignore_cancel: bool = false,
 };
 

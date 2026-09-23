@@ -51,7 +51,7 @@ pub const sessionMeta = session_index.sessionMeta;
 pub const sessionAge = session_index.sessionAge;
 pub const SessionEntry = session_index.SessionEntry;
 pub const listSavedSessions = session_index.listSavedSessions;
-pub const listSavedSessionsAll = session_index.listSavedSessionsAll;
+pub const listSavedSessionsAll = @import("session_discovery.zig").listAll;
 pub const homeSessionPath = session_index.homeSessionPath;
 pub const displayWorkspace = session_index.displayWorkspace;
 
@@ -461,17 +461,8 @@ pub fn restoreContextMeter(root: *Agent, saved_context_tokens: u64, saved_local_
 /// the restored provider's kind — same provider id guarantees it.
 pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8) !void {
     flushSaves(); // #273: a session switch never leaves the outgoing one queued
-    const path = try sessionPath(arena, name);
-    const data = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(8 * 1024 * 1024)) catch blk: {
-        // backward-compat: older builds wrote <name>.session.json in cwd.
-        const legacy = try std.fmt.allocPrint(arena, "{s}{s}", .{ name, session_ext });
-        break :blk Io.Dir.cwd().readFileAlloc(root.io, legacy, arena, .limited(8 * 1024 * 1024)) catch {
-            // #712: a save from `$HOME` is invisible if we only look at cwd.
-            if (root.home.len == 0) return error.FileNotFound;
-            const home_path = try homeSessionPath(arena, root.home, name);
-            break :blk try Io.Dir.cwd().readFileAlloc(root.io, home_path, arena, .limited(8 * 1024 * 1024));
-        };
-    };
+    const found = @import("session_discovery.zig").locate(root, arena, name) orelse return error.FileNotFound;
+    const data = Io.Dir.cwd().readFileAlloc(root.io, found.path, arena, .limited(8 * 1024 * 1024)) catch return error.FileNotFound;
     const parsed = try std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always });
     if (parsed != .object) return error.BadSession;
     const obj = parsed.object;
@@ -494,6 +485,7 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     // negative value simply leaves this process's numbering alone.
     protocol_seq.restore(eventSeqFromSession(obj));
     if (cacheKeyFromSession(obj)) |k| http_headers.restoreSessionId(k);
+    if (promptCacheKeyFromSession(obj)) |k| http_headers.restoreProjectRootId(k);
 
     root.ensureStoredKeys(keys);
     if (std.mem.eql(u8, pid, "codex")) root.ensureModelCatalog(keys.*);
@@ -509,27 +501,7 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     root.pr_draft_scope = null; // draft-only scope must be authorized again after resume
     root.messages = msgs;
     root.compaction_window = compaction_window;
-    // Repair histories written by older builds where a Responses
-    // `function_call_output.output` was persisted as a byte array instead of a
-    // string. The Responses API rejects that ("input[N].output[0]: expected an
-    // object, got an integer instead"), and we restore messages verbatim — so a
-    // poisoned last.session.json would otherwise re-break every resume.
-    for (root.messages.items) |*m| {
-        if (m.* != .object) continue;
-        const mtype = if (m.object.get("type")) |t| (if (t == .string) t.string else "") else "";
-        if (!std.mem.eql(u8, mtype, "function_call_output")) continue;
-        const out = m.object.get("output") orelse continue;
-        if (out == .string) continue; // already correct
-        var repaired: std.ArrayList(u8) = .empty;
-        if (out == .array) {
-            for (out.array.items) |el| {
-                if (el == .integer and el.integer >= 0 and el.integer <= 255) {
-                    try repaired.append(arena, @intCast(el.integer));
-                }
-            }
-        }
-        try m.object.put(arena, "output", .{ .string = repaired.items });
-    }
+    @import("history_wire.zig").prepare(arena, root.provider.kind, &root.messages);
     // #752: truncated `function.arguments` strings 400 every later request.
     tool_call_args.repairHistory(root.gpa, arena, root.messages.items);
     root.strict = strict;

@@ -12,6 +12,7 @@ function fixture(name: typeof cases[number]): AssistantTurn {
   if (["running", "waiting", "missing-result", "error"].includes(name)) turn.tools = [{ id: "fixture-tool", name: "Check palette", icon: "run", chip: "palette.json", status: name === "waiting" ? "ok" : "running", detail: [{ text: "Scripted tool output" }], atChars: 0, startedAt: now - 5000 }];
   if (name === "waiting") turn.lastUpdateAt = now - 25000;
   if (name === "partial-error" || name === "done" || name === "stopped") {
+    turn.reasoning = "Check the layout and keyboard shortcuts before answering.";
     turn.text = "The preview is ready. The updated layout and keyboard shortcut checks passed.";
     turn.tools = [
       { id: "write", name: "Update layout", chip: "layout.tsx", icon: "write", status: "ok", detail: [{ text: "Layout updated." }], atChars: 0 },

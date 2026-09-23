@@ -213,14 +213,22 @@ pub fn keepReasonFor(gpa: Allocator, io: Io, e: Entry) KeepReason {
 /// the tree is clean, so git's own refusal is a second belt — #112 must not
 /// turn `prune` into a data-loss command.
 pub fn removeWorktree(gpa: Allocator, io: Io, e: Entry) bool {
-    const rm = runCapped(gpa, io, &.{ "git", "-C", e.path, "worktree", "remove", e.path }, 8192, 8192, 60_000) catch return false;
+    const common = runCapped(gpa, io, &.{ "git", "-C", e.path, "rev-parse", "--path-format=absolute", "--git-common-dir" }, 8192, 8192, 15_000) catch return false;
+    defer gpa.free(common.stdout);
+    defer gpa.free(common.stderr);
+    if (!ranOk(common)) return false;
+    const git_dir = std.mem.trim(u8, common.stdout, " \t\r\n");
+    if (git_dir.len == 0) return false;
+    // Removing a worktree from inside itself fails on Windows; launch Git from
+    // the common directory rather than inheriting the target worktree's cwd.
+    const rm = process_runner.runCappedWithOptions(gpa, io, &.{ "git", "--git-dir", git_dir, "worktree", "remove", e.path }, 8192, 8192, 60_000, .{ .cwd = .{ .path = git_dir } }) catch return false;
     defer {
         gpa.free(rm.stdout);
         gpa.free(rm.stderr);
     }
     if (!ranOk(rm)) return false;
     if (isGraffScratchBranch(e.branch)) {
-        if (runCapped(gpa, io, &.{ "git", "-C", e.path, "branch", "-D", shortBranch(e.branch) }, 8192, 8192, 30_000)) |b| {
+        if (runCapped(gpa, io, &.{ "git", "--git-dir", git_dir, "branch", "-D", shortBranch(e.branch) }, 8192, 8192, 30_000)) |b| {
             gpa.free(b.stdout);
             gpa.free(b.stderr);
         } else |_| {}
@@ -311,6 +319,56 @@ pub fn parseOlderThanArg(args: []const []const u8) ??i64 {
     return null;
 }
 
+/// Retention is not an explicit request to discard a release or an active tree.
+fn protectedBranch(refname: []const u8) bool {
+    const branch = shortBranch(refname);
+    return std.mem.eql(u8, branch, "release") or std.mem.eql(u8, branch, "hotfix") or
+        std.mem.startsWith(u8, branch, "release/") or std.mem.startsWith(u8, branch, "hotfix/");
+}
+
+fn ownerActive(owner: worktree_lease.Owner, identity: []const u8, probe: @import("proc_identity.zig").Probe) bool {
+    if (!std.mem.eql(u8, owner.identity, identity)) return false;
+    return switch (probe) {
+        .gone => false,
+        .unknown => true,
+        .id => |id| owner.start_id == 0 or id == owner.start_id,
+    };
+}
+
+/// Unlike the startup warning, deletion treats a legacy live PID as occupied.
+/// Read without pruning the registry; an unreadable registry cannot prove safety.
+fn registeredOwner(io: Io, arena: Allocator, identity: []const u8) bool {
+    const home = @import("job_registry.zig").home;
+    if (home.len == 0) return true;
+    const registry = std.fs.path.join(arena, &.{ home, @import("presence.zig").registry_subdir }) catch return true;
+    var dir = Io.Dir.cwd().openDir(io, registry, .{ .iterate = true }) catch |err| return err != error.FileNotFound;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch return true) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".json")) continue;
+        const text = dir.readFileAlloc(io, entry.name, arena, .limited(64 * 1024)) catch return true;
+        const owner = @import("presence_record.zig").parseRecord(arena, text) orelse return true;
+        if (owner.pid <= 0 or owner.identity.len == 0) return true;
+        if (ownerActive(owner, identity, @import("proc_identity.zig").probe(io, owner.pid))) return true;
+    }
+    return false;
+}
+
+fn retentionKeep(gpa: Allocator, io: Io, arena: Allocator, e: Entry, current: worktree_lease.Identity) ?[]const u8 {
+    if (current.kind == .not_git or current.id.len == 0) return "unverifiable current checkout";
+    if (e.locked) return "locked worktree";
+    if (@import("experiment_pool.zig").isExperimentTree(e.path, e.branch)) return "retained experiment pool";
+    if (protectedBranch(e.branch)) return "protected release/hotfix branch";
+    if (@import("worktree_reap.zig").sessionPid(e.branch)) |pid| {
+        if (@import("proc_identity.zig").probe(io, pid) != .gone) return "live or unverified session process";
+    } else if (std.mem.startsWith(u8, shortBranch(e.branch), "worktree-session-")) return "unverifiable session process";
+    const candidate = worktree_lease.identityAt(gpa, io, arena, e.path);
+    if (candidate.kind == .not_git or candidate.id.len == 0) return "unverifiable checkout identity";
+    if (std.mem.eql(u8, candidate.id, current.id)) return "current checkout";
+    if (registeredOwner(io, arena, candidate.id)) return "live owner or unverifiable registry";
+    return null;
+}
+
 fn removeStale(gpa: Allocator, io: Io, arena: Allocator, out: *Io.Writer, older_than_ms: i64) !void {
     const r = listPorcelain(gpa, io) orelse return;
     defer {
@@ -320,9 +378,14 @@ fn removeStale(gpa: Allocator, io: Io, arena: Allocator, out: *Io.Writer, older_
     const entries = try parseEntries(arena, r.stdout);
     const main_path = mainWorktreePath(worktree_lease.gitCommonDir(gpa, io, arena));
     const now_ms = unixMs(io);
+    const current = worktree_lease.currentIdentity(gpa, io, arena);
     var removed: usize = 0;
     for (entries, 0..) |e, i| {
         const is_main = i == 0 or (main_path.len > 0 and std.mem.eql(u8, e.path, main_path));
+        if (!is_main) if (retentionKeep(gpa, io, arena, e, current)) |reason| {
+            try out.print("  kept {s} — {s}\n", .{ e.path, reason });
+            continue;
+        };
         const verdict = pruneVerdict(is_main, keepReasonFor(gpa, io, e), worktreeAgeMs(io, now_ms, e.path), older_than_ms);
         switch (verdict) {
             .keep_main => continue,
@@ -452,4 +515,30 @@ test "verdictText: every kept reason explains itself, reusing the #276 wording" 
     try std.testing.expectEqualStrings(keepReasonText(.committed), verdictText(.keep_committed));
     try std.testing.expect(std.mem.indexOf(u8, verdictText(.keep_too_new), "retention") != null);
     try std.testing.expectEqualStrings("", verdictText(.remove));
+}
+
+test "retention protects release and hotfix branches without overmatching scratch names" {
+    try std.testing.expectEqualStrings("unverifiable current checkout", retentionKeep(
+        std.testing.allocator,
+        std.testing.io,
+        std.testing.allocator,
+        .{},
+        .{},
+    ).?);
+    for ([_][]const u8{ "release", "hotfix", "refs/heads/release/next", "refs/heads/hotfix/fix" }) |name|
+        try std.testing.expect(protectedBranch(name));
+    for ([_][]const u8{ "worktree-release-notes", "release-notes", "feature/hotfix" }) |name|
+        try std.testing.expect(!protectedBranch(name));
+}
+
+test "retention keeps live legacy and unknown owners but permits dead or reused PIDs" {
+    const owner: worktree_lease.Owner = .{ .pid = 123, .identity = "fixture", .start_id = 456 };
+    try std.testing.expect(ownerActive(owner, "fixture", .{ .id = 456 }));
+    try std.testing.expect(ownerActive(owner, "fixture", .unknown));
+    try std.testing.expect(!ownerActive(owner, "fixture", .gone));
+    try std.testing.expect(!ownerActive(owner, "fixture", .{ .id = 789 }));
+    try std.testing.expect(!ownerActive(owner, "different", .{ .id = 456 }));
+    var legacy = owner;
+    legacy.start_id = 0;
+    try std.testing.expect(ownerActive(legacy, "fixture", .{ .id = 789 }));
 }

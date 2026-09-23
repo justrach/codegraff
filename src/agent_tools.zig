@@ -46,6 +46,7 @@ const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: the load_tool_s
 const native_fold = @import("native_fold.zig"); // folded native power tools: load_tool_schemas's native half
 const local_tools = @import("local_tools.zig");
 const schedule = @import("schedule.zig");
+const jev_tool = @import("jev_tool.zig");
 const util = @import("util.zig"); // #225: unixMs, for the clock_sleep interrupted-elapsed measurement
 
 const cite_markup = @import("cite_markup.zig");
@@ -56,6 +57,8 @@ const read_miss = @import("read_miss.zig");
 /// external calls fan out across the Io thread pool. Results are returned
 /// in call order, arena-owned.
 pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
+    defer @import("agent_async_tools.zig").reset(self);
+    defer if (self.approvals) |ap| ap.clearPlanReadOnce(self.io, self);
     if (!self.sub and calls.len >= 4) {
         var names: [32][]const u8 = undefined;
         const n = @min(calls.len, names.len);
@@ -87,6 +90,10 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
     }
     var miss_batch = read_miss.Batch.init(read_paths.items);
     for (calls, 0..) |call, i| {
+        if (try @import("agent_async_tools.zig").claim(self, call)) |result| {
+            results[i] = result;
+            continue;
+        }
         if (eval_index) |verifier| if (i != verifier) {
             self.emitToolRejected(call, "verifier_boundary", eval_control.verifier_boundary);
             results[i] = .{ .text = eval_control.verifier_boundary, .is_error = true };
@@ -141,10 +148,14 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             brief_diversity.noteSiblingBatch(self.arena, self.tracer, calls, wave2.items, results);
         }
     }
+    if (!self.sub and jev_tool.takeCatalogRefresh()) {
+        self.invalidateRootTools();
+        try self.ensureRootTools(self.provider.kind);
+    }
     if (defer_completion) if (eval_control.completionIndex(calls)) |i| {
         var verify_failed = ext_idx.items.len == 0;
         for (ext_idx.items) |j| {
-            if (results[j].is_error or results[j].cancelled) verify_failed = true;
+            if (results[j].is_error or results[j].cancelled or results[j].pending) verify_failed = true;
         }
         if (verify_failed) {
             self.emitToolRejected(calls[i], "eval_stale", eval_control.completion_verify_failed);
@@ -183,6 +194,12 @@ pub fn rejectToolCall(self: *Agent, call: ToolCall) !?ExecResult {
         if (read_miss.callPath(call.input)) |path| {
             if (self.read_miss.shouldRefuse(path)) return try refuseRead(self, call);
         }
+    }
+    if (isMetaName(call.name) or local_tools.isInstall(call.name) or schedule.isName(call.name) or std.mem.eql(u8, call.name, "structured_output")) {
+        if (self.run_budget) |budget| if (budget.toolRefusal(self.arena, self.tracer)) |denied| {
+            self.emitToolRejected(call, "exhausted", denied.text);
+            return .{ .text = denied.text, .is_error = true };
+        };
     }
     if (self.sub) return null;
     if (self.review_mode) if (try review.rejectTool(self.arena, call)) |denied| {
@@ -381,6 +398,7 @@ pub fn sayToolUse(self: *Agent, call: ToolCall) !void {
 /// the wire still emits their correlated completion status so clients can
 /// close the announced row without duplicating the result body.
 pub fn sayToolResult(self: *Agent, call: ToolCall, r: ExecResult) void {
+    @import("agent_async_tools.zig").presented(self, call);
     const name = call.name;
     if (self.out == null and self.sink == null) return;
     const ev: engine_events.ToolOutcome = .{

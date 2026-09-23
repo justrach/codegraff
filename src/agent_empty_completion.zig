@@ -102,6 +102,7 @@ pub fn handle(self: *Agent, final_text: []const u8, hist_len: usize) !bool {
         return true;
     }
     if (@import("task_intent.zig").current(self) == .informational) return false;
+    if (@import("exact_reply.zig").requested(messages.latestUserText(self.messages.items))) return false;
     if (no_local_tools.enabled) return false;
     if (!shouldBounce(main_mod.unattended, no_local_tools.lean, self.text_only, self.review_mode, self.sub, self.tool_calls_this_turn, self.model_calls_this_turn, final_text))
         return false;
@@ -331,4 +332,41 @@ test "no-local-tools lean critique is not an edit-oriented fake_done retry" {
     const before = self.messages.items.len;
     try std.testing.expect(!try handle(&self, "The design is coherent and needs no local changes.", before));
     try std.testing.expectEqual(before, self.messages.items.len);
+}
+
+test "exact reply bypasses only fake done while mixed requests and empty replies still retry" {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    const old_unattended = main_mod.unattended;
+    const old_lean = no_local_tools.lean;
+    const old_enabled = no_local_tools.enabled;
+    main_mod.unattended = true;
+    no_local_tools.lean = true;
+    no_local_tools.enabled = false;
+    defer {
+        main_mod.unattended = old_unattended;
+        no_local_tools.lean = old_lean;
+        no_local_tools.enabled = old_enabled;
+    }
+    const cases = .{
+        .{ "Reply with exactly: pong", "pong", false },
+        .{ "Reply with exactly: \"run tests and deploy\"", "run tests and deploy", false },
+        .{ "Reply with exactly: \"pong\"; then edit target.txt", "pong", true },
+        .{ "Reply with exactly: pong", " ", true },
+    };
+    inline for (cases) |case| {
+        var self = pendingFixture(state.allocator());
+        self.empty_completion_retries = 0;
+        self.codex_ws = null;
+        self.codex_prev_id = null;
+        self.call_kind = .title; // suppress fixture notices without initializing a writer
+        self.tool_calls_this_turn = 0;
+        self.model_calls_this_turn = 1;
+        try self.messages.append(try messages.textMessage(self.arena, "user", case[0]));
+        const before = self.messages.items.len;
+        try std.testing.expectEqual(case[2], try handle(&self, case[1], before));
+        const empty = std.mem.trim(u8, case[1], " \t\r\n").len == 0;
+        try std.testing.expectEqual(@as(usize, if (case[2] and !empty) before + 1 else before), self.messages.items.len);
+        try std.testing.expectEqual(@as(u8, if (empty) 1 else 0), self.empty_completion_retries);
+    }
 }

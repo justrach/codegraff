@@ -67,3 +67,14 @@ the backstop when the model writes "I fixed it" with zero tools. No
 Explicit informational turns are exempt from the edit-oriented bounce. The
 generic fallback now conditions edits on the actual request. Mixed change
 requests retain the coding completion policy.
+
+## Literal-reply refinement
+
+A fully consumed request of the form `Reply with exactly: pong` (also
+`Respond` or `Answer`, optionally preceded by `Please`) is exempt from this
+bounce. Its payload must be a single token or one quoted literal; a trailing
+instruction keeps the coding backstop. Action words inside the quoted literal
+are data. This recognition is local to the fake-done guard: it does not change
+intent classification, tool permissions, empty-response retries, or open-work
+completion gates. Translation and ambiguous multiword requests remain outside
+this narrow exemption.

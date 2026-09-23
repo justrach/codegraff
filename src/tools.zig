@@ -33,6 +33,7 @@ pub const ExecResult = struct {
     text: []const u8,
     is_error: bool,
     cancelled: bool = false, // ended by user Esc, not by failing (#266)
+    pending: bool = false, // asynchronous work has no terminal result yet
     ms: i64 = 0, // wall-clock of the tool exec (external tools only; --timing)
 };
 
@@ -80,6 +81,7 @@ pub const ToolOutput = struct {
     text: []u8 = &.{}, // gpa-owned
     is_error: bool = false,
     cancelled: bool = false, // ended by user Esc, not by failing (#266)
+    pending: bool = false, // asynchronous work has no terminal result yet
     ms: i64 = 0, // set by execTool
 };
 
@@ -100,9 +102,13 @@ pub const ToolCtx = struct {
     io: Io,
     client: *std.http.Client,
     provider: Provider,
+    jev_effort_pending: ?*@import("jev_effort_state.zig").Pending = null,
     subagent_provider: ?Provider = null,
     subagent_cross_provider: bool = false,
     subagent_feedback: ?*@import("subagent_feedback.zig").Inbox = null,
+    worker_family: []const u8 = "",
+    worker_id: ?[]const u8 = null,
+    retained_worker: ?*@import("subagent_retained.zig").State = null,
     interactive_children: bool = false,
     session_name: []const u8 = "",
     registry: ?*mcp.Registry,
@@ -110,9 +116,11 @@ pub const ToolCtx = struct {
     from_sub: bool,
     has_eval: bool = false, // the root's --eval loop: escalation's strongest verifier
     approvals: ?*Approvals,
+    plan_read_owner: ?*const anyopaque = null,
     tracer: ?*Tracer,
     run_budget: ?*run_budget_mod.RunBudget = null,
     publication_checks: @import("pr_local_checks.zig").State = .{},
+    publication_observer: ?@import("pr_local_checks.zig").Observer = null,
     depth: u8 = 0,
     snapshots: ?*Snapshots = null,
     tools_used: ?*ToolSink = null, // the calling agent's tool log (trajectory/process mining)

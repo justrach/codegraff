@@ -36,6 +36,15 @@ test("armIdle parks a snapshot after the quiet period", async () => {
   expect(parkCount()).toBe(0);
 });
 
+test("unset GRAFF_ACP_IDLE_MS never parks an open tab", async () => {
+  delete process.env.GRAFF_ACP_IDLE_MS;
+  let killed = 0;
+  armIdle("idle-test", { resume: "session-open", model: null, cwd: "/tmp", yolo: true, mcp: false }, () => { killed += 1; });
+  await new Promise(resolve => setTimeout(resolve, 40));
+  expect(killed).toBe(0);
+  expect(takeParked("idle-test")).toBeUndefined();
+});
+
 test("GRAFF_ACP_IDLE_MS=0 never parks", async () => {
   process.env.GRAFF_ACP_IDLE_MS = "0";
   let killed = 0;

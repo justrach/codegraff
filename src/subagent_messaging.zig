@@ -9,14 +9,20 @@ fn refused(gpa: std.mem.Allocator, reason: []const u8) !tools.ToolOutput {
 
 pub fn send(ctx: tools.ToolCtx, input: std.json.Value) !tools.ToolOutput {
     if (ctx.from_sub) return refused(ctx.gpa, "only the parent can message background subagents");
-    const id = tools.intField(input, "id") orelse return tools.missingArg(ctx.gpa, "id");
+    const task_id = tools.strField(input, "task_id");
+    const id = tools.intField(input, "id") orelse if (task_id != null) 1 else return tools.missingArg(ctx.gpa, "id or task_id");
     const message = tools.strField(input, "message") orelse return tools.missingArg(ctx.gpa, "message");
     if (id <= 0 or id > std.math.maxInt(u32)) return refused(ctx.gpa, "invalid agent id");
     const registry = &subagent.g_agent_jobs;
     registry.mutex.lockUncancelable(ctx.io);
-    defer registry.mutex.unlock(ctx.io);
+    var locked = true;
+    defer if (locked) registry.mutex.unlock(ctx.io);
     for (registry.list.items) |job| {
-        if (job.id != id) continue;
+        if (task_id) |target| {
+            const state = job.ctx.retained_worker orelse continue;
+            if (!std.mem.eql(u8, state.record.id, target) or job.done) continue;
+        } else if (job.id != id) continue;
+        if (!std.mem.eql(u8, @import("subagent_retained.zig").family(ctx), @import("subagent_retained.zig").family(job.ctx))) return refused(ctx.gpa, "worker belongs to another parent session");
         if (job.done) return refused(ctx.gpa, "agent has already finished; start a new subagent for follow-up work");
         // Allocate the acknowledgement before enqueue so OOM cannot accept a
         // message and then fail to return its receipt.
@@ -34,5 +40,8 @@ pub fn send(ctx: tools.ToolCtx, input: std.json.Value) !tools.ToolOutput {
         };
         return .{ .text = ack };
     }
+    registry.mutex.unlock(ctx.io);
+    locked = false;
+    if (task_id) |target| return @import("subagent_resume.zig").queued(ctx, target, message);
     return refused(ctx.gpa, "agent is not live in this process; agent_output can inspect a retained result, but feedback requires a live background agent");
 }

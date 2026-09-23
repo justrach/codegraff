@@ -333,7 +333,7 @@ test "runScript empty subagent() reaches execSubagent; persist binds do not brea
     try std.testing.expectEqualStrings("slept 1ms", reuse.text);
 }
 
-test "feedLive launches two independent subagent() calls before runScript claims" {
+test "feedLive leaves side-effecting subagents for lexical execution" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
     var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
@@ -356,12 +356,7 @@ test "feedLive launches two independent subagent() calls before runScript claims
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     rlm_spec.takeLive(ctx, &claimed, arena_state.allocator());
-    try std.testing.expectEqual(@as(usize, 2), claimed.count());
-    var it = claimed.iterator();
-    while (it.next()) |e| {
-        try std.testing.expect(e.value_ptr.is_error);
-        try std.testing.expect(std.mem.indexOf(u8, e.value_ptr.text, "prompt") != null);
-    }
+    try std.testing.expectEqual(@as(usize, 0), claimed.count());
 }
 
 test "rlm prompt: subagent() is advertised as sidecar-only, not a critical-path handoff" {

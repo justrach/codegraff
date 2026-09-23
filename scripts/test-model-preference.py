@@ -123,7 +123,7 @@ def main() -> None:
         # across providers until the workspace explicitly allowlists it.
         with launch(str(cwd), env, codex_home=None) as session:
             session.wait_for_literal("Cross-provider use is blocked")
-            session.wait_for_literal("deepseek-v4-pro · Medium · ~/repo · Fallback")
+            session.wait_for_literal("mimo-v2.6-pro · High · ~/repo · Fallback")
             session.wait_for_prompt()
             cursor = len(session.raw)
             session.send_line("must not reach a provider")
@@ -137,7 +137,7 @@ def main() -> None:
         # With explicit consent persisted, the same fallback is ready for use.
         with launch(str(cwd), env, codex_home=None) as session:
             session.wait_for_literal("saved preference kept")
-            session.wait_for_literal("deepseek-v4-pro · Medium · ~/repo · Fallback")
+            session.wait_for_literal("mimo-v2.6-pro · High · ~/repo · Fallback")
             session.wait_for_prompt()
             clean_exit(session)
 
@@ -147,8 +147,8 @@ def main() -> None:
             session.wait_for_prompt()
             clean_exit(session)
 
-        # A removed rollout stays on the selected provider when that login is
-        # healthy and the live catalog advertises a replacement model.
+        # A temporary catalog omission keeps the exact saved selection when
+        # that provider's credential remains available.
         cache.write_text(
             json.dumps(
                 {
@@ -160,8 +160,7 @@ def main() -> None:
             encoding="utf-8",
         )
         with launch(str(cwd), env, codex_home=str(codex_home)) as session:
-            session.wait_for_literal("saved preference kept")
-            session.wait_for_literal("gpt-5.6-luna · Medium · ~/repo · Fallback")
+            session.wait_for_literal("gpt-5.6-sol · Medium")
             session.wait_for_prompt()
             clean_exit(session)
         assert preference.read_text(encoding="utf-8") == "codex\ngpt-5.6-sol\n"

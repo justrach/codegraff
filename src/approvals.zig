@@ -30,6 +30,39 @@ pub const Approvals = struct {
     /// plan-mode exploration outside cwd (#64); freed alongside prefixes.
     plan_read_roots: std.ArrayList([]const u8) = .empty,
     yolo: bool = false,
+    /// Batch-scoped grants own their bytes in the calling agent's arena.
+    plan_read_once: ?*PlanReadOnce = null,
+    const PlanReadOnce = struct { owner: *const anyopaque, id: []const u8, command: []const u8, next: ?*PlanReadOnce };
+
+    pub fn approvePlanReadOnce(self: *Approvals, io: Io, arena: Allocator, owner: *const anyopaque, id: []const u8, command: []const u8) !void {
+        const grant = try arena.create(PlanReadOnce);
+        grant.* = .{ .owner = owner, .id = try arena.dupe(u8, id), .command = try arena.dupe(u8, command), .next = null };
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        grant.next = self.plan_read_once;
+        self.plan_read_once = grant;
+    }
+    pub fn consumePlanReadOnce(self: *Approvals, io: Io, owner: *const anyopaque, id: []const u8, command: []const u8) bool {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        var link = &self.plan_read_once;
+        while (link.*) |grant| {
+            if (grant.owner == owner and std.mem.eql(u8, grant.id, id) and std.mem.eql(u8, grant.command, command)) {
+                link.* = grant.next;
+                return true;
+            }
+            link = &grant.next;
+        }
+        return false;
+    }
+    pub fn clearPlanReadOnce(self: *Approvals, io: Io, owner: *const anyopaque) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        var link = &self.plan_read_once;
+        while (link.*) |grant| {
+            if (grant.owner == owner) link.* = grant.next else link = &grant.next;
+        }
+    }
 
     // The pure, terminal-free half of the gate lives in harness_policy.zig
     // (#429): the seeds, the command classifiers, the settings-file location
@@ -198,4 +231,23 @@ test "the re-exports really are harness_policy's, not a second implementation" {
     try std.testing.expectEqual(&policy.confinedPath, &confinedPath);
     try std.testing.expectEqualStrings(policy.settings_path, Approvals.settings_path);
     try std.testing.expectEqualStrings(policy.settings_dir, Approvals.settings_dir);
+}
+
+test "one-call plan grants isolate agents with duplicate call IDs and batch cleanup" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const io = std.testing.io;
+    var approvals: Approvals = .{};
+    var first: u8 = 0;
+    var second: u8 = 0;
+    const cmd = "cat /tmp/approved-file";
+    try approvals.approvePlanReadOnce(io, arena.allocator(), &first, "same-id", cmd);
+    try std.testing.expect(!approvals.consumePlanReadOnce(io, &second, "same-id", cmd));
+    try std.testing.expect(!approvals.consumePlanReadOnce(io, &first, "same-id", "cat /tmp/different-file"));
+    try approvals.approvePlanReadOnce(io, arena.allocator(), &second, "same-id", cmd);
+    approvals.clearPlanReadOnce(io, &first);
+    try std.testing.expect(!approvals.consumePlanReadOnce(io, &first, "same-id", cmd));
+    try std.testing.expect(approvals.consumePlanReadOnce(io, &second, "same-id", cmd));
+    try std.testing.expect(!approvals.consumePlanReadOnce(io, &second, "same-id", cmd));
+    try std.testing.expect(approvals.plan_read_once == null);
 }

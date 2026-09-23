@@ -17,7 +17,6 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
-
 const args = @import("args.zig");
 const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
@@ -37,7 +36,6 @@ const vision_queue = @import("vision_queue.zig");
 const pricing = @import("pricing.zig");
 const billing = @import("billing.zig");
 const models_rank = @import("models_rank");
-
 pub const protocol_version = proto.protocol_version;
 pub const err_method_not_found = proto.err_method_not_found;
 pub const err_internal = proto.err_internal;
@@ -124,6 +122,16 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
     if (req.id == null) return true;
     const keys = live.keys;
     const root = live.root;
+    // Hydrate deferred local metadata without network refresh or MCP startup.
+    root.ensureStoredKeys(keys);
+    if (root.model_catalog) |*cached|
+        cached.ensureCached(root.io, root.gpa, root.arena, root.home, keys.get("codex") orelse "", keys.codex_account);
+    if (!live.local_catalog_loaded) {
+        if (root.home.len > 0) @import("router_catalog.zig").loadCachedAll(root.io, root.arena, root.home);
+        live.local_catalog_loaded = true;
+    }
+    const er = @import("effort_route.zig");
+    if (@import("gateway_picker_catalog.zig").requested(req.params)) @import("gateway_picker_catalog.zig").refresh(root.gpa, root.io, root.arena, keys.*);
     const catalog = pricing.models();
     const Row = struct {
         name: []const u8,
@@ -132,6 +140,8 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
         authenticated: bool,
         cost: []const u8,
         current: bool,
+        effortLevels: []const []const u8,
+        fastSupported: bool,
     };
     const ranked = try arena.alloc(models_rank.Scored, catalog.len);
     for (catalog, 0..) |m, i| ranked[i] = .{
@@ -145,6 +155,10 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
     const rows = try arena.alloc(Row, catalog.len);
     for (ranked, rows) |r, *row| {
         const m = catalog[r.idx];
+        const supports_effort = if (provider_mod.specFor(m.provider)) |spec|
+            @import("schema.zig").providerTakesEffort(spec.kind, m.provider, m.name)
+        else
+            false;
         row.* = .{
             .name = m.name,
             .provider = m.provider,
@@ -152,9 +166,10 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
             .authenticated = keys.get(m.provider) != null,
             .cost = billing.costFor(m.provider, keys.source(m.provider)).badge(),
             .current = std.mem.eql(u8, m.name, root.provider.model) and std.mem.eql(u8, m.provider, root.provider.id),
+            .effortLevels = if (supports_effort) er.levels(m.provider, m.name) else &.{},
+            .fastSupported = std.mem.eql(u8, m.provider, "codex"),
         };
     }
-    const er = @import("effort_route.zig");
     const levels: []const []const u8 = if (!root.effortApplies()) &.{} else er.levels(root.provider.id, root.provider.model);
     try proto.writeResult(w, req.id, .{
         .models = rows,
@@ -173,20 +188,40 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
 
 const LiveTurn = @import("acp_live_turn.zig").LiveTurn;
 
+var acp_inbox_nudge: ?*@import("acp_inbox.zig").Inbox = null;
+
+fn nudgeAcp() void {
+    if (acp_inbox_nudge) |inbox| inbox.nudge();
+}
+
 pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_mod.Agent, keys: *provider_mod.Keys, client: *std.http.Client, in: *Io.Reader, out: *Io.Writer, arena: Allocator, flags: args.Flags) !bool {
     if (!(flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "acp"))) return false;
     _ = environ_map;
     _ = client;
     main_mod.unattended = true;
+    // GUI is an interactive root (ADR 0154): park long shells and resume on exit.
+    @import("subagent_interactive.zig").configure(true);
+    defer @import("subagent_interactive.zig").configure(false);
     root.in = null;
     root.out = null; // not stream_quiet: that forces SSE and misses resume cache
     main_mod.g_out = null;
     engine.implementation_version = main_mod.harness_version;
     engine.cancel_flag.store(false, .release);
     engine.on_cancel = syncEscCancel;
-    var inbox: @import("acp_inbox.zig").Inbox = .{ .gpa = gpa, .io = io, .reader = in };
+    var permission_bridge: @import("acp_permission.zig").Bridge = .{ .io = io, .out = out };
+    const previous_permission = root.permission;
+    root.permission = permission_bridge.handler();
+    defer root.permission = previous_permission;
+    var inbox: @import("acp_inbox.zig").Inbox = .{ .gpa = gpa, .io = io, .reader = in, .permission = &permission_bridge };
     try inbox.start();
     defer inbox.deinit();
+    acp_inbox_nudge = &inbox;
+    const prev_queued = @import("job_notify.zig").on_queued;
+    @import("job_notify.zig").on_queued = nudgeAcp;
+    defer {
+        @import("job_notify.zig").on_queued = prev_queued;
+        acp_inbox_nudge = null;
+    }
     @import("acp_ask.zig").attach(io, gpa);
     defer @import("acp_ask.zig").detach();
     var live: LiveTurn = .{ .root = root, .keys = keys, .out = out, .inbox = &inbox };
@@ -202,15 +237,19 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
         .extra = liveModels,
         .cwd = if (std.fs.path.isAbsolute(main_mod.g_cwd_display)) main_mod.g_cwd_display else "",
     };
+    @import("acp_session_load.zig").configure(&d, &live);
     while (true) {
         const event = (inbox.wait(arena) catch break) orelse break;
         switch (event) {
             .tick => @import("acp_idle.zig").maybeWake(&d, arena, out, io, root.session_name) catch |err| {
                 std.debug.print("acp: idle wake failed: {t}\n", .{err});
             },
-            .line => |line| handleLine(&d, arena, out, line) catch |err| {
-                std.debug.print("acp: dispatch failed: {t}\n", .{err});
-                break;
+            .line => |line| {
+                handleLine(&d, arena, out, line) catch |err| {
+                    std.debug.print("acp: dispatch failed: {t}\n", .{err});
+                    break;
+                };
+                @import("acp_idle.zig").startupEffortNotice(&d, root, out) catch break;
             },
         }
         out.flush() catch break;
@@ -297,7 +336,7 @@ test "parseRequest: requests, notifications, and lines that are not ours" {
     try testing.expect(parseRequest(a, "{\"id\":1,\"result\":{}}") == null);
 }
 
-test "negotiateVersion takes the lower of the two proposals" {
+test "negotiateVersion returns the supported ACP v1 protocol" {
     var state = std.heap.ArenaAllocator.init(testing.allocator);
     defer state.deinit();
     const a = state.allocator();
@@ -307,7 +346,7 @@ test "negotiateVersion takes the lower of the two proposals" {
         }
     }.f;
     try testing.expectEqual(@as(i64, 1), negotiateVersion(parse(a, "{\"protocolVersion\":5}")));
-    try testing.expectEqual(@as(i64, 0), negotiateVersion(parse(a, "{\"protocolVersion\":0}")));
+    try testing.expectEqual(@as(i64, 1), negotiateVersion(parse(a, "{\"protocolVersion\":0}")));
     try testing.expectEqual(@as(i64, 1), negotiateVersion(parse(a, "{\"protocolVersion\":1}")));
     try testing.expectEqual(@as(i64, 1), negotiateVersion(parse(a, "{}")));
     try testing.expectEqual(@as(i64, 1), negotiateVersion(parse(a, "{\"protocolVersion\":\"1\"}")));
@@ -377,11 +416,15 @@ test "handleLine: initialize, session/new, then a prompt turn" {
     var w: Io.Writer = .fixed(&buf);
     var d: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .seed = 0xabc };
 
-    try handleLine(&d, a, &w, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":9,\"clientCapabilities\":{\"fs\":{}}}}");
+    try handleLine(&d, a, &w, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":0,\"clientCapabilities\":{\"fs\":{}}}}");
     const init_line = w.buffered();
     try testing.expect(std.mem.indexOf(u8, init_line, "\"protocolVersion\":1") != null);
     try testing.expect(std.mem.indexOf(u8, init_line, "\"embeddedContext\":true") != null);
     try testing.expect(std.mem.indexOf(u8, init_line, "\"name\":\"graff\"") != null);
+    const init_response = try std.json.parseFromSliceLeaky(Value, a, std.mem.trim(u8, init_line, "\n"), .{});
+    const init_result = init_response.object.get("result").?.object;
+    for ([_][]const u8{ "agentInfo", "agentImplementation" }) |field|
+        try testing.expectEqualStrings("graff", init_result.get(field).?.object.get("name").?.string);
     try testing.expect(std.mem.indexOf(u8, init_line, "\"loadSession\":false") != null);
     try testing.expect(std.mem.indexOf(u8, init_line, "graff-login") != null);
     try testing.expect(std.mem.indexOf(u8, init_line, "\"type\":\"terminal\"") != null);
@@ -396,11 +439,11 @@ test "handleLine: initialize, session/new, then a prompt turn" {
     try testing.expectEqualStrings("acp-abc-1", d.session_id.?);
 
     w = .fixed(&buf);
-    try handleLine(&d, a, &w, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"acp-abc-1\",\"prompt\":[{\"type\":\"text\",\"text\":\"ping\"}]}}");
+    try handleLine(&d, a, &w, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"acp-abc-1\",\"prompt\":[{\"type\":\"text\",\"text\":\"ping\"},{\"type\":\"resource\",\"resource\":{\"uri\":\"memory://draft\",\"text\":\"draft contents\"}}]}}");
     var lines = std.mem.splitScalar(u8, w.buffered(), '\n');
     const first = lines.next().?;
     try testing.expect(std.mem.indexOf(u8, first, "\"method\":\"session/update\"") != null);
-    try testing.expect(std.mem.indexOf(u8, first, "\"text\":\"echo:ping\"") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "\"text\":\"echo:ping\\nmemory://draft\\ndraft contents\"") != null);
     try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}", lines.next().?);
     try testing.expectEqualStrings("", lines.next().?);
     try testing.expect(lines.next() == null);
@@ -506,6 +549,11 @@ test "OpenAI effort menu omits Max and keeps Ultra on the Responses wire" {
         aw.clearRetainingCapacity();
         try handleLine(&d, a, &aw.writer, "{\"id\":1,\"method\":\"graff/models\"}");
         const result = try std.json.parseFromSliceLeaky(Value, a, aw.writer.buffered(), .{});
+        for (result.object.get("result").?.object.get("models").?.array.items) |row| {
+            const fields = row.object;
+            try testing.expect(fields.get("effortLevels").? == .array);
+            try testing.expect(fields.get("fastSupported").? == .bool);
+        }
         const current = result.object.get("result").?.object.get("current").?.object;
         try testing.expectEqualStrings("ultra", current.get("effort").?.string);
         const levels = current.get("effortLevels").?.array.items;

@@ -191,6 +191,28 @@ pub struct WorkspaceSessionDto {
     pub configuration_error: Option<String>,
     pub selected_conversation_id: Option<String>,
     pub conversations: Vec<ConversationSessionSummaryDto>,
+    /// Present when this project is a task checkout (#1119). Omitted otherwise
+    /// so older snapshots and tests stay valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub task: Option<TaskWorkspaceSummaryDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename = "TaskWorkspaceSummary")]
+pub struct TaskWorkspaceSummaryDto {
+    pub branch: String,
+    pub base_branch: String,
+    pub base_commit: String,
+    pub checkout_bytes: u64,
+    pub keep_reason: Option<String>,
+    pub setup_script: Option<String>,
+    pub run_script: Option<String>,
+    pub teardown_script: Option<String>,
+    pub setup_error: Option<String>,
+    pub run_error: Option<String>,
+    pub merged_back: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]

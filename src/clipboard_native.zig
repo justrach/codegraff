@@ -33,8 +33,8 @@ pub fn grabWithRunner(io: std.Io, gpa: std.mem.Allocator, board: []const u8, pat
     // can take time to materialize, but cannot block a paste indefinitely.
     for (0..2) |_| {
         const r = run(gpa, io, &.{ "/usr/bin/osascript", "-l", "JavaScript", "-e", script, path, board }, 64, 1024, 5000) catch |err| return .{ .failed = switch (err) {
-            error.FileNotFound, error.AccessDenied => .unavailable,
-            else => .unavailable,
+            error.FileNotFound, error.AccessDenied => .spawn,
+            else => .spawn,
         } };
         defer gpa.free(r.stdout);
         defer gpa.free(r.stderr);

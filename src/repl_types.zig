@@ -12,7 +12,7 @@
 
 const std = @import("std");
 
-pub const Effort = enum { low, medium, high, xhigh, max, ultra };
+pub const Effort = enum { low, medium, high, xhigh, max, ultra, none };
 
 pub const Turn = struct {
     role: Role,

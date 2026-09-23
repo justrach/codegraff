@@ -241,11 +241,7 @@ test "grok spec: held xAI WS chains previous_response_id + delta; drop rebuilds 
     agent.codex_prev_id = try std.testing.allocator.dupe(u8, "resp_live");
     agent.codex_sent_upto = 2;
     agent.codex_props_fp = codex_chain.propsFor(&agent);
-    // On-socket xAI chaining is opt-in (GRAFF_XAI_WS_CHAIN — a live probe
-    // reproduced a silent stall, so it is off by default); the contract
-    // being conformance-tested here is the opted-in behavior.
-    codex_chain.g_xai_ws_chain = true;
-    defer codex_chain.g_xai_ws_chain = false;
+    try std.testing.expect(codex_chain.g_xai_ws_chain);
     try std.testing.expect(codex_chain.chainUsable(&agent));
 
     const delta = try agent.buildBody(null, false, false, false);
@@ -335,6 +331,21 @@ test "grok spec: official cache is an exact prefix — append keeps it, edit bre
     try std.testing.expect(std.mem.indexOf(u8, miss, "hello") == null);
     try std.testing.expect(std.mem.indexOf(u8, miss, "HELLO-EDITED") != null);
     try std.testing.expectEqualStrings(cacheKeyIn(first).?, cacheKeyIn(miss).?);
+}
+
+test "grok spec: compact/rewrite is not an append — chain drops (official cache miss)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var dummy_ws: ws.WsClient = undefined;
+    var agent = try xaiAgent(a, "main", .responses);
+    agent.codex_ws = &dummy_ws;
+    agent.codex_prev_id = "resp_live";
+    agent.codex_sent_upto = 1;
+    agent.codex_props_fp = codex_chain.propsFor(&agent);
+    try std.testing.expect(codex_chain.chainUsable(&agent));
+    agent.history_rewrites += 1;
+    try std.testing.expect(!codex_chain.chainUsable(&agent));
 }
 
 test "grok spec: Chat replays reasoning_content (official top cache-miss cause)" {

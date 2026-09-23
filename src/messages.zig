@@ -129,7 +129,7 @@ const responses_output_cap = 16384;
 /// ...ContentBlock`). Tool output (bash, file reads, MCP, webfetch) is the usual
 /// source of raw bytes, so any externally-sourced content must pass through this
 /// before it reaches the serializer. Returns `s` unchanged when already valid.
-fn sanitizeUtf8(arena: Allocator, s: []const u8) []const u8 {
+pub fn sanitizeUtf8(arena: Allocator, s: []const u8) []const u8 {
     if (std.unicode.utf8ValidateSlice(s)) return s;
     const buf = arena.dupe(u8, s) catch return "";
     var i: usize = 0;
@@ -280,7 +280,7 @@ pub fn normalizeOpenAIHistory(arena: Allocator, messages: *std.json.Array) void 
 /// Best-effort decode of a non-string tool `content` value to a string. A pure
 /// byte-integer array (every item an int in 0..255) decodes back to its bytes
 /// (so [61,61,61] → "==="); anything else is JSON-encoded.
-fn toolContentString(arena: Allocator, v: Value) []const u8 {
+pub fn toolContentString(arena: Allocator, v: Value) []const u8 {
     if (v == .array) {
         var bytes: std.ArrayList(u8) = .empty;
         defer bytes.deinit(arena);

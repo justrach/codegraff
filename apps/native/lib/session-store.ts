@@ -1,6 +1,7 @@
-import { closeSync, existsSync, fstatSync, openSync, readdirSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { withoutGuiSkillContext } from "./gui-skills";
 
 /** Same layout `src/session_index.zig` owns. Header fields land before
@@ -207,12 +208,44 @@ function newerFirst(a: StoredSessionRow, b: StoredSessionRow): number {
   return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
 }
 
-/** Cwd saves first (they win on the same base name), then `~/.graff/sessions`
- *  when that tree is a different workspace. ADR 0059 / #712. */
+/** Match engine discovery, including linked trees outside the repository. */
+export function extraWorktreeRoots(cwd: string): string[] {
+  const roots = new Set<string>();
+  try {
+    const current = realpathSync(cwd);
+    const listed = execFileSync("git", ["-C", cwd, "worktree", "list", "--porcelain", "-z"], {
+      encoding: "utf8", timeout: 2000, maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "ignore"],
+    });
+    for (const field of listed.split("\0")) {
+      if (!field.startsWith("worktree ")) continue;
+      const tree = field.slice("worktree ".length);
+      if (path.isAbsolute(tree) && !sameWorkspace(tree, current) && existsSync(tree)) roots.add(tree);
+    }
+  } catch { /* Non-git folders still expose local auto-isolate saves. */ }
+  const root = path.join(cwd, ".graff", "worktrees");
+  try {
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (entry.isDirectory()) roots.add(path.join(root, entry.name));
+    }
+  } catch { /* The auto-isolate directory need not exist. */ }
+  return [...roots];
+}
+
+/** Cwd saves first (they win on the same base name), then linked worktrees
+ *  including external linked trees (#1151), then `~/.graff/sessions` when that tree
+ *  is a different workspace. ADR 0059 / #712. */
 export function listSessionRows(cwd: string, home = homeDir()): StoredSessionRow[] {
   const cwdDir = path.join(cwd, SESSIONS_DIR);
   const rows = readDir(cwdDir, cwd, true, home, cwd);
   const seen = new Set(rows.map((r) => r.name));
+  for (const wt of extraWorktreeRoots(cwd)) {
+    if (sameWorkspace(wt, cwd)) continue;
+    for (const row of readDir(path.join(wt, SESSIONS_DIR), wt, false, home, cwd)) {
+      if (seen.has(row.name)) continue;
+      rows.push(row);
+      seen.add(row.name);
+    }
+  }
   if (home && !sameWorkspace(home, cwd)) {
     for (const row of readDir(path.join(home, SESSIONS_DIR), home, false, home, cwd)) {
       if (seen.has(row.name)) continue;
@@ -272,6 +305,10 @@ export function findSessionFile(cwd: string, name: string, home = homeDir()): { 
   if (!NAME_RE.test(name)) return null;
   const localFile = path.join(cwd, SESSIONS_DIR, `${name}${SESSION_EXT}`);
   if (existsSync(localFile)) return { file: localFile, local: true, workspace: cwd };
+  for (const wt of extraWorktreeRoots(cwd)) {
+    const file = path.join(wt, SESSIONS_DIR, `${name}${SESSION_EXT}`);
+    if (existsSync(file)) return { file, local: false, workspace: wt };
+  }
   if (home && !sameWorkspace(home, cwd)) {
     const homeFile = path.join(home, SESSIONS_DIR, `${name}${SESSION_EXT}`);
     if (existsSync(homeFile)) return { file: homeFile, local: false, workspace: home };

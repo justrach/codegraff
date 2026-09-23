@@ -173,6 +173,9 @@ pub fn parse(init: std.process.Init) !Flags {
                 } else if (std.mem.eql(u8, arg, "--max-tool-calls")) {
                     const mv = it.next() orelse std.process.fatal("--max-tool-calls needs a non-negative integer — harness --help", .{});
                     main_mod.max_tool_calls = std.fmt.parseInt(u64, mv, 10) catch std.process.fatal("--max-tool-calls needs a non-negative integer, got '{s}'", .{mv});
+                } else if (std.mem.eql(u8, arg, "--max-run-tool-calls")) {
+                    const mv = it.next() orelse std.process.fatal("--max-run-tool-calls needs a non-negative integer", .{});
+                    @import("run_budget.zig").cli_max_tool_calls = std.fmt.parseInt(u64, mv, 10) catch std.process.fatal("--max-run-tool-calls needs a non-negative integer", .{});
                 } else if (std.mem.eql(u8, arg, "--max-model-calls")) {
                     const mv = it.next() orelse std.process.fatal("--max-model-calls needs a non-negative integer — graff --help", .{});
                     main_mod.max_model_calls = std.fmt.parseInt(u64, mv, 10) catch std.process.fatal("--max-model-calls needs a non-negative integer, got '{s}'", .{mv});

@@ -81,9 +81,11 @@ function mcpOffPath(): string {
 // child's history; `dispose`/`dispose-page` reap children on tab close and
 // page unload. Kept on globalThis so dev-server module reloads don't orphan
 // running agents.
-const g = globalThis as typeof globalThis & { __graffAcpSlots?: Map<string, Slot>; __graffAcpBootstraps?: Map<string, Promise<Slot>>; __graffAcpRetirements?: Map<string, Promise<void>>; __graffAcpShuttingDown?: boolean };
+type BootstrapGeneration = { replacement?: Promise<Slot> };
+const g = globalThis as typeof globalThis & { __graffAcpSlots?: Map<string, Slot>; __graffAcpBootstraps?: Map<string, Promise<Slot>>; __graffAcpBootstrapGenerations?: WeakMap<Promise<Slot>, BootstrapGeneration>; __graffAcpRetirements?: Map<string, Promise<void>>; __graffAcpShuttingDown?: boolean };
 const slots = (g.__graffAcpSlots ??= new Map<string, Slot>());
 const bootstraps = (g.__graffAcpBootstraps ??= new Map<string, Promise<Slot>>());
+const bootstrapGenerations = (g.__graffAcpBootstrapGenerations ??= new WeakMap<Promise<Slot>, BootstrapGeneration>());
 const retirements = (g.__graffAcpRetirements ??= new Map<string, Promise<void>>());
 const DEFAULT_CHAT = "default";
 // Session names become a CLI argument and a filename under .graff/sessions.
@@ -258,8 +260,23 @@ function bootstrap(chat: string, opts: BootstrapOpts): Promise<Slot> {
   const live = slots.get(chat);
   // Explicit changes can replace a stalled handshake. Ordinary concurrent
   // requests must wait instead of killing the worker they are about to use.
-  if (opts.reset || (live && !matchesBootstrap(live, opts))) bootstraps.delete(chat);
-  return serializeBootstrap(bootstraps, chat, () => bootstrapNow(chat, opts));
+  const replacing = opts.reset || (live !== undefined && !matchesBootstrap(live, opts));
+  const previous = bootstraps.get(chat);
+  const previousGeneration = previous ? bootstrapGenerations.get(previous) : undefined;
+  // Every caller queued behind a handshake belongs to that same generation.
+  // Replacing its tail must redirect the original caller as well as the queue.
+  const generation: BootstrapGeneration = !replacing && previousGeneration ? previousGeneration : {};
+  if (replacing) bootstraps.delete(chat);
+  const serialized = serializeBootstrap(bootstraps, chat, () => bootstrapNow(chat, opts));
+  const pending = bootstraps.get(chat);
+  if (pending) bootstrapGenerations.set(pending, generation);
+  const result = serialized.catch(error => {
+    const replacement = generation.replacement;
+    if (replacement) return replacement;
+    throw error;
+  });
+  if (replacing && previousGeneration) previousGeneration.replacement = result;
+  return result;
 }
 
 async function bootstrapNow(chat: string, opts: BootstrapOpts): Promise<Slot> {
@@ -363,6 +380,13 @@ export async function POST(req: NextRequest) {
       });
       return Response.json({ sessionId: slot.sessionId, cwd: slot.cwd, commands: slot.commands });
     }
+    if (method === "session/permission") {
+      const current = slots.get(chat);
+      const { requestId, sessionId, optionId } = body.params ?? {};
+      if (!current || typeof sessionId !== "string" || current.sessionId !== sessionId || typeof requestId !== "string" || !(optionId === null || typeof optionId === "string") || !current.transport.respondPermission(requestId, sessionId, optionId))
+        return Response.json({ error: "Permission request is no longer active or response is invalid" }, { status: 409 });
+      return Response.json({ ok: true });
+    }
     const slot = await bootstrap(chat, { model });
     if (method === "session/cancel") {
       try {
@@ -425,7 +449,7 @@ export async function POST(req: NextRequest) {
       slot.pendingPrompt = pending;
       // Both rejection and success settle the gate without changing the wire outcome.
       const settled = () => {
-        if (slot.pendingPrompt === pending) { slot.pendingPrompt = null; slot.streaming = false; }
+        if (slot.pendingPrompt === pending) { slot.transport.clearPermissions(); slot.pendingPrompt = null; slot.streaming = false; }
         if (slots.get(chat) === slot) watchIdle(chat, slot);
       };
       void pending.then(settled, settled);

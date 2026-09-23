@@ -186,6 +186,16 @@ test { // a new module's tests run only when something references it (see main.z
 /// the labeled results of the previous phase (appended when omitted).
 /// Returns the final phase's results.
 pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
+    if (ctx.from_sub or tools.strField(input, "isolation") == null or !std.mem.eql(u8, tools.strField(input, "isolation").?, "worktree")) return execWorkflowShared(ctx, input);
+    // Pipeline owns one scope per item, never one tree shared by parallel items.
+    if (tools.json_args.object(input)) |obj| if (obj.contains("pipeline")) return .{ .text = try ctx.gpa.dupe(u8, "Set isolation:worktree on pipeline, not on its outer workflow object."), .is_error = true };
+    var scope = @import("workflow_workspace.zig").Scope.init(ctx) catch |err| return tools.failure(ctx.gpa, err);
+    defer scope.deinit();
+    const out = execWorkflowShared(scope.context(ctx), input) catch |err| tools.failure(ctx.gpa, err);
+    return scope.finish(out);
+}
+
+fn execWorkflowShared(ctx: ToolCtx, input: Value) !ToolOutput {
     const gpa = ctx.gpa;
     if (ctx.from_sub) return .{
         .text = try gpa.dupe(u8, "subagents cannot run workflows — do this work yourself"),
@@ -333,7 +343,7 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
             override.* = fleet.resolveOverride(task);
             const agent_niche = fleet.resolveNiche(task);
             niche.* = if (agent_niche.len > 0) agent_niche else title;
-            isolation.* = fleet.resolveIsolation(task);
+            isolation.* = if (ctx.agent_cwd != null and std.mem.eql(u8, tools.strField(input, "isolation") orelse "", "worktree")) .shared_cwd else fleet.resolveIsolation(task);
             isolation_fallback.* = fleet.resolveIsolationFallback(task);
             const raw = if (task.get("prompt")) |p| (if (p == .string) p.string else "") else "";
             if (raw.len == 0) return .{ .text = try gpa.dupe(u8, "each task needs a non-empty \"prompt\""), .is_error = true };

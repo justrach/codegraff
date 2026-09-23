@@ -1,4 +1,5 @@
-//! `/sessions` listing: cwd saves, then device-wide home saves (#712).
+//! `/sessions` listing: cwd saves, then linked worktrees (#1151), then
+//! device-wide home saves (#712).
 
 const std = @import("std");
 const Io = std.Io;

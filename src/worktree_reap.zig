@@ -27,6 +27,33 @@ fn pidGone(io: Io, pid: i32) bool {
     return proc_identity.probe(io, pid) == .gone;
 }
 
+fn hasIgnoreCase(hay: []const u8, needle: []const u8) bool {
+    if (hay.len < needle.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= hay.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(hay[i .. i + needle.len], needle)) return true;
+    }
+    return false;
+}
+
+/// User asked to free disk. Unfold `workspace` so action=gc is callable.
+/// Do not match a generic "clean up" — that is finish-is-not-archive.
+pub fn userAskedToFreeTrees(text: []const u8) bool {
+    const needles = [_][]const u8{
+        "clear up space",
+        "free space",
+        "free disk",
+        "clear unused",
+        "unused worktree",
+        "unused trees",
+        "workspace gc",
+        "/workspace gc",
+        "worktree gc",
+    };
+    for (needles) |n| if (hasIgnoreCase(text, n)) return true;
+    return false;
+}
+
 /// Drop registrations whose dirs are already gone, then remove clean
 /// auto-isolate trees whose pid is dead. Returns how many directories went.
 pub fn orphans(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8) usize {
@@ -53,6 +80,80 @@ pub fn orphans(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8) usize 
         if (prune.removeWorktree(gpa, io, e)) removed += 1;
     }
     return removed;
+}
+
+/// After an agent task: drop stale registrations and dead session checkouts.
+/// Named task workspaces stay; this does not archive them.
+pub fn reapAfterTask(gpa: Allocator, io: Io) void {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    _ = orphans(gpa, io, arena_state.allocator(), ".");
+}
+
+pub fn prMerged(gpa: Allocator, io: Io, cwd: []const u8, branch: []const u8, head: []const u8) bool {
+    const name = prune.shortBranch(branch);
+    const r = process_runner.runCappedWithOptions(gpa, io, &.{ "gh", "pr", "view", name, "--json", "state,headRefOid" }, 4096, 4096, 20_000, .{ .cwd = .{ .path = cwd } }) catch return false;
+    defer {
+        gpa.free(r.stdout);
+        gpa.free(r.stderr);
+    }
+    if (!process_runner.ranOk(r)) return false;
+    return provesMergedHead(gpa, r.stdout, head);
+}
+
+pub fn provesMergedHead(gpa: Allocator, bytes: []const u8, head: []const u8) bool {
+    if (head.len == 0) return false;
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, bytes, .{}) catch return false;
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    const state = parsed.value.object.get("state") orelse return false;
+    const oid = parsed.value.object.get("headRefOid") orelse return false;
+    return state == .string and oid == .string and std.mem.eql(u8, state.string, "MERGED") and std.mem.eql(u8, oid.string, head);
+}
+
+fn treeDirty(gpa: Allocator, io: Io, path: []const u8) bool {
+    const st = runCapped(gpa, io, &.{ "git", "-C", path, "status", "--porcelain" }, 1 << 16, 8192, 15_000) catch return true;
+    defer {
+        gpa.free(st.stdout);
+        gpa.free(st.stderr);
+    }
+    if (!process_runner.ranOk(st)) return true;
+    return std.mem.trim(u8, st.stdout, " \t\r\n").len > 0;
+}
+
+/// Named task trees whose GitHub PR is MERGED and whose checkout is clean.
+/// Dirty trees stay. `gh` missing or offline is a no-op.
+pub fn mergedPulls(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8) usize {
+    const dir = if (cwd.len > 0) cwd else ".";
+    const listed = runCapped(gpa, io, &.{ "git", "-C", dir, "worktree", "list", "--porcelain" }, 1 << 18, 8192, 15_000) catch return 0;
+    defer {
+        gpa.free(listed.stdout);
+        gpa.free(listed.stderr);
+    }
+    const entries = prune.parseEntries(arena, listed.stdout) catch return 0;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const here_n = Io.Dir.cwd().realPathFile(io, ".", &buf) catch 0;
+    const here = if (here_n > 0) buf[0..here_n] else "";
+    var removed: usize = 0;
+    for (entries) |e| {
+        const name = prune.shortBranch(e.branch);
+        if (!std.mem.startsWith(u8, name, "worktree-")) continue;
+        if (sessionPid(e.branch) != null) continue;
+        if (here.len > 0 and std.mem.eql(u8, e.path, here)) continue;
+        if (treeDirty(gpa, io, e.path)) continue;
+        if (!prMerged(gpa, io, dir, e.branch, e.head)) continue;
+        if (!@import("workspace_prepare.zig").beforeArchive(gpa, io, arena, dir, e.path, name["worktree-".len..])) continue;
+        if (prune.removeWorktree(gpa, io, e)) removed += 1;
+    }
+    return removed;
+}
+
+test "userAskedToFreeTrees: space/gc wording, not generic cleanup" {
+    try std.testing.expect(userAskedToFreeTrees("can we clear up space"));
+    try std.testing.expect(userAskedToFreeTrees("Free disk please"));
+    try std.testing.expect(userAskedToFreeTrees("run worktree gc"));
+    try std.testing.expect(!userAskedToFreeTrees("clean up the worktree after you finish"));
+    try std.testing.expect(!userAskedToFreeTrees("summarize the architecture"));
 }
 
 test "sessionPid: only auto-isolate session branches" {
@@ -107,6 +208,16 @@ test "orphans: a dead-pid clean session tree is removed; a named workspace is no
     const n = orphans(a, io, ar, root);
     try std.testing.expect(n >= 1);
     try std.testing.expect((Io.Dir.cwd().statFile(io, gone.path, .{}) catch null) == null);
+    try std.testing.expectEqualStrings("", @import("worktree_base.zig").text(a, io, ar, &.{ "git", "-C", root, "branch", "--list", gone.branch }));
     try std.testing.expect((Io.Dir.cwd().statFile(io, named.path, .{}) catch null) != null);
     try std.testing.expect((Io.Dir.cwd().statFile(io, live.path, .{}) catch null) != null);
+}
+
+test "merged PR proof must cover the exact current workspace head" {
+    const a = std.testing.allocator;
+    try std.testing.expect(provesMergedHead(a, "{\"state\":\"MERGED\",\"headRefOid\":\"abc\"}", "abc"));
+    try std.testing.expect(!provesMergedHead(a, "{\"state\":\"MERGED\",\"headRefOid\":\"old\"}", "new"));
+    try std.testing.expect(!provesMergedHead(a, "{\"state\":\"OPEN\",\"headRefOid\":\"abc\"}", "abc"));
+    try std.testing.expect(!provesMergedHead(a, "{\"state\":\"MERGED\"}", "abc"));
+    try std.testing.expect(!provesMergedHead(a, "invalid", "abc"));
 }

@@ -71,6 +71,7 @@ pub const sim = @import("sim.zig");
 
 test {
     _ = engine;
+    _ = @import("permission.zig");
     _ = @import("events.zig");
     _ = theme;
     _ = catalog;

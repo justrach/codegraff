@@ -28,10 +28,12 @@ export function AssistantResponseCopyButton({
       onClick={() => {
         void copy(text);
       }}
-      className="-ml-1 rounded-full px-1.5 text-muted-foreground hover:text-foreground"
+      className="size-7 rounded-full border border-border bg-background p-0 text-foreground shadow-none hover:bg-muted"
     >
-      {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-      <span aria-live="polite">{label}</span>
+      {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+      <span className="sr-only" aria-live="polite">
+        {label}
+      </span>
     </Button>
   );
 }

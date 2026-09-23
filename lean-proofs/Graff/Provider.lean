@@ -51,7 +51,7 @@ def specs : List Row :=
   , { id := "openai",     kind := .responses, auth := .bearer }
   , { id := "google",     kind := .interactions, auth := .googApiKey, catalog := .openai, takesEffort := true }
   , { id := "minimax",    kind := .anthropic, auth := .bearer }
-  , { id := "xiaomi",     kind := .openai,    auth := .bearer }
+  , { id := "xiaomi",     kind := .openai,    auth := .bearer,  catalog := .openai }
   , { id := "kilo",       kind := .openai,    auth := .bearer }
   , { id := "groq",       kind := .openai,    auth := .bearer }
   , { id := "cerebras",   kind := .openai,    auth := .bearer,  catalog := .openai, takesEffort := true }
