@@ -21,9 +21,16 @@ A completed response without usage increments the observed call count and marks
 token and cost totals incomplete. Preserve reported subtotals without treating
 unknown usage as zero or mixing reported charges with list-price estimates.
 
+Track failed request attempts without reported usage separately from successful
+calls. Begin tracking only when invoking transport, after request validation;
+preserve uncertainty even if a later retry succeeds. The counter describes outer
+request attempts, not individual socket dials. Missing or malformed Responses
+usage is also unknown. Text summaries label known subtotals, while JSON and SDK
+results expose separate usage-completeness and missing-usage fields.
+
 ## Consequences
 
 The fix avoids replaying completed work without shortening the normal trailer
 wait. Offline unit and TLS/HTTP2 cases cover delayed usage, omitted usage, empty
 completed output, normal termination, and a genuinely unterminated response.
-This does not recover usage from other failed attempts or establish their charges.
+This does not recover failed-attempt usage or establish those attempts' charges.

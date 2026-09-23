@@ -443,11 +443,11 @@ test "inputOverCompactThreshold (#260): a fresh Base64 image is vision context, 
 }
 
 pub fn recordUsageResponses(self: *Agent, response: std.json.ObjectMap, req_body_len: usize) void {
+    const usage_known = @import("request_usage_attempts.zig").noteResponsesUsage(self.io, g_cost, response);
     self.last_cache_read = 0;
     self.last_usage_includes_output = false;
-    // Fallback estimate from the serialized request body, with inline Base64
-    // images charged as bounded vision tokens rather than text. This keeps the
-    // context meter live when Codex omits usage without compacting fresh images.
+    // Estimate serialized input with bounded vision tokens for inline images.
+    // Preserve the context meter when the provider omits usage.
     const est = requestBodyEstimateTokens(self, req_body_len);
     // A held Codex WS sends only previous_response_id + the unsent delta, so
     // body/4 can be tiny even when the preceding response reported a near-full
@@ -488,7 +488,7 @@ pub fn recordUsageResponses(self: *Agent, response: std.json.ObjectMap, req_body
         cache_write = usageInt(d.object, "cache_write_tokens");
         if (cached > 0) self.last_cache_read = @intCast(cached);
     };
-    self.recordCost(@max(in_tokens - cached - cache_write, 0), cached, cache_write, out_tokens);
+    if (usage_known) self.recordCost(@max(in_tokens - cached - cache_write, 0), cached, cache_write, out_tokens);
 }
 
 test "recordUsageResponses: usage fallbacks never lower an authoritative meter" {

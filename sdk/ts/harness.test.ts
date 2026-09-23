@@ -55,6 +55,9 @@ describe("Harness transport", () => {
       unpricedCalls: 0,
       complete: true,
       metadataComplete: true,
+      usageComplete: false,
+      missingUsageCalls: 0,
+      unreportedFailedAttempts: 1,
     });
     expect(await h.ask("plain")).toBe("user:plain");
   });

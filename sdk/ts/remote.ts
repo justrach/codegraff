@@ -35,7 +35,7 @@ export type Event =
   | { seq: number; type: "agent_usage"; id: string; ok: boolean; duration_ms: number; tool_calls: number; context_tokens: number; cache_read_tokens: number }
   | { seq: number; type: "finalizing" }
   | { seq: number; type: "session_recap"; text: string; status: "needs_input" | "completed" | "failed"; source: "heuristic" | "model" }
-  | { seq: number; type: "turn"; text: string; context_tokens: number; cost_usd: number; input_tokens: number; uncached_input_tokens: number; cache_read_tokens: number; output_tokens: number; api_calls: number; subscription_calls: number; unpriced_calls: number; complete?: boolean; metadata_complete?: boolean }
+  | { seq: number; type: "turn"; text: string; context_tokens: number; cost_usd: number; input_tokens: number; uncached_input_tokens: number; cache_read_tokens: number; output_tokens: number; api_calls: number; usage_complete?: boolean; missing_usage_calls?: number; unreported_failed_attempts?: number; subscription_calls: number; unpriced_calls: number; complete?: boolean; metadata_complete?: boolean }
   | { seq: number; type: "system_prompt"; ok: boolean; append: boolean; chars: number }
   | { seq: number; type: "model"; ok: boolean; provider: string; model: string; context: number; note: string }
   | { seq: number; type: "compact"; ok: boolean; chars: number }
@@ -128,7 +128,7 @@ export interface AskResult {
   text: string;
   /** Server-reported context size at turn end. */
   contextTokens: number;
-  /** Turn cost in USD. */
+  /** Known turn cost in USD; check usageComplete before treating it as a total. */
   costUsd: number;
   inputTokens: number;
   uncachedInputTokens: number;
@@ -143,6 +143,10 @@ export interface AskResult {
   /** False when the turn finished incomplete (interrupted/stalled). */
   complete?: boolean;
   metadataComplete?: boolean;
+  /** False means token/cost values are known subtotals only; absent on older servers. */
+  usageComplete?: boolean;
+  missingUsageCalls?: number;
+  unreportedFailedAttempts?: number;
 }
 
 export interface RunAgentRemoteOptions extends RemoteOptions {
@@ -375,6 +379,9 @@ export class RemoteHarness {
           unpricedCalls: ev.unpriced_calls,
           complete: ev.complete,
           metadataComplete: ev.metadata_complete,
+          usageComplete: ev.usage_complete,
+          missingUsageCalls: ev.missing_usage_calls,
+          unreportedFailedAttempts: ev.unreported_failed_attempts,
         };
       }
       if (ev.type === "error") throw new Error(ev.message);

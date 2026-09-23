@@ -61,6 +61,7 @@ pub const CostTally = struct {
     out_tokens: u64 = 0,
     api_calls: u64 = 0,
     sub_calls: u64 = 0, // subscription-billed (flat-rate; contribute $0)
+    unreported_failed_attempts: u64 = 0, // not successful calls; billing is unknown
     missing_usage_calls: u64 = 0, // completed responses whose usage was absent
     unpriced_calls: u64 = 0, // no price_table row
 
@@ -95,6 +96,12 @@ pub const CostTally = struct {
         self.missing_usage_calls +|= 1;
     }
 
+    pub fn failedWithoutUsage(self: *CostTally, io: Io, count: u64) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        self.unreported_failed_attempts +|= count;
+    }
+
     /// Consistent copy for rendering (taken under the lock).
     pub fn snap(self: *CostTally, io: Io) CostTally {
         self.mutex.lockUncancelable(io);
@@ -106,10 +113,12 @@ pub const CostTally = struct {
 
     /// One-line summary shared by /cost and the one-shot stderr report.
     pub fn render(c: CostTally, w: *Io.Writer) !void {
+        if (c.missing_usage_calls > 0 or c.unreported_failed_attempts > 0) try w.writeAll("known subtotal: ");
         try w.print("{d} api call(s) · {d} in ({d} cached, {d} cache writes) + {d} out tokens · ${d:.8}", .{
             c.api_calls, c.in_tokens +| c.cache_tokens, c.cache_tokens, c.cache_write_tokens, c.out_tokens, c.usd,
         });
         if (c.missing_usage_calls > 0) try w.print(" · totals incomplete: {d} call(s) missing usage (tokens and cost unknown)", .{c.missing_usage_calls});
+        if (c.unreported_failed_attempts > 0) try w.print(" · totals incomplete: {d} failed request attempt(s) without usage (tokens and cost unknown)", .{c.unreported_failed_attempts});
         if (c.sub_calls > 0) try w.print(" · {d} subscription call(s), flat-rate (not in $)", .{c.sub_calls});
         if (c.unpriced_calls > 0) try w.print(" · {d} call(s) on unpriced models", .{c.unpriced_calls});
     }

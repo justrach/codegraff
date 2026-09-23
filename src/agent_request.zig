@@ -85,6 +85,8 @@ fn sayTypedApiError(self: *Agent, etype: []const u8, ecode: ?[]const u8, emsg: [
 }
 
 pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
+    var usage_attempts: @import("request_usage_attempts.zig").Ledger = .{};
+    defer usage_attempts.finish(self.io, &@import("pricing.zig").g_cost);
     errdefer {
         if (@import("agent_async_tools.zig").started(self)) self.closeCodexWs();
         @import("agent_async_tools.zig").reset(self);
@@ -227,6 +229,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             while (true) : (attempt += 1) {
                 var conv_buf: [96]u8 = undefined;
                 const conv = http_headers.promptCacheKey(self.io, self.label, self, &conv_buf);
+                usage_attempts.begin();
                 const attempt_body = if (live)
                     self.postLive(body)
                 else
@@ -391,6 +394,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             switch (r) {
                 .ok => |obj| {
                     if (!self.compaction_request) self.compact_transport_failures = 0;
+                    usage_attempts.completed();
                     self.recordUsageResponses(obj, body.len);
                     try @import("agent_async_tools.zig").join(self);
                     // #414: an empty output whose usage already fills the window
@@ -479,6 +483,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     const usage = root.get("usage");
                     if (usage == null or usage.? != .object) @import("pricing.zig").g_cost.missingUsage(self.io);
                 }
+                usage_attempts.completed();
                 self.recordUsage(root, body.len);
                 if (recoverBehavioralOverflow(self, root, &context_retried)) continue; // #414: silent overflow / upstream truncation → trim + retry
                 if (!self.compaction_request) self.compact_transport_failures = 0;
@@ -573,6 +578,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             return error.ApiError;
         }
 
+        usage_attempts.completed();
         self.recordUsage(root, body.len);
         if (recoverBehavioralOverflow(self, root, &context_retried)) continue; // #414: same, on the non-streamed body
         if (!self.compaction_request) self.compact_transport_failures = 0;
