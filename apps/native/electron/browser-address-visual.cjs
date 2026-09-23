@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-async function runBrowserAddress({ wc, browser, destination, guard, wait, delayOpenReply, openReplySent }) {
+async function runBrowserAddress({ wc, browser, destination, guard, wait, delayOpenReply, openReplySent, delayAbortedReply, abortedReplySent, delayUnreplacedAbort, unreplacedAbortSent }) {
   const js = code => wc.executeJavaScript(code);
   const searches = [];
   const safe = guard(destination);
@@ -34,6 +34,24 @@ async function runBrowserAddress({ wc, browser, destination, guard, wait, delayO
   await js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   assert.deepEqual(searches, [expected]);
   assert.equal(await js(`!!document.querySelector('aside [role="alert"]')`), false, 'Search terms do not show Invalid URL');
+  // A successful replacement page can precede an ERR_ABORTED IPC reply for
+  // the original navigation. The late error must not cover that page.
+  delayAbortedReply();
+  const redirected = destination + '/late-reply';
+  await submit(redirected);
+  await wait(() => {
+    const page = browser.tabs.get(browser.visible)?.view?.webContents;
+    return page && !page.isLoading() && page.getURL() === redirected;
+  }, 'replacement page finished before its rejected reply');
+  await wait(abortedReplySent, 'late aborted reply delivered');
+  await js('new Promise(resolve=>setTimeout(resolve,100))');
+  assert.equal(await js(`!!document.querySelector('aside [role="alert"]')`), false, 'superseded abort does not show a navigation error');
+  // Without a completed replacement, the same abort remains visible.
+  delayUnreplacedAbort();
+  await submit(destination + '/no-replacement');
+  await wait(unreplacedAbortSent, 'unreplaced abort delivered');
+  await wait(`document.querySelector('aside [role="alert"]')?.textContent.includes('ERR_ABORTED')`);
+  assert.equal(browser.tabs.get(browser.visible).view.webContents.getURL(), redirected);
   // Check scheme rejection in the real IPC path without treating it as a search.
   const oldURL = browser.tabs.get(browser.visible).view.webContents.getURL();
   await submit('javascript:alert(1)');
