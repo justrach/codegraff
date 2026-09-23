@@ -469,8 +469,7 @@ test "native Jev gateway confirmed receipt records exact charge once" {
     var tally: pricing.CostTally = .{};
     var temp = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer temp.deinit();
-    noteGatewayUsage(io, &tally, temp.allocator(),
-        "{\"usage\":{\"input_tokens\":296,\"output_tokens\":20},\"codegraff_billing\":{\"settled\":true,\"charge_micro_usd\":12,\"currency\":\"USD\"}}");
+    noteGatewayUsage(io, &tally, temp.allocator(), "{\"usage\":{\"input_tokens\":296,\"output_tokens\":20},\"codegraff_billing\":{\"settled\":true,\"charge_micro_usd\":12,\"currency\":\"USD\"}}");
     const c = tally.snap(io);
     try std.testing.expectEqual(@as(u64, 1), c.api_calls);
     try std.testing.expectEqual(@as(u64, 296), c.in_tokens);
