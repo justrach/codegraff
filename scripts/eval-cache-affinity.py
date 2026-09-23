@@ -137,8 +137,9 @@ def run(binary, cwd, artifacts, model, prompt, timeout, source_env):
     env['GRAFF_LEARNING_PRIVACY'] = 'local'
     with binary.open('rb') as executable:
         shebang = executable.readline(256)
-    # Windows cannot launch an extensionless shebang fixture via CreateProcess.
-    launcher = [sys.executable] if os.name == 'nt' and shebang.startswith(b'#!') and b'python' in shebang.lower() else []
+    # Windows cannot launch Python scripts through CreateProcess by shebang.
+    launcher = [sys.executable] if os.name == 'nt' and (binary.suffix.lower() == '.py' or
+                (shebang.startswith(b'#!') and b'python' in shebang.lower())) else []
     argv = [*launcher, str(binary), '--no-local-tools', '--yolo', '--max-model-calls', '2',
             '--no-telemetry', '-p', prompt]
     expected_hash = digest(binary)
@@ -235,7 +236,7 @@ def main():
         if not source.is_file() or not os.access(source, os.X_OK):
             ap.error(f'{arm} must be an executable file')
         before_hash = digest(source)
-        dest = binaries / arm
+        dest = binaries / f'{arm}{source.suffix}'
         shutil.copyfile(source, dest)
         dest.chmod(0o500)
         if digest(dest) != before_hash or digest(source) != before_hash:

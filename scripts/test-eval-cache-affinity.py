@@ -44,7 +44,7 @@ class ProbeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             for arm in ('before', 'after'):
-                binary = root / arm
+                binary = root / f'{arm}.py'
                 binary.write_text(f'''#!{sys.executable}
 import json, os
 from pathlib import Path
@@ -61,8 +61,8 @@ print({FOOTER!r}, file=__import__('sys').stderr)
                 binary.chmod(0o700)
             out = root / 'result'
             env = dict(os.environ, CODEGRAFF_API_KEY='offline-fixture-only', OPENAI_API_KEY='must-not-inherit')
-            p = subprocess.run([sys.executable, str(SCRIPT), '--before', str(root/'before'),
-                                '--after', str(root/'after'), '--model', 'fixture', '--repeats', '2',
+            p = subprocess.run([sys.executable, str(SCRIPT), '--before', str(root/'before.py'),
+                                '--after', str(root/'after.py'), '--model', 'fixture', '--repeats', '2',
                                 '--out', str(out)], env=env, capture_output=True, text=True, timeout=30)
             self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
             pairs = json.loads((out/'pairs.json').read_text())

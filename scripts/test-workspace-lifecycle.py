@@ -51,9 +51,18 @@ with tempfile.TemporaryDirectory(prefix="graff-workspace-lifecycle-") as tempora
     assert "setup ok" in graff("create", "task", "main")
     tree = root / ".graff/worktrees/task"
     assert git("config", "branch.worktree-task.graff-base") == "main"
-    assert Path((tree / ".graff/setup-cwd").read_text().strip()).resolve() == tree.resolve()
+    def recorded_cwd(name):
+        value = (tree / f'.graff/{name}-cwd').read_text().strip()
+        # Git Bash pwd uses /d/... while Python on Windows uses D:\\... .
+        if os.name == 'nt' and value.startswith('/'):
+            drive, separator, rest = value[1:].partition('/')
+            if separator and len(drive) == 1 and drive.isalpha():
+                value = f'{drive}:/{rest}'
+        return Path(value).resolve()
+
+    assert recorded_cwd('setup') == tree.resolve()
     assert "run finished" in graff("run", "task")
-    assert Path((tree / ".graff/run-cwd").read_text().strip()).resolve() == tree.resolve()
+    assert recorded_cwd('run') == tree.resolve()
     (tree / "file").write_text("task\n")
     git("add", "file", cwd=tree)
     git("commit", "-qm", "task", cwd=tree)
