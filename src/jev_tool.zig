@@ -54,6 +54,12 @@ pub fn available(provider: Provider) bool {
         !state.down.load(.acquire) and scope.eligible(provider);
 }
 
+/// A model switch can change Jev visibility even when the wire format stays the same.
+pub fn updateProvider(root: anytype, p: Provider) void {
+    if (available(root.provider) != available(p)) root.invalidateRootTools();
+    root.provider = p;
+}
+
 pub fn catalogExtras(provider: Provider) []const ToolSpec {
     return if (available(provider)) &.{spec} else &.{};
 }

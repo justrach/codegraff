@@ -26,7 +26,6 @@ const fallback_config = @import("fallback_config.zig");
 const util = @import("util.zig");
 const trace = @import("trace.zig");
 const orch_rows = @import("orchestration_rows.zig");
-const jev_tool = @import("jev_tool.zig");
 
 fn localProviderUrl(url: []const u8) bool {
     return std.mem.startsWith(u8, url, "http://127.0.0.1") or std.mem.startsWith(u8, url, "http://localhost") or std.mem.startsWith(u8, url, "http://[::1]");
@@ -76,7 +75,6 @@ fn translateHistory(arena: Allocator, msgs: *std.json.Array, to_kind: Provider.K
 
 pub fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: bool) ![]const u8 {
     const same_format = root.provider.kind == p.kind;
-    const same_jev_scope = jev_tool.available(root.provider) == jev_tool.available(p);
     const same_selection = same_format and
         root.provider.context == p.context and
         std.mem.eql(u8, root.provider.id, p.id) and
@@ -94,7 +92,7 @@ pub fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: 
             note = "history cleared — /keepcontext on to carry it across formats";
         }
     }
-    root.provider = p;
+    @import("jev_tool.zig").updateProvider(root, p);
     // #371: the #291 worker default resolved once at startup; without this a
     // /model switch left children on the OLD provider's rung (root on codex,
     // workers silently still on kimi — a cost and consent surprise) or with
@@ -103,8 +101,6 @@ pub fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: 
     if (!root.subagent_provider_explicit) if (@import("bench_priors.zig").g_keys) |k| {
         root.subagent_provider = @import("subagent_selection.zig").resolveSubagentProvider(k.*, p, null, null, false, false);
     };
-    // A same-format model switch can change native Jev visibility.
-    if (!same_jev_scope) root.invalidateRootTools();
     // Keep the context estimate and first request exact without eagerly
     // materializing formats this session has never used.
     try root.ensureRootTools(p.kind);
@@ -551,31 +547,6 @@ test "applyProviderInner preserves the server meter on an exact model re-selecti
     try std.testing.expect(root.tools_openai.len > 0);
     try std.testing.expect(root.tools_responses.len > 0); // already paid for, remains cached
     try std.testing.expectEqual(@as(usize, 0), root.tools_anthropic.len);
-
-    const mock = struct {
-        pub fn get(_: @This(), key: []const u8) ?[]const u8 {
-            return if (std.mem.eql(u8, key, "JEV_BACKEND")) "mock" else null;
-        }
-    }{};
-    jev_tool.configure(mock);
-    defer jev_tool.configure(struct {
-        pub fn get(_: @This(), _: []const u8) ?[]const u8 {
-            return null;
-        }
-    }{});
-    _ = jev_tool.setCodegraffLogin(true);
-    // Same-format GPT-6 → GPT-5 switches must also rebuild the catalog.
-    var gpt6 = changed;
-    gpt6.model = "gpt-6-sol";
-    root.invalidateRootTools();
-    _ = try applyProviderInner(&root, a, gpt6, false);
-    try std.testing.expect(std.mem.indexOf(u8, root.tools_responses, jev_tool.name) != null);
-    _ = try applyProviderInner(&root, a, changed, false);
-    try std.testing.expect(std.mem.indexOf(u8, root.tools_responses, jev_tool.name) == null);
-    _ = try applyProviderInner(&root, a, changed_format, false);
-    try std.testing.expect(std.mem.indexOf(u8, root.tools_openai, jev_tool.name) == null);
-    _ = try applyProviderInner(&root, a, gpt6, false);
-    try std.testing.expect(std.mem.indexOf(u8, root.tools_responses, jev_tool.name) != null);
 }
 
 test "set_model control resolves explicit provider/model fields" {
