@@ -271,8 +271,11 @@ test "affinity: real linked worktrees share primary checkout key without merging
     // Git also accepts relative .git pointers; canonicalization must agree.
     const relative_pointer = try std.fs.path.join(a, &.{ sibling, ".git" });
     defer a.free(relative_pointer);
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = relative_pointer, .data = "gitdir: ../primary/.git/worktrees/sibling\n" });
-    try std.testing.expectEqualStrings(projectIdForCwd(io, primary, &primary_key), projectIdForCwd(io, sibling, &sibling_key));
+    // Git for Windows marks a linked worktree's .git pointer read-only.
+    if (@import("builtin").os.tag != .windows) {
+        try Io.Dir.cwd().writeFile(io, .{ .sub_path = relative_pointer, .data = "gitdir: ../primary/.git/worktrees/sibling\n" });
+        try std.testing.expectEqualStrings(projectIdForCwd(io, primary, &primary_key), projectIdForCwd(io, sibling, &sibling_key));
+    }
     const nested = try std.fs.path.join(a, &.{ sibling, "nested" });
     defer a.free(nested);
     try affinityGit(&.{ "init", "-q", nested });

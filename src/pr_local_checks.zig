@@ -247,10 +247,11 @@ test "publication receipts record successful shell checks at the observed Git he
     try std.testing.expectEqualStrings(head, receipt.head_after);
     try std.testing.expectEqualStrings("rendered dimensions passed", receipt.output);
     try std.testing.expect(receipt.tracked_tree_clean_after and receipt.completed and !receipt.failed);
+    const repository = try repositoryRoot(&root, cwd);
     try record(&root, call, .{ .text = "FAIL", .is_error = true });
-    try std.testing.expect(root.publication_checks.unresolved(cwd) != null);
+    try std.testing.expect(root.publication_checks.unresolved(repository) != null);
     try record(&root, call, .{ .text = "passed", .is_error = false });
-    try std.testing.expect(root.publication_checks.unresolved(cwd) == null);
+    try std.testing.expect(root.publication_checks.unresolved(repository) == null);
     const output = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"action\":\"output\",\"command\":\"node scripts/test-motion.mjs\"}", .{});
     try record(&root, .{ .id = "poll", .name = "shell", .input = output }, .{ .text = "passed", .is_error = false });
     try std.testing.expectEqual(@as(usize, 3), root.publication_checks.recent.items.len);

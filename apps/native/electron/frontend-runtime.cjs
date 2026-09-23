@@ -178,7 +178,12 @@ app.whenReady().then(async () => {
         report.nativePointer={bounds,trace:await js('window.__nativeClickTrace')};
         await js('window.__nativeClickCleanup()');
       }
-    } else for (const type of ['mouseDown', 'mouseUp']) await desktop.testInput(wc, { type, button: 'left', clickCount: 1, ...p });
+    } else {
+      await desktop.testInput(wc, { type: 'mouseDown', button: 'left', clickCount: 1, ...p });
+      // Focusing a control can scroll the transcript between press and release.
+      const release = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return null;const r=e.getBoundingClientRect(),x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2);return e.contains(document.elementFromPoint(x,y))?{x,y}:null})()`);
+      await desktop.testInput(wc, { type: 'mouseUp', button: 'left', clickCount: 1, ...p, ...release });
+    }
   };
   const send = async text => {
     await click('textarea[aria-label="Prompt"]');

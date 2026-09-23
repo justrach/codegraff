@@ -76,7 +76,8 @@ def check(binary, phases):
             assert len(trees) == len(expected), trees
             assert sorted((tree/'result.txt').read_text() for tree in trees) == expected
             for tree in trees:
-                assert str(tree) in text, 'retained path was not delivered'
+                # Compare the JSON-escaped spelling (Windows paths contain backslashes).
+                assert json.dumps(str(tree))[1:-1] in text, 'retained path was not delivered'
                 branch = subprocess.check_output(['git', '-C', str(tree), 'branch', '--show-current'], text=True).strip()
                 assert branch in text, 'retained branch was not delivered'
             print(f'PASS {"phases" if phases else "pipeline"}: dependent reads, isolated items, committed trees retained and delivered')
