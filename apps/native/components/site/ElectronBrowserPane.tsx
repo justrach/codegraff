@@ -17,6 +17,9 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
   const address = useRef<HTMLInputElement>(null);
   const typing = useRef(false);
   const infoRevision = useRef(0);
+  const currentUrl = useRef(initialUrl || "about:blank");
+  const navigationId = useRef(0);
+  const navigation = useRef<{ id: number; previousUrl: string; completedUrl?: string; aborted?: boolean } | null>(null);
   const callbacks = useRef({ pins, onPinsChange }); callbacks.current = { pins, onPinsChange };
   const storageKey = `graff.electron.browser.url:${memoryKey || chat}`;
   const layout = () => {
@@ -27,17 +30,30 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
   const layoutRef = useRef(layout); layoutRef.current = layout;
   const command = async (method: string, params?: Record<string, unknown>) => {
     const revision = ++infoRevision.current;
+    const pending = method === "open" || method === "navigate"
+      ? { id: ++navigationId.current, previousUrl: currentUrl.current } : null;
+    if (pending) navigation.current = pending;
     try {
       setError(""); const next = await desktop()!.browser(chat, method, params);
       // Navigation events may be newer than the snapshot returned over IPC.
-      if (revision === infoRevision.current && next?.url !== undefined) { setInfo(next); setUrl(next.url === "about:blank" ? "" : next.url); localStorage.setItem(storageKey, next.url); }
+      if (revision === infoRevision.current && next?.url !== undefined) { currentUrl.current = next.url; setInfo(next); setUrl(next.url === "about:blank" ? "" : next.url); localStorage.setItem(storageKey, next.url); }
       layoutRef.current();
     } catch (err) {
+      if (pending && navigation.current?.id !== pending.id) return;
       const raw = err instanceof Error ? err.message : String(err);
+      // A redirected load can reject with ERR_ABORTED after its replacement
+      // page has loaded. Ignore it only when a newer page completed for this
+      // chat's pending navigation; a failed load must still reach the user.
+      if (pending && /ERR_ABORTED/.test(raw) && navigation.current?.id === pending.id) {
+        if (navigation.current.completedUrl && navigation.current.completedUrl !== pending.previousUrl) return;
+        navigation.current.aborted = true;
+      }
       setError(/Invalid URL/i.test(raw) ? "Enter a web address or a search." : raw);
     }
   };
   useEffect(() => {
+    navigation.current = null;
+    currentUrl.current = initialUrl || "about:blank";
     const bridge = desktop()!;
     const unsubscribe = bridge.subscribe(event => {
       if (event.type === "layout") layoutRef.current();
@@ -46,6 +62,12 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
       if (event.type === "info" && event.info) {
         infoRevision.current++;
         if (event.info.ready === "loading") setPicking(false);
+        const pending = navigation.current;
+        if (pending && event.info.ready === "complete" && event.info.url !== pending.previousUrl) {
+          pending.completedUrl = event.info.url;
+          if (pending.aborted) { pending.aborted = false; setError(""); }
+        }
+        currentUrl.current = event.info.url;
         setInfo(event.info); setUrl(event.info.url === "about:blank" ? "" : event.info.url);
         localStorage.setItem(storageKey, event.info.url);
       }
@@ -60,6 +82,7 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
     void bridge.browser(chat, "info").then(current => {
       if (!alive || revision !== infoRevision.current) return;
       if (current && current.url && current.url !== "about:blank") {
+        currentUrl.current = current.url;
         setInfo(current); setUrl(current.url);
         return;
       }
@@ -71,7 +94,8 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
     if (frame.current) observer.observe(frame.current);
     const changed = () => layoutRef.current();
     window.addEventListener("resize", changed);
-    return () => { alive = false; infoRevision.current++; observer.disconnect(); unsubscribe(); window.removeEventListener("resize", changed);
+    return () => { alive = false; infoRevision.current++; navigationId.current++; navigation.current = null;
+      observer.disconnect(); unsubscribe(); window.removeEventListener("resize", changed);
       void bridge.browser(chat, "hide"); };
     // A browser view belongs to its chat, not a render of the composer.
     // eslint-disable-next-line react-hooks/exhaustive-deps

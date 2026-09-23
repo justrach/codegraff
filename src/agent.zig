@@ -162,6 +162,7 @@ pub const Agent = struct {
     goal_note_fp: u64 = 0, // last-injected standing-goal note fingerprint (goal_state.steeringGate, #318)
     goal_note_age: u32 = 0, // turns since that note was last injected (refresh interval)
     pending_goal_note: ?[]const u8 = null, // one-shot supersession note for the next turn (/goal replace|clear)
+    startup_effort_notice: ?[]const u8 = null, // ACP presents a corrected stale effort setting after session/new
     completion_gate_armed: bool = false, // attempt_completion was refused; the promised second call closes the goal. Persists ACROSS turns (a model emits one per turn) until the checklist or goal changes (#318)
     completion_refused: bool = false, // a refused attempt_completion this turn: work the model must react to, so /loop must not read the turn as zero-tool (#318)
     todos_dirty: bool = false, // todo_write ran in THIS process: a checklist restored from disk is persisted state, never evidence that the current prompt is done (#318)
@@ -267,8 +268,8 @@ pub const Agent = struct {
 
     /// Whether the active provider honors a reasoning-effort hint: the
     /// Responses API (codex, native xAI) via reasoning.effort, and the
-    /// OpenAI-compatible providers that normalize reasoning_effort — native
-    /// xAI chat, the codegraff gateway, and deepseek. Everything else ignores it.
+    /// OpenAI-compatible providers that expose a thinking or effort control,
+    /// including native xAI chat, MiMo, the codegraff gateway, and deepseek.
     pub fn effortApplies(self: *const Agent) bool {
         return schema.providerTakesEffort(self.provider.kind, self.provider.id, self.provider.model);
     }

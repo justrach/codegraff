@@ -122,6 +122,7 @@ fn effortTier(effort: main_mod.ReasoningEffort) engine_events.ReasoningEffort {
         .xhigh => .xhigh,
         .max => .max,
         .ultra => .ultra,
+        .none => .none,
     };
 }
 
@@ -138,7 +139,7 @@ fn effectiveEffort(self: *Agent) ?engine_events.ReasoningEffort {
     }
     if (!self.effortApplies()) return null;
     const er = @import("effort_route.zig");
-    const wire = er.wireEffort(self.provider.model, @tagName(self.reasoning));
+    const wire = er.wireEffort(self.provider.id, self.provider.model, @tagName(self.reasoning));
     const display = er.normalize(self.provider.id, self.provider.model, wire);
     inline for (std.meta.tags(main_mod.ReasoningEffort)) |tag| {
         if (std.mem.eql(u8, @tagName(tag), display)) return effortTier(tag);

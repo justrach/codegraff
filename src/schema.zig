@@ -379,6 +379,7 @@ fn providerLoginKind(id: []const u8) []const u8 {
 /// turns out to reject it.
 pub fn providerTakesEffort(kind: Provider.Kind, id: []const u8, model: []const u8) bool {
     if (std.mem.startsWith(u8, model, "grok")) return std.mem.eql(u8, id, "xai");
+    if (@import("effort_route.zig").mimoRoute(id, model)) return true;
     return kind == .responses or
         (std.mem.eql(u8, id, "kimi") and pricing.kimiSupportsThinking(model)) or
         (if (provider_mod.specFor(id)) |spec| spec.takes_effort else false);

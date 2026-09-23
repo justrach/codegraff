@@ -62,7 +62,7 @@ CASES = [
      lambda e: e.get("type") == "effort" and e.get("level") == "ultra",
      "set_effort ultra -> effort ack"),
     ({"type": "set_effort", "level": "sideways"},
-     lambda e: e.get("type") == "error" and "low" in e.get("message", ""),
+     lambda e: e.get("type") == "error" and "supported by the current model" in e.get("message", ""),
      "set_effort invalid -> error"),
     ({"type": "set_effort", "level": "medium"},
      lambda e: e.get("type") == "effort" and e.get("level") == "medium",

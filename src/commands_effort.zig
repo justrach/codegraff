@@ -13,7 +13,13 @@ const reasoning_levels = [_]pickers.PickItem{
     .{ .name = "Extra high", .desc = "Extra high reasoning depth for complex problems" },
     .{ .name = "Max", .desc = "Maximum reasoning depth for the hardest problems" },
     .{ .name = "Ultra", .desc = "Maximum reasoning with automatic task delegation" },
+    .{ .name = "Off", .desc = "Disable model reasoning" },
 };
+
+fn display(root: *Agent, effort: ReasoningEffort) []const u8 {
+    if (er.mimoRoute(root.provider.id, root.provider.model) and effort == .high) return "On";
+    return reasoning_levels[@intFromEnum(effort)].name;
+}
 
 fn normalized(root: *Agent, requested: []const u8) ?ReasoningEffort {
     const tag = er.normalize(root.provider.id, root.provider.model, requested);
@@ -35,7 +41,10 @@ pub fn handle(root: *Agent, arena: std.mem.Allocator, line: []const u8, out: *st
         for (levels, 0..) |tag, i| {
             const effort = std.meta.stringToEnum(ReasoningEffort, tag).?;
             tags[i] = effort;
-            rows[i] = reasoning_levels[@intFromEnum(effort)];
+            rows[i] = if (er.mimoRoute(root.provider.id, root.provider.model) and effort == .high)
+                .{ .name = "On", .desc = "Enable model reasoning" }
+            else
+                reasoning_levels[@intFromEnum(effort)];
             if (effort == current) cur = i;
         }
         const idx = pickers.listPickerAt(root, arena, out, title, rows[0..levels.len], cur) orelse return true;
@@ -59,14 +68,14 @@ pub fn handle(root: *Agent, arena: std.mem.Allocator, line: []const u8, out: *st
         };
     } else {
         const current = normalized(root, @tagName(root.reasoning)).?;
-        try out.print("reasoning effort: {s}\n", .{reasoning_levels[@intFromEnum(current)].name});
+        try out.print("reasoning effort: {s}\n", .{display(root, current)});
         try out.flush();
         return true;
     }
     _ = @import("repl_glue.zig").saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
     try out.print("reasoning effort: {s}{s}\n", .{
-        reasoning_levels[@intFromEnum(root.reasoning)].name,
-        if (!root.effortApplies()) " (current model ignores it — applies to xai, codex, deepseek, codegraff)" else "",
+        display(root, root.reasoning),
+        if (!root.effortApplies()) " (current model ignores it — applies to supported reasoning models)" else "",
     });
     try out.flush();
     return true;

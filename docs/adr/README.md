@@ -217,6 +217,7 @@ record only when you need the evidence or the edge cases.
 | [0189](0189-bounded-buffered-http2-posts.md) | Buffered HTTP/2 posts cap body growth, use exclusive pooled leases with durable transport allocation, join deadlines, and never replay ambiguous sends. |
 | [0190](0190-catalog-gets-share-bounded-http2-transport.md) | Catalog GETs use bounded HTTP/2 pages with joined deadlines, shared redirect limits, and credentials scoped to the original origin. |
 | [0191](0191-acp-effort-is-session-configuration.md) | ACP thought-level options follow the active model and share `/effort` state; changes received during a turn apply after that turn. |
+| [0192](0192-mimo-thinking-is-a-binary-setting.md) | MiMo exposes Off/On, preserves legacy positive settings as On, and uses the documented thinking control on each wire. |
 
 ## When to write one
 

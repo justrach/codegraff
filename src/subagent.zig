@@ -71,6 +71,7 @@ pub fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     const cell: route_policy.Cell = .{ .role = route_policy.roleOf(label, niche) };
     // #380: vision-aware seat + honesty flag (this file is at the cap).
     const ask = vision_ask.seat(ctx, base, obj, cell, label, prompt, sys_override, niche);
+    if (ask.pin.effort_outcome == .unsupported_effort) return .{ .text = try ctx.gpa.dupe(u8, "subagent: Off is unsupported by this model; choose a supported effort"), .is_error = true };
     if (ask.blocked) return .{ .text = try vision_ask.blockMessage(ctx.gpa, ask), .is_error = true };
     const keep = tools.json_args.flag(input, "retained");
     if (ctx.interactive_children or tools.json_args.flag(input, "run_in_background")) {

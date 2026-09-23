@@ -118,8 +118,8 @@ export interface AnswerOptions {
   callId?: string;
 }
 
-/** Reasoning effort levels accepted by setEffort (protocol set_effort). */
-export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+/** Reasoning effort levels for setEffort; `none` requires a supported model route. */
+export type EffortLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 /** Structured result of one turn: the final assistant text plus the usage
  *  the harness reported on the terminal `turn` event. */
