@@ -16,6 +16,8 @@ const invalid_params: i32 = -32602;
 
 pub fn configure(d: *engine.Dispatch, live: *LiveTurn) void {
     d.load_session = load;
+    d.config = @import("acp_config.zig").option;
+    d.set_config = @import("acp_config.zig").set;
     d.durable_session_id = if (session.validSessionName(live.root.session_name)) live.root.session_name else null;
     live.dispatch = d;
 }
@@ -90,6 +92,7 @@ pub fn load(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request
     d.session_id = live.session_id;
     d.durable_session_id = live.session_id;
     try replayHistory(arena, live.root, w, live.session_id);
-    try proto.writeResult(w, req.id, struct {}{});
+    const options = engine.configOptions(d, arena) catch |err| return proto.writeError(w, req.id, engine.err_internal, @errorName(err));
+    try proto.writeResult(w, req.id, .{ .configOptions = options });
     try proto.writeAvailableCommands(w, live.session_id, proto.slashCommands());
 }

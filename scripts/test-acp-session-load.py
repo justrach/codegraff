@@ -126,6 +126,8 @@ def run(binary):
             assert init["result"]["agentCapabilities"]["loadSession"] is True
             sid = a.request("session/new", {"cwd": str(cwd), "mcpServers": []})["result"]["sessionId"]
             assert "/" not in sid and "\\" not in sid
+            changed = a.request("session/set_config_option", {"sessionId": sid, "configId": "thought_level", "value": "high"})
+            assert changed["result"]["configOptions"][0]["currentValue"] == "high"
             duplicate = a.request("session/new", {"cwd": str(cwd), "mcpServers": []})
             assert duplicate["error"]["code"] == -32000
             turn = a.request("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text": "Original human request."}]}, 35)
@@ -155,6 +157,8 @@ def run(binary):
             created = b.request("session/new", {"cwd": str(cwd), "mcpServers": []})["result"]
             fresh = created["sessionId"]
             assert fresh != sid
+            lowered = b.request("session/set_config_option", {"sessionId": fresh, "configId": "thought_level", "value": "low"})
+            assert lowered["result"]["configOptions"][0]["currentValue"] == "low"
             bad = b.request("session/load", {"sessionId": "../escape", "cwd": str(cwd), "mcpServers": []})
             assert bad["error"]["code"] == -32602
             missing = b.request("session/load", {"sessionId": "missing", "cwd": str(cwd), "mcpServers": []})
@@ -167,7 +171,12 @@ def run(binary):
             assert wrong["error"]["code"] == -32602
             before = len(b.events)
             loaded = b.request("session/load", {"sessionId": sid, "cwd": str(cwd), "mcpServers": []})
-            assert loaded.get("result") == {}, (created, loaded)
+            created_config = created["configOptions"]
+            loaded_config = loaded["result"]["configOptions"]
+            assert len(created_config) == len(loaded_config) == 1, (created, loaded)
+            assert created_config[0]["category"] == loaded_config[0]["category"] == "thought_level"
+            assert created_config[0]["currentValue"] == "high", created_config
+            assert loaded_config[0]["currentValue"] == "low", loaded_config
             duplicate_after_load = b.request("session/new", {"cwd": str(cwd), "mcpServers": []})
             assert duplicate_after_load["error"]["code"] == -32000
             replay = b.events[before:]
@@ -181,6 +190,7 @@ def run(binary):
             assert stale_session["error"]["code"] == -32602
             continued = b.request("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text": "Continue with original context."}]}, 35)
             assert continued["result"]["stopReason"] == "end_turn"
+            assert next_model.requests[0]["reasoning"]["effort"] == "low"
             assert next_model.new_handle != old
             assert "Original human request." in json.dumps(next_model.requests[0])
             assert "Original assistant answer." in json.dumps(next_model.requests[0])
