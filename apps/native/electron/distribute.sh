@@ -4,7 +4,6 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${GRAFF_SIGN_IDENTITY:?Set a Developer ID Application identity}"
 : "${GRAFF_NOTARY_PROFILE:?Set a notarytool keychain profile}"
-: "${GRAFF_WEBAUTHN_PROFILE:?Set a macOS provisioning profile authorizing the app and WebAuthn keychain group}"
 source_app="${1:?Usage: distribute.sh /path/Codegraff.app /path/output}"
 out="${2:?Provide a new output directory}"
 mkdir -p "$out"
