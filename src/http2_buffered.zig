@@ -149,10 +149,13 @@ fn watched(ex: *Exchange, deadline_ms: u64) !void {
     }
 }
 
-pub fn post(gpa: Allocator, io: Io, client: *std.http.Client, url: []const u8, bearer: []const u8, body: []const u8, deadline_ms: u64) !Response {
-    var ex: Exchange = .{ .gpa = gpa, .io = io, .client = client, .url = url, .bearer = bearer, .body = body, .limit = max_body };
+/// `transport_gpa` must outlive pooled sessions (until pool.shutdown).
+/// `result_allocator` may be a request-scoped arena; no pooled allocation
+/// or live I/O retains its output after this function returns.
+pub fn post(transport_gpa: Allocator, result_allocator: Allocator, io: Io, client: *std.http.Client, url: []const u8, bearer: []const u8, body: []const u8, deadline_ms: u64) !Response {
+    var ex: Exchange = .{ .gpa = transport_gpa, .io = io, .client = client, .url = url, .bearer = bearer, .body = body, .limit = max_body };
     try watched(&ex, deadline_ms);
-    return .{ .status = ex.status, .body = try gpa.dupe(u8, ex.bytes[0..ex.len]) };
+    return .{ .status = ex.status, .body = try result_allocator.dupe(u8, ex.bytes[0..ex.len]) };
 }
 
 test "buffered response rejects growth past limit before copying" {
@@ -277,7 +280,7 @@ test "loopback HTTPS stalled body cancels and releases the exchange" {
     var client: std.http.Client = .{ .allocator = std.testing.allocator, .io = io };
     defer client.deinit();
     const started = Io.Timestamp.now(io, .awake).nanoseconds;
-    try std.testing.expectError(error.DeadlineExceeded, post(std.testing.allocator, io, &client, url, "Bearer fixture", "{}", 100));
+    try std.testing.expectError(error.DeadlineExceeded, post(std.testing.allocator, std.testing.allocator, io, &client, url, "Bearer fixture", "{}", 100));
     const elapsed = Io.Timestamp.now(io, .awake).nanoseconds - started;
     try std.testing.expect(elapsed < 2 * std.time.ns_per_s);
 }
@@ -291,10 +294,31 @@ test "loopback HTTP2 ambiguous post-send drop is never replayed" {
     defer pool.shutdown(io);
     var client: std.http.Client = .{ .allocator = std.testing.allocator, .io = io };
     defer client.deinit();
-    const response = post(std.testing.allocator, io, &client, std.mem.span(value), "Bearer fixture", "{}", 1000) catch |err| {
+    const response = post(std.testing.allocator, std.testing.allocator, io, &client, std.mem.span(value), "Bearer fixture", "{}", 1000) catch |err| {
         try std.testing.expect(err == error.RstStream or err == error.ReadFailed or err == error.EndOfStream);
         return;
     };
     std.testing.allocator.free(response.body);
     return error.ExpectedAmbiguousFailure;
+}
+
+test "loopback HTTP2 reuses a pooled session after result arena destruction" {
+    const value = std.c.getenv("GRAFF_JEV_HTTP2_REUSE_URL") orelse return error.SkipZigTest;
+    const io = std.testing.io;
+    const saved = @import("main.zig").g_http2;
+    defer @import("main.zig").g_http2 = saved;
+    @import("main.zig").g_http2 = true;
+    defer pool.shutdown(io);
+    var client: std.http.Client = .{ .allocator = std.testing.allocator, .io = io };
+    defer client.deinit();
+    for (0..2) |_| {
+        var temp = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer temp.deinit(); // response, bearer and body die before pool reuse
+        const a = temp.allocator();
+        const bearer = try a.dupe(u8, "Bearer fixture");
+        const body = try a.dupe(u8, "{}");
+        const response = try post(std.testing.allocator, a, io, &client, std.mem.span(value), bearer, body, 1000);
+        try std.testing.expectEqual(@as(u16, 200), response.status);
+        try std.testing.expectEqualStrings("{\"ok\":true}", response.body);
+    }
 }

@@ -205,7 +205,7 @@ fn fetch(ctx: ToolCtx, arena: Allocator, body: []const u8) ![]const u8 {
     const bearer = try gatewayBearer(arena, state.key);
     var completed = false;
     defer if (!completed) pricing.g_cost.failedWithoutUsage(ctx.io, 1);
-    const res = try buffered_https.post(arena, ctx.io, ctx.client, endpoint, bearer, body, 10_000);
+    const res = try buffered_https.post(ctx.gpa, arena, ctx.io, ctx.client, endpoint, bearer, body, 10_000);
     switch (res.status) {
         200 => {},
         401, 403 => return error.JevUnauthorized,

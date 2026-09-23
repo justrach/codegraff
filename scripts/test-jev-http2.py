@@ -30,12 +30,18 @@ def exercise(root):
             port = int(ports.get(timeout=10))
             env = dict(__import__('os').environ,
                        GRAFF_JEV_HTTP2_STALL_URL=f'https://localhost:{port}/v1/systemone',
-                       GRAFF_JEV_HTTP2_DROP_URL=f'https://localhost:{port}/drop')
+                       GRAFF_JEV_HTTP2_DROP_URL=f'https://localhost:{port}/drop',
+                       GRAFF_JEV_HTTP2_REUSE_URL=f'https://localhost:{port}/ok')
             start = time.monotonic()
-            result = fixture.run(['zig', 'build', 'test', '--system', str(root/'packages'),
-                                  '--cache-dir', str(root/'test-cache'),
-                                  '-Dtest-filter=loopback HTTP', '--summary', 'all'],
-                                 cwd=REPO, env=env, timeout=240)
+            try:
+                result = fixture.run(['zig', 'build', 'test', '--system', str(root/'packages'),
+                                      '--cache-dir', str(root/'test-cache'),
+                                      '-Dtest-filter=loopback HTTP', '--summary', 'all'],
+                                     cwd=REPO, env=env, timeout=240)
+            except RuntimeError:
+                print('server log:', log.read_text(), flush=True)
+                print('server stderr:', (root/'server-stderr').read_text(), flush=True)
+                raise
             elapsed = time.monotonic() - start
             assert '1 skipped' not in result.stderr, result.stderr
             deadline = time.monotonic() + 5
@@ -46,13 +52,16 @@ def exercise(root):
                 time.sleep(.02)
             assert any(row['event'] == 'session' and row['alpn'] == 'h2' for row in rows), rows
             requests = [row for row in rows if row['event'] == 'request']
-            assert len(requests) == 2, rows
-            assert {row['path'] for row in requests} == {'/v1/systemone', '/drop'}, requests
+            assert len(requests) == 4, rows
+            assert {row['path'] for row in requests} == {'/v1/systemone', '/drop', '/ok'}, requests
             assert all(row['method'] == 'POST' and row['auth'] == 'Bearer fixture' and row['body'] == '{}' for row in requests), requests
+            reused = [row for row in requests if row['path'] == '/ok']
+            assert len(reused) == 2 and reused[0]['session'] == reused[1]['session'], reused
+            assert [row['stream'] for row in reused] == [1, 3], reused
             assert len([row for row in rows if row['event'] == 'dropped']) == 1, rows
             assert any(row['event'] == 'stalled' for row in rows), rows
             assert any(row['event'] == 'closed' for row in rows), rows
-            print(f'PASS Jev HTTPS: stalled h2 canceled/closed, ambiguous drop had one POST; test command {elapsed:.1f}s', flush=True)
+            print(f'PASS Jev HTTPS: cancel/close, one ambiguous POST, pooled reuse after arena teardown; test command {elapsed:.1f}s', flush=True)
         finally:
             fixture.terminate(server)
 
