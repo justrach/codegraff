@@ -60,8 +60,9 @@ exports.run = async ({win, backend}) => {
   await until(() => js(`document.body.innerText.includes('Listener ready for shutdown.')`), 'agent completion');
   phase('agent completion');
   if (process.env.GRAFF_SHUTDOWN_PIN === '1') {
-    await submit('/jobs keep 1');
-    await until(() => js(`document.body.innerText.includes('job 1 pinned')`), 'explicit user pin');
+    const jobId = require('./shutdown-job-id.cjs').listenerJobId(JSON.parse(fs.readFileSync(path.join(output, 'requests.json'), 'utf8')));
+    await submit(`/jobs keep ${jobId}`);
+    await until(() => js(`document.body.innerText.includes(${JSON.stringify(`job ${jobId} pinned`)})`), 'explicit user pin');
     phase('explicit user pin');
   }
   const listener = JSON.parse(fs.readFileSync(path.join(workspace,'listener.json'),'utf8'));
