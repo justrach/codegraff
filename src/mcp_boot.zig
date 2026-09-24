@@ -40,12 +40,14 @@ pub const StartOutcome = struct {
 pub const PendingStart = struct {
     future: Io.Future(StartOutcome) = .{ .any_future = null, .result = .{} },
     ready: ?*std.atomic.Value(bool) = null,
+    await_entered: ?*Io.Event = null,
 
     fn finished(self: *const PendingStart) bool {
         return if (self.ready) |flag| flag.load(.acquire) else true;
     }
 
     fn awaitResult(self: *PendingStart, reg: *Registry) StartOutcome {
+        if (self.await_entered) |event| event.set(reg.io);
         const result = self.future.await(reg.io);
         self.future = .{ .any_future = null, .result = .{} };
         if (self.ready) |flag| reg.gpa.destroy(flag);
@@ -475,6 +477,7 @@ test "concurrent parent and child requests consume a deferred handshake once" {
     const ready = try reg.gpa.create(std.atomic.Value(bool));
     ready.* = .init(false);
     var completed: Io.Event = .unset;
+    var awaiting: Io.Event = .unset;
     var release_start: Io.Event = .unset;
     defer release_start.set(io);
     const Start = struct {
@@ -486,27 +489,45 @@ test "concurrent parent and child requests consume a deferred handshake once" {
         }
     };
     reg.pending_starts = try reg.gpa.alloc(PendingStart, 1);
-    reg.pending_starts[0] = .{ .future = try io.concurrent(Start.run, .{ io, ready, &completed, &release_start }), .ready = ready };
+    reg.pending_starts[0] = .{ .future = try io.concurrent(Start.run, .{ io, ready, &completed, &release_start }), .ready = ready, .await_entered = &awaiting };
     reg.pending_names = try reg.arena().dupe([]const u8, &.{"server"});
     try completed.wait(io);
 
-    var release: Io.Event = .unset;
+    var child_entered: Io.Event = .unset;
     const Request = struct {
-        fn run(task_io: Io, registry: *Registry, gate: *Io.Event) bool {
-            gate.wait(task_io) catch return false;
+        fn run(task_io: Io, registry: *Registry, entered: ?*Io.Event) bool {
+            if (entered) |event| event.set(task_io);
             return joinBeforeRequest(registry);
         }
     };
-    var parent = try io.concurrent(Request.run, .{ io, &reg, &release });
-    var child = try io.concurrent(Request.run, .{ io, &reg, &release });
-    release.set(io);
-    // Keep the future outstanding while both request threads reach its join.
-    try io.sleep(.fromMilliseconds(20), .awake);
+    var parent = try io.concurrent(Request.run, .{ io, &reg, null });
+    try awaiting.wait(io); // Parent holds the registry lock inside the join.
+    var child = try io.concurrent(Request.run, .{ io, &reg, &child_entered });
+    try child_entered.wait(io); // Child has reached the contested join call.
     release_start.set(io);
     const parent_merged = parent.await(io);
     const child_merged = child.await(io);
     try std.testing.expect(parent_merged != child_merged);
     try std.testing.expectEqual(@as(usize, 0), reg.pending_starts.len);
+}
+
+test "catalog snapshot stays stable when a registry publishes new tools" {
+    const io = std.testing.io;
+    var reg = Registry.empty(std.testing.allocator, io);
+    defer reg.deinit();
+    var initial = [_]mcp.Tool{.{
+        .server_index = 0,
+        .original_name = "read",
+        .qualified_name = "mcp__fixture__read",
+        .description = "Read",
+        .input_schema = .null,
+    }};
+    reg.tools = &initial;
+    const snapshot = try reg.snapshotTools(std.testing.allocator);
+    defer std.testing.allocator.free(snapshot);
+    reg.tools = &.{};
+    try std.testing.expectEqual(@as(usize, 1), snapshot.len);
+    try std.testing.expectEqualStrings("mcp__fixture__read", snapshot[0].qualified_name);
 }
 
 test "ACP stdout discipline does not block optional startup handshakes" {

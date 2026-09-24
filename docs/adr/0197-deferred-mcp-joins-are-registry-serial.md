@@ -14,8 +14,9 @@ can double-await the future or read its freed queue entry.
 
 Use the registry mutex for every deferred queue mutation and join. Public
 entry points take the lock; private helpers perform joins while it is held.
-Keep model requests nonblocking with respect to unfinished handshakes. Emit
-notices after releasing the lock.
+Tool-call lookup uses the same lock, and catalog readers copy the published
+tool slice while holding it. Keep model requests nonblocking with respect to
+unfinished handshakes. Emit notices after releasing the lock.
 
 ## Consequences
 
