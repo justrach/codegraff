@@ -196,7 +196,6 @@ fn nudgeAcp() void {
 
 pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_mod.Agent, keys: *provider_mod.Keys, client: *std.http.Client, in: *Io.Reader, out: *Io.Writer, arena: Allocator, flags: args.Flags) !bool {
     if (!(flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "acp"))) return false;
-    _ = environ_map;
     _ = client;
     main_mod.unattended = true;
     // GUI is an interactive root (ADR 0154): park long shells and resume on exit.
@@ -236,6 +235,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
         .meter = liveMeter,
         .extra = liveModels,
         .cwd = if (std.fs.path.isAbsolute(main_mod.g_cwd_display)) main_mod.g_cwd_display else "",
+        .draft_subagents_enabled = std.mem.eql(u8, environ_map.get("GRAFF_ACP_DRAFT_SUBAGENTS") orelse "", "1"),
     };
     @import("acp_session_load.zig").configure(&d, &live);
     while (true) {

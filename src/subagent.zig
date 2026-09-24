@@ -74,7 +74,13 @@ pub fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     if (ask.pin.effort_outcome == .unsupported_effort) return .{ .text = try ctx.gpa.dupe(u8, "subagent: Off is unsupported by this model; choose a supported effort"), .is_error = true };
     if (ask.blocked) return .{ .text = try vision_ask.blockMessage(ctx.gpa, ask), .is_error = true };
     const keep = tools.json_args.flag(input, "retained");
-    if (ctx.interactive_children or tools.json_args.flag(input, "run_in_background")) {
+    // Interactive roots default to detached workers, but an explicit false
+    // asks for a foreground child that completes within this prompt turn.
+    const explicit_foreground = switch (obj.get("run_in_background") orelse .null) {
+        .bool => |value| !value,
+        else => false,
+    };
+    if ((ctx.interactive_children and !explicit_foreground) or tools.json_args.flag(input, "run_in_background")) {
         var child = ctx;
         if (keep) child.retained_worker = try @import("subagent_retained.zig").create(ctx, label);
         errdefer if (keep) child.retained_worker.?.deinit(ctx.gpa, ctx.io);

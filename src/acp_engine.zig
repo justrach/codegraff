@@ -72,7 +72,21 @@ pub const Dispatch = struct {
     error_message: ?*const fn (ctx: *anyopaque, err: anyerror) []const u8 = null,
     /// Isolated checkout after session start (`g_cwd_display`). Empty omits the field.
     cwd: []const u8 = "",
+    /// ACP v1 draft subagent updates are opt-in at initialize.
+    subagents: bool = false,
+    /// The current implementation streams live child activity; historical
+    /// child replay is not yet available, so CLI leaves this off by default.
+    draft_subagents_enabled: bool = false,
 };
+
+fn supportsSubagents(params: ?std.json.Value) bool {
+    const root = params orelse return false;
+    if (root != .object) return false;
+    const caps = root.object.get("clientCapabilities") orelse return false;
+    if (caps != .object) return false;
+    const subagents = caps.object.get("subagents") orelse return false;
+    return subagents == .object;
+}
 
 pub fn configOptions(d: *Dispatch, arena: Allocator) ![]const ConfigOption {
     const config = d.config orelse return &.{};
@@ -229,7 +243,10 @@ pub fn handlePreAuthLine(arena: Allocator, w: *Io.Writer, line: []const u8) !voi
 
 pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u8) !void {
     const req = parseRequest(arena, line) orelse return;
-    if (std.mem.eql(u8, req.method, "initialize")) return respondInitialize(w, req, d.load_session != null);
+    if (std.mem.eql(u8, req.method, "initialize")) {
+        d.subagents = supportsSubagents(req.params);
+        return respondInitialize(w, req, d.load_session != null);
+    }
     if (std.mem.eql(u8, req.method, "authenticate"))
         return respondError(w, req, err_method_not_found, "terminal auth is out of band: re-spawn graff login");
     if (std.mem.eql(u8, req.method, "session/new")) {
@@ -317,6 +334,22 @@ test "in-process handleLine speaks the same initialize / new / prompt envelopes"
     try handleLine(&d, a, &w, "{\"id\":3,\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"ping\"}]}}");
     try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"text\":\"echo:ping\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"stopReason\":\"end_turn\"") != null);
+}
+
+test "subagent draft updates require explicit client capability" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [8192]u8 = undefined;
+    var out: Io.Writer = .fixed(&buf);
+    var dispatch: Dispatch = .{ .turn = echoTurn, .ctx = undefined };
+    try handleLine(&dispatch, arena.allocator(), &out, "{\"id\":1,\"method\":\"initialize\",\"params\":{\"clientCapabilities\":{}}}");
+    try std.testing.expect(!dispatch.subagents);
+    out = .fixed(&buf);
+    try handleLine(&dispatch, arena.allocator(), &out, "{\"id\":2,\"method\":\"initialize\",\"params\":{\"clientCapabilities\":{\"subagents\":{}}}}");
+    try std.testing.expect(dispatch.subagents);
+    out = .fixed(&buf);
+    try handleLine(&dispatch, arena.allocator(), &out, "{\"id\":3,\"method\":\"initialize\",\"params\":{\"clientCapabilities\":{\"subagents\":null}}}");
+    try std.testing.expect(!dispatch.subagents);
 }
 
 test "session/new reports an isolated checkout when Dispatch.cwd is set" {

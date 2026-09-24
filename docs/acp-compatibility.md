@@ -31,6 +31,7 @@ optional feature or draft extension is enabled.
 | Content | Text, resource links and supported embedded text resources are accepted. Image and audio prompt capabilities are currently advertised as false. | `src/acp_protocol.zig` |
 | Client filesystem and terminals | These are optional negotiated ACP facilities, not a requirement that local harness tools be replaced by client tools. The local tool implementation does not imply support for every client-side method. | Capability negotiation and the upstream v1 schema |
 | Usage | Connection usage is a namespaced extension. It preserves unknown totals and is not a standard ACP v1 billing contract. | `scripts/test-acp-usage.py`, ADR 0182 |
+| Subagents | The proposed child-session update stream is an opt-in live preview: client `subagents` capability plus `GRAFF_ACP_DRAFT_SUBAGENTS=1`. Explicit `run_in_background:false` foreground children stream separately; the default detached workers retain their parent tool row and `graff/agents` inspection. Child history is not yet replayed on `session/load`. | `scripts/test-acp-subagent-update.py`, ADR 0194 |
 | Transport | ACP uses JSON-RPC over stdio. HTTP/2 checks exercise the model request transport behind ACP; they do not redefine ACP as an HTTP/2 protocol. | `scripts/test-acp-http2.py`, `scripts/test-acp-http2-retry.py` |
 
 ## Client acceptance checklist
