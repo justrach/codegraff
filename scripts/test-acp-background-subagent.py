@@ -165,6 +165,10 @@ def run(binary, capability=True, cancel=False, disconnect=False, switch_session=
                     client.events.append(json.loads(line))
                 assert not client.pending, 'partial JSON frame on ACP teardown'
                 assert not any(row['event']['type'] == 'terminal' for row in child_events(client))
+                saved = json.loads((work / '.graff' / 'sessions' / f'{sid}.session.json').read_text())
+                child = next(row for row in saved['background_agents'] if row['label'] == 'Inspect in background')
+                assert child['done'] and not child['interrupted'], child
+                assert 'The child finished after the parent prompt.' in child['result'], child
                 return
             if cancel:
                 agents = client.request('graff/agents', {'action': 'list', 'scope': 'device'})
