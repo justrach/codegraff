@@ -9,7 +9,10 @@ const deadline = setTimeout(() => finish(1), 30000);
 async function finish(code) {
   clearTimeout(deadline);
   try { assertSafe(); } catch (error) { console.error(error); code = 1; }
-  cleanup(); fs.rmSync(temporary, { recursive: true, force: true }); app.exit(code);
+  cleanup();
+  // Chromium may still write profile files while Electron shuts down.
+  app.once('quit', () => fs.rmSync(temporary, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  app.exit(code);
 }
 app.whenReady().then(async () => {
   assert.equal(foreground, false, 'The background regression must run without foreground opt-in');
