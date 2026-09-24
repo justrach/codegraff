@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import queue
+import subprocess
 import sys
 import tempfile
 import threading
@@ -85,7 +86,10 @@ def run(binary, capability=True, cancel=False, disconnect=False, switch_session=
             assert (work / '.graff' / 'sessions' / f'{other_sid}.session.json').exists()
         model = Model()
         port = model.start(0)
-        client = load.Acp(binary, work, home, port, extra_env={'GRAFF_NO_NATIVE_FOLD': '1'},
+        extra_env = {'GRAFF_NO_NATIVE_FOLD': '1'}
+        if disconnect:
+            extra_env['GRAFF_SHUTDOWN_DEBUG'] = '1'
+        client = load.Acp(binary, work, home, port, extra_env=extra_env,
                           extra_args=('--max-model-calls', '6', '--max-run-tool-calls', '8'))
         try:
             caps = {'_meta': {'graff/backgroundSubagents': True}} if capability else {}
@@ -126,7 +130,17 @@ def run(binary, capability=True, cancel=False, disconnect=False, switch_session=
                 # write a frame into the closed connection.
                 time.sleep(.2)
                 model.release_child.set()
-                assert client.proc.wait(timeout=8) == 0
+                # Shutdown joins a still-running worker. On a loaded Windows
+                # runner, its request/cleanup can outlast an eight-second
+                # process deadline; the fixture itself bounds the held model
+                # request at 15 seconds. Keep the stronger exit assertion,
+                # and name the shutdown phase if it really stalls.
+                try:
+                    exit_code = client.proc.wait(timeout=25)
+                except subprocess.TimeoutExpired as exc:
+                    trace = Path(client.err.name).read_text(errors='replace')[-3000:]
+                    raise AssertionError(f'ACP did not exit after stdin EOF; stderr tail:\n{trace}') from exc
+                assert exit_code == 0, exit_code
                 while True:
                     try:
                         chunk = client.chunks.get_nowait()
