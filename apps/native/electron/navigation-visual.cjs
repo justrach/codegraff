@@ -23,10 +23,16 @@ async function runNavigationVisuals({win:fixtureWindow,origin,output}) {
   const pressEnter=async()=>{await testDesktop.pressEnter(wc);await sleep(50);};
   const input=async text=>{await js(`(()=>{const e=document.querySelector('textarea[aria-label="Prompt"]');e.focus();Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,${JSON.stringify(text)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`);await sleep(100);};
   const tabs=()=>js(`document.querySelectorAll('[aria-label="Close tab"]').length`);
+  const worktreeSetup=process.env.GRAFF_VISUAL_SUITE==='session-navigation' ? `
+      localStorage.setItem('graff.native.workspace','/demo/field-notes/.graff/worktrees/session-visual');
+      localStorage.setItem('graff.native.workspaces',JSON.stringify([...JSON.parse(localStorage.getItem('graff.native.workspaces')),
+        {path:'/demo/field-notes',name:'Field Notes',source:'history'},
+        {path:'/demo/field-notes/.graff/worktrees/session-visual',name:'session-visual',source:'history'}]));` : '';
   try {
     fixtureWindow.hide();await wc.loadURL('about:blank');testDesktop.attachTestDebugger(wc);await wc.debugger.sendCommand('Page.enable');
     await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument',{source:`(${installGalleryFixture.toString()})();
       localStorage.setItem('graff.native.workspaces',JSON.stringify(Array.from({length:50},(_,i)=>({name:'Project '+(i%10),path:'/demo/folder-'+i}))));
+      ${worktreeSetup}
       const commands=[{name:'compact',description:'Compact conversation context'},...Array.from({length:100},(_,i)=>({name:'command-'+i,description:'Command '+i}))];
       const galleryFetch=window.fetch;window.fetch=async(input,options)=>{const response=await galleryFetch(input,options);if(options?.body&&JSON.parse(options.body).method==='bootstrap')return new Response(JSON.stringify({sessionId:'demo',commands}),{headers:{'content-type':'application/json'}});if(String(input).includes('/api/models')){const data=await response.json();data.result.commands=commands;data.result.current.model='${['tab-drag','session-navigation'].includes(process.env.GRAFF_VISUAL_SUITE) ? 'Graff' : 'example-model-with-a-long-name'}';data.result.models[0].name=data.result.current.model;return new Response(JSON.stringify(data),{headers:{'content-type':'application/json'}});}return response;};`});
     await wc.loadURL(origin);testDesktop.present(win);await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);

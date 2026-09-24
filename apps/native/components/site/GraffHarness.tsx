@@ -50,11 +50,7 @@ import { usePromptQueue, steerOrInterrupt } from "./usePromptQueue";
 import { useChatClose } from "./useChatClose";
 import { type StoredSession } from "@/lib/sessions";
 import { loadHistory, mergeHistory } from "@/lib/prompt-history";
-import {
-  basename,
-  findWorkspace,
-  type Workspace,
-} from "@/lib/workspaces";
+import { basename, displayWorkspace, findWorkspace, type Workspace } from "@/lib/workspaces";
 
 export default function GraffHarness() {
   const navigation = useResponsiveNavigation();
@@ -354,12 +350,9 @@ export default function GraffHarness() {
 
   const recents = sidebarRecents(stored, chats, unread);
 
-  // The folder chip is the tab's workspace. New chat opens there.
+  // Display the project separately from the checkout where this chat runs.
   const cwdOf = (thread: Chat) => thread.cwd ?? activePath ?? health?.cwd;
-  const workspaceNameOf = (thread: Chat) => {
-    const dir = cwdOf(thread);
-    return findWorkspace(workspaces, dir)?.name ?? (dir ? basename(dir) : "workspace");
-  };
+  const workspaceOf = (thread: Chat) => displayWorkspace(cwdOf(thread), workspaces);
   const chatCwd = cwdOf(chatThread);
   useEffect(() => {
     let alive = true;
@@ -374,11 +367,11 @@ export default function GraffHarness() {
     const id = setInterval(tick, 5000);
     return () => { alive = false; clearInterval(id); };
   }, [chatCwd]);
-  const chatWorkspace = findWorkspace(workspaces, chatCwd);
-  const workspaceName = chatWorkspace?.name ?? (chatCwd ? basename(chatCwd) : "workspace");
+  const chatWorkspaceDisplay = workspaceOf(chatThread);
   const pinCount = (pinsByChat[chatThread.id] ?? []).length;
   const activeWorkspace = findWorkspace(workspaces, activePath);
   const sidebarWorkspace = activeWorkspace ?? (activePath ? { path: activePath, name: basename(activePath) } : undefined);
+  const sidebarWorkspaceDisplay = sidebarWorkspace ? chatWorkspaceDisplay : undefined;
 
   const resumeQueue = (chatId: number) => void resumeQueuedPrompt(chatId, {
     pending: queueResumesRef.current,
@@ -495,7 +488,7 @@ export default function GraffHarness() {
           setBrowserOpen(key === "browser");
           setConversationsOpen(key === "conversations");
         }}
-        workspace={sidebarWorkspace}
+        workspace={sidebarWorkspace} workspaceDisplay={sidebarWorkspaceDisplay}
         workspaces={workspaces}
         onSwitchWorkspace={switchWorkspace}
         onArchiveRecent={(id) => dropStored(id, true)}
@@ -510,7 +503,7 @@ export default function GraffHarness() {
         <HarnessChrome sidebarVisible={navigation.sidebarVisible} navigationToggle={navigation.trigger} unreadIds={unread} onTabPointerDown={tabDrag.begin} onTabClickCapture={tabDrag.suppressClick} chats={groups.tabs} activeId={groups.activeTab} busyIds={new Set(groups.groups.filter(group => group.ids.some(id => busyIds.has(id))).map(group => group.ids[0]))} focusChat={id => focusChat(groups.focusOf(id))} closeChat={closeTab} newChat={newChat}
           conversationsOpen={conversationsOpen} openConversations={openConversations} split={panes.length > 0} toggleSplit={toggleSplit}
           filesOpen={filesOpen} onFiles={() => { setAgentsOpen(false); setFileRequest(null); setProjectsOpen(false); setBrowserOpen(false); setConversationsOpen(false); setFilesOpen(fileRequest?.changes ? true : !filesOpen); }}
-          chatCwd={chatCwd} workspaceName={workspaceName} onFolder={() => setDialog({ mode: "new" })} openChanges={toggleChanges} changesOpen={!!(filesOpen && fileRequest?.changes)}
+          chatCwd={chatCwd} workspaceDisplay={chatWorkspaceDisplay} onFolder={() => setDialog({ mode: "new" })} openChanges={toggleChanges} changesOpen={!!(filesOpen && fileRequest?.changes)}
           reviewsOpen={reviewsOpen} onReviews={() => { setAgentsOpen(false); setProjectsOpen(false); setBrowserOpen(false); setConversationsOpen(false); setFilesOpen(false); setReviewsOpen(open => !open); }}
           browserOpen={browserOpen} onBrowser={() => { setAgentsOpen(false); setProjectsOpen(false); setConversationsOpen(false); setFilesOpen(false); setBrowserOpen(open => !open); }} pinCount={pinCount}
           terminalVisible={terminalVisible} toggleTerminal={toggleTerminal} agentsOpen={agentsOpen}
@@ -540,7 +533,7 @@ export default function GraffHarness() {
           ) : null}
           <div className="min-h-0 min-w-0 flex-1" style={{ display: projectsOpen || conversationsOpen || agentsOpen ? "none" : "flex" }}>
             <ChatSplitLayout threads={columns} liveChatIds={chats.map(chat => chat.id)} activeId={activeId} direction={splitDirection} layout={groups.tree} onLayoutChange={groups.setTree}
-              onFocus={id => focusChat(id, false)} onClose={closeChat} folder={thread => ({name: workspaceNameOf(thread), path: cwdOf(thread)})}
+              onFocus={id => focusChat(id, false)} onClose={closeChat} folder={thread => ({...workspaceOf(thread), path: cwdOf(thread)})}
               body={columnBody} split={columnIds.length > 1} claims={claims} />
           </div>
 

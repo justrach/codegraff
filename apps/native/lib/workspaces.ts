@@ -70,6 +70,21 @@ export function findWorkspace(list: readonly Workspace[], path: string | null | 
   return list.find((w) => w.path === p);
 }
 
+export type WorkspaceDisplay = { project: string; worktree: boolean };
+
+/** Generated checkouts are still separate working folders, but their GUI label
+ * names the owning project rather than a session-shaped directory. */
+export function displayWorkspace(cwd: string | null | undefined, list: readonly Workspace[]): WorkspaceDisplay {
+  if (!cwd) return { project: "workspace", worktree: false };
+  const path = normalizePath(cwd);
+  const checkout = /[/\\]\.graff[/\\]worktrees[/\\][^/\\]+(?=$|[/\\])/.exec(path);
+  const projectPath = checkout ? path.slice(0, checkout.index) || path[0] : path;
+  return {
+    project: findWorkspace(list, projectPath)?.name ?? basename(projectPath.replace(/\\/g, "/")),
+    worktree: checkout !== null,
+  };
+}
+
 /** Preserve chosen rows, including a full list, when showing startup context. */
 export function restoreWorkspaceSelection(saved: readonly Workspace[], remembered: string | null, root: string) {
   const list = [...saved];

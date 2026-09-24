@@ -8,6 +8,7 @@ import type { Chat } from "./harness-types";
 import reviewStyles from "./ChangesPane.module.css";
 import { archiveTaskWorkspace, createTaskWorkspace, gcTaskWorkspaces, landTaskWorkspace, runTaskWorkspace, updateTaskWorkspace } from "./harness-task-workspace";
 import { useCommandGlyph } from "@/lib/shortcut-glyph";
+import type { WorkspaceDisplay } from "@/lib/workspaces";
 
 type Props = {
   navigationToggle?: ReactNode; sidebarVisible?: boolean;
@@ -16,7 +17,7 @@ type Props = {
   chats: (Pick<Chat, "id" | "title"> & { paneIds?: number[]; direction?: "row" | "column"; tree?: SplitTree })[]; activeId: number; busyIds: ReadonlySet<number>;
   focusChat(id: number): void; closeChat(id: number): void; newChat(): void;
   conversationsOpen: boolean; openConversations(): void; split: boolean; toggleSplit(): void;
-  filesOpen: boolean; onFiles(): void; chatCwd?: string; workspaceName: string; onFolder(): void;
+  filesOpen: boolean; onFiles(): void; chatCwd?: string; workspaceDisplay: WorkspaceDisplay; onFolder(): void;
   openChanges(): void; changesOpen?: boolean; reviewsOpen?: boolean; onReviews?: () => void; browserOpen: boolean; onBrowser(): void; pinCount: number;
   terminalVisible: boolean; toggleTerminal(): void; agentsOpen: boolean; onAgents(): void; workingAgents?: number;
   tasksOpen?: boolean; taskCount?: number; onTasks?: () => void; splitNotice?: string | null;
@@ -28,7 +29,7 @@ function paneBtn(pressed: boolean) {
 
 export default function HarnessChrome({navigationToggle, sidebarVisible = false, unreadIds, chats, activeId, busyIds, focusChat, closeChat, newChat,
   conversationsOpen, openConversations, split, toggleSplit, filesOpen, onFiles, chatCwd,
-  workspaceName, onFolder, openChanges, changesOpen = false, reviewsOpen = false, onReviews, browserOpen, onBrowser, pinCount, terminalVisible,
+  workspaceDisplay, onFolder, openChanges, changesOpen = false, reviewsOpen = false, onReviews, browserOpen, onBrowser, pinCount, terminalVisible,
   toggleTerminal, agentsOpen, onAgents, workingAgents = 0, tasksOpen = false, taskCount = 0, onTasks, splitNotice, onTabPointerDown, onTabClickCapture}: Props) {
   const mod = useCommandGlyph();
   return (
@@ -52,7 +53,10 @@ export default function HarnessChrome({navigationToggle, sidebarVisible = false,
       <div className={`${reviewStyles.actions} flex shrink-0 items-center gap-1 ${sidebarVisible ? "justify-end" : "min-h-10 border-t border-line px-2 py-1"}`}>
         {navigationToggle}
         <button type="button" aria-pressed={filesOpen && !changesOpen} onClick={onFiles} title={`${chatCwd ?? "Workspace"}\nShow this chat's files`}
-          className={`max-w-48 truncate lg:hidden ${paneBtn(filesOpen && !changesOpen)}`}>{workspaceName}</button>
+          className={`flex max-w-48 items-center gap-1 lg:hidden ${paneBtn(filesOpen && !changesOpen)}`}>
+          <span className="min-w-0 flex-1 truncate">{workspaceDisplay.project}</span>
+          {workspaceDisplay.worktree && <span className="shrink-0 text-[10px] text-ink-3">worktree</span>}
+        </button>
         <div className={`ml-auto flex items-center gap-1 ${sidebarVisible ? "rounded-[14px] border border-line bg-page px-2 py-0.5" : ""}`}>
         <ActionMenu label="Workspace tools" text="Tools" className="shrink-0">
           <button type="button" aria-label="Review workspace changes" aria-pressed={changesOpen} onClick={openChanges}>Review</button>

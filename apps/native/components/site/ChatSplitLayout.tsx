@@ -7,11 +7,12 @@ import SplitDivider from "./SplitDivider";
 import paneStyles from "./chat-pane.module.css";
 import {flatSplit,pruneSplit,splitGeometry,paneStyle,type SplitTree} from "@/lib/split-tree";
 import { useCommandGlyph } from "@/lib/shortcut-glyph";
+import type { WorkspaceDisplay } from "@/lib/workspaces";
 export default function ChatSplitLayout({ threads, liveChatIds, activeId, direction, layout, onLayoutChange, onFocus, onClose, folder, body, split, claims = [] }: {
   threads: Chat[]; activeId: number; direction: "row" | "column"; layout?: SplitTree;
   liveChatIds?: number[];
   onLayoutChange(tree:SplitTree):void; onFocus(id: number): void; onClose(id: number): void;
-  folder(thread: Chat): { name: string; path?: string }; body(thread: Chat): ReactNode; split: boolean;
+  folder(thread: Chat): WorkspaceDisplay & { path?: string }; body(thread: Chat): ReactNode; split: boolean;
   claims?: { kind: string; key: string; session: string }[];
 }) {
   const mod = useCommandGlyph();
@@ -40,8 +41,9 @@ export default function ChatSplitLayout({ threads, liveChatIds, activeId, direct
   const tree=useMemo(()=>layout?pruneSplit(layout,new Set(threads.map(thread=>thread.id)))!:flatSplit(threads.map(thread=>thread.id),direction),[layout,shownKey,direction]);
   const geometry=useMemo(()=>splitGeometry(tree),[tree]);
   return <div data-chat-layout className="relative flex min-h-0 min-w-0 flex-1" style={{flexDirection:direction}}>
-    {threads.map((thread,index)=>
-      <section key={thread.id} data-chat={thread.id} data-focused={thread.id===activeId}
+    {threads.map((thread,index)=>{
+      const place = folder(thread);
+      return <section key={thread.id} data-chat={thread.id} data-focused={thread.id===activeId}
         data-glass={split && thread.id !== activeId ? "true" : undefined}
         aria-label={`Chat pane ${index+1}`}
         onPointerDownCapture={()=>{if(thread.id!==activeId)onFocus(thread.id);}}
@@ -54,12 +56,12 @@ export default function ChatSplitLayout({ threads, liveChatIds, activeId, direct
           {claims.filter(claim => claim.session === thread.session).slice(0, 1).map(claim =>
             <span key={`${claim.kind}:${claim.key}`} title={`${claim.kind} ${claim.key}`} className="max-w-[45%] truncate rounded-full bg-inset px-2 py-0.5 text-[10px] text-ink-3">{claim.kind === "pull_request" ? `PR ${claim.key}` : claim.kind === "issue" ? `#${claim.key}` : claim.key}</span>
           )}
-          {split && <span title={folder(thread).path} className="flex min-w-0 max-w-[40%] items-center gap-1 text-[11px] text-ink-3"><IconFolder size={13}/><span className="truncate">{folder(thread).name}</span></span>}
+          {split && <span title={place.path} aria-label={`Project ${place.project}${place.worktree ? ", worktree" : ""}`} className="flex min-w-0 max-w-[50%] items-center gap-1 text-[11px] text-ink-3"><IconFolder size={13}/><span className="truncate">{place.project}</span>{place.worktree && <span className="shrink-0 rounded bg-inset px-1 text-[10px]">worktree</span>}</span>}
           {split && <button type="button" aria-label="Close this split" title={`Close this chat (${mod}W)`} onClick={()=>onClose(thread.id)} className="flex size-6 shrink-0 items-center justify-center rounded text-ink-3 hover:bg-hover hover:text-ink">×</button>}
         </header>}
         <ComposerDraftContext.Provider value={draftFor(thread.id)}>{body(thread)}</ComposerDraftContext.Provider>
-      </section>
-    )}
+      </section>;
+    })}
     {geometry.dividers.map(({node,box},index)=><SplitDivider key={node.key} node={node} box={box} tree={tree} onChange={onLayoutChange} index={index}/>)}
   </div>;
 }

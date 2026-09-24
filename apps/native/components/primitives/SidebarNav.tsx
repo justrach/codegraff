@@ -21,6 +21,7 @@ import GlideMenu from "@/components/primitives/GlideMenu";
 import { useCommandGlyph } from "@/lib/shortcut-glyph";
 import ActionMenu from "./ActionMenu";
 import WorkspaceMenu from "./WorkspaceMenu";
+import type { WorkspaceDisplay } from "@/lib/workspaces";
 
 /* ─────────────────────────────────────────────────────────
  * SIDEBAR NAV
@@ -87,6 +88,7 @@ type SidebarNavProps = {
   variant?: string;
   /** The active workspace (the folder graff runs in); the demo shows a placeholder. */
   workspace?: SidebarWorkspace;
+  workspaceDisplay?: WorkspaceDisplay;
   /** Every workspace the switcher offers, the active one included. */
   workspaces?: SidebarWorkspace[];
   onSwitchWorkspace?: (path: string) => void;
@@ -190,6 +192,7 @@ export default function SidebarNav({
   footerTitle,
   recents = DEFAULT_RECENTS,
   workspace,
+  workspaceDisplay,
   workspaces = [],
   onSwitchWorkspace,
   onNewWorkspace,
@@ -297,8 +300,9 @@ export default function SidebarNav({
               <CodeGraffMark size={20} />
             </span>
             <span className="sidebar-copy ml-1.5 min-w-0 flex-1 truncate text-[14px] font-medium text-ink-2" title={workspace?.path}>
-              {workspace?.name ?? WORKSPACE.name}
+              {workspaceDisplay?.project ?? workspace?.name ?? WORKSPACE.name}
             </span>
+            {workspaceDisplay?.worktree && <span className="sidebar-copy shrink-0 rounded bg-inset px-1 text-[10px] text-ink-3">worktree</span>}
             <span className="sidebar-copy ml-1 flex shrink-0 text-ink-3">
               <IconChevronDownSmall size={16} />
             </span>
