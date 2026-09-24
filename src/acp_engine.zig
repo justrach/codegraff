@@ -52,6 +52,8 @@ pub const ConfigOption = struct {
 };
 pub const ConfigFn = *const fn (ctx: *anyopaque, arena: Allocator) anyerror!?ConfigOption;
 pub const SetConfigFn = *const fn (ctx: *anyopaque, value: []const u8) anyerror!bool;
+/// The request's `mcpServers` on session/new and session/load (acp_mcp_servers.zig).
+pub const McpServersFn = *const fn (ctx: *anyopaque, arena: Allocator, params: ?std.json.Value) anyerror!void;
 
 pub const Dispatch = struct {
     turn: TurnFn,
@@ -69,6 +71,7 @@ pub const Dispatch = struct {
     extra: ?ExtraFn = null,
     config: ?ConfigFn = null,
     set_config: ?SetConfigFn = null,
+    mcp_servers: ?McpServersFn = null,
     error_message: ?*const fn (ctx: *anyopaque, err: anyerror) []const u8 = null,
     /// Isolated checkout after session start (`g_cwd_display`). Empty omits the field.
     cwd: []const u8 = "",
@@ -266,6 +269,9 @@ fn respondInitialize(w: *Io.Writer, req: proto.Request, can_load: bool) !void {
             .loadSession = can_load,
             ._meta = .{ .@"codegraff/usage" = can_load, .@"graff/backgroundSubagents" = true },
             .promptCapabilities = proto.PromptCapabilities{},
+            // session/new and session/load connect a client's MCP servers
+            // (stdio always; http advertised; sse not run).
+            .mcpCapabilities = .{ .http = true, .sse = false },
         },
         .agentInfo = proto.AgentImplementation{ .version = implementation_version },
         .agentImplementation = proto.AgentImplementation{ .version = implementation_version },
@@ -293,6 +299,9 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
     if (std.mem.eql(u8, req.method, "session/new")) {
         if (d.load_session != null and d.session_id != null)
             return respondError(w, req, -32000, "This ACP process already owns a session");
+        // The client's MCP servers join before the reply: its first prompt
+        // must already see their tools. A bad entry never fails the session.
+        if (d.mcp_servers) |attach| attach(d.ctx, arena, req.params) catch {};
         d.created += 1;
         d.session_id = d.durable_session_id orelse try std.fmt.allocPrint(arena, "acp-{x}-{d}", .{ d.seed, d.created });
         if (d.config != null) {
@@ -324,7 +333,10 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
         return;
     }
     if (std.mem.eql(u8, req.method, "session/load")) {
-        if (d.load_session) |load| return load(d.ctx, arena, w, req);
+        if (d.load_session) |load| {
+            if (d.mcp_servers) |attach| attach(d.ctx, arena, req.params) catch {};
+            return load(d.ctx, arena, w, req);
+        }
     }
     if (std.mem.eql(u8, req.method, "session/set_config_option") and d.set_config != null) {
         const params = req.params orelse return respondError(w, req, -32602, "Invalid configuration option");
