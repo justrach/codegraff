@@ -31,13 +31,18 @@
 
 Apple Silicon · macOS 14+
 
-1. [Download CodeGraff](https://github.com/justrach/codegraff/releases/latest/download/Codegraff-macos-arm64.dmg).
-2. Quit any running copies, open the disk image, and drag **Codegraff.app** to **Applications**.
-3. Eject the disk image and open **Codegraff** from Applications.
+1. [Download Harness](https://github.com/justrach/harness/releases/latest/download/Harness-macos-arm64.dmg).
+2. Open the disk image and drag **Harness.app** to **Applications**.
+3. Open **Harness** from Applications and choose CodeGraff as your agent.
 
-The signed and notarized app includes its runtime; no developer tools or local
-server are needed. [Verify the download checksum](https://github.com/justrach/codegraff/releases/latest/download/Codegraff-DMG-SHA256SUMS).
-For a `graff` command in your terminal, install the CLI below.
+The signed and notarized app includes Graff and installs the `graff` command
+on your PATH on first launch. The standalone CLI installer below remains
+available for terminal-only use.
+
+If you already use **Codegraff.app**, install **Harness.app** once. They have
+different macOS identities and update feeds, so the old app cannot update
+itself into Harness. Keep the old app until you have checked any sessions you
+need, then remove it when you are ready.
 
 ### Desktop for Linux
 
@@ -96,84 +101,16 @@ use browser tools, and delegate work to sub-agents.
 
 ## The desktop app
 
-Chat, coordinate agents, review changes, and browse in one workspace.
-The desktop and terminal use the same Graff harness.
+[Harness](https://github.com/justrach/harness) is CodeGraff's native macOS
+workspace. It runs Graff through the Agent Client Protocol, with conversations,
+workspaces, files, changes, a terminal, and a browser in one app. Choose a
+model and available effort level for each conversation. The Graff engine is the
+same one used by the terminal CLI.
 
-### Chat and context
-
-[![CodeGraff's bright desktop, framed in rice paper with workshop artwork](docs/images/desktop-chat-studio.png)](docs/images/desktop-chat-light.png)
-
-- **Keep track of work:** tabs distinguish running, finished, interrupted, and unread conversations.
-- **Control the next step:** choose a model and effort level, or steer a queued follow-up with Cmd+Enter on macOS or Ctrl+Enter on Windows and Linux.
-- **See what fits:** the composer shows remaining context and attachment previews.
-- **Choose an appearance:** White, Black, Website, CodeGraff, or a custom theme through `$gui-theme`.
-
-### Agents
-
-[![CodeGraff Agents panel with local peers and a handoff request, framed in coral with the workshop crew](docs/images/desktop-agents-studio.png)](docs/images/desktop-agents-codegraff.png)
-
-See who is working, send a message, hand off a task, or stop a peer.
-Messages arrive at the recipient’s next step. The Agents pane also shows
-occupancy and resource use. [Read the Agents guide](docs/agents-panel.md).
-
-<details>
-<summary>View agent occupancy and resource use</summary>
-
-[![Agents occupancy, RSS/CPU, and peer talk in a rice-paper workshop frame](docs/images/desktop-occupancy-studio.png)](docs/images/desktop-occupancy.png)
-
-The optional profiler records anonymous resource measurements without identities
-or message contents.
-
-</details>
-
-### Changes and browser
-
-[![CodeGraff's dark Changes panel beside the conversation, framed in cobalt with a rat reviewing a proof](docs/images/desktop-review-studio.png)](docs/images/desktop-review-dark.png)
-
-Review staged, unstaged, and untracked edits alongside the conversation.
-Inspect diffs, worktrees, and recent commits; resize the pane for more room.
-The browser supports navigation, find, zoom, and pinned page elements.
-Optional macOS computer use requires enabling it and granting system permissions.
-
-<details>
-<summary>View browser annotations</summary>
-
-[![Pinned browser follow-up in a rice-paper workshop frame](docs/images/desktop-browser-studio.png)](docs/images/native-browser-annotate.jpg)
-
-Pin a page element and include it in your next message. Background browser work
-keeps the focused chat in place.
-
-</details>
-
-<details>
-<summary>Updates and restart</summary>
-
-[![Update-ready restart in a rice-paper workshop frame](docs/images/desktop-update-studio.png)](docs/images/desktop-update-ready.png)
-
-Desktop builds from v0.0.291 check for updates online and download them in the
-background. Choose **Restart to update** when your work is finished, or use
-**Codegraff → Check for Updates…**. Automatic downloads can be disabled in that
-menu. Earlier builds need one manual installation to enable the updater.
-An app update replaces the bundled Graff engine together with the interface.
-A CLI installed separately through Quick start has its own update lifecycle;
-that command downloads a CLI archive, not the notarized desktop installer.
-
-</details>
-
-<details>
-<summary>Sessions, attachments, and integrations</summary>
-
-- Saved sessions are snapshots; navigation stays accessible in narrow windows.
-- Sent images use compact thumbnails, while drafts keep a preview.
-- Closed Mermaid code blocks render as diagrams.
-- Muse Spark supports pasted, dropped, and attached images.
-- MCP tools can display an App UI in an isolated result frame.
-- `graff mcp install` registers a local HTTP task service for other clients.
-
-</details>
-
-*Images show unchanged GUI captures with scripted demonstration content.
-Click an image to open the original capture.*
+Harness maintains its GUI and signed app releases in its own repository.
+CodeGraff maintains the Graff engine and CLI here. Stable Harness updates use
+the Harness updater; beta desktop builds follow published releases from the
+current CodeGraff release branch.
 
 ## How Graff handles work
 

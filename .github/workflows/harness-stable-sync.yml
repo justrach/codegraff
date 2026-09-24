@@ -1,0 +1,68 @@
+name: Harness stable sync
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published stable release tag to recheck and dispatch
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    if: github.event_name == 'workflow_dispatch' || (!github.event.release.draft && !github.event.release.prerelease)
+    runs-on: macos-26
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate stable tag and resolve source commit
+        id: source
+        run: |
+          set -euo pipefail
+          python3 scripts/check-release-tag.py "$RELEASE_TAG"
+          git fetch --depth=1 origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          sha="$(git rev-parse "$RELEASE_TAG^{commit}")"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Download signed desktop and CLI assets
+        run: |
+          set -euo pipefail
+          gh release download "$RELEASE_TAG" --repo justrach/codegraff \
+            --pattern 'Codegraff-macos-arm64.dmg' \
+            --pattern 'Codegraff-DMG-SHA256SUMS' \
+            --pattern 'graff-aarch64-macos.tar.gz' \
+            --pattern 'SHA256SUMS'
+          test -f Codegraff-macos-arm64.dmg
+          test -f Codegraff-DMG-SHA256SUMS
+          test -f graff-aarch64-macos.tar.gz
+          test -f SHA256SUMS
+          shasum -a 256 -c Codegraff-DMG-SHA256SUMS
+          awk '/ graff-aarch64-macos.tar.gz$/ { print }' SHA256SUMS | shasum -a 256 -c
+      - name: Verify the published notarized app
+        run: |
+          set -euo pipefail
+          xcrun stapler validate Codegraff-macos-arm64.dmg
+          spctl --assess --type open --context context:primary-signature Codegraff-macos-arm64.dmg
+          mountpoint="$RUNNER_TEMP/codegraff-release-dmg"
+          mkdir -p "$mountpoint"
+          hdiutil attach -quiet -nobrowse -readonly -mountpoint "$mountpoint" Codegraff-macos-arm64.dmg
+          trap 'hdiutil detach -quiet "$mountpoint"' EXIT
+          app="$mountpoint/Codegraff.app"
+          test -d "$app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = com.codegraff.app
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "${RELEASE_TAG#v}"
+          codesign --verify --deep --strict "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute "$app"
+      - name: Notify Harness of published stable release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HARNESS_SYNC_TOKEN: ${{ secrets.HARNESS_SYNC_TOKEN }}
+          RELEASE_SHA: ${{ steps.source.outputs.sha }}
+        run: python3 scripts/harness-release-dispatch.py stable --tag "$RELEASE_TAG" --sha "$RELEASE_SHA"
