@@ -87,6 +87,8 @@ pub fn load(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request
     session.loadSession(live.root, live.keys, arena, sid) catch |err| {
         return proto.writeError(w, req.id, invalid_params, if (err == error.FileNotFound) "Unknown session ID in the selected workspace" else "Saved session could not be loaded");
     };
+    // Same precedence as CLI resume: the host respawns with --model to switch.
+    if (live.model_override) |p| @import("session_branch.zig").applyModelOverride(live.root, arena, p);
     live.root.session_name = try arena.dupe(u8, sid);
     live.session_id = live.root.session_name;
     d.session_id = live.session_id;

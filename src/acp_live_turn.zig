@@ -26,6 +26,8 @@ pub const LiveTurn = struct {
     prev_prompt_fp: [16]u8 = @splat(0),
     inbox: ?*@import("acp_inbox.zig").Inbox = null,
     dispatch: ?*@import("acp_engine.zig").Dispatch = null,
+    /// Launch `--model`: outranks a loaded session's saved model, as on CLI resume.
+    model_override: ?provider_mod.Provider = null,
 
     pub fn errorMessage(ctx: *anyopaque, err: anyerror) []const u8 {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
