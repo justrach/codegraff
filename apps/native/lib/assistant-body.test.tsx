@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { AssistantBody } from "../components/site/ChatBubbles";
+import { SeenTextContext } from "../components/site/useSmoothStream";
 import { emptyTurn } from "./graff-events";
 
 test("completed turns do not retain a synthetic waiting disclosure", () => {
@@ -53,4 +54,18 @@ test("Retry only exists on an errored turn, and waits while another turn is live
   const busy = renderToStaticMarkup(<AssistantBody turn={failed} following={false} onRetry={() => {}} retryDisabled />);
   expect(busy).toContain("data-retry-turn");
   expect(busy).toMatch(/data-retry-turn[^>]*\sdisabled=/);
+});
+
+test("remounted live text starts at the prefix already seen in that chat", () => {
+  const turn = { ...emptyTurn(), status: "streaming" as const, text: "Already seen.\nA new line arrived." };
+  const seen = new Map([["42:0", "Already seen."]]);
+  const render = (prefix: Map<string, string>) => renderToStaticMarkup(
+    <SeenTextContext.Provider value={prefix}><AssistantBody turn={turn} messageId={42} following={false} /></SeenTextContext.Provider>,
+  );
+  const resumed = render(seen);
+  expect(resumed).toContain("Already seen.");
+  expect(resumed).not.toContain("A new line arrived.");
+  seen.set("42:0", turn.text);
+  expect(render(seen)).toContain("A new line arrived.");
+  expect(render(new Map())).not.toContain("Already seen.");
 });
