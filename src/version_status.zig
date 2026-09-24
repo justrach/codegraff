@@ -126,7 +126,8 @@ pub fn alreadyHasRelease(installed_version: []const u8, latest_tag: []const u8) 
     const check = compare(installed_version, latest_tag);
     return switch (check.state) {
         .current, .newer => true,
-        .dev => check.order == .gt or check.order == .eq,
+        // A prerelease at the same numeric base is still older than stable.
+        .dev => check.order == .gt,
         .older, .unable => false,
     };
 }

@@ -83,6 +83,7 @@ pub fn classify(path: []const u8, home: []const u8) Kind {
     if (contains(path, "/snap/") or contains(path, "/flatpak/") or
         contains(path, "/var/lib/flatpak/"))
         return .package_managed;
+    if (contains(path, ".app/Contents/")) return .package_managed;
     if (contains(path, "/opt/local/")) return .package_managed;
     if (std.mem.startsWith(u8, path, "/usr/bin/") or
         std.mem.startsWith(u8, path, "/bin/") or
@@ -149,6 +150,7 @@ test "classify: package trees and zig-out never look supported" {
     try std.testing.expectEqual(Kind.package_managed, classify("/usr/local/Cellar/graff/0.1/bin/graff", "/Users/me"));
     try std.testing.expectEqual(Kind.package_managed, classify("/nix/store/aaa/bin/graff", "/home/me"));
     try std.testing.expectEqual(Kind.package_managed, classify("/usr/bin/graff", "/home/me"));
+    try std.testing.expectEqual(Kind.package_managed, classify("/Applications/Codegraff.app/Contents/Resources/graff", "/Users/me"));
     try std.testing.expectEqual(Kind.development, classify("/work/codegraff/zig-out/bin/graff", "/home/me"));
     try std.testing.expectEqual(Kind.supported, classify("/home/me/bin/graff", "/home/me"));
     try std.testing.expectEqual(Kind.supported, classify("/home/me/.local/bin/graff", "/home/me"));
