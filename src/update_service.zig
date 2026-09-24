@@ -321,13 +321,20 @@ pub const HttpFetch = struct {
     user_agent: []const u8,
     max_bytes: usize = 80 * 1024 * 1024,
 
+    fn acceptFor(url: []const u8) []const u8 {
+        return if (std.mem.startsWith(u8, url, "https://api.github.com/"))
+            "application/vnd.github+json"
+        else
+            "application/octet-stream";
+    }
+
     pub fn get(ctx: ?*anyopaque, gpa: Allocator, url: []const u8) FetchError![]u8 {
         const self: *HttpFetch = @ptrCast(@alignCast(ctx orelse return error.Offline));
         var client: std.http.Client = .{ .allocator = self.gpa, .io = self.io };
         defer client.deinit();
         var aw: Io.Writer.Allocating = .init(gpa);
         errdefer aw.deinit();
-        const extra = [_]std.http.Header{.{ .name = "Accept", .value = "application/octet-stream" }};
+        const extra = [_]std.http.Header{.{ .name = "Accept", .value = acceptFor(url) }};
         const res = client.fetch(.{
             .location = .{ .url = url },
             .method = .GET,
@@ -344,3 +351,9 @@ pub const HttpFetch = struct {
         return .{ .ctx = self, .get = get };
     }
 };
+
+test "GitHub API metadata asks for JSON while tag-pinned assets stay binary" {
+    try std.testing.expectEqualStrings("application/vnd.github+json", HttpFetch.acceptFor(@import("beta_feed.zig").branches_url));
+    try std.testing.expectEqualStrings("application/vnd.github+json", HttpFetch.acceptFor(@import("beta_feed.zig").releases_url));
+    try std.testing.expectEqualStrings("application/octet-stream", HttpFetch.acceptFor("https://github.com/justrach/codegraff/releases/download/v0.0.302.6-beta.26.1/SHA256SUMS"));
+}
