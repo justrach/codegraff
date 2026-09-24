@@ -22,7 +22,7 @@ pub const ClipboardPasteSource = union(enum) {
     unsupported_platform,
 };
 
-pub const no_vision_message = "this model can't see images — /model to a vision one (claude-*, gpt-5*)";
+pub const no_vision_message = "this model can't see images — /models shows which ones can";
 
 /// Decide a Ctrl-V paste WITHOUT touching the clipboard unless it can help.
 ///

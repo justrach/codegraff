@@ -57,6 +57,8 @@ pub fn visionModel(m_full: []const u8) bool {
     const m = if (slash) |i| m_full[i + 1 ..] else m_full;
     return std.mem.startsWith(u8, m, "claude") or
         std.mem.startsWith(u8, m, "gpt-6-astra") or
+        std.mem.startsWith(u8, m, "gpt-6-sol") or
+        std.mem.startsWith(u8, m, "gpt-6-luna") or
         std.mem.startsWith(u8, m, "gpt-5") or
         std.mem.startsWith(u8, m, "gpt-4") or
         std.mem.startsWith(u8, m, "grok-4") or
@@ -371,6 +373,8 @@ test "visionCapable allowlist" {
     try std.testing.expect(visionCapable(mk("claude-opus-4-8")));
     try std.testing.expect(visionCapable(mk("gpt-5.5")));
     try std.testing.expect(visionCapable(mk("gpt-6-astra")));
+    try std.testing.expect(visionCapable(mk("gpt-6-sol")));
+    try std.testing.expect(visionCapable(mk("gpt-6-luna")));
     try std.testing.expect(!visionCapable(mk("deepseek-v4-pro")));
     try std.testing.expect(visionCapable(mk("k3"))); // Kimi for Coding sees images
     try std.testing.expect(visionCapable(mk("glm-5.3-flash"))); // codegraff backend accepts images
@@ -382,6 +386,9 @@ test "visionModel: vision-capable model families only" {
     try std.testing.expect(visionModel("claude-opus-4-8"));
     try std.testing.expect(visionModel("gpt-5.5"));
     try std.testing.expect(visionModel("openai/gpt-6-astra"));
+    try std.testing.expect(visionModel("openai/gpt-6-sol"));
+    try std.testing.expect(visionModel("gpt-6-sol-2026-09-22"));
+    try std.testing.expect(visionModel("codex/gpt-6-luna"));
     try std.testing.expect(visionModel("gpt-4o"));
     try std.testing.expect(visionModel("grok-4.3"));
     try std.testing.expect(visionModel("glm-5.3-flash"));
