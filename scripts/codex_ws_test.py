@@ -349,6 +349,12 @@ def run_scenario(
         session.wait_for_literal(REPLY_TEXT, start=cursor)
         session.wait_for(CTX_RE, start=cursor)
         standing = terminal_text(bytes(session.raw[cursor:]))
+        # WS streams deltas through the same printDelta hook as SSE; the
+        # completed response must not surface the answer a second time.
+        if standing.count(REPLY_TEXT) != 1:
+            raise AssertionError(
+                f"{label}: reply shown {standing.count(REPLY_TEXT)}x, expected once"
+            )
         pct = int(CTX_RE.search(standing).group(1))
         if not 0 <= pct <= 100:
             raise AssertionError(f"{label}: invalid standing ctx percent {pct}")
