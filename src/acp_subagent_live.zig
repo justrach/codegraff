@@ -11,6 +11,7 @@ const util = @import("util.zig");
 pub const State = struct {
     out: *Io.Writer,
     parent: []const u8,
+    output_lock: *Io.Mutex,
 };
 
 var active: ?*State = null;
@@ -35,6 +36,8 @@ pub fn announce(io: Io, id: []const u8, name: []const u8, task: []const u8, pare
     main.g_gui_mu.lockUncancelable(io);
     defer main.g_gui_mu.unlock(io);
     const state = active orelse return false;
+    state.output_lock.lockUncancelable(io);
+    defer state.output_lock.unlock(io);
     proto.writeNotification(state.out, "session/update", .{ .sessionId = state.parent, .update = .{
         .sessionUpdate = "subagent_update",
         .subagentSessionId = id,
@@ -50,6 +53,8 @@ pub fn finish(io: Io, id: []const u8, outcome: []const u8, parent_call_id: []con
     main.g_gui_mu.lockUncancelable(io);
     defer main.g_gui_mu.unlock(io);
     const state = active orelse return;
+    state.output_lock.lockUncancelable(io);
+    defer state.output_lock.unlock(io);
     proto.writeNotification(state.out, "session/update", .{ .sessionId = state.parent, .update = .{
         .sessionUpdate = "subagent_update",
         .subagentSessionId = id,
@@ -78,6 +83,8 @@ pub const ChildSink = struct {
         main.g_gui_mu.lockUncancelable(self.io);
         defer main.g_gui_mu.unlock(self.io);
         const state = active orelse return;
+        state.output_lock.lockUncancelable(self.io);
+        defer state.output_lock.unlock(self.io);
         const w = state.out;
         switch (stamped.event) {
             .reasoning_delta => |v| stream.writeThought(w, self.id, v.text) catch return,
@@ -101,7 +108,8 @@ test "negotiated child stream announces before activity and terminates on parent
     var buffer: [8192]u8 = undefined;
     var out: Io.Writer = .fixed(&buffer);
     const io = std.testing.io;
-    var state: State = .{ .out = &out, .parent = "parent" };
+    var output_lock: Io.Mutex = .init;
+    var state: State = .{ .out = &out, .parent = "parent", .output_lock = &output_lock };
     install(io, &state);
     defer uninstall(io);
     try std.testing.expect(announce(io, "child", "Scout", "Inspect the code", "spawn-1"));
