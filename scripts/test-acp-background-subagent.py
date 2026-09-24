@@ -81,12 +81,15 @@ def run(binary, capability=True, cancel=False, disconnect=False, switch_session=
         home.mkdir()
         other_sid = None
         if switch_session:
-            seed_model = load.ScriptedModel([])
+            seed_model = load.ScriptedModel([{'text': 'Seed session is ready.'}])
             seed_port = seed_model.start(0)
             seed = load.Acp(binary, work, home, seed_port, extra_env={'GRAFF_NO_NATIVE_FOLD': '1'})
             try:
                 seed.request('initialize', {'protocolVersion': 1})
                 other_sid = seed.request('session/new', {'cwd': str(work), 'mcpServers': []})['result']['sessionId']
+                seeded = seed.request('session/prompt', {'sessionId': other_sid,
+                    'prompt': [{'type': 'text', 'text': 'Create a session to load.'}]})
+                assert seeded['result']['stopReason'] == 'end_turn', seeded
             finally:
                 seed.close()
                 seed_model.stop()
