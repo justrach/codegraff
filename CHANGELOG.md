@@ -18,6 +18,12 @@ current is part of cutting a release.
 - WebSocket prewarm sends the selected model in its first frame and records a bounded rejection reason when the server refuses it. A rejected prewarm can still fall back through the existing transport recovery path.
 - WebSocket turns deliver response deltas as they arrive, including before a slow completion frame, and flush held text once at completion. Mock transport checks cover live output, retry, fallback, and duplicate-output prevention.
 
+### Optional formal evidence for local learning
+
+- Bounded lifecycle models cover effort changes, asynchronous tools, permission ownership, and connection leases. Deliberately weakened configurations provide counterexamples for the invariants those models are meant to guard.
+- Prompt evolution and local learning can require pinned formal-check evidence before scoring, checkpoint restore, or promotion. Drifted inputs or missing evidence stop that optional path; ordinary learning keeps its prior defaults.
+- Formal evidence remains separate from held-out task evaluation: a model check cannot make an incorrect candidate pass, and these finite models do not claim proof that the implementation matches them.
+
 ## v0.0.302.5
 
 - Dry-run route checks preserve an explicitly qualified selection while checking whether it is available. This keeps the reported route aligned with the route the next request would use.
