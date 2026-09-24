@@ -38,7 +38,8 @@ async function runSessionNavigation({ win, output }) {
   assert.doesNotMatch(await sidebarLabel(),/session-visual/);
   await shortcut('t',['meta']);
   await wait(`document.querySelectorAll('[data-tab-id]').length===2`);
-  assert.match(await sidebarLabel(),/Field Notes.*worktree/,'Cmd+T keeps the project label');
+  assert.match(await sidebarLabel(),/Field Notes/,'Cmd+T keeps the project label');
+  assert.doesNotMatch(await sidebarLabel(),/worktree|session-visual/,'Cmd+T starts in the project, outside the generated checkout');
   await shortcut('w',['meta']);
   await wait(`document.querySelectorAll('[data-tab-id]').length===1`);
   assert.equal(await js(`document.querySelector('[data-session-tab-strip]')?.getBoundingClientRect().height ?? 0`),0);
@@ -97,7 +98,7 @@ async function runSessionNavigation({ win, output }) {
   await wait(`document.querySelectorAll('[data-chat]').length===2`);
   const folderLabels = await js(`Array.from(document.querySelectorAll('[data-chat] [aria-label^="Project "]'),e=>e.textContent)`);
   assert.equal(folderLabels.length,2);
-  assert.ok(folderLabels.every(label=>label.includes('Field Notes')&&label.includes('worktree')&&!label.includes('session-visual')),'split headers identify the project, not a session-shaped folder');
+  assert.ok(folderLabels.every(label=>label.includes('Field Notes')&&!label.includes('worktree')&&!label.includes('session-visual')),'split headers identify the project without inheriting a generated checkout');
   const splitIds = await js(`Array.from(document.querySelectorAll('[data-chat]'),e=>Number(e.dataset.chat))`);
   await click('[aria-label="Expand sidebar"]');
   await wait(`!!document.querySelector('[data-session-navigation="sidebar"]')`);
@@ -116,8 +117,8 @@ async function runSessionNavigation({ win, output }) {
   await wait(`!!document.querySelector('[data-session-navigation="tabs"]')`);
   assert.equal(await js(`document.querySelectorAll('[data-session-navigation]').length`),1);
   const compactLabel = await js(`(()=>{const e=document.querySelector('[data-workspace-toolbar] button[title*="Show this chat"]');return e&&e.getClientRects().length?e.textContent:null})()`);
-  assert.match(compactLabel,/Field Notes.*worktree/,'narrow toolbar names the project and checkout');
-  assert.doesNotMatch(compactLabel,/session-visual/);
+  assert.match(compactLabel,/Field Notes/,'narrow toolbar names the project');
+  assert.doesNotMatch(compactLabel,/worktree|session-visual/);
   assert.equal(await js(`document.querySelector('[data-chat="${drafted}"] textarea').value`),'Keep this draft');
   console.log('Session navigation passed: project/worktree labels, new tabs, split groups, drafts and narrow toolbar.');
 }
