@@ -1,6 +1,6 @@
 # 0002. xAI defaults to the Responses wire (WS; client compact)
 
-Status: accepted 2026-08-15; compaction arm amended 2026-09-05; WS chaining on 2026-09-19
+Status: accepted 2026-08-15; compaction arm amended 2026-09-05; WS chaining on 2026-09-19; WS chaining off again 2026-09-25
 
 ## Context
 
@@ -34,10 +34,20 @@ opts a session back onto chat completions.
 - WS eligibility stays an explicit provider list (codex, xai, and Codegraff
   when its selected alias is Responses-kind) — Platform OpenAI has no WS
   server and must never probe one.
-- xAI WS chaining is on: `previous_response_id` + delta input on the held
-  socket, matching the published store:false / ZDR in-memory cache. A
-  not-found, 25-minute cap, or drop re-anchors with full input (append-only
-  history; compact rewrites drop the chain). `GRAFF_XAI_WS_CHAIN=0` opts out.
+- xAI WS chaining is off by default (`GRAFF_XAI_WS_CHAIN=1` opts in). The
+  published contract says `previous_response_id` + delta input works on the
+  held socket with store:false via the per-connection cache. Live, a chained
+  store:false `response.create` gets one frame and then nothing until the
+  stall watchdog fires (about two minutes), both after a normal turn and after
+  a `generate:false` warmup; the same requests with store:true complete in
+  seconds. graff sends store:false, so every chained turn stalled and paid a
+  re-anchor. Unchained turns (full input every turn) are unaffected. When on:
+  a not-found, 25-minute cap, or drop re-anchors with full input
+  (append-only history; compact rewrites drop the chain). Turning it back on
+  needs a live probe showing store:false chaining completes.
+- The `generate:false` warmup (prewarm) is off by default for every provider
+  (`GRAFF_WS_PREWARM=1` opts in). It runs after the user's prompt, in series,
+  and measured slower on turn 1 than a cold turn, with no turn-2 gain.
 - Revisit if xAI's wire diverges from OpenAI Responses semantics or the
   compact endpoint's blob replay pricing changes the cost picture.
 - Hosted `x_search` rides this wire by default (ADR
