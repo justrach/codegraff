@@ -10,14 +10,15 @@ fn repositoryPath(arena: A, dir: []const u8, name: []const u8) ![]const u8 {
     return std.mem.trimStart(u8, path, "/");
 }
 
-pub const File = struct { path: []const u8, before: ?[]const u8, after: ?[]const u8 };
+pub const File = struct { path: []const u8, before: ?[]const u8, after: ?[]const u8, change: ?[]const u8 = null };
 pub const Input = struct {
-    version: u8 = 1,
+    version: u8 = 2,
     base: []const u8,
     head: []const u8,
     body: []const u8,
     files: []const File,
     support_omitted: bool = false,
+    support_limit: ?[]const u8 = null,
     // Changed files plus unchanged callers/configuration that establish
     // how those files are reached by the repository's test runners.
     scope: []const u8 = "changed committed files plus unchanged callers/configuration that establish test reachability",
@@ -42,7 +43,8 @@ fn raw(gpa: A, io: std.Io, arena: A, cwd: []const u8, args: []const []const u8) 
     const result = try runner.runCappedWithOptions(gpa, io, args, max_bytes + 1, 2048, 15_000, .{ .cwd = .{ .path = cwd } });
     defer gpa.free(result.stdout);
     defer gpa.free(result.stderr);
-    if (!runner.ranOk(result) or result.stdout_truncated or result.stderr_truncated) return error.EvidenceUnavailable;
+    if (result.stdout_truncated) return error.ReviewTooLarge;
+    if (!runner.ranOk(result) or result.stderr_truncated) return error.EvidenceUnavailable;
     return arena.dupe(u8, result.stdout);
 }
 
@@ -68,16 +70,25 @@ const Support = struct {
     size: *usize,
     omitted: bool = false,
     packages: std.ArrayList([]const u8) = .empty,
+    seen: std.StringHashMap(void),
+    limit: ?[]const u8 = null,
 
     fn add(self: *Support, path: []const u8) !?[]const u8 {
         for (self.files.items) |file| if (std.mem.eql(u8, file.path, path)) return file.after;
         if (self.files.items.len >= max_files) {
             self.omitted = true;
+            if (self.limit == null) self.limit = "support file count exceeded 32";
             return null;
         }
-        const after = try blob(self.gpa, self.io, self.arena, self.cwd, self.head, path) orelse return null;
+        const after = blob(self.gpa, self.io, self.arena, self.cwd, self.head, path) catch |err| {
+            if (err != error.ReviewTooLarge) return err;
+            self.omitted = true;
+            if (self.limit == null) self.limit = "a support file exceeded 128 KiB";
+            return null;
+        } orelse return null;
         if (self.size.* + after.len > max_bytes) {
             self.omitted = true;
+            if (self.limit == null) self.limit = "support source exceeded the 128 KiB review budget";
             return null;
         }
         self.size.* += after.len;
@@ -103,17 +114,30 @@ const Support = struct {
     }
 
     fn runners(self: *Support, dir: []const u8, text: []const u8) !void {
-        var words = std.mem.tokenizeAny(u8, text, " \t\r\n\"';&|");
+        return self.walk(dir, text, 0);
+    }
+
+    fn walk(self: *Support, dir: []const u8, text: []const u8, depth: usize) !void {
+        var words = std.mem.tokenizeAny(u8, text, " \t\r\n\"';&|(),{}[]");
         while (words.next()) |word| {
-            if (std.fs.path.isAbsolute(word) or std.mem.indexOfAny(u8, word, "$`*?()") != null) continue;
+            if (std.fs.path.isAbsolute(word) or std.mem.indexOfAny(u8, word, "$`*?:") != null) continue;
             const ext = std.fs.path.extension(word);
             var source = false;
-            for ([_][]const u8{ ".js", ".mjs", ".cjs", ".ts", ".py", ".sh" }) |allowed| if (std.mem.eql(u8, ext, allowed)) {
+            for ([_][]const u8{ ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".py", ".sh" }) |allowed| if (std.mem.eql(u8, ext, allowed)) {
                 source = true;
                 break;
             };
             if (!source) continue;
-            _ = try self.add(try repositoryPath(self.arena, dir, word));
+            if (depth >= 5) {
+                self.omitted = true;
+                if (self.limit == null) self.limit = "test runner chain exceeded five levels";
+                return;
+            }
+            const path = try repositoryPath(self.arena, dir, word);
+            if (self.seen.contains(path)) continue;
+            try self.seen.put(path, {});
+            const contents = try self.add(path) orelse continue;
+            try self.walk(std.fs.path.dirnamePosix(path) orelse "", contents, depth + 1);
         }
     }
 };
@@ -128,14 +152,16 @@ pub fn gather(gpa: A, io: std.Io, arena: A, cwd: []const u8, base: []const u8, h
     while (paths.next()) |path| {
         if (path.len == 0) continue;
         if (files.items.len >= max_files) return error.ReviewTooLarge;
-        const before = try blob(gpa, io, arena, cwd, base, path);
         const after = try blob(gpa, io, arena, cwd, head, path);
-        size += (if (before) |text| text.len else 0) + (if (after) |text| text.len else 0);
+        // A context diff carries the old lines; repeating the complete base
+        // blob would charge unchanged source twice and crowd out test evidence.
+        const change = try raw(gpa, io, arena, cwd, &.{ "git", "diff", "--no-ext-diff", "--no-renames", "--unified=3", base, head, "--", path });
+        size += change.len + (if (after) |text| text.len else 0);
         if (size > max_bytes) return error.ReviewTooLarge;
-        try files.append(arena, .{ .path = path, .before = before, .after = after });
+        try files.append(arena, .{ .path = path, .before = null, .after = after, .change = change });
     }
     if (files.items.len == 0) return error.NoChangedFiles;
-    var support: Support = .{ .gpa = gpa, .io = io, .arena = arena, .cwd = cwd, .head = head, .files = &files, .size = &size };
+    var support: Support = .{ .gpa = gpa, .io = io, .arena = arena, .cwd = cwd, .head = head, .files = &files, .size = &size, .seen = std.StringHashMap(void).init(arena) };
     // Walk changed-file ancestors before generic root files: the closest
     // package defines the changed test's runner, often in a nested workspace.
     const changed = try arena.dupe(File, files.items);
@@ -165,7 +191,7 @@ pub fn gather(gpa: A, io: std.Io, arena: A, cwd: []const u8, base: []const u8, h
     }
     const coverage = [_][]const u8{ "build.zig", "src/main.zig", "package.json", "scripts/eval/tier1-manifest.json" };
     for (coverage) |path| _ = try support.add(path);
-    return .{ .base = base, .head = head, .body = body, .files = files.items, .support_omitted = support.omitted };
+    return .{ .base = base, .head = head, .body = body, .files = files.items, .support_omitted = support.omitted, .support_limit = support.limit };
 }
 
 test "claim review rejects branch names as immutable identities" {
@@ -193,6 +219,47 @@ test "claim review reads committed blobs despite a repaired working tree" {
     try std.testing.expectEqual(@as(usize, 1), input.files.len);
     try std.testing.expect(input.files[0].before == null);
     try std.testing.expectEqualStrings("  broken dispatch\n\n", input.files[0].after.?);
+}
+
+test "claim review budgets changed hunks instead of the complete base blob" {
+    const io = std.testing.io;
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    var scratch = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer scratch.deinit();
+    const a = scratch.allocator();
+    var path: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = path[0..try temp.dir.realPath(io, &path)];
+    const gpa = std.testing.allocator;
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "init", "-q" });
+    const source = try a.alloc(u8, 75 * 1024);
+    @memset(source, 'a');
+    for (source, 0..) |*byte, i| if (i % 80 == 79) {
+        byte.* = '\n';
+    };
+    source[0] = 'x';
+    source[source.len - 1] = '\n';
+    try temp.dir.writeFile(io, .{ .sub_path = "large.txt", .data = source });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "add", "." });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "base" });
+    const base = try capture(gpa, io, a, cwd, &.{ "git", "rev-parse", "HEAD" });
+    source[0] = 'y';
+    try temp.dir.writeFile(io, .{ .sub_path = "large.txt", .data = source });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "add", "." });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "head" });
+    const head = try capture(gpa, io, a, cwd, &.{ "git", "rev-parse", "HEAD" });
+    const input = try gather(gpa, io, a, cwd, base, head, "claim");
+    try std.testing.expectEqual(@as(usize, 1), input.files.len);
+    try std.testing.expect(input.files[0].before == null);
+    try std.testing.expect(input.files[0].change != null);
+    try std.testing.expectEqual(@as(u8, 'y'), input.files[0].after.?[0]);
+    const oversized = try a.alloc(u8, max_bytes + 1024);
+    @memset(oversized, 'z');
+    try temp.dir.writeFile(io, .{ .sub_path = "large.txt", .data = oversized });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "add", "." });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "oversized" });
+    const large_head = try capture(gpa, io, a, cwd, &.{ "git", "rev-parse", "HEAD" });
+    try std.testing.expectError(error.ReviewTooLarge, gather(gpa, io, a, cwd, head, large_head, "claim"));
 }
 
 test "claim review includes unchanged callers that establish test reachability" {
@@ -254,7 +321,8 @@ test "claim review includes committed nested package runners and workflow reacha
     try temp.dir.createDirPath(io, "apps/client/lib");
     try temp.dir.createDirPath(io, ".github/workflows");
     try temp.dir.writeFile(io, .{ .sub_path = "apps/client/package.json", .data = "{\"scripts\":{\"test\":\"node scripts/test-nested.mjs\"}}" });
-    try temp.dir.writeFile(io, .{ .sub_path = "apps/client/scripts/test-nested.mjs", .data = "import '../lib/view.test.mjs';\n" });
+    try temp.dir.writeFile(io, .{ .sub_path = "apps/client/scripts/test-nested.mjs", .data = "import '../lib/suite.mjs';\n" });
+    try temp.dir.writeFile(io, .{ .sub_path = "apps/client/lib/suite.mjs", .data = "import './view.test.mjs';\n" });
     try temp.dir.writeFile(io, .{ .sub_path = "apps/client/lib/view.test.mjs", .data = "old test\n" });
     try temp.dir.writeFile(io, .{ .sub_path = ".github/workflows/check.yml", .data = "run: cd apps/client && npm test\n" });
     _ = try capture(gpa, io, a, cwd, &.{ "git", "add", "." });
@@ -266,19 +334,25 @@ test "claim review includes committed nested package runners and workflow reacha
     const head = try capture(gpa, io, a, cwd, &.{ "git", "rev-parse", "HEAD" });
     try temp.dir.writeFile(io, .{ .sub_path = "apps/client/scripts/test-nested.mjs", .data = "uncommitted runner is not evidence" });
     const input = try gather(gpa, io, a, cwd, base, head, "Local: `npm test` passed.");
-    try std.testing.expectEqual(@as(usize, 4), input.files.len);
+    try std.testing.expectEqual(@as(usize, 5), input.files.len);
     var bytes = input.body.len;
+    var saw_suite = false;
     for (input.files) |file| {
-        bytes += if (file.before) |text| text.len else 0;
+        bytes += if (file.change) |text| text.len else 0;
         bytes += if (file.after) |text| text.len else 0;
         if (std.mem.eql(u8, file.path, "apps/client/scripts/test-nested.mjs"))
-            try std.testing.expectEqualStrings("import '../lib/view.test.mjs';\n", file.after.?);
+            try std.testing.expectEqualStrings("import '../lib/suite.mjs';\n", file.after.?);
+        if (std.mem.eql(u8, file.path, "apps/client/lib/suite.mjs")) {
+            saw_suite = true;
+            try std.testing.expectEqualStrings("import './view.test.mjs';\n", file.after.?);
+        }
     }
+    try std.testing.expect(saw_suite);
     try std.testing.expect(bytes <= max_bytes and input.files.len <= max_files);
     try std.testing.expect(!input.support_omitted);
     var files: std.ArrayList(File) = .empty;
     var size: usize = max_bytes;
-    var support: Support = .{ .gpa = gpa, .io = io, .arena = a, .cwd = cwd, .head = head, .files = &files, .size = &size };
+    var support: Support = .{ .gpa = gpa, .io = io, .arena = a, .cwd = cwd, .head = head, .files = &files, .size = &size, .seen = std.StringHashMap(void).init(a) };
     try std.testing.expect(try support.add("apps/client/package.json") == null);
     try std.testing.expect(support.omitted and files.items.len == 0 and size == max_bytes);
 }
