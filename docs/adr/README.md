@@ -222,6 +222,7 @@ record only when you need the evidence or the edge cases.
 | [0194](0194-acp-child-sessions-are-an-opt-in-preview.md) | Draft ACP child sessions stream live only with explicit opt-in; durable replay is required before default enablement. |
 | [0194](0194-native-learning-formal-baseline.md) | Optional native learning admits and promotes only with a fresh pinned formal baseline check bound to the evaluated binary; remote submission waits for a compatible signed receipt. |
 | [0195](0195-embedded-browser-replaces-kuri.md) | Desktop browser uses embedded Chromium, web preview uses the paired extension, and CLI fetch uses built-in HTTP without a sidecar. |
+| [0197](0197-deferred-mcp-joins-are-registry-serial.md) | Deferred MCP startup queues and joins use the registry lock so concurrent parent and child requests consume each connection once. |
 | [0196](0196-background-acp-agents-use-a-graff-extension.md) | Detached ACP workers stream through an opted-in Graff extension with connection-lifetime output ownership; draft child sessions remain foreground-only. |
 | [0198](0198-project-choice-survives-session-isolation.md) | New chats inherit the chosen project while ACP reports each worker checkout; generated worktrees are rooted at the main checkout. |
 | [0199](0199-generated-checkouts-belong-to-project-history.md) | Generated worktree activity rolls up to the owning project in automatic suggestions; explicitly saved checkouts stay selectable. |
