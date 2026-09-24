@@ -34,6 +34,9 @@ pub const LiveTurn = struct {
 
     pub fn run(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const u8 {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
+        var output_lock: Io.Mutex = .init;
+        if (self.inbox) |inbox| if (inbox.permission) |bridge| bridge.setOutputLock(&output_lock);
+        defer if (self.inbox) |inbox| if (inbox.permission) |bridge| bridge.setOutputLock(null);
         // Receipt marker before any dedup/turn work: a worker that logged its
         // recipe but never this line never received its prompt — the stall is
         // upstream (client dispatch / bootstrap / transport), not in the turn.
@@ -70,9 +73,11 @@ pub const LiveTurn = struct {
         self.saw_text = false;
         var sink: stream.EventSink = undefined;
         sink.init(self.root.gpa, self.out, &self.session_id, &self.saw_text);
+        sink.output_lock = &output_lock;
+        sink.output_io = self.root.io;
         const subagents = self.dispatch != null and self.dispatch.?.subagents and self.dispatch.?.draft_subagents_enabled;
         defer sink.deinit();
-        var child_state: @import("acp_subagent_live.zig").State = .{ .out = self.out, .parent = self.session_id };
+        var child_state: @import("acp_subagent_live.zig").State = .{ .out = self.out, .parent = self.session_id, .output_lock = &output_lock };
         if (subagents) @import("acp_subagent_live.zig").install(self.root.io, &child_state);
         defer if (subagents) @import("acp_subagent_live.zig").uninstall(self.root.io);
         self.root.out = &sink.writer;
@@ -101,6 +106,8 @@ pub const LiveTurn = struct {
             sink.writer.flush() catch {};
             main_mod.g_gui_mu.lockUncancelable(self.root.io);
             defer main_mod.g_gui_mu.unlock(self.root.io);
+            output_lock.lockUncancelable(self.root.io);
+            defer output_lock.unlock(self.root.io);
             @import("acp_usage.zig").writeBestEffort(self.out, self.session_id, &@import("pricing.zig").g_cost, self.root.io);
         }
         turn_trace.record(self.root, self.root.io, arena, text, turn_id, started, result, self.root.effectiveContextTokens(), before, &self.prev_turn_id, &self.prev_prompt_fp);
@@ -121,6 +128,8 @@ pub const LiveTurn = struct {
                 const report = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ partial, marker });
                 try self.root.messages.append(try messages.textMessage(arena, "assistant", report));
                 try sink.writer.flush();
+                output_lock.lockUncancelable(self.root.io);
+                defer output_lock.unlock(self.root.io);
                 try proto.writeSessionUpdate(self.out, self.session_id, marker);
             }
             // #753: an API interruption is a failed turn, not a dead ACP

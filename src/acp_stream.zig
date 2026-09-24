@@ -208,6 +208,8 @@ pub fn translateEvent(
 /// Line-splitting writer: --json JSONL in, ACP session/update out.
 pub const EventSink = struct {
     out: *Io.Writer,
+    output_lock: ?*Io.Mutex = null,
+    output_io: ?Io = null,
     session_id: *[]const u8,
     saw_text: *bool,
     /// Any text delta this turn (never reset) — the final chunk needs a
@@ -254,6 +256,10 @@ pub const EventSink = struct {
         if (trimmed.len == 0) return;
         var parsed = std.json.parseFromSlice(Value, self.gpa, trimmed, .{}) catch return;
         defer parsed.deinit();
+        // Child-session notifications and ordinary root events share the
+        // transport writer. Both acquire this per-turn lock before output.
+        if (self.output_lock) |lock| lock.lockUncancelable(self.output_io.?);
+        defer if (self.output_lock) |lock| lock.unlock(self.output_io.?);
         const kind = translateEvent(self.out, self.session_id.*, parsed.value, &self.last_id, &self.next_tool) catch return;
         // saw_text means "the last thing streamed was answer text". A tool
         // event resets it: a completion-tool turn streams its preamble, THEN

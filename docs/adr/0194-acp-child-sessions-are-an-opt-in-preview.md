@@ -15,8 +15,10 @@ Keep stable ACP behavior as the default. A client that advertises
 `clientCapabilities.subagents` can receive live `subagent_update` and child
 session updates only when Graff is also launched with
 `GRAFF_ACP_DRAFT_SUBAGENTS=1`. Announce only foreground children that complete
-within the active parent prompt; detached workers remain available through
-`graff/agents`. Preserve the parent tool call for clients and early failures,
+within the active parent prompt. Interactive sessions default to detached
+workers; `run_in_background:false` explicitly selects a foreground child on
+every frontend. Detached workers remain available through `graff/agents` and
+their parent tool rows. Preserve the parent tool call for clients and early failures,
 with a namespaced tool name and parent call ID for exact UI correlation.
 
 ## Consequences
