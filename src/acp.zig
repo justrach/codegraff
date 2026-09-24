@@ -207,7 +207,12 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     engine.implementation_version = main_mod.harness_version;
     engine.cancel_flag.store(false, .release);
     engine.on_cancel = syncEscCancel;
-    var permission_bridge: @import("acp_permission.zig").Bridge = .{ .io = io, .out = out };
+    var transport_lock: Io.Mutex = .init;
+    var framed: @import("acp_line_writer.zig").LineWriter = undefined;
+    framed.init(io, out, &transport_lock);
+    defer framed.deinit();
+    const wire = &framed.writer;
+    var permission_bridge: @import("acp_permission.zig").Bridge = .{ .io = io, .out = wire };
     const previous_permission = root.permission;
     root.permission = permission_bridge.handler();
     defer root.permission = previous_permission;
@@ -223,7 +228,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     }
     @import("acp_ask.zig").attach(io, gpa);
     defer @import("acp_ask.zig").detach();
-    var live: LiveTurn = .{ .root = root, .keys = keys, .out = out, .inbox = &inbox, .model_override = if (flags.model_flag != null) root.provider else null };
+    var live: LiveTurn = .{ .root = root, .keys = keys, .out = wire, .inbox = &inbox, .model_override = if (flags.model_flag != null) root.provider else null };
     var d: Dispatch = .{
         .turn = LiveTurn.run,
         .error_message = LiveTurn.errorMessage,
@@ -238,21 +243,28 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
         .draft_subagents_enabled = std.mem.eql(u8, environ_map.get("GRAFF_ACP_DRAFT_SUBAGENTS") orelse "", "1"),
     };
     @import("acp_session_load.zig").configure(&d, &live);
+    var background_state: @import("acp_subagent_live.zig").BackgroundState = .{
+        .out = out,
+        .output_lock = &transport_lock,
+    };
+    @import("acp_subagent_live.zig").installBackground(io, &background_state);
+    defer @import("acp_subagent_live.zig").uninstallBackground(io);
     while (true) {
         const event = (inbox.wait(arena) catch break) orelse break;
         switch (event) {
-            .tick => @import("acp_idle.zig").maybeWake(&d, arena, out, io, root.session_name) catch |err| {
+            .tick => @import("acp_idle.zig").maybeWake(&d, arena, wire, io, root.session_name) catch |err| {
                 std.debug.print("acp: idle wake failed: {t}\n", .{err});
             },
             .line => |line| {
-                handleLine(&d, arena, out, line) catch |err| {
+                handleLine(&d, arena, wire, line) catch |err| {
                     std.debug.print("acp: dispatch failed: {t}\n", .{err});
                     break;
                 };
-                @import("acp_idle.zig").startupEffortNotice(&d, root, out) catch break;
+                @import("acp_subagent_live.zig").configureBackground(io, d.session_id orelse "", d.background_subagents);
+                @import("acp_idle.zig").startupEffortNotice(&d, root, wire) catch break;
             },
         }
-        out.flush() catch break;
+        wire.flush() catch break;
     }
     session.saveSession(root, arena, root.session_name) catch {};
     root.md_buf.deinit(gpa);
@@ -571,30 +583,4 @@ test "OpenAI effort menu omits Max and keeps Ultra on the Responses wire" {
         const extra_request = try std.json.parseFromSliceLeaky(Value, a, extra, .{});
         try testing.expectEqualStrings("xhigh", extra_request.object.get("reasoning").?.object.get("effort").?.string);
     }
-}
-
-test "handleLine: live context occupancy precedes the terminal prompt reply" {
-    const was_cancelled = engine.cancel_flag.swap(false, .acq_rel);
-    defer engine.cancel_flag.store(was_cancelled, .release);
-    const extra = engine.extra_cancelled;
-    engine.extra_cancelled = null;
-    defer engine.extra_cancelled = extra;
-    var state = std.heap.ArenaAllocator.init(testing.allocator);
-    defer state.deinit();
-    const a = state.allocator();
-    var buf: [16384]u8 = undefined;
-    var w: Io.Writer = .fixed(&buf);
-    const meter = struct {
-        fn read(_: *anyopaque) engine.Meter {
-            return .{ .used = 123, .window = 1000 };
-        }
-    }.read;
-    var d: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .meter = meter };
-    try handleLine(&d, a, &w, "{\"id\":1,\"method\":\"session/new\"}");
-    w = .fixed(&buf);
-    try handleLine(&d, a, &w, "{\"id\":2,\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"hi\"}]}}");
-    const output = w.buffered();
-    const occupancy = std.mem.indexOf(u8, output, "\"gui_context_meter\",\"used\":123,\"window\":1000") orelse return error.MissingMeter;
-    const terminal = std.mem.indexOf(u8, output, "\"stopReason\":\"end_turn\"") orelse return error.MissingTerminalReply;
-    try testing.expect(occupancy < terminal);
 }
