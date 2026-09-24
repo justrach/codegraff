@@ -23,6 +23,8 @@ pub const changelog_text =
     \\──────────
     \\0.0.302.5
     \\  • route checks preserve explicitly qualified selections
+    \\  • the old browser companion is retired; webfetch uses built-in HTTP
+    \\  • web-only browser access uses the paired Chrome extension
     \\
     \\Full release history: https://github.com/justrach/codegraff/releases
     \\

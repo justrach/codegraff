@@ -13,6 +13,8 @@ current is part of cutting a release.
 ## v0.0.302.5
 
 - Dry-run route checks preserve an explicitly qualified selection while checking whether it is available. This keeps the reported route aligned with the route the next request would use.
+- The CLI no longer installs, invokes, or advertises the Kuri companion. `webfetch` uses the built-in HTTP client and returns bounded HTML or text instead of companion-generated Markdown.
+- The desktop browser remains embedded. The web-only Browser pane now uses an explicitly paired Chrome extension; the retired browser endpoint returns 410 instead of starting a sidecar. Existing user-installed companion files are left in place.
 
 ## v0.0.302.4
 
