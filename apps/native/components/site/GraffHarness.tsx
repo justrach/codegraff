@@ -5,6 +5,8 @@ import { useResponsiveNavigation } from "./useResponsiveNavigation";
 import { useNavigationPromptFocus } from "./useNavigationPromptFocus";
 import { useUnreadChats } from "./useUnreadChats";
 import { useHarnessSessions } from "./useHarnessSessions";
+import { restoreOpenTabs, usePageRecovery } from "./page-recovery";
+import { usePromptRecall } from "./usePromptRecall";
 import { resumeQueuedPrompt } from "@/lib/prompt-queue-resume";
 import { createPromptRunner } from "./harness-prompt-runner";
 import { workspaceActions } from "./harness-workspace-actions";
@@ -49,7 +51,7 @@ import { enqueuePrompt } from "@/lib/prompt-queue";
 import { usePromptQueue, steerOrInterrupt } from "./usePromptQueue";
 import { useChatClose } from "./useChatClose";
 import { type StoredSession } from "@/lib/sessions";
-import { loadHistory, mergeHistory } from "@/lib/prompt-history";
+import { mergeHistory } from "@/lib/prompt-history";
 import {
   basename,
   findWorkspace,
@@ -92,12 +94,7 @@ export default function GraffHarness() {
   const [claims, setClaims] = useState<{ kind: string; key: string; session: string }[]>([]);
   const [fileRequest, setFileRequest] = useState<{ path: string; n: number; changes?: boolean } | null>(null);
   const fileReqRef = useRef(0);
-  // Shell-style prompt recall (ArrowUp in the composer), kept per browser so
-  // a new tab or a reload still has the last prompts under the cursor.
-  const [history, setHistory] = useState<string[]>([]);
-  useEffect(() => {
-    setHistory(loadHistory(window.localStorage));
-  }, []);
+  const [history, setHistory] = usePromptRecall();
   // Workspaces are the folders graff runs in. The list and the active pick
   // persist in desktop settings, with browser storage as a migration/fallback.
   // Refs mirror the state for the async paths (spawn, session list) that
@@ -190,8 +187,9 @@ export default function GraffHarness() {
   const { adoptCatalog, refreshChangedCatalog, requireSession, refreshStored, projectsReady, unwatchIdle, chatCatalogs, catalogStatus, applyCatalog } = useHarnessSessions({ onPermission: permissions.update,
     sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal,
     pendingPick: () => pendingPickRef.current ?? pendingModel,
+    restoreTabs: () => restoreOpenTabs({ chatsRef, sessionNamesRef, chatIdRef, msgIdRef, setChats, setActiveId, restoreGroups: groups.restore }),
   });
-
+  usePageRecovery(projectsReady, chats, activeId, groups.groups, busyIds, runningRef);
   const { openPath, openReference } = useReferenceNavigation({
     context: (id = activeIdRef.current) => ({ root: chatsRef.current.find(c => c.id === id)?.cwd ?? activePathRef.current ?? health?.cwd, chat: handleOf(id), focus: () => focusChat(id) }),
     hideOtherPanes: () => { setProjectsOpen(false); setAgentsOpen(false); setConversationsOpen(false); setReviewsOpen(false); },

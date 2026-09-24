@@ -108,6 +108,7 @@ app.whenReady().then(async () => {
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), partition: 'persist:app',
       contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: !process.env.GRAFF_ELECTRON_SMOKE } });
   const projects = require('./project-store.cjs').projectStore(app.getPath('userData'));
+  const { preflight, reload } = require('./transition-guard.cjs').installTransitionGuard({ win, ipcMain, trusted, dialog });
   ipcMain.on('workspace-ready', event => { trusted(event); workspaceRequests.ready(); });
   ipcMain.handle('projects', (event, { action, value }) => { trusted(event); if (action === 'load') return projects.load(); if (action === 'save') return projects.save(value); throw Error('Unknown project action'); });
   installWindowState(win);
@@ -240,7 +241,7 @@ app.whenReady().then(async () => {
   });
   win.on('minimize', () => { if (browser.visible) browser.hide(browser.visible); });
   win.on('restore', () => win.webContents.send('browser-event', { type: 'layout' }));
-  const updateMenu = require('./updates.cjs').installUpdates({ app, win, ipcMain, trusted, resources });
+  const updateMenu = require('./updates.cjs').installUpdates({ app, win, ipcMain, trusted, resources, preflight });
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: appName, submenu: [{ role: 'about' }, ...updateMenu, { type: 'separator' }, { label: 'Activity…', accelerator: 'CmdOrCtrl+,', click: () => void activity().catch(error => dialog.showErrorBox('Activity', error.message)) }, { label: 'Computer use…', visible: process.platform === 'darwin', click: () => void computer.configure().catch(error => dialog.showErrorBox('Computer use', error.message)) }, { type: 'separator' }, { role: 'quit' }] },
     { label: 'File', submenu: [
@@ -268,7 +269,7 @@ app.whenReady().then(async () => {
     } }, { label: 'Browser passkey help…', click: () => void require('./webauthn.cjs').showPasskeyHelp({
       window: win, browser, dialog, shell: require('electron').shell, configured: passkeysConfigured,
     }).catch(() => dialog.showErrorBox('Browser passkeys', 'Could not open the default browser. Use another sign-in method on the site.')) }] },
-    { role: 'editMenu' }, { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { role: 'togglefullscreen' }, { label: 'Session observer', type: 'checkbox', checked: !!notch?.enabled(), visible: process.platform === 'darwin', click: item => { item.checked = notch?.setEnabled(item.checked) ?? false; } }, { label: 'Release browser pages', click: () => { browser.closeAll(); win.webContents.send('browser-event', { type: 'released' }); } }] },
+    { role: 'editMenu' }, { label: 'View', submenu: [{ label: 'Reload', accelerator: 'CmdOrCtrl+R', click: () => void reload() }, { role: 'toggleDevTools' }, { role: 'togglefullscreen' }, { label: 'Session observer', type: 'checkbox', checked: !!notch?.enabled(), visible: process.platform === 'darwin', click: item => { item.checked = notch?.setEnabled(item.checked) ?? false; } }, { label: 'Release browser pages', click: () => { browser.closeAll(); win.webContents.send('browser-event', { type: 'released' }); } }] },
     { label: 'Performance', submenu: [
       { label: 'Start recording', click: () => void profiler.start() },
       { label: 'Mark candidate phase', click: () => profiler.mark('candidate') },

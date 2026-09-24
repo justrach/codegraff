@@ -54,6 +54,29 @@ describe("listSessionRows", () => {
     } finally { rmSync(temp, { recursive: true, force: true }); }
   });
 
+  it("finds sibling and nested registered checkouts after startup in a generated checkout", () => {
+    const temp = realpathSync(mkdtempSync(path.join(tmpdir(), "graff-nested-session-")));
+    const main = path.join(temp, "main"), home = path.join(temp, "home");
+    const first = path.join(main, ".graff/worktrees/first");
+    const nested = path.join(first, ".graff/worktrees/nested");
+    const sibling = path.join(main, ".graff/worktrees/sibling");
+    mkdirSync(main); mkdirSync(home);
+    const git = (...args: string[]) => execFileSync("git", ["-C", main, ...args], { stdio: "pipe" });
+    try {
+      git("init");
+      git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture");
+      git("worktree", "add", "--detach", first);
+      git("worktree", "add", "--detach", nested);
+      git("worktree", "add", "--detach", sibling);
+      writeSession(nested, "nested-chat", { title: "Nested", updated_ms: 2, workspace: nested });
+      writeSession(sibling, "sibling-chat", { title: "Sibling", updated_ms: 3, workspace: sibling });
+      const rows = listSessionRows(first, home);
+      assert.equal(rows.find(row => row.name === "nested-chat")?.workspace, nested);
+      assert.equal(rows.find(row => row.name === "sibling-chat")?.workspace, sibling);
+      assert.equal(findSessionFile(first, "nested-chat", home)?.workspace, nested);
+    } finally { rmSync(temp, { recursive: true, force: true }); }
+  });
+
   it("lists cwd, then home, and cwd wins on the same name", () => {
     const cwd = mkdtempSync(path.join(tmpdir(), "graff-cwd-"));
     const home = mkdtempSync(path.join(tmpdir(), "graff-home-"));
