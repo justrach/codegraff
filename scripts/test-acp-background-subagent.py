@@ -21,7 +21,13 @@ class Model(load.ScriptedModel):
         super().__init__([], exhausted_text='unexpected model request')
         self.child_started = threading.Event()
         self.release_child = threading.Event()
+        self.child_reply_ready = threading.Event()
+        self.child_frame_sent = threading.Event()
         self.root_calls = 0
+
+    def after_stream_delta(self, _delta):
+        if self.child_reply_ready.is_set():
+            self.child_frame_sent.set()
 
     def next_reply(self, body):
         names = [item.get('function', item).get('name') for item in body.get('tools', [])]
@@ -37,6 +43,7 @@ class Model(load.ScriptedModel):
         if number == 0:
             self.child_started.set()
             assert self.release_child.wait(15), 'child release timed out'
+            self.child_reply_ready.set()
             return {'text': 'The child finished after the parent prompt.'}
         if number == 1:
             return {'tool': 'subagent', 'arguments': {
@@ -139,7 +146,12 @@ def run(binary, capability=True, cancel=False, disconnect=False, switch_session=
                     exit_code = client.proc.wait(timeout=25)
                 except subprocess.TimeoutExpired as exc:
                     trace = Path(client.err.name).read_text(errors='replace')[-3000:]
-                    raise AssertionError(f'ACP did not exit after stdin EOF; stderr tail:\n{trace}') from exc
+                    state = (f'child_started={model.child_started.is_set()} '
+                             f'released={model.release_child.is_set()} '
+                             f'reply_ready={model.child_reply_ready.is_set()} '
+                             f'frame_sent={model.child_frame_sent.is_set()} '
+                             f'model_requests={len(model.requests)}')
+                    raise AssertionError(f'ACP did not exit after stdin EOF ({state}); stderr tail:\n{trace}') from exc
                 assert exit_code == 0, exit_code
                 while True:
                     try:
