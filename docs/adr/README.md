@@ -220,6 +220,7 @@ record only when you need the evidence or the edge cases.
 | [0192](0192-mimo-thinking-is-a-binary-setting.md) | MiMo exposes Off/On, preserves legacy positive settings as On, and uses the documented thinking control on each wire. |
 | [0193](0193-jev-selects-effort-only.md) | Optional Jev selects only supported session effort at the next request boundary; arbitrary judgments are not exposed. |
 | [0195](0195-embedded-browser-replaces-kuri.md) | Desktop browser uses embedded Chromium, web preview uses the paired extension, and CLI fetch uses built-in HTTP without a sidecar. |
+| [0198](0198-project-choice-survives-session-isolation.md) | New chats inherit the chosen project while ACP reports each worker checkout; generated worktrees are rooted at the main checkout. |
 
 ## When to write one
 

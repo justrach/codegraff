@@ -7,6 +7,8 @@ export type Msg =
  * model is only the default a new tab inherits. `cwd` is the workspace the
  * tab's agent runs in — fixed at spawn, like the model. */
 export type Chat = { id: number; title: string | null; messages: Msg[]; model?: string; nextModel?: string; preparingModel?: string; session?: string; cwd?: string;
+  /** Folder chosen for new chats and project settings; cwd may be an isolated checkout. */
+  project?: string;
   /** The model named this tab from its first prompt: the session poller,
    * which reads graff's own saved title, must leave it alone. */
   titledByModel?: boolean;
@@ -23,4 +25,3 @@ export function newPageToken(): string {
 export function newSessionName(): string {
   return `native-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
-

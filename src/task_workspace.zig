@@ -103,6 +103,14 @@ pub fn gitDirAt(gpa: Allocator, io: Io, arena: Allocator, checkout: []const u8) 
     return lease.identityAt(gpa, io, arena, checkout).id;
 }
 
+/// Auto-isolation always writes under the owning main checkout, even when
+/// the new session was launched from another linked worktree.
+pub fn autoIsolationRoot(gpa: Allocator, io: Io, arena: Allocator, checkout: []const u8) ?[]const u8 {
+    const common = lease.gitCommonDirAt(gpa, io, arena, checkout);
+    const root = worktree_prune.mainWorktreePath(common);
+    return if (root.len > 0) root else null;
+}
+
 fn isGitAt(gpa: Allocator, io: Io, cwd: []const u8) bool {
     const r = runCapped(gpa, io, &.{ "git", "-C", cwd, "rev-parse", "--is-inside-work-tree" }, 4096, 4096, 15_000) catch return false;
     defer {
@@ -397,7 +405,8 @@ pub fn maybeAutoIsolate(gpa: Allocator, io: Io, arena: Allocator, home: []const 
     io.random(&raw);
     const nonce = std.fmt.bytesToHex(raw, .lower);
     const slug = autoSlug(arena, proc_identity.selfPid(), nonce[0..8]) catch return .{ .failed = error.CreateFailed };
-    const wt = create(gpa, io, arena, .{ .slug = slug, .unique = true }) catch |err| return .{ .failed = err };
+    const project = autoIsolationRoot(gpa, io, arena, ".") orelse return .{ .failed = error.CreateFailed };
+    const wt = create(gpa, io, arena, .{ .slug = slug, .cwd = project, .unique = true }) catch |err| return .{ .failed = err };
     enter(io, arena, wt) catch |err| return .{ .failed = err };
     return .{ .isolated = wt };
 }

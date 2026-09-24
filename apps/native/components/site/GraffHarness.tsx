@@ -50,7 +50,7 @@ import { usePromptQueue, steerOrInterrupt } from "./usePromptQueue";
 import { useChatClose } from "./useChatClose";
 import { type StoredSession } from "@/lib/sessions";
 import { loadHistory, mergeHistory } from "@/lib/prompt-history";
-import { basename, displayWorkspace, findWorkspace, type Workspace } from "@/lib/workspaces";
+import { basename, chatProject, displayWorkspace, findWorkspace, type Workspace } from "@/lib/workspaces";
 
 export default function GraffHarness() {
   const navigation = useResponsiveNavigation();
@@ -238,7 +238,7 @@ export default function GraffHarness() {
     sessionNamesRef.current.set(id, session);
     const cwd = folder ?? activePathRef.current ?? undefined;
     const ws = findWorkspace(workspacesRef.current, cwd);
-    const next = [...chatsRef.current, { id, title: null, messages: [], model: ws?.model ?? model ?? undefined, session, cwd }];
+    const next = [...chatsRef.current, { id, title: null, messages: [], model: ws?.model ?? model ?? undefined, session, cwd, project: cwd }];
     chatsRef.current = next; setChats(next);
     setZoomedPane(null);
     activateChat(id);
@@ -270,7 +270,7 @@ export default function GraffHarness() {
   const openStored = (name: string, cwd = activePathRef.current ?? undefined) => savedConversation.open(name, cwd);
 
   const newChat = () => {
-    const folder = chatsRef.current.find(c => c.id === activeIdRef.current)?.cwd;
+    const folder = chatProject(chatsRef.current.find(c => c.id === activeIdRef.current) ?? {}, activePathRef.current, workspacesRef.current);
     if (folder && folder !== activePathRef.current) activateWorkspace(folder);
     openChat((chatIdRef.current += 1), folder ?? activePathRef.current ?? undefined);
   };
@@ -280,7 +280,7 @@ export default function GraffHarness() {
     if (id !== activeIdRef.current) setBrowserOpen(false);
     setProjectsOpen(false); setAgentsOpen(false);
     setConversationsOpen(false);
-    const folder = chatsRef.current.find(chat => chat.id === id)?.cwd;
+    const folder = chatProject(chatsRef.current.find(chat => chat.id === id) ?? {}, activePathRef.current, workspacesRef.current);
     if (folder && folder !== activePathRef.current) activateWorkspace(folder);
     if (!columnIds.includes(id) || (zoomedPane !== null && zoomedPane !== id)) setZoomedPane(null);
     setActiveId(id);
@@ -303,12 +303,10 @@ export default function GraffHarness() {
     if (!next) { if (!source.some(pane => columnIds.includes(pane)) && columnIds.length + source.length > MAX_COLUMNS) setSplitNotice(SPLIT_LIMIT_MESSAGE); return; }
     setSplitNotice(null); setZoomedPane(null);
     groups.split(sourceId, drop.id, drop.edge); setActiveId(sourceId);
-    const folder = chatsRef.current.find(chat => chat.id === sourceId)?.cwd;
+    const folder = chatProject(chatsRef.current.find(chat => chat.id === sourceId) ?? {}, activePathRef.current, workspacesRef.current);
     if (folder && folder !== activePathRef.current) activateWorkspace(folder);
   });
 
-  /** Another chat beside the ones on screen, in the workspace the active
-   * chat is in. Up to four columns; past that they are too narrow to read. */
   const addPane = (direction: "row" | "column" = splitDirection) => {
     if (splitLimitReached(columnIds.length)) {
       setSplitNotice(SPLIT_LIMIT_MESSAGE);
@@ -316,7 +314,7 @@ export default function GraffHarness() {
     }
     setSplitNotice(null);
     const id = (chatIdRef.current += 1);
-    openChat(id, chatsRef.current.find(c => c.id === activeIdRef.current)?.cwd ?? activePathRef.current ?? undefined);
+    openChat(id, chatProject(chatsRef.current.find(c => c.id === activeIdRef.current) ?? {}, activePathRef.current, workspacesRef.current));
     groups.split(id,activeId,direction === "row" ? "right" : "bottom");
   };
 
@@ -352,7 +350,7 @@ export default function GraffHarness() {
 
   // Display the project separately from the checkout where this chat runs.
   const cwdOf = (thread: Chat) => thread.cwd ?? activePath ?? health?.cwd;
-  const workspaceOf = (thread: Chat) => displayWorkspace(cwdOf(thread), workspaces);
+  const workspaceOf = (thread: Chat) => displayWorkspace(cwdOf(thread), workspaces, chatProject(thread, activePath, workspaces));
   const chatCwd = cwdOf(chatThread);
   useEffect(() => {
     let alive = true;
