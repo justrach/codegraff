@@ -123,6 +123,7 @@ pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
         // Preemptive idle expiry is not a failed transport attempt; it only asks
         // request() to rebuild the already-created delta as full input.
         if (e == error.CodexWsReanchor) return e;
+        if (self.tracer) |tr| tr.note("ws_error", @errorName(e));
         self.closeCodexWs();
         self.ws_transport_failures +|= 1;
         // 426, a stalled first handshake, or two failures → HTTPS SSE. A delta

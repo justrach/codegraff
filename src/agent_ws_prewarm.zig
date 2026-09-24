@@ -46,6 +46,11 @@ pub fn buildFrame(self: *Agent, arena: std.mem.Allocator) ![]u8 {
     try st.beginObject();
     try st.objectField("type");
     try st.write("response.create");
+    // buildBody writes model before body_responses.write; so must we. Without
+    // it codex answers `'None' model is not supported` and then drops the
+    // socket under the real turn.
+    try st.objectField("model");
+    try st.write(self.provider.model);
     try body_responses.write(self, &st, self.toolsJson(), false);
     try st.endObject();
     return out.toOwnedSlice();
@@ -142,7 +147,10 @@ fn awaitPrewarmId(self: *Agent, arena: std.mem.Allocator, client: *ws.WsClient) 
             if (idv != .string or idv.string.len == 0) return error.NoId;
             return idv.string;
         }
-        if (std.mem.eql(u8, t, "response.failed") or std.mem.eql(u8, t, "error")) return error.PrewarmRejected;
+        if (std.mem.eql(u8, t, "response.failed") or std.mem.eql(u8, t, "error")) {
+            if (self.tracer) |tr| tr.note("ws", fbuf.items[0..@min(fbuf.items.len, 300)]);
+            return error.PrewarmRejected;
+        }
         fbuf.clearRetainingCapacity();
     }
 }
@@ -176,6 +184,8 @@ test "buildFrame: prewarm body has generate:false, empty input, no previous_resp
     try stdt.testing.expect(std.mem.indexOf(u8, frame, "previous_response_id") == null);
     try stdt.testing.expect(std.mem.indexOf(u8, frame, "\"stream\":true") == null);
     try stdt.testing.expect(std.mem.indexOf(u8, frame, "\"instructions\"") != null);
+    // Codex rejects a model-less prewarm and drops the socket under turn 1.
+    try stdt.testing.expect(std.mem.indexOf(u8, frame, "\"model\":\"gpt-5.6\"") != null);
     // The flag must not leak past the builder.
     try stdt.testing.expect(!agent.ws_prewarm);
 }
