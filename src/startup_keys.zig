@@ -69,7 +69,7 @@ fn explicitProvider(model_flag: ?[]const u8) ?[]const u8 {
     return catalog_selection.explicitProvider(model_flag orelse return null);
 }
 
-fn qualifiedProvider(keys: provider_mod.Keys, query: []const u8) error{ MissingKey, UnknownModel }!?provider_mod.Provider {
+pub fn qualifiedProvider(keys: provider_mod.Keys, query: []const u8) error{ MissingKey, UnknownModel }!?provider_mod.Provider {
     const slash = std.mem.indexOfScalar(u8, query, '/') orelse return null;
     const pid = query[0..slash];
     const spec = provider_mod.specFor(pid) orelse return null;
