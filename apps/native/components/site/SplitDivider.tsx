@@ -1,6 +1,6 @@
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {createFrameBatch} from '@/lib/frame-batch';
-import {dividerStyle,paneStyle,resizeSplit,splitGeometry,splitIds,type SplitBox,type SplitTree} from '@/lib/split-tree';
+import {balanceSplit,dividerStyle,paneStyle,resizeSplit,splitGeometry,splitIds,type SplitBox,type SplitTree} from '@/lib/split-tree';
 
 function paint(root:HTMLElement,tree:SplitTree) {
   const {panes,dividers}=splitGeometry(tree);
@@ -44,7 +44,7 @@ export default function SplitDivider({node,box,tree,onChange,index}:{
     onPointerMove={event=>move(vertical?event.clientX:event.clientY)}
     onPointerUp={event=>{move(vertical?event.clientX:event.clientY);finish();if(event.currentTarget.hasPointerCapture(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId);}}
     onPointerCancel={()=>finish(true)} onLostPointerCapture={()=>finish()}
-    onDoubleClick={()=>onChange(resizeSplit(tree,node.key,.5))}
+    onDoubleClick={()=>onChange(balanceSplit(tree))}
     onKeyDown={event=>{
       const delta=event.key===(vertical?'ArrowLeft':'ArrowUp')?-.05:event.key===(vertical?'ArrowRight':'ArrowDown')?.05:0;
       if(delta){event.preventDefault();event.stopPropagation();onChange(resizeSplit(tree,node.key,node.ratio+delta));}
