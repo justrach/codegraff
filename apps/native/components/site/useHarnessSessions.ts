@@ -25,9 +25,10 @@ type Props = {
   setWorkspaces: Setter<Workspace[]>; setActivePath: Setter<string | null>;
   setChats: Setter<Chat[]>; setStored: Setter<StoredSession[]>; setStoredTotal: Setter<number>;
   pendingPick(): { key: string; chatId: number } | null;
+  restoreTabs(): Promise<number | null>;
 };
 const SIDEBAR_PAGE = 12;
-export function useHarnessSessions({onPermission, sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal, pendingPick}: Props) {
+export function useHarnessSessions({onPermission, sessionsRef, sessionNamesRef, chatsRef, workspacesRef, activePathRef, pageRef, runningRef, model, activeId, handleOf, setModels, setCommands, setCatalogCommands, setChatModel, setModelKey, setSessionIds, setHealth, setWorkspaces, setActivePath, setChats, setStored, setStoredTotal, pendingPick, restoreTabs}: Props) {
   const [projectsReady, setProjectsReady] = useState(false);
   const [chatCatalogs, setChatCatalogs] = useState<Record<number, PromptModel[]>>({});
   const catalogForSpawn = useRef<Record<number, { cwd?: string; models: PromptModel[] }>>({});
@@ -201,6 +202,15 @@ export function useHarnessSessions({onPermission, sessionsRef, sessionNamesRef, 
       setWorkspaces(list);
       setActivePath(active);
       persistProjects(window.localStorage, list, active);
+      const restoredId = await restoreTabs();
+      if (cancelled) return;
+      if (restoredId !== null) {
+        setProjectsReady(true);
+        void refreshStored();
+        if (!window.graffDesktop) await requireSession(restoredId);
+        if (!cancelled) await adoptCatalog(restoredId);
+        return;
+      }
       if (active) setChats((current) => current.map((c) => (c.id === 1 && !c.cwd ? { ...c, cwd: active } : c)));
       void refreshStored();
       try {

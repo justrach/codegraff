@@ -332,6 +332,7 @@ app.whenReady().then(async () => {
   await require('./attachment-lifetime-frontend.cjs').runAttachments({win,origin,temp,output,requests,workspace,send,click,until,report});
   if (narrowNavigation) return;
   await require('./browser-focus-frontend.cjs').runBrowserFocus({ win, output, click, until, report });
+  await require('./page-recovery-visual.cjs').runPageRecovery({ win, report });
   await require('./tab-drag-visual.cjs').runTabDrag({ win, origin, output });
   report.passed.push('trusted pointer and keyboard: tab reorder, horizontal/vertical splits, draft retention, Escape and four-pane limit');
   await js(`localStorage.setItem('graff.native.browser.open', '1')`);

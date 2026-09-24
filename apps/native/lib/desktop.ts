@@ -12,6 +12,7 @@ export type DesktopBridge = {
   linkSettings?(action: 'load' | 'save', value?: LinkDestination): Promise<LinkDestination>;
   projects?(action: 'load' | 'save', value?: { list: import('./workspaces').Workspace[]; active: string | null }): Promise<{ list: import('./workspaces').Workspace[]; active: string | null } | null | void>;
   updates?(action: 'state' | 'check' | 'restart' | 'automatic', value?: boolean): Promise<UpdateState>;
+  activeTurns?(count: number): void;
   updateSubscribe?(callback: (state: UpdateState) => void): () => void;
   terminal?(action: string, params?: Record<string, unknown>): Promise<{id: string; seq: number; history: string; exit: number | null}>;
   terminalSubscribe?(callback: (event: TerminalEvent) => void): () => void;

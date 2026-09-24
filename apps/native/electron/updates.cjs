@@ -118,7 +118,7 @@ function writePrefs(file, patch) {
   fs.writeFileSync(file, JSON.stringify(next));
 }
 
-function installUpdates({ app, win, ipcMain, trusted, resources }) {
+function installUpdates({ app, win, ipcMain, trusted, resources, preflight = async () => true }) {
   const { dialog } = require('electron');
   const prefs = path.join(app.getPath('userData'), 'updates.json');
   const loaded = readPrefs(prefs);
@@ -147,8 +147,8 @@ function installUpdates({ app, win, ipcMain, trusted, resources }) {
         message: `Codegraff ${readyVersion} is ready to install.`,
         detail: 'Restart to apply the update now, or keep working — Codegraff offers the restart again at next launch.',
         buttons: ['Restart to update', 'Later'], defaultId: 0, cancelId: 1,
-      }).then(({ response }) => {
-        if (response === 0 && !win.isDestroyed()) { try { controller.restart(); } catch {} }
+      }).then(async ({ response }) => {
+        if (response === 0 && !win.isDestroyed() && await preflight('Restart') && !win.isDestroyed()) { try { controller.restart(); } catch {} }
       }).catch(() => {});
     },
   });
@@ -157,7 +157,10 @@ function installUpdates({ app, win, ipcMain, trusted, resources }) {
   ipcMain.handle('updates', async (event, action, value) => {
     trusted(event);
     if (action === 'check') await controller.check(true);
-    else if (action === 'restart') controller.restart();
+    else if (action === 'restart') {
+      if (controller.state().status !== 'ready') controller.restart(); // preserve the unavailable-state error
+      if (await preflight('Restart')) controller.restart();
+    }
     else if (action === 'automatic') controller.setAutomatic(!!value);
     else if (action !== 'state') throw Error('Unknown update action');
     return controller.state();

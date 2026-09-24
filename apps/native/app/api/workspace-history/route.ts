@@ -4,5 +4,6 @@ import { defaultRoot } from "@/lib/server-root";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
-  return Response.json({ workspaces: discoverWorkspaceHistory([defaultRoot(), ...req.nextUrl.searchParams.getAll("root").slice(0, 50)]) });
+  const saved = req.nextUrl.searchParams.getAll("root").slice(0, 50);
+  return Response.json({ workspaces: discoverWorkspaceHistory([defaultRoot(), ...saved], undefined, saved) });
 }

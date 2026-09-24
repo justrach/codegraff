@@ -32,7 +32,7 @@ export function useChatGroups(chats: Chat[], activeId: number) {
     const tree=apply(group.tree??flatSplit(group.ids,group.direction));
     return old.map(item=>item===group?{ids:splitIds(tree),tree,direction:typeof tree==='number'?'row':tree.axis}:item);
   });
-  return { groups, tabs, panes, setPanes, tree: current?.tree, setTree: (tree:SplitTree)=>updateTree(()=>tree),
+  return { groups, tabs, panes, setPanes, restore: (saved: ChatGroup[]) => setLayouts(saved), tree: current?.tree, setTree: (tree:SplitTree)=>updateTree(()=>tree),
     resize: (delta:number)=>updateTree(tree=>resizeChatSplit(tree,activeId,delta)), balance: ()=>updateTree(balanceSplit),
     split(source:number,target:number,edge:'left'|'right'|'top'|'bottom') {
       setLayouts(old=>{

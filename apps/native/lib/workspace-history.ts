@@ -15,10 +15,14 @@ function entries(folder: string): string[] {
 }
 
 /** Registry entries are hints. Only an existing, readable session header makes
- * a folder an activity suggestion; never infer a parent repository. */
-export function discoverWorkspaceHistory(known: string[] = [], home = homeDir()): WorkspaceActivity[] {
+ * activity; generated checkout activity is attributed to its outer project. */
+export function discoverWorkspaceHistory(known: string[] = [], home = homeDir(), saved: string[] = known): WorkspaceActivity[] {
   const roots = new Set<string>();
   const knownNames = new Map<string, string>();
+  const savedRoots = new Set<string>();
+  for (const root of saved) {
+    try { if (path.isAbsolute(root)) savedRoots.add(realpathSync(root)); } catch {}
+  }
   for (const root of known) {
     try { if (path.isAbsolute(root)) knownNames.set(realpathSync(root), path.normalize(root)); } catch {}
   }
@@ -37,7 +41,7 @@ export function discoverWorkspaceHistory(known: string[] = [], home = homeDir())
       if (row.version === 1) add(row.path);
     } catch { /* Partial, obsolete and malformed hints are ignored. */ }
   }
-  const rows: WorkspaceActivity[] = [];
+  const activity = new Map<string, number>();
   for (const root of roots) {
     let latest = 0;
     for (const folder of [path.join(root, SESSIONS_DIR), path.join(root, SESSIONS_DIR, "archived")]) {
@@ -54,7 +58,16 @@ export function discoverWorkspaceHistory(known: string[] = [], home = homeDir())
         } catch { /* A concurrent save/delete must not break other projects. */ }
       }
     }
-    if (latest > 0) rows.push({ path: knownNames.get(root) ?? root, lastActivityMs: latest });
+    if (latest > 0) {
+      // Generated session checkouts belong to the outer project. A folder
+      // explicitly saved by the user remains an independent choice.
+      const marker = `${path.sep}.graff${path.sep}worktrees${path.sep}`;
+      const index = savedRoots.has(root) ? -1 : root.indexOf(marker);
+      const owner = index > 0 ? root.slice(0, index) : root;
+      const label = knownNames.get(owner) ?? owner;
+      activity.set(label, Math.max(activity.get(label) ?? 0, latest));
+    }
   }
-  return rows.sort((a, b) => b.lastActivityMs - a.lastActivityMs || a.path.localeCompare(b.path));
+  return [...activity].map(([path, lastActivityMs]) => ({ path, lastActivityMs }))
+    .sort((a, b) => b.lastActivityMs - a.lastActivityMs || a.path.localeCompare(b.path));
 }

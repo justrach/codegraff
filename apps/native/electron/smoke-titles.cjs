@@ -47,6 +47,7 @@ async function run({win, backend}) {
     fs.writeFileSync(path.join(directory,'named-title.session.json'),JSON.stringify(named));
     report.passed.push('packaged GUI text prompt creates real file and meaningful saved title','image-bearing prompt reaches bundled harness as pixels and saves meaningful title');
   } else {
+    await until(()=>js(`document.querySelectorAll('[data-tab-id]').length===2 && document.querySelector('[data-tab-id] button[aria-pressed="true"]')?.textContent.includes('image of retained work')`),'open tabs restored after packaged restart');
     await until(()=>js(`document.querySelector('#sidebar-chat-list')?.textContent.includes('Recover a legacy conversation title') && document.querySelector('#sidebar-chat-list')?.textContent.includes('My explicit project title')`),'fresh packaged process recovers legacy and preserves explicit titles');
     assert.equal(await js(`document.querySelector('#sidebar-chat-list').textContent.includes('Untitled session')`),false);
     await js(`Array.from(document.querySelectorAll('#sidebar-chat-list button[data-row]')).find(e=>e.textContent.includes('Recover a legacy conversation title')).setAttribute('data-title-recovery','true')`);
@@ -54,7 +55,7 @@ async function run({win, backend}) {
     await until(()=>js(`document.querySelector('[data-tab-id] button[aria-pressed=\"true\"]')?.textContent.includes('Recover a legacy')`),'legacy snapshot opens');
     await until(()=>js(`document.querySelector('[data-chat][data-focused=\"true\"]')?.textContent.includes('Recover a legacy conversation title')`),'recovered transcript renders');
     await shot('packaged-recovered-titles.png');
-    report.passed.push('fresh packaged process recovers saved input_text placeholder title','explicit saved title remains unchanged','recovered saved conversation opens through real sidebar');
+    report.passed.push('packaged restart restores open tabs and selected saved conversation','fresh packaged process recovers saved input_text placeholder title','explicit saved title remains unchanged','recovered saved conversation opens through real sidebar');
   }
   report.desktop=desktop.assertSafe();fs.writeFileSync(path.join(output,`titles-${phase}.json`),JSON.stringify(report,null,2));
 }
