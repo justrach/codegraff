@@ -46,9 +46,8 @@ async function runBrowserFocus({ win, output, click, until, report }) {
     await js(`Array.from(document.querySelectorAll('button[aria-label="New chat"]')).find(e=>e.checkVisibility()).setAttribute('data-browser-new-chat','true')`);
     await click('[data-browser-new-chat="true"]');
     await until(async () => (await focused()) !== a && browser.visible !== chatA, 'second chat');
-    if (!await js(`!!document.querySelector('[aria-label="Address"]')?.checkVisibility()`)) {
-      await openBrowser();
-    }
+    assert.equal(await js(`!!document.querySelector('[aria-label="Close browser"]')`), false, 'switching chats closes the browser pane');
+    await openBrowser();
     await navigateUser(`${origin}/selected`);
     const b = await focused(), chatB = browser.visible;
     await click('textarea[aria-label="Prompt"]');
@@ -81,6 +80,7 @@ async function runBrowserFocus({ win, output, click, until, report }) {
     assert.equal(browser.visible, chatA);
     assert.ok(events.some(event => event.type === 'show' && event.chat === chatA));
     await click(`[data-tab-members="${b}"] button[aria-pressed]`);
+    assert.equal(await js(`!!document.querySelector('[aria-label="Close browser"]')`), false, 'explicit browser reveal does not leak into the next chat');
     assert.equal(await js(`document.querySelector('[data-chat="${b}"] textarea').value`), 'Keep my draft here');
     report.passed.push('native background browser open, popup and failed navigation preserve selected chat, composer draft and native view; explicit user reveal still works');
   } finally {

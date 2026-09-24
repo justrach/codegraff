@@ -56,9 +56,6 @@ import {
   type Workspace,
 } from "@/lib/workspaces";
 
-/** Whether the sidecar browser pane was open, restored after a reload. */
-const BROWSER_OPEN_KEY = "graff.native.browser.open";
-
 export default function GraffHarness() {
   const navigation = useResponsiveNavigation();
   const [chats, setChats] = useState<Chat[]>([{ id: 1, title: null, messages: [] }]);
@@ -109,7 +106,7 @@ export default function GraffHarness() {
   const [dialog, setDialog] = useState<null | { mode: "new" } | { mode: "settings" }>(null);
   // The sidecar browser: one Chrome tab per chat, and the pins the user
   // drops on it, which ride ahead of the chat's next prompt.
-  const [browserOpen, setBrowserOpen] = useBrowserVisibility(BROWSER_OPEN_KEY, (chat) => {
+  const [browserOpen, setBrowserOpen] = useBrowserVisibility((chat) => {
     const target = chats.find(c => chat ? chatHandle(pageRef.current, c.id) === chat : c.id === activeId);
     if (target) { focusChat(target.id); setFilesOpen(false); } return target ? chatHandle(pageRef.current, target.id) : false;
   });
@@ -135,7 +132,7 @@ export default function GraffHarness() {
   const [pinsByChat, setPinsByChat] = useState<Record<number, BrowserPin[]>>({});
   const pinsRef = useRef<Record<number, BrowserPin[]>>({});
   const { promptFocusRoot, requestPromptFocus } = useNavigationPromptFocus();
-  const activateChat = (id: number) => { setActiveId(id); requestPromptFocus(id); };
+  const activateChat = (id: number) => { setBrowserOpen(false); setActiveId(id); requestPromptFocus(id); };
   const chatIdRef = useRef(1);
   const msgIdRef = useRef(0);
   // Split view: ordered visible chats, independent of focus. Each keeps its
@@ -284,6 +281,7 @@ export default function GraffHarness() {
 
   /** Focus a pane in place, or restore the selected workspace tab’s layout. */
   const focusChat = (id: number, focusPrompt = true) => {
+    if (id !== activeIdRef.current) setBrowserOpen(false);
     setProjectsOpen(false); setAgentsOpen(false);
     setConversationsOpen(false);
     const folder = chatsRef.current.find(chat => chat.id === id)?.cwd;
