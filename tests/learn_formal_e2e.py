@@ -31,7 +31,7 @@ from learn_e2e import (
 def setup(graff: Path, root: Path) -> tuple[Path, Path, dict[str, str], Path, Path, Path]:
     tools = root / "tools"
     tools.mkdir(mode=0o700)
-    binary = Path("/bin/sh").resolve()
+    binary = Path(sys.executable).resolve(strict=True)
     binary_pin = {"path": str(binary), "sha256": raw_sha256(binary)}
     mutator_marker = root / "mutator-called"
     evaluator_fail = root / "evaluator-fail"

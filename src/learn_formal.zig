@@ -273,7 +273,10 @@ test "pinned helper evidence is rechecked for resume and promotion contexts" {
     const helper_path = try std.fmt.allocPrint(arena, "{s}/helper.sh", .{root});
     const pin_path = try std.fmt.allocPrint(arena, "{s}/pin.json", .{root});
     const key_path = try std.fmt.allocPrint(arena, "{s}/key", .{root});
-    const binary_hash = try store_mod.hashFileNoFollow(io, "/bin/sh");
+    var shell_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const shell_len = try Io.Dir.realPathFileAbsolute(io, "/bin/sh", &shell_buf);
+    const shell_path = shell_buf[0..shell_len];
+    const binary_hash = try store_mod.hashFileNoFollow(io, shell_path);
     const identity = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const script = try std.fmt.allocPrint(arena, "printf '{{\"schema\":\"{s}\",\"ok\":true,\"candidate_prompt_sha256\":\"%s\",\"formal_identity_sha256\":\"{s}\",\"checker_output_sha256\":\"{s}\",\"binary_sha256\":\"{s}\"}}\\n' \"$4\"\n", .{ check_schema, identity, identity, &binary_hash });
     {
@@ -281,7 +284,7 @@ test "pinned helper evidence is rechecked for resume and promotion contexts" {
         defer file.close(io);
         try file.writeStreamingAll(io, script);
     }
-    const pin_bytes = try std.fmt.allocPrint(arena, "{{\"binary\":{{\"path\":\"/bin/sh\",\"sha256\":\"{s}\"}}}}\n", .{&binary_hash});
+    const pin_bytes = try std.fmt.allocPrint(arena, "{{\"binary\":{{\"path\":\"{s}\",\"sha256\":\"{s}\"}}}}\n", .{ shell_path, &binary_hash });
     {
         const file = try tmp.dir.createFile(io, "pin.json", .{ .permissions = .fromMode(0o600) });
         defer file.close(io);
@@ -296,7 +299,7 @@ test "pinned helper evidence is rechecked for resume and promotion contexts" {
     const pin_hash = store_mod.rawSha256(pin_bytes);
     const inputs = [_]store_mod.PinnedFile{.{ .path = helper_path, .sha256 = &helper_hash }};
     const formal: store_mod.FormalCheck = .{
-        .checker = .{ .program = "/bin/sh", .sha256 = &binary_hash, .args = &.{helper_path}, .inputs = &inputs },
+        .checker = .{ .program = shell_path, .sha256 = &binary_hash, .args = &.{helper_path}, .inputs = &inputs },
         .pin = .{ .path = pin_path, .sha256 = &pin_hash },
         .timeout_ms = 2000,
     };
