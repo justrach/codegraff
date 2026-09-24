@@ -10,6 +10,7 @@ pub const primary_evaluation_request_schema = "codegraff.learn.primary-evaluatio
 pub const primary_evaluation_response_schema = "codegraff.learn.primary-evaluation.response.v1";
 pub const legacy_run_schema = "codegraff.learn.run.v2";
 pub const run_schema = "codegraff.learn.run.v3";
+pub const formal_run_schema = "codegraff.learn.run.v4";
 
 pub const GenomeRef = struct {
     id: []const u8,
@@ -238,6 +239,8 @@ pub const RunRecord = struct {
     planned_candidates: usize,
     repetitions: usize,
     auto_requested: bool,
+    formal_admission_evidence_id: ?[]const u8 = null,
+    formal_selection_evidence_id: ?[]const u8 = null,
     primary_baseline: ?PrimaryBaselineRecord = null,
     candidates: []const CandidateRecord,
     /// Best primary-suite contender. This remains populated when the evidence

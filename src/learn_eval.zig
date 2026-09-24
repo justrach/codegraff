@@ -25,6 +25,7 @@ pub const primary_evaluation_request_schema = protocol.primary_evaluation_reques
 pub const primary_evaluation_response_schema = protocol.primary_evaluation_response_schema;
 pub const legacy_run_schema = protocol.legacy_run_schema;
 pub const run_schema = protocol.run_schema;
+pub const formal_run_schema = protocol.formal_run_schema;
 pub const GenomeRef = protocol.GenomeRef;
 pub const MutationRequest = protocol.MutationRequest;
 pub const MutationResponse = protocol.MutationResponse;
@@ -532,13 +533,19 @@ pub fn verifyComparison(
 
 pub fn validateRun(run: RunRecord) !void {
     const current = std.mem.eql(u8, run.schema, run_schema);
+    const formal = std.mem.eql(u8, run.schema, formal_run_schema);
     const legacy = std.mem.eql(u8, run.schema, legacy_run_schema);
-    if ((!current and !legacy) or !store_mod.validId(run.trial_id) or !store_mod.validId(run.nonce) or !store_mod.validId(run.config_id) or !store_mod.validId(run.parent_genome_id) or !store_mod.validId(run.parent_transaction_id)) return error.InvalidRun;
+    if ((!current and !formal and !legacy) or !store_mod.validId(run.trial_id) or !store_mod.validId(run.nonce) or !store_mod.validId(run.config_id) or !store_mod.validId(run.parent_genome_id) or !store_mod.validId(run.parent_transaction_id)) return error.InvalidRun;
+    if (formal) {
+        if (run.formal_admission_evidence_id == null or !store_mod.validId(run.formal_admission_evidence_id.?) or
+            (run.selected_genome_id == null) != (run.formal_selection_evidence_id == null)) return error.InvalidRun;
+        if (run.formal_selection_evidence_id) |id| if (!store_mod.validId(id)) return error.InvalidRun;
+    } else if (run.formal_admission_evidence_id != null or run.formal_selection_evidence_id != null) return error.InvalidRun;
     if (run.planned_candidates == 0 or run.planned_candidates > 16 or run.candidates.len != run.planned_candidates) return error.InvalidRun;
     if (run.repetitions == 0 or run.repetitions > 100 or run.harness_version.len == 0 or run.harness_version.len > 128) return error.InvalidRun;
     if (run.primary_winner_genome_id) |id| if (!store_mod.validId(id)) return error.InvalidRun;
     if (run.selected_genome_id) |id| if (!store_mod.validId(id)) return error.InvalidRun;
-    if (current) {
+    if (current or formal) {
         if (run.primary_baseline) |baseline| {
             if (!store_mod.validId(baseline.suite_sha256) or !store_mod.validId(baseline.request_evidence_id) or !store_mod.validId(baseline.response_evidence_id)) return error.InvalidRun;
         }

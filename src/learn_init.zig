@@ -9,6 +9,7 @@ const Allocator = std.mem.Allocator;
 const store_mod = @import("learn_store.zig");
 const learn_run = @import("learn_run.zig");
 const bootstrap = @import("learn_bootstrap.zig");
+const formal_gate = @import("learn_formal.zig");
 const credentials = @import("learn_credentials.zig");
 const util = @import("util.zig");
 
@@ -58,6 +59,11 @@ pub fn zeroConfig(
 pub fn verifyPins(io: Io, arena: Allocator, config: store_mod.Config) !void {
     try store_mod.verifyProgram(io, config.mutator);
     try store_mod.verifyProgram(io, config.evaluator);
+    if (config.formal_check) |formal| {
+        try store_mod.verifyProgram(io, formal.checker);
+        try store_mod.verifyPinnedFile(io, formal.pin);
+        try formal_gate.verifyBinaryBinding(arena, io, config);
+    }
     const primary_suite = try store_mod.loadSuite(io, arena, config.evaluation_suite);
     try store_mod.validateSuitePower(primary_suite.manifest, config.gate);
     if (config.holdout_suite) |suite| {

@@ -10,6 +10,7 @@ const eval = @import("learn_eval.zig");
 const store_mod = @import("learn_store.zig");
 
 pub const schema = "codegraff.learn.pending.v1";
+pub const formal_schema = "codegraff.learn.pending.v2";
 pub const file_name = "pending.json";
 
 pub const Record = struct {
@@ -25,6 +26,7 @@ pub const Record = struct {
     planned_candidates: usize,
     repetitions: usize,
     auto_requested: bool,
+    formal_admission_evidence_id: ?[]const u8 = null,
     primary_baseline: ?eval.PrimaryBaselineRecord = null,
     candidates: []const eval.CandidateRecord,
 };
@@ -41,12 +43,17 @@ fn validCandidate(candidate: eval.CandidateRecord) bool {
 }
 
 pub fn validate(record: Record) !void {
-    if (!std.mem.eql(u8, record.schema, schema) or
+    const formal = std.mem.eql(u8, record.schema, formal_schema);
+    if ((!std.mem.eql(u8, record.schema, schema) and !formal) or
         !store_mod.validId(record.trial_id) or
         !store_mod.validId(record.nonce) or
         !store_mod.validId(record.config_id) or
         !store_mod.validId(record.parent_genome_id) or
         !store_mod.validId(record.parent_transaction_id)) return error.InvalidPendingRun;
+    if (formal) {
+        if (record.formal_admission_evidence_id == null or
+            !store_mod.validId(record.formal_admission_evidence_id.?)) return error.InvalidPendingRun;
+    } else if (record.formal_admission_evidence_id != null) return error.InvalidPendingRun;
     if (record.harness_version.len == 0 or record.harness_version.len > 128 or
         record.planned_candidates == 0 or record.planned_candidates > 16 or
         record.candidates.len != record.planned_candidates or
@@ -83,4 +90,36 @@ pub fn clear(store: *store_mod.Store) !void {
         else => return err,
     };
     try store_mod.syncDirectory(store.io, store.refs);
+}
+
+test "formal checkpoint requires admission evidence and legacy rejects it" {
+    const id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const candidate: eval.CandidateRecord = .{
+        .genome_id = id,
+        .mutation = .{ .seed = id, .request_evidence_id = id, .response_evidence_id = id },
+        .primary = null,
+        .holdout = null,
+        .eligible = false,
+        .reason = "pending",
+    };
+    var record: Record = .{
+        .schema = formal_schema,
+        .trial_id = id,
+        .nonce = id,
+        .created_unix_ms = 0,
+        .harness_version = "test",
+        .config_id = id,
+        .parent_genome_id = id,
+        .parent_generation = 0,
+        .parent_transaction_id = id,
+        .planned_candidates = 1,
+        .repetitions = 1,
+        .auto_requested = false,
+        .candidates = &.{candidate},
+    };
+    try std.testing.expectError(error.InvalidPendingRun, validate(record));
+    record.formal_admission_evidence_id = id;
+    try validate(record);
+    record.schema = schema;
+    try std.testing.expectError(error.InvalidPendingRun, validate(record));
 }

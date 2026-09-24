@@ -127,6 +127,9 @@ pub fn submitVerifiedRun(
     run_id: []const u8,
     run: eval.RunRecord,
 ) !SubmitResult {
+    // The signed receipt schema does not yet bind formal admission evidence.
+    if (config.formal_check != null or std.mem.eql(u8, run.schema, eval.formal_run_schema))
+        return error.FormalReceiptUnsupported;
     try preflight(io, arena, environ);
     var primary_count: usize = 0;
     var holdout_count: usize = 0;
@@ -221,4 +224,42 @@ test "learning pass-rate grade uses repeated pair count" {
 
 test {
     _ = @import("learn_receipt.zig");
+}
+
+test "formal learning runs cannot enter the unsigned receipt path" {
+    const id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    var config: store.Config = .{
+        .schema = store.config_schema,
+        .agent_name = "candidate",
+        .mutation_instruction = "change one behavior",
+        .mutator = .{ .program = "/missing/mutator", .sha256 = id },
+        .evaluator = .{ .program = "/missing/evaluator", .sha256 = id },
+        .evaluation_suite = .{ .path = "/missing/suite", .sha256 = id },
+        .cohort = .{ .provider = "test", .model = "test", .task_family = "test", .adapter_version = "v1", .verifier_version = "v1" },
+    };
+    var run: eval.RunRecord = .{
+        .schema = eval.formal_run_schema,
+        .trial_id = id,
+        .nonce = id,
+        .created_unix_ms = 0,
+        .harness_version = "test",
+        .config_id = id,
+        .parent_genome_id = id,
+        .parent_generation = 0,
+        .parent_transaction_id = id,
+        .planned_candidates = 1,
+        .repetitions = 1,
+        .auto_requested = false,
+        .candidates = &.{},
+        .selected_genome_id = null,
+    };
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try std.testing.expectError(error.FormalReceiptUnsupported, submitVerifiedRun(std.testing.io, std.testing.allocator, std.testing.allocator, &env, config, id, run));
+    run.schema = eval.run_schema;
+    config.formal_check = .{
+        .checker = .{ .program = "/missing/checker", .sha256 = id },
+        .pin = .{ .path = "/missing/pin", .sha256 = id },
+    };
+    try std.testing.expectError(error.FormalReceiptUnsupported, submitVerifiedRun(std.testing.io, std.testing.allocator, std.testing.allocator, &env, config, id, run));
 }

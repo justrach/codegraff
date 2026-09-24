@@ -46,6 +46,11 @@ pub fn buildFrame(self: *Agent, arena: std.mem.Allocator) ![]u8 {
     try st.beginObject();
     try st.objectField("type");
     try st.write("response.create");
+    // buildBody writes the model before the Responses fields; this frame
+    // must too, or the server rejects it as the 'None' model and the socket
+    // is spent for the turn that follows.
+    try st.objectField("model");
+    try st.write(self.provider.model);
     try body_responses.write(self, &st, self.toolsJson(), false);
     try st.endObject();
     return out.toOwnedSlice();
@@ -142,7 +147,10 @@ fn awaitPrewarmId(self: *Agent, arena: std.mem.Allocator, client: *ws.WsClient) 
             if (idv != .string or idv.string.len == 0) return error.NoId;
             return idv.string;
         }
-        if (std.mem.eql(u8, t, "response.failed") or std.mem.eql(u8, t, "error")) return error.PrewarmRejected;
+        if (std.mem.eql(u8, t, "response.failed") or std.mem.eql(u8, t, "error")) {
+            if (self.tracer) |tr| tr.note("ws", std.fmt.allocPrint(arena, "prewarm rejection: {s}", .{fbuf.items[0..@min(fbuf.items.len, 300)]}) catch "prewarm rejection");
+            return error.PrewarmRejected;
+        }
         fbuf.clearRetainingCapacity();
     }
 }
@@ -172,6 +180,8 @@ test "buildFrame: prewarm body has generate:false, empty input, no previous_resp
     };
     const frame = try buildFrame(&agent, arena);
     try stdt.testing.expect(std.mem.indexOf(u8, frame, "\"generate\":false") != null);
+    // Without it the server answers "the 'None' model is not supported".
+    try stdt.testing.expect(std.mem.indexOf(u8, frame, "\"model\":\"gpt-5.6\"") != null);
     try stdt.testing.expect(std.mem.indexOf(u8, frame, "\"input\":[]") != null);
     try stdt.testing.expect(std.mem.indexOf(u8, frame, "previous_response_id") == null);
     try stdt.testing.expect(std.mem.indexOf(u8, frame, "\"stream\":true") == null);

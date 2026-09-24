@@ -7,9 +7,11 @@ const build_options = @import("build_options");
 
 const checkpoint = @import("learn_checkpoint.zig");
 const eval = @import("learn_eval.zig");
+const formal_gate = @import("learn_formal.zig");
 const holdout = @import("learn_holdout.zig");
 const mutation_verify = @import("learn_mutation_verify.zig");
 const primary = @import("learn_primary.zig");
+const progressRecord = @import("learn_progress.zig").record;
 const report = @import("learn_report.zig");
 const store_mod = @import("learn_store.zig");
 const submit = @import("learn_submit.zig");
@@ -142,6 +144,11 @@ fn mutationIsDuplicate(parent_id: []const u8, candidates: []const eval.Candidate
 fn verifyPins(io: Io, arena: Allocator, config: store_mod.Config) !void {
     try store_mod.verifyProgram(io, config.mutator);
     try store_mod.verifyProgram(io, config.evaluator);
+    if (config.formal_check) |formal| {
+        try store_mod.verifyProgram(io, formal.checker);
+        try store_mod.verifyPinnedFile(io, formal.pin);
+        try formal_gate.verifyBinaryBinding(arena, io, config);
+    }
     const primary_suite = try store_mod.loadSuite(io, arena, config.evaluation_suite);
     try store_mod.validateSuitePower(primary_suite.manifest, config.gate);
     if (config.holdout_suite) |suite| {
@@ -179,35 +186,6 @@ fn copyMutationCandidate(arena: Allocator, outcome: eval.MutationOutcome) !eval.
         .holdout = null,
         .eligible = false,
         .reason = "unevaluated",
-    };
-}
-
-fn progressRecord(
-    config_id: []const u8,
-    active: store_mod.LoadedActive,
-    nonce: []const u8,
-    trial_id: []const u8,
-    created_unix_ms: i64,
-    candidate_count: usize,
-    repetitions: usize,
-    auto_requested: bool,
-    primary_baseline: ?eval.PrimaryBaselineRecord,
-    candidates: []const eval.CandidateRecord,
-) checkpoint.Record {
-    return .{
-        .trial_id = trial_id,
-        .nonce = nonce,
-        .created_unix_ms = created_unix_ms,
-        .harness_version = build_options.version,
-        .config_id = config_id,
-        .parent_genome_id = active.ref.genome_id,
-        .parent_generation = active.ref.generation,
-        .parent_transaction_id = active.ref.transaction_id,
-        .planned_candidates = candidate_count,
-        .repetitions = repetitions,
-        .auto_requested = auto_requested,
-        .primary_baseline = primary_baseline,
-        .candidates = candidates,
     };
 }
 
@@ -344,6 +322,10 @@ pub fn execute(
     out: *Io.Writer,
 ) !Result {
     if (options.resume_run and options.restart) return error.ConflictingOptions;
+    if (config.value.formal_check != null) {
+        try verifyPins(io, arena, config.value);
+        if (options.submit) return error.FormalReceiptUnsupported;
+    }
     if (options.restart) try checkpoint.clear(store);
     const pending = try checkpoint.load(arena, store);
 
@@ -356,6 +338,7 @@ pub fn execute(
     var repetitions: usize = undefined;
     var primary_baseline: ?eval.PrimaryBaselineRecord = null;
     var candidates: []eval.CandidateRecord = undefined;
+    var formal_admission_evidence_id: ?[]const u8 = null;
 
     if (options.resume_run) {
         const saved = pending orelse return error.NoPendingRun;
@@ -364,6 +347,13 @@ pub fn execute(
             options.auto != saved.auto_requested) return error.ResumeOptionMismatch;
         nonce = saved.nonce;
         trial_id = saved.trial_id;
+        if ((config.value.formal_check != null) != std.mem.eql(u8, saved.schema, checkpoint.formal_schema))
+            return error.FormalPendingContextMismatch;
+        if (config.value.formal_check) |formal| {
+            const evidence_id = saved.formal_admission_evidence_id orelse return error.FormalPendingContextMismatch;
+            try formal_gate.verify(gpa, arena, io, environ, store, formal, evidence_id, &config.id, saved.trial_id, "admission", active.genome);
+            formal_admission_evidence_id = evidence_id;
+        }
         created_unix_ms = saved.created_unix_ms;
         candidate_count = saved.planned_candidates;
         repetitions = saved.repetitions;
@@ -386,6 +376,9 @@ pub fn execute(
         trial_buffer = trialId(&config.id, active.ref.genome_id, active.ref.generation, active.ref.transaction_id, &nonce_buffer);
         nonce = &nonce_buffer;
         trial_id = &trial_buffer;
+        if (config.value.formal_check) |formal| {
+            formal_admission_evidence_id = try formal_gate.record(gpa, arena, io, environ, store, formal, &config.id, trial_id, "admission", active.genome);
+        }
         created_unix_ms = util.unixMs(io);
         candidates = try arena.alloc(eval.CandidateRecord, candidate_count);
 
@@ -420,6 +413,7 @@ pub fn execute(
             candidate_count,
             repetitions,
             options.auto,
+            formal_admission_evidence_id,
             null,
             candidates,
         ));
@@ -450,7 +444,7 @@ pub fn execute(
             config.value.evaluation_suite,
             repetitions,
         );
-        try checkpoint.write(gpa, store, progressRecord(&config.id, active, nonce, trial_id, created_unix_ms, candidate_count, repetitions, options.auto, primary_baseline, candidates));
+        try checkpoint.write(gpa, store, progressRecord(&config.id, active, nonce, trial_id, created_unix_ms, candidate_count, repetitions, options.auto, formal_admission_evidence_id, primary_baseline, candidates));
     }
 
     var missing_primary: std.ArrayList(usize) = .empty;
@@ -478,7 +472,7 @@ pub fn execute(
         if (result) |completed| {
             candidates[index].primary = completed.comparison;
             candidates[index].reason = candidates[index].primary.?.reason;
-            try checkpoint.write(gpa, store, progressRecord(&config.id, active, nonce, trial_id, created_unix_ms, candidate_count, repetitions, options.auto, primary_baseline, candidates));
+            try checkpoint.write(gpa, store, progressRecord(&config.id, active, nonce, trial_id, created_unix_ms, candidate_count, repetitions, options.auto, formal_admission_evidence_id, primary_baseline, candidates));
         } else |err| if (primary_failure == null) {
             primary_failure = err;
         }
@@ -510,12 +504,19 @@ pub fn execute(
                     repetitions,
                     1,
                 );
-                try checkpoint.write(gpa, store, progressRecord(&config.id, active, nonce, trial_id, created_unix_ms, candidate_count, repetitions, options.auto, primary_baseline, candidates));
+                try checkpoint.write(gpa, store, progressRecord(&config.id, active, nonce, trial_id, created_unix_ms, candidate_count, repetitions, options.auto, formal_admission_evidence_id, primary_baseline, candidates));
             }
         };
     }
     const finalized = try tournament.finalize(active.ref.genome_id, candidates, config.value.holdout_suite != null);
     const primary_winner = if (finalized.primary_winner_index) |index| candidates[index].genome_id else null;
+    const formal_selection_evidence_id: ?[]const u8 = if (finalized.selected_genome_id) |selected| blk: {
+        if (config.value.formal_check) |formal| {
+            const prompt = try store.readGenome(arena, selected, config.value.limits.genome_bytes);
+            break :blk try formal_gate.record(gpa, arena, io, environ, store, formal, &config.id, trial_id, "selection", prompt);
+        }
+        break :blk null;
+    } else null;
 
     // Re-check every externally controlled executable and suite after use and
     // before committing the immutable run record.
@@ -523,7 +524,7 @@ pub fn execute(
     try verifyTrialPower(io, arena, config.value, candidate_count);
 
     const record: eval.RunRecord = .{
-        .schema = eval.run_schema,
+        .schema = if (config.value.formal_check != null) eval.formal_run_schema else eval.run_schema,
         .trial_id = trial_id,
         .nonce = nonce,
         .created_unix_ms = created_unix_ms,
@@ -535,6 +536,8 @@ pub fn execute(
         .planned_candidates = candidate_count,
         .repetitions = repetitions,
         .auto_requested = options.auto,
+        .formal_admission_evidence_id = formal_admission_evidence_id,
+        .formal_selection_evidence_id = formal_selection_evidence_id,
         .primary_baseline = primary_baseline,
         .candidates = candidates,
         .primary_winner_genome_id = primary_winner,

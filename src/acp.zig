@@ -224,7 +224,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     }
     @import("acp_ask.zig").attach(io, gpa);
     defer @import("acp_ask.zig").detach();
-    var live: LiveTurn = .{ .root = root, .keys = keys, .out = out, .inbox = &inbox };
+    var live: LiveTurn = .{ .root = root, .keys = keys, .out = out, .inbox = &inbox, .model_override = if (flags.model_flag != null) root.provider else null };
     var d: Dispatch = .{
         .turn = LiveTurn.run,
         .error_message = LiveTurn.errorMessage,
