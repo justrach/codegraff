@@ -58,8 +58,11 @@ fn observe(self: *Agent, cmd: []const u8) !?ExecResult {
     }
     if (pr_publish.decide(draft, ev) != .allow) return .{ .text = pr_publish.refuseText(self.arena, cmd, ev), .is_error = true };
     if (!draft) {
-        const review = @import("pr_claim_review.zig").review(self, target, command.flag("--base", "-B"), creating, ev.head_sha, ev.body, ev.head_status) catch
-            return .{ .text = "PR publication preflight: claim review could not establish readiness from the committed source and tests; write NOT performed. Keep a draft while evidence is unresolved.", .is_error = true };
+        const review = @import("pr_claim_review.zig").review(self, target, command.flag("--base", "-B"), creating, ev.head_sha, ev.body, ev.head_status) catch |err|
+            return .{ .text = if (err == error.ReviewTooLarge)
+                "PR publication preflight: claim review input exceeded its size limit (128 KiB committed source budget or 256 KiB review packet); write NOT performed. Narrow the change or provide smaller relevant evidence."
+            else
+                "PR publication preflight: claim review could not establish readiness from the committed source and tests; write NOT performed. Keep a draft while evidence is unresolved.", .is_error = true };
         if (review.verdict != .supported) return .{ .text = try std.fmt.allocPrint(self.arena, "PR publication preflight: claim review is {s}: {s}. Write NOT performed; keep a draft or fix the unsupported claim and coverage.", .{ @tagName(review.verdict), review.reason }), .is_error = true };
     }
     @import("pr_verify.zig").arm(self, target, creating and command.flag("--head", "-H") == null) catch return .{ .text = "PR publication preflight: could not persist the CI verification obligation; write NOT performed", .is_error = true };

@@ -31,6 +31,7 @@ async function runNavigationPromptFocus({ win, origin }) {
   await wc.debugger.sendCommand('Page.enable');
   const { identifier } = await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: `
     (${installGalleryFixture.toString()})();
+    localStorage.removeItem('graff.native.open-tabs.v1');
     const previous=window.fetch;
     window.fetch=async(input,options)=>{
       const url=new URL(String(input),location.origin);
@@ -49,10 +50,12 @@ async function runNavigationPromptFocus({ win, origin }) {
     await click(`${sidebar} button[aria-label="Home"]`); await focused(first);
     for (const keyCode of 'return draft') await testDesktop.testInput(wc, { type: 'char', keyCode });
     await click(`${sidebar} button[aria-label="New chat"]`);
+    await wait(`document.querySelector('[data-chat][data-focused="true"]')?.dataset.chat!=='${first}'`);
     const second = await active(); assert.notEqual(second, first); await focused(second);
     await click('[aria-label="Collapse sidebar"]');
     await wait(`!!document.querySelector('[data-session-navigation="tabs"]')`);
     await click('[data-workspace-toolbar] button[aria-label="New chat"]');
+    await wait(`document.querySelector('[data-chat][data-focused="true"]')?.dataset.chat!=='${second}'`);
     const third = await active(); assert.notEqual(third, second); await focused(third);
     await click(tab(first)); await focused(first);
     assert.deepEqual(await js(`(()=>{const prompt=document.querySelector('[data-chat="${first}"] textarea[aria-label="Prompt"]');return {value:prompt.value,start:prompt.selectionStart,end:prompt.selectionEnd};})()`),
@@ -62,8 +65,9 @@ async function runNavigationPromptFocus({ win, origin }) {
     await click('[aria-label="Expand sidebar"]');
     await wait(`!!document.querySelector('[data-session-navigation="sidebar"]')`);
     // A saved conversation moves into the open-chat list once selected.
+    const beforeSavedTabs = await js(`document.querySelectorAll('[data-tab-id]').length`);
     await click(`${sidebar} button[title^="Focus history"]`);
-    await wait(`!!document.querySelector('[data-continue-snapshot]') || document.querySelectorAll('[data-tab-id]').length===4`);
+    await wait(`!!document.querySelector('[data-continue-snapshot]') || document.querySelectorAll('[data-tab-id]').length>${beforeSavedTabs}`);
     if (await js(`!!document.querySelector('[data-continue-snapshot]')`)) await click('[data-continue-snapshot]');
     const saved = await active();
     await click(tab(first));

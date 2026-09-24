@@ -43,3 +43,23 @@ test("suggestions retain saved settings without consuming choices and sort by ac
   assert.equal(mergeWorkspaceActivity(result, activity).length, 51);
   assert.equal(mergeWorkspaceActivity([{ path: "/terminal-only", name: "terminal", source: "startup" }], activity)[0].source, "history");
 });
+
+test("generated nested session checkouts roll up to their project unless explicitly saved", () => {
+  const home = realpathSync(mkdtempSync(path.join(os.tmpdir(), "workspace-history-checkouts-")));
+  const project = path.join(home, "project");
+  const outer = path.join(project, ".graff/worktrees/outer");
+  const nested = path.join(outer, ".graff/worktrees/nested");
+  try {
+    const registry = path.join(home, ".graff/workspace-history"); mkdirSync(registry, { recursive: true });
+    const register = (root: string, time: number) => {
+      const folder = path.join(root, ".graff/sessions"); mkdirSync(folder, { recursive: true });
+      writeFileSync(path.join(folder, "one.session.json"), JSON.stringify({ updated_ms: time, messages: [] }));
+      writeFileSync(path.join(registry, createHash("sha256").update(root).digest("hex") + ".json"), JSON.stringify({ version: 1, path: root }));
+    };
+    register(project, 10); register(outer, 20); register(nested, 30);
+    assert.deepEqual(discoverWorkspaceHistory([nested], home, []), [{ path: project, lastActivityMs: 30 }]);
+    assert.deepEqual(discoverWorkspaceHistory([nested], home, [nested]), [
+      { path: nested, lastActivityMs: 30 }, { path: project, lastActivityMs: 20 },
+    ]);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});

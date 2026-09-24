@@ -136,6 +136,9 @@ Remote: passed.
         if not args.budget_exhausted:
             review_request=json.dumps(model.requests[2])
             assert 'changed committed files' in review_request and 'delete_word' in review_request and 'test_helper.py' in review_request
+            observed=json.loads(model.requests[2]['messages'][-1]['content'])['observed_local_checks']
+            assert len(observed)==1 and observed[0]['command']=='python3 -m unittest test_helper -v'
+            assert observed[0]['completed'] and not observed[0]['failed'] and 'Ran 1 test' in observed[0]['output']
             if args.repo or args.url:
                 assert 'https://github.com/fixture/alternate' in review_request
         else:

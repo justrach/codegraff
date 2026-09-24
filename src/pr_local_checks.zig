@@ -101,7 +101,7 @@ pub fn batchGate(root: anytype, calls: []const ToolCall, call: ToolCall) !?ExecR
 
 pub const State = struct {
     const Entry = struct { cwd: []const u8, command: []const u8, repository: ?[]const u8 = null };
-    pub const Receipt = struct { repository: []const u8, command: []const u8, head_after: []const u8, tracked_tree_clean_after: bool, output: []const u8, failed: bool, completed: bool, output_truncated: bool = false };
+    pub const Receipt = struct { repository: []const u8, command: []const u8, head_after: []const u8, tracked_tree_clean_after: bool, output: []const u8, failed: bool, completed: bool, command_truncated: bool = false, output_truncated: bool = false };
     observation_mutex: std.Io.Mutex = .init,
     failed: std.ArrayList(Entry) = .empty,
     recent: std.ArrayList(Receipt) = .empty,
@@ -118,12 +118,15 @@ pub const State = struct {
     pub fn recordReceipt(self: *State, arena: Allocator, receipt: Receipt) !void {
         var owned = receipt;
         owned.repository = try arena.dupe(u8, receipt.repository);
-        owned.command = try arena.dupe(u8, receipt.command);
+        var command_end = @min(receipt.command.len, 1024);
+        while (command_end > 0 and !std.unicode.utf8ValidateSlice(receipt.command[0..command_end])) command_end -= 1;
+        owned.command_truncated = receipt.command_truncated or command_end < receipt.command.len;
+        owned.command = try arena.dupe(u8, receipt.command[0..command_end]);
         owned.head_after = try arena.dupe(u8, receipt.head_after);
-        owned.output_truncated = receipt.output.len > 4096;
+        owned.output_truncated = receipt.output_truncated or receipt.output.len > 4096;
         var end = @min(receipt.output.len, 4096);
         while (end > 0 and !std.unicode.utf8ValidateSlice(receipt.output[0..end])) end -= 1;
-        owned.output_truncated = end < receipt.output.len;
+        owned.output_truncated = owned.output_truncated or end < receipt.output.len;
         owned.output = try arena.dupe(u8, receipt.output[0..end]);
         if (self.recent.items.len == 8) _ = self.recent.orderedRemove(0);
         try self.recent.append(arena, owned);
@@ -151,6 +154,8 @@ pub const State = struct {
     pub fn write(self: *const State, writer: anytype) !void {
         try writer.objectField("publication_failed_checks");
         try writer.write(self.failed.items);
+        try writer.objectField("publication_recent_checks");
+        try writer.write(self.recent.items);
     }
 
     pub fn mixFingerprint(self: *const State, fingerprint: anytype) void {
@@ -160,16 +165,25 @@ pub const State = struct {
             fingerprint.text(entry.command);
             fingerprint.text(entry.repository orelse entry.cwd);
         }
+        fingerprint.num(self.recent.items.len);
+        for (self.recent.items) |receipt| {
+            fingerprint.text(receipt.repository);
+            fingerprint.text(receipt.command);
+            fingerprint.text(receipt.head_after);
+            fingerprint.text(receipt.output);
+            fingerprint.num(@intFromBool(receipt.tracked_tree_clean_after));
+            fingerprint.num(@intFromBool(receipt.failed));
+            fingerprint.num(@intFromBool(receipt.completed));
+            fingerprint.num(@intFromBool(receipt.command_truncated));
+            fingerprint.num(@intFromBool(receipt.output_truncated));
+        }
     }
 
     pub fn restore(self: *State, arena: Allocator, object: std.json.ObjectMap) !void {
         var restored: State = .{};
-        const saved = object.get("publication_failed_checks") orelse {
-            self.* = restored;
-            return;
-        };
-        if (saved != .array) return error.InvalidPublicationChecks;
-        for (saved.array.items) |item| {
+        const saved = object.get("publication_failed_checks") orelse .null;
+        if (saved != .null and saved != .array) return error.InvalidPublicationChecks;
+        if (saved == .array) for (saved.array.items) |item| {
             if (item != .object) return error.InvalidPublicationChecks;
             const cwd = item.object.get("cwd") orelse return error.InvalidPublicationChecks;
             const command = item.object.get("command") orelse return error.InvalidPublicationChecks;
@@ -179,6 +193,25 @@ pub const State = struct {
             if (repository != .null and (repository != .string or !std.fs.path.isAbsolute(repository.string)))
                 return error.InvalidPublicationChecks;
             try restored.failed.append(arena, .{ .cwd = try arena.dupe(u8, cwd.string), .command = try arena.dupe(u8, command.string), .repository = if (repository == .string) try arena.dupe(u8, repository.string) else null });
+        };
+        const receipts = object.get("publication_recent_checks") orelse .null;
+        if (receipts != .null and receipts != .array) return error.InvalidPublicationChecks;
+        if (receipts == .array) {
+            if (receipts.array.items.len > 8) return error.InvalidPublicationChecks;
+            for (receipts.array.items) |item| {
+                if (item != .object) return error.InvalidPublicationChecks;
+                const repository = item.object.get("repository") orelse return error.InvalidPublicationChecks;
+                const command = item.object.get("command") orelse return error.InvalidPublicationChecks;
+                const head = item.object.get("head_after") orelse return error.InvalidPublicationChecks;
+                const output = item.object.get("output") orelse return error.InvalidPublicationChecks;
+                const clean = item.object.get("tracked_tree_clean_after") orelse return error.InvalidPublicationChecks;
+                const failed = item.object.get("failed") orelse return error.InvalidPublicationChecks;
+                const completed = item.object.get("completed") orelse return error.InvalidPublicationChecks;
+                const command_truncated = item.object.get("command_truncated") orelse std.json.Value{ .bool = false };
+                const truncated = item.object.get("output_truncated") orelse return error.InvalidPublicationChecks;
+                if (repository != .string or !std.fs.path.isAbsolute(repository.string) or command != .string or command.string.len == 0 or command.string.len > 1024 or head != .string or head.string.len > 64 or output != .string or output.string.len > 4096 or clean != .bool or failed != .bool or completed != .bool or command_truncated != .bool or truncated != .bool) return error.InvalidPublicationChecks;
+                try restored.recordReceipt(arena, .{ .repository = repository.string, .command = command.string, .head_after = head.string, .tracked_tree_clean_after = clean.bool, .output = output.string, .failed = failed.bool, .completed = completed.bool, .command_truncated = command_truncated.bool, .output_truncated = truncated.bool });
+            }
         }
         self.* = restored;
     }
@@ -268,6 +301,7 @@ test "failed checks survive serialization and malformed state is not a clean res
     const a = arena.allocator();
     var original: State = .{};
     try original.failed.append(a, .{ .cwd = "/fixture", .command = "zig build test" });
+    try original.recordReceipt(a, .{ .repository = "/fixture", .command = "zig build test", .head_after = "head", .tracked_tree_clean_after = true, .output = "1 test passed", .failed = false, .completed = true });
     var output: std.Io.Writer.Allocating = .init(a);
     var writer: std.json.Stringify = .{ .writer = &output.writer };
     try writer.beginObject();
@@ -277,6 +311,8 @@ test "failed checks survive serialization and malformed state is not a clean res
     var resumed: State = .{};
     try resumed.restore(a, saved.object);
     try std.testing.expectEqualStrings("zig build test", resumed.unresolved("/fixture").?);
+    try std.testing.expectEqual(@as(usize, 1), resumed.recent.items.len);
+    try std.testing.expectEqualStrings("1 test passed", resumed.recent.items[0].output);
     const malformed = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"publication_failed_checks\":false}", .{});
     try std.testing.expectError(error.InvalidPublicationChecks, resumed.restore(a, malformed.object));
     try std.testing.expect(resumed.unresolved("/fixture") != null);
@@ -300,12 +336,14 @@ test "claim review local receipts retain bounded owned output and explicit limit
     defer arena.deinit();
     var state: State = .{};
     var text: [4100]u8 = @splat('x');
-    for (0..10) |_| try state.recordReceipt(arena.allocator(), .{ .repository = "/repo", .command = "pytest", .head_after = "head", .tracked_tree_clean_after = false, .output = &text, .failed = false, .completed = false });
+    for (0..10) |_| try state.recordReceipt(arena.allocator(), .{ .repository = "/repo", .command = &text, .head_after = "head", .tracked_tree_clean_after = false, .output = &text, .failed = false, .completed = false });
     text[0] = 'y';
     try std.testing.expectEqual(@as(usize, 8), state.recent.items.len);
     const last = state.recent.items[7];
     try std.testing.expectEqual(@as(u8, 'x'), last.output[0]);
     try std.testing.expectEqual(@as(usize, 4096), last.output.len);
+    try std.testing.expectEqual(@as(usize, 1024), last.command.len);
+    try std.testing.expect(last.command_truncated);
     try std.testing.expect(last.output_truncated);
     try std.testing.expect(!last.completed and !last.tracked_tree_clean_after);
 }

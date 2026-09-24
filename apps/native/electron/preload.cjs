@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('graffDesktop', {
   projects: (action, value) => ipcRenderer.invoke('projects', { action, value }),
   linkSettings: (action, value) => ipcRenderer.invoke('link-settings', action, value),
   updates: (action, value) => ipcRenderer.invoke('updates', action, value),
+  activeTurns: count => ipcRenderer.send('active-turns', count),
   updateSubscribe: callback => {
     const listener = (_event, state) => callback(state);
     ipcRenderer.on('update-state', listener);

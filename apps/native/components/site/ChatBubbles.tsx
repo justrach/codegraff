@@ -21,11 +21,11 @@ import { turnBlocks, type AssistantTurn } from "@/lib/acp";
 import { useSmoothStream } from "./useSmoothStream";
 
 /** Reveal updates belong to this text block, not the entire tool/reasoning tree. */
-const StreamingMarkdown = memo(function StreamingMarkdown({ text, live, onOpenPath, scroller, following }: {
+const StreamingMarkdown = memo(function StreamingMarkdown({ text, live, blockId, onOpenPath, scroller, following }: {
   text: string; live: boolean; onOpenPath?: (path: string) => void;
-  scroller?: RefObject<HTMLDivElement | null>; following: boolean;
+  blockId: string; scroller?: RefObject<HTMLDivElement | null>; following: boolean;
 }) {
-  const shown = useSmoothStream(text, live);
+  const shown = useSmoothStream(text, live, blockId);
   useLayoutEffect(() => {
     pinScrollerTail(scroller?.current ?? null, following);
   }, [shown, scroller, following]);
@@ -136,6 +136,7 @@ export const UserBubble = memo(function UserBubble({ text, promptIndex, onEdit }
 
 export const AssistantBody = memo(function AssistantBody({
   turn,
+  messageId,
   onOpenPath,
   onReview,
   onAnswer,
@@ -149,6 +150,7 @@ export const AssistantBody = memo(function AssistantBody({
   promptIndex,
 }: {
   turn: AssistantTurn;
+  messageId?: number;
   onOpenPath?: (path: string) => void;
   onReview?: () => void;
   onAnswer?: (text: string, cancelled?: boolean) => void | Promise<void>;
@@ -210,7 +212,7 @@ export const AssistantBody = memo(function AssistantBody({
           </div>
         ) : (
           <div key={`text-${i}`} className="mt-3 max-w-[630px]">
-            {usage ? <UsageSummary text={block.text} /> : <StreamingMarkdown text={block.text} live={i === lastTextIndex && live}
+            {usage ? <UsageSummary text={block.text} /> : <StreamingMarkdown text={block.text} live={i === lastTextIndex && live} blockId={`${messageId ?? "standalone"}:${i}`}
               onOpenPath={onOpenPath} scroller={scroller} following={i === lastTextIndex && following} />}
           </div>
         ),

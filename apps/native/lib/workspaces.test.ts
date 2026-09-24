@@ -2,6 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   basename,
+  displayWorkspace,
+  chatProject,
   restoreWorkspaceSelection,
   findWorkspace,
   loadActiveWorkspace,
@@ -39,6 +41,23 @@ describe("basename / monogram", () => {
   });
 });
 
+describe("displayWorkspace", () => {
+  const workspaces: Workspace[] = [
+    { path: "/repo", name: "Codegraff" },
+    { path: "/repo/.graff/worktrees/session-one", name: "session-one" },
+  ];
+  it("shows the project and worktree status, not a generated checkout name", () => {
+    assert.deepEqual(displayWorkspace("/repo", workspaces), { project: "Codegraff", worktree: false });
+    assert.deepEqual(displayWorkspace("/repo/.graff/worktrees/session-one", workspaces), { project: "Codegraff", worktree: true });
+    assert.deepEqual(displayWorkspace("/repo/.graff/worktrees/session-one/.graff/worktrees/session-two", workspaces), { project: "Codegraff", worktree: true });
+    assert.deepEqual(displayWorkspace("/repo/.graff/worktrees/session-one", workspaces, "/repo/.graff/worktrees/session-one"), { project: "session-one", worktree: true });
+  });
+  it("keeps ordinary folders and fallback names unchanged", () => {
+    assert.deepEqual(displayWorkspace("/other/project", workspaces), { project: "project", worktree: false });
+    assert.deepEqual(displayWorkspace(null, workspaces), { project: "workspace", worktree: false });
+  });
+});
+
 describe("upsertWorkspace", () => {
   it("adds a row, defaulting the name to the folder", () => {
     const list = upsertWorkspace([], { path: "/a/b/", name: "  " });
@@ -70,6 +89,21 @@ describe("remove / find", () => {
     assert.equal(findWorkspace(list, "/b/")?.name, "b");
     assert.equal(findWorkspace(list, null), undefined);
     assert.equal(findWorkspace(list, "/zzz"), undefined);
+  });
+});
+
+describe("chat project identity", () => {
+  const root = "/repo";
+  const checkout = `${root}/.graff/worktrees/session-42`;
+  it("starts a new chat in the project after auto-isolation", () => {
+    assert.equal(chatProject({ cwd: checkout, project: root }, checkout, []), root);
+    assert.equal(chatProject({ cwd: checkout }, checkout, []), root);
+    assert.equal(chatProject({ cwd: `${checkout}/.graff/worktrees/session-43` }, checkout, []), root);
+  });
+  it("keeps explicitly selected linked worktrees", () => {
+    assert.equal(chatProject({ cwd: checkout, project: checkout }, root, []), checkout);
+    assert.equal(chatProject({ cwd: checkout }, root, [{ path: checkout, name: "selected", source: "saved" }]), checkout);
+    assert.equal(chatProject({ cwd: "/repo/.graff/worktrees/feature" }, root, []), "/repo/.graff/worktrees/feature");
   });
 });
 

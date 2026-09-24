@@ -61,9 +61,23 @@ pub fn review(self: *Agent, target: evidence.Target, base_name: ?[]const u8, cre
     const fork = try evidence.capture(self.gpa, self.io, self.arena, target, &.{ "git", "merge-base", base, head });
     const input = try inputs.gather(self.gpa, self.io, self.arena, target.cwd, fork, head, body);
     const pr_checks = if (creating) "" else evidence.capture(self.gpa, self.io, self.arena, target, &.{ "gh", "pr", "checks", target.selector }) catch "";
-    const serialized = try std.json.Stringify.valueAlloc(self.arena, .{ .repository = repo, .base_tip = base, .input = input, .observed_local_checks = self.publication_checks.recent.items, .observed_head_ci = @tagName(ci), .observed_pr_checks = pr_checks }, .{});
+    var local: std.ArrayList(@import("pr_local_checks.zig").State.Receipt) = .empty;
+    const repository = try @import("pr_local_checks.zig").repositoryRoot(self, target.cwd);
+    for (self.publication_checks.recent.items) |receipt| {
+        if (std.mem.eql(u8, receipt.repository, repository)) try local.append(self.arena, receipt);
+    }
+    const packet = try std.json.Stringify.valueAlloc(self.arena, .{
+        .repository = repo,
+        .base_tip = base,
+        .committed_inputs = input,
+        .observed_local_checks = local.items,
+        .local_check_limit = if (local.items.len == 0) "no local check receipt was observed for this repository in the current or restored session" else "receipts are bounded observations; head_after and tracked_tree_clean_after do not prove immutable execution",
+        .observed_head_ci = @tagName(ci),
+        .observed_pr_checks = pr_checks,
+    }, .{});
+    if (packet.len > 256 * 1024) return error.ReviewTooLarge;
     var hash: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(serialized, &hash, .{});
+    std.crypto.hash.sha2.Sha256.hash(packet, &hash, .{});
     const key = std.fmt.bytesToHex(hash, .lower);
     if (remembered(self.io, key)) return .{ .verdict = .supported, .reason = "same immutable inputs already reviewed" };
     var judge: Agent = .{
@@ -90,6 +104,7 @@ pub fn review(self: *Agent, target: evidence.Target, base_name: ?[]const u8, cre
         \\Check boundary cases asserted in the PR description against tests and implementation.
         \\Do not infer execution or remote CI from prose. The harness supplies observed_head_ci separately.
         \\This review does not certify execution or CI coverage beyond the supplied observations.
+        \\If support_omitted is true, use support_limit to identify the missing evidence and return unresolved when it is required.
         \\If required callers or tests are missing, return unresolved. If a claim exceeds supported scope,
         \\return unsupported with a concrete counterexample or missing coverage. Do not accept claims
         \\just because the body says dispatch, integration, verified, or end-to-end.
@@ -97,7 +112,6 @@ pub fn review(self: *Agent, target: evidence.Target, base_name: ?[]const u8, cre
         ,
     };
     defer judge.tools_used.deinit(self.gpa);
-    const packet = try std.json.Stringify.valueAlloc(self.arena, .{ .committed_inputs = serialized, .observed_local_checks = self.publication_checks.recent.items, .observed_pr_checks = pr_checks, .execution_limits = "head_after and tracked_tree_clean_after are post-run observations, not proof of immutable execution; missing history is unknown" }, .{});
     try judge.messages.append(try @import("messages.zig").textMessage(self.arena, "user", packet));
     const response = try judge.request(null);
     const result = try parse(self.arena, @import("title.zig").assistantText(self.provider.kind, response));
