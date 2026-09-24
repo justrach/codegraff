@@ -2,14 +2,14 @@ import type { ChatGroup } from "./chat-groups";
 import type { Chat } from "@/components/site/harness-types";
 
 export const TAB_RECOVERY_KEY = "graff.native.open-tabs.v1";
-export type TabReference = Pick<Chat, "id" | "session" | "cwd" | "title" | "model">;
+export type TabReference = Pick<Chat, "id" | "session" | "cwd" | "project" | "title" | "model">;
 export type TabRecovery = { tabs: TabReference[]; activeId: number; groups: ChatGroup[] };
 
 /** Keep only references and layout. Transcripts remain in the engine's saved
  * sessions; drafts and live tool state must never be mistaken for a checkpoint. */
 export function tabRecovery(chats: readonly Chat[], activeId: number, groups: readonly ChatGroup[]): TabRecovery {
   return {
-    tabs: chats.slice(0, 50).map(({ id, session, cwd, title, model }) => ({ id, session, cwd, title, model })),
+    tabs: chats.slice(0, 50).map(({ id, session, cwd, project, title, model }) => ({ id, session, cwd, project, title, model })),
     activeId,
     groups: groups.map(group => ({ ids: [...group.ids], direction: group.direction, ...(group.tree ? { tree: group.tree } : {}) })),
   };
@@ -31,8 +31,10 @@ export function loadTabRecovery(storage: Pick<Storage, "getItem"> | null): TabRe
       if (!Number.isSafeInteger(tab.id) || (tab.id as number) < 1 || seen.has(tab.id as number) ||
           typeof tab.session !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(tab.session)) return null;
       if (tab.cwd !== undefined && (typeof tab.cwd !== "string" || !tab.cwd.startsWith("/"))) return null;
+      if (tab.project !== undefined && (typeof tab.project !== "string" || !tab.project.startsWith("/"))) return null;
       seen.add(tab.id as number);
       tabs.push({ id: tab.id as number, session: tab.session, cwd: tab.cwd as string | undefined,
+        project: tab.project as string | undefined,
         title: typeof tab.title === "string" ? tab.title : null,
         model: typeof tab.model === "string" ? tab.model : undefined });
     }
