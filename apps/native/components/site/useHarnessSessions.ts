@@ -9,7 +9,7 @@ import type { AcpCommand } from "@/lib/acp";
 import type { PromptModel } from "@/components/primitives/PromptBar";
 import { listSessionsPage, type StoredSession } from "@/lib/sessions";
 import { restoreProjects, persistProjects } from "@/lib/project-preferences";
-import { findWorkspace, mergeWorkspaceActivity, restoreWorkspaceSelection, type Workspace } from "@/lib/workspaces";
+import { chatProject, findWorkspace, mergeWorkspaceActivity, restoreWorkspaceSelection, type Workspace } from "@/lib/workspaces";
 import { newSessionName, type Chat } from "./harness-types";
 type Ref<T> = MutableRefObject<T>;
 type Setter<T> = Dispatch<SetStateAction<T>>;
@@ -134,7 +134,7 @@ export function useHarnessSessions({onPermission, sessionsRef, sessionNamesRef, 
     // A tab spawns where it was opened; the first tab, opened before the
     // workspace list loaded, takes the active workspace.
     const cwd = chat?.cwd ?? activePathRef.current ?? undefined;
-    const ws = findWorkspace(workspacesRef.current, cwd);
+    const ws = findWorkspace(workspacesRef.current, chatProject(chat ?? {}, activePathRef.current, workspacesRef.current));
     const spawnModel = key ?? chat?.model ?? ws?.model ?? model ?? undefined;
     const cached = catalogForSpawn.current[chatId];
     const { sessionId: id, commands, cwd: checkout } = await startWithSelectedModel(spawnModel,

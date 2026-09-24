@@ -223,6 +223,7 @@ record only when you need the evidence or the edge cases.
 | [0195](0195-embedded-browser-replaces-kuri.md) | Desktop browser uses embedded Chromium, web preview uses the paired extension, and CLI fetch uses built-in HTTP without a sidecar. |
 | [0196](0196-background-acp-agents-use-a-graff-extension.md) | Detached ACP workers stream through an opted-in Graff extension with connection-lifetime output ownership; draft child sessions remain foreground-only. |
 | [0197](0197-deferred-mcp-joins-are-registry-serial.md) | Deferred MCP queues, joins, tool lookup, and catalog snapshots use the registry lock so concurrent requests consume and publish each connection once. |
+| [0198](0198-project-choice-survives-session-isolation.md) | New chats inherit the chosen project while ACP reports each worker checkout; generated worktrees are rooted at the main checkout. |
 
 ## When to write one
 

@@ -34,7 +34,7 @@ export function workspaceActions({workspacesRef, activePathRef, chatsRef, chatId
    * there, and a conversation would lose the ground it was standing on. */
   const moveChatTo = (chatId: number, path: string) => {
     const ws = findWorkspace(workspacesRef.current, path);
-    const next = chatsRef.current.map((c) => (c.id === chatId ? { ...c, cwd: path, model: c.model ?? ws?.model } : c));
+    const next = chatsRef.current.map((c) => (c.id === chatId ? { ...c, cwd: path, project: path, model: c.model ?? ws?.model } : c));
     // requireSession reads the chat from this ref in the same tick, before
     // React has re-rendered with the new cwd.
     chatsRef.current = next;
