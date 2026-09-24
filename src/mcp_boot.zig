@@ -159,7 +159,13 @@ pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]con
 }
 
 /// True when `name` is already live or queued on a deferred boot.
-pub fn alreadyStarting(reg: *const Registry, name: []const u8) bool {
+pub fn alreadyStarting(reg: *Registry, name: []const u8) bool {
+    reg.mutex.lockUncancelable(reg.io);
+    defer reg.mutex.unlock(reg.io);
+    return alreadyStartingLocked(reg, name);
+}
+
+fn alreadyStartingLocked(reg: *const Registry, name: []const u8) bool {
     for (reg.servers) |s| if (std.mem.eql(u8, s.name, name)) return true;
     for (reg.pending_names) |n| if (std.mem.eql(u8, n, name)) return true;
     return false;
@@ -179,7 +185,9 @@ fn startCtx(reg: *const Registry) StartCtx {
 /// companion auto-connect so first paint is not the handshake. If the
 /// thread pool cannot take the task, skip — do not run `io.async` inline.
 pub fn queueStdio(reg: *Registry, name: []const u8, command: []const u8, args: []const []const u8) void {
-    if (alreadyStarting(reg, name)) return;
+    reg.mutex.lockUncancelable(reg.io);
+    defer reg.mutex.unlock(reg.io);
+    if (alreadyStartingLocked(reg, name)) return;
     const a = reg.arena();
     const n = a.dupe(u8, name) catch return;
     var cfg: std.json.ObjectMap = .empty;
@@ -298,19 +306,23 @@ fn noteMcpDeferred(io: Io) void {
 /// First model call: do not wait for deferred MCP handshakes (ADR 0035).
 /// Later requests only consume ready outcomes; `/mcp` and teardown may wait.
 pub fn joinBeforeRequest(reg: *Registry) bool {
-    switch (firstRequestJoin(reg.pending_starts.len, &reg.first_request_join_skipped)) {
-        .none => return false,
-        .skip => {
-            noteMcpDeferred(reg.io);
-            return false;
-        },
-        .join => return joinReady(reg),
-    }
+    reg.mutex.lockUncancelable(reg.io);
+    const decision = firstRequestJoin(reg.pending_starts.len, &reg.first_request_join_skipped);
+    const merged = if (decision == .join) joinReadyLocked(reg) else false;
+    reg.mutex.unlock(reg.io);
+    if (decision == .skip) noteMcpDeferred(reg.io);
+    return merged;
 }
 
 /// Compact unfinished tasks in place without changing their flag addresses.
 /// No unfinished handshake is ever awaited on the request path.
 pub fn joinReady(reg: *Registry) bool {
+    reg.mutex.lockUncancelable(reg.io);
+    defer reg.mutex.unlock(reg.io);
+    return joinReadyLocked(reg);
+}
+
+fn joinReadyLocked(reg: *Registry) bool {
     const pending = reg.pending_starts;
     var merged = false;
     for (pending, 0..) |*task, i| {
@@ -340,13 +352,11 @@ pub fn joinReady(reg: *Registry) bool {
 /// (companion servers may already be present). Idempotent. Returns true
 /// when this call actually merged something, so the agent can rebuild catalogs.
 pub fn joinPending(reg: *Registry) bool {
-    if (reg.pending_starts.len == 0) return false;
     const t0 = Io.Timestamp.now(reg.io, .awake);
-    const futures = reg.pending_starts;
-    reg.pending_starts = &.{};
-    reg.pending_names = &.{};
-    mergeOutcomes(reg, futures);
-    reg.gpa.free(futures);
+    reg.mutex.lockUncancelable(reg.io);
+    const joined = joinPendingLocked(reg);
+    reg.mutex.unlock(reg.io);
+    if (!joined) return false;
     const waited = @max(0, t0.untilNow(reg.io, .awake).toMilliseconds());
     if (waited >= 80) {
         if (@import("engine_sink.zig").hostedSink()) |sink| {
@@ -355,6 +365,16 @@ pub fn joinPending(reg: *Registry) bool {
             if (text.len > 0) sink.emit(reg.io, .{ .session_notice = .{ .text = text, .tone = .dim } });
         }
     }
+    return true;
+}
+
+fn joinPendingLocked(reg: *Registry) bool {
+    if (reg.pending_starts.len == 0) return false;
+    const futures = reg.pending_starts;
+    reg.pending_starts = &.{};
+    reg.pending_names = &.{};
+    mergeOutcomes(reg, futures);
+    reg.gpa.free(futures);
     return true;
 }
 
@@ -444,6 +464,48 @@ test "#860 later requests leave unfinished handshakes queued and consume ready t
     try std.testing.expect(!joinBeforeRequest(&reg));
     release_task.set(io);
     try std.testing.expect(joinPending(&reg));
+    try std.testing.expectEqual(@as(usize, 0), reg.pending_starts.len);
+}
+
+test "concurrent parent and child requests consume a deferred handshake once" {
+    const io = std.testing.io;
+    var reg = Registry.empty(std.testing.allocator, io);
+    defer reg.deinit();
+    reg.first_request_join_skipped = true;
+    const ready = try reg.gpa.create(std.atomic.Value(bool));
+    ready.* = .init(false);
+    var completed: Io.Event = .unset;
+    var release_start: Io.Event = .unset;
+    defer release_start.set(io);
+    const Start = struct {
+        fn run(task_io: Io, flag: *std.atomic.Value(bool), done: *Io.Event, release: *Io.Event) StartOutcome {
+            flag.store(true, .release);
+            done.set(task_io);
+            release.wait(task_io) catch {};
+            return .{};
+        }
+    };
+    reg.pending_starts = try reg.gpa.alloc(PendingStart, 1);
+    reg.pending_starts[0] = .{ .future = try io.concurrent(Start.run, .{ io, ready, &completed, &release_start }), .ready = ready };
+    reg.pending_names = try reg.arena().dupe([]const u8, &.{"server"});
+    try completed.wait(io);
+
+    var release: Io.Event = .unset;
+    const Request = struct {
+        fn run(task_io: Io, registry: *Registry, gate: *Io.Event) bool {
+            gate.wait(task_io) catch return false;
+            return joinBeforeRequest(registry);
+        }
+    };
+    var parent = try io.concurrent(Request.run, .{ io, &reg, &release });
+    var child = try io.concurrent(Request.run, .{ io, &reg, &release });
+    release.set(io);
+    // Keep the future outstanding while both request threads reach its join.
+    try io.sleep(.fromMilliseconds(20), .awake);
+    release_start.set(io);
+    const parent_merged = parent.await(io);
+    const child_merged = child.await(io);
+    try std.testing.expect(parent_merged != child_merged);
     try std.testing.expectEqual(@as(usize, 0), reg.pending_starts.len);
 }
 
