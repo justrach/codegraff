@@ -1,0 +1,153 @@
+diff --git a/apps/native/components/primitives/PromptBar.tsx b/apps/native/components/primitives/PromptBar.tsx
+index be7eaeb1..90862e59 100644
+--- a/apps/native/components/primitives/PromptBar.tsx
++++ b/apps/native/components/primitives/PromptBar.tsx
+@@ -7,6 +7,7 @@ import layout from "./PromptBar.module.css";
+ import ModelEffortButtons from "./ModelEffortButtons";
+ import type { ModelChoice } from "@/lib/acp-client";
+ import { resolveComposerModel } from "@/lib/composer-model";
++import { shouldPickComposerRow } from "@/lib/composer-keyboard";
+ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+ import ComposerMenu from "./ComposerMenu";
+ import ComposerAttachments from "./ComposerAttachments";
+@@ -488,7 +489,7 @@ export default function PromptBar({
+                   setActive((activeIndex + (event.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length);
+                   return;
+                 }
+-                if (!event.shiftKey && (event.key === "Enter" || event.key === "Tab")) {
++                if (shouldPickComposerRow(event.key, event.shiftKey, engaged)) {
+                   event.preventDefault();
+                   event.stopPropagation();
+                   pick(rows[activeIndex]);
+diff --git a/apps/native/electron/composer-interaction-visual.cjs b/apps/native/electron/composer-interaction-visual.cjs
+index 5904be15..da8f1128 100644
+--- a/apps/native/electron/composer-interaction-visual.cjs
++++ b/apps/native/electron/composer-interaction-visual.cjs
+@@ -20,6 +20,18 @@ async function runComposerInteractions({ win, origin, output }) {
+     await pause();
+   };
+   const frames = () => js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))');
++  const nativeKey = async key => {
++    await testDesktop.testInput(wc, { type: 'keyDown', keyCode: key });
++    await testDesktop.testInput(wc, { type: 'keyUp', keyCode: key });
++    await frames();
++  };
++  const hover = async selector => {
++    await js(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'nearest',behavior:'instant'})`);
++    await frames();
++    const point = await js(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
++    await testDesktop.testInput(wc, { type: 'mouseMove', ...point });
++    await frames();
++  };
+   const pointer = async selector => {
+     await js(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'nearest',behavior:'instant'})`);
+     for (let attempt = 0; attempt < 30; attempt++) {
+@@ -45,6 +57,63 @@ async function runComposerInteractions({ win, origin, output }) {
+   try {
+     await wc.loadURL(origin); win.setSize(1440, 900); testDesktop.present(win);
+     await wait(`!!document.querySelector('textarea') && !document.querySelector('[aria-label="Choose model"]').textContent.includes('Loading')`);
++
++    // A completion row only owns Enter/Tab after its dark hover state makes
++    // that selection visible. Before engagement, Enter submits and Tab keeps
++    // normal focus traversal instead of silently choosing the attach row.
++    await js(`(()=>{
++      const original=window.fetch;window.composerKeyboardProbe={fileClicks:0,requests:0};
++      window.fetch=async(input,options)=>{
++        if(String(input).includes('/api/acp')&&options?.body){
++          const body=JSON.parse(options.body);
++          if(body.method==='session/prompt'){
++            window.composerKeyboardProbe.requests++;
++            return new Response(JSON.stringify({jsonrpc:'2.0',id:body.id??1,result:{stopReason:'end_turn'}})+'\\n',{headers:{'content-type':'application/x-ndjson'}});
++          }
++        }
++        return original(input,options);
++      };
++      document.querySelector('input[type="file"]').addEventListener('click',event=>{event.preventDefault();window.composerKeyboardProbe.fileClicks++;});
++    })()`);
++    await testDesktop.testInput(wc, { type: 'mouseMove', x: 1, y: 1 });
++    await input('@tab-without-selection');
++    await wait(`!!document.querySelector('[data-composer-menu] [role="option"][title^="Add photos"]')`);
++    assert.equal(await js(`document.querySelector('[data-composer-menu] [role="option"][title^="Add photos"]').classList.contains('bg-hover')`), false, 'An untouched @ menu has no visibly selected row');
++    await nativeKey('Tab');
++    assert.equal(await js('window.composerKeyboardProbe.fileClicks'), 0, 'Unengaged Tab must not open the file chooser');
++    assert.equal(await js('window.composerKeyboardProbe.requests'), 0, 'Unengaged Tab must not submit');
++    assert.notEqual(await js('document.activeElement.tagName'), 'TEXTAREA', 'Unengaged Tab keeps normal focus traversal');
++    await input('@enter-without-selection');
++    await wait(`!!document.querySelector('[data-composer-menu] [role="option"][title^="Add photos"]')`);
++    assert.equal(await js(`document.querySelector('[data-composer-menu] [role="option"][title^="Add photos"]').classList.contains('bg-hover')`), false, 'A changed @ query resets visible selection');
++    await nativeKey('Enter');
++    await wait(`window.composerKeyboardProbe.requests===1`);
++    assert.equal(await js('window.composerKeyboardProbe.fileClicks'), 0, 'Unengaged Enter submits instead of opening the file chooser');
++    assert.equal(await js('document.querySelector("textarea").value'), '', 'Unengaged Enter clears the submitted draft');
++
++    await wc.loadURL(origin);
++    await wait(`!!document.querySelector('textarea') && !document.querySelector('[aria-label="Choose model"]').textContent.includes('Loading')`);
++    await js(`(()=>{window.composerKeyboardProbe={fileClicks:0};document.querySelector('input[type="file"]').addEventListener('click',event=>{event.preventDefault();window.composerKeyboardProbe.fileClicks++;});})()`);
++    await testDesktop.testInput(wc, { type: 'mouseMove', x: 1, y: 1 });
++    await input('@hover-selection');
++    await wait(`!!document.querySelector('[data-composer-menu] [role="option"][title^="Add photos"]')`);
++    await hover('[data-composer-menu] [role="option"][title^="Add photos"]');
++    await wait(`document.querySelector('[data-composer-menu] [role="option"][title^="Add photos"]').classList.contains('bg-hover')`);
++    await nativeKey('Enter');
++    assert.equal(await js('window.composerKeyboardProbe.fileClicks'), 1, 'Hover-highlighted Enter opens the file chooser');
++    await testDesktop.testInput(wc, { type: 'mouseMove', x: 1, y: 1 });
++    await frames();
++    await input('@arrow-selection');
++    await wait(`!!document.querySelector('[data-composer-menu] [role="option"][title^="Add photos"]')`);
++    assert.equal(await js(`document.querySelector('[data-composer-menu] [role="option"][title^="Add photos"]').classList.contains('bg-hover')`), false, 'A fresh @ query starts without a visible selection');
++    await nativeKey('ArrowDown');
++    await wait(`document.querySelector('[data-composer-menu] [role="option"][title^="Add photos"]').classList.contains('bg-hover')`);
++    await nativeKey('Tab');
++    assert.equal(await js('window.composerKeyboardProbe.fileClicks'), 2, 'Arrow-highlighted Tab opens the file chooser');
++    assert.equal(await js('document.activeElement.tagName'), 'TEXTAREA', 'Engaged Tab is consumed and returns focus to the composer');
++
++    await wc.loadURL(origin);
++    await wait(`!!document.querySelector('textarea') && !document.querySelector('[aria-label="Choose model"]').textContent.includes('Loading')`);
+     await js(`(()=>{
+       const original=window.fetch;window.composerRequests=[];window.composerCancels=0;window.fileChooserClicks=0;
+       window.fetch=async(input,options)=>{
+diff --git a/apps/native/lib/composer-keyboard.test.ts b/apps/native/lib/composer-keyboard.test.ts
+new file mode 100644
+index 00000000..ad0fc14a
+--- /dev/null
++++ b/apps/native/lib/composer-keyboard.test.ts
+@@ -0,0 +1,15 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import { shouldPickComposerRow } from "./composer-keyboard.ts";
++
++test("an open composer menu does not capture Enter or Tab before a row is visibly selected", () => {
++  assert.equal(shouldPickComposerRow("Enter", false, false), false);
++  assert.equal(shouldPickComposerRow("Tab", false, false), false);
++});
++
++test("Enter and Tab activate an engaged composer row", () => {
++  assert.equal(shouldPickComposerRow("Enter", false, true), true);
++  assert.equal(shouldPickComposerRow("Tab", false, true), true);
++  assert.equal(shouldPickComposerRow("Enter", true, true), false);
++  assert.equal(shouldPickComposerRow("ArrowDown", false, true), false);
++});
+diff --git a/apps/native/lib/composer-keyboard.ts b/apps/native/lib/composer-keyboard.ts
+new file mode 100644
+index 00000000..a7efecab
+--- /dev/null
++++ b/apps/native/lib/composer-keyboard.ts
+@@ -0,0 +1,5 @@
++/** A composer menu row is keyboard-activatable only after the user has
++ * visibly selected it by hovering or using the arrow keys. */
++export function shouldPickComposerRow(key: string, shiftKey: boolean, engaged: boolean): boolean {
++  return engaged && !shiftKey && (key === "Enter" || key === "Tab");
++}
+diff --git a/apps/native/package.json b/apps/native/package.json
+index 42d06619..f1208b8b 100644
+--- a/apps/native/package.json
++++ b/apps/native/package.json
+@@ -10,7 +10,7 @@
+     "start": "NEXT_TELEMETRY_DISABLED=1 next start --port 3000",
+     "mock-serve": "node scripts/mock-serve.mjs",
+     "lint": "next lint",
+-    "test": "node --experimental-strip-types --test lib/cite-markup.test.ts lib/graff-events.test.ts lib/acp.test.ts lib/sessions.test.ts lib/session-store.test.ts lib/follow-scroll.test.ts lib/motion-throttle.test.ts lib/prompt-queue.test.ts lib/prompt-queue-steer.test.ts lib/prompt-queue-resume.test.ts lib/streaming-code.test.ts lib/run-traces.test.ts lib/agents.test.ts lib/mermaid-plugin.test.ts lib/prompt-history.test.ts lib/attachments.test.ts lib/queued-attachments.test.ts lib/idle-http.test.ts lib/composer-model-pick.test.ts lib/workspaces.test.ts lib/fuzzy.test.ts lib/folder-picker.test.ts lib/browser/annotations.test.ts lib/browser/url.test.ts lib/extension-bridge.test.ts lib/close-confirm.test.ts components/site/harness-split.test.ts components/site/appearance-panel.test.ts",
++    "test": "node --experimental-strip-types --test lib/cite-markup.test.ts lib/graff-events.test.ts lib/acp.test.ts lib/sessions.test.ts lib/session-store.test.ts lib/follow-scroll.test.ts lib/motion-throttle.test.ts lib/prompt-queue.test.ts lib/prompt-queue-steer.test.ts lib/prompt-queue-resume.test.ts lib/streaming-code.test.ts lib/run-traces.test.ts lib/agents.test.ts lib/mermaid-plugin.test.ts lib/prompt-history.test.ts lib/attachments.test.ts lib/queued-attachments.test.ts lib/idle-http.test.ts lib/composer-model-pick.test.ts lib/composer-keyboard.test.ts lib/workspaces.test.ts lib/fuzzy.test.ts lib/folder-picker.test.ts lib/browser/annotations.test.ts lib/browser/url.test.ts lib/extension-bridge.test.ts lib/close-confirm.test.ts components/site/harness-split.test.ts components/site/appearance-panel.test.ts",
+     "electron:build": "bash electron/build.sh",
+     "test:electron": "bun test electron/policy.test.cjs",
+     "test:webauthn": "node scripts/test-webauthn.mjs",

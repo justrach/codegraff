@@ -1,0 +1,40 @@
+You are patching justrach/codegraff. Do not use tools. Reply with one unified diff and nothing else.
+
+PR 1035 — Unlink reclaimable Accord peer socks.
+
+Bug: a crashed session leaves `{pid}-{start}.accord.sock` in the live dir. Fan-out keeps dialing those names. Drop a sock only when process identity says the owner is gone. Unknown stays. Do not unlink the live listener's own sock.
+
+Relevant API in src/proc_identity.zig:
+```
+pub const Record = struct { pid: i32 = 0, start_id: StartId = 0 };
+pub const OwnerState = enum { held, reclaimable };
+pub fn stateOf(io: Io, rec: Record) OwnerState;
+```
+Sock names are `{pid}-{hex start_id}.accord.sock`, matching listen():
+```
+const name = std.fmt.bufPrint(&name_buf, "{d}-{x}.accord.sock", .{ self.pid, self.start_id }) catch return;
+```
+
+Current livePost fan-out in src/presence_accord.zig dials every other *.accord.sock and never unlinks:
+```
+while (it.next(io) catch null) |entry| {
+    if (!std.mem.endsWith(u8, entry.name, ".accord.sock")) continue;
+    if (g_own_name) |own| if (std.mem.eql(u8, entry.name, own)) continue;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
+    sendLine(io, gpa, path, json_line) catch {};
+}
+```
+listen() currently does:
+```
+const dir = dir_path orelse return;
+const self = @import("proc_identity.zig").selfRecord(io);
+```
+Delete with `Io.Dir.cwd().deleteFile(io, path)`. Tests in this file use `std.testing.io`, `test_enabled`, `listen`, `livePost`, `stop`, and `Io.Dir.cwd().writeFile` / `statFile`.
+
+Implement:
+- parse `{pid}-{hex}.accord.sock` into a proc_identity.Record; reject junk, non-positive pids, and missing hex.
+- before dialing a peer, unlink it when stateOf is .reclaimable; if it was unlinked, do not dial it.
+- on listen, sweep the live dir for reclaimable socks before binding.
+- tests: parseSockName accepts `42-2a.accord.sock` (pid 42, start_id 0x2a) and rejects junk; livePost unlinks a reclaimable peer sock named `999999-1.accord.sock` (pid 999999 is gone) and statFile then returns FileNotFound.
+
+Write a unified diff for src/presence_accord.zig only.

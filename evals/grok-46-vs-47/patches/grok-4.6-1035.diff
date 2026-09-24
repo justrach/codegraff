@@ -1,0 +1,77 @@
+--- a/src/presence_accord.zig
++++ b/src/presence_accord.zig
+@@ -1,6 +1,7 @@
+ const std = @import("std");
+ const Io = std.Io;
++const proc_identity = @import("proc_identity.zig");
+ 
+@@
+-        const dir = dir_path orelse return;
+-        const self = @import("proc_identity.zig").selfRecord(io);
++        const dir = dir_path orelse return;
++        const self = proc_identity.selfRecord(io);
+@@
+         const name = std.fmt.bufPrint(&name_buf, "{d}-{x}.accord.sock", .{ self.pid, self.start_id }) catch return;
++        sweepReclaimableSocks(io, dir, name);
+@@
+         if (g_own_name) |own| if (std.mem.eql(u8, entry.name, own)) continue;
+         const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
++        if (unlinkReclaimableSock(io, path, entry.name)) continue;
+         sendLine(io, gpa, path, json_line) catch {};
+@@
++fn parseSockName(name: []const u8) ?proc_identity.Record {
++    const suffix = ".accord.sock";
++    if (!std.mem.endsWith(u8, name, suffix)) return null;
++    const stem = name[0 .. name.len - suffix.len];
++    const dash = std.mem.indexOfScalar(u8, stem, '-') orelse return null;
++    if (dash == 0 or dash + 1 >= stem.len) return null;
++    const pid = std.fmt.parseInt(i32, stem[0..dash], 10) catch return null;
++    if (pid <= 0) return null;
++    const start_id = std.fmt.parseInt(proc_identity.StartId, stem[dash + 1 ..], 16) catch return null;
++    return .{ .pid = pid, .start_id = start_id };
++}
++
++fn unlinkReclaimableSock(io: Io, path: []const u8, name: []const u8) bool {
++    const rec = parseSockName(name) orelse return false;
++    if (proc_identity.stateOf(io, rec) != .reclaimable) return false;
++    Io.Dir.cwd().deleteFile(io, path) catch return false;
++    return true;
++}
++
++fn sweepReclaimableSocks(io: Io, dir_path: []const u8, own_name: []const u8) void {
++    var live_dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return;
++    defer live_dir.close(io);
++    var it = live_dir.iterate(io);
++    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
++    while (it.next(io) catch null) |entry| {
++        if (!std.mem.endsWith(u8, entry.name, ".accord.sock")) continue;
++        if (std.mem.eql(u8, entry.name, own_name)) continue;
++        const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
++        _ = unlinkReclaimableSock(io, path, entry.name);
++    }
++}
++
++test "parseSockName accepts pid-hex sock names and rejects junk" {
++    const rec = parseSockName("42-2a.accord.sock") orelse return error.TestUnexpectedResult;
++    try std.testing.expectEqual(@as(i32, 42), rec.pid);
++    try std.testing.expectEqual(@as(proc_identity.StartId, 0x2a), rec.start_id);
++    try std.testing.expect(parseSockName("junk") == null);
++    try std.testing.expect(parseSockName("42.accord.sock") == null);
++    try std.testing.expect(parseSockName("0-2a.accord.sock") == null);
++    try std.testing.expect(parseSockName("-1-2a.accord.sock") == null);
++    try std.testing.expect(parseSockName("42-.accord.sock") == null);
++    try std.testing.expect(parseSockName("42-2a") == null);
++}
++
++test "livePost unlinks reclaimable peer sock" {
++    const io = std.testing.io;
++    if (!test_enabled) return error.SkipZigTest;
++    listen(io);
++    defer stop(io);
++    const dir_path = dir_path orelse return error.SkipZigTest;
++    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
++    const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, "999999-1.accord.sock" }) catch return error.TestUnexpectedResult;
++    try Io.Dir.cwd().writeFile(io, path, "stale");
++    livePost(io, std.testing.allocator, "{}");
++    try std.testing.expectError(error.FileNotFound, Io.Dir.cwd().statFile(io, path));
++}

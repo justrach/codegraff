@@ -72,20 +72,21 @@ permission UI and release updater are follow-up distribution work.
 
 ## Browser passkeys
 
-Developer ID signing writes the Touch ID keychain group into both the main app's
-entitlements and `Contents/Resources/webauthn.json`. Startup configures Electron
-from that signed resource before creating browser pages. The group uses the
-signing team and bundle identifier; keep both stable across releases so existing
-credentials remain accessible. If the signing identity is a certificate hash,
-set `GRAFF_SIGN_TEAM_ID` to its ten-character Apple team identifier.
+Touch ID passkeys are optional in Developer ID distributions. Set
+`GRAFF_WEBAUTHN_PROFILE` to enable them: the signer validates the macOS profile
+for the signing team and actual bundle identifier, then embeds it and adds the
+authorized application identifier and keychain group to the main app. It also
+writes the group to signed `Contents/Resources/webauthn.json`, which configures
+Electron before browser creation. Keep the team and bundle identifier stable
+across releases so existing device credentials remain accessible. If the
+signing identity is a certificate hash, set `GRAFF_SIGN_TEAM_ID` to its
+ten-character Apple team identifier.
 
-Signing also requires `GRAFF_WEBAUTHN_PROFILE`: a valid macOS provisioning profile
-for that signing certificate/team and bundle identifier, authorizing the
-`keychain-access-groups` value (an authorized team wildcard is also accepted).
-The signer checks its platform, expiration, app identifier and group, then embeds
-it and supplies the matching `com.apple.application-identifier`. A bare keychain
-entitlement without an authorizing profile can pass signature verification but
-be rejected by macOS at launch. Do not omit this provisioning step.
+Without `GRAFF_WEBAUTHN_PROFILE`, the signer removes any stale embedded profile
+and passkey resource and omits their restricted entitlements. The app can still
+be signed and notarized, but in-app Touch ID passkeys are unavailable. A
+provided profile must authorize the group (a team wildcard is accepted); an
+invalid one fails signing rather than falling back to this mode.
 
 On supported Macs, this enables device-bound Touch ID credentials created in
 Codegraff's persistent browser partition. It does **not** expose existing iCloud
@@ -204,17 +205,19 @@ See [repeatable performance scenarios](VISUAL-TESTS.md) for the model-free runne
 ## Building a distribution disk image
 
 `build.sh` produces a development app with a local signature. For public downloads,
-run `distribute.sh` with a Developer ID Application identity, an authorizing
-macOS provisioning profile (see Browser passkeys above), and a `notarytool`
-keychain profile. Bun installs the pinned Electron signing utility with the other
-development dependencies.
+run `distribute.sh` with a Developer ID Application identity and a `notarytool`
+keychain profile. Add `GRAFF_WEBAUTHN_PROFILE` only when enabling in-app Touch ID
+passkeys (see Browser passkeys above). Bun installs the pinned Electron signing
+utility with the other development dependencies.
 
 ```sh
 GRAFF_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 GRAFF_NOTARY_PROFILE="notary-local" \
-GRAFF_WEBAUTHN_PROFILE="signing/Codegraff.provisionprofile" \
 bash apps/native/electron/distribute.sh zig-out/electron/Codegraff.app zig-out/distribution
 ```
+
+For a passkey-enabled build, set `GRAFF_WEBAUTHN_PROFILE` to an authorizing
+profile when running the same command.
 
 The command signs nested executables, notarizes and staples the app, creates the
 Finder drag-to-Applications layout, then signs, notarizes and staples the DMG.
@@ -282,7 +285,6 @@ artifact. With the same signing environment used for stable releases, run:
 ```sh
 GRAFF_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 GRAFF_NOTARY_PROFILE="notary-local" \
-GRAFF_WEBAUTHN_PROFILE="signing/Codegraff.provisionprofile" \
 bash apps/native/electron/distribute.sh Codegraff.app zig-out/beta-distribution
 bash apps/native/electron/publish-beta-macos.sh vVERSION-beta.RUN.ATTEMPT zig-out/beta-distribution
 ```

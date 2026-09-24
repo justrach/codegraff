@@ -1,0 +1,27 @@
+{
+  "model_flag": "grok-4.6",
+  "pr": "1035",
+  "session_id": "35c00000-6e64-4831-a1c7-92c012fd0460",
+  "wall_s": 260.076,
+  "exit_code": 0,
+  "usage": {
+    "input_tokens": 16846,
+    "cache_read_input_tokens": 1920,
+    "cache_creation_input_tokens": 0,
+    "output_tokens": 15551,
+    "reasoning_tokens": 14319,
+    "total_tokens": 34317
+  },
+  "modelUsage": {
+    "grok-4.6-build": {
+      "inputTokens": 16846,
+      "outputTokens": 15551,
+      "cacheReadInputTokens": 1920,
+      "cacheCreationInputTokens": 0,
+      "modelCalls": 1,
+      "costUSD": 0.04350572
+    }
+  },
+  "total_cost_usd": 0.04350572,
+  "stopReason": "end_turn"
+}

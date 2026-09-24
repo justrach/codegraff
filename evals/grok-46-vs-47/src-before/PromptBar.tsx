@@ -1,0 +1,573 @@
+"use client";
+
+import { parseComposerToken as parseToken, guiSkillRows } from "@/lib/gui-skills";
+import { Icon, GLYPHS, SOURCES, DEMO_COMMANDS, MODELS, FILES, DICTATION, AUTO_STEPS } from "./prompt-demo";
+import ModelPicker from "./ModelPicker";
+import layout from "./PromptBar.module.css";
+import ModelEffortButtons from "./ModelEffortButtons";
+import type { ModelChoice } from "@/lib/acp-client";
+import { resolveComposerModel } from "@/lib/composer-model";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import ComposerMenu from "./ComposerMenu";
+import ComposerAttachments from "./ComposerAttachments";
+import { useComposerSweep } from "./useComposerSweep";
+import { useComposerSize } from "./useComposerSize";
+import { useComposerDraft } from "./useComposerDraft";
+import { useSteerArm } from "./useSteerArm";
+import type { AcpCommand } from "@/lib/acp";
+import {
+  filesFrom,
+  releaseAttachments,
+  discardAttachments,
+  uploadAttachment,
+  withAttachmentMarkers,
+} from "@/lib/attachments";
+import { entryAt, historyKeyIntent, stepHistory } from "@/lib/prompt-history";
+
+/* ─────────────────────────────────────────────────────────
+ * PROMPT BAR
+ * A composer with real controls: attach, @ data sources,
+ * / commands, a model picker, dictation, and send.
+ * Type @ or / to open the menus; ↑↓ + Enter to pick.
+ * Variants: Rounded (composer radius) · Pill (full radius). Send is circular.
+ * Radii: docs/design.md.
+ * ───────────────────────────────────────────────────────── */
+
+export type PromptModel = ModelChoice;
+
+export default function PromptBar({
+  variant = "Rounded",
+  demo = true,
+  tall = false,
+  placeholder,
+  onSend, onSetting, onSteerQueued,
+  models,
+  commands,
+  modelKey,
+  onModelChange,
+  disabled,
+  busy = false,
+  onStop,
+  history,
+  root,
+  contextMeter,
+  inject,
+}: {
+  variant?: string;
+  /** the self-running walkthrough; turn off when embedding in a real surface */
+  demo?: boolean;
+  /** hero sizing: a multi-line input with controls on their own row */
+  tall?: boolean;
+  placeholder?: string;
+  onSend?: (text: string) => void; onSetting?: (text: string) => Promise<void>;
+  /** Steer the next queued message without consuming the current draft. */
+  onSteerQueued?: () => void;
+  models?: PromptModel[];
+  /** The slash commands the agent advertised. Empty until it answers —
+   * an empty menu beats inventing commands this build may not service. */
+  commands?: AcpCommand[];
+  modelKey?: string;
+  onModelChange?: (key: string) => void;
+  disabled?: boolean;
+  /** A turn is running: the send arrow morphs into a stop square. */
+  busy?: boolean;
+  onStop?: () => void;
+  /** Earlier prompts, oldest first. ArrowUp on the first line of the draft
+   * walks back through them like a shell; ArrowDown walks forward again. */
+  history?: readonly string[];
+  /** The workspace this composer sends into. The @ picker searches it, and a
+   * picked file is mentioned by its path relative to it. */
+  root?: string;
+  contextMeter?: import("@/lib/context-meter").ContextMeter;
+  /** Load this text into the draft when `key` changes (edit-prompt). */
+  inject?: { key: number; text: string } | null;
+}) {
+  const pill = variant === "Pill";
+  const catalog = models && models.length > 0 ? models : MODELS;
+  const { draft, setDraft, attachments, setAttachments, uploads, setUploads, attachError, setAttachError } = useComposerDraft();
+  useEffect(() => {
+    if (!inject) return;
+    setDraft(inject.text);
+    setHistoryIndex(-1);
+  }, [inject?.key]);
+  /* Recall cursor: -1 is the live draft. Whatever was being typed is kept
+   * aside so ArrowDown past the newest entry hands it back untouched. */
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const stashRef = useRef("");
+  const caretToEndRef = useRef(false);
+  const [dismissed, setDismissed] = useState(false);
+  const [plusOpen, setPlusOpen] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
+  const [model, setModel] = useState<PromptModel>(() => resolveComposerModel(catalog, modelKey));
+  /* Live surfaces load their catalog async (graff/models); once it lands, or
+   * the owner re-points modelKey, the picked entry must follow — the initial
+   * useState snapshot is stale by then. Unknown keys keep their own name. */
+  useEffect(() => {
+    const next = resolveComposerModel(catalog, modelKey);
+    setModel((cur) => (cur.key === next.key && cur.name === next.name ? cur : next));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelKey, models]);
+  const [dragging, setDragging] = useState(false);
+  /* Workspace files matching the current @ query — live surfaces only. */
+  const [fileRows, setFileRows] = useState<{ key: string; name: string; desc: string }[]>([]);
+  const [connected, setConnected] = useState(false);
+  const [active, setActive] = useState(0);
+  const [listening, setListening] = useState(false);
+  const [auto, setAuto] = useState(demo);
+  const [autoStep, setAutoStep] = useState(0);
+  const [expanded, setExpanded] = useState(false);
+  const wide = expanded || tall;
+  const [engaged, setEngaged] = useState(false);
+  const controlsRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const measureRef = useRef<HTMLSpanElement>(null);
+  const modelRef = useRef<HTMLButtonElement>(null);
+  const menuAnchor = useRef<HTMLDivElement>(null);
+  const menuPanel = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+  const { sweepRef, celebrate } = useComposerSweep();
+
+  /* hand control to the user: stop the demo loop, and when they aim at
+   * the input itself, clear the demo's leftover draft for a clean start */
+  const takeOver = (event: { target: EventTarget | null }) => {
+    setAuto(false);
+    if (auto && event.target === inputRef.current) setDraft("");
+  };
+
+  /* ACP names commands bare; the menu shows and inserts the typed form. */
+  const slashRows = useMemo(() => {
+    const live = commands ?? (demo ? DEMO_COMMANDS : []);
+    return live.map((c) => ({ key: c.name, name: `/${c.name}`, desc: c.description }));
+  }, [commands, demo]);
+
+  const token = dismissed ? null : parseToken(draft);
+  const menu: "at" | "slash" | "skill" | null = plusOpen ? "at" : token?.kind ?? null;
+  const query = plusOpen ? "" : token?.query ?? "";
+
+  /* The @ picker searches the workspace. Debounced, and every in-flight
+   * search is abandoned when the query moves on, so a slow walk over a large
+   * tree can never land on top of results for what is now typed. */
+  useEffect(() => {
+    if (demo || menu !== "at") return;
+    if (!query) {
+      setFileRows([]);
+      return;
+    }
+    const abort = new AbortController();
+    const timer = setTimeout(() => {
+      const params = new URLSearchParams({ q: query });
+      if (root) params.set("root", root);
+      fetch(`/api/fs?${params}`, { signal: abort.signal })
+        .then((res) => res.json())
+        .then((json: { matches?: string[] }) => {
+          setFileRows(
+            (json.matches ?? []).map((rel) => ({
+              key: `file:${rel}`,
+              name: rel.slice(rel.lastIndexOf("/") + 1),
+              desc: rel,
+            })),
+          );
+        })
+        .catch(() => {
+          /* aborted, or the workspace went away — keep the rows we have */
+        });
+    }, 90);
+    return () => {
+      abort.abort();
+      clearTimeout(timer);
+    };
+  }, [demo, menu, query, root]);
+
+  /* The walkthrough glides through a fixed cast of sources. A live composer
+   * offers the real attach action and whatever the workspace search found —
+   * an invented data source is worse than an empty menu. */
+  const atRows = demo
+    ? SOURCES.filter((s) => s.name.toLowerCase().includes(query))
+    : [...guiSkillRows(query), SOURCES[0], ...fileRows];
+
+  const rows: { key: string; name: string; desc: string }[] =
+    menu === "skill" ? guiSkillRows(query) : menu === "at"
+      ? atRows
+      : menu === "slash"
+        ? slashRows.filter((c) => c.name.slice(1).startsWith(query))
+        : [];
+  const activeIndex = Math.min(active, Math.max(0, rows.length - 1));
+
+  useEffect(() => {
+    setActive(0);
+    setEngaged(false);
+  }, [menu, query]);
+
+  const selectModel = (next: PromptModel) => {
+    setModel(next);
+    setModelOpen(false);
+    if (next.key !== model.key) onModelChange?.(next.key);
+    if (next.key === "sprinkles-5") celebrate();
+  };
+
+  /* autoplay: apply the current step, then advance after its hold */
+  useEffect(() => {
+    if (!auto) return;
+    const step = AUTO_STEPS[autoStep % AUTO_STEPS.length];
+    setDraft(step.draft);
+    if (step.active !== undefined) setActive(step.active);
+    if (step.connect !== undefined) setConnected(step.connect);
+    if (step.modelOpen !== undefined) setModelOpen(step.modelOpen);
+    if (step.model) {
+      const next = MODELS.find((m) => m.key === step.model);
+      if (next) selectModel(next);
+    }
+    const t = setTimeout(() => setAutoStep((s) => s + 1), step.hold);
+    return () => clearTimeout(t);
+  }, [auto, autoStep]);
+
+  /* The simulated transcript is confined to the component demo. */
+  useEffect(() => {
+    if (!demo || !listening) return;
+    const t = setTimeout(() => {
+      setDraft((current) => (current ? `${current.trimEnd()} ${DICTATION}` : DICTATION));
+      setListening(false);
+      inputRef.current?.focus();
+    }, 2200);
+    return () => clearTimeout(t);
+  }, [demo, listening]);
+
+  useComposerSize({ inputRef, controlsRef, measureRef, modelRef, draft, expanded, setExpanded });
+
+  /* A recalled prompt lands with the caret at its end, ready to edit or send. */
+  useLayoutEffect(() => {
+    if (!caretToEndRef.current) return;
+    caretToEndRef.current = false;
+    inputRef.current?.setSelectionRange(draft.length, draft.length);
+  }, [draft]);
+
+  /* The menu is portaled: its own pointer events are still inside this
+   * composer. A different split's composer is outside. */
+  useEffect(() => {
+    if (!menu) return;
+    const close = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (menuAnchor.current?.contains(target) || menuPanel.current?.contains(target)) return;
+      setPlusOpen(false);
+      setDismissed(true);
+    };
+    document.addEventListener("pointerdown", close);
+    return () => document.removeEventListener("pointerdown", close);
+  }, [menu]);
+
+  const closeMenus = () => {
+    setPlusOpen(false);
+    setModelOpen(false);
+  };
+
+  const pick = (row: { key: string; name: string; desc: string }) => {
+    const before = token ? draft.slice(0, token.start) : draft;
+    if (row.key === "attach") {
+      if (demo) {
+        const name = FILES[attachments.length % FILES.length];
+        setAttachments((current) => [...current, { id: `${name}-${current.length}`, name, path: name }]);
+      } else {
+        fileInputRef.current?.click();
+      }
+      setDraft(before);
+    } else if (row.key.startsWith("gui-skill:")) {
+      setDraft(`${before}$${row.key.slice(10)} `);
+    } else if (row.key.startsWith("file:")) {
+      /* The harness reads `@[path]` out of the prompt text: an image becomes
+       * a native vision block, anything else stays a path it opens itself. */
+      setDraft(`${before}@[${row.desc}] `);
+    } else if (menu === "at") {
+      setDraft(`${before}@${row.name} `);
+    } else {
+      setDraft(`${before}${row.name} `);
+    }
+    setPlusOpen(false);
+    setDismissed(false);
+    inputRef.current?.focus();
+  };
+
+  const attachFiles = async (files: File[]) => {
+    if (demo || files.length === 0) return;
+    setAttachError(null); setUploads(count => count + files.length);
+    for (const file of files) {
+      try {
+        const attachment = await uploadAttachment(file);
+        setAttachments((current) => [...current, attachment]);
+      } catch (err) {
+        setAttachError(err instanceof Error ? err.message : String(err));
+      } finally { setUploads(count => count - 1); }
+    }
+    if (inputRef.current?.closest("[data-promptbar]")?.contains(document.activeElement)) inputRef.current.focus();
+  };
+
+  const removeAttachment = (id: string) => {
+    setAttachments((current) => {
+      discardAttachments(current.filter((a) => a.id === id));
+      return current.filter((a) => a.id !== id);
+    });
+  };
+
+  const canSend = !disabled && uploads === 0 && (draft.trim().length > 0 || attachments.length > 0);
+  const showStop = busy;
+  const steerArm = useSteerArm(busy && !disabled, onSteerQueued);
+  const send = () => {
+    if (!canSend) return;
+    if (/^\/(effort|reasoning)$/.test(draft.trim()) && model.effortLevels?.length) { modelRef.current?.dispatchEvent(new Event("graff-effort-open")); setDraft(""); return; }
+    onSend?.(withAttachmentMarkers(draft.trim(), attachments));
+    releaseAttachments(attachments);
+    setDraft("");
+    setAttachments([]);
+    setAttachError(null);
+    setHistoryIndex(-1);
+    stashRef.current = "";
+    closeMenus();
+  };
+
+  /* Shell-style recall. Only from the draft's first line (up) or last line
+   * (down) — in the middle of a multi-line draft the arrows keep moving the
+   * caret — and never while the @ / model menus own the arrow keys. */
+  const recall = (event: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+    if (menu || modelOpen || !history || history.length === 0) return false;
+    const caret = event.currentTarget.selectionStart ?? draft.length;
+    const intent = historyKeyIntent(draft, caret, event.key);
+    if (!intent || (intent === "down" && historyIndex < 0)) return false;
+    event.preventDefault();
+    const next = stepHistory(history.length, historyIndex, intent);
+    if (next === historyIndex) return true;
+    if (historyIndex < 0) stashRef.current = draft;
+    setHistoryIndex(next);
+    setDraft(next < 0 ? stashRef.current : (entryAt(history, next) ?? ""));
+    caretToEndRef.current = true;
+    return true;
+  };
+
+  return (
+    <div
+      data-promptbar
+      className={`${layout.composer} ${demo ? "flex min-h-[384px] w-full max-w-105 flex-col justify-end pb-8" : "w-full"}`}
+      onPointerDownCapture={takeOver}
+      onKeyDownCapture={takeOver}
+    >
+      {/* composer is the anchor — menus grow up from its top edge */}
+      <div ref={menuAnchor} className="relative">
+      {/* ── @ / slash menu ─────────────────────────────── */}
+      {menu && <ComposerMenu anchor={menuAnchor} panel={menuPanel} id={menuId} menu={menu} rows={rows} query={query}
+        active={activeIndex} engaged={engaged} setActive={setActive} setEngaged={setEngaged}
+        connected={connected} setConnected={setConnected} demo={demo} onPick={pick} />}
+
+
+      {modelOpen && <ModelPicker models={catalog} selected={model} anchor={modelRef} onClose={() => setModelOpen(false)}
+        onSelect={next => { selectModel(next); inputRef.current?.focus({ preventScroll: true }); }} />}
+
+      {(steerArm.left > 0 || steerArm.steering) && (
+        <p role="status" className="mb-1.5 px-1 text-[12px] font-medium text-ink-2">
+          {steerArm.steering ? "Steering…" : `Enter again in ${steerArm.left} to steer`}
+        </p>
+      )}
+      {/* ── composer ───────────────────────────────────── */}
+      <div
+        onDragOver={(event) => {
+          /* Claim the drop only for files. Without preventDefault here the
+           * browser navigates away to the dropped file instead. */
+          if (demo || !event.dataTransfer.types.includes("Files")) return;
+          event.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={(event) => {
+          if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+          setDragging(false);
+        }}
+        onDrop={(event) => {
+          const files = filesFrom(event.dataTransfer);
+          if (demo || files.length === 0) return;
+          event.preventDefault();
+          setDragging(false);
+          void attachFiles(files);
+        }}
+        className={`relative isolate flex flex-col overflow-hidden border ${layout.glass} transition-[border-color,border-radius] duration-150 focus-within:border-line-strong ${
+          dragging ? "border-accent-ink" : "border-line"
+        } ${
+          tall ? "gap-2.5 p-3.5" : "gap-1.5 p-1.5"
+        } ${
+          pill ? (attachments.length > 0 || wide ? "rounded-composer" : "rounded-full") : "rounded-composer"
+        }`}
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          hidden
+          onChange={(event) => {
+            void attachFiles(Array.from(event.target.files ?? []));
+            // Same file twice in a row is a real thing to want; without this
+            // the second pick fires no change event at all.
+            event.target.value = "";
+          }}
+        />
+        {/* A brief accent sweep, released as soon as the model feedback ends. */}
+        <span
+          ref={sweepRef}
+          aria-hidden="true"
+          data-composer-sweep
+          className="pointer-events-none absolute inset-0 -z-10 opacity-0"
+          style={{ background: "linear-gradient(110deg, transparent 15%, color-mix(in srgb, var(--accent) 18%, transparent) 48%, transparent 80%)" }}
+        />
+        <span
+          ref={measureRef}
+          aria-hidden="true"
+          className="pointer-events-none absolute invisible whitespace-pre text-[13px] leading-[18px]"
+        >
+          {draft}
+        </span>
+
+        <ComposerAttachments attachments={attachments} pill={pill} onRemove={removeAttachment} />
+
+        {uploads > 0 && <p role="status" className="px-2 text-xs text-ink-3">Adding {uploads} {uploads === 1 ? "file" : "files"}…</p>}
+        {attachError && (
+          <div className={`text-[11.5px] text-red ${pill ? "px-2" : "px-1"}`} role="status">
+            {attachError}
+          </div>
+        )}
+
+        <div
+          ref={controlsRef}
+          className={`${layout.controls} grid items-end gap-x-1 gap-y-1.5 ${
+            wide
+              ? "grid-cols-[28px_minmax(0,1fr)_0px_28px_28px]"
+              : "grid-cols-[28px_minmax(0,1fr)_auto_28px_28px]"
+          }`}
+        >
+          <button
+            type="button"
+            aria-label="Add attachments and sources"
+            aria-expanded={plusOpen}
+            onClick={() => {
+              setModelOpen(false);
+              setPlusOpen((current) => !current);
+              inputRef.current?.focus();
+            }}
+            className={`flex size-7 shrink-0 items-center justify-center justify-self-start rounded-full text-ink-3 transition-[background-color,color,transform] duration-150 hover:bg-hover hover:text-ink active:scale-[0.94] ${plusOpen ? "bg-hover text-ink" : ""} ${wide ? "col-start-1 row-start-2" : "col-start-1 row-start-1"}`}
+          >
+            <Icon size={16} strokeWidth={2}><path d="M12 5v14M5 12h14" /></Icon>
+          </button>
+
+          <textarea
+            ref={inputRef}
+            rows={1}
+            value={draft}
+            onChange={(event) => {
+              setDraft(event.target.value);
+              setDismissed(false);
+              setPlusOpen(false);
+            }}
+            onPaste={(event) => {
+              /* Claim the paste only when it carries files. A text paste has
+               * to fall through untouched — that is Cmd-V doing its job. */
+              const files = filesFrom(event.clipboardData);
+              if (demo || files.length === 0) return;
+              event.preventDefault();
+              void attachFiles(files);
+            }}
+            onKeyDown={(event) => {
+              // IME candidate keys always belong to the input method.
+              if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && busy && !disabled && onSteerQueued) {
+                event.preventDefault();
+                event.stopPropagation();
+                if (!event.repeat) steerArm.fire();
+                return;
+              }
+              // Other modified keys belong to desktop shortcuts.
+              if (event.metaKey || event.ctrlKey || event.altKey) return;
+              if (menu && rows.length > 0) {
+                if (!event.shiftKey && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setEngaged(true);
+                  setActive((activeIndex + (event.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length);
+                  return;
+                }
+                if (!event.shiftKey && (event.key === "Enter" || event.key === "Tab")) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  pick(rows[activeIndex]);
+                  return;
+                }
+              }
+              if (!event.shiftKey && recall(event)) return;
+              if (event.key === "Escape") {
+                setDismissed(true);
+                closeMenus();
+                return;
+              }
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                event.stopPropagation();
+                if (!canSend && steerArm.consumeEnter()) return;
+                send();
+              }
+            }}
+            placeholder={listening ? "Listening…" : placeholder ?? "Write a message…"}
+            aria-label="Prompt"
+            aria-autocomplete="list" aria-controls={menu ? menuId : undefined}
+            aria-activedescendant={menu && rows.length ? `${menuId}-${activeIndex}` : undefined}
+            className={`${tall ? "min-h-[68px] px-2 py-2 text-[14px] leading-5" : "min-h-7 px-1 py-[5px] text-[13px] leading-[18px]"} min-w-0 w-full resize-none bg-transparent text-ink outline-none [overflow-wrap:anywhere] placeholder:text-ink-3 ${
+              wide ? "col-span-full col-start-1 row-start-1" : "col-start-2 row-start-1"
+            }`}
+          />
+
+          <ModelEffortButtons model={model} buttonRef={modelRef} modelOpen={modelOpen} wide={wide} pill={pill} busy={busy}
+            contextMeter={contextMeter} showContextMeter={!demo}
+            onCommand={onSetting} openModel={() => { setPlusOpen(false); setModelOpen(current => !current); }} />
+
+          {/* Keep cancellation available while a follow-up is being drafted. */}
+          <button
+            type="button"
+            aria-label={busy ? "Queue follow-up" : listening ? "Stop dictation" : "Start dictation"}
+            aria-pressed={busy ? undefined : listening} disabled={busy ? !canSend : !demo}
+            title={busy ? "Queue this follow-up" : demo ? "Demo dictation" : "Dictation is not available yet"}
+            onClick={busy ? send : () => setListening((current) => !current)}
+            className={`flex size-7 shrink-0 items-center justify-center rounded-full disabled:opacity-30 disabled:cursor-not-allowed transition-[background-color,color,transform] duration-150 active:scale-[0.94] ${listening ? "bg-accent-tint text-accent-ink" : "text-ink-3 hover:bg-hover hover:text-ink"} ${wide ? "col-start-4 row-start-2" : "col-start-4 row-start-1"}`}
+          >
+            {busy ? <Icon size={16} strokeWidth={2.4}><path d="M12 19V5M5 12l7-7 7 7" /></Icon> : listening ? (
+              <span className="flex h-3.5 items-center gap-[2.5px]">
+                {[0, 1, 2].map((i) => (
+                  <span
+                    key={i}
+                    className="w-[2.5px] rounded-full bg-current"
+                    style={{ height: "100%", animation: `eq-bounce 900ms steps(6, end) ${i * 150}ms infinite` }}
+                  />
+                ))}
+              </span>
+            ) : (
+              <Icon size={15} strokeWidth={2}><g><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3" /></g></Icon>
+            )}
+          </button>
+
+          {/* send — circular; while a turn runs it morphs into stop */}
+          <button
+            type="button"
+            aria-label={showStop ? "Stop" : "Send"}
+            disabled={showStop ? !onStop : !canSend}
+            onClick={showStop ? onStop : send}
+            className={`flex size-7 shrink-0 items-center justify-center rounded-full disabled:opacity-30 disabled:cursor-not-allowed transition-[background-color,color,transform] duration-200 enabled:active:scale-[0.94] ${wide ? "col-start-5 row-start-2" : "col-start-5 row-start-1"}`}
+            style={{
+              background: showStop || canSend ? "var(--ink)" : "var(--line-strong)",
+              color: showStop || canSend ? "var(--surface)" : "var(--ink-2)",
+            }}
+          >
+            {showStop ? (
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                <rect x="5" y="5" width="14" height="14" rx="2.5" />
+              </svg>
+            ) : (
+              <Icon size={16} strokeWidth={2.4}><path d="M12 19V5M5 12l7-7 7 7" /></Icon>
+            )}
+          </button>
+        </div>
+      </div>
+      </div>
+    </div>
+  );
+}

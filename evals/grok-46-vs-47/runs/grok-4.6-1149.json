@@ -1,0 +1,37 @@
+{
+  "model_flag": "grok-4.6",
+  "pr": "1149",
+  "session_id": "f6b5daf6-844b-4b19-89ff-0185387c2f48",
+  "wall_s": 108.547,
+  "started_at": "2026-09-21T17:24:37Z",
+  "exit_code": 0,
+  "stderr": "",
+  "response": {
+    "text": "```diff\ndiff --git a/apps/native/electron/webauthn-profile.test.cjs b/apps/native/electron/webauthn-profile.test.cjs\n--- a/apps/native/electron/webauthn-profile.test.cjs\n+++ b/apps/native/electron/webauthn-profile.test.cjs\n@@ -1,5 +1,12 @@\n test('accepts a profile until its expiration boundary', () => {\n   const profile = fixture();\n   profile.ExpirationDate = new Date(now + 1);\n   assert.deepEqual(authorize(profile), { 'com.apple.application-identifier': appId });\n });\n+\n+test('rejects TEAM.* keychain groups when application-identifier is another bundle', () => {\n+  const profile = fixture();\n+  profile.Entitlements['com.apple.application-identifier'] = 'ABCDE12345.org.example.other';\n+  assert.throws(() => authorize(profile), /application-identifier/);\n+});\ndiff --git a/apps/native/electron/webauthn-signing.test.cjs b/apps/native/electron/webauthn-signing.test.cjs\n--- a/apps/native/electron/webauthn-signing.test.cjs\n+++ b/apps/native/electron/webauthn-signing.test.cjs\n@@ -1,5 +1,12 @@\n test('invalid metadata fails before writing config or invoking signer', async () => {\n   let called = false;\n   await assert.rejects(signBundle({ app: 'Fixture.app', identity, teamId: '', readBundleId: () => bundleId, sign: () => { called = true; } }), /valid signing team/);\n   assert.equal(called, false);\n });\n+\n+test('rejects a same-team profile for a different bundle before the signer runs', async () => {\n+  let called = false;\n+  await assert.rejects(signBundle({ app: 'Fixture.app', identity, teamId: 'ABCDE12345', readBundleId: () => bundleId, readProvisioningProfile: () => profile('org.example.other'), sign: () => { called = true; } }), /application-identifier/);\n+  assert.equal(called, false);\n+});\n```",
+    "stopReason": "end_turn",
+    "sessionId": "f6b5daf6-844b-4b19-89ff-0185387c2f48",
+    "requestId": "4f8606e5-c9a8-4606-8c82-4ebf3c15d583",
+    "thought": "The user wants me to patch justrach/codegraff with a unified diff only - no tools. Let me understand the request:\n```diff\ndiff --git a/packages/test-utils/src/webauthn-profile.test.cjs b/packages/test-utils/src/webauthn-profile.test.cjs\nindex 5e8f0c3..a1b2c4d 100644\n--- a/packages/test-utils/src/webauthn profile.test.cjs\n+++ b/packages/test-utils/src/webauthn-profile.test.cjs\n@@ -142,6 +142,18 @@ test('rejects profiles with mismatched application-identifier', () => {\n   assert.throws(() => authorize(profile), /application-identifier/);\n });\n \n+test('rejects TEAM.* keychain groups when application-identifier is another bundle', () => {\n+  const profile = fixture();\n+  profile.Entitlements['com.apple.application-identifier'] = 'ABCDE12345.org.example.other';\n+  profile.Entitlements['keychain-access-groups'] = ['ABCDE12345 . *'];\n+  assert.throws(() => authorize(profile), /application-identifier|keychain-access-groups/);\n+});\n+\n test('rejects profiles with mismatched keychain-access-groups', () => {\n   const profile = fixture();\n   profile.Entitlements['keychain-access-groups'] = ['ABCDE123 45.org.example.fixture.other'];\n@@ -189,6 +201,18 @@ test('accepts a profile until its expiration boundary', () => {\n   assert.throws(() => authorize(profile), /expired/);\n });\n \n+test('rejects a same-team profile for a different bundle before the signer runs', async () => {\n+  let called = false;\n+  await assert.rejects(signBundle({\n+    app: 'Fixture.app',\n+    identity,\n+    teamId: 'ABCDE12345',\n+    readBundleId: () => bundleId,\n+    readProvisioningProfile: () => profile('org.example other'),\n+    sign: () => { called = true; },\n+  }), /application-identifier|bundle|profile/);\n+  assert.equal(called, false);\n+});\n+\n test('invalid metadata fails before writing config or invoking signer', async () => {\n   let called = false;\n   await assert.reject s(signBundle({ app: 'Fixture.app', identity, teamId: '', readBundleId: () => bundleId, sign: () => { called = true; } }), /valid signing team/);\n   assert.equal(called, false);\n```\n\n**Note:** I adjusted the regexes to be more specific to the entitlement mismatch and bundle mismatch cases. The profile test adds a dedicated test for the TEAM.* keychain group case with a different bundle ID. The signing test ensures the profile is rejected early before the signer runs. These match the existing assertion style (assert.throws for sync profile validation, assert.rejects + called flag for async signing).",
+    "usage": {
+      "input_tokens": 17502,
+      "cache_read_input_tokens": 256,
+      "cache_creation_input_tokens": 0,
+      "output_tokens": 5962,
+      "reasoning_tokens": 5461,
+      "total_tokens": 23720
+    },
+    "num_turns": 1,
+    "total_cost_usd": 0.02410736,
+    "total_cost_usd_ticks": 241073600,
+    "modelUsage": {
+      "grok-4.6-build": {
+        "inputTokens": 17502,
+        "outputTokens": 5962,
+        "cacheReadInputTokens": 256,
+        "cacheCreationInputTokens": 0,
+        "modelCalls": 1,
+        "costUSD": 0.02410736
+      }
+    }
+  }
+}

@@ -1,12 +1,13 @@
 const assert = require('node:assert/strict');
-async function runBrowserAddress({ wc, browser, destination, guard, wait, delayOpenReply, openReplySent, delayAbortedReply, abortedReplySent, delayUnreplacedAbort, unreplacedAbortSent }) {
+async function runBrowserAddress({ wc, browser, destination, guard, wait, browserOpens, errors, delayOpenReply, openReplySent, delayAbortedReply, abortedReplySent, delayUnreplacedAbort, unreplacedAbortSent }) {
   const js = code => wc.executeJavaScript(code);
-  const searches = [];
+  const searches = [], attempted = [];
   const safe = guard(destination);
   // Redirect only the expected search URL to local HTML before any network I/O.
   const query = 'how to center a div 世界';
   const expected = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
   browser.session.webRequest.onBeforeRequest((details, callback) => {
+    if (attempted.length < 12) attempted.push(details.url);
     if (details.url === expected) { searches.push(details.url); callback({ redirectURL: destination }); }
     else safe(details, callback);
   });
@@ -21,7 +22,13 @@ async function runBrowserAddress({ wc, browser, destination, guard, wait, delayO
   };
   delayOpenReply();
   await submit(query);
-  await wait(() => searches.length === 1, 'ordinary words reach the search URL');
+  try {
+    await wait(() => searches.length === 1, 'ordinary words reach the search URL');
+  } catch (error) {
+    const address = await js(`document.querySelector('input[aria-label="Address"]')?.value`);
+    const visible = browser.tabs.get(browser.visible)?.view?.webContents?.getURL();
+    throw new Error(`${error.message}; address=${JSON.stringify(address)}; browser opens=${JSON.stringify(browserOpens)}; attempted requests=${JSON.stringify(attempted)}; IPC errors=${JSON.stringify(errors)}; visible page=${JSON.stringify(visible)}`, { cause: error });
+  }
   await wait(() => {
     const page = browser.tabs.get(browser.visible)?.view?.webContents;
     return page && !page.isLoading() && page.getURL() === destination + '/';

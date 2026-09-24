@@ -27,7 +27,12 @@ function optionsForFile(app, config, applicationEntitlements = {}) {
     const entitlements = {};
     if (jit) entitlements['com.apple.security.cs.allow-jit'] = true;
     if (bun) entitlements['com.apple.security.cs.allow-unsigned-executable-memory'] = true;
-    if (main) Object.assign(entitlements, applicationEntitlements, { 'keychain-access-groups': [config.keychainAccessGroup] });
+    if (main) {
+      Object.assign(entitlements, applicationEntitlements);
+      if (applicationEntitlements['com.apple.application-identifier']) {
+        entitlements['keychain-access-groups'] = [config.keychainAccessGroup];
+      }
+    }
     return { hardenedRuntime: true, entitlements };
   };
 }
@@ -56,7 +61,10 @@ async function signBundle({ app, identity, teamId, profilePath, sign, readProvis
   if (!app || !identity) throw new Error('Provide an app path and GRAFF_SIGN_IDENTITY.');
   app = path.resolve(app);
   const config = signingConfig(identity, teamId, readBundleId(app));
-  const applicationEntitlements = profileEntitlements(readProvisioningProfile(profilePath), config);
+  // A profile is needed only for the optional Touch ID keychain group. If one
+  // was supplied, validate it strictly rather than silently signing without it.
+  const applicationEntitlements = profilePath
+    ? profileEntitlements(readProvisioningProfile(profilePath), config) : {};
   const fileOptions = optionsForFile(app, config, applicationEntitlements);
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'graff-sign-entitlements-'));
   try {
@@ -71,13 +79,21 @@ async function signBundle({ app, identity, teamId, profilePath, sign, readProvis
         paths.set(key, plistPath);
       }
     }
-    // osx-sign's automatic embedding keeps stale profiles; replace with the one validated above.
-    await fs.copyFile(profilePath, path.join(app, 'Contents', 'embedded.provisionprofile'));
-    await fs.writeFile(path.join(app, 'Contents', 'Resources', 'webauthn.json'), `${JSON.stringify(config)}\n`);
+    // The source bundle may have been signed before. Never retain its profile
+    // or passkey resource in a distribution without the matching entitlement.
+    const embedded = path.join(app, 'Contents', 'embedded.provisionprofile');
+    const resource = path.join(app, 'Contents', 'Resources', 'webauthn.json');
+    if (profilePath) {
+      await fs.copyFile(profilePath, embedded);
+      await fs.writeFile(resource, `${JSON.stringify(config)}\n`);
+    } else {
+      await fs.rm(embedded, { force: true });
+      await fs.rm(resource, { force: true });
+    }
     await sign({
       app, platform: 'darwin', type: 'distribution', identity,
       preAutoEntitlements: false, preEmbedProvisioningProfile: false,
-      provisioningProfile: path.resolve(profilePath),
+      ...(profilePath ? { provisioningProfile: path.resolve(profilePath) } : {}),
       optionsForFile(file) {
         const options = fileOptions(file);
         return { ...options, entitlements: paths.get(JSON.stringify(options.entitlements)) };

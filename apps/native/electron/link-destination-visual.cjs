@@ -30,7 +30,7 @@ async function runLinkDestinationVisuals({ origin, output }) {
   };
   wc.on('console-message', event => { if (event.level >= 2) console.error('Link renderer:', event.message); });
   const browser = new BrowserTabs(win, event => wc.send('browser-event', event));
-  const system = [], routed = [], settings = [], blocked = [], errors = [];
+  const system = [], routed = [], settings = [], blocked = [], errors = [], browserOpens = [];
   let delayNextOpen = null, delayedReplySent = false, abortedReplySent = false, unreplacedAbortSent = false;
   // Neither session may reach the network or an engine endpoint. Only the app's
   // static assets and our loopback HTML fixture are allowed through.
@@ -47,7 +47,11 @@ async function runLinkDestinationVisuals({ origin, output }) {
     const result = await (action === 'save' ? store.save(value) : store.load());
     settings.push({ action, value, result }); return result;
   });
+  // The real desktop registers this IPC before opening settings. Keep the
+  // isolated fixture's settings surface equivalent without changing the app.
+  ipcMain.handle('notch-settings', () => null);
   ipcMain.handle('browser', async (_event, { chat, method, params }) => {
+    if (method === 'open') browserOpens.push(params?.url);
     const delayed = method === 'open' ? delayNextOpen : null;
     if (delayed) delayNextOpen = null;
     try {
@@ -227,7 +231,7 @@ async function runLinkDestinationVisuals({ origin, output }) {
     assert.equal(routed.length, before, 'same-origin links bypass external routing');
     assert.ok(await js(`!!document.querySelector('textarea[aria-label="Prompt"]')`));
     assert.deepEqual(errors, [], 'browser IPC completes without errors');
-    await require('./browser-address-visual.cjs').runBrowserAddress({ wc, browser, destination, guard, wait,
+    await require('./browser-address-visual.cjs').runBrowserAddress({ wc, browser, destination, guard, wait, browserOpens, errors,
       delayOpenReply: () => { delayNextOpen = 'success'; }, openReplySent: () => delayedReplySent,
       delayAbortedReply: () => { delayNextOpen = 'abort'; }, abortedReplySent: () => abortedReplySent,
       delayUnreplacedAbort: () => { delayNextOpen = 'unreplaced-abort'; }, unreplacedAbortSent: () => unreplacedAbortSent });
@@ -235,7 +239,7 @@ async function runLinkDestinationVisuals({ origin, output }) {
     assert.deepEqual(blocked, [], 'no external network or engine/model requests attempted');
     console.log('Link destination visuals passed: real UserBubble click, default/save/switch, reload and fresh-store persistence, normal/blank links, closed-browser reveal, overlays, unsafe/same-origin links, split focus and preserved app.');
   } finally {
-    ipcMain.removeHandler('link-settings'); ipcMain.removeHandler('browser'); ipcMain.removeListener('browser-overlay', overlay);
+    ipcMain.removeHandler('link-settings'); ipcMain.removeHandler('notch-settings'); ipcMain.removeHandler('browser'); ipcMain.removeListener('browser-overlay', overlay);
     browser.closeAll(); win.destroy(); browser.session.webRequest.onBeforeRequest(null);
     await new Promise(resolve => fixture.close(resolve));
     fs.rmSync(directory, { recursive: true, force: true });

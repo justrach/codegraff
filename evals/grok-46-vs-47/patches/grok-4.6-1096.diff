@@ -1,0 +1,90 @@
+diff --git a/apps/native/components/primitives/PromptBar.tsx b/apps/native/components/primitives/PromptBar.tsx
+--- a/apps/native/components/primitives/PromptBar.tsx
++++ b/apps/native/components/primitives/PromptBar.tsx
+@@
+ } from "react";
++import { shouldPickComposerRow } from "../../lib/composer-keyboard";
+@@
+     if (menu && rows.length > 0) {
+       if (!event.shiftKey && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+         event.preventDefault();
+         event.stopPropagation();
+         setEngaged(true);
+         setActive((activeIndex + (event.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length);
+         return;
+       }
+-      if (!event.shiftKey && (event.key === "Enter" || event.key === "Tab")) {
++      if (shouldPickComposerRow(event.key, event.shiftKey, engaged)) {
+         event.preventDefault();
+         event.stopPropagation();
+         pick(rows[activeIndex]);
+         return;
+       }
+     }
+diff --git a/apps/native/lib/composer-keyboard.test.ts b/apps/native/lib/composer-keyboard.test.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/native/lib/composer-keyboard.test.ts
+@@ -0,0 +1,42 @@
++import assert from "node:assert/strict";
++import { describe, it } from "node:test";
++import { shouldPickComposerRow } from "./composer-keyboard.ts";
++
++describe("shouldPickComposerRow", () => {
++  it("picks on Enter when the row is visibly engaged", () => {
++    assert.equal(shouldPickComposerRow("Enter", false, true), true);
++  });
++
++  it("picks on Tab when the row is visibly engaged", () => {
++    assert.equal(shouldPickComposerRow("Tab", false, true), true);
++  });
++
++  it("does not pick on Enter when the menu is not engaged", () => {
++    assert.equal(shouldPickComposerRow("Enter", false, false), false);
++  });
++
++  it("does not pick on Tab when the menu is not engaged", () => {
++    assert.equal(shouldPickComposerRow("Tab", false, false), false);
++  });
++
++  it("does not pick on Shift+Enter even when engaged", () => {
++    assert.equal(shouldPickComposerRow("Enter", true, true), false);
++  });
++
++  it("does not pick on Shift+Tab even when engaged", () => {
++    assert.equal(shouldPickComposerRow("Tab", true, true), false);
++  });
++
++  it("does not treat arrow keys as activation", () => {
++    assert.equal(shouldPickComposerRow("ArrowDown", false, true), false);
++    assert.equal(shouldPickComposerRow("ArrowUp", false, true), false);
++    assert.equal(shouldPickComposerRow("ArrowDown", false, false), false);
++    assert.equal(shouldPickComposerRow("ArrowUp", false, false), false);
++  });
++
++  it("does not pick on unrelated keys", () => {
++    assert.equal(shouldPickComposerRow("Escape", false, true), false);
++    assert.equal(shouldPickComposerRow(" ", false, true), false);
++  });
++});
+diff --git a/apps/native/lib/composer-keyboard.ts b/apps/native/lib/composer-keyboard.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/native/lib/composer-keyboard.ts
+@@ -0,0 +1,10 @@
++export function shouldPickComposerRow(
++  key: string,
++  shiftKey: boolean,
++  engaged: boolean,
++): boolean {
++  if (!engaged || shiftKey) {
++    return false;
++  }
++  return key === "Enter" || key === "Tab";
++}
+diff --git a/apps/native/package.json b/apps/native/package.json
+--- a/apps/native/package.json
++++ b/apps/native/package.json
+@@
+-    "test": "node --experimental-strip-types --test lib/composer-model-pick.test.ts
++    "test": "node --experimental-strip-types --test lib/composer-keyboard.test.ts lib/composer-model-pick.test.ts

@@ -27,14 +27,14 @@ test('team derives only from an anchored Developer ID Application identity or ex
   }
 });
 
-test('profile-gated entitlements stay on the main app; JIT and Bun policies stay exact', () => {
+test('only main app gets keychain access; existing JIT and Bun policies stay exact', () => {
   const app = path.resolve('Fixture.app');
   const config = signingConfig(identity, undefined, bundleId);
-  const options = optionsForFile(app, config, { 'com.apple.application-identifier': `ABCDE12345.${bundleId}` });
+  const options = optionsForFile(app, config);
   const jit = { 'com.apple.security.cs.allow-jit': true };
   const cases = [
-    [app, { ...jit, 'com.apple.application-identifier': `ABCDE12345.${bundleId}`, 'keychain-access-groups': [config.keychainAccessGroup] }],
-    [app + '/', { ...jit, 'com.apple.application-identifier': `ABCDE12345.${bundleId}`, 'keychain-access-groups': [config.keychainAccessGroup] }],
+    [app, { ...jit, 'keychain-access-groups': [config.keychainAccessGroup] }],
+    [app + '/', { ...jit, 'keychain-access-groups': [config.keychainAccessGroup] }],
     [`${app}/Contents/Resources/bun`, { ...jit, 'com.apple.security.cs.allow-unsigned-executable-memory': true }],
     [`${app}/Contents/Frameworks/Helper.app`, jit],
     [`${app}/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework`, jit],
@@ -42,40 +42,6 @@ test('profile-gated entitlements stay on the main app; JIT and Bun policies stay
     [`${app}/Contents/Frameworks/library.dylib`, {}],
   ];
   for (const [file, entitlements] of cases) assert.deepEqual(options(file), { hardenedRuntime: true, entitlements });
-  assert.deepEqual(optionsForFile(app, config)(app), { hardenedRuntime: true, entitlements: jit });
-});
-
-test('profile-free signing removes stale passkey artifacts and restricted entitlements', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'webauthn-sign-plain-'));
-  const app = path.join(root, 'Fixture.app');
-  const resources = path.join(app, 'Contents', 'Resources');
-  try {
-    await fs.mkdir(resources, { recursive: true });
-    const embedded = path.join(app, 'Contents', 'embedded.provisionprofile');
-    const resource = path.join(resources, 'webauthn.json');
-    await fs.writeFile(embedded, 'stale profile');
-    await fs.writeFile(resource, '{"stale":true}');
-    let calls = 0;
-    await signBundle({ app, identity, readBundleId: () => bundleId,
-      readProvisioningProfile: () => assert.fail('must not read a profile'),
-      sign: async (options) => {
-        calls++;
-        assert.equal(options.preAutoEntitlements, false);
-        assert.equal(options.preEmbedProvisioningProfile, false);
-        assert.equal(Object.hasOwn(options, 'provisioningProfile'), false);
-        await assert.rejects(fs.access(embedded), { code: 'ENOENT' });
-        await assert.rejects(fs.access(resource), { code: 'ENOENT' });
-        for (const file of [app, `${resources}/bun`, `${app}/Contents/Frameworks/Helper.app`, `${resources}/other`]) {
-          const result = options.optionsForFile(file);
-          assert.equal(result.hardenedRuntime, true);
-          const entitlements = plist.parse(await fs.readFile(result.entitlements, 'utf8'));
-          assert.deepEqual(entitlements, optionsForFile(app, signingConfig(identity, undefined, bundleId))(file).entitlements);
-          assert.equal(Object.hasOwn(entitlements, 'com.apple.application-identifier'), false);
-          assert.equal(Object.hasOwn(entitlements, 'keychain-access-groups'), false);
-        }
-      } });
-    assert.equal(calls, 1);
-  } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
 for (const fails of [false, true]) test(`sign dispatch writes matching config and plist entitlements, cleans temporary files (failure=${fails})`, async () => {
@@ -124,29 +90,7 @@ test('invalid metadata fails before writing config or invoking signer', async ()
   let called = false;
   await assert.rejects(signBundle({ app: 'Fixture.app', identity, teamId: '', readBundleId: () => bundleId, sign: () => { called = true; } }), /valid signing team/);
   await assert.rejects(signBundle({ app: 'Fixture.app', identity, readBundleId: () => 'bad/bundle', sign: () => { called = true; } }), /CFBundleIdentifier/);
-  assert.equal(called, false);
-});
-
-test('signBundle rejects a same-team profile for a different bundle before invoking the signer', async () => {
-  let called = false;
-  await assert.rejects(signBundle({
-    app: 'Fixture.app',
-    identity,
-    profilePath: 'fixture.provisionprofile',
-    readProvisioningProfile: () => profile('com.unrelated.app'),
-    readBundleId: () => bundleId,
-    sign: () => { called = true; },
-  }), /provisioning profile/);
-  assert.equal(called, false);
-});
-
-test('an explicitly supplied unreadable profile fails before signing', async () => {
-  let called = false;
-  await assert.rejects(signBundle({
-    app: 'Fixture.app', identity, profilePath: 'missing.provisionprofile',
-    readProvisioningProfile: () => { throw Error('profile read failed'); },
-    readBundleId: () => bundleId, sign: () => { called = true; },
-  }), /profile read failed/);
+  await assert.rejects(signBundle({ app: 'Fixture.app', identity, readBundleId: () => bundleId, sign: () => { called = true; } }), /GRAFF_WEBAUTHN_PROFILE/);
   assert.equal(called, false);
 });
 

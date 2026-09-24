@@ -1,0 +1,104 @@
+diff --git a/src/presence_accord.zig b/src/presence_accord.zig
+index 13fdec4f..2c306410 100644
+--- a/src/presence_accord.zig
++++ b/src/presence_accord.zig
+@@ -7,6 +7,7 @@ const builtin = @import("builtin");
+ const Io = std.Io;
+ const net = std.Io.net;
+ const accord = @import("accord");
++const proc_identity = @import("proc_identity.zig");
+ 
+ pub const env_var = "GRAFF_ACCORD";
+ pub const sock_env = "GRAFF_ACCORD_SOCK";
+@@ -134,18 +135,52 @@ pub fn livePost(io: Io, gpa: std.mem.Allocator, chan_name: []const u8, json_line
+     while (it.next(io) catch null) |entry| {
+         if (!std.mem.endsWith(u8, entry.name, ".accord.sock")) continue;
+         if (g_own_name) |own| if (std.mem.eql(u8, entry.name, own)) continue;
++        if (dropDeadSock(io, dir_path, entry.name)) continue;
+         const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
+         sendLine(io, gpa, path, json_line) catch {};
+     }
+ }
+ 
++fn parseSockName(name: []const u8) ?proc_identity.Record {
++    const suffix = ".accord.sock";
++    if (!std.mem.endsWith(u8, name, suffix)) return null;
++    const stem = name[0 .. name.len - suffix.len];
++    const dash = std.mem.lastIndexOfScalar(u8, stem, '-') orelse return null;
++    if (dash == 0 or dash + 1 >= stem.len) return null;
++    const pid = std.fmt.parseInt(i32, stem[0..dash], 10) catch return null;
++    const start_id = std.fmt.parseInt(u64, stem[dash + 1 ..], 16) catch return null;
++    if (pid <= 0) return null;
++    return .{ .pid = pid, .start_id = start_id };
++}
++
++/// Unlink only when the recorded owner is provably gone (#413). Unknown stays.
++fn dropDeadSock(io: Io, dir_path: []const u8, name: []const u8) bool {
++    const rec = parseSockName(name) orelse return false;
++    if (proc_identity.stateOf(io, rec) != .reclaimable) return false;
++    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
++    const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, name }) catch return false;
++    Io.Dir.cwd().deleteFile(io, path) catch return false;
++    return true;
++}
++
++fn sweepDead(io: Io, dir_path: []const u8) void {
++    var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return;
++    defer dir.close(io);
++    var it = dir.iterate();
++    while (it.next(io) catch null) |entry| {
++        if (!std.mem.endsWith(u8, entry.name, ".accord.sock")) continue;
++        _ = dropDeadSock(io, dir_path, entry.name);
++    }
++}
++
+ /// Bind `{live_dir}/{pid}-{start}.accord.sock` and accept live posts.
+ pub fn listen(io: Io, gpa: std.mem.Allocator, dir_path: ?[]const u8) void {
+     if (!enabled()) return;
+     if (builtin.os.tag == .windows) return;
+     if (g_listener != null) return;
+     const dir = dir_path orelse return;
+-    const self = @import("proc_identity.zig").selfRecord(io);
++    sweepDead(io, dir);
++    const self = proc_identity.selfRecord(io);
+     var name_buf: [64]u8 = undefined;
+     const name = std.fmt.bufPrint(&name_buf, "{d}-{x}.accord.sock", .{ self.pid, self.start_id }) catch return;
+     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+@@ -414,6 +449,37 @@ test "Accord stats report session RSS when enabled" {
+     try std.testing.expectEqual(@as(usize, 0), s.outbound);
+ }
+ 
++test "parseSockName reads pid-start names and rejects junk" {
++    const rec = parseSockName("42-2a.accord.sock") orelse return error.ParseFailed;
++    try std.testing.expectEqual(@as(i32, 42), rec.pid);
++    try std.testing.expectEqual(@as(u64, 0x2a), rec.start_id);
++    try std.testing.expect(parseSockName("not-a-sock") == null);
++    try std.testing.expect(parseSockName("x-yy.accord.sock") == null);
++    try std.testing.expect(parseSockName("-1-1.accord.sock") == null);
++    try std.testing.expect(parseSockName("0-1.accord.sock") == null);
++}
++
++test "livePost unlinks a reclaimable peer sock" {
++    if (builtin.os.tag == .windows) return;
++    const io = std.testing.io;
++    const gpa = std.testing.allocator;
++    test_enabled = true;
++    defer {
++        stop(io);
++        test_enabled = false;
++    }
++    const dir = "graff-accord-dead";
++    try Io.Dir.cwd().createDirPath(io, dir);
++    defer Io.Dir.cwd().deleteTree(io, dir) catch {};
++    listen(io, gpa, dir);
++    const dead = "999999-1.accord.sock";
++    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
++    const path = try std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir, dead });
++    try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "stale" });
++    livePost(io, gpa, "chan", "{\"text\":\"hi\"}\n");
++    try std.testing.expectError(error.FileNotFound, Io.Dir.cwd().statFile(io, path, .{}));
++}
++
+ test "listen binds a 0600 sock and stop unlinks it" {
+     if (builtin.os.tag == .windows) return;
+     const io = std.testing.io;

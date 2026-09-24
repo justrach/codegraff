@@ -17,6 +17,7 @@ const pricing = @import("pricing.zig");
 const billing = @import("billing.zig");
 const report = @import("route_report.zig");
 const provider_mod = @import("provider.zig");
+const startup_keys = @import("startup_keys.zig");
 
 pub const Seat = struct {
     pid: []const u8,
@@ -34,14 +35,50 @@ pub const Answer = union(enum) {
 /// Pure resolution shared by the command and its tests: catalog-name
 /// resolution, then the real provider seat.
 pub fn seatFor(keys: provider_mod.Keys, query: []const u8) Answer {
+    // A provider-qualified model is an exact seat in --model and /model.
+    // Keep this dry run on the same route instead of resolving its bare name
+    // again, which could choose another credential for a shared model.
+    const qualified = startup_keys.qualifiedProvider(keys, query) catch |err| return switch (err) {
+        error.UnknownModel => .unknown,
+        error.MissingKey => .{ .no_credential = query },
+    };
+    if (qualified) |p| return answerFor(p);
     const resolved = pricing.resolveModelName(keys, query) orelse return .unknown;
     const p = keys.providerFor(resolved) catch return .{ .no_credential = resolved };
+    return answerFor(p);
+}
+
+fn answerFor(p: provider_mod.Provider) Answer {
     return .{ .seat = .{
         .pid = p.id,
         .model = p.model,
         .billing = billing.forProvider(p),
         .source = p.source,
     } };
+}
+
+test "qualified route keeps the selected provider and credential" {
+    const original = pricing.active_model_table;
+    defer pricing.active_model_table = original;
+    pricing.active_model_table = &.{
+        .{ .provider = "codex", .name = "shared-route-fixture", .context = 270_000 },
+        .{ .provider = "openai", .name = "shared-route-fixture", .context = 270_000 },
+    };
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    try std.testing.expect(keys.set("codex", "login-token", .login));
+    try std.testing.expect(keys.set("openai", "metered-token", .session));
+
+    const codex = seatFor(keys, "codex/shared-route-fixture");
+    try std.testing.expectEqualStrings("codex", codex.seat.pid);
+    try std.testing.expectEqual(pricing.Billing.sub, codex.seat.billing);
+    const openai = seatFor(keys, "openai/shared-route-fixture");
+    try std.testing.expectEqualStrings("openai", openai.seat.pid);
+    try std.testing.expect(openai.seat.billing != .sub);
+
+    var openai_only: provider_mod.Keys = .{ .values = @splat(null) };
+    try std.testing.expect(openai_only.set("openai", "metered-token", .session));
+    try std.testing.expect(seatFor(openai_only, "codex/shared-route-fixture") == .no_credential);
+    try std.testing.expect(seatFor(keys, "codex/not-a-model") == .unknown);
 }
 
 pub fn billingLabel(b: pricing.Billing) []const u8 {
