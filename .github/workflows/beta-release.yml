@@ -151,3 +151,16 @@ jobs:
           gh release create "$BETA_TAG" beta-assets/* \
             --target "$GITHUB_SHA" --prerelease --latest=false \
             --title "$BETA_TAG" --notes-file beta-notes.md
+      - name: Recheck beta before desktop handoff
+        if: steps.fresh.outputs.publish == 'true'
+        id: handoff_fresh
+        run: python3 scripts/beta-release.py guard --branch "$GITHUB_REF_NAME" --sha "$GITHUB_SHA"
+      - name: Notify Harness of published beta
+        if: steps.handoff_fresh.outputs.publish == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HARNESS_SYNC_TOKEN: ${{ secrets.HARNESS_SYNC_TOKEN }}
+          BETA_TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          python3 scripts/harness-release-dispatch.py beta \
+            --tag "$BETA_TAG" --sha "$GITHUB_SHA" --branch "$GITHUB_REF_NAME"
