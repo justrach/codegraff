@@ -135,6 +135,12 @@ app.whenReady().then(async () => {
   await wc.loadURL(origin); desktop.present(win);
   if (desktop.foreground) await until(() => win.isFocused(), 'foreground window focus');
   await until(() => js(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`), 'workspace and composer ready');
+  assert.equal(await js(`!!document.querySelector('[aria-label="Close browser"]')`), false, 'Browser starts closed');
+  await js(`localStorage.setItem('graff.native.browser.open', '1')`);
+  await wc.reload();
+  await until(() => js(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`), 'workspace ready after reload');
+  assert.equal(await js(`!!document.querySelector('[aria-label="Close browser"]')`), false, 'Browser stays closed despite saved open state');
+  report.passed.push('Browser starts closed, including after a saved open state');
   if (process.env.GRAFF_CLI_TEST) await until(async () => (await projects.load())?.active === fs.realpathSync(workspace), 'startup CLI folder after project restoration');
   let computer;
   if (process.env.GRAFF_FRONTEND_OS_INPUT === '1') {
