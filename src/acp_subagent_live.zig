@@ -23,13 +23,24 @@ pub const BackgroundState = struct {
     output_lock: *Io.Mutex,
     parent: []const u8 = "",
     enabled: bool = false,
+    generation: u64 = 0,
 };
 
 var background: ?*BackgroundState = null;
+var next_background_generation: u64 = 0;
+
+/// Owned by the detached child, rather than the mutable ACP dispatch session.
+pub const BackgroundHandle = struct {
+    parent: []const u8,
+    generation: u64,
+    parent_call_id: []const u8,
+};
 
 pub fn installBackground(io: Io, state: *BackgroundState) void {
     main.g_gui_mu.lockUncancelable(io);
     defer main.g_gui_mu.unlock(io);
+    next_background_generation +%= 1;
+    state.generation = next_background_generation;
     background = state;
 }
 
@@ -49,17 +60,15 @@ pub fn configureBackground(io: Io, parent: []const u8, enabled: bool) void {
     state.enabled = enabled;
 }
 
-fn backgroundSend(io: Io, id: []const u8, parent_call_id: []const u8, seq: u64, event: anytype) bool {
-    main.g_gui_mu.lockUncancelable(io);
-    defer main.g_gui_mu.unlock(io);
+fn backgroundSendLocked(io: Io, handle: BackgroundHandle, id: []const u8, seq: u64, event: anytype) bool {
     const state = background orelse return false;
-    if (!state.enabled or state.parent.len == 0) return false;
+    if (state.generation != handle.generation) return false;
     state.output_lock.lockUncancelable(io);
     defer state.output_lock.unlock(io);
     proto.writeNotification(state.out, "graff/subagent_event", .{
-        .parentSessionId = state.parent,
+        .parentSessionId = handle.parent,
         .subagentSessionId = id,
-        .parentToolCallId = parent_call_id,
+        .parentToolCallId = handle.parent_call_id,
         .seq = seq,
         .event = event,
     }) catch return false;
@@ -67,16 +76,32 @@ fn backgroundSend(io: Io, id: []const u8, parent_call_id: []const u8, seq: u64, 
     return true;
 }
 
-pub fn announceBackground(io: Io, id: []const u8, name: []const u8, task: []const u8, parent_call_id: []const u8) bool {
-    return backgroundSend(io, id, parent_call_id, 0, .{
+fn backgroundSend(io: Io, handle: BackgroundHandle, id: []const u8, seq: u64, event: anytype) bool {
+    main.g_gui_mu.lockUncancelable(io);
+    defer main.g_gui_mu.unlock(io);
+    return backgroundSendLocked(io, handle, id, seq, event);
+}
+
+pub fn announceBackground(a: std.mem.Allocator, io: Io, id: []const u8, name: []const u8, task: []const u8, parent_call_id: []const u8) ?BackgroundHandle {
+    main.g_gui_mu.lockUncancelable(io);
+    defer main.g_gui_mu.unlock(io);
+    const state = background orelse return null;
+    if (!state.enabled or state.parent.len == 0) return null;
+    const handle: BackgroundHandle = .{
+        .parent = a.dupe(u8, state.parent) catch return null,
+        .generation = state.generation,
+        .parent_call_id = parent_call_id,
+    };
+    if (!backgroundSendLocked(io, handle, id, 0, .{
         .type = "spawn",
         .name = util.utf8Prefix(name, 256),
         .task = util.utf8Prefix(task, 2048),
-    });
+    })) return null;
+    return handle;
 }
 
-pub fn finishBackground(io: Io, id: []const u8, parent_call_id: []const u8, seq: u64, outcome: []const u8) void {
-    _ = backgroundSend(io, id, parent_call_id, seq, .{ .type = "terminal", .state = outcome });
+pub fn finishBackground(io: Io, handle: BackgroundHandle, id: []const u8, seq: u64, outcome: []const u8) void {
+    _ = backgroundSend(io, handle, id, seq, .{ .type = "terminal", .state = outcome });
 }
 
 pub fn eligible(kind: []const u8, depth: u8, detached: bool) bool {
@@ -133,7 +158,7 @@ pub const ChildSink = struct {
     id: []const u8,
     io: Io,
     recorder: ?sink.EngineSink = null,
-    background_call_id: ?[]const u8 = null,
+    background_handle: ?BackgroundHandle = null,
     seq: u64 = 1,
 
     pub fn engineSink(self: *ChildSink) sink.EngineSink {
@@ -145,8 +170,8 @@ pub const ChildSink = struct {
     fn emit(ctx: *anyopaque, stamped: sink.Stamped) void {
         const self: *ChildSink = @ptrCast(@alignCast(ctx));
         if (self.recorder) |record| record.vt.emit(record.ctx, stamped);
-        if (self.background_call_id) |call_id| {
-            self.emitBackground(stamped, call_id);
+        if (self.background_handle) |handle| {
+            self.emitBackground(stamped, handle);
             return;
         }
         main.g_gui_mu.lockUncancelable(self.io);
@@ -172,7 +197,7 @@ pub const ChildSink = struct {
         w.flush() catch {};
     }
 
-    fn emitBackground(self: *ChildSink, stamped: sink.Stamped, call_id: []const u8) void {
+    fn emitBackground(self: *ChildSink, stamped: sink.Stamped, handle: BackgroundHandle) void {
         var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena_state.deinit();
         const a = arena_state.allocator();
@@ -197,7 +222,7 @@ pub const ChildSink = struct {
         const params = parsed.object.get("params") orelse return;
         if (params != .object) return;
         const update = params.object.get("update") orelse return;
-        if (backgroundSend(self.io, self.id, call_id, self.seq, .{ .type = "update", .update = update }))
+        if (backgroundSend(self.io, handle, self.id, self.seq, .{ .type = "update", .update = update }))
             self.seq += 1;
     }
 };

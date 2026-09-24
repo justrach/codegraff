@@ -363,18 +363,21 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     const detached = ctx.subagent_feedback != null;
     const announce_child = acp_children.eligible(kind, ctx.depth, detached);
     const announced = announce_child and acp_children.announce(ctx.io, sub_id, label, prompt, ctx.parent_tool_call_id);
-    const background_announced = detached and std.mem.eql(u8, kind, "subagent") and ctx.depth == 0 and ctx.parent_tool_call_id.len > 0 and
-        acp_children.announceBackground(ctx.io, sub_id, label, prompt, ctx.parent_tool_call_id);
+    const background_handle: ?acp_children.BackgroundHandle = if (detached and std.mem.eql(u8, kind, "subagent") and ctx.depth == 0 and ctx.parent_tool_call_id.len > 0)
+        acp_children.announceBackground(arena, ctx.io, sub_id, label, prompt, ctx.parent_tool_call_id)
+    else
+        null;
+    const background_announced = background_handle != null;
     var child_stream: acp_children.ChildSink = .{
         .id = sub_id,
         .io = ctx.io,
         .recorder = agent.sink,
-        .background_call_id = if (background_announced) ctx.parent_tool_call_id else null,
+        .background_handle = background_handle,
     };
     if (announced or background_announced) agent.sink = child_stream.engineSink();
     var child_state: []const u8 = "failed";
     defer if (announced) acp_children.finish(ctx.io, sub_id, child_state, ctx.parent_tool_call_id);
-    defer if (background_announced) acp_children.finishBackground(ctx.io, sub_id, ctx.parent_tool_call_id, child_stream.seq, child_state);
+    defer if (background_handle) |handle| acp_children.finishBackground(ctx.io, handle, sub_id, child_stream.seq, child_state);
 
     const wf_task = std.mem.eql(u8, kind, "workflow_task");
     if (wf_task) guiEmit(ctx.io, .{ .type = "tool_call", .name = "subagent", .input = .{ .description = label }, .id = sub_id });
