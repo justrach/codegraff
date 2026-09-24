@@ -146,6 +146,9 @@ pub fn build(b: *std.Build) void {
     const acp_child_update_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-subagent-update.py" });
     acp_child_update_test.addArtifactArg(exe);
     test_step.dependOn(&acp_child_update_test.step);
+    const acp_background_child_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-background-subagent.py" });
+    acp_background_child_test.addArtifactArg(exe);
+    test_step.dependOn(&acp_background_child_test.step);
     const workflow_isolation_test = b.addSystemCommand(&.{ "python3", "scripts/test-workflow-isolation.py" });
     workflow_isolation_test.addArtifactArg(exe);
     test_step.dependOn(&workflow_isolation_test.step);

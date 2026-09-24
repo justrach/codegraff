@@ -16,6 +16,69 @@ pub const State = struct {
 
 var active: ?*State = null;
 
+/// Connection-owned extension state. Unlike `active`, this survives parent
+/// prompt boundaries so detached workers can keep reporting their progress.
+pub const BackgroundState = struct {
+    out: *Io.Writer,
+    output_lock: *Io.Mutex,
+    parent: []const u8 = "",
+    enabled: bool = false,
+};
+
+var background: ?*BackgroundState = null;
+
+pub fn installBackground(io: Io, state: *BackgroundState) void {
+    main.g_gui_mu.lockUncancelable(io);
+    defer main.g_gui_mu.unlock(io);
+    background = state;
+}
+
+/// Detach before the ACP transport is destroyed. Child jobs can still finish
+/// during the parent process's final reap, but must not write to a dead pipe.
+pub fn uninstallBackground(io: Io) void {
+    main.g_gui_mu.lockUncancelable(io);
+    defer main.g_gui_mu.unlock(io);
+    background = null;
+}
+
+pub fn configureBackground(io: Io, parent: []const u8, enabled: bool) void {
+    main.g_gui_mu.lockUncancelable(io);
+    defer main.g_gui_mu.unlock(io);
+    const state = background orelse return;
+    state.parent = parent;
+    state.enabled = enabled;
+}
+
+fn backgroundSend(io: Io, id: []const u8, parent_call_id: []const u8, seq: u64, event: anytype) bool {
+    main.g_gui_mu.lockUncancelable(io);
+    defer main.g_gui_mu.unlock(io);
+    const state = background orelse return false;
+    if (!state.enabled or state.parent.len == 0) return false;
+    state.output_lock.lockUncancelable(io);
+    defer state.output_lock.unlock(io);
+    proto.writeNotification(state.out, "graff/subagent_event", .{
+        .parentSessionId = state.parent,
+        .subagentSessionId = id,
+        .parentToolCallId = parent_call_id,
+        .seq = seq,
+        .event = event,
+    }) catch return false;
+    state.out.flush() catch {};
+    return true;
+}
+
+pub fn announceBackground(io: Io, id: []const u8, name: []const u8, task: []const u8, parent_call_id: []const u8) bool {
+    return backgroundSend(io, id, parent_call_id, 0, .{
+        .type = "spawn",
+        .name = util.utf8Prefix(name, 256),
+        .task = util.utf8Prefix(task, 2048),
+    });
+}
+
+pub fn finishBackground(io: Io, id: []const u8, parent_call_id: []const u8, seq: u64, outcome: []const u8) void {
+    _ = backgroundSend(io, id, parent_call_id, seq, .{ .type = "terminal", .state = outcome });
+}
+
 pub fn eligible(kind: []const u8, depth: u8, detached: bool) bool {
     return depth == 0 and !detached and std.mem.eql(u8, kind, "subagent");
 }
@@ -70,6 +133,8 @@ pub const ChildSink = struct {
     id: []const u8,
     io: Io,
     recorder: ?sink.EngineSink = null,
+    background_call_id: ?[]const u8 = null,
+    seq: u64 = 1,
 
     pub fn engineSink(self: *ChildSink) sink.EngineSink {
         return .{ .ctx = self, .vt = &vtable };
@@ -80,6 +145,10 @@ pub const ChildSink = struct {
     fn emit(ctx: *anyopaque, stamped: sink.Stamped) void {
         const self: *ChildSink = @ptrCast(@alignCast(ctx));
         if (self.recorder) |record| record.vt.emit(record.ctx, stamped);
+        if (self.background_call_id) |call_id| {
+            self.emitBackground(stamped, call_id);
+            return;
+        }
         main.g_gui_mu.lockUncancelable(self.io);
         defer main.g_gui_mu.unlock(self.io);
         const state = active orelse return;
@@ -101,6 +170,35 @@ pub const ChildSink = struct {
             else => return,
         }
         w.flush() catch {};
+    }
+
+    fn emitBackground(self: *ChildSink, stamped: sink.Stamped, call_id: []const u8) void {
+        var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena_state.deinit();
+        const a = arena_state.allocator();
+        var bytes: Io.Writer.Allocating = .init(a);
+        defer bytes.deinit();
+        const w = &bytes.writer;
+        switch (stamped.event) {
+            .reasoning_delta => |v| stream.writeThought(w, self.id, v.text) catch return,
+            .text_delta => |v| stream.writeMessage(w, self.id, v.text) catch return,
+            .tool_call_announced => |v| {
+                if (v.ask_user or std.mem.eql(u8, v.name, "attempt_completion")) return;
+                stream.writeToolCall(w, self.id, v.id, v.name, v.input) catch return;
+            },
+            .tool_result => |v| {
+                if (v.ask_user or std.mem.eql(u8, v.name, "attempt_completion")) return;
+                stream.writeToolDone(w, self.id, v.id, v.is_error or v.cancelled, v.text) catch return;
+            },
+            .tool_rejected => |v| stream.writeToolDone(w, self.id, v.id, true, v.message) catch return,
+            else => return,
+        }
+        const parsed = std.json.parseFromSliceLeaky(std.json.Value, a, w.buffered(), .{}) catch return;
+        const params = parsed.object.get("params") orelse return;
+        if (params != .object) return;
+        const update = params.object.get("update") orelse return;
+        if (backgroundSend(self.io, self.id, call_id, self.seq, .{ .type = "update", .update = update }))
+            self.seq += 1;
     }
 };
 

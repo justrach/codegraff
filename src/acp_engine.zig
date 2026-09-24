@@ -74,6 +74,9 @@ pub const Dispatch = struct {
     cwd: []const u8 = "",
     /// ACP v1 draft subagent updates are opt-in at initialize.
     subagents: bool = false,
+    /// Graff extension: detached children may outlive a prompt. The client
+    /// must request it independently of the draft ACP child-session shape.
+    background_subagents: bool = false,
     /// The current implementation streams live child activity; historical
     /// child replay is not yet available, so CLI leaves this off by default.
     draft_subagents_enabled: bool = false,
@@ -86,6 +89,17 @@ fn supportsSubagents(params: ?std.json.Value) bool {
     if (caps != .object) return false;
     const subagents = caps.object.get("subagents") orelse return false;
     return subagents == .object;
+}
+
+fn supportsBackgroundSubagents(params: ?std.json.Value) bool {
+    const root = params orelse return false;
+    if (root != .object) return false;
+    const caps = root.object.get("clientCapabilities") orelse return false;
+    if (caps != .object) return false;
+    const meta = caps.object.get("_meta") orelse return false;
+    if (meta != .object) return false;
+    const value = meta.object.get("graff/backgroundSubagents") orelse return false;
+    return value == .bool and value.bool;
 }
 
 pub fn configOptions(d: *Dispatch, arena: Allocator) ![]const ConfigOption {
@@ -219,12 +233,38 @@ test "slash commands refresh occupancy before their terminal response" {
     try std.testing.expect(meter_pos < end_pos);
 }
 
+test "live context occupancy precedes the terminal prompt reply" {
+    const was_cancelled = cancel_flag.swap(false, .acq_rel);
+    defer cancel_flag.store(was_cancelled, .release);
+    const extra = extra_cancelled;
+    extra_cancelled = null;
+    defer extra_cancelled = extra;
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    const a = state.allocator();
+    var buf: [16384]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    const meter = struct {
+        fn read(_: *anyopaque) Meter {
+            return .{ .used = 123, .window = 1000 };
+        }
+    }.read;
+    var d: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .meter = meter };
+    try handleLine(&d, a, &w, "{\"id\":1,\"method\":\"session/new\"}");
+    w = .fixed(&buf);
+    try handleLine(&d, a, &w, "{\"id\":2,\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"hi\"}]}}");
+    const output = w.buffered();
+    const occupancy = std.mem.indexOf(u8, output, "\"gui_context_meter\",\"used\":123,\"window\":1000") orelse return error.MissingMeter;
+    const terminal = std.mem.indexOf(u8, output, "\"stopReason\":\"end_turn\"") orelse return error.MissingTerminalReply;
+    try std.testing.expect(occupancy < terminal);
+}
+
 fn respondInitialize(w: *Io.Writer, req: proto.Request, can_load: bool) !void {
     return respond(w, req, .{
         .protocolVersion = negotiateVersion(req.params),
         .agentCapabilities = .{
             .loadSession = can_load,
-            ._meta = .{ .@"codegraff/usage" = can_load },
+            ._meta = .{ .@"codegraff/usage" = can_load, .@"graff/backgroundSubagents" = true },
             .promptCapabilities = proto.PromptCapabilities{},
         },
         .agentInfo = proto.AgentImplementation{ .version = implementation_version },
@@ -245,6 +285,7 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
     const req = parseRequest(arena, line) orelse return;
     if (std.mem.eql(u8, req.method, "initialize")) {
         d.subagents = supportsSubagents(req.params);
+        d.background_subagents = supportsBackgroundSubagents(req.params);
         return respondInitialize(w, req, d.load_session != null);
     }
     if (std.mem.eql(u8, req.method, "authenticate"))
@@ -350,6 +391,21 @@ test "subagent draft updates require explicit client capability" {
     out = .fixed(&buf);
     try handleLine(&dispatch, arena.allocator(), &out, "{\"id\":3,\"method\":\"initialize\",\"params\":{\"clientCapabilities\":{\"subagents\":null}}}");
     try std.testing.expect(!dispatch.subagents);
+}
+
+test "background child extension negotiates independently of draft sessions" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [2048]u8 = undefined;
+    var out: Io.Writer = .fixed(&buf);
+    var dispatch: Dispatch = .{ .turn = echoTurn, .ctx = undefined };
+    try handleLine(&dispatch, arena.allocator(), &out, "{\"id\":1,\"method\":\"initialize\",\"params\":{\"clientCapabilities\":{\"_meta\":{\"graff/backgroundSubagents\":true}}}}");
+    try std.testing.expect(dispatch.background_subagents);
+    try std.testing.expect(!dispatch.subagents);
+    try std.testing.expect(std.mem.indexOf(u8, out.buffered(), "\"graff/backgroundSubagents\":true") != null);
+    out = .fixed(&buf);
+    try handleLine(&dispatch, arena.allocator(), &out, "{\"id\":2,\"method\":\"initialize\",\"params\":{\"clientCapabilities\":{\"_meta\":{\"graff/backgroundSubagents\":false}}}}");
+    try std.testing.expect(!dispatch.background_subagents);
 }
 
 test "session/new reports an isolated checkout when Dispatch.cwd is set" {
