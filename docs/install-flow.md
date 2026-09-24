@@ -29,8 +29,7 @@ It "worked before", so something changed — `install.sh` itself did **not**
    `HARNESS_BUILD=source`.
 2. Symlink `harness -> graff` (back-compat).
 3. **Companion suite** step — installs muonry + zigrep tools + codedb.
-4. **kuri** step (opt-in).
-5. PATH check, done.
+4. PATH check, done.
 
 Only step 1 is required; the harness "works fine without it, premium paths just
 stay dormant."

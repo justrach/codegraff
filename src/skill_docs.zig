@@ -2,7 +2,7 @@
 //! loads into context on demand.
 //!
 //! NOT to be confused with skills.zig, which is the *companion binary*
-//! registry (`/skills add kuri` — CLI tools the harness upgrades itself with
+//! registry (`/skills add graff` — CLI tools the harness upgrades itself with
 //! when they're on PATH). This module is the document-shaped kind, same layout
 //! Claude Code uses: `<dir>/<name>/SKILL.md` (or `<dir>/<name>.md`) with
 //! `name:`/`description:` frontmatter and a markdown body. Discovery is tiered

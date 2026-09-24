@@ -8,8 +8,7 @@ Two kinds of thing are called "skills" in graff, and `/skills` lists both:
 
 - **SKILL.md playbooks** (this document): markdown instructions loaded on
   demand through the `skill` tool. Implemented in `src/skill_docs.zig`.
-- **Companion tools** (`src/skills.zig`): optional CLI binaries such as `kuri`
-  or the codedb suite, which the harness detects on PATH and mentions in one
+- **Companion tools** (`src/skills.zig`): optional CLI binaries from the graff code-intelligence suite, which the harness detects on PATH and mentions in one
   context line each. `/skills add <name>` installs those.
 
 ## Layout and precedence

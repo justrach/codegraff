@@ -8,6 +8,7 @@ import {
   extensionPin,
   extensionStatus,
 } from "@/lib/extension-bridge";
+import { sameOriginUiRequest } from "@/lib/extension-auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,12 +29,14 @@ export const dynamic = "force-dynamic";
 const HOLD_MS = 25_000;
 
 export async function GET(req: NextRequest) {
-  if (!checkBearer(req.headers.get("authorization"))) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  if (!checkBearer(req.headers.get("authorization")) && !sameOriginUiRequest(req)) return Response.json({ error: "Unauthorized" }, { status: 401 });
   return Response.json(extensionStatus());
 }
 
 export async function POST(req: NextRequest) {
-  if (!checkBearer(req.headers.get("authorization"))) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const extension = checkBearer(req.headers.get("authorization"));
+  const ui = sameOriginUiRequest(req);
+  if (!extension && !ui) return Response.json({ error: "Unauthorized" }, { status: 401 });
   let body: Record<string, unknown>;
   try {
     body = (await req.json()) as Record<string, unknown>;
@@ -41,6 +44,7 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: "expected JSON" }, { status: 400 });
   }
   const type = body.type;
+  if (!extension && (type === "poll" || type === "result" || type === "event")) return Response.json({ error: "Unauthorized" }, { status: 401 });
   if (type === "poll") {
     const extId = typeof body.extId === "string" ? body.extId : "unknown";
     const tabs = Array.isArray(body.tabs) ? body.tabs : [];
