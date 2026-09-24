@@ -19,8 +19,9 @@ async function runPageRecovery({ win, report }) {
     throw Error(`Tab recovery ${stage} timed out: ${JSON.stringify({ ready: last?.ready, openTabs: last?.tabs?.length, savedTabs: last?.record?.tabs?.length ?? null })}`);
   };
   const initial = await wait(state => state.ready && state.tabs.length > 0 && state.record?.tabs?.length > 0, 'page readiness');
-  await wc.executeJavaScript(`window.dispatchEvent(new CustomEvent('graff-desktop-action', {detail:'new'}))`);
-  const before = await wait(state => state.tabs.length === initial.tabs.length + 1 && state.record?.tabs?.length === initial.record.tabs.length + 1, 'new tab checkpoint');
+  assert.equal(await wc.executeJavaScript(`(() => { const button = Array.from(document.querySelectorAll('button[aria-label="New chat"]')).find(node => node.checkVisibility()); button?.click(); return !!button; })()`), true, 'New chat control is visible');
+  const before = await wait(state => state.tabs.length === initial.tabs.length + 1 && state.record?.tabs?.length === initial.record.tabs.length + 1,
+    `new tab checkpoint after ${initial.tabs.length} visible tabs and ${initial.record.tabs.length} saved chats`);
   assert.equal(before.record.activeId, before.active);
   await wc.reload();
   const after = await wait(state => state.ready && state.tabs.length === before.tabs.length && state.active === before.active, 'reload');
