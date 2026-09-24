@@ -549,7 +549,11 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
         if (frames_seen == 1) if (self.tracer) |tr| tr.note("ws", "first frame");
         if (fbuf.items.len == 0) continue :stream;
         try loop_guard.event(self, fbuf.items, false);
-        @import("agent_async_tools.zig").onLine(self, fbuf.items);
+        // Same per-line hook as the SSE reader: streams text/thinking/tool-arg
+        // deltas to the TUI and ACP sinks (and runs async-tool admission).
+        // Without it a WS turn surfaced nothing until the response completed.
+        const sse_line = try std.mem.concat(self.scratchAlloc(), u8, &.{ "data: ", fbuf.items });
+        self.printDelta(sse_line);
         // …and THIS is the budget signal: visible prose, from EITHER event that
         // grows partial_text on SSE — an output-text delta, or the streamed
         // arguments of a whitelisted meta call (attempt_completion / ask_user),
@@ -582,5 +586,6 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     }
     self.traceFirstToken(); // tool-only responses fall back to completion time
     self.codex_ws_used_ms = nowAwakeMs(self.io); // completed turn — restart the idle window (#codex-ws)
+    sink.emit(self.io, .{ .stream_complete = .{ .streamed_text = self.streamed_text } }); // as SSE: flush the held markdown tail
     return full.toOwnedSlice();
 }
