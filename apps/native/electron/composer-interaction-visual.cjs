@@ -55,6 +55,7 @@ async function runComposerInteractions({ win, origin, output }) {
   const windowActions = [];
   ipcMain.handle('window-control', (_event, action) => { windowActions.push(action); });
   try {
+    await js(`localStorage.removeItem('graff.native.open-tabs.v1')`);
     await wc.loadURL(origin); win.setSize(1440, 900); testDesktop.present(win);
     await wait(`!!document.querySelector('textarea') && !document.querySelector('[aria-label="Choose model"]').textContent.includes('Loading')`);
 
@@ -307,11 +308,11 @@ async function runComposerInteractions({ win, origin, output }) {
     await wait(`Array.from(document.querySelectorAll('[data-chat][data-focused="true"] li')).some(e=>e.textContent.includes('A follow-up worth keeping'))`);
     assert.equal(await draft(split), '', 'Queueing transfers the draft into its queue');
     fs.writeFileSync(path.join(output, 'composer-interactions.png'), (await wc.capturePage()).toPNG());
+    await js('window.galleryBenchmark=false');
+    await wait(`!document.querySelector('[data-chat][data-focused="true"] [aria-label="Stop"]') && !document.querySelector('[data-chat][data-focused="true"] [data-queued-prompt]')`);
     console.log('Composer interactions passed: portaled pointer selection, IME, shortcut ownership, per-chat drafts and uploads, split zoom, independent stop and queue.');
   } finally {
     ipcMain.removeHandler('window-control');
-    await wc.loadURL(origin);
-    await wait(`!!document.querySelector('textarea')`);
   }
 }
 module.exports = { runComposerInteractions };

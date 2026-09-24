@@ -12,6 +12,7 @@ async function runChatScroll({ win, origin, output }) {
     }
     throw Error(`Chat scroll timed out: ${code}`);
   };
+  await js(`localStorage.removeItem('graff.native.open-tabs.v1')`);
   await wc.loadURL(origin); win.setSize(1100, 760); testDesktop.present(win);
   await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   await js(`(() => {

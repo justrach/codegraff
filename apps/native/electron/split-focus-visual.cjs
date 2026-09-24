@@ -86,6 +86,7 @@ async function runSplitFocus({win,origin,output}) {
   wc.send('desktop-action','close');
   await wait(`document.querySelectorAll('[data-chat]').length===2`);
   assert.deepEqual(await ids(),[finalPanes[0],finalPanes[2]],'Native close follows keyboard pane focus even when the text cursor was in another pane');
+  await js(`localStorage.removeItem('graff.native.open-tabs.v1')`);
   await wc.loadURL(origin);await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   console.log('Split interaction passed: native/DOM close routing, stable pointer/keyboard focus, preserved drafts, mouse resizing in both directions, shared toolbar.');
 }
