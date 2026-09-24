@@ -15,6 +15,7 @@ const version_status = @import("version_status.zig");
 const update_target = @import("update_target.zig");
 const archive = @import("update_archive.zig");
 const credential_store = @import("credential_store.zig");
+const beta_feed = @import("beta_feed.zig");
 
 pub const FetchError = error{ Offline, Malformed, Permission, OutOfMemory };
 
@@ -83,6 +84,7 @@ pub const Opts = struct {
     target_path: []const u8,
     asset_name: []const u8,
     fetch: Fetch,
+    channel: enum { stable, beta } = .stable,
     cancel: ?*const std.atomic.Value(bool) = null,
 };
 
@@ -125,6 +127,29 @@ fn fetchOwned(opts: Opts, url: []const u8) FetchError![]u8 {
 }
 
 fn latestFromFetch(opts: Opts) FetchError![]u8 {
+    if (opts.channel == .beta) {
+        const branches = try fetchOwned(opts, beta_feed.branches_url);
+        defer opts.gpa.free(branches);
+        const branch = beta_feed.newestBranch(branches, opts.gpa) orelse return error.Malformed;
+        defer opts.gpa.free(branch);
+        var best: ?[]u8 = null;
+        errdefer if (best) |b| opts.gpa.free(b);
+        for (1..11) |page| {
+            const url = if (page == 1) beta_feed.releases_url else std.fmt.allocPrint(opts.gpa, "{s}&page={d}", .{ beta_feed.releases_url, page }) catch return error.OutOfMemory;
+            defer if (page != 1) opts.gpa.free(url);
+            const releases = try fetchOwned(opts, url);
+            defer opts.gpa.free(releases);
+            const count = beta_feed.releaseCount(releases, opts.gpa) orelse return error.Malformed;
+            if (beta_feed.newestRelease(releases, branch, opts.gpa)) |candidate| {
+                if (best == null or beta_feed.compareTags(candidate, best.?).? == .gt) {
+                    if (best) |b| opts.gpa.free(b);
+                    best = candidate;
+                } else opts.gpa.free(candidate);
+            }
+            if (count < 100) return best orelse error.Malformed;
+        }
+        return error.Malformed; // Incomplete feed: never guess at an older beta.
+    }
     const body = fetchOwned(opts, version_status.repo_api) catch |err| return err;
     defer opts.gpa.free(body);
     var tag_buf: [64]u8 = undefined;
@@ -154,8 +179,34 @@ pub fn inspect(opts: Opts) Report {
     }, null, installed, "could not reach the release feed");
     defer opts.gpa.free(tag);
 
-    const run = version_status.compare(opts.running_version, tag);
+    // The stable comparison parser accepts numeric tags, while beta tags add
+    // two run components. Compare stable versions against the beta's base and
+    // compare beta-to-beta versions with the full tag below.
+    const numeric_tag = if (opts.channel == .beta)
+        tag[0..(std.mem.indexOf(u8, tag, "-beta.") orelse return snapshot(opts, .malformed, tag, installed, "unparseable beta tag"))]
+    else
+        tag;
+    const run = version_status.compare(opts.running_version, numeric_tag);
     if (run.failure == .latest_tag) return snapshot(opts, .malformed, tag, installed, "unparseable release tag");
+
+    if (opts.channel == .beta) {
+        // A stable build at the same base version is newer than its beta.
+        // An identical beta (running or installed) needs no replacement.
+        if (installed) |inst| {
+            if (std.mem.eql(u8, version_status.stripV(std.mem.trim(u8, inst, " \t\r\n")), version_status.stripV(tag)))
+                return snapshot(opts, .already_installed, tag, inst, "the install target is already at this beta");
+            const disk = version_status.compare(std.mem.trim(u8, inst, " \t\r\n"), numeric_tag);
+            const disk_beta = beta_feed.compareTags(std.mem.trim(u8, inst, " \t\r\n"), tag);
+            if (disk.order == .gt or (disk.order == .eq and disk.clean_release) or
+                (disk_beta != null and disk_beta.? == .gt))
+                return snapshot(opts, .newer, tag, inst, "installed version is newer than this beta");
+        }
+        const run_beta = beta_feed.compareTags(opts.running_version, tag);
+        if (run.order == .gt or (run.order == .eq and run.clean_release) or
+            (run_beta != null and run_beta.? == .gt))
+            return snapshot(opts, .newer, tag, installed, "running version is newer than this beta");
+        return snapshot(opts, .available, tag, installed, "");
+    }
 
     if (installed) |inst| {
         if (version_status.alreadyHasRelease(inst, tag))
