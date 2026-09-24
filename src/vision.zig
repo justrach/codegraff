@@ -56,11 +56,7 @@ pub fn visionModel(m_full: []const u8) bool {
     const slash = std.mem.lastIndexOfScalar(u8, m_full, '/');
     const m = if (slash) |i| m_full[i + 1 ..] else m_full;
     return std.mem.startsWith(u8, m, "claude") or
-        std.mem.startsWith(u8, m, "gpt-6-astra") or
-        std.mem.startsWith(u8, m, "gpt-6-sol") or
-        std.mem.startsWith(u8, m, "gpt-6-luna") or
-        std.mem.startsWith(u8, m, "gpt-5") or
-        std.mem.startsWith(u8, m, "gpt-4") or
+        openaiGptVision(m) or
         std.mem.startsWith(u8, m, "grok-4") or
         std.mem.startsWith(u8, m, "glm-5v") or // glm-5v-turbo & co: explicit vision variants
         std.mem.startsWith(u8, m, "glm-5.3") or // glm-5.3 / glm-5.3-flash accept images on codegraff
@@ -74,6 +70,16 @@ pub fn visionModel(m_full: []const u8) bool {
         std.mem.startsWith(u8, m, "pixtral") or
         std.mem.indexOf(u8, m, "-vl") != null or // qwen2-vl, qwen2.5-vl, internvl, …
         std.mem.indexOf(u8, m, "vision") != null; // llama-3.2-vision, minicpm-v-vision, …
+}
+
+/// Every OpenAI gpt-* chat model accepts image input (gpt-4*, gpt-5*, gpt-6*
+/// and whatever ships next), so match the family rather than listing
+/// releases. The two exceptions are text-only: open-weight gpt-oss and the
+/// retired gpt-3.5 line.
+fn openaiGptVision(m: []const u8) bool {
+    if (!std.mem.startsWith(u8, m, "gpt-")) return false;
+    const rest = m["gpt-".len..];
+    return !std.mem.startsWith(u8, rest, "oss") and !std.mem.startsWith(u8, rest, "3");
 }
 
 pub fn visionCapable(p: Provider) bool {
@@ -380,6 +386,25 @@ test "visionCapable allowlist" {
     try std.testing.expect(visionCapable(mk("glm-5.3-flash"))); // codegraff backend accepts images
     try std.testing.expect(visionCapable(mk("glm-5v-turbo"))); // glm's explicit vision variant
     try std.testing.expect(!visionCapable(mk("minimax-m3")));
+}
+
+test "visionModel: every OpenAI gpt-* model sees images, gpt-oss and gpt-3.5 do not" {
+    // Catalog-driven so a new gpt-* entry can't ship text-only by omission.
+    for (@import("pricing.zig").model_table) |m| {
+        const slash = std.mem.lastIndexOfScalar(u8, m.name, '/');
+        const bare = if (slash) |i| m.name[i + 1 ..] else m.name;
+        if (!std.mem.startsWith(u8, bare, "gpt-") or std.mem.startsWith(u8, bare, "gpt-oss")) continue;
+        std.testing.expect(visionModel(m.name)) catch |e| {
+            std.debug.print("{s} is not vision-capable\n", .{m.name});
+            return e;
+        };
+    }
+    try std.testing.expect(visionModel("gpt-7"));
+    try std.testing.expect(visionModel("gpt-5.3-codex-spark"));
+    try std.testing.expect(visionModel("gpt-4.1-mini"));
+    try std.testing.expect(!visionModel("gpt-oss-120b"));
+    try std.testing.expect(!visionModel("accounts/fireworks/models/gpt-oss-120b"));
+    try std.testing.expect(!visionModel("gpt-3.5-turbo"));
 }
 
 test "visionModel: vision-capable model families only" {
