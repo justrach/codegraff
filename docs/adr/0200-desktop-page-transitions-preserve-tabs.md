@@ -1,4 +1,4 @@
-# 0198. Desktop page transitions preserve chat references
+# 0200. Desktop page transitions preserve chat references
 
 Status: accepted 2026-09-24
 

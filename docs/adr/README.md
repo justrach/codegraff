@@ -223,8 +223,8 @@ record only when you need the evidence or the edge cases.
 | [0195](0195-embedded-browser-replaces-kuri.md) | Desktop browser uses embedded Chromium, web preview uses the paired extension, and CLI fetch uses built-in HTTP without a sidecar. |
 | [0196](0196-background-acp-agents-use-a-graff-extension.md) | Detached ACP workers stream through an opted-in Graff extension with connection-lifetime output ownership; draft child sessions remain foreground-only. |
 | [0197](0197-deferred-mcp-joins-are-registry-serial.md) | Deferred MCP queues, joins, tool lookup, and catalog snapshots use the registry lock so concurrent requests consume and publish each connection once. |
-| [0198](0198-desktop-page-transitions-preserve-tabs.md) | Desktop restart/reload confirms active-turn interruption and restores tab references from saved sessions in their workspaces. |
 | [0199](0199-generated-checkouts-belong-to-project-history.md) | Generated worktree activity rolls up to the owning project in automatic suggestions; explicitly saved checkouts stay selectable. |
+| [0200](0200-desktop-page-transitions-preserve-tabs.md) | Desktop restart/reload confirms active-turn interruption and restores tab references from saved sessions in their workspaces. |
 
 ## When to write one
 
