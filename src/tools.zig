@@ -395,8 +395,7 @@ pub const webfetch_cap = 256 * 1024;
 /// them, and bounds the context on its own.
 pub const codedb_result_cap = 64 * 1024;
 
-/// True when the text carries no real content (empty, or whitespace only) —
-/// kuri-fetch "succeeds" on JS-rendered SPAs but emits pages of blank lines.
+/// True when the text carries no real content (empty, or whitespace only).
 pub fn blankText(text: []const u8) bool {
     var meaningful: usize = 0;
     for (text) |c| switch (c) {
@@ -406,10 +405,8 @@ pub fn blankText(text: []const u8) bool {
     return meaningful < 16;
 }
 
-/// Fallback webfetch path: a plain GET via the harness's shared HTTP client,
-/// raw body (HTML/text), capped at webfetch_cap. Load-bearing even when kuri
-/// is installed — it covers the servers kuri's TLS stack rejects and the
-/// SPAs it renders blank.
+/// Fetch via the harness's shared HTTP client. The raw HTML/text body is
+/// capped at webfetch_cap.
 pub fn rawFetch(gpa: Allocator, client: *std.http.Client, url: []const u8) ToolOutput {
     const buf = gpa.alloc(u8, webfetch_cap) catch return .{ .is_error = true };
     defer gpa.free(buf);

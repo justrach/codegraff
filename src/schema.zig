@@ -76,7 +76,7 @@ pub const base_specs = [_]ToolSpec{
     },
     .{
         .name = "webfetch",
-        .desc = "Fetch an http(s) URL and return the page content. When the kuri fetcher is installed (and not disabled) the page arrives as markdown; otherwise — or whenever kuri fails or returns nothing — a plain HTTP GET returns the raw HTML/text. Output is size-capped.",
+        .desc = "Fetch an http(s) URL with a plain HTTP GET and return the raw HTML/text. Output is size-capped.",
         .schema =
         \\{"type": "object", "properties": {"url": {"type": "string", "description": "Absolute http:// or https:// URL to fetch"}}, "required": ["url"]}
         ,

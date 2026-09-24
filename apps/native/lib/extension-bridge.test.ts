@@ -61,7 +61,7 @@ describe("extension-bridge", () => {
     extensionPoll("ext-1", []);
     assert.equal(extensionPaired(), true);
     attachChatTab("chat-a", 9);
-    // The sidecar block still renders for sidecar pins alongside.
-    assert.match(annotationsBlock([{ ...PIN, source: "sidecar" }], null), /sidecar/);
+    // Embedded-browser pins still render alongside extension pins.
+    assert.match(annotationsBlock([{ ...PIN, source: "sidecar" }], null), /Browser annotations/);
   });
 });

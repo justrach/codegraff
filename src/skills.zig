@@ -46,13 +46,6 @@ pub const skills_registry = [_]SkillDef{
         .install = "curl -fsSL https://codegraff.com/install-graff.sh | sh",
         .note = "", // the codedb tool description + zigpatch delegation already cover it
     },
-    .{
-        .name = "kuri",
-        .desc = "browser automation, web crawling, iOS/Android device control (github.com/justrach/kuri)",
-        .bins = &.{"kuri"},
-        .install = "curl -fsSL https://raw.githubusercontent.com/justrach/kuri/main/install.sh | sh",
-        .note = "The `kuri` CLI is installed (browser automation, HAR capture, iOS/Android device control) — prefer it via bash for those tasks; run `kuri --help` once first. Never synthesize simulator input (`kuri ios tap/swipe/scroll/type`) in background work — it grabs the user's real cursor and focus; use `xcrun simctl` instead, shut down devices you boot, and never `open -a Simulator` for background work (#407).",
-    },
 };
 
 /// System-prompt notes for known MCP servers (the MCP twin of skill notes):
@@ -353,13 +346,14 @@ test "mcpServerConnected: prefix match on qualified names" {
 }
 
 test "skillDisabled: registry lookup and toggle" {
-    const i = skillIndex("kuri").?;
+    const i = skillIndex("graff").?;
     const saved = main_mod.g_skill_disabled[i];
     defer main_mod.g_skill_disabled[i] = saved;
     main_mod.g_skill_disabled[i] = false;
-    try std.testing.expect(!skillDisabled("kuri"));
+    try std.testing.expect(!skillDisabled("graff"));
     main_mod.g_skill_disabled[i] = true;
-    try std.testing.expect(skillDisabled("kuri"));
+    try std.testing.expect(skillDisabled("graff"));
+    try std.testing.expect(!skillDisabled("kuri"));
     try std.testing.expect(!skillDisabled("not-a-skill"));
 }
 
@@ -367,23 +361,24 @@ test "companion opt-out: {\"skills\":{\"codedbpro\":false}} disables auto-connec
     // applySkillSettings is the pure half of loadSkillSettings; prove the
     // settings key flips companionDisabled(), the flag the auto-connect reads.
     const saved_companion = main_mod.g_companion_disabled;
-    const ki = skillIndex("kuri").?;
-    const saved_kuri = main_mod.g_skill_disabled[ki];
+    const ki = skillIndex("graff").?;
+    const saved_graff = main_mod.g_skill_disabled[ki];
     defer {
         main_mod.g_companion_disabled = saved_companion;
-        main_mod.g_skill_disabled[ki] = saved_kuri;
+        main_mod.g_skill_disabled[ki] = saved_graff;
     }
     main_mod.g_companion_disabled = @splat(false);
     main_mod.g_skill_disabled[ki] = false;
 
     var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_inst.deinit();
-    const json = "{\"skills\":{\"codedbpro\":false,\"kuri\":false}}";
+    const json = "{\"skills\":{\"codedbpro\":false,\"graff\":false,\"kuri\":false}}";
     const v = try std.json.parseFromSliceLeaky(Value, arena_inst.allocator(), json, .{ .allocate = .alloc_always });
     applySkillSettings(v.object.get("skills").?);
 
     try std.testing.expect(companionDisabled("codedbpro")); // the fix: was always false before
-    try std.testing.expect(skillDisabled("kuri")); // existing registry path still works
+    try std.testing.expect(skillDisabled("graff"));
+    try std.testing.expect(skillIndex("kuri") == null); // retired entries stay ignored
     try std.testing.expect(!companionDisabled("not-a-server"));
 }
 
@@ -408,6 +403,6 @@ test "codedb-pro license probe is bounded" {
 
 test "skillIndex: registry lookup" {
     try std.testing.expect(skillIndex("graff") != null);
-    try std.testing.expect(skillIndex("kuri") != null);
+    try std.testing.expect(skillIndex("kuri") == null);
     try std.testing.expect(skillIndex("nonexistent-skill") == null);
 }

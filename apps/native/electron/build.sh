@@ -2,7 +2,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../../.." && pwd)"
-version="${GRAFF_VERSION:-0.0.291}"
+version="${GRAFF_VERSION:-0.0.302.5}"
 ui="$root/apps/native"
 out="$root/zig-out/electron"
 app_name="Codegraff"

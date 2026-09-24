@@ -195,7 +195,7 @@ const title_mod = @import("title.zig");
 // is read from here; the mutable steer/thinking globals stay here, read/written live via `main_mod.g_x` (never aliased — they're `var`s).
 const repl_glue = @import("repl_glue.zig");
 const fallback_config = @import("fallback_config.zig");
-/// Per-skill user opt-out, persisted as {"skills": {"kuri": false}} in .harness/settings.json. A disabled skill is treated as not installed
+/// Per-skill user opt-out, persisted under "skills" in .harness/settings.json. A disabled skill is treated as not installed
 /// anywhere — no system-prompt note, /skills shows it disabled, and webfetch never shells out to it, even when its binaries are on PATH.
 pub var g_skill_disabled: [skills_registry.len]bool = @splat(false);
 /// Same opt-out, for the metered companion MCP servers (codedb-pro) — they live in companion_servers, NOT skills_registry, so need their own flags.
