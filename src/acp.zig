@@ -285,7 +285,7 @@ fn echoTurn(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror![]cons
     return std.fmt.allocPrint(arena, "echo:{s}", .{text});
 }
 
-test "userMessage promotes a GUI @[image] attachment to a native vision block" {
+test "userMessage sends a Codex GPT-6 Sol GUI attachment as a native vision block" {
     var state = std.heap.ArenaAllocator.init(testing.allocator);
     defer state.deinit();
     const a = state.allocator();
@@ -295,7 +295,7 @@ test "userMessage promotes a GUI @[image] attachment to a native vision block" {
         .arena = a,
         .io = testing.io,
         .client = undefined,
-        .provider = .{ .id = "xai", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "grok-4", .context = 100_000 },
+        .provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-6-sol", .context = 100_000 },
         .messages = std.json.Array.init(a),
         .sub = false,
         .label = "test",
