@@ -253,6 +253,11 @@ pub const Registry = struct {
         };
         return n;
     }
+    pub fn snapshotTools(reg: *Registry, allocator: Allocator) ![]Tool {
+        reg.mutex.lockUncancelable(reg.io);
+        defer reg.mutex.unlock(reg.io);
+        return allocator.dupe(Tool, reg.tools);
+    }
     /// Spawn a stdio child and wire up its transport. Factored out of
     /// `startServer` so the `GRAFF_MCP_PROBE` path can call it a second
     /// time: some legacy SDK servers close stdout on an unrecognized
@@ -477,6 +482,8 @@ pub const Registry = struct {
         return reg.callWithContext(out_alloc, qualified, input, null);
     }
     pub fn callWithContext(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value, context: ?@import("mcp_turn_context.zig").Snapshot) !CallResult {
+        reg.mutex.lockUncancelable(reg.io);
+        defer reg.mutex.unlock(reg.io);
         const tool = for (reg.tools) |t| {
             if (std.mem.eql(u8, t.qualified_name, qualified)) break t;
         } else return .{ .text = try out_alloc.dupe(u8, "unknown MCP tool"), .is_error = true };
@@ -485,9 +492,6 @@ pub const Registry = struct {
         const turn_ctx = @import("mcp_turn_context.zig").effective(context, reg.io, server.name);
         const params = try @import("mcp_turn_context.zig").params(reg.gpa, server.name, tool.original_name, input, turn_ctx);
         defer reg.gpa.free(params);
-
-        reg.mutex.lockUncancelable(reg.io);
-        defer reg.mutex.unlock(reg.io);
 
         // Tool responses can be large and numerous; keep them out of the
         // session arena. Only the returned text is copied to `out_alloc`.
