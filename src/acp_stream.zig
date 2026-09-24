@@ -74,6 +74,7 @@ pub fn writeToolCall(w: *Io.Writer, session_id: []const u8, id: []const u8, name
             .kind = kindFor(name),
             .status = "in_progress",
             .rawInput = input,
+            ._meta = .{ .@"graff/toolName" = name },
         },
     });
 }

@@ -352,7 +352,11 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     // #352: codex-gated. execImagegen answers a call that was never advertised
     // (an unavailable session) with the same honest error it gives the model.
     if (std.mem.eql(u8, call.name, imagegen.tool_name)) return imagegen.execImagegen(ctx, input);
-    if (std.mem.eql(u8, call.name, "subagent")) return execSubagent(ctx, input);
+    if (std.mem.eql(u8, call.name, "subagent")) {
+        var child_ctx = ctx;
+        child_ctx.parent_tool_call_id = call.id;
+        return execSubagent(child_ctx, input);
+    }
     if (std.mem.eql(u8, call.name, "workflow")) return execWorkflow(ctx, input);
     if (std.mem.eql(u8, call.name, @import("rlm.zig").tool_name)) return @import("rlm.zig").exec(ctx, input);
     if (local_tools.isLocal(call.name)) return local_tools.exec(gpa, io, call.name, input);
