@@ -27,9 +27,7 @@ const intField = tools.intField;
 const missingArg = tools.missingArg;
 const outsideCwd = tools.outsideCwd;
 const beforeFromRead = tools.beforeFromRead; // /rewind snapshot classifier (snapshots.zig)
-const blankText = tools.blankText;
 const rawFetch = tools.rawFetch;
-const webfetch_cap = tools.webfetch_cap;
 
 const subagent = @import("subagent.zig");
 const execSubagent = subagent.execSubagent;
@@ -47,7 +45,6 @@ const jobs = @import("jobs.zig");
 const runCapped = jobs.runCapped;
 const exec_bash = @import("exec_bash.zig");
 const shell_tool = @import("shell_tool.zig");
-const skills = @import("skills.zig");
 const skill_docs = @import("skill_docs.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: refuse an MCP tool whose schema was never loaded
 const read_file = @import("read_file.zig");
@@ -245,24 +242,6 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             .text = try gpa.dupe(u8, "webfetch only handles absolute http:// and https:// URLs"),
             .is_error = true,
         };
-        // kuri-preferred, never kuri-dependent: kuri-fetch converts HTML to
-        // markdown, but its TLS stack rejects some servers and JS-rendered
-        // SPAs come back blank — any failure or empty result falls through
-        // to the harness's own HTTP client below.
-        if (!skills.skillDisabled("kuri") and skills.binOnPath(io, "kuri-fetch")) kuri: {
-            const run = runCapped(gpa, io, &.{ "kuri-fetch", "-q", "--no-color", url }, webfetch_cap, 4096, 0) catch break :kuri;
-            defer {
-                gpa.free(run.stdout);
-                gpa.free(run.stderr);
-            }
-            if (run.term != .exited or run.term.exited != 0) break :kuri;
-            if (blankText(run.stdout)) break :kuri; // SPA / conversion failure
-            var aw: Io.Writer.Allocating = .init(gpa);
-            errdefer aw.deinit();
-            try aw.writer.writeAll(run.stdout);
-            if (run.stdout_truncated) try aw.writer.print("\n[truncated at {d} KB]", .{webfetch_cap / 1024});
-            return .{ .text = try aw.toOwnedSlice() };
-        }
         return rawFetch(gpa, ctx.client, url);
     }
     if (std.mem.eql(u8, call.name, result_read.tool_name)) return result_read.exec(ctx, call);

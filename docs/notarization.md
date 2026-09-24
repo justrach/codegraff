@@ -133,5 +133,3 @@ All four commands must pass. That is the whole release.
   ship the accepted bytes (step 3).
 - **Stray asset after upload** — wrong local filename; delete the stray
   asset and upload again under the canonical name.
-- **Tests failing locally about webfetch/catalog counts** — environment,
-  not you: webfetch hides when the kuri fetcher is installed. CI stays green.

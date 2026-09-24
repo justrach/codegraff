@@ -1,4 +1,4 @@
-import type { BrowserPin, KuriHandle } from "./browser/annotations";
+import type { BrowserPin, BrowserHandle as EmbeddedBrowserHandle } from "./browser/annotations";
 import type { PageInfo } from "./browser-client";
 
 export type DesktopEvent = { type: string; chat?: string; url?: string; info?: PageInfo; pin?: BrowserPin };
@@ -27,4 +27,4 @@ declare global { interface Window { graffDesktop?: DesktopBridge } }
 export function desktop(): DesktopBridge | undefined {
   return typeof window !== "undefined" ? window.graffDesktop : undefined;
 }
-export type BrowserHandle = KuriHandle;
+export type BrowserHandle = EmbeddedBrowserHandle;

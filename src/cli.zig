@@ -21,12 +21,10 @@ const version_status = @import("version_status.zig");
 pub const changelog_text =
     \\What's new
     \\──────────
-    \\0.0.302.4
-    \\  • streamed and dependent tool work retains call identity and result order
-    \\  • HTTP/2 requests use bounded, reusable transport where supported
-    \\  • ACP and desktop effort controls reflect the active model's capabilities
-    \\  • workspace recovery and usage reporting preserve uncertain outcomes
-    \\  • desktop navigation keeps real errors visible without covering a replacement page
+    \\0.0.302.5
+    \\  • route checks preserve explicitly qualified selections
+    \\  • the old browser companion is retired; webfetch uses built-in HTTP
+    \\  • web-only browser access uses the paired Chrome extension
     \\
     \\Full release history: https://github.com/justrach/codegraff/releases
     \\

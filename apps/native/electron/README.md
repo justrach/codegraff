@@ -65,10 +65,9 @@ GRAFF_CWD="$PWD" GRAFF_ELECTRON_SMOKE=/tmp/graff-electron-smoke.json \
   zig-out/electron/Codegraff.app/Contents/MacOS/Codegraff
 ```
 
-The existing AppKit/Kuri shell remains a fallback through
-`bash apps/native/desktop/build-app.sh`. Its release updater is not reused by
-this local Electron trial. Browser permissions are denied by default; a
-permission UI and release updater are follow-up distribution work.
+The older AppKit shell remains available through
+`bash apps/native/desktop/build-app.sh`. Browser permissions are denied by
+default in the Electron build.
 
 ## Browser passkeys
 
@@ -139,10 +138,9 @@ The computer tool discovers running apps, inspects Accessibility trees, activate
 apps, presses elements, sets values, clicks, types, sends shortcuts, scrolls and
 captures screens. Screen captures include display bounds and image dimensions.
 
-Kuri cannot start through this desktop's legacy browser routes. The generated
-MCP config omits Kuri entries from the global config, without editing the source
-configuration. Independently configured project/plugin tools are separate from
-the desktop browser and are not uninstalled.
+Legacy browser routes return 410. The embedded desktop browser is exposed
+through the desktop bridge. Independently configured project/plugin tools are
+separate and are not uninstalled.
 
 ## Profiler and feedback
 

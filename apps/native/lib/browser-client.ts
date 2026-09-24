@@ -1,10 +1,6 @@
-/** Browser side of /api/browser and the Chrome extension bridge: the
- * sidecar's live page, its controls, and the element lookups behind
- * annotations. Extension rows (the user's own Chrome, paired explicitly)
- * speak the same method set; see apps/chrome-extension for the other end. */
+/** Embedded desktop browser and paired Chrome extension helpers. */
 
-import type { KuriState } from "@/lib/browser/kuri-supervisor";
-import type { KuriHandle, PinElement } from "@/lib/browser/annotations";
+import type { BrowserHandle, PinElement } from "@/lib/browser/annotations";
 async function extensionCall<T>(chat: string, method: string, params: Record<string, unknown> = {}): Promise<T> {
   const res = await fetch("/api/extension", {
     method: "POST",
@@ -19,11 +15,9 @@ async function extensionCall<T>(chat: string, method: string, params: Record<str
 
 import { desktop } from "./desktop";
 
-const BASE = "/api/browser";
 
 export type PageInfo = { tabId: string; url: string; title: string; width: number; height: number; ready: string };
 
-export type BrowserStatus = { kuri: KuriState; tab: PageInfo | null };
 
 export type ExtensionTab = { id: number; windowId: number; url: string; title: string; active: boolean };
 
@@ -72,39 +66,10 @@ export type InputEvent =
   | { kind: "type"; text: string };
 
 export async function browserCall<T>(chat: string, method: string, params?: Record<string, unknown>): Promise<T> {
-  if (desktop()) return desktop()!.browser<T>(chat, method, params);
-  const res = await fetch(BASE, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chat, method, params }),
-    cache: "no-store",
-  });
-  const text = await res.text();
-  let body: unknown = null;
-  try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = null;
-  }
-  if (!res.ok) {
-    const detail = body && typeof body === "object" && typeof (body as { error?: unknown }).error === "string" ? (body as { error: string }).error : text;
-    throw new Error(detail || `browser ${method} → ${res.status}`);
-  }
-  return body as T;
+  const bridge = desktop();
+  return bridge ? bridge.browser<T>(chat, method, params) : extensionCall<T>(chat, method, params);
 }
 
-export async function browserStatus(chat: string): Promise<BrowserStatus> {
-  const res = await fetch(`${BASE}?chat=${encodeURIComponent(chat)}`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`browser status → ${res.status}`);
-  return (await res.json()) as BrowserStatus;
-}
-
-/** The current picture of the chat's tab; `tick` defeats the image cache. */
-export function frameUrl(chat: string, quality: number, tick: number): string {
-  return `${BASE}?chat=${encodeURIComponent(chat)}&frame=1&q=${quality}&t=${tick}`;
-}
-
-export const browserWarm = () => browserCall<{ kuri: KuriState }>("default", "warm");
 export const browserOpen = (chat: string, url: string, width: number, height: number) =>
   browserCall<PageInfo>(chat, "open", { url, width, height });
 export const browserNavigate = (chat: string, url: string) => browserCall<PageInfo>(chat, "navigate", { url });
@@ -117,9 +82,8 @@ export const browserInspect = (chat: string, x: number, y: number) => browserCal
 export const browserHighlight = (chat: string, target: { ref: string } | { selector: string }) =>
   browserCall<{ ok: true }>(chat, "highlight", target);
 export const browserMap = (chat: string) => browserCall<ElementMap | null>(chat, "map");
-export const browserHandle = (chat: string) => browserCall<KuriHandle | null>(chat, "handle");
-export const browserClose = (chat: string) => browserCall<{ ok: true }>(chat, "close");
-export const browserStop = (chat: string) => browserCall<{ kuri: KuriState }>(chat, "stop");
+export const browserHandle = (chat: string) => desktop() ? browserCall<BrowserHandle | null>(chat, "handle") : Promise.resolve(null);
+export const browserClose = (chat: string) => desktop() ? browserCall<{ ok: true }>(chat, "close") : Promise.resolve({ ok: true as const });
 
 /** The same methods against the user's own Chrome, via the paired
  * extension instead of the sidecar. `open` creates a tab in the user's

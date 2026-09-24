@@ -265,49 +265,13 @@ For an optimization comparison, `bun run benchmark:desktop` runs identical
 streaming and scrolling workloads against a selected production build. See
 [the benchmark instructions](electron/VISUAL-TESTS.md#comparing-production-builds).
 
-## Browser sidecar (experimental)
+## Embedded browser
 
-The **Browser** button in the tab bar (or the sidebar's Browser item)
-opens a pane showing a live Chrome tab that belongs to the chat. It is
-[Kuri](https://github.com/justrach/kuri)'s managed headless Chrome, driven
-over `/api/browser`; install Kuri (`curl -fsSL https://kuri.trilok.ai/download | sh`)
-or set `KURI_BIN`. Nothing runs until a pane is opened, and a browser that
-sees no requests for `GRAFF_BROWSER_IDLE_MINS` (default 20, `0` = never) is
-stopped again. Its footprint is capped: when Kuri and its Chrome tree pass
-`GRAFF_BROWSER_MAX_RSS_MB` (default 3072, `0` = no cap) they are stopped
-and the next request starts a fresh browser. Kuri is started with
-`KURI_ALLOW_LOCAL=1` so dev servers on this machine open; a Kuri older
-than that flag refuses localhost.
-
-- **Browse** forwards clicks, scrolling and typing to the page.
-- Drag the pane's left edge to resize it (double-click the edge for the
-  default width, arrow keys when it has focus); the width is remembered
-  and the page's viewport follows, so pins stay on their elements.
-- The address bar takes `localhost:3000`-style addresses; Cmd/Ctrl+L
-  focuses it from the page. The width control next to it shows the page
-  at the pane's own width (1:1) or a wider layout (768, 1024, 1280 px)
-  scaled down, so a desktop layout can be pinned as it will ship. A
-  workspace's pane remembers its last page and goes back there when it
-  opens on a blank tab (after a reload, or a browser restart).
-- **Annotate** pins the element under a click, instantly: the page's
-  pinnable elements (boxes, names, selectors, Kuri refs) are fetched as
-  one map and hit-tested in the pane, so hover and click never wait on
-  the network; the map refreshes after a scroll and every few seconds.
-  A note is optional (Enter keeps it). Pins keep page coordinates and
-  follow the page as it scrolls; the wheel scrolls in both modes and, in
-  Annotate, so do the arrow keys, Page Up/Down, Space, Home and End. Nothing is injected, so any
-  page works. Pins go behind the chat's next prompt as a block naming
-  each element (role, name, selector, box), the note, and — when Kuri's
-  snapshot names the same element — its `@eN` ref, plus the tab's address
-  so the agent can snapshot, act on, and highlight the very page the user
-  is looking at. **Ask graff** in the pane sends them right away, and
-  the tab reloads by itself once a turn that carried pins has finished,
-  so the result is on screen without a click.
-
-The design and what is deliberately left out are in
-`docs/proposals/2026-09-03-browser-sidecar.md`. The sidebar footer names the tab's graff
-session (`native-…`, the `--resume` target); clicking it copies the
-command that continues the same conversation in a terminal.
+The packaged desktop app has a Browser pane backed by its embedded Chromium
+view. It shares the visible page with the agent's browser tool, supports
+navigation and element pins, and requires no separate browser process or
+companion install. In the web-only preview, the Browser pane uses the paired
+Chrome extension so a user can choose the visible tab and pin elements there.
 
 ## Run
 
