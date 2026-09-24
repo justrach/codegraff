@@ -19,6 +19,20 @@ async function runSplitFocus({win,origin,output}) {
   await key('d',{metaKey:true});
   await wait(`document.querySelectorAll('[data-chat]').length===3`);
   const original=await ids();
+  const divider='[data-chat-divider][aria-orientation="vertical"]';
+  const dividerPoint=await js(`(()=>{const r=document.querySelector(${JSON.stringify(divider)}).getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
+  const widths=()=>js(`Array.from(document.querySelectorAll('[data-chat]')).map(e=>e.getBoundingClientRect().width)`);
+  await testDesktop.testInput(wc,{type:'mouseDown',button:'left',clickCount:1,...dividerPoint});
+  await testDesktop.testInput(wc,{type:'mouseMove',button:'left',x:dividerPoint.x+80,y:dividerPoint.y});
+  await testDesktop.testInput(wc,{type:'mouseUp',button:'left',clickCount:1,x:dividerPoint.x+80,y:dividerPoint.y});
+  await wait(`(()=>{const w=Array.from(document.querySelectorAll('[data-chat]')).map(e=>e.getBoundingClientRect().width);return Math.max(...w)-Math.min(...w)>30})()`);
+  const balancePoint=await js(`(()=>{const r=document.querySelector(${JSON.stringify(divider)}).getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
+  for(const clickCount of [1,2]) {
+    await testDesktop.testInput(wc,{type:'mouseDown',button:'left',clickCount,...balancePoint});
+    await testDesktop.testInput(wc,{type:'mouseUp',button:'left',clickCount,...balancePoint});
+  }
+  await wait(`(()=>{const w=Array.from(document.querySelectorAll('[data-chat]')).map(e=>e.getBoundingClientRect().width);return Math.max(...w)-Math.min(...w)<10})()`);
+  assert.ok(Math.max(...await widths())-Math.min(...await widths())<10,'Double-click must rebalance all three chat panes after a drag');
   await js(`document.querySelectorAll('[data-chat] textarea').forEach((e,i)=>{Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,'Draft '+i);e.dispatchEvent(new Event('input',{bubbles:true}));})`);
   await pointer(`[data-chat="${original[1]}"] textarea`);
   fs.writeFileSync(path.join(output,'split-before-close.png'),(await wc.capturePage()).toPNG());

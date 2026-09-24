@@ -33,7 +33,8 @@ Tabs and workspace controls live in a shared toolbar above all panes. A combined
 tab shows its member names and a miniature layout icon. Each split
 has a compact, consistent header identifying its chat and folder. Adjacent panes
 can be resized by dragging their separator or using its arrow keys; double-click
-balances the pair. The active pane has an accent border.
+balances the visible chat layout, including groups with more than two panes. The
+active pane has an accent border.
 
 Projects and Conversations hide the chat layout while keeping it mounted, so
 visiting either surface preserves visible composers and transcript positions.
