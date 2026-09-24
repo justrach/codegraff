@@ -68,3 +68,26 @@ test "ACP writer does not expose partial JSON lines" {
     try framed.writer.flush();
     try std.testing.expectEqualStrings("{\"id\":1}\n{\"id\":2}\n", transport.buffered());
 }
+
+test "independent producers keep interleaved partial JSON frames intact" {
+    const io = std.testing.io;
+    var transport_buf: [256]u8 = undefined;
+    var transport: Io.Writer = .fixed(&transport_buf);
+    var lock: Io.Mutex = .init;
+    var main_writer: LineWriter = undefined;
+    main_writer.init(io, &transport, &lock);
+    defer main_writer.deinit();
+    var permission_writer: LineWriter = undefined;
+    permission_writer.init(io, &transport, &lock);
+    defer permission_writer.deinit();
+    try main_writer.writer.writeAll("{\"from\":\"main\"");
+    try main_writer.writer.flush();
+    try permission_writer.writer.writeAll("{\"from\":\"permission\"");
+    try permission_writer.writer.flush();
+    try std.testing.expectEqual(@as(usize, 0), transport.buffered().len);
+    try permission_writer.writer.writeAll("}\n");
+    try permission_writer.writer.flush();
+    try main_writer.writer.writeAll("}\n");
+    try main_writer.writer.flush();
+    try std.testing.expectEqualStrings("{\"from\":\"permission\"}\n{\"from\":\"main\"}\n", transport.buffered());
+}

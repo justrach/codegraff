@@ -212,7 +212,10 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     framed.init(io, out, &transport_lock);
     defer framed.deinit();
     const wire = &framed.writer;
-    var permission_bridge: @import("acp_permission.zig").Bridge = .{ .io = io, .out = wire };
+    var permission_framed: @import("acp_line_writer.zig").LineWriter = undefined;
+    permission_framed.init(io, out, &transport_lock);
+    defer permission_framed.deinit();
+    var permission_bridge: @import("acp_permission.zig").Bridge = .{ .io = io, .out = &permission_framed.writer };
     const previous_permission = root.permission;
     root.permission = permission_bridge.handler();
     defer root.permission = previous_permission;

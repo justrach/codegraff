@@ -66,11 +66,23 @@ def child_events(client):
     return [row['params'] for row in client.events if row.get('method') == 'graff/subagent_event']
 
 
-def run(binary, capability=True, cancel=False, disconnect=False):
+def run(binary, capability=True, cancel=False, disconnect=False, switch_session=False):
     with tempfile.TemporaryDirectory(prefix='graff-acp-background-') as temporary:
         work = Path(temporary)
         home = work / 'home'
         home.mkdir()
+        other_sid = None
+        if switch_session:
+            seed_model = load.ScriptedModel([])
+            seed_port = seed_model.start(0)
+            seed = load.Acp(binary, work, home, seed_port, extra_env={'GRAFF_NO_NATIVE_FOLD': '1'})
+            try:
+                seed.request('initialize', {'protocolVersion': 1})
+                other_sid = seed.request('session/new', {'cwd': str(work), 'mcpServers': []})['result']['sessionId']
+            finally:
+                seed.close()
+                seed_model.stop()
+            assert (work / '.graff' / 'sessions' / f'{other_sid}.session.json').exists()
         model = Model()
         port = model.start(0)
         client = load.Acp(binary, work, home, port, extra_env={'GRAFF_NO_NATIVE_FOLD': '1'},
@@ -99,6 +111,14 @@ def run(binary, capability=True, cancel=False, disconnect=False):
             assert all(row['subagentSessionId'] == spawn['subagentSessionId'] and
                        row['parentToolCallId'] == spawn['parentToolCallId'] for row in rows), rows
             assert not any(row['event']['type'] == 'terminal' for row in rows), rows
+            if switch_session:
+                assert other_sid != sid
+                loaded = client.request('session/load', {'sessionId': other_sid,
+                    'cwd': str(work), 'mcpServers': []})
+                assert 'result' in loaded, loaded
+                # Reinitialization may disable future children; this child was
+                # already announced and must retain its stream and parent ID.
+                client.request('initialize', {'protocolVersion': 1, 'clientCapabilities': {}})
             if disconnect:
                 client.proc.stdin.close()
                 # ACP detaches its emitter before waiting for the held worker
@@ -131,6 +151,7 @@ def run(binary, capability=True, cancel=False, disconnect=False):
                 and row['params']['event']['type'] == 'terminal')
             assert terminal['params']['event']['state'] == ('cancelled' if cancel else 'completed')
             rows = child_events(client)
+            assert all(row['parentSessionId'] == sid for row in rows), rows
             assert [row['seq'] for row in rows] == list(range(len(rows))), rows
             assert rows[-1]['event']['type'] == 'terminal', rows
             assert rows[-1]['seq'] > 0, rows
@@ -146,4 +167,5 @@ if __name__ == '__main__':
     run(binary)
     run(binary, cancel=True)
     run(binary, disconnect=True)
-    print('ACP background subagents: opt-in, cross-turn stream, cancellation, ordered JSON frames, teardown')
+    run(binary, switch_session=True)
+    print('ACP background subagents: opt-in, cross-turn stream, session switch, cancellation, ordered JSON frames, teardown')
