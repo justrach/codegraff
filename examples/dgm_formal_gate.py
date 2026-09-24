@@ -311,7 +311,7 @@ class FormalGate:
                     or receipt["main_model"] != self.main_model
                     or receipt["replay_model"] != self.pin["replay_model"]
                     or receipt["heldout_eval_set_hash"] != row.get("eval_set_hash", "")
-                    or (row.get("eval_set_hash") and row["eval_set_hash"] != self.pin["heldout_hash"]) 
+                    or (row.get("eval_set_hash") and row["eval_set_hash"] != self.pin["heldout_hash"])
                     or (prompt is not None and candidate != prompt)):
                 raise GateError("formal score receipt does not match its score row")
             preflight_name = receipt["preflight_file"]
