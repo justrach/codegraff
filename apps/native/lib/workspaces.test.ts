@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   basename,
+  displayWorkspace,
   restoreWorkspaceSelection,
   findWorkspace,
   loadActiveWorkspace,
@@ -36,6 +37,22 @@ describe("basename / monogram", () => {
     assert.equal(monogram(".hidden-thing"), "H");
     assert.equal(monogram("2fast"), "2");
     assert.equal(monogram("   "), "?");
+  });
+});
+
+describe("displayWorkspace", () => {
+  const workspaces: Workspace[] = [
+    { path: "/repo", name: "Codegraff" },
+    { path: "/repo/.graff/worktrees/session-one", name: "session-one" },
+  ];
+  it("shows the project and worktree status, not a generated checkout name", () => {
+    assert.deepEqual(displayWorkspace("/repo", workspaces), { project: "Codegraff", worktree: false });
+    assert.deepEqual(displayWorkspace("/repo/.graff/worktrees/session-one", workspaces), { project: "Codegraff", worktree: true });
+    assert.deepEqual(displayWorkspace("/repo/.graff/worktrees/session-one/.graff/worktrees/session-two", workspaces), { project: "Codegraff", worktree: true });
+  });
+  it("keeps ordinary folders and fallback names unchanged", () => {
+    assert.deepEqual(displayWorkspace("/other/project", workspaces), { project: "project", worktree: false });
+    assert.deepEqual(displayWorkspace(null, workspaces), { project: "workspace", worktree: false });
   });
 });
 
