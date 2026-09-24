@@ -158,6 +158,7 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     // GRAFF_CODEX_FULL_RESEND: presence-based — never chain previous_response_id
     // (codex_chain); the opencode-shape experiment for cache-hit measurement.
     if (environ_map.get("GRAFF_CODEX_FULL_RESEND") != null) @import("codex_chain.zig").g_force_full_resend = true;
+    if (environ_map.get("GRAFF_WS_PREWARM")) |v| @import("agent_ws_prewarm.zig").g_enabled = std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "true");
     // GRAFF_NO_NATIVE_FOLD: presence-based — restore full power-tool schemas
     // in every request (the pre-fold interactive surface).
     if (environ_map.get("GRAFF_NO_NATIVE_FOLD") != null) native_fold.enabled = false;
@@ -248,7 +249,7 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
         if (v.len > 0) provider_mod.g_vercel_url_override = v;
     }
     ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
-    // xAI on-socket chaining is on (ADR 0002). GRAFF_XAI_WS_CHAIN=0/off/false opts out.
+    // xAI on-socket chaining is off by default (ADR 0002); GRAFF_XAI_WS_CHAIN=1 opts in, 0/off/false/no keeps it off.
     if (environ_map.get("GRAFF_XAI_WS_CHAIN")) |v| {
         const off = std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "off") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "no");
         @import("codex_chain.zig").g_xai_ws_chain = !off;

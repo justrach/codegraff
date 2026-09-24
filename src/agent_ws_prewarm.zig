@@ -24,10 +24,16 @@ const serde = @import("serde.zig");
 
 const WatchdogFired = http.WatchdogFired;
 
+/// Off by default: the warmup runs after the user's prompt, in series, and
+/// measured slower on turn 1 than a cold turn (and no faster on turn 2).
+/// GRAFF_WS_PREWARM=1 opts in.
+pub var g_enabled = false;
+
 /// Should this fresh connection prewarm? Codex or xAI (on-socket chain),
 /// session start (nothing sent, no chain anchor), and not under the full-resend
 /// experiment (seeding the chain would fight the flag's premise).
 pub fn eligible(self: *const Agent) bool {
+    if (!g_enabled) return false;
     const brand = std.mem.eql(u8, self.provider.id, "codex") or
         (std.mem.eql(u8, self.provider.id, "xai") and codex_chain.g_xai_ws_chain);
     if (!brand) return false;
@@ -207,6 +213,10 @@ test "stripTransportFields: WS frames omit the SSE-only stream field" {
 
 test "eligible: xAI session start when chaining is on" {
     const stdt = std;
+    try stdt.testing.expect(!g_enabled); // opt-in (GRAFF_WS_PREWARM=1)
+    const saved_enabled = g_enabled;
+    defer g_enabled = saved_enabled;
+    g_enabled = true;
     var arena_state = stdt.heap.ArenaAllocator.init(stdt.testing.allocator);
     defer arena_state.deinit();
     var agent = Agent{
@@ -232,6 +242,10 @@ test "eligible: xAI session start when chaining is on" {
 
 test "eligible: codex session start only" {
     const stdt = std;
+    try stdt.testing.expect(!g_enabled); // opt-in (GRAFF_WS_PREWARM=1)
+    const saved_enabled = g_enabled;
+    defer g_enabled = saved_enabled;
+    g_enabled = true;
     var arena_state = stdt.heap.ArenaAllocator.init(stdt.testing.allocator);
     defer arena_state.deinit();
     var agent = Agent{
