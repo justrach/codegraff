@@ -24,6 +24,7 @@ const codex_chain = @import("codex_chain.zig");
 const toolResultMessage = messages_mod.toolResultMessage;
 const turn_checkpoint = @import("turn_checkpoint.zig");
 const tool_call_args = @import("tool_call_args.zig");
+const tool_call_repair = @import("tool_call_repair.zig");
 
 pub fn surfaceUnstreamedText(self: *Agent, text: []const u8) !void {
     if (self.sub or self.streamed_text or text.len == 0) return;
@@ -250,10 +251,12 @@ pub fn stepOpenAI(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
         return error.ApiError;
     }
     const choice = choices.?.array.items[0].object;
-    const message = choice.get("message") orelse {
+    var message = choice.get("message") orelse {
         try self.sayApiError("api error: choice had no message", .{});
         return error.ApiError;
     };
+    // Lost arguments rebuilt from the reply's own tool-call markup (MiMo).
+    _ = try tool_call_repair.repairCalls(self.arena, &message, self.toolsJson());
     const msg_obj = tools_mod.json_args.object(message) orelse {
         try self.sayApiError("api error: choice message was not an object", .{});
         return error.ApiError;
@@ -292,6 +295,10 @@ pub fn stepOpenAI(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
         for (calls.items, results) |call, r| {
             const tool_msg = try toolResultMessage(self.arena, .openai, call.id, r.text, r.is_error);
             try self.messages.append(tool_msg);
+        }
+        if (tool_call_repair.brokenCallLoop(self.messages.items)) {
+            try self.say("{s}\n", .{tool_call_repair.loop_stop_text});
+            return tool_call_repair.loop_stop_text;
         }
         try turn_checkpoint.afterToolBatch(self);
         if (eval_control.shouldStopAfterBatch(calls.items, self.eval_repair_pending)) {
