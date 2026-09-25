@@ -141,6 +141,7 @@ fn spill(arena: Allocator, session: []const u8, full: []const u8) ?[]const u8 {
     const dir = std.fmt.allocPrint(arena, "{s}/{s}/artifacts", .{ session_index.sessions_dir, session }) catch return refund(full.len);
     sweepOnce(sink, arena, session);
     sink.dir.createDirPath(sink.io, dir) catch return refund(full.len);
+    @import("graff_dir.zig").ensureIgnore(sink.io, sink.dir); // #1273
     const seq = g_seq.fetchAdd(1, .monotonic);
     const rel = std.fmt.allocPrint(arena, "{s}/tool-{d}.txt", .{ dir, seq }) catch return refund(full.len);
     sink.dir.writeFile(sink.io, .{ .sub_path = rel, .data = full, .flags = .{ .exclusive = true } }) catch return refund(full.len);

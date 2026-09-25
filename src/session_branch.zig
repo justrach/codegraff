@@ -56,6 +56,7 @@ pub fn restore(root: *agent_mod.Agent, keys: *provider_mod.Keys, arena: Allocato
         if (std.mem.eql(u8, source, dest)) return Error.BranchMatchesSource;
         if (session.sessionExists(root, arena, dest)) return Error.BranchAlreadyExists;
         try Io.Dir.cwd().createDirPath(root.io, session.sessions_dir);
+        @import("graff_dir.zig").ensureIgnore(root.io, Io.Dir.cwd()); // #1273
         const path = try session.sessionPath(arena, dest);
         const claim = Io.Dir.cwd().createFile(root.io, path, .{ .exclusive = true }) catch |err| switch (err) {
             error.PathAlreadyExists => return Error.BranchAlreadyExists,

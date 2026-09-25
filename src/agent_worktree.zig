@@ -77,6 +77,7 @@ pub fn agentWorktreeCreateAt(gpa: Allocator, io: Io, arena: Allocator, sub_id: [
         gpa.free(add.stderr);
     }
     if (!ranOk(add)) return error.CreateFailed;
+    @import("graff_dir.zig").ensureIgnoreAt(io, cwd); // #1273: hide .graff/worktrees
 
     var base: []const u8 = "";
     if (runCapped(gpa, io, &.{ "git", "-C", names.path, "rev-parse", "HEAD" }, 4096, 4096, 15_000)) |r| {

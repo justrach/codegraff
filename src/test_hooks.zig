@@ -395,4 +395,5 @@ test {
     _ = @import("tool_env.zig"); // #1267/#1268: tool children's environment
     _ = @import("destructive_git.zig"); // #1269: destructive-git tokenizer tables
     _ = @import("output_elide.zig"); // #1271: over-cap output keeps head and tail
+    _ = @import("graff_dir.zig"); // #1273: .graff/.gitignore keeps run state out of git
 }
