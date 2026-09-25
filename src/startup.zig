@@ -365,7 +365,12 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         // contradictory combination up front rather than silently ignoring one.
         if (flags.update_force and flags.update_check)
             std.process.fatal("--force and --check are mutually exclusive — use `graff update` (without --check) to install", .{});
-        try cli.updateCommand(io, gpa, arena, init.environ_map, flags.update_force, flags.update_check);
+        if (flags.update_beta) {
+            if (flags.update_force) std.process.fatal("--force is not supported with --beta", .{});
+            try cli.updateBetaCommand(io, gpa, arena, init.environ_map, flags.update_check);
+        } else {
+            try cli.updateCommand(io, gpa, arena, init.environ_map, flags.update_force, flags.update_check);
+        }
         return true;
     }
 

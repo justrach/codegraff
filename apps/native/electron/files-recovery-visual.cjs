@@ -22,6 +22,7 @@ async function runFilesRecovery({ win, origin, output }) {
   const settle = () => js(`new Promise(r=>setTimeout(r,100))`);
   const focusTab = index => js(`document.querySelectorAll('[aria-label="Close tab"]')[${index}].parentElement.querySelector('button[aria-pressed]').click()`);
 
+  await js(`localStorage.removeItem('graff.native.open-tabs.v1')`);
   await wc.loadURL(origin);
   await wait(`!!document.querySelector('button[aria-label="Files"]')`);
   const firstTab = await js(`document.querySelectorAll('[aria-label="Close tab"]').length`);

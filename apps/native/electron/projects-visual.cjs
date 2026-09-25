@@ -60,12 +60,14 @@ async function runProjectVisuals({ win, origin, output, pressEnter }) {
   await wait(`!!document.querySelector('[data-project-path="/demo/folder-42"]')`);
   await js(`document.querySelector('[data-project-path="/demo/folder-42"] button:last-child').click()`);
   await wait(`document.querySelector('[data-workspace-trigger] [title]')?.title.includes('/demo/folder-42')`);
+  const folder42TabIndex = await js(`Array.from(document.querySelectorAll('[aria-label="Close tab"]')).findIndex(e=>e.parentElement.querySelector('button[aria-pressed]')?.getAttribute('aria-pressed')==='true')`);
+  assert.ok(folder42TabIndex >= 0, 'The new project chat has an active tab');
   assert.equal(await js(`document.querySelectorAll('[aria-label="Close tab"]').length`), before + 1, 'New project chat creates exactly one tab');
   await js(`document.querySelector('button[aria-label="Projects"]').click()`);
   await wait(`!!document.querySelector('[data-project-path="/demo/folder-43"]')`);
   await js(`document.querySelector('[data-project-path="/demo/folder-43"] button:last-child').click()`);
   await wait(`document.querySelector('[data-workspace-trigger] [title]')?.title.includes('/demo/folder-43')`);
-  await js(`document.querySelector('[aria-label="Close tab"]').parentElement.querySelector('button[aria-pressed]').click()`);
+  await js(`Array.from(document.querySelectorAll('[aria-label="Close tab"]'))[${folder42TabIndex}].parentElement.querySelector('button[aria-pressed]').click()`);
   await wait(`document.querySelector('[data-workspace-trigger] [title]')?.title.includes('/demo/folder-42')`);
   await js(`document.querySelector('button[aria-label="New chat"]').click()`);
   await wait(`document.querySelector('[data-workspace-trigger] [title]')?.title.includes('/demo/folder-42')`);

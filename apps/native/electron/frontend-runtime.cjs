@@ -135,6 +135,8 @@ app.whenReady().then(async () => {
   await wc.loadURL(origin); desktop.present(win);
   if (desktop.foreground) await until(() => win.isFocused(), 'foreground window focus');
   await until(() => js(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`), 'workspace and composer ready');
+  assert.equal(await js(`!!document.querySelector('[aria-label="Close browser"]')`), false, 'Browser starts closed');
+  report.passed.push('Browser starts closed on initial load');
   if (process.env.GRAFF_CLI_TEST) await until(async () => (await projects.load())?.active === fs.realpathSync(workspace), 'startup CLI folder after project restoration');
   let computer;
   if (process.env.GRAFF_FRONTEND_OS_INPUT === '1') {
@@ -330,6 +332,12 @@ app.whenReady().then(async () => {
   await require('./attachment-lifetime-frontend.cjs').runAttachments({win,origin,temp,output,requests,workspace,send,click,until,report});
   if (narrowNavigation) return;
   await require('./browser-focus-frontend.cjs').runBrowserFocus({ win, output, click, until, report });
+  await require('./page-recovery-visual.cjs').runPageRecovery({ win, report });
   await require('./tab-drag-visual.cjs').runTabDrag({ win, origin, output });
   report.passed.push('trusted pointer and keyboard: tab reorder, horizontal/vertical splits, draft retention, Escape and four-pane limit');
+  await js(`localStorage.setItem('graff.native.browser.open', '1')`);
+  await wc.reload();
+  await until(() => js(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`), 'workspace ready after reload');
+  assert.equal(await js(`!!document.querySelector('[aria-label="Close browser"]')`), false, 'Browser stays closed despite saved open state');
+  report.passed.push('Browser stays closed after a saved open state');
 }).then(() => finish()).catch(finish);

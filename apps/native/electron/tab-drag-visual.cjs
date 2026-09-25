@@ -87,6 +87,9 @@ async function runTabDrag({win, origin, output, injectMissedCollapseClick=false}
   };
   const up=to=>desktop.testInput(wc,{type:'mouseUp',button:'left',clickCount:1,...to});
   const drag=async(id,to)=>{await move(await down(id),to);await up(to);};
+  // This fixture starts a new layout. Earlier frontend legs now leave their
+  // open tabs recoverable across navigation, so clear that one test record.
+  await js(`localStorage.removeItem('graff.native.open-tabs.v1')`);
   await wc.loadURL(origin);win.setSize(1320,850);
   await ready();
   await click('[aria-label="New chat"]');
@@ -140,6 +143,7 @@ async function runTabDrag({win, origin, output, injectMissedCollapseClick=false}
   await wait(`!!document.querySelector('[data-split-limit]')`);
   assert.deepEqual(await panes(),before);
   // A fresh single pane can split vertically; mixed trees have separate stress coverage.
+  await js(`localStorage.removeItem('graff.native.open-tabs.v1')`);
   await wc.loadURL(origin);await ready();
   if(await js(`!!document.querySelector('[aria-label="Close browser"]')`))await click('[aria-label="Close browser"]');
   await wait(`!document.querySelector('[aria-label="Close browser"]')`);
@@ -179,6 +183,7 @@ async function runTabDrag({win, origin, output, injectMissedCollapseClick=false}
   desktop.attachTestDebugger(wc);
   await wc.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
   try {
+    await js(`localStorage.removeItem('graff.native.open-tabs.v1')`);
     await wc.loadURL(origin);await ready();
     await click('[aria-label="New chat"]');await wait(`document.querySelectorAll('[data-tab-id]').length===2`);
     const [source]=await tabs();

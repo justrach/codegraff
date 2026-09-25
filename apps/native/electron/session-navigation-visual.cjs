@@ -33,6 +33,15 @@ async function runSessionNavigation({ win, output }) {
     await wait(`!!document.querySelector('[role="dialog"][aria-label="Appearance"]')`);
   };
   await wait(`!!document.querySelector('[data-session-navigation="sidebar"]')`);
+  const sidebarLabel = () => js(`document.querySelector('[data-workspace-trigger]')?.textContent`);
+  assert.match(await sidebarLabel(),/Field Notes.*worktree/,'sidebar names the project and labels the checkout');
+  assert.doesNotMatch(await sidebarLabel(),/session-visual/);
+  await shortcut('t',['meta']);
+  await wait(`document.querySelectorAll('[data-tab-id]').length===2`);
+  assert.match(await sidebarLabel(),/Field Notes/,'Cmd+T keeps the project label');
+  assert.doesNotMatch(await sidebarLabel(),/worktree|session-visual/,'Cmd+T starts in the project, outside the generated checkout');
+  await shortcut('w',['meta']);
+  await wait(`document.querySelectorAll('[data-tab-id]').length===1`);
   assert.equal(await js(`document.querySelector('[data-session-tab-strip]')?.getBoundingClientRect().height ?? 0`),0);
   await openAppearance('[aria-label="Workspace navigation"] button[aria-label="Settings"]');
   const appearance = await js(`(()=>{const d=document.querySelector('[role="dialog"][aria-label="Appearance"]');const r=d.getBoundingClientRect();const h=[...d.querySelectorAll('strong')].find(el=>el.textContent==='Appearance');const hr=h.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,headingTop:hr.top,headingVisible:hr.bottom>0&&hr.top<innerHeight,vw:innerWidth};})()`);
@@ -87,6 +96,9 @@ async function runSessionNavigation({ win, output }) {
   await capture('tabs-only');
   wc.send('desktop-action','split-right');
   await wait(`document.querySelectorAll('[data-chat]').length===2`);
+  const folderLabels = await js(`Array.from(document.querySelectorAll('[data-chat] [aria-label^="Project "]'),e=>e.textContent)`);
+  assert.equal(folderLabels.length,2);
+  assert.ok(folderLabels.every(label=>label.includes('Field Notes')&&!label.includes('worktree')&&!label.includes('session-visual')),'split headers identify the project without inheriting a generated checkout');
   const splitIds = await js(`Array.from(document.querySelectorAll('[data-chat]'),e=>Number(e.dataset.chat))`);
   await click('[aria-label="Expand sidebar"]');
   await wait(`!!document.querySelector('[data-session-navigation="sidebar"]')`);
@@ -104,7 +116,10 @@ async function runSessionNavigation({ win, output }) {
   await click('[aria-label="Close navigation"]');
   await wait(`!!document.querySelector('[data-session-navigation="tabs"]')`);
   assert.equal(await js(`document.querySelectorAll('[data-session-navigation]').length`),1);
+  const compactLabel = await js(`(()=>{const e=document.querySelector('[data-workspace-toolbar] button[title*="Show this chat"]');return e&&e.getClientRects().length?e.textContent:null})()`);
+  assert.match(compactLabel,/Field Notes/,'narrow toolbar names the project');
+  assert.doesNotMatch(compactLabel,/worktree|session-visual/);
   assert.equal(await js(`document.querySelector('[data-chat="${drafted}"] textarea').value`),'Keep this draft');
-  console.log('Session navigation passed: one surface, unsaved chats, drafts, vertical reorder, split groups and narrow popover.');
+  console.log('Session navigation passed: project/worktree labels, new tabs, split groups, drafts and narrow toolbar.');
 }
 module.exports = { runSessionNavigation };

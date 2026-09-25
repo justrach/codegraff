@@ -64,6 +64,13 @@ graff                           # start an interactive session
 graff -p "Explain this project"  # ask a single question
 ```
 
+To try the newest CLI beta on macOS or Linux, run `graff update --beta --check`
+to see the release, then `graff update --beta` to install it for the next
+launch. The CLI chooses the beta for the newest numeric release branch and
+checks the tarball against that release's `SHA256SUMS`. `graff update` continues
+to use the stable release. Update package-managed installs through their
+package manager.
+
 <details>
 <summary>Other login options, Windows, and editor integration</summary>
 

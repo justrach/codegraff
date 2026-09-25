@@ -220,9 +220,14 @@ record only when you need the evidence or the edge cases.
 | [0192](0192-mimo-thinking-is-a-binary-setting.md) | MiMo exposes Off/On, preserves legacy positive settings as On, and uses the documented thinking control on each wire. |
 | [0193](0193-jev-selects-effort-only.md) | Optional Jev selects only supported session effort at the next request boundary; arbitrary judgments are not exposed. |
 | [0194](0194-acp-child-sessions-are-an-opt-in-preview.md) | Draft ACP child sessions stream live only with explicit opt-in; durable replay is required before default enablement. |
+| [0194](0194-native-learning-formal-baseline.md) | Optional native learning admits and promotes only with a fresh pinned formal baseline check bound to the evaluated binary; remote submission waits for a compatible signed receipt. |
 | [0195](0195-embedded-browser-replaces-kuri.md) | Desktop browser uses embedded Chromium, web preview uses the paired extension, and CLI fetch uses built-in HTTP without a sidecar. |
 | [0196](0196-background-acp-agents-use-a-graff-extension.md) | Detached ACP workers stream through an opted-in Graff extension with connection-lifetime output ownership; draft child sessions remain foreground-only. |
 | [0197](0197-deferred-mcp-joins-are-registry-serial.md) | Deferred MCP queues, joins, tool lookup, and catalog snapshots use the registry lock so concurrent requests consume and publish each connection once. |
+| [0198](0198-project-choice-survives-session-isolation.md) | New chats inherit the chosen project while ACP reports each worker checkout; generated worktrees are rooted at the main checkout. |
+| [0199](0199-generated-checkouts-belong-to-project-history.md) | Generated worktree activity rolls up to the owning project in automatic suggestions; explicitly saved checkouts stay selectable. |
+| [0200](0200-desktop-page-transitions-preserve-tabs.md) | Desktop restart/reload confirms active-turn interruption and restores tab references from saved sessions in their workspaces. |
+| [0201](0201-cli-beta-channel-is-explicit.md) | CLI beta updates require explicit opt-in, select the newest numeric release branch, verify pinned assets, and activate on next launch. |
 
 ## When to write one
 

@@ -10,11 +10,33 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.302.6
+
+### Session and transport fixes
+
+- Loading a saved ACP session now keeps an explicitly selected launch model, matching command-line resume. Switching the selected model no longer requires discarding the saved conversation.
+- WebSocket prewarm sends the selected model in its first frame and records a bounded rejection reason when the server refuses it. A rejected prewarm can still fall back through the existing transport recovery path.
+- WebSocket turns deliver response deltas as they arrive, including before a slow completion frame, and flush held text once at completion. Mock transport checks cover live output, retry, fallback, and duplicate-output prevention.
+- ACP and `--json` input accept records larger than 64 KiB, such as long pasted prompts or image payloads. An oversized line used to end the session silently; now records up to 64 MiB are read and anything larger is dropped with a warning.
+- xAI WebSocket turns send full history again instead of chaining on the previous response, and the `generate:false` warmup is off by default. Chaining without server-side storage could stall after the first frame. `GRAFF_XAI_WS_CHAIN=1` and `GRAFF_WS_PREWARM=1` opt back in.
+- ACP clients can pass MCP servers in `session/new` and `session/load`, and `GRAFF_NO_PLUGINS` now applies before those servers connect.
+- Opted-in ACP clients can preview child-agent activity live, and background workers stream through a Graff extension across turns. Session teardown waits for background agents, and deferred MCP startup joins run under the registry lock.
+
+### Optional formal evidence for local learning
+
+- Bounded lifecycle models cover effort changes, asynchronous tools, permission ownership, and connection leases. Deliberately weakened configurations provide counterexamples for the invariants those models are meant to guard.
+- Prompt evolution and local learning can require pinned formal-check evidence before scoring, checkpoint restore, or promotion. Drifted inputs or missing evidence stop that optional path; ordinary learning keeps its prior defaults.
+- Formal evidence remains separate from held-out task evaluation: a model check cannot make an incorrect candidate pass, and these finite models do not claim proof that the implementation matches them.
+
 ## v0.0.302.5
 
 - Dry-run route checks preserve an explicitly qualified selection while checking whether it is available. This keeps the reported route aligned with the route the next request would use.
 - The CLI no longer installs, invokes, or advertises the Kuri companion. `webfetch` uses the built-in HTTP client and returns bounded HTML or text instead of companion-generated Markdown.
 - The desktop browser remains embedded. The web-only Browser pane now uses an explicitly paired Chrome extension; the retired browser endpoint returns 410 instead of starting a sidecar. Existing user-installed companion files are left in place.
+- Desktop chats restore their open tabs and selected workspace after a page reload, and a restart or reload warns before interrupting active work. Saved conversations remain discoverable across linked worktrees.
+- New chats and splits start from the owning project root, avoiding nested generated checkouts. The workspace switcher distinguishes projects from generated checkouts, and the visible folder label names the project.
+- Browser panes begin closed and do not reopen merely because the user switched chats. Returning to an unchanged chat does not replay the latest text animation. Resized chat dividers rebalance panes consistently.
+- Pull-request claim review accepts observed local checks, follows bounded test-runner reachability, and reports when evidence exceeds its input limit instead of presenting it as an unsupported claim.
 
 ## v0.0.302.4
 

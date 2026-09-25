@@ -23,6 +23,8 @@ const Fixture = struct {
     fetches: std.atomic.Value(usize) = .init(0),
     cancel_on_tarball: ?*std.atomic.Value(bool) = null,
     hold: ?*std.atomic.Value(bool) = null,
+    beta: bool = false,
+    seen_beta_tag: bool = false,
 
     fn get(ctx: ?*anyopaque, gpa: Allocator, url: []const u8) update_service.FetchError![]u8 {
         const self: *Fixture = @ptrCast(@alignCast(ctx orelse return error.Offline));
@@ -31,6 +33,12 @@ const Fixture = struct {
             while (h.load(.acquire)) std.Thread.yield() catch {};
         }
         if (self.fail == .offline) return error.Offline;
+        if (self.beta and std.mem.indexOf(u8, url, "/matching-refs/heads/release/v") != null)
+            return gpa.dupe(u8, "[{\"ref\":\"refs/heads/release/v0.0.302.6\"}]") catch return error.OutOfMemory;
+        if (self.beta and std.mem.indexOf(u8, url, "/releases?per_page=100") != null)
+            return gpa.dupe(u8, "[{\"tag_name\":\"v0.0.302.6-beta.26.1\",\"draft\":false,\"prerelease\":true}]") catch return error.OutOfMemory;
+        if (self.beta and std.mem.indexOf(u8, url, "/releases/download/v0.0.302.6-beta.26.1/") != null)
+            self.seen_beta_tag = true;
         if (std.mem.indexOf(u8, url, "/releases/latest") != null) {
             if (self.fail == .malformed) return gpa.dupe(u8, "{nope") catch return error.OutOfMemory;
             return gpa.dupe(u8, latest_json) catch return error.OutOfMemory;
@@ -58,6 +66,58 @@ fn setupArchive(gpa: Allocator) !struct { bytes: []u8, sums: []u8 } {
     const bytes = try archive.fixtureArchive(gpa, "graff-x86_64-linux/graff", "NEW-GRAFF");
     errdefer gpa.free(bytes);
     return .{ .bytes = bytes, .sums = try archive.sumsLine(gpa, asset, bytes) };
+}
+
+test "beta update downloads only pinned verified assets and installs for next launch" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    update_service.resetBusyForTest();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "graff", .data = "OLD" });
+    const target = try fixturePath(&tmp, io, gpa, "graff");
+    defer gpa.free(target);
+    const pack = try setupArchive(gpa);
+    defer gpa.free(pack.bytes);
+    defer gpa.free(pack.sums);
+    var fx: Fixture = .{ .archive = pack.bytes, .sums = pack.sums, .beta = true };
+    var options = opts(io, gpa, target, fx.fetch(), null);
+    options.running_version = "0.0.302.5";
+    options.channel = .beta;
+    const report = update_service.install(options, .human);
+    try std.testing.expectEqual(update_service.Kind.installed, report.kind);
+    try std.testing.expectEqualStrings("v0.0.302.6-beta.26.1", report.latest_tag().?);
+    try std.testing.expect(fx.seen_beta_tag);
+    try std.testing.expect(!fx.seen_latest_download.load(.acquire));
+    const after = try Io.Dir.cwd().readFileAlloc(io, target, gpa, .limited(64));
+    defer gpa.free(after);
+    try std.testing.expectEqualStrings("NEW-GRAFF", after);
+}
+
+test "stable at the beta base is not downgraded, and beta does not block stable" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    update_service.resetBusyForTest();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "graff", .data = "STABLE" });
+    const target = try fixturePath(&tmp, io, gpa, "graff");
+    defer gpa.free(target);
+    const pack = try setupArchive(gpa);
+    defer gpa.free(pack.bytes);
+    defer gpa.free(pack.sums);
+    var fx: Fixture = .{ .archive = pack.bytes, .sums = pack.sums, .beta = true };
+    var options = opts(io, gpa, target, fx.fetch(), null);
+    options.running_version = "0.0.302.6";
+    options.channel = .beta;
+    try std.testing.expectEqual(update_service.Kind.newer, update_service.inspect(options).kind);
+    try std.testing.expect(!@import("version_status.zig").alreadyHasRelease("0.0.302.6-beta.26.1", "v0.0.302.6"));
+    update_service.writeInstalledVersion(io, target, "0.0.302.6-beta.27.1");
+    options.running_version = "0.0.302.5";
+    try std.testing.expectEqual(update_service.Kind.newer, update_service.install(options, .human).kind);
+    const unchanged = try Io.Dir.cwd().readFileAlloc(io, target, gpa, .limited(64));
+    defer gpa.free(unchanged);
+    try std.testing.expectEqualStrings("STABLE", unchanged);
 }
 
 fn fixturePath(tmp: *std.testing.TmpDir, io: Io, gpa: Allocator, name: []const u8) ![]u8 {
