@@ -10,7 +10,7 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## v0.0.302.6
+## v0.0.302.5
 
 ### Session and transport fixes
 
@@ -42,7 +42,7 @@ current is part of cutting a release.
 - Prompt evolution and local learning can require pinned formal-check evidence before scoring, checkpoint restore, or promotion. Drifted inputs or missing evidence stop that optional path; ordinary learning keeps its prior defaults.
 - Formal evidence remains separate from held-out task evaluation: a model check cannot make an incorrect candidate pass, and these finite models do not claim proof that the implementation matches them.
 
-## v0.0.302.5
+### Desktop, browser and routing
 
 - Dry-run route checks preserve an explicitly qualified selection while checking whether it is available. This keeps the reported route aligned with the route the next request would use.
 - The CLI no longer installs, invokes, or advertises the Kuri companion. `webfetch` uses the built-in HTTP client and returns bounded HTML or text instead of companion-generated Markdown.
@@ -51,6 +51,10 @@ current is part of cutting a release.
 - New chats and splits start from the owning project root, avoiding nested generated checkouts. The workspace switcher distinguishes projects from generated checkouts, and the visible folder label names the project.
 - Browser panes begin closed and do not reopen merely because the user switched chats. Returning to an unchanged chat does not replay the latest text animation. Resized chat dividers rebalance panes consistently.
 - Pull-request claim review accepts observed local checks, follows bounded test-runner reachability, and reports when evidence exceeds its input limit instead of presenting it as an unsupported claim.
+
+### Updates
+
+- `graff update --beta` opts into beta builds explicitly: it picks the newest numeric release branch, verifies the pinned archive against its checksums, and activates on the next launch. `graff update` stays on the stable channel.
 
 ## v0.0.302.4
 
