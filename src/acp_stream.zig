@@ -8,14 +8,14 @@ const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
 const util = @import("util.zig");
 const proto = @import("acp_protocol.zig");
+const view = @import("acp_tool_view.zig");
 
 pub fn kindFor(name: []const u8) []const u8 {
     if (std.mem.eql(u8, name, "read_file") or std.mem.eql(u8, name, "codedb") or std.mem.eql(u8, name, "skill"))
         return "read";
     if (std.mem.eql(u8, name, "edit_file") or std.mem.eql(u8, name, "write_file"))
         return "edit";
-    if (std.mem.eql(u8, name, "bash") or std.mem.eql(u8, name, "bash_output") or std.mem.eql(u8, name, "bash_kill"))
-        return "execute";
+    if (@import("shell_tool.zig").isFamily(name)) return "execute";
     if (std.mem.eql(u8, name, "webfetch")) return "fetch";
     if (std.mem.eql(u8, name, "todo_write") or std.mem.eql(u8, name, "todo_read"))
         return "think";
@@ -65,14 +65,21 @@ pub fn writeMessage(w: *Io.Writer, session_id: []const u8, text: []const u8) !vo
 }
 
 pub fn writeToolCall(w: *Io.Writer, session_id: []const u8, id: []const u8, name: []const u8, input: Value) !void {
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const kind = kindFor(name);
+    const cwd = @import("main.zig").g_cwd_display;
     try proto.writeNotification(w, "session/update", .{
         .sessionId = session_id,
         .update = .{
             .sessionUpdate = "tool_call",
             .toolCallId = id,
             .title = titleFor(name, input),
-            .kind = kindFor(name),
+            .kind = kind,
             .status = "in_progress",
+            .locations = try view.locations(a, kind, input, cwd),
+            .content = try view.diffs(a, name, input, cwd),
             .rawInput = input,
             ._meta = .{ .@"graff/toolName" = name },
         },
@@ -178,15 +185,25 @@ pub fn translateEvent(
         try writeToolCall(w, session_id, id, name, input);
         return .tool;
     }
-    if (std.mem.eql(u8, typ, "tool_result") or std.mem.eql(u8, typ, "tool_call_finished") or std.mem.eql(u8, typ, "tool_rejected")) {
-        if (util.strFieldObj(ev.object, "name")) |name|
-            if (std.mem.eql(u8, name, "attempt_completion")) return .none;
+    // The engine closes every call with tool_result and then
+    // tool_call_finished (timing only, no text): the result already sent the
+    // terminal update, so a second one would only duplicate it (#1288).
+    if (std.mem.eql(u8, typ, "tool_call_finished")) return .tool;
+    if (std.mem.eql(u8, typ, "tool_result") or std.mem.eql(u8, typ, "tool_rejected")) {
+        const result_name = util.strFieldObj(ev.object, "name") orelse "";
+        if (std.mem.eql(u8, result_name, "attempt_completion")) return .none;
         const use_id = if (util.strFieldObj(ev.object, "id")) |given| given else lastId(id_buf);
         const text = util.strFieldObj(ev.object, "text") orelse util.strFieldObj(ev.object, "message") orelse "";
         const is_error = switch (ev.object.get("is_error") orelse .null) {
             .bool => |b| b,
             else => std.mem.eql(u8, typ, "tool_rejected"),
         };
+        // Content in an update replaces the call's content: a successful
+        // native edit keeps its announced diff instead of "replaced 1 …".
+        if (!is_error and (std.mem.eql(u8, result_name, "edit_file") or std.mem.eql(u8, result_name, "write_file"))) {
+            try writeToolStatus(w, session_id, use_id, "completed");
+            return .tool;
+        }
         try writeToolDone(w, session_id, use_id, is_error, text);
         return .tool;
     }
@@ -341,11 +358,44 @@ test "translateEvent: an id-less tool_call_started updates the announced call" {
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "in_progress") != null);
     try testing.expectEqual(@as(u32, 1), next);
 
-    // The timing bracket has no text: status only, no content array.
+    // An empty result closes the call with status only, no content array.
+    w = .fixed(&buf);
+    const result = try std.json.parseFromSlice(Value, a, "{\"type\":\"tool_result\",\"name\":\"bash\",\"is_error\":false,\"text\":\"\"}", .{});
+    defer result.deinit();
+    _ = try translateEvent(&w, "s1", result.value, &id_buf, &next);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "completed") != null);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "\"content\"") == null);
+
+    // The timing bracket that follows every result sends nothing (#1288).
     w = .fixed(&buf);
     const finished = try std.json.parseFromSlice(Value, a, "{\"type\":\"tool_call_finished\",\"name\":\"bash\",\"is_error\":false,\"ms\":12}", .{});
     defer finished.deinit();
-    _ = try translateEvent(&w, "s1", finished.value, &id_buf, &next);
+    try testing.expectEqual(.tool, try translateEvent(&w, "s1", finished.value, &id_buf, &next));
+    try testing.expectEqual(@as(usize, 0), w.buffered().len);
+}
+
+test "translateEvent: shell is execute; edits carry locations and a diff that the result keeps" {
+    var buf: [4096]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var id_buf: [64]u8 = @splat(0);
+    var next: u32 = 0;
+    try testing.expectEqualStrings("execute", kindFor("shell"));
+
+    const call = try std.json.parseFromSlice(Value, a, "{\"type\":\"tool_call\",\"id\":\"e1\",\"name\":\"edit_file\",\"input\":{\"path\":\"calc.py\",\"old_string\":\"a - b\",\"new_string\":\"a + b\"}}", .{});
+    defer call.deinit();
+    _ = try translateEvent(&w, "s1", call.value, &id_buf, &next);
+    const announced = w.buffered();
+    try testing.expect(std.mem.indexOf(u8, announced, "\"locations\":[{\"path\":") != null);
+    try testing.expect(std.mem.indexOf(u8, announced, "\"type\":\"diff\"") != null);
+    try testing.expect(std.mem.indexOf(u8, announced, "\"oldText\":\"a - b\",\"newText\":\"a + b\"") != null);
+
+    w = .fixed(&buf);
+    const done = try std.json.parseFromSlice(Value, a, "{\"type\":\"tool_result\",\"id\":\"e1\",\"name\":\"edit_file\",\"is_error\":false,\"text\":\"replaced 1 occurrence(s) in calc.py\"}", .{});
+    defer done.deinit();
+    _ = try translateEvent(&w, "s1", done.value, &id_buf, &next);
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "completed") != null);
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "\"content\"") == null);
 }

@@ -192,7 +192,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
                 if (approvals.planReadAllowed(self.io, cmd)) return null;
                 if (self.permission) |handler| {
                     const description = try std.fmt.allocPrint(self.arena, "plan mode — read outside the project: {s}", .{cmd});
-                    if (handler.ask(self.io, .{ .call_id = call.id, .tool = call.name, .description = description }) == .allow_once) {
+                    if (handler.ask(self.io, .{ .call_id = call.id, .tool = call.name, .description = description, .input = call.input }) == .allow_once) {
                         try approvals.approvePlanReadOnce(self.io, self.arena, self, call.id, cmd);
                         return null;
                     }
@@ -306,7 +306,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
     } else return null;
 
     if (self.permission) |handler| {
-        switch (handler.ask(self.io, .{ .call_id = call.id, .tool = call.name, .description = prompt_line, .allow_always = true, .always_label = try std.fmt.allocPrint(self.arena, "Always allow {s}", .{key}) })) {
+        switch (handler.ask(self.io, .{ .call_id = call.id, .tool = call.name, .description = prompt_line, .input = call.input, .allow_always = true, .always_label = try std.fmt.allocPrint(self.arena, "Always allow {s}", .{key}) })) {
             .allow_once => return null,
             .allow_always => {
                 try approvals.approve(self.io, self.gpa, key);

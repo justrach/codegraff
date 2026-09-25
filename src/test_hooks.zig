@@ -370,6 +370,7 @@ test {
     _ = @import("tui_goal.zig"); // #716: typed TUI /goal is retirable, not standing
     _ = @import("net_efficiency_test.zig");
     _ = @import("codex_tool_search.zig"); // hosted tool_search on gpt-5.4+ Codex
+    _ = @import("acp_tool_view.zig"); // #1287/#1289: ACP locations and edit diffs
     _ = @import("tool_call_args.zig"); // #752: truncated tool-call arguments must not poison history
     _ = @import("tool_call_repair.zig"); // MiMo: lost tool-call arguments rebuilt from markup
     _ = @import("cache_affinity.zig"); // ADR 0069: git-root / scratch cache seed
