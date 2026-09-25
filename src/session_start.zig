@@ -166,9 +166,11 @@ pub fn setupWorktreeAndBanner(
         } });
     }
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    main_mod.g_cwd_display = if (flags.worktree_flag) |wt|
-        // After chdir into the worktree, realPath(AT_FDCWD) is unreliable; derive from the launch dir.
-        std.fmt.allocPrint(arena, "{s}/.graff/worktrees/{s}", .{ environ_map.get("PWD") orelse ".", wt }) catch try arena.dupe(u8, environ_map.get("PWD") orelse ".")
+    main_mod.g_cwd_display = if (flags.worktree_flag != null)
+        // task_workspace.enter already set the tree's resolved absolute path.
+        // Not $PWD: hosts that spawn with a working directory (ACP clients)
+        // leave it naming their own folder, so saves recorded the wrong tree.
+        main_mod.g_cwd_display
     else if (isolated) |wt|
         try arena.dupe(u8, wt.path)
     else if (std.process.currentPath(io, &cwd_buf)) |n|

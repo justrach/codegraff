@@ -30,7 +30,7 @@ Finish is not archive.
   `isolation_fallback` / `GRAFF_ISOLATION_FALLBACK=1`.
 - Finish / `graff worktree archive` keep dirty or unique-commit trees. Archive
   removes only a clean checkout whose commits exist elsewhere.
-- `session/new` reports the checkout `cwd` so GUI chats bind to that tree.
+- `session/new` reports the checkout so GUI chats bind to that tree. Superseded in form by ADR 0202: it is `_meta["graff/worktree"]`, not a top-level `cwd`.
 
 ## Consequences
 

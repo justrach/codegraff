@@ -350,6 +350,7 @@ test {
     _ = @import("acp_config.zig");
     _ = @import("session_start_plugins_test.zig");
     _ = @import("acp_mcp_servers.zig");
+    _ = @import("acp_workspace.zig");
     _ = @import("acp_images.zig");
     _ = @import("libgraff.zig");
     _ = @import("tui_peer.zig");

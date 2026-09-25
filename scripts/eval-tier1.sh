@@ -189,6 +189,7 @@ if wanted shell; then
       python3 scripts/eval/process_guard.py --timeout 90 python3 scripts/test-acp-released-fixes.py zig-out/bin/graff &&
       python3 scripts/eval/process_guard.py --timeout 120 python3 scripts/test-acp-permissions.py zig-out/bin/graff &&
       python3 scripts/eval/process_guard.py --timeout 90 python3 scripts/test-acp-session-load.py zig-out/bin/graff &&
+      python3 scripts/eval/process_guard.py --timeout 120 python3 scripts/test-acp-workspace.py zig-out/bin/graff &&
       python3 scripts/eval/process_guard.py --timeout 90 python3 scripts/test-acp-images.py zig-out/bin/graff
     ); then :; else
       record_fail shell

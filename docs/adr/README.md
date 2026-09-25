@@ -228,6 +228,7 @@ record only when you need the evidence or the edge cases.
 | [0199](0199-generated-checkouts-belong-to-project-history.md) | Generated worktree activity rolls up to the owning project in automatic suggestions; explicitly saved checkouts stay selectable. |
 | [0200](0200-desktop-page-transitions-preserve-tabs.md) | Desktop restart/reload confirms active-turn interruption and restores tab references from saved sessions in their workspaces. |
 | [0201](0201-cli-beta-channel-is-explicit.md) | CLI beta updates require explicit opt-in, select the newest numeric release branch, verify pinned assets, and activate on next launch. |
+| [0202](0202-acp-sessions-adopt-client-cwd.md) | ACP sessions adopt the client `cwd`, report the worktree as `_meta["graff/worktree"]` (null in a main checkout), and `graff worktree` exits non-zero when it refuses or does nothing. |
 
 ## When to write one
 

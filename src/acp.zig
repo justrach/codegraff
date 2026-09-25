@@ -245,7 +245,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
         .meter = liveMeter,
         .extra = liveModels,
         .mcp_servers = @import("acp_mcp_servers.zig").attach,
-        .cwd = if (std.fs.path.isAbsolute(main_mod.g_cwd_display)) main_mod.g_cwd_display else "",
+        .workspace = .{ .gpa = gpa, .io = io },
         .draft_subagents_enabled = std.mem.eql(u8, environ_map.get("GRAFF_ACP_DRAFT_SUBAGENTS") orelse "", "1"),
     };
     @import("acp_session_load.zig").configure(&d, &live);

@@ -15,7 +15,8 @@ async function worker(mode: string) {
     require('node:readline').createInterface({input:process.stdin}).on('line', line => {
       const req=JSON.parse(line);
       if(req.method==='initialize' && mode!=='initialize') send({id:req.id,result:{protocolVersion:1}});
-      if(req.method==='session/new' && mode!=='session/new') send({id:req.id,result:mode==='invalid'?{}:mode==='isolated'?{sessionId:'ready',cwd:'/isolated/tree'}:{sessionId:'ready'}});
+      const results={invalid:{},isolated:{sessionId:'ready',cwd:'/isolated/tree'},worktree:{sessionId:'ready',_meta:{'graff/worktree':{name:'harness-1',path:'/repo/.graff/worktrees/harness-1',branch:'worktree-harness-1',base:'main',baseSha:null,root:'/repo',generated:false}}},main:{sessionId:'ready',cwd:'/stale',_meta:{'graff/worktree':null}}};
+      if(req.method==='session/new' && mode!=='session/new') send({id:req.id,result:results[mode]??{sessionId:'ready'}});
     });
     console.log('ready');
   `], { stdio: ["pipe", "pipe", "inherit"] });
@@ -119,6 +120,20 @@ test("session/new checkout binds the worker to its isolated worktree", async () 
       throw new Error("A successful handshake must not retire its child");
     }, 1000)).toEqual({ sessionId: "ready", cwd: "/isolated/tree" });
   } finally { await retireWorker(isolated.child, 50); }
+});
+
+test("session/new binds to the worktree graff reports in _meta; null means the requested folder", async () => {
+  const noRetire = async () => { throw new Error("A successful handshake must not retire its child"); };
+  const tree = await worker("worktree");
+  try {
+    expect(await initializeWorker(tree.transport, "/repo", noRetire, 1000))
+      .toEqual({ sessionId: "ready", cwd: "/repo/.graff/worktrees/harness-1" });
+  } finally { await retireWorker(tree.child, 50); }
+  const main = await worker("main");
+  try {
+    // An explicit null wins over a stray legacy field.
+    expect(await initializeWorker(main.transport, "/repo", noRetire, 1000)).toEqual({ sessionId: "ready" });
+  } finally { await retireWorker(main.child, 50); }
 });
 
 test("overlapping startup and first prompt share a completed worker", async () => {
