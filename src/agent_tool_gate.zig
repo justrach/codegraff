@@ -354,6 +354,18 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
     };
 }
 
+/// ToolCtx.host_gate: a call an rlm script makes (bash, write_file, MCP…)
+/// gets the same gate as the catalog call would (#1292). It runs on a pool
+/// thread, so it holds the lock that already guards this agent's arena there.
+pub fn hostGate(context: *anyopaque, call: ToolCall) ?tools_mod.ToolOutput {
+    const self: *Agent = @ptrCast(@alignCast(context));
+    self.publication_checks.observation_mutex.lockUncancelable(self.io);
+    defer self.publication_checks.observation_mutex.unlock(self.io);
+    const denied = (gateTool(self, call) catch
+        return .{ .text = self.gpa.dupe(u8, "tool gate failed; the call was not run") catch &.{}, .is_error = true }) orelse return null;
+    return .{ .text = self.gpa.dupe(u8, denied.text) catch &.{}, .is_error = true, .cancelled = denied.cancelled };
+}
+
 pub fn firstWord(cmd: []const u8) []const u8 {
     const end = std.mem.indexOfAny(u8, cmd, " \t") orelse cmd.len;
     return cmd[0..end];

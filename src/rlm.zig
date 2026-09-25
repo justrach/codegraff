@@ -28,7 +28,7 @@ pub const tool_name = "rlm";
 pub const tool_desc = "Programmatic tool calling (RLM + sPTC). Functions ARE this session's tools. Leading read_file/codedb/sleep_ms/llm_query calls overlap as it streams; other calls run in order, stopping on error/cancel/pending. Binds persist. subagent(\"task\") is sidecar-only (keep the critical-path next step local). Loaded MCP names are host functions after load_tool_schemas; tools.server.tool(...) is that name; each(arr, tool, field) maps a JSON array; len(x)/project(x, field) slim it. print() is the answer. Prefer one rlm over N tool calls.";
 /// --lean catalog desc: same contract, no REPL essay. maybeAppend is after
 /// compactLeanSpecs, so this is the one-shot wire text.
-pub const lean_tool_desc = "Batch independent read_file/codedb here. print(read_file(\"p\")) returns the file — do not catalog-read it again. Then edit_file/write_file/bash as catalog tools. Leading reads overlap; other calls run in order, stopping on error/cancel/pending. Binds persist. Loaded MCP names are host functions after load_tool_schemas.";
+pub const lean_tool_desc = "Batch independent read_file/codedb here. print(read_file(\"p\")) returns the file — do not catalog-read it again. Then edit_file/write_file/shell as catalog tools. Leading reads overlap; other calls run in order, stopping on error/cancel/pending. Binds persist. Loaded MCP names are host functions after load_tool_schemas.";
 pub const tool_schema =
     \\{"type": "object", "properties": {"code": {"type": "string", "description": "Python-like script: name = read_file(\"path\") / codedb(\"command\") / bash(\"cmd\") / sleep_ms(ms) / llm_query(\"prompt\") / subagent(\"task\") / loaded mcp__server__tool() or tools.server.tool(); each(arr, tool, field) maps a JSON array; len(x) and project(x, field) slim it; print(...) is the result. Assignments persist across rlm calls."}}, "required": ["code"]}
 ;
@@ -248,7 +248,11 @@ fn runHostRaw(ctx: ToolCtx, call: spec_ptc.Call) ToolOutput {
         return .{ .text = ctx.gpa.dupe(u8, "rlm: bad args") catch &.{}, .is_error = true };
     };
     defer parsed.deinit();
-    return exec_mod.execTool(ctx, .{ .id = "rlm", .name = ready.name, .input = parsed.value });
+    // #1292: the agent's approval gate, not just the executor's backstops.
+    // A denial is an error result, so the script stops here.
+    const host_call: tools.ToolCall = .{ .id = if (ctx.host_gate) |gate| gate.call_id else "rlm", .name = ready.name, .input = parsed.value };
+    if (ctx.host_gate) |gate| if (gate.check(gate.context, host_call)) |denied| return denied;
+    return exec_mod.execTool(ctx, host_call);
 }
 
 fn runSleep(ctx: ToolCtx, args_json: []const u8) ToolOutput {

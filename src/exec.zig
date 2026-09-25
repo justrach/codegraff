@@ -358,7 +358,11 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         return execSubagent(child_ctx, input);
     }
     if (std.mem.eql(u8, call.name, "workflow")) return execWorkflow(ctx, input);
-    if (std.mem.eql(u8, call.name, @import("rlm.zig").tool_name)) return @import("rlm.zig").exec(ctx, input);
+    if (std.mem.eql(u8, call.name, @import("rlm.zig").tool_name)) {
+        var rlm_ctx = ctx;
+        if (rlm_ctx.host_gate) |*gate| gate.call_id = call.id; // consent prompts name this rlm call
+        return @import("rlm.zig").exec(rlm_ctx, input);
+    }
     if (local_tools.isLocal(call.name)) return local_tools.exec(gpa, io, call.name, input);
     if (std.mem.eql(u8, call.name, "agent_output")) {
         const id = intField(input, "id") orelse return missingArg(gpa, "id");

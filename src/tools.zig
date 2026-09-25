@@ -94,6 +94,14 @@ pub const beforeFromRead = snapshots_mod.beforeFromRead;
 pub const Snapshots = snapshots_mod.Snapshots;
 pub const Rewound = snapshots_mod.Rewound;
 
+/// The owning agent's tool gate, for calls a tool makes on its own (rlm host
+/// functions). `check` returns a gpa-owned denial, or null to run the call.
+pub const HostGate = struct {
+    context: *anyopaque,
+    call_id: []const u8 = "rlm",
+    check: *const fn (*anyopaque, ToolCall) ?ToolOutput,
+};
+
 /// Everything a tool executor may touch from a pool thread. All fields are
 /// thread-safe (gpa, io, shared http client, mutex-guarded registry and
 /// approvals) or read-only.
@@ -122,6 +130,7 @@ pub const ToolCtx = struct {
     run_budget: ?*run_budget_mod.RunBudget = null,
     publication_checks: @import("pr_local_checks.zig").State = .{},
     publication_observer: ?@import("pr_local_checks.zig").Observer = null,
+    host_gate: ?HostGate = null, // #1292: rlm host calls pass the same gate as catalog calls
     depth: u8 = 0,
     snapshots: ?*Snapshots = null,
     tools_used: ?*ToolSink = null, // the calling agent's tool log (trajectory/process mining)

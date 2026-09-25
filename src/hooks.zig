@@ -18,6 +18,7 @@ const Allocator = std.mem.Allocator;
 const root = @import("main.zig");
 const harness_policy = @import("harness_policy.zig");
 const win = @import("win_api.zig");
+const shell_tool = @import("shell_tool.zig");
 
 /// Lifecycle hooks (codex/Claude-style), loaded once at startup from
 /// .harness/settings.json's "hooks" object. Three events:
@@ -32,8 +33,9 @@ const win = @import("win_api.zig");
 ///
 /// Shape: {"hooks": {"pre_tool": [{"match": "bash|edit_file",
 /// "command": "./guard.sh", "timeout_ms": 10000}], ...}}. `match` is "*"
-/// (default) or pipe-separated tool names. A hung hook is killed at its
-/// timeout and treated as allow — hooks must never brick the loop.
+/// (default) or pipe-separated tool names; `shell` and its legacy names
+/// (`bash`, `bash_output`, `bash_kill`) match each other. A hung hook is
+/// killed at its timeout and treated as allow — hooks must never brick the loop.
 pub const Hook = struct {
     match: []const u8,
     command: []const u8,
@@ -47,11 +49,22 @@ pub const Hook = struct {
         if (std.mem.eql(u8, self.match, "*")) return true;
         var it = std.mem.splitScalar(u8, self.match, '|');
         while (it.next()) |m| {
-            if (std.mem.eql(u8, std.mem.trim(u8, m, " "), tool)) return true;
+            if (sameTool(std.mem.trim(u8, m, " "), tool)) return true;
         }
         return false;
     }
 };
+
+/// #1292: the catalog calls the shell tool `shell`; hooks written for `bash`
+/// (the /hooks example, adopted Claude settings) must still fire, and a
+/// `shell` hook must see a legacy-named call. `shell` covers run, output and
+/// kill, so it pairs with every family name; the aliases don't pair with
+/// each other (`bash` is not `bash_output`).
+fn sameTool(m: []const u8, tool: []const u8) bool {
+    if (std.mem.eql(u8, m, tool)) return true;
+    return (std.mem.eql(u8, m, shell_tool.tool_name) and shell_tool.isFamily(tool)) or
+        (std.mem.eql(u8, tool, shell_tool.tool_name) and shell_tool.isFamily(m));
+}
 
 pub const Hooks = struct {
     pre_tool: []const Hook = &.{},
@@ -192,6 +205,26 @@ test "Hook.matches: wildcard, pipe lists, exact" {
     try std.testing.expect(multi.matches("write_file")); // spaces trimmed
     try std.testing.expect(!multi.matches("read_file"));
     try std.testing.expect(!multi.matches("bas")); // no prefix matching
+}
+
+test "Hook.matches: shell and its legacy names match each other (#1292)" {
+    const bash = Hook{ .match = "bash", .command = "", .timeout_ms = 0 };
+    try std.testing.expect(bash.matches("shell"));
+    try std.testing.expect(bash.matches("bash"));
+    try std.testing.expect(!bash.matches("bash_output")); // aliases stay distinct
+    const shell = Hook{ .match = "edit_file|shell", .command = "", .timeout_ms = 0 };
+    try std.testing.expect(shell.matches("bash"));
+    try std.testing.expect(shell.matches("bash_output"));
+    try std.testing.expect(shell.matches("bash_kill"));
+    try std.testing.expect(shell.matches("edit_file"));
+    const output = Hook{ .match = "bash_output", .command = "", .timeout_ms = 0 };
+    try std.testing.expect(output.matches("shell")); // shell may be action=output
+    try std.testing.expect(!output.matches("bash"));
+    try std.testing.expect(!bash.matches("read_file"));
+    try std.testing.expect(!shell.matches("shel")); // no prefix matching
+    try std.testing.expect(!shell.matches("shell_x"));
+    const read = Hook{ .match = "read_file", .command = "", .timeout_ms = 0 };
+    try std.testing.expect(!read.matches("shell"));
 }
 
 test "parseHookList: defaults, malformed entries skipped" {
