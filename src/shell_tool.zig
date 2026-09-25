@@ -192,6 +192,22 @@ test "shell interact dispatch names the missing PTY" {
     try std.testing.expect(std.mem.indexOf(u8, out.text, "not a PTY") != null);
 }
 
+test "#1270: a NUL byte in a shell command is refused with its offset, never run" {
+    const gpa = std.testing.allocator;
+    var client: std.http.Client = undefined;
+    const ctx: ToolCtx = .{ .gpa = gpa, .io = std.testing.io, .client = &client, .provider = undefined, .registry = null, .from_sub = false, .approvals = null, .tracer = null };
+    for ([_][]const u8{ "shell", "bash" }) |name| {
+        var c = try parseCall(gpa, name, "{\"command\":\"true\\u0000 && false\"}");
+        defer c.parsed.deinit();
+        try std.testing.expectEqual(@as(?usize, 4), std.mem.indexOfScalar(u8, runCommand(c.call).?, 0));
+        const out = try exec(ctx, c.call);
+        defer gpa.free(out.text);
+        try std.testing.expect(out.is_error);
+        try std.testing.expect(!out.pending);
+        try std.testing.expect(std.mem.indexOf(u8, out.text, "NUL byte at offset 4") != null);
+    }
+}
+
 test "catalog advertises shell, not the three bash names" {
     const schema = @import("schema.zig");
     var saw_shell = false;
