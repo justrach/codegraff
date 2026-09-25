@@ -7,6 +7,7 @@ const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
 const Agent = @import("agent.zig").Agent;
 const cancel_source = @import("cancel_source.zig"); // #728
+const stdin_line = @import("stdin_line.zig");
 
 const cancelled_answer = "{\"type\":\"answer\",\"cancelled\":true}";
 
@@ -119,8 +120,17 @@ fn readerTask() void {
     const gpa = inbox_gpa.?;
     const reader = inbox_reader.?;
     while (true) {
-        const raw = reader.takeDelimiter('\n') catch break;
-        const line = raw orelse break;
+        // Not takeDelimiter: a request with an image outgrows the stdin buffer,
+        // and its StreamTooLong used to end the session here.
+        const line = switch (stdin_line.take(reader, gpa, stdin_line.max_bytes) catch break) {
+            .eof => break,
+            .too_long => {
+                std.debug.print("graff: dropped a --json input record over {d} bytes\n", .{stdin_line.max_bytes});
+                continue;
+            },
+            .line => |l| l,
+        };
+        defer gpa.free(line);
         if (isCancel(gpa, line)) {
             mutex.lockUncancelable(io);
             const active = turn_active.load(.acquire);

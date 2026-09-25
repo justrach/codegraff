@@ -15,6 +15,8 @@ const Allocator = std.mem.Allocator;
 const root = @import("main.zig");
 const harness_version = root.harness_version;
 const version_status = @import("version_status.zig");
+const update_service = @import("update_service.zig");
+const update_target = @import("update_target.zig");
 
 /// Shown under `graff --version` — a terse "what's new" for recent releases.
 /// Keep it short and current; bump alongside the version each release.
@@ -22,9 +24,10 @@ pub const changelog_text =
     \\What's new
     \\──────────
     \\0.0.302.5
-    \\  • route checks preserve explicitly qualified selections
+    \\  • WebSocket turns stream live, with automatic HTTPS fallback
+    \\  • ACP sessions use the client's folder and report their worktree
+    \\  • openai/codex models and ACP image blocks accept images
     \\  • the old browser companion is retired; webfetch uses built-in HTTP
-    \\  • web-only browser access uses the paired Chrome extension
     \\
     \\Full release history: https://github.com/justrach/codegraff/releases
     \\
@@ -77,7 +80,8 @@ pub const usage_text =
     \\                                   `graff remote` anywhere can drive sessions on this machine
     \\  graff remote [new|send|tail|…]   list and drive the sessions of machines running remote-control
     \\  graff acp                        Agent Client Protocol agent on stdio (Zed and other ACP editors)
-    \\  graff update [--force|--check]   update graff to the latest GitHub release
+    \\  graff update [--force|--check]   update graff to the latest stable release
+    \\  graff update --beta [--check]   install the newest beta for the next launch
     \\  graff title <prompt>            print the AI tab-title for a prompt (test title styles)
     \\
     \\flags:
@@ -248,4 +252,44 @@ pub fn updateCommand(
         std.process.fatal("update: installer failed — try again or download manually from https://github.com/justrach/codegraff/releases/latest", .{});
     try out.writeAll("✓ update installed — restart every running graff session to load the new binary\n");
     try out.flush();
+}
+
+/// Explicit beta opt-in. Resolve a tag on the newest numeric release branch,
+/// then reuse the in-session updater's pinned checksum and atomic placement.
+pub fn updateBetaCommand(io: Io, gpa: Allocator, arena: Allocator, environ: *const std.process.Environ.Map, check_only: bool) !void {
+    const asset = update_target.assetName() orelse std.process.fatal("beta updates are unavailable on this platform", .{});
+    const exe = std.process.executablePathAlloc(io, gpa) catch std.process.fatal("cannot locate the running graff executable", .{});
+    defer gpa.free(exe);
+    const home = environ.get("HOME") orelse "";
+    var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target = update_target.resolve(exe, home, &target_buf);
+    if (target.kind != .supported) std.process.fatal("beta update: {s}", .{target.detail});
+
+    var http: update_service.HttpFetch = .{ .io = io, .gpa = gpa, .user_agent = "simple-harness/" ++ harness_version };
+    const opts: update_service.Opts = .{
+        .io = io,
+        .gpa = gpa,
+        .running_version = harness_version,
+        .target_path = target.path,
+        .asset_name = asset,
+        .fetch = http.fetch(),
+        .channel = .beta,
+    };
+    var buf: [4096]u8 = undefined;
+    var writer = Io.File.stdout().writer(io, &buf);
+    const out = &writer.interface;
+    const report = if (check_only) update_service.inspect(opts) else update_service.install(opts, .human);
+    switch (report.kind) {
+        .available => try out.print("beta available: {s} (run `graff update --beta`)\n", .{report.latest_tag().?}),
+        .installed => try out.print("installed {s} for the next launch; restart graff to use it\n", .{report.latest_tag().?}),
+        .current, .already_installed => try out.print("beta {s} is already installed\n", .{report.latest_tag().?}),
+        .newer => try out.print("running graff v{s} is newer than beta {s}; keeping it\n", .{ report.running(), report.latest_tag().? }),
+        .offline => std.process.fatal("beta update: could not reach GitHub or download a release asset", .{}),
+        .malformed => std.process.fatal("beta update: no published beta for the newest release branch, or release metadata is invalid", .{}),
+        .verify_failed => std.process.fatal("beta update: SHA256SUMS verification failed", .{}),
+        .permission => std.process.fatal("beta update: cannot write {s}", .{target.path}),
+        else => std.process.fatal("beta update: {s}", .{report.detail}),
+    }
+    try out.flush();
+    _ = arena;
 }

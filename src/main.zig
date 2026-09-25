@@ -558,7 +558,7 @@ const agentJobsReap = subagent.agentJobsReap; // #276 P0-3: background subagents
 const workflow = @import("workflow_test.zig"); // the engine's tests live here (workflow.zig hit the 600-line cap)
 const exec = @import("exec.zig");
 test { // ── Unit tests (`zig build test`): pull in tests from imported modules (mcp.zig)
-    _ = .{ @import("jev_tool.zig"), @import("jev_model_scope.zig"), @import("jev_provider_switch_tests.zig"), @import("jev_effort_state.zig") };
+    _ = .{ @import("beta_feed.zig"), @import("jev_tool.zig"), @import("jev_model_scope.zig"), @import("jev_provider_switch_tests.zig"), @import("jev_effort_state.zig") };
     _ = .{ @import("mcp_apps.zig"), @import("html_view.zig"), @import("providers_confirmation_tests.zig"), @import("repl_model_confirmation_tests.zig"), @import("repl_model_pick_tests.zig"), @import("engine_sink_citation_tests.zig"), @import("cite_markup_stream_tests.zig"), @import("oneshot_citation_tests.zig"), @import("tui_acp.zig"), @import("acp_permission.zig"), @import("acp_usage.zig") };
     _ = .{ @import("mcp_server_tests.zig"), @import("main_test.zig"), @import("artifact_claim_command.zig"), @import("cli_path_hint.zig"), @import("run_budget.zig"), @import("pr_review_input.zig"), @import("pr_claim_review.zig"), @import("tui_paste_transfer.zig") };
     _ = .{ @import("session_catalog.zig"), @import("session_prompt.zig"), @import("session_discovery.zig") };
@@ -582,7 +582,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = .{ @import("acp_protocol.zig"), @import("subagent_mimo_tests.zig"), @import("mimo_effort_tests.zig"), @import("gateway_picker_catalog.zig") };
     _ = @import("task_outcome.zig"); // goal-outcome telemetry events
     _ = @import("learn_delete.zig"); // #303: its tests were dead until listed here
-    _ = .{ @import("additional_tests.zig"), @import("req_stats.zig"), @import("exact_reply.zig"), @import("rlm_order_tests.zig"), @import("async_tool_policy.zig"), @import("agent_async_tools.zig"), @import("request_usage_attempts.zig") };
+    _ = .{ @import("additional_tests.zig"), @import("req_stats.zig"), @import("exact_reply.zig"), @import("rlm_order_tests.zig"), @import("async_tool_policy.zig"), @import("agent_async_tools.zig"), @import("request_usage_attempts.zig"), @import("learn_formal.zig") };
     _ = @import("goal_pacing_autonomous_test.zig");
     _ = @import("goal_state.zig");
     _ = @import("goal_persist_tests.zig");
@@ -593,7 +593,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = .{ @import("presence_accord.zig"), @import("peer_idle.zig"), @import("acp_idle.zig"), @import("presence_chan.zig"), @import("presence_record.zig"), @import("daddy.zig"), @import("peer_inbox_content_test.zig"), @import("peer_inbox_failure_test.zig"), @import("peer_inbox_storage_test.zig"), @import("peer_inbox_sequence_test.zig"), @import("peer_inbox_snapshot_test.zig") };
     _ = @import("acp_agents.zig");
     _ = .{ @import("subagent_activity.zig"), @import("subagent_interactive.zig"), @import("subagent_recovery.zig"), @import("subagent_retained.zig"), @import("subagent_run_tests.zig") };
-    _ = @import("acp_agent_activity.zig");
+    _ = .{ @import("acp_agent_activity.zig"), @import("acp_subagent_live.zig"), @import("acp_line_writer.zig") };
     _ = @import("acp_replay.zig");
     _ = @import("read_image.zig");
     _ = .{ @import("pr_local_checks.zig"), @import("mcp_names.zig"), @import("workspace_history.zig"), @import("file_worktree.zig"), @import("mcp_turn_context.zig"), @import("review_deadline.zig"), @import("issue_cmd.zig"), @import("shell_tool.zig"), @import("acp_ask.zig"), @import("side_steer.zig"), @import("task_workspace_tests.zig"), @import("workspace_prepare_tests.zig"), @import("worktree_reap.zig") };

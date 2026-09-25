@@ -50,6 +50,32 @@ test "learning config parser rejects unknown fields and unsafe auto" {
     try std.testing.expectError(error.UnknownField, std.json.parseFromSlice(Config, std.testing.allocator, unknown, .{}));
 }
 
+test "formal checker shape requires one pinned script argument" {
+    const hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    var config: Config = .{
+        .schema = config_schema,
+        .agent_name = "candidate",
+        .mutation_instruction = "change one behavior",
+        .mutator = .{ .program = "/bin/mutate", .sha256 = hash },
+        .evaluator = .{ .program = "/bin/evaluate", .sha256 = hash },
+        .evaluation_suite = .{ .path = "/suite", .sha256 = hash },
+        .cohort = .{ .provider = "test", .model = "test", .task_family = "test", .adapter_version = "v1", .verifier_version = "v1" },
+        .formal_check = .{
+            .checker = .{ .program = "/bin/python", .sha256 = hash, .args = &.{"/pinned/helper.py"}, .inputs = &.{.{ .path = "/pinned/helper.py", .sha256 = hash }} },
+            .pin = .{ .path = "/pinned/manifest.json", .sha256 = hash },
+        },
+    };
+    try validateConfig(config);
+    var formal = config.formal_check.?;
+    formal.checker.args = &.{"/other/helper.py"};
+    config.formal_check = formal;
+    try std.testing.expectError(error.InvalidFormalChecker, validateConfig(config));
+    formal.checker.args = &.{"/pinned/helper.py"};
+    formal.checker.inputs = &.{};
+    config.formal_check = formal;
+    try std.testing.expectError(error.InvalidFormalChecker, validateConfig(config));
+}
+
 test "suite statistical units are additive, validated, and criticality-consistent" {
     const legacy =
         \\{"schema":"codegraff.learn.suite.v1","suite_id":"legacy","cases":[{"id":"one"},{"id":"two"}]}

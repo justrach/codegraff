@@ -186,6 +186,13 @@ fn sweepDead(io: Io, dir_path: []const u8) void {
 }
 
 /// Bind `{live_dir}/{pid}-{start}.accord.sock` and accept live posts.
+/// `sockaddr_un.sun_path` is 104 bytes on macOS/BSD and 108 on Linux,
+/// including the terminating NUL. std's listener indexes past it otherwise.
+pub fn fitsUnixSocketPath(path: []const u8) bool {
+    const cap: usize = if (builtin.os.tag == .linux) 108 else 104;
+    return path.len < cap;
+}
+
 pub fn listen(io: Io, gpa: std.mem.Allocator, dir_path: ?[]const u8) void {
     if (!enabled()) return;
     if (builtin.os.tag == .windows) return;
@@ -197,6 +204,8 @@ pub fn listen(io: Io, gpa: std.mem.Allocator, dir_path: ?[]const u8) void {
     const name = std.fmt.bufPrint(&name_buf, "{d}-{x}.accord.sock", .{ self.pid, self.start_id }) catch return;
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir, name }) catch return;
+    // Presence is best-effort: a long $HOME must not trip the sockaddr bound.
+    if (!fitsUnixSocketPath(path)) return;
     const owned_dir = gpa.dupe(u8, dir) catch return;
     const owned_name = gpa.dupe(u8, name) catch {
         gpa.free(owned_dir);
@@ -576,4 +585,10 @@ test "standing link carries msg, progress, and a reply on one session" {
 test "liveClaim is a no-op when Accord is off" {
     test_enabled = false;
     liveClaim(std.testing.io, "[]");
+}
+
+test "fitsUnixSocketPath: a socket under a long HOME is skipped, not a panic" {
+    try std.testing.expect(fitsUnixSocketPath("/Users/me/.graff/live/123-abc.accord.sock"));
+    const long = "/var/folders/65/qh0z1swn4g3ghw352z5w94w80000gn/T/graff-acp-images-abcdefgh/home/.graff/live/12345-1a2b3c4d5e6f.accord.sock";
+    try std.testing.expect(!fitsUnixSocketPath(long));
 }

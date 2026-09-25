@@ -51,6 +51,7 @@ pub const Flags = struct {
     selftest_spinner_flag: bool = false, // --selftest-spinner: headless spinner render for the PTY anti-stealth test
     selftest_markdown_flag: bool = false, // --selftest-markdown: render the real streaming markdown fixture in a PTY
     update_check: bool = false, // graff update --check
+    update_beta: bool = false, // graff update --beta
     model_flag: ?[]const u8 = null,
     subagent_provider_flag: ?[]const u8 = null,
     subagent_model_flag: ?[]const u8 = null,
@@ -209,6 +210,8 @@ pub fn parse(init: std.process.Init) !Flags {
                     flags.update_force = true;
                 } else if (std.mem.eql(u8, arg, "--check")) {
                     flags.update_check = true;
+                } else if (std.mem.eql(u8, arg, "--beta")) {
+                    flags.update_beta = true;
                 } else if (std.mem.eql(u8, arg, "--resume")) {
                     const rv = it.next() orelse std.process.fatal("--resume needs a session name — harness --help", .{});
                     flags.resume_flag = try arena.dupe(u8, rv);

@@ -70,11 +70,27 @@ pub fn worktreeAutoCommit(gpa: Allocator, io: Io, msg: []const u8) void {
 /// worktree-<name> into the current branch as one clean commit, then removes the
 /// worktree and deletes its branch. Run from the main checkout.
 pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const []const u8) !void {
+    var captured: Io.Writer.Allocating = .init(arena);
+    try runTo(gpa, io, arena, args, &captured.writer);
+    const text = captured.written();
     var buf: [4096]u8 = undefined;
     var w = Io.File.stdout().writer(io, &buf);
-    const out = &w.interface;
-    defer out.flush() catch {};
+    try w.interface.writeAll(text);
+    try w.interface.flush();
+    const code = exitCode(text);
+    if (code != 0) std.process.exit(code);
+}
 
+/// Scripted callers (Harness, CI) branch on the status, not the prose:
+/// 1 = refused or failed (`✗`, usage), 2 = nothing done (`kept`, `⚠`), else 0.
+pub fn exitCode(text: []const u8) u8 {
+    const first = std.mem.trimStart(u8, text, " \t\r\n");
+    if (std.mem.startsWith(u8, first, "✗") or std.mem.startsWith(u8, first, "usage:")) return 1;
+    if (std.mem.startsWith(u8, first, "kept ") or std.mem.startsWith(u8, first, "⚠")) return 2;
+    return 0;
+}
+
+fn runTo(gpa: Allocator, io: Io, arena: Allocator, args: []const []const u8, out: *Io.Writer) !void {
     const action = if (args.len > 0) args[0] else "list";
 
     if (std.mem.eql(u8, action, "list") or std.mem.eql(u8, action, "ls")) {
@@ -89,6 +105,10 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
         const name = args[1];
         const wt_path = try std.fmt.allocPrint(arena, ".graff/worktrees/{s}", .{name});
         const wt_branch = try std.fmt.allocPrint(arena, "worktree-{s}", .{name});
+        Io.Dir.cwd().access(io, wt_path, .{}) catch {
+            try out.print("✗ no such task workspace {s} — `graff worktree list`\n", .{name});
+            return;
+        };
 
         const metadata = @import("worktree_base.zig");
         const base = metadata.read(gpa, io, arena, ".", wt_branch);
@@ -353,4 +373,13 @@ test "land source gate preserves untracked staged and unstaged work and fails cl
 test { // split-out module: unreferenced, its tests silently never run
     _ = worktree_prune;
     _ = @import("worktree_reap.zig");
+}
+
+test "exitCode: refusals and usage fail, kept is a no-op, success is zero" {
+    try std.testing.expectEqual(@as(u8, 1), exitCode("✗ no such task workspace x — `graff worktree list`\n"));
+    try std.testing.expectEqual(@as(u8, 1), exitCode("usage: graff worktree merge <name>\n"));
+    try std.testing.expectEqual(@as(u8, 2), exitCode("kept /r/.graff/worktrees/x — has uncommitted changes\n"));
+    try std.testing.expectEqual(@as(u8, 2), exitCode("⚠ nothing to land from worktree-x (empty or already merged) — worktree left intact\n"));
+    try std.testing.expectEqual(@as(u8, 0), exitCode("✓ landed worktree-x → current branch as one commit, removed the worktree\n"));
+    try std.testing.expectEqual(@as(u8, 0), exitCode("identity: /r/.git (main checkout)\n"));
 }

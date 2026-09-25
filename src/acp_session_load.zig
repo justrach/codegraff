@@ -11,6 +11,8 @@ const replay = @import("acp_replay.zig");
 const transcript = @import("session_transcript.zig");
 const LiveTurn = @import("acp_live_turn.zig").LiveTurn;
 const util = @import("util.zig");
+const acp_workspace = @import("acp_workspace.zig");
+const workspace_switch = @import("workspace_switch.zig");
 
 const invalid_params: i32 = -32602;
 
@@ -51,19 +53,22 @@ pub fn load(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request
     const params = req.params orelse return reject(w, req, "Invalid session/load parameters");
     if (params != .object) return reject(w, req, "Invalid session/load parameters");
     const sid = util.strFieldObj(params.object, "sessionId") orelse return reject(w, req, "Invalid session ID");
-    const cwd = util.strFieldObj(params.object, "cwd") orelse return reject(w, req, "Invalid session workspace");
+    if (util.strFieldObj(params.object, "cwd") == null) return reject(w, req, "Invalid session workspace");
     if (!session.validSessionName(sid)) return reject(w, req, "Invalid session ID");
-    if (!std.fs.path.isAbsolute(cwd))
-        return reject(w, req, "Session workspace does not match the selected workspace");
-    const canonical_cwd = Io.Dir.cwd().realPathFileAlloc(live.root.io, cwd, arena) catch cwd;
-    const canonical_active = Io.Dir.cwd().realPathFileAlloc(live.root.io, d.cwd, arena) catch d.cwd;
-    if (!session_index.sameWorkspace(canonical_cwd, canonical_active))
-        return reject(w, req, "Session workspace does not match the selected workspace");
+    const env = d.workspace orelse return reject(w, req, "Session loading is unavailable");
+    // The client's cwd becomes the session's; naming the checkout that owns a
+    // `-w` or auto-isolated tree keeps that tree (acp_workspace.adopt).
+    acp_workspace.adopt(env, arena, params) catch |err| return reject(w, req, acp_workspace.errorText(err));
     // No discovery fallback to the user's home or a sibling checkout. A save
     // with this basename in another workspace is a different conversation.
+    // The one exception is this checkout's own `.graff/worktrees/*` (ADR 0202).
     const path = try session.sessionPath(arena, sid);
-    const stat = Io.Dir.cwd().statFile(live.root.io, path, .{}) catch
-        return reject(w, req, "Unknown session ID in the selected workspace");
+    const stat = Io.Dir.cwd().statFile(live.root.io, path, .{}) catch blk: {
+        if (!acp_workspace.enterSavedTree(env, arena, sid)) return reject(w, req, "Unknown session ID in the selected workspace");
+        break :blk Io.Dir.cwd().statFile(live.root.io, path, .{}) catch
+            return reject(w, req, "Unknown session ID in the selected workspace");
+    };
+    const canonical_active = workspace_switch.currentAbs(live.root.io, arena);
     if (stat.kind != .file) return reject(w, req, "Unknown session ID in the selected workspace");
     const bytes = Io.Dir.cwd().readFileAlloc(live.root.io, path, arena, .limited(8 * 1024 * 1024)) catch
         return reject(w, req, "Saved session could not be loaded");
@@ -87,12 +92,14 @@ pub fn load(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request
     session.loadSession(live.root, live.keys, arena, sid) catch |err| {
         return proto.writeError(w, req.id, invalid_params, if (err == error.FileNotFound) "Unknown session ID in the selected workspace" else "Saved session could not be loaded");
     };
+    // Same precedence as CLI resume: the host respawns with --model to switch.
+    if (live.model_override) |p| @import("session_branch.zig").applyModelOverride(live.root, arena, p);
     live.root.session_name = try arena.dupe(u8, sid);
     live.session_id = live.root.session_name;
     d.session_id = live.session_id;
     d.durable_session_id = live.session_id;
     try replayHistory(arena, live.root, w, live.session_id);
     const options = engine.configOptions(d, arena) catch |err| return proto.writeError(w, req.id, engine.err_internal, @errorName(err));
-    try proto.writeResult(w, req.id, .{ .configOptions = options });
+    try proto.writeResult(w, req.id, .{ .configOptions = options, ._meta = acp_workspace.meta(env, arena) });
     try proto.writeAvailableCommands(w, live.session_id, proto.slashCommands());
 }

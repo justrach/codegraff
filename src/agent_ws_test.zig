@@ -596,4 +596,5 @@ comptime {
     _ = @import("agent_ws_stall_test.zig");
     _ = @import("agent_ws_reuse_test.zig");
     _ = @import("agent_ws_fallback_test.zig"); // (#427) the WS→SSE ladder's routing decisions
+    _ = @import("agent_ws_stream_test.zig"); // WS deltas stream through printDelta like SSE
 }

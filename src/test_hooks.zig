@@ -22,6 +22,7 @@
 //! checking the guard still does.
 
 // Learning / DGM promotion pipeline.
+const learn_checkpoint = @import("learn_checkpoint.zig");
 const learn_holdout = @import("learn_holdout.zig");
 const learn_receipt = @import("learn_receipt.zig");
 const learn_report = @import("learn_report.zig");
@@ -235,6 +236,7 @@ const commands_sandbox = @import("commands_sandbox.zig");
 const sandbox_tests = @import("sandbox_tests.zig");
 
 test {
+    _ = learn_checkpoint;
     _ = learn_holdout;
     _ = learn_receipt;
     _ = learn_report;
@@ -346,6 +348,10 @@ test {
     _ = @import("commands_experiment.zig");
     _ = @import("acp_engine.zig");
     _ = @import("acp_config.zig");
+    _ = @import("session_start_plugins_test.zig");
+    _ = @import("acp_mcp_servers.zig");
+    _ = @import("acp_workspace.zig");
+    _ = @import("acp_images.zig");
     _ = @import("libgraff.zig");
     _ = @import("tui_peer.zig");
     _ = @import("acp_auth.zig");

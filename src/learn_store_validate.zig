@@ -61,6 +61,16 @@ pub fn validateConfig(config: Config) !void {
     if (!validText(config.mutation_instruction, 4096)) return error.InvalidMutationInstruction;
     try validateProgram(config.mutator);
     try validateProgram(config.evaluator);
+    if (config.formal_check) |formal| {
+        try validateProgram(formal.checker);
+        if (formal.checker.args.len != 1 or formal.checker.inputs.len != 1 or
+            formal.checker.pass_env.len != 0 or
+            !std.mem.eql(u8, formal.checker.args[0], formal.checker.inputs[0].path))
+            return error.InvalidFormalChecker;
+        if (!std.fs.path.isAbsolute(formal.pin.path) or !validText(formal.pin.path, std.fs.max_path_bytes) or
+            !validId(formal.pin.sha256) or formal.timeout_ms == 0 or formal.timeout_ms > 900_000)
+            return error.InvalidFormalChecker;
+    }
     try validateSuitePin(config.evaluation_suite);
     if (config.holdout_suite) |suite| try validateSuitePin(suite);
 

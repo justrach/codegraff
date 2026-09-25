@@ -40,10 +40,13 @@ pub fn propsFor(self: *const Agent) u64 {
 /// optimization trades cheap cache reads for full-price re-uploads.
 pub var g_force_full_resend = false;
 
-/// xAI on-socket chaining (published WS contract: store:false / ZDR via the
-/// per-connection cache). GRAFF_XAI_WS_CHAIN=0 opts out. A not-found, 25-min
-/// cap, or drop re-anchors with full input (shouldDropChain).
-pub var g_xai_ws_chain = true;
+/// xAI on-socket chaining (`previous_response_id` + delta input on the held
+/// socket). Off by default: with store:false a chained response.create gets
+/// one frame and then silence until the stall watchdog fires (~2 min), both on
+/// a normal turn and after a generate:false warmup; store:true chains fine.
+/// GRAFF_XAI_WS_CHAIN=1 opts in. A not-found, 25-min cap, or drop re-anchors
+/// with full input (shouldDropChain).
+pub var g_xai_ws_chain = false;
 
 /// May this request chain onto the held response instead of re-anchoring?
 /// Brands whose Responses WS holds prior state in-memory and accept
@@ -174,8 +177,11 @@ test "usable: chains only on a clean extension of what the server holds" {
     try std.testing.expect(!usable(true, true, 4, 6, 0, 0, 8, 7));
 }
 
-test "chainUsable: xAI chains by default on a held socket" {
-    try std.testing.expect(g_xai_ws_chain);
+test "chainUsable: xAI chains on a held socket when opted in" {
+    try std.testing.expect(!g_xai_ws_chain); // off by default (store:false chained turns stall)
+    const saved = g_xai_ws_chain;
+    defer g_xai_ws_chain = saved;
+    g_xai_ws_chain = true;
     try std.testing.expect(usable(true, true, 1, 2, 0, 0, 7, 7));
 }
 

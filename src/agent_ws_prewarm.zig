@@ -24,10 +24,16 @@ const serde = @import("serde.zig");
 
 const WatchdogFired = http.WatchdogFired;
 
+/// Off by default: the warmup runs after the user's prompt, in series, and
+/// measured slower on turn 1 than a cold turn (and no faster on turn 2).
+/// GRAFF_WS_PREWARM=1 opts in.
+pub var g_enabled = false;
+
 /// Should this fresh connection prewarm? Codex or xAI (on-socket chain),
 /// session start (nothing sent, no chain anchor), and not under the full-resend
 /// experiment (seeding the chain would fight the flag's premise).
 pub fn eligible(self: *const Agent) bool {
+    if (!g_enabled) return false;
     const brand = std.mem.eql(u8, self.provider.id, "codex") or
         (std.mem.eql(u8, self.provider.id, "xai") and codex_chain.g_xai_ws_chain);
     if (!brand) return false;
@@ -46,6 +52,11 @@ pub fn buildFrame(self: *Agent, arena: std.mem.Allocator) ![]u8 {
     try st.beginObject();
     try st.objectField("type");
     try st.write("response.create");
+    // buildBody writes the model before the Responses fields; this frame
+    // must too, or the server rejects it as the 'None' model and the socket
+    // is spent for the turn that follows.
+    try st.objectField("model");
+    try st.write(self.provider.model);
     try body_responses.write(self, &st, self.toolsJson(), false);
     try st.endObject();
     return out.toOwnedSlice();
@@ -142,7 +153,10 @@ fn awaitPrewarmId(self: *Agent, arena: std.mem.Allocator, client: *ws.WsClient) 
             if (idv != .string or idv.string.len == 0) return error.NoId;
             return idv.string;
         }
-        if (std.mem.eql(u8, t, "response.failed") or std.mem.eql(u8, t, "error")) return error.PrewarmRejected;
+        if (std.mem.eql(u8, t, "response.failed") or std.mem.eql(u8, t, "error")) {
+            if (self.tracer) |tr| tr.note("ws", std.fmt.allocPrint(arena, "prewarm rejection: {s}", .{fbuf.items[0..@min(fbuf.items.len, 300)]}) catch "prewarm rejection");
+            return error.PrewarmRejected;
+        }
         fbuf.clearRetainingCapacity();
     }
 }
@@ -172,6 +186,8 @@ test "buildFrame: prewarm body has generate:false, empty input, no previous_resp
     };
     const frame = try buildFrame(&agent, arena);
     try stdt.testing.expect(std.mem.indexOf(u8, frame, "\"generate\":false") != null);
+    // Without it the server answers "the 'None' model is not supported".
+    try stdt.testing.expect(std.mem.indexOf(u8, frame, "\"model\":\"gpt-5.6\"") != null);
     try stdt.testing.expect(std.mem.indexOf(u8, frame, "\"input\":[]") != null);
     try stdt.testing.expect(std.mem.indexOf(u8, frame, "previous_response_id") == null);
     try stdt.testing.expect(std.mem.indexOf(u8, frame, "\"stream\":true") == null);
@@ -197,6 +213,10 @@ test "stripTransportFields: WS frames omit the SSE-only stream field" {
 
 test "eligible: xAI session start when chaining is on" {
     const stdt = std;
+    try stdt.testing.expect(!g_enabled); // opt-in (GRAFF_WS_PREWARM=1)
+    const saved_enabled = g_enabled;
+    defer g_enabled = saved_enabled;
+    g_enabled = true;
     var arena_state = stdt.heap.ArenaAllocator.init(stdt.testing.allocator);
     defer arena_state.deinit();
     var agent = Agent{
@@ -222,6 +242,10 @@ test "eligible: xAI session start when chaining is on" {
 
 test "eligible: codex session start only" {
     const stdt = std;
+    try stdt.testing.expect(!g_enabled); // opt-in (GRAFF_WS_PREWARM=1)
+    const saved_enabled = g_enabled;
+    defer g_enabled = saved_enabled;
+    g_enabled = true;
     var arena_state = stdt.heap.ArenaAllocator.init(stdt.testing.allocator);
     defer arena_state.deinit();
     var agent = Agent{

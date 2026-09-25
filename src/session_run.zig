@@ -239,6 +239,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     // One-shot returns here, before the REPL cleanup defer below is even
     // registered, so free the root's gpa-backed buffers explicitly (else a
     // tool-using one-shot leaks its tool log / render buffers on exit).
+    @import("subagent.zig").agentJobsReap(gpa, io);
     @import("agent_render_cleanup.zig").deinit(root);
     root.tools_used.deinit(gpa);
     // Presence announced this session at boot (#469); a one-shot returns
@@ -467,6 +468,9 @@ pub fn compactResumedSession(root: *agent_mod.Agent) void {
 /// final turn left uncommitted. Moved out of main() verbatim (600-line
 /// goal); `root` is already stable main()-owned storage.
 pub fn finalizeSession(gpa: Allocator, io: Io, arena: Allocator, out: *Io.Writer, root: *agent_mod.Agent, json_mode: bool) !void {
+    // Live children still use the session's presence/activity storage and
+    // must publish their final ledger rows before the last session save.
+    @import("subagent.zig").agentJobsReap(gpa, io);
     // Task-outcome telemetry: a working goal that never completed counts as
     // abandoned. Before presence.retire so the event can't outlive the flush.
     @import("task_outcome.zig").noteSessionEnd(root);

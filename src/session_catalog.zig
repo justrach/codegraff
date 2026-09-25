@@ -41,7 +41,8 @@ test "#867 session save load preserves the loaded catalog and clears legacy sele
         .out = null,
         .home = try std.fmt.allocPrint(arena, ".zig-cache/tmp/{s}", .{tmp.sub_path}),
     };
-    var registry: @import("mcp.zig").Registry = undefined;
+    var registry = @import("mcp.zig").Registry.empty(gpa, io);
+    defer registry.deinit();
     const spec = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"type\":\"object\",\"properties\":{}}", .{});
     var tools = [_]Tool{
         .{ .server_index = 0, .original_name = "a", .qualified_name = "mcp__fixture__a", .description = "A", .input_schema = spec },
@@ -106,7 +107,8 @@ test "#867 malformed catalog state resets selections and validates saved names" 
         .label = "root",
         .out = null,
     };
-    var registry: @import("mcp.zig").Registry = undefined;
+    var registry = @import("mcp.zig").Registry.empty(gpa, std.testing.io);
+    defer registry.deinit();
     const spec = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"type\":\"object\",\"properties\":{}}", .{});
     var tools = [_]Tool{
         .{ .server_index = 0, .original_name = "current", .qualified_name = "mcp__fixture__current", .description = "Current registry schema", .input_schema = spec },
@@ -153,6 +155,8 @@ fn connected(root: *const Agent) []const Tool {
 }
 
 pub fn mixFingerprint(root: *const Agent, f: anytype) void {
+    if (root.registry) |reg| reg.mutex.lockUncancelable(reg.io);
+    defer if (root.registry) |reg| reg.mutex.unlock(reg.io);
     f.flag(native.listed());
     for (native.loadedNames()) |name| {
         f.text(name);
@@ -167,6 +171,8 @@ pub fn mixFingerprint(root: *const Agent, f: anytype) void {
 }
 
 pub fn write(root: *const Agent, s: *std.json.Stringify) !void {
+    if (root.registry) |reg| reg.mutex.lockUncancelable(reg.io);
+    defer if (root.registry) |reg| reg.mutex.unlock(reg.io);
     try s.objectField("loaded_tools");
     try s.beginObject();
     try s.objectField("native");
@@ -248,6 +254,8 @@ fn restoreName(root: *Agent, name: std.json.Value) !void {
         if (try native.findRootSpec(root.arena, name.string) != null) native.markLoaded(name.string);
         return;
     }
+    if (root.registry) |reg| reg.mutex.lockUncancelable(reg.io);
+    defer if (root.registry) |reg| reg.mutex.unlock(reg.io);
     for (connected(root)) |tool| {
         if (!std.mem.eql(u8, tool.qualified_name, name.string)) continue;
         var input: std.json.ObjectMap = .empty;

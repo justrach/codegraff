@@ -99,7 +99,7 @@ pub fn consumePromptImages(arena: Allocator, root: *Agent, text: []const u8) !Va
         vision.tracePaste(root, "sent", "submit", bytes, img.media_type);
     }
     if (imgs.len == 0) return messages.textMessage(arena, "user", text);
-    return vision.imageMessages(arena, root.provider.kind, text, imgs);
+    return vision.imageMessages(arena, root.provider.kind, if (std.mem.trim(u8, text, " \t\r\n").len == 0) attached_note else text, imgs);
 }
 
 /// After an ask_user (or any tool that staged pixels) tool result, attach the
