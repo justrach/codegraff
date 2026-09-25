@@ -83,9 +83,11 @@ fn liveSlash(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror!?[]co
     return try engine.stripSgr(arena, aw.writer.buffered());
 }
 
-fn liveAfter(ctx: *anyopaque, arena: Allocator, text: []const u8) void {
+fn liveAfter(ctx: *anyopaque, arena: Allocator, text: []const u8, prompt: ?std.json.Value) void {
     const live: *LiveTurn = @ptrCast(@alignCast(ctx));
     _ = playbook_glue.applyUserOverride(live.root, arena, text);
+    // ACP image blocks join the next model request (promptCapabilities.image).
+    _ = @import("acp_images.zig").stage(live.root, prompt);
 }
 
 fn liveBind(ctx: *anyopaque, session_id: []const u8) void {

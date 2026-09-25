@@ -83,7 +83,9 @@ fn openaiGptVision(m: []const u8) bool {
 }
 
 pub fn visionCapable(p: Provider) bool {
-    return visionModel(p.model);
+    // OpenAI's API and ChatGPT/Codex login serve only multimodal models, so
+    // any id there (o-series, codex-*, future names) takes images.
+    return visionModel(p.model) or std.mem.eql(u8, p.id, "openai") or std.mem.eql(u8, p.id, "codex");
 }
 
 /// Guess an image media type from a file extension (default image/png).
@@ -386,6 +388,21 @@ test "visionCapable allowlist" {
     try std.testing.expect(visionCapable(mk("glm-5.3-flash"))); // codegraff backend accepts images
     try std.testing.expect(visionCapable(mk("glm-5v-turbo"))); // glm's explicit vision variant
     try std.testing.expect(!visionCapable(mk("minimax-m3")));
+}
+
+test "visionCapable: every model on the openai and codex providers takes images" {
+    const mk = struct {
+        fn p(id: []const u8, model: []const u8) Provider {
+            return .{ .id = id, .kind = .responses, .auth = .bearer, .url = "", .model = model, .context = 0, .api_key = "", .account = "" };
+        }
+    }.p;
+    for ([_][]const u8{ "openai", "codex" }) |id| {
+        for ([_][]const u8{ "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-terra", "gpt-5.3-codex-spark", "o4-mini", "codex-mini-latest" }) |model|
+            try std.testing.expect(visionCapable(mk(id, model)));
+    }
+    // The provider rule is not a name rule: an o-series id elsewhere stays text-only.
+    try std.testing.expect(!visionCapable(mk("openrouter", "o4-mini")));
+    try std.testing.expect(!visionCapable(mk("fireworks", "accounts/fireworks/models/gpt-oss-120b")));
 }
 
 test "visionModel: every OpenAI gpt-* model sees images, gpt-oss and gpt-3.5 do not" {

@@ -22,6 +22,12 @@ current is part of cutting a release.
 - ACP clients can pass MCP servers in `session/new` and `session/load`, and `GRAFF_NO_PLUGINS` now applies before those servers connect.
 - Opted-in ACP clients can preview child-agent activity live, and background workers stream through a Graff extension across turns. Session teardown waits for background agents, and deferred MCP startup joins run under the registry lock.
 
+### Image input
+
+- Every OpenAI `gpt-*` model is treated as image-capable (gpt-oss and gpt-3.5 excepted), and so is every model on the `openai` and `codex` providers, including o-series and `codex-*` ids. New releases no longer ship text-only by omission.
+- ACP clients can send standard `image` prompt blocks, and `promptCapabilities.image` is now advertised. Images join the next model request when the model accepts them and are skipped for text-only models. An image with no caption is sent with a short note, since some providers reject an empty text part.
+- Graff no longer crashes at startup when its presence socket path would exceed the platform limit (a long `$HOME`); that best-effort listener is skipped instead.
+
 ### Optional formal evidence for local learning
 
 - Bounded lifecycle models cover effort changes, asynchronous tools, permission ownership, and connection leases. Deliberately weakened configurations provide counterexamples for the invariants those models are meant to guard.
