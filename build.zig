@@ -155,6 +155,12 @@ pub fn build(b: *std.Build) void {
     const workspace_lifecycle_test = b.addSystemCommand(&.{ "python3", "scripts/test-workspace-lifecycle.py" });
     workspace_lifecycle_test.addArtifactArg(exe);
     test_step.dependOn(&workspace_lifecycle_test.step);
+    const acp_workspace_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-workspace.py" });
+    acp_workspace_test.addArtifactArg(exe);
+    test_step.dependOn(&acp_workspace_test.step);
+    const acp_images_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-images.py" });
+    acp_images_test.addArtifactArg(exe);
+    test_step.dependOn(&acp_images_test.step);
     const run_tool_budget_test = b.addSystemCommand(&.{ "python3", "scripts/test-run-tool-budget.py" });
     run_tool_budget_test.addArtifactArg(exe);
     test_step.dependOn(&run_tool_budget_test.step);

@@ -24,9 +24,10 @@ pub const changelog_text =
     \\What's new
     \\──────────
     \\0.0.302.5
-    \\  • route checks preserve explicitly qualified selections
+    \\  • WebSocket turns stream live, with automatic HTTPS fallback
+    \\  • ACP sessions use the client's folder and report their worktree
+    \\  • openai/codex models and ACP image blocks accept images
     \\  • the old browser companion is retired; webfetch uses built-in HTTP
-    \\  • web-only browser access uses the paired Chrome extension
     \\
     \\Full release history: https://github.com/justrach/codegraff/releases
     \\

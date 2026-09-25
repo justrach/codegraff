@@ -121,7 +121,7 @@ fn realpathOs(io: Io, path: []const u8, out: []u8) ?[]const u8 {
     return out[0..n];
 }
 
-fn samePath(io: Io, a: []const u8, b: []const u8) bool {
+pub fn samePath(io: Io, a: []const u8, b: []const u8) bool {
     const left = std.mem.trimEnd(u8, a, "/");
     const right = std.mem.trimEnd(u8, b, "/");
     if (std.mem.eql(u8, left, right)) return true;
@@ -183,7 +183,7 @@ pub fn formatList(arena: Allocator, entries: []const Entry, current: []const u8,
     return buf.items;
 }
 
-fn currentAbs(io: Io, arena: Allocator) []const u8 {
+pub fn currentAbs(io: Io, arena: Allocator) []const u8 {
     // Process cwd via Io's processCurrentPath (linux getcwd syscall /
     // RtlGetCurrentDirectory_U) — not Io.Dir.cwd().realPath, which Threaded
     // Io can keep stale across posix.chdir, and not std.c.getcwd, which
