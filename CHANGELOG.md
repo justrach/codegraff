@@ -22,6 +22,14 @@ current is part of cutting a release.
 - ACP clients can pass MCP servers in `session/new` and `session/load`, and `GRAFF_NO_PLUGINS` now applies before those servers connect.
 - Opted-in ACP clients can preview child-agent activity live, and background workers stream through a Graff extension across turns. Session teardown waits for background agents, and deferred MCP startup joins run under the registry lock.
 
+### Workspaces over ACP
+
+- ACP sessions now use the folder the client asks for on `session/new` and `session/load`, as the protocol requires, instead of the folder graff was launched in. A relative or missing folder is rejected.
+- The worktree a session runs in is reported as `_meta["graff/worktree"]` (name, path, branch, base, owning checkout, and whether graff generated it), or `null` in a main checkout. The non-standard top-level `cwd` in the `session/new` reply is gone; the desktop app reads the new field and still accepts older builds.
+- Reopening a session works from the repository root when the process runs in a `-w` tree, and from a main checkout when the save lives in one of its worktrees. Switching workspace mid-session sends `session_info_update`.
+- `-w` sessions record their real worktree path. They used `$PWD`, which names the host's own folder when an app launches graff, so their saves pointed at a path that did not exist.
+- `graff worktree` exits 1 when it refuses or fails and 2 when it does nothing, instead of always 0. Merging a workspace that does not exist now says so.
+
 ### Optional formal evidence for local learning
 
 - Bounded lifecycle models cover effort changes, asynchronous tools, permission ownership, and connection leases. Deliberately weakened configurations provide counterexamples for the invariants those models are meant to guard.

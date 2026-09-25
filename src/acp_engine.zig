@@ -7,6 +7,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const proto = @import("acp_protocol.zig");
+const acp_workspace = @import("acp_workspace.zig");
 const util = @import("util.zig");
 const acp_auth = @import("acp_auth.zig");
 
@@ -73,8 +74,8 @@ pub const Dispatch = struct {
     set_config: ?SetConfigFn = null,
     mcp_servers: ?McpServersFn = null,
     error_message: ?*const fn (ctx: *anyopaque, err: anyerror) []const u8 = null,
-    /// Isolated checkout after session start (`g_cwd_display`). Empty omits the field.
-    cwd: []const u8 = "",
+    /// Live CLI: adopt the client's cwd, report `_meta["graff/worktree"]` (acp_workspace.zig).
+    workspace: ?acp_workspace.Env = null,
     /// ACP v1 draft subagent updates are opt-in at initialize.
     subagents: bool = false,
     /// Graff extension: detached children may outlive a prompt. The client
@@ -174,6 +175,7 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
     };
     if (d.bind_session) |bind| bind(d.ctx, sid);
     const config_before = configOptions(d, arena) catch |err| return turnError(d, w, req, err);
+    const workspace_before = acp_workspace.snapshot(d.workspace, arena);
     const text = try flattenPrompt(arena, if (obj) |o| o.get("prompt") else null);
     if (d.slash) |slash| {
         const reply = slash(d.ctx, arena, text) catch |err| {
@@ -183,6 +185,7 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
         if (reply) |plain| {
             if (plain.len > 0) try writeSessionUpdate(w, sid, plain);
             emitConfigChange(d, arena, w, sid, config_before) catch |config_err| return turnError(d, w, req, config_err);
+            try acp_workspace.emitChange(d.workspace, arena, w, sid, workspace_before);
             try emitMeter(d, w, sid);
             return respond(w, req, .{ .stopReason = "end_turn" });
         }
@@ -194,6 +197,7 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
     };
     if (final.len > 0) try writeSessionUpdate(w, sid, final);
     emitConfigChange(d, arena, w, sid, config_before) catch |config_err| return turnError(d, w, req, config_err);
+    try acp_workspace.emitChange(d.workspace, arena, w, sid, workspace_before);
     try emitMeter(d, w, sid);
     const extra = if (extra_cancelled) |f| f() else false;
     const stop: []const u8 = if (cancel_flag.load(.acquire) or extra) "cancelled" else "end_turn";
@@ -301,17 +305,19 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
             return respondError(w, req, -32000, "This ACP process already owns a session");
         // The client's MCP servers join before the reply: its first prompt
         // must already see their tools. A bad entry never fails the session.
+        if (d.workspace) |env| acp_workspace.adopt(env, arena, req.params) catch |err|
+            return respondError(w, req, -32602, acp_workspace.errorText(err));
         if (d.mcp_servers) |attach| attach(d.ctx, arena, req.params) catch {};
         d.created += 1;
         d.session_id = d.durable_session_id orelse try std.fmt.allocPrint(arena, "acp-{x}-{d}", .{ d.seed, d.created });
         if (d.config != null) {
             const options = configOptions(d, arena) catch |err| return respondError(w, req, err_internal, @errorName(err));
-            if (d.cwd.len > 0)
-                try respond(w, req, .{ .sessionId = d.session_id.?, .cwd = d.cwd, .configOptions = options })
+            if (d.workspace) |env|
+                try respond(w, req, .{ .sessionId = d.session_id.?, .configOptions = options, ._meta = acp_workspace.meta(env, arena) })
             else
                 try respond(w, req, .{ .sessionId = d.session_id.?, .configOptions = options });
-        } else if (d.cwd.len > 0)
-            try respond(w, req, .{ .sessionId = d.session_id.?, .cwd = d.cwd })
+        } else if (d.workspace) |env|
+            try respond(w, req, .{ .sessionId = d.session_id.?, ._meta = acp_workspace.meta(env, arena) })
         else
             try respond(w, req, .{ .sessionId = d.session_id.? });
         try proto.writeAvailableCommands(w, d.session_id.?, proto.slashCommands());
@@ -420,15 +426,21 @@ test "background child extension negotiates independently of draft sessions" {
     try std.testing.expect(!dispatch.background_subagents);
 }
 
-test "session/new reports an isolated checkout when Dispatch.cwd is set" {
+test "session/new: embeds send no root cwd; a relative client cwd is rejected" {
     var state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer state.deinit();
     var buf: [32768]u8 = undefined;
     var w: Io.Writer = .fixed(&buf);
-    var d: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .seed = 0x11, .cwd = "/repo/.graff/worktrees/session-1" };
+    var d: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .seed = 0x11 };
     try handleLine(&d, state.allocator(), &w, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/new\"}");
     try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"sessionId\":\"acp-11-1\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"cwd\":\"/repo/.graff/worktrees/session-1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"cwd\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "graff/worktree") == null);
+    w = .fixed(&buf);
+    var live: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .seed = 0x12, .workspace = .{ .gpa = std.testing.allocator, .io = std.testing.io } };
+    try handleLine(&live, state.allocator(), &w, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session/new\",\"params\":{\"cwd\":\"relative/dir\"}}");
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "Session cwd must be an absolute path") != null);
+    try std.testing.expect(live.session_id == null);
 }
 
 test "in-process embed can still create a second session" {
