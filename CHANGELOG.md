@@ -26,6 +26,7 @@ current is part of cutting a release.
 - Tool calls whose arguments a server lost (empty, `{}` or cut off) are rebuilt from the call markup in the same reply and the markup is removed from the message. The affected model family gets plain parameter types instead of nullable unions, and a turn whose last three tool batches all failed on unusable arguments ends instead of looping. (#1276)
 - Over-cap tool output keeps its head and tail around a truncation marker, so test summaries and final errors survive. (#1271)
 - Images read with `read_file` are downscaled to the provider-safe size, or refused with a reason, instead of failing the next request. (#1272)
+- When a reasoning model spends its whole reply reasoning without answering, the retry asks for brief thinking and a direct answer instead of repeating the identical request. (#1293)
 - Retry backoff adds bounded jitter so parallel workers don't retry in lockstep; a server's Retry-After is never shortened. (#1274)
 
 ### ACP

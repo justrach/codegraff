@@ -147,11 +147,18 @@ def main():
                     assert result.get('stopReason') == 'end_turn', result
                     assert model.error is None, model.error
                     return updates
-                edits = terminal_updates(prompt('Apply the scripted batch, correct its invalid span, then finish.', 3))
-                assert len(edits) == 2, edits
-                assert [u['status'] for u in edits] == ['failed', 'completed'], edits
+                turn = prompt('Apply the scripted batch, correct its invalid span, then finish.', 3)
+                edits = terminal_updates(turn)
+                assert len(edits) == 1 and edits[0]['status'] == 'failed', edits
                 assert 'no batch changes written' in text(edits[0])
-                assert '2 edit span(s)' in text(edits[1])
+                # #1287: a successful native edit keeps its announced diff, so
+                # its completion carries status only (content would replace it).
+                updates = [e['params']['update'] for e in turn if e.get('method') == 'session/update']
+                done = [u for u in updates if u.get('sessionUpdate') == 'tool_call_update' and u.get('status') == 'completed' and not u.get('content')]
+                assert done, updates
+                announced = {u['toolCallId']: u for u in updates if u.get('sessionUpdate') == 'tool_call'}
+                diffs = [c for c in announced[done[-1]['toolCallId']].get('content') or [] if c.get('type') == 'diff']
+                assert len(diffs) == 2, announced[done[-1]['toolCallId']]
                 shell = terminal_updates(prompt('Start a job; reject legacy output and kill handles, then read and stop the valid handle.', 4))
                 assert len(shell) == 5, shell
                 assert shell[1]['status'] == shell[2]['status'] == 'failed', shell
