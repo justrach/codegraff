@@ -116,9 +116,11 @@ def exercise(root, binary):
             result, updates = call('session/prompt', {'sessionId':sid, 'prompt':[{'type':'text', 'text':'Say OK.'}]}, 3)
             assert result.get('result', {}).get('stopReason') == 'end_turn', result
             reply_chunks = chunks(updates)
-            assert len(reply_chunks) == 2 and re.fullmatch(
-                r'\[network error: EndOfStream — retrying in 250ms \(1/6\)\]', reply_chunks[0]
-            ) and reply_chunks[1] == 'OK', reply_chunks
+            # #1274: the 250 ms first flake step is jittered upward by at most 25%.
+            retry_line = re.fullmatch(
+                r'\[network error: EndOfStream — retrying in (\d+)ms \(1/6\)\]', reply_chunks[0]
+            ) if len(reply_chunks) == 2 else None
+            assert retry_line and 250 <= int(retry_line.group(1)) <= 312 and reply_chunks[1] == 'OK', reply_chunks
             rows = [json.loads(line) for line in log.read_text().splitlines()]
             posts = [row for row in rows if row['event'] == 'post']
             assert len(posts) == 2, posts

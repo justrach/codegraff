@@ -65,6 +65,7 @@ const codex_chain = @import("codex_chain.zig");
 
 const req_stats = @import("req_stats.zig"); // GRAFF_REQ_STATS anatomy (session_settings arms req_stats.g_armed)
 const scratch = @import("agent_request_scratch.zig");
+const jitter = @import("retry_jitter.zig"); // #1274: every computed backoff is jittered upward
 
 /// #390 — appended once, on the run's final admitted model call, right where
 /// the tools disappear, so the model knows WHY and lands instead of retrying.
@@ -276,7 +277,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                             if (telemetry.g_telem) |t| t.errorEvent("stream_retry", what);
                             @import("agent_stream.zig").noteStallRetry(self, stall_retries); // #680: clears the partial (fresh stream, no concat) + widens the between-lines budget
                             self.closeCodexWs(); // tear down the dead WS + null codex_prev_id for a full re-send (no-op off codex WS)
-                            self.sleepInterruptible(stall_reconnect_backoff_ms) catch return error.Interrupted;
+                            self.sleepInterruptible(jitter.ms(self.io, stall_reconnect_backoff_ms)) catch return error.Interrupted; // #1274: desync parallel reconnects
                             continue :rebuild;
                         }
                         // Budget gone: the turn is ending. Mid-turn cuts stayed silent.
@@ -306,7 +307,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                             openai404_retries += 1;
                             try self.say("[openai 404 (often spurious) — retrying ({d}/{d})]\n", .{ openai404_retries, max_openai404_retries });
                             if (self.tracer) |tr| tr.note("retry", "openai 404");
-                            self.sleepInterruptible(RetryPlan.delayMs(false, openai404_retries - 1)) catch return error.Interrupted;
+                            self.sleepInterruptible(jitter.ms(self.io, RetryPlan.delayMs(false, openai404_retries - 1))) catch return error.Interrupted;
                             continue;
                         }
                         self.last_api_error = std.fmt.allocPrint(self.arena, "openai 404 (model not found?): {s}", .{if (main_mod.g_5xx_body_len > 0) main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len] else "not found"}) catch "openai 404: model not found";
@@ -345,9 +346,10 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                         if (throttled) {
                             // #retry-after: prefer the provider's Retry-After
                             // (429/503) over our computed backoff, capped — like
-                            // opencode, so we wait exactly as long as the server asked.
+                            // opencode, so we wait at least as long as the server asked.
+                            // #1274: jitter only adds on top, so parallel agents desync.
                             const server_ra = main_mod.g_retry_after_ms;
-                            const delay_ms = if (server_ra > 0) server_ra else RetryPlan.delayMs(throttled, attempt);
+                            const delay_ms = jitter.ms(self.io, if (server_ra > 0) server_ra else RetryPlan.delayMs(throttled, attempt));
                             const ra_note: []const u8 = if (server_ra > 0) " (server retry-after)" else "";
                             const what: []const u8 = if (err == error.RateLimited) "rate limited (429)" else "server error (5xx)";
                             // Never echo the captured 429/5xx body. Envelopes from
@@ -359,7 +361,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                         } else {
                             // Transport flakes back off; rapid retries against a
                             // just-closed keep-alive re-fail (#86). Cap: 4s/6 tries.
-                            const delay_ms = RetryPlan.delayMs(throttled, attempt);
+                            const delay_ms = jitter.ms(self.io, RetryPlan.delayMs(throttled, attempt));
                             @import("turn_chrome.zig").emitRetryNotice(self.io, @errorName(err), attempt + 1, max_attempts);
                             if (scratch.showRecoveredTransportRetry(self.call_kind))
                                 try scratch.announceNetworkRetry(self, err, delay_ms, attempt + 1, max_attempts);
