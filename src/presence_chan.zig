@@ -70,16 +70,40 @@ pub fn postMessage(io: Io, arena: Allocator, dir: Io.Dir, name: []const u8, msg:
     return true;
 }
 
+/// Unread bytes one drain reads at most. A bigger backlog keeps only its
+/// newest complete lines instead of failing the read and going deaf.
+pub const max_unread = 256 * 1024;
+
+/// Byte length of a channel file, or null if it cannot be stat'd.
+pub fn fileSize(io: Io, dir: Io.Dir, name: []const u8) ?u64 {
+    const st = dir.statFile(io, name, .{}) catch return null;
+    return st.size;
+}
+
 /// Read complete channel lines after `offset`, advancing it past everything
-/// parsed. A trailing partial line stays for the next drain — a writer
-/// mid-append never yields a torn message. A file shorter than the offset was
-/// recreated; restart from the top rather than skip it forever.
+/// parsed. Every model request drains, so only the unread tail is read and a
+/// file that has not grown costs no allocation (a whole-file read here kept a
+/// copy of the log in the session arena per request). A trailing partial
+/// line stays for the next drain — a writer mid-append never yields a torn
+/// message. A file shorter than the offset was recreated; restart from the
+/// top rather than skip it forever.
 pub fn readNewMessages(io: Io, arena: Allocator, dir: Io.Dir, name: []const u8, offset: *u64) []const Message {
-    const text = dir.readFileAlloc(io, name, arena, .limited(256 * 1024)) catch return &.{};
-    if (text.len < offset.*) offset.* = 0;
-    if (text.len == offset.*) return &.{};
+    const f = dir.openFile(io, name, .{}) catch return &.{};
+    defer f.close(io);
+    const size = (f.stat(io) catch return &.{}).size;
+    if (size < offset.*) offset.* = 0;
+    if (size == offset.*) return &.{};
+    const backlog = size - offset.* > max_unread;
+    const start = if (backlog) size - max_unread else offset.*;
+    const buf = arena.alloc(u8, @intCast(size - start)) catch return &.{};
+    const text = buf[0 .. f.readPositionalAll(io, buf, start) catch return &.{}];
+    var pos: usize = 0;
+    // Mid-backlog the window opens inside a line: resume at the next one.
+    if (backlog) pos = if (std.mem.indexOfScalar(u8, text, '\n')) |nl| nl + 1 else {
+        offset.* = start + text.len; // one line over the cap: drop it
+        return &.{};
+    };
     var msgs: std.ArrayList(Message) = .empty;
-    var pos: usize = @intCast(offset.*);
     while (std.mem.indexOfScalarPos(u8, text, pos, '\n')) |nl| {
         const line = text[pos..nl];
         pos = nl + 1;
@@ -87,7 +111,7 @@ pub fn readNewMessages(io: Io, arena: Allocator, dir: Io.Dir, name: []const u8, 
         if (m.from_pid == 0 or m.text.len == 0) continue;
         msgs.append(arena, m) catch break;
     }
-    offset.* = @intCast(pos);
+    offset.* = start + pos;
     return msgs.items;
 }
 
@@ -160,6 +184,40 @@ test "readNewMessages: a torn trailing line waits for the next drain" {
     const second = readNewMessages(io, arena, tmp.dir, name, &off);
     try std.testing.expectEqual(1, second.len);
     try std.testing.expectEqualStrings("rest", second[0].text);
+}
+
+test "readNewMessages: a drain with nothing new allocates nothing" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try std.testing.expect(postMessage(io, arena_state.allocator(), tmp.dir, "room.jsonl", .{ .from_pid = 4, .from_start = 1, .ts_ms = 1, .text = "hi" }));
+    var off: u64 = fileSize(io, tmp.dir, "room.jsonl").?;
+    // Count allocations (none fail): at the tail there must be none.
+    var counting = std.testing.FailingAllocator.init(arena_state.allocator(), .{});
+    try std.testing.expectEqual(0, readNewMessages(io, counting.allocator(), tmp.dir, "room.jsonl", &off).len);
+    try std.testing.expectEqual(@as(usize, 0), counting.allocations);
+    try std.testing.expectEqual(fileSize(io, tmp.dir, "room.jsonl").?, off);
+}
+
+test "readNewMessages: a backlog over the cap keeps its newest lines" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const pad: [1024]u8 = @splat('x');
+    var i: usize = 0;
+    while ((fileSize(io, tmp.dir, "room.jsonl") orelse 0) <= max_unread) : (i += 1)
+        try std.testing.expect(postMessage(io, arena, tmp.dir, "room.jsonl", .{ .from_pid = 5, .from_start = 1, .ts_ms = @intCast(i), .text = &pad }));
+    try std.testing.expect(postMessage(io, arena, tmp.dir, "room.jsonl", .{ .from_pid = 5, .from_start = 1, .ts_ms = -1, .text = "newest" }));
+    var off: u64 = 0;
+    const got = readNewMessages(io, arena, tmp.dir, "room.jsonl", &off);
+    try std.testing.expect(got.len > 0 and got.len < i + 1); // the oldest lines dropped
+    try std.testing.expectEqualStrings("newest", got[got.len - 1].text);
+    try std.testing.expectEqual(fileSize(io, tmp.dir, "room.jsonl").?, off);
 }
 
 test "postMessage dual-writes JSONL when Accord live is on" {

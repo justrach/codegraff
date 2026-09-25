@@ -96,7 +96,7 @@ pub fn restore(root: *Agent, obj: std.json.ObjectMap) void {
     // One-shots must not hear predating chatter (ADR 0004 measured ~4k tokens
     // of stale room on the first step). Inbox restore would re-surface it.
     if (main_mod.unattended) {
-        presence.seekRoomsToTail(root.io, root.arena);
+        presence.seekRoomsToTail(root.io);
         peer_inbox.clear();
         return;
     }
@@ -110,7 +110,7 @@ pub fn restore(root: *Agent, obj: std.json.ObjectMap) void {
         peer_channel.markCaughtUp();
     } else {
         // Pre-0014 file: no cursor. Seek rather than replay the last 10 lines.
-        presence.seekRoomsToTail(root.io, root.arena);
+        presence.seekRoomsToTail(root.io);
     }
     // restoreJson clears both bodies and loss accounting, even for a legacy
     // session with no mailbox. Add the saved count AFTER array evictions.

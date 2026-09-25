@@ -393,10 +393,10 @@ pub fn drainChannel(io: Io, arena: Allocator) []const Message {
     defer dir.close(io);
     if (main_mod.unattended and !g_tail_seeked) {
         g_tail_seeked = true;
-        if (dir.readFileAlloc(io, chan, arena, .limited(16 * 1024 * 1024)) catch null) |text| g_inbox_off = @intCast(text.len);
+        if (presence_chan.fileSize(io, dir, chan)) |n| g_inbox_off = n;
         // The device room too: deliverInbound always drains the worktree
         // channel first, so one fast-forward covers both rooms.
-        if (dir.readFileAlloc(io, device_room, arena, .limited(16 * 1024 * 1024)) catch null) |text| g_device_off = @intCast(text.len);
+        if (presence_chan.fileSize(io, dir, device_room)) |n| g_device_off = n;
     }
     const raw = presence_chan.readNewMessages(io, arena, dir, chan, &g_inbox_off);
     var out: std.ArrayList(Message) = .empty;
@@ -442,7 +442,7 @@ pub fn adoptRoomCursor(c: RoomCursor) void {
 
 /// Join at the live tail — same as a `-p` one-shot. Used when a resumed
 /// session has no saved cursor (legacy file) so we do not replay stale room.
-pub fn seekRoomsToTail(io: Io, arena: Allocator) void {
+pub fn seekRoomsToTail(io: Io) void {
     const dir_path = g_dir orelse {
         g_tail_seeked = true;
         return;
@@ -452,12 +452,10 @@ pub fn seekRoomsToTail(io: Io, arena: Allocator) void {
         return;
     };
     defer dir.close(io);
-    if (g_chan) |chan| {
-        if (dir.readFileAlloc(io, chan, arena, .limited(16 * 1024 * 1024)) catch null) |text|
-            g_inbox_off = @intCast(text.len);
-    }
-    if (dir.readFileAlloc(io, device_room, arena, .limited(16 * 1024 * 1024)) catch null) |text|
-        g_device_off = @intCast(text.len);
+    if (g_chan) |chan| if (presence_chan.fileSize(io, dir, chan)) |n| {
+        g_inbox_off = n;
+    };
+    if (presence_chan.fileSize(io, dir, device_room)) |n| g_device_off = n;
     g_tail_seeked = true;
 }
 
