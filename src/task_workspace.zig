@@ -227,6 +227,7 @@ fn mintOnce(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8, rel: []co
         gpa.free(r.stderr);
     }
     if (!ranOk(r)) return error.CreateFailed;
+    if (std.mem.indexOf(u8, rel, ".graff/") != null) @import("graff_dir.zig").ensureIgnoreAt(io, cwd); // #1273
 }
 
 pub fn create(gpa: Allocator, io: Io, arena: Allocator, opts: CreateOpts) (CreateError || Allocator.Error)!Workspace {

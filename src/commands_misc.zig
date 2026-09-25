@@ -470,9 +470,14 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
 /// /help dumps the full command list. Always handles `line` — never returns
 /// "unhandled" — so callers just `try` it after every tryHandle() misses.
 pub fn handleRest(line: []const u8, out: *Io.Writer) !void {
-    // Unknown slash command → a short error + pointer (only /help dumps the list).
+    // Unknown slash command → a short error + the nearest spelling (#1275), or
+    // a pointer to /help (only /help dumps the list). ACP answers with this too.
     if (!std.mem.eql(u8, line, "/help")) {
-        try out.print("unknown command '{s}' — /help for the list\n", .{line});
+        const word = line[0 .. std.mem.indexOfAny(u8, line, " \t\r\n") orelse line.len];
+        if (command_catalog.suggest(word)) |near|
+            try out.print("unknown command '{s}' — did you mean {s}?\n", .{ word, near })
+        else
+            try out.print("unknown command '{s}' — /help for the list\n", .{word});
         try out.flush();
         return;
     }

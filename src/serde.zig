@@ -181,7 +181,7 @@ fn hasSchemaComposition(obj: std.json.ObjectMap) bool {
 ///
 /// Reports whether it changed anything, so a writer that would otherwise pass
 /// the catalog through verbatim can keep the original bytes.
-fn defaultRootObjectType(arena: Allocator, value: *Value) Allocator.Error!bool {
+pub fn defaultRootObjectType(arena: Allocator, value: *Value) Allocator.Error!bool {
     if (value.* != .object) return false;
     if (value.object.get("type") != null or hasSchemaComposition(value.object)) return false;
     try value.object.put(arena, "type", .{ .string = "object" });

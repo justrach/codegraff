@@ -370,7 +370,9 @@ test {
     _ = @import("tui_goal.zig"); // #716: typed TUI /goal is retirable, not standing
     _ = @import("net_efficiency_test.zig");
     _ = @import("codex_tool_search.zig"); // hosted tool_search on gpt-5.4+ Codex
+    _ = @import("acp_tool_view.zig"); // #1287/#1289: ACP locations and edit diffs
     _ = @import("tool_call_args.zig"); // #752: truncated tool-call arguments must not poison history
+    _ = @import("tool_call_repair.zig"); // MiMo: lost tool-call arguments rebuilt from markup
     _ = @import("cache_affinity.zig"); // ADR 0069: git-root / scratch cache seed
     _ = @import("remote_control.zig"); // #722: relay command parsing, yolo ceiling, device id
     _ = @import("remote_upload.zig"); // #722: batch body shape, upload stubs, urgent flushes
@@ -390,4 +392,8 @@ test {
     _ = @import("mcp_rpc.zig");
     _ = @import("subagent_brief.zig"); // structured delegation brief + harness environment header
     _ = @import("idle_wake_sources.zig"); // shared idle auto-turn sources for REPL / TUI / ACP
+    _ = @import("tool_env.zig"); // #1267/#1268: tool children's environment
+    _ = @import("destructive_git.zig"); // #1269: destructive-git tokenizer tables
+    _ = @import("output_elide.zig"); // #1271: over-cap output keeps head and tail
+    _ = @import("graff_dir.zig"); // #1273: .graff/.gitignore keeps run state out of git
 }

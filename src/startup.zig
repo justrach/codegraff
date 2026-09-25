@@ -266,6 +266,10 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // the login flow writes instead of "/.kimi/...".
     oauth.initHome(keys_cli.homeEnv(init.environ_map) orelse "");
     job_registry.home = keys_cli.homeEnv(init.environ_map) orelse ""; // #199: ownership records for background jobs
+    // #1267: tool children get graff's environment minus its credentials.
+    // After router_config.load (its key is one of them), before `serve` and
+    // the other subcommands below can spawn a tool.
+    @import("tool_env.zig").init(arena, init.environ_map);
     // #557: same pin for GRAFF_PRICES_PATH, before `graff models` is dispatched
     // below — the hydration points (router_catalog, models_cache) all sit well
     // under the last call that still holds the environment.

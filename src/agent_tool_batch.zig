@@ -42,9 +42,7 @@ test "optional effort selections serialize in model call order" {
     try std.testing.expect(!isSequential("shell"));
 }
 
-fn isShellName(name: []const u8) bool {
-    return std.mem.eql(u8, name, "shell") or std.mem.eql(u8, name, "bash");
-}
+const isShellName = @import("shell_tool.zig").runsCommand;
 
 /// Preserve the async scheduling policy introduced for #1166. This is not
 /// thread affinity: Threaded Io may run async work on its pool too. Safety
@@ -86,6 +84,7 @@ pub fn context(self: *Agent) ToolCtx {
         .run_budget = self.run_budget,
         .publication_checks = self.publication_checks,
         .publication_observer = .{ .context = self, .state = &self.publication_checks, .record = @import("pr_local_checks.zig").observeOutput },
+        .host_gate = .{ .context = self, .check = @import("agent_tool_gate.zig").hostGate },
         .depth = self.depth,
         .snapshots = self.snapshots,
         .tools_used = &self.tools_used,

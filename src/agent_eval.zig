@@ -17,7 +17,7 @@ const providerClass = scoring.providerClass;
 const signScore = scoring.signScore;
 
 const telemetry = @import("telemetry.zig");
-const runCapped = @import("jobs.zig").runCapped;
+const runCappedWithOptions = @import("jobs.zig").runCappedWithOptions;
 const judgeTask = @import("subagent.zig").judgeTask;
 const eval_memory = @import("eval_memory.zig");
 const trace = @import("trace.zig");
@@ -72,7 +72,7 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
     const commitment_id = std.fmt.bufPrint(&commitment_buf, "eval-{d}-{d}", .{ eval_turn, self.eval_iter + 1 }) catch "";
     if (behavior) |bt| bt.recordExpectedAction(eval_turn, commitment_id, .{ .kind = "eval" }, .{ .pass = true }, "eval-driven loop verifier");
 
-    const run = runCapped(self.gpa, self.io, &.{ "/bin/sh", "-c", cmd }, 64 * 1024, 16 * 1024, 0) catch |e| {
+    const run = runCappedWithOptions(self.gpa, self.io, &.{ "/bin/sh", "-c", cmd }, 64 * 1024, 16 * 1024, 0, .{ .environ_map = @import("tool_env.zig").get() }) catch |e| { // #1267
         // The command never ran, so the commitment can never be verified by
         // the normal exit-code/score path below; resolve it here instead of
         // leaving a dangling turn_committed that a scorer would misread as

@@ -125,6 +125,7 @@ fn mintOne(gpa: Allocator, io: Io, arena: Allocator, id: []const u8, i: u8) !Sea
             gpa.free(add.stderr);
         }
         if (!ranOk(add) and !dirExists(io, rel)) return error.CreateFailed;
+        @import("graff_dir.zig").ensureIgnore(io, Io.Dir.cwd()); // #1273: hide .graff/worktrees
     }
     const path = try absOrRel(io, arena, rel);
     return .{ .path = path, .branch = branch, .base = readHead(gpa, io, arena, path) };

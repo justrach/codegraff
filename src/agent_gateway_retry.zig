@@ -18,13 +18,14 @@
 //!    fail-fast.
 //! 4. The transient-server ladder (overloaded / server_error, and xAI's
 //!    mid-stream "Internal error during token parsing" — ADR 0148): a 5xx that
-//!    surfaced in-band is retried 3× with 1·2·4 s backoff, never treated as
+//!    surfaced in-band is retried 3× with 1·2·4 s (+jitter) backoff, never treated as
 //!    context overflow. Moved here from agent_request_policy.zig (600-line cap).
 
 const std = @import("std");
 const Agent = @import("agent.zig").Agent;
 const http = @import("http.zig");
 const RetryPlan = http.RetryPlan;
+const jitter = @import("retry_jitter.zig");
 const util = @import("util.zig");
 const policy = @import("agent_request_policy.zig");
 const telemetry = @import("telemetry.zig");
@@ -149,7 +150,7 @@ pub fn retryDegenerateBody(self: *Agent, body: []const u8, retries: *usize) !boo
     if (retries.* >= max_short_flake_retries) return false;
     retries.* += 1;
     self.partial_text.clearRetainingCapacity();
-    const delay_ms = RetryPlan.delayMs(true, retries.* - 1);
+    const delay_ms = jitter.ms(self.io, RetryPlan.delayMs(true, retries.* - 1));
     const what: []const u8 = if (policy.sseKeepAliveOnly(body)) "keep-alive only, no tokens" else "truncated gateway body";
     try self.say("[provider queued the request ({s}) — retrying in {d}s ({d}/{d})]\n", .{ what, delay_ms / 1000, retries.*, max_short_flake_retries });
     if (self.tracer) |tr| tr.note("retry", what);
@@ -162,7 +163,7 @@ fn retryShortGatewayFlake(self: *Agent, etype: []const u8, code: ?[]const u8, ms
     if (retries.* >= max_short_flake_retries) return false;
     retries.* += 1;
     self.partial_text.clearRetainingCapacity();
-    const delay_ms = RetryPlan.delayMs(true, retries.* - 1);
+    const delay_ms = jitter.ms(self.io, RetryPlan.delayMs(true, retries.* - 1));
     try self.say("[gateway flake — retrying in {d}s ({d}/{d})]\n", .{ delay_ms / 1000, retries.*, max_short_flake_retries });
     if (self.tracer) |tr| tr.note("retry", "short gateway flake");
     self.sleepInterruptible(delay_ms) catch return error.Interrupted;
@@ -243,7 +244,7 @@ pub fn retryTransientServerError(self: *Agent, etype: []const u8, code: ?[]const
     if (retries.* >= max_server_retries) return false;
     retries.* += 1;
     self.partial_text.clearRetainingCapacity(); // fresh re-stream after the retry, no concat
-    const delay_ms = serverRetryDelayMs(msg) orelse RetryPlan.delayMs(true, retries.* - 1); // 1·2·4s, or the provider's wait
+    const delay_ms = jitter.ms(self.io, serverRetryDelayMs(msg) orelse RetryPlan.delayMs(true, retries.* - 1)); // 1·2·4s, or the provider's wait; +jitter (#1274)
     const label = transientServerLabel(msg);
     try announceTransientRetry(self, label, delay_ms, retries.*);
     if (self.tracer) |tr| tr.note("retry", label);
@@ -259,7 +260,7 @@ fn retryBodyParseAfterTimeouts(self: *Agent, msg: []const u8, state: *GatewayRet
     if (!shouldRetryBodyParseAfterTimeouts(msg, state.transport_timeouts, state.parse_retries)) return false;
     state.parse_retries += 1;
     self.partial_text.clearRetainingCapacity(); // fresh re-stream after the retry, no concat
-    const delay_ms = RetryPlan.delayMs(true, state.parse_retries - 1); // 1·2s
+    const delay_ms = jitter.ms(self.io, RetryPlan.delayMs(true, state.parse_retries - 1)); // 1·2s
     try self.say("[gateway answered after {d} timeouts with a body-parse rejection — retrying in {d}s ({d}/{d})]\n", .{ state.transport_timeouts, delay_ms / 1000, state.parse_retries, max_gateway_parse_retries });
     if (self.tracer) |tr| tr.note("retry", "body-parse rejection after transport timeouts (gateway artifact?)");
     self.sleepInterruptible(delay_ms) catch return error.Interrupted;

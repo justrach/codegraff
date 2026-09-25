@@ -154,18 +154,10 @@ pub fn isInterpreter(word: []const u8) bool {
 /// user's, or a -w worktree's auto-checkpoints. Codex keeps `.git` read-only to
 /// the agent and opencode forbids `git reset --hard`; we do the same to a
 /// degree: these never auto-run (not under --yolo, not via a blanket `git`
-/// allow), so they always reach a human y/n. Scans the whole command so a
-/// chained `cd x && git reset --hard` is caught too.
-pub fn isDestructiveGit(cmd: []const u8) bool {
-    if (std.mem.indexOf(u8, cmd, "git ") == null) return false;
-    const pats = [_][]const u8{
-        "reset --hard", "clean -f",  "checkout --", "checkout .",
-        "push --force", "push -f",   "branch -D",   "stash clear",
-        "stash drop",   "restore .",
-    };
-    for (pats) |p| if (std.mem.indexOf(u8, cmd, p) != null) return true;
-    return false;
-}
+/// allow), so they always reach a human y/n. A tokenizer, not a substring
+/// scan (#1269): it skips git's global options and reads every chained or
+/// nested command. The per-subcommand rules live in destructive_git.zig.
+pub const isDestructiveGit = @import("destructive_git.zig").isDestructiveGit;
 
 /// Whether a destructive git command may auto-run without a y/n. Gated
 /// everywhere EXCEPT the root agent under --yolo, where the operator explicitly

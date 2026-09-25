@@ -58,6 +58,17 @@ pub const Bridge = struct {
             .{ .optionId = "reject_once", .name = "Reject", .kind = "reject_once" },
             .{ .optionId = "allow_always", .name = req.always_label, .kind = "allow_always" },
         };
+        // What is being approved (#1289): kind, input, and for file tools
+        // the same locations and diff the tool call itself announces.
+        var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const input = req.input orelse std.json.Value{ .object = .empty };
+        const kind = @import("acp_stream.zig").kindFor(req.tool);
+        const cwd = @import("main.zig").g_cwd_display;
+        const view = @import("acp_tool_view.zig");
+        const locations = view.locations(arena, kind, input, cwd) catch return .deny;
+        const content = view.diffs(arena, req.tool, input, cwd) catch return .deny;
         {
             // Same order as tool dispatch: bridge state -> shared output.
             // Inbox responses/cancel never acquire the output lock. Release it
@@ -69,7 +80,7 @@ pub const Bridge = struct {
             defer if (self.output_lock) |lock| lock.unlock(io);
             std.json.Stringify.value(.{ .jsonrpc = "2.0", .id = id, .method = "session/request_permission", .params = .{
                 .sessionId = self.session,
-                .toolCall = .{ .toolCallId = req.call_id, .title = req.description, .status = "pending" },
+                .toolCall = .{ .toolCallId = req.call_id, .title = req.description, .status = "pending", .kind = kind, .rawInput = input, .locations = locations, .content = content },
                 .options = options[0..if (req.allow_always) @as(usize, 3) else 2],
             } }, .{}, self.out) catch return .deny;
             self.out.writeByte('\n') catch return .deny;

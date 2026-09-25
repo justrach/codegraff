@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const main_mod = @import("main.zig");
+const shell_tool = @import("shell_tool.zig");
 const json_inbox = @import("json_inbox.zig");
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
@@ -154,7 +155,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
             .text = try self.arena.dupe(u8, "learning is root-only — subagents cannot run mutators, evaluators, or publish grades"),
             .is_error = true,
         };
-        if (std.mem.eql(u8, call.name, "bash") and call.input == .object) {
+        if (shell_tool.runsCommand(call.name) and call.input == .object) {
             if (call.input.object.get("command")) |cv| if (cv == .string) {
                 if (try publish_gate.bash(self, std.mem.trim(u8, cv.string, " \t"))) |blocked| return blocked;
                 if (Approvals.isDestructiveGit(cv.string)) return .{
@@ -178,7 +179,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
             .text = try self.arena.dupe(u8, "plan mode is on — read-only. Fold this change into the plan you present; the user applies it after approving (/plan toggles the mode off)."),
             .is_error = true,
         };
-        if (std.mem.eql(u8, call.name, "bash")) {
+        if (shell_tool.runsCommand(call.name)) {
             // Model-supplied: a non-object here is UB in a ReleaseFast build,
             // and this gate is ROOT-only, so the subagent-path guards added in
             // v0.0.223 never covered it.
@@ -191,7 +192,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
                 if (approvals.planReadAllowed(self.io, cmd)) return null;
                 if (self.permission) |handler| {
                     const description = try std.fmt.allocPrint(self.arena, "plan mode — read outside the project: {s}", .{cmd});
-                    if (handler.ask(self.io, .{ .call_id = call.id, .tool = call.name, .description = description }) == .allow_once) {
+                    if (handler.ask(self.io, .{ .call_id = call.id, .tool = call.name, .description = description, .input = call.input }) == .allow_once) {
                         try approvals.approvePlanReadOnce(self.io, self.arena, self, call.id, cmd);
                         return null;
                     }
@@ -222,7 +223,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
     var key: []const u8 = undefined;
     var line_buf: [256]u8 = undefined;
     var prompt_line: []const u8 = undefined;
-    if (std.mem.eql(u8, call.name, "bash")) {
+    if (shell_tool.runsCommand(call.name)) {
         const args = json_args.object(call.input) orelse return null; // model-supplied; UB in ReleaseFast without the tag check
         const cmd_val = args.get("command") orelse return null;
         if (cmd_val != .string) return null;
@@ -305,7 +306,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
     } else return null;
 
     if (self.permission) |handler| {
-        switch (handler.ask(self.io, .{ .call_id = call.id, .tool = call.name, .description = prompt_line, .allow_always = true, .always_label = try std.fmt.allocPrint(self.arena, "Always allow {s}", .{key}) })) {
+        switch (handler.ask(self.io, .{ .call_id = call.id, .tool = call.name, .description = prompt_line, .input = call.input, .allow_always = true, .always_label = try std.fmt.allocPrint(self.arena, "Always allow {s}", .{key}) })) {
             .allow_once => return null,
             .allow_always => {
                 try approvals.approve(self.io, self.gpa, key);
@@ -336,7 +337,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
         'y', 'Y' => return null,
         'a', 'A' => {
             try approvals.approve(self.io, self.gpa, key);
-            if (std.mem.eql(u8, call.name, "bash") and Approvals.isInterpreter(key)) {
+            if (shell_tool.runsCommand(call.name) and Approvals.isInterpreter(key)) {
                 try w.print("  note: \"{s}\" can execute arbitrary code (e.g. {s} -c '…'); approving it is effectively unrestricted.\n", .{ key, key });
                 try w.flush();
             }
@@ -351,6 +352,18 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
         .text = try self.arena.dupe(u8, "user declined this tool call — do not retry it or a reworded equivalent; the answer will not change. Continue with what is already approved, delegate the declined work to a subagent, or report the blocker plainly."),
         .is_error = true,
     };
+}
+
+/// ToolCtx.host_gate: a call an rlm script makes (bash, write_file, MCP…)
+/// gets the same gate as the catalog call would (#1292). It runs on a pool
+/// thread, so it holds the lock that already guards this agent's arena there.
+pub fn hostGate(context: *anyopaque, call: ToolCall) ?tools_mod.ToolOutput {
+    const self: *Agent = @ptrCast(@alignCast(context));
+    self.publication_checks.observation_mutex.lockUncancelable(self.io);
+    defer self.publication_checks.observation_mutex.unlock(self.io);
+    const denied = (gateTool(self, call) catch
+        return .{ .text = self.gpa.dupe(u8, "tool gate failed; the call was not run") catch &.{}, .is_error = true }) orelse return null;
+    return .{ .text = self.gpa.dupe(u8, denied.text) catch &.{}, .is_error = true, .cancelled = denied.cancelled };
 }
 
 pub fn firstWord(cmd: []const u8) []const u8 {
@@ -498,4 +511,31 @@ test "plan frontend allow once reaches actual dispatch without a reusable grant"
     try approvals.approvePlanReadOnce(io, arena.allocator(), &agent, call.id, command);
     _ = try agent.runTools(&.{});
     try std.testing.expect(!approvals.consumePlanReadOnce(io, &agent, call.id, command));
+}
+
+test "approval gate asks for shell commands under the advertised name and the bash alias (#1292)" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const Fixture = struct {
+        calls: usize = 0,
+        fn ask(ptr: *anyopaque, _: std.Io, _: @import("engine_permission.zig").Request) @import("engine_permission.zig").Decision {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.calls += 1;
+            return .deny;
+        }
+    };
+    for ([_][]const u8{ shell_tool.tool_name, "bash" }) |name| {
+        var fixture: Fixture = .{};
+        var approvals: Approvals = .{};
+        var agent: Agent = .{ .gpa = gpa, .arena = arena.allocator(), .io = io, .client = undefined, .provider = .{ .id = "fixture", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "fixture", .context = 1000 }, .messages = .init(arena.allocator()), .sub = false, .label = "root", .out = null, .approvals = &approvals, .permission = .{ .ctx = &fixture, .request = Fixture.ask } };
+        defer agent.tools_used.deinit(gpa);
+        var args: std.json.ObjectMap = .empty;
+        try args.put(arena.allocator(), "command", .{ .string = "curl -X POST https://example.invalid/upload -d @nothing.txt" });
+        const results = try agent.runTools(&.{.{ .id = "gate", .name = name, .input = .{ .object = args } }});
+        try std.testing.expectEqual(@as(usize, 1), fixture.calls);
+        try std.testing.expect(results[0].is_error);
+        try std.testing.expect(std.mem.indexOf(u8, results[0].text, "declined") != null);
+    }
 }

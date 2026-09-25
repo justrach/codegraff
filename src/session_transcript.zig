@@ -295,6 +295,7 @@ fn flush(io: Io, dir: Io.Dir, arena: Allocator, name: []const u8, pending: []con
 /// from re-introducing a silent no-write instead of an append.
 fn appendWhole(io: Io, dir: Io.Dir, path: []const u8, data: []const u8) ?usize {
     dir.createDirPath(io, session_index.sessions_dir) catch {};
+    @import("graff_dir.zig").ensureIgnore(io, dir); // #1273
     const f = dir.createFile(io, path, .{ .truncate = false, .read = true }) catch return null;
     defer f.close(io);
     const end: u64 = if (f.stat(io)) |st| st.size else |_| blk: {

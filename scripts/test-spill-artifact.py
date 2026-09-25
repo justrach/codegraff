@@ -66,9 +66,9 @@ class SpillModel(ScriptedModel):
                 return {"text": "no marker in the history"}
             self.cited = (int(found.group(1)), found.group(2))
             return {"tool": "bash", "arguments": {
-                "command": f"tail -c 120 {shlex.quote(found.group(2))}",
+                "command": f"grep -o {NEEDLE} {shlex.quote(found.group(2))}",
             }}
-        return {"text": "recovered the tail from the artifact"}
+        return {"text": "recovered the elided bytes from the artifact"}
 
 
 def seed_session(workspace: pathlib.Path, output: str) -> None:
@@ -128,10 +128,13 @@ def main() -> None:
     if not os.access(graff, os.X_OK):
         sys.exit(f"test-spill-artifact: not an executable: {graff}")
 
-    # A padded output whose needle sits well past the cap, so nothing but the
-    # artifact can still produce it.
+    # A padded output whose needle sits in the middle, the part the cap elides
+    # (head and tail are kept, #1271), so nothing but the artifact can still
+    # produce it.
     pad = "build step ok\n"
-    output = (pad * (OUTPUT_BYTES // len(pad) + 2))[: OUTPUT_BYTES - len(NEEDLE) - 1] + NEEDLE + "\n"
+    body = (pad * (OUTPUT_BYTES // len(pad) + 2))[: OUTPUT_BYTES - len(NEEDLE) - 1]
+    half = len(body) // 2
+    output = body[:half] + NEEDLE + "\n" + body[half:]
     assert len(output) == OUTPUT_BYTES, len(output)
 
     failures: list[str] = []

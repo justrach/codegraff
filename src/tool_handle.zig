@@ -202,6 +202,7 @@ fn persist(arena: Allocator, target: Target, text: []const u8) ?[]const u8 {
     if (!reserve(text.len)) return null;
     // createDirPath is idempotent; `.graff` normally already exists (trace setup).
     target.dir.createDirPath(target.io, handles_dir) catch return refund(text.len);
+    @import("graff_dir.zig").ensureIgnore(target.io, target.dir); // #1273
     // `g_seq` is per-process. A prior graff in this cwd may have left tr_N;
     // exclusive create must skip those instead of dropping the handle.
     var spins: u32 = 0;

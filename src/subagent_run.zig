@@ -399,7 +399,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
             // A /loop deadline the run is already past makes waiting pointless.
             if (subagent_retry.pastDeadline(util.unixMs(ctx.io), ctx.loop_deadline_ms)) break :ask r;
             subagent_retry.traceAttempt(ctx.tracer, sub_id, attempts, fail_kind, agent.last_api_error);
-            agent.sleepInterruptible(subagent_retry.backoffMs(fail_kind, attempts)) catch break :ask r;
+            agent.sleepInterruptible(@import("retry_jitter.zig").ms(agent.io, subagent_retry.backoffMs(fail_kind, attempts))) catch break :ask r; // #1274
         }
     };
     try @import("subagent_retained.zig").checkpoint(&agent, ctx);

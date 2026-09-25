@@ -86,6 +86,29 @@ pub fn filter(needle: []const u8, out: []usize) usize {
     return n;
 }
 
+/// Every spelling lookup() accepts, names first, for suggest().
+const spellings = blk: {
+    var n: usize = 0;
+    for (items) |it| n += 1 + it.aliases.len;
+    var arr: [n][]const u8 = undefined;
+    var i: usize = 0;
+    for (items) |it| {
+        arr[i] = it.name;
+        i += 1;
+    }
+    for (items) |it| for (it.aliases) |a| {
+        arr[i] = a;
+        i += 1;
+    };
+    break :blk arr;
+};
+
+/// The command a mistyped `token` most likely meant (#1275), from the same
+/// speller the REPL/ACP catalog uses, so `/resuem` gets one answer everywhere.
+pub fn suggest(token: []const u8) ?[]const u8 {
+    return @import("slash_suggest").nearest(token, &spellings);
+}
+
 fn eqlIgnoreCase(a: []const u8, b: []const u8) bool {
     return std.ascii.eqlIgnoreCase(a, b);
 }
@@ -118,4 +141,12 @@ test "filter: slash prefix and alias" {
 
 test "catalog names start with slash" {
     for (items) |it| try std.testing.expect(it.name.len > 1 and it.name[0] == '/');
+}
+
+test "suggest (#1275): a typo names the command; paths and noise do not" {
+    try std.testing.expectEqualStrings("/resume", suggest("/resuem").?);
+    try std.testing.expectEqualStrings("/help", suggest("/hlep").?);
+    try std.testing.expectEqualStrings("/settings", suggest("/setings").?);
+    try std.testing.expect(suggest("/banana") == null);
+    try std.testing.expect(suggest("/usr/bin/foo") == null);
 }

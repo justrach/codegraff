@@ -277,7 +277,7 @@ fn mapMatcher(arena: Allocator, m: []const u8) []const u8 {
     var first = true;
     while (it.next()) |raw| {
         const p = std.mem.trim(u8, raw, " ");
-        const mapped: []const u8 = if (std.mem.eql(u8, p, "Bash")) "bash" else if (std.mem.eql(u8, p, "Read")) "read_file" else if (std.mem.eql(u8, p, "Edit")) "edit_file" else if (std.mem.eql(u8, p, "Write")) "write_file" else p;
+        const mapped: []const u8 = if (std.mem.eql(u8, p, "Bash")) "shell" else if (std.mem.eql(u8, p, "Read")) "read_file" else if (std.mem.eql(u8, p, "Edit")) "edit_file" else if (std.mem.eql(u8, p, "Write")) "write_file" else p;
         if (!first) out.append('|') catch {};
         first = false;
         out.appendSlice(mapped) catch {};
@@ -414,6 +414,12 @@ test "adopt writes missing Claude MCP into graff folders and skips existing name
     try testing.expectEqual(@as(usize, 0), again.added_user);
     try testing.expectEqual(@as(usize, 0), again.added_project);
     try testing.expect(again.skipped >= 2);
+}
+
+test "adopted Claude Bash hooks match the advertised shell tool (#1292)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    try std.testing.expectEqualStrings("shell|edit_file", mapMatcher(arena_state.allocator(), "Bash|Edit"));
 }
 
 test "first-run adopt writes a marker and does not run again" {

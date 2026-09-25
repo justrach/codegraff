@@ -395,6 +395,7 @@ pub const Agent = struct {
             const root = self.request(if (self.text_only) null else self.toolsJson()) catch |err| return review_deadline.finish(try @import("agent_model_loop.zig").finishError(self, err));
             const done = try @import("agent_steps.zig").stepForWire(self, root);
             if (done) |final_text| {
+                if (@import("tool_call_repair.zig").endsTurn(self, final_text)) return review_deadline.finish(final_text); // final: no retry/nudge
                 // Retry empty replies; reconcile plain finals with live work (#745).
                 if (try bounced_answer.retry(self, final_text, hist_len)) continue;
                 if (try @import("named_work.zig").handle(self, final_text)) continue;
@@ -410,8 +411,7 @@ pub const Agent = struct {
 
     // The provider round trip (request/buildBody + usage/cost recording +
     // Codex/Responses SSE reassembly) lives in agent_request.zig (#123,
-    // 600-line goal). Member-aliased so self.request(...)/etc. resolve
-    // unchanged.
+    // 600-line goal). Member-aliased so self.request(...)/etc. resolve unchanged.
     pub const request = @import("agent_request.zig").request;
     pub const inputOverCompactThreshold = @import("agent_request.zig").inputOverCompactThreshold;
     pub const fullInputEstimateTokens = @import("agent_request.zig").fullInputEstimateTokens;

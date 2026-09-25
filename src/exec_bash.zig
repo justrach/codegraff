@@ -268,9 +268,10 @@ fn formatCapped(gpa: Allocator, cmd: []const u8, run: jobs.CappedRun) !ToolOutpu
     errdefer aw.deinit();
     const w = &aw.writer;
     if (run.stdout.len > 0) try w.writeAll(run.stdout);
-    if (run.stdout_truncated) try w.print("\n[stdout truncated at {d} KB]", .{bash_stdout_cap / 1024});
+    // #1271: the capture kept head and tail; say the MIDDLE went, not the end.
+    if (run.stdout_truncated) try w.print("\n[stdout over the {d} KB cap: head and tail kept, middle truncated]", .{bash_stdout_cap / 1024});
     if (run.stderr.len > 0) try w.print("\n[stderr]\n{s}", .{run.stderr});
-    if (run.stderr_truncated) try w.print("\n[stderr truncated at {d} KB]", .{bash_stderr_cap / 1024});
+    if (run.stderr_truncated) try w.print("\n[stderr over the {d} KB cap: head and tail kept, middle truncated]", .{bash_stderr_cap / 1024});
     if (run.cancelled) {
         try w.writeAll("\n[cancelled by user; local process group killed]\n");
         try w.writeAll(cancel_hint);
@@ -292,8 +293,21 @@ test {
     _ = server_port;
 }
 
+/// #1270: spawn copies argv into NUL-terminated C strings, so a NUL inside
+/// the command (JSON `\u0000`) ended the string there: `make test\u0000 &&
+/// git push` ran only `make test` and reported its success. Refuse before
+/// anything is gated or spawned, naming the offset so the model can fix it.
+pub fn nulRejection(gpa: Allocator, cmd: []const u8) !?ToolOutput {
+    const at = std.mem.indexOfScalar(u8, cmd, 0) orelse return null;
+    return .{
+        .text = try std.fmt.allocPrint(gpa, "command refused: it contains a NUL byte at offset {d}. The shell would stop reading there and run only the text before it. Remove the NUL and retry.", .{at}),
+        .is_error = true,
+    };
+}
+
 pub fn exec(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
     const cmd = strField(call.input, "command") orelse return missingArg(ctx.gpa, "command");
+    if (try nulRejection(ctx.gpa, cmd)) |refused| return refused;
     if (try @import("publish_gate.zig").beforeExec(ctx, cmd)) |denied| return denied;
     // Respect the subagent gate before running even a read-only probe.
     const approved = if (ctx.from_sub) (if (ctx.approvals) |ap| ap.allowed(ctx.io, cmd) else true) else true;
@@ -370,6 +384,7 @@ fn execUnchecked(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
     var opts = jobs.toolRunOptions(ctx.agent_cwd);
     var live = exec_bash_stream.Ctx{ .io = io };
     exec_bash_stream.attach(&opts, false, &live); // subagents stay quiet (#93)
+    opts.keep_tail = true; // #1271: the ending is where failures land
     const run = try jobs.runCappedWithOptions(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap, subagent_deadline_ms, opts);
     defer gpa.free(run.stdout);
     defer gpa.free(run.stderr);

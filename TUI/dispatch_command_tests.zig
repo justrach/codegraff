@@ -264,6 +264,17 @@ test "every slash name printed in /help dispatches" {
     try std.testing.expect(seen >= 9);
 }
 
+test "a mistyped command is refused locally with the nearest spelling (#1275)" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    try std.testing.expectEqual(Effect.stay, applyLine(&m, "/resuem"));
+    try std.testing.expect(m.pending == null); // no model turn
+    try std.testing.expectEqualStrings("unknown command: /resuem — did you mean /resume?", m.history.items[m.history.items.len - 1].text);
+    _ = applyLine(&m, "/xyzzy");
+    try std.testing.expectEqualStrings("unknown command: /xyzzy — try /help", m.history.items[m.history.items.len - 1].text);
+}
+
 test "/image attaches a path the next send carries as @[path]" {
     var m: Model = undefined;
     m.setup(std.testing.allocator);

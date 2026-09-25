@@ -247,7 +247,7 @@ pub const FileWriterOpen = struct {
 };
 
 fn openRunFile(io: Io, dir_path: []const u8, path: []const u8, buf: []u8) FileWriterOpen {
-    Io.Dir.cwd().createDir(io, ".graff", .default_dir) catch {};
+    @import("graff_dir.zig").ensure(io, Io.Dir.cwd()); // #1273: .graff/.gitignore
     Io.Dir.cwd().createDir(io, dir_path, .default_dir) catch {};
     // A random run id makes collision vanishingly unlikely; exclusive creation
     // turns even that case into a disabled writer instead of truncating another
@@ -294,6 +294,7 @@ pub fn openBehaviorFile(io: Io, base: Io.Dir, dir: []const u8, run_id: []const u
             else => return .{ .file = null, .writer = undefined },
         };
         const next = current.openDir(io, component, .{ .iterate = true, .follow_symlinks = false }) catch return .{ .file = null, .writer = undefined };
+        if (!current_owned and std.mem.eql(u8, component, ".graff")) @import("graff_dir.zig").ensureIgnoreIn(io, next); // #1273
         if (current_owned) current.close(io);
         current = next;
         current_owned = true;

@@ -188,7 +188,7 @@ fn replacementFor(call_name: []const u8, is_bash_search: bool, zigrep_installed:
 /// approvals are untouched, and any codedb-pro failure stands it down.
 pub fn nativeRefusal(ctx: tools.ToolCtx, call: tools.ToolCall) ?tools.ToolOutput {
     if (!enforcementActive(ctx)) return null;
-    const is_bash_search = std.mem.eql(u8, call.name, "bash") and
+    const is_bash_search = @import("shell_tool.zig").runsCommand(call.name) and
         if (tools.strField(call.input, "command")) |cmd| leadingSearchCommand(cmd) else false;
     if (!is_bash_search and !replacedNative(call.name)) return null;
     const pro = replacementFor(call.name, is_bash_search, skills.binOnPath(ctx.io, "zigrep"));
@@ -232,7 +232,7 @@ fn searchRedirect(gpa: Allocator, pattern: []const u8) ?Redirect {
 pub fn redirect(ctx: tools.ToolCtx, call: tools.ToolCall) ?Redirect {
     if (!enforcementActive(ctx)) return null;
     const gpa = ctx.gpa;
-    if (std.mem.eql(u8, call.name, "bash")) {
+    if (@import("shell_tool.zig").runsCommand(call.name)) {
         const cmd = tools.strField(call.input, "command") orelse return null;
         if (!leadingSearchCommand(cmd)) return null;
         // grep/rg: first bare (non-flag) token after the command is the pattern.

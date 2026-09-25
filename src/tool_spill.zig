@@ -27,7 +27,7 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const util = @import("util.zig");
-const utf8Prefix = util.utf8Prefix;
+const output_elide = @import("output_elide.zig");
 const session_index = @import("session_index.zig");
 
 /// Ceiling on what one session may leave on disk. Every artifact is a tool
@@ -141,6 +141,7 @@ fn spill(arena: Allocator, session: []const u8, full: []const u8) ?[]const u8 {
     const dir = std.fmt.allocPrint(arena, "{s}/{s}/artifacts", .{ session_index.sessions_dir, session }) catch return refund(full.len);
     sweepOnce(sink, arena, session);
     sink.dir.createDirPath(sink.io, dir) catch return refund(full.len);
+    @import("graff_dir.zig").ensureIgnore(sink.io, sink.dir); // #1273
     const seq = g_seq.fetchAdd(1, .monotonic);
     const rel = std.fmt.allocPrint(arena, "{s}/tool-{d}.txt", .{ dir, seq }) catch return refund(full.len);
     sink.dir.writeFile(sink.io, .{ .sub_path = rel, .data = full, .flags = .{ .exclusive = true } }) catch return refund(full.len);
@@ -259,9 +260,12 @@ fn truncateStrField(arena: Allocator, o: *std.json.ObjectMap, key: []const u8, c
     // The full bytes go to an artifact first (when the session is durable), so
     // the marker below can point at them instead of only announcing the loss.
     const marker = note.text(arena, v.string, cap);
-    // Keep the prefix short enough that prefix + '\n' + marker <= cap, so the
-    // marker never grows an output that was only barely over the cap.
-    const stub = std.fmt.allocPrint(arena, "{s}\n{s}", .{ utf8Prefix(v.string, cap -| (marker.len + 1)), marker }) catch return 0;
+    // Keep the body short enough that body + '\n' + marker <= cap, so the
+    // marker never grows an output that was only barely over the cap. #1271:
+    // the body is head AND tail around a gap (output_elide.zig), because the
+    // ending of a test run or build is usually what the model needs.
+    const body = output_elide.headTail(arena, v.string, cap -| (marker.len + 1)) catch return 0;
+    const stub = std.fmt.allocPrint(arena, "{s}\n{s}", .{ body, marker }) catch return 0;
     o.put(arena, key, .{ .string = stub }) catch return 0;
     return orig -| stub.len;
 }
@@ -323,6 +327,28 @@ test "no durable session (#409): the cap stays a plain truncation" {
     try std.testing.expectEqualStrings("[truncated]", note.text(a, &util.repeatBytes("x", 4096), 1024));
 }
 
+test "#1271: a 3 MB tool output ending in a sentinel keeps the sentinel under the cap" {
+    resetForTest();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const sentinel = "FINAL-SENTINEL-1271";
+    const big = try a.alloc(u8, 3 * 1024 * 1024);
+    @memset(big, 'x');
+    @memcpy(big[big.len - sentinel.len ..], sentinel);
+    var tool: std.json.ObjectMap = .empty;
+    try tool.put(a, "role", .{ .string = "tool" });
+    try tool.put(a, "content", .{ .string = big });
+    var m: Value = .{ .object = tool };
+    const cap: usize = 16 * 1024;
+    try std.testing.expect(truncateToolOutput(a, &m, cap, .{ .fallback = "[truncated]" }) > 0);
+    const stub = m.object.get("content").?.string;
+    try std.testing.expect(stub.len <= cap);
+    try std.testing.expect(std.mem.indexOf(u8, stub, sentinel) != null);
+    try std.testing.expect(std.mem.indexOf(u8, stub, "bytes truncated ...]") != null);
+    try std.testing.expect(std.mem.endsWith(u8, stub, "[truncated]"));
+}
+
 test "spill writes the full output and the marker points at it (#409)" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true });
@@ -335,7 +361,7 @@ test "spill writes the full output and the marker points at it (#409)" {
     enable(.{ .io = io, .dir = tmp.dir, .base_abs = "/work" });
 
     const cap: usize = 1024;
-    // A needle past the cap: only the artifact can still hold it. It has to be
+    // A needle in the elided middle: only the artifact can still hold it. It has to be
     // a STRING, not a bare 'N' — the marker embeds the artifact's real absolute
     // path, and std.testing.tmpDir names its directory with 16 random
     // base64-url characters. One of those is 'N' about 22% of the time, so a
@@ -344,7 +370,7 @@ test "spill writes the full output and the marker points at it (#409)" {
     const needle = "NEEDLE409";
     const big = try a.alloc(u8, 8192);
     @memset(big, 'x');
-    @memcpy(big[8000..][0..needle.len], needle);
+    @memcpy(big[4000..][0..needle.len], needle); // mid-output: head and tail are kept (#1271)
 
     var fco: std.json.ObjectMap = .empty;
     try fco.put(a, "type", .{ .string = "function_call_output" });

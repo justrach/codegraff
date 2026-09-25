@@ -24,7 +24,7 @@ fn isSharedTreeSubcommand(sub: []const u8) bool {
 /// the subcommand, and skips git's global options so `git -C repo reset` is
 /// seen as `reset`. A quoted "git add" inside an echo string is a known false
 /// positive — the cost is one needless checkpoint line, the same trade
-/// harness_policy.isDestructiveGit makes for its substring scan.
+/// harness_policy.isDestructiveGit makes for git text inside quotes.
 pub fn isSharedTreeGit(cmd: []const u8) bool {
     var it = std.mem.tokenizeAny(u8, cmd, " \t\r\n;&|\"'`()");
     while (it.next()) |tok| {

@@ -31,6 +31,7 @@ const serve_create = @import("serve_create.zig");
 const events = @import("serve_events.zig");
 const upload = @import("remote_upload.zig");
 const util = @import("util.zig");
+const jitter = @import("retry_jitter.zig");
 
 const ServeState = serve.ServeState;
 const ServeSession = serve.ServeSession;
@@ -102,7 +103,7 @@ pub fn remoteControlMain(gpa: Allocator, io: Io, cfg: Config, exe: []const u8) !
         if (!registered) {
             register(&self, arena, label) catch |err| {
                 serve.serveLog(io, "remote-control: register failed ({t}) — retrying in {d}s", .{ err, @divTrunc(backoff, 1000) });
-                io.sleep(.fromMilliseconds(backoff), .awake) catch return;
+                io.sleep(.fromMilliseconds(@intCast(jitter.ms(io, @intCast(backoff)))), .awake) catch return;
                 backoff = @min(backoff * 2, backoff_max_ms);
                 continue;
             };
@@ -114,7 +115,7 @@ pub fn remoteControlMain(gpa: Allocator, io: Io, cfg: Config, exe: []const u8) !
         const cmds = poll(&self, arena) catch |err| {
             if (err == error.UnknownDevice) registered = false;
             serve.serveLog(io, "remote-control: poll failed ({t}) — retrying in {d}s", .{ err, @divTrunc(backoff, 1000) });
-            io.sleep(.fromMilliseconds(backoff), .awake) catch return;
+            io.sleep(.fromMilliseconds(@intCast(jitter.ms(io, @intCast(backoff)))), .awake) catch return;
             backoff = @min(backoff * 2, backoff_max_ms);
             continue;
         };

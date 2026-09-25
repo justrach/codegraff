@@ -10,6 +10,32 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.302.6
+
+### Safety
+
+- Shell commands called by the tool's current name (`shell`) now go through the approval prompt, the subagent destructive-git block and the publish gate. Only the legacy `bash` name was gated before; plan mode was already enforced separately. (#1292)
+- Commands the agent runs no longer inherit provider API keys from graff's environment, so `env` in a tool call can't copy them into transcripts. `GRAFF_TOOL_ENV_PASS` keeps named variables when a tool genuinely needs one. (#1267)
+- Tool shells get non-interactive editor, pager and prompt defaults, so `git commit` without `-m`, `rebase -i` or a pager can't hang a call until its deadline. (#1268)
+- The destructive-git check tokenizes commands instead of matching substrings, catching spellings such as `git clean -df`, `git restore -- .`, `git checkout -f`, `git -C dir reset --hard` and forced push refspecs. (#1269)
+- A shell command containing a NUL byte is refused instead of silently running only the part before it. (#1270)
+- `.graff/` gets its own `.gitignore` when graff creates it, so sessions and traces never show up in `git status` or a model-run `git add -A`; project config such as `workspace.toml` and `tools/` stays committable. (#1273)
+
+### Model and tool reliability
+
+- Tool calls whose arguments a server lost (empty, `{}` or cut off) are rebuilt from the call markup in the same reply and the markup is removed from the message. The affected model family gets plain parameter types instead of nullable unions, and a turn whose last three tool batches all failed on unusable arguments ends instead of looping. (#1276)
+- Over-cap tool output keeps its head and tail around a truncation marker, so test summaries and final errors survive. (#1271)
+- Images read with `read_file` are downscaled to the provider-safe size, or refused with a reason, instead of failing the next request. (#1272)
+- When a reasoning model spends its whole reply reasoning without answering, the retry asks for brief thinking and a direct answer instead of repeating the identical request. (#1293)
+- Retry backoff adds bounded jitter so parallel workers don't retry in lockstep; a server's Retry-After is never shortened. (#1274)
+
+### ACP
+
+- File tools report `locations`, edits carry ACP `diff` content that the completion keeps, the shell tool is kind `execute`, and each call sends one terminal update instead of two. (#1287, #1288)
+- Permission requests include the tool's kind, input, locations and diff, so clients show what is being approved. (#1289)
+- A mistyped slash command is answered locally with a suggestion ("did you mean /resume?") in the terminal, the TUI and over ACP, instead of going to the model. (#1275)
+- An image block's `uri` no longer becomes a bare line in the prompt text.
+
 ## v0.0.302.5
 
 ### Session and transport fixes

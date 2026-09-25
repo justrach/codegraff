@@ -243,3 +243,88 @@ test "rlm print keeps literals known and missing binds and supported reducers" {
     try std.testing.expect(!out.is_error);
     try std.testing.expectEqualStrings("literal [data]\nquoted\n2\n[1,2]\n2\n[1,2]\nmissing_bind", out.text);
 }
+
+const Gate = struct {
+    seen: usize = 0,
+    call_id: []const u8 = "",
+    fn check(context: *anyopaque, call: tools.ToolCall) ?tools.ToolOutput {
+        const self: *Gate = @ptrCast(@alignCast(context));
+        self.seen += 1;
+        self.call_id = call.id;
+        if (!@import("shell_tool.zig").runsCommand(call.name)) return null;
+        return .{ .text = gpa.dupe(u8, "gate denied") catch &.{}, .is_error = true };
+    }
+};
+
+test "rlm host calls pass the agent gate and a denial stops the script (#1292)" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    var gate: Gate = .{};
+    var ctx = f.ctx();
+    ctx.host_gate = .{ .context = &gate, .call_id = "call-rlm", .check = Gate.check };
+    const out = try rlm.runScript(ctx, "r = read_file(\"target.txt\")\nv = bash(\"printf ran > marker\")\nw = write_file(path=\"after\", content=\"x\")\nprint(v)");
+    defer gpa.free(out.text);
+    try std.testing.expect(out.is_error);
+    try std.testing.expectEqualStrings("gate denied", out.text);
+    try std.testing.expectEqual(@as(usize, 2), gate.seen); // read_file, then the denied bash
+    try std.testing.expectEqualStrings("call-rlm", gate.call_id);
+    try std.testing.expectError(error.FileNotFound, f.tmp.dir.openFile(io, "marker", .{}));
+    try std.testing.expectError(error.FileNotFound, f.tmp.dir.openFile(io, "after", .{}));
+}
+
+const Agent = @import("agent.zig").Agent;
+const Approvals = @import("approvals.zig").Approvals;
+const permission = @import("engine_permission.zig");
+
+const Deny = struct {
+    calls: usize = 0,
+    fn ask(ptr: *anyopaque, _: std.Io, req: permission.Request) permission.Decision {
+        const self: *@This() = @ptrCast(@alignCast(ptr));
+        self.calls += 1;
+        std.debug.assert(std.mem.eql(u8, req.call_id, "call-rlm"));
+        return .deny;
+    }
+};
+
+fn rlmCall(arena: std.mem.Allocator, code: []const u8) !tools.ToolCall {
+    var args: std.json.ObjectMap = .empty;
+    try args.put(arena, "code", .{ .string = code });
+    return .{ .id = "call-rlm", .name = rlm.tool_name, .input = .{ .object = args } };
+}
+
+test "rlm bash and write_file at the root ask the permission handler like catalog calls (#1292)" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    for ([_][]const u8{
+        "print(bash(\"printf ran > marker\"))",
+        "w = write_file(path=\"marker\", content=\"ran\")\nprint(w)",
+    }) |code| {
+        var deny: Deny = .{};
+        var approvals: Approvals = .{};
+        var agent: Agent = .{ .gpa = gpa, .arena = arena.allocator(), .io = io, .client = &f.client, .provider = .{ .id = "fixture", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "fixture", .context = 1000 }, .messages = .init(arena.allocator()), .sub = false, .label = "root", .out = null, .approvals = &approvals, .permission = .{ .ctx = &deny, .request = Deny.ask }, .agent_cwd = f.cwd };
+        defer agent.tools_used.deinit(gpa);
+        const results = try agent.runTools(&.{try rlmCall(arena.allocator(), code)});
+        try std.testing.expectEqual(@as(usize, 1), deny.calls);
+        try std.testing.expect(results[0].is_error);
+        try std.testing.expect(std.mem.indexOf(u8, results[0].text, "declined") != null);
+        try std.testing.expectError(error.FileNotFound, f.tmp.dir.openFile(io, "marker", .{}));
+    }
+}
+
+test "rlm destructive git in a yolo subagent hits the subagent block (#1292)" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    var approvals: Approvals = .{ .yolo = true };
+    var agent: Agent = .{ .gpa = gpa, .arena = arena.allocator(), .io = io, .client = &f.client, .provider = .{ .id = "fixture", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "fixture", .context = 1000 }, .messages = .init(arena.allocator()), .sub = true, .label = "sub", .out = null, .approvals = &approvals, .agent_cwd = f.cwd };
+    defer agent.tools_used.deinit(gpa);
+    // A missing branch: harmless even if the gate ever regresses.
+    const code = "v = bash(\"git branch -D graff-1294-no-such-branch\")\nw = write_file(path=\"marker\", content=\"ran\")\nprint(v)";
+    const results = try agent.runTools(&.{try rlmCall(arena.allocator(), code)});
+    try std.testing.expect(results[0].is_error);
+    try std.testing.expect(std.mem.indexOf(u8, results[0].text, "destructive git is blocked for subagents") != null);
+    try std.testing.expectError(error.FileNotFound, f.tmp.dir.openFile(io, "marker", .{}));
+}

@@ -67,6 +67,7 @@ fn releaseOwner(io: Io, dir: Io.Dir, path: []const u8) void {
 /// file back to the new length.
 pub fn writeSession(io: Io, dir: Io.Dir, path: []const u8, data: []const u8) !void {
     if (std.fs.path.dirname(path)) |parent| dir.createDirPath(io, parent) catch {};
+    @import("graff_dir.zig").ensureFor(io, dir, path); // #1273
     const file = dir.createFile(io, path, .{
         .truncate = false,
         .lock = .exclusive,
