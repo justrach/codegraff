@@ -73,6 +73,9 @@ fn blockText(block: Value) ?[]const u8 {
     if (std.mem.eql(u8, kind, "text")) return util.strFieldObj(o, "text");
     if (std.mem.eql(u8, kind, "resource_link"))
         return util.strFieldObj(o, "uri") orelse util.strFieldObj(o, "name");
+    // Media blocks are the pixels/samples themselves (staged by acp_images);
+    // their optional `uri` is provenance, not words the user typed.
+    if (std.mem.eql(u8, kind, "image") or std.mem.eql(u8, kind, "audio")) return null;
     return util.strFieldObj(o, "text") orelse util.strFieldObj(o, "uri");
 }
 
@@ -116,6 +119,18 @@ pub fn flattenPrompt(arena: Allocator, prompt: ?Value) ![]const u8 {
         try buf.appendSlice(text);
     }
     return buf.items;
+}
+
+test "flattenPrompt: an image block's uri never becomes prompt text" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const prompt = try std.json.parseFromSliceLeaky(Value, a,
+        \\[{"type":"text","text":"what colour is it"},
+        \\ {"type":"image","data":"iVBORw0KGgo=","mimeType":"image/png","uri":"file:///tmp/shot.png"},
+        \\ {"type":"audio","data":"AAAA","mimeType":"audio/wav","uri":"file:///tmp/a.wav"}]
+    , .{});
+    try std.testing.expectEqualStrings("what colour is it", try flattenPrompt(a, prompt));
 }
 
 test "ACP v1 rejects unsupported version claims without numeric conversion" {
