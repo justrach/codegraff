@@ -27,9 +27,10 @@ with tempfile.TemporaryDirectory(prefix="graff-workspace-lifecycle-") as tempora
     def git(*args, cwd=root):
         return subprocess.check_output(["git", "-C", str(cwd), *args], text=True, stderr=subprocess.STDOUT).strip()
 
-    def graff(*args):
+    def graff(*args, code=0):
+        # Exit status contract: 0 done, 1 refused or failed, 2 nothing done (kept).
         result = subprocess.run([binary, "worktree", *args], cwd=root, env=env, text=True, capture_output=True, timeout=30)
-        assert result.returncode == 0, result.stderr
+        assert result.returncode == code, (result.returncode, result.stdout, result.stderr)
         return result.stdout
 
     git("init", "-q", "-b", "main")
@@ -60,11 +61,12 @@ with tempfile.TemporaryDirectory(prefix="graff-workspace-lifecycle-") as tempora
     git("commit", "-qm", "task", cwd=tree)
     head = git("rev-parse", "HEAD", cwd=tree)
     proof.write_text(json.dumps({"state": "MERGED", "headRefOid": "old"}))
-    assert "kept" in graff("archive-merged", "task") and tree.exists()
+    assert "kept" in graff("archive-merged", "task", code=2) and tree.exists()
     proof.write_text(json.dumps({"state": "MERGED", "headRefOid": head}))
     (tree / "untracked").write_text("keep")
-    assert "kept" in graff("archive-merged", "task") and tree.exists()
-    assert "confirm" in graff("remove", "task") and tree.exists()
+    assert "kept" in graff("archive-merged", "task", code=2) and tree.exists()
+    assert "confirm" in graff("remove", "task", code=1) and tree.exists()
+    assert "no such task workspace" in graff("merge", "missing", code=1)
     (tree / "untracked").unlink()
     assert "archived" in graff("archive-merged", "task") and not tree.exists()
     assert not git("branch", "--list", "worktree-task")

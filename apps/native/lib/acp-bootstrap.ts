@@ -23,6 +23,19 @@ export function bindSessionCwd(requested: string, reported?: string, hostCwd = p
   return resolved;
 }
 
+/** The worker's checkout from a session/new or session/load result. Graff
+ * reports its worktree as `_meta["graff/worktree"]` (null: the requested
+ * folder itself); older builds sent a non-standard top-level `cwd`. */
+export function sessionCheckout(result: { cwd?: unknown; _meta?: unknown } | null | undefined): string | undefined {
+  const meta = result?._meta;
+  if (meta && typeof meta === "object" && "graff/worktree" in meta) {
+    const tree = (meta as Record<string, unknown>)["graff/worktree"];
+    const at = tree && typeof tree === "object" ? (tree as { path?: unknown }).path : undefined;
+    return typeof at === "string" && at.trim() ? at.trim() : undefined;
+  }
+  return typeof result?.cwd === "string" && result.cwd.trim() ? result.cwd.trim() : undefined;
+}
+
 /** A failed handshake cannot recover from a late reply. Retire its worker
  * before reporting failure so a retry starts with a fresh transport. */
 export async function initializeWorker(
@@ -35,11 +48,11 @@ export async function initializeWorker(
       throw new Error("initialize returned an unsupported or missing protocolVersion; expected 1");
     }
     phase = "session/new";
-    const created = await transport.request(phase, { cwd, mcpServers: [] }, timeoutMs) as { sessionId?: unknown; cwd?: unknown } | null;
+    const created = await transport.request(phase, { cwd, mcpServers: [] }, timeoutMs) as { sessionId?: unknown; cwd?: unknown; _meta?: unknown } | null;
     if (typeof created?.sessionId !== "string" || !created.sessionId) {
       throw new Error("session/new returned no sessionId");
     }
-    const checkout = typeof created.cwd === "string" && created.cwd.trim() ? created.cwd.trim() : undefined;
+    const checkout = sessionCheckout(created);
     return checkout ? { sessionId: created.sessionId, cwd: checkout } : { sessionId: created.sessionId };
   } catch (cause) {
     const detail = cause instanceof Error ? cause.message : String(cause);
