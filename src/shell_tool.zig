@@ -35,6 +35,12 @@ pub fn isFamily(name: []const u8) bool {
         std.mem.eql(u8, name, "bash_kill");
 }
 
+/// A call that runs a shell command: the advertised name or its legacy
+/// alias. Every gate that inspects `command` must use this (#1292).
+pub fn runsCommand(name: []const u8) bool {
+    return std.mem.eql(u8, name, tool_name) or std.mem.eql(u8, name, "bash");
+}
+
 pub fn isAlias(name: []const u8) bool {
     return std.mem.eql(u8, name, "bash") or
         std.mem.eql(u8, name, "bash_output") or

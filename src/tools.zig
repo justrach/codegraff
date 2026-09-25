@@ -214,7 +214,7 @@ pub fn codedbGuard(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
     if (!main_mod.g_codedb_guard) return null;
     // Licensed or not: shell reads of a concrete source file go to codedb,
     // not mcp__codedbpro__read (ADR 0040).
-    if (!std.mem.eql(u8, call.name, "bash")) return null;
+    if (!@import("shell_tool.zig").runsCommand(call.name)) return null;
     const cmd = strField(call.input, "command") orelse return null;
 
     // First word must be a code scan/read utility (basename, so /usr/bin/grep

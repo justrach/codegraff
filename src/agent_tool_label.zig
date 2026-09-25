@@ -108,7 +108,7 @@ pub fn editDelta(input: std.json.Value, path: []const u8, buf: []u8) []const u8 
 }
 
 pub fn detail(t: ToolInvocation, buf: []u8) []const u8 {
-    if (std.mem.eql(u8, t.name, "bash")) return "";
+    if (@import("shell_tool.zig").runsCommand(t.name)) return "";
     if (std.mem.eql(u8, t.name, "edit_file")) {
         const path = stringField(t.input, "path") orelse return "";
         return editDelta(t.input, displayPath(firstLine(path)), buf);
@@ -156,7 +156,7 @@ pub fn skipLineRepl(name: []const u8) bool {
 
 /// Short verb the human reads. Never "bash". Never a truncated harness name.
 pub fn verb(name: []const u8, input: std.json.Value, buf: []u8) []const u8 {
-    if (std.mem.eql(u8, name, "bash")) {
+    if (@import("shell_tool.zig").runsCommand(name)) {
         const cmd = stringField(input, "command") orelse return "run";
         const tok = firstToken(cmd);
         if (std.mem.indexOf(u8, cmd, "test") != null) return "test";
@@ -379,7 +379,7 @@ pub fn interpret(name: []const u8, all: []const u8, buf: []u8) []const u8 {
     if (std.mem.eql(u8, name, "read_file") and lines > 1) {
         return std.fmt.bufPrint(buf, "{d} lines", .{lines}) catch all;
     }
-    const bashy = std.mem.eql(u8, name, "bash") or std.mem.eql(u8, name, "codedb");
+    const bashy = @import("shell_tool.zig").runsCommand(name) or std.mem.eql(u8, name, "codedb");
     if (bashy and lines > 1) {
         if (gitCommitCount(all)) |n|
             return std.fmt.bufPrint(buf, "{d} commits", .{n}) catch lastNonEmptyLine(all);
