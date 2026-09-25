@@ -394,4 +394,5 @@ test {
     _ = @import("idle_wake_sources.zig"); // shared idle auto-turn sources for REPL / TUI / ACP
     _ = @import("tool_env.zig"); // #1267/#1268: tool children's environment
     _ = @import("destructive_git.zig"); // #1269: destructive-git tokenizer tables
+    _ = @import("output_elide.zig"); // #1271: over-cap output keeps head and tail
 }

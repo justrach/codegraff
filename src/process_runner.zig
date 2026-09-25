@@ -11,6 +11,7 @@ const posix_process_groups = switch (builtin.os.tag) {
     else => true,
 };
 const tool_pulse = @import("tool_pulse.zig");
+const output_elide = @import("output_elide.zig");
 const GroupId = if (posix_process_groups) std.posix.pid_t else void;
 const WindowsJobHandle = if (builtin.os.tag == .windows) ?std.os.windows.HANDLE else void;
 
@@ -111,6 +112,14 @@ pub const CappedRunOptions = struct {
     /// Clipboard export is not a user turn. Esc would kill osascript and
     /// Ctrl-V would report a cancelled clipboard read (#1146).
     ignore_cancel: bool = false,
+    /// #1271: over the cap, keep the first third and the LAST two thirds of
+    /// each stream around a `[... N bytes truncated ...]` gap instead of only
+    /// the first `cap` bytes. The tail lives in a fixed ring (never more than
+    /// the cap), and the joined result still fits the cap. Off by default:
+    /// programmatic callers parse the capture or reject a truncated one, and
+    /// the bash tool is the reader that needs the ending (test summaries,
+    /// final errors).
+    keep_tail: bool = false,
 };
 
 /// #253: RLIMIT_NOFILE as this process actually observes it. main() calls
@@ -275,6 +284,9 @@ pub fn runCappedWithOptions(gpa: Allocator, io: Io, argv: []const []const u8, st
     var saved: [2]?[]u8 = .{ null, null };
     errdefer for (saved) |item| if (item) |bytes| gpa.free(bytes);
     var streamed: [2]usize = .{ 0, 0 };
+    var rings: [2]?output_elide.TailRing = .{ null, null };
+    defer for (&rings) |*ring| if (ring.*) |*r| r.deinit(gpa);
+    var after_head: [2]usize = .{ 0, 0 };
 
     var esc_killed = false;
     var timed_out = false;
@@ -290,7 +302,7 @@ pub fn runCappedWithOptions(gpa: Allocator, io: Io, argv: []const []const u8, st
             error.Timeout => {},
             else => |other| return other,
         };
-        for (readers, caps, &saved, &streamed, [_]u8{ 0, 1 }) |reader, cap, *item, *seen, which| {
+        for (readers, caps, &saved, &streamed, &rings, &after_head, [_]u8{ 0, 1 }) |reader, cap, *item, *seen, *ring, *tailed, which| {
             const buffered = reader.buffered();
             // Fresh bytes this tick: anything past the streamed mark, or any
             // residue at all once capping started tossing what it saved.
@@ -302,7 +314,22 @@ pub fn runCappedWithOptions(gpa: Allocator, io: Io, argv: []const []const u8, st
                     seen.* = end;
                 }
             }
-            if (item.* == null and buffered.len > cap) item.* = try gpa.dupe(u8, buffered[0..cap]);
+            if (item.* == null) {
+                if (buffered.len > cap) {
+                    const split = options.keep_tail and cap >= output_elide.min_budget;
+                    const avail = cap -| output_elide.gap_reserve;
+                    const head_len = if (split) @import("util.zig").utf8Prefix(buffered, output_elide.headShare(avail)).len else cap;
+                    item.* = try gpa.dupe(u8, buffered[0..head_len]);
+                    if (split) {
+                        ring.* = try output_elide.TailRing.init(gpa, avail - head_len);
+                        ring.*.?.push(buffered[head_len..]);
+                        tailed.* = buffered.len - head_len;
+                    }
+                }
+            } else if (ring.*) |*r| {
+                r.push(buffered);
+                tailed.* += buffered.len;
+            }
             if (item.* != null) reader.toss(buffered.len);
         }
         if (!eof) {
@@ -333,6 +360,11 @@ pub fn runCappedWithOptions(gpa: Allocator, io: Io, argv: []const []const u8, st
             cleanup_needed = false;
         }
         break :blk term;
+    };
+    for (&saved, &rings, after_head) |*item, *ring, tailed| if (ring.*) |*r| {
+        const joined = try output_elide.joinRing(gpa, item.*.?, r, tailed);
+        gpa.free(item.*.?);
+        item.* = joined;
     };
     const stdout = if (saved[0]) |bytes| bytes else try gpa.dupe(u8, readers[0].buffered());
     errdefer if (saved[0] == null) gpa.free(stdout);
@@ -497,4 +529,20 @@ test "runCapped streams stdout before the child exits" {
     try std.testing.expect(state.seen);
     try std.testing.expect(std.mem.indexOf(u8, r.stdout, "STREAM_MARK") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.stdout, "DONE") != null);
+}
+
+test "#1271: keep_tail keeps the end of 3 MB of output within the 1 MB cap" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const cap: usize = 1024 * 1024;
+    const script = "printf START; head -c 3145728 /dev/zero | tr '\\000' x; printf FINAL-SENTINEL-1271; printf ERR-TAIL >&2";
+    const r = try runCappedWithOptions(gpa, std.testing.io, &.{ "/bin/sh", "-c", script }, cap, 4096, 30_000, .{ .keep_tail = true });
+    defer gpa.free(r.stdout);
+    defer gpa.free(r.stderr);
+    try std.testing.expect(r.stdout_truncated);
+    try std.testing.expect(r.stdout.len <= cap);
+    try std.testing.expect(std.mem.startsWith(u8, r.stdout, "START"));
+    try std.testing.expect(std.mem.endsWith(u8, r.stdout, "FINAL-SENTINEL-1271"));
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "bytes truncated ...]") != null);
+    try std.testing.expectEqualStrings("ERR-TAIL", r.stderr);
 }

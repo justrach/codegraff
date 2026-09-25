@@ -268,9 +268,10 @@ fn formatCapped(gpa: Allocator, cmd: []const u8, run: jobs.CappedRun) !ToolOutpu
     errdefer aw.deinit();
     const w = &aw.writer;
     if (run.stdout.len > 0) try w.writeAll(run.stdout);
-    if (run.stdout_truncated) try w.print("\n[stdout truncated at {d} KB]", .{bash_stdout_cap / 1024});
+    // #1271: the capture kept head and tail; say the MIDDLE went, not the end.
+    if (run.stdout_truncated) try w.print("\n[stdout over the {d} KB cap: head and tail kept, middle truncated]", .{bash_stdout_cap / 1024});
     if (run.stderr.len > 0) try w.print("\n[stderr]\n{s}", .{run.stderr});
-    if (run.stderr_truncated) try w.print("\n[stderr truncated at {d} KB]", .{bash_stderr_cap / 1024});
+    if (run.stderr_truncated) try w.print("\n[stderr over the {d} KB cap: head and tail kept, middle truncated]", .{bash_stderr_cap / 1024});
     if (run.cancelled) {
         try w.writeAll("\n[cancelled by user; local process group killed]\n");
         try w.writeAll(cancel_hint);
@@ -383,6 +384,7 @@ fn execUnchecked(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
     var opts = jobs.toolRunOptions(ctx.agent_cwd);
     var live = exec_bash_stream.Ctx{ .io = io };
     exec_bash_stream.attach(&opts, false, &live); // subagents stay quiet (#93)
+    opts.keep_tail = true; // #1271: the ending is where failures land
     const run = try jobs.runCappedWithOptions(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap, subagent_deadline_ms, opts);
     defer gpa.free(run.stdout);
     defer gpa.free(run.stderr);
