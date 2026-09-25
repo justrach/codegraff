@@ -77,7 +77,11 @@ test "create: two task workspaces get distinct checkouts and index.lock paths" {
     defer arena.deinit();
     const ar = arena.allocator();
     const one = try ws.create(a, io, ar, .{ .slug = "agent-one", .cwd = root });
-    const two = try ws.create(a, io, ar, .{ .slug = "agent-two", .cwd = root });
+    const project = ws.autoIsolationRoot(a, io, ar, one.path) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(root, project);
+    const two = try ws.create(a, io, ar, .{ .slug = "agent-two", .cwd = project });
+    const expected_two = try std.fs.path.join(ar, &.{ root, ".graff", "worktrees", "agent-two" });
+    try std.testing.expectEqualStrings(expected_two, two.path);
     try std.testing.expect(!std.mem.eql(u8, one.path, two.path));
     try std.testing.expect(!std.mem.eql(u8, one.branch, two.branch));
     try std.testing.expectEqualStrings("main", @import("worktree_base.zig").read(a, io, ar, root, one.branch));

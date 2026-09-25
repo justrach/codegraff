@@ -23,6 +23,7 @@ async function runNavigationKeyboard({win, origin}) {
   const modalContainsFocus = () => js(`document.querySelector('[aria-modal="true"]')?.contains(document.activeElement)`);
   const focusDiagnostic = () => js(`JSON.stringify({hasFocus:document.hasFocus(),active:document.activeElement?.outerHTML.slice(0,2500),modal:document.querySelector('[aria-modal="true"]')?.getAttribute('aria-label')})`);
 
+  await js(`localStorage.removeItem('graff.native.open-tabs.v1')`);
   await wc.loadURL(origin); testDesktop.present(win);
   await wait(`!!document.querySelector('[data-workspace-ready="true"] textarea[aria-label="Prompt"]')`);
   wc.send('desktop-action', 'new');

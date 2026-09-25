@@ -76,10 +76,7 @@ pub fn restore(root: *agent_mod.Agent, keys: *provider_mod.Keys, arena: Allocato
     // --goal flag gets below. `keep_context` still decides whether the restored
     // conversation is translated or dropped across a wire-format change,
     // exactly as a mid-session /model does.
-    if (model_override) |p| {
-        _ = providers.applyProviderInner(root, arena, p, false) catch {};
-        root.fallback_active = false; // an explicit choice, never a repaired credential
-    }
+    if (model_override) |p| applyModelOverride(root, arena, p);
     root.session_name = branch orelse source;
     if (branch) |dest| {
         root.session_parent = source;
@@ -100,6 +97,13 @@ pub fn restore(root: *agent_mod.Agent, keys: *provider_mod.Keys, arena: Allocato
         .entered = origin.kind == .entered,
         .enter_failed = origin.kind == .failed,
     };
+}
+
+/// Shared by CLI resume and ACP session/load so a host's --model respawn lands
+/// on the same model through either path.
+pub fn applyModelOverride(root: *agent_mod.Agent, arena: Allocator, p: provider_mod.Provider) void {
+    _ = providers.applyProviderInner(root, arena, p, false) catch {};
+    root.fallback_active = false; // an explicit choice, never a repaired credential
 }
 
 test "--model outranks the model a resumed session saved" {

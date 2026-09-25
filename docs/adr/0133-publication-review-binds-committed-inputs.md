@@ -16,6 +16,13 @@ identified check observations. Missing, oversized or unsupported inputs and
 unresolved or malformed review results do not establish readiness. Drafts
 remain available. No particular wording is required to trigger review.
 
+Changed files supply the proposed-head blob and a context diff for prior lines;
+unchanged base blobs are not repeated. Test entry points follow committed
+package scripts and runner imports through a bounded chain. The packet names
+size and traversal limits when evidence is omitted. Successful local check
+receipts remain bounded and survive session restore, with their observed head
+and completion status; they are not immutable execution proof.
+
 The review supplements actual tests and fresh CI observations. It is not a
 mechanical coverage certificate. Changed files may omit important callers;
 the reviewer must retain uncertainty rather than invent those paths. A check

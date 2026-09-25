@@ -26,6 +26,43 @@ const executable_permissions = learn_eval.executable_permissions;
 const dir_permissions = learn_eval.dir_permissions;
 const builtin = @import("builtin");
 
+test "formal run schema binds admission and selected evidence" {
+    const id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const candidate: learn_eval.CandidateRecord = .{
+        .genome_id = id,
+        .mutation = .{ .seed = id, .request_evidence_id = id, .response_evidence_id = id },
+        .primary = null,
+        .holdout = null,
+        .eligible = false,
+        .reason = "pending",
+    };
+    var run: learn_eval.RunRecord = .{
+        .schema = learn_eval.formal_run_schema,
+        .trial_id = id,
+        .nonce = id,
+        .created_unix_ms = 0,
+        .harness_version = "test",
+        .config_id = id,
+        .parent_genome_id = id,
+        .parent_generation = 0,
+        .parent_transaction_id = id,
+        .planned_candidates = 1,
+        .repetitions = 1,
+        .auto_requested = false,
+        .candidates = &.{candidate},
+        .selected_genome_id = null,
+    };
+    try std.testing.expectError(error.InvalidRun, learn_eval.validateRun(run));
+    run.formal_admission_evidence_id = id;
+    try learn_eval.validateRun(run);
+    run.selected_genome_id = id;
+    try std.testing.expectError(error.InvalidRun, learn_eval.validateRun(run));
+    run.formal_selection_evidence_id = id;
+    try learn_eval.validateRun(run);
+    run.schema = learn_eval.run_schema;
+    try std.testing.expectError(error.InvalidRun, learn_eval.validateRun(run));
+}
+
 test "paired tail has known exact values" {
     try std.testing.expectApproxEqAbs(@as(f64, 0.5), pairedTail(1, 0), 1e-12);
     try std.testing.expectApproxEqAbs(@as(f64, 0.0546875), pairedTail(8, 2), 1e-12);

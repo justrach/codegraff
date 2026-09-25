@@ -1,14 +1,40 @@
 import { test, expect } from "bun:test";
 import { createSmoothStream } from "./smooth-stream";
 
-function fixture() {
+function fixture(initial = "") {
   let now = 0;
   const frames: ((now: number) => void)[] = [], painted: string[] = [];
-  const stream = createSmoothStream("", text => painted.push(text), {
+  const stream = createSmoothStream(initial, text => painted.push(text), {
     now: () => now, frame(callback) { frames.push(callback); return frames.length; }, cancel() {},
   });
   return { stream, frames, painted, tick(index: number) { now += 1000 / 120; frames[index](now); } };
 }
+
+test("a remounted chat reveals only content added after the last visit", () => {
+  const received = "An answer already received before switching tabs. ".repeat(20);
+  const first = fixture();
+  first.stream.update(received, true);
+  first.tick(0);
+  expect(first.painted.at(-1)?.length).toBeLessThan(received.length);
+  first.stream.dispose();
+
+  // Unmount records all text received in the visible chat, including the
+  // queued tail. A second mount with unchanged content schedules no reveal.
+  const returnVisit = fixture(received);
+  returnVisit.stream.update(received, true);
+  expect(returnVisit.frames).toHaveLength(0);
+  const next = `${received}One new line arrived while away.`;
+  returnVisit.stream.update(next, true);
+  expect(returnVisit.frames).toHaveLength(1);
+  returnVisit.tick(0);
+  expect(returnVisit.painted.at(-1)?.startsWith(received)).toBe(true);
+  returnVisit.stream.dispose();
+
+  const again = fixture(next);
+  again.stream.update(next, true);
+  expect(again.frames).toHaveLength(0);
+  again.stream.dispose();
+});
 
 test("starting on the full string never typewrites — the live hook must start empty", () => {
   const painted: string[] = [];

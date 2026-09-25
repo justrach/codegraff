@@ -70,6 +70,37 @@ export function findWorkspace(list: readonly Workspace[], path: string | null | 
   return list.find((w) => w.path === p);
 }
 
+export type WorkspaceDisplay = { project: string; worktree: boolean };
+
+/** Generated checkouts are still separate working folders, but their GUI label
+ * names the owning project rather than a session-shaped directory. */
+export function displayWorkspace(cwd: string | null | undefined, list: readonly Workspace[], selectedProject?: string): WorkspaceDisplay {
+  if (!cwd && !selectedProject) return { project: "workspace", worktree: false };
+  const path = normalizePath(cwd ?? selectedProject ?? "");
+  const checkout = /[/\\]\.graff[/\\]worktrees[/\\][^/\\]+(?=$|[/\\])/.exec(path);
+  const projectPath = selectedProject ? normalizePath(selectedProject) : checkout ? path.slice(0, checkout.index) || path[0] : path;
+  return {
+    project: findWorkspace(list, projectPath)?.name ?? basename(projectPath.replace(/\\/g, "/")),
+    worktree: checkout !== null,
+  };
+}
+
+/** A generated checkout belongs to the project that contains .graff. An
+ * explicitly selected folder wins, even if it has the same path shape. */
+export function chatProject(
+  chat: { cwd?: string; project?: string }, fallback: string | null | undefined,
+  workspaces: readonly Workspace[],
+): string | undefined {
+  if (chat.project) return chat.project;
+  const cwd = chat.cwd;
+  if (!cwd) return fallback ?? undefined;
+  if (findWorkspace(workspaces, cwd)?.source === "saved") return cwd;
+  const marker = "/.graff/worktrees/";
+  const at = cwd.indexOf(marker);
+  if (at > 0 && /^session-[^/]+(?:\/\.graff\/worktrees\/session-[^/]+)*$/.test(cwd.slice(at + marker.length))) return cwd.slice(0, at);
+  return cwd;
+}
+
 /** Preserve chosen rows, including a full list, when showing startup context. */
 export function restoreWorkspaceSelection(saved: readonly Workspace[], remembered: string | null, root: string) {
   const list = [...saved];

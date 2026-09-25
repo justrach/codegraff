@@ -29,6 +29,14 @@ pub const Program = struct {
     pass_env: []const []const u8 = &.{},
 };
 
+/// Optional external formal baseline check. This binds a model-check result
+/// to a prompt fingerprint; it does not prove the prompt's behavior.
+pub const FormalCheck = struct {
+    checker: Program,
+    pin: PinnedFile,
+    timeout_ms: u64 = 900_000,
+};
+
 pub const Suite = struct {
     path: []const u8,
     sha256: []const u8,
@@ -89,6 +97,7 @@ pub const Config = struct {
     mutation_instruction: []const u8,
     mutator: Program,
     evaluator: Program,
+    formal_check: ?FormalCheck = null,
     evaluation_suite: Suite,
     holdout_suite: ?Suite = null,
     limits: Limits = .{},

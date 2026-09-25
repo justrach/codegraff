@@ -83,7 +83,7 @@ export default memo(function ChatTranscript({ messages, register, following, onO
         ? message.origin === "notification"
           ? <SessionNotice key={message.id} text={message.text} />
           : <UserBubble key={message.id} text={message.text} promptIndex={prompts[start + index]} onEdit={snapshot || !onEditPrompt ? undefined : onEditPrompt} />
-        : <AssistantBody key={message.id} turn={message.turn} onOpenPath={onOpenPath} onReview={onReview} onAnswer={onAnswer}
+        : <AssistantBody key={message.id} messageId={message.id} turn={message.turn} onOpenPath={onOpenPath} onReview={onReview} onAnswer={onAnswer}
             retryDisabled={busy} promptIndex={prompts[start + index]} onRetry={snapshot || !onEditPrompt || message.turn.status !== "error" ? undefined : retryPrompt}
             usage={(() => { const previous = messages[start + index - 1]; return previous?.role === "user" && /^\/(usage|cost)$/.test(previous.text.trim()); })()}
             scroller={scroller} following={following && start + index === messages.length - 1} snapshot={snapshot} />)}

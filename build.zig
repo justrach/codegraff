@@ -161,6 +161,9 @@ pub fn build(b: *std.Build) void {
     const subagent_resume_test = b.addSystemCommand(&.{ "python3", "scripts/test-subagent-resume.py" });
     subagent_resume_test.addArtifactArg(exe);
     test_step.dependOn(&subagent_resume_test.step);
+    const learn_formal_test = b.addSystemCommand(&.{ "python3", "tests/learn_formal_e2e.py", "--graff" });
+    learn_formal_test.addArtifactArg(exe);
+    test_step.dependOn(&learn_formal_test.step);
     test_step.dependOn(&b.addSystemCommand(&.{ "python3", "graff-evals/test_measurement.py" }).step);
     test_step.dependOn(&b.addSystemCommand(&.{ "python3", "scripts/test-eval-cache-affinity.py" }).step);
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline two-process ACP v1 load: replay, context, and stale shell handles."""
+"""Offline ACP load: model precedence, replay, context, and stale shell handles."""
 import json
 import os
 import queue
@@ -174,6 +174,14 @@ def run(binary):
             a.close()
             first_model.stop()
 
+        # Give the saved conversation a different model from the explicit
+        # --model vercel used by the process that will load it. The fixture's
+        # local gateway accepts this saved model without catalog discovery.
+        snapshot = json.loads(saved.read_text())
+        assert snapshot["provider"] == "vercel", snapshot
+        snapshot["model"] = "saved/model-a"
+        saved.write_text(json.dumps(snapshot))
+
         # Simulate a compacted provider window: the transcript still retains
         # an older user turn that no longer appears in the model snapshot.
         transcript = cwd / ".graff" / "sessions" / f"{sid}.transcript.jsonl"
@@ -202,6 +210,9 @@ def run(binary):
             assert wrong["error"]["code"] == -32602
             before = len(b.events)
             loaded = b.request("session/load", {"sessionId": sid, "cwd": str(cwd), "mcpServers": []})
+            selected = b.request("graff/models")["result"]["current"]
+            assert selected["provider"] == "vercel", selected
+            assert selected["model"] == "alibaba/qwen3.8-27b", selected
             created_config = created["configOptions"]
             loaded_config = loaded["result"]["configOptions"]
             assert len(created_config) == len(loaded_config) == 1, (created, loaded)
@@ -222,6 +233,7 @@ def run(binary):
             continued = b.request("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text": "Continue with original context."}]}, 35)
             assert continued["result"]["stopReason"] == "end_turn"
             assert next_model.requests[0]["reasoning"]["effort"] == "low"
+            assert next_model.requests[0]["model"] == "alibaba/qwen3.8-27b", next_model.requests[0]
             assert next_model.new_handle != old
             assert "Original human request." in json.dumps(next_model.requests[0])
             assert "Original assistant answer." in json.dumps(next_model.requests[0])
@@ -232,7 +244,7 @@ def run(binary):
         finally:
             b.close()
             next_model.stop()
-    print("ACP session/load replay and stale shell isolation: ok")
+    print("ACP session/load model precedence, replay, and stale shell isolation: ok")
 
 
 if __name__ == "__main__":
