@@ -67,12 +67,21 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     exe.root_module.addImport("models_rank", models_rank_mod);
+    // Same reason: one nearest-command speller for the REPL/ACP catalog and
+    // the TUI catalog (#1275).
+    const slash_suggest_mod = b.createModule(.{
+        .root_source_file = b.path("src/slash_suggest.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("slash_suggest", slash_suggest_mod);
     const tui_mod = b.createModule(.{
         .root_source_file = b.path("TUI/root.zig"),
         .target = target,
         .optimize = optimize,
     });
     tui_mod.addImport("models_rank", models_rank_mod);
+    tui_mod.addImport("slash_suggest", slash_suggest_mod);
     exe.root_module.addImport("tui", tui_mod);
     const install_graff = b.addInstallArtifact(exe, .{});
     b.getInstallStep().dependOn(&install_graff.step);
@@ -107,6 +116,7 @@ pub fn build(b: *std.Build) void {
     unit_tests.root_module.addImport("accord", accord_mod);
     unit_tests.root_module.addImport("http_zig", http_zig_mod);
     unit_tests.root_module.addImport("models_rank", models_rank_mod);
+    unit_tests.root_module.addImport("slash_suggest", slash_suggest_mod);
     unit_tests.root_module.addImport("tui", tui_mod);
     // spec/ fixtures live outside src/; importing them here makes @embedFile
     // legal and rebuilds the suite when the exported semantics change.
@@ -161,6 +171,9 @@ pub fn build(b: *std.Build) void {
     const acp_images_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-images.py" });
     acp_images_test.addArtifactArg(exe);
     test_step.dependOn(&acp_images_test.step);
+    const acp_slash_typo_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-slash-typo.py" });
+    acp_slash_typo_test.addArtifactArg(exe);
+    test_step.dependOn(&acp_slash_typo_test.step);
     const run_tool_budget_test = b.addSystemCommand(&.{ "python3", "scripts/test-run-tool-budget.py" });
     run_tool_budget_test.addArtifactArg(exe);
     test_step.dependOn(&run_tool_budget_test.step);
@@ -215,6 +228,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     tui_exe.root_module.addImport("models_rank", models_rank_mod);
+    tui_exe.root_module.addImport("slash_suggest", slash_suggest_mod);
     b.installArtifact(tui_exe);
 
     const tui_tests = b.addTest(.{
@@ -232,6 +246,7 @@ pub fn build(b: *std.Build) void {
         .filters = test_filters,
     });
     tui_tests.root_module.addImport("models_rank", models_rank_mod);
+    tui_tests.root_module.addImport("slash_suggest", slash_suggest_mod);
     tui_tests.root_module.addAnonymousImport("spec_terminal_modes", .{ .root_source_file = b.path("spec/kernels/terminal_modes.json") });
 
     const tui_test_step = b.step("tui-test", "Run fullscreen TUI unit tests");

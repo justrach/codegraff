@@ -65,9 +65,10 @@ fn liveCancelled() bool {
 
 /// A slash command typed in a client runs the same handler the REPL runs,
 /// so the menu the agent advertises is not a menu of things that then get
-/// sent to the model as prose. Anything outside the catalog returns null
-/// and stays an ordinary prompt. Pickers here find no TTY and fall back to
-/// printing their list, so nothing waits on a keypress that cannot come.
+/// sent to the model as prose. A command-shaped `/word` outside the catalog
+/// gets the terminal's own refusal + nearest spelling (#1275), not a model
+/// turn; paths and prose return null and stay ordinary prompts. Pickers here
+/// find no TTY and fall back to printing their list.
 fn liveSlash(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror!?[]const u8 {
     if (@import("review.zig").promptFromLine(text) != null) return null;
     if (@import("issue_cmd.zig").promptFromLine(text) != null) return null;
@@ -78,8 +79,8 @@ fn liveSlash(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror!?[]co
         _ = try playbook_glue.command(live.root, arena, text, &aw.writer);
         return try engine.stripSgr(arena, aw.writer.buffered());
     }
-    if (command_catalog.match(text) == null) return null;
-    try main_mod.handleCommand(live.root, live.keys, arena, text, &aw.writer);
+    if (command_catalog.match(text) == null and command_catalog.commandWord(text) == null) return null;
+    try main_mod.handleCommand(live.root, live.keys, arena, std.mem.trim(u8, text, " \t\r\n"), &aw.writer);
     return try engine.stripSgr(arena, aw.writer.buffered());
 }
 

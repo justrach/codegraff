@@ -277,6 +277,8 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         } else {
             return applyLine(self, arg);
         }
+    } else if (catalog.suggest(cmd)) |near| {
+        self.pushFmt(.err, "unknown command: {s} — did you mean {s}?", .{ cmd, near }) catch {};
     } else {
         self.pushFmt(.err, "unknown command: {s} — try /help", .{cmd}) catch {};
     }

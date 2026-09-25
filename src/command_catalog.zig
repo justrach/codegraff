@@ -9,6 +9,7 @@
 //! /help dump (it falls back to `name` when empty). `desc` is the one-liner.
 
 const std = @import("std");
+const slash_suggest = @import("slash_suggest");
 
 /// One catalog entry. `name`/`desc` are the same two fields the generic
 /// listPicker items carry (pickers.PickItem = this type), so both are always
@@ -28,6 +29,34 @@ pub fn match(line: []const u8) ?Item {
     const word = t[0 .. std.mem.indexOfAny(u8, t, " \t") orelse t.len];
     for (commands) |c| if (std.mem.eql(u8, c.name, word)) return c;
     return null;
+}
+
+/// Spellings the handlers accept that are not catalog entries (each runs the
+/// entry named in its comment). suggest() offers them like any name.
+pub const aliases = [_][]const u8{
+    "/constraint", // /never
+    "/ws", // /workspace
+    "/adopt", // /import-claude
+};
+
+/// The first word of `line` when it is command-shaped: `/` then letters,
+/// digits, `-` or `_`, ended by whitespace or the end of the line. A path
+/// (`/usr/bin/foo`, `/tmp/x.png`), `/**`, or text that merely contains a
+/// `/word` later on is not a command and stays an ordinary prompt.
+pub fn commandWord(line: []const u8) ?[]const u8 {
+    const t = std.mem.trim(u8, line, " \t\r\n");
+    if (t.len < 2 or t[0] != '/') return null;
+    const word = t[0 .. std.mem.indexOfAny(u8, t, " \t\r\n") orelse t.len];
+    for (word[1..]) |c| if (!(std.ascii.isAlphanumeric(c) or c == '-' or c == '_')) return null;
+    return word;
+}
+
+/// The command `word` most likely misspells (#1275): the nearest catalog
+/// name or alias by edit distance, or null when nothing is close. Shared by
+/// the terminal refusal (commands_misc.handleRest) and, through it, ACP.
+pub fn suggest(word: []const u8) ?[]const u8 {
+    const candidates = comptime names ++ aliases;
+    return slash_suggest.nearest(word, &candidates);
 }
 
 pub const commands = [_]Item{
@@ -120,4 +149,38 @@ test "catalog is well-formed and names track commands" {
         try std.testing.expect(command.desc.len > 0);
         try std.testing.expectEqualStrings(command.name, name);
     }
+}
+
+test "suggest (#1275): typos find the command, unrelated words do not" {
+    try std.testing.expectEqualStrings("/resume", suggest("/resuem").?); // transposition
+    try std.testing.expectEqualStrings("/help", suggest("/hlep").?);
+    try std.testing.expectEqualStrings("/model", suggest("/modle").?);
+    try std.testing.expectEqualStrings("/compact", suggest("/compcat").?);
+    try std.testing.expectEqualStrings("/sessions", suggest("/sesions").?); // deletion
+    try std.testing.expectEqualStrings("/resume", suggest("/Resume").?); // case only
+    try std.testing.expectEqualStrings("/constraint", suggest("/constrant").?); // aliases count
+    // Too far from every name, or too short to guess at.
+    try std.testing.expect(suggest("/banana") == null);
+    try std.testing.expect(suggest("/xyzzy") == null);
+    try std.testing.expect(suggest("/zz") == null);
+    try std.testing.expect(suggest("/") == null);
+    var long: [81]u8 = undefined;
+    @memset(&long, 'a');
+    long[0] = '/';
+    try std.testing.expect(suggest(&long) == null); // past the speller's length cap
+}
+
+test "commandWord (#1275): paths and prose are not commands" {
+    try std.testing.expectEqualStrings("/resuem", commandWord("/resuem").?);
+    try std.testing.expectEqualStrings("/resuem", commandWord("  /resuem last  ").?);
+    try std.testing.expectEqualStrings("/pr-acceptance", commandWord("/pr-acceptance draft").?);
+    try std.testing.expectEqualStrings("/foo", commandWord("/foo\nsecond line").?);
+    try std.testing.expect(commandWord("/usr/bin/foo") == null);
+    try std.testing.expect(commandWord("/usr/bin/foo explain this") == null);
+    try std.testing.expect(commandWord("/tmp/x.png") == null);
+    try std.testing.expect(commandWord("/x.png what is this") == null);
+    try std.testing.expect(commandWord("/**\n * doc comment\n */") == null);
+    try std.testing.expect(commandWord("please /resuem") == null);
+    try std.testing.expect(commandWord("/") == null);
+    try std.testing.expect(commandWord("") == null);
 }
