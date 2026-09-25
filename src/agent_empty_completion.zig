@@ -25,6 +25,44 @@ pub fn shouldRetry(final_text: []const u8, retries: u8) bool {
     return std.mem.trim(u8, final_text, " \t\r\n").len == 0;
 }
 
+/// Retry note when the empty reply was all reasoning (#1293): the identical
+/// request tends to reason to the output limit again, so ask for brevity.
+pub const reasoning_budget_note = "Your previous reply spent its whole output budget reasoning and produced no answer or tool call. Think briefly, then call a tool or answer directly.";
+
+/// True when the rewound reply carried reasoning but no answer: chat
+/// `reasoning_content`/`reasoning`, a Responses `reasoning` item, or an
+/// Anthropic `thinking` block.
+pub fn reasonedWithoutAnswer(rewound: []const std.json.Value) bool {
+    for (rewound) |m| {
+        if (m != .object) continue;
+        const o = m.object;
+        for ([_][]const u8{ "reasoning_content", "reasoning" }) |key| if (o.get(key)) |r| {
+            if (r == .string and std.mem.trim(u8, r.string, " \t\r\n").len > 0) return true;
+        };
+        if (o.get("type")) |t| if (t == .string and std.mem.eql(u8, t.string, "reasoning")) return true;
+        if (o.get("content")) |c| if (c == .array) for (c.array.items) |block| {
+            if (block == .object) if (block.object.get("type")) |bt| if (bt == .string and std.mem.eql(u8, bt.string, "thinking")) return true;
+        };
+    }
+    return false;
+}
+
+test "reasonedWithoutAnswer: chat, Responses and Anthropic reasoning shapes; plain empty replies are not" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for ([_][]const u8{
+        "[{\"role\":\"assistant\",\"content\":\"\",\"reasoning_content\":\"let me think...\"}]",
+        "[{\"type\":\"reasoning\",\"summary\":[]}]",
+        "[{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"hm\"}]}]",
+    }) |raw| {
+        const v = try std.json.parseFromSliceLeaky(std.json.Value, a, raw, .{});
+        try std.testing.expect(reasonedWithoutAnswer(v.array.items));
+    }
+    const plain = try std.json.parseFromSliceLeaky(std.json.Value, a, "[{\"role\":\"assistant\",\"content\":\"  \",\"reasoning_content\":\" \"}]", .{});
+    try std.testing.expect(!reasonedWithoutAnswer(plain.array.items));
+}
+
 /// Lean `-p` described a fix and never called a tool. One bounce.
 pub const bounce_note = "If the user requested a change, a description alone is not completion: inspect and edit the files with read_file / edit_file / write_file; do not claim the tree is already updated. If the request is informational, answer it from sufficient evidence without making unrequested changes.";
 
@@ -95,10 +133,15 @@ test "#1013 without a bounce note the follow-up is the answer" {
 /// caller should `continue` the loop.
 pub fn handle(self: *Agent, final_text: []const u8, hist_len: usize) !bool {
     if (shouldRetry(final_text, self.empty_completion_retries)) {
+        const keep = @min(hist_len, self.messages.items.len);
+        const reasoned = reasonedWithoutAnswer(self.messages.items[keep..]);
         self.empty_completion_retries += 1;
         self.closeCodexWs();
-        self.messages.shrinkRetainingCapacity(@min(hist_len, self.messages.items.len));
-        try self.say("[model returned an empty completion — retrying ({d}/{d})]\n", .{ self.empty_completion_retries, max_consecutive });
+        self.messages.shrinkRetainingCapacity(keep);
+        if (reasoned) {
+            try self.messages.append(try messages.userNote(self.arena, self.provider.kind, reasoning_budget_note));
+            try self.say("[model reasoned without answering — retrying with a brief-answer note ({d}/{d})]\n", .{ self.empty_completion_retries, max_consecutive });
+        } else try self.say("[model returned an empty completion — retrying ({d}/{d})]\n", .{ self.empty_completion_retries, max_consecutive });
         return true;
     }
     if (@import("task_intent.zig").current(self) == .informational) return false;
