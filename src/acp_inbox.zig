@@ -5,6 +5,11 @@ const Agent = @import("agent.zig").Agent;
 const proto = @import("acp_protocol.zig");
 const cancel_source = @import("cancel_source.zig");
 const acp_ask = @import("acp_ask.zig");
+const stdin_line = @import("stdin_line.zig");
+
+test {
+    _ = stdin_line;
+}
 
 pub const Inbox = struct {
     permission: ?*@import("acp_permission.zig").Bridge = null,
@@ -151,8 +156,16 @@ pub const Inbox = struct {
 
     fn pump(self: *Inbox) void {
         while (true) {
-            const line = (self.reader.takeDelimiter('\n') catch break) orelse break;
-            self.accept(line) catch break;
+            // Not takeDelimiter: a prompt with an attachment outgrows the stdin
+            // buffer, and its StreamTooLong used to end the session here.
+            switch (stdin_line.take(self.reader, self.gpa, stdin_line.max_bytes) catch break) {
+                .eof => break,
+                .too_long => std.debug.print("acp: dropped an input record over {d} bytes\n", .{stdin_line.max_bytes}),
+                .line => |line| {
+                    defer self.gpa.free(line);
+                    self.accept(line) catch break;
+                },
+            }
         }
         self.mutex.lockUncancelable(self.io);
         self.eof = true;

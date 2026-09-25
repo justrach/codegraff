@@ -30,6 +30,7 @@ pub const Owned = struct {
         copy.plan_read_owner = null;
         copy.worker_family = try a.dupe(u8, source.worker_family);
         copy.session_name = try a.dupe(u8, source.session_name);
+        copy.parent_tool_call_id = try a.dupe(u8, source.parent_tool_call_id);
         if (source.worker_id) |id| copy.worker_id = try a.dupe(u8, id);
         if (source.approvals) |ap| {
             ap.mutex.lockUncancelable(source.io);

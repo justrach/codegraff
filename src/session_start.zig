@@ -439,6 +439,10 @@ pub fn leanMode(effective_lean: bool, environ_map: anytype) bool {
 }
 
 pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Writer, in: *Io.Reader, flags: args.Flags, mcp_config_path: []const u8, home: []const u8, use_color: bool, json_mode: bool, environ_map: anytype) !mcp.Registry {
+    // GRAFF_NO_PLUGINS must hold before the merge below reads Claude/Cursor/
+    // Grok/Codex MCP trees. applyEnvKnobs sets it too, but only after the
+    // registry has already connected their servers.
+    @import("plugins.zig").applyEnv(environ_map);
     const global_path = mcp_config.globalPath(arena, home, environ_map);
     const sink = engine_sink.writerSink(out);
     // First interactive session copies Claude/Cursor MCP into ~/.codegraff once.

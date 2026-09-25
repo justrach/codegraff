@@ -67,10 +67,10 @@ pub fn ensureRootTools(self: *Agent, kind: Provider.Kind) !void {
         try surface.filterSpecs(@TypeOf(schema.base_specs[0]), self.arena, schema.base_specs[0..])
     else
         try withExtras(self.arena, try schema.effectiveRootSpecs(self.arena), self.provider);
-    const connected: []const mcp.Tool = if (self.registry) |registry|
-        (if (self.sub) try surface.filterWorkerMcp(self.arena, registry.tools) else registry.tools)
-    else
-        &.{};
+    const connected: []const mcp.Tool = if (self.registry) |registry| blk: {
+        const snapshot = try registry.snapshotTools(self.arena);
+        break :blk if (self.sub) try surface.filterWorkerMcp(self.arena, snapshot) else snapshot;
+    } else &.{};
     dest.* = try schema.renderRootTools(self.arena, kind, specs, connected);
 }
 

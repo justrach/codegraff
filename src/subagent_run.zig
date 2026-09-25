@@ -356,6 +356,29 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         agent.agent_cwd = ctx.agent_cwd;
     }
 
+    // ACP v1's draft child-session scope is one foreground prompt. Detached
+    // workers use a separate opted-in Graff notification and retain the
+    // graff/agents inspection path after session/prompt returns.
+    const acp_children = @import("acp_subagent_live.zig");
+    const detached = ctx.subagent_feedback != null;
+    const announce_child = acp_children.eligible(kind, ctx.depth, detached);
+    const announced = announce_child and acp_children.announce(ctx.io, sub_id, label, prompt, ctx.parent_tool_call_id);
+    const background_handle: ?acp_children.BackgroundHandle = if (detached and std.mem.eql(u8, kind, "subagent") and ctx.depth == 0 and ctx.parent_tool_call_id.len > 0)
+        acp_children.announceBackground(arena, ctx.io, sub_id, label, prompt, ctx.parent_tool_call_id)
+    else
+        null;
+    const background_announced = background_handle != null;
+    var child_stream: acp_children.ChildSink = .{
+        .id = sub_id,
+        .io = ctx.io,
+        .recorder = agent.sink,
+        .background_handle = background_handle,
+    };
+    if (announced or background_announced) agent.sink = child_stream.engineSink();
+    var child_state: []const u8 = "failed";
+    defer if (announced) acp_children.finish(ctx.io, sub_id, child_state, ctx.parent_tool_call_id);
+    defer if (background_handle) |handle| acp_children.finishBackground(ctx.io, handle, sub_id, child_stream.seq, child_state);
+
     const wf_task = std.mem.eql(u8, kind, "workflow_task");
     if (wf_task) guiEmit(ctx.io, .{ .type = "tool_call", .name = "subagent", .input = .{ .description = label }, .id = sub_id });
     const tasked = try @import("subagent_brief.zig").prepare(arena, ctx.io, kind, prompt, ctx.agent_cwd, main_mod.g_hooks.pre_tool);
@@ -382,6 +405,8 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     try @import("subagent_retained.zig").checkpoint(&agent, ctx);
     const run_ms: i64 = @intCast(@max(0, sub_start.untilNow(ctx.io, .awake).toMilliseconds()));
     const run_ok = if (report) |r| r.len > 0 else |_| false;
+    const interrupted = if (activity) |*recorder| @import("subagent_activity.zig").interruptRequested(ctx.io, recorder.dir, sub_id) else false;
+    child_state = if (interrupted) "cancelled" else if (report) |_| (if (run_ok) "completed" else "failed") else |err| (if (err == error.Interrupted or err == error.Canceled) "cancelled" else "failed");
     if (activity) |*recorder| recorder.finish(run_ok, if (report) |r| r else |_| (agent.last_api_error orelse "Sub-agent failed"));
     if (wf_task) {
         // The sa- id (shared with agent_usage) pairs parallel workflow rows;

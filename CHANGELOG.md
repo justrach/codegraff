@@ -17,6 +17,10 @@ current is part of cutting a release.
 - Loading a saved ACP session now keeps an explicitly selected launch model, matching command-line resume. Switching the selected model no longer requires discarding the saved conversation.
 - WebSocket prewarm sends the selected model in its first frame and records a bounded rejection reason when the server refuses it. A rejected prewarm can still fall back through the existing transport recovery path.
 - WebSocket turns deliver response deltas as they arrive, including before a slow completion frame, and flush held text once at completion. Mock transport checks cover live output, retry, fallback, and duplicate-output prevention.
+- ACP and `--json` input accept records larger than 64 KiB, such as long pasted prompts or image payloads. An oversized line used to end the session silently; now records up to 64 MiB are read and anything larger is dropped with a warning.
+- xAI WebSocket turns send full history again instead of chaining on the previous response, and the `generate:false` warmup is off by default. Chaining without server-side storage could stall after the first frame. `GRAFF_XAI_WS_CHAIN=1` and `GRAFF_WS_PREWARM=1` opt back in.
+- ACP clients can pass MCP servers in `session/new` and `session/load`, and `GRAFF_NO_PLUGINS` now applies before those servers connect.
+- Opted-in ACP clients can preview child-agent activity live, and background workers stream through a Graff extension across turns. Session teardown waits for background agents, and deferred MCP startup joins run under the registry lock.
 
 ### Optional formal evidence for local learning
 

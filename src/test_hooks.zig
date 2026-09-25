@@ -348,6 +348,8 @@ test {
     _ = @import("commands_experiment.zig");
     _ = @import("acp_engine.zig");
     _ = @import("acp_config.zig");
+    _ = @import("session_start_plugins_test.zig");
+    _ = @import("acp_mcp_servers.zig");
     _ = @import("libgraff.zig");
     _ = @import("tui_peer.zig");
     _ = @import("acp_auth.zig");

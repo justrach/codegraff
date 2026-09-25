@@ -6,6 +6,7 @@ const util = @import("util.zig");
 pub const Bridge = struct {
     io: Io,
     out: *Io.Writer,
+    output_lock: ?*Io.Mutex = null,
     session: []const u8 = "",
     mutex: Io.Mutex = .init,
     ready: Io.Condition = .init,
@@ -17,6 +18,11 @@ pub const Bridge = struct {
 
     pub fn handler(self: *Bridge) permission.Handler {
         return .{ .ctx = self, .request = ask };
+    }
+    pub fn setOutputLock(self: *Bridge, lock: ?*Io.Mutex) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        self.output_lock = lock;
     }
     pub fn cancel(self: *Bridge) void {
         self.mutex.lockUncancelable(self.io);
@@ -59,6 +65,8 @@ pub const Bridge = struct {
             const main = @import("main.zig");
             main.g_gui_mu.lockUncancelable(io);
             defer main.g_gui_mu.unlock(io);
+            if (self.output_lock) |lock| lock.lockUncancelable(io);
+            defer if (self.output_lock) |lock| lock.unlock(io);
             std.json.Stringify.value(.{ .jsonrpc = "2.0", .id = id, .method = "session/request_permission", .params = .{
                 .sessionId = self.session,
                 .toolCall = .{ .toolCallId = req.call_id, .title = req.description, .status = "pending" },

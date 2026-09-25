@@ -241,7 +241,9 @@ test "grok spec: held xAI WS chains previous_response_id + delta; drop rebuilds 
     agent.codex_prev_id = try std.testing.allocator.dupe(u8, "resp_live");
     agent.codex_sent_upto = 2;
     agent.codex_props_fp = codex_chain.propsFor(&agent);
-    try std.testing.expect(codex_chain.g_xai_ws_chain);
+    const saved_chain = codex_chain.g_xai_ws_chain;
+    defer codex_chain.g_xai_ws_chain = saved_chain;
+    codex_chain.g_xai_ws_chain = true; // opt-in (GRAFF_XAI_WS_CHAIN=1)
     try std.testing.expect(codex_chain.chainUsable(&agent));
 
     const delta = try agent.buildBody(null, false, false, false);
@@ -343,6 +345,9 @@ test "grok spec: compact/rewrite is not an append — chain drops (official cach
     agent.codex_prev_id = "resp_live";
     agent.codex_sent_upto = 1;
     agent.codex_props_fp = codex_chain.propsFor(&agent);
+    const saved_chain = codex_chain.g_xai_ws_chain;
+    defer codex_chain.g_xai_ws_chain = saved_chain;
+    codex_chain.g_xai_ws_chain = true; // opt-in (GRAFF_XAI_WS_CHAIN=1)
     try std.testing.expect(codex_chain.chainUsable(&agent));
     agent.history_rewrites += 1;
     try std.testing.expect(!codex_chain.chainUsable(&agent));
