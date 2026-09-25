@@ -31,7 +31,7 @@ pub var extra_cancelled: ?*const fn () bool = null;
 
 pub const TurnFn = *const fn (ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const u8;
 pub const SlashFn = *const fn (ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror!?[]const u8;
-pub const AfterUserFn = *const fn (ctx: *anyopaque, arena: Allocator, text: []const u8) void;
+pub const AfterUserFn = *const fn (ctx: *anyopaque, arena: Allocator, text: []const u8, prompt: ?std.json.Value) void;
 pub const BindSessionFn = *const fn (ctx: *anyopaque, session_id: []const u8) void;
 pub const LoadSessionFn = *const fn (ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request) anyerror!void;
 /// Optional per-turn context meter: used and window tokens for the
@@ -190,7 +190,7 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
             return respond(w, req, .{ .stopReason = "end_turn" });
         }
     }
-    if (d.after_user) |after| after(d.ctx, arena, text);
+    if (d.after_user) |after| after(d.ctx, arena, text, if (obj) |o| o.get("prompt") else null);
     const final = d.turn(d.ctx, arena, text) catch |err| {
         emitConfigChange(d, arena, w, sid, config_before) catch |config_err| return turnError(d, w, req, config_err);
         return turnError(d, w, req, err);
@@ -272,7 +272,7 @@ fn respondInitialize(w: *Io.Writer, req: proto.Request, can_load: bool) !void {
         .agentCapabilities = .{
             .loadSession = can_load,
             ._meta = .{ .@"codegraff/usage" = can_load, .@"graff/backgroundSubagents" = true },
-            .promptCapabilities = proto.PromptCapabilities{},
+            .promptCapabilities = proto.PromptCapabilities{ .image = can_load },
             // session/new and session/load connect a client's MCP servers
             // (stdio always; http advertised; sse not run).
             .mcpCapabilities = .{ .http = true, .sse = false },

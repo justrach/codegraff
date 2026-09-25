@@ -30,6 +30,12 @@ current is part of cutting a release.
 - `-w` sessions record their real worktree path. They used `$PWD`, which names the host's own folder when an app launches graff, so their saves pointed at a path that did not exist.
 - `graff worktree` exits 1 when it refuses or fails and 2 when it does nothing, instead of always 0. Merging a workspace that does not exist now says so.
 
+### Image input
+
+- Every OpenAI `gpt-*` model is treated as image-capable (gpt-oss and gpt-3.5 excepted), and so is every model on the `openai` and `codex` providers, including o-series and `codex-*` ids. New releases no longer ship text-only by omission.
+- ACP clients can send standard `image` prompt blocks, and `promptCapabilities.image` is now advertised. Images join the next model request when the model accepts them and are skipped for text-only models. An image with no caption is sent with a short note, since some providers reject an empty text part.
+- Graff no longer crashes at startup when its presence socket path would exceed the platform limit (a long `$HOME`); that best-effort listener is skipped instead.
+
 ### Optional formal evidence for local learning
 
 - Bounded lifecycle models cover effort changes, asynchronous tools, permission ownership, and connection leases. Deliberately weakened configurations provide counterexamples for the invariants those models are meant to guard.
