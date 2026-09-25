@@ -392,4 +392,5 @@ test {
     _ = @import("subagent_brief.zig"); // structured delegation brief + harness environment header
     _ = @import("idle_wake_sources.zig"); // shared idle auto-turn sources for REPL / TUI / ACP
     _ = @import("tool_env.zig"); // #1267/#1268: tool children's environment
+    _ = @import("destructive_git.zig"); // #1269: destructive-git tokenizer tables
 }
