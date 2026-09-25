@@ -34,6 +34,7 @@ pub fn runCappedCwd(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap
 pub fn toolRunOptions(cwd: ?[]const u8) CappedRunOptions {
     return .{
         .cwd = if (cwd) |path| .{ .path = path } else .inherit,
+        .environ_map = @import("tool_env.zig").get(), // #1267: no provider keys
         .kill_process_tree = true,
     };
 }
@@ -307,6 +308,7 @@ pub fn spawnJobOpts(gpa: Allocator, io: Io, cmd: []const u8, opts: SpawnOpts) !*
     var child = try std.process.spawn(io, .{
         .argv = &argv,
         .cwd = if (opts.cwd) |path| .{ .path = path } else .inherit,
+        .environ_map = @import("tool_env.zig").get(), // #1267: no provider keys
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,

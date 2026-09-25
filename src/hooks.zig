@@ -129,6 +129,7 @@ pub fn runHookCmd(gpa: Allocator, io: Io, command: []const u8, payload: []const 
     const none: HookRun = .{ .code = null, .stderr = &.{} };
     var child = std.process.spawn(io, .{
         .argv = &.{ "/bin/sh", "-c", command },
+        .environ_map = @import("tool_env.zig").get(), // #1267: no provider keys
         .stdin = .pipe,
         .stdout = .ignore,
         .stderr = .pipe,

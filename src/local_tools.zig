@@ -182,9 +182,15 @@ fn jsonString(arena: Allocator, s: []const u8) ![]const u8 {
     return aw.writer.buffered();
 }
 
+/// Local tools are model-invoked children like `shell`: same scrubbed
+/// environment (#1267).
+fn toolEnvOpts() process_runner.CappedRunOptions {
+    return .{ .environ_map = @import("tool_env.zig").get() };
+}
+
 fn dryRun(io: Io, gpa: Allocator, runner: []const u8, entry_rel: []const u8) bool {
     const argv = [_][]const u8{ runner, entry_rel, "--dry-run" };
-    const run_res = process_runner.runCapped(gpa, io, &argv, 32 * 1024, 4 * 1024, 8_000) catch return false;
+    const run_res = process_runner.runCappedWithOptions(gpa, io, &argv, 32 * 1024, 4 * 1024, 8_000, toolEnvOpts()) catch return false;
     defer gpa.free(run_res.stdout);
     defer gpa.free(run_res.stderr);
     return run_res.term == .exited and run_res.term.exited == 0;
@@ -200,7 +206,7 @@ pub fn exec(gpa: Allocator, io: Io, name: []const u8, input: Value) !tools_mod.T
     aw.writer.flush() catch {};
     const payload = if (aw.writer.buffered().len == 0) "{}" else aw.writer.buffered();
     const argv = [_][]const u8{ inst.runner, inst.entry_path, payload };
-    const run_res = process_runner.runCapped(gpa, io, &argv, 256 * 1024, 16 * 1024, 30_000) catch |err| {
+    const run_res = process_runner.runCappedWithOptions(gpa, io, &argv, 256 * 1024, 16 * 1024, 30_000, toolEnvOpts()) catch |err| {
         return .{ .text = try std.fmt.allocPrint(gpa, "local tool failed: {s}", .{@errorName(err)}), .is_error = true };
     };
     defer gpa.free(run_res.stdout);
