@@ -255,8 +255,9 @@ pub fn stepOpenAI(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
         try self.sayApiError("api error: choice had no message", .{});
         return error.ApiError;
     };
-    // Lost arguments rebuilt from the reply's own tool-call markup (MiMo).
-    _ = try tool_call_repair.repairCalls(self.arena, &message, self.toolsJson());
+    // Lost arguments rebuilt from the reply's own tool-call markup (MiMo only).
+    if (@import("effort_route.zig").mimoRoute(self.provider.id, self.provider.model))
+        _ = try tool_call_repair.repairCalls(self.arena, self.scratchAlloc(), &message, self.toolsJson());
     const msg_obj = tools_mod.json_args.object(message) orelse {
         try self.sayApiError("api error: choice message was not an object", .{});
         return error.ApiError;
@@ -296,11 +297,14 @@ pub fn stepOpenAI(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
             const tool_msg = try toolResultMessage(self.arena, .openai, call.id, r.text, r.is_error);
             try self.messages.append(tool_msg);
         }
-        if (tool_call_repair.brokenCallLoop(self.messages.items)) {
+        // Judged before the checkpoint, which may append queued images.
+        const stuck = tool_call_repair.brokenCallLoop(self.messages.items);
+        try turn_checkpoint.afterToolBatch(self);
+        // runTurn returns this text as-is (isLoopStop): no nudge re-opens it.
+        if (stuck) {
             try self.say("{s}\n", .{tool_call_repair.loop_stop_text});
             return tool_call_repair.loop_stop_text;
         }
-        try turn_checkpoint.afterToolBatch(self);
         if (eval_control.shouldStopAfterBatch(calls.items, self.eval_repair_pending)) {
             if (try grantRepairTurn(self)) return null;
             return eval_control.verifier_hard_stop;

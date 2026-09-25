@@ -395,6 +395,11 @@ pub const Agent = struct {
             const root = self.request(if (self.text_only) null else self.toolsJson()) catch |err| return review_deadline.finish(try @import("agent_model_loop.zig").finishError(self, err));
             const done = try @import("agent_steps.zig").stepForWire(self, root);
             if (done) |final_text| {
+                // The broken-call stop is final: no retry, nudge, or open-work pass.
+                if (@import("tool_call_repair.zig").isLoopStop(final_text)) {
+                    if (self.feedback) |inbox| _ = inbox.close(self.io);
+                    return review_deadline.finish(final_text);
+                }
                 // Retry empty replies; reconcile plain finals with live work (#745).
                 if (try bounced_answer.retry(self, final_text, hist_len)) continue;
                 if (try @import("named_work.zig").handle(self, final_text)) continue;

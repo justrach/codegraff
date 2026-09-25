@@ -9,7 +9,8 @@
 //!
 //! - `repairCalls` rebuilds a broken call's arguments from the matching
 //!   markup (values coerced to the tool schema's types) and removes the
-//!   markup from `content`, so neither the UI nor the next request sees it.
+//!   markup it used from `content`, so the next request's history is clean.
+//!   The live stream already showed it; this does not filter text deltas.
 //! - `writeMimoTools` sends MiMo plain parameter types: its parser breaks on
 //!   nullable unions such as `["integer","null"]`.
 //! - `brokenCallLoop` ends a turn whose last three tool batches all failed on
@@ -22,20 +23,40 @@ const tool_call_args = @import("tool_call_args.zig");
 
 pub const loop_stop_text = "Stopped: the model sent tool calls with unusable arguments three times in a row, so the turn ended instead of retrying. Send a new message to continue, or switch models.";
 
-const Block = struct { name: []const u8, body: []const u8, used: bool = false };
+/// The turn loop ends on this text outright: no retry, nudge, or open-work pass.
+pub fn isLoopStop(text: []const u8) bool {
+    return text.ptr == loop_stop_text.ptr;
+}
 
-/// `<function=NAME>BODY</function>` spans in `text`, in order. A block cut
-/// off before its closing tag runs to the end of the text.
-fn blocks(arena: Allocator, text: []const u8) ![]Block {
+const ws = " \t\r\n";
+
+/// One `<function=NAME>BODY</function>`; `start..end` also covers a
+/// `<tool_call>` wrapper around it.
+const Block = struct { name: []const u8, body: []const u8, start: usize, end: usize, state: enum { free, taken, repaired } = .free };
+
+/// Closed `<function=NAME>BODY</function>` spans in `text`, in order. An
+/// opening tag with no `</function>` before the next one (prose that quotes
+/// the format, or a cut-off reply) is not a block.
+fn blocks(scratch: Allocator, text: []const u8) ![]Block {
     var out: std.ArrayList(Block) = .empty;
     var pos: usize = 0;
     while (std.mem.indexOfPos(u8, text, pos, "<function=")) |start| {
         const name_start = start + "<function=".len;
         const name_end = std.mem.indexOfScalarPos(u8, text, name_start, '>') orelse break;
-        const body_end = std.mem.indexOfPos(u8, text, name_end, "</function>") orelse text.len;
+        const close = std.mem.indexOfPos(u8, text, name_end, "</function>") orelse break;
+        if (std.mem.indexOfPos(u8, text, name_end, "<function=")) |next| if (next < close) {
+            pos = next;
+            continue;
+        };
+        var span_start = start;
+        var span_end = close + "</function>".len;
+        const before = std.mem.trimEnd(u8, text[0..start], ws);
+        if (std.mem.endsWith(u8, before, "<tool_call>")) span_start = before.len - "<tool_call>".len;
+        const after = std.mem.trimStart(u8, text[span_end..], ws);
+        if (std.mem.startsWith(u8, after, "</tool_call>")) span_end = text.len - after.len + "</tool_call>".len;
         const name = std.mem.trim(u8, text[name_start..name_end], " \t\r\n\"'");
-        try out.append(arena, .{ .name = name, .body = text[name_end + 1 .. body_end] });
-        pos = @min(text.len, body_end + "</function>".len);
+        try out.append(scratch, .{ .name = name, .body = text[name_end + 1 .. close], .start = span_start, .end = span_end });
+        pos = close + "</function>".len;
     }
     return out.items;
 }
@@ -58,17 +79,51 @@ fn wants(prop: ?Value, kind: []const u8) bool {
     return false;
 }
 
+/// `t` is a plain JSON number: `-?(0|[1-9][0-9]*)(.[0-9]+)?([eE][+-]?[0-9]+)?`,
+/// integer part only when `!fraction`. parseInt/parseFloat also take `+`,
+/// `_`, `inf`, and `nan`, none of which is JSON.
+fn jsonNumber(t: []const u8, fraction: bool) bool {
+    var i: usize = 0;
+    if (i < t.len and t[i] == '-') i += 1;
+    const digits = struct {
+        fn run(s: []const u8, from: usize) usize {
+            var j = from;
+            while (j < s.len and std.ascii.isDigit(s[j])) j += 1;
+            return j - from;
+        }
+    }.run;
+    const whole = digits(t, i);
+    if (whole == 0 or (whole > 1 and t[i] == '0')) return false;
+    i += whole;
+    if (!fraction) return i == t.len;
+    if (i < t.len and t[i] == '.') {
+        const n = digits(t, i + 1);
+        if (n == 0) return false;
+        i += 1 + n;
+    }
+    if (i < t.len and (t[i] == 'e' or t[i] == 'E')) {
+        i += 1;
+        if (i < t.len and (t[i] == '+' or t[i] == '-')) i += 1;
+        const n = digits(t, i);
+        if (n == 0) return false;
+        i += n;
+    }
+    return i == t.len;
+}
+
 /// A `<parameter>` value as the JSON type its schema declares; text otherwise.
-fn coerce(arena: Allocator, raw: []const u8, prop: ?Value) Value {
-    const t = std.mem.trim(u8, raw, " \t\r\n");
-    if (wants(prop, "integer")) if (std.fmt.parseInt(i64, t, 10)) |n| return .{ .integer = n } else |_| {};
-    if (wants(prop, "number")) if (std.fmt.parseFloat(f64, t)) |n| return .{ .float = n } else |_| {};
+fn coerce(scratch: Allocator, raw: []const u8, prop: ?Value) Value {
+    const t = std.mem.trim(u8, raw, ws);
+    if (wants(prop, "integer") and jsonNumber(t, false)) if (std.fmt.parseInt(i64, t, 10)) |n| return .{ .integer = n } else |_| {};
+    if (wants(prop, "number") and jsonNumber(t, true)) if (std.fmt.parseFloat(f64, t)) |n| {
+        if (std.math.isFinite(n)) return .{ .number_string = t };
+    } else |_| {};
     if (wants(prop, "boolean")) {
         if (std.mem.eql(u8, t, "true")) return .{ .bool = true };
         if (std.mem.eql(u8, t, "false")) return .{ .bool = false };
     }
     if (wants(prop, "array") or wants(prop, "object")) {
-        if (std.json.parseFromSliceLeaky(Value, arena, t, .{ .allocate = .alloc_always })) |v| {
+        if (std.json.parseFromSliceLeaky(Value, scratch, t, .{ .allocate = .alloc_always })) |v| {
             if (v == .array or v == .object) return v;
         } else |_| {}
     }
@@ -97,72 +152,149 @@ fn properties(catalog: ?Value, name: []const u8) ?std.json.ObjectMap {
     return null;
 }
 
-/// JSON-object arguments from one block's `<parameter=K>V</parameter>` pairs.
-fn argumentsFrom(arena: Allocator, body: []const u8, props: ?std.json.ObjectMap) !?[]const u8 {
-    var obj: std.json.ObjectMap = .empty;
-    var pos: usize = 0;
-    while (std.mem.indexOfPos(u8, body, pos, "<parameter=")) |start| {
-        const key_start = start + "<parameter=".len;
-        const key_end = std.mem.indexOfScalarPos(u8, body, key_start, '>') orelse break;
-        const next = std.mem.indexOfPos(u8, body, key_end, "<parameter=") orelse body.len;
-        const close = std.mem.indexOfPos(u8, body, key_end, "</parameter>");
-        const value_end = if (close) |c| @min(c, next) else next;
-        const key = std.mem.trim(u8, body[key_start..key_end], " \t\r\n\"'");
-        const prop = if (props) |p| p.get(key) else null;
-        try obj.put(arena, key, coerce(arena, body[key_end + 1 .. value_end], prop));
-        pos = if (close) |c| (if (c < next) c + "</parameter>".len else next) else next;
+/// Where the parameter after `from` starts: a `<parameter=` right after a
+/// `</parameter>`. One inside a value (a quoted string in a command) is not.
+fn nextParam(body: []const u8, from: usize) usize {
+    var pos = from;
+    while (std.mem.indexOfPos(u8, body, pos, "<parameter=")) |p| {
+        if (std.mem.endsWith(u8, std.mem.trimEnd(u8, body[from..p], ws), "</parameter>")) return p;
+        pos = p + 1;
     }
-    if (obj.count() == 0) return null;
-    return try std.json.Stringify.valueAlloc(arena, Value{ .object = obj }, .{});
+    return body.len;
 }
 
-/// `text` without its tool-call markup (`<tool_call>…</tool_call>` and any
-/// bare `<function=…>…</function>`), trimmed.
-fn stripMarkup(arena: Allocator, text: []const u8) ![]const u8 {
+/// Arguments object from one block's `<parameter=K>V</parameter>` pairs. A
+/// value runs to the last `</parameter>` before the next parameter. Null
+/// (no repair) for anything else in the body, a duplicate key, or a key the
+/// tool's schema does not declare.
+fn argumentsFrom(scratch: Allocator, body: []const u8, props: ?std.json.ObjectMap) !?std.json.ObjectMap {
+    var obj: std.json.ObjectMap = .empty;
+    var rest = std.mem.trimStart(u8, body, ws);
+    while (rest.len > 0) {
+        if (!std.mem.startsWith(u8, rest, "<parameter=")) return null;
+        const key_end = std.mem.indexOfScalar(u8, rest, '>') orelse return null;
+        const key = std.mem.trim(u8, rest["<parameter=".len..key_end], " \t\r\n\"'");
+        const next = nextParam(rest, key_end + 1);
+        const close = std.mem.lastIndexOf(u8, rest[key_end + 1 .. next], "</parameter>") orelse return null;
+        const value_end = key_end + 1 + close;
+        if (std.mem.trim(u8, rest[value_end + "</parameter>".len .. next], ws).len != 0) return null;
+        const prop = if (props) |p| (p.get(key) orelse return null) else null;
+        if (key.len == 0 or obj.contains(key)) return null;
+        try obj.put(scratch, key, coerce(scratch, rest[key_end + 1 .. value_end], prop));
+        rest = rest[next..];
+    }
+    return if (obj.count() == 0) null else obj;
+}
+
+/// A JSON string literal's body: up to its closing quote, or to the end of
+/// a cut-off `s`. Returns the body and whether it closed.
+fn stringBody(s: []const u8) struct { []const u8, bool } {
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) switch (s[i]) {
+        '\\' => i += 1,
+        '"' => return .{ s[0..i], true },
+        else => {},
+    };
+    return .{ s[0..@min(i, s.len)], false };
+}
+
+/// Whether `rebuilt` could be what the provider cut off as `broken`: each
+/// `"key":"string` that `broken` spells out must name a rebuilt key whose
+/// encoded value equals it (or starts with it, where cut off). Stops
+/// checking at the first non-string value or unparseable byte.
+fn consistent(scratch: Allocator, broken: []const u8, rebuilt: std.json.ObjectMap) !bool {
+    var rest = std.mem.trimStart(u8, broken, ws);
+    if (!std.mem.startsWith(u8, rest, "{")) return true;
+    rest = rest[1..];
+    while (true) {
+        rest = std.mem.trimStart(u8, rest, ws);
+        if (!std.mem.startsWith(u8, rest, "\"")) return true;
+        const key, const key_closed = stringBody(rest[1..]);
+        if (!key_closed) return true;
+        rest = std.mem.trimStart(u8, rest[key.len + 2 ..], ws);
+        if (!std.mem.startsWith(u8, rest, ":")) return true;
+        rest = std.mem.trimStart(u8, rest[1..], ws);
+        if (!std.mem.startsWith(u8, rest, "\"")) return true;
+        const val, const val_closed = stringBody(rest[1..]);
+        const want = rebuilt.get(key) orelse return false;
+        const encoded = try std.json.Stringify.valueAlloc(scratch, want, .{});
+        if (encoded.len < 2 or encoded[0] != '"') return false;
+        const inner = encoded[1 .. encoded.len - 1];
+        if (if (val_closed) !std.mem.eql(u8, inner, val) else !std.mem.startsWith(u8, inner, val)) return false;
+        if (!val_closed) return true;
+        rest = std.mem.trimStart(u8, rest[val.len + 2 ..], ws);
+        if (!std.mem.startsWith(u8, rest, ",")) return true;
+        rest = rest[1..];
+    }
+}
+
+/// `text` without the spans of blocks that repaired a call, trimmed.
+fn stripRepaired(arena: Allocator, text: []const u8, found: []const Block) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     var pos: usize = 0;
-    while (pos < text.len) {
-        const wrapped = std.mem.indexOfPos(u8, text, pos, "<tool_call>");
-        const bare = std.mem.indexOfPos(u8, text, pos, "<function=");
-        const start = if (wrapped != null and (bare == null or wrapped.? <= bare.?)) wrapped.? else bare orelse break;
-        const close_tag: []const u8 = if (wrapped != null and start == wrapped.?) "</tool_call>" else "</function>";
-        try out.appendSlice(arena, text[pos..start]);
-        const end = std.mem.indexOfPos(u8, text, start, close_tag) orelse text.len;
-        pos = @min(text.len, end + close_tag.len);
-    }
-    if (pos < text.len) try out.appendSlice(arena, text[pos..]);
-    return std.mem.trim(u8, out.items, " \t\r\n");
+    for (found) |b| if (b.state == .repaired) {
+        try out.appendSlice(arena, text[pos..b.start]);
+        pos = b.end;
+    };
+    try out.appendSlice(arena, text[pos..]);
+    return std.mem.trim(u8, out.items, ws);
 }
 
-/// Repair a chat-completions assistant `message` in place. Returns true when
-/// it changed (a call's arguments rebuilt, or markup removed from content).
-pub fn repairCalls(arena: Allocator, message: *Value, tools_raw: []const u8) !bool {
+const Call = struct { f: *Value, name: []const u8, args: []const u8, broken: bool };
+
+fn countFor(name: []const u8, calls: []const Call, found: []const Block) struct { usize, usize } {
+    var broken: usize = 0;
+    var markup: usize = 0;
+    for (calls) |c| if (c.broken and std.mem.eql(u8, c.name, name)) {
+        broken += 1;
+    };
+    for (found) |b| if (std.mem.eql(u8, b.name, name)) {
+        markup += 1;
+    };
+    return .{ broken, markup };
+}
+
+/// Repair a chat-completions assistant `message` in place; true when a
+/// call's arguments were rebuilt. Only broken calls take markup, in order,
+/// and only when a tool name has exactly as many blocks as broken calls.
+/// `arena` owns `message`; everything transient goes on `scratch`.
+pub fn repairCalls(arena: Allocator, scratch: Allocator, message: *Value, tools_raw: []const u8) !bool {
     if (message.* != .object) return false;
     const content = message.object.get("content") orelse return false;
     if (content != .string or std.mem.indexOf(u8, content.string, "<function=") == null) return false;
-    const calls = message.object.getPtr("tool_calls") orelse return false;
-    if (calls.* != .array or calls.array.items.len == 0) return false;
-    const found = try blocks(arena, content.string);
+    const tool_calls = message.object.getPtr("tool_calls") orelse return false;
+    if (tool_calls.* != .array or tool_calls.array.items.len == 0) return false;
+    const found = try blocks(scratch, content.string);
     if (found.len == 0) return false;
-    const catalog = std.json.parseFromSliceLeaky(Value, arena, tools_raw, .{ .allocate = .alloc_always }) catch null;
-    for (calls.array.items) |*tc| {
+    var calls: std.ArrayList(Call) = .empty;
+    for (tool_calls.array.items) |*tc| {
         if (tc.* != .object) continue;
         const f = tc.object.getPtr("function") orelse continue;
         if (f.* != .object) continue;
         const name = if (f.object.get("name")) |n| (if (n == .string) n.string else continue) else continue;
         const args = if (f.object.get("arguments")) |a| (if (a == .string) a.string else "") else "";
-        const parsed = tool_call_args.parse(arena, args);
+        const parsed = tool_call_args.parse(scratch, args);
         const broken = !parsed.valid or (parsed.input == .object and parsed.input.object.count() == 0);
-        for (found) |*b| {
-            if (b.used or !std.mem.eql(u8, b.name, name)) continue;
-            b.used = true;
-            if (broken) if (try argumentsFrom(arena, b.body, properties(catalog, name))) |fixed| {
-                try f.object.put(arena, "arguments", .{ .string = fixed });
-            };
-            break;
-        }
+        try calls.append(scratch, .{ .f = f, .name = name, .args = args, .broken = broken });
     }
-    try message.object.put(arena, "content", .{ .string = try stripMarkup(arena, content.string) });
+    const catalog = std.json.parseFromSliceLeaky(Value, scratch, tools_raw, .{ .allocate = .alloc_always }) catch null;
+    var repaired = false;
+    for (calls.items) |c| {
+        if (!c.broken) continue;
+        const broken, const markup = countFor(c.name, calls.items, found);
+        if (broken != markup) continue;
+        for (found) |*b| if (b.state == .free and std.mem.eql(u8, b.name, c.name)) {
+            b.state = .taken;
+            const obj = try argumentsFrom(scratch, b.body, properties(catalog, c.name)) orelse break;
+            if (!try consistent(scratch, c.args, obj)) break;
+            try c.f.object.put(arena, "arguments", .{ .string = try std.json.Stringify.valueAlloc(arena, Value{ .object = obj }, .{}) });
+            b.state = .repaired;
+            repaired = true;
+            break;
+        };
+    }
+    if (!repaired) return false;
+    try message.object.put(arena, "content", .{ .string = try stripRepaired(arena, content.string, found) });
     return true;
 }
 
@@ -206,7 +338,8 @@ fn collapseNullable(arena: Allocator, schema: *Value) !void {
     if (obj.getPtr("items")) |items| try collapseNullable(arena, items);
 }
 
-/// Chat-completions tools for MiMo: plain parameter types, no nullable unions.
+/// Chat-completions tools for MiMo: plain parameter types, no nullable
+/// unions, and the root `type: object` writeOpenAITools adds.
 pub fn writeMimoTools(s: *std.json.Stringify, arena: Allocator, raw: []const u8) !void {
     const value = std.json.parseFromSliceLeaky(Value, arena, raw, .{ .allocate = .alloc_always }) catch return s.print("{s}", .{raw});
     if (value != .array) return s.print("{s}", .{raw});
@@ -214,7 +347,10 @@ pub fn writeMimoTools(s: *std.json.Stringify, arena: Allocator, raw: []const u8)
         if (tool.* != .object) continue;
         const f = tool.object.getPtr("function") orelse continue;
         if (f.* != .object) continue;
-        if (f.object.getPtr("parameters")) |p| try collapseNullable(arena, p);
+        if (f.object.getPtr("parameters")) |p| {
+            _ = try @import("serde.zig").defaultRootObjectType(arena, p);
+            try collapseNullable(arena, p);
+        }
     }
     try s.write(value);
 }
@@ -271,7 +407,7 @@ test "repairCalls rebuilds lost arguments from markup, typed by the schema, and 
         \\{"role":"assistant","content":"Let me look.\n<tool_call><function=read_file><parameter=path>src/vision.zig</parameter><parameter=start_line>40</parameter><parameter=end_line>160</parameter></function></tool_call>",
         \\ "tool_calls":[{"id":"c1","type":"function","function":{"name":"read_file","arguments":"{\"path\": \"src/vision.zig\", \", \"start_line\": "}}]}
     , .{ .allocate = .alloc_always });
-    try std.testing.expect(try repairCalls(a, &message, tools));
+    try std.testing.expect(try repairCalls(a, a, &message, tools));
     const args = message.object.get("tool_calls").?.array.items[0].object.get("function").?.object.get("arguments").?.string;
     const parsed = try std.json.parseFromSliceLeaky(Value, a, args, .{});
     try std.testing.expectEqualStrings("src/vision.zig", parsed.object.get("path").?.string);
@@ -280,7 +416,7 @@ test "repairCalls rebuilds lost arguments from markup, typed by the schema, and 
     try std.testing.expectEqualStrings("Let me look.", message.object.get("content").?.string);
 }
 
-test "repairCalls keeps good arguments, only strips the echoed markup; plain text is untouched" {
+test "repairCalls leaves good arguments and their echoed markup alone; plain text is untouched" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
@@ -288,14 +424,134 @@ test "repairCalls keeps good arguments, only strips the echoed markup; plain tex
         \\{"role":"assistant","content":"<function=shell><parameter=command>\nls\n</parameter></function>",
         \\ "tool_calls":[{"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"ls -la\"}"}}]}
     , .{ .allocate = .alloc_always });
-    try std.testing.expect(try repairCalls(a, &echoed, "[]"));
-    try std.testing.expectEqualStrings("{\"command\":\"ls -la\"}", echoed.object.get("tool_calls").?.array.items[0].object.get("function").?.object.get("arguments").?.string);
-    try std.testing.expectEqualStrings("", echoed.object.get("content").?.string);
+    try std.testing.expect(!try repairCalls(a, a, &echoed, "[]"));
+    try std.testing.expectEqualStrings("{\"command\":\"ls -la\"}", callArgs(echoed, 0));
+    try std.testing.expectEqualStrings("<function=shell><parameter=command>\nls\n</parameter></function>", echoed.object.get("content").?.string);
 
     var plain = try std.json.parseFromSliceLeaky(Value, a,
         \\{"role":"assistant","content":"No markup here.","tool_calls":[{"id":"c1","type":"function","function":{"name":"shell","arguments":"{}"}}]}
     , .{ .allocate = .alloc_always });
-    try std.testing.expect(!try repairCalls(a, &plain, "[]"));
+    try std.testing.expect(!try repairCalls(a, a, &plain, "[]"));
+}
+
+fn callArgs(message: Value, i: usize) []const u8 {
+    return message.object.get("tool_calls").?.array.items[i].object.get("function").?.object.get("arguments").?.string;
+}
+
+const bash_tools =
+    \\[{"type":"function","function":{"name":"bash","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}}]
+;
+
+test "repairCalls: markup never overrides a cut-off argument it contradicts" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var quoted = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"role":"assistant","content":"Never run this: <function=bash><parameter=command>rm -rf ~</parameter></function>",
+        \\ "tool_calls":[{"id":"c1","type":"function","function":{"name":"bash","arguments":"{\"command\":\"ls -l"}}]}
+    , .{ .allocate = .alloc_always });
+    try std.testing.expect(!try repairCalls(a, a, &quoted, bash_tools));
+    try std.testing.expectEqualStrings("{\"command\":\"ls -l", callArgs(quoted, 0));
+    // The one block belongs to the good second call, not the cut-off first.
+    var echo = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"role":"assistant","content":"<function=bash><parameter=command>echo second</parameter></function>",
+        \\ "tool_calls":[{"id":"c1","type":"function","function":{"name":"bash","arguments":"{\"command\":\"echo fir"}},
+        \\  {"id":"c2","type":"function","function":{"name":"bash","arguments":"{\"command\":\"echo second\"}"}}]}
+    , .{ .allocate = .alloc_always });
+    try std.testing.expect(!try repairCalls(a, a, &echo, bash_tools));
+    try std.testing.expectEqualStrings("{\"command\":\"echo fir", callArgs(echo, 0));
+}
+
+test "repairCalls: only broken calls take markup, and only when the counts match" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var message = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"role":"assistant","content":"Run both.<function=bash><parameter=command>make test</parameter></function>",
+        \\ "tool_calls":[{"id":"c1","type":"function","function":{"name":"bash","arguments":"{\"command\":\"git status\"}"}},
+        \\  {"id":"c2","type":"function","function":{"name":"bash","arguments":"{}"}}]}
+    , .{ .allocate = .alloc_always });
+    try std.testing.expect(try repairCalls(a, a, &message, bash_tools));
+    try std.testing.expectEqualStrings("{\"command\":\"git status\"}", callArgs(message, 0));
+    try std.testing.expectEqualStrings("{\"command\":\"make test\"}", callArgs(message, 1));
+    try std.testing.expectEqualStrings("Run both.", message.object.get("content").?.string);
+
+    var two = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"role":"assistant","content":"<function=bash><parameter=command>make test</parameter></function>",
+        \\ "tool_calls":[{"id":"c1","type":"function","function":{"name":"bash","arguments":"{}"}},
+        \\  {"id":"c2","type":"function","function":{"name":"bash","arguments":""}}]}
+    , .{ .allocate = .alloc_always });
+    try std.testing.expect(!try repairCalls(a, a, &two, bash_tools));
+    try std.testing.expectEqualStrings("{}", callArgs(two, 0));
+}
+
+test "repairCalls: text around the markup survives, and unclosed tags are prose" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var prose = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"role":"assistant","content":"The markup looks like `<function=NAME>` then params. Next I will read the file.",
+        \\ "tool_calls":[{"id":"c1","type":"function","function":{"name":"bash","arguments":"{}"}}]}
+    , .{ .allocate = .alloc_always });
+    try std.testing.expect(!try repairCalls(a, a, &prose, bash_tools));
+    try std.testing.expectEqualStrings("The markup looks like `<function=NAME>` then params. Next I will read the file.", prose.object.get("content").?.string);
+
+    var mixed = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"role":"assistant","content":"Format: `<function=NAME>` then params.\n<tool_call>\n<function=bash><parameter=command>ls</parameter></function>\n</tool_call>\nDone.",
+        \\ "tool_calls":[{"id":"c1","type":"function","function":{"name":"bash","arguments":"{}"}}]}
+    , .{ .allocate = .alloc_always });
+    try std.testing.expect(try repairCalls(a, a, &mixed, bash_tools));
+    try std.testing.expectEqualStrings("{\"command\":\"ls\"}", callArgs(mixed, 0));
+    try std.testing.expectEqualStrings("Format: `<function=NAME>` then params.\n\nDone.", mixed.object.get("content").?.string);
+}
+
+test "repairCalls: parameter tags inside a value stay in it; unknown or repeated keys refuse" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var printf = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"role":"assistant","content":"<function=bash><parameter=command>printf '<parameter=x>y</parameter>' > f</parameter></function>",
+        \\ "tool_calls":[{"id":"c1","type":"function","function":{"name":"bash","arguments":"{}"}}]}
+    , .{ .allocate = .alloc_always });
+    try std.testing.expect(try repairCalls(a, a, &printf, bash_tools));
+    const parsed = try std.json.parseFromSliceLeaky(Value, a, callArgs(printf, 0), .{});
+    try std.testing.expectEqual(@as(usize, 1), parsed.object.count());
+    try std.testing.expectEqualStrings("printf '<parameter=x>y</parameter>' > f", parsed.object.get("command").?.string);
+
+    for ([_][]const u8{
+        "<parameter=command>ls</parameter><parameter=x>y</parameter>",
+        "<parameter=command>ls</parameter>\n<parameter=command>pwd</parameter>",
+    }) |body| {
+        const content = try std.fmt.allocPrint(a, "<function=bash>{s}</function>", .{body});
+        var msg: std.json.ObjectMap = .empty;
+        try msg.put(a, "content", .{ .string = content });
+        var fn_obj: std.json.ObjectMap = .empty;
+        try fn_obj.put(a, "name", .{ .string = "bash" });
+        try fn_obj.put(a, "arguments", .{ .string = "{}" });
+        var call: std.json.ObjectMap = .empty;
+        try call.put(a, "function", .{ .object = fn_obj });
+        var calls = std.json.Array.init(a);
+        try calls.append(.{ .object = call });
+        try msg.put(a, "tool_calls", .{ .array = calls });
+        var message: Value = .{ .object = msg };
+        try std.testing.expect(!try repairCalls(a, a, &message, bash_tools));
+    }
+}
+
+test "repairCalls: coerce emits only finite plain JSON numbers" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const num = try std.json.parseFromSliceLeaky(Value, a, "{\"type\":\"number\"}", .{});
+    const int = try std.json.parseFromSliceLeaky(Value, a, "{\"type\":\"integer\"}", .{});
+    for ([_][]const u8{ "inf", "-inf", "Infinity", "1e999", "nan", "1_000", "+5", "01", "1.", ".5" }) |raw| {
+        try std.testing.expect(coerce(a, raw, num) == .string);
+        try std.testing.expect(coerce(a, raw, int) == .string);
+    }
+    try std.testing.expectEqualStrings("-1.5e3", coerce(a, "-1.5e3", num).number_string);
+    try std.testing.expectEqualStrings("0.25", coerce(a, " 0.25\n", num).number_string);
+    try std.testing.expectEqual(@as(i64, -42), coerce(a, "-42", int).integer);
+    try std.testing.expect(coerce(a, "99999999999999999999", int) == .string);
 }
 
 test "repairCalls: multiline string values lose only the wrapping newlines" {
@@ -306,7 +562,7 @@ test "repairCalls: multiline string values lose only the wrapping newlines" {
         \\{"role":"assistant","content":"<tool_call>\n<function=write_file>\n<parameter=path>\na.txt\n</parameter>\n<parameter=content>\n  one\n  two\n</parameter>\n</function>\n</tool_call>",
         \\ "tool_calls":[{"id":"c1","type":"function","function":{"name":"write_file","arguments":""}}]}
     , .{ .allocate = .alloc_always });
-    try std.testing.expect(try repairCalls(a, &message, "[]"));
+    try std.testing.expect(try repairCalls(a, a, &message, "[]"));
     const args = message.object.get("tool_calls").?.array.items[0].object.get("function").?.object.get("arguments").?.string;
     const parsed = try std.json.parseFromSliceLeaky(Value, a, args, .{});
     try std.testing.expectEqualStrings("a.txt", parsed.object.get("path").?.string);
@@ -331,6 +587,23 @@ test "writeMimoTools collapses nullable unions to the plain type" {
     try std.testing.expectEqualStrings("string", props.get("tags").?.object.get("items").?.object.get("type").?.string);
 }
 
+test "writeMimoTools gives a typeless root schema type object, like writeOpenAITools" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var aw: std.Io.Writer.Allocating = .init(a);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    try writeMimoTools(&s, a,
+        \\[{"type":"function","function":{"name":"a","parameters":{"properties":{"n":{"type":["integer","null"]}}}}},
+        \\ {"type":"function","function":{"name":"b","parameters":{"anyOf":[{"type":"object"}]}}}]
+    );
+    const out = try std.json.parseFromSliceLeaky(Value, a, aw.written(), .{});
+    const first = out.array.items[0].object.get("function").?.object.get("parameters").?.object;
+    try std.testing.expectEqualStrings("object", first.get("type").?.string);
+    try std.testing.expectEqualStrings("integer", first.get("properties").?.object.get("n").?.object.get("type").?.string);
+    try std.testing.expect(out.array.items[1].object.get("function").?.object.get("parameters").?.object.get("type") == null);
+}
+
 test "brokenCallLoop: three all-unusable batches in a row, not two or a mixed one" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -347,4 +620,17 @@ test "brokenCallLoop: three all-unusable batches in a row, not two or a mixed on
     try std.testing.expect(!brokenCallLoop(two.array.items));
     const mixed = try std.json.parseFromSliceLeaky(Value, a, "[" ++ call ++ "," ++ bad ++ "," ++ call ++ "," ++ good ++ "," ++ bad ++ "," ++ call ++ "," ++ bad ++ "]", .{});
     try std.testing.expect(!brokenCallLoop(mixed.array.items));
+}
+
+test "brokenCallLoop stop runs the batch checkpoint, then ends the turn past every nudge" {
+    const steps = @embedFile("agent_steps.zig");
+    const step = steps[std.mem.indexOf(u8, steps, "pub fn stepOpenAI").?..];
+    try std.testing.expect(std.mem.indexOf(u8, step, "turn_checkpoint.afterToolBatch(self)").? < std.mem.indexOf(u8, step, "return tool_call_repair.loop_stop_text").?);
+    const agent = @embedFile("agent.zig");
+    const loop = agent[std.mem.indexOf(u8, agent, "pub fn runTurn").?..];
+    try std.testing.expect(std.mem.indexOf(u8, loop, "isLoopStop(").? < std.mem.indexOf(u8, loop, "bounced_answer.retry(").?);
+    try std.testing.expect(isLoopStop(loop_stop_text));
+    const copy = try std.testing.allocator.dupe(u8, loop_stop_text);
+    defer std.testing.allocator.free(copy);
+    try std.testing.expect(!isLoopStop(copy));
 }
