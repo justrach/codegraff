@@ -10,9 +10,9 @@ fn repositoryPath(arena: A, dir: []const u8, name: []const u8) ![]const u8 {
     return std.mem.trimStart(u8, path, "/");
 }
 
-pub const File = struct { path: []const u8, before: ?[]const u8, after: ?[]const u8, change: ?[]const u8 = null };
+pub const File = struct { path: []const u8, before: ?[]const u8, after: ?[]const u8, change: ?[]const u8 = null, after_omitted: bool = false };
 pub const Input = struct {
-    version: u8 = 2,
+    version: u8 = 3,
     base: []const u8,
     head: []const u8,
     body: []const u8,
@@ -21,7 +21,7 @@ pub const Input = struct {
     support_limit: ?[]const u8 = null,
     // Changed files plus unchanged callers/configuration that establish
     // how those files are reached by the repository's test runners.
-    scope: []const u8 = "changed committed files plus unchanged callers/configuration that establish test reachability",
+    scope: []const u8 = "changed committed files (full head or marked context diff) plus unchanged callers/configuration that establish test reachability",
 };
 pub fn digest(arena: A, input: Input) ![64]u8 {
     const bytes = try std.json.Stringify.valueAlloc(arena, input, .{});
@@ -146,19 +146,47 @@ pub fn gather(gpa: A, io: std.Io, arena: A, cwd: []const u8, base: []const u8, h
     if (!evidence.validSha(base) or !evidence.validSha(head)) return error.InvalidCommit;
     if (body.len > max_bytes) return error.ReviewTooLarge;
     const names = try raw(gpa, io, arena, cwd, &.{ "git", "diff", "--no-ext-diff", "--no-renames", "--name-only", "-z", base, head, "--" });
+    var has_source_change = false;
+    var scan = std.mem.splitScalar(u8, names, 0);
+    while (scan.next()) |path| {
+        if (path.len > 0 and !std.mem.endsWith(u8, path, ".md")) {
+            has_source_change = true;
+            break;
+        }
+    }
     var paths = std.mem.splitScalar(u8, names, 0);
     var files: std.ArrayList(File) = .empty;
     var size = body.len;
     while (paths.next()) |path| {
         if (path.len == 0) continue;
         if (files.items.len >= max_files) return error.ReviewTooLarge;
-        const after = try blob(gpa, io, arena, cwd, head, path);
+        var after_omitted = false;
+        const after = blob(gpa, io, arena, cwd, head, path) catch |err| blk: {
+            if (err != error.ReviewTooLarge) return err;
+            after_omitted = true;
+            break :blk null;
+        };
+        // In mixed changes, reserve room for source and test reachability
+        // instead of repeating complete documentation pages.
+        if (after != null and has_source_change and std.mem.endsWith(u8, path, ".md")) after_omitted = true;
         // A context diff carries the old lines; repeating the complete base
         // blob would charge unchanged source twice and crowd out test evidence.
-        const change = try raw(gpa, io, arena, cwd, &.{ "git", "diff", "--no-ext-diff", "--no-renames", "--unified=3", base, head, "--", path });
-        size += change.len + (if (after) |text| text.len else 0);
-        if (size > max_bytes) return error.ReviewTooLarge;
-        try files.append(arena, .{ .path = path, .before = null, .after = after, .change = change });
+        var change = try raw(gpa, io, arena, cwd, &.{ "git", "diff", "--no-ext-diff", "--no-renames", "--unified=3", base, head, "--", path });
+        if (size + change.len > max_bytes) return error.ReviewTooLarge;
+        if (after) |text| {
+            if (size + change.len + text.len > max_bytes) after_omitted = true;
+        }
+        if (after_omitted) {
+            // Preserve more committed context when it fits. Never label this
+            // excerpt as the complete proposed-head source.
+            if (raw(gpa, io, arena, cwd, &.{ "git", "diff", "--no-ext-diff", "--no-renames", "--unified=20", base, head, "--", path })) |expanded| {
+                if (size + expanded.len <= max_bytes) change = expanded;
+            } else |err| {
+                if (err != error.ReviewTooLarge) return err;
+            }
+        }
+        size += change.len + if (after_omitted) @as(usize, 0) else if (after) |text| text.len else 0;
+        try files.append(arena, .{ .path = path, .before = null, .after = if (after_omitted) null else after, .change = change, .after_omitted = after_omitted });
     }
     if (files.items.len == 0) return error.NoChangedFiles;
     var support: Support = .{ .gpa = gpa, .io = io, .arena = arena, .cwd = cwd, .head = head, .files = &files, .size = &size, .seen = std.StringHashMap(void).init(arena) };
@@ -181,6 +209,10 @@ pub fn gather(gpa: A, io: std.Io, arena: A, cwd: []const u8, base: []const u8, h
     try support.package("");
     for ([_][]const u8{ "bunfig.toml", "vitest.config.ts", "vitest.config.js", "jest.config.js", "jest.config.ts", "playwright.config.ts", "pyproject.toml" }) |config|
         _ = try support.add(config);
+    // Direct test roots matter more than broad workflow inventory when the
+    // remaining support budget is tight.
+    const coverage = [_][]const u8{ "build.zig", "src/main.zig", "package.json", "scripts/eval/tier1-manifest.json" };
+    for (coverage) |path| _ = try support.add(path);
     const workflows = try raw(gpa, io, arena, cwd, &.{ "git", "ls-tree", "-r", "--name-only", "-z", head, "--", ".github/workflows" });
     var workflow_paths = std.mem.splitScalar(u8, workflows, 0);
     while (workflow_paths.next()) |path| {
@@ -189,8 +221,6 @@ pub fn gather(gpa: A, io: std.Io, arena: A, cwd: []const u8, base: []const u8, h
         try support.runners("", text);
         for (support.packages.items) |dir| try support.runners(dir, text);
     }
-    const coverage = [_][]const u8{ "build.zig", "src/main.zig", "package.json", "scripts/eval/tier1-manifest.json" };
-    for (coverage) |path| _ = try support.add(path);
     return .{ .base = base, .head = head, .body = body, .files = files.items, .support_omitted = support.omitted, .support_limit = support.limit };
 }
 
@@ -262,6 +292,119 @@ test "claim review budgets changed hunks instead of the complete base blob" {
     try std.testing.expectError(error.ReviewTooLarge, gather(gpa, io, a, cwd, head, large_head, "claim"));
 }
 
+test "claim review uses committed context when changed head source exceeds the budget" {
+    const io = std.testing.io;
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    var scratch = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer scratch.deinit();
+    const a = scratch.allocator();
+    const gpa = std.testing.allocator;
+    var path: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = path[0..try temp.dir.realPath(io, &path)];
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "init", "-q" });
+    const source = try a.alloc(u8, 75 * 1024);
+    @memset(source, 'a');
+    for (source, 0..) |*byte, i| if (i % 80 == 79) {
+        byte.* = '\n';
+    };
+    source[0] = 'x';
+    source[source.len - 1] = '\n';
+    try temp.dir.writeFile(io, .{ .sub_path = "alpha.txt", .data = source });
+    try temp.dir.writeFile(io, .{ .sub_path = "beta.txt", .data = source });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "add", "." });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "base" });
+    const base = try capture(gpa, io, a, cwd, &.{ "git", "rev-parse", "HEAD" });
+    source[0] = 'y';
+    try temp.dir.writeFile(io, .{ .sub_path = "alpha.txt", .data = source });
+    try temp.dir.writeFile(io, .{ .sub_path = "beta.txt", .data = source });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "add", "." });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "head" });
+    const head = try capture(gpa, io, a, cwd, &.{ "git", "rev-parse", "HEAD" });
+    source[0] = 'u';
+    try temp.dir.writeFile(io, .{ .sub_path = "beta.txt", .data = source });
+    const input = try gather(gpa, io, a, cwd, base, head, "claim");
+    try std.testing.expectEqual(@as(usize, 2), input.files.len);
+    try std.testing.expectEqual(@as(u8, 'y'), input.files[0].after.?[0]);
+    try std.testing.expect(!input.files[0].after_omitted);
+    try std.testing.expect(input.files[1].after == null);
+    try std.testing.expect(input.files[1].after_omitted);
+    try std.testing.expect(std.mem.indexOf(u8, input.files[1].change.?, "+yaaa") != null);
+    try std.testing.expect(std.mem.indexOf(u8, input.files[1].change.?, "+uaaa") == null);
+
+    const large = try a.alloc(u8, max_bytes + 1024);
+    @memset(large, 'a');
+    for (large, 0..) |*byte, i| if (i % 80 == 79) {
+        byte.* = '\n';
+    };
+    large[0] = 'x';
+    large[large.len - 1] = '\n';
+    try temp.dir.writeFile(io, .{ .sub_path = "large.txt", .data = large });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "add", "." });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "large-base" });
+    const large_base = try capture(gpa, io, a, cwd, &.{ "git", "rev-parse", "HEAD" });
+    large[0] = 'y';
+    try temp.dir.writeFile(io, .{ .sub_path = "large.txt", .data = large });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "add", "." });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "large-head" });
+    const large_head = try capture(gpa, io, a, cwd, &.{ "git", "rev-parse", "HEAD" });
+    const single = try gather(gpa, io, a, cwd, large_base, large_head, "claim");
+    try std.testing.expectEqual(@as(usize, 1), single.files.len);
+    try std.testing.expect(single.files[0].after == null and single.files[0].after_omitted);
+    try std.testing.expect(std.mem.indexOf(u8, single.files[0].change.?, "+yaaa") != null);
+}
+
+test "mixed documentation changes leave room for committed test roots" {
+    const io = std.testing.io;
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    var scratch = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer scratch.deinit();
+    const a = scratch.allocator();
+    const gpa = std.testing.allocator;
+    var path: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = path[0..try temp.dir.realPath(io, &path)];
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "init", "-q" });
+    try temp.dir.createDirPath(io, "src");
+    const docs = try a.alloc(u8, 60 * 1024);
+    const source = try a.alloc(u8, 50 * 1024);
+    @memset(docs, 'a');
+    @memset(source, 'a');
+    for (docs, 0..) |*byte, i| if (i % 80 == 79) {
+        byte.* = '\n';
+    };
+    for (source, 0..) |*byte, i| if (i % 80 == 79) {
+        byte.* = '\n';
+    };
+    docs[0] = 'x';
+    source[0] = 'x';
+    docs[docs.len - 1] = '\n';
+    source[source.len - 1] = '\n';
+    try temp.dir.writeFile(io, .{ .sub_path = "README.md", .data = docs });
+    try temp.dir.writeFile(io, .{ .sub_path = "dispatch.zig", .data = source });
+    try temp.dir.writeFile(io, .{ .sub_path = "src/main.zig", .data = source });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "add", "." });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "base" });
+    const base = try capture(gpa, io, a, cwd, &.{ "git", "rev-parse", "HEAD" });
+    docs[0] = 'y';
+    source[0] = 'y';
+    try temp.dir.writeFile(io, .{ .sub_path = "README.md", .data = docs });
+    try temp.dir.writeFile(io, .{ .sub_path = "dispatch.zig", .data = source });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "add", "." });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "head" });
+    const head = try capture(gpa, io, a, cwd, &.{ "git", "rev-parse", "HEAD" });
+    const input = try gather(gpa, io, a, cwd, base, head, "claim");
+    try std.testing.expectEqual(@as(usize, 3), input.files.len);
+    try std.testing.expectEqualStrings("README.md", input.files[0].path);
+    try std.testing.expect(input.files[0].after == null and input.files[0].after_omitted);
+    try std.testing.expect(std.mem.indexOf(u8, input.files[0].change.?, "+yaaa") != null);
+    try std.testing.expectEqual(@as(u8, 'y'), input.files[1].after.?[0]);
+    try std.testing.expect(!input.files[1].after_omitted);
+    try std.testing.expectEqualStrings("src/main.zig", input.files[2].path);
+    try std.testing.expectEqual(@as(u8, 'x'), input.files[2].after.?[0]);
+    try std.testing.expect(!input.support_omitted);
+}
+
 test "claim review includes unchanged callers that establish test reachability" {
     const io = std.testing.io;
     var temp = std.testing.tmpDir(.{});
@@ -303,6 +446,9 @@ test "claim review digest invalidates changed body head and committed source" {
     try std.testing.expect(!std.mem.eql(u8, &original, &try digest(a, input)));
     input.head = "head";
     files[0].after = "different committed source";
+    try std.testing.expect(!std.mem.eql(u8, &original, &try digest(a, input)));
+    files[0].after = "source";
+    files[0].after_omitted = true;
     try std.testing.expect(!std.mem.eql(u8, &original, &try digest(a, input)));
 }
 
