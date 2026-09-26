@@ -147,17 +147,13 @@ pub fn open(arena: Allocator, vault_key: VaultKey, r: ItemRef, nonce: []const u8
     return out;
 }
 
-/// The string a mutating request signs. An empty body contributes an empty
-/// hash field.
+/// The string a mutating request signs. The body hash is always sha256 hex,
+/// including for an empty body.
 pub fn signingString(arena: Allocator, method: []const u8, path: []const u8, body: []const u8, ts_ms: i64, device_id: []const u8) ![]const u8 {
-    var hex: [2 * Sha256.digest_length]u8 = undefined;
-    const hash: []const u8 = if (body.len == 0) "" else blk: {
-        var d: [Sha256.digest_length]u8 = undefined;
-        Sha256.hash(body, &d, .{});
-        hex = std.fmt.bytesToHex(d, .lower);
-        break :blk &hex;
-    };
-    return std.fmt.allocPrint(arena, "{s}|{s}|{s}|{d}|{s}", .{ method, path, hash, ts_ms, device_id });
+    var d: [Sha256.digest_length]u8 = undefined;
+    Sha256.hash(body, &d, .{});
+    const hex = std.fmt.bytesToHex(d, .lower);
+    return std.fmt.allocPrint(arena, "{s}|{s}|{s}|{d}|{s}", .{ method, path, &hex, ts_ms, device_id });
 }
 
 /// base64url Ed25519 signature for X-Vault-Signature.
@@ -246,7 +242,7 @@ test "device secret survives encode/decode and request signatures verify" {
     const sig = Ed25519.Signature.fromBytes((try decode(arena, sig_b64))[0..64].*);
     try sig.verify(try signingString(arena, "PUT", "/vault/items/graff/codex", "{}", 1700000000000, "dev-a"), k.sign.public_key);
     try std.testing.expectError(error.SignatureVerificationFailed, sig.verify(try signingString(arena, "PUT", "/vault/items/graff/kimi", "{}", 1700000000000, "dev-a"), k.sign.public_key));
-    try std.testing.expectEqualStrings("GET|/vault||5|d", try signingString(arena, "GET", "/vault", "", 5, "d"));
+    try std.testing.expectEqualStrings("DELETE|/vault/devices/x|e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855|5|d", try signingString(arena, "DELETE", "/vault/devices/x", "", 5, "d"));
 }
 
 test "userIdFromBearer reads the JWT sub and the dev forms" {

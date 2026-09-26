@@ -11,6 +11,8 @@ test {
     _ = @import("agent_responses.zig");
     _ = @import("session_branch.zig");
     _ = @import("vault_crypto.zig");
+    _ = @import("vault_client.zig");
+    _ = @import("vault_sync.zig");
     _ = @import("peer_cli.zig");
 }
 
