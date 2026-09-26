@@ -256,6 +256,7 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
     const req = parseRequest(arena, line) orelse return;
     if (std.mem.eql(u8, req.method, "initialize")) {
         v2.negotiate(req.params, d.seed);
+        @import("acp_elicit.zig").configure(req.params);
         // The draft child-session RFD is a v1 shape; v2 gets tool-call progress.
         d.subagents = !v2.on() and supportsSubagents(req.params);
         d.background_subagents = supportsBackgroundSubagents(req.params);

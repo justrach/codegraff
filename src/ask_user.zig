@@ -22,6 +22,7 @@ const protocol_seq = @import("protocol_seq.zig");
 const vision = @import("vision.zig");
 const vision_queue = @import("vision_queue.zig");
 const acp_ask = @import("acp_ask.zig");
+const acp_elicit = @import("acp_elicit.zig");
 const style = &@import("ansi.zig").style;
 
 /// Block the root agent for an ask_user reply; subagents have no stdin.
@@ -33,10 +34,16 @@ pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
             self.next_ask_id += 1;
             break :blk id;
         };
+        // ACP owns stdin (`root.in` is null). A client that cannot show the
+        // question must not leave the turn waiting on it (acp_elicit.zig).
+        if (self.in == null and acp_elicit.mode == .none)
+            return .{ .text = acp_elicit.unsupported_text, .is_error = true };
         try emitAskUser(self, call_id, question, call.input);
-        // ACP owns stdin (`root.in` is null); answers arrive on session/answer.
+        // Answers arrive as the elicitation response or session/answer.
         if (self.in == null) {
+            if (self.tracer) |tr| tr.note("ask_user_wait", @tagName(acp_elicit.mode));
             const got = try acp_ask.wait(self.arena);
+            acp_elicit.finish();
             if (got.cancelled) return .{ .text = "user cancelled the follow-up", .is_error = true };
             return finishAnswer(self, std.mem.trim(u8, got.text, " \t\r"));
         }

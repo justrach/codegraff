@@ -137,6 +137,9 @@ pub fn build(b: *std.Build) void {
     const acp_startup_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-startup.py" });
     acp_startup_test.addArtifactArg(exe);
     test_step.dependOn(&acp_startup_test.step);
+    const acp_ask_user_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-ask-user.py" });
+    acp_ask_user_test.addArtifactArg(exe);
+    test_step.dependOn(&acp_ask_user_test.step);
     const acp_v2_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-v2.py" });
     acp_v2_test.addArtifactArg(exe);
     test_step.dependOn(&acp_v2_test.step);

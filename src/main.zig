@@ -579,7 +579,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = .{ @import("http2_pool.zig"), @import("agent_stream_h2.zig"), @import("agent_stream_h2_transport_test.zig") }; // h2 stream path, and graff's request/response contract over the pinned http-zig
     _ = @import("tui_acp_updates.zig");
     _ = @import("acp_preauth.zig"); // credential-free ACP loop must stay in the test root
-    _ = .{ @import("acp_protocol.zig"), @import("acp_v2.zig"), @import("acp_v2_prompt.zig"), @import("acp_engine_test.zig"), @import("subagent_mimo_tests.zig"), @import("mimo_effort_tests.zig"), @import("gateway_picker_catalog.zig") };
+    _ = .{ @import("acp_protocol.zig"), @import("acp_v2.zig"), @import("acp_v2_prompt.zig"), @import("acp_elicit.zig"), @import("acp_engine_test.zig"), @import("subagent_mimo_tests.zig"), @import("mimo_effort_tests.zig"), @import("gateway_picker_catalog.zig") };
     _ = @import("task_outcome.zig"); // goal-outcome telemetry events
     _ = @import("learn_delete.zig"); // #303: its tests were dead until listed here
     _ = .{ @import("additional_tests.zig"), @import("req_stats.zig"), @import("exact_reply.zig"), @import("rlm_order_tests.zig"), @import("async_tool_policy.zig"), @import("agent_async_tools.zig"), @import("request_usage_attempts.zig"), @import("learn_formal.zig") };

@@ -9,6 +9,7 @@ const Value = std.json.Value;
 const util = @import("util.zig");
 const proto = @import("acp_protocol.zig");
 const v2 = @import("acp_v2.zig");
+const acp_elicit = @import("acp_elicit.zig");
 
 pub fn kindFor(name: []const u8) []const u8 {
     if (std.mem.eql(u8, name, "read_file") or std.mem.eql(u8, name, "codedb") or std.mem.eql(u8, name, "skill"))
@@ -198,6 +199,10 @@ pub fn translateEvent(
         return .tool;
     }
     if (std.mem.eql(u8, typ, "ask_user")) {
+        if (acp_elicit.mode == .elicitation) {
+            try acp_elicit.writeRequest(w, session_id, util.strFieldObj(ev.object, "question") orelse "", ev.object.get("input") orelse .null);
+            return .notice;
+        }
         try proto.writeNotification(w, "session/update", .{
             .sessionId = session_id,
             .update = .{

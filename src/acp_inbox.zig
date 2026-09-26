@@ -107,9 +107,10 @@ pub const Inbox = struct {
     fn accept(self: *Inbox, line: []const u8) !void {
         var arena = std.heap.ArenaAllocator.init(self.gpa);
         defer arena.deinit();
-        if (self.permission) |bridge| {
+        {
             const value = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), line, .{}) catch .null;
-            if (bridge.accept(value)) return;
+            if (@import("acp_elicit.zig").accept(value)) return;
+            if (self.permission) |bridge| if (bridge.accept(value)) return;
         }
         const req = proto.parseRequest(arena.allocator(), line);
         self.mutex.lockUncancelable(self.io);
