@@ -25,30 +25,33 @@
   <a href="#development">Development</a>
 </p>
 
+<p align="center">
+  <img src="docs/images/harness-chat-dark.png" width="960" alt="Harness desktop with graff selected, in the Codegraff Dark theme">
+  <br><sub><a href="https://github.com/justrach/harness">Harness</a>, the graff desktop app, in the built-in Codegraff Dark theme. Synthetic example conversation.</sub>
+</p>
+
 ## Quick start
 
-### Desktop for Mac
+### Desktop
 
-Apple Silicon · macOS 14+
+The desktop app for graff is [Harness](https://github.com/justrach/harness),
+a native app built with Rust and GPUI.
 
-1. [Download CodeGraff](https://github.com/justrach/codegraff/releases/latest/download/Codegraff-macos-arm64.dmg).
-2. Quit any running copies, open the disk image, and drag **Codegraff.app** to **Applications**.
-3. Eject the disk image and open **Codegraff** from Applications.
+**macOS** (Apple Silicon, macOS 12+)
 
-The signed and notarized app includes its runtime; no developer tools or local
-server are needed. [Verify the download checksum](https://github.com/justrach/codegraff/releases/latest/download/Codegraff-DMG-SHA256SUMS).
-For a `graff` command in your terminal, install the CLI below.
+1. [Download Harness](https://github.com/justrach/harness/releases/latest/download/Harness-macos-arm64.dmg).
+2. Open the disk image and drag **Harness.app** to **Applications**.
+3. Open **Harness** from Applications.
 
-### Desktop for Linux
+The app is signed and notarized. It bundles graff and puts the `graff` command
+on your terminal `PATH` the first time it opens.
 
-x86_64
+**Windows** (x86_64): [download the portable build](https://github.com/justrach/harness/releases/latest/download/Harness-windows-x86_64.zip),
+unpack it, and run `harness.exe`. Keep `harness-update.json` next to it for
+in-app updates. Install the graff CLI as described below.
 
-1. [Download the package](https://github.com/justrach/codegraff/releases/latest/download/Codegraff-linux-amd64.deb).
-2. Install it with `sudo apt install ./Codegraff-linux-amd64.deb`.
-3. Open **Codegraff** from the app menu, or run `codegraff`.
-
-[Verify the download checksum](https://github.com/justrach/codegraff/releases/latest/download/Codegraff-linux-amd64-SHA256SUMS).
-The package is unsigned. It includes its runtime.
+**Linux:** build Harness from source. See the
+[Harness README](https://github.com/justrach/harness#get-started).
 
 ### Terminal
 
@@ -103,84 +106,33 @@ use browser tools, and delegate work to sub-agents.
 
 ## The desktop app
 
-Chat, coordinate agents, review changes, and browse in one workspace.
-The desktop and terminal use the same Graff harness.
+[Harness](https://github.com/justrach/harness) is the desktop app for graff.
+Choose graff, or another installed coding agent, and a model for each
+conversation. Workspaces and sessions stay together, and you can review changes
+next to the chat. Files, a browser, and terminals are also available in the
+app.
 
-### Chat and context
+<p align="center">
+  <img src="docs/images/harness-agents-dark.png" width="960" alt="Harness Settings → Agents in the Codegraff Dark theme, with graff listed first">
+  <br><sub>Installed agents appear in <strong>Settings → Agents</strong>, with graff listed first.</sub>
+</p>
 
-[![CodeGraff's bright desktop, framed in rice paper with workshop artwork](docs/images/desktop-chat-studio.png)](docs/images/desktop-chat-light.png)
+- **Works locally first:** Harness starts in local mode without an account.
+  Turn on sync to follow or control a session from another signed-in device or
+  the iOS companion app.
+- **Keeps graff up to date:** the macOS app checks for the latest stable
+  CodeGraff release shortly after launch and every six hours. It installs an
+  update only after checking the SHA-256 checksum. To try the newest beta,
+  choose **Install beta** in **Settings → Agents**. Choose **Update** to go back
+  to stable. Set `HARNESS_GRAFF_AUTO_UPDATE=0` to turn off background checks. If
+  you set `GRAFF_EXECUTABLE`, Harness does not replace that binary.
+- **Shows graff's sub-agents:** each background agent links to its live
+  transcript.
+- **Tabs and split panes:** each tab keeps its own split layout, and ⌘K jumps
+  to any open pane.
 
-- **Keep track of work:** tabs distinguish running, finished, interrupted, and unread conversations.
-- **Control the next step:** choose a model and effort level, or steer a queued follow-up with Cmd+Enter on macOS or Ctrl+Enter on Windows and Linux.
-- **See what fits:** the composer shows remaining context and attachment previews.
-- **Choose an appearance:** White, Black, Website, CodeGraff, or a custom theme through `$gui-theme`.
-
-### Agents
-
-[![CodeGraff Agents panel with local peers and a handoff request, framed in coral with the workshop crew](docs/images/desktop-agents-studio.png)](docs/images/desktop-agents-codegraff.png)
-
-See who is working, send a message, hand off a task, or stop a peer.
-Messages arrive at the recipient’s next step. The Agents pane also shows
-occupancy and resource use. [Read the Agents guide](docs/agents-panel.md).
-
-<details>
-<summary>View agent occupancy and resource use</summary>
-
-[![Agents occupancy, RSS/CPU, and peer talk in a rice-paper workshop frame](docs/images/desktop-occupancy-studio.png)](docs/images/desktop-occupancy.png)
-
-The optional profiler records anonymous resource measurements without identities
-or message contents.
-
-</details>
-
-### Changes and browser
-
-[![CodeGraff's dark Changes panel beside the conversation, framed in cobalt with a rat reviewing a proof](docs/images/desktop-review-studio.png)](docs/images/desktop-review-dark.png)
-
-Review staged, unstaged, and untracked edits alongside the conversation.
-Inspect diffs, worktrees, and recent commits; resize the pane for more room.
-The browser supports navigation, find, zoom, and pinned page elements.
-Optional macOS computer use requires enabling it and granting system permissions.
-
-<details>
-<summary>View browser annotations</summary>
-
-[![Pinned browser follow-up in a rice-paper workshop frame](docs/images/desktop-browser-studio.png)](docs/images/native-browser-annotate.jpg)
-
-Pin a page element and include it in your next message. Background browser work
-keeps the focused chat in place.
-
-</details>
-
-<details>
-<summary>Updates and restart</summary>
-
-[![Update-ready restart in a rice-paper workshop frame](docs/images/desktop-update-studio.png)](docs/images/desktop-update-ready.png)
-
-Desktop builds from v0.0.291 check for updates online and download them in the
-background. Choose **Restart to update** when your work is finished, or use
-**Codegraff → Check for Updates…**. Automatic downloads can be disabled in that
-menu. Earlier builds need one manual installation to enable the updater.
-An app update replaces the bundled Graff engine together with the interface.
-A CLI installed separately through Quick start has its own update lifecycle;
-that command downloads a CLI archive, not the notarized desktop installer.
-
-</details>
-
-<details>
-<summary>Sessions, attachments, and integrations</summary>
-
-- Saved sessions are snapshots; navigation stays accessible in narrow windows.
-- Sent images use compact thumbnails, while drafts keep a preview.
-- Closed Mermaid code blocks render as diagrams.
-- Muse Spark supports pasted, dropped, and attached images.
-- MCP tools can display an App UI in an isolated result frame.
-- `graff mcp install` registers a local HTTP task service for other clients.
-
-</details>
-
-*Images show unchanged GUI captures with scripted demonstration content.
-Click an image to open the original capture.*
+*These images are captures of the production Harness app with synthetic
+content. Harness can [regenerate them](https://github.com/justrach/harness/tree/main/docs/media/readme).*
 
 ## How Graff handles work
 
@@ -461,13 +413,15 @@ The repository is organized as follows:
 | path | what it is |
 |---|---|
 | `src/`, `TUI/` | harness + terminal |
-| `apps/` | desktop (Electron) and iOS |
+| `apps/` | older Electron desktop and iOS |
 | `graff-evals/` | live, in-house, FrontierHarness |
 | `docs/` | ADRs, architecture, images, install, embedding |
 | `sdk/` | generated TypeScript / Python |
 | `scripts/` | tier-1/2, PTY probes, release, desktop launch |
 
-Desktop code lives in `apps/native`; evaluation tooling lives in `graff-evals`.
+The desktop app, Harness, has its own repository:
+[justrach/harness](https://github.com/justrach/harness). The older Electron app
+is in `apps/native`, and evaluation tooling is in `graff-evals`.
 
 ```bash
 scripts/install-hooks.sh          # once
@@ -481,7 +435,7 @@ Docs-only pushes skip it. In-house PR fixtures: `graff-evals/`
 (`--suite inhouse`).
 
 <details>
-<summary>Build and test the desktop from source</summary>
+<summary>Build and test the older Electron desktop (<code>apps/native</code>) from source</summary>
 
 Build on Apple Silicon macOS 14+ with Bun, Zig, and Xcode command-line tools:
 

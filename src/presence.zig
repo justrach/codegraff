@@ -214,8 +214,7 @@ pub fn rebind(io: Io, gpa: Allocator, arena: Allocator) void {
             return;
         };
         defer dir.close(io);
-        if (dir.readFileAlloc(io, chan, arena, .limited(16 * 1024 * 1024)) catch null) |text|
-            g_inbox_off = @intCast(text.len);
+        g_inbox_off = presence_chan.roomSize(io, dir, chan);
     };
     writeOwn(io, arena);
 }
@@ -393,10 +392,10 @@ pub fn drainChannel(io: Io, arena: Allocator) []const Message {
     defer dir.close(io);
     if (main_mod.unattended and !g_tail_seeked) {
         g_tail_seeked = true;
-        if (dir.readFileAlloc(io, chan, arena, .limited(16 * 1024 * 1024)) catch null) |text| g_inbox_off = @intCast(text.len);
+        g_inbox_off = presence_chan.roomSize(io, dir, chan);
         // The device room too: deliverInbound always drains the worktree
         // channel first, so one fast-forward covers both rooms.
-        if (dir.readFileAlloc(io, device_room, arena, .limited(16 * 1024 * 1024)) catch null) |text| g_device_off = @intCast(text.len);
+        g_device_off = presence_chan.roomSize(io, dir, device_room);
     }
     const raw = presence_chan.readNewMessages(io, arena, dir, chan, &g_inbox_off);
     var out: std.ArrayList(Message) = .empty;
@@ -452,12 +451,9 @@ pub fn seekRoomsToTail(io: Io, arena: Allocator) void {
         return;
     };
     defer dir.close(io);
-    if (g_chan) |chan| {
-        if (dir.readFileAlloc(io, chan, arena, .limited(16 * 1024 * 1024)) catch null) |text|
-            g_inbox_off = @intCast(text.len);
-    }
-    if (dir.readFileAlloc(io, device_room, arena, .limited(16 * 1024 * 1024)) catch null) |text|
-        g_device_off = @intCast(text.len);
+    _ = arena;
+    if (g_chan) |chan| g_inbox_off = presence_chan.roomSize(io, dir, chan);
+    g_device_off = presence_chan.roomSize(io, dir, device_room);
     g_tail_seeked = true;
 }
 
