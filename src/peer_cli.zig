@@ -27,6 +27,7 @@ const peer_target = @import("peer_target.zig");
 const proc_identity = @import("proc_identity.zig");
 const worktree_lease = @import("worktree_lease.zig");
 const util = @import("util.zig");
+const peer_cloud = @import("peer_cloud.zig");
 
 const Message = presence_chan.Message;
 const Owner = worktree_lease.Owner;
@@ -37,6 +38,8 @@ pub const usage =
     \\  send [--to NAME] [--anyway] TEXT   post to this worktree's room, or DM NAME (TEXT or stdin)
     \\  inbox [--peek] [--json] [--wake]   messages since your last read
     \\  read [--last N] [--json]           recent room history you can see (default 20; cursor unchanged)
+    \\  cloud on|off|status                share rooms through your codegraff account (off by default)
+    \\  send --cloud TEXT                  post to your account's shared channel (needs cloud on)
     \\  --as NAME                          your name (default $GRAFF_PEER_NAME or agent@folder)
     \\
 ;
@@ -51,6 +54,7 @@ pub const Opts = struct {
     peek: bool = false,
     wake: bool = false,
     anyway: bool = false,
+    cloud: bool = false,
 };
 
 pub fn parseOpts(arena: Allocator, args: []const []const u8) error{ Usage, OutOfMemory }!Opts {
@@ -75,6 +79,8 @@ pub fn parseOpts(arena: Allocator, args: []const []const u8) error{ Usage, OutOf
             o.wake = true;
         } else if (std.mem.eql(u8, a, "--anyway")) {
             o.anyway = true;
+        } else if (std.mem.eql(u8, a, "--cloud")) {
+            o.cloud = true;
         } else if (std.mem.startsWith(u8, a, "--")) {
             return error.Usage;
         } else if (o.action.len == 0) {
@@ -456,7 +462,11 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, home: []const u8, env_n
         break :blk t;
     };
 
-    if (std.mem.eql(u8, opts.action, "list") or std.mem.eql(u8, opts.action, "ls")) {
+    var cloud_buf: [24]u8 = undefined;
+    const cloud = peer_cloud.open(io, gpa, arena, home, name, &cloud_buf);
+    if (std.mem.eql(u8, opts.action, "cloud")) {
+        try peer_cloud.command(io, gpa, arena, home, name, opts.text, out);
+    } else if (std.mem.eql(u8, opts.action, "list") or std.mem.eql(u8, opts.action, "ls")) {
         const peers = livePeers(io, arena, ctx);
         if (opts.json) {
             var s: std.json.Stringify = .{ .writer = out };
@@ -471,16 +481,25 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, home: []const u8, env_n
             const label = if (p.title.len > 0) p.title else p.session_id;
             try out.print("  {s:<40} pid {d:<7} {s:<9} {s}\n", .{ util.utf8Prefix(label, 40), @as(u32, @intCast(@max(p.pid, 0))), p.activity, folderLabel(p.identity, &lb) });
         }
+        if (cloud) |c| for (peer_cloud.members(c)) |m| if (!std.mem.eql(u8, m.name, c.member))
+            try out.print("  @{s:<39} cloud       {s:<9} {s} {s}\n", .{ m.name, if (m.online) "online" else "offline", m.kind, m.host });
     } else if (std.mem.eql(u8, opts.action, "inbox")) {
         var peek = cur;
         const heard = collect(io, arena, ctx, if (opts.peek or opts.wake) &peek else &cur);
+        const remote = if (cloud) |c| peer_cloud.inbox(c, opts.peek or opts.wake) else &.{};
         if (opts.wake) {
-            if (heard.len == 0) return;
-            try out.print("[peer] {d} new message{s} for {s} — read them with: graff peer inbox --as \"{s}\"\n", .{ heard.len, if (heard.len == 1) "" else "s", name, name });
+            const n = heard.len + remote.len;
+            if (n == 0) return;
+            try out.print("[peer] {d} new message{s} for {s} — read them with: graff peer inbox --as \"{s}\"\n", .{ n, if (n == 1) "" else "s", name, name });
             return;
         }
         if (!opts.peek) saveCursor(io, arena, ctx, cur);
-        if (heard.len == 0 and !opts.json) try out.writeAll("no new messages\n");
+        if (heard.len == 0 and remote.len == 0 and !opts.json) try out.writeAll("no new messages\n");
+        for (remote) |m| if (opts.json) {
+            var s: std.json.Stringify = .{ .writer = out };
+            try s.write(.{ .room = "cloud", .from = m.from, .to = m.to, .ts_ms = m.ts, .text = m.body });
+            try out.writeAll("\n");
+        } else try peer_cloud.writeMsg(out, m);
         for (heard) |h| {
             if (opts.json) {
                 var s: std.json.Stringify = .{ .writer = out };
@@ -501,6 +520,11 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, home: []const u8, env_n
     } else if (std.mem.eql(u8, opts.action, "send")) {
         const text = if (opts.text.len > 0) opts.text else readStdin(io, arena);
         if (text.len == 0) std.process.fatal("graff peer send: no message (pass TEXT or pipe it on stdin)", .{});
+        if (opts.cloud) {
+            const c = cloud orelse std.process.fatal("graff peer send --cloud: cloud peers are off — graff peer cloud on", .{});
+            if (!peer_cloud.post(c, opts.to, text)) std.process.fatal("graff peer send --cloud: the gateway refused the message", .{});
+            return out.print("posted to your cloud channel as @{s}\n", .{c.member});
+        }
         switch (send(io, gpa, arena, dir_path, ctx, &cur, opts.to, text, opts.anyway)) {
             .posted => |p| if (p.target) |t|
                 try out.print("sent to {s} ({s} room, {d} woken)\n", .{ if (t.title.len > 0) t.title else t.session_id, @tagName(p.room), p.woke })
@@ -513,7 +537,12 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, home: []const u8, env_n
                 out.flush() catch {};
                 std.process.exit(3);
             },
-            .no_target => std.process.fatal("graff peer send: no live agent matches '{s}' — see graff peer list", .{opts.to.?}),
+            .no_target => {
+                // Not on this device: a cloud member of the same name, if cloud peers are on.
+                if (cloud) |c| if (peer_cloud.post(c, opts.to, text))
+                    return out.print("sent to @{s} through your cloud channel\n", .{opts.to.?});
+                std.process.fatal("graff peer send: no live agent matches '{s}' — see graff peer list", .{opts.to.?});
+            },
             .ambiguous => std.process.fatal("graff peer send: '{s}' matches several agents — use the exact name from graff peer list", .{opts.to.?}),
             .no_room => std.process.fatal("graff peer send: not in a git worktree — pass --to NAME to DM someone", .{}),
         }
