@@ -5,7 +5,7 @@
 - clientCapabilities.elicitation.form: standard elicitation/create, answer flows back
 - _meta["graff/askUser"]: graff's gui_ask_user + session/answer (apps/native)
 """
-import json, os, queue, signal, subprocess, sys, tempfile, threading, time
+import json, os, queue, shutil, signal, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'eval'))
 from mock_model import ScriptedModel
@@ -33,7 +33,9 @@ def run(binary, case):
         'elicitation': {'fs': {}, 'elicitation': {'form': {}}},
         'legacy': {'fs': {}, '_meta': {'graff/askUser': True}},
     }[case]
-    with tempfile.TemporaryDirectory(prefix='acp-ask-user-') as temp:
+    # Windows keeps the killed process's files open briefly; do not fail on cleanup.
+    temp = tempfile.mkdtemp(prefix='acp-ask-user-')
+    try:
         env = {k: v for k, v in os.environ.items() if not k.endswith('_API_KEY')}
         config = Path(temp) / 'mcp.json'
         config.write_text('{"mcpServers":{}}')
@@ -43,7 +45,7 @@ def run(binary, case):
         env['GRAFF_VERCEL_URL'] = f'http://127.0.0.1:{port}/v1/chat/completions'
         proc = subprocess.Popen([binary, 'acp', '--model', 'vercel', '--old', '--no-lean', '--yolo'], cwd=temp, env=env,
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                                start_new_session=True)
+                                start_new_session=os.name == 'posix')
         messages = queue.Queue()
 
         def read():
@@ -104,9 +106,14 @@ def run(binary, case):
                 assert 'npm' in results[-1] and 'wrong' not in results[-1], results
             print('PASS ACP ask_user', case, flush=True)
         finally:
-            os.killpg(proc.pid, signal.SIGKILL)
-            proc.wait(timeout=3)
+            if os.name == 'posix':
+                os.killpg(proc.pid, signal.SIGKILL)
+            else:
+                proc.kill()
+            proc.wait(timeout=10)
             model.stop()
+    finally:
+        shutil.rmtree(temp, ignore_errors=True)
 
 
 if __name__ == '__main__':
