@@ -1,6 +1,6 @@
 # 0027. Kimi Coding identity is graff, device fields follow kimi-code
 
-Status: accepted 2026-08-25
+Status: superseded by 0204 (2026-09-26)
 
 ## Context
 

@@ -37,7 +37,7 @@ record only when you need the evidence or the edge cases.
 | [0024](0024-three-harness-compare-prompt-subagent-rss.md) | Steal short child briefs + sidecar spawn; `print(read_file)` returns the file; `-p` skips the shared-tree checkpoint (evals are sibling sandboxes); reject rlm-only catalog, grok heap, Harbor. |
 | [0025](0025-io-uring-is-not-the-process-io.md) | Process Io stays Zig `Threaded`. spec-ptc is already the default loop (ADR 0022). Do not take ublk or switch `main` to `std.Io.Uring`. |
 | [0026](0026-foreground-bash-auto-backgrounds.md) | Root foreground `bash` auto-backgrounds after 120s (a shorter `timeout` may promote earlier); it is not killed. Subagents still kill at 120s (#93). |
-| [0027](0027-kimi-identity-is-graff.md) | Kimi Coding User-Agent is `graff/<version>`, not a spoofed `kimi-code-cli` token. X-Msh device fields follow kimi-code's shapes. |
+| [0027](0027-kimi-identity-is-graff.md) | Kimi Coding User-Agent is `graff/<version>`, not a spoofed `kimi-code-cli` token. X-Msh device fields follow kimi-code's shapes. Superseded by 0204. |
 | [0028](0028-codex-session-id-is-the-cache-key.md) | Codex HTTP/WS `session_id` is the `prompt_cache_key` (openai/codex ModelClient default), not a per-process random UUID. |
 | [0029](0029-mcp-inside-rlm-and-return-shapes.md) | Loaded MCP tools are rlm host functions; persist return shapes on the load result, never the prefix; fat MCP results auto-slim; default `-p` connects `.mcp.json` (folded, not skipped). |
 | [0030](0030-rlm-late-showcase.md) | Superseded by [0140](0140-rlm-is-listed-when-available.md). Late showcase hid `rlm` on small turns; that gate is gone. |
@@ -230,6 +230,7 @@ record only when you need the evidence or the edge cases.
 | [0201](0201-cli-beta-channel-is-explicit.md) | CLI beta updates require explicit opt-in, select the newest numeric release branch, verify pinned assets, and activate on next launch. |
 | [0202](0202-acp-sessions-adopt-client-cwd.md) | ACP sessions adopt the client `cwd`, report the worktree as `_meta["graff/worktree"]` (null in a main checkout), and `graff worktree` exits non-zero when it refuses or does nothing. |
 | [0203](0203-external-agents-join-rooms-through-graff-peer.md) | Other agents join the device rooms with `graff peer list/send/inbox`: same JSONL rooms and records, owned by the agent's process; a DM is held while the recipient's newer message is unread; drains read only new bytes. |
+| [0204](0204-kimi-platform-is-graff.md) | Kimi requests send `X-Msh-Platform: graff` and `graff/<version>` everywhere (OAuth and inference), never `kimi_code_cli`; a Kimi Code console key bills as plan quota. Supersedes 0027. |
 
 ## When to write one
 

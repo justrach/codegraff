@@ -1,7 +1,8 @@
 //! Kimi Coding request identity. Field *shapes* follow MoonshotAI/kimi-code
 //! `packages/oauth/src/identity.ts` (hostname, Node-style device model,
-//! `os.release()`). The product token stays `graff/<version>`: Moonshot treats
-//! a spoofed User-Agent as a violation, and a host must state its own name.
+//! `os.release()`). Every host states its own identity there: the product
+//! token is `graff/<version>` and `X-Msh-Platform` is `graff`, never the Kimi
+//! CLI's `kimi_code_cli` (#1297, ADR 0204).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -9,7 +10,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 pub const user_agent = "graff/" ++ @import("build_options").version;
-pub const platform = "kimi_code_cli";
+pub const platform = "graff";
 pub const version = @import("build_options").version;
 
 pub var device_id: []const u8 = "unknown";
@@ -258,7 +259,9 @@ test "identityHeaders use hostname and Node-shaped model, not zig os tags" {
     const got = identityHeaders(&headers);
     try std.testing.expectEqual(@as(usize, 6), got.len);
     try std.testing.expectEqualStrings("X-Msh-Platform", got[0].name);
-    try std.testing.expectEqualStrings("kimi_code_cli", got[0].value);
+    // graff states its own platform; it never reports the Kimi CLI's (#1297).
+    try std.testing.expectEqualStrings("graff", got[0].value);
+    for (got) |h| try std.testing.expect(std.mem.indexOf(u8, h.value, "kimi_code_cli") == null);
     try std.testing.expectEqualStrings(version, got[1].value);
     try std.testing.expectEqualStrings(device_name, got[2].value);
     try std.testing.expect(device_name.len > 0);
