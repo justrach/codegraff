@@ -96,6 +96,29 @@ test "collect: worktree lines and device DMs are heard; own lines and other DMs 
     try testing.expectEqual(@as(usize, 0), peer_cli.collect(testing.io, arena, ctx, &cur).len);
 }
 
+test "history: recent visible lines oldest first, other agents' DMs hidden, cursor untouched" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const ctx = ctxFor(tmp.dir, "claude@repo", 50);
+    var tb: [presence_chan.chan_name_max]u8 = undefined;
+    const tree = presence_chan.chanName(&tb, tree_identity);
+    try testing.expect(presence_chan.postMessage(testing.io, arena, tmp.dir, tree, .{ .from_pid = 10, .from_start = 1, .from_session = "graff-a", .ts_ms = 1, .text = "one" }));
+    try testing.expect(presence_chan.postMessage(testing.io, arena, tmp.dir, tree, .{ .from_pid = 10, .from_start = 1, .from_session = "graff-a", .to = "graff-b", .ts_ms = 2, .text = "not mine" }));
+    try testing.expect(presence_chan.postMessage(testing.io, arena, tmp.dir, presence.device_room, .{ .from_pid = 50, .from_start = 1, .from_session = "claude@repo", .to = "graff-c", .ts_ms = 3, .text = "my own dm" }));
+    try testing.expect(presence_chan.postMessage(testing.io, arena, tmp.dir, tree, .{ .from_pid = 10, .from_start = 1, .from_session = "graff-a", .ts_ms = 4, .text = "four" }));
+    const all = peer_cli.history(testing.io, arena, ctx, 20, 1 << 20);
+    try testing.expectEqual(@as(usize, 3), all.len);
+    try testing.expectEqualStrings("one", all[0].m.text);
+    try testing.expectEqualStrings("my own dm", all[1].m.text);
+    try testing.expectEqualStrings("four", all[2].m.text);
+    const last2 = peer_cli.history(testing.io, arena, ctx, 2, 1 << 20);
+    try testing.expectEqualStrings("my own dm", last2[0].m.text);
+    try testing.expect(peer_cli.loadCursor(testing.io, arena, ctx) == null);
+}
+
 test "cursor: saved position survives, and a first read joins at the tail" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();

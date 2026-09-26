@@ -32,10 +32,11 @@ const Message = presence_chan.Message;
 const Owner = worktree_lease.Owner;
 
 pub const usage =
-    \\usage: graff peer <list|send|inbox> [options]
+    \\usage: graff peer <list|send|inbox|read> [options]
     \\  list [--json]                      live agents on this device
     \\  send [--to NAME] [--anyway] TEXT   post to this worktree's room, or DM NAME (TEXT or stdin)
     \\  inbox [--peek] [--json] [--wake]   messages since your last read
+    \\  read [--last N] [--json]           recent room history you can see (default 20; cursor unchanged)
     \\  --as NAME                          your name (default $GRAFF_PEER_NAME or agent@folder)
     \\
 ;
@@ -45,6 +46,7 @@ pub const Opts = struct {
     as: ?[]const u8 = null,
     to: ?[]const u8 = null,
     text: []const u8 = "",
+    last: usize = 20,
     json: bool = false,
     peek: bool = false,
     wake: bool = false,
@@ -61,6 +63,10 @@ pub fn parseOpts(arena: Allocator, args: []const []const u8) error{ Usage, OutOf
             i += 1;
             if (i >= args.len) return error.Usage;
             if (a[2] == 'a') o.as = args[i] else o.to = args[i];
+        } else if (std.mem.eql(u8, a, "--last")) {
+            i += 1;
+            if (i >= args.len) return error.Usage;
+            o.last = std.fmt.parseInt(usize, args[i], 10) catch return error.Usage;
         } else if (std.mem.eql(u8, a, "--json")) {
             o.json = true;
         } else if (std.mem.eql(u8, a, "--peek")) {
@@ -272,6 +278,36 @@ pub fn collect(io: Io, arena: Allocator, ctx: Ctx, cur: *Cursor) []const Heard {
     return out.items;
 }
 
+/// Recent history this agent can see, oldest first, without moving its read
+/// cursor: its worktree room (minus other agents' DMs) and the device lines
+/// addressed to it or sent by it. Reads only each room's last `window` bytes.
+pub fn history(io: Io, arena: Allocator, ctx: Ctx, last: usize, window: u64) []const Heard {
+    var out: std.ArrayList(Heard) = .empty;
+    var tb: [presence_chan.chan_name_max]u8 = undefined;
+    const tree = treeRoomName(&tb, ctx.identity);
+    const rooms = [_]struct { name: []const u8, room: Room }{ .{ .name = tree, .room = .tree }, .{ .name = presence.device_room, .room = .device } };
+    for (rooms) |r| {
+        if (r.name.len == 0) continue;
+        const size = presence_chan.roomSize(io, ctx.dir, r.name);
+        var off: u64 = size -| window;
+        // Starting mid-file: the first partial line fails to parse and is dropped.
+        for (presence_chan.readNewMessagesWindow(io, arena, ctx.dir, r.name, &off, @intCast(size - off))) |m| {
+            const mine = isOwn(m, ctx.name);
+            const sees = switch (r.room) {
+                .tree => mine or peer_target.treeHears(m, ctx.name),
+                .device => mine or peer_target.deviceHears(m, ctx.name),
+            };
+            if (sees) out.append(arena, .{ .room = r.room, .m = m }) catch break;
+        }
+    }
+    std.mem.sort(Heard, out.items, {}, struct {
+        fn lt(_: void, a: Heard, b: Heard) bool {
+            return a.m.ts_ms < b.m.ts_ms;
+        }
+    }.lt);
+    return out.items[out.items.len -| last..];
+}
+
 fn isOwn(m: Message, name: []const u8) bool {
     return std.mem.eql(u8, m.from_session, name);
 }
@@ -444,6 +480,16 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, home: []const u8, env_n
         }
         if (!opts.peek) saveCursor(io, arena, ctx, cur);
         if (heard.len == 0 and !opts.json) try out.writeAll("no new messages\n");
+        for (heard) |h| {
+            if (opts.json) {
+                var s: std.json.Stringify = .{ .writer = out };
+                try s.write(.{ .room = @tagName(h.room), .from = h.m.from_session, .to = h.m.to, .ts_ms = h.m.ts_ms, .text = h.m.text });
+                try out.writeAll("\n");
+            } else try writeHeard(out, h);
+        }
+    } else if (std.mem.eql(u8, opts.action, "read") or std.mem.eql(u8, opts.action, "history")) {
+        const heard = history(io, arena, ctx, opts.last, 256 * 1024);
+        if (heard.len == 0 and !opts.json) try out.writeAll("no messages you can see yet\n");
         for (heard) |h| {
             if (opts.json) {
                 var s: std.json.Stringify = .{ .writer = out };
