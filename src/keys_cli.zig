@@ -100,6 +100,29 @@ pub fn homeEnv(env: anytype) ?[]const u8 {
     return null;
 }
 
+const KeychainLookup = union(enum) { found: []const u8, missing, transient };
+
+/// `security` exits 44 (errSecItemNotFound) when no item exists. Any other
+/// failure (spawn error, busy securityd while several sessions start at once)
+/// says nothing about whether the key is stored.
+fn keychainLookup(io: Io, arena: Allocator, provider: []const u8) KeychainLookup {
+    var child = std.process.spawn(io, .{
+        .argv = &.{ "security", "find-generic-password", "-s", keychain_service, "-a", provider, "-w" },
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .ignore,
+    }) catch return .transient;
+    const out: ?[]u8 = if (child.stdout) |f| read: {
+        var rbuf: [8 * 1024]u8 = undefined;
+        var fr = f.readerStreaming(io, &rbuf);
+        break :read fr.interface.allocRemaining(arena, .limited(64 * 1024)) catch null;
+    } else null;
+    const term = child.wait(io) catch return .transient;
+    const key = std.mem.trim(u8, out orelse "", " \t\r\n");
+    if (key.len > 0) return .{ .found = key };
+    return if (term == .exited and (term.exited == 0 or term.exited == 44)) .missing else .transient;
+}
+
 pub fn storeKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, provider: []const u8, key: []const u8) bool {
     if (builtin.os.tag == .macos) {
         var child = std.process.spawn(io, .{
@@ -135,19 +158,15 @@ pub fn storeKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, prov
 
 pub fn loadStoredKey(io: Io, arena: Allocator, home: []const u8, provider: []const u8) ?[]const u8 {
     if (builtin.os.tag == .macos) {
-        var child = std.process.spawn(io, .{
-            .argv = &.{ "security", "find-generic-password", "-s", keychain_service, "-a", provider, "-w" },
-            .stdin = .ignore,
-            .stdout = .pipe,
-            .stderr = .ignore,
-        }) catch return null;
-        defer _ = child.wait(io) catch {};
-        const f = child.stdout orelse return null;
-        var rbuf: [8 * 1024]u8 = undefined;
-        var fr = f.readerStreaming(io, &rbuf);
-        const out = fr.interface.allocRemaining(arena, .limited(64 * 1024)) catch return null;
-        const key = std.mem.trim(u8, out, " \t\r\n");
-        return if (key.len > 0) key else null;
+        // A transient miss drops a stored key for the whole session, so retry
+        // once. Only errSecItemNotFound is a definite absence; it costs one
+        // lookup, keeping keyless providers as cheap as before.
+        for (0..2) |_| switch (keychainLookup(io, arena, provider)) {
+            .found => |key| return key,
+            .missing => return null,
+            .transient => {},
+        };
+        return null;
     }
     const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ home, keys_file }) catch return null;
     const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024)) catch return null;
