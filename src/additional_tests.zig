@@ -10,6 +10,7 @@ test {
     _ = @import("provider_codegraff_tests.zig");
     _ = @import("agent_responses.zig");
     _ = @import("session_branch.zig");
+    _ = @import("acp_subagent_progress.zig");
     _ = @import("vault_crypto.zig");
     _ = @import("vault_client.zig");
     _ = @import("vault_sync.zig");

@@ -39,7 +39,7 @@ pub fn kindFor(name: []const u8) []const u8 {
     return "other";
 }
 
-fn titleFor(name: []const u8, input: Value) []const u8 {
+pub fn titleFor(name: []const u8, input: Value) []const u8 {
     if (input == .object) {
         if (util.strFieldObj(input.object, "path")) |p| return p;
         if (util.strFieldObj(input.object, "file")) |f| return f;

@@ -17,7 +17,7 @@ def updates(client):
             if event.get('method') == 'session/update']
 
 
-def run(binary, preview, capability, json_mode=False):
+def run(binary, preview, capability, json_mode=False, progress_on=True):
     with tempfile.TemporaryDirectory(prefix='graff-acp-child-') as temporary:
         work = Path(temporary)
         home = work / 'home'
@@ -36,6 +36,8 @@ def run(binary, preview, capability, json_mode=False):
         env = {'GRAFF_NO_NATIVE_FOLD': '1'}
         if preview:
             env['GRAFF_ACP_DRAFT_SUBAGENTS'] = '1'
+        if not progress_on:
+            env['GRAFF_ACP_SUBAGENT_PROGRESS'] = '0'
         args = ('--max-model-calls', '6', '--max-run-tool-calls', '8')
         if json_mode:
             args += ('--json',)
@@ -60,6 +62,24 @@ def run(binary, preview, capability, json_mode=False):
             if not (preview and capability):
                 assert not child_updates, rows
                 assert all(session == sid for _, session, _ in rows), rows
+                # Standard ACP: the child's work streams onto the parent tool
+                # call as content-only tool_call_update rows (ADR 0205).
+                progress = [(i, update) for i, session, update in rows
+                            if update.get('sessionUpdate') == 'tool_call_update'
+                            and update.get('toolCallId') == parent_id
+                            and 'graff/subagent' in update.get('_meta', {})]
+                if not progress_on:
+                    assert not progress, rows
+                    return
+                assert progress, rows
+                assert all('status' not in update for _, update in progress), progress
+                assert any('read_file: example.txt' in str(update.get('content')) for _, update in progress), progress
+                last = progress[-1][1]
+                assert last['_meta']['graff/subagent']['state'] == 'completed', last
+                done = [i for i, session, update in rows
+                        if update.get('sessionUpdate') == 'tool_call_update'
+                        and update.get('toolCallId') == parent_id and update.get('status') in ('completed', 'failed')]
+                assert done and progress[-1][0] < done[-1], rows
                 return
             assert len(child_updates) == 2, rows
             announced_at, announced = child_updates[0]
@@ -91,4 +111,6 @@ if __name__ == '__main__':
     for preview, capability in ((False, True), (True, False), (True, True)):
         run(binary, preview, capability)
     run(binary, True, True, json_mode=True)
-    print('ACP child sessions: gated fallback, negotiated announcement, child activity, terminal, --json')
+    run(binary, False, False)
+    run(binary, False, False, progress_on=False)
+    print('ACP subagents: standard progress on the parent tool call by default, opt-out, draft child sessions when negotiated, --json')

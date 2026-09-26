@@ -368,16 +368,19 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     else
         null;
     const background_announced = background_handle != null;
+    const progress_on = !announced and !background_announced and acp_children.progressFor(ctx.io, kind, ctx.depth, ctx.parent_tool_call_id);
     var child_stream: acp_children.ChildSink = .{
         .id = sub_id,
         .io = ctx.io,
         .recorder = agent.sink,
         .background_handle = background_handle,
+        .progress = if (progress_on) .{ .parent_call_id = ctx.parent_tool_call_id, .child_id = sub_id, .name = label } else null,
     };
-    if (announced or background_announced) agent.sink = child_stream.engineSink();
+    if (announced or background_announced or progress_on) agent.sink = child_stream.engineSink();
     var child_state: []const u8 = "failed";
     defer if (announced) acp_children.finish(ctx.io, sub_id, child_state, ctx.parent_tool_call_id);
     defer if (background_handle) |handle| acp_children.finishBackground(ctx.io, handle, sub_id, child_stream.seq, child_state);
+    defer if (progress_on) child_stream.finishProgress(child_state);
 
     const wf_task = std.mem.eql(u8, kind, "workflow_task");
     if (wf_task) guiEmit(ctx.io, .{ .type = "tool_call", .name = "subagent", .input = .{ .description = label }, .id = sub_id });

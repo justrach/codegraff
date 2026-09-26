@@ -231,6 +231,7 @@ record only when you need the evidence or the edge cases.
 | [0202](0202-acp-sessions-adopt-client-cwd.md) | ACP sessions adopt the client `cwd`, report the worktree as `_meta["graff/worktree"]` (null in a main checkout), and `graff worktree` exits non-zero when it refuses or does nothing. |
 | [0203](0203-external-agents-join-rooms-through-graff-peer.md) | Other agents join the device rooms with `graff peer list/send/inbox`: same JSONL rooms and records, owned by the agent's process; a DM is held while the recipient's newer message is unread; drains read only new bytes. |
 | [0204](0204-kimi-platform-is-graff.md) | Kimi requests send `X-Msh-Platform: graff` and `graff/<version>` everywhere (OAuth and inference), never `kimi_code_cli`; a Kimi Code console key bills as plan quota. Supersedes 0027. |
+| [0205](0205-subagent-progress-is-standard-tool-content.md) | By default a subagent streams its work onto the parent tool call as content-only `tool_call_update` rows (rolling log + `_meta["graff/subagent"]`); the draft child-session stream only when both sides opt in; `GRAFF_ACP_SUBAGENT_PROGRESS=0` turns it off. |
 
 ## When to write one
 

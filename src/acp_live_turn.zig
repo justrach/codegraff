@@ -77,11 +77,13 @@ pub const LiveTurn = struct {
         sink.init(self.root.gpa, self.out, &self.session_id, &self.saw_text);
         sink.output_lock = &output_lock;
         sink.output_io = self.root.io;
-        const subagents = self.dispatch != null and self.dispatch.?.subagents and self.dispatch.?.draft_subagents_enabled;
+        // Standard progress on the parent tool call by default; the draft
+        // child-session stream only when both sides opted in (ADR 0194/0205).
+        const draft = self.dispatch != null and self.dispatch.?.subagents and self.dispatch.?.draft_subagents_enabled;
         defer sink.deinit();
-        var child_state: @import("acp_subagent_live.zig").State = .{ .out = self.out, .parent = self.session_id, .output_lock = &output_lock };
-        if (subagents) @import("acp_subagent_live.zig").install(self.root.io, &child_state);
-        defer if (subagents) @import("acp_subagent_live.zig").uninstall(self.root.io);
+        var child_state: @import("acp_subagent_live.zig").State = .{ .out = self.out, .parent = self.session_id, .output_lock = &output_lock, .mode = if (draft) .draft else .progress };
+        @import("acp_subagent_live.zig").install(self.root.io, &child_state);
+        defer @import("acp_subagent_live.zig").uninstall(self.root.io);
         self.root.out = &sink.writer;
         main_mod.g_out = &sink.writer;
         defer {
