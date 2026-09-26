@@ -197,8 +197,11 @@ pub fn codexLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, re
     try out.flush();
 }
 
-// Kimi Code OAuth — device-code flow, same client + endpoints the Kimi CLI
-// uses (auth.kimi.com). `graff login kimi` runs the flow and writes the token
+// Kimi Code OAuth — device-code flow on the shared kimi-code OAuth client and
+// endpoints (auth.kimi.com). Moonshot's own hosts share this client and tell
+// themselves apart by `X-Msh-Platform`; graff reports `graff` and
+// `graff/<version>`, never the CLI's identity (#1297, ADR 0204).
+// `graff login kimi` runs the flow and writes the token
 // to ~/.kimi/credentials/graff-oauth.json; loadKimiOAuth reads it at startup
 // and refreshes in place when near expiry.
 const kimi_oauth_host = "https://auth.kimi.com";
