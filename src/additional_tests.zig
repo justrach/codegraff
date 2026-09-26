@@ -14,6 +14,7 @@ test {
     _ = @import("vault_client.zig");
     _ = @import("vault_sync.zig");
     _ = @import("keys_vault_cli.zig");
+    _ = @import("vault_refresh.zig");
     _ = @import("peer_cli.zig");
 }
 
