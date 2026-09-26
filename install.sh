@@ -12,6 +12,12 @@ set -euo pipefail
 # HARNESS_BUILD=source (skip the release download and compile),
 # HARNESS_NO_GRAFF=1 (skip the codedb/zigrep companion suite),
 # HARNESS_NO_PATH=1 (do not append the install dir to ~/.zshrc / ~/.bashrc).
+#
+# Desktop app too (macOS Apple Silicon): add --desktop, or GRAFF_DESKTOP=1.
+#   curl -fsSL https://raw.githubusercontent.com/justrach/codegraff/main/install.sh | bash -s -- --desktop
+# It installs Harness.app from the latest Harness release's app tarball,
+# checked against that release's manifest.json, into /Applications (or
+# ~/Applications). GRAFF_DESKTOP_DIR overrides the destination.
 
 REPO="${HARNESS_REPO:-https://github.com/justrach/codegraff}"
 INSTALL_DIR="${HARNESS_DIR:-$HOME/bin}"
@@ -239,7 +245,58 @@ main() {
     "$INSTALL_DIR/$BIN" mcp install || printf 'MCP setup incomplete. Retry with: graff mcp install\n' >&2
   fi
 
+  if [ -n "${GRAFF_DESKTOP:-}" ]; then
+    install_desktop || true
+    printf "\n  ${W}done!${N} run ${C}$BIN${N} in a terminal, or open ${C}Harness${N} from Applications\n\n"
+    return 0
+  fi
+  if [ "$(uname -s)" = Darwin ]; then
+    printf "\n  ${D}desktop app: re-run with${N} ${C}bash -s -- --desktop${N} ${D}to install Harness too${N}\n"
+  fi
   printf "\n  ${W}done!${N} run ${C}$BIN${N} to start, or ${C}$BIN --help${N}\n\n"
+}
+
+DESKTOP_REPO="${GRAFF_DESKTOP_REPO:-https://github.com/justrach/harness}"
+
+# Install the desktop app (Harness) without a DMG: the release publishes the
+# signed, notarized app as a tarball plus a manifest of SHA-256 sums.
+install_desktop() {
+  if [ "$(uname -s)" != Darwin ] || [ "$(uname -m)" != arm64 ]; then
+    printf "  ${D}│${N} %-10s ${Y}skipped${N} ${D}(one-line desktop install is macOS Apple Silicon only — see $DESKTOP_REPO/releases)${N}\n" "desktop"
+    return 0
+  fi
+  local tmpd name sum got dest
+  tmpd="$(mktemp -d)"
+  printf "  ${D}│${N} %-10s " "desktop"
+  if ! curl -fsSL --max-time 60 "$DESKTOP_REPO/releases/latest/download/manifest.json" -o "$tmpd/manifest.json"; then
+    printf "${R}failed${N} ${D}(could not fetch the Harness release manifest)${N}\n"; rm -rf "$tmpd"; return 1
+  fi
+  name="$(grep -oE '"harness-[0-9.]+-macos-arm64-app\.tar\.gz"' "$tmpd/manifest.json" | head -1 | tr -d '"')"
+  sum="$(sed -n "/\"$name\"/,/sha256/p" "$tmpd/manifest.json" | grep -oE '[0-9a-f]{64}' | head -1)"
+  if [ -z "$name" ] || [ -z "$sum" ]; then
+    printf "${R}failed${N} ${D}(no macOS app tarball in the release manifest)${N}\n"; rm -rf "$tmpd"; return 1
+  fi
+  if ! curl -fsSL --max-time 300 "$DESKTOP_REPO/releases/latest/download/$name" -o "$tmpd/$name"; then
+    printf "${R}failed${N} ${D}(download of $name)${N}\n"; rm -rf "$tmpd"; return 1
+  fi
+  got="$(shasum -a 256 "$tmpd/$name" | cut -c1-64)"
+  if [ "$got" != "$sum" ]; then
+    printf "${R}failed${N} ${D}(checksum mismatch for $name — not installed)${N}\n"; rm -rf "$tmpd"; return 1
+  fi
+  tar -xzf "$tmpd/$name" -C "$tmpd" && [ -d "$tmpd/Harness.app" ] \
+    && codesign --verify --deep --strict "$tmpd/Harness.app" >/dev/null 2>&1 || {
+    printf "${R}failed${N} ${D}(the app did not unpack with a valid signature — not installed)${N}\n"; rm -rf "$tmpd"; return 1
+  }
+  dest="${GRAFF_DESKTOP_DIR:-/Applications}"
+  if [ -z "${GRAFF_DESKTOP_DIR:-}" ] && [ ! -w "$dest" ]; then dest="$HOME/Applications"; fi
+  mkdir -p "$dest"
+  rm -rf "$dest/Harness.app"
+  ditto "$tmpd/Harness.app" "$dest/Harness.app"
+  rm -rf "$tmpd"
+  printf "${G}✓${N} ${D}(Harness ${name#harness-} → $dest/Harness.app)${N}\n" | sed 's/-macos-arm64-app.tar.gz//'
+  if pgrep -x Harness >/dev/null 2>&1; then
+    printf "  ${Y}Harness is running${N} — quit and reopen it to use the new version.\n"
+  fi
 }
 
 # Persist $INSTALL_DIR on PATH so the next terminal finds `graff`.
@@ -322,6 +379,12 @@ ensure_path() {
     esac
   fi
 }
+
+for arg in "$@"; do
+  case "$arg" in
+    --desktop) GRAFF_DESKTOP=1 ;;
+  esac
+done
 
 if [ "${1:-}" = "--path-only" ]; then
   ensure_path

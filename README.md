@@ -46,6 +46,12 @@ a native app built with Rust and GPUI.
 The app is signed and notarized. It bundles graff and puts the `graff` command
 on your terminal `PATH` the first time it opens.
 
+Or install the app and the `graff` CLI together from a terminal:
+
+```sh
+curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | bash -s -- --desktop
+```
+
 **Windows** (x86_64): [download the portable build](https://github.com/justrach/harness/releases/latest/download/Harness-windows-x86_64.zip),
 unpack it, and run `harness.exe`. Keep `harness-update.json` next to it for
 in-app updates. Install the graff CLI as described below.
