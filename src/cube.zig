@@ -26,7 +26,7 @@ const harness_version = root.harness_version;
 // payload on POST sends "{}" (the gateway rejects empty bodies).
 const GatewayResponse = struct { code: u16, body: []const u8 };
 
-fn gatewayFetch(io: Io, gpa: Allocator, arena: Allocator, method: std.http.Method, url: []const u8, key: []const u8, payload: ?[]const u8) !GatewayResponse {
+pub fn gatewayFetch(io: Io, gpa: Allocator, arena: Allocator, method: std.http.Method, url: []const u8, key: []const u8, payload: ?[]const u8) !GatewayResponse {
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
     var aw: Io.Writer.Allocating = .init(arena);
@@ -45,7 +45,7 @@ fn gatewayFetch(io: Io, gpa: Allocator, arena: Allocator, method: std.http.Metho
     return .{ .code = @intFromEnum(res.status), .body = aw.writer.buffered() };
 }
 
-fn gatewayJson(io: Io, gpa: Allocator, arena: Allocator, method: std.http.Method, url: []const u8, key: []const u8, payload: ?[]const u8) !Value {
+pub fn gatewayJson(io: Io, gpa: Allocator, arena: Allocator, method: std.http.Method, url: []const u8, key: []const u8, payload: ?[]const u8) !Value {
     const r = try gatewayFetch(io, gpa, arena, method, url, key, payload);
     if (r.code < 200 or r.code >= 300) {
         var msg: []const u8 = r.body;
@@ -381,6 +381,7 @@ pub fn cubeCommand(io: Io, gpa: Allocator, arena: Allocator, key: []const u8, ar
     const out = &ow.interface;
 
     const sub = if (args.len > 0) args[0] else "status";
+    if (try @import("cube_run.zig").command(io, gpa, arena, key, args)) return;
     if (std.mem.eql(u8, sub, "new")) {
         var minutes: i64 = 30;
         var i: usize = 1;
@@ -406,7 +407,7 @@ pub fn cubeCommand(io: Io, gpa: Allocator, arena: Allocator, key: []const u8, ar
         return;
     }
     if (!std.mem.eql(u8, sub, "status"))
-        std.process.fatal("usage: graff cube [new [--minutes N]|status|stop]", .{});
+        std.process.fatal("usage: graff cube [new [--minutes N]|status|stop|spawn|runs|kill]", .{});
 
     const st = cubeReadState(io, arena) orelse {
         try out.writeAll("no cube — `graff cube new` spins one up\n");

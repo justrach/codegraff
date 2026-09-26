@@ -20,6 +20,7 @@
 //! unattended (`yolo`) session unless it was started with --yolo itself.
 
 const std = @import("std");
+const run_token = @import("run_token.zig");
 const builtin = @import("builtin");
 const Io = std.Io;
 const Value = std.json.Value;
@@ -92,6 +93,13 @@ pub fn remoteControlMain(gpa: Allocator, io: Io, cfg: Config, exe: []const u8) !
     self.hostname = hostName(&self.hostname_buf, cfg.hostname_env);
     self.agent_id = try deviceId(io, gpa, cfg.home);
     const label = cfg.name orelse self.hostname;
+    var run_arena = std.heap.ArenaAllocator.init(gpa);
+    defer run_arena.deinit();
+    if (run_token.load(io, run_arena.allocator(), cfg.home)) |run| if (std.mem.eql(u8, run.token, cfg.key)) {
+        on_run_token = true;
+        group.concurrent(io, renewLoop, .{ gpa, io, run }) catch
+            serve.serveLog(io, "remote-control: cannot start the run renew loop — the run expires at its TTL", .{});
+    };
 
     var backoff: i64 = backoff_min_ms;
     var registered = false;
@@ -153,10 +161,37 @@ pub fn parseDeviceId(data: []const u8) ?[16]u8 {
     return out;
 }
 
+/// Set when this process authenticates with a cloud run's launch token.
+var on_run_token = false;
+
+/// Renew the run token every third of its remaining life (also the sandbox
+/// auto-stop heartbeat). A revoked or expired run ends this agent at once.
+fn renewLoop(gpa: Allocator, io: Io, first: run_token.Run) void {
+    var run = first;
+    while (true) {
+        const wait = run_token.renewDelayMs(run.expires_at, @divTrunc(util.unixMs(io), 1000));
+        io.sleep(.fromMilliseconds(@intCast(wait)), .awake) catch return;
+        var arena_state = std.heap.ArenaAllocator.init(gpa);
+        defer arena_state.deinit();
+        switch (run_token.renew(io, gpa, arena_state.allocator(), run)) {
+            .renewed => |exp| run.expires_at = exp,
+            .retry => if (@divTrunc(util.unixMs(io), 1000) >= run.expires_at) {
+                serve.serveLog(io, "remote-control: run {s} expired before it could be renewed — exiting", .{run.run_id});
+                std.process.exit(0);
+            },
+            .ended => |why| {
+                serve.serveLog(io, "remote-control: run {s} ended ({s}) — exiting", .{ run.run_id, why });
+                std.process.exit(0);
+            },
+        }
+    }
+}
+
 /// The key was refused: revoked, or missing the `remote` scope. Nothing this
 /// process can do fixes that, and retrying forever would just hammer the
 /// gateway with a dead credential — exit and say what to run.
 fn refused(arena: Allocator, code: u16, body: []const u8) noreturn {
+    if (on_run_token) std.process.fatal("remote-control: the gateway refused this run's token (HTTP {d}: {s}) — the run was killed or expired, or the device id file under $HOME was lost; this agent is done", .{ code, upload.errorMessage(arena, body) });
     std.process.fatal("remote-control: gateway refused the key (HTTP {d}: {s}) — run `graff login` again (keys need the `remote` scope)", .{ code, upload.errorMessage(arena, body) });
 }
 

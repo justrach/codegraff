@@ -121,5 +121,8 @@ pub fn loadKey(io: Io, arena: Allocator, home: []const u8) ?[]const u8 {
             } else |_| {}
         } else |_| {}
     } else |_| {}
+    // A cloud agent's launch token (cg_lt_, gateway /v1/runs): every graff
+    // process on that box, remote-control and its session children, uses it.
+    if (@import("run_token.zig").load(io, arena, home)) |run| return run.token;
     return null;
 }
