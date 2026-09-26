@@ -12,6 +12,24 @@ pub const default_edge = "https://edge.codegraff.com";
 
 pub const Response = struct { status: u16, body: []const u8 };
 
+/// The bearer and ciphertext never travel in clear: https, or plain http to
+/// this machine only (the dev edge).
+pub fn checkEdgeUrl(url: []const u8) error{InsecureEdgeUrl}!void {
+    if (std.mem.startsWith(u8, url, "https://")) return;
+    for ([_][]const u8{ "http://127.0.0.1:", "http://127.0.0.1/", "http://localhost:", "http://localhost/", "http://[::1]:", "http://[::1]/" }) |ok| {
+        if (std.mem.startsWith(u8, url, ok)) return;
+    }
+    return error.InsecureEdgeUrl;
+}
+
+test "checkEdgeUrl allows https and loopback http only" {
+    try checkEdgeUrl("https://edge.example.com");
+    try checkEdgeUrl("http://127.0.0.1:27640");
+    try checkEdgeUrl("http://localhost:8787");
+    try std.testing.expectError(error.InsecureEdgeUrl, checkEdgeUrl("http://edge.example.com"));
+    try std.testing.expectError(error.InsecureEdgeUrl, checkEdgeUrl("http://127.0.0.1.evil.com"));
+}
+
 pub const Transport = struct {
     ctx: *anyopaque,
     callFn: *const fn (ctx: *anyopaque, arena: Allocator, method: []const u8, path: []const u8, headers: []const std.http.Header, body: []const u8) anyerror!Response,
@@ -77,12 +95,14 @@ pub const Client = struct {
         };
     }
 
-    /// true = lease granted, false = another device holds it.
-    pub fn lease(c: *Client, agent: []const u8, slot: []const u8, ttl_s: u32) !bool {
+    /// The item's version at the moment the lease was granted, or null when
+    /// another device holds it. Decide what to do from this version, never
+    /// from an earlier read: another device may have committed in between.
+    pub fn lease(c: *Client, agent: []const u8, slot: []const u8, ttl_s: u32) !?u64 {
         const r = try c.call("POST", try c.itemPath(agent, slot, "/lease"), try c.json(.{ .ttlSeconds = @min(ttl_s, 60) }), true, &.{});
         return switch (r.status) {
-            200 => true,
-            409 => false,
+            200 => (try parseField(c.arena, r.body, "version")) orelse 0,
+            409 => null,
             else => statusError(r.status),
         };
     }

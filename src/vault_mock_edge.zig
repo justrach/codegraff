@@ -45,6 +45,11 @@ pub const MockEdge = struct {
         m.arena.deinit();
     }
 
+    /// Test hook: a lease that expired while its holder was still working.
+    pub fn dropLease(m: *MockEdge, key: []const u8) void {
+        if (m.items.getPtr(key)) |it| it.lease_holder = null;
+    }
+
     pub fn transport(m: *MockEdge) client.Transport {
         return .{ .ctx = m, .callFn = handle };
     }
@@ -172,7 +177,7 @@ pub const MockEdge = struct {
                 }
                 if (item.lease_holder) |h| if (!std.mem.eql(u8, h, caller)) return .{ .status = 409, .body = "{\"error\":\"lease_held\"}" };
                 item.lease_holder = try a.dupe(u8, caller);
-                return resp(arena, 200, .{ .leaseHolder = caller });
+                return resp(arena, 200, .{ .leaseHolder = caller, .version = item.version });
             }
             if (std.mem.eql(u8, action, "/status")) {
                 item.status = try a.dupe(u8, parsed.object.get("status").?.string);

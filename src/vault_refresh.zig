@@ -65,17 +65,21 @@ fn adopt(s: *sync.Session, versions: Versions, slot: []const u8, file: []const u
 
 pub fn plan(s: *sync.Session, versions: Versions, slot: []const u8, file: []const u8) !Plan {
     const local = versions.get(slot);
-    const current: u64 = if (try s.c.getItem("graff", slot)) |it| it.version else 0;
+    // Decide from the version the lease reports, not an earlier read: a
+    // device that commits between a read and our lease would otherwise make
+    // us refresh with a spent token, which providers treat as theft.
+    const current = (try s.c.lease("graff", slot, 60)) orelse return .wait;
     if (current > local) {
-        if (try adopt(s, versions, slot, file)) |v| return .{ .adopted = v };
+        defer s.c.release("graff", slot) catch {};
+        return if (try adopt(s, versions, slot, file)) |v| .{ .adopted = v } else .wait;
     }
-    if (!try s.c.lease("graff", slot, 60)) return .wait;
     return .{ .refresh = current };
 }
 
 /// After a refresh under the lease: write the new login as the next version.
 /// If the vault moved anyway, the vault wins and the local result is
-/// discarded (its refresh token was already spent elsewhere).
+/// discarded (its refresh token was already spent elsewhere). If only the
+/// lease was lost, nothing is overwritten unless the vault is actually newer.
 pub fn commit(s: *sync.Session, versions: Versions, slot: []const u8, file: []const u8, base: u64) !u64 {
     defer s.c.release("graff", slot) catch {};
     const bytes = try Io.Dir.cwd().readFileAlloc(s.io, file, s.arena, .limited(1 << 20));
@@ -84,7 +88,12 @@ pub fn commit(s: *sync.Session, versions: Versions, slot: []const u8, file: []co
             try versions.set(slot, v);
             return v;
         },
-        .conflict, .lease_held => return (try adopt(s, versions, slot, file)) orelse error.Conflict,
+        .conflict => return (try adopt(s, versions, slot, file)) orelse error.Conflict,
+        .lease_held => {
+            const now: u64 = if (try s.c.getItem("graff", slot)) |it| it.version else 0;
+            if (now > base) return (try adopt(s, versions, slot, file)) orelse error.LeaseLost;
+            return error.LeaseLost;
+        },
     }
 }
 

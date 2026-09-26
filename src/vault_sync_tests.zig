@@ -74,8 +74,8 @@ test "compare-and-swap: a stale If-Match gets 412, and a lease blocks other writ
         .conflict => |cur| try testing.expectEqual(@as(u64, 1), cur),
         else => return error.ExpectedConflict,
     }
-    try testing.expect(try a.c.lease("graff", "kimi", 60));
-    try testing.expect(!try b.c.lease("graff", "kimi", 60));
+    try testing.expect((try a.c.lease("graff", "kimi", 60)) != null);
+    try testing.expect((try b.c.lease("graff", "kimi", 60)) == null);
     try testing.expect((try b.s.putAt("graff", "kimi", "rotating", 1, "b-refresh")) == .lease_held);
     try testing.expect((try a.s.putAt("graff", "kimi", "rotating", 1, "a-refresh")) == .ok);
     try a.c.release("graff", "kimi");
@@ -123,5 +123,61 @@ test "removing a device rotates the key; the survivor still reads, the removed o
     // The removed device has no wrapped key any more and its signatures fail.
     try testing.expectError(error.NotEnrolled, b.s.pull("graff", "codex"));
     // Leases taken for the rotation were released.
-    try testing.expect(try a.c.lease("graff", "codex", 60));
+    try testing.expect((try a.c.lease("graff", "codex", 60)) != null);
+}
+
+test "a crash between rotating the key and re-encrypting strands nothing" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var edge = MockEdge.init(testing.allocator);
+    defer edge.deinit();
+    var a: Dev = undefined;
+    a.init(arena, &edge, "dev-a");
+    a.s.prev_key_path = try std.fmt.allocPrint(arena, ".zig-cache/tmp/{s}/prev.key", .{tmp.sub_path});
+    var b: Dev = undefined;
+    b.init(arena, &edge, "dev-b");
+    _ = try a.s.enable("laptop");
+    _ = try b.s.enable("old-vps");
+    try a.s.approve("dev-b");
+    _ = try a.s.push("graff", "codex", "rotating", "codex-login");
+    try a.s.rotateKey("dev-b"); // …and the process dies here.
+    // Items are still at the old epoch; the cached key still opens them.
+    try testing.expectEqualStrings("codex-login", (try a.s.pull("graff", "codex")).?.bytes);
+    try a.s.migrate();
+    const now = try a.c.getVault();
+    for (now.items) |h| try testing.expectEqual(now.keyEpoch, h.keyEpoch);
+    try testing.expectEqualStrings("codex-login", (try a.s.pull("graff", "codex")).?.bytes);
+    // The previous key is gone once nothing needs it.
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(testing.io, a.s.prev_key_path.?, .{}));
+}
+
+test "a rotation that cannot take every lease releases the ones it took" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var edge = MockEdge.init(testing.allocator);
+    defer edge.deinit();
+    var a: Dev = undefined;
+    a.init(arena, &edge, "dev-a");
+    var b: Dev = undefined;
+    b.init(arena, &edge, "dev-b");
+    var c: Dev = undefined;
+    c.init(arena, &edge, "dev-c");
+    _ = try a.s.enable("laptop");
+    _ = try b.s.enable("vps");
+    _ = try c.s.enable("old");
+    try a.s.approve("dev-b");
+    try a.s.approve("dev-c");
+    _ = try a.s.push("graff", "codex", "rotating", "c");
+    _ = try a.s.push("graff", "xai", "rotating", "x");
+    // B is mid-refresh on one rotating login.
+    const busy = if (std.mem.eql(u8, (try a.c.getVault()).items[0].slot, "codex")) "xai" else "codex";
+    try testing.expect((try b.c.lease("graff", busy, 60)) != null);
+    try testing.expectError(error.LeaseHeld, a.s.remove("dev-c"));
+    // Whatever A leased before stopping is free again for B.
+    const other = if (std.mem.eql(u8, busy, "codex")) "xai" else "codex";
+    try testing.expect((try b.c.lease("graff", other, 60)) != null);
 }

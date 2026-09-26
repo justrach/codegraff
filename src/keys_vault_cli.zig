@@ -97,6 +97,13 @@ fn loadIdentityFile(io: Io, arena: Allocator, path: []const u8, create: bool) !?
     return .{ .id = id, .keys = keys };
 }
 
+/// Where the previous vault key waits during a rotation: beside the device
+/// key file, or under ~/.graff.
+pub fn prevKeyPath(arena: Allocator, home: []const u8, device_file: ?[]const u8) ![]const u8 {
+    if (device_file) |f| if (std.fs.path.dirname(f)) |dir| return std.fmt.allocPrint(arena, "{s}/vault-prev-key", .{dir});
+    return std.fmt.allocPrint(arena, "{s}/.graff/vault-prev-key", .{home});
+}
+
 const Opts = struct {
     action: []const u8 = "",
     arg: []const u8 = "",
@@ -170,9 +177,21 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, home: []const u8, env: 
         try out.writeAll("This device is not enrolled. Run `graff keys enable` first.\n");
         exitFlushed(out, 2);
     };
-    var http: client.Http = .{ .io = io, .gpa = gpa, .base = env.get("HARNESS_EDGE_URL") orelse client.default_edge };
+    const edge_url = env.get("HARNESS_EDGE_URL") orelse client.default_edge;
+    client.checkEdgeUrl(edge_url) catch {
+        try out.print("graff keys: HARNESS_EDGE_URL must be https (plain http only to this machine): {s}\n", .{edge_url});
+        exitFlushed(out, 2);
+    };
+    var http: client.Http = .{ .io = io, .gpa = gpa, .base = edge_url };
     var c: client.Client = .{ .io = io, .arena = arena, .transport = http.transport(), .bearer = bearer, .device_id = ident.id, .keys = ident.keys };
     var s = try sync.Session.open(io, arena, &c);
+    s.prev_key_path = try prevKeyPath(arena, home, env.get("GRAFF_VAULT_DEVICE_FILE"));
+    // Finish a rotation an earlier run was interrupted in.
+    if (!creating) {
+        if (Io.Dir.cwd().statFile(io, s.prev_key_path.?, .{})) |_| {
+            s.migrate() catch |err| try out.print("note: finishing an interrupted key rotation failed ({t}); it will be retried\n", .{err});
+        } else |_| {}
+    }
     const fp = crypto.fingerprint(ident.keys.box.public_key);
 
     if (creating) {
@@ -191,7 +210,7 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, home: []const u8, env: 
         }
         try out.print("this device: {s}  fingerprint {s}\n", .{ ident.id, &fp });
         for (v.devices) |d| {
-            const dfp = s.deviceFingerprint(d) catch "????????".*;
+            const dfp = s.deviceFingerprint(d) catch @as(crypto.Fingerprint, @splat('?'));
             try out.print("  {s:<10} {s}  {s}  {s}\n", .{ d.status, &dfp, d.deviceId, d.name });
         }
         if (std.mem.eql(u8, o.action, "status")) for (v.items) |it| {

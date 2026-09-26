@@ -58,11 +58,14 @@ pub fn before(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, provid
     if (!force and !due(io, arena, file, margin_s)) return null;
     const ident = (keys_vault_cli.loadIdentity(io, gpa, arena, home, false, env("GRAFF_VAULT_DEVICE_FILE")) catch return null) orelse return null;
     const http = arena.create(client.Http) catch return null;
-    http.* = .{ .io = io, .gpa = gpa, .base = env("HARNESS_EDGE_URL") orelse client.default_edge };
+    const edge_url = env("HARNESS_EDGE_URL") orelse client.default_edge;
+    client.checkEdgeUrl(edge_url) catch return null;
+    http.* = .{ .io = io, .gpa = gpa, .base = edge_url };
     const c = arena.create(client.Client) catch return null;
     c.* = .{ .io = io, .arena = arena, .transport = http.transport(), .bearer = bearer, .device_id = ident.id, .keys = ident.keys };
     const s = arena.create(sync.Session) catch return null;
     s.* = sync.Session.open(io, arena, c) catch return null;
+    s.prev_key_path = keys_vault_cli.prevKeyPath(arena, home, env("GRAFF_VAULT_DEVICE_FILE")) catch null;
     const versions = refresh.Versions.at(io, arena, home) catch return null;
     const p = refresh.plan(s, versions, provider, file) catch return null;
     const live = arena.create(Live) catch return null;

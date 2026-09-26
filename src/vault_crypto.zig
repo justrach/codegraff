@@ -5,7 +5,8 @@
 //! - Vault key: 32 random bytes, created by the first device.
 //! - Wrap: ephemeral X25519 to the recipient's public key → HKDF-SHA256
 //!   (salt = ephPub‖recipientPub, info = "harness-vault-v1 wrap") →
-//!   XChaCha20-Poly1305, random 24-byte nonce, aad = "wrap|userId|deviceId".
+//!   XChaCha20-Poly1305, random 24-byte nonce,
+//!   aad = "wrap|userId|deviceId|keyEpoch" (so an old epoch cannot be replayed).
 //!   wrappedKey = ephPub ‖ nonce ‖ ciphertext ‖ tag.
 //! - Item: XChaCha20-Poly1305 under the vault key, random nonce,
 //!   aad = "userId|agent|slot|version|keyEpoch"; stored as ciphertext ‖ tag.
@@ -59,17 +60,32 @@ pub const DeviceKeys = struct {
     }
 };
 
-/// First 8 hex chars of sha256(X25519 public key): what `approve` asks the
-/// user to compare, and what `status` prints for this device.
-pub fn fingerprint(box_public: [X25519.public_length]u8) [8]u8 {
+pub const fingerprint_hex = 20;
+/// Display width: 20 hex chars in groups of 4.
+pub const Fingerprint = [fingerprint_hex + fingerprint_hex / 4 - 1]u8;
+
+/// First 80 bits of sha256(X25519 public key), as "abcd ef01 2345 6789 abcd":
+/// what `approve` asks the user to compare and `status` prints. 80 bits so a
+/// bearer holder cannot grind a look-alike device key.
+pub fn fingerprint(box_public: [X25519.public_length]u8) Fingerprint {
     var digest: [Sha256.digest_length]u8 = undefined;
     Sha256.hash(&box_public, &digest, .{});
     const hex = std.fmt.bytesToHex(digest, .lower);
-    return hex[0..8].*;
+    var out: Fingerprint = undefined;
+    var o: usize = 0;
+    for (hex[0..fingerprint_hex], 0..) |ch, i| {
+        if (i > 0 and i % 4 == 0) {
+            out[o] = ' ';
+            o += 1;
+        }
+        out[o] = ch;
+        o += 1;
+    }
+    return out;
 }
 
-fn wrapAad(buf: []u8, user_id: []const u8, device_id: []const u8) ![]const u8 {
-    return std.fmt.bufPrint(buf, "wrap|{s}|{s}", .{ user_id, device_id });
+fn wrapAad(buf: []u8, user_id: []const u8, device_id: []const u8, key_epoch: u64) ![]const u8 {
+    return std.fmt.bufPrint(buf, "wrap|{s}|{s}|{d}", .{ user_id, device_id, key_epoch });
 }
 
 fn wrapKeyFor(shared: [X25519.shared_length]u8, eph_pub: [32]u8, recipient_pub: [32]u8) [key_len]u8 {
@@ -83,7 +99,7 @@ fn wrapKeyFor(shared: [X25519.shared_length]u8, eph_pub: [32]u8, recipient_pub: 
 }
 
 /// Wrap the vault key to one device's X25519 public key.
-pub fn wrap(io: Io, vault_key: VaultKey, recipient_pub: [32]u8, user_id: []const u8, device_id: []const u8) ![wrapped_len]u8 {
+pub fn wrap(io: Io, vault_key: VaultKey, recipient_pub: [32]u8, user_id: []const u8, device_id: []const u8, key_epoch: u64) ![wrapped_len]u8 {
     const eph = X25519.KeyPair.generate(io);
     const shared = try X25519.scalarmult(eph.secret_key, recipient_pub);
     const k = wrapKeyFor(shared, eph.public_key, recipient_pub);
@@ -92,20 +108,22 @@ pub fn wrap(io: Io, vault_key: VaultKey, recipient_pub: [32]u8, user_id: []const
     const nonce = out[32..][0..nonce_len];
     io.random(nonce);
     var abuf: [512]u8 = undefined;
-    const aad = try wrapAad(&abuf, user_id, device_id);
+    const aad = try wrapAad(&abuf, user_id, device_id, key_epoch);
     const ct = out[32 + nonce_len ..][0..key_len];
     const tag = out[32 + nonce_len + key_len ..][0..tag_len];
     Aead.encrypt(ct, tag, &vault_key, aad, nonce.*, k);
     return out;
 }
 
-pub fn unwrap(keys: DeviceKeys, wrapped: []const u8, user_id: []const u8, device_id: []const u8) !VaultKey {
+/// `key_epoch` is the epoch GET /vault reports; a wrapped key from another
+/// epoch fails to open.
+pub fn unwrap(keys: DeviceKeys, wrapped: []const u8, user_id: []const u8, device_id: []const u8, key_epoch: u64) !VaultKey {
     if (wrapped.len != wrapped_len) return error.BadWrappedKey;
     const eph_pub = wrapped[0..32].*;
     const shared = try X25519.scalarmult(keys.box.secret_key, eph_pub);
     const k = wrapKeyFor(shared, eph_pub, keys.box.public_key);
     var abuf: [512]u8 = undefined;
-    const aad = try wrapAad(&abuf, user_id, device_id);
+    const aad = try wrapAad(&abuf, user_id, device_id, key_epoch);
     var out: VaultKey = undefined;
     const nonce = wrapped[32..][0..nonce_len].*;
     const ct = wrapped[32 + nonce_len ..][0..key_len];
@@ -199,11 +217,13 @@ test "wrap/unwrap round-trips to the right device and rejects the wrong aad or d
     const b = DeviceKeys.generate(io);
     var vk: VaultKey = undefined;
     io.random(&vk);
-    const w = try wrap(io, vk, a.box.public_key, "u1", "dev-a");
-    try std.testing.expectEqualSlices(u8, &vk, &(try unwrap(a, &w, "u1", "dev-a")));
-    try std.testing.expectError(error.WrongKeyOrTampered, unwrap(a, &w, "u2", "dev-a"));
-    try std.testing.expectError(error.WrongKeyOrTampered, unwrap(a, &w, "u1", "dev-b"));
-    try std.testing.expectError(error.WrongKeyOrTampered, unwrap(b, &w, "u1", "dev-a"));
+    const w = try wrap(io, vk, a.box.public_key, "u1", "dev-a", 3);
+    try std.testing.expectEqualSlices(u8, &vk, &(try unwrap(a, &w, "u1", "dev-a", 3)));
+    try std.testing.expectError(error.WrongKeyOrTampered, unwrap(a, &w, "u2", "dev-a", 3));
+    try std.testing.expectError(error.WrongKeyOrTampered, unwrap(a, &w, "u1", "dev-b", 3));
+    try std.testing.expectError(error.WrongKeyOrTampered, unwrap(b, &w, "u1", "dev-a", 3));
+    // An edge replaying an older epoch's wrapped key is caught.
+    try std.testing.expectError(error.WrongKeyOrTampered, unwrap(a, &w, "u1", "dev-a", 4));
 }
 
 test "item seal/open round-trips and any aad field change is rejected" {
@@ -255,5 +275,8 @@ test "userIdFromBearer reads the JWT sub and the dev forms" {
     try std.testing.expectEqualStrings("alice", try userIdFromBearer(arena, "alice@org1"));
     try std.testing.expectEqualStrings("bob", try userIdFromBearer(arena, "bob"));
     const pub_key: [32]u8 = @splat(1);
-    try std.testing.expectEqual(@as(usize, 8), fingerprint(pub_key).len);
+    const fp = fingerprint(pub_key);
+    try std.testing.expectEqual(@as(usize, 24), fp.len);
+    try std.testing.expectEqual(@as(u8, ' '), fp[4]);
+    try std.testing.expectEqual(@as(usize, 20), std.mem.count(u8, &fp, " ") * 0 + fp.len - 4);
 }

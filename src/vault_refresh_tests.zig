@@ -60,10 +60,7 @@ test "one refresher at a time: the other device adopts the committed version ins
     // Both devices hit expiry. A plans first and gets the lease.
     const pa = try refresh.plan(&a.s, a.versions, "xai", a.file);
     try testing.expect(pa == .refresh);
-    // B has never synced: it adopts v1 rather than refreshing blind…
-    const pb = try refresh.plan(&b.s, b.versions, "xai", b.file);
-    try testing.expectEqual(refresh.Plan{ .adopted = v1 }, pb);
-    // …and once caught up, it must wait while A holds the lease.
+    // B must not refresh while A holds the lease.
     try testing.expect((try refresh.plan(&b.s, b.versions, "xai", b.file)) == .wait);
 
     // A refreshes and commits the rotated token.
@@ -73,6 +70,62 @@ test "one refresher at a time: the other device adopts the committed version ins
     // B's next plan adopts v2 without ever spending the refresh token.
     try testing.expectEqual(refresh.Plan{ .adopted = v2 }, try refresh.plan(&b.s, b.versions, "xai", b.file));
     try testing.expectEqualStrings("token-v2", try b.read(arena));
+}
+
+test "a commit landing between a read and the lease is adopted, not refreshed over" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var edge = MockEdge.init(testing.allocator);
+    defer edge.deinit();
+    var a: Dev = undefined;
+    try a.init(arena, &edge, "dev-a", try tmpPath(arena, &tmp, "a"));
+    var b: Dev = undefined;
+    try b.init(arena, &edge, "dev-b", try tmpPath(arena, &tmp, "b"));
+    _ = try a.s.enable("laptop");
+    _ = try b.s.enable("vps");
+    try a.s.approve("dev-b");
+    try a.write("token-v1");
+    try a.versions.set("xai", try a.s.push("graff", "xai", "rotating", "token-v1"));
+    // A read v1 and decided to refresh; before its lease, B refreshes and commits v2.
+    const pb = try refresh.plan(&b.s, b.versions, "xai", b.file);
+    try testing.expect(pb == .adopted);
+    const pb2 = try refresh.plan(&b.s, b.versions, "xai", b.file);
+    try b.write("token-v2");
+    _ = try refresh.commit(&b.s, b.versions, "xai", b.file, pb2.refresh);
+    // A's lease reports v2 > its v1: adopt, never refresh with the spent token.
+    const pa = try refresh.plan(&a.s, a.versions, "xai", a.file);
+    try testing.expect(pa == .adopted);
+    try testing.expectEqualStrings("token-v2", try a.read(arena));
+    // And A released the lease it took to look.
+    try testing.expect((try b.c.lease("graff", "xai", 60)) != null);
+}
+
+test "a commit after the lease expired does not overwrite the vault" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var edge = MockEdge.init(testing.allocator);
+    defer edge.deinit();
+    var a: Dev = undefined;
+    try a.init(arena, &edge, "dev-a", try tmpPath(arena, &tmp, "a"));
+    var b: Dev = undefined;
+    try b.init(arena, &edge, "dev-b", try tmpPath(arena, &tmp, "b"));
+    _ = try a.s.enable("laptop");
+    _ = try b.s.enable("vps");
+    try a.s.approve("dev-b");
+    try a.write("token-v1");
+    try a.versions.set("xai", try a.s.push("graff", "xai", "rotating", "token-v1"));
+    const pa = try refresh.plan(&a.s, a.versions, "xai", a.file);
+    edge.dropLease("graff/xai"); // A's provider call outlived the lease…
+    try testing.expect((try b.c.lease("graff", "xai", 60)) != null); // …and B took it.
+    try a.write("token-a-refreshed");
+    try testing.expectError(error.LeaseLost, refresh.commit(&a.s, a.versions, "xai", a.file, pa.refresh));
+    try testing.expectEqualStrings("token-v1", (try a.s.pull("graff", "xai")).?.bytes);
 }
 
 test "a rejected refresh adopts a newer vault login, else marks needs_signin" {

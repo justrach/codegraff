@@ -118,7 +118,7 @@ class Edge(BaseHTTPRequestHandler):
                 if it.get("lease") not in (None, dev_id) and it.get("leaseUntil", 0) > time.time():
                     return self.reply(409, {"error": "lease_held"})
                 it.update(lease=dev_id, leaseUntil=time.time() + min(int(data.get("ttlSeconds", 60)), 60))
-                return self.reply(200, {"leaseHolder": dev_id})
+                return self.reply(200, {"leaseHolder": dev_id, "version": it["version"]})
             if action == "status":
                 if not it:
                     return self.reply(404, {})
