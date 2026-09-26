@@ -39,10 +39,10 @@ class Hub:
                 u = urlparse(self.path)
                 hub.calls.append(('GET', self.path))
                 if u.path == '/v1/swarm':
-                    return self.reply(200, {'members': [
+                    return self.reply(200, {'agents': [
                         {'name': ME, 'kind': 'external', 'host': 'mac', 'online': True},
                         {'name': 'vm-mimo', 'kind': 'external', 'host': 'sandbox', 'online': True},
-                        {'name': 'reviewer', 'kind': 'hub', 'host': '', 'online': False}]})
+                        {'name': 'reviewer', 'kind': 'hub', 'host': '', 'online': None}]})
                 if u.path == '/v1/swarm/messages':
                     q = parse_qs(u.query)
                     start = int(q.get('from', ['1'])[0])
