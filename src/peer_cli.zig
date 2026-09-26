@@ -154,8 +154,9 @@ fn exePath(pid: i32, buf: []u8) usize {
             // Raw syscall, like proc_identity: Io.Dir reads under /proc can
             // panic on the io_uring backend.
             var lb: [64]u8 = undefined;
-            const link = std.fmt.bufPrintZ(&lb, "/proc/{d}/exe", .{pid}) catch return 0;
-            const rc = std.os.linux.readlink(link, buf.ptr, buf.len);
+            const path = std.fmt.bufPrint(lb[0 .. lb.len - 1], "/proc/{d}/exe", .{pid}) catch return 0;
+            lb[path.len] = 0;
+            const rc = std.os.linux.readlink(lb[0..path.len :0], buf.ptr, buf.len);
             return if (@as(isize, @bitCast(rc)) < 0) 0 else rc;
         },
         else => return 0,
