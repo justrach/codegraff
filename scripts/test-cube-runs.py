@@ -59,8 +59,8 @@ class Gateway:
                     cmd = b.get('command', '')
                     gw.execs.append(cmd)
                     out = ''
-                    if 'install.sh' in cmd:
-                        out = 'ok\n'
+                    if '--version' in cmd:
+                        out = 'graff 0.0.302.6\n'
                     elif 'echo $HOME' in cmd:
                         out = '/home/daytona\n'
                     elif 'remote-control.log' in cmd and 'tail' in cmd:

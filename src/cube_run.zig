@@ -87,10 +87,27 @@ fn spawnInto(c: Ctx, out: *Io.Writer, o: Spawn, sandbox: []const u8) !void {
     }
     if (!std.mem.eql(u8, state, "started")) return error.SandboxNotStarted;
 
-    try out.writeAll("  installing graff …\n");
-    try out.flush();
-    const inst = try exec(c, sandbox, "curl -fsSL https://raw.githubusercontent.com/justrach/codegraff/main/install.sh | bash >/dev/null 2>&1; test -x $HOME/bin/graff && echo ok", 120, false);
-    if (!std.mem.startsWith(u8, std.mem.trim(u8, result(inst), " \r\n"), "ok")) return error.InstallFailed;
+    // Private dir first; the run file lands in it later. The token never rides argv.
+    const home = std.mem.trim(u8, result(try exec(c, sandbox, "umask 077; mkdir -p $HOME/.codegraff $HOME/bin && chmod 700 $HOME/.codegraff && echo $HOME", 30, false)), " \r\n");
+    if (home.len == 0 or home[0] != '/') return error.NoHome;
+    if (std.c.getenv("GRAFF_CUBE_GRAFF_BINARY")) |local| {
+        // Developer path: ship this machine's Linux build (an unreleased graff).
+        const path = std.mem.span(local);
+        try out.print("  uploading graff from {s} …\n", .{path});
+        try out.flush();
+        const bin = Io.Dir.cwd().readFileAlloc(c.io, path, c.arena, .limited(64 * 1024 * 1024)) catch return error.BinaryUnreadable;
+        const enc = try c.arena.alloc(u8, std.base64.standard.Encoder.calcSize(bin.len));
+        const up = try json(c.arena, .{ .path = try std.fmt.allocPrint(c.arena, "{s}/bin/graff", .{home}), .contentBase64 = std.base64.standard.Encoder.encode(enc, bin) });
+        _ = try cube.gatewayJson(c.io, c.gpa, c.arena, .POST, try url(c.arena, "/v1/sandboxes/{s}/upload", .{sandbox}), c.key, up);
+        _ = try exec(c, sandbox, "chmod 755 $HOME/bin/graff", 30, false);
+    } else {
+        try out.writeAll("  installing graff …\n");
+        try out.flush();
+        _ = try exec(c, sandbox, "curl -fsSL https://raw.githubusercontent.com/justrach/codegraff/main/install.sh | bash >/dev/null 2>&1", 120, false);
+    }
+    const ver = std.mem.trim(u8, result(try exec(c, sandbox, "$HOME/bin/graff --version 2>/dev/null | head -1", 30, false)), " \r\n");
+    if (!std.mem.startsWith(u8, ver, "graff ")) return error.InstallFailed;
+    try out.print("  {s}\n", .{ver});
 
     const name = o.name orelse o.model orelse "cloud-agent";
     const run_resp = try cube.gatewayFetch(c.io, c.gpa, c.arena, .POST, try url(c.arena, "/v1/runs", .{}), c.key, try json(c.arena, .{
@@ -110,9 +127,6 @@ fn spawnInto(c: Ctx, out: *Io.Writer, o: Spawn, sandbox: []const u8) !void {
     const run_id = strFieldObj(run.object, "run_id") orelse return error.RunCreateFailed;
     const run_file = strFieldObj(run.object, "run_file") orelse return error.RunCreateFailed;
 
-    // Private dir first, then the file, then 0600: the token never rides argv.
-    const home = std.mem.trim(u8, result(try exec(c, sandbox, "umask 077; mkdir -p $HOME/.codegraff && chmod 700 $HOME/.codegraff && echo $HOME", 30, false)), " \r\n");
-    if (home.len == 0 or home[0] != '/') return error.NoHome;
     const b64 = try c.arena.alloc(u8, std.base64.standard.Encoder.calcSize(run_file.len));
     const upload = try json(c.arena, .{ .path = try std.fmt.allocPrint(c.arena, "{s}/.codegraff/run.json", .{home}), .contentBase64 = std.base64.standard.Encoder.encode(b64, run_file) });
     _ = try cube.gatewayJson(c.io, c.gpa, c.arena, .POST, try url(c.arena, "/v1/sandboxes/{s}/upload", .{sandbox}), c.key, upload);
