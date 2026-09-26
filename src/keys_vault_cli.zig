@@ -36,6 +36,7 @@ pub const usage =
     \\  put <agent>/<slot>              store stdin as an opaque item
     \\  get <agent>/<slot>              print an item's bytes
     \\Needs HARNESS_BEARER (Harness passes it). HARNESS_EDGE_URL overrides the edge.
+    \\GRAFF_VAULT_DEVICE_FILE keeps this device's keys in a 0600 file instead of the Keychain.
     \\
 ;
 
@@ -61,11 +62,11 @@ pub fn providerPath(arena: Allocator, home: []const u8, name: []const u8) ?[]con
 /// secret: the Keychain on macOS, the 0600 key file elsewhere.
 pub const Identity = struct { id: []const u8, keys: crypto.DeviceKeys };
 
-pub fn loadIdentity(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, create: bool) !?Identity {
-    if (keys_cli.loadStoredKey(io, arena, home, device_account)) |stored| {
-        const colon = std.mem.indexOfScalar(u8, stored, ':') orelse return error.BadDeviceKey;
-        return .{ .id = stored[0..colon], .keys = try crypto.DeviceKeys.decodeSecret(stored[colon + 1 ..]) };
-    }
+/// `file`: GRAFF_VAULT_DEVICE_FILE — keep the identity in this 0600 file
+/// instead of the Keychain (headless servers, sandboxes, tests).
+pub fn loadIdentity(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, create: bool, file: ?[]const u8) !?Identity {
+    if (file) |path| return loadIdentityFile(io, arena, path, create);
+    if (keys_cli.loadStoredKey(io, arena, home, device_account)) |stored| return try parseIdentity(stored);
     if (!create) return null;
     var raw: [16]u8 = undefined;
     io.random(&raw);
@@ -74,6 +75,25 @@ pub fn loadIdentity(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, 
     const secret = keys.encodeSecret();
     const value = try std.fmt.allocPrint(arena, "{s}:{s}", .{ id, &secret });
     if (!keys_cli.storeKey(io, gpa, arena, home, device_account, value)) return error.CannotStoreDeviceKey;
+    return .{ .id = id, .keys = keys };
+}
+
+fn parseIdentity(stored: []const u8) !Identity {
+    const t = std.mem.trim(u8, stored, " \t\r\n");
+    const colon = std.mem.indexOfScalar(u8, t, ':') orelse return error.BadDeviceKey;
+    return .{ .id = t[0..colon], .keys = try crypto.DeviceKeys.decodeSecret(t[colon + 1 ..]) };
+}
+
+fn loadIdentityFile(io: Io, arena: Allocator, path: []const u8, create: bool) !?Identity {
+    if (Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(4096))) |stored| return try parseIdentity(stored) else |_| {}
+    if (!create) return null;
+    var raw: [16]u8 = undefined;
+    io.random(&raw);
+    const id = try std.fmt.allocPrint(arena, "dev-{s}", .{std.fmt.bytesToHex(raw, .lower)});
+    const keys = crypto.DeviceKeys.generate(io);
+    const secret = keys.encodeSecret();
+    if (std.fs.path.dirname(path)) |dir| Io.Dir.cwd().createDirPath(io, dir) catch {};
+    try credential_store.replaceFile(io, Io.Dir.cwd(), path, try std.fmt.allocPrint(arena, "{s}:{s}\n", .{ id, &secret }), credential_store.private_file);
     return .{ .id = id, .keys = keys };
 }
 
@@ -146,7 +166,7 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, home: []const u8, env: 
         exitFlushed(out, 2);
     };
     const creating = std.mem.eql(u8, o.action, "enable");
-    const ident = (try loadIdentity(io, gpa, arena, home, creating)) orelse {
+    const ident = (try loadIdentity(io, gpa, arena, home, creating, env.get("GRAFF_VAULT_DEVICE_FILE"))) orelse {
         try out.writeAll("This device is not enrolled. Run `graff keys enable` first.\n");
         exitFlushed(out, 2);
     };
