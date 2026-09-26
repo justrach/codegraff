@@ -74,9 +74,13 @@ pub fn qualifiedProvider(keys: provider_mod.Keys, query: []const u8) error{ Miss
     const pid = query[0..slash];
     const spec = provider_mod.specFor(pid) orelse return null;
     const model = query[slash + 1 ..];
-    if (model.len == 0 or (!keys_cli.isLocalUrl(spec.url) and !pricing.providerModelInTable(pid, model)))
-        return error.UnknownModel;
-    return try keys.providerById(pid, model);
+    if (model.len == 0) return error.UnknownModel;
+    // Key first: a dynamic router's rows are only in the table once its
+    // catalog loaded, which needs the key, so a missing credential would
+    // otherwise surface as an unknown model.
+    const p = try keys.providerById(pid, model);
+    if (!keys_cli.isLocalUrl(spec.url) and !pricing.providerModelInTable(pid, model)) return error.UnknownModel;
+    return p;
 }
 
 test "qualified startup model keeps its catalog provider and validates the exact row" {
@@ -97,6 +101,8 @@ test "qualified startup model keeps its catalog provider and validates the exact
         if (std.mem.eql(u8, spec.id, "xiaomi")) value.* = null;
     }
     try std.testing.expectError(error.MissingKey, qualifiedProvider(keys, "xiaomi/mimo-v2.6-pro-ultraspeed"));
+    // Keyless router whose catalog never loaded: report the credential, not the row.
+    try std.testing.expectError(error.MissingKey, qualifiedProvider(keys, "openrouter/xiaomi/not-in-baked-table"));
 }
 
 /// Whether one stored credential can affect an explicit startup selection:
