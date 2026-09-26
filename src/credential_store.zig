@@ -82,6 +82,14 @@ fn writeDestination(io: Io, dir: Io.Dir, sub_path: []const u8, allocator: Alloca
     }
 }
 
+/// On macOS fsync only reaches the drive's write cache; F_FULLFSYNC asks the
+/// drive to flush it, so a just-rotated refresh token survives a power cut.
+/// The fsync already succeeded, so a filesystem without F_FULLFSYNC is fine.
+fn fullSync(io: Io, file: Io.File) !void {
+    try file.sync(io);
+    if (builtin.os.tag == .macos) _ = std.c.fcntl(file.handle, std.c.F.FULLFSYNC, @as(c_int, 0));
+}
+
 fn syncDirectory(io: Io, dir: Io.Dir) !void {
     if (builtin.os.tag == .windows) return;
     // Linux openDir handles may use O_PATH, which fsync rejects. Reopen the
@@ -92,7 +100,7 @@ fn syncDirectory(io: Io, dir: Io.Dir) !void {
         .resolve_beneath = true,
     });
     defer file.close(io);
-    try file.sync(io);
+    try fullSync(io, file);
 }
 
 /// Replace `dir`/`sub_path` with `bytes` atomically. `sub_path` may carry
@@ -126,7 +134,7 @@ pub fn replaceFile(io: Io, dir: Io.Dir, sub_path: []const u8, bytes: []const u8,
         } else |_| {}
     }
     try atomic.file.writeStreamingAll(io, bytes);
-    try atomic.file.sync(io);
+    try fullSync(io, atomic.file);
     try atomic.replace(io);
     try syncDirectory(io, atomic.dir);
 }
