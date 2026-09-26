@@ -18,12 +18,14 @@ readiness. Drafts remain available. No particular wording is required to
 trigger review.
 
 Changed files supply the proposed-head blob when it fits and a context diff
-for prior lines; unchanged base blobs are not repeated. When a complete
-proposed-head blob exceeds the individual or aggregate source budget, its
-committed context diff remains available with an explicit omission marker.
-The reviewer must return unresolved if the missing source is needed to assess
-a claim. An oversized diff still blocks publication. Test entry points follow
-committed package scripts and runner imports through a bounded chain. The
+for prior lines; unchanged base blobs are not repeated. In mixed source and
+documentation changes, documentation pages use marked context diffs to leave
+room for committed test entry points. A complete proposed-head blob that
+exceeds the individual or aggregate source budget likewise falls back to a
+marked committed context diff. The reviewer must return unresolved if omitted
+source is needed to assess a claim. An oversized diff still blocks publication.
+Test entry points follow committed package scripts and runner imports through
+a bounded chain. The
 packet names size and traversal limits when evidence is omitted. Successful
 local check receipts remain bounded and survive session restore, with their
 observed head and completion status; they are not immutable execution proof.
