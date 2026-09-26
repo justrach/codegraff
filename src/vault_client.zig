@@ -251,6 +251,9 @@ pub const Http = struct {
             .payload = if (body.len > 0 or m == .POST or m == .PUT) body else null,
             .response_writer = &aw.writer,
             .extra_headers = headers,
+            // One request per connection: a bodyless 204 on a kept-alive
+            // connection otherwise leaves the reader waiting for a body.
+            .keep_alive = false,
         });
         return .{ .status = @intFromEnum(res.status), .body = aw.writer.buffered() };
     }

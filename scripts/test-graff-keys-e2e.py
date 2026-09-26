@@ -6,6 +6,7 @@ waits, gets approved, and pulls it; a forged signature is rejected; removing
 B rotates the key and A still reads everything.
 
     python3 scripts/test-graff-keys-e2e.py [path/to/graff]
+    EDGE_URL=http://127.0.0.1:27650 python3 scripts/test-graff-keys-e2e.py
 """
 import json, os, socket, subprocess, sys, tempfile, time
 
@@ -22,15 +23,23 @@ def free_port():
 
 
 def main():
-    port = free_port()
-    edge = subprocess.Popen([sys.executable, os.path.join(ROOT, "scripts", "vault_edge_dev.py"), "--port", str(port)], stdout=subprocess.PIPE, text=True)
-    edge.stdout.readline()
+    # EDGE_URL points the test at an already running edge (e.g. the Harness
+    # VaultRoom under `wrangler dev`); otherwise a local reference edge starts.
+    edge_url = os.environ.get("EDGE_URL")
+    edge = None
+    if not edge_url:
+        port = free_port()
+        edge = subprocess.Popen([sys.executable, os.path.join(ROOT, "scripts", "vault_edge_dev.py"), "--port", str(port)], stdout=subprocess.PIPE, text=True)
+        edge.stdout.readline()
+        edge_url = f"http://127.0.0.1:{port}"
+    # Each run gets its own dev-mode user so reruns against a live edge start clean.
+    user = f"e2e-{os.getpid()}-{int(time.time())}"
     tmp = tempfile.mkdtemp(prefix="graff-keys-e2e-")
     try:
         def dev(name):
             home = os.path.join(tmp, name)
             os.makedirs(os.path.join(home, ".xai", "credentials"), exist_ok=True)
-            env = {**os.environ, "HOME": home, "HARNESS_BEARER": "user1", "HARNESS_EDGE_URL": f"http://127.0.0.1:{port}", "GRAFF_VAULT_DEVICE_FILE": os.path.join(home, "device.key")}
+            env = {**os.environ, "HOME": home, "HARNESS_BEARER": user, "HARNESS_EDGE_URL": edge_url, "GRAFF_VAULT_DEVICE_FILE": os.path.join(home, "device.key")}
 
             def run(*args, stdin=None, ok=True):
                 r = subprocess.run([GRAFF, "keys", *args], env=env, input=stdin, capture_output=True, text=True, timeout=60)
@@ -70,7 +79,7 @@ def main():
             other_secret = f.read().strip().split(":", 1)[1]
         with open(forged, "w") as f:
             f.write(real.split(":")[0] + ":" + other_secret)
-        env_f = {**os.environ, "HOME": home_b, "HARNESS_BEARER": "user1", "HARNESS_EDGE_URL": f"http://127.0.0.1:{port}", "GRAFF_VAULT_DEVICE_FILE": forged}
+        env_f = {**os.environ, "HOME": home_b, "HARNESS_BEARER": user, "HARNESS_EDGE_URL": edge_url, "GRAFF_VAULT_DEVICE_FILE": forged}
         r = subprocess.run([GRAFF, "keys", "push", "xai"], env=env_f, capture_output=True, text=True, timeout=60)
         assert r.returncode != 0, "a forged signature must be rejected"
 
@@ -82,7 +91,8 @@ def main():
         assert b("pull", "xai", ok=False).returncode != 0, "a removed device must not read the vault"
         print("graff keys e2e: OK (bootstrap, approve, push/pull, put/get, forged signature, remove+rotate, 0600 files)")
     finally:
-        edge.terminate()
+        if edge:
+            edge.terminate()
 
 
 if __name__ == "__main__":
