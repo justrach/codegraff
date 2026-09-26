@@ -121,7 +121,10 @@ pub const Inbox = struct {
                 const value = params.object.get("sessionId") orelse break :blk null;
                 break :blk if (value == .string) value.string else null;
             };
-            if (std.mem.eql(u8, r.method, "session/cancel") and r.id == null) {
+            // v2 session/close cancels like session/cancel, then still queues
+            // so dispatch answers it once the turn has unwound.
+            const closing = std.mem.eql(u8, r.method, "session/close");
+            if ((std.mem.eql(u8, r.method, "session/cancel") and r.id == null) or closing) {
                 if (self.session_id) |current| {
                     if (sid == null or std.mem.eql(u8, sid.?, current)) {
                         self.cancelled = true;
@@ -130,7 +133,7 @@ pub const Inbox = struct {
                         if (self.permission) |bridge| bridge.cancel();
                     }
                 }
-                return;
+                if (!closing) return;
             }
             if (std.mem.eql(u8, r.method, "session/answer")) {
                 const obj: ?std.json.ObjectMap = if (r.params) |p| (if (p == .object) p.object else null) else null;

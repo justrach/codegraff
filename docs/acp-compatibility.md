@@ -1,7 +1,9 @@
 # ACP compatibility
 
 Graff implements ACP wire protocol **v1**. The upstream repository identifies
-v1 as stable; v2 is a draft and is not a compatibility target for this release.
+v1 as stable. The v2 draft is available as a preview: a client that sends
+`protocolVersion` 2 or higher to a graff started with `GRAFF_ACP_V2=1` gets the
+v2 shapes (ADR 0206); every other connection gets v1, unchanged.
 Protocol versions are negotiated through `initialize.protocolVersion`, not
 inferred from SDK package versions.
 
@@ -34,6 +36,23 @@ optional feature or draft extension is enabled.
 | Usage | Connection usage is a namespaced extension. It preserves unknown totals and is not a standard ACP v1 billing contract. | `scripts/test-acp-usage.py`, ADR 0182 |
 | Subagents | Default: a top-level subagent streams its work onto the parent tool call as standard `tool_call_update` content (a rolling log of its tool calls, failures and message tail), with no `status` change and `_meta["graff/subagent"]` = `{sessionId, name, state}`; `GRAFF_ACP_SUBAGENT_PROGRESS=0` disables it. Opt-in preview: the proposed child-session stream (client `subagents` capability plus `GRAFF_ACP_DRAFT_SUBAGENTS=1`) replaces it for foreground children. Detached workers also keep `graff/agents` inspection. Child history is not yet replayed on `session/load`. | `scripts/test-acp-subagent-update.py`, ADR 0194, ADR 0205 |
 | Transport | ACP uses JSON-RPC over stdio. HTTP/2 checks exercise the model request transport behind ACP; they do not redefine ACP as an HTTP/2 protocol. | `scripts/test-acp-http2.py`, `scripts/test-acp-http2-retry.py` |
+
+## ACP v2 preview (`GRAFF_ACP_V2=1`)
+
+| Surface | v2 behavior | Coverage |
+| --- | --- | --- |
+| Initialization | `protocolVersion: 2`, `info`, and object-marker `capabilities.session` (`prompt.image`/`embeddedContext`, `mcp.stdio`/`http`); graff extensions in `capabilities._meta`. `authMethods` uses `methodId`, and the terminal login is listed only when the client sends `capabilities.auth.terminal`. | `src/acp_v2.zig`, `scripts/test-acp-v2.py` |
+| Prompt lifecycle | `session/prompt` is answered with `{messageId}` once the user message is inserted, before the turn runs. Then `user_message` (same ID), `state_update` `running`, the turn's updates, and `state_update` `idle` with `stopReason`. A turn that fails after acceptance idles with `stopReason: "_error"` and `_meta["graff/error"]`. Agent-started turns (peer mail) use the same updates with no request. | `src/acp_v2_prompt.zig`, `scripts/test-acp-v2.py` |
+| Messages | Every chunk has a `messageId`. A new ID starts when output switches between thought and text or after a tool event, so later text never appends above an earlier tool row. | `src/acp_v2.zig` |
+| Tool calls | No `tool_call`: the first `tool_call_update` for an ID creates the row. Subagent progress keeps replacing that call's `content`. | `src/acp_stream.zig` |
+| Permissions | `state_update` `requires_action` while a `session/request_permission` is pending, `running` once it is answered. | `src/acp_permission.zig` |
+| Usage | `usage_update` `{used, size}` replaces `gui_context_meter`. Graff-only session updates are `_`-prefixed (`_gui_ask_user`). | `src/acp_engine.zig` |
+| Sessions | `session/close` cancels any running turn and answers `{}`. `session/resume` restores a saved session without replay, and replays it only for `replayFrom: {type: "start"}`. | `src/acp_session_load.zig` |
+
+Not yet: stable message IDs across replay (replayed messages get fresh IDs),
+`session/list`, `auth/login` / `auth/logout`, `plan_update`, structured diffs,
+terminal updates, JSON-RPC batches, the draft child-session stream, and
+subagent progress after the prompt goes idle.
 
 ## Client acceptance checklist
 

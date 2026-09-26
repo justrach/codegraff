@@ -59,6 +59,8 @@ pub fn promptWake(d: *engine.Dispatch, arena: Allocator, w: *Io.Writer, wake: []
         },
     });
     try engine.handleLine(d, arena, w, aw.writer.buffered());
+    // v2's idle `state_update` already closes an agent-started turn.
+    if (@import("acp_v2.zig").on()) return;
     try proto.writeNotification(w, "session/update", .{
         .sessionId = sid,
         .update = .{

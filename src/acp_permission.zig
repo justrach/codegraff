@@ -3,6 +3,7 @@ const std = @import("std");
 const Io = std.Io;
 const permission = @import("engine_permission.zig");
 const util = @import("util.zig");
+const v2 = @import("acp_v2.zig");
 pub const Bridge = struct {
     io: Io,
     out: *Io.Writer,
@@ -73,9 +74,19 @@ pub const Bridge = struct {
                 .options = options[0..if (req.allow_always) @as(usize, 3) else 2],
             } }, .{}, self.out) catch return .deny;
             self.out.writeByte('\n') catch return .deny;
+            if (v2.on()) v2.writeRequiresAction(self.out, self.session) catch return .deny;
             self.out.flush() catch return .deny;
         }
         while (self.decision == null and !self.closed) self.ready.waitUncancelable(io, &self.mutex);
+        if (v2.on() and !self.closed) {
+            const main = @import("main.zig");
+            main.g_gui_mu.lockUncancelable(io);
+            defer main.g_gui_mu.unlock(io);
+            if (self.output_lock) |lock| lock.lockUncancelable(io);
+            defer if (self.output_lock) |lock| lock.unlock(io);
+            v2.writeRunning(self.out, self.session) catch {};
+            self.out.flush() catch {};
+        }
         return self.decision orelse .deny;
     }
     /// Responses have no method. Only the currently pending server ID can resolve.

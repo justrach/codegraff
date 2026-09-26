@@ -60,9 +60,8 @@ pub fn parseRequest(arena: Allocator, line: []const u8) ?Request {
 
 pub fn negotiateVersion(params: ?Value) i64 {
     // ACP requires the requested version if supported, otherwise our latest.
-    // We implement only v1: echoing an older number would promise other shapes.
-    _ = params;
-    return protocol_version;
+    // v2 is supported only behind GRAFF_ACP_V2=1 (acp_v2.zig); never echo 0.
+    return @import("acp_v2.zig").negotiated(params);
 }
 
 fn blockText(block: Value) ?[]const u8 {
@@ -187,6 +186,8 @@ pub fn writeNotification(w: *Io.Writer, method: []const u8, params: anytype) !vo
 
 /// One `agent_message_chunk` notification (the v0 final-text update).
 pub fn writeSessionUpdate(w: *Io.Writer, session_id: []const u8, text: []const u8) !void {
+    const v2 = @import("acp_v2.zig");
+    if (v2.on()) return v2.writeChunk(w, session_id, false, text);
     try writeNotification(w, "session/update", .{
         .sessionId = session_id,
         .update = .{

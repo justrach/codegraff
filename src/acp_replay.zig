@@ -1,4 +1,4 @@
-//! Project saved provider history onto ACP v1's user-visible replay stream.
+//! Project saved provider history onto ACP's user-visible replay stream.
 //! This never invokes a tool: orphaned calls become failed historical rows.
 const std = @import("std");
 const Io = std.Io;
@@ -7,6 +7,7 @@ const Value = std.json.Value;
 const proto = @import("acp_protocol.zig");
 const util = @import("util.zig");
 const session_peer = @import("session_peer.zig");
+const v2 = @import("acp_v2.zig");
 
 const Call = struct { id: []const u8, finished: bool = false };
 
@@ -35,6 +36,16 @@ fn visibleText(arena: Allocator, value: Value) ![]const u8 {
 
 fn message(w: *Io.Writer, sid: []const u8, role: []const u8, text: []const u8) !void {
     if (text.len == 0) return;
+    if (v2.on()) {
+        // Full-content upserts need no `content: []` reset before them.
+        var id: [48]u8 = undefined;
+        const user = std.mem.eql(u8, role, "user");
+        return proto.writeNotification(w, "session/update", .{ .sessionId = sid, .update = .{
+            .sessionUpdate = if (user) "user_message" else "agent_message",
+            .messageId = v2.mint(&id, if (user) "user" else "agent"),
+            .content = .{.{ .type = "text", .text = text }},
+        } });
+    }
     try proto.writeNotification(w, "session/update", .{
         .sessionId = sid,
         .update = .{
@@ -50,7 +61,7 @@ fn beginCall(arena: Allocator, w: *Io.Writer, sid: []const u8, calls: *std.Array
     try proto.writeNotification(w, "session/update", .{
         .sessionId = sid,
         .update = .{
-            .sessionUpdate = "tool_call",
+            .sessionUpdate = if (v2.on()) "tool_call_update" else "tool_call",
             .toolCallId = id,
             .title = name,
             .kind = "other",

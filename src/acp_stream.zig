@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
 const util = @import("util.zig");
 const proto = @import("acp_protocol.zig");
+const v2 = @import("acp_v2.zig");
 
 pub fn kindFor(name: []const u8) []const u8 {
     if (std.mem.eql(u8, name, "read_file") or std.mem.eql(u8, name, "codedb") or std.mem.eql(u8, name, "skill"))
@@ -51,6 +52,7 @@ pub fn titleFor(name: []const u8, input: Value) []const u8 {
 }
 
 pub fn writeThought(w: *Io.Writer, session_id: []const u8, text: []const u8) !void {
+    if (v2.on()) return v2.writeChunk(w, session_id, true, text);
     try proto.writeNotification(w, "session/update", .{
         .sessionId = session_id,
         .update = .{
@@ -65,10 +67,13 @@ pub fn writeMessage(w: *Io.Writer, session_id: []const u8, text: []const u8) !vo
 }
 
 pub fn writeToolCall(w: *Io.Writer, session_id: []const u8, id: []const u8, name: []const u8, input: Value) !void {
+    // v2 removed `tool_call`: the first `tool_call_update` for an ID creates it,
+    // and text after a tool row is a new message.
+    v2.breakMessage();
     try proto.writeNotification(w, "session/update", .{
         .sessionId = session_id,
         .update = .{
-            .sessionUpdate = "tool_call",
+            .sessionUpdate = if (v2.on()) "tool_call_update" else "tool_call",
             .toolCallId = id,
             .title = titleFor(name, input),
             .kind = kindFor(name),
@@ -80,6 +85,7 @@ pub fn writeToolCall(w: *Io.Writer, session_id: []const u8, id: []const u8, name
 }
 
 pub fn writeToolStatus(w: *Io.Writer, session_id: []const u8, id: []const u8, status: []const u8) !void {
+    v2.breakMessage();
     try proto.writeNotification(w, "session/update", .{
         .sessionId = session_id,
         .update = .{
@@ -92,6 +98,7 @@ pub fn writeToolStatus(w: *Io.Writer, session_id: []const u8, id: []const u8, st
 
 pub fn writeToolDone(w: *Io.Writer, session_id: []const u8, id: []const u8, is_error: bool, text: []const u8) !void {
     const status: []const u8 = if (is_error) "failed" else "completed";
+    v2.breakMessage();
     if (text.len == 0) return writeToolStatus(w, session_id, id, status);
     try proto.writeNotification(w, "session/update", .{
         .sessionId = session_id,
@@ -194,7 +201,8 @@ pub fn translateEvent(
         try proto.writeNotification(w, "session/update", .{
             .sessionId = session_id,
             .update = .{
-                .sessionUpdate = "gui_ask_user",
+                // v2 reserves non-underscore variants for the spec.
+                .sessionUpdate = if (v2.on()) "_gui_ask_user" else "gui_ask_user",
                 .callId = util.strFieldObj(ev.object, "call_id") orelse "",
                 .question = util.strFieldObj(ev.object, "question") orelse "",
                 .input = ev.object.get("input") orelse Value{ .object = .empty },
