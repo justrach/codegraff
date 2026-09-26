@@ -197,8 +197,11 @@ pub fn codexLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, re
     try out.flush();
 }
 
-// Kimi Code OAuth — device-code flow, same client + endpoints the Kimi CLI
-// uses (auth.kimi.com). `graff login kimi` runs the flow and writes the token
+// Kimi Code OAuth — device-code flow on the shared kimi-code OAuth client and
+// endpoints (auth.kimi.com). Moonshot's own hosts share this client and tell
+// themselves apart by `X-Msh-Platform`; graff reports `graff` and
+// `graff/<version>`, never the CLI's identity (#1297, ADR 0204).
+// `graff login kimi` runs the flow and writes the token
 // to ~/.kimi/credentials/graff-oauth.json; loadKimiOAuth reads it at startup
 // and refreshes in place when near expiry.
 const kimi_oauth_host = "https://auth.kimi.com";
@@ -353,11 +356,17 @@ pub fn refreshOAuthKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u
     if (!is_kimi and !is_xai and !is_codex) return null;
     oauth_refresh_mutex.lockUncancelable(io);
     defer oauth_refresh_mutex.unlock(io);
+    // Vault sync (harness ADR 0005): adopt a newer login, wait while another
+    // device refreshes, or refresh under the lease and publish the result.
+    const live = @import("vault_live.zig").before(io, gpa, arena, home, provider_id, force, oauth_refresh_margin_s);
+    if (live) |l| if (l.step == .wait) return null;
+    const refresh_now = force and (live == null or live.?.step == .refresh);
+    defer if (live) |l| l.commit();
     if (is_codex) {
         const dir = helpers.codexHomeDir(arena, home) orelse return null;
-        return helpers.loadCodexOAuth(io, gpa, arena, dir, force, stale, account);
+        return helpers.loadCodexOAuth(io, gpa, arena, dir, refresh_now, stale, account);
     }
-    const key = (if (is_kimi) loadKimiOAuth(io, gpa, arena, home, force, stale) else loadXaiOAuth(io, gpa, arena, home, force, stale)) orelse return null;
+    const key = (if (is_kimi) loadKimiOAuth(io, gpa, arena, home, refresh_now, stale) else loadXaiOAuth(io, gpa, arena, home, refresh_now, stale)) orelse return null;
     return .{ .key = key };
 }
 

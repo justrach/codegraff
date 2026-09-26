@@ -10,6 +10,14 @@ test {
     _ = @import("provider_codegraff_tests.zig");
     _ = @import("agent_responses.zig");
     _ = @import("session_branch.zig");
+    _ = @import("acp_subagent_progress.zig");
+    _ = @import("vault_crypto.zig");
+    _ = @import("vault_client.zig");
+    _ = @import("vault_sync.zig");
+    _ = @import("keys_vault_cli.zig");
+    _ = @import("vault_refresh.zig");
+    _ = @import("vault_live.zig");
+    _ = @import("peer_cli.zig");
 }
 
 test "oneshot -p still uses the live stall-watched transport" {

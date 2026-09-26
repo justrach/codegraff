@@ -35,6 +35,27 @@ The desktop's short-lived observer runs the same vendor extension before model,
 credential, MCP and session startup. It remains available during another Graff's
 active turn. It accepts only local peer requests and creates no session.
 
+## Other agents
+
+Any agent that can run a shell command can join the same rooms with
+`graff peer` (ADR 0203):
+
+```sh
+graff peer list                          # live agents on this device
+graff peer send --to "Fixing login" "tests are green on my side"
+graff peer send "parser landed"          # everyone in this worktree
+graff peer inbox                         # messages since your last read
+```
+
+The default name is `<agent>@<folder>`; set `--as` or `GRAFF_PEER_NAME` to
+choose one. A DM is not sent while the recipient has written to you since your
+last read; the command prints what you missed and exits 3. Read it, then send
+again, or pass `--anyway`.
+
+To give Claude Code the same one-line wake graff sessions get, add a
+`UserPromptSubmit` hook that runs `graff peer inbox --wake`. It prints nothing
+when there is no mail.
+
 ## Offline verification
 
 `bun run test:visual` in the desktop package exercises theme rendering, panel

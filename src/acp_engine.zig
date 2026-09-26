@@ -10,6 +10,8 @@ const proto = @import("acp_protocol.zig");
 const acp_workspace = @import("acp_workspace.zig");
 const util = @import("util.zig");
 const acp_auth = @import("acp_auth.zig");
+const v2 = @import("acp_v2.zig");
+const v2_prompt = @import("acp_v2_prompt.zig");
 
 pub const parseRequest = proto.parseRequest;
 pub const negotiateVersion = proto.negotiateVersion;
@@ -123,7 +125,7 @@ fn sameConfig(before: []const ConfigOption, after: []const ConfigOption) bool {
     return true;
 }
 
-fn emitConfigChange(d: *Dispatch, arena: Allocator, w: *Io.Writer, sid: []const u8, before: []const ConfigOption) !void {
+pub fn emitConfigChange(d: *Dispatch, arena: Allocator, w: *Io.Writer, sid: []const u8, before: []const ConfigOption) !void {
     if (d.config == null) return;
     const after = try configOptions(d, arena);
     if (sameConfig(before, after)) return;
@@ -138,7 +140,7 @@ fn respond(w: *Io.Writer, req: proto.Request, result: anytype) !void {
     try writeResult(w, req.id, result);
 }
 
-fn respondError(w: *Io.Writer, req: proto.Request, code: i32, message: []const u8) !void {
+pub fn respondError(w: *Io.Writer, req: proto.Request, code: i32, message: []const u8) !void {
     if (req.id == null) return;
     try writeError(w, req.id, code, message);
 }
@@ -168,6 +170,7 @@ fn turnError(d: *Dispatch, w: *Io.Writer, req: proto.Request, err: anyerror) !vo
 }
 
 fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request) !void {
+    if (v2.on()) return v2_prompt.promptTurn(d, arena, w, req);
     const obj: ?std.json.ObjectMap = if (req.params) |p| (if (p == .object) p.object else null) else null;
     const sid = blk: {
         if (obj) |o| if (util.strFieldObj(o, "sessionId")) |s| break :blk s;
@@ -204,10 +207,11 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
     try respond(w, req, .{ .stopReason = stop });
 }
 
-fn emitMeter(d: *Dispatch, w: *Io.Writer, sid: []const u8) !void {
+pub fn emitMeter(d: *Dispatch, w: *Io.Writer, sid: []const u8) !void {
     if (d.meter) |meter| {
         // Report live occupancy independently of the model catalog.
         const m = meter(d.ctx);
+        if (m.window > 0 and v2.on()) return v2.writeUsage(w, sid, m.used, m.window);
         if (m.window > 0) try proto.writeNotification(w, "session/update", .{
             .sessionId = sid,
             .update = .{
@@ -219,54 +223,8 @@ fn emitMeter(d: *Dispatch, w: *Io.Writer, sid: []const u8) !void {
     }
 }
 
-test "slash commands refresh occupancy before their terminal response" {
-    const Fixture = struct {
-        fn slash(_: *anyopaque, _: Allocator, _: []const u8) anyerror!?[]const u8 {
-            return "compacted";
-        }
-        fn meter(_: *anyopaque) Meter {
-            return .{ .used = 20, .window = 100 };
-        }
-    };
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var buffer: [2048]u8 = undefined;
-    var writer: Io.Writer = .fixed(&buffer);
-    var dispatch: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .slash = Fixture.slash, .meter = Fixture.meter };
-    try handleLine(&dispatch, arena.allocator(), &writer, "{\"id\":1,\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"/compact\"}]}}");
-    const output = writer.buffered();
-    const meter_pos = std.mem.indexOf(u8, output, "\"used\":20,\"window\":100") orelse return error.MissingMeter;
-    const end_pos = std.mem.indexOf(u8, output, "stopReason") orelse return error.MissingResponse;
-    try std.testing.expect(meter_pos < end_pos);
-}
-
-test "live context occupancy precedes the terminal prompt reply" {
-    const was_cancelled = cancel_flag.swap(false, .acq_rel);
-    defer cancel_flag.store(was_cancelled, .release);
-    const extra = extra_cancelled;
-    extra_cancelled = null;
-    defer extra_cancelled = extra;
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    const a = state.allocator();
-    var buf: [16384]u8 = undefined;
-    var w: Io.Writer = .fixed(&buf);
-    const meter = struct {
-        fn read(_: *anyopaque) Meter {
-            return .{ .used = 123, .window = 1000 };
-        }
-    }.read;
-    var d: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .meter = meter };
-    try handleLine(&d, a, &w, "{\"id\":1,\"method\":\"session/new\"}");
-    w = .fixed(&buf);
-    try handleLine(&d, a, &w, "{\"id\":2,\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"hi\"}]}}");
-    const output = w.buffered();
-    const occupancy = std.mem.indexOf(u8, output, "\"gui_context_meter\",\"used\":123,\"window\":1000") orelse return error.MissingMeter;
-    const terminal = std.mem.indexOf(u8, output, "\"stopReason\":\"end_turn\"") orelse return error.MissingTerminalReply;
-    try std.testing.expect(occupancy < terminal);
-}
-
 fn respondInitialize(w: *Io.Writer, req: proto.Request, can_load: bool) !void {
+    if (v2.on()) return respond(w, req, v2.initializeResult(req.params, can_load, implementation_version));
     return respond(w, req, .{
         .protocolVersion = negotiateVersion(req.params),
         .agentCapabilities = .{
@@ -287,14 +245,20 @@ fn respondInitialize(w: *Io.Writer, req: proto.Request, can_load: bool) !void {
 /// engine response; every request that needs a live Agent is auth-gated.
 pub fn handlePreAuthLine(arena: Allocator, w: *Io.Writer, line: []const u8) !void {
     const req = parseRequest(arena, line) orelse return;
-    if (std.mem.eql(u8, req.method, "initialize")) return respondInitialize(w, req, false);
+    if (std.mem.eql(u8, req.method, "initialize")) {
+        v2.negotiate(req.params, 0);
+        return respondInitialize(w, req, false);
+    }
     return respondError(w, req, err_auth_required, acp_auth.required_message);
 }
 
 pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u8) !void {
     const req = parseRequest(arena, line) orelse return;
     if (std.mem.eql(u8, req.method, "initialize")) {
-        d.subagents = supportsSubagents(req.params);
+        v2.negotiate(req.params, d.seed);
+        @import("acp_elicit.zig").configure(req.params);
+        // The draft child-session RFD is a v1 shape; v2 gets tool-call progress.
+        d.subagents = !v2.on() and supportsSubagents(req.params);
         d.background_subagents = supportsBackgroundSubagents(req.params);
         return respondInitialize(w, req, d.load_session != null);
     }
@@ -323,7 +287,7 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
         try proto.writeAvailableCommands(w, d.session_id.?, proto.slashCommands());
         return;
     }
-    if ((d.load_session != null and (std.mem.eql(u8, req.method, "session/prompt") or std.mem.eql(u8, req.method, "session/cancel"))) or
+    if ((d.load_session != null and (std.mem.eql(u8, req.method, "session/prompt") or std.mem.eql(u8, req.method, "session/cancel") or std.mem.eql(u8, req.method, "session/close"))) or
         (d.set_config != null and std.mem.eql(u8, req.method, "session/set_config_option")))
     {
         const params = req.params orelse return respondError(w, req, -32602, "Invalid session ID");
@@ -335,10 +299,11 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
     if (std.mem.eql(u8, req.method, "session/cancel")) {
         cancel_flag.store(true, .release);
         if (on_cancel) |hook| hook();
-        if (req.id != null) return respond(w, req, .{});
+        if (req.id != null) return respond(w, req, struct {}{});
         return;
     }
-    if (std.mem.eql(u8, req.method, "session/load")) {
+    if (v2.on() and std.mem.eql(u8, req.method, "session/close")) return respond(w, req, struct {}{});
+    if (std.mem.eql(u8, req.method, if (v2.on()) "session/resume" else "session/load")) {
         if (d.load_session) |load| {
             if (d.mcp_servers) |attach| attach(d.ctx, arena, req.params) catch {};
             return load(d.ctx, arena, w, req);

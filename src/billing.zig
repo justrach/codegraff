@@ -87,9 +87,17 @@ pub const CostClass = enum {
 /// vendor. A seat with no credential yet falls back to the provider table and
 /// there advertises what signing in would buy, which is the only useful thing
 /// to say on a row the user cannot pick yet.
+/// A key that spends a membership plan, not a meter. Kimi Code keys are made
+/// in the Kimi Code console, only work on api.kimi.com/coding, and draw on the
+/// membership quota (#1297).
+fn planKey(provider_id: []const u8) bool {
+    return std.mem.eql(u8, provider_id, "kimi");
+}
+
 pub fn costFor(provider_id: []const u8, source: CredentialSource) CostClass {
     if (localSeat(provider_id)) return .local;
     if (std.mem.eql(u8, provider_id, "codegraff")) return .credits;
+    if (planKey(provider_id)) return .plan;
     if (!subscriptionLogin(provider_id)) return .api;
     return switch (source) {
         .login, .none => .plan,
@@ -100,6 +108,7 @@ pub fn costFor(provider_id: []const u8, source: CredentialSource) CostClass {
 /// The billing class of one API call on this seat.
 pub fn forSeat(provider_id: []const u8, model: []const u8, source: CredentialSource) Billing {
     if (source == .login and subscriptionLogin(provider_id)) return .sub;
+    if (planKey(provider_id) and source != .none) return .sub;
     return if (pricing.priceForProvider(provider_id, model) != null) .priced else .unpriced;
 }
 
@@ -123,10 +132,11 @@ test "a flat-rate login and a metered key on the same seat bill differently (#47
     try std.testing.expectEqual(Billing.sub, forSeat("xai", "grok-4.3", .login));
     try std.testing.expectEqual(Billing.priced, forSeat("xai", "grok-4.3", .environment));
 
-    // Same discipline for the two providers that were already classified: the
-    // subscription is the login, so KIMI_API_KEY is metered per token.
+    // Kimi is the exception (#1297): a Kimi Code console key draws on the
+    // membership quota, so KIMI_API_KEY bills like the login does.
     try std.testing.expectEqual(Billing.sub, forSeat("kimi", "kimi-k2.7", .login));
-    try std.testing.expectEqual(Billing.priced, forSeat("kimi", "kimi-k2.7", .environment));
+    try std.testing.expectEqual(Billing.sub, forSeat("kimi", "kimi-k2.7", .environment));
+    try std.testing.expectEqual(Billing.sub, forSeat("kimi", "kimi-k2.7", .stored));
 
     // codex has no usable env key (env_key is the CODEX_DISABLED sentinel), so
     // it is only ever reached by login — but the source still gates it.
@@ -185,7 +195,8 @@ test "costFor: the picker's badge follows the credential, then the provider" {
     try std.testing.expectEqual(CostClass.plan, costFor("xai", .login));
     try std.testing.expectEqual(CostClass.api, costFor("xai", .environment));
     try std.testing.expectEqual(CostClass.plan, costFor("kimi", .login));
-    try std.testing.expectEqual(CostClass.api, costFor("kimi", .stored));
+    try std.testing.expectEqual(CostClass.plan, costFor("kimi", .stored));
+    try std.testing.expectEqual(CostClass.plan, costFor("kimi", .environment));
 
     // localhost is nobody's bill.
     try std.testing.expectEqual(CostClass.local, costFor("lmstudio", .environment));

@@ -70,16 +70,37 @@ pub fn postMessage(io: Io, arena: Allocator, dir: Io.Dir, name: []const u8, msg:
     return true;
 }
 
+/// Most bytes one drain reads. A drain reads only what follows its offset, so
+/// a long-lived room costs the new lines, not the whole log.
+pub const drain_window: usize = 1024 * 1024;
+
+/// Current byte length of a room, or 0 when it does not exist yet. Joining at
+/// the tail needs only this, never the bytes.
+pub fn roomSize(io: Io, dir: Io.Dir, name: []const u8) u64 {
+    const st = dir.statFile(io, name, .{}) catch return 0;
+    return st.size;
+}
+
 /// Read complete channel lines after `offset`, advancing it past everything
 /// parsed. A trailing partial line stays for the next drain — a writer
 /// mid-append never yields a torn message. A file shorter than the offset was
-/// recreated; restart from the top rather than skip it forever.
+/// recreated; restart from the top rather than skip it forever. Reads at most
+/// `drain_window` bytes from the offset; the rest waits for the next drain.
 pub fn readNewMessages(io: Io, arena: Allocator, dir: Io.Dir, name: []const u8, offset: *u64) []const Message {
-    const text = dir.readFileAlloc(io, name, arena, .limited(256 * 1024)) catch return &.{};
-    if (text.len < offset.*) offset.* = 0;
-    if (text.len == offset.*) return &.{};
+    return readNewMessagesWindow(io, arena, dir, name, offset, drain_window);
+}
+
+pub fn readNewMessagesWindow(io: Io, arena: Allocator, dir: Io.Dir, name: []const u8, offset: *u64, window: usize) []const Message {
+    const f = dir.openFile(io, name, .{}) catch return &.{};
+    defer f.close(io);
+    const size = (f.stat(io) catch return &.{}).size;
+    if (size < offset.*) offset.* = 0;
+    if (size == offset.*) return &.{};
+    const want: usize = @intCast(@min(size - offset.*, window));
+    const buf = arena.alloc(u8, want) catch return &.{};
+    const text = buf[0 .. f.readPositionalAll(io, buf, offset.*) catch return &.{}];
     var msgs: std.ArrayList(Message) = .empty;
-    var pos: usize = @intCast(offset.*);
+    var pos: usize = 0;
     while (std.mem.indexOfScalarPos(u8, text, pos, '\n')) |nl| {
         const line = text[pos..nl];
         pos = nl + 1;
@@ -87,7 +108,10 @@ pub fn readNewMessages(io: Io, arena: Allocator, dir: Io.Dir, name: []const u8, 
         if (m.from_pid == 0 or m.text.len == 0) continue;
         msgs.append(arena, m) catch break;
     }
-    offset.* = @intCast(pos);
+    // A single line longer than the window can never complete inside it; skip
+    // it rather than re-read the same bytes forever.
+    if (pos == 0 and text.len == window) pos = text.len;
+    offset.* += pos;
     return msgs.items;
 }
 
@@ -160,6 +184,52 @@ test "readNewMessages: a torn trailing line waits for the next drain" {
     const second = readNewMessages(io, arena, tmp.dir, name, &off);
     try std.testing.expectEqual(1, second.len);
     try std.testing.expectEqualStrings("rest", second[0].text);
+}
+
+test "readNewMessages: a room past the old 256 KiB read cap still delivers new lines" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var big: std.ArrayList(u8) = .empty;
+    for (0..1500) |_| {
+        try big.appendSlice(arena, "{\"from_pid\":9,\"from_start\":1,\"text\":\"");
+        try big.appendNTimes(arena, 'x', 200);
+        try big.appendSlice(arena, "\"}\n");
+    }
+    try tmp.dir.writeFile(io, .{ .sub_path = "room.jsonl", .data = big.items });
+    var off: u64 = roomSize(io, tmp.dir, "room.jsonl");
+    try std.testing.expect(off > 256 * 1024);
+    try std.testing.expect(postMessage(io, arena, tmp.dir, "room.jsonl", .{ .from_pid = 2, .from_start = 1, .ts_ms = 1, .text = "after the cap" }));
+    const got = readNewMessages(io, arena, tmp.dir, "room.jsonl", &off);
+    try std.testing.expectEqual(@as(usize, 1), got.len);
+    try std.testing.expectEqualStrings("after the cap", got[0].text);
+    try std.testing.expectEqual(roomSize(io, tmp.dir, "room.jsonl"), off);
+}
+
+test "readNewMessagesWindow: a line longer than the window is skipped, not re-read forever" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const long_line: [301]u8 = @as([300]u8, @splat('y')) ++ "\n".*;
+    try tmp.dir.writeFile(io, .{ .sub_path = "room.jsonl", .data = &long_line });
+    try std.testing.expect(postMessage(io, arena, tmp.dir, "room.jsonl", .{ .from_pid = 2, .from_start = 1, .ts_ms = 1, .text = "ok" }));
+    var off: u64 = 0;
+    var heard: usize = 0;
+    var drains: usize = 0;
+    while (off < roomSize(io, tmp.dir, "room.jsonl") and drains < 32) : (drains += 1) {
+        const got = readNewMessagesWindow(io, arena, tmp.dir, "room.jsonl", &off, 128);
+        for (got) |m| {
+            if (std.mem.eql(u8, m.text, "ok")) heard += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), heard);
+    try std.testing.expect(drains < 32);
 }
 
 test "postMessage dual-writes JSONL when Accord live is on" {

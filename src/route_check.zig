@@ -134,11 +134,11 @@ test "seatFor: family-alias spelling seats the sub, exact names hold, unknown mi
     try std.testing.expectEqual(pricing.Billing.sub, sol.seat.billing);
     try std.testing.expect(seatFor(all, "totally-unknown-zzz") == .unknown);
 
-    // The same seat reached with KIMI_API_KEY is billed, not free. (Whether it
-    // lands on .priced or .unpriced is the price sheet's business; what must
-    // never happen is a metered key being written off as a subscription.)
+    // A metered key is never written off as a subscription: XAI_API_KEY bills.
+    // KIMI_API_KEY is a Kimi Code console key on the membership quota (#1297).
     const keyed = provider_mod.Keys{ .values = @splat("k"), .sources = @splat(.environment) };
-    try std.testing.expect(seatFor(keyed, "kimi-k3").seat.billing != .sub);
+    try std.testing.expect(seatFor(keyed, "grok-4.3").seat.billing != .sub);
+    try std.testing.expectEqual(pricing.Billing.sub, seatFor(keyed, "kimi-k3").seat.billing);
 }
 
 test "seatFor: catalogued model with no serving credential reports no_credential, not a gateway seat" {

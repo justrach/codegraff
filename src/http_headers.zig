@@ -557,7 +557,8 @@ test "Kimi chat sends graff identity and kimi-code device headers (#617)" {
     var buf: [12]std.http.Header = undefined;
     const p: Provider = .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "k3", .context = 256_000 };
     const headers = providerHeaders(io, p, "Bearer k", &buf);
-    try std.testing.expectEqualStrings("kimi_code_cli", headerValue(headers, "X-Msh-Platform").?);
+    try std.testing.expectEqualStrings("graff", headerValue(headers, "X-Msh-Platform").?);
+    for (headers) |h| try std.testing.expect(std.mem.indexOf(u8, h.value, "kimi_code_cli") == null and std.mem.indexOf(u8, h.value, "kimi-code-cli") == null);
     try std.testing.expect(headerValue(headers, "X-Msh-Device-Name").?.len > 0);
     try std.testing.expect(!std.mem.eql(u8, headerValue(headers, "X-Msh-Device-Name").?, "unknown"));
     const model = headerValue(headers, "X-Msh-Device-Model").?;

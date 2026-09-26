@@ -121,7 +121,12 @@ fn sockPath(buf: []u8, chan_name: []const u8) ?[]const u8 {
 /// Best-effort live send of the same JSONL line already appended to the room.
 /// Never fails the durable write. Fans out to every peer sock in the live dir.
 pub fn livePost(io: Io, gpa: std.mem.Allocator, chan_name: []const u8, json_line: []const u8) void {
-    fanout(io, gpa, chan_name, .msg, .none, json_line);
+    // Callers pass a request arena. Standing links outlive it, so they come
+    // from the listener's allocator; an arena-owned link was freed with the
+    // request and then freed again by stop().
+    _ = gpa;
+    const owner = g_gpa orelse return;
+    fanout(io, owner, chan_name, .msg, .none, json_line);
 }
 
 /// Latest claim ledger as replaceable progress. File JSON remains canonical

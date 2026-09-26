@@ -222,6 +222,75 @@ fn probeDarwin(io: Io, pid: i32) Probe {
     return if (usec == 0) .unknown else .{ .id = usec };
 }
 
+/// A process's parent pid and short command name (`comm`, truncated by the
+/// kernel to 15 bytes). `graff peer` walks these to find the long-lived agent
+/// behind a per-command shell.
+pub const Parent = struct {
+    ppid: i32,
+    comm_buf: [16]u8 = @splat(0),
+    comm_len: u8 = 0,
+
+    pub fn comm(p: *const Parent) []const u8 {
+        return p.comm_buf[0..p.comm_len];
+    }
+};
+
+pub fn parentOf(pid: i32) ?Parent {
+    if (pid <= 0) return null;
+    switch (builtin.os.tag) {
+        .linux => {
+            var path_buf: [64]u8 = undefined;
+            const path = std.fmt.bufPrint(&path_buf, "/proc/{d}/stat", .{pid}) catch return null;
+            const fd = std.posix.openat(std.posix.AT.FDCWD, path, .{}, 0) catch return null;
+            defer _ = std.posix.system.close(fd);
+            var buf: [4096]u8 = undefined;
+            const n = std.posix.read(fd, &buf) catch return null;
+            return parseLinuxParent(buf[0..n]);
+        },
+        .macos => {
+            var info: darwin.ProcBsdInfo = undefined;
+            const size: c_int = @sizeOf(darwin.ProcBsdInfo);
+            if (darwin.proc_pidinfo(@intCast(pid), darwin.PROC_PIDTBSDINFO, 0, &info, size) != size) return null;
+            var p: Parent = .{ .ppid = @intCast(info.ppid) };
+            const c = std.mem.sliceTo(&info.comm, 0);
+            @memcpy(p.comm_buf[0..c.len], c);
+            p.comm_len = @intCast(c.len);
+            return p;
+        },
+        else => return null,
+    }
+}
+
+/// Fields 2 (comm, between the first '(' and the LAST ')') and 4 (ppid) of
+/// a `/proc/<pid>/stat` line.
+pub fn parseLinuxParent(text: []const u8) ?Parent {
+    const open = std.mem.indexOfScalar(u8, text, '(') orelse return null;
+    const close = std.mem.lastIndexOfScalar(u8, text, ')') orelse return null;
+    if (close <= open) return null;
+    var it = std.mem.tokenizeAny(u8, text[close + 1 ..], " \t\r\n");
+    _ = it.next() orelse return null; // field 3: state
+    const ppid = std.fmt.parseInt(i32, it.next() orelse return null, 10) catch return null;
+    var p: Parent = .{ .ppid = ppid };
+    const c = text[open + 1 .. close];
+    const n = @min(c.len, p.comm_buf.len);
+    @memcpy(p.comm_buf[0..n], c[0..n]);
+    p.comm_len = @intCast(n);
+    return p;
+}
+
+test "parseLinuxParent: ppid and a comm holding spaces and ')'" {
+    const p = parseLinuxParent("4242 (my (odd) cmd) S 777 4242 4242 0 -1") orelse return error.ExpectedParent;
+    try std.testing.expectEqual(@as(i32, 777), p.ppid);
+    try std.testing.expectEqualStrings("my (odd) cmd", p.comm());
+    try std.testing.expect(parseLinuxParent("garbage") == null);
+}
+
+test "parentOf: this process has a live parent" {
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
+    const p = parentOf(selfPid()) orelse return error.ExpectedParent;
+    try std.testing.expect(p.ppid > 0);
+}
+
 const win = struct {
     const w = std.os.windows;
     const PROCESS_QUERY_LIMITED_INFORMATION: w.DWORD = 0x1000;

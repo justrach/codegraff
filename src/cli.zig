@@ -23,6 +23,12 @@ const update_target = @import("update_target.zig");
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.302.6
+    \\  • ask_user over ACP uses standard elicitation and never freezes a client
+    \\  • ACP subagents stream their work onto the parent tool call
+    \\  • ACP v2 draft preview (GRAFF_ACP_V2=1)
+    \\  • graff peer: message other agents on this device; graff keys: sync logins
+    \\
     \\0.0.302.5
     \\  • WebSocket turns stream live, with automatic HTTPS fallback
     \\  • ACP sessions use the client's folder and report their worktree
@@ -69,6 +75,7 @@ pub const usage_text =
     \\  graff worktree prune             drop git registrations for worktrees whose dirs were deleted
     \\  graff servers                    background servers graff started (this session's or older): pid, port, age
     \\  graff servers stop <pid>         end one (its whole process tree); `prune` drops records of dead ones
+    \\  graff peer list|send|inbox       talk with other agents on this device (Claude Code, Codex, graff)
     \\  graff sandboxes                  list your gateway sandboxes (what's burning credits)
     \\  graff sandboxes stop <id>        spin a sandbox down (stops it + settles the meter)
     \\  graff cube new                   spin up a cloud graff (sandbox + serve + preview URL)

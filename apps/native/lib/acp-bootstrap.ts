@@ -43,7 +43,7 @@ export async function initializeWorker(
 ): Promise<{ sessionId: string; cwd?: string }> {
   let phase = "initialize";
   try {
-    const initialized = await transport.request(phase, { protocolVersion: 1, clientCapabilities: { fs: {} } }, timeoutMs) as { protocolVersion?: unknown } | null;
+    const initialized = await transport.request(phase, { protocolVersion: 1, clientCapabilities: { fs: {}, _meta: { "graff/askUser": true } } }, timeoutMs) as { protocolVersion?: unknown } | null;
     if (initialized?.protocolVersion !== 1) {
       throw new Error("initialize returned an unsupported or missing protocolVersion; expected 1");
     }
