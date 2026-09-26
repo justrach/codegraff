@@ -10,9 +10,9 @@ fn repositoryPath(arena: A, dir: []const u8, name: []const u8) ![]const u8 {
     return std.mem.trimStart(u8, path, "/");
 }
 
-pub const File = struct { path: []const u8, before: ?[]const u8, after: ?[]const u8, change: ?[]const u8 = null };
+pub const File = struct { path: []const u8, before: ?[]const u8, after: ?[]const u8, change: ?[]const u8 = null, after_omitted: bool = false };
 pub const Input = struct {
-    version: u8 = 2,
+    version: u8 = 3,
     base: []const u8,
     head: []const u8,
     body: []const u8,
@@ -21,7 +21,7 @@ pub const Input = struct {
     support_limit: ?[]const u8 = null,
     // Changed files plus unchanged callers/configuration that establish
     // how those files are reached by the repository's test runners.
-    scope: []const u8 = "changed committed files plus unchanged callers/configuration that establish test reachability",
+    scope: []const u8 = "changed committed files (full head or marked context diff) plus unchanged callers/configuration that establish test reachability",
 };
 pub fn digest(arena: A, input: Input) ![64]u8 {
     const bytes = try std.json.Stringify.valueAlloc(arena, input, .{});
@@ -152,13 +152,30 @@ pub fn gather(gpa: A, io: std.Io, arena: A, cwd: []const u8, base: []const u8, h
     while (paths.next()) |path| {
         if (path.len == 0) continue;
         if (files.items.len >= max_files) return error.ReviewTooLarge;
-        const after = try blob(gpa, io, arena, cwd, head, path);
+        var after_omitted = false;
+        const after = blob(gpa, io, arena, cwd, head, path) catch |err| blk: {
+            if (err != error.ReviewTooLarge) return err;
+            after_omitted = true;
+            break :blk null;
+        };
         // A context diff carries the old lines; repeating the complete base
         // blob would charge unchanged source twice and crowd out test evidence.
-        const change = try raw(gpa, io, arena, cwd, &.{ "git", "diff", "--no-ext-diff", "--no-renames", "--unified=3", base, head, "--", path });
-        size += change.len + (if (after) |text| text.len else 0);
-        if (size > max_bytes) return error.ReviewTooLarge;
-        try files.append(arena, .{ .path = path, .before = null, .after = after, .change = change });
+        var change = try raw(gpa, io, arena, cwd, &.{ "git", "diff", "--no-ext-diff", "--no-renames", "--unified=3", base, head, "--", path });
+        if (size + change.len > max_bytes) return error.ReviewTooLarge;
+        if (after) |text| {
+            if (size + change.len + text.len > max_bytes) after_omitted = true;
+        }
+        if (after_omitted) {
+            // Preserve more committed context when it fits. Never label this
+            // excerpt as the complete proposed-head source.
+            if (raw(gpa, io, arena, cwd, &.{ "git", "diff", "--no-ext-diff", "--no-renames", "--unified=20", base, head, "--", path })) |expanded| {
+                if (size + expanded.len <= max_bytes) change = expanded;
+            } else |err| {
+                if (err != error.ReviewTooLarge) return err;
+            }
+        }
+        size += change.len + if (after_omitted) @as(usize, 0) else if (after) |text| text.len else 0;
+        try files.append(arena, .{ .path = path, .before = null, .after = if (after_omitted) null else after, .change = change, .after_omitted = after_omitted });
     }
     if (files.items.len == 0) return error.NoChangedFiles;
     var support: Support = .{ .gpa = gpa, .io = io, .arena = arena, .cwd = cwd, .head = head, .files = &files, .size = &size, .seen = std.StringHashMap(void).init(arena) };
@@ -262,6 +279,68 @@ test "claim review budgets changed hunks instead of the complete base blob" {
     try std.testing.expectError(error.ReviewTooLarge, gather(gpa, io, a, cwd, head, large_head, "claim"));
 }
 
+test "claim review uses committed context when changed head source exceeds the budget" {
+    const io = std.testing.io;
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    var scratch = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer scratch.deinit();
+    const a = scratch.allocator();
+    const gpa = std.testing.allocator;
+    var path: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = path[0..try temp.dir.realPath(io, &path)];
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "init", "-q" });
+    const source = try a.alloc(u8, 75 * 1024);
+    @memset(source, 'a');
+    for (source, 0..) |*byte, i| if (i % 80 == 79) {
+        byte.* = '\n';
+    };
+    source[0] = 'x';
+    source[source.len - 1] = '\n';
+    try temp.dir.writeFile(io, .{ .sub_path = "alpha.txt", .data = source });
+    try temp.dir.writeFile(io, .{ .sub_path = "beta.txt", .data = source });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "add", "." });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "base" });
+    const base = try capture(gpa, io, a, cwd, &.{ "git", "rev-parse", "HEAD" });
+    source[0] = 'y';
+    try temp.dir.writeFile(io, .{ .sub_path = "alpha.txt", .data = source });
+    try temp.dir.writeFile(io, .{ .sub_path = "beta.txt", .data = source });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "add", "." });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "head" });
+    const head = try capture(gpa, io, a, cwd, &.{ "git", "rev-parse", "HEAD" });
+    source[0] = 'u';
+    try temp.dir.writeFile(io, .{ .sub_path = "beta.txt", .data = source });
+    const input = try gather(gpa, io, a, cwd, base, head, "claim");
+    try std.testing.expectEqual(@as(usize, 2), input.files.len);
+    try std.testing.expectEqual(@as(u8, 'y'), input.files[0].after.?[0]);
+    try std.testing.expect(!input.files[0].after_omitted);
+    try std.testing.expect(input.files[1].after == null);
+    try std.testing.expect(input.files[1].after_omitted);
+    try std.testing.expect(std.mem.indexOf(u8, input.files[1].change.?, "+yaaa") != null);
+    try std.testing.expect(std.mem.indexOf(u8, input.files[1].change.?, "+uaaa") == null);
+
+    const large = try a.alloc(u8, max_bytes + 1024);
+    @memset(large, 'a');
+    for (large, 0..) |*byte, i| if (i % 80 == 79) {
+        byte.* = '\n';
+    };
+    large[0] = 'x';
+    large[large.len - 1] = '\n';
+    try temp.dir.writeFile(io, .{ .sub_path = "large.txt", .data = large });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "add", "." });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "large-base" });
+    const large_base = try capture(gpa, io, a, cwd, &.{ "git", "rev-parse", "HEAD" });
+    large[0] = 'y';
+    try temp.dir.writeFile(io, .{ .sub_path = "large.txt", .data = large });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "add", "." });
+    _ = try capture(gpa, io, a, cwd, &.{ "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "large-head" });
+    const large_head = try capture(gpa, io, a, cwd, &.{ "git", "rev-parse", "HEAD" });
+    const single = try gather(gpa, io, a, cwd, large_base, large_head, "claim");
+    try std.testing.expectEqual(@as(usize, 1), single.files.len);
+    try std.testing.expect(single.files[0].after == null and single.files[0].after_omitted);
+    try std.testing.expect(std.mem.indexOf(u8, single.files[0].change.?, "+yaaa") != null);
+}
+
 test "claim review includes unchanged callers that establish test reachability" {
     const io = std.testing.io;
     var temp = std.testing.tmpDir(.{});
@@ -303,6 +382,9 @@ test "claim review digest invalidates changed body head and committed source" {
     try std.testing.expect(!std.mem.eql(u8, &original, &try digest(a, input)));
     input.head = "head";
     files[0].after = "different committed source";
+    try std.testing.expect(!std.mem.eql(u8, &original, &try digest(a, input)));
+    files[0].after = "source";
+    files[0].after_omitted = true;
     try std.testing.expect(!std.mem.eql(u8, &original, &try digest(a, input)));
 }
 
