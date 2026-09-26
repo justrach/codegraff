@@ -23,6 +23,12 @@ const update_target = @import("update_target.zig");
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.302.6
+    \\  • ask_user over ACP uses standard elicitation and never freezes a client
+    \\  • ACP subagents stream their work onto the parent tool call
+    \\  • ACP v2 draft preview (GRAFF_ACP_V2=1)
+    \\  • graff peer: message other agents on this device; graff keys: sync logins
+    \\
     \\0.0.302.5
     \\  • WebSocket turns stream live, with automatic HTTPS fallback
     \\  • ACP sessions use the client's folder and report their worktree

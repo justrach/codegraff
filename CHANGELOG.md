@@ -10,6 +10,24 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.302.6
+
+### ACP
+
+- `ask_user` no longer freezes clients that cannot show a question. A client that advertises `clientCapabilities.elicitation.form` gets a standard `elicitation/create` form request; the desktop app opts in to Graff's own question update; any other client gets an immediate result so the model continues instead of waiting for an answer that cannot arrive.
+- A running subagent streams its work onto the parent's tool call as ordinary `tool_call_update` content: a bounded log of its tool calls, failures and the tail of its message. Any ACP client shows it without changes. `GRAFF_ACP_SUBAGENT_PROGRESS=0` turns it off.
+- ACP v2 draft preview: with `GRAFF_ACP_V2=1` and a client that asks for protocol version 2, prompts are acknowledged with a `messageId` on insertion and the outcome arrives as `state_update`, chunks carry message IDs, tool rows are created by `tool_call_update`, and `session/close` and `session/resume` are available. Every other connection keeps v1 unchanged.
+- An empty JSON-RPC result (for example `session/cancel` with an id) is now `{}` rather than `[]`.
+
+### Agents on one device
+
+- `graff peer list|send|inbox|read` lets any agent on the machine, not only graff sessions, list live agents, post to a worktree room, or send a direct message.
+
+### Logins
+
+- `graff keys` syncs provider logins between your devices through an end-to-end encrypted vault: `status`, `enable`, `devices`, `approve`, `remove`, `push`, `pull`, `put` and `get`. Rotating logins refresh under a vault lease so two devices cannot race a refresh.
+- Kimi requests identify graff as the platform, and Kimi console keys are billed as plan usage.
+
 ## v0.0.302.5
 
 ### Session and transport fixes
