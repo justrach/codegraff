@@ -389,6 +389,13 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         return true;
     }
 
+    // `graff peer <list|send|inbox>`: the device's agent rooms for any agent
+    // with a shell (Claude Code, Codex, scripts), not only graff sessions.
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "peer")) {
+        try @import("peer_cli.zig").command(gpa, io, arena, init.environ_map.get("HOME") orelse "", init.environ_map.get("GRAFF_PEER_NAME"), flags.positionals.items[1..]);
+        return true;
+    }
+
     // `graff sandboxes [stop <id>]`: list the account's gateway sandboxes or
     // spin one down. Key resolution mirrors a normal run: CODEGRAFF_API_KEY
     // env first, else the `graff login` file via loadCodegraffKey.

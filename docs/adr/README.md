@@ -229,6 +229,7 @@ record only when you need the evidence or the edge cases.
 | [0200](0200-desktop-page-transitions-preserve-tabs.md) | Desktop restart/reload confirms active-turn interruption and restores tab references from saved sessions in their workspaces. |
 | [0201](0201-cli-beta-channel-is-explicit.md) | CLI beta updates require explicit opt-in, select the newest numeric release branch, verify pinned assets, and activate on next launch. |
 | [0202](0202-acp-sessions-adopt-client-cwd.md) | ACP sessions adopt the client `cwd`, report the worktree as `_meta["graff/worktree"]` (null in a main checkout), and `graff worktree` exits non-zero when it refuses or does nothing. |
+| [0203](0203-external-agents-join-rooms-through-graff-peer.md) | Other agents join the device rooms with `graff peer list/send/inbox`: same JSONL rooms and records, owned by the agent's process; a DM is held while the recipient's newer message is unread; drains read only new bytes. |
 
 ## When to write one
 
