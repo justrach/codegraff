@@ -43,6 +43,13 @@ pub fn memberName(buf: *[24]u8, name: []const u8) []const u8 {
         }
     }
     while (n > 0 and buf[n - 1] == '-') n -= 1;
+    // The hub reserves these; keep them addressable as someone else.
+    for ([_][]const u8{ "you", "system", "all", "everyone", "here" }) |r| if (std.mem.eql(u8, buf[0..n], r)) {
+        const suffix = "-agent";
+        @memcpy(buf[n .. n + suffix.len], suffix);
+        n += suffix.len;
+        break;
+    };
     if (n < 2) {
         const fallback = "graff-agent";
         @memcpy(buf[0..fallback.len], fallback);
@@ -213,4 +220,6 @@ test "local peer names map to swarm member names" {
     try std.testing.expectEqualStrings("graff-agent", memberName(&b, "@@"));
     try std.testing.expectEqualStrings("session-1790411649669-63", memberName(&b, "session-1790411649669-6302"));
     try std.testing.expectEqualStrings("mimo", memberName(&b, "MIMO--"));
+    try std.testing.expectEqualStrings("all-agent", memberName(&b, "all"));
+    try std.testing.expectEqualStrings("everyone-agent", memberName(&b, "Everyone"));
 }
