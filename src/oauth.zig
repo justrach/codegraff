@@ -356,11 +356,17 @@ pub fn refreshOAuthKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u
     if (!is_kimi and !is_xai and !is_codex) return null;
     oauth_refresh_mutex.lockUncancelable(io);
     defer oauth_refresh_mutex.unlock(io);
+    // Vault sync (harness ADR 0005): adopt a newer login, wait while another
+    // device refreshes, or refresh under the lease and publish the result.
+    const live = @import("vault_live.zig").before(io, gpa, arena, home, provider_id, force, oauth_refresh_margin_s);
+    if (live) |l| if (l.step == .wait) return null;
+    const refresh_now = force and (live == null or live.?.step == .refresh);
+    defer if (live) |l| l.commit();
     if (is_codex) {
         const dir = helpers.codexHomeDir(arena, home) orelse return null;
-        return helpers.loadCodexOAuth(io, gpa, arena, dir, force, stale, account);
+        return helpers.loadCodexOAuth(io, gpa, arena, dir, refresh_now, stale, account);
     }
-    const key = (if (is_kimi) loadKimiOAuth(io, gpa, arena, home, force, stale) else loadXaiOAuth(io, gpa, arena, home, force, stale)) orelse return null;
+    const key = (if (is_kimi) loadKimiOAuth(io, gpa, arena, home, refresh_now, stale) else loadXaiOAuth(io, gpa, arena, home, refresh_now, stale)) orelse return null;
     return .{ .key = key };
 }
 
