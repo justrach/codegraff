@@ -61,6 +61,8 @@ pub const SetConfigFn = *const fn (ctx: *anyopaque, value: []const u8) anyerror!
 /// The request's `mcpServers` on session/new and session/load (acp_mcp_servers.zig).
 pub const McpServersFn = *const fn (ctx: *anyopaque, arena: Allocator, params: ?std.json.Value) anyerror!void;
 
+pub const Cancellation = struct { source: []const u8, message: []const u8 };
+
 pub const Dispatch = struct {
     turn: TurnFn,
     ctx: *anyopaque,
@@ -79,6 +81,7 @@ pub const Dispatch = struct {
     set_config: ?SetConfigFn = null,
     mcp_servers: ?McpServersFn = null,
     error_message: ?*const fn (ctx: *anyopaque, err: anyerror) []const u8 = null,
+    cancel_info: ?*const fn (ctx: *anyopaque) ?Cancellation = null,
     /// Live CLI: adopt the client's cwd, report `_meta["graff/worktree"]` (acp_workspace.zig).
     workspace: ?acp_workspace.Env = null,
     /// ACP v1 draft subagent updates are opt-in at initialize.
@@ -165,8 +168,14 @@ pub fn stripSgr(arena: Allocator, s: []const u8) ![]const u8 {
 }
 
 fn turnError(d: *Dispatch, w: *Io.Writer, req: proto.Request, err: anyerror) !void {
-    if (err == error.Interrupted or err == error.Canceled)
+    if (err == error.Interrupted or err == error.Canceled) {
+        if (d.cancel_info) |read| if (read(d.ctx)) |info|
+            return respond(w, req, .{ .stopReason = "cancelled", ._meta = .{
+                .@"graff/cancelSource" = info.source,
+                .@"graff/cancelMessage" = info.message,
+            } });
         return respond(w, req, .{ .stopReason = "cancelled" });
+    }
     if (err == error.RunBudgetExhausted)
         return respond(w, req, .{ .stopReason = "max_turn_requests" });
     return respondError(w, req, err_internal, if (d.error_message) |message| message(d.ctx, err) else @errorName(err));

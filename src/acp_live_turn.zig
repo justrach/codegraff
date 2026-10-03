@@ -30,6 +30,7 @@ pub const LiveTurn = struct {
     model_override: ?provider_mod.Provider = null,
     /// The context count the last mid-turn meter carried.
     last_meter_used: u64 = 0,
+    cancelled_source: ?cancel_source.Source = null,
 
     /// Mid-turn `usage_update`, only when the count moved since the last one.
     fn stepMeter(ctx: *anyopaque, w: *Io.Writer) void {
@@ -47,8 +48,23 @@ pub const LiveTurn = struct {
         return if (err == error.ApiError) self.root.last_api_error orelse "Provider request failed" else @errorName(err);
     }
 
+    pub fn signalCancel() void {
+        cancel_source.cancel(.acp_cancel); // #728
+    }
+
+    pub fn cancelled() bool {
+        return agent_mod.Agent.esc_cancel.load(.acquire);
+    }
+
+    pub fn cancelInfo(ctx: *anyopaque) ?@import("acp_engine.zig").Cancellation {
+        const self: *LiveTurn = @ptrCast(@alignCast(ctx));
+        const source = self.cancelled_source orelse return null;
+        return .{ .source = @tagName(source), .message = cancel_source.marker(source) };
+    }
+
     pub fn run(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const u8 {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
+        self.cancelled_source = null;
         var output_lock: Io.Mutex = .init;
         if (self.inbox) |inbox| if (inbox.permission) |bridge| bridge.setOutputLock(&output_lock);
         defer if (self.inbox) |inbox| if (inbox.permission) |bridge| bridge.setOutputLock(null);
@@ -140,9 +156,17 @@ pub const LiveTurn = struct {
             self.root.rebaseContextMeter();
         }
         const final = result catch |err| {
+            if (err == error.Interrupted or err == error.Canceled) {
+                self.cancelled_source = cancel_source.take(self.root.tracer);
+                if (!isolated) try self.root.messages.append(try messages.textMessage(
+                    arena,
+                    "assistant",
+                    cancel_source.marker(self.cancelled_source.?),
+                ));
+            }
             if (isolated) {
                 const marker = if (err == error.Interrupted or err == error.Canceled)
-                    cancel_source.marker(cancel_source.take(self.root.tracer))
+                    cancel_source.marker(self.cancelled_source.?)
                 else
                     try std.fmt.allocPrint(arena, "[review ended early: {s}; findings are incomplete]", .{@errorName(err)});
                 const partial = std.mem.trim(u8, self.root.partial_text.items, " \t\r\n");

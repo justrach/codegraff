@@ -55,14 +55,6 @@ pub fn isAcpSubcommand(positional: []const u8) bool {
     return true;
 }
 
-fn syncEscCancel() void {
-    @import("cancel_source.zig").cancel(.acp_cancel); // #728
-}
-
-fn liveCancelled() bool {
-    return agent_mod.Agent.esc_cancel.load(.acquire);
-}
-
 /// A slash command typed in a client runs the same handler the REPL runs,
 /// so the menu the agent advertises is not a menu of things that then get
 /// sent to the model as prose. A command-shaped `/word` outside the catalog
@@ -189,8 +181,8 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
 
 pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u8) !void {
     engine.implementation_version = main_mod.harness_version;
-    engine.on_cancel = syncEscCancel;
-    engine.extra_cancelled = liveCancelled;
+    engine.on_cancel = LiveTurn.signalCancel;
+    engine.extra_cancelled = LiveTurn.cancelled;
     return engine.handleLine(d, arena, w, line);
 }
 
@@ -214,7 +206,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     main_mod.g_out = null;
     engine.implementation_version = main_mod.harness_version;
     engine.cancel_flag.store(false, .release);
-    engine.on_cancel = syncEscCancel;
+    engine.on_cancel = LiveTurn.signalCancel;
     var transport_lock: Io.Mutex = .init;
     var framed: @import("acp_line_writer.zig").LineWriter = undefined;
     framed.init(io, out, &transport_lock);
@@ -243,6 +235,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     var d: Dispatch = .{
         .turn = LiveTurn.run,
         .error_message = LiveTurn.errorMessage,
+        .cancel_info = LiveTurn.cancelInfo,
         .ctx = &live,
         .seed = @bitCast(util.unixMs(io)),
         .slash = liveSlash,

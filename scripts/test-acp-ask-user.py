@@ -29,15 +29,18 @@ def run(binary, case):
     arguments = {'question': QUESTION, 'options': ['npm', 'GitHub release']}
     if case == 'questions':
         arguments = {'questions': [{'question': QUESTION, 'options': [{'label': 'npm'}, {'label': 'GitHub release'}]}]}
-    model = ScriptedModel([
-        {'tool': 'ask_user', 'arguments': arguments},
-        {'text': 'Done.'},
-    ])
+    replies = [{'tool': 'ask_user', 'arguments': arguments}]
+    if case == 'delayed':
+        replies.append({'tool': 'ask_user', 'arguments': arguments})
+    replies.append({'text': 'Done.'})
+    model = ScriptedModel(replies)
     caps = {
         'none': {'fs': {}},
         'elicitation': {'fs': {}, 'elicitation': {'form': {}}},
         'questions': {'fs': {}, 'elicitation': {'form': {}}},
         'legacy': {'fs': {}, '_meta': {'graff/askUser': True}},
+        'delayed': {'fs': {}, 'elicitation': {'form': {}}},
+        'cancel': {'fs': {}, 'elicitation': {'form': {}}},
     }[case]
     # Windows keeps the killed process's files open briefly; do not fail on cleanup.
     temp = tempfile.mkdtemp(prefix='acp-ask-user-')
@@ -68,6 +71,7 @@ def run(binary, case):
             proc.stdin.flush()
 
         seen = []
+        elicitations = []
 
         def wait(id, timeout=30):
             deadline = time.monotonic() + timeout
@@ -78,14 +82,22 @@ def run(binary, case):
                 if m.get('id') == id and 'method' not in m:
                     return m
                 if m.get('method') == 'elicitation/create':
-                    assert case in ('elicitation', 'questions'), m
+                    assert case in ('elicitation', 'questions', 'delayed', 'cancel'), m
                     params = m['params']
                     assert params['mode'] == 'form' and params['message'] == QUESTION, params
                     answer = params['requestedSchema']['properties']['answer']
                     assert answer['enum'] == ['npm', 'GitHub release'], answer
-                    # A stale ID must not answer the live question.
-                    send({'id': 'graff-elicit-0', 'result': {'action': 'accept', 'content': {'answer': 'wrong'}}})
-                    send({'id': m['id'], 'result': {'action': 'accept', 'content': {'answer': 'npm'}}})
+                    elicitations.append(m['id'])
+                    if case == 'cancel':
+                        send({'method': 'session/cancel', 'params': {'sessionId': sid}})
+                        continue
+                    if case == 'delayed':
+                        time.sleep(.2)
+                    # A stale ID must not answer this or the next question.
+                    stale = elicitations[0] if len(elicitations) > 1 else 'graff-elicit-0'
+                    send({'id': stale, 'result': {'action': 'accept', 'content': {'answer': 'wrong'}}})
+                    answer_text = 'GitHub release' if len(elicitations) > 1 else 'npm'
+                    send({'id': m['id'], 'result': {'action': 'accept', 'content': {'answer': answer_text}}})
                 update = (m.get('params') or {}).get('update') or {}
                 if update.get('sessionUpdate') == 'gui_ask_user':
                     assert case == 'legacy', m
@@ -99,6 +111,14 @@ def run(binary, case):
             started = time.monotonic()
             send({'id': 3, 'method': 'session/prompt', 'params': {'sessionId': sid, 'prompt': [{'type': 'text', 'text': 'Ask me.'}]}})
             done = wait(3, timeout=20)
+            if case == 'cancel':
+                assert done.get('result', {}).get('stopReason') == 'cancelled', done
+                meta = done['result'].get('_meta', {})
+                assert meta.get('graff/cancelSource') == 'acp_cancel', done
+                assert 'interrupted by user' in meta.get('graff/cancelMessage', ''), done
+                assert len(model.requests) == 1, 'explicit cancellation continued the model'
+                print('PASS ACP ask_user', case, flush=True)
+                return
             assert done.get('result', {}).get('stopReason') == 'end_turn', done
             results = tool_results(model)
             assert results, 'ask_user result never reached the model'
@@ -109,7 +129,11 @@ def run(binary, case):
                 assert 'elicitation/create' not in methods and 'gui_ask_user' not in updates
                 assert time.monotonic() - started < 10, 'ask_user waited on a client that cannot answer'
             else:
-                assert 'npm' in results[-1] and 'wrong' not in results[-1], results
+                expected = 'GitHub release' if case == 'delayed' else 'npm'
+                assert expected in results[-1] and not any('wrong' in r for r in results), results
+                if case == 'delayed':
+                    assert len(elicitations) == 2 and len(model.requests) == 3
+                    assert 'npm' in results and 'GitHub release' in results
             print('PASS ACP ask_user', case, flush=True)
         finally:
             if os.name == 'posix':
@@ -124,5 +148,5 @@ def run(binary, case):
 
 if __name__ == '__main__':
     binary = str(Path(sys.argv[1] if len(sys.argv) > 1 else 'zig-out/bin/graff').resolve())
-    for case in ['none', 'elicitation', 'questions', 'legacy']:
+    for case in ['none', 'elicitation', 'questions', 'legacy', 'delayed', 'cancel']:
         run(binary, case)

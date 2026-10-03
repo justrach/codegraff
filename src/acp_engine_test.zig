@@ -57,3 +57,24 @@ test "live context occupancy precedes the terminal prompt reply" {
     const terminal = std.mem.indexOf(u8, output, "\"stopReason\":\"end_turn\"") orelse return error.MissingTerminalReply;
     try std.testing.expect(occupancy < terminal);
 }
+
+test "interrupted ACP prompt preserves cancellation provenance in its terminal response" {
+    const Fixture = struct {
+        fn turn(_: *anyopaque, _: Allocator, _: []const u8) anyerror![]const u8 {
+            return error.Interrupted;
+        }
+        fn cancelled(_: *anyopaque) ?engine.Cancellation {
+            return .{ .source = "none", .message = "harness cancelled the turn" };
+        }
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var buffer: [4096]u8 = undefined;
+    var writer: Io.Writer = .fixed(&buffer);
+    var dispatch: Dispatch = .{ .turn = Fixture.turn, .ctx = undefined, .cancel_info = Fixture.cancelled };
+    try handleLine(&dispatch, arena.allocator(), &writer, "{\"id\":7,\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"continue\"}]}}");
+    const output = writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"stopReason\":\"cancelled\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"graff/cancelSource\":\"none\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "harness cancelled the turn") != null);
+}
