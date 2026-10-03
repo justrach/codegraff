@@ -85,6 +85,7 @@ fn sayTypedApiError(self: *Agent, etype: []const u8, ecode: ?[]const u8, emsg: [
 }
 
 pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
+    self.last_api_reauth = null;
     // Pool-thread Jev results become session state only on this owner thread.
     if (Agent.esc_cancel.load(.acquire) or @import("acp_engine.zig").cancel_flag.load(.acquire))
         self.jev_effort_pending.invalidate(self.io)
@@ -441,6 +442,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     self.ws_api_error_pending = false;
                     const diagnostic = try responses.failureDiagnostic(self.arena, self.provider.id, failure);
                     if (@import("agent_async_tools.zig").started(self)) {
+                        self.last_api_reauth = @import("auth_recovery.zig").forFailure(self.provider, failure.code, msg);
                         try self.sayApiError("{s}", .{diagnostic});
                         return error.ApiError;
                     }
@@ -481,6 +483,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     // response.failed arm too. Keep it on the same bounded
                     // overload retry path as SSE and JSON error envelopes.
                     if (try policy.afterServerErrorOrParseReject(self, "", failure.code, msg, &server_retries, &gw_retry)) continue :rebuild;
+                    self.last_api_reauth = @import("auth_recovery.zig").forFailure(self.provider, failure.code, msg);
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                     try self.sayApiError("{s}", .{diagnostic});
                     return error.ApiError;

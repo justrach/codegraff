@@ -176,6 +176,10 @@ pub fn writeResult(w: *Io.Writer, id: ?Value, result: anytype) !void {
 }
 
 pub fn writeError(w: *Io.Writer, id: ?Value, code: i32, message: []const u8) !void {
+    return writeErrorData(w, id, code, message, null);
+}
+
+pub fn writeErrorData(w: *Io.Writer, id: ?Value, code: i32, message: []const u8, data: anytype) !void {
     var s: std.json.Stringify = .{ .writer = w };
     try s.beginObject();
     try s.objectField("jsonrpc");
@@ -188,6 +192,10 @@ pub fn writeError(w: *Io.Writer, id: ?Value, code: i32, message: []const u8) !vo
     try s.write(code);
     try s.objectField("message");
     try s.write(message);
+    if (@TypeOf(data) != @TypeOf(null)) {
+        try s.objectField("data");
+        try s.write(data);
+    }
     try s.endObject();
     try s.endObject();
     try w.writeByte('\n');

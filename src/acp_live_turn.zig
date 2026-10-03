@@ -42,6 +42,17 @@ pub const LiveTurn = struct {
         meter.write(w, self.session_id, used, window, meter.knownCostUsd(self.root.io)) catch {};
     }
 
+    pub fn bindSession(ctx: *anyopaque, session_id: []const u8) void {
+        const self: *LiveTurn = @ptrCast(@alignCast(ctx));
+        self.session_id = session_id;
+        self.root.last_api_reauth = null;
+    }
+
+    pub fn errorRecovery(ctx: *anyopaque, err: anyerror) ?@import("auth_recovery.zig").Recovery {
+        const self: *LiveTurn = @ptrCast(@alignCast(ctx));
+        return if (err == error.ApiError) self.root.last_api_reauth else null;
+    }
+
     pub fn errorMessage(ctx: *anyopaque, err: anyerror) []const u8 {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
         return if (err == error.ApiError) self.root.last_api_error orelse "Provider request failed" else @errorName(err);

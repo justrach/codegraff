@@ -39,11 +39,14 @@ pub fn promptTurn(d: *engine.Dispatch, arena: Allocator, w: *Io.Writer, req: pro
     try engine.emitMeter(d, w, sid);
     switch (outcome) {
         .stop => |stop| try v2.writeIdle(w, sid, stop),
-        .failed => |message| try v2.writeFailed(w, sid, message),
+        .failed => |failed| try v2.writeFailedRecovery(w, sid, failed.message, failed.recovery),
     }
 }
 
-const Outcome = union(enum) { stop: []const u8, failed: []const u8 };
+const Outcome = union(enum) {
+    stop: []const u8,
+    failed: struct { message: []const u8, recovery: ?@import("auth_recovery.zig").Recovery },
+};
 
 fn run(d: *engine.Dispatch, arena: Allocator, w: *Io.Writer, sid: []const u8, text: []const u8, prompt: ?std.json.Value) Outcome {
     @import("acp_citations.zig").endTurn(sid); // a failed turn must not leave a marker open
@@ -64,7 +67,10 @@ fn run(d: *engine.Dispatch, arena: Allocator, w: *Io.Writer, sid: []const u8, te
 fn failure(d: *engine.Dispatch, err: anyerror) Outcome {
     if (err == error.Interrupted or err == error.Canceled) return .{ .stop = "cancelled" };
     if (err == error.RunBudgetExhausted) return .{ .stop = "max_turn_requests" };
-    return .{ .failed = if (d.error_message) |message| message(d.ctx, err) else @errorName(err) };
+    return .{ .failed = .{
+        .message = if (d.error_message) |message| message(d.ctx, err) else @errorName(err),
+        .recovery = if (d.error_recovery) |recover| recover(d.ctx, err) else null,
+    } };
 }
 
 fn echoTurn(_: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const u8 {

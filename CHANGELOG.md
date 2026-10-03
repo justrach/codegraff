@@ -10,6 +10,12 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.302.19
+
+### ACP recovery
+
+- Terminal authentication failures now carry fixed, route-specific reauthentication metadata in both ACP protocol versions (ADR 0246). Clients can choose the matching sign-in command instead of parsing error text or targeting the wrong credential store. Only login-sourced credentials qualify; quota, server and transport failures remain generic, and retry and fallback behavior are unchanged.
+
 ## v0.0.302.18
 
 ### Terminal UI

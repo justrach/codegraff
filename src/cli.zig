@@ -23,6 +23,9 @@ const update_target = @import("update_target.zig");
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.302.19
+    \\  • ACP sign-in failures identify the matching credential route and login command
+    \\
     \\0.0.302.18
     \\  • graff tui launches the separate fullscreen client; terminals get the line REPL
     \\  • shorter turns: one-line heads-ups, no recomputed answers, fewer false stalls

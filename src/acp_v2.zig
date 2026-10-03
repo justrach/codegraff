@@ -114,6 +114,17 @@ pub fn writeFailed(w: *Io.Writer, sid: []const u8, message: []const u8) !void {
     });
 }
 
+pub fn writeFailedRecovery(w: *Io.Writer, sid: []const u8, message: []const u8, recovery: ?@import("auth_recovery.zig").Recovery) !void {
+    const data = recovery orelse return writeFailed(w, sid, message);
+    breakMessage();
+    try notify(w, sid, .{
+        .sessionUpdate = "state_update",
+        .state = "idle",
+        .stopReason = "_error",
+        ._meta = .{ .@"graff/error" = message, .@"graff/reauth" = data },
+    });
+}
+
 pub fn writeUsage(w: *Io.Writer, sid: []const u8, used: u64, size: u64) !void {
     try notify(w, sid, .{ .sessionUpdate = "usage_update", .used = used, .size = size });
 }

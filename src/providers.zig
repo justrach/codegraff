@@ -211,6 +211,7 @@ pub fn runTurnWithFallback(root: *Agent, keys: *Keys, arena: Allocator, out: ?*I
     attempted[0] = root.provider.id;
     while (true) {
         root.last_api_error = null;
+        root.last_api_reauth = null;
         const result = root.runTurn();
         if (result) |text| {
             // #255: no clean per-segment choke point exists across the

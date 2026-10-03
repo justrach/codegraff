@@ -272,6 +272,7 @@ record only when you need the evidence or the edge cases.
 | [0243](0243-repo-context-rides-as-an-input-item-on-responses.md) | On the Responses wire for codex, chatgpt-new and openai, root turns send the project-instructions section and the layout as one developer input item ahead of the conversation, so the instructions are byte-identical across repos and cache on turn 1. |
 | [0244](0244-saved-workspaces-have-durable-discovery.md) | Remember saved workspace roots locally; remote picker targets are workspace-qualified, and resume must enter the selected tree before restoring it. |
 | [0245](0245-fullscreen-tui-is-an-external-client.md) | The fullscreen UI is maintained separately; `graff tui` launches installed `graff-tui` before engine startup, sibling first then PATH, without downloading. TTY `graff repl` uses the line REPL. Supersedes 0041, 0042 and the fullscreen portion of 0142. |
+| [0246](0246-acp-reauth-is-route-specific.md) | Terminal ChatGPT auth rejection carries fixed route-specific recovery metadata: ACP v1 `-32000` + `error.data`, v2 failed idle `_meta["graff/reauth"]`; `graff login chatgpt-new` repairs the new store, `codex login` the legacy one. Retry and non-auth error behavior stay unchanged. |
 
 ## When to write one
 

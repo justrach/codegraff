@@ -96,11 +96,6 @@ fn liveAfter(ctx: *anyopaque, arena: Allocator, text: []const u8, prompt: ?std.j
     _ = @import("acp_images.zig").stage(live.root, prompt);
 }
 
-fn liveBind(ctx: *anyopaque, session_id: []const u8) void {
-    const live: *LiveTurn = @ptrCast(@alignCast(ctx));
-    live.session_id = session_id;
-}
-
 /// Per-turn context meter: the live occupancy estimate against the model's
 /// wall, so the client can render remaining context without reading history.
 fn liveMeter(ctx: *anyopaque) engine.Meter {
@@ -243,11 +238,12 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     var d: Dispatch = .{
         .turn = LiveTurn.run,
         .error_message = LiveTurn.errorMessage,
+        .error_recovery = LiveTurn.errorRecovery,
         .ctx = &live,
         .seed = @bitCast(util.unixMs(io)),
         .slash = liveSlash,
         .after_user = liveAfter,
-        .bind_session = liveBind,
+        .bind_session = LiveTurn.bindSession,
         .meter = liveMeter,
         .extra = liveModels,
         .mcp_servers = @import("acp_mcp_servers.zig").attach,

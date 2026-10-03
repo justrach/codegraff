@@ -79,6 +79,7 @@ pub const Dispatch = struct {
     set_config: ?SetConfigFn = null,
     mcp_servers: ?McpServersFn = null,
     error_message: ?*const fn (ctx: *anyopaque, err: anyerror) []const u8 = null,
+    error_recovery: ?*const fn (ctx: *anyopaque, err: anyerror) ?@import("auth_recovery.zig").Recovery = null,
     /// Live CLI: adopt the client's cwd, report `_meta["graff/worktree"]` (acp_workspace.zig).
     workspace: ?acp_workspace.Env = null,
     /// ACP v1 draft subagent updates are opt-in at initialize.
@@ -169,7 +170,12 @@ fn turnError(d: *Dispatch, w: *Io.Writer, req: proto.Request, err: anyerror) !vo
         return respond(w, req, .{ .stopReason = "cancelled" });
     if (err == error.RunBudgetExhausted)
         return respond(w, req, .{ .stopReason = "max_turn_requests" });
-    return respondError(w, req, err_internal, if (d.error_message) |message| message(d.ctx, err) else @errorName(err));
+    const message = if (d.error_message) |describe| describe(d.ctx, err) else @errorName(err);
+    if (d.error_recovery) |recover| if (recover(d.ctx, err)) |data| {
+        if (req.id != null) try proto.writeErrorData(w, req.id, err_auth_required, message, data);
+        return;
+    };
+    return respondError(w, req, err_internal, message);
 }
 
 fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request) !void {
