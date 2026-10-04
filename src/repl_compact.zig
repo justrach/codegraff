@@ -92,11 +92,13 @@ pub fn replCompactCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl
         cv.list().* = agent.messages;
         cv.compaction_window = agent.compaction_window;
     };
+    const hosted_seq = @import("gateway_compact.zig").seq();
     const n = agent.manualCompact() catch |err| {
         out.note = (switch (err) {
             error.EmptySummary => gpa.dupe(u8, "compaction failed: empty summary, history unchanged"),
             error.IncompleteSummary => gpa.dupe(u8, "compaction failed: incomplete summary, history unchanged"),
             error.ApiError => gpa.dupe(u8, "compaction failed: provider error, history unchanged"),
+            error.CompactionOff => gpa.dupe(u8, "compaction is off: Codegraff credits are used up"),
             else => gpa.dupe(u8, "compaction failed, history unchanged"),
         }) catch "";
         return false;
@@ -126,6 +128,10 @@ pub fn replCompactCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl
         turns.append(.{ .role = role, .text = text }) catch gpa.free(text);
     }
     out.turns = turns.toOwnedSlice() catch &.{};
-    out.note = std.fmt.allocPrint(gpa, "history compacted to a {d}-char summary", .{n}) catch "";
+    var line_buf: [160]u8 = undefined;
+    out.note = if (@import("gateway_compact.zig").seq() != hosted_seq)
+        gpa.dupe(u8, @import("gateway_compact.zig").lastLine(c.io, &line_buf)) catch ""
+    else
+        std.fmt.allocPrint(gpa, "history compacted to a {d}-char summary", .{n}) catch "";
     return true;
 }

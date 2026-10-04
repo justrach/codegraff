@@ -173,18 +173,7 @@ fn usageCount(v: Value) ?i64 {
     return if (v == .integer and v.integer >= 0) v.integer else null;
 }
 
-fn settledCharge(body: Value) ?u64 {
-    if (body != .object) return null;
-    const receipt = body.object.get("codegraff_billing") orelse return null;
-    if (receipt != .object) return null;
-    const settled = receipt.object.get("settled") orelse return null;
-    const currency = receipt.object.get("currency") orelse return null;
-    const charge = receipt.object.get("charge_micro_usd") orelse return null;
-    if (settled != .bool or !settled.bool or currency != .string or
-        !std.mem.eql(u8, currency.string, "USD") or charge != .integer or
-        charge.integer < 0 or charge.integer > 9_007_199_254_740_991) return null;
-    return @intCast(charge.integer);
-}
+const settledCharge = @import("pricing_gateway.zig").settledCharge;
 
 fn noteGatewayUsage(io: Io, tally: *pricing.CostTally, arena: Allocator, raw: []const u8) void {
     const parsed = std.json.parseFromSliceLeaky(Value, arena, raw, .{}) catch {

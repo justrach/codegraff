@@ -118,6 +118,7 @@ pub fn compactPrelude(self: *Agent) ?usize {
 pub fn compact(self: *Agent) anyerror!usize {
     // An opaque item anywhere in history needs the server, never a local summary.
     if (@import("compaction_window.zig").latestBlob(self.messages.items) != null) return error.ServerCompactionRequired;
+    if (try @import("gateway_compact.zig").run(self)) |freed| return freed; // ADR 0252: a Codegraff login compacts on the gateway first
     const fork = @import("cache_fork.zig").begin(self); // ADR 0220: read the cached history, not rewrite it
     defer @import("cache_fork.zig").end();
     const pending_tokens = compactPrelude(self) orelse {
@@ -284,7 +285,7 @@ pub fn handoffMessage(self: *Agent, summary: []const u8, discarded: []const Valu
     return handoff_note.handoff(self.arena, self, base, standing, discarded);
 }
 
-fn rootHandoff(self: *Agent, summary: []const u8) ![]const u8 {
+pub fn rootHandoff(self: *Agent, summary: []const u8) ![]const u8 {
     return std.fmt.allocPrint(self.arena,
         \\Context: the earlier conversation was compacted to save space.
         \\Summary of the earlier work:
@@ -560,7 +561,7 @@ pub fn compactOrRecover(self: *Agent, trim_on_fail: bool) void {
                 self.compact_transport_failures = 0;
                 return; // user hit Esc mid-compaction
             },
-            error.EmptySummary, error.IncompleteSummary, error.ActivePromptPinned => {}, // compact() already explained it
+            error.EmptySummary, error.IncompleteSummary, error.ActivePromptPinned, error.CompactionOff => {}, // compact() already explained it
             else => {
                 if (main_mod.json_mode)
                     self.emit(.{ .type = "error", .message = std.fmt.allocPrint(self.arena, "auto-compaction failed: {s}", .{@errorName(err)}) catch "auto-compaction failed" })

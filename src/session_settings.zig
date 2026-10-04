@@ -70,6 +70,7 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     main_mod.g_path_env = try arena.dupe(u8, environ_map.get("PATH") orelse "");
     plugins.applyEnv(environ_map);
     jev_tool.configure(environ_map);
+    try @import("gateway_compact.zig").configure(arena, environ_map); // ADR 0252: GRAFF_HOSTED_COMPACT, GRAFF_COMPACT_URL/_MODEL
     main_mod.g_codedb_guard = environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
     job_idle.applyEnv(environ_map); // #199: background-job idle warn/stop, minutes (0 = off)
     @import("run_idle.zig").applyEnv(environ_map); // GRAFF_HEARTBEAT_SECS: a waiting run's heartbeat (0 = off)
@@ -282,7 +283,9 @@ fn codegraffLoginKey(io: Io, arena: Allocator, environ_map: anytype) ?[]const u8
 pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: *Io.Writer, flags: args.Flags, use_color: bool, json_mode: bool, cwd_display: []const u8) !ThemeSetup {
     try applyEnvKnobs(arena, environ_map);
     @import("python_version.zig").detect(io, environ_map.get("PATH")); // ADR 0242: before any catalog renders
-    _ = jev_tool.setCodegraffLoginKey(io, codegraffLoginKey(io, arena, environ_map));
+    const codegraff_key = codegraffLoginKey(io, arena, environ_map);
+    _ = jev_tool.setCodegraffLoginKey(io, codegraff_key);
+    @import("gateway_compact.zig").setLoginKey(io, codegraff_key); // ADR 0252: the login also compacts
     skills.loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     anim.loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
     anim.loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme

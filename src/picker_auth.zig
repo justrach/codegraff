@@ -109,6 +109,7 @@ pub fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, provider_id: 
     }
     if (std.mem.eql(u8, provider_id, "codegraff") and jev_tool.setCodegraffLoginKey(root.io, codegraff_key))
         root.invalidateRootTools();
+    if (std.mem.eql(u8, provider_id, "codegraff")) @import("gateway_compact.zig").setLoginKey(root.io, codegraff_key);
     if (std.mem.eql(u8, provider_id, "codex") and keys.get("codex") != null)
         root.reloadModelCatalog(keys.*);
 }

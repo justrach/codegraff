@@ -593,7 +593,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = .{ @import("acp_agents.zig"), @import("repo_context_tests.zig") };
     _ = .{ @import("subagent_activity.zig"), @import("subagent_interactive.zig"), @import("subagent_recovery.zig"), @import("subagent_retained.zig"), @import("subagent_run_tests.zig") };
     _ = .{ @import("acp_agent_activity.zig"), @import("acp_subagent_live.zig"), @import("acp_line_writer.zig") };
-    _ = .{ @import("acp_replay.zig"), @import("python_version.zig"), @import("jev_auto.zig"), @import("background_wait.zig") };
+    _ = .{ @import("acp_replay.zig"), @import("python_version.zig"), @import("jev_auto.zig"), @import("background_wait.zig"), @import("gateway_compact_tests.zig") };
     _ = @import("read_image.zig");
     _ = .{ @import("mcp_names.zig"), @import("workspace_history.zig"), @import("file_worktree.zig"), @import("mcp_turn_context.zig"), @import("review_deadline.zig"), @import("issue_cmd.zig"), @import("shell_tool.zig"), @import("acp_ask.zig"), @import("side_steer.zig"), @import("task_workspace_tests.zig"), @import("workspace_prepare_tests.zig"), @import("worktree_reap.zig") };
 }
