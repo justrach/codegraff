@@ -75,10 +75,8 @@ pub const Dispatch = struct {
     load_session: ?LoadSessionFn = null,
     /// Live CLI saves under this stable name; embeds retain generated IDs.
     durable_session_id: ?[]const u8 = null,
-    /// #1529: the save the live session writes now. A slash command such as
-    /// `/resume` can move it off the transport ID; the prompt result then
-    /// names it (`_meta["graff/durableSessionId"]`) so the host loads that
-    /// save after a restart instead of the one it was handed at session/new.
+    /// #1529: the save the live session writes now; `/resume` can move it off
+    /// the transport ID, and the prompt result names it (`respondStop`).
     durable_name: ?*const fn (ctx: *anyopaque) ?[]const u8 = null,
     meter: ?MeterFn = null,
     extra: ?ExtraFn = null,
