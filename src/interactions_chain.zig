@@ -2,10 +2,11 @@
 //!
 //! A stored Interaction keeps every step it was sent and every step it
 //! produced. A follow-up that names it in `previous_interaction_id` sends only
-//! the steps added since, and the endpoint reports — and bills — only those as
-//! input: a 38k-token history continued with a short question comes back as
-//! ~130 `total_input_tokens`, with the whole prompt in `raw_prompt_token`.
-//! Before this, graff sent `store:false` and replayed every step every request.
+//! the steps added since; the server reads the history it holds, which keeps
+//! the prompt prefix stable for implicit caching and stops graff re-uploading
+//! the conversation. (The flat usage totals then cover only the new steps; the
+//! meters read the whole prompt, see interactions_steps.promptUsage.) Before
+//! this, graff sent `store:false` and replayed every step every request.
 //!
 //! The chain is used only while graff's history is a clean extension of what
 //! the server holds, and the guard is content rather than bookkeeping:
@@ -81,7 +82,7 @@ fn digest(h: Wyhash) u64 {
 
 /// Decide what the next request sends, and remember what it carried so the
 /// answer can extend the chain. Called once per body build.
-pub fn plan(self: *Agent) !Plan {
+pub fn plan(self: *Agent, wire_model: []const u8) !Plan {
     const c = &self.ix_chain;
     c.sent_state = null;
     if (!g_store) {
@@ -89,7 +90,7 @@ pub fn plan(self: *Agent) !Plan {
         return .{};
     }
     const items = self.messages.items;
-    const model = modelFp(self.provider.model);
+    const model = modelFp(wire_model);
     var h = Wyhash.init(0);
     var out: Plan = .{};
     var hashed: usize = 0;
@@ -165,7 +166,7 @@ fn answer(arena: std.mem.Allocator, id: []const u8) !std.json.ObjectMap {
 
 /// One model turn: plan the request, then record and append the answer.
 fn turn(agent: *Agent, arena: std.mem.Allocator, id: []const u8, step_json: []const u8) !Plan {
-    var p = try plan(agent);
+    var p = try plan(agent, agent.provider.model);
     // prev_id points into the chain, which record() is about to overwrite.
     if (p.prev_id) |held| p.prev_id = try arena.dupe(u8, held);
     const st = try parse(arena, step_json);
@@ -193,7 +194,7 @@ test "a turn that extends history chains and sends only the new steps" {
 
     // A tool result rides on the newest Interaction.
     try agent.messages.append(try steps.functionResult(a, "c1", "bash", "out"));
-    const p3 = try plan(&agent);
+    const p3 = try plan(&agent, agent.provider.model);
     try std.testing.expectEqualStrings("v1_two", p3.prev_id.?);
     try std.testing.expectEqual(@as(usize, 4), p3.from);
 }
@@ -211,7 +212,7 @@ test "any change to what the server holds falls back to a full replay" {
     _ = try turn(&edited, a, "v1_one", reply);
     edited.messages.items[0] = try steps.userInput(a, "summary of earlier work");
     try edited.messages.append(try steps.userInput(a, "next"));
-    try std.testing.expect((try plan(&edited)).prev_id == null);
+    try std.testing.expect((try plan(&edited, edited.provider.model)).prev_id == null);
 
     // /clear then a history that grows back past the watermark.
     var cleared = testAgent(a);
@@ -219,7 +220,7 @@ test "any change to what the server holds falls back to a full replay" {
     _ = try turn(&cleared, a, "v1_one", reply);
     cleared.messages.clearRetainingCapacity();
     for ([_][]const u8{ "a", "b", "c" }) |t| try cleared.messages.append(try steps.userInput(a, t));
-    try std.testing.expect((try plan(&cleared)).prev_id == null);
+    try std.testing.expect((try plan(&cleared, cleared.provider.model)).prev_id == null);
 
     // A model switch.
     var switched = testAgent(a);
@@ -227,13 +228,13 @@ test "any change to what the server holds falls back to a full replay" {
     _ = try turn(&switched, a, "v1_one", reply);
     switched.provider.model = "gemini-3.8-pro";
     try switched.messages.append(try steps.userInput(a, "next"));
-    try std.testing.expect((try plan(&switched)).prev_id == null);
+    try std.testing.expect((try plan(&switched, switched.provider.model)).prev_id == null);
 
     // Nothing new to send: an empty delta is never chained.
     var idle = testAgent(a);
     try idle.messages.append(try steps.userInput(a, "first"));
     _ = try turn(&idle, a, "v1_one", reply);
-    try std.testing.expect((try plan(&idle)).prev_id == null);
+    try std.testing.expect((try plan(&idle, idle.provider.model)).prev_id == null);
 }
 
 test "a message appended while the request was in flight leaves no chain" {
@@ -243,7 +244,7 @@ test "a message appended while the request was in flight leaves no chain" {
     const steps = @import("interactions_steps.zig");
     var agent = testAgent(a);
     try agent.messages.append(try steps.userInput(a, "first"));
-    _ = try plan(&agent);
+    _ = try plan(&agent, agent.provider.model);
     try agent.messages.append(try steps.userInput(a, "steer")); // the server never saw this
     try record(&agent, try answer(a, "v1_one"), &.{});
     try std.testing.expect(agent.ix_chain.id() == null);
@@ -261,7 +262,7 @@ test "the opt-out keeps every request stateless" {
     try agent.messages.append(try steps.userInput(a, "first"));
     _ = try turn(&agent, a, "v1_one", "{\"type\":\"model_output\",\"content\":[]}");
     try agent.messages.append(try steps.userInput(a, "next"));
-    try std.testing.expect((try plan(&agent)).prev_id == null);
+    try std.testing.expect((try plan(&agent, agent.provider.model)).prev_id == null);
     try std.testing.expect(agent.ix_chain.id() == null);
 }
 

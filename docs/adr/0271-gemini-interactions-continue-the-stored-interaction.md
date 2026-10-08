@@ -5,13 +5,17 @@ Status: accepted 2026-10-08
 ## Context
 
 The direct Google provider speaks the Interactions API. graff sent
-`store:false` and the whole step list on every request, so a long session paid
-for its full history as input on every call; implicit caching only discounted
-part of it. The endpoint can hold the conversation itself: a request that names
-a stored Interaction in `previous_interaction_id` sends only the steps added
-since, and the endpoint reports only those as `total_input_tokens` (the whole
-prompt is reported separately as `raw_prompt_token`). In a probe, a 38k-token
-history continued with a short question reported 134 input tokens.
+`store:false` and the whole step list on every request, re-uploading the
+conversation each call. The endpoint can hold the conversation itself: a
+request that names a stored Interaction in `previous_interaction_id` sends only
+the steps added since, and Google recommends that path for implicit caching of
+the history.
+
+On such a request the flat usage totals (`total_input_tokens`,
+`total_cached_tokens`) cover only the new steps, while
+`model_invocation_token_counts` and `raw_prompt_token` report the whole prompt
+the model read and the part served from cache. Google documents the continued
+history as input, so graff meters the whole prompt.
 
 The earlier writer skipped this because the id had to stay consistent with
 graff's own history through compaction, trims and edits.
@@ -33,16 +37,36 @@ server holds. `interactions_chain.zig` owns the rule:
   with the full history.
 - `system_instruction`, `tools` and `generation_config` are sent on every
   request, as the endpoint does not carry them over.
-- The context meter reads `raw_prompt_token`, so compaction still sees the real
-  window size; cost reads what was billed; the held prefix shows as a cache read.
+- Usage reads the per-invocation counts (`promptUsage`): the context meter and
+  the cost both use the whole prompt, with its cached part at the cache rate.
 
 `GRAFF_INTERACTIONS_STORE=0` (or off/false/no) restores the stateless shape:
 `store:false` and a full replay on every request.
 
 ## Consequences
 
-Long Gemini sessions stop re-sending their history, which cuts input billed per
-call to roughly the new steps. Interactions are now retained by Google under its
+Long Gemini sessions stop re-uploading their history, and the server-held prefix
+stays stable for implicit caching (a 107k-token stable prompt read 102,400
+tokens from cache). Interactions are now retained by Google under its
 storage policy; users who must not have that set `GRAFF_INTERACTIONS_STORE=0`.
 Hashing the history costs one serialization pass per request, which the full
 replay already paid.
+
+The same change brings the wire in line with what Gemini 3 supports:
+
+- `tool_choice` is `validated` (auto with constrained decoding of calls), and
+  `any` when a tool is forced.
+- `thinking_level` is never `minimal`, which Gemini 3.1 Pro and 3.7/3.8 Flash
+  reject; the lightest effort sends `low`.
+- `thinking_summaries: "auto"` is sent explicitly (without it no summaries
+  stream, despite the documented default), and `thought_summary` deltas feed
+  the reasoning panel.
+- Requests with tools on `gemini-3.1-pro-preview` go to
+  `gemini-3.1-pro-preview-customtools`, Google's variant that prefers the
+  harness's own tools over shell, at the same price. The chain keys on the wire
+  model, so a request without tools on the other variant replays in full.
+- Chat-shaped user/assistant text turns that shared paths append (the
+  REPL/--json/ACP user turn, interrupt markers, the compaction request) are
+  rewritten as `user_input` / `model_output` steps before each send
+  (`history_wire.prepare`); the endpoint rejected the whole request on one, so
+  only `-p` worked on this provider.

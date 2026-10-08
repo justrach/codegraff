@@ -30,7 +30,7 @@ pub fn buildBody(self: *Agent, tools_in: ?[]const u8, force_tool: bool, stream: 
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     try s.beginObject();
     try s.objectField("model");
-    try s.write(self.provider.model);
+    try s.write(if (self.provider.kind == .interactions) @import("interactions_wire.zig").wireModel(self.provider.model, tools != null) else self.provider.model);
     switch (self.provider.kind) {
         .anthropic => {
             const is_kimi = std.mem.eql(u8, self.provider.id, "kimi");

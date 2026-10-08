@@ -27,7 +27,7 @@ pub fn prepare(a: std.mem.Allocator, kind: Kind, history: *std.json.Array) void 
                 repair(a, &block.object, "content", true);
             }
         },
-        .interactions => {},
+        .interactions => @import("interactions_steps.zig").normalizeHistory(a, history),
     }
 }
 

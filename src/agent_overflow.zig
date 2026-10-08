@@ -221,8 +221,8 @@ pub fn readCompletion(kind: Provider.Kind, root: std.json.ObjectMap) Completion 
         .interactions => {
             if (usageOf(root)) |u| {
                 // A continued Interaction reports only its new steps as input;
-                // raw_prompt_token is the whole prompt the window holds.
-                c.input_tokens = nonNegative(@max(usageInt(u, "total_input_tokens"), usageInt(u, "raw_prompt_token")));
+                // the window holds the whole prompt (interactions_steps.promptUsage).
+                c.input_tokens = nonNegative(@import("interactions_steps.zig").promptUsage(u).prompt);
                 c.output_tokens = nonNegative(usageInt(u, "total_output_tokens") +| usageInt(u, "total_thought_tokens"));
             }
             if (str(root, "status")) |s| c.stop = stopFromString(kind, s);
