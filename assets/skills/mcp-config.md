@@ -39,6 +39,10 @@ global one with the same name. Their tools reach the model as
   still loads. If tools vanished after an edit, check the file parses first.
 - `~/.mcpconfig.json` is not read - that path belongs to other MCP clients.
   Startup says so once if it exists.
+- Names under `"disabledMcpServers"` (same object shape, in either file) stay
+  out of the session, including servers graff would otherwise import from
+  another tool's config. Moving an entry back into `mcpServers` turns it on.
+  The global list never removes a server the project file defines.
 - A local server starts on first use once graff has seen its tools (they are
   cached): the session lists its tools but spawns the process only when a tool
   is called. `"startup": "eager"` on an entry starts it with every session;
@@ -52,6 +56,7 @@ global one with the same name. Their tools reach the model as
 
 ```sh
 graff mcp                                            # list configured servers (global ones tagged)
+graff mcp list --json                                # the merged set as JSON, with each server's source
 graff mcp add <name> -- <command> [args...]          # local server
 graff mcp add <name> --env KEY=VALUE -- <command>    # with env
 graff mcp add <name> --url https://host/mcp          # remote server
