@@ -60,7 +60,9 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     try s.objectField("generation_config");
     try s.beginObject();
     try s.objectField("thinking_level");
-    try s.write(thinkingLevel(@tagName(self.reasoning)));
+    // Same effort policy as the Codegraff route (ADR 0046: default medium on
+    // Gemini goes out as low), so both paths think alike.
+    try s.write(thinkingLevel(@import("effort_route.zig").wireEffort(self.provider.id, self.provider.model, @tagName(self.reasoning))));
     // Documented as the default, but summaries only stream when asked for;
     // they feed the reasoning panel (title.reasoningDelta).
     try s.objectField("thinking_summaries");
