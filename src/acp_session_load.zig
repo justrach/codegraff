@@ -22,7 +22,15 @@ pub fn configure(d: *engine.Dispatch, live: *LiveTurn) void {
     d.config = @import("acp_config.zig").option;
     d.set_config = @import("acp_config.zig").set;
     d.durable_session_id = if (session.validSessionName(live.root.session_name)) live.root.session_name else null;
+    d.durable_name = durableName;
     live.dispatch = d;
+}
+
+/// The save turns are written to (`acp_live_turn` saves under `session_name`).
+fn durableName(ctx: *anyopaque) ?[]const u8 {
+    const live: *LiveTurn = @ptrCast(@alignCast(ctx));
+    const name = live.root.session_name;
+    return if (session.validSessionName(name)) name else null;
 }
 
 fn reject(w: *Io.Writer, req: proto.Request, message: []const u8) !void {

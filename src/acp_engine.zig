@@ -75,6 +75,11 @@ pub const Dispatch = struct {
     load_session: ?LoadSessionFn = null,
     /// Live CLI saves under this stable name; embeds retain generated IDs.
     durable_session_id: ?[]const u8 = null,
+    /// #1529: the save the live session writes now. A slash command such as
+    /// `/resume` can move it off the transport ID; the prompt result then
+    /// names it (`_meta["graff/durableSessionId"]`) so the host loads that
+    /// save after a restart instead of the one it was handed at session/new.
+    durable_name: ?*const fn (ctx: *anyopaque) ?[]const u8 = null,
     meter: ?MeterFn = null,
     extra: ?ExtraFn = null,
     config: ?ConfigFn = null,
@@ -211,7 +216,7 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
             try acp_workspace.emitChange(d.workspace, arena, w, sid, workspace_before);
             try emitMeter(d, w, sid);
             if (resend_key) |key| resent.finish(key, 0, "end_turn");
-            return respond(w, req, .{ .stopReason = "end_turn" });
+            return respondStop(d, w, req, sid, "end_turn");
         }
     }
     if (d.after_user) |after| after(d.ctx, arena, text, if (obj) |o| o.get("prompt") else null);
@@ -226,7 +231,26 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
     const extra = if (extra_cancelled) |f| f() else false;
     const stop: []const u8 = if (cancel_flag.load(.acquire) or extra) "cancelled" else "end_turn";
     if (resend_key) |key| resent.finish(key, 0, stop);
-    try respond(w, req, .{ .stopReason = stop });
+    try respondStop(d, w, req, sid, stop);
+}
+
+/// The save the session writes, when it is no longer the transport ID `sid`.
+pub fn movedDurableName(d: *const Dispatch, sid: []const u8) ?[]const u8 {
+    const current = d.durable_name orelse return null;
+    const name = current(d.ctx) orelse return null;
+    if (std.mem.eql(u8, name, sid)) return null;
+    return name;
+}
+
+/// A prompt's result. When a command moved the session onto another save, the
+/// result names it and the dispatch's durable identity follows (#1529); the
+/// transport ID keeps routing this connection.
+fn respondStop(d: *Dispatch, w: *Io.Writer, req: proto.Request, sid: []const u8, stop: []const u8) !void {
+    if (movedDurableName(d, sid)) |name| {
+        d.durable_session_id = name;
+        return respond(w, req, .{ .stopReason = stop, ._meta = .{ .@"graff/durableSessionId" = name } });
+    }
+    return respond(w, req, .{ .stopReason = stop });
 }
 
 pub fn emitMeter(d: *Dispatch, w: *Io.Writer, sid: []const u8) !void {
