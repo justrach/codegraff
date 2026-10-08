@@ -160,6 +160,8 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     // GRAFF_CODEX_FULL_RESEND: presence-based — never chain previous_response_id
     // (codex_chain); the opencode-shape experiment for cache-hit measurement.
     if (environ_map.get("GRAFF_CODEX_FULL_RESEND") != null) @import("codex_chain.zig").g_force_full_resend = true;
+    // GRAFF_INTERACTIONS_STORE=0: Google Interactions stays stateless (store:false, full replay; interactions_chain).
+    if (environ_map.get("GRAFF_INTERACTIONS_STORE")) |v| @import("interactions_chain.zig").g_store = !(std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "off") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "no"));
     if (environ_map.get("GRAFF_WS_PREWARM")) |v| @import("agent_ws_prewarm.zig").g_enabled = std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "true");
     // GRAFF_NO_NATIVE_FOLD: presence-based — restore full power-tool schemas
     // in every request (the pre-fold interactive surface).

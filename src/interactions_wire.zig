@@ -15,9 +15,10 @@
 //!   - unknown fields fail the WHOLE request ("Unknown parameter 'strict' at
 //!     'tools[0]'"), so nothing generic may be sprayed into this body.
 //!
-//! `store:false` keeps graff's own history authoritative, matching what the
-//! Responses wire already does; server-side state via previous_interaction_id
-//! is deliberately not used yet (it would need the id to survive compaction).
+//! graff's own history stays authoritative. The server-side copy is used only
+//! while it matches: a request continues the last stored Interaction with
+//! `previous_interaction_id` and only the new steps when interactions_chain.zig
+//! proves graff's history extends it, and replays every step otherwise.
 
 const std = @import("std");
 
@@ -36,9 +37,18 @@ pub fn thinkingLevel(effort: []const u8) []const u8 {
 pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_tool: bool, stream: bool) !void {
     try s.objectField("system_instruction");
     try s.write(try @import("agent_request_body_responses.zig").schemaAwarePrompt(self));
-    // graff replays the full step list every turn, so the server keeps nothing.
-    try s.objectField("store");
-    try s.write(false);
+    const chain = @import("interactions_chain.zig");
+    const plan = try chain.plan(self);
+    // Stored by default (the field's default is true) so the next request can
+    // continue this one; GRAFF_INTERACTIONS_STORE=0 keeps nothing server-side.
+    if (!chain.g_store) {
+        try s.objectField("store");
+        try s.write(false);
+    }
+    if (plan.prev_id) |id| {
+        try s.objectField("previous_interaction_id");
+        try s.write(id);
+    }
     try s.objectField("generation_config");
     try s.beginObject();
     try s.objectField("thinking_level");
@@ -56,7 +66,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     }
     try s.objectField("input");
     try s.beginArray();
-    for (self.messages.items) |m| try @import("session_wake.zig").writeWire(s, m);
+    for (self.messages.items[plan.from..]) |m| try @import("session_wake.zig").writeWire(s, m);
     try s.endArray();
     if (stream) {
         try s.objectField("stream");

@@ -65,15 +65,22 @@ pub fn assistantText(arena: Allocator, root: std.json.ObjectMap) ![]const u8 {
 /// output, so a tally that skipped it would understate every call.
 /// `total_cached_tokens` is the cached PORTION of the input, matching how the
 /// other wires report a cache read.
+///
+/// A request that continued a stored Interaction reports only its new steps as
+/// `total_input_tokens`; the whole prompt is `raw_prompt_token`. The context
+/// meter reads the whole prompt (compaction depends on it), the cost only what
+/// was billed, and the held prefix shows as a cache read: it was not resent.
 pub fn recordUsage(self: *@import("agent.zig").Agent, u: std.json.ObjectMap, fallback: u64) void {
     const ctx = @import("agent_context.zig");
     const in_tokens = ctx.usageInt(u, "total_input_tokens");
+    const prompt = @max(in_tokens, ctx.usageInt(u, "raw_prompt_token"));
     const out_tokens = ctx.usageInt(u, "total_output_tokens") +| ctx.usageInt(u, "total_thought_tokens");
-    const total = @max(ctx.usageInt(u, "total_tokens"), in_tokens +| out_tokens);
+    const total = @max(ctx.usageInt(u, "total_tokens"), prompt +| out_tokens);
     if (total > 0) ctx.replaceContextTokens(self, @intCast(total)) else ctx.floorContextTokens(self, fallback);
     self.last_usage_includes_output = total > 0;
     const cached = ctx.usageInt(u, "total_cached_tokens");
-    if (cached > 0) self.last_cache_read = @intCast(cached);
+    const held = prompt - in_tokens;
+    if (cached +| held > 0) self.last_cache_read = @intCast(cached +| held);
     self.recordCost(@max(in_tokens - cached, 0), cached, 0, out_tokens);
 }
 
@@ -113,6 +120,8 @@ pub fn step(self: *@import("agent.zig").Agent, root: std.json.ObjectMap) !?[]con
         try self.sayApiError("api error: interaction steps were not a list", .{});
         return error.ApiError;
     }
+    // The stored Interaction now holds these steps too (interactions_chain.zig).
+    try @import("interactions_chain.zig").record(self, root, steps.array.items);
     // Echo every step back verbatim next turn — the thought signature is opaque
     // and the endpoint validates it, so it must survive unedited.
     for (steps.array.items) |st| try self.messages.append(st);

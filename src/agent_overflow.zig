@@ -220,7 +220,9 @@ pub fn readCompletion(kind: Provider.Kind, root: std.json.ObjectMap) Completion 
         // than a bare thought counts as content the turn actually produced.
         .interactions => {
             if (usageOf(root)) |u| {
-                c.input_tokens = nonNegative(usageInt(u, "total_input_tokens"));
+                // A continued Interaction reports only its new steps as input;
+                // raw_prompt_token is the whole prompt the window holds.
+                c.input_tokens = nonNegative(@max(usageInt(u, "total_input_tokens"), usageInt(u, "raw_prompt_token")));
                 c.output_tokens = nonNegative(usageInt(u, "total_output_tokens") +| usageInt(u, "total_thought_tokens"));
             }
             if (str(root, "status")) |s| c.stop = stopFromString(kind, s);
