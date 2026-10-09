@@ -50,7 +50,7 @@ const learn_eval = @import("learn_eval.zig");
 const learn_cli = @import("learn_cli.zig");
 test {
     _ = .{ @import("http2_buffered.zig"), @import("clipboard_native.zig"), @import("clipboard_edge_tests.zig"), @import("clipboard_failure_tests.zig"), @import("process_runner_clipboard_tests.zig") };
-    _ = @import("server_orphan.zig");
+    _ = .{ @import("server_orphan.zig"), @import("term_sender.zig") };
     _ = @import("repo_transaction.zig");
     _ = .{ @import("pr_command.zig"), @import("pr_evidence.zig"), @import("artifact_repository.zig"), @import("artifact_claim_ledger.zig"), @import("artifact_claim_store.zig"), @import("artifact_claim_stale.zig"), @import("artifact_claim_unresolved.zig") };
     _ = @import("argstream_citation_tests.zig"); // unit_tests' root is main.zig only, so reference every split-out module or its tests silently never run
@@ -252,9 +252,9 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
     const arena = init.arena.allocator();
-    // #122: raise the open-file soft limit to the OS hard cap (Darwin defaults
-    // to 256). Raising it avoids ProcessFdQuotaExceeded during parallel tools.
+    // #122: raise the open-file soft limit to the OS hard cap (Darwin defaults to 256) to avoid ProcessFdQuotaExceeded during parallel tools.
     std.process.raiseFileDescriptorLimit();
+    @import("term_sender.zig").install(); // a SIGTERM names its sender on stderr
     // #124: a per-turn scratch arena for the root agent's transient parse garbage,
     // reset each request() so a long REPL/--json/serve session's RSS stays flat.
     var scratch_state = std.heap.ArenaAllocator.init(gpa);
