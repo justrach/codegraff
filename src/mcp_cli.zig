@@ -208,6 +208,7 @@ fn mcpCliUsage(w: *Io.Writer) !void {
         \\  graff mcp install [--directory PATH] [--port N]   install HTTP service and client entries
         \\  graff mcp serve [--http] [--port N] [--model NAME] [--yolo]   expose run_task over stdio or HTTP
         \\  graff mcp                      list servers in .mcp.json + ~/.codegraff/mcp.json
+        \\  graff mcp list --json          the same as JSON, with each server's source (no secret values)
         \\  graff mcp import               copy setup and import this project's Claude history
         \\  graff mcp import-session <id>  import only one Claude conversation into graff
         \\  graff mcp add <url | @scope/package | uvx:package | '{json}' | ->   infer, save, then connect to check it
@@ -327,6 +328,11 @@ pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, en
 
     if (args.len == 0 or std.mem.eql(u8, args[0], "list")) {
         const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path, home, mcp_config.isEnvOverride(environ_map));
+        if (args.len > 1 and std.mem.eql(u8, args[1], "--json")) {
+            try @import("mcp_list_json.zig").write(arena, merged, mcp_config_path, global_path, &out.interface);
+            try out.interface.flush();
+            return;
+        }
         try mcp_config.reportInvalid(merged, &out.interface, mcp_config_path, global_path, "", "");
         if (merged.servers.count() == 0) {
             try out.interface.writeAll("no MCP servers configured. Add one with `graff mcp add <name> -- <command> [args...]`,\nor list servers for every project in ~/" ++ mcp_config.global_rel_path ++ ".\n");

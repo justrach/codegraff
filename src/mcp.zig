@@ -474,4 +474,5 @@ test {
     _ = @import("mcp_cache.zig");
     _ = @import("mcp_boot.zig");
     _ = @import("mcp_elicitation.zig");
+    _ = @import("mcp_list_json.zig");
 }
