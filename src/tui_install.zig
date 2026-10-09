@@ -265,6 +265,6 @@ test "findInstalled picks the newest version that has the client" {
     try tmp.dir.writeFile(io, .{ .sub_path = "0.2.110/bin/graff-tui", .data = "" });
     const base = try tmp.dir.realPathFileAlloc(io, ".", a);
     const found = findInstalled(io, a, base).?;
-    try std.testing.expect(std.mem.endsWith(u8, found, "0.2.110/bin/graff-tui"));
+    try std.testing.expect(std.mem.endsWith(u8, found, try std.fs.path.join(a, &.{ "0.2.110", "bin", "graff-tui" })));
     try std.testing.expect(findInstalled(io, a, "/nonexistent/graff-tui-root") == null);
 }
