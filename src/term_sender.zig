@@ -38,7 +38,7 @@ fn senderName(pid: i32, buf: []u8) []const u8 {
         return if (n > 0) buf[0..@min(@as(usize, @intCast(n)), buf.len)] else "";
     }
     var path_buf: [32]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/comm", .{pid}) catch return "";
+    const path = std.fmt.bufPrintSentinel(&path_buf, "/proc/{d}/comm", .{pid}, 0) catch return "";
     const fd = std.os.linux.open(path, .{ .ACCMODE = .RDONLY }, 0);
     if (std.os.linux.errno(fd) != .SUCCESS) return "";
     defer _ = std.os.linux.close(@intCast(fd));
