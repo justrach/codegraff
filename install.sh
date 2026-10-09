@@ -25,6 +25,7 @@ esac
 # Env overrides: HARNESS_REPO (source repo), HARNESS_DIR (install dir),
 # HARNESS_BUILD=source (skip the release download and compile),
 # HARNESS_NO_GRAFF=1 (skip the codedb/zigrep companion suite),
+# HARNESS_NO_CODEDB=1 (leave codedb alone),
 # HARNESS_NO_PATH=1 (do not append the install dir to ~/.zshrc / ~/.bashrc).
 
 REPO="${HARNESS_REPO:-https://github.com/justrach/codegraff}"
@@ -72,13 +73,13 @@ need_zig() {
 # --yolo pages in more than --version. Ad-hoc is the correct local signature.
 darwin_sign() {
   [ "$(uname -s)" = Darwin ] || return 0
-  local bin="$1"
+  local bin="$1" identifier="${2:-graff}"
   [ -f "$bin" ] || return 0
   if codesign --verify --strict "$bin" >/dev/null 2>&1 \
     && codesign -dv --verbose=2 "$bin" 2>&1 | grep -q 'Authority=Developer ID Application'; then
     return 0
   fi
-  codesign -s - --force --identifier graff "$bin" >/dev/null 2>&1 || true
+  codesign -s - --force --identifier "$identifier" "$bin" >/dev/null 2>&1 || true
 }
 
 # Drop the binary onto a *fresh inode*: overwriting a running macOS binary in
@@ -162,6 +163,43 @@ fetch_release() {
   [ -x "$INSTALL_DIR/$BIN" ] || return 1
 }
 
+# codedb backs graff's codedb tool. Install it when missing and bring an
+# existing copy up to codedb's latest release, so `graff update` keeps it
+# current too. Only a download that matches the release's checksums.sha256
+# and runs `--version` is installed. Prints current, installed or failed.
+CODEDB_REPO="${CODEDB_REPO:-https://github.com/justrach/codedb}"
+update_codedb() {
+  local platform="$1" asset="codedb-$1" tag latest current dest tmpd
+  tag="$(curl -fsSLI --max-time 30 -o /dev/null -w '%{url_effective}' "$CODEDB_REPO/releases/latest" 2>/dev/null)" || { echo failed; return 0; }
+  latest="${tag##*/v}"
+  case "$latest" in ''|*/*) echo failed; return 0 ;; esac
+  dest="$(command -v codedb 2>/dev/null || true)"
+  if [ -n "$dest" ]; then
+    current="$("$dest" --version 2>/dev/null | awk '{print $NF}')"
+    [ "$current" = "$latest" ] && { echo current; return 0; }
+  fi
+  tmpd="$(mktemp -d)"
+  if ! curl -fsSL --max-time 120 "$CODEDB_REPO/releases/download/v$latest/$asset" -o "$tmpd/$asset" \
+    || ! curl -fsSL --max-time 30 "$CODEDB_REPO/releases/download/v$latest/checksums.sha256" -o "$tmpd/checksums.sha256"; then
+    rm -rf "$tmpd"; echo failed; return 0
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$tmpd" && grep " $asset\$" checksums.sha256 | sha256sum -c - >/dev/null 2>&1)
+  else
+    (cd "$tmpd" && grep " $asset\$" checksums.sha256 | shasum -a 256 -c - >/dev/null 2>&1)
+  fi || { rm -rf "$tmpd"; echo failed; return 0; }
+  chmod 0755 "$tmpd/$asset"
+  "$tmpd/$asset" --version >/dev/null 2>&1 || { rm -rf "$tmpd"; echo failed; return 0; }
+  # Replace the codedb on PATH when we may write it; otherwise install next to graff.
+  if [ -z "$dest" ] || [ ! -w "$dest" ]; then dest="$INSTALL_DIR/codedb"; fi
+  mkdir -p "$(dirname "$dest")"
+  rm -f "$dest"
+  install -m 0755 "$tmpd/$asset" "$dest" || { rm -rf "$tmpd"; echo failed; return 0; }
+  darwin_sign "$dest" codedb
+  rm -rf "$tmpd"
+  echo "installed $latest"
+}
+
 build_from_source() {
   local src tmp=""
   need_zig
@@ -242,6 +280,16 @@ main() {
       fi
       rm -f "$suite_log"
     fi
+  fi
+
+  # After the suite, which may install codedb itself: keep codedb current.
+  if [ -z "${HARNESS_NO_GRAFF:-}" ] && [ -z "${HARNESS_NO_CODEDB:-}" ]; then
+    printf "  ${D}│${N} %-10s " "codedb"
+    case "$(update_codedb "$platform")" in
+      current) printf "${G}✓${N} (up to date)\n" ;;
+      installed*) printf "${G}✓${N} (updated)\n" ;;
+      *) printf "${Y}skipped${N} ${D}(codedb release unavailable — graff still works)${N}\n" ;;
+    esac
   fi
 
   ensure_path
