@@ -145,9 +145,13 @@ test "#753 backtest: three background handles replay after the live table is gon
     };
 
     var ids: [3]u32 = undefined;
+    // Fan-out defaults to isolation:worktree. Three identical prompts share one
+    // subagent id hash, so concurrent `git worktree add` calls collide and a
+    // child fails before it ever calls the model (CI: !first.is_error at the
+    // first collect). This test is about the ledger, not worktrees.
     for (0..3) |i| {
         const parsed = try std.json.parseFromSlice(std.json.Value, gpa,
-            \\{"description":"scan","prompt":"reply once","run_in_background":true}
+            \\{"description":"scan","prompt":"reply once","run_in_background":true,"isolation":"shared_cwd"}
         , .{});
         defer parsed.deinit();
         http_client.injectConstructionTlsForTest(0);
