@@ -56,6 +56,7 @@ test "perOutputCap (#201): window-proportional with an absolute ceiling, keep_re
 test "compactAt (#204): GRAFF_COMPACT_PCT overrides the 80% default, both directions" {
     var p: Provider = undefined;
     p.context = 100_000;
+    p.model = "m";
     try std.testing.expectEqual(@as(u64, 80_000), p.compactAt());
     provider_mod.g_compact_pct_override = 70;
     defer provider_mod.g_compact_pct_override = null;
@@ -68,11 +69,12 @@ test "gemini routes to google, not the gateway, and carries the real 1M window" 
     const all = Keys{ .values = @splat("k") };
     // Before the google row existed, gemini-* was uncatalogued: providerFor fell
     // through to the codegraff gateway and contextFor returned default_context,
-    // so a 1,048,576-token model auto-compacted at 160k instead of 838k.
+    // so a 1,048,576-token model auto-compacted at 160k. The window is real;
+    // the default compaction point is Gemini's own token cap.
     const gemini = try all.providerFor("gemini-3.8-flash");
     try std.testing.expectEqualStrings("google", gemini.id);
     try std.testing.expectEqual(@as(u64, 1_048_576), gemini.context);
-    try std.testing.expect(gemini.compactAt() > 800_000);
+    try std.testing.expectEqual(Provider.gemini_compact_tokens, gemini.compactAt());
     // Gemini talks Google's first-party Interactions wire, not the OpenAI
     // compatibility shim, and authenticates with x-goog-api-key.
     try std.testing.expectEqual(Provider.Kind.interactions, gemini.kind);

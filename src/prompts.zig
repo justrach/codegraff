@@ -472,19 +472,7 @@ pub const sub_system_prompt =
     \\Files changed, Verified, Skipped, and Open questions (omit empty).
 ++ parallel_tools_note ++ text.public_write_note ++ text.constraint_authority_note ++ text.claim_ownership_note;
 
-pub const compact_instruction =
-    \\Summarize this entire conversation for a context handoff. Capture: the
-    \\user's goals, all important facts and decisions, file paths and code
-    \\that was created or modified, command results that matter, the current
-    \\task checklist and each item's status, and any pending or unfinished
-    \\work. Be thorough but compact. Reply with only the summary.
-    \\Report only what this conversation actually contains. Do not write that a
-    \\rule, constraint or preference was recorded — recorded constraints live in
-    \\a durable ledger injected separately (with caps), so a summary
-    \\that asserts one invents it, and the agent reading you cannot tell the
-    \\difference (#738). A standing instruction the user gave in words belongs
-    \\here as what they said, attributed to them, not as machine state.
-;
+pub const compact_instruction = @import("compact_handoff_note.zig").compact_instruction;
 
 test { // #421/#410: prompt snapshots and goal-prefix behavior must stay reachable.
     _ = @import("prompt_snapshot_tests.zig");
