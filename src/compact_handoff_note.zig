@@ -45,7 +45,25 @@ const Value = std.json.Value;
 
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
-const compact_instruction = @import("prompts.zig").compact_instruction;
+/// What the summarizer is asked for (re-exported as prompts.compact_instruction).
+pub const compact_instruction =
+    \\Summarize this entire conversation for a context handoff. Capture: the
+    \\user's goals, all important facts and decisions, file paths and code
+    \\that was created or modified, command results that matter, the current
+    \\task checklist and each item's status, and any pending or unfinished
+    \\work. Be thorough but compact. Reply with only the summary.
+    \\Copy exact values the remaining work depends on (names, ids, numbers,
+    \\error text, anything the user asked to have reported) character for
+    \\character. Where a tool result was not read closely enough to copy from,
+    \\say so and name the file or command, so it is read again rather than
+    \\recalled.
+    \\Report only what this conversation actually contains. Do not write that a
+    \\rule, constraint or preference was recorded — recorded constraints live in
+    \\a durable ledger injected separately (with caps), so a summary
+    \\that asserts one invents it, and the agent reading you cannot tell the
+    \\difference (#738). A standing instruction the user gave in words belongs
+    \\here as what they said, attributed to them, not as machine state.
+;
 const session_transcript = @import("session_transcript.zig");
 const tool_spill = @import("tool_spill.zig");
 const peer_context = @import("peer_context.zig");

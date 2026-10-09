@@ -15,39 +15,65 @@
 //!   - unknown fields fail the WHOLE request ("Unknown parameter 'strict' at
 //!     'tools[0]'"), so nothing generic may be sprayed into this body.
 //!
-//! `store:false` keeps graff's own history authoritative, matching what the
-//! Responses wire already does; server-side state via previous_interaction_id
-//! is deliberately not used yet (it would need the id to survive compaction).
+//! graff's own history stays authoritative. The server-side copy is used only
+//! while it matches: a request continues the last stored Interaction with
+//! `previous_interaction_id` and only the new steps when interactions_chain.zig
+//! proves graff's history extends it, and replays every step otherwise.
 
 const std = @import("std");
 
 const Agent = @import("agent.zig").Agent;
 const serde = @import("serde.zig");
 
-/// graff's effort tag → Interactions `thinking_level`. The endpoint names its
-/// own accepted set in the rejection: high, low, medium, minimal, none.
+/// graff's effort tag → Interactions `thinking_level`. Only low, medium and
+/// high are accepted by every current model: Gemini 3.1 Pro and 3.7/3.8 Flash
+/// reject `minimal` with a 400, so the lightest effort maps to `low`.
 pub fn thinkingLevel(effort: []const u8) []const u8 {
     if (std.mem.eql(u8, effort, "max") or std.mem.eql(u8, effort, "high")) return "high";
     if (std.mem.eql(u8, effort, "medium")) return "medium";
-    if (std.mem.eql(u8, effort, "minimal") or std.mem.eql(u8, effort, "none")) return "minimal";
     return "low";
+}
+
+/// The model id sent on the wire. Gemini 3.1 Pro has a variant tuned for
+/// harnesses that bring their own tools (it prefers them over shell), at the
+/// same price; requests that carry tools use it.
+pub fn wireModel(model: []const u8, has_tools: bool) []const u8 {
+    if (has_tools and std.mem.eql(u8, model, "gemini-3.1-pro-preview")) return "gemini-3.1-pro-preview-customtools";
+    return model;
 }
 
 pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_tool: bool, stream: bool) !void {
     try s.objectField("system_instruction");
     try s.write(try @import("agent_request_body_responses.zig").schemaAwarePrompt(self));
-    // graff replays the full step list every turn, so the server keeps nothing.
-    try s.objectField("store");
-    try s.write(false);
+    const chain = @import("interactions_chain.zig");
+    const plan = try chain.plan(self, wireModel(self.provider.model, tools != null));
+    // Stored by default (the field's default is true) so the next request can
+    // continue this one; GRAFF_INTERACTIONS_STORE=0 keeps nothing server-side.
+    if (!chain.g_store) {
+        try s.objectField("store");
+        try s.write(false);
+    }
+    if (plan.prev_id) |id| {
+        try s.objectField("previous_interaction_id");
+        try s.write(id);
+    }
     try s.objectField("generation_config");
     try s.beginObject();
     try s.objectField("thinking_level");
-    try s.write(thinkingLevel(@tagName(self.reasoning)));
-    // tool_choice lives HERE, not at the top level, and its enum is lowercase:
-    // auto | any | none. "required"/"ANY" are both rejected outright.
+    // Same effort policy as the Codegraff route (ADR 0046: default medium on
+    // Gemini goes out as low), so both paths think alike.
+    try s.write(thinkingLevel(@import("effort_route.zig").wireEffort(self.provider.id, self.provider.model, @tagName(self.reasoning))));
+    // Documented as the default, but summaries only stream when asked for;
+    // they feed the reasoning panel (title.reasoningDelta).
+    try s.objectField("thinking_summaries");
+    try s.write("auto");
+    // tool_choice lives HERE, not at the top level, and is lowercase:
+    // auto | any | none | validated. "required"/"ANY" are rejected outright.
+    // `validated` is auto with constrained decoding of the call, so arguments
+    // always match the declared schema.
     if (tools != null) {
         try s.objectField("tool_choice");
-        try s.write(if (force_tool) "any" else "auto");
+        try s.write(if (force_tool) "any" else "validated");
     }
     try s.endObject();
     if (tools) |t| {
@@ -56,7 +82,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     }
     try s.objectField("input");
     try s.beginArray();
-    for (self.messages.items) |m| try @import("session_wake.zig").writeWire(s, m);
+    for (self.messages.items[plan.from..]) |m| try @import("session_wake.zig").writeWire(s, m);
     try s.endArray();
     if (stream) {
         try s.objectField("stream");
@@ -65,13 +91,19 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
 }
 
 test "thinking_level maps graff's efforts onto the accepted set" {
-    // The set is the endpoint's own: "Valid values are: high, low, medium,
-    // minimal, none" — anything else 400s the request.
+    // Only levels every current model accepts are ever sent.
     try std.testing.expectEqualStrings("high", thinkingLevel("max"));
     try std.testing.expectEqualStrings("high", thinkingLevel("high"));
     try std.testing.expectEqualStrings("medium", thinkingLevel("medium"));
     try std.testing.expectEqualStrings("low", thinkingLevel("low"));
-    try std.testing.expectEqualStrings("minimal", thinkingLevel("minimal"));
+    // `minimal` 400s on Gemini 3.1 Pro and 3.7/3.8 Flash.
+    try std.testing.expectEqualStrings("low", thinkingLevel("minimal"));
     // An unknown tag degrades to a level the endpoint accepts, never to a 400.
     try std.testing.expectEqualStrings("low", thinkingLevel("nonsense"));
+}
+
+test "Gemini 3.1 Pro uses its custom-tools variant only when tools ride the request" {
+    try std.testing.expectEqualStrings("gemini-3.1-pro-preview-customtools", wireModel("gemini-3.1-pro-preview", true));
+    try std.testing.expectEqualStrings("gemini-3.1-pro-preview", wireModel("gemini-3.1-pro-preview", false));
+    try std.testing.expectEqualStrings("gemini-3.8-flash", wireModel("gemini-3.8-flash", true));
 }

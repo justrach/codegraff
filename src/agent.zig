@@ -96,6 +96,7 @@ pub const Agent = struct {
     codex_props_fp: u64 = 0, // request properties the server anchored on (model/effort/fast/tools/instructions)
     codex_ws_used_ms: i64 = 0, // .awake-clock ms of the WS's last successful use; gates the idle preemptive re-anchor (#codex-ws)
     codex_ws_opened_ms: i64 = 0, // first connect time; xAI/codex WS hard-cap is 25 minutes
+    ix_chain: @import("interactions_chain.zig").Chain = .{}, // Interactions previous_interaction_id chain (interactions_chain.zig)
     sub: bool,
     /// This agent is served NO tools at all — the `tools` field is omitted
     /// from the request rather than sent empty, which every provider accepts.

@@ -1,5 +1,6 @@
 //! Where automatic compaction starts, as a percent of the model's context
-//! window (default 80; `Provider.compactAt`). The first one set wins:
+//! window (default 80, capped at 300k tokens on Gemini; `Provider.compactAt`).
+//! A set percentage applies as is. The first one set wins:
 //!
 //!   1. `--compact-at N` on the command line (the SDK's `compactAt` option)
 //!   2. `GRAFF_COMPACT_PCT=N` (how Harness passes its setting)
@@ -84,6 +85,13 @@ pub fn current() u8 {
     return if (provider_mod.g_compact_pct_override) |p| @min(p, 100) else default_pct;
 }
 
+/// The percent the threshold actually sits at: the default is capped in
+/// tokens on some models (Provider.gemini_compact_tokens).
+fn shownPct(p: provider_mod.Provider) u64 {
+    if (p.context == 0) return current();
+    return (p.compactAt() * 100 + p.context / 2) / p.context;
+}
+
 /// `/compact-at` shows the point, `/compact-at N` sets it (and persists it
 /// for this workspace), `/compact-at default` goes back to 80%.
 pub fn handle(root: *Agent, line: []const u8, out: *Io.Writer) !bool {
@@ -93,7 +101,7 @@ pub fn handle(root: *Agent, line: []const u8, out: *Io.Writer) !bool {
     const arg = std.mem.trim(u8, line[name.len..], " \t");
     if (arg.len == 0) {
         try out.print("compaction starts at {d}% of the context window ({d}k of {d}k tokens){s}\n", .{
-            current(),
+            shownPct(root.provider),
             root.provider.compactAt() / 1000,
             root.provider.context / 1000,
             if (provider_mod.g_compact_pct_override == null) " · default" else "",
@@ -101,7 +109,12 @@ pub fn handle(root: *Agent, line: []const u8, out: *Io.Writer) !bool {
     } else if (std.ascii.eqlIgnoreCase(arg, "default") or std.ascii.eqlIgnoreCase(arg, "reset")) {
         provider_mod.g_compact_pct_override = null;
         const saved = save(root.io, root.gpa, null);
-        try out.print("compaction starts at the default {d}% of the context window{s}\n", .{ default_pct, if (saved) "" else " (not persisted)" });
+        try out.print("compaction starts at the default {d}% of the context window ({d}k of {d}k tokens){s}\n", .{
+            shownPct(root.provider),
+            root.provider.compactAt() / 1000,
+            root.provider.context / 1000,
+            if (saved) "" else " (not persisted)",
+        });
     } else if (parse(arg)) |pct| {
         provider_mod.g_compact_pct_override = pct;
         const saved = save(root.io, root.gpa, pct);
@@ -152,4 +165,22 @@ test "the threshold follows the setting in both directions" {
     try std.testing.expectEqual(@as(u64, 120_000), p.compactAt());
     provider_mod.g_compact_pct_override = parse("90");
     try std.testing.expectEqual(@as(u64, 180_000), p.compactAt());
+}
+
+test "Gemini's default stops at 300k tokens; a set percentage still applies" {
+    const saved_override = provider_mod.g_compact_pct_override;
+    defer provider_mod.g_compact_pct_override = saved_override;
+    provider_mod.g_compact_pct_override = null;
+    for ([_][]const u8{ "gemini-3.8-flash", "google/gemini-3.8-flash" }) |model| {
+        const p: provider_mod.Provider = .{ .id = "t", .kind = .interactions, .auth = .goog_api_key, .url = "", .api_key = "", .model = model, .context = 1_048_576 };
+        try std.testing.expectEqual(@as(u64, 300_000), p.compactAt());
+        try std.testing.expectEqual(@as(u64, 29), shownPct(p));
+    }
+    const small: provider_mod.Provider = .{ .id = "t", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "gemini-small", .context = 200_000 };
+    try std.testing.expectEqual(@as(u64, 160_000), small.compactAt()); // 80% is already under the cap
+    const other: provider_mod.Provider = .{ .id = "t", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-6", .context = 1_000_000 };
+    try std.testing.expectEqual(@as(u64, 800_000), other.compactAt());
+    provider_mod.g_compact_pct_override = 80;
+    const g: provider_mod.Provider = .{ .id = "t", .kind = .interactions, .auth = .goog_api_key, .url = "", .api_key = "", .model = "gemini-3.8-flash", .context = 1_000_000 };
+    try std.testing.expectEqual(@as(u64, 800_000), g.compactAt());
 }

@@ -210,8 +210,18 @@ pub const Provider = struct {
     /// GRAFF_COMPACT_PCT overrides the percentage, clamped to 1..100 (#204). Unlike
     /// codex's one-directional clamp, the override may lower OR raise the threshold.
     pub fn compactAt(p: Provider) u64 {
-        const pct: u64 = if (g_compact_pct_override) |o| @min(o, 100) else 80;
-        return p.context / 100 * pct;
+        if (g_compact_pct_override) |o| return p.context / 100 * @min(o, 100);
+        const at = p.context / 100 * 80;
+        return if (isGeminiModel(p.model)) @min(at, gemini_compact_tokens) else at;
+    }
+
+    /// Gemini's default compaction point unless a percentage is set: 80% of its
+    /// 1M window put ~800k billed tokens on every request near the line (ADR 0272).
+    pub const gemini_compact_tokens: u64 = 300_000;
+
+    pub fn isGeminiModel(model: []const u8) bool {
+        const bare = if (std.mem.lastIndexOfScalar(u8, model, '/')) |i| model[i + 1 ..] else model;
+        return std.mem.startsWith(u8, bare, "gemini-");
     }
 
     /// The provider's explicit server-side compaction endpoint, if we use it.
