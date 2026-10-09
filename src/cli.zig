@@ -161,7 +161,7 @@ pub const usage_text =
     \\usage:
     \\  graff [flags]                    start the line REPL
     \\  graff repl                       line REPL (scripted when stdin is piped)
-    \\  graff tui [args...]               launch installed graff-tui (sibling binary, then PATH)
+    \\  graff tui [--yes] [args...]         launch graff-tui; installs it from the Harness release on first use
     \\  graff [-p] "prompt"              one-shot: run the prompt, print the answer, exit
     \\  graff login                      get a codegraff key (device-code OAuth)
     \\  graff login chatgpt              ChatGPT sign-in (also: codex, openai)
