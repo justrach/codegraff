@@ -53,6 +53,11 @@ advertises it:
 }
 ```
 
+Clients disagree on what `args` does. The registry's guide replaces the agent
+command's args (`graff login`); the ACP v1 schema appends them to it
+(`graff acp login`). `args.zig` treats `acp login` as `login`, so both start
+the same login flow.
+
 Do not invent Agent Auth that duplicates `graff login`. Do not add env-var
 auth to satisfy the registry — it is not one of the two accepted types.
 

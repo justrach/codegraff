@@ -257,6 +257,7 @@ pub fn parse(init: std.process.Init) !Flags {
                 try flags.positionals.append(arena, try arena.dupe(u8, arg));
             }
         }
+        dropAcpBeforeLogin(&flags.positionals);
         if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "login")) flags.login_flag = true;
         if (flags.login_flag and flags.positionals.items.len > 1) {
             const name = flags.positionals.items[1];
@@ -328,6 +329,32 @@ pub fn loginTarget(name: []const u8) ?[]const u8 {
     if (@import("oauth_zai.zig").isLoginName(name)) return "zai";
     if (@import("oauth_chatgpt.zig").isLoginName(name)) return "chatgpt-new";
     return null;
+}
+
+/// ACP Terminal Auth advertises `args: ["login"]`. The v1 schema appends
+/// those args to the agent command (`graff acp login`); the registry's guide
+/// replaces them (`graff login`). Both must reach the login flow.
+fn dropAcpBeforeLogin(positionals: *std.ArrayList([]const u8)) void {
+    const items = positionals.items;
+    if (items.len > 1 and std.mem.eql(u8, items[0], "acp") and std.mem.eql(u8, items[1], "login"))
+        _ = positionals.orderedRemove(0);
+}
+
+test "dropAcpBeforeLogin: appended terminal-auth args reach login; plain acp stays acp" {
+    const a = std.testing.allocator;
+    var appended: std.ArrayList([]const u8) = .empty;
+    defer appended.deinit(a);
+    try appended.appendSlice(a, &.{ "acp", "login", "kimi" });
+    dropAcpBeforeLogin(&appended);
+    try std.testing.expectEqual(@as(usize, 2), appended.items.len);
+    try std.testing.expectEqualStrings("login", appended.items[0]);
+    try std.testing.expectEqualStrings("kimi", appended.items[1]);
+
+    var plain: std.ArrayList([]const u8) = .empty;
+    defer plain.deinit(a);
+    try plain.append(a, "acp");
+    dropAcpBeforeLogin(&plain);
+    try std.testing.expectEqualStrings("acp", plain.items[0]);
 }
 
 test "loginTarget: every ChatGPT name, codex included, is the plan's sign-in; unknown names are not logins" {
