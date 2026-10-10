@@ -115,6 +115,13 @@ pub fn writeToolDone(w: *Io.Writer, session_id: []const u8, id: []const u8, is_e
     try @import("acp_view_meta.zig").writeDone(w, session_id, id, status, text);
 }
 
+/// Meta tools announce a row but send no result; ask_user has no row and
+/// attempt_completion's row is never drawn.
+fn closesOnFinish(name: []const u8) bool {
+    if (std.mem.eql(u8, name, "ask_user") or std.mem.eql(u8, name, "attempt_completion")) return false;
+    return @import("schema.zig").isMetaName(name);
+}
+
 fn storeId(id_buf: *[64]u8, id: []const u8) []const u8 {
     @memset(id_buf, 0);
     const n = @min(id.len, id_buf.len - 1);
@@ -189,8 +196,21 @@ pub fn translateEvent(
     }
     // The engine closes every call with tool_result and then
     // tool_call_finished (timing only, no text): the result already sent the
-    // terminal update, so a second one would only duplicate it (#1288).
-    if (std.mem.eql(u8, typ, "tool_call_finished")) return .tool;
+    // terminal update, so a second one would only duplicate it (#1288). A meta
+    // tool's result never reaches the wire (engine_events.durable), so its
+    // finish is the only close its announced row gets.
+    if (std.mem.eql(u8, typ, "tool_call_finished")) {
+        const name = util.strFieldObj(ev.object, "name") orelse "";
+        const id = util.strFieldObj(ev.object, "id") orelse return .tool;
+        if (closesOnFinish(name)) {
+            const failed = switch (ev.object.get("is_error") orelse .null) {
+                .bool => |b| b,
+                else => false,
+            };
+            try writeToolStatus(w, session_id, id, if (failed) "failed" else "completed");
+        }
+        return .tool;
+    }
     if (std.mem.eql(u8, typ, "tool_result") or std.mem.eql(u8, typ, "tool_rejected")) {
         const result_name = util.strFieldObj(ev.object, "name") orelse "";
         if (std.mem.eql(u8, result_name, "attempt_completion")) return .none;

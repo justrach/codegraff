@@ -21,6 +21,8 @@ pub fn configure(d: *engine.Dispatch, live: *LiveTurn) void {
     d.load_session = load;
     d.config = @import("acp_config.zig").option;
     d.set_config = @import("acp_config.zig").set;
+    d.model_config = @import("acp_model_option.zig").option;
+    d.set_model = @import("acp_model_option.zig").set;
     d.durable_session_id = if (session.validSessionName(live.root.session_name)) live.root.session_name else null;
     live.dispatch = d;
 }
@@ -103,7 +105,7 @@ pub fn load(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request
     if (!v2.on() or replayFromStart(params)) try replayHistory(arena, live.root, w, live.session_id);
     const options = engine.configOptions(d, arena) catch |err| return proto.writeError(w, req.id, engine.err_internal, @errorName(err));
     try proto.writeResult(w, req.id, .{ .configOptions = options, ._meta = acp_workspace.meta(env, arena) });
-    try proto.writeAvailableCommands(w, live.session_id, proto.slashCommands());
+    try proto.writeAvailableCommands(w, live.session_id, try @import("acp_t3.zig").commands(arena, proto.slashCommands()));
 }
 
 /// #1557: the save parsed and its fields are present, so a failure here is
