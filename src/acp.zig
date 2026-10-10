@@ -123,13 +123,7 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
     const keys = live.keys;
     const root = live.root;
     // Hydrate deferred local metadata without network refresh or MCP startup.
-    root.ensureStoredKeys(keys);
-    if (root.model_catalog) |*cached|
-        cached.ensureCached(root.io, root.gpa, root.arena, root.home, keys.get("codex") orelse "", keys.codex_account);
-    if (!live.local_catalog_loaded) {
-        if (root.home.len > 0) @import("router_catalog.zig").loadCachedAll(root.io, root.arena, root.home);
-        live.local_catalog_loaded = true;
-    }
+    @import("acp_model_option.zig").hydrate(live);
     const er = @import("effort_route.zig");
     if (@import("gateway_picker_catalog.zig").requested(req.params)) @import("gateway_picker_catalog.zig").refresh(root.gpa, root.io, root.arena, keys.*);
     const catalog = pricing.models();

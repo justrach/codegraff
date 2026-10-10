@@ -113,7 +113,7 @@ pub fn adopt(env: Env, arena: Allocator, params: ?Value) AdoptError!void {
     dir.close(env.io);
     const active = workspace_switch.currentAbs(env.io, arena);
     if (workspace_switch.samePath(env.io, want, active)) return;
-    if (info(env, arena)) |tree| if (workspace_switch.samePath(env.io, want, tree.root)) return;
+    if (@import("acp_t3.zig").keepsIsolatedTree()) if (info(env, arena)) |tree| if (workspace_switch.samePath(env.io, want, tree.root)) return;
     _ = workspace_switch.enterPath(env.gpa, env.io, arena, want) catch |err|
         return if (err == error.OutOfMemory) error.OutOfMemory else error.ChdirFailed;
 }
