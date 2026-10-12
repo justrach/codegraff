@@ -24,6 +24,10 @@ const update_target = @import("update_target.zig");
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.31
+    \\  • tool rows for todo_write, peer_message and schema loads finish in ACP clients
+    \\  • graff update works on Windows
+    \\
     \\0.302.30
     \\  • graff mcp status / reconnect / enable / disable, and /mcp reconnect in a session
     \\  • graff login anthropic: use an Anthropic Console account
