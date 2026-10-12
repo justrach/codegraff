@@ -10,6 +10,17 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.31
+
+### ACP
+
+- Tool rows for tools whose only end is a finish event (`peer_message`, `load_tool_schemas`, `todo_write`) now get their completed or failed status. They stayed "in progress" in clients such as the desktop app. Ordinary tools still end once, on their result (#1600).
+
+### Updating
+
+- `graff update` works on Windows. It ran `install.sh` through `/bin/sh`, which Windows does not have, and failed with "could not launch installer". It now runs the release's `install.ps1`, which verifies the download and replaces the running `graff.exe`.
+- `graff --help` lists `graff login anthropic`.
+
 ## v0.302.30
 
 Releases are now tagged with three parts (`v0.302.N`). `graff update` treats v0.302.30 as newer than every v0.0.302.N.
