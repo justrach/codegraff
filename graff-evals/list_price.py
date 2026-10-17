@@ -67,6 +67,8 @@ RATES = {
         "high_cache": 0.40,
         "high_out": 4.0,
     },
+    # Gemini 4 Argon list per 1M
+    "gemini-4-argon": {"high_at": 0, "in": 2.0, "cache": 0.10, "out": 10.0, "high_in": 2.0, "high_cache": 0.10, "high_out": 10.0},
     "gemini-3.8-flash": {
         "high_at": 0,
         "in": 0.75,
@@ -130,6 +132,8 @@ def rates_for(model: str) -> dict | None:
         return RATES["muse-spark-1.2-contributor"]
     if model.startswith("muse-spark-1.2") or leaf.startswith("muse-spark-1.2"):
         return RATES["muse-spark-1.2"]
+    if model.startswith("gemini-4-argon") or leaf.startswith("gemini-4-argon"):
+        return RATES["gemini-4-argon"]
     if model.startswith("gemini") or leaf.startswith("gemini"):
         return RATES["gemini-3.8-flash"]
     if model in ("k3", "kimi-k3") or leaf in ("k3", "kimi-k3") or leaf.startswith("kimi-k3"):

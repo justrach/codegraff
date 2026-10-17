@@ -395,5 +395,43 @@
     "usage": "graff-stderr",
     "default_model": "gpt-6-1-sol-medium",
     "note": "Devin CLI over ACP, the way the Harness desktop app drives it (devin acp, tools auto-approved). Token usage is summed from the per-call usage_update notifications and priced at Devin's list price. Needs `devin auth login`; DEVIN_BIN overrides the binary."
+  },
+  "agy-high": {
+    "cmd": ["agy", "-p", "{prompt}", "--output-format", "json", "--dangerously-skip-permissions", "--model", "{model}"],
+    "answer": "agy-json",
+    "usage": "agy-json",
+    "capabilities": [],
+    "model_map": {"gemini-4-argon": "gemini-4-argon-high"},
+    "default_model": "gemini-4-argon",
+    "note": "Antigravity CLI print mode on its own sign-in, high reasoning. input_tokens there excludes the cached part; calls are not reported."
+  },
+  "agy-low": {
+    "cmd": ["agy", "-p", "{prompt}", "--output-format", "json", "--dangerously-skip-permissions", "--model", "{model}"],
+    "answer": "agy-json",
+    "usage": "agy-json",
+    "capabilities": [],
+    "model_map": {"gemini-4-argon": "gemini-4-argon-low"},
+    "default_model": "gemini-4-argon",
+    "note": "Antigravity CLI print mode on its own sign-in, low reasoning. input_tokens there excludes the cached part; calls are not reported."
+  },
+  "graff-gateway-high": {
+    "cmd": ["python3", "{repo}/graff-evals/graff_json.py", "--effort", "high", "--model", "{model}", "{prompt}"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": [],
+    "env": {"GRAFF_NO_TELEMETRY": "1", "GRAFF_BIN": "{repo}/zig-out/bin/graff"},
+    "model_prefix": "codegraff",
+    "default_model": "gemini-4-argon",
+    "note": "graff --json on the Codegraff gateway, set_effort high before the prompt (-p has no effort flag)"
+  },
+  "graff-gateway-default": {
+    "cmd": ["python3", "{repo}/graff-evals/graff_json.py", "--effort", "default", "--model", "{model}", "{prompt}"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": [],
+    "env": {"GRAFF_NO_TELEMETRY": "1", "GRAFF_BIN": "{repo}/zig-out/bin/graff"},
+    "model_prefix": "codegraff",
+    "default_model": "gemini-4-argon",
+    "note": "graff --json on the Codegraff gateway, set_effort default before the prompt (-p has no effort flag)"
   }
 }
