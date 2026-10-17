@@ -168,6 +168,7 @@ pub fn buildBody(self: *Agent, tools_in: ?[]const u8, force_tool: bool, stream: 
             try s.objectField("content");
             try s.write(repo.instructions);
             try s.endObject();
+            if (repo_context.statefulChat(self)) try repo_context.writeOpening(&s);
             if (repo.context.len != 0) try repo_context.writeChatMessage(&s, self.scratchAlloc(), repo.context);
             for (self.messages.items) |m| try writeOpenAIMessageNormalized(&s, m);
             try s.endArray();

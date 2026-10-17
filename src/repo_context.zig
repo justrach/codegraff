@@ -104,6 +104,27 @@ pub fn writeItem(s: *std.json.Stringify, text: []const u8) !void {
 /// framed so the model reads it as standing context rather than a request.
 pub const chat_frame = "Repository context for this session (standing instructions and layout, not a request):\n\n";
 
+/// Gemini's implicit cache reuses a request's prefix only up to the start of
+/// a later turn: the system prompt and tools alone never count, and the repo
+/// context plus the first prompt is one user turn, so every new session's
+/// first call read nothing from the cache. One fixed exchange ahead of the
+/// context gives every session, in any repo, the same turn boundary after the
+/// system prompt and tools, so a first call in a new repo reads them from the
+/// cache.
+pub const opening_user = "A new coding session is starting.";
+pub const opening_model = "Ready.";
+
+pub fn writeOpening(s: *std.json.Stringify) !void {
+    for ([_][2][]const u8{ .{ "user", opening_user }, .{ "assistant", opening_model } }) |m| {
+        try s.beginObject();
+        try s.objectField("role");
+        try s.write(m[0]);
+        try s.objectField("content");
+        try s.write(m[1]);
+        try s.endObject();
+    }
+}
+
 pub fn writeChatMessage(s: *std.json.Stringify, arena: std.mem.Allocator, text: []const u8) !void {
     try s.beginObject();
     try s.objectField("role");

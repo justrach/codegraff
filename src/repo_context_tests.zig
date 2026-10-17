@@ -107,11 +107,16 @@ test "ADR 0258: Gemini on the Codegraff chat wire sends the per-repo context onc
     const system = messages[0].object.get("content").?.string;
     try std.testing.expect(std.mem.startsWith(u8, system, "BASE\n\n# Skills\nstatic tail"));
     try std.testing.expect(std.mem.indexOf(u8, system, "# Project") == null);
+    // A fixed opening exchange gives every session the same cacheable turn boundary.
     try std.testing.expectEqualStrings("user", messages[1].object.get("role").?.string);
-    const context = messages[1].object.get("content").?.string;
+    try std.testing.expectEqualStrings(repo_context.opening_user, messages[1].object.get("content").?.string);
+    try std.testing.expectEqualStrings("assistant", messages[2].object.get("role").?.string);
+    try std.testing.expectEqualStrings(repo_context.opening_model, messages[2].object.get("content").?.string);
+    try std.testing.expectEqualStrings("user", messages[3].object.get("role").?.string);
+    const context = messages[3].object.get("content").?.string;
     try std.testing.expect(std.mem.startsWith(u8, context, repo_context.chat_frame ++ "# Project instructions (from AGENTS.md)\nUse tabs."));
     try std.testing.expect(std.mem.indexOf(u8, context, "logs/auth.log") != null);
-    try std.testing.expectEqualStrings("hello", messages[2].object.get("content").?.string);
+    try std.testing.expectEqualStrings("hello", messages[4].object.get("content").?.string);
 
     // A second repo sends the same system prompt.
     var other = try chatRoot(a, "codegraff", "google/gemini-3.7-flash", layout_b);

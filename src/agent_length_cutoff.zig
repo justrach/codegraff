@@ -30,8 +30,8 @@ pub const note = "Your previous reply ran long without a tool call and was cut o
 /// that end in a tool call stay well under it.
 pub const runaway_bytes: usize = 24 * 1024;
 
-/// Rewinds per turn. Argon can run away again after a rewind (a second
-/// runaway in one turn streamed 180 KB for 145 s to the output cap).
+/// Rewinds per turn. A model can run away again after a rewind, and a second
+/// runaway left alone streams all the way to the output cap.
 pub const max_rewinds: u8 = 2;
 
 /// The provider stopped because it ran out of output budget, in any of the
