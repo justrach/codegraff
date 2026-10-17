@@ -182,6 +182,13 @@ pub const LiveTurn = struct {
                     cancel_source.marker(self.cancelled_source.?),
                 ));
             }
+            // #1639: like the REPL, a turn the transport ended keeps its
+            // partial reply and says why, so the next prompt (and a resume)
+            // sees where the answer stopped instead of no reply at all.
+            if (!isolated and (err == error.StreamDropped or err == error.StreamStalled)) {
+                const ended = try @import("stream_reconnect.zig").endedEarlyText(arena, self.root.partial_text.items, err == error.StreamStalled);
+                try self.root.messages.append(try messages.textMessage(arena, "assistant", ended));
+            }
             if (isolated) {
                 const marker = if (err == error.Interrupted or err == error.Canceled)
                     cancel_source.marker(self.cancelled_source.?)

@@ -446,10 +446,7 @@ pub fn run(ctx: *Ctx) !void {
                 // harness gave up, NOT the user (#134) — keep the partial but
                 // tag it a stall, and emit the structured error for --json.
                 const partial = std.mem.trim(u8, ctx.root.partial_text.items, " \t\r\n");
-                const marker: []const u8 = if (partial.len > 0)
-                    try std.fmt.allocPrint(ctx.arena, "{s}\n\n[response ended early: stream stalled]", .{partial})
-                else
-                    "[response ended early: stream stalled]";
+                const marker = try @import("stream_reconnect.zig").endedEarlyText(ctx.arena, partial, true);
                 try ctx.root.messages.append(try messages.textMessage(ctx.arena, "assistant", marker));
                 if (main_mod.json_mode) {
                     ctx.root.emit(.{ .type = "error", .message = ctx.root.last_api_error orelse "stream stalled — ending turn" });
@@ -468,10 +465,7 @@ pub fn run(ctx: *Ctx) !void {
                 // the user (#133). Keep the partial, tag it a drop (never
                 // "[response interrupted by user]"), and emit the --json error.
                 const partial = std.mem.trim(u8, ctx.root.partial_text.items, " \t\r\n");
-                const marker: []const u8 = if (partial.len > 0)
-                    try std.fmt.allocPrint(ctx.arena, "{s}\n\n[response ended early: connection dropped]", .{partial})
-                else
-                    "[response ended early: connection dropped]";
+                const marker = try @import("stream_reconnect.zig").endedEarlyText(ctx.arena, partial, false);
                 try ctx.root.messages.append(try messages.textMessage(ctx.arena, "assistant", marker));
                 if (main_mod.json_mode) {
                     ctx.root.emit(.{ .type = "error", .message = ctx.root.last_api_error orelse "stream dropped — ending turn" });

@@ -207,8 +207,8 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     // #56: bounded stream-stall / drop reconnect budget (codex's stream_max_retries analog), outside the rebuild loop so a WS reanchor can't reset it.
     self.stall = .{}; // #680: a fresh widen ladder + tripped budget per request
     var stall_retries: usize = 0;
-    const max_stall_retries: usize = 2;
-    const stall_reconnect_backoff_ms = 750; // brief pause before reconnecting on a fresh stream
+    var drop_retries: usize = 0; // #1639: a peer close earns its own, larger budget (stream_reconnect.zig)
+    const reconnect = @import("stream_reconnect.zig");
     var server_retries: usize = 0; // #opencode-parity: bounded retries for a transient in-stream server overload
     var openai404_retries: usize = 0; // #opencode-parity: bounded retries for OpenAI's spurious model 404s
     const max_openai404_retries: usize = 2;
@@ -282,24 +282,25 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     if (err == error.StreamStalled or err == error.StreamDropped) {
                         const stalled = err == error.StreamStalled;
                         const what: []const u8 = if (stalled) "stream stalled" else "stream dropped";
-                        if (stall_retries < max_stall_retries) {
-                            stall_retries += 1;
+                        const retries = if (stalled) &stall_retries else &drop_retries;
+                        if (retries.* < reconnect.maxRetries(stalled)) {
+                            retries.* += 1;
                             // #56: give a fresh WS one reconnect; if it stalls again,
                             // fall back to the reliable SSE transport for the rest of
                             // the session — codex's WS→SSE fallback, and consistent
                             // with how a WS transport error is already handled (ws_off).
-                            if (stall_retries > 1) self.ws_off = true;
+                            if (stall_retries + drop_retries > 1) self.ws_off = true;
                             if (self.tracer) |tr| tr.note("stream_retry", what);
                             if (telemetry.g_telem) |t| t.errorEvent("stream_retry", what);
-                            @import("agent_stream.zig").noteStallRetry(self, stall_retries); // #680: clears the partial (fresh stream, no concat) + widens the between-lines budget
+                            @import("agent_stream.zig").noteStallRetry(self, stall_retries); // #680: clears the partial (fresh stream, no concat) + widens the between-lines budget (stalls only)
                             self.closeCodexWs(); // tear down the dead WS + null codex_prev_id for a full re-send (no-op off codex WS)
-                            self.sleepInterruptible(jitter.ms(self.io, stall_reconnect_backoff_ms)) catch return error.Interrupted; // #1274: desync parallel reconnects
+                            self.sleepInterruptible(jitter.ms(self.io, reconnect.backoffMs(stalled, retries.*))) catch return error.Interrupted; // #1274: desync parallel reconnects
                             continue :rebuild;
                         }
                         // Budget gone: the turn is ending. Mid-turn cuts stayed silent.
                         @import("engine_sink.zig").forAgent(self).emit(self.io, .{ .transport_aborted = .{ .reason = if (stalled) .stalled else .dropped, .turn_ending = true } });
                         if (stalled) {
-                            self.last_api_error = @import("agent_stream.zig").stallGiveUpMessage(self, max_stall_retries); // #680: reports the wait that tripped, not the configured total
+                            self.last_api_error = @import("agent_stream.zig").stallGiveUpMessage(self, reconnect.max_stall_retries); // #680: reports the wait that tripped, not the configured total
                             if (telemetry.g_telem) |t| t.errorEvent("stream_stall", self.last_api_error orelse "stream stalled");
                             if (self.tracer) |tr| tr.note("stream_stall", self.last_api_error orelse "stream stalled");
                             return error.StreamStalled;
