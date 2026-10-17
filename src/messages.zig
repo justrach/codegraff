@@ -2,8 +2,7 @@
 //! user/assistant/tool_result messages in each provider's shape, scrub invalid
 //! UTF-8 so content never serializes as a byte-int array, and coerce resumed
 //! Responses/OpenAI tool outputs back to strings (#95/#99). Split out of
-//! main.zig (600-line goal). Back-imports main for Provider (.Kind) and
-//! utf8Prefix (used by the Responses output cap).
+//! main.zig (600-line goal). Oversized outputs keep recoverable handles.
 
 const std = @import("std");
 const Io = std.Io;
@@ -12,9 +11,7 @@ const Allocator = std.mem.Allocator;
 
 const root = @import("main.zig");
 const provider_mod = @import("provider.zig");
-const util = @import("util.zig");
 const Provider = provider_mod.Provider;
-const utf8Prefix = util.utf8Prefix;
 
 pub fn textMessage(arena: Allocator, role: []const u8, text: []const u8) !Value {
     var msg: std.json.ObjectMap = .empty;
@@ -237,10 +234,7 @@ pub fn normalizeResponsesHistory(arena: Allocator, messages: *std.json.Array) vo
         const out = m.object.get("output") orelse continue;
         if (out == .string and out.string.len <= responses_output_cap) continue; // valid + within cap
         const s = if (out == .string) out.string else jsonValueString(arena, out);
-        const capped = if (s.len > responses_output_cap)
-            (std.fmt.allocPrint(arena, "{s}\n[truncated: the Responses API caps tool output at {d} chars — read/fetch a smaller range]", .{ utf8Prefix(s, responses_output_cap - 112), responses_output_cap }) catch utf8Prefix(s, responses_output_cap))
-        else
-            s;
+        const capped = @import("tool_spill.zig").capWithHandle(arena, s, responses_output_cap);
         m.object.put(arena, "output", .{ .string = capped }) catch {};
     }
 }

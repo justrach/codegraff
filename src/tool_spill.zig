@@ -131,6 +131,25 @@ pub const Note = struct {
     }
 };
 
+/// Wire admission can have a tighter limit than tool-time handling (#1526).
+/// Use the already-wired workspace sink to preserve the original as a regular
+/// read_tool_result handle, including for results without a durable session.
+/// The bounded replacement makes repeated normalization a no-op.
+pub fn capWithHandle(arena: Allocator, full: []const u8, cap: usize) []const u8 {
+    if (full.len <= cap) return full;
+    if (g_sink) |sink| {
+        const handled = @import("tool_handle.zig").forResult(arena, arena, .{
+            .io = sink.io,
+            .dir = sink.dir,
+        }, full, cap) catch null;
+        if (handled) |result| return result.text;
+    }
+    const marker = "[tool result truncated: no recoverable handle could be written; narrow the result and retry]";
+    if (marker.len + 1 >= cap) return util.utf8Prefix(marker, cap);
+    const body = output_elide.headTail(arena, full, cap - marker.len - 1) catch "";
+    return std.fmt.allocPrint(arena, "{s}\n{s}", .{ body, marker }) catch marker;
+}
+
 /// Write `full` to this session's artifact dir; the ABSOLUTE path on success.
 /// Null — i.e. plain truncation — when no durable session is wired, when the
 /// per-session budget is spent, or when any part of the write fails. Public

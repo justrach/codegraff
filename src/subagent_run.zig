@@ -394,6 +394,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     @import("worker_jev.zig").offer(&agent); // ADR 0232: a child asks Jev for its own effort mid-run
     // ADR 0232: a fresh child starts from the user's request; a resumed one already has it.
     const first = if (agent.messages.items.len == 0) try @import("subagent_fork.zig").firstMessage(arena, ctx.parent_task, task_prompt) else task_prompt;
+    @import("named_work.zig").rememberOn(&agent, prompt);
     try agent.messages.append(try textMessage(arena, "user", first));
     defer agent.tools_used.deinit(gpa);
     // Retry transient failures against the same child history.
