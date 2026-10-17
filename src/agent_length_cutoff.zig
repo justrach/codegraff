@@ -4,11 +4,14 @@
 //! provider streams reasoning summaries, in reasoning) until the output cap
 //! stops it: minutes of "wait, let me re-check the spec" with no tool call,
 //! after which the turn ended as if that text were the answer. Two stops,
-//! both rewinding the reply and asking for the next action once per turn:
+//! both rewinding the reply and asking for the next action:
 //!   * `handle`: the provider already cut the reply at its output limit;
 //!   * `ReplySize` + `recoverRunaway`: the reply passed `runaway_bytes` of text
 //!     (or of summary reasoning) before any tool call, so the stream is
 //!     stopped early instead of waiting for the cap.
+//! A turn gets `max_rewinds` rewinds; a runaway after that still stops the
+//! stream, and the turn ends like a model loop (agent_model_loop.finishError)
+//! instead of streaming to the output cap.
 //! The cut reply is never the answer, and keeping it would re-bill its tokens
 //! as input on every later call. A turn with no tool call yet is left alone:
 //! a long first answer stays as written.
@@ -27,6 +30,10 @@ pub const note = "Your previous reply ran long without a tool call and was cut o
 /// that end in a tool call stay well under it.
 pub const runaway_bytes: usize = 24 * 1024;
 
+/// Rewinds per turn. Argon can run away again after a rewind (a second
+/// runaway in one turn streamed 180 KB for 145 s to the output cap).
+pub const max_rewinds: u8 = 2;
+
 /// The provider stopped because it ran out of output budget, in any of the
 /// response shapes graff reads: chat finish_reason, Anthropic stop_reason,
 /// Responses incomplete_details, Interactions status.
@@ -43,10 +50,14 @@ pub fn cutAtLimit(root: std.json.ObjectMap) bool {
     return false;
 }
 
-/// Mid-task (the turn has used tools) and not yet spent this turn.
+/// Mid-task: the turn has used tools, outside compaction and schema replies.
+fn midTask(self: *const Agent) bool {
+    return self.tool_calls_this_turn > 0 and !self.compaction_request and self.output_schema == null;
+}
+
+/// Mid-task with a rewind left this turn.
 fn armed(self: *const Agent) bool {
-    return !self.length_cutoff_used and self.tool_calls_this_turn > 0 and
-        !self.compaction_request and self.output_schema == null;
+    return self.length_cutoffs < max_rewinds and midTask(self);
 }
 
 /// Rewind a mid-task reply the provider cut at its output limit and add the
@@ -57,8 +68,9 @@ pub fn handle(self: *Agent, root: std.json.ObjectMap, hist_len: usize) !bool {
 }
 
 /// The stream stopped itself (`error.ReplyRunaway`): rewind the same way.
+/// False with no rewind left: finishError ends the turn.
 pub fn recoverRunaway(self: *Agent, err: anyerror, hist_len: usize) !bool {
-    if (err != error.ReplyRunaway) return false;
+    if (err != error.ReplyRunaway or self.length_cutoffs >= max_rewinds) return false;
     self.partial_text.clearRetainingCapacity();
     if (self.streamed_text) if (self.out) |w| {
         w.writeAll("\n") catch {};
@@ -71,7 +83,7 @@ pub fn recoverRunaway(self: *Agent, err: anyerror, hist_len: usize) !bool {
 
 fn rewind(self: *Agent, hist_len: usize, line: []const u8) !bool {
     if (!@import("agent_empty_completion.zig").PendingWork.canRequest(self)) return false;
-    self.length_cutoff_used = true;
+    self.length_cutoffs += 1;
     const keep = @min(hist_len, self.messages.items.len);
     self.closeCodexWs();
     self.messages.shrinkRetainingCapacity(keep);
@@ -97,7 +109,7 @@ pub const ReplySize = struct {
         }
         self.text += text_len;
         self.reasoning += reasoningDelta(kind, event).len;
-        if (!armed(agent)) return false;
+        if (!midTask(agent)) return false;
         return self.text > runaway_bytes or (summaryReasoning(agent.provider.model) and self.reasoning > runaway_bytes);
     }
 };
@@ -214,7 +226,7 @@ test "ReplySize: text past the limit stops a mid-task reply; a tool call, an una
     var agent: Agent = undefined;
     agent.provider.kind = .openai;
     agent.provider.model = "codegraff/gemini-4-argon";
-    agent.length_cutoff_used = false;
+    agent.length_cutoffs = 0;
     agent.tool_calls_this_turn = 1;
     agent.compaction_request = false;
     agent.output_schema = null;
@@ -230,15 +242,18 @@ test "ReplySize: text past the limit stops a mid-task reply; a tool call, an una
     try std.testing.expect(!with_tool.feed(&agent, tool_ev, 0));
     try std.testing.expect(!with_tool.feed(&agent, text_ev, runaway_bytes * 2));
 
-    // No tool call yet this turn, or already rewound once: never stopped.
+    // No tool call yet this turn: never stopped.
     agent.tool_calls_this_turn = 0;
     var first: ReplySize = .{};
     try std.testing.expect(!first.feed(&agent, text_ev, runaway_bytes * 2));
     agent.tool_calls_this_turn = 1;
-    agent.length_cutoff_used = true;
+
+    // Rewinds spent: still stopped (the turn then ends instead of rewinding).
+    agent.length_cutoffs = max_rewinds;
     var spent: ReplySize = .{};
-    try std.testing.expect(!spent.feed(&agent, text_ev, runaway_bytes * 2));
-    agent.length_cutoff_used = false;
+    try std.testing.expect(spent.feed(&agent, text_ev, runaway_bytes * 2));
+    try std.testing.expect(!try recoverRunaway(&agent, error.ReplyRunaway, 0));
+    agent.length_cutoffs = 0;
 
     // Reasoning counts only for summary-reasoning (Gemini) models.
     var big: std.ArrayList(u8) = .empty;

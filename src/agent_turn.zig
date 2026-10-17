@@ -16,7 +16,7 @@ pub fn run(self: *Agent, root_turn_prepared: *std.atomic.Value(bool)) anyerror![
     defer if (!self.sub) @import("peer_idle.zig").noteTurnEnd();
     var pending_work = empty_completion.PendingWork.begin(self);
     var bounced_answer: empty_completion.BounceAnswer = .{};
-    self.length_cutoff_used = false; // agent_length_cutoff.zig: once per turn
+    self.length_cutoffs = 0; // agent_length_cutoff.zig: rewinds this turn
     self.completed = null;
     self.yielded = null;
     self.read_miss.reset();

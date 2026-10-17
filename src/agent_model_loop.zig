@@ -140,7 +140,8 @@ pub fn checkResponse(agent: *Agent, root: std.json.ObjectMap) !void {
 /// only unseen text plus a short marker. The ordinary final event remains the
 /// caller's responsibility, exactly as for an ordinary completed answer.
 pub fn finishError(agent: *Agent, err: anyerror) ![]const u8 {
-    if (err != error.ModelLoop) return err;
+    // A runaway with no rewind left ends the turn the same way (agent_length_cutoff.zig).
+    if (err != error.ModelLoop and err != error.ReplyRunaway) return err;
     return finish(agent);
 }
 
