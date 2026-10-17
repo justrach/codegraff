@@ -19,6 +19,12 @@ pub const session_ext = ".session.json";
 /// Title-named session files live here (resume reads this).
 pub const sessions_dir = ".graff/sessions";
 
+/// Read limit shared by every session-file reader. saveSession has no limit,
+/// and a provider-native compaction item is opaque and grows with the context
+/// it summarizes, so one item alone can be many MiB. A save that loads must
+/// also list, so nothing reads a session with a smaller cap (#1654).
+pub var max_session_bytes: usize = 256 * 1024 * 1024;
+
 /// INVARIANT: every `.graff/` path this harness builds is FORWARD-SLASHED on
 /// every platform, including Windows. Not an accident of `allocPrint` — a
 /// choice, and callers may rely on it:
@@ -79,7 +85,7 @@ pub fn sessionMetaFromBytes(arena: Allocator, data: []const u8) SessionMeta {
 
 pub fn sessionMeta(root: *Agent, arena: Allocator, base: []const u8) SessionMeta {
     const path = sessionPath(arena, base) catch return .{};
-    const data = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(8 * 1024 * 1024)) catch return .{};
+    const data = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(max_session_bytes)) catch return .{};
     return sessionMetaFromBytes(arena, data);
 }
 
@@ -115,14 +121,14 @@ pub fn sameWorkspace(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, std.mem.trimEnd(u8, a, "/"), std.mem.trimEnd(u8, b, "/"));
 }
 
-fn listFromDir(io: Io, arena: Allocator, dir: Io.Dir, workspace: []const u8, local: bool) std.ArrayList(SessionEntry) {
+pub fn listFromDir(io: Io, arena: Allocator, dir: Io.Dir, workspace: []const u8, local: bool) std.ArrayList(SessionEntry) {
     var entries: std.ArrayList(SessionEntry) = .empty;
     var it = dir.iterate();
     while (it.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, session_ext)) continue;
         const base = arena.dupe(u8, entry.name[0 .. entry.name.len - session_ext.len]) catch continue;
-        const data = dir.readFileAlloc(io, entry.name, arena, .limited(8 * 1024 * 1024)) catch continue;
+        const data = dir.readFileAlloc(io, entry.name, arena, .limited(max_session_bytes)) catch continue;
         const meta = sessionMetaFromBytes(arena, data);
         entries.append(arena, .{
             .base = base,
@@ -233,6 +239,10 @@ pub fn savedSessionsHint(n: usize, buf: []u8) []const u8 {
         n,
         if (n == 1) "" else "s",
     }) catch "";
+}
+
+test {
+    _ = @import("session_size_tests.zig"); // #1654
 }
 
 test "sessionMetaFromBytes reads title + updated_ms from the header only" {

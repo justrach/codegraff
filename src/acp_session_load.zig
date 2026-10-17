@@ -81,8 +81,8 @@ pub fn load(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request
     };
     const canonical_active = workspace_switch.currentAbs(live.root.io, arena);
     if (stat.kind != .file) return reject(w, req, "Unknown session ID in the selected workspace");
-    const bytes = Io.Dir.cwd().readFileAlloc(live.root.io, path, arena, .limited(8 * 1024 * 1024)) catch
-        return reject(w, req, "Saved session could not be loaded");
+    const bytes = Io.Dir.cwd().readFileAlloc(live.root.io, path, arena, .limited(session_index.max_session_bytes)) catch |err|
+        return reject(w, req, loadErrorText(arena, if (err == error.StreamTooLong) error.SessionTooLarge else err, ""));
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, bytes, .{ .allocate = .alloc_always }) catch
         return reject(w, req, "Saved session could not be loaded");
     if (parsed != .object) return reject(w, req, "Saved session could not be loaded");
@@ -121,6 +121,7 @@ pub fn load(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request
 /// of all, which the host would otherwise present as lost context.
 fn loadErrorText(arena: Allocator, err: anyerror, provider_id: []const u8) []const u8 {
     if (err == error.FileNotFound) return "Unknown session ID in the selected workspace";
+    if (err == error.SessionTooLarge) return "Saved session is larger than the session read limit and could not be loaded";
     if (err == error.MissingKey and provider_id.len > 0)
         return std.fmt.allocPrint(arena, "Saved session is intact, but its provider \"{s}\" has no credential in this process; run `graff login {s}` or `graff key set {s} <key>`, then load it again", .{ provider_id, provider_id, provider_id }) catch "Saved session is intact, but its provider has no credential in this process";
     return std.fmt.allocPrint(arena, "Saved session could not be loaded ({s})", .{@errorName(err)}) catch "Saved session could not be loaded";
@@ -136,6 +137,7 @@ test "loadErrorText names a missing credential instead of blaming the save (#155
     try std.testing.expect(std.mem.indexOf(u8, missing, "could not be loaded") == null);
     try std.testing.expectEqualStrings("Unknown session ID in the selected workspace", loadErrorText(a, error.FileNotFound, "x"));
     try std.testing.expectEqualStrings("Saved session could not be loaded (BadSession)", loadErrorText(a, error.BadSession, "x"));
+    try std.testing.expect(std.mem.indexOf(u8, loadErrorText(a, error.SessionTooLarge, "x"), "read limit") != null);
 }
 
 fn replayFromStart(params: std.json.Value) bool {
