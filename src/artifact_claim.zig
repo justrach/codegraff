@@ -122,7 +122,7 @@ pub fn selfOwner(io: Io) Owner {
     };
 }
 
-fn ownerLive(io: Io, owner: Owner) bool {
+pub fn ownerLive(io: Io, owner: Owner) bool {
     if (g_test_owner.session.len > 0 or g_test_owner.pid != 0) {
         if (sameOwner(owner, g_test_owner)) return true;
         return g_test_live;
@@ -254,7 +254,7 @@ pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []cons
     if (std.mem.eql(u8, action, "claim") or std.mem.eql(u8, action, "acquire")) {
         const msg = claim_ledger.acquireIn(ledger, storage, kind, key, me, now, live, repo) catch |err| switch (err) {
             error.ClaimHeld => return .{ .text = refuseText(arena, kind, key, existing.?.owner), .is_error = true },
-            else => |e| return .{ .text = claim_ledger.acquireFailText(arena, e), .is_error = true },
+            else => |e| return .{ .text = try @import("artifact_claim_inventory.zig").acquireFail(arena, io, e, ledger.slice(), me), .is_error = true }, // #1614: at capacity, list what can be released
         };
         if (tx) |transaction| transaction.write(try persistJson(scratch.allocator(), ledger)) catch return .{ .text = "claim was NOT persisted; retry before publishing", .is_error = true };
         announceLive(io, scratch.allocator(), ledger);
@@ -302,7 +302,7 @@ pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []cons
             const v = claim_ledger.verdictIn(ledger.slice(), c.kind, c.key, me, live, c.repo orelse repo);
             return .{ .text = try std.fmt.allocPrint(arena, "claim {s} {s}: {s} owner=\"{s}\"", .{ @tagName(c.kind), c.key, @tagName(v), c.owner.session }), .is_error = false };
         }
-        return .{ .text = "no claim", .is_error = false };
+        return .{ .text = if (key.len == 0) try @import("artifact_claim_inventory.zig").status(arena, io, ledger.slice(), me) else "no claim", .is_error = false }; // #1614: keyless status lists the ledger
     }
     return .{ .text = "action must be claim, release, handoff, or status", .is_error = true };
 }
