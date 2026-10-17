@@ -135,6 +135,14 @@ small explanations, focused reviews, test runs, and narrowly scoped fixes.
   summarizer runs on its own single-call budget.
 - Root tool calls are capped at 64 per turn.
 
+When Graff calls this tool over HTTP, its transport waits for the validated
+child budget, any required context summarization, and 15 seconds for cleanup
+and the final partial-output reply. Discovery and unrelated tools retain their
+normal deadlines. Other MCP hosts control their own transport timeouts: allow
+at least the task timeout plus 15 seconds, or plus 75 seconds when context
+exceeds 8 KiB. A shorter host timeout can discard the reply; it does not prove
+the child stopped, and this tool has no continuation handle.
+
 `context` carries text only. It cannot set cwd, credentials, model, permission
 mode, or any CLI flag — those still come from the server launch.
 

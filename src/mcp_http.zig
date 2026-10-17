@@ -308,7 +308,7 @@ pub const PostOptions = struct {
 /// Cancellation unwinds the request, whose errdefer poisons the connection so
 /// a timed-out socket is never pooled.
 pub fn post(http: *HttpTransport, body: []const u8, meta: RequestMeta, expected_id: ?i64) !?[]u8 {
-    return postWith(http, body, meta, expected_id, .{});
+    return postWith(http, body, meta, expected_id, .{ .timeout_s = @import("mcp_server.zig").transportTimeoutSeconds(http.client.allocator, meta.method, meta.name, body) });
 }
 
 pub fn postWith(http: *HttpTransport, body: []const u8, meta: RequestMeta, expected_id: ?i64, opts: PostOptions) !?[]u8 {

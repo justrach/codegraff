@@ -247,6 +247,22 @@ const context_max_bytes: usize = 32768;
 const summary_stdout_cap: usize = 16 * 1024;
 const summarize_deadline_ms: u64 = 60_000;
 
+/// Leave the bounded task time to stop its child and return partial output.
+/// Other tools, discovery, and invalid task inputs keep the normal HTTP bound.
+/// This is request-local: it never changes another server's client settings.
+pub fn transportTimeoutSeconds(a: Allocator, method: []const u8, name: ?[]const u8, body: []const u8) i64 {
+    if (!std.mem.eql(u8, method, "tools/call") or !std.mem.eql(u8, name orelse "", "run_task")) return 15;
+    const parsed = std.json.parseFromSlice(Value, a, body, .{}) catch return 15;
+    defer parsed.deinit();
+    const request = parsed.value;
+    if (request != .object) return 15;
+    const params = request.object.get("params") orelse return 15;
+    if (params != .object) return 15;
+    const task = parseTask(params.object.get("arguments") orelse return 15) catch return 15;
+    const preprocessing: u64 = if (task.context) |context| if (context.len > inline_context_max) summarize_deadline_ms / 1000 else 0 else 0;
+    return @intCast(task.timeout_seconds + preprocessing + 15);
+}
+
 const raw_context_lead = "\n\nBackground context supplied by the caller for this task:\n\n";
 const summary_context_lead = "\n\nBackground context supplied by the caller for this task (summarized to fit):\n\n";
 const summarize_instruction =

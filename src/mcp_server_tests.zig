@@ -190,6 +190,37 @@ test "MCP execution errors are tool errors and server remains usable" {
     try std.testing.expect(std.mem.indexOf(u8, result, "\"id\":3,\"result\":{}") != null);
 }
 
+test "MCP task HTTP deadline outlives the validated child budget" {
+    const a = std.testing.allocator;
+    const default = "{\"params\":{\"arguments\":{\"prompt\":\"hello\"}}}";
+    try std.testing.expectEqual(@as(i64, 135), mcp.transportTimeoutSeconds(a, "tools/call", "run_task", default));
+    const bounded = "{\"params\":{\"arguments\":{\"prompt\":\"hello\",\"timeout_seconds\":300}}}";
+    try std.testing.expectEqual(@as(i64, 315), mcp.transportTimeoutSeconds(a, "tools/call", "run_task", bounded));
+    try std.testing.expectEqual(@as(i64, 15), mcp.transportTimeoutSeconds(a, "tools/list", "run_task", bounded));
+    try std.testing.expectEqual(@as(i64, 15), mcp.transportTimeoutSeconds(a, "tools/call", "other", bounded));
+    try std.testing.expectEqual(@as(i64, 15), mcp.transportTimeoutSeconds(a, "tools/call", null, bounded));
+}
+
+test "MCP task HTTP deadline includes only required context preprocessing" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const context = try a.alloc(u8, 8193);
+    @memset(context, 'x');
+    const long = try std.fmt.allocPrint(a, "{{\"params\":{{\"arguments\":{{\"prompt\":\"hello\",\"context\":\"{s}\",\"timeout_seconds\":300}}}}}}", .{context});
+    try std.testing.expectEqual(@as(i64, 375), mcp.transportTimeoutSeconds(a, "tools/call", "run_task", long));
+    const short = try std.fmt.allocPrint(a, "{{\"params\":{{\"arguments\":{{\"prompt\":\"hello\",\"context\":\"{s}\",\"timeout_seconds\":300}}}}}}", .{context[0..8192]});
+    try std.testing.expectEqual(@as(i64, 315), mcp.transportTimeoutSeconds(a, "tools/call", "run_task", short));
+}
+
+test "MCP task HTTP deadline rejects unbounded or malformed inputs" {
+    const a = std.testing.allocator;
+    for ([_][]const u8{
+        "not json",                                                                "null",                                                                   "{}",                                                                      "{\"params\":[]}",
+        "{\"params\":{\"arguments\":{\"prompt\":\"x\",\"timeout_seconds\":301}}}", "{\"params\":{\"arguments\":{\"prompt\":\"x\",\"timeout_seconds\":-1}}}", "{\"params\":{\"arguments\":{\"prompt\":\"x\",\"timeout_seconds\":1.5}}}", "{\"params\":{\"arguments\":{\"prompt\":\"x\",\"cwd\":\"other\"}}}",
+    }) |input| try std.testing.expectEqual(@as(i64, 15), mcp.transportTimeoutSeconds(a, "tools/call", "run_task", input));
+}
+
 test "MCP failed task preserves partial output and truncation markers" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

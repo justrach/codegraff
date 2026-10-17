@@ -15,7 +15,12 @@ from pathlib import Path
 import subprocess
 import tempfile
 import threading
+import time
+import sys
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "eval"))
+from mock_model import ScriptedModel
 
 
 MODERN_PROTOCOL = "2026-07-28"
@@ -185,15 +190,94 @@ def run(graff: Path) -> None:
         thread.join(timeout=5)
 
 
+def run_task_deadline(graff: Path) -> None:
+    """A delayed tool failure must arrive intact, after the old 15-second bound."""
+    class TaskFixture(BaseHTTPRequestHandler):
+        calls = 0
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            pass
+
+        def do_POST(self) -> None:  # noqa: N802
+            message = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if message["method"] == "tools/list":
+                result = {"tools": [{"name": "run_task", "description": "Run the fixture task.",
+                    "inputSchema": {"type": "object", "properties": {
+                        "prompt": {"type": "string"}, "timeout_seconds": {"type": "integer"}},
+                        "required": ["prompt"]}}]}
+            elif message["method"] == "tools/call":
+                TaskFixture.calls += 1
+                time.sleep(16)
+                result = {"isError": True, "content": [{"type": "text", "text":
+                    "MCP_PARTIAL_WORK\n[Task timed out; partial work may remain.]"}],
+                    "structuredContent": {"status": "timed_out", "text": "MCP_PARTIAL_WORK"}}
+            else:
+                result = {}
+            if "id" not in message:
+                self.send_response(202)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            body = json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except BrokenPipeError:
+                pass  # The unfixed client closes before the delayed result.
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), TaskFixture)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    model = ScriptedModel([
+        {"tool": "load_tool_schemas", "arguments": {"server": "fixture"}},
+        {"tool": "mcp__fixture__run_task", "arguments": {
+            "prompt": "Return the fixture result.", "timeout_seconds": 16}},
+        {"text": "MCP_DEADLINE_DONE"},
+    ])
+    thread.start()
+    try:
+        model.start(1234)
+        with tempfile.TemporaryDirectory(prefix="graff-mcp-deadline-") as temp:
+            workspace = Path(temp)
+            (workspace / ".mcp.json").write_text(json.dumps({"mcpServers": {
+                "fixture": {"url": f"http://127.0.0.1:{server.server_port}/mcp"}}}))
+            env = {"PATH": os.environ.get("PATH", ""), "HOME": temp, "USERPROFILE": temp,
+                   "LMSTUDIO_API_KEY": "local-fixture", "GRAFF_FLEET": "off",
+                   "GRAFF_NO_PLUGINS": "1", "GRAFF_NO_TELEMETRY": "1",
+                   "GRAFF_NO_SMOLIFY": "1", "GRAFF_BEHAVIOR_TRACE": "0"}
+            completed = subprocess.run([str(graff), "--json", "--yolo", "--no-resume",
+                "--model", "lmstudio", "--max-model-calls", "5"], cwd=workspace,
+                env=env, input=json.dumps({"type": "user", "text":
+                    "Use the fixture run_task once and report its result. No file access is needed."}) + "\n",
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=45)
+            assert completed.returncode == 0, completed.stderr
+            assert TaskFixture.calls == 1, TaskFixture.calls
+            tool_replies = [message.get("content", "") for request in model.requests
+                            for message in request.get("messages", []) if message.get("role") == "tool"]
+            assert any("MCP_PARTIAL_WORK" in text for text in tool_replies), tool_replies
+            assert not any("McpRequestTimedOut" in text for text in tool_replies), tool_replies
+            assert "MCP_DEADLINE_DONE" in completed.stdout, completed.stdout
+    finally:
+        model.stop()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--graff", type=Path, default=Path("zig-out/bin/graff"))
+    parser.add_argument("--only-task-deadline", action="store_true")
     args = parser.parse_args()
     graff = args.graff.resolve()
     if not graff.is_file():
         parser.error(f"graff binary not found: {graff}")
-    run(graff)
-    print("Streamable HTTP MCP E2E passed")
+    if not args.only_task_deadline:
+        run(graff)
+    run_task_deadline(graff)
+    print("Streamable HTTP MCP E2E passed (including delayed task failure with partial output)")
     return 0
 
 

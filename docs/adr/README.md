@@ -304,6 +304,7 @@ record only when you need the evidence or the edge cases.
 | [0287](0287-loopback-inference-has-request-local-deadlines.md) | Loopback inference receives request-local default deadlines; explicit limits and remote recovery budgets remain unchanged. |
 | [0288](0288-anthropic-native-login-is-source-aware.md) | Native subscription PKCE login is shared across CLI, REPL and ACP; subscription wire compatibility stays credential-source-aware. |
 | [0289](0289-mcp-results-preserve-typed-and-display-content.md) | Preserve typed MCP results independently of display content, show resource references without fetching them and answer pings during shared waits. |
+| [0290](0290-mcp-task-replies-outlive-child-deadlines.md) | HTTP task calls wait for validated child and required preprocessing budgets plus reply cleanup; other requests keep their deadlines. |
 
 ## When to write one
 
