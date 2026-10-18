@@ -16,16 +16,19 @@ pub fn prepare(a: std.mem.Allocator, kind: Kind, history: *std.json.Array) void 
             }
             messages.normalizeResponsesHistory(a, history);
         },
-        .anthropic => for (history.items) |*item| {
-            if (item.* != .object) continue;
-            const content = item.object.getPtr("content") orelse continue;
-            if (content.* != .array) continue;
-            for (content.array.items) |*block| {
-                if (block.* != .object) continue;
-                const typ = block.object.get("type") orelse continue;
-                if (typ != .string or !std.mem.eql(u8, typ.string, "tool_result")) continue;
-                repair(a, &block.object, "content", true);
+        .anthropic => {
+            for (history.items) |*item| {
+                if (item.* != .object) continue;
+                const content = item.object.getPtr("content") orelse continue;
+                if (content.* != .array) continue;
+                for (content.array.items) |*block| {
+                    if (block.* != .object) continue;
+                    const typ = block.object.get("type") orelse continue;
+                    if (typ != .string or !std.mem.eql(u8, typ.string, "tool_result")) continue;
+                    repair(a, &block.object, "content", true);
+                }
             }
+            @import("anthropic_tool_pairs.zig").repair(a, history) catch {};
         },
         .interactions => @import("interactions_steps.zig").normalizeHistory(a, history),
     }

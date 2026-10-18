@@ -191,6 +191,9 @@ pub fn stepAnthropic(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
     try assistant.put(self.arena, "role", .{ .string = "assistant" });
     try assistant.put(self.arena, "content", content);
     try self.messages.append(.{ .object = assistant });
+    // A failing meta tool or result conversion must not leave unpaired calls
+    // in memory (or in the next saved session). Never replay the batch.
+    errdefer @import("anthropic_tool_pairs.zig").repair(self.arena, &self.messages) catch {};
 
     var calls: std.ArrayList(ToolCall) = .empty;
     defer calls.deinit(self.gpa);
