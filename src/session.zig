@@ -467,7 +467,7 @@ pub fn restoreContextMeter(root: *Agent, saved_context_tokens: u64, saved_local_
 pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8) !void {
     flushSaves(); // #273: a session switch never leaves the outgoing one queued
     const found = @import("session_discovery.zig").locate(root, arena, name) orelse return error.FileNotFound;
-    const data = Io.Dir.cwd().readFileAlloc(root.io, found.path, arena, .limited(8 * 1024 * 1024)) catch return error.FileNotFound;
+    const data = Io.Dir.cwd().readFileAlloc(root.io, found.path, arena, .limited(session_index.max_session_bytes)) catch |err| return if (err == error.StreamTooLong) error.SessionTooLarge else error.FileNotFound;
     const parsed = try std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always });
     if (parsed != .object) return error.BadSession;
     const obj = parsed.object;

@@ -16,6 +16,10 @@ const Agent = agent_mod.Agent;
 const unixMs = util.unixMs;
 
 pub const session_ext = ".session.json";
+/// #1654: the one read ceiling for every session-file reader. saveSession
+/// writes uncapped, and a provider-native compaction item grows with the
+/// context it summarizes, so this sits far above any real save.
+pub const max_session_bytes: usize = 256 * 1024 * 1024;
 /// Title-named session files live here (resume reads this).
 pub const sessions_dir = ".graff/sessions";
 
@@ -79,7 +83,7 @@ pub fn sessionMetaFromBytes(arena: Allocator, data: []const u8) SessionMeta {
 
 pub fn sessionMeta(root: *Agent, arena: Allocator, base: []const u8) SessionMeta {
     const path = sessionPath(arena, base) catch return .{};
-    const data = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(8 * 1024 * 1024)) catch return .{};
+    const data = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(max_session_bytes)) catch return .{};
     return sessionMetaFromBytes(arena, data);
 }
 
@@ -122,7 +126,7 @@ fn listFromDir(io: Io, arena: Allocator, dir: Io.Dir, workspace: []const u8, loc
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, session_ext)) continue;
         const base = arena.dupe(u8, entry.name[0 .. entry.name.len - session_ext.len]) catch continue;
-        const data = dir.readFileAlloc(io, entry.name, arena, .limited(8 * 1024 * 1024)) catch continue;
+        const data = dir.readFileAlloc(io, entry.name, arena, .limited(max_session_bytes)) catch continue;
         const meta = sessionMetaFromBytes(arena, data);
         entries.append(arena, .{
             .base = base,
@@ -302,6 +306,22 @@ test "listFromDir finds a session and infers workspace (#712)" {
     try std.testing.expectEqualStrings("Home chat", entries.items[0].title.?);
     try std.testing.expectEqualStrings("/Users/me", entries.items[0].workspace);
     try std.testing.expect(!entries.items[0].local);
+}
+
+test "listFromDir still lists a save larger than 8 MiB (#1654)" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // One opaque compaction blob, as provider-native compaction writes it.
+    const blob = try arena.alloc(u8, 9 * 1024 * 1024);
+    @memset(blob, 'a');
+    const data = try std.fmt.allocPrint(arena, "{{\"provider\":\"x\",\"model\":\"y\",\"title\":\"Long chat\",\"updated_ms\":9,\"messages\":[{{\"type\":\"compaction\",\"encrypted_content\":\"{s}\"}}]}}", .{blob});
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "big.session.json", .data = data });
+    const entries = listFromDir(std.testing.io, arena, tmp.dir, "/w", true);
+    try std.testing.expectEqual(@as(usize, 1), entries.items.len);
+    try std.testing.expectEqualStrings("Long chat", entries.items[0].title.?);
 }
 
 test "homeSessionPath and sameWorkspace (#712)" {
