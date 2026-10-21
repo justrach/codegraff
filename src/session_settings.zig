@@ -303,6 +303,7 @@ fn codegraffLoginKey(io: Io, arena: Allocator, environ_map: anytype) ?[]const u8
 pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: *Io.Writer, flags: args.Flags, use_color: bool, json_mode: bool, cwd_display: []const u8) !ThemeSetup {
     try applyEnvKnobs(arena, environ_map);
     @import("compact_at.zig").applyStartup(io, arena); // --compact-at > GRAFF_COMPACT_PCT > saved /compact-at
+    @import("openai_prompt_cache.zig").applyStartup(io, arena); // GRAFF_OPENAI_CACHE_TTL > openai_cache_ttl
     @import("python_version.zig").detect(io, environ_map.get("PATH")); // ADR 0242: before any catalog renders
     const codegraff_key = codegraffLoginKey(io, arena, environ_map);
     _ = jev_tool.setCodegraffLoginKey(io, codegraff_key);

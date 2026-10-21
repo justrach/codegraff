@@ -36,6 +36,8 @@ pub const Snap = struct {
     last_bust: Bust = .none,
     last_read: u64 = 0,
     last_write: u64 = 0,
+    last_write_12h: u64 = 0,
+    last_write_30m: u64 = 0,
     /// #1333: keyed context updates delivered without touching the prefix.
     hot_updates: u32 = 0,
     last_hot: []const u8 = "",
@@ -108,6 +110,13 @@ pub fn noteUsage(read: u64, write: u64) void {
     defer release();
     snap.last_read = read;
     snap.last_write = write;
+}
+
+pub fn noteWriteSplit(write_12h: u64, write_30m: u64) void {
+    acquire();
+    defer release();
+    snap.last_write_12h = write_12h;
+    snap.last_write_30m = write_30m;
 }
 
 pub fn noteRequest(io: Io, system: []const u8, tools: []const u8) void {
@@ -201,7 +210,10 @@ pub fn render(w: *Io.Writer) !void {
             kib(s.tools_bytes),
             if (s.same) "same" else "changed",
         });
-        try w.print("  last       {d} read · {d} write\n", .{ s.last_read, s.last_write });
+        try w.print("  last       {d} read · {d} write", .{ s.last_read, s.last_write });
+        if (s.last_write_12h > 0 or s.last_write_30m > 0)
+            try w.print("  ({d} 12h · {d} 30m)", .{ s.last_write_12h, s.last_write_30m });
+        try w.writeByte('\n');
         try w.print("  session    {d}% hit", .{sessionHitPct()});
         if (g_io) |io| {
             const c = pricing.g_cost.snap(io);
@@ -223,6 +235,7 @@ pub fn render(w: *Io.Writer) !void {
     }
     try w.writeAll(
         \\  remaining max
+        \\    GRAFF_OPENAI_CACHE_TTL  12h (default) / 30m / off; OpenAI Responses GPT-5.6+
         \\    GRAFF_STABLE_CATALOG=0  opt out: loads rewrite tools JSON (stable is the default)
         \\    /goal /never /strict    each prefix rewrite is one miss; compaction already pays one
         \\    leave skill bodies      and file: paths out of the prefix (already the default)
@@ -315,6 +328,7 @@ test "render stays content-free and names remaining levers" {
     try std.testing.expect(contains(text, "prompt cache"));
     try std.testing.expect(contains(text, "prefix"));
     try std.testing.expect(contains(text, "GRAFF_STABLE_CATALOG"));
+    try std.testing.expect(contains(text, "GRAFF_OPENAI_CACHE_TTL"));
     try std.testing.expect(contains(text, "clear_thinking"));
     try std.testing.expect(contains(text, "Vercel"));
     try std.testing.expect(contains(text, "/goal"));

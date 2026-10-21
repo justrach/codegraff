@@ -19,7 +19,7 @@ record only when you need the evidence or the edge cases.
 | [0006](0006-workspace-switch-is-a-tool.md) | Mid-session worktree switch is a real `workspace` tool; a skill cannot move file-tool cwd. |
 | [0007](0007-plugins-are-read-in-place.md) | Cursor/Claude/Grok/Codex plugins and MCP are read in place (Claude/Cursor cache via installed_plugins.json, Codex via config.toml PluginStore, never walked); skills stay on-demand; MCP stays consent-gated. |
 | [0008](0008-synthetic-evals-use-external-verifiers.md) | Synthetic coding evals promote only external-verifier passes; model judges may tiebreak correctness, never decide it. |
-| [0009](0009-gpt-5-6-explicit-prompt-cache-boundary.md) | GPT-5.6 OpenAI Platform marks the stable prefix explicitly; Codex and xAI stay on their supported keyed automatic-cache paths. |
+| [0009](0009-gpt-5-6-explicit-prompt-cache-boundary.md) | GPT-5.6 OpenAI Platform marks the stable prefix explicitly; Codex and xAI stay on their supported keyed automatic-cache paths. 12h lifetime: [0298](0298-openai-12h-prompt-cache.md). |
 | [0010](0010-background-jobs-wait-for-exit.md) | `bash_output`/`agent_output` `wait_ms>0` blocks until exit (10h cap); do not poll every 30s. |
 | [0011](0011-prompt-cache-max-is-visible.md) | Prompt-cache max is on: stable catalog by default; `/cache` is the HUD; `/btw` rides the parent prefix; children share role-lane `x-grok-conv-id` / `prompt_cache_key` (not the root id). |
 | [0012](0012-overflow-handles-named-limits-extra-roots.md) | Fat tool results become `tr_N` handles; named `--context-limit` caps prefix bytes; `--add-dir` extra roots are PathConfine allow-lists, not cwd/skill/session sources. |
@@ -315,6 +315,7 @@ record only when you need the evidence or the edge cases.
 | [0295](0295-worker-native-turns-share-the-chat-step.md) | Experimental Worker-native turns share the native chat step; JSPI supplies bounded host I/O, not a proxy or a second agent loop. |
 | [0296](0296-worker-tasks-own-remote-sandbox-cleanup.md) | Worker/DO tasks retain the agent loop and delegate Linux execution to remote sandboxes with explicit ownership, deletion and bounded leases. |
 | [0297](0297-sdk-managed-replay-reuses-the-relay.md) | The fetch-only managed SDK reuses account relay/device tapes; prompt retries are explicit, durability limits are stated, and content-free OTLP export remains opt-in and observational. |
+| [0298](0298-openai-12h-prompt-cache.md) | OpenAI Responses GPT-5.6+ puts a 12h explicit breakpoint on the stable prefix and keeps a 30m request default; Chat Completions and older models get no new fields. |
 
 ## When to write one
 
