@@ -29,19 +29,10 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     var ckbuf: [96]u8 = undefined;
     try s.objectField("prompt_cache_key");
     try s.write(http_headers.requestCacheKey(self.io, self.label, self, self.provider, &ckbuf));
-    const explicit_cache = supportsExplicitPromptCache(self);
-    if (explicit_cache) {
-        try s.objectField("prompt_cache_options");
-        try s.beginObject();
-        try s.objectField("mode");
-        // Root conversations grow append-only, so retain the useful implicit
-        // latest-message breakpoint. One-shot children cache only the shared
-        // system+tools prefix and avoid paying to write each unique task suffix.
-        try s.write(if (self.sub) "explicit" else "implicit");
-        try s.objectField("ttl");
-        try s.write("30m");
-        try s.endObject();
-    }
+    const oai_cache = @import("openai_prompt_cache.zig");
+    // Root keeps implicit latest-message (30m). Children are explicit-only so
+    // a unique task suffix is not written. ADR 0298 puts 12h on the prefix.
+    if (oai_cache.active(self)) try oai_cache.writeOptions(s, self.sub);
     // Held-socket delta: previous_response_id + only the new items. xAI's
     // published WS contract supports this with store:false via the in-memory
     // connection cache; a not-found / 25-min close / drop re-anchors.
@@ -56,7 +47,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     // semantically neutral developer block after it marks the reusable boundary;
     // tools are also part of the rendered prefix. Chained requests already hold
     // this item server-side, so only a full anchor writes it.
-    if (!chain and explicit_cache) try writeCacheAnchor(s);
+    if (!chain and oai_cache.active(self)) try oai_cache.writeAnchor(s);
     const from = if (chain) self.codex_sent_upto else 0;
     if (from == 0 and !self.ws_prewarm and repo.context.len != 0) try @import("repo_context.zig").writeItem(s, repo.context);
     if (!self.ws_prewarm) for (self.messages.items[from..]) |m| try @import("session_wake.zig").writeWireInput(s, m, self.provider.model); // prewarm: NO input items; turn 1 chains onto the warmup id
@@ -131,33 +122,6 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     if (self.ws_prewarm) try s.objectField("generate") else try s.objectField("stream");
     // No top-level max_output_tokens: codex rejects it ("Unsupported parameter") on gpt-5.6-*.
     if (self.ws_prewarm) try s.write(false) else try s.write(true);
-}
-
-fn supportsExplicitPromptCache(self: *const Agent) bool {
-    return std.mem.eql(u8, self.provider.id, "openai") and @import("provider_codegraff.zig").openaiGptFamily(self.provider.model);
-}
-
-fn writeCacheAnchor(s: *std.json.Stringify) !void {
-    try s.beginObject();
-    try s.objectField("type");
-    try s.write("message");
-    try s.objectField("role");
-    try s.write("developer");
-    try s.objectField("content");
-    try s.beginArray();
-    try s.beginObject();
-    try s.objectField("type");
-    try s.write("input_text");
-    try s.objectField("text");
-    try s.write("The preceding instructions and available tools are the stable operating context for this session.");
-    try s.objectField("prompt_cache_breakpoint");
-    try s.beginObject();
-    try s.objectField("mode");
-    try s.write("explicit");
-    try s.endObject();
-    try s.endObject();
-    try s.endArray();
-    try s.endObject();
 }
 
 /// With --output-schema the strict grammar tempts the model to answer
@@ -398,6 +362,7 @@ test "#695: an empty catalog string is omitted from the body, never serialized a
 
 test {
     _ = @import("agent_request_body_cache_test.zig");
+    _ = @import("openai_prompt_cache.zig");
 }
 
 test "xai Responses body is bearer-clean: no codex-isms, xAI-legal fields only (#502)" {

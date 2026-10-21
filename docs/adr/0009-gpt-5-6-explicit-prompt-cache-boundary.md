@@ -29,8 +29,9 @@ unsupported parameter, so its supported automatic/keyed path must remain.
 - Root sessions use `prompt_cache_options.mode = "implicit"`: the explicit
   stable prefix remains reusable while append-only conversation turns keep the
   useful latest-message checkpoint. Subagents use `mode = "explicit"` so their
-  unique task suffix is not written at 1.25× input price. Both use the documented
-  30-minute TTL.
+  unique task suffix is not written at 1.25× input price. The request TTL
+  stays 30 minutes; ADR 0298 puts `ttl: "12h"` on the stable-prefix
+  breakpoint (configurable via `GRAFF_OPENAI_CACHE_TTL`).
 - Root OpenAI/Codex requests keep the durable project key. Child prefix traffic
   is deterministically spread over four stable role lanes to stay below the
   documented approximately 15 requests/minute per-key guidance while preserving
