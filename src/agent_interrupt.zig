@@ -92,18 +92,26 @@ pub fn restoreStdin(orig: tty.RawState) void {
 }
 
 /// Sleep `ms` watching stdin for Esc (when the root is on a TTY), so the
-/// user can cancel a retry backoff instead of waiting it out.
+/// user can cancel a retry backoff instead of waiting it out. ACP, JSON and
+/// hosted clients cancel through the shared flags instead, so check those
+/// too (#1699).
 pub fn sleepInterruptible(self: *Agent, ms: u64) error{Interrupted}!void {
     const watch = !self.sub and self.in != null and main_mod.use_color and !main_mod.json_mode;
     const orig_tio: ?tty.RawState = if (watch) rawNonblockStdin() else null;
     defer if (orig_tio) |o| tty.restore(o);
     var left = ms;
     while (left > 0) {
+        if (cancelRequested()) return error.Interrupted;
         const chunk = @min(left, 100);
-        self.io.sleep(.fromMilliseconds(@intCast(chunk)), .awake) catch {};
+        self.io.sleep(.fromMilliseconds(@intCast(chunk)), .awake) catch return error.Interrupted;
         left -= chunk;
         if (orig_tio != null and escPressed(true)) return error.Interrupted;
     }
+    if (cancelRequested()) return error.Interrupted;
+}
+
+fn cancelRequested() bool {
+    return Agent.esc_cancel.load(.acquire) or @import("acp_engine.zig").cancel_flag.load(.acquire);
 }
 
 /// The `data: {...}` payload of one SSE line, or null for anything else
@@ -126,4 +134,5 @@ test { // #728: cancel_source has no other path into the test root
     _ = cancel_source;
     _ = @import("agent_interrupt_repl_tests.zig");
     _ = @import("agent_interrupt_escape_edges_tests.zig");
+    _ = @import("agent_interrupt_cancel_tests.zig");
 }
