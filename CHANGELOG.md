@@ -10,6 +10,14 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.48.1
+
+A hotfix on v0.302.48 with one change, #1703 (#1701):
+
+- Issue reporting now finishes the job for a recurrence. When current evidence shows that a failure closed as resolved still happens, the agent reopens the canonical issue and attaches the evidence instead of leaving only a comment under a closed status. It follows duplicate closures to their canonical issue and leaves intentionally rejected, withdrawn and out-of-scope reports closed. If reopening is denied, it says the issue remains closed and needs a maintainer, then verifies and reports the final state.
+- `/issue` sends the same reporting brief over ACP as in the line REPL; ACP used to forward the literal `/issue` text. Custom and learned root prompts keep the publication and issue-lifecycle policy when they replace the built-in prompt.
+- Retains all changes from v0.302.48.
+
 ## v0.302.48
 
 - oMLX is a built-in local provider (`omlx`, `127.0.0.1:8000`). Set its key with `graff key set omlx <key>` or `OMLX_API_KEY`. `graff models` lists the models it serves, `--model omlx` starts on the first one, `/effort` is sent as `reasoning_effort`, and it is billed as local (#1695).

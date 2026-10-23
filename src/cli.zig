@@ -24,6 +24,10 @@ const update_target = @import("update_target.zig");
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.48.1
+    \\  • a recurrence reopens its resolved issue, not just a comment
+    \\  • /issue sends the full reporting brief over ACP too
+    \\
     \\0.302.48
     \\  • oMLX is a built-in local provider: --model omlx
     \\  • compaction counts opaque state by the provider's own measure
