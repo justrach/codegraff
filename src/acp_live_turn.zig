@@ -116,6 +116,7 @@ pub const LiveTurn = struct {
             try self.out.flush();
         }
         const review_prompt = review.promptFromLine(text);
+        const issue_report = @import("issue_cmd.zig").promptFromLine(text);
         const parent_override = self.root.sys_override;
         const parent_review_mode = self.root.review_mode;
         self.root.review_mode = review_prompt != null;
@@ -129,7 +130,9 @@ pub const LiveTurn = struct {
         defer if (context.restore(self.root)) self.root.rebaseContextMeter();
         if (@import("side_steer.zig").isSideRequest(text))
             return @import("side_steer.zig").spawnSide(self.root, arena, null, text);
-        const prompt = try @import("goal_state.zig").applyGoalSteering(arena, self.root, review_prompt orelse if (auto) |invocation| invocation.prompt else text);
+        // Match REPL expansion order: review, issue brief, then goal pacing.
+        const base_prompt = review_prompt orelse if (issue_report) |report| try @import("issue_cmd.zig").userText(arena, report) else if (auto) |invocation| invocation.prompt else text;
+        const prompt = try @import("goal_state.zig").applyGoalSteering(arena, self.root, base_prompt);
         switch (try @import("turn_dedup.zig").enqueue(self.root, arena, self.out, prompt)) {
             .started => {},
             .skipped => return "",

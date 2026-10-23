@@ -313,7 +313,10 @@ pub fn ultracodeActive(agent: *const Agent) bool {
 /// by setRootSystemPrompts below) so this stays a pure string funnel for the
 /// tests and for every non-root agent.
 pub fn setSystemPrompts(agent: *Agent, base: []const u8, arena: Allocator) !void {
-    const with_playbook = if (playbook.g_root_inject) playbook.composeRoot(agent.io, arena, base) else base;
+    // #1701: custom/learned root personas and later replacements retain the
+    // same publication policy as workers. Keep sys_base verbatim for refreshes.
+    const protected = if (playbook.g_root_inject) text.withAuthority(arena, base) else base;
+    const with_playbook = if (playbook.g_root_inject) playbook.composeRoot(agent.io, arena, protected) else protected;
     // #391: the pre-compaction note-to-self rides the SAME funnel, one rung
     // below the user's constraints — a rule outranks the agent's own working
     // state. Same arming discipline as the two blocks around it, so this stays

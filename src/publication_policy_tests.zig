@@ -70,6 +70,27 @@ test "#739 custom worker and review personas cannot remove standing policy" {
     try std.testing.expectEqualStrings(text.public_write_note ++ text.constraint_authority_note ++ text.claim_ownership_note, text.withAuthority(failing.allocator(), "CUSTOM_PERSONA"));
 }
 
+test "#1701 custom and learned root bases retain lifecycle policy across replacements" {
+    const playbook = @import("playbook.zig");
+    const saved = playbook.g_root_inject;
+    defer playbook.g_root_inject = saved;
+    playbook.g_root_inject = true;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var agent: @import("agent.zig").Agent = undefined;
+    agent.io = std.testing.io;
+    for ([_][]const u8{ "CUSTOM_ROOT", "OLDER_LEARNED_ROOT", prompts.main_system_prompt }) |base| {
+        try prompts.setSystemPrompts(&agent, base, arena.allocator());
+        try std.testing.expectEqualStrings(base, agent.sys_base);
+        for ([_][]const u8{ agent.sys_normal, agent.sys_strict, agent.sys_ultra, agent.sys_ultra_strict }) |policy| {
+            try std.testing.expect(std.mem.startsWith(u8, policy, base));
+            try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, policy, @import("issue_reporting.zig").guidance));
+            try std.testing.expect(std.mem.indexOf(u8, policy, text.public_write_note) != null);
+            try std.testing.expect(std.mem.indexOf(u8, policy, text.claim_ownership_note) != null);
+        }
+    }
+}
+
 test "#738 failed prompt allocation never installs only some variants" {
     const playbook = @import("playbook.zig");
     const saved = playbook.g_root_inject;
