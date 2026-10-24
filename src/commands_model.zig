@@ -360,7 +360,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             .{ .name = "chatgpt", .desc = "ChatGPT sign-in (also: codex, openai)" },
             .{ .name = "anthropic", .desc = "Claude subscription sign-in (also: ant)" },
             .{ .name = "console", .desc = "metered Console sign-in through the ant CLI" },
-            .{ .name = "kimi", .desc = "Kimi Code sign-in (device-code OAuth)" },
+            .{ .name = "kimi", .desc = "Kimi Code sign-in (kimi.ai; /login kimi.com for China)" },
             .{ .name = "xai", .desc = "Grok / SuperGrok sign-in (device-code OAuth)" },
             .{ .name = "zai", .desc = "Z.AI Coding Plan sign-in (CLI OAuth)" },
         };
@@ -380,6 +380,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         // Same names as `graff login`: every ChatGPT name, codex included, is
         // the plan's sign-in, chatgpt-new (ADR 0229).
         const console_login = std.ascii.eqlIgnoreCase(target, "console");
+        const kimi_region = @import("oauth_kimi.zig").regionFromLoginName(target);
         target = @import("args.zig").loginTarget(target) orelse target;
 
         const home = root.home;
@@ -391,7 +392,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 return true;
             };
         } else if (std.mem.eql(u8, target, "kimi")) {
-            oauth.kimiLogin(root.io, root.gpa, arena, home) catch |err| {
+            oauth.kimiLogin(root.io, root.gpa, arena, home, kimi_region) catch |err| {
                 try out.print("\xe2\x9c\x97 kimi login failed: {t}\n", .{err});
                 try out.flush();
                 return true;

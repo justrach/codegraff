@@ -42,6 +42,7 @@ pub const Flags = struct {
     refresh_flag: bool = false,
     codex_login: bool = false,
     kimi_login: bool = false,
+    kimi_region: ?@import("oauth_kimi.zig").Region = null, // `graff login kimi.ai` / `kimi.com`
     xai_login: bool = false,
     zai_login: bool = false,
     chatgpt_login: bool = false,
@@ -273,6 +274,7 @@ pub fn parse(init: std.process.Init) !Flags {
                 std.process.fatal("unknown login '{s}' — graff login [codegraff|chatgpt|anthropic|kimi|xai|zai]", .{name});
             flags.codex_login = std.mem.eql(u8, target, "codex");
             flags.kimi_login = std.mem.eql(u8, target, "kimi");
+            flags.kimi_region = @import("oauth_kimi.zig").regionFromLoginName(name);
             flags.xai_login = std.mem.eql(u8, target, "xai");
             flags.zai_login = std.mem.eql(u8, target, "zai");
             flags.chatgpt_login = std.mem.eql(u8, target, "chatgpt-new");
@@ -351,6 +353,7 @@ pub fn loginTarget(name: []const u8) ?[]const u8 {
     };
     for (aliases) |pair| if (std.ascii.eqlIgnoreCase(name, pair[0])) return pair[1];
     if (@import("oauth_zai.zig").isLoginName(name)) return "zai";
+    if (@import("oauth_kimi.zig").isLoginName(name)) return "kimi";
     if (@import("oauth_chatgpt.zig").isLoginName(name)) return "chatgpt-new";
     return null;
 }
@@ -361,6 +364,7 @@ test "loginTarget: every ChatGPT name, codex included, is the plan's sign-in; un
     try std.testing.expectEqualStrings("codegraff", loginTarget("graff").?);
     try std.testing.expectEqualStrings("xai", loginTarget("grok").?);
     try std.testing.expectEqualStrings("kimi", loginTarget("kimi").?);
+    try std.testing.expectEqualStrings("kimi", loginTarget("kimi.ai").?);
     for ([_][]const u8{ "ant", "anthropic", "ANT", "Anthropic", "console", "Console" }) |name|
         try std.testing.expectEqualStrings("anthropic", loginTarget(name).?);
     try std.testing.expectEqualStrings("zai", loginTarget("zai").?);
