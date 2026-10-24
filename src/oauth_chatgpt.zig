@@ -399,10 +399,11 @@ pub fn login(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !void {
         .login_hint = if (returning) saved.?.email else "",
     };
     const url = try authorizeUrl(arena, attempt);
-    try out.print("\nSign in with ChatGPT (your browser should open it):\n\n{s}\n\n", .{url});
-    try out.print("waiting for the sign-in on {s} …\n", .{attempt.redirect});
+    try out.print("\nSign in with ChatGPT (your browser should open it):\n\n{s}\n", .{url});
+    try @import("signin_link.zig").offer(io, out, url);
+    try out.print("\nwaiting for the sign-in on {s} …\n", .{attempt.redirect});
     try out.flush();
-    helpers.openBrowser(io, url);
+    @import("signin_link.zig").open(io, url);
     // Only this attempt's redirect ends the wait; a tab left from an earlier
     // attempt gets a page saying so (oauth_callback.zig).
     var rbuf: [16 * 1024]u8 = undefined;

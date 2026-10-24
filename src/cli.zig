@@ -24,6 +24,10 @@ const update_target = @import("update_target.zig");
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.52
+    \\  • graff login kimi works for kimi.ai (international) and kimi.com accounts
+    \\  • sign-in links are copied to your clipboard, over SSH too
+    \\
     \\0.302.51
     \\  • Kimi API keys and logins work again (no more RstStream)
     \\  • a used-up Kimi plan window stops instead of retrying
@@ -255,7 +259,7 @@ pub const usage_text =
     \\  graff login chatgpt              ChatGPT sign-in (also: codex, openai)
     \\  graff login anthropic            Claude subscription browser sign-in (also: ant)
     \\  graff login console              metered Console sign-in through the `ant` CLI
-    \\  graff login kimi                 Kimi Code OAuth login (device-code)
+    \\  graff login kimi                 Kimi Code OAuth login (kimi.ai; kimi.com for China)
     \\  graff login xai                  Grok/SuperGrok OAuth login (device-code)
     \\  graff login zai                  Z.AI Coding Plan OAuth login
     \\  graff key set <provider> <key>   store a key (Keychain; POSIX 0600 file; Windows home ACL)
