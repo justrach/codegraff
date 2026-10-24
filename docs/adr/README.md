@@ -325,6 +325,7 @@ record only when you need the evidence or the edge cases.
 | [0300](0300-a-session-shuts-down-the-simulators-it-booted.md) | Shell commands that look like simulator work are bracketed by booted-device snapshots; devices a session booted are leased under `~/.codegraff/simulators/` and shut down when the last live leaseholder ends, never devices booted before. `GRAFF_KEEP_SIMULATORS=1` opts out. |
 
 | [0301](0301-failed-requests-settle-the-pending-turn.md) | Exhausted request retries leave a truthful failure boundary in history so an identical prompt can run after reconnecting, including after save/load; duplicate-host protection and bounded retries stay unchanged. |
+| [0302](0302-terminal-repl-chrome-stays-in-the-terminal.md) | Refine the line REPL's terminal sinks: quiet status hierarchy, mode-first width priority and active-work emphasis, without native windows or changing the editor, engine or external fullscreen client. |
 
 ## When to write one
 

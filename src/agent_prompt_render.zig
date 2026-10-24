@@ -4,12 +4,10 @@
 //! agent_stream_render.zig and agent_tool_render.zig have for their clusters;
 //! this is one of the few files down here that may touch ansi/term.
 //!
-//! Every function is the old inline agent_prompt.zig code path, gate for gate,
-//! and the layout is asserted byte-for-byte by the tests at the bottom. The one
-//! deliberate difference from the pre-#429 path: a write error is swallowed
-//! rather than propagated, because a sink emit returns void. Every other
-//! TuiSink branch already behaves that way, and the only way to reach it is a
-//! terminal that has gone away mid-prompt.
+//! The session strip separates identity, operational modes and quiet metrics.
+//! A colored terminal replaces the existing blank row with a subtle divider;
+//! plain output keeps the unframed status and bare prompt. This is terminal
+//! presentation only: the engine still owns every fact in PromptStatus.
 
 const std = @import("std");
 const Io = std.Io;
@@ -92,8 +90,19 @@ fn cwdName(cwd: []const u8) []const u8 {
     return t;
 }
 
+fn modeSegment(w: *Io.Writer, text: []const u8) !void {
+    try w.print(" · {s}{s}{s}{s}{s}{s}", .{ style.reset, style.accent, style.bold, text, style.reset, style.dim });
+}
+
 fn line(w: *Io.Writer, st: PromptStatus, cols: usize) !void {
     working.writeFromStanding(w, st.standing);
+    // Reuse the blank separator row, not another panel or an editor border.
+    // Leave a column free so the rule never triggers terminal autowrap.
+    if (style.accent.len > 0 and cols > 1) {
+        try w.writeAll(style.dim);
+        for (0..cols - 1) |_| try w.writeAll("─");
+        try w.writeAll(style.reset);
+    }
     try w.writeByte('\n');
 
     var cbuf: [24]u8 = undefined;
@@ -125,21 +134,21 @@ fn line(w: *Io.Writer, st: PromptStatus, cols: usize) !void {
     else
         "";
 
-    // Dim meter above a bare `›`. Operational badges (Fast/Plan/Strict)
-    // stay. Cwd is a high-priority one-liner (`~/folder`) so the Codegraff
-    // box does not have to restate the ask. #209: drop from the right.
+    // Identity anchors the strip; modes that affect the next turn take
+    // priority over workspace and usage. Everything stays above a bare `›`.
+    // #209: drop lower-priority segments instead of wrapping the strip.
     const avail = cols -| 1;
     var used: usize = st.model.len;
     const folder = cwdName(st.cwd);
     const show_fast = st.fast and fitsSegment(&used, avail, 3 + "Fast".len);
     const show_effort = st.effort != null and
         fitsSegment(&used, avail, 3 + reasoningLabel(st.effort.?).len);
-    const show_cwd = folder.len > 0 and fitsSegment(&used, avail, 3 + 2 + folder.len);
     const show_fallback = st.fallback and
         fitsSegment(&used, avail, 3 + "Fallback".len);
     const show_plan = st.plan and fitsSegment(&used, avail, 3 + "Plan".len);
     const show_strict = st.strict and fitsSegment(&used, avail, 3 + "Strict".len);
     const show_ultra = st.ultracode and fitsSegment(&used, avail, 3 + "Ultracode".len);
+    const show_cwd = folder.len > 0 and fitsSegment(&used, avail, 3 + 2 + folder.len);
     const show_ctx = ctx.len > 0 and fitsSegment(&used, avail, 3 + ctx.len);
     const show_cache = show_ctx and cache.len > 0 and fitsSegment(&used, avail, 3 + cache.len);
     const show_cost = cost.len > 0 and fitsSegment(&used, avail, 3 + cost.len);
@@ -148,14 +157,14 @@ fn line(w: *Io.Writer, st: PromptStatus, cols: usize) !void {
     const show_session = st.standing.session.len > 0 and
         fitsSegment(&used, avail, 3 + st.standing.session.len);
 
-    try w.print("{s}{s}", .{ style.dim, st.model });
-    if (show_fast) try w.print(" · Fast", .{});
+    try w.print("{s}{s}{s}{s}{s}", .{ style.bold, style.accent, st.model, style.reset, style.dim });
+    if (show_fast) try modeSegment(w, "Fast");
     if (show_effort) try w.print(" · {s}", .{reasoningLabel(st.effort.?)});
+    if (show_fallback) try modeSegment(w, "Fallback");
+    if (show_plan) try modeSegment(w, "Plan");
+    if (show_strict) try modeSegment(w, "Strict");
+    if (show_ultra) try modeSegment(w, "Ultracode");
     if (show_cwd) try w.print(" · ~/{s}", .{folder});
-    if (show_fallback) try w.print(" · Fallback", .{});
-    if (show_plan) try w.print(" · Plan", .{});
-    if (show_strict) try w.print(" · Strict", .{});
-    if (show_ultra) try w.print(" · Ultracode", .{});
     if (show_ctx) try w.print(" · {s}", .{ctx});
     if (show_cache) try w.print(" · {s}", .{cache});
     if (show_cost) try w.print(" · {s}", .{cost});
@@ -232,15 +241,14 @@ test "wide pane keeps every segment, matching the pre-#209 behaviour" {
     try std.testing.expect(fitsSegment(&used, avail, " · 12k/100k ctx (12% · compact@80k)".len));
 }
 
-/// The status line as a plain-terminal reader sees it. Pins the exact bytes the
-/// pre-#429 inline path produced, so the move behind the sink cannot quietly
-/// reword, reorder or re-space a segment.
+/// The unstyled strip as a plain-terminal reader sees it, with enough room
+/// for every optional segment.
 fn renderPlain(buf: *Io.Writer.Allocating, st: PromptStatus) []const u8 {
     line(&buf.writer, st, 400) catch unreachable; // a pane wide enough to keep everything
     return buf.writer.buffered();
 }
 
-test "batch 3: every status-line segment renders exactly as it did inline" {
+test "terminal status keeps every segment and prioritizes operational modes" {
     const saved = style.*;
     style.* = .{}; // assert the text, not the palette
     defer style.* = saved;
@@ -265,7 +273,7 @@ test "batch 3: every status-line segment renders exactly as it did inline" {
         .ultracode = true,
     };
     try std.testing.expectEqualStrings(
-        "\ngpt-5.6 · Fast · High · ~/graff · Fallback · Plan · Strict · Ultracode · ctx 6% · cache 16% · $0.50\n› ",
+        "\ngpt-5.6 · Fast · High · Fallback · Plan · Strict · Ultracode · ~/graff · ctx 6% · cache 16% · $0.50\n› ",
         renderPlain(&aw, full),
     );
 
@@ -430,6 +438,50 @@ test "standing work draws a WORKING block above the prompt" {
             "\nm · ~/w · image · login-fix\n› ",
         aw.writer.buffered(),
     );
+}
+
+test "terminal chrome bounds its divider and separates identity from metadata" {
+    const saved = style.*;
+    style.* = @import("ansi.zig").Style.ansi;
+    defer style.* = saved;
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const st: PromptStatus = .{
+        .model = "m",
+        .provider_id = "p",
+        .cwd = "/w",
+        .privacy_label = "",
+        .privacy = .local,
+        .plan = true,
+    };
+    for ([_]usize{ 1, 18, 80 }) |cols| {
+        aw.clearRetainingCapacity();
+        try line(&aw.writer, st, cols);
+        const text = aw.written();
+        const end = std.mem.indexOfScalar(u8, text, '\n').?;
+        try std.testing.expectEqual(cols - 1, std.mem.count(u8, text[0..end], "─"));
+        try std.testing.expect(std.mem.indexOf(u8, text, "\x1b[1m\x1b[38;2;5;150;105mm\x1b[0m\x1b[2m") != null);
+        try std.testing.expect(std.mem.endsWith(u8, text, "\n\x1b[1m\x1b[38;2;5;150;105m›\x1b[0m "));
+    }
+}
+
+test "terminal status keeps operational modes before a long workspace" {
+    const saved = style.*;
+    style.* = .{};
+    defer style.* = saved;
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try line(&aw.writer, .{
+        .model = "m",
+        .provider_id = "p",
+        .cwd = "/a-very-long-workspace-name",
+        .privacy_label = "",
+        .privacy = .local,
+        .fallback = true,
+        .plan = true,
+        .strict = true,
+    }, 36);
+    try std.testing.expectEqualStrings("\nm · Fallback · Plan · Strict\n› ", aw.written());
 }
 
 test {

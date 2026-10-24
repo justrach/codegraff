@@ -10,6 +10,13 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.52
+
+- The terminal REPL has a clearer session strip, a subtle divider, and distinct styling for active and completed checklist items. The bare prompt, scrollback, and plain output remain intact; no native window or graphical toolkit is required.
+- Operational modes stay visible before workspace metadata when a terminal pane is narrow.
+- Includes independent conversation forks for subagents and workflow fan-out, optional retained workers, and bounded workflow synthesis that preserves earlier findings.
+- Retains all changes from v0.302.51.
+
 ## v0.302.51
 
 - Kimi works again with an API key or `graff login kimi`. Every Kimi request had been failing with `network error: RstStream` (or a 400 over HTTP/1.1) because graff sent a corrupted device-id header; graff no longer sends a device id or keeps `~/.kimi/device_id`.
