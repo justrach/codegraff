@@ -522,7 +522,8 @@ pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, en
 test "graff mcp install: the bundled installer inflates to the whole script" {
     const script = try @import("update_archive.zig").gunzip(std.testing.allocator, @embedFile("mcp_installer.gz"));
     defer std.testing.allocator.free(script);
-    try std.testing.expect(std.mem.startsWith(u8, script, "#!/usr/bin/env python3\n"));
+    // No line ending in the needle: a Windows checkout may have CRLF.
+    try std.testing.expect(std.mem.startsWith(u8, script, "#!/usr/bin/env python3"));
     try std.testing.expect(std.mem.indexOf(u8, script, "'--binary', required=True") != null);
 }
 test "trustedMcpEntry: only the exact companion shape skips the consent gate" {
