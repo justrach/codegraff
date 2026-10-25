@@ -3,7 +3,8 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const lean_release = optimize == .fast or optimize == .small;
+    // Every release mode ships stripped; ReleaseSafe is the shipped one.
+    const lean_release = optimize != .debug;
 
     // `--version` string: stamped from `git describe` at build time so every
     // binary says which commit built it; `-Dversion=X.Y.Z` overrides (the

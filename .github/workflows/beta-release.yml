@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       # One runner per target instead of a serial six-target loop: wall time
-      # drops from ~24 min to roughly a single ReleaseFast build (~4-5 min).
+      # drops from ~24 min to roughly a single release build (~4-5 min).
       # fail-fast stays on (the default) so a broken target cancels the rest
       # instead of publishing a partial set.
       matrix:
