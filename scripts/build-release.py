@@ -66,7 +66,7 @@ def fetch_dependencies(zig, env):
 def contract(target, version, zig, telemetry=None, portable_host=False):
     # A fixed version avoids an undeclared dependency on git describe / .git.
     output = ROOT / "zig-out" / target / "bin" / ("graff.exe" if target.endswith("windows") else "graff")
-    command = [str(zig), "build", "graff", "-Doptimize=ReleaseSafe",
+    command = [str(zig), "build", "graff", "-Doptimize=ReleaseSafe", "-Dlearn=false",
                "-Dtarget=" + target, "-Dversion=" + version,
                "--prefix", str(ROOT / "zig-out" / target)]
     if portable_host:
