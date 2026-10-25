@@ -243,6 +243,12 @@ pub const changelog_text =
     \\
 ;
 
+/// Release builds leave `graff learn` out (build option `learn`).
+const learn_usage = if (@import("build_options").learn)
+    "  graff learn [help]                local mutate/evaluate/promote/rollback engine\n"
+else
+    "";
+
 pub const usage_text =
     \\graff — a minimal agentic coding harness in Zig (zero deps)
     \\
@@ -270,7 +276,8 @@ pub const usage_text =
     \\  graff mcp install                configure local HTTP service and MCP clients
     \\  graff mcp serve [--http] [--port N] expose run_task to MCP clients
     \\  graff plugins [load <name>]       list Claude/Cursor/Grok/Codex plugin trees (in place)
-    \\  graff learn [help]                local mutate/evaluate/promote/rollback engine
+    \\
+++ learn_usage ++
     \\  graff worktree list              list -w tabs and experiment-pool trees (tagged)
     \\  graff worktree create <name> [base]  mint a task workspace from the remote base (origin/main after fetch; optional base)
     \\  graff worktree run <name>        run the workspace run script from that checkout
