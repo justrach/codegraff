@@ -150,7 +150,7 @@ fn plainInline(a: std.mem.Allocator, line: []const u8) ![]const u8 {
 /// covers the ranges that misalign TUI table borders (CJK, Hangul, kana,
 /// fullwidth forms, common emoji planes). Emoji-presentation via a VS16 (U+FE0F)
 /// on a text-default base is not width-promoted. ASCII/Latin-1 skip the table.
-fn codepointWidth(cp: u21) usize {
+pub fn codepointWidth(cp: u21) usize {
     if (cp < 0x300) return 1; // ASCII + Latin-1 (control bytes stay 1, as before)
     if ((cp >= 0x300 and cp <= 0x36F) or // combining diacritical marks
         (cp >= 0x200B and cp <= 0x200F) or // ZWSP..RLM

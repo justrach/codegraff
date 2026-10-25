@@ -183,6 +183,9 @@ jobs:
       - name: PTY Markdown rendering test
         run: python3 scripts/test-pty-markdown.py zig-out/bin/graff
 
+      - name: PTY worker inspection test
+        run: python3 scripts/test-pty-workers.py zig-out/bin/graff
+
       - name: Parallel bash Esc cancellation test (#266)
         run: python3 scripts/test-pty-parallel-cancel.py zig-out/bin/graff
 

@@ -57,6 +57,27 @@ pub fn containsHttp(value: []const u8) bool {
     return std.mem.indexOf(u8, value, "http://") != null or std.mem.indexOf(u8, value, "https://") != null;
 }
 
+pub const Emphasis = struct { start: usize, end: usize, after: usize, strong: bool };
+
+/// Balanced inline emphasis; underscores inside identifiers stay literal.
+pub fn emphasisAt(s: []const u8, i: usize) ?Emphasis {
+    if (i >= s.len or (s[i] != '*' and s[i] != '_')) return null;
+    if (s[i] == '_' and i > 0 and (std.ascii.isAlphanumeric(s[i - 1]) or s[i - 1] == '_')) return null;
+    const n: usize = if (i + 1 < s.len and s[i + 1] == s[i]) 2 else 1;
+    const start = i + n;
+    if (start >= s.len or std.ascii.isWhitespace(s[start])) return null;
+    var pos = start;
+    while (std.mem.indexOfPos(u8, s, pos, s[i..start])) |end| {
+        if (end > start and s[end - 1] != '\\' and !std.ascii.isWhitespace(s[end - 1])) {
+            const after = end + n;
+            if (s[i] != '_' or after == s.len or !std.ascii.isAlphanumeric(s[after]))
+                return .{ .start = start, .end = end, .after = after, .strong = n == 2 };
+        }
+        pos = end + n;
+    }
+    return null;
+}
+
 pub fn codepointCount(s: []const u8) usize {
     var count: usize = 0;
     for (s) |b| {
@@ -83,12 +104,15 @@ pub fn inlineVisibleLen(s: []const u8) usize {
                 continue;
             }
         }
-        if (i + 1 < s.len and s[i] == '*' and s[i + 1] == '*') {
-            if (std.mem.indexOfPos(u8, s, i + 2, "**")) |end| {
-                count += codepointCount(s[i + 2 .. end]);
-                i = end + 2;
-                continue;
-            }
+        if (s[i] == '\\' and i + 1 < s.len and std.mem.indexOfScalar(u8, "*_`\\[]()#~", s[i + 1]) != null) {
+            count += 1;
+            i += 2;
+            continue;
+        }
+        if (emphasisAt(s, i)) |span| {
+            count += codepointCount(s[span.start..span.end]);
+            i = span.after;
+            continue;
         }
         if (s[i] == '`') {
             if (std.mem.indexOfScalarPos(u8, s, i + 1, '`')) |end| {

@@ -261,6 +261,11 @@ pub const tty = struct {
         return n > 0;
     }
 
+    /// Picker/inspector readiness includes bytes already queued by the editor.
+    pub fn pollPrompt(in: *std.Io.Reader, timeout_ms: i32) bool {
+        return queued_pos < queued_len or in.buffered().len > 0 or poll(timeout_ms);
+    }
+
     /// Non-blocking read of pending raw stdin bytes (terminal already in raw
     /// mode); returns the byte count. On Windows it drains queued console
     /// records and emits the ASCII byte of each key-down (Esc->0x1b,

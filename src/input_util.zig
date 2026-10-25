@@ -371,7 +371,8 @@ pub fn redraw(o: *Io.Writer, items: []const u8, c: usize, marks: []const []const
                     o.writeAll("\x1b[0m") catch {};
                     shine_active = false;
                 }
-                o.writeAll(if (main_mod.use_color) "\x1b[7;38;2;5;150;105m" else "\x1b[7m") catch {};
+                if (main_mod.use_color) o.writeAll(@import("ansi.zig").style.accent) catch {};
+                o.writeAll("\x1b[7m") catch {};
                 mark_end = best_end;
                 mark_open = true;
             }
