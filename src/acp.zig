@@ -147,7 +147,7 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
             billing.costFor(m.provider, keys.source(m.provider)),
         ),
     };
-    std.mem.sort(models_rank.Scored, ranked, {}, models_rank.scoredLess);
+    @import("stable_sort.zig").sort(models_rank.Scored, ranked, {}, models_rank.scoredLess);
     const rows = try arena.alloc(Row, catalog.len);
     for (ranked, rows) |r, *row| {
         const m = catalog[r.idx];

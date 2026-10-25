@@ -309,7 +309,7 @@ pub fn promptCatalog(arena: Allocator, list: []const Skill) []const u8 {
     if (list.len == 0) return "";
     const order = arena.alloc(usize, list.len) catch return "";
     for (order, 0..) |*o, i| o.* = i;
-    std.mem.sort(usize, order, list, struct {
+    @import("stable_sort.zig").sort(usize, order, list, struct {
         fn lessThan(ctx: []const Skill, a: usize, b: usize) bool {
             return std.mem.order(u8, ctx[a].name, ctx[b].name) == .lt;
         }

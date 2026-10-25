@@ -18,7 +18,7 @@ pub fn list(a: A, io: Io, dir: Io.Dir) ![]activity.Meta {
         const row = std.json.parseFromSliceLeaky(activity.Meta, a, bytes, .{ .ignore_unknown_fields = true }) catch continue;
         if (activity.validId(row.id)) try rows.append(a, row);
     }
-    std.mem.sort(activity.Meta, rows.items, {}, struct {
+    @import("stable_sort.zig").sort(activity.Meta, rows.items, {}, struct {
         fn less(_: void, x: activity.Meta, y: activity.Meta) bool {
             return x.updatedAt > y.updatedAt;
         }
