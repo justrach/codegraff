@@ -24,6 +24,9 @@ jobs:
       - name: Zig source-size guard integrity tests
         run: python3 scripts/test-zig-lines.py
 
+      - name: Release CI gate integrity tests
+        run: python3 scripts/test-wait-for-ci.py
+
       - name: PTY cleanup integrity
         run: python3 scripts/eval/test_pty_cleanup.py
 
