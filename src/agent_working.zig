@@ -33,17 +33,20 @@ pub fn write(w: *Io.Writer, title: []const u8, items: []const Item) void {
     for (items) |it| {
         if (it.done) done += 1;
     }
-    w.print("{s}WORKING{s}  {s}{s}{s}", .{ style.dim, style.reset, style.bold, shown, style.reset }) catch return;
-    if (items.len > 0) w.print("  {s}{d}/{d}{s}", .{ style.dim, done, items.len, style.reset }) catch return;
+    w.print("{s}WORKING{s}  {s}{s}{s}{s}", .{ style.muted, style.reset, style.bold, style.text, shown, style.reset }) catch return;
+    if (items.len > 0) w.print("  {s}{d}/{d}{s}", .{ style.muted, done, items.len, style.reset }) catch return;
     w.writeByte('\n') catch return;
     const n = @min(items.len, max_items);
     for (items[0..n], 0..) |it, i| {
         const branch: []const u8 = if (i + 1 == n) "└ " else "├ ";
-        const mark: []const u8 = if (it.done) "✓" else if (it.active) "◌" else "○";
-        const color = if (it.done) style.dim else if (it.active) style.accent else "";
+        const mark: []const u8 = if (it.done) "✓" else if (it.active)
+            (if (style.accent.len > 0) "●" else "◌")
+        else
+            "○";
+        const color = if (it.active and !it.done) style.accent else style.muted;
         const weight = if (it.active and !it.done) style.bold else "";
         w.print("{s}{s}{s}{s}{s}{s} {s}{s}\n", .{
-            style.dim, branch, style.reset, color, weight, mark, clip(it.content, item_clip), style.reset,
+            style.faint, branch, style.reset, color, weight, mark, clip(it.content, item_clip), style.reset,
         }) catch return;
     }
 }
@@ -67,7 +70,7 @@ pub fn writeFromStanding(w: *Io.Writer, st: engine_events.StandingWork) void {
 fn writeWaiting(w: *Io.Writer, waiting: []const u8) void {
     if (waiting.len == 0) return;
     w.print("{s}↻{s}{s} waiting on {s} — graff continues when it finishes{s}\n", .{
-        style.accent, style.reset, style.dim, waiting, style.reset,
+        style.accent, style.reset, style.muted, waiting, style.reset,
     }) catch return;
 }
 
@@ -118,7 +121,7 @@ test "completed checklist stays out of idle prompt redraws" {
 
 test "terminal working block highlights active work without hiding waiting" {
     const saved = style.*;
-    style.* = @import("ansi.zig").Style.ansi;
+    style.* = @import("ansi.zig").Style.harness;
     defer style.* = saved;
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
@@ -129,9 +132,9 @@ test "terminal working block highlights active work without hiding waiting" {
     };
     writeFromStanding(&aw.writer, .{ .goal = "ship it", .todos = &items, .todos_done = 1, .todos_total = 3, .waiting = "agent 4" });
     const text = aw.written();
-    try std.testing.expect(std.mem.indexOf(u8, text, "\x1b[2m✓ finished\x1b[0m") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "\x1b[38;2;5;150;105m\x1b[1m◌ current\x1b[0m") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "○ next") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\x1b[38;2;154;147;132m✓ finished\x1b[0m") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\x1b[38;2;232;163;61m\x1b[1m● current\x1b[0m") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\x1b[38;2;154;147;132m○ next\x1b[0m") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "waiting on agent 4 — graff continues when it finishes") != null);
 }
 

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Deterministic real-PTY smoke test for interactive REPL state/redraws."""
 
+from __future__ import annotations
+
 import os
+import re
 import sys
 import tempfile
 
@@ -10,10 +13,8 @@ from pty_harness import PtySession, terminal_text
 
 _arg = sys.argv[1] if len(sys.argv) > 1 else "graff"
 GRAFF = os.path.abspath(_arg) if os.sep in _arg else _arg
-# The effort/ultracode badges and the picker selection moved from coral to the
-# emerald accent when the palette aligned to the site (coral is reserved for
-# errors) — ansi.zig style.accent / pickers.zig.
-ACCENT = b"\x1b[38;2;5;150;105m"
+# Pickers share the production REPL's Harness Codegraff Dark accent.
+ACCENT = b"\x1b[38;2;232;163;61m"
 RESET = b"\x1b[0m"
 
 
@@ -25,6 +26,7 @@ def main() -> None:
             "HOME": tmp,
             "CODEGRAFF_API_KEY": "local-pty-test",
             "GRAFF_FLEET": "off",
+            "GRAFF_CODEX_WS": "1",  # pin the transport this fixture asserts
             "GRAFF_NO_TELEMETRY": "1",
         }
         # A wide pane so the full status line (all mode badges + the deep temp
@@ -45,22 +47,23 @@ def main() -> None:
             def command(
                 line: str,
                 output: str,
-                prompt: str,
+                prompt: re.Pattern[str],
                 color_bytes: bytes | None,
             ) -> None:
                 cursor = len(session.raw)
                 session.send_line(line)
                 session.wait_for_literal(output, start=cursor)
-                session.wait_for_literal(prompt, start=cursor)
+                session.wait_for(prompt, start=cursor)
                 if color_bytes is not None and color_bytes not in bytes(session.raw[cursor:]):
                     raise AssertionError(f"missing colored badge {color_bytes!r} after {line}")
 
-            # Dim meter above a bare › (ADR 0016, 0302): model · effort ·
-            # mode badges · ~/cwd. Provider and privacy left the line;
-            # ctx/session follow. Use the temp dir's basename so the literals
-            # stay deterministic.
+            # The colored strip has a left model/mode cluster and right-aligned
+            # workspace metadata (ADR 0302). Assert both on the same row rather
+            # than expecting the old separator where alignment padding now sits.
             def status(*modes):
-                return " · ".join(["deepseek-v4-pro", "Extra high", *modes, f"~/{os.path.basename(tmp)}"])
+                left = " · ".join(["deepseek-v4-pro", "Extra high", *modes])
+                right = f"~/{os.path.basename(tmp)}"
+                return re.compile(r"(?m)^" + re.escape(left) + r" {2,}" + re.escape(right) + r"(?: · [^\r\n]*)?$")
 
             base = status()
             command(
@@ -80,7 +83,7 @@ def main() -> None:
             session.wait_for_literal("/models [health]", start=cursor)
             session.wait_for_literal("/fallback [allow|remove|off]", start=cursor)
             session.wait_for_literal("/login [codegraff|chatgpt|kimi|xai|zai]", start=cursor)
-            session.wait_for_literal(base, start=cursor)
+            session.wait_for(base, start=cursor)
             session.wait_for_prompt(start=cursor)
             cursor = len(session.raw)
             session.send_line("/models health")
@@ -92,7 +95,7 @@ def main() -> None:
             )
             session.wait_for(r"✓\s+codegraff\s+environment", start=cursor)
             session.wait_for(r"·\s+codex\s+missing", start=cursor)
-            session.wait_for_literal(base, start=cursor)
+            session.wait_for(base, start=cursor)
             session.wait_for_prompt(start=cursor)
             if b"local-pty-test" in bytes(session.raw[cursor:]):
                 raise AssertionError("/models health exposed a credential value")

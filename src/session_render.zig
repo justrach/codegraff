@@ -35,7 +35,7 @@ const autocommit_suffix = " · auto-committing each turn (`graff worktree merge`
 /// state, so the engine says only that color exists and this decides what it
 /// looks like. Reached through engine_sink.enableColor.
 pub fn enableColor() void {
-    ansi.style = ansi.Style.ansi;
+    ansi.style = ansi.Style.harness;
 }
 
 /// Draw one lifecycle event, or nothing when the moment belongs to another

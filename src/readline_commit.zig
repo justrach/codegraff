@@ -42,7 +42,8 @@ pub fn commit(out: *Io.Writer, items: []const u8, marks: []const []const u8, pas
                 if (store.highlightEndAt(items, i)) |end| best_end = @max(best_end, end);
             }
             if (best_end > i) {
-                out.writeAll(if (use_color) "\x1b[7;38;2;5;150;105m" else "\x1b[7m") catch {};
+                if (use_color) out.writeAll(@import("ansi.zig").style.accent) catch {};
+                out.writeAll("\x1b[7m") catch {};
                 mark_end = best_end;
                 mark_open = true;
             }

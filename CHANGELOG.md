@@ -14,6 +14,9 @@ current is part of cutting a release.
 
 - The terminal REPL has a clearer session strip, a subtle divider, and distinct styling for active and completed checklist items. The bare prompt, scrollback, and plain output remain intact; no native window or graphical toolkit is required.
 - Operational modes stay visible before workspace metadata when a terminal pane is narrow.
+- The line REPL uses a warm amber palette with cream text and muted status metadata.
+- Markdown emphasis renders in streamed replies and agent reports instead of leaving single-marker formatting literal.
+- `/workers` opens a read-only subagent browser with clickable rows, live activity, Markdown reports, and keyboard navigation. `/agents` still lists agent types.
 - Includes independent conversation forks for subagents and workflow fan-out, optional retained workers, and bounded workflow synthesis that preserves earlier findings.
 - Release binaries are built ReleaseSafe: an out-of-range index or overflow stops graff with a clear panic instead of silently corrupting state, and the stripped binaries are about 17-20% smaller.
 - Retains all changes from v0.302.51.

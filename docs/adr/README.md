@@ -327,6 +327,8 @@ record only when you need the evidence or the edge cases.
 | [0301](0301-failed-requests-settle-the-pending-turn.md) | Exhausted request retries leave a truthful failure boundary in history so an identical prompt can run after reconnecting, including after save/load; duplicate-host protection and bounded retries stay unchanged. |
 | [0302](0302-terminal-repl-chrome-stays-in-the-terminal.md) | Refine the line REPL's terminal sinks: quiet status hierarchy, mode-first width priority and active-work emphasis, without native windows or changing the editor, engine or external fullscreen client. |
 
+| [0303](0303-terminal-markdown-and-worker-inspection.md) | The line REPL renders inline emphasis and offers a temporary mouse/keyboard `/workers` inspector over the existing bounded ACP child feed, without replacing the editor or changing engine behavior. |
+
 ## When to write one
 
 Write an ADR when a decision is load-bearing and non-obvious: it was reached
