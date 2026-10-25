@@ -41,39 +41,60 @@ pub fn build(b: *std.Build) void {
     opts.addOption([]const u8, "version", version);
     opts.addOption([]const u8, "telemetry_endpoint", telemetry_endpoint);
 
+    // Release binaries ship without unwind tables or frame pointers: they are
+    // stripped, so a panic can't print a useful trace anyway. Windows keeps its
+    // tables because the MinGW startup code registers SEH handlers with them.
+    const no_unwind = lean_release and target.result.os.tag != .windows;
+    // graff's own code is its own module so it keeps the requested build mode
+    // (ReleaseSafe checks overflow, bounds and union tags). The root module
+    // only forwards to it; std and other generic library code follow the root,
+    // which a ReleaseSafe release builds for size.
+    const app_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .strip = lean_release,
+        // Linux cross-builds (x86_64-linux for in-container evals) must say
+        // libc explicitly; macOS resolves it implicitly and never notices.
+        .link_libc = true,
+        .unwind_tables = if (no_unwind) .none else null,
+        .omit_frame_pointer = if (lean_release) true else null,
+        .error_tracing = if (lean_release) false else null,
+    });
     const exe = b.addExecutable(.{
         .name = "graff",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
+            .root_source_file = b.path("src/entry.zig"),
             .target = target,
-            .optimize = optimize,
+            .optimize = if (optimize == .safe) .small else optimize,
             .strip = lean_release,
-            // Linux cross-builds (x86_64-linux for in-container evals) must say
-            // libc explicitly; macOS resolves it implicitly and never notices.
             .link_libc = true,
+            .unwind_tables = if (no_unwind) .none else null,
+            .omit_frame_pointer = if (lean_release) true else null,
         }),
     });
-    exe.root_module.addOptions("build_options", opts);
+    exe.root_module.addImport("graff", app_mod);
+    app_mod.addOptions("build_options", opts);
     const accord_dep = b.dependency("accord", .{ .target = target, .optimize = optimize });
     const accord_mod = accord_dep.module("accord");
-    exe.root_module.addImport("accord", accord_mod);
+    app_mod.addImport("accord", accord_mod);
     const http_zig_dep = b.dependency("http_zig", .{ .target = target, .optimize = optimize });
     const http_zig_mod = http_zig_dep.module("http_zig");
-    exe.root_module.addImport("http_zig", http_zig_mod);
+    app_mod.addImport("http_zig", http_zig_mod);
     // Shared model-ranking module used by the line-REPL picker.
     const models_rank_mod = b.createModule(.{
         .root_source_file = b.path("src/models_rank.zig"),
         .target = target,
         .optimize = optimize,
     });
-    exe.root_module.addImport("models_rank", models_rank_mod);
+    app_mod.addImport("models_rank", models_rank_mod);
     // Shared nearest-command speller for the REPL/ACP catalog.
     const slash_suggest_mod = b.createModule(.{
         .root_source_file = b.path("src/slash_suggest.zig"),
         .target = target,
         .optimize = optimize,
     });
-    exe.root_module.addImport("slash_suggest", slash_suggest_mod);
+    app_mod.addImport("slash_suggest", slash_suggest_mod);
     const install_graff = b.addInstallArtifact(exe, .{});
     b.getInstallStep().dependOn(&install_graff.step);
     const graff_step = b.step("graff", "Build and install only the release CLI");
@@ -110,7 +131,7 @@ pub fn build(b: *std.Build) void {
     unit_tests.root_module.addImport("slash_suggest", slash_suggest_mod);
     // spec/ fixtures live outside src/; importing them here makes @embedFile
     // legal and rebuilds the suite when the exported semantics change.
-    exe.root_module.addAnonymousImport("ui_theme", .{ .root_source_file = b.path("src/ui_theme.css") });
+    app_mod.addAnonymousImport("ui_theme", .{ .root_source_file = b.path("src/ui_theme.css") });
     unit_tests.root_module.addAnonymousImport("ui_theme", .{ .root_source_file = b.path("src/ui_theme.css") });
     unit_tests.root_module.addAnonymousImport("spec_tool_catalog", .{ .root_source_file = b.path("spec/kernels/tool_catalog.json") });
     unit_tests.root_module.addAnonymousImport("spec_transport", .{ .root_source_file = b.path("spec/kernels/transport.json") });
@@ -265,7 +286,7 @@ pub fn build(b: *std.Build) void {
         .{ .import = "learn_kit_generate", .path = "examples/learn_generate_suites.py" },
         .{ .import = "learn_kit_scorer", .path = "scripts/score_run.py" },
     }) |asset| {
-        exe.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
+        app_mod.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
         unit_tests.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
     }
 
@@ -279,7 +300,7 @@ pub fn build(b: *std.Build) void {
         .{ .import = "skill_doc_jspace", .path = "assets/skills/jspace.md" },
         .{ .import = "skill_doc_workspace", .path = "assets/skills/workspace.md" },
     }) |asset| {
-        exe.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
+        app_mod.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
         unit_tests.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
     }
 
