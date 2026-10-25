@@ -203,7 +203,7 @@ pub const Recorder = struct {
             if (!validId(meta.id) or std.mem.eql(u8, meta.status, "working")) continue;
             completed.append(a, meta) catch return;
         }
-        std.mem.sort(Meta, completed.items, {}, struct {
+        @import("stable_sort.zig").sort(Meta, completed.items, {}, struct {
             fn less(_: void, x: Meta, y: Meta) bool {
                 return x.updatedAt > y.updatedAt;
             }

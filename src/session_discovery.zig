@@ -128,7 +128,7 @@ pub fn listAll(root: *Agent, arena: Allocator) std.ArrayList(session_index.Sessi
     const home = root.home;
     if (home.len > 0 and !session_index.sameWorkspace(home, cwd))
         session_index.appendWorkspaceSessions(root.io, arena, &entries, home, false);
-    std.mem.sort(session_index.SessionEntry, entries.items, {}, struct {
+    @import("stable_sort.zig").sort(session_index.SessionEntry, entries.items, {}, struct {
         fn newer(_: void, a: session_index.SessionEntry, b: session_index.SessionEntry) bool {
             if (a.local != b.local) return a.local;
             return a.updated_ms > b.updated_ms;

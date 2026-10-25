@@ -179,7 +179,7 @@ fn gramSet(out: []u64, words: []const u64) []const u64 {
         }
     }
     const filled = out[0..n];
-    std.mem.sort(u64, filled, {}, std.sort.asc(u64));
+    @import("stable_sort.zig").sort(u64, filled, {}, std.sort.asc(u64));
     var w: usize = 0;
     for (filled, 0..) |v, k| {
         if (k == 0 or v != filled[w - 1]) {
