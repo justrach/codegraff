@@ -64,6 +64,10 @@ test "submitted prompt keeps key material masked" {
 }
 
 test "submitted prompt retains attachment chip styling" {
+    const ansi = @import("ansi.zig");
+    const saved = ansi.style;
+    ansi.style = ansi.Style.harness;
+    defer ansi.style = saved;
     var output: Io.Writer.Allocating = .init(std.testing.allocator);
     defer output.deinit();
     const mark = "[Image #1]";
@@ -71,6 +75,6 @@ test "submitted prompt retains attachment chip styling" {
     try std.testing.expect(std.mem.indexOf(
         u8,
         output.writer.buffered(),
-        "\x1b[7;38;2;5;150;105m[Image #1]\x1b[0m caption",
+        "\x1b[38;2;232;163;61m\x1b[7m[Image #1]\x1b[0m caption",
     ) != null);
 }

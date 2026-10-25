@@ -95,7 +95,7 @@ fn skipEscape(text: []const u8, start: usize) usize {
 
 /// Raw means uninterpreted, not unsafe: terminal controls and invalid UTF-8
 /// never get a chance to repaint the user's terminal.
-fn sanitized(alloc: std.mem.Allocator, text: []const u8) ![]u8 {
+pub fn sanitized(alloc: std.mem.Allocator, text: []const u8) ![]u8 {
     var out = std.array_list.Managed(u8).init(alloc);
     errdefer out.deinit();
     var i: usize = 0;
