@@ -55,11 +55,14 @@ def main() -> None:
                 if color_bytes is not None and color_bytes not in bytes(session.raw[cursor:]):
                     raise AssertionError(f"missing colored badge {color_bytes!r} after {line}")
 
-            # Dim meter above a bare › (ADR 0016): model · effort · ~/cwd ·
-            # badges. Provider and privacy left the line; ctx/session follow.
-            # Cwd returned as a `~/folder` segment (98958fc) — use the temp
-            # dir's basename so the literals stay deterministic.
-            base = f"deepseek-v4-pro · Extra high · ~/{os.path.basename(tmp)}"
+            # Dim meter above a bare › (ADR 0016, 0302): model · effort ·
+            # mode badges · ~/cwd. Provider and privacy left the line;
+            # ctx/session follow. Use the temp dir's basename so the literals
+            # stay deterministic.
+            def status(*modes):
+                return " · ".join(["deepseek-v4-pro", "Extra high", *modes, f"~/{os.path.basename(tmp)}"])
+
+            base = status()
             command(
                 "/effort xhigh",
                 "reasoning effort: Extra high",
@@ -96,25 +99,25 @@ def main() -> None:
             command(
                 "/plan",
                 "plan mode on",
-                f"{base} · Plan",
+                status("Plan"),
                 None,
             )
             command(
                 "/strict",
                 "strict mode ON",
-                f"{base} · Plan · Strict",
+                status("Plan", "Strict"),
                 None,
             )
             command(
                 "/ultracode on",
                 "ultracode mode: on",
-                f"{base} · Plan · Strict · Ultracode",
+                status("Plan", "Strict", "Ultracode"),
                 None,
             )
             command(
                 "/yolo",
                 "yolo mode ON",
-                f"{base} · Plan · Strict · Ultracode",
+                status("Plan", "Strict", "Ultracode"),
                 None,
             )
             if b"\x1b[31mYOLO\x1b[0m" in bytes(session.raw):

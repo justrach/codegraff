@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   build:
@@ -202,8 +203,23 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/release.keychain-db" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/ac_api_key.p8"
 
+  # Builds run beside CI; nothing is published unless CI passed on this
+  # exact push (scripts/wait-for-ci.py).
+  ci-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts/wait-for-ci.py
+          sparse-checkout-cone-mode: false
+      - name: Wait for CI on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/wait-for-ci.py --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --ref "$GITHUB_REF_NAME"
+
   release:
-    needs: [build, macos-sign]
+    needs: [build, macos-sign, ci-gate]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
