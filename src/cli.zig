@@ -24,6 +24,10 @@ const update_target = @import("update_target.zig");
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.53
+    \\  • normal terminal startup is quiet; diagnostics stay opt-in
+    \\  • live thinking shows Ctrl+T collapse/expand beside its header
+    \\
     \\0.302.51
     \\  • Kimi API keys and logins work again (no more RstStream)
     \\  • a used-up Kimi plan window stops instead of retrying

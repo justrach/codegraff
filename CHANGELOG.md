@@ -10,6 +10,12 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.53
+
+- Normal terminal startup keeps background connection receipts and legacy-listener diagnostics behind `GRAFF_REPL_DEBUG=1`; boot timing stays behind `GRAFF_BOOT_DEBUG=1`. Explicit `/mcp` and `graff servers` inspection remains available, and listener ownership protections are unchanged.
+- Live thinking shows `Ctrl+T collapse` and `Ctrl+T expand` beside its header. Enable it with `/thinking on`; completed terminal scrollback remains read-only.
+- Retains all changes from v0.302.52.
+
 ## v0.302.52
 
 - The terminal REPL has a clearer session strip, a subtle divider, and distinct styling for active and completed checklist items. The bare prompt, scrollback, and plain output remain intact; no native window or graphical toolkit is required.

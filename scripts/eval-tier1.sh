@@ -41,7 +41,7 @@ checks, in order:
   build       zig build
   shell       durable shell IDs and stale-handle isolation after a crash
   tests       zig build test, and the suite count never shrinks
-  terminal    PTY cleanup integrity and line-REPL prompt reflow
+  terminal    PTY cleanup, line-REPL prompt reflow, and live thinking controls
   invariants  the named goal/loop/todo tests actually ran, not just compiled
   sdk         the committed SDKs match `graff --schema`
 EOF
@@ -266,8 +266,10 @@ if wanted terminal; then
   if ((!build_ok)); then
     skip_dependent terminal
   else
-    announce terminal "PTY cleanup integrity and line-REPL prompt reflow"
-    if python3 scripts/eval/test_pty_cleanup.py && python3 scripts/eval/process_guard.py --timeout 90 python3 scripts/test-repl-prompt-reflow.py zig-out/bin/graff; then :; else
+    announce terminal "PTY cleanup, line-REPL prompt reflow, and live thinking controls"
+    if python3 scripts/eval/test_pty_cleanup.py &&
+      python3 scripts/eval/process_guard.py --timeout 90 python3 scripts/test-repl-prompt-reflow.py zig-out/bin/graff &&
+      python3 scripts/eval/process_guard.py --timeout 90 python3 scripts/test-repl-thinking.py zig-out/bin/graff; then :; else
       record_fail terminal
     fi
   fi

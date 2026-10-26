@@ -44,7 +44,7 @@ test "connectCompanion on interactive yolo queues instead of addServer" {
     try std.testing.expect(std.mem.indexOf(u8, src, "companion: {s} (background)") != null);
 }
 
-test "connectCompanion yolo writes the companion receipt and does not addServer" {
+test "connectCompanion yolo gates receipts on debug without addServer" {
     const main_mod = @import("main.zig");
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
@@ -64,16 +64,19 @@ test "connectCompanion yolo writes the companion receipt and does not addServer"
     defer arena_state.deinit();
     var env = std.process.Environ.Map.init(std.testing.allocator);
     defer env.deinit();
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    var registry = mcp.Registry.empty(std.testing.allocator, io);
-    defer registry.deinit();
+    for ([_]bool{ false, true }) |debug| {
+        if (debug) try env.put("GRAFF_REPL_DEBUG", "1");
+        var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+        defer aw.deinit();
+        var registry = mcp.Registry.empty(std.testing.allocator, io);
+        defer registry.deinit();
 
-    try session_start.connectCompanion(io, arena_state.allocator(), &registry, .{ .yolo_flag = true }, &aw.writer, false, env);
-    const out = aw.writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "companion: codedb-pro (background)") != null);
-    try std.testing.expectEqual(@as(usize, 0), registry.servers.len);
-    try std.testing.expectEqual(@as(usize, 0), registry.tools.len);
+        try session_start.connectCompanion(io, arena_state.allocator(), &registry, .{ .yolo_flag = true }, &aw.writer, false, env);
+        const out = aw.writer.buffered();
+        try std.testing.expectEqual(debug, std.mem.indexOf(u8, out, "companion: codedb-pro (background)") != null);
+        try std.testing.expectEqual(@as(usize, 0), registry.servers.len);
+        try std.testing.expectEqual(@as(usize, 0), registry.tools.len);
+    }
 }
 
 test "skipOptionalServer keeps deepwiki/mobbin out of the default catalog" {
