@@ -46,8 +46,9 @@ pub fn build(b: *std.Build) void {
     opts.addOption(bool, "learn", learn);
 
     // Release binaries ship without unwind tables or frame pointers: they are
-    // stripped, so a panic can't print a useful trace anyway. Windows keeps its
-    // tables because the MinGW startup code registers SEH handlers with them.
+    // stripped, so a panic can't print a useful trace anyway. On Windows only
+    // graff's module drops them: the root's setting also builds the MinGW
+    // startup code, which registers SEH handlers and needs its tables.
     const no_unwind = lean_release and target.result.os.tag != .windows;
     // graff's own code is its own module so it keeps the requested build mode
     // (ReleaseSafe checks overflow, bounds and union tags). The root module
@@ -61,7 +62,7 @@ pub fn build(b: *std.Build) void {
         // Linux cross-builds (x86_64-linux for in-container evals) must say
         // libc explicitly; macOS resolves it implicitly and never notices.
         .link_libc = true,
-        .unwind_tables = if (no_unwind) .none else null,
+        .unwind_tables = if (lean_release) .none else null,
         .omit_frame_pointer = if (lean_release) true else null,
         .error_tracing = if (lean_release) false else null,
     });
@@ -135,8 +136,6 @@ pub fn build(b: *std.Build) void {
     unit_tests.root_module.addImport("slash_suggest", slash_suggest_mod);
     // spec/ fixtures live outside src/; importing them here makes @embedFile
     // legal and rebuilds the suite when the exported semantics change.
-    app_mod.addAnonymousImport("ui_theme", .{ .root_source_file = b.path("src/ui_theme.css") });
-    unit_tests.root_module.addAnonymousImport("ui_theme", .{ .root_source_file = b.path("src/ui_theme.css") });
     unit_tests.root_module.addAnonymousImport("spec_tool_catalog", .{ .root_source_file = b.path("spec/kernels/tool_catalog.json") });
     unit_tests.root_module.addAnonymousImport("spec_transport", .{ .root_source_file = b.path("spec/kernels/transport.json") });
     unit_tests.root_module.addAnonymousImport("spec_providers", .{ .root_source_file = b.path("spec/kernels/providers.json") });
@@ -281,7 +280,6 @@ pub fn build(b: *std.Build) void {
     // into a workspace so zero-configuration learning needs no repo checkout.
     // Embedded by name (src/learn_assets.zig `@embedFile`s these imports).
     for ([_]struct { import: []const u8, path: []const u8 }{
-        .{ .import = "mcp_installer", .path = "scripts/install-mcp.py" },
         .{ .import = "learn_kit_mutator", .path = "examples/learn_graff_mutator.py" },
         .{ .import = "learn_kit_evaluator", .path = "examples/learn_graff_evaluator.py" },
         .{ .import = "learn_kit_case", .path = "examples/learn_graff_case.py" },
@@ -292,6 +290,29 @@ pub fn build(b: *std.Build) void {
     }) |asset| {
         app_mod.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
         unit_tests.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
+    }
+
+    // Text only needed at run time ships gzipped; callers inflate it with
+    // update_archive.gunzip. Imported as "<name>.gz".
+    const gzip_asset = b.addExecutable(.{
+        .name = "gzip_asset",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("scripts/gzip_asset.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    for ([_]struct { import: []const u8, path: []const u8 }{
+        .{ .import = "mcp_installer.gz", .path = "scripts/install-mcp.py" },
+        .{ .import = "chatgpt_callback.gz", .path = "src/oauth_page/chatgpt_callback.html" },
+        .{ .import = "mcp_app_host.gz", .path = "src/mcp_app_host.html" },
+        .{ .import = "mcp_task_app.gz", .path = "src/mcp_task_app.html" },
+        .{ .import = "ui_theme.gz", .path = "src/ui_theme.css" },
+    }) |asset| {
+        const gzip_run = b.addRunArtifact(gzip_asset);
+        gzip_run.addFileArg(b.path(asset.path));
+        const gz = gzip_run.addOutputFileArg(asset.import);
+        app_mod.addAnonymousImport(asset.import, .{ .root_source_file = gz });
+        unit_tests.root_module.addAnonymousImport(asset.import, .{ .root_source_file = gz });
     }
 
     // Bundled skills: SKILL.md playbooks compiled into every binary (embedded

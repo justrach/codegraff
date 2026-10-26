@@ -68,7 +68,7 @@ pub fn snapshot(io: Io, a: Allocator, home: []const u8, server: *rpc.Server, uri
     const encoder = std.base64.standard.Encoder;
     const encoded = try a.alloc(u8, encoder.calcSize(payload.len));
     _ = encoder.encode(encoded, payload);
-    const template = @embedFile("mcp_app_host.html");
+    const template = try @import("update_archive.zig").gunzip(a, @embedFile("mcp_app_host.gz"));
     const marker = "GRAFF_APP_PAYLOAD";
     const split = std.mem.indexOf(u8, template, marker).?;
     const html = try std.mem.concat(a, u8, &.{ template[0..split], encoded, template[split + marker.len ..] });
@@ -101,6 +101,12 @@ test "MCP app resources require matching URI and app MIME type" {
     defer parsed.deinit();
     try std.testing.expect(readResource(parsed.value, "ui://a") != null);
     try std.testing.expect(readResource(parsed.value, "ui://b") == null);
+}
+
+test "MCP app host page ships gzipped and keeps its payload slot" {
+    const page = try @import("update_archive.zig").gunzip(std.testing.allocator, @embedFile("mcp_app_host.gz"));
+    defer std.testing.allocator.free(page);
+    try std.testing.expect(std.mem.indexOf(u8, page, "GRAFF_APP_PAYLOAD") != null);
 }
 
 test "app-only MCP tools stay out of the model catalog" {

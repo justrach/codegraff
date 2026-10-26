@@ -10,10 +10,18 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## v0.302.53
+## v0.302.54
 
 - Normal terminal startup keeps background connection receipts and legacy-listener diagnostics behind `GRAFF_REPL_DEBUG=1`; boot timing stays behind `GRAFF_BOOT_DEBUG=1`. Explicit `/mcp` and `graff servers` inspection remains available, and listener ownership protections are unchanged.
 - Live thinking shows `Ctrl+T collapse` and `Ctrl+T expand` beside its header. Enable it with `/thinking on`; completed terminal scrollback remains read-only.
+- Retains all changes from v0.302.53.
+
+## v0.302.53
+
+- Embedded runtime resources are compressed, prompt variants share their common text, and optional tool catalogs are built on first use to keep release binaries smaller without changing their contents.
+- Release builds retain runtime safety checks while sharing library code more efficiently. Local learning remains available in development builds rather than being included in release binaries.
+- Routed requests use stable session affinity, and usage prices follow the router's published catalog.
+- Workflow synthesis preserves its tool catalog at the final report-only boundary while refusing further tool execution.
 - Retains all changes from v0.302.52.
 
 ## v0.302.52
@@ -26,6 +34,8 @@ current is part of cutting a release.
 - Includes independent conversation forks for subagents and workflow fan-out, optional retained workers, and bounded workflow synthesis that preserves earlier findings.
 - Release binaries are built ReleaseSafe: an out-of-range index or overflow stops graff with a clear panic instead of silently corrupting state, and the stripped binaries are about 17-20% smaller.
 - `graff learn` is no longer part of the release binary, which is about 300 KB smaller for it; sessions no longer start background learning trials.
+- Release binaries are another 50-120 KB smaller: the MCP installer and two HTML pages ship gzipped, the sign-in page's images are WebP, and graff's own code on Windows drops its unwind tables like the other platforms.
+- Release binaries are about 100 KB smaller again: the system prompt's variants share one copy, subagent tool lists for gated sessions are built when first needed instead of compiled in, and the MCP task page ships gzipped.
 - Retains all changes from v0.302.51.
 
 ## v0.302.51
