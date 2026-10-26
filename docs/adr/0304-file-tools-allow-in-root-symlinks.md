@@ -1,4 +1,4 @@
-# 0302. File tools allow symlinks that resolve inside their tool root
+# 0304. File tools allow symlinks that resolve inside their tool root
 
 Status: accepted 2026-10-26
 
