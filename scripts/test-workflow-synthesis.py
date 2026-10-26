@@ -68,7 +68,11 @@ class Model(fixture.ScriptedModel):
                 if name == 'GENERAL':
                     return {'text': 'GENERAL_DONE'}
                 assert n == 9, (name, n, 'synthesis exceeded its request allowance')
-                assert not body.get('tools'), (name, 'report request still advertises tools')
+                previous = calls[-2]
+                assert body.get('tools') == previous['tools'], (name, 'report changed the tool catalog')
+                assert body.get('tool_choice') == 'none', (name, 'report permits tool use')
+                assert body['messages'][0] == previous['messages'][0], (name, 'report changed the system prefix')
+                assert body.get('prompt_cache_key') == previous.get('prompt_cache_key'), (name, 'report changed cache routing')
                 if name.startswith('BAD'):
                     return fixture.tool('bash', command='printf FORBIDDEN > forbidden-' + name + '.txt')
                 return {'text': 'SYNTHESIS_DONE_' + name}
