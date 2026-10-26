@@ -136,8 +136,6 @@ pub fn build(b: *std.Build) void {
     unit_tests.root_module.addImport("slash_suggest", slash_suggest_mod);
     // spec/ fixtures live outside src/; importing them here makes @embedFile
     // legal and rebuilds the suite when the exported semantics change.
-    app_mod.addAnonymousImport("ui_theme", .{ .root_source_file = b.path("src/ui_theme.css") });
-    unit_tests.root_module.addAnonymousImport("ui_theme", .{ .root_source_file = b.path("src/ui_theme.css") });
     unit_tests.root_module.addAnonymousImport("spec_tool_catalog", .{ .root_source_file = b.path("spec/kernels/tool_catalog.json") });
     unit_tests.root_module.addAnonymousImport("spec_transport", .{ .root_source_file = b.path("spec/kernels/transport.json") });
     unit_tests.root_module.addAnonymousImport("spec_providers", .{ .root_source_file = b.path("spec/kernels/providers.json") });
@@ -307,6 +305,8 @@ pub fn build(b: *std.Build) void {
         .{ .import = "mcp_installer.gz", .path = "scripts/install-mcp.py" },
         .{ .import = "chatgpt_callback.gz", .path = "src/oauth_page/chatgpt_callback.html" },
         .{ .import = "mcp_app_host.gz", .path = "src/mcp_app_host.html" },
+        .{ .import = "mcp_task_app.gz", .path = "src/mcp_task_app.html" },
+        .{ .import = "ui_theme.gz", .path = "src/ui_theme.css" },
     }) |asset| {
         const gzip_run = b.addRunArtifact(gzip_asset);
         gzip_run.addFileArg(b.path(asset.path));

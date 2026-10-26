@@ -264,6 +264,9 @@ test "MCP Apps negotiate metadata and serve only the declared resource" {
     const resource = read.object.get("result").?.object.get("contents").?.array.items[0];
     try std.testing.expectEqualStrings(app.mime, resource.object.get("mimeType").?.string);
     try std.testing.expect(std.mem.startsWith(u8, resource.object.get("text").?.string, "<!doctype html>"));
+    // The gzipped theme is spliced into its slot, not left as the marker.
+    try std.testing.expect(std.mem.indexOf(u8, resource.object.get("text").?.string, "CODEGRAFF_THEME") == null);
+    try std.testing.expect(std.mem.indexOf(u8, resource.object.get("text").?.string, "Shared Codegraff desktop") != null);
     const rejected = try std.json.parseFromSliceLeaky(Value, a, lines.next().?, .{});
     try std.testing.expectEqual(@as(i64, -32002), rejected.object.get("error").?.object.get("code").?.integer);
 }
