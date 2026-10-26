@@ -5,10 +5,13 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.55
+    \\  • help, release history, and bundled playbooks are compressed until needed
+    \\  • long home paths keep the macOS background-launch protection
+    \\
     \\0.302.54
     \\  • normal terminal startup is quiet; diagnostics stay opt-in
     \\  • live thinking shows Ctrl+T collapse/expand beside its header
-    \\  • help, release history, and bundled playbooks are compressed until needed
     \\
     \\0.302.53
     \\  • smaller binaries share prompt text and compress runtime resources
