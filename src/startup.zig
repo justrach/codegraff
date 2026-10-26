@@ -557,7 +557,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         return true;
     }
 
-    if (!main_mod.json_mode and flags.oneshot_prompt == null)
+    if (!main_mod.json_mode and flags.oneshot_prompt == null and init.environ_map.get("GRAFF_REPL_DEBUG") != null)
         @import("server_diagnostics.zig").warnStartup(arena, io);
 
     return false;

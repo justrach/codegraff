@@ -53,10 +53,9 @@ pub const Tracker = struct {
         self.phases_len = 0;
     }
 
-    /// `GRAFF_BOOT_DEBUG` prints every phase. Interactive boots also name
-    /// anything ≥80ms so a hang after `plugins:` is visible without an env var.
-    pub fn shouldPrint(debug: bool, phase_ms: i64) bool {
-        return debug or phase_ms >= 80;
+    /// Phase receipts always reach the trace; stderr is an explicit debug view.
+    pub fn shouldPrint(debug: bool, _: i64) bool {
+        return debug;
     }
 
     fn emit(tracer: *trace.Tracer, phase: Phase) void {
@@ -85,9 +84,10 @@ test "startup phases retain order and non-negative deltas before attach" {
     try std.testing.expect(tracker.phases[1].cumulative_ms >= tracker.phases[0].cumulative_ms);
 }
 
-test "slow boot phases print without GRAFF_BOOT_DEBUG" {
+test "boot phase diagnostics require GRAFF_BOOT_DEBUG even for slow phases" {
     try std.testing.expect(!Tracker.shouldPrint(false, 0));
     try std.testing.expect(!Tracker.shouldPrint(false, 79));
-    try std.testing.expect(Tracker.shouldPrint(false, 80));
+    try std.testing.expect(!Tracker.shouldPrint(false, 80));
+    try std.testing.expect(!Tracker.shouldPrint(false, 80_000));
     try std.testing.expect(Tracker.shouldPrint(true, 0));
 }
