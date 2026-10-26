@@ -255,7 +255,7 @@ test "execBatch uses selected worktree, replace_all, one snapshot, and preserves
     try std.testing.expectEqual(@as(std.posix.mode_t, 0o755), (try selected.dir.statFile(io, "task.sh", .{})).permissions.toMode() & 0o777);
 }
 
-test "execBatch replaces without truncating open readers and rejects symlink paths" {
+test "execBatch replaces without truncating open readers and confines symlink paths" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     const io = std.testing.io;
@@ -296,15 +296,33 @@ test "execBatch replaces without truncating open readers and rejects symlink pat
     try std.testing.expectEqualStrings("real.txt", link_target[0..link_len]);
 
     const linked_input = try std.json.parseFromSliceLeaky(Value, input_arena.allocator(),
-        \\{"path":"link.txt","edits":[{"old_string":"after","new_string":"escaped"}]}
+        \\{"path":"link.txt","edits":[{"old_string":"after","new_string":"linked"}]}
     , .{});
-    const refused = try execBatch(ctx, linked_input);
+    const linked = try execBatch(ctx, linked_input);
+    defer gpa.free(linked.text);
+    try std.testing.expect(!linked.is_error);
+    const changed = try tmp.dir.readFileAlloc(io, "real.txt", gpa, .limited(4096));
+    defer gpa.free(changed);
+    try std.testing.expectEqualStrings("linked\n", changed);
+    const kept_link_len = try tmp.dir.readLink(io, "link.txt", &link_target);
+    try std.testing.expectEqualStrings("real.txt", link_target[0..kept_link_len]);
+
+    var outside = std.testing.tmpDir(.{});
+    defer outside.cleanup();
+    try outside.dir.writeFile(io, .{ .sub_path = "secret.txt", .data = "outside\n" });
+    const outside_path = try outside.dir.realPathFileAlloc(io, "secret.txt", gpa);
+    defer gpa.free(outside_path);
+    try tmp.dir.symLink(io, outside_path, "escape.txt", .{});
+    const escaped_input = try std.json.parseFromSliceLeaky(Value, input_arena.allocator(),
+        \\{"path":"escape.txt","edits":[{"old_string":"outside","new_string":"escaped"}]}
+    , .{});
+    const refused = try execBatch(ctx, escaped_input);
     defer gpa.free(refused.text);
     try std.testing.expect(refused.is_error);
     try std.testing.expect(std.mem.indexOf(u8, refused.text, "outside the working directory") != null);
-    const unchanged = try tmp.dir.readFileAlloc(io, "real.txt", gpa, .limited(4096));
+    const unchanged = try outside.dir.readFileAlloc(io, "secret.txt", gpa, .limited(4096));
     defer gpa.free(unchanged);
-    try std.testing.expectEqualStrings("after\n", unchanged);
+    try std.testing.expectEqualStrings("outside\n", unchanged);
 }
 
 test "execBatch and single edit share the same-file write lock" {
