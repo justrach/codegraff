@@ -19,6 +19,7 @@ current is part of cutting a release.
 - `/workers` opens a read-only subagent browser with clickable rows, live activity, Markdown reports, and keyboard navigation. `/agents` still lists agent types.
 - Includes independent conversation forks for subagents and workflow fan-out, optional retained workers, and bounded workflow synthesis that preserves earlier findings.
 - Release binaries are built ReleaseSafe: an out-of-range index or overflow stops graff with a clear panic instead of silently corrupting state, and the stripped binaries are about 17-20% smaller.
+- `graff learn` is no longer part of the release binary, which is about 300 KB smaller for it; sessions no longer start background learning trials.
 - Retains all changes from v0.302.51.
 
 ## v0.302.51

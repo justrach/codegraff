@@ -37,9 +37,13 @@ pub fn build(b: *std.Build) void {
         "telemetry-endpoint",
         "default OTLP endpoint baked into builds (pass \"\" to disable; default = the deployed collector)",
     ) orelse "https://harness-telemetry.rachpradhan.workers.dev";
+    // `graff learn` (local policy learning) and its embedded Python kit. Dev
+    // builds keep it so CI exercises it; release builds leave it out.
+    const learn = b.option(bool, "learn", "include `graff learn` local policy learning (default true)") orelse true;
     const opts = b.addOptions();
     opts.addOption([]const u8, "version", version);
     opts.addOption([]const u8, "telemetry_endpoint", telemetry_endpoint);
+    opts.addOption(bool, "learn", learn);
 
     // Release binaries ship without unwind tables or frame pointers: they are
     // stripped, so a panic can't print a useful trace anyway. Windows keeps its

@@ -231,6 +231,17 @@ jobs:
       - name: Expired codex token recovered mid-turn, retry carries it (#402)
         run: python3 scripts/test-codex-auth-recovery.py zig-out/bin/graff
 
+      - name: Release builds leave graff learn out
+        run: |
+          zig build graff -Dlearn=false --prefix "$RUNNER_TEMP/no-learn"
+          if "$RUNNER_TEMP/no-learn/bin/graff" learn status 2>"$RUNNER_TEMP/learn.err"; then
+            echo "graff learn ran in a -Dlearn=false build" >&2; exit 1
+          fi
+          grep -q 'not included in this build' "$RUNNER_TEMP/learn.err"
+          if "$RUNNER_TEMP/no-learn/bin/graff" --help | grep -q 'graff learn'; then
+            echo "--help lists graff learn in a -Dlearn=false build" >&2; exit 1
+          fi
+
       - name: SDK generation drift
         run: |
           python3 sdk/generate.py --harness ./zig-out/bin/graff

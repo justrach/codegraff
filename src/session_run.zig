@@ -449,6 +449,7 @@ pub fn shouldAutoLearn(unattended: bool, json_mode: bool) bool {
 /// does not wait on suite generation; the next session that finds a store
 /// starts the cadence.
 pub fn startBackgroundLearning(gpa: Allocator, arena: Allocator, io: Io, environ_map: *const std.process.Environ.Map, budget: *const run_budget_mod.RunBudget, telemetry_allowed: bool) void {
+    if (comptime !@import("build_options").learn) return;
     if (!shouldAutoLearn(main_mod.unattended, main_mod.json_mode)) return;
     const options: learn_auto.Options = .{
         .model_calls = budget.used(),
