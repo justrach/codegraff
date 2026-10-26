@@ -327,6 +327,12 @@ pub fn build(b: *std.Build) void {
     }) |asset| {
         app_mod.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
         unit_tests.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
+        const gzip_run = b.addRunArtifact(gzip_asset);
+        gzip_run.addFileArg(b.path(asset.path));
+        const gzip_import = b.fmt("{s}.gz", .{asset.import});
+        const gz = gzip_run.addOutputFileArg(gzip_import);
+        app_mod.addAnonymousImport(gzip_import, .{ .root_source_file = gz });
+        unit_tests.root_module.addAnonymousImport(gzip_import, .{ .root_source_file = gz });
     }
 
     const external_tui_test = b.addSystemCommand(&.{ "python3", "scripts/test-external-tui.py" });
