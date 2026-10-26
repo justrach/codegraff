@@ -122,3 +122,26 @@ test "promptCatalog: names + descriptions only, never bodies" {
     const zeta_at = std.mem.indexOf(u8, ordered, "zeta (personal)") orelse return error.TestUnexpectedResult;
     try std.testing.expect(alpha_at < zeta_at);
 }
+
+test "bundled skills: both parse at comptime with a trigger description" {
+    try std.testing.expectEqual(@as(usize, 5), skill_docs.builtins.len);
+    try std.testing.expectEqualStrings("skill-creator", skill_docs.builtins[0].name);
+    try std.testing.expectEqualStrings("mcp-config", skill_docs.builtins[1].name);
+    try std.testing.expectEqualStrings("mcp", skill_docs.builtins[2].name);
+    try std.testing.expectEqualStrings("jspace", skill_docs.builtins[3].name);
+    try std.testing.expectEqualStrings("workspace", skill_docs.builtins[4].name);
+    const subjects = [_][]const u8{ skill_docs.project_dir, ".mcp.json", "graff mcp add", "action=inbox", "action=use" };
+    for (skill_docs.builtins, subjects, 0..) |sk, subject, i| {
+        const doc = try @import("update_archive.zig").gunzip(std.testing.allocator, sk.gzip_doc);
+        defer std.testing.allocator.free(doc);
+        try std.testing.expect(doc.len > 500);
+        try std.testing.expect(std.mem.indexOf(u8, doc, subject) != null);
+        if (i == 1) try std.testing.expect(std.mem.indexOf(u8, doc, "/mcp trust") != null);
+        try std.testing.expect(sk.desc.len > 40); // a trigger, not a topic word
+        try std.testing.expectEqualStrings("", sk.body);
+        try std.testing.expect(sk.gzip_doc.len > 0);
+        try std.testing.expect(sk.source == .builtin);
+        try std.testing.expectEqualStrings("", sk.dir); // nothing on disk to point at
+        try std.testing.expect(std.mem.indexOfScalar(u8, sk.name, ' ') == null);
+    }
+}

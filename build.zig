@@ -315,6 +315,35 @@ pub fn build(b: *std.Build) void {
         unit_tests.root_module.addAnonymousImport(asset.import, .{ .root_source_file = gz });
     }
 
+    // Evaluate the CLI's Zig text constants on the host, including the learn
+    // conditional, then reuse the same compressor as the other runtime assets.
+    const cli_source = b.createModule(.{
+        .root_source_file = b.path("src/cli_text_source.zig"),
+        .target = b.graph.host,
+    });
+    cli_source.addOptions("build_options", opts);
+    const cli_text = b.addExecutable(.{
+        .name = "cli_text",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("scripts/cli_text.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    cli_text.root_module.addImport("cli_text_source", cli_source);
+    const text_run = b.addRunArtifact(cli_text);
+    const help_text = text_run.addOutputFileArg("cli_help.txt");
+    const changelog_text = text_run.addOutputFileArg("cli_changelog.txt");
+    for ([_]struct { name: []const u8, text: std.Build.LazyPath }{
+        .{ .name = "cli_help.gz", .text = help_text },
+        .{ .name = "cli_changelog.gz", .text = changelog_text },
+    }) |asset| {
+        const gzip_run = b.addRunArtifact(gzip_asset);
+        gzip_run.addFileArg(asset.text);
+        const gz = gzip_run.addOutputFileArg(asset.name);
+        app_mod.addAnonymousImport(asset.name, .{ .root_source_file = gz });
+        unit_tests.root_module.addAnonymousImport(asset.name, .{ .root_source_file = gz });
+    }
+
     // Bundled skills: SKILL.md playbooks compiled into every binary (embedded
     // by name in src/skill_docs.zig), so a fresh install already knows how to
     // author more skills and how to change this workspace's MCP servers.
@@ -327,6 +356,12 @@ pub fn build(b: *std.Build) void {
     }) |asset| {
         app_mod.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
         unit_tests.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
+        const gzip_run = b.addRunArtifact(gzip_asset);
+        gzip_run.addFileArg(b.path(asset.path));
+        const gzip_import = b.fmt("{s}.gz", .{asset.import});
+        const gz = gzip_run.addOutputFileArg(gzip_import);
+        app_mod.addAnonymousImport(gzip_import, .{ .root_source_file = gz });
+        unit_tests.root_module.addAnonymousImport(gzip_import, .{ .root_source_file = gz });
     }
 
     const external_tui_test = b.addSystemCommand(&.{ "python3", "scripts/test-external-tui.py" });
