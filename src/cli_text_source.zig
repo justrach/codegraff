@@ -5,6 +5,10 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.56
+    \\  • native file tools follow dependency symlinks that stay inside the workspace
+    \\  • escaping, dangling, and cyclic links remain blocked
+    \\
     \\0.302.55
     \\  • help, release history, and bundled playbooks are compressed until needed
     \\  • long home paths keep the macOS background-launch protection

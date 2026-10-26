@@ -10,6 +10,12 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.56
+
+- Native file tools can follow dependency symlinks whose targets remain inside their selected tool root. Reads, directory listings, edits, and writes share the same confinement policy.
+- Escaping, dangling, and cyclic links remain denied. Missing ordinary paths remain available for new writes, and explicitly allowed extra roots keep their own boundaries.
+- Retains all changes from v0.302.55.
+
 ## v0.302.55
 
 - Command-line help, release history, and bundled playbooks are compressed until requested, reducing duplicated runtime text without removing content or changing the build's safety settings.

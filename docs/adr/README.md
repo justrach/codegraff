@@ -328,6 +328,7 @@ record only when you need the evidence or the edge cases.
 | [0302](0302-terminal-repl-chrome-stays-in-the-terminal.md) | Refine the line REPL's terminal sinks: quiet status hierarchy, mode-first width priority and active-work emphasis, without native windows or changing the editor, engine or external fullscreen client. |
 
 | [0303](0303-terminal-markdown-and-worker-inspection.md) | The line REPL renders inline emphasis and offers a temporary mouse/keyboard `/workers` inspector over the existing bounded ACP child feed, without replacing the editor or changing engine behavior. |
+| [0304](0304-file-tools-allow-in-root-symlinks.md) | File tools allow canonical in-root symlinks, reject escaping or unresolved links, and retain lexical confinement and missing write targets; the check is not an atomic sandbox. |
 
 ## When to write one
 
