@@ -24,6 +24,15 @@ const update_target = @import("update_target.zig");
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.53
+    \\  • smaller binaries share prompt text and compress runtime resources
+    \\  • release builds keep safety checks and leave local learning optional
+    \\  • workflow synthesis keeps its catalog at the final report boundary
+    \\
+    \\0.302.52
+    \\  • clearer terminal status, Markdown emphasis, and checklist styling
+    \\  • /workers opens a read-only browser of subagent activity and reports
+    \\
     \\0.302.51
     \\  • Kimi API keys and logins work again (no more RstStream)
     \\  • a used-up Kimi plan window stops instead of retrying

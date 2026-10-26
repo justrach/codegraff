@@ -10,6 +10,14 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.53
+
+- Embedded runtime resources are compressed, prompt variants share their common text, and optional tool catalogs are built on first use to keep release binaries smaller without changing their contents.
+- Release builds retain runtime safety checks while sharing library code more efficiently. Local learning remains available in development builds rather than being included in release binaries.
+- Routed requests use stable session affinity, and usage prices follow the router's published catalog.
+- Workflow synthesis preserves its tool catalog at the final report-only boundary while refusing further tool execution.
+- Retains all changes from v0.302.52.
+
 ## v0.302.52
 
 - The terminal REPL has a clearer session strip, a subtle divider, and distinct styling for active and completed checklist items. The bare prompt, scrollback, and plain output remain intact; no native window or graphical toolkit is required.
