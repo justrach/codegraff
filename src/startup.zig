@@ -266,7 +266,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     if (flags.help_flag or flags.version_flag) {
         var hbuf: [4096]u8 = undefined;
         var hw = Io.File.stdout().writer(io, &hbuf);
-        if (flags.help_flag) try hw.interface.writeAll(cli.usage_text) else try hw.interface.print("graff {s}\n\n{s}", .{ main_mod.harness_version, cli.changelog_text });
+        try @import("cli_text.zig").print(gpa, &hw.interface, flags.help_flag, main_mod.harness_version);
         try hw.interface.flush();
         return true;
     }
