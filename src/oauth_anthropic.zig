@@ -297,9 +297,11 @@ pub fn login(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, refresh
     const verifier = helpers.b64url(arena, &random);
     if (verifier.len == 0) return error.OutOfMemory;
     const url = try authorizeUrl(arena, redirect, verifier);
-    try out.print("\nSign in with Anthropic (your browser should open it):\n\n{s}\n\nWaiting for sign-in…\n", .{url});
+    try out.print("\nSign in with Anthropic (your browser should open it):\n\n{s}\n", .{url});
+    try @import("signin_link.zig").offer(io, out, url);
+    try out.writeAll("\nWaiting for sign-in…\n");
     try out.flush();
-    helpers.openBrowser(io, url);
+    @import("signin_link.zig").open(io, url);
     while (true) {
         const stream = try server.accept(io);
         defer stream.close(io);

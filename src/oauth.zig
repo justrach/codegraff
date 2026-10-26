@@ -13,7 +13,7 @@ const accountFromIdToken = helpers.accountFromIdToken;
 const writeCodexAuth = helpers.writeCodexAuth;
 const codex_login_page_html = helpers.codex_login_page_html;
 const queryParam = helpers.queryParam;
-const openBrowser = helpers.openBrowser;
+const signin_link = @import("signin_link.zig");
 const callback = @import("oauth_callback.zig");
 
 const ansi = @import("ansi.zig");
@@ -24,8 +24,6 @@ const util = @import("util.zig");
 const strFieldObj = util.strFieldObj;
 
 const unixMs = util.unixMs;
-const kimi_catalog = @import("kimi_catalog.zig");
-const pricing = @import("pricing.zig");
 const codegraff = @import("oauth_codegraff.zig");
 const zai = @import("oauth_zai.zig");
 const credential_store = @import("credential_store.zig");
@@ -68,7 +66,7 @@ pub const takePersistError = helpers.takePersistError;
 // it — wider than the old 60s so a mid-session refresh has headroom before a
 // turn's request would otherwise cross the expiry and 401. kimi-code uses the
 // same "ensureFresh near expiry + force-refresh on 401" shape.
-const oauth_refresh_margin_s: i64 = 300;
+pub const oauth_refresh_margin_s: i64 = 300;
 // Serializes concurrent token refreshes (parallel subagents share the on-disk
 // token) so they don't race the single-use refresh_token.
 var oauth_refresh_mutex: Io.Mutex = .init;
@@ -134,9 +132,11 @@ pub fn codexLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, re
         var server = try callback.listen(io, 1455);
         defer server.deinit(io);
 
-        try out.print("\nOpen this URL to authorize (browser should open automatically):\n\n{s}\n\nwaiting for the callback on {s} …\n", .{ url, codex_redirect });
+        try out.print("\nOpen this URL to authorize (browser should open automatically):\n\n{s}\n", .{url});
+        try signin_link.offer(io, out, url);
+        try out.print("\nwaiting for the callback on {s} …\n", .{codex_redirect});
         try out.flush();
-        openBrowser(io, url);
+        signin_link.open(io, url);
 
         // Only this attempt's redirect ends the wait (oauth_callback.zig).
         var rbuf: [16 * 1024]u8 = undefined;
@@ -182,142 +182,15 @@ pub fn codexLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, re
     try out.flush();
 }
 
-// Kimi Code OAuth — device-code flow on the shared kimi-code OAuth client and
-// endpoints (auth.kimi.com). Moonshot's own hosts share this client and tell
-// themselves apart by `X-Msh-Platform`; graff reports `graff` and
-// `graff/<version>`, never the CLI's identity (#1297, ADR 0204).
-// `graff login kimi` runs the flow and writes the token
-// to ~/.kimi/credentials/graff-oauth.json; loadKimiOAuth reads it at startup
-// and refreshes in place when near expiry.
-const kimi_oauth_host = "https://auth.kimi.com";
-const kimi_device_auth_url = kimi_oauth_host ++ "/api/oauth/device_authorization";
-const kimi_token_url = kimi_oauth_host ++ "/api/oauth/token";
-const kimi_client_id = "17e5f671-d194-4dfb-9706-5516cb48c098";
-
-/// POST a form body to a Kimi OAuth endpoint; return the parsed JSON object.
-fn kimiOAuthPost(io: Io, gpa: Allocator, arena: Allocator, url: []const u8, body: []const u8) !std.json.ObjectMap {
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    var aw: Io.Writer.Allocating = .init(arena);
-    var identity_buf: [5]std.http.Header = undefined;
-    const identity = kimi_catalog.identityHeaders(&identity_buf);
-    _ = try client.fetch(.{
-        .location = .{ .url = url },
-        .method = .POST,
-        .payload = body,
-        .response_writer = &aw.writer,
-        .headers = .{
-            .content_type = .{ .override = "application/x-www-form-urlencoded" },
-            .user_agent = .{ .override = kimi_catalog.user_agent },
-        },
-        .extra_headers = identity,
-    });
-    const v = try std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always });
-    if (v != .object) return error.BadOAuthResponse;
-    return v.object;
-}
-
-fn kimiAuthPath(arena: Allocator, home: []const u8) []const u8 {
-    return credential_store.oauthPath(arena, home, ".kimi");
-}
-
-fn writeKimiAuth(io: Io, arena: Allocator, home: []const u8, access: []const u8, refresh: []const u8, expires_at: i64) !void {
-    return credential_store.writeOAuth(io, arena, home, ".kimi", access, refresh, expires_at);
-}
-
-/// `graff login kimi`: Kimi Code device-code OAuth. Prints a verification URL +
-/// user code, opens the browser, polls until the user authorizes, then stores
-/// the access/refresh token.
-pub fn kimiLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !void {
-    var obuf: [4096]u8 = undefined;
-    var ow = Io.File.stdout().writer(io, &obuf);
-    const out = &ow.interface;
-
-    const da_body = try std.fmt.allocPrint(arena, "client_id={s}", .{kimi_client_id});
-    const da = kimiOAuthPost(io, gpa, arena, kimi_device_auth_url, da_body) catch |err| {
-        try out.print("✗ Kimi device authorization failed: {t}\n", .{err});
-        try out.flush();
-        return;
-    };
-    if (da.get("error")) |e| {
-        try out.print("✗ {s}\n", .{if (e == .string) e.string else "device authorization error"});
-        try out.flush();
-        return;
-    }
-    const device_code = strFieldObj(da, "device_code") orelse return error.BadOAuthResponse;
-    const user_code = strFieldObj(da, "user_code") orelse "";
-    const verify = strFieldObj(da, "verification_uri_complete") orelse strFieldObj(da, "verification_uri") orelse "";
-    const interval: i64 = if (da.get("interval")) |iv| (if (iv == .integer) @max(iv.integer, 1) else 5) else 5;
-
-    try out.print("\nTo log in to Kimi, open this URL (browser should open automatically):\n\n  {s}\n\nand confirm the code:  {s}\n\nwaiting for authorization…\n", .{ verify, user_code });
-    try out.flush();
-    openBrowser(io, verify);
-
-    const poll_body = try std.fmt.allocPrint(arena, "client_id={s}&device_code={s}&grant_type=urn:ietf:params:oauth:grant-type:device_code", .{ kimi_client_id, device_code });
-    var attempts: usize = 0;
-    while (attempts < 360) : (attempts += 1) {
-        io.sleep(Io.Duration.fromSeconds(interval), .awake) catch {};
-        const resp = kimiOAuthPost(io, gpa, arena, kimi_token_url, poll_body) catch continue;
-        if (resp.get("access_token")) |a| if (a == .string and a.string.len > 0) {
-            const refresh = strFieldObj(resp, "refresh_token") orelse "";
-            const expires_in: i64 = if (resp.get("expires_in")) |ei| (if (ei == .integer) ei.integer else 900) else 900;
-            try writeKimiAuth(io, arena, home, a.string, refresh, @divTrunc(unixMs(io), 1000) + expires_in);
-            _ = kimi_catalog.load(io, gpa, arena, a.string);
-            try out.print("✓ logged into Kimi — wrote {s}. /model kimi selects {s}\n", .{
-                kimiAuthPath(arena, home), pricing.providerDefaultModel("kimi", "k3"),
-            });
-            try out.flush();
-            return;
-        };
-        const msg = if (resp.get("error")) |e| (if (e == .string) e.string else "") else "";
-        if (std.mem.eql(u8, msg, "authorization_pending") or std.mem.eql(u8, msg, "slow_down")) continue;
-        if (std.mem.eql(u8, msg, "expired_token")) {
-            try out.writeAll("✗ the code expired — run `graff login kimi` again\n");
-            try out.flush();
-            return;
-        }
-        if (msg.len > 0) {
-            try out.print("✗ {s}\n", .{msg});
-            try out.flush();
-            return;
-        }
-    }
-    try out.writeAll("✗ timed out waiting for authorization\n");
-    try out.flush();
-}
+// Kimi Code OAuth lives in oauth_kimi.zig (two sign-in servers, kimi.ai and kimi.com).
+const kimi = @import("oauth_kimi.zig");
+pub const kimiLogin = kimi.login;
+pub const loadKimiOAuth = kimi.load;
 
 /// #245 single-flight guard: has the token that just 401'd already been replaced
 /// on disk by another concurrent refresher? Defined in oauth_helpers.zig, where
 /// the silent codex refresh (#402) needs the same primitive.
 const supersededToken = helpers.supersededToken;
-
-/// Reads the stored Kimi OAuth access token, refreshing it in place when within
-/// 60s of expiry. Returns null if not logged in. Mirrors loadCodexAuth.
-/// `stale` is the token that just 401'd (null when not recovering from one) —
-/// see supersededToken.
-pub fn loadKimiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, force: bool, stale: ?[]const u8) ?[]const u8 {
-    const data = Io.Dir.cwd().readFileAlloc(io, kimiAuthPath(arena, home), arena, .limited(64 * 1024)) catch return null;
-    const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return null;
-    if (v != .object) return null;
-    const access = strFieldObj(v.object, "access_token") orelse return null;
-    const expires_at: i64 = if (v.object.get("expires_at")) |e| (if (e == .integer) e.integer else 0) else 0;
-    // #245: another concurrent refresher may already have replaced the token that
-    // 401'd; re-minting would rotate-kill theirs. Adopt what is on disk instead.
-    if (supersededToken(force, access, stale)) return access;
-    if (force or (expires_at != 0 and @divTrunc(unixMs(io), 1000) >= expires_at - oauth_refresh_margin_s)) {
-        if (strFieldObj(v.object, "refresh_token")) |refresh| {
-            const body = std.fmt.allocPrint(arena, "client_id={s}&grant_type=refresh_token&refresh_token={s}", .{ kimi_client_id, refresh }) catch return access;
-            const resp = kimiOAuthPost(io, gpa, arena, kimi_token_url, body) catch return access;
-            if (resp.get("access_token")) |a| if (a == .string and a.string.len > 0) {
-                const new_refresh = strFieldObj(resp, "refresh_token") orelse refresh;
-                const expires_in: i64 = if (resp.get("expires_in")) |ei| (if (ei == .integer) ei.integer else 900) else 900;
-                writeKimiAuth(io, arena, home, a.string, new_refresh, @divTrunc(unixMs(io), 1000) + expires_in) catch {};
-                return a.string;
-            };
-        }
-    }
-    return access;
-}
 
 /// #148: mid-session refresh for a login-sourced key. For the refreshable OAuth
 /// providers (kimi/xai/codex) returns the current access token, refreshed in
@@ -439,9 +312,11 @@ pub fn xaiLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !voi
     const verify = strFieldObj(da, "verification_uri_complete") orelse strFieldObj(da, "verification_uri") orelse "";
     const interval: i64 = if (da.get("interval")) |iv| (if (iv == .integer) @max(iv.integer, 1) else 5) else 5;
 
-    try out.print("\nTo log in to Grok (xAI), open this URL (browser should open automatically):\n\n  {s}\n\nand confirm the code:  {s}\n\nwaiting for authorization…\n", .{ verify, user_code });
+    try out.print("\nTo log in to Grok (xAI), open this URL (browser should open automatically):\n\n  {s}\n", .{verify});
+    try signin_link.offer(io, out, verify);
+    try out.print("\nand confirm the code:  {s}\n\nwaiting for authorization…\n", .{user_code});
     try out.flush();
-    openBrowser(io, verify);
+    signin_link.open(io, verify);
 
     const poll_body = try std.fmt.allocPrint(arena, "client_id={s}&device_code={s}&grant_type=urn:ietf:params:oauth:grant-type:device_code", .{ xai_client_id, device_code });
     var attempts: usize = 0;
@@ -571,7 +446,7 @@ test "writeKimiAuth/writeXaiAuth: both real writers store 0600 in 0700 dirs, loa
     // Drive the two production writers, not a shared helper: xAI used to open its
     // token file with a bare createFile (0644, no 0700 dirs) while kimi hardened
     // its own, and only pinning both functions keeps that from coming back.
-    try writeKimiAuth(io, arena, home, "kimi-access", "kimi-refresh", far_future);
+    try kimi.writeAuth(io, arena, home, "kimi-access", "kimi-refresh", far_future, "");
     try writeXaiAuth(io, arena, home, "xai-access", "xai-refresh", far_future);
 
     for ([_][]const u8{ ".kimi", ".xai" }) |provider_dir| {

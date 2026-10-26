@@ -12,6 +12,9 @@ current is part of cutting a release.
 
 ## v0.302.52
 
+- `graff login kimi` signs international accounts in on kimi.ai and mainland China accounts on kimi.com. graff picks the site from your saved login or your clock and locale; `graff login kimi.ai` and `graff login kimi.com` choose it outright, and token refresh goes back to the site that issued the login. Earlier logins keep refreshing on kimi.com.
+- Sign-in links are copied for you: in a terminal, `graff login` puts the link on the clipboard (over SSH, on your own terminal's clipboard) so it can be pasted into any browser or device. Over SSH and with `GRAFF_NO_BROWSER`, graff no longer opens a browser the user can't see.
+- The Kimi sign-in waits as long as the code is valid, slows down when the server asks, says when the sign-in server is unreachable, and reports a declined sign-in plainly.
 - The terminal REPL has a clearer session strip, a subtle divider, and distinct styling for active and completed checklist items. The bare prompt, scrollback, and plain output remain intact; no native window or graphical toolkit is required.
 - Operational modes stay visible before workspace metadata when a terminal pane is narrow.
 - The line REPL uses a warm amber palette with cream text and muted status metadata.

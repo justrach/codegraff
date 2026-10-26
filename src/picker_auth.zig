@@ -325,7 +325,7 @@ pub fn offerProviderAuth(
                 return;
             };
         } else if (std.mem.eql(u8, pid, "kimi")) {
-            oauth.kimiLogin(root.io, root.gpa, arena, home) catch |err| {
+            oauth.kimiLogin(root.io, root.gpa, arena, home, null) catch |err| {
                 try out.print("\xe2\x9c\x97 kimi login failed: {t}\n", .{err});
                 try out.flush();
                 return;
