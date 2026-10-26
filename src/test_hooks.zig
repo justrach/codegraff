@@ -340,6 +340,7 @@ test {
     _ = @import("mcp_connect_notice.zig"); // ADR 0230
     _ = @import("oauth_callback.zig");
     _ = @import("cache_key_tests.zig"); // ADR 0223: moved off http_headers.zig (600-line cap)
+    _ = @import("router_headers_tests.zig"); // moved off http_headers.zig (600-line cap)
     _ = @import("mcp_shapes_tests.zig"); // ADR 0225: moved off mcp_shapes.zig (600-line cap)
     _ = json_controls;
     _ = effort_route;
