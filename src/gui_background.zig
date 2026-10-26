@@ -73,13 +73,13 @@ pub fn applyTo(m: *Map, os: std.Target.Os.Tag) std.mem.Allocator.Error!void {
 pub fn install(io: Io, home: []const u8, target: []const u8) void {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const d = dir(&buf, builtin.os.tag, home, null) orelse return;
-    var text_buf: [512]u8 = undefined;
+    var text_buf: [2 * std.fs.max_path_bytes + 512]u8 = undefined;
     const text = script(&text_buf, target) catch return;
     const cwd = Io.Dir.cwd();
     cwd.createDirPath(io, d) catch return;
     var shim_dir = cwd.openDir(io, d, .{}) catch return;
     defer shim_dir.close(io);
-    var have_buf: [512]u8 = undefined;
+    var have_buf: [text_buf.len]u8 = undefined;
     if (shim_dir.readFile(io, "open", &have_buf)) |have| {
         if (std.mem.eql(u8, have, text)) return;
     } else |_| {}

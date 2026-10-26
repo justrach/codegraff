@@ -14,6 +14,8 @@ current is part of cutting a release.
 
 - Normal terminal startup keeps background connection receipts and legacy-listener diagnostics behind `GRAFF_REPL_DEBUG=1`; boot timing stays behind `GRAFF_BOOT_DEBUG=1`. Explicit `/mcp` and `graff servers` inspection remains available, and listener ownership protections are unchanged.
 - Live thinking shows `Ctrl+T collapse` and `Ctrl+T expand` beside its header. Enable it with `/thinking on`; completed terminal scrollback remains read-only.
+- Command-line help, release history, and bundled playbooks are compressed until requested, reducing duplicated runtime text without removing content or changing the build's safety settings.
+- Long home paths no longer prevent installation of the macOS background-launch shim.
 - Retains all changes from v0.302.53.
 
 ## v0.302.53
