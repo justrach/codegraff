@@ -32,6 +32,11 @@ pub fn priceFor(model: []const u8) ?ModelPrice {
 /// The gateway's live catalog wins over the baked snapshot, so a model or price
 /// it adds bills correctly without a graff release.
 pub fn priceForProvider(provider: []const u8, model: []const u8) ?ModelPrice {
+    // Vercel AI Gateway publishes its own per-route price in /models too.
+    if (std.mem.eql(u8, provider, "vercel")) {
+        if (modelInfoFor(provider, model)) |info| if (info.price) |p| return @import("catalog_price.zig").asModelPrice(info.name, p);
+        return priceFor(model);
+    }
     if (std.mem.eql(u8, provider, "codegraff")) {
         if (modelInfoFor(provider, model)) |info| if (info.price) |p| return @import("catalog_price.zig").asModelPrice(info.name, p);
         return @import("pricing_gateway.zig").find(model);

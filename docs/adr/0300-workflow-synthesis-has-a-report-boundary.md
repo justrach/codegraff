@@ -12,8 +12,12 @@ failure while losing the previous phase's evidence from the workflow result.
 
 Canonical `synthesize` phases and pipeline stages have a worker-local allowance
 of eight evidence-bearing model requests, followed by one report-only request.
-The final request omits tools and explicitly asks for a qualified summary.
-Dispatch also refuses tools at that boundary even if a model emits one anyway.
+The final request explicitly asks for a qualified summary. On OpenAI chat and
+Responses wires it retains the stable tool catalog with `tool_choice: "none"`,
+so disabling execution does not also change the cacheable prefix. Auto-only
+routes and other wires still omit tools; pre-existing text-only restrictions
+are never widened. Dispatch refuses tools at the boundary even if a model
+emits one anyway.
 The allowance stays on the worker across turn retries; it is not a renewed
 per-request or per-turn counter. Ordinary workers and root turns are unchanged.
 

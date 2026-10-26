@@ -44,3 +44,37 @@ test "GPT-5.6 and later Platform marks the stable prefix; Codex and older routes
     try std.testing.expect(std.mem.indexOf(u8, old, "prompt_cache_breakpoint") == null);
     try std.testing.expect(std.mem.indexOf(u8, old, "prompt_cache_options") == null);
 }
+
+test "workflow synthesis report keeps chat and Responses cache prefixes" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const catalog = "[{\"type\":\"function\",\"function\":{\"name\":\"ping\",\"description\":\"fixture\",\"parameters\":{\"type\":\"object\"}}}]";
+    for ([_]@import("provider.zig").Provider.Kind{ .openai, .responses }) |kind| {
+        var agent = try bodies.testAgentFor(a, "openai", kind, "gpt-5.6");
+        agent.sub = true;
+        agent.label = "synthesize";
+        agent.synthesis = .{ .enabled = true, .requests = 7 };
+        try agent.synthesis.beforeRequest(&agent);
+        const before = try agent.buildBody(catalog, true, true, true);
+        defer std.testing.allocator.free(before);
+        try agent.synthesis.beforeRequest(&agent);
+        const after = try agent.buildBody(if (agent.synthesis.keepsCatalog(&agent)) catalog else null, true, true, true);
+        defer std.testing.allocator.free(after);
+        const first = try std.json.parseFromSliceLeaky(std.json.Value, a, before, .{});
+        const report = try std.json.parseFromSliceLeaky(std.json.Value, a, after, .{});
+        try std.testing.expectEqualStrings(
+            try std.json.Stringify.valueAlloc(a, first.object.get("tools").?, .{}),
+            try std.json.Stringify.valueAlloc(a, report.object.get("tools").?, .{}),
+        );
+        try std.testing.expectEqualStrings(first.object.get("prompt_cache_key").?.string, report.object.get("prompt_cache_key").?.string);
+        const first_prefix = if (kind == .responses) first.object.get("instructions").? else first.object.get("messages").?.array.items[0];
+        const report_prefix = if (kind == .responses) report.object.get("instructions").? else report.object.get("messages").?.array.items[0];
+        try std.testing.expectEqualStrings(
+            try std.json.Stringify.valueAlloc(a, first_prefix, .{}),
+            try std.json.Stringify.valueAlloc(a, report_prefix, .{}),
+        );
+        try std.testing.expectEqualStrings("required", first.object.get("tool_choice").?.string);
+        try std.testing.expectEqualStrings("none", report.object.get("tool_choice").?.string);
+    }
+}
