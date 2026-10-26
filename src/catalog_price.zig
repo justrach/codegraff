@@ -17,8 +17,9 @@ const pricing = @import("pricing.zig");
 pub fn parse(obj: std.json.ObjectMap) ?pricing.CatalogPrice {
     const p = obj.get("pricing") orelse return null;
     if (p != .object) return null;
-    const in = perMillion(p.object.get("prompt")) orelse return null;
-    const out = perMillion(p.object.get("completion")) orelse return null;
+    // Vercel AI Gateway names the same per-token rates input/output.
+    const in = perMillion(p.object.get("prompt") orelse p.object.get("input")) orelse return null;
+    const out = perMillion(p.object.get("completion") orelse p.object.get("output")) orelse return null;
     var price: pricing.CatalogPrice = .{ .in = in, .out = out, .cache = perMillion(p.object.get("input_cache_read")) orelse in };
     if (p.object.get("long_context")) |lc| if (lc == .object) {
         const at = lc.object.get("threshold") orelse return price;
@@ -83,6 +84,16 @@ test "parse reads OpenRouter-style per-token strings as USD per 1M" {
     try std.testing.expectEqual(@as(f64, 0.825), parse(flash.value.object).?.in);
 }
 
+test "parse reads Vercel AI Gateway input/output rates" {
+    const a = std.testing.allocator;
+    const parsed = try std.json.parseFromSlice(Value, a,
+        \\{"id":"moonshotai/kimi-k3.1-pro","pricing":{"input":"0.000002","output":"0.00001","input_cache_read":"0.0000002","input_cache_write":"0.000002"}}
+    , .{});
+    defer parsed.deinit();
+    const p = parse(parsed.value.object).?;
+    try std.testing.expect(approx(p.in, 2) and approx(p.out, 10) and approx(p.cache, 0.2));
+}
+
 test "parse keeps a long-context tier, and rejects a row without both rates" {
     const a = std.testing.allocator;
     const tiered = try std.json.parseFromSlice(Value, a,
@@ -130,7 +141,10 @@ test "a gateway catalog price wins over the baked snapshot; other providers are 
     pricing.active_model_table = &.{
         .{ .provider = "codegraff", .name = "gemini-3.8-flash", .context = 1_048_576, .price = .{ .in = 1, .out = 2, .cache = 0.1 } },
         .{ .provider = "codegraff", .name = "gpt-6-sol", .context = 1_050_000 },
+        .{ .provider = "vercel", .name = "moonshotai/kimi-k3.1-pro", .context = 1_048_576, .price = .{ .in = 2, .out = 10, .cache = 0.2 } },
     };
+    const vercel = pricing.priceForProvider("vercel", "moonshotai/kimi-k3.1-pro").?;
+    try std.testing.expect(approx(vercel.in, 2) and approx(vercel.cache, 0.2));
     const live = pricing.priceForProvider("codegraff", "gemini-3.8-flash").?;
     try std.testing.expect(approx(live.in, 1) and approx(live.out, 2));
     // No catalog price: the baked gateway row still answers.

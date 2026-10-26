@@ -20,6 +20,8 @@ current is part of cutting a release.
 - Includes independent conversation forks for subagents and workflow fan-out, optional retained workers, and bounded workflow synthesis that preserves earlier findings.
 - Release binaries are built ReleaseSafe: an out-of-range index or overflow stops graff with a clear panic instead of silently corrupting state, and the stripped binaries are about 17-20% smaller.
 - `graff learn` is no longer part of the release binary, which is about 300 KB smaller for it; sessions no longer start background learning trials.
+- Release binaries are another 50-120 KB smaller: the MCP installer and two HTML pages ship gzipped, the sign-in page's images are WebP, and graff's own code on Windows drops its unwind tables like the other platforms.
+- Release binaries are about 100 KB smaller again: the system prompt's variants share one copy, subagent tool lists for gated sessions are built when first needed instead of compiled in, and the MCP task page ships gzipped.
 - Retains all changes from v0.302.51.
 
 ## v0.302.51
