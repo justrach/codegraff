@@ -83,7 +83,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
         try s.objectField("tools");
         try serde.writeOpenAITools(s, self.scratchAlloc(), async_payload); // #261 follow-up
         try s.objectField("tool_choice");
-        try s.write(if (force_tool) "required" else "auto");
+        try s.write(if (self.synthesis.keepsCatalog(self)) "none" else if (force_tool) "required" else "auto");
         try s.objectField("parallel_tool_calls");
         try s.write(true);
     }
