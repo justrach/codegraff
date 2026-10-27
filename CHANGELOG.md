@@ -10,6 +10,17 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.57
+
+- Images are typed by their bytes rather than their file extension. A WebP saved as `.png` is sent as WebP, and a file that is not PNG, JPEG, GIF, or WebP is refused before it reaches the transcript instead of failing every later turn (#1762).
+- A turn that fails before any reply records the failure in history, so resending the same prompt makes a new request instead of being skipped as a duplicate. The boundary is saved with the session (#1729).
+- Streams that carry only an error event surface the provider's error type and message on every wire instead of being retried as truncated bodies; deterministic invalid-request errors are no longer retried (#748).
+- Checklist items the user withdrew or delegated can be marked `cancelled` with a required, visible reason, and the completion gate accepts them without counting them as verified. An `ask_user` answer counts as the user's scope change (#1520).
+- ACP clients receive `session_info_update` as soon as `workspace use` moves the session, with the new folder as `_meta["graff/cwd"]`, so client-served tools can follow the switch within the same turn (#1737).
+- Retained workers remember the folder their checkpoint was saved under, so `subagent_resume` still finds it after a workspace switch; refusals now explain what happened and what to do (#1724).
+- The repeated-tool-call guard no longer counts polls of a background subagent that is still running (#1706).
+- Retains all changes from v0.302.56.
+
 ## v0.302.56
 
 - Native file tools can follow dependency symlinks whose targets remain inside their selected tool root. Reads, directory listings, edits, and writes share the same confinement policy.

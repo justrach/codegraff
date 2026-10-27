@@ -5,6 +5,12 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.57
+    \\  • images are typed by their bytes, so a mislabelled file no longer wedges a chat
+    \\  • resending a prompt after a failed request makes a new request
+    \\  • stream error events surface the provider's error instead of retrying
+    \\  • withdrawn checklist items can be cancelled with a reason
+    \\
     \\0.302.56
     \\  • native file tools follow dependency symlinks that stay inside the workspace
     \\  • escaping, dangling, and cyclic links remain blocked
