@@ -47,6 +47,10 @@ test "todos round-trip: appendTodosFromValue parses content/status/epoch, skips 
     try session.appendTodosFromValue(a, &todos, retired);
     try std.testing.expectEqual(@as(usize, 3), todos.items.len);
     try std.testing.expect(todos.items[2].retired);
+    // #1520: a cancelled item's reason survives resume; its absence reads as none.
+    try session.appendTodosFromValue(a, &todos, try std.json.parseFromSliceLeaky(Value, a, "[{\"content\":\"publish\",\"status\":\"cancelled\",\"reason\":\"delegated to the release session\"}]", .{}));
+    try std.testing.expectEqualStrings("delegated to the release session", todos.items[3].reason);
+    try std.testing.expectEqualStrings("", todos.items[0].reason);
 }
 
 test "goalFromValue: legacy string -> active; object round-trips; paused stays paused (#223)" {

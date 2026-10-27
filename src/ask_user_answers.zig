@@ -13,6 +13,13 @@ const Entry = struct { turn: u64 = 0, len: usize = 0, buf: [max_bytes]u8 = undef
 var ring: [slots]Entry = @splat(.{});
 var next: usize = 0;
 var lock: std.atomic.Value(bool) = .init(false);
+/// Every answer ever recorded, never reset (#1520): an answer is a user scope
+/// change that todo_write's cancel guard must see, like a newer user message.
+var answered: std.atomic.Value(u64) = .init(0);
+
+pub fn answeredCount() u64 {
+    return answered.load(.acquire);
+}
 
 fn acquire() void {
     while (lock.swap(true, .acquire)) std.atomic.spinLoopHint();
@@ -35,6 +42,7 @@ pub fn record(turn: u64, answer: []const u8) void {
     ring[next] = .{ .turn = turn, .len = n };
     @memcpy(ring[next].buf[0..n], answer[0..n]);
     next = (next + 1) % slots;
+    _ = answered.fetchAdd(1, .acq_rel);
 }
 
 pub fn reset() void {

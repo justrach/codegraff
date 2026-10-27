@@ -588,7 +588,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("goal_persist_tests.zig");
     _ = @import("agent_render_cleanup.zig");
     _ = .{ @import("goal_flow.zig"), @import("shell_identity.zig") };
-    _ = @import("goal_todo.zig");
+    _ = .{ @import("goal_todo.zig"), @import("todo_cancel.zig") };
     _ = @import("goal_pacing.zig");
     _ = .{ @import("presence_accord.zig"), @import("peer_idle.zig"), @import("acp_idle.zig"), @import("presence_chan.zig"), @import("presence_record.zig"), @import("daddy.zig"), @import("peer_inbox_content_test.zig"), @import("peer_inbox_failure_test.zig"), @import("peer_inbox_storage_test.zig"), @import("peer_inbox_sequence_test.zig"), @import("peer_inbox_snapshot_test.zig") };
     _ = .{ @import("acp_agents.zig"), @import("repo_context_tests.zig") };
