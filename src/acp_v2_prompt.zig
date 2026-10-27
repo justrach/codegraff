@@ -23,7 +23,7 @@ pub fn promptTurn(d: *engine.Dispatch, arena: Allocator, w: *Io.Writer, req: pro
     // JSON-RPC error is still the right answer.
     const config_before = engine.configOptions(d, arena) catch |err|
         return engine.respondError(w, req, proto.err_internal, @errorName(err));
-    const workspace_before = acp_workspace.snapshot(d.workspace, arena);
+    acp_workspace.snapshot(d.workspace);
     // Before slash handling: an agent's room line must not run as a command.
     const text = try @import("acp_room.zig").frame(arena, req.params, try proto.flattenPrompt(arena, prompt));
     var id_buf: [48]u8 = undefined;
@@ -35,7 +35,7 @@ pub fn promptTurn(d: *engine.Dispatch, arena: Allocator, w: *Io.Writer, req: pro
 
     const outcome = run(d, arena, w, sid, text, prompt);
     engine.emitConfigChange(d, arena, w, sid, config_before) catch {};
-    acp_workspace.emitChange(d.workspace, arena, w, sid, workspace_before) catch {};
+    acp_workspace.emitChange(d.workspace, arena, w, sid) catch {};
     try engine.emitMeter(d, w, sid);
     switch (outcome) {
         .stop => |stop| try v2.writeIdle(w, sid, stop),
