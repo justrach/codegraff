@@ -199,7 +199,7 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
     if (d.bind_session) |bind| bind(d.ctx, sid);
     @import("acp_citations.zig").endTurn(sid); // a failed turn must not leave a marker open
     const config_before = configOptions(d, arena) catch |err| return turnError(d, w, req, err);
-    const workspace_before = acp_workspace.snapshot(d.workspace, arena);
+    acp_workspace.snapshot(d.workspace);
     // Before slash handling: an agent's room line must not run as a command.
     const flat = try flattenPrompt(arena, if (obj) |o| o.get("prompt") else null);
     const text = try @import("acp_room.zig").frame(arena, req.params, flat);
@@ -211,7 +211,7 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
         if (reply) |plain| {
             if (plain.len > 0) try writeSessionUpdate(w, sid, try @import("acp_t3.zig").slashReply(arena, plain));
             emitConfigChange(d, arena, w, sid, config_before) catch |config_err| return turnError(d, w, req, config_err);
-            try acp_workspace.emitChange(d.workspace, arena, w, sid, workspace_before);
+            try acp_workspace.emitChange(d.workspace, arena, w, sid);
             try emitMeter(d, w, sid);
             if (resend_key) |key| resent.finish(key, 0, "end_turn");
             return respondStop(d, w, req, sid, "end_turn");
@@ -224,7 +224,7 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
     };
     if (final.len > 0) try writeSessionUpdate(w, sid, final);
     emitConfigChange(d, arena, w, sid, config_before) catch |config_err| return turnError(d, w, req, config_err);
-    try acp_workspace.emitChange(d.workspace, arena, w, sid, workspace_before);
+    try acp_workspace.emitChange(d.workspace, arena, w, sid);
     try emitMeter(d, w, sid);
     const extra = if (extra_cancelled) |f| f() else false;
     const stop: []const u8 = if (cancel_flag.load(.acquire) or extra) "cancelled" else "end_turn";

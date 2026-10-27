@@ -135,6 +135,60 @@ test "native image read stages pixels and tool checkpoint sends them without a u
     try std.testing.expect(reg.pending_image == null);
 }
 
+test "#1737: after workspace use, an image in the new tree attaches; one outside both trees is refused" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest; // enterPath is POSIX-only
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const policy = @import("harness_policy.zig");
+    const switcher = @import("workspace_switch.zig");
+    const main_mod = @import("main.zig");
+    var launch = std.testing.tmpDir(.{});
+    defer launch.cleanup();
+    var other = std.testing.tmpDir(.{});
+    defer other.cleanup();
+    var outside = std.testing.tmpDir(.{});
+    defer outside.cleanup();
+    try other.dir.writeFile(io, .{ .sub_path = "shot.png", .data = tiny_png });
+    try outside.dir.writeFile(io, .{ .sub_path = "shot.png", .data = tiny_png });
+    var orig = try Io.Dir.cwd().openDir(io, ".", .{});
+    defer orig.close(io);
+    defer _ = std.posix.system.fchdir(orig.handle);
+    const saved = .{ main_mod.g_cwd_display, main_mod.g_worktree_branch };
+    defer {
+        main_mod.g_cwd_display = saved[0];
+        main_mod.g_worktree_branch = saved[1];
+        switcher.deinitDisplay(a);
+        @import("tool_spill.zig").resetForTest();
+    }
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const other_abs = try arena.allocator().dupe(u8, buf[0..try other.dir.realPath(io, &buf)]);
+    const outside_abs = try arena.allocator().dupe(u8, buf[0..try outside.dir.realPath(io, &buf)]);
+    if (std.posix.system.fchdir(launch.dir.handle) != 0) return error.ChdirFailed;
+    _ = try switcher.enterPath(a, io, arena.allocator(), other_abs);
+
+    // The native tools' own confinement now roots at the switched tree.
+    try std.testing.expect(policy.confinedPath("shot.png") and policy.noSymlinkEscape(io, "shot.png", null));
+    const resolved = try @import("codedbpro_paths.zig").sessionAbs(a, io, null, "shot.png");
+    defer a.free(resolved);
+    try std.testing.expect(std.mem.startsWith(u8, resolved, other_abs));
+    var reg = @import("mcp.zig").Registry.empty(a, io);
+    defer reg.deinit();
+    var ctx: ToolCtx = undefined;
+    ctx.registry = &reg;
+    ctx.provider = .{ .id = "test", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 100000 };
+    const out = (try stage(a, io, ctx, resolved, "shot.png", tiny_png.len)).?;
+    defer a.free(out.text);
+    try std.testing.expect(!out.is_error);
+    try std.testing.expect(reg.pending_image != null);
+
+    // Outside both the launch tree and the switched tree: still refused.
+    const escaped = try std.fmt.allocPrint(arena.allocator(), "{s}/shot.png", .{outside_abs});
+    try std.testing.expect(!policy.confinedPath(escaped) and !policy.noSymlinkEscape(io, escaped, null));
+    try std.testing.expect(!policy.confinedPath("../outside/shot.png"));
+}
+
 /// 1x1 PNG a fake resizer "downscales" to.
 const tiny_png = "\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x04\x00\x00\x00\xb5\x1c\x0c\x02\x00\x00\x00\x0b\x49\x44\x41\x54\x78\xda\x63\xfc\xff\x1f\x00\x03\x03\x02\x00\xef\x9a\x0f\x5b\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82";
 
