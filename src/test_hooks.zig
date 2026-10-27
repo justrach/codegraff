@@ -378,6 +378,7 @@ test {
     _ = @import("commands_resume.zig"); // #697: --resume SOURCE --branch DEST parser
     _ = @import("session_list.zig"); // #712: device-wide saved-session listing
     _ = @import("turn_dedup.zig"); // #714: identical user turns do not replay
+    _ = @import("turn_dedup_tests.zig"); // #1729: a failed turn's retry is a new ask
     _ = @import("net_efficiency_test.zig");
     _ = @import("codex_tool_search.zig"); // hosted tool_search on gpt-5.4+ Codex
     _ = @import("acp_tool_view.zig"); // #1287/#1289: ACP locations and edit diffs

@@ -498,6 +498,7 @@ pub fn run(ctx: *Ctx) !void {
                 if (recovery_meter >= ctx.root.provider.compactAt()) {
                     ctx.root.autocompact(recovery_meter);
                 }
+                try @import("turn_dedup.zig").settleFailedTurn(ctx.root, ctx.arena, err); // #1729: a retry of this prompt is a new ask
                 session.saveSession(ctx.root, ctx.arena, ctx.root.session_name) catch {};
                 continue;
             },
@@ -508,6 +509,7 @@ pub fn run(ctx: *Ctx) !void {
                 } else {
                     ctx.root.say("[turn aborted: {t}]\n", .{e}) catch {};
                 }
+                try @import("turn_dedup.zig").settleFailedTurn(ctx.root, ctx.arena, e);
                 session.saveSession(ctx.root, ctx.arena, ctx.root.session_name) catch {};
                 continue;
             },
