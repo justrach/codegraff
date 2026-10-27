@@ -88,6 +88,13 @@ test "stage: a codex model receives ACP images as the next request's input_image
     try std.testing.expect(std.mem.indexOf(u8, wire, vision_queue.attached_note) != null); // image-only prompt
     try std.testing.expectEqual(@as(u8, 0), codex.pending_image_len);
 
+    // #1762: WebP bytes labelled image/png go out as image/webp.
+    const mislabeled = try std.json.parseFromSliceLeaky(Value, a,
+        \\[{"type":"image","data":"UklGRiQAAABXRUJQVlA4IA==","mimeType":"image/png"}]
+    , .{});
+    try std.testing.expectEqual(@as(usize, 1), stage(&codex, mislabeled));
+    try std.testing.expectEqualStrings("image/webp", codex.pending_image.?.media_type);
+
     var text_only = testAgent(a, "openrouter", "qwen3.8-27b");
     try std.testing.expectEqual(@as(usize, 0), stage(&text_only, prompt));
     try std.testing.expectEqual(@as(u8, 0), text_only.pending_image_len);
