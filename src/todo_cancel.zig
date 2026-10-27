@@ -52,7 +52,9 @@ pub fn reasonOf(item: Value, prior: ?TodoItem) []const u8 {
 
 /// The rejection for a write that cancels an item without a reason, or null
 /// when every cancelled item has one. `priors` is aligned with the usable
-/// items (those with a content string), as applyTodoWrite builds it.
+/// items (those with a content string), as applyTodoWrite builds it. An item
+/// already cancelled before reasons existed (a resumed session) is not a new
+/// cancel, so re-listing it unchanged never rejects the write.
 pub fn missingReason(arena: std.mem.Allocator, items: []const Value, priors: []const ?TodoItem) !?[]const u8 {
     var k: usize = 0;
     for (items) |item| {
@@ -60,6 +62,7 @@ pub fn missingReason(arena: std.mem.Allocator, items: []const Value, priors: []c
         const prior = priors[k];
         k += 1;
         if (!isCancel(statusOf(item)) or reasonOf(item, prior).len > 0) continue;
+        if (prior) |p| if (isCancel(p.status)) continue;
         return try std.fmt.allocPrint(arena, "todo_write rejected; the list is unchanged. The cancelled item \"{s}\" needs a short \"reason\" saying who withdrew the work or where it went (for example \"user withdrew publication\" or \"delegated to the release session\"). Resend the full list with a reason on every cancelled item.", .{content});
     }
     return null;
@@ -122,6 +125,9 @@ test "#1520 missingReason names the first cancelled item without a reason" {
     try std.testing.expect(std.mem.indexOf(u8, msg, "\"tag the release\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, msg, "unchanged") != null);
     try std.testing.expect((try missingReason(ar, list.array.items[0..3], priors[0..2])) == null);
+    // Cancelled before reasons existed (a resumed session): re-listing it is not a new cancel.
+    const legacy = [_]?TodoItem{ null, .{ .content = "tag the release", .status = "cancelled" } }; // aligned with usable items
+    try std.testing.expect((try missingReason(ar, &.{ list.array.items[0], list.array.items[1], list.array.items[3] }, &legacy)) == null);
 }
 
 test "#1520 an ask_user answer changes the request fingerprint" {
