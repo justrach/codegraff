@@ -472,7 +472,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             .no_vision => try out.print("⚠ {s} can't see images — switch to a vision model first, e.g. /model claude-opus-4-8 or /model gpt-6-sol\n", .{root.provider.model}),
             .ok => |o| try out.print("📎 attached {s} ({s}) — sent with your next message\n", .{ path, vision.fmtBytes(mbuf[0..16], o.bytes) }),
             // Sized, distinct lines instead of "missing, or larger than 5MB" (#349).
-            .too_large, .not_found, .read_error => try out.print("{s}\n", .{vision.stageMessage(&mbuf, staged, path)}),
+            .too_large, .not_found, .read_error, .unsupported => try out.print("{s}\n", .{vision.stageMessage(&mbuf, staged, path)}),
         }
         try out.flush();
         return true;

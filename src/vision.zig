@@ -89,7 +89,8 @@ pub fn visionCapable(p: Provider) bool {
     return visionModel(p.model) or std.mem.eql(u8, p.id, "openai") or std.mem.eql(u8, p.id, "codex");
 }
 
-/// Guess an image media type from a file extension (default image/png).
+/// Guess an image media type from a file extension (default image/png). A
+/// label only: anything sent to a provider is typed by `image_sniff` (#1762).
 pub fn imageMediaType(path: []const u8) []const u8 {
     if (std.ascii.endsWithIgnoreCase(path, ".jpg") or std.ascii.endsWithIgnoreCase(path, ".jpeg")) return "image/jpeg";
     if (std.ascii.endsWithIgnoreCase(path, ".gif")) return "image/gif";
@@ -167,6 +168,8 @@ pub const StageResult = union(enum) {
     not_found,
     /// It was there and the right size, but the read or the encode failed.
     read_error,
+    /// The bytes are not PNG, JPEG, GIF or WebP, whatever the name says (#1762).
+    unsupported,
 
     pub fn isOk(self: StageResult) bool {
         return std.meta.activeTag(self) == .ok;
@@ -201,15 +204,13 @@ pub fn stageImagePath(root: *Agent, path: []const u8) StageResult {
 
     const arena = root.arena;
     const data = readStagedBytes(io, arena, fit.path) orelse return .read_error;
+    // Media type from the bytes we actually encode, never the name (#1762): a
+    // WebP saved as .png must go out as image/webp, and a downscale temp is
+    // whatever `sips` wrote. Labelled with the path the USER named.
+    const media = @import("image_sniff.zig").sniff(data) orelse return .unsupported;
     const enc = std.base64.standard.Encoder;
     const b64 = arena.alloc(u8, enc.calcSize(data.len)) catch return .read_error;
     _ = enc.encode(b64, data);
-    // Media type from the file we actually encoded, but labelled with the path
-    // the USER named — a temp file's random name means nothing to them. A
-    // downscale step is PNG because `sipsResize` forces `-s format png` AND
-    // `fitToBudget` re-checks the magic bytes; without both, `sips -Z` would
-    // keep the source encoding and we'd send JPEG bytes as `image/png`.
-    const media = imageMediaType(fit.path);
     @import("vision_queue.zig").stage(root, .{ .media_type = media, .b64 = b64, .label = arena.dupe(u8, path) catch path });
     return .{ .ok = .{ .bytes = fit.bytes, .media_type = media } };
 }
@@ -229,6 +230,7 @@ pub fn stageMessage(buf: []u8, r: StageResult, what: []const u8) []const u8 {
         ) catch "that image is too large to send",
         .not_found => std.fmt.bufPrint(buf, "can't find {s}", .{what}) catch "can't find that image",
         .read_error => std.fmt.bufPrint(buf, "couldn't read {s}", .{what}) catch "couldn't read that image",
+        .unsupported => std.fmt.bufPrint(buf, "{s} is not a PNG, JPEG, GIF or WebP image; convert it first", .{what}) catch "that file is not a supported image",
     };
 }
 
@@ -323,10 +325,13 @@ pub fn mcpImageBlock(block: Value) ?McpImageBlock {
     // mimeType is required by the spec; default rather than drop an otherwise
     // usable image, but refuse a mime that is not an image at all.
     const mime = if (block.object.get("mimeType")) |m| (if (m == .string) m.string else "") else "";
-    const media_type = if (mime.len == 0) "image/png" else mime;
-    if (!std.mem.startsWith(u8, media_type, "image/")) return null;
+    const declared = if (mime.len == 0) "image/png" else mime;
+    if (!std.mem.startsWith(u8, declared, "image/")) return null;
     const bytes = std.base64.standard.Decoder.calcSizeForSlice(data.string) catch return null;
     if (bytes == 0 or bytes > max_mcp_image_bytes) return null;
+    // #1762: a server (or ACP client) that mislabels a WebP as image/png
+    // would otherwise wedge the chat; the bytes win when we recognize them.
+    const media_type = @import("image_sniff.zig").resolveDeclared(data.string, declared);
     return .{ .media_type = media_type, .b64 = data.string, .bytes = bytes };
 }
 
