@@ -34,9 +34,8 @@ pub const TodoItem = struct {
     epoch: u64 = 0, // the goal epoch that authored this item (#318); 0 = no goal
     retired: bool = false, // a LATER user ask retired this finished item (#394): kept as the session's archive, invisible to every epoch-scoped query
     ask_fp: u64 = 0, // #1545: fingerprint of the user request this item was first written under; "cancelled" needs a newer one (0 = legacy/restored)
-
-    /// Completed or cancelled: no longer open work. A cancelled item is parked,
-    /// never verified (goal_verify.taskVerified still refuses it).
+    reason: []const u8 = "", // #1520: why a "cancelled" item was withdrawn or delegated; required, shown with it (todo_cancel.zig)
+    /// Completed or cancelled: no longer open work. A cancelled item is parked, never verified (goal_verify.taskVerified refuses it).
     pub fn closed(t: TodoItem) bool {
         return std.mem.eql(u8, t.status, "completed") or std.mem.eql(u8, t.status, "cancelled");
     }

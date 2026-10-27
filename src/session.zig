@@ -177,6 +177,7 @@ fn fingerprint(root: *Agent, name: []const u8) u64 {
         f.text(t.status);
         f.num(t.epoch);
         f.flag(t.retired); // #394: retiring a finished checklist is a real state change, so it must reach disk
+        f.text(t.reason); // #1520
     }
     if (root.session_parent) |parent| f.text(parent) else f.flag(false);
     f.text(root.session_title orelse sessionTitle(root));
@@ -319,6 +320,10 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
             try s.objectField("retired");
             try s.write(true);
         }
+        if (t.reason.len > 0) { // #1520: why a cancelled item was withdrawn; absent otherwise
+            try s.objectField("reason");
+            try s.write(t.reason);
+        }
         try s.endObject();
     }
     try s.endArray();
@@ -410,7 +415,8 @@ pub fn appendTodosFromValue(arena: Allocator, todos: *std.ArrayList(agent_mod.To
         // Absent in sessions written before #394: those items are live, and the
         // first new ask retires them if they turn out to be a finished list.
         const retired = if (item.object.get("retired")) |r| (r == .bool and r.bool) else false;
-        try todos.append(arena, .{ .content = content, .status = status, .epoch = epoch, .retired = retired });
+        const reason = if (item.object.get("reason")) |r| (if (r == .string) r.string else "") else "";
+        try todos.append(arena, .{ .content = content, .status = status, .epoch = epoch, .retired = retired, .reason = reason });
     }
 }
 
