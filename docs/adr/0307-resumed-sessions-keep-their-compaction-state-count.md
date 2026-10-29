@@ -32,6 +32,14 @@ restored history has the same size and digest and the session's provider and
 model match. A changed state, a different model or provider, or a missing or
 malformed record leaves the bytes/16 estimate in place.
 
+The count is learned from every Responses reply that carries usage, chained
+or not. With `previous_response_id` (the WebSocket delta, chatgpt-new's
+default transport) OpenAI bills every earlier input token in the chain as
+input, so `input_tokens` covers the whole context, which is how graff's meter
+and Codex's own occupancy already read it. Learning only from unchained
+requests left a WebSocket session uncounted until a compaction forced a full
+resend, so its reload still fell back to bytes/16.
+
 ## Consequences
 
 A resumed session reports the occupancy the provider last counted, and does not

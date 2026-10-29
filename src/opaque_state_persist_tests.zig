@@ -197,3 +197,20 @@ test "a session saved after a counted request loads without a forced compaction 
     try std.testing.expect(root.effectiveContextTokens() < 100_000);
     try std.testing.expect(!root.inputOverCompactThreshold());
 }
+
+test "a chained response teaches the compaction-state count (#1686)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    context_tokens.resetStateCountsForTest();
+    defer context_tokens.resetStateCountsForTest();
+
+    // previous_response_id still bills the whole chain as input (OpenAI), so a
+    // WebSocket delta's usage counts the state like a full request's does.
+    var root = agent(try history(a, 'A'));
+    root.codex_prev_id = "resp_1";
+    const response = try std.json.parseFromSliceLeaky(Value, a, "{\"usage\":{\"input_tokens\":80000}}", .{});
+    @import("opaque_state_usage.zig").learn(&root, response.object);
+    try std.testing.expect(context_tokens.calibratedState(state_len) != null);
+    try std.testing.expect(!root.inputOverCompactThreshold());
+}
