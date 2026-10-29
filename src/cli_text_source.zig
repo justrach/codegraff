@@ -5,6 +5,10 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.58
+    \\  • ACP startup and model discovery no longer wait on slow model-catalog hosts
+    \\  • note_constraint states its 240-byte limit up front
+    \\
     \\0.302.57
     \\  • images are typed by their bytes, so a mislabelled file no longer wedges a chat
     \\  • resending a prompt after a failed request makes a new request

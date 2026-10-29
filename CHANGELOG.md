@@ -10,6 +10,12 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.58
+
+- ACP startup and `graff/models` no longer wait on slow model-catalog requests. A cached catalog, fresh or stale, loads immediately and refreshes in the background; only a provider with no cache waits, at most 800ms in total. A cold DNS lookup or slow host can no longer make a client report that model discovery timed out. The Kimi account catalog is now cached for 6 hours.
+- `note_constraint` states its 240-byte limit in the tool description and the `text` field, so a model learns it before writing a rule rather than from a rejection (#1764).
+- Retains all changes from v0.302.57.
+
 ## v0.302.57
 
 - Images are typed by their bytes rather than their file extension. A WebP saved as `.png` is sent as WebP, and a file that is not PNG, JPEG, GIF, or WebP is refused before it reaches the transcript instead of failing every later turn (#1762).
