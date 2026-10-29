@@ -332,6 +332,8 @@ record only when you need the evidence or the edge cases.
 | [0305](0305-cancelled-checklist-items-carry-a-reason.md) | A `cancelled` todo needs a short reason or the write is rejected whole; it stays listed with that reason, stops blocking completion and never counts as verified. A verification item can be cancelled after a newer user message or an answered `ask_user`. |
 | [0306](0306-model-catalogs-never-hold-startup.md) | Boot and `graff/models` never wait on a catalog GET past a budget: cached catalogs activate now and refresh behind on detached workers whose only output is the disk cache; only uncached ones wait, together, up to 800ms. |
 
+| [0302](0302-sse-idle-watchdogs-follow-body-byte-progress.md) | SSE idle watchdogs observe partial body-byte progress, while separate unfinished-event time and size bounds preserve recovery. |
+
 ## When to write one
 
 Write an ADR when a decision is load-bearing and non-obvious: it was reached

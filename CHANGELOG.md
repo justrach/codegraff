@@ -10,6 +10,12 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.59
+
+- Large, steadily arriving SSE events no longer trigger false stream stalls or replay a request merely because the next newline has not arrived (#1765).
+- Genuine stalled streams still time out. Unfinished events have bounded assembly time and size, and local assembly-limit failures are not retried.
+- Retains all changes from v0.302.58.
+
 ## v0.302.58
 
 - ACP startup and `graff/models` no longer wait on slow model-catalog requests. A cached catalog, fresh or stale, loads immediately and refreshes in the background; only a provider with no cache waits, at most 800ms in total. A cold DNS lookup or slow host can no longer make a client report that model discovery timed out. The Kimi account catalog is now cached for 6 hours.

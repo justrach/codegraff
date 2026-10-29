@@ -577,7 +577,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("agent_ws_steer.zig");
     _ = @import("agent_ws_signal.zig");
     _ = .{ @import("agent_ws_prewarm.zig"), @import("agent_ws_headers.zig") };
-    _ = .{ @import("http2_pool.zig"), @import("agent_stream_h2.zig"), @import("agent_stream_h2_transport_test.zig") }; // h2 stream path, and graff's request/response contract over the pinned http-zig
+    _ = .{ @import("http2_pool.zig"), @import("agent_stream_h2.zig"), @import("agent_stream_h2_transport_test.zig"), @import("agent_stream_progress_test.zig"), @import("agent_stream_h2_progress_test.zig"), @import("stream_read_progress.zig") }; // transport contracts and partial-event byte progress
     _ = @import("acp_preauth.zig"); // credential-free ACP loop must stay in the test root
     _ = .{ @import("acp_protocol.zig"), @import("acp_v2.zig"), @import("acp_v2_prompt.zig"), @import("acp_session_load.zig"), @import("acp_session_fork.zig"), @import("session_fork.zig"), @import("acp_elicit.zig"), @import("hot_context.zig"), @import("history_translate.zig"), @import("mcp_notify.zig"), @import("mcp_wait.zig"), @import("mcp_pages.zig"), @import("mcp_mrtr.zig"), @import("ask_user_args.zig"), @import("mcp_add.zig"), @import("mcp_lazy.zig"), @import("mcp_share.zig"), @import("acp_room.zig"), @import("mcp_catalog.zig"), @import("mcp_watch.zig"), @import("acp_engine_test.zig"), @import("subagent_mimo_tests.zig"), @import("mimo_effort_tests.zig"), @import("gateway_picker_catalog.zig"), @import("ask_user_answers.zig"), @import("job_class.zig"), @import("startup_claim.zig") };
     _ = @import("task_outcome.zig"); // goal-outcome telemetry events

@@ -5,6 +5,10 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.59
+    \\  • steadily arriving partial SSE events no longer trigger false stalls or replay
+    \\  • genuine stalls still time out and unfinished events remain bounded
+    \\
     \\0.302.58
     \\  • ACP startup and model discovery no longer wait on slow model-catalog hosts
     \\  • note_constraint states its 240-byte limit up front
