@@ -538,3 +538,14 @@ test "xAI defaults to the Responses wire; GRAFF_XAI_WIRE=chat opts out (#502)" {
     try std.testing.expectEqual(Provider.Kind.responses, oai.kind);
     try std.testing.expect(std.mem.indexOf(u8, oai.url, "api.openai.com") != null);
 }
+
+test "GRAFF_CHATGPT_URL keeps chatgpt-new discovery on the override origin" {
+    const saved = provider.g_chatgpt_url_override;
+    defer provider.g_chatgpt_url_override = saved;
+    const spec = provider.specFor("chatgpt-new").?;
+    provider.g_chatgpt_url_override = null;
+    try std.testing.expectEqualStrings(spec.models_url, modelsUrl(spec));
+    provider.g_chatgpt_url_override = "http://127.0.0.1:4321/v1/responses";
+    try std.testing.expectEqualStrings("http://127.0.0.1:4321/v1/models", modelsUrl(spec));
+    try std.testing.expectEqualStrings(provider.specFor("codex").?.models_url, modelsUrl(provider.specFor("codex").?));
+}

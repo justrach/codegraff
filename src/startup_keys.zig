@@ -265,6 +265,11 @@ fn missingCredentials() noreturn {
 /// failures without manufacturing a provider. All successful resolution and
 /// model-selection behavior is shared with resolveKeys above.
 pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytype, model_flag: ?[]const u8, worker_provider_hint: ?[]const u8) !?ResolvedKeys {
+    // GRAFF_CHATGPT_URL: chatgpt-new's Responses endpoint for localhost mocks,
+    // read before Keys.build and the startup catalog load so neither goes live.
+    if (environ_map.get("GRAFF_CHATGPT_URL")) |v| {
+        if (v.len > 0) provider_mod.g_chatgpt_url_override = v;
+    }
     var keys: provider_mod.Keys = .{ .values = undefined };
     for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
         value.* = environ_map.get(spec.env_key);

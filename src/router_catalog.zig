@@ -86,7 +86,19 @@ pub fn dynamic(spec: provider.ProviderSpec) bool {
 }
 
 pub fn modelsUrl(spec: provider.ProviderSpec) []const u8 {
-    return if (dynamic(spec)) spec.models_url else "";
+    if (!dynamic(spec)) return "";
+    // GRAFF_CHATGPT_URL keeps discovery on the mock's origin, never the live API.
+    if (std.mem.eql(u8, spec.id, "chatgpt-new")) if (provider.g_chatgpt_url_override) |url| return overrideModelsUrl(url);
+    return spec.models_url;
+}
+
+var override_models_buf: [256]u8 = undefined;
+
+/// scheme://host[:port] of `url` + /v1/models; `url` itself when unparsable.
+fn overrideModelsUrl(url: []const u8) []const u8 {
+    const scheme_end = std.mem.indexOf(u8, url, "://") orelse return url;
+    const path_start = std.mem.indexOfScalarPos(u8, url, scheme_end + 3, '/') orelse url.len;
+    return std.fmt.bufPrint(&override_models_buf, "{s}/v1/models", .{url[0..path_start]}) catch url;
 }
 
 fn validModelId(id: []const u8) bool {
