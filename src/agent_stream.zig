@@ -30,7 +30,8 @@ const providerUserAgent = http.providerUserAgent;
 const capture5xxBodyStream = http.capture5xxBodyStream;
 const WatchdogFired = http.WatchdogFired;
 const sendHeadTask = http.sendHeadTask;
-const streamLineTask = http.streamLineTask;
+const stream_progress = @import("stream_read_progress.zig");
+const streamLineTask = stream_progress.lineTask;
 const deadlineStallTask = http.deadlineStallTask;
 const watchdogError = http.watchdogError;
 const http_stall = @import("http_stall.zig");
@@ -252,7 +253,8 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
             // #680: widened by each stall reconnect this request has already made.
             // A terminal finish_reason may precede usage; never extend that completed response's trailer wait.
             const stall_budget = if (saw_done) http_stall.interFrameBudgetMs(http.stream_stall_ms, got_body, prose_open, self.stall.widen) else policy.interFrameBudgetMs(got_body, prose_open, self.stall.widen);
-            rsel.concurrent(.line, streamLineTask, .{ reader, &line.writer }) catch {
+            var progress = stream_progress.Progress.init(self.io, .{ .idle_ms = stall_budget });
+            rsel.concurrent(.line, streamLineTask, .{ reader, &line.writer, &progress }) catch {
                 // #56 Fix-B: pool exhausted — no idle-stall watchdog for this read.
                 // A bare blocking streamDelimiterEnding here is the last forever-hang:
                 // on a half-open socket it never returns and nothing can trip it. Fail
@@ -266,7 +268,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
                 if (req.connection) |conn| conn.closing = true;
                 return error.StreamStalled;
             };
-            rsel.concurrent(.stall, deadlineStallTask, .{ self.io, orig_tio != null, stall_budget }) catch {
+            rsel.concurrent(.stall, stream_progress.Progress.watch, .{ &progress, orig_tio != null }) catch {
                 const r = rsel.await() catch |e| {
                     rsel.cancelDiscard();
                     return e;
@@ -308,7 +310,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
                     if (w == .deadline) self.stall.tripped_ms = stall_budget; // #680: the turn-ending message reports THIS wait
                     if (w == .deadline) sink.emit(self.io, .{ .transport_aborted = .{ .reason = .stalled, .turn_ending = false } }) else sink.emit(self.io, .{ .stream_aborted = .interrupted });
                     if (req.connection) |conn| conn.closing = true;
-                    return watchdogError(w, error.StreamStalled);
+                    return watchdogError(w, progress.deadlineError());
                 },
             }
         }

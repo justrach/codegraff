@@ -326,6 +326,8 @@ record only when you need the evidence or the edge cases.
 
 | [0301](0301-failed-requests-settle-the-pending-turn.md) | Exhausted request retries leave a truthful failure boundary in history so an identical prompt can run after reconnecting, including after save/load; duplicate-host protection and bounded retries stay unchanged. |
 
+| [0302](0302-sse-idle-watchdogs-follow-body-byte-progress.md) | SSE idle watchdogs observe partial body-byte progress, while separate unfinished-event time and size bounds preserve recovery. |
+
 ## When to write one
 
 Write an ADR when a decision is load-bearing and non-obvious: it was reached
