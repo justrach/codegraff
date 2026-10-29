@@ -274,6 +274,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     if (err == error.Interrupted) return error.Interrupted;
                     if (err == error.Steered) if (@import("steer_now.zig").supersede(self)) continue :rebuild;
                     if (err == error.Canceled) return error.Canceled;
+                    if (err == error.StreamTooLong or err == error.StreamEventDeadline) return err; // deterministic event bounds: replay cannot repair them
                     if (quota.transportCode(err)) |code| {
                         if (try quota.handle(self, "", code, "", &auth_refreshed)) continue;
                         return err;
