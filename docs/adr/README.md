@@ -331,6 +331,7 @@ record only when you need the evidence or the edge cases.
 | [0304](0304-file-tools-allow-in-root-symlinks.md) | File tools allow canonical in-root symlinks, reject escaping or unresolved links, and retain lexical confinement and missing write targets; the check is not an atomic sandbox. |
 | [0305](0305-cancelled-checklist-items-carry-a-reason.md) | A `cancelled` todo needs a short reason or the write is rejected whole; it stays listed with that reason, stops blocking completion and never counts as verified. A verification item can be cancelled after a newer user message or an answered `ask_user`. |
 | [0306](0306-model-catalogs-never-hold-startup.md) | Boot and `graff/models` never wait on a catalog GET past a budget: cached catalogs activate now and refresh behind on detached workers whose only output is the disk cache; only uncached ones wait, together, up to 800ms. |
+| [0307](0307-resumed-sessions-keep-their-compaction-state-count.md) | A session saves the provider's count of its compaction state, scoped to provider, model, size and digest; loading reapplies it before rebasing the meter, so a restart neither inflates the meter nor forces a compaction. |
 
 | [0302](0302-sse-idle-watchdogs-follow-body-byte-progress.md) | SSE idle watchdogs observe partial body-byte progress, while separate unfinished-event time and size bounds preserve recovery. |
 
