@@ -6,11 +6,15 @@ const http = @import("http.zig");
 const Agent = @import("agent.zig").Agent;
 const cancel_source = @import("cancel_source.zig");
 
+/// Largest single streamed event either transport assembles. A Responses
+/// compaction item carries its opaque state whole; real ones exceed 60 MB.
+pub const max_event_bytes: usize = 128 * 1024 * 1024;
+
 pub const Limits = struct {
     idle_ms: u64,
     // A peer dripping bytes cannot hold an unfinished event open forever.
     total_ms: u64 = 15 * 60 * 1000,
-    max_bytes: usize = 128 * 1024 * 1024,
+    max_bytes: usize = max_event_bytes,
 };
 
 pub fn expired(start_ms: i64, last_ms: i64, now_ms: i64, limits: Limits) bool {
