@@ -339,6 +339,7 @@ test {
     _ = @import("piped_paste.zig"); // ADR 0231
     _ = @import("mcp_connect_notice.zig"); // ADR 0230
     _ = @import("image_sniff.zig"); // #1762: image media type from the bytes
+    _ = @import("catalog_bounded.zig"); // model discovery: catalog GETs never hold boot past a budget
     _ = @import("oauth_callback.zig");
     _ = @import("cache_key_tests.zig"); // ADR 0223: moved off http_headers.zig (600-line cap)
     _ = @import("router_headers_tests.zig"); // moved off http_headers.zig (600-line cap)

@@ -1,9 +1,10 @@
 //! Model discovery for Codegraff, Anthropic, xAI, and the optional workspace router.
 //!
-//! Workspace router cache: `.graff/.config.router`. xAI prefers a live GET but
-//! boot activates any disk cache, waits at most 500ms to recache, else
-//! refreshes in the background. `/models` is the blocking freshness moment.
-//! Catalog failures never prevent startup. Baked pricing.zig rows are offline fallback.
+//! Workspace router cache: `.graff/.config.router`. Boot activates any disk
+//! cache now (fresh, or stale and refreshed behind it; xAI always refreshes)
+//! and waits at most `catalog_bounded.startup_budget` only when there is none.
+//! `/models` is the blocking freshness moment. Catalog failures never prevent
+//! startup. Baked pricing.zig rows are offline fallback.
 
 const std = @import("std");
 const Io = std.Io;
@@ -13,6 +14,7 @@ const Value = std.json.Value;
 const root = @import("main.zig");
 const catalog_selection = @import("catalog_selection.zig");
 const credential_store = @import("credential_store.zig");
+const catalog_bounded = @import("catalog_bounded.zig");
 const kimi_catalog = @import("kimi_catalog.zig");
 const pricing = @import("pricing.zig");
 const pricing_db = @import("pricing_db.zig"); // #557: LiteLLM price/context overlay, hydrated on the same beats as these catalogs
@@ -27,43 +29,18 @@ const catalog_page_limit = 16 * 1024 * 1024; // Full provider lists may be much 
 var attempted: [provider.provider_specs.len]bool = @splat(false);
 var additional_attempted = false;
 
-/// xAI boot uses any disk cache; live GET is budgeted, else background. `/models` still blocks.
-pub const live_budget_ms: i64 = 500;
+/// xAI refreshes behind even a fresh cache; `/models` still blocks.
 pub fn alwaysLive(spec: provider.ProviderSpec) bool {
     return std.mem.eql(u8, spec.id, "xai");
 }
 
-var bg_refresh: Io.Future(void) = undefined;
-var bg_refresh_live = false;
-var bg_done: Io.Event = .unset;
-
-fn refreshCacheTask(io: Io, gpa: Allocator, home: []u8, spec: provider.ProviderSpec, key: []u8, source: provider.Keys.CredentialSource) void {
-    defer gpa.free(home);
-    defer gpa.free(key);
-    defer bg_done.set(io);
+/// Fetch the live list into the disk cache; true when it was written. Runs
+/// on a `catalog_bounded` worker with its own Io and allocator.
+pub fn fetchToCache(io: Io, gpa: Allocator, home: []const u8, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource) bool {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
-    const snapshot = fetch(io, gpa, arena_state.allocator(), spec, key, source) orelse return;
-    writeCache(io, arena_state.allocator(), home, spec, snapshot.models);
-}
-
-fn startBackgroundRefresh(io: Io, gpa: Allocator, home: []const u8, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource) void {
-    if (bg_refresh_live) return;
-    const home_d = gpa.dupe(u8, home) catch return;
-    const key_d = gpa.dupe(u8, key) catch {
-        gpa.free(home_d);
-        return;
-    };
-    bg_done.reset();
-    const args = .{ io, gpa, home_d, spec, key_d, source };
-    bg_refresh = io.concurrent(refreshCacheTask, args) catch io.async(refreshCacheTask, args);
-    bg_refresh_live = true;
-}
-
-pub fn shutdown(io: Io) void {
-    if (!bg_refresh_live) return;
-    bg_refresh.await(io);
-    bg_refresh_live = false;
+    const snapshot = fetch(io, gpa, arena_state.allocator(), spec, key, source) orelse return false;
+    return writeCache(io, arena_state.allocator(), home, spec, snapshot.models);
 }
 
 pub const Snapshot = struct {
@@ -323,13 +300,20 @@ pub fn cacheDocument(io: Io, arena: Allocator, spec: provider.ProviderSpec, mode
     return aw.writer.buffered();
 }
 
-fn writeCache(io: Io, arena: Allocator, home: []const u8, spec: provider.ProviderSpec, models: []const pricing.ModelInfo) void {
-    const document = cacheDocument(io, arena, spec, models) orelse return;
+fn writeCache(io: Io, arena: Allocator, home: []const u8, spec: provider.ProviderSpec, models: []const pricing.ModelInfo) bool {
+    const document = cacheDocument(io, arena, spec, models) orelse return false;
     for ([_][]const u8{ dirPath(arena, home, spec), flatPath(arena, home, spec) }) |path| {
         if (path.len == 0) continue;
         credential_store.replaceFile(io, Io.Dir.cwd(), path, document, .default_file) catch continue;
-        return;
+        return true;
     }
+    return false;
+}
+
+/// Activate the spec's disk cache, whatever its age.
+pub fn activateCached(io: Io, arena: Allocator, home: []const u8, spec: provider.ProviderSpec) bool {
+    const snapshot = cachedSnapshot(io, arena, home, spec) orelse return false;
+    return activate(arena, spec, snapshot.models);
 }
 
 fn cachedSnapshot(io: Io, arena: Allocator, home: []const u8, spec: provider.ProviderSpec) ?Snapshot {
@@ -362,7 +346,7 @@ fn loadSpec(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, spec: pr
     };
     if (fetch(io, gpa, arena, spec, key, source)) |snapshot| {
         if (activate(arena, spec, snapshot.models)) {
-            if (home.len != 0 or isAdditional(spec)) writeCache(io, arena, home, spec, snapshot.models);
+            if (home.len != 0 or isAdditional(spec)) _ = writeCache(io, arena, home, spec, snapshot.models);
             return true;
         }
     }
@@ -437,7 +421,7 @@ fn finishFetch(io: Io, arena: Allocator, home: []const u8, outcome: FetchOutcome
     if (outcome.models.len > 0) {
         const kept = retainModels(arena, outcome.models) orelse return;
         if (activate(arena, outcome.spec, kept) and outcome.write_cache)
-            writeCache(io, arena, home, outcome.spec, kept);
+            _ = writeCache(io, arena, home, outcome.spec, kept);
         return;
     }
     if (cachedSnapshot(io, arena, home, outcome.spec)) |snapshot|
@@ -451,20 +435,9 @@ fn cacheFresh(io: Io, arena: Allocator, home: []const u8, spec: provider.Provide
     return age >= 0 and age <= cache_ttl_ms and activate(arena, spec, snapshot.models);
 }
 
-const KimiOutcome = struct {
-    fetch: kimi_catalog.Fetch = .{},
-    arena_state: ?std.heap.ArenaAllocator = null,
-};
-
-fn kimiFetchTask(io: Io, gpa: Allocator, access: []const u8) KimiOutcome {
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    return .{
-        .fetch = kimi_catalog.fetch(io, gpa, arena_state.allocator(), access),
-        .arena_state = arena_state,
-    };
-}
-
-fn spawnKimi(io: Io, gpa: Allocator, arena: Allocator, keys: provider.Keys, model_flag: ?[]const u8, saved: ?serde.SavedModel) ?Io.Future(KimiOutcome) {
+/// Kimi's account catalog: any cache activates now (a stale one refreshes
+/// behind it); with none, a live fetch joins the boot batch. Returns its slot.
+fn startKimi(io: Io, batch: *catalog_bounded.Batch, arena: Allocator, home: []const u8, keys: provider.Keys, model_flag: ?[]const u8, saved: ?serde.SavedModel) ?usize {
     if (!catalog_selection.startupMayUse(keys, "kimi", model_flag, saved)) return null;
     if (!kimi_catalog.claimAttempt()) return null;
     const access = keys.get("kimi") orelse "";
@@ -472,55 +445,65 @@ fn spawnKimi(io: Io, gpa: Allocator, arena: Allocator, keys: provider.Keys, mode
         kimi_catalog.commit(arena, &.{}, "baked fallback — no Kimi login");
         return null;
     }
-    const args = .{ io, gpa, access };
-    return io.concurrent(kimiFetchTask, args) catch io.async(kimiFetchTask, args);
+    const cache = kimi_catalog.cached(io, arena, home) orelse return batch.spawn(.kimi, home, access);
+    kimi_catalog.commit(arena, cache.rows, "cached account catalog");
+    if (!cache.fresh) catalog_bounded.detach(.kimi, home, access);
+    return null;
 }
 
-/// Startup catalog load. Fresh disk caches activate inline; live GETs run
-/// concurrently so boot pays the slowest host, not the sum. xAI activates any
-/// cache immediately, waits `live_budget_ms` only when there is none, and
-/// otherwise refreshes the cache file in the background.
+/// Startup catalog load. Never waits on a host that already has a disk
+/// cache: fresh caches activate as they are, stale ones activate and refresh
+/// behind. Hosts with no cache fetch concurrently under one budget, so boot
+/// pays at most `startup_budget` however slow DNS or TLS is; a fetch that
+/// misses it still caches its list for the next process.
 pub fn ensureForStartup(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys, model_flag: ?[]const u8, saved: ?serde.SavedModel) void {
-    var kimi_task = spawnKimi(io, gpa, arena, keys, model_flag, saved);
-    defer if (kimi_task) |*fut| {
-        var outcome = fut.await(io);
-        defer if (outcome.arena_state) |*ta| ta.deinit();
-        kimi_catalog.commit(arena, outcome.fetch.rows, outcome.fetch.source);
-    };
-
-    var futures: [provider.provider_specs.len + 1]?Io.Future(FetchOutcome) = @splat(null);
+    _ = gpa;
+    var batch: catalog_bounded.Batch = .{};
+    const kimi_slot = startKimi(io, &batch, arena, home, keys, model_flag, saved);
+    var slots: [provider.provider_specs.len + 1]?usize = @splat(null);
     for (provider.provider_specs, 0..) |spec, index| {
         if (!dynamic(spec) or !catalog_selection.startupMayUse(keys, spec.id, model_flag, saved)) continue;
         if (attempted[index]) continue;
         const key = keys.get(spec.id) orelse continue;
         if (key.len == 0) continue;
         attempted[index] = true;
-        const source = keys.source(spec.id);
-        if (cacheFresh(io, arena, home, spec)) {
-            if (alwaysLive(spec)) startBackgroundRefresh(io, gpa, home, spec, key, source);
-            continue;
-        }
-        if (alwaysLive(spec)) {
-            startBackgroundRefresh(io, gpa, home, spec, key, source);
-            bg_done.waitTimeout(io, .{ .duration = .{ .raw = .fromMilliseconds(live_budget_ms), .clock = .awake } }) catch {};
-            if (cachedSnapshot(io, arena, home, spec)) |snapshot| _ = activate(arena, spec, snapshot.models);
-            continue;
-        }
-        futures[index] = spawnFetch(io, gpa, home, spec, key, source);
+        slots[index] = startSpec(io, &batch, arena, home, spec, key, keys.source(spec.id));
     }
     if (provider.additional_router) |spec| {
         if (catalog_selection.startupMayUse(keys, spec.id, model_flag, saved) and !additional_attempted) {
             if (keys.get(spec.id)) |key| if (key.len != 0) {
                 additional_attempted = true;
-                if (!cacheFresh(io, arena, home, spec))
-                    futures[provider.provider_specs.len] = spawnFetch(io, gpa, home, spec, key, keys.source(spec.id));
+                slots[provider.provider_specs.len] = startSpec(io, &batch, arena, home, spec, key, keys.source(spec.id));
             };
         }
     }
-    for (&futures) |*maybe| {
-        const outcome = if (maybe.*) |*fut| fut.await(io) else continue;
-        finishFetch(io, arena, home, outcome);
+    if (batch.len == 0) return;
+    batch.wait(io, catalog_bounded.startup_budget);
+    if (batch.fetched(kimi_slot)) {
+        if (kimi_catalog.cached(io, arena, home)) |fresh| kimi_catalog.commit(arena, fresh.rows, "live account catalog");
+    } else if (kimi_slot != null) kimi_catalog.commit(arena, &.{}, "baked fallback — live catalog still loading");
+    for (provider.provider_specs, 0..) |spec, index|
+        if (batch.fetched(slots[index])) {
+            _ = activateCached(io, arena, home, spec);
+        };
+    if (provider.additional_router) |spec| if (batch.fetched(slots[provider.provider_specs.len])) {
+        _ = activateCached(io, arena, home, spec);
+    };
+}
+
+fn startSpec(io: Io, batch: *catalog_bounded.Batch, arena: Allocator, home: []const u8, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource) ?usize {
+    const job: catalog_bounded.Job = .{ .router = .{ .spec = spec, .source = source } };
+    // The workspace router caches under `.graff`, not home.
+    const cache_home = if (isAdditional(spec)) "." else home;
+    if (cacheFresh(io, arena, home, spec)) {
+        if (alwaysLive(spec)) catalog_bounded.detach(job, cache_home, key);
+        return null;
     }
+    if (activateCached(io, arena, home, spec)) {
+        catalog_bounded.detach(job, cache_home, key);
+        return null;
+    }
+    return batch.spawn(job, cache_home, key);
 }
 
 /// An explicit /models listing is the freshness moment: hit every keyed
@@ -530,7 +513,6 @@ pub fn ensureForStartup(io: Io, gpa: Allocator, arena: Allocator, home: []const 
 /// remains the offline fallback, and each live list is re-cached for the
 /// next boot. Returns how many providers were pinged.
 pub fn refreshForListing(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys) usize {
-    shutdown(io);
     pricing_db.ensure(io, gpa, arena, home, true); // the same freshness moment covers the price sheet, network and all
     var futures: [provider.provider_specs.len + 1]?Io.Future(FetchOutcome) = @splat(null);
     var pinged: usize = 0;

@@ -330,6 +330,7 @@ record only when you need the evidence or the edge cases.
 | [0303](0303-terminal-markdown-and-worker-inspection.md) | The line REPL renders inline emphasis and offers a temporary mouse/keyboard `/workers` inspector over the existing bounded ACP child feed, without replacing the editor or changing engine behavior. |
 | [0304](0304-file-tools-allow-in-root-symlinks.md) | File tools allow canonical in-root symlinks, reject escaping or unresolved links, and retain lexical confinement and missing write targets; the check is not an atomic sandbox. |
 | [0305](0305-cancelled-checklist-items-carry-a-reason.md) | A `cancelled` todo needs a short reason or the write is rejected whole; it stays listed with that reason, stops blocking completion and never counts as verified. A verification item can be cancelled after a newer user message or an answered `ask_user`. |
+| [0306](0306-model-catalogs-never-hold-startup.md) | Boot and `graff/models` never wait on a catalog GET past a budget: cached catalogs activate now and refresh behind on detached workers whose only output is the disk cache; only uncached ones wait, together, up to 800ms. |
 
 ## When to write one
 

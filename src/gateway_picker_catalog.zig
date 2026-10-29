@@ -2,6 +2,7 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const catalog_bounded = @import("catalog_bounded.zig");
 const router = @import("router_catalog.zig");
 const provider = @import("provider.zig");
 const util = @import("util.zig");
@@ -29,54 +30,36 @@ test "gateway refresh is skipped only by explicit false" {
     try std.testing.expect(!requested(parsed.value));
 }
 
-pub fn refresh(gpa: Allocator, io: Io, arena: Allocator, keys: provider.Keys) void {
+pub fn refresh(io: Io, arena: Allocator, home: []const u8, keys: provider.Keys) void {
     const key = keys.get("codegraff") orelse return;
     const now = util.unixMs(io);
     if (last_attempt) |previous| if (now >= previous and now - previous < 30_000) return;
     last_attempt = now;
     const spec = provider.specFor("codegraff") orelse return;
-    _ = refreshAt(gpa, io, arena, spec, key, keys.source("codegraff"), .fromMilliseconds(500));
+    _ = refreshAt(io, arena, home, spec, key, keys.source("codegraff"), .fromMilliseconds(500));
 }
 
-pub fn refreshAt(gpa: Allocator, io: Io, arena: Allocator, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource, deadline: Io.Duration) bool {
-    const buffer = gpa.alloc(u8, 2 * 1024 * 1024) catch return false;
-    defer gpa.free(buffer);
-    var writer: Io.Writer = .fixed(buffer);
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    var headers_buffer: [4]std.http.Header = undefined;
-    var scratch = std.heap.ArenaAllocator.init(gpa);
-    defer scratch.deinit();
-    const headers = router.catalogHeaders(scratch.allocator(), spec, key, source, &headers_buffer) orelse return false;
-    const Done = union(enum) { fetched: bool, timeout: void };
-    var done_buffer: [2]Done = undefined;
-    var select: Io.Select(Done) = .init(io, &done_buffer);
-    select.concurrent(.timeout, delay, .{ io, deadline }) catch return false;
-    select.concurrent(.fetched, fetch, .{ &client, spec.models_url, headers, &writer }) catch {
-        select.cancelDiscard();
-        return false;
-    };
-    const first = select.await() catch {
-        select.cancelDiscard();
-        return false;
-    };
-    select.cancelDiscard(); // join the HTTP worker before releasing its storage
-    if (first != .fetched or !first.fetched) return false;
-    const snapshot = router.parseModels(arena, spec.id, writer.buffered()) orelse return false;
-    return router.activate(arena, spec, snapshot.models);
+/// Fetch into the disk cache on a detached worker and activate it only if it
+/// lands within `deadline`. Cancelling an HTTP worker joins it, and one parked
+/// in DNS or TLS held `graff/models` for seconds past this deadline; a late
+/// worker is abandoned instead and leaves the cache for the next caller.
+pub fn refreshAt(io: Io, arena: Allocator, home: []const u8, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource, deadline: Io.Duration) bool {
+    var batch: catalog_bounded.Batch = .{};
+    const slot = batch.spawn(.{ .router = .{ .spec = spec, .source = source } }, home, key);
+    batch.wait(io, deadline);
+    if (!batch.fetched(slot)) return false;
+    return router.activateCached(io, arena, home, spec);
 }
 
-fn delay(io: Io, duration: Io.Duration) void {
-    io.sleep(duration, .awake) catch {};
-}
-
-fn fetch(client: *std.http.Client, url: []const u8, headers: []const std.http.Header, writer: *Io.Writer) bool {
-    const result = client.fetch(.{ .location = .{ .url = url }, .method = .GET, .extra_headers = headers, .response_writer = writer }) catch return false;
-    return result.status == .ok;
-}
+/// The 50ms call's worker is abandoned and keeps reading its spec after the test.
+var test_url_buf: [64]u8 = undefined;
 
 test "gateway picker refresh uses live aliases and preserves its snapshot on timeout" {
     const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(std.testing.io, ".", gpa);
+    defer gpa.free(home);
     const io = std.testing.io;
     const pricing = @import("pricing.zig");
     const saved = pricing.active_model_table;
@@ -90,16 +73,16 @@ test "gateway picker refresh uses live aliases and preserves its snapshot on tim
     defer group.cancel(io);
     try group.concurrent(io, answer, .{ io, &server });
     var spec = provider.specFor("codegraff").?;
-    spec.models_url = try std.fmt.allocPrint(arena.allocator(), "http://127.0.0.1:{d}/v1/models", .{server.socket.address.getPort()});
-    try std.testing.expect(refreshAt(gpa, io, arena.allocator(), spec, "test-key", .environment, .fromSeconds(1)));
+    spec.models_url = try std.fmt.bufPrint(&test_url_buf, "http://127.0.0.1:{d}/v1/models", .{server.socket.address.getPort()});
+    try std.testing.expect(refreshAt(io, arena.allocator(), home, spec, "test-key", .environment, .fromSeconds(1)));
     try std.testing.expect(pricing.providerModelInTable("codegraff", "new-gateway-alias"));
     const before = pricing.active_model_table;
     for (0..2) |_| {
-        try std.testing.expect(!refreshAt(gpa, io, arena.allocator(), spec, "test-key", .environment, .fromSeconds(1)));
+        try std.testing.expect(!refreshAt(io, arena.allocator(), home, spec, "test-key", .environment, .fromSeconds(1)));
         try std.testing.expectEqual(before.ptr, pricing.active_model_table.ptr);
     }
     const started = Io.Timestamp.now(io, .awake).nanoseconds;
-    try std.testing.expect(!refreshAt(gpa, io, arena.allocator(), spec, "test-key", .environment, .fromMilliseconds(50)));
+    try std.testing.expect(!refreshAt(io, arena.allocator(), home, spec, "test-key", .environment, .fromMilliseconds(50)));
     try std.testing.expect(Io.Timestamp.now(io, .awake).nanoseconds - started < 2 * std.time.ns_per_s);
     try std.testing.expectEqual(before.ptr, pricing.active_model_table.ptr);
 }
