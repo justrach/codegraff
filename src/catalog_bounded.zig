@@ -52,7 +52,7 @@ const Task = struct {
     }
 
     fn run(t: *Task) void {
-        var threaded: Io.Threaded = .init(alloc, .{});
+        var threaded = privateThreaded();
         defer threaded.deinit();
         const io = threaded.io();
         t.ok = switch (t.job) {
@@ -63,6 +63,17 @@ const Task = struct {
         if (t.state.cmpxchgStrong(running, finished, .acq_rel, .acquire) != null) t.destroy();
     }
 };
+
+/// A worker's own Io. `Threaded.init` installs a process-wide no-op SIGIO and
+/// SIGPIPE handler, and `deinit` restores the action it replaced. A worker
+/// outlives the Io around it, so its restore can reinstate the default action
+/// another Io had replaced, and that Io's next cancellation SIGIO kills the
+/// process. The worker leaves the no-op handler installed instead.
+fn privateThreaded() Io.Threaded {
+    var threaded: Io.Threaded = .init(alloc, .{});
+    threaded.have_signal_handler = false;
+    return threaded;
+}
 
 fn start(job: Job, home: []const u8, key: []const u8) ?*Task {
     if (builtin.single_threaded or home.len == 0 or key.len == 0) return null;
@@ -167,6 +178,23 @@ test "a batch that misses its budget returns on time and abandons the fetch" {
     batch.wait(io, .fromMilliseconds(100));
     try std.testing.expect(Io.Timestamp.now(io, .awake).nanoseconds - started < std.time.ns_per_s);
     try std.testing.expect(!batch.fetched(slot));
+}
+
+test "a finished worker never reinstates the default SIGIO action" {
+    const posix = std.posix;
+    if (builtin.single_threaded or posix.Sigaction == void or !@hasField(posix.SIG, "IO")) return error.SkipZigTest;
+    const default: posix.Sigaction = .{ .handler = .{ .handler = posix.SIG.DFL }, .mask = posix.sigemptyset(), .flags = 0 };
+    var saved: posix.Sigaction = undefined;
+    posix.sigaction(.IO, &default, &saved);
+    defer posix.sigaction(.IO, &saved, null);
+    // The worker starts before any other Io and finishes after one exists.
+    var worker = privateThreaded();
+    var session: Io.Threaded = .init(std.testing.allocator, .{});
+    worker.deinit();
+    var now: posix.Sigaction = undefined;
+    posix.sigaction(.IO, null, &now);
+    session.deinit();
+    try std.testing.expect(now.handler.handler != posix.SIG.DFL);
 }
 
 test "a batch reports nothing it could not start" {
