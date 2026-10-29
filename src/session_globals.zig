@@ -13,7 +13,6 @@ pub fn release(gpa: Allocator, io: Io) void {
     presence.retire(io);
     @import("presence_accord.zig").stop(io);
     presence.deinit(gpa);
-    @import("router_catalog.zig").shutdown(io);
     // #1196: filled by the first successful MCP tool result.
     @import("mcp_shapes.zig").shutdown(io);
 }

@@ -156,10 +156,11 @@ pub fn specFor(id: []const u8) ?ProviderSpec {
 pub const kimi_native_url = "https://api.kimi.com/coding/v1/chat/completions";
 pub const kimi_anthropic_url = "https://api.kimi.com/coding/v1/messages?beta=true";
 
-/// Endpoint overrides (GRAFF_CODEX_URL / GRAFF_XAI_URL / GRAFF_ZAI_URL /
-/// GRAFF_VERCEL_URL). Parsed before Keys.build so startup, /model, and
-/// session restore share one URL.
+/// Endpoint overrides (GRAFF_CODEX_URL / GRAFF_CHATGPT_URL / GRAFF_XAI_URL /
+/// GRAFF_ZAI_URL / GRAFF_VERCEL_URL). Parsed before Keys.build so startup,
+/// /model, and session restore share one URL.
 pub var g_codex_url_override: ?[]const u8 = null;
+pub var g_chatgpt_url_override: ?[]const u8 = null;
 pub var g_xai_url_override: ?[]const u8 = null;
 pub var g_zai_url_override: ?[]const u8 = null;
 pub var g_vercel_url_override: ?[]const u8 = null;
@@ -170,6 +171,7 @@ pub const vercel_v1_url = "https://ai-gateway.vercel.sh/v1/chat/completions";
 fn resolvedUrl(spec: ProviderSpec, model: []const u8) []const u8 {
     if (std.mem.eql(u8, spec.id, "kimi") and pricing.kimiProtocol(model) == .anthropic) return kimi_anthropic_url;
     if (std.mem.eql(u8, spec.id, "codex")) return g_codex_url_override orelse spec.url;
+    if (std.mem.eql(u8, spec.id, "chatgpt-new")) return g_chatgpt_url_override orelse spec.url;
     if (std.mem.eql(u8, spec.id, "xai")) return g_xai_url_override orelse if (g_xai_responses) xai_responses_url else spec.url;
     if (std.mem.eql(u8, spec.id, "zai")) return g_zai_url_override orelse spec.url;
     if (std.mem.eql(u8, spec.id, "vercel")) return g_vercel_url_override orelse spec.url;

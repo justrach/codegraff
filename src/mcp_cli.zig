@@ -294,7 +294,8 @@ pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, en
         }
         const exe = try std.process.executablePathAlloc(io, arena);
         var argv: std.ArrayList([]const u8) = .empty;
-        try argv.appendSlice(arena, &.{ "python3", "-c", @embedFile("mcp_installer"), "--binary", exe });
+        const installer = try @import("update_archive.zig").gunzip(arena, @embedFile("mcp_installer.gz"));
+        try argv.appendSlice(arena, &.{ "python3", "-c", installer, "--binary", exe });
         try argv.appendSlice(arena, args[1..]);
         const result = try @import("process_runner.zig").runCappedWithOptions(arena, io, argv.items, 16384, 4096, 30000, .{ .environ_map = environ_map });
         var buffer: [4096]u8 = undefined;
@@ -517,6 +518,13 @@ pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, en
     if (verify_after) try checkSaved(io, gpa, arena, home, name, &out.interface);
     try out.interface.writeAll("  a running session connects it before its next request; otherwise `/mcp trust` if startup is waiting for consent.\n");
     try out.interface.flush();
+}
+test "graff mcp install: the bundled installer inflates to the whole script" {
+    const script = try @import("update_archive.zig").gunzip(std.testing.allocator, @embedFile("mcp_installer.gz"));
+    defer std.testing.allocator.free(script);
+    // No line ending in the needle: a Windows checkout may have CRLF.
+    try std.testing.expect(std.mem.startsWith(u8, script, "#!/usr/bin/env python3"));
+    try std.testing.expect(std.mem.indexOf(u8, script, "'--binary', required=True") != null);
 }
 test "trustedMcpEntry: only the exact companion shape skips the consent gate" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);

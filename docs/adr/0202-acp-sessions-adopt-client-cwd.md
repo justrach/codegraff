@@ -33,8 +33,14 @@ build. The top-level `cwd` field is removed.
 No other folder is searched.
 
 When `/workspace use` or the `workspace` tool moves the root session, the
-prompt reply is preceded by `session_info_update` whose `_meta` carries the
-new value.
+client gets `session_info_update` whose `_meta` carries the new
+`graff/worktree` value and `graff/cwd`, the session's absolute working
+directory (so a switch into a main checkout or a non-graff tree is still
+addressable). The tool's switch is reported right after its tool result,
+before the model's next call, not at turn end: a client that serves tools
+resolving paths against the session's folder (image attachment) must follow
+it within the turn (#1737). A slash switch is reported before the prompt
+reply. Each switch is reported once.
 
 `graff worktree` exits 1 when it refuses or fails and 2 when it does nothing
 (`kept`), so hosts can branch on the status instead of the text.

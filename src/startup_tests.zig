@@ -42,7 +42,6 @@ test "resolveKeys does not load Kimi/xAI OAuth credentials for an explicit unrel
     const saved_models = pricing.active_model_table;
     defer pricing.active_model_table = saved_models;
     defer @import("http2_pool.zig").shutdown(io);
-    defer @import("router_catalog.zig").shutdown(io);
 
     // This test checks credential scope, so seed a fresh local catalog. It
     // must not turn a synthetic key into a real provider GET during tier 1.

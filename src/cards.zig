@@ -1,4 +1,4 @@
-//! Subagent cards (#51): launch/done one-liners (`↯ scout` / `✓ scout`) and
+//! Subagent cards (#51): launch/done one-liners (`● Agent` / `✓ Agent`) and
 //! the inspect-report writer (`.graff/subagents/<id>.md`). The sa- id is not
 //! foreground UI (ADR 0021). Split out of main.zig (600-line goal).
 
@@ -60,7 +60,7 @@ pub fn subagentId(buf: []u8, ordinal: u32, label: []const u8, prompt: []const u8
     return std.fmt.bufPrint(buf, "sa-{d:0>3}-{s}", .{ ordinal, hex }) catch buf[0..0];
 }
 
-/// One-line launch: `↯ scout   {label}`. The sa- id and the boxed prompt are
+/// One-line launch: `● Agent   {label}  /workers`. The sa- id and prompt are
 /// not foreground UI (ADR 0021); `/debug` still names the id.
 pub fn subagentLaunchCard(arena: Allocator, id: []const u8, sprite: []const u8, label: []const u8, kind: []const u8, activity: []const u8) void {
     _ = sprite;
@@ -69,16 +69,16 @@ pub fn subagentLaunchCard(arena: Allocator, id: []const u8, sprite: []const u8, 
     if (root.json_mode) return;
     var aw: Io.Writer.Allocating = .init(arena);
     const w = &aw.writer;
-    const shown = collapseWs(label);
+    const shown = collapseWs(@import("line_repl_disclosure.zig").sanitized(arena, label) catch "Agent");
     if (@import("repl.zig").g_debug) {
-        w.print("  {s}↯ scout{s}   {s}{s}{s}  [{s}]\n", .{ style.dim, style.reset, style.bold, shown, style.reset, id }) catch return;
+        w.print("  {s}● Agent{s}   {s}{s}{s}  [{s}]\n", .{ style.accent, style.reset, style.bold, shown, style.reset, id }) catch return;
     } else {
-        w.print("  {s}↯ scout{s}   {s}{s}{s}\n", .{ style.dim, style.reset, style.bold, shown, style.reset }) catch return;
+        w.print("  {s}● Agent{s}   {s}{s}{s}  {s}/workers{s}\n", .{ style.accent, style.reset, style.bold, shown, style.reset, style.muted, style.reset }) catch return;
     }
     tick_gate.workerLine(aw.writer.buffered());
 }
 
-/// One-line settle: `✓ scout   {label}` (or ✗). Cache hit rides when the
+/// One-line settle: `✓ Agent   {label}` (or ✗). Cache hit rides when the
 /// worker reported usage (ADR 0018 for scouts). Elapsed/tools/inspect path
 /// stay in `.graff/subagents/<id>.md`.
 pub fn subagentDoneCard(
@@ -100,10 +100,10 @@ pub fn subagentDoneCard(
     if (root.json_mode) return;
     var aw: Io.Writer.Allocating = .init(arena);
     const w = &aw.writer;
-    const shown = collapseWs(label);
+    const shown = collapseWs(@import("line_repl_disclosure.zig").sanitized(arena, label) catch "Agent");
     const mark: []const u8 = if (ok) "✓" else "✗";
     const mc: []const u8 = if (ok) style.green else style.red;
-    w.print("  {s}{s} scout{s}   {s}", .{ mc, mark, style.reset, shown }) catch return;
+    w.print("  {s}{s} Agent{s}   {s}", .{ mc, mark, style.reset, shown }) catch return;
     if (context_tokens > 0) {
         const pct = @min((cache_read *| 100) / context_tokens, 100);
         w.print("  {s}cache {d}%{s}", .{ style.dim, pct, style.reset }) catch return;

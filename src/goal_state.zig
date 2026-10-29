@@ -315,7 +315,9 @@ pub fn renderTodos(self: *Agent, epoch: u64) []const u8 {
             "[-]"
         else
             "[ ]";
-        w.print("{s} {s}\n", .{ mark, t.content }) catch break;
+        w.print("{s} {s}", .{ mark, t.content }) catch break;
+        if (t.reason.len > 0) w.print(" (cancelled: {s})", .{t.reason}) catch break; // #1520: a cancel shows why
+        w.writeByte('\n') catch break;
     }
     return std.mem.trimEnd(u8, aw.writer.buffered(), "\n");
 }

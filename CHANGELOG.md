@@ -10,6 +10,77 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.60
+
+- A resumed session keeps the provider's count of its Responses compaction state. A restart no longer re-estimates that opaque state from its size, which could show the context meter far over 100% and force a compaction the session did not need. The count is saved with the session and reapplied only to the same state, provider and model (#1686).
+- The count is learned from chained (WebSocket) replies as well as full requests, so chatgpt-new sessions are counted during normal use.
+- WebSocket accepts events as large as SSE does (128 MiB). A large compaction item over WebSocket previously failed, retried, and fell back to SSE, re-running the turn each time.
+- `GRAFF_CHATGPT_URL` points chatgpt-new at a local mock for testing.
+- Retains all changes from v0.302.59.
+
+## v0.302.59
+
+- Large, steadily arriving SSE events no longer trigger false stream stalls or replay a request merely because the next newline has not arrived (#1765).
+- Genuine stalled streams still time out. Unfinished events have bounded assembly time and size, and local assembly-limit failures are not retried.
+- Retains all changes from v0.302.58.
+
+## v0.302.58
+
+- ACP startup and `graff/models` no longer wait on slow model-catalog requests. A cached catalog, fresh or stale, loads immediately and refreshes in the background; only a provider with no cache waits, at most 800ms in total. A cold DNS lookup or slow host can no longer make a client report that model discovery timed out. The Kimi account catalog is now cached for 6 hours.
+- `note_constraint` states its 240-byte limit in the tool description and the `text` field, so a model learns it before writing a rule rather than from a rejection (#1764).
+- Retains all changes from v0.302.57.
+
+## v0.302.57
+
+- Images are typed by their bytes rather than their file extension. A WebP saved as `.png` is sent as WebP, and a file that is not PNG, JPEG, GIF, or WebP is refused before it reaches the transcript instead of failing every later turn (#1762).
+- A turn that fails before any reply records the failure in history, so resending the same prompt makes a new request instead of being skipped as a duplicate. The boundary is saved with the session (#1729).
+- Streams that carry only an error event surface the provider's error type and message on every wire instead of being retried as truncated bodies; deterministic invalid-request errors are no longer retried (#748).
+- Checklist items the user withdrew or delegated can be marked `cancelled` with a required, visible reason, and the completion gate accepts them without counting them as verified. An `ask_user` answer counts as the user's scope change (#1520).
+- ACP clients receive `session_info_update` as soon as `workspace use` moves the session, with the new folder as `_meta["graff/cwd"]`, so client-served tools can follow the switch within the same turn (#1737).
+- Retained workers remember the folder their checkpoint was saved under, so `subagent_resume` still finds it after a workspace switch; refusals now explain what happened and what to do (#1724).
+- The repeated-tool-call guard no longer counts polls of a background subagent that is still running (#1706).
+- Retains all changes from v0.302.56.
+
+## v0.302.56
+
+- Native file tools can follow dependency symlinks whose targets remain inside their selected tool root. Reads, directory listings, edits, and writes share the same confinement policy.
+- Escaping, dangling, and cyclic links remain denied. Missing ordinary paths remain available for new writes, and explicitly allowed extra roots keep their own boundaries.
+- Retains all changes from v0.302.55.
+
+## v0.302.55
+
+- Command-line help, release history, and bundled playbooks are compressed until requested, reducing duplicated runtime text without removing content or changing the build's safety settings.
+- Long home paths no longer prevent installation of the macOS background-launch shim.
+- Includes the quiet terminal startup and live thinking controls from v0.302.54, and retains all changes from v0.302.53.
+
+## v0.302.54
+
+- Normal terminal startup keeps background connection receipts and legacy-listener diagnostics behind `GRAFF_REPL_DEBUG=1`; boot timing stays behind `GRAFF_BOOT_DEBUG=1`. Explicit `/mcp` and `graff servers` inspection remains available, and listener ownership protections are unchanged.
+- Live thinking shows `Ctrl+T collapse` and `Ctrl+T expand` beside its header. Enable it with `/thinking on`; completed terminal scrollback remains read-only.
+- Retains all changes from v0.302.53.
+
+## v0.302.53
+
+- Embedded runtime resources are compressed, prompt variants share their common text, and optional tool catalogs are built on first use to keep release binaries smaller without changing their contents.
+- Release builds retain runtime safety checks while sharing library code more efficiently. Local learning remains available in development builds rather than being included in release binaries.
+- Routed requests use stable session affinity, and usage prices follow the router's published catalog.
+- Workflow synthesis preserves its tool catalog at the final report-only boundary while refusing further tool execution.
+- Retains all changes from v0.302.52.
+
+## v0.302.52
+
+- The terminal REPL has a clearer session strip, a subtle divider, and distinct styling for active and completed checklist items. The bare prompt, scrollback, and plain output remain intact; no native window or graphical toolkit is required.
+- Operational modes stay visible before workspace metadata when a terminal pane is narrow.
+- The line REPL uses a warm amber palette with cream text and muted status metadata.
+- Markdown emphasis renders in streamed replies and agent reports instead of leaving single-marker formatting literal.
+- `/workers` opens a read-only subagent browser with clickable rows, live activity, Markdown reports, and keyboard navigation. `/agents` still lists agent types.
+- Includes independent conversation forks for subagents and workflow fan-out, optional retained workers, and bounded workflow synthesis that preserves earlier findings.
+- Release binaries are built ReleaseSafe: an out-of-range index or overflow stops graff with a clear panic instead of silently corrupting state, and the stripped binaries are about 17-20% smaller.
+- `graff learn` is no longer part of the release binary, which is about 300 KB smaller for it; sessions no longer start background learning trials.
+- Release binaries are another 50-120 KB smaller: the MCP installer and two HTML pages ship gzipped, the sign-in page's images are WebP, and graff's own code on Windows drops its unwind tables like the other platforms.
+- Release binaries are about 100 KB smaller again: the system prompt's variants share one copy, subagent tool lists for gated sessions are built when first needed instead of compiled in, and the MCP task page ships gzipped.
+- Retains all changes from v0.302.51.
+
 ## v0.302.51
 
 - Kimi works again with an API key or `graff login kimi`. Every Kimi request had been failing with `network error: RstStream` (or a 400 over HTTP/1.1) because graff sent a corrupted device-id header; graff no longer sends a device id or keeps `~/.kimi/device_id`.

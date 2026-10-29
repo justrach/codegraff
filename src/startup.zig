@@ -44,6 +44,7 @@ const prompts = @import("prompts.zig");
 const learn_store = @import("learn_store.zig");
 const learn_bootstrap = @import("learn_bootstrap.zig");
 const learn_auto = @import("learn_auto.zig");
+const build_options = @import("build_options"); // .learn: is `graff learn` in this build
 const imagegen = @import("imagegen.zig"); // #352: codex-skill detection + the personal-tier skill mirror
 
 const plugins = @import("plugins.zig");
@@ -95,7 +96,9 @@ pub fn buildSystemPrompt(
     // authoring guidance is only sent where a repository exists to act on.
     prompts.probeGitRepo(io);
     // A learned policy is used unless this session opted out of it.
-    const learned: ?learn_store.ActiveAgent = if (system_prompt_flag == null and learn_auto.enabled(learned_policy_env)) learnedRootPolicy(io, arena) else null;
+    const learned: ?learn_store.ActiveAgent = if (comptime !build_options.learn)
+        null
+    else if (system_prompt_flag == null and learn_auto.enabled(learned_policy_env)) learnedRootPolicy(io, arena) else null;
     if (learned) |policy| if (!quiet) {
         try out.print("root policy: learned generation {d} ({s})\n", .{ policy.generation, policy.genome_id[0..12] });
         try out.flush();
@@ -263,7 +266,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     if (flags.help_flag or flags.version_flag) {
         var hbuf: [4096]u8 = undefined;
         var hw = Io.File.stdout().writer(io, &hbuf);
-        if (flags.help_flag) try hw.interface.writeAll(cli.usage_text) else try hw.interface.print("graff {s}\n\n{s}", .{ main_mod.harness_version, cli.changelog_text });
+        try @import("cli_text.zig").print(gpa, &hw.interface, flags.help_flag, main_mod.harness_version);
         try hw.interface.flush();
         return true;
     }
@@ -323,6 +326,8 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // resolution and normal session construction; configured child tools get
     // only their explicitly allowlisted environment.
     if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "learn")) {
+        if (comptime !build_options.learn)
+            std.process.fatal("learn: `graff learn` is not included in this build", .{});
         learn_cli.command(io, gpa, arena, init, flags.positionals.items[1..]) catch |err|
             std.process.fatal("learn: {s}", .{@errorName(err)});
         return true;
@@ -557,7 +562,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         return true;
     }
 
-    if (!main_mod.json_mode and flags.oneshot_prompt == null)
+    if (!main_mod.json_mode and flags.oneshot_prompt == null and init.environ_map.get("GRAFF_REPL_DEBUG") != null)
         @import("server_diagnostics.zig").warnStartup(arena, io);
 
     return false;

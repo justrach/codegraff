@@ -57,7 +57,7 @@ test {
     _ = @import("codex_node_repl.zig");
     _ = pricing;
     _ = models_cache;
-    _ = ansi;
+    _ = .{ ansi, @import("agent_markdown_inline.zig"), @import("terminal_workers_tests.zig") };
     _ = serve;
     _ = .{ @import("json_inbox.zig"), @import("acp_inbox.zig"), @import("cite_markup.zig"), @import("server_diagnostics.zig"), @import("server_discovery.zig"), @import("job_browser_guard.zig"), @import("preview_consumers.zig"), @import("plan_usage.zig"), @import("server_port.zig"), @import("job_registry_stop_tests.zig") };
     _ = util;
@@ -565,7 +565,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = .{ @import("agent_empty_completion.zig"), @import("agent_length_cutoff.zig"), @import("agent_model_loop.zig"), @import("publication_policy_tests.zig"), @import("jobs_completion_tests.zig"), @import("headless_result.zig"), @import("oneshot.zig"), @import("agent_length.zig"), @import("agent_length_tests.zig") };
     _ = .{ @import("provider_routing_tests.zig"), @import("codegraff_messages_tests.zig"), @import("tool_result_empty_tests.zig"), @import("history_wire.zig"), @import("path_lookup.zig"), @import("agents_prepare.zig"), @import("catalog_price.zig"), @import("readline_paste_number_tests.zig"), @import("test_hooks.zig"), @import("peer_wake_loop.zig") };
     _ = .{ @import("list_dir_nearmiss.zig"), @import("tool_preview_tests.zig"), @import("stream_reconnect.zig") };
-    _ = @import("repo_map.zig");
+    _ = .{ @import("repo_map.zig"), @import("cli_text.zig") };
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests
     _ = @import("agent_gateway_retry.zig"); // #1019: flake vs overflow classification must stay reachable
     _ = @import("agent_responses.zig"); // #1019: type:error frame message extraction
@@ -588,7 +588,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("goal_persist_tests.zig");
     _ = @import("agent_render_cleanup.zig");
     _ = .{ @import("goal_flow.zig"), @import("shell_identity.zig") };
-    _ = @import("goal_todo.zig");
+    _ = .{ @import("goal_todo.zig"), @import("todo_cancel.zig") };
     _ = @import("goal_pacing.zig");
     _ = .{ @import("presence_accord.zig"), @import("peer_idle.zig"), @import("acp_idle.zig"), @import("presence_chan.zig"), @import("presence_record.zig"), @import("daddy.zig"), @import("peer_inbox_content_test.zig"), @import("peer_inbox_failure_test.zig"), @import("peer_inbox_storage_test.zig"), @import("peer_inbox_sequence_test.zig"), @import("peer_inbox_snapshot_test.zig") };
     _ = .{ @import("acp_agents.zig"), @import("repo_context_tests.zig") };

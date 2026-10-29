@@ -140,21 +140,63 @@ pub fn enterSavedTree(env: Env, arena: Allocator, session_id: []const u8) bool {
     return false;
 }
 
-/// Taken before a prompt turn; compared by `emitChange` after it.
-pub fn snapshot(env: ?Env, arena: Allocator) []const u8 {
-    if (env == null) return "";
-    return arena.dupe(u8, main_mod.g_cwd_display) catch "";
+/// `session_info_update` meta: the tree plus the session's absolute cwd, so a
+/// client can re-root cwd-relative work (image attachment, files panel) even
+/// when the new folder is a main checkout or a non-graff worktree (#1737).
+pub const ChangeMeta = struct { @"graff/worktree": ?Info, @"graff/cwd": []const u8 };
+
+/// The live session's env and the cwd the client was last told about. The
+/// event stream reads them to report a mid-turn switch (`emitMoved`) without
+/// threading the dispatch through it. Embeds and the REPL leave env null.
+var live_env: ?Env = null;
+var reported_buf: [std.fs.max_path_bytes]u8 = undefined;
+var reported_len: usize = 0;
+
+fn remember(cwd: []const u8) void {
+    reported_len = @min(cwd.len, reported_buf.len);
+    @memcpy(reported_buf[0..reported_len], cwd[0..reported_len]);
+}
+
+/// Taken before a prompt turn: the client already knows this cwd.
+pub fn snapshot(env: ?Env) void {
+    live_env = env orelse return;
+    remember(main_mod.g_cwd_display);
+}
+
+fn emitIfMoved(e: Env, arena: Allocator, w: *Io.Writer, session_id: []const u8) !void {
+    const cwd = main_mod.g_cwd_display;
+    if (std.mem.eql(u8, reported_buf[0..reported_len], cwd)) return;
+    try proto.writeNotification(w, "session/update", .{
+        .sessionId = session_id,
+        .update = .{ .sessionUpdate = "session_info_update", ._meta = ChangeMeta{
+            .@"graff/worktree" = info(e, arena),
+            .@"graff/cwd" = cwd,
+        } },
+    });
+    remember(cwd);
 }
 
 /// `/workspace use` and the `workspace` tool move the root session. Tell the
 /// client with `session_info_update` so it can re-record the chat's tree.
-pub fn emitChange(env: ?Env, arena: Allocator, w: *Io.Writer, session_id: []const u8, before: []const u8) !void {
-    const e = env orelse return;
-    if (std.mem.eql(u8, before, main_mod.g_cwd_display)) return;
-    try proto.writeNotification(w, "session/update", .{
-        .sessionId = session_id,
-        .update = .{ .sessionUpdate = "session_info_update", ._meta = meta(e, arena) },
-    });
+/// Silent when `emitMoved` already reported the switch during the turn.
+pub fn emitChange(env: ?Env, arena: Allocator, w: *Io.Writer, session_id: []const u8) !void {
+    try emitIfMoved(env orelse return, arena, w, session_id);
+}
+
+/// After a root tool result: report a switch the moment it happens, before
+/// the model's next call. Waiting for the turn to end left the client
+/// resolving tools it serves (show_image) against the old tree (#1737).
+pub fn emitMoved(w: *Io.Writer, session_id: []const u8) !void {
+    const e = live_env orelse return;
+    if (std.mem.eql(u8, reported_buf[0..reported_len], main_mod.g_cwd_display)) return;
+    var arena_state = std.heap.ArenaAllocator.init(e.gpa);
+    defer arena_state.deinit();
+    try emitIfMoved(e, arena_state.allocator(), w, session_id);
+}
+
+pub fn resetForTest() void {
+    live_env = null;
+    reported_len = 0;
 }
 
 test "fromRevParse: a linked tree reports its name, branch, and owning checkout" {
@@ -187,6 +229,51 @@ test "Meta serializes an explicit null for the main checkout" {
     var s: std.json.Stringify = .{ .writer = &w };
     try s.write(Meta{ .@"graff/worktree" = null });
     try std.testing.expectEqualStrings("{\"graff/worktree\":null}", w.buffered());
+}
+
+test "#1737: a mid-turn workspace switch reaches the client with the tool result, once" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const saved = main_mod.g_cwd_display;
+    defer main_mod.g_cwd_display = saved;
+    defer resetForTest();
+    const stream = @import("acp_stream.zig");
+    const ev = try std.json.parseFromSliceLeaky(Value, arena.allocator(),
+        \\{"type":"tool_result","id":"call-7","name":"workspace","text":"now at /trees/other","is_error":false}
+    , .{});
+    var id_buf: [64]u8 = @splat(0);
+    var next: u32 = 0;
+    var buf: [8192]u8 = undefined;
+
+    // Without a live ACP session (REPL, embeds) nothing extra is written.
+    main_mod.g_cwd_display = "/trees/launch";
+    var quiet: Io.Writer = .fixed(&buf);
+    _ = try stream.translateEvent(&quiet, "s1", ev, &id_buf, &next);
+    try std.testing.expect(std.mem.indexOf(u8, quiet.buffered(), "session_info_update") == null);
+
+    // Live session: the switch is reported right after the tool's own update.
+    snapshot(.{ .gpa = a, .io = std.testing.io });
+    main_mod.g_cwd_display = "/trees/other";
+    var w: Io.Writer = .fixed(&buf);
+    _ = try stream.translateEvent(&w, "s1", ev, &id_buf, &next);
+    const out = w.buffered();
+    const done = std.mem.indexOf(u8, out, "call-7") orelse return error.TestExpectedToolUpdate;
+    const info_at = std.mem.indexOf(u8, out, "\"session_info_update\"") orelse return error.TestExpectedInfoUpdate;
+    try std.testing.expect(done < info_at);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"graff/cwd\":\"/trees/other\"") != null);
+
+    // Already told: neither the next tool result nor turn end repeats it.
+    var again: Io.Writer = .fixed(&buf);
+    _ = try stream.translateEvent(&again, "s1", ev, &id_buf, &next);
+    try emitChange(.{ .gpa = a, .io = std.testing.io }, arena.allocator(), &again, "s1");
+    try std.testing.expect(std.mem.indexOf(u8, again.buffered(), "session_info_update") == null);
+
+    // A slash switch (no tool result) is still reported at turn end.
+    main_mod.g_cwd_display = "/trees/third";
+    var end: Io.Writer = .fixed(&buf);
+    try emitChange(.{ .gpa = a, .io = std.testing.io }, arena.allocator(), &end, "s1");
+    try std.testing.expect(std.mem.indexOf(u8, end.buffered(), "\"graff/cwd\":\"/trees/third\"") != null);
 }
 
 test "errorText names the cwd problem" {

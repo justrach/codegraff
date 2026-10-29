@@ -24,6 +24,9 @@ jobs:
       - name: Zig source-size guard integrity tests
         run: python3 scripts/test-zig-lines.py
 
+      - name: Release CI gate integrity tests
+        run: python3 scripts/test-wait-for-ci.py
+
       - name: PTY cleanup integrity
         run: python3 scripts/eval/test_pty_cleanup.py
 
@@ -156,6 +159,9 @@ jobs:
       - name: Embedder mode resumable serve streams (#330)
         run: python3 scripts/test-serve-resume.py zig-out/bin/graff
 
+      - name: A reloaded session keeps its compaction-state count (#1686)
+        run: python3 scripts/test-acp-reload-compaction-count.py zig-out/bin/graff
+
       - name: Over-cap tool output spills to a session artifact (#409)
         run: python3 scripts/test-spill-artifact.py zig-out/bin/graff
 
@@ -179,6 +185,9 @@ jobs:
 
       - name: PTY Markdown rendering test
         run: python3 scripts/test-pty-markdown.py zig-out/bin/graff
+
+      - name: PTY worker inspection test
+        run: python3 scripts/test-pty-workers.py zig-out/bin/graff
 
       - name: Parallel bash Esc cancellation test (#266)
         run: python3 scripts/test-pty-parallel-cancel.py zig-out/bin/graff
@@ -224,6 +233,17 @@ jobs:
 
       - name: Expired codex token recovered mid-turn, retry carries it (#402)
         run: python3 scripts/test-codex-auth-recovery.py zig-out/bin/graff
+
+      - name: Release builds leave graff learn out
+        run: |
+          zig build graff -Dlearn=false --prefix "$RUNNER_TEMP/no-learn"
+          if "$RUNNER_TEMP/no-learn/bin/graff" learn status 2>"$RUNNER_TEMP/learn.err"; then
+            echo "graff learn ran in a -Dlearn=false build" >&2; exit 1
+          fi
+          grep -q 'not included in this build' "$RUNNER_TEMP/learn.err"
+          if "$RUNNER_TEMP/no-learn/bin/graff" --help | grep -q 'graff learn'; then
+            echo "--help lists graff learn in a -Dlearn=false build" >&2; exit 1
+          fi
 
       - name: SDK generation drift
         run: |

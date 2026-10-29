@@ -14,7 +14,7 @@
     "src/main.zig",
     "src/repl.zig"
   ],
-  "test_count_baseline": 3484,
+  "test_count_baseline": 3562,
   "test_count_slack": 25,
   "required_invariants": [
     {

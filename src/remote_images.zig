@@ -66,14 +66,16 @@ pub fn stage(root: *Agent, request: std.json.ObjectMap) bool {
                 return fail(root, "image_base64 data is not valid base64");
             if (bytes == 0 or bytes > vision.max_staged_image_bytes)
                 return fail(root, "image_base64 is empty or exceeds the staged-image limit");
-            {
+            // #1762: the bytes, when recognized, decide the type sent.
+            const sent_type = blk: {
                 const scratch = root.gpa.alloc(u8, bytes) catch
                     return fail(root, "could not validate remote image data");
                 defer root.gpa.free(scratch);
                 std.base64.standard.Decoder.decode(scratch, data) catch
                     return fail(root, "image_base64 data is not valid base64");
-            }
-            specs[i] = .{ .base64 = .{ .media_type = media_type, .data = data } };
+                break :blk @import("image_sniff.zig").sniff(scratch) orelse media_type;
+            };
+            specs[i] = .{ .base64 = .{ .media_type = sent_type, .data = data } };
             continue;
         }
         return fail(root, "request image type must be image_url or image_base64");

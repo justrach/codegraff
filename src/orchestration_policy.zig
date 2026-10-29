@@ -210,7 +210,7 @@ pub const ArmObs = struct {
         var buf: [max_call_samples]u32 = @splat(0);
         @memcpy(buf[0..self.n_calls], self.calls[0..self.n_calls]);
         const s = buf[0..self.n_calls];
-        std.mem.sort(u32, s, {}, std.sort.asc(u32));
+        @import("stable_sort.zig").sort(u32, s, {}, std.sort.asc(u32));
         // Nearest-rank: ceil(0.9 * n), 1-based, clamped into the slice.
         const rank = (self.n_calls * 9 + 9) / 10;
         return s[@min(rank, s.len) - 1];

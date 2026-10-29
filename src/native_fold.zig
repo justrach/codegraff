@@ -307,7 +307,7 @@ pub fn renderLoadedTail(s: *std.json.Stringify, kind: @import("provider.zig").Pr
     for (mcp_tools) |m| if (mcp_schema_gate.policyDeferred(mcp_tools, m)) {
         if (mcp_schema_gate.loadSeq(m.qualified_name)) |seq| try loaded.append(out, .{ .seq = seq, .external = m });
     };
-    std.mem.sort(Entry, loaded.items, {}, struct {
+    @import("stable_sort.zig").sort(Entry, loaded.items, {}, struct {
         fn lt(_: void, a: Entry, b: Entry) bool {
             return a.seq < b.seq;
         }

@@ -283,6 +283,7 @@ pub fn assembleStream(self: *Agent, body: []const u8) !?std.json.ObjectMap {
 pub const assembleAnthropic = @import("anthropic_assemble.zig").assembleAnthropic;
 
 const chat_tool_calls = @import("chat_tool_calls.zig");
+const sse_error = @import("sse_error_event.zig");
 
 pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
     const result_arena = self.messageMutationAlloc();
@@ -298,10 +299,12 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
     var extra_content: ?Value = null;
     var saw_chunk = false;
     var saw_done = false; // `data: [DONE]`: the stream ended on purpose even without a finish_reason
+    var named_error = false; // the data lines follow an `event: error` name
     var it = std.mem.tokenizeScalar(u8, body, '\n');
     while (it.next()) |raw_line| {
         const payload = ssePayload(raw_line) orelse {
             saw_done = saw_done or std.mem.eql(u8, std.mem.trim(u8, raw_line, " \r"), "data: [DONE]");
+            named_error = sse_error.namesError(raw_line, named_error);
             continue;
         };
         const v = std.json.parseFromSliceLeaky(Value, self.scratchAlloc(), payload, .{ .allocate = .alloc_always }) catch continue; // #124: per-event parse tree is transient (deltas are appendSlice'd into session accumulators)
@@ -309,15 +312,8 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
         // Error-only SSE (`event: error` / `data: {"error":…}`) has no
         // choices chunk. Hand the envelope back so request() reports it
         // instead of falling through to the truncated-body retry (#748).
-        if (v.object.get("error")) |err| if (err != .null) {
-            var env: std.json.ObjectMap = .empty;
-            try env.put(result_arena, "type", .{ .string = "error" });
-            try env.put(result_arena, "error", try util.dupeJsonValue(result_arena, err));
-            return env;
-        };
-        if (v.object.get("type")) |t| if (t == .string and std.mem.eql(u8, t.string, "error")) {
-            return (try util.dupeJsonValue(result_arena, v)).object;
-        };
+        if (try sse_error.envelope(result_arena, v.object, named_error)) |env| return env;
+        named_error = false;
         // The final usage chunk (stream_options.include_usage) may have
         // an empty choices array.
         if (v.object.get("usage")) |u| if (u == .object) {
@@ -429,4 +425,5 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
 test {
     _ = @import("agent_steps_tests.zig");
     _ = @import("anthropic_assemble.zig");
+    _ = @import("sse_error_event.zig");
 }
