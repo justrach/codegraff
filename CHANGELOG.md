@@ -10,6 +10,14 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.60
+
+- A resumed session keeps the provider's count of its Responses compaction state. A restart no longer re-estimates that opaque state from its size, which could show the context meter far over 100% and force a compaction the session did not need. The count is saved with the session and reapplied only to the same state, provider and model (#1686).
+- The count is learned from chained (WebSocket) replies as well as full requests, so chatgpt-new sessions are counted during normal use.
+- WebSocket accepts events as large as SSE does (128 MiB). A large compaction item over WebSocket previously failed, retried, and fell back to SSE, re-running the turn each time.
+- `GRAFF_CHATGPT_URL` points chatgpt-new at a local mock for testing.
+- Retains all changes from v0.302.59.
+
 ## v0.302.59
 
 - Large, steadily arriving SSE events no longer trigger false stream stalls or replay a request merely because the next newline has not arrived (#1765).

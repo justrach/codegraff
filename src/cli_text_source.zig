@@ -5,6 +5,10 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.60
+    \\  • a resumed session keeps its real context size instead of re-estimating compaction state
+    \\  • large compaction items work over WebSocket without re-running the turn
+    \\
     \\0.302.59
     \\  • steadily arriving partial SSE events no longer trigger false stalls or replay
     \\  • genuine stalls still time out and unfinished events remain bounded
