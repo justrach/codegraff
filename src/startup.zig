@@ -236,6 +236,8 @@ fn serveConfig(flags: args.Flags, environ: anytype) serve.ServeConfig {
 /// every other terminal trajectory keeps resolveKeys' existing fatal behavior.
 pub fn resolveKeysOrRunAcpPreAuth(io: Io, gpa: Allocator, arena: Allocator, init: std.process.Init, flags: args.Flags) !?ResolvedKeys {
     const worker_hint = flags.subagent_provider_flag orelse init.environ_map.get("GRAFF_SUBAGENT_PROVIDER");
+    // Before key resolution: the startup catalog load reads it (catalog_selection.startupLoads).
+    if (flags.allow_cross_provider_subagents_flag) @import("subagent_selection.zig").g_cross_provider_consent = true;
     const is_acp = flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "acp");
     if (!is_acp) return try resolveKeys(io, gpa, arena, init.environ_map, flags.model_flag, worker_hint);
     if (try startup_keys.resolveKeysOptional(io, gpa, arena, init.environ_map, flags.model_flag, worker_hint)) |resolved| return resolved;
