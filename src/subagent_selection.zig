@@ -134,6 +134,12 @@ pub fn subagentProvider(
     return keys.providerById(requested_provider, model) catch error.MissingKey;
 }
 
+/// The session consented (--allow-cross-provider-subagents) to workers on
+/// another provider. Latches on at startup; a later model switch re-resolving
+/// the worker without the flag does not withdraw it. Read by per-persona
+/// `<provider>/<model>` pins (subagent_pin.zig).
+pub var g_cross_provider_consent: bool = false;
+
 pub fn resolveSubagentProvider(
     keys: provider_mod.Keys,
     root: provider_mod.Provider,
@@ -142,6 +148,7 @@ pub fn resolveSubagentProvider(
     allow_cross_provider: bool,
     disable_default_ladder: bool,
 ) ?provider_mod.Provider {
+    if (allow_cross_provider) g_cross_provider_consent = true;
     const raw_provider = provider_query orelse "";
     const requested_provider = std.mem.trim(u8, raw_provider, " \t\r\n");
     const raw_model = model_query orelse {
