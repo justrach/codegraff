@@ -366,6 +366,13 @@ pub const pinned_warning = "[vision warning] this task names an image and the wo
 /// have BEEN a vision ask: a disclaimer in a report about anything else is
 /// prose, not a capability admission.
 pub fn warningFor(ask: Ask, report: []const u8) ?[]const u8 {
+    // A role persona that names another provider and could not be seated
+    // there ran on the session default instead: say why, where the user and
+    // the parent model both see it, not only in the trace.
+    switch (ask.pin.outcome) {
+        .cross_provider_unconsented, .no_login => return ask.pin.outcome.describe(),
+        else => {},
+    }
     if (!ask.isAsk()) return null;
     if (disclaimed(report)) return disclaimer_warning;
     return if (ask.pinned_blind) pinned_warning else null;

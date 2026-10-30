@@ -45,3 +45,18 @@ test "a <provider>/<model> pin seats a role on another provider only with consen
     keys.values = @splat(null);
     try std.testing.expectEqual(pin_mod.Outcome.no_login, pin_mod.resolve(codexBase(), scout).outcome);
 }
+
+test "an ignored cross-provider pin is named in the worker's report" {
+    const vision_ask = @import("vision_ask.zig");
+    const gpa = std.testing.allocator;
+    const refused: vision_ask.Ask = .{ .pin = .{ .outcome = .cross_provider_unconsented, .source = .persona } };
+    const flagged = vision_ask.flagText(gpa, try gpa.dupe(u8, "the brief"), refused);
+    defer gpa.free(flagged);
+    try std.testing.expect(std.mem.indexOf(u8, flagged, "--allow-cross-provider-subagents") != null);
+    try std.testing.expect(std.mem.endsWith(u8, flagged, "the brief"));
+    // A pin that applied adds nothing.
+    const seated: vision_ask.Ask = .{ .pin = .{ .outcome = .pinned, .source = .persona } };
+    const clean = vision_ask.flagText(gpa, try gpa.dupe(u8, "the brief"), seated);
+    defer gpa.free(clean);
+    try std.testing.expectEqualStrings("the brief", clean);
+}
