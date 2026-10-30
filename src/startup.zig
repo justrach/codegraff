@@ -420,6 +420,13 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         return true;
     }
 
+    // `graff harness-tree …`: the harness (instructions, skills, subagents,
+    // scripts, hooks) as one value: show, digest, check, apply, diff.
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "harness-tree")) {
+        try @import("harness_tree_cli.zig").command(io, arena, flags.positionals.items[1..]);
+        return true;
+    }
+
     // `graff servers [stop <pid>|prune]`: background servers graff started —
     // this session's or an earlier one's (#199).
     if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "servers")) {
