@@ -14,6 +14,7 @@
 //! restores today's plain inherit-root behavior.
 const std = @import("std");
 
+const catalog_selection = @import("catalog_selection.zig");
 const pricing = @import("pricing.zig");
 const provider_mod = @import("provider.zig");
 const tier_ladder = @import("subagent_tier_ladder.zig");
@@ -118,7 +119,14 @@ pub fn subagentProvider(
         return error.CrossProviderConsentRequired;
 
     const requested_model = std.mem.trim(u8, model_query, " \t\r\n");
-    const model = modelForProvider(requested_provider, requested_model) orelse {
+    const model = modelForProvider(requested_provider, requested_model) orelse explicit: {
+        // Same rule as `--model <provider>/<model>`: a login-served router
+        // (the codegraff gateway) serves what its live catalog lists, which
+        // the baked table does not carry, so an explicitly named worker
+        // provider takes the exact model name the way the root model does.
+        if (provider_query != null) if (provider_mod.specFor(requested_provider)) |spec| {
+            if (catalog_selection.acceptsExplicitModel(spec, requested_model)) break :explicit requested_model;
+        };
         if (pricing.resolveModelName(keys, requested_model) != null)
             return error.ModelNotOnProvider;
         return error.UnknownModel;
@@ -184,6 +192,24 @@ test "worker selection stays provider-local unless explicitly allowed" {
         error.UnknownProvider,
         subagentProvider(keys, root, "not-a-provider", "k3", true),
     );
+}
+
+test "an explicit worker provider takes a gateway model the baked table lacks" {
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    for (provider_mod.provider_specs, &keys.values) |spec, *value| {
+        if (std.mem.eql(u8, spec.id, "codex") or
+            std.mem.eql(u8, spec.id, "codegraff")) value.* = "test-token";
+    }
+    const root = try keys.providerById("codex", "gpt-6.1-sol");
+    const gateway_only = "gateway-only-model-not-in-the-baked-table";
+    try std.testing.expect(modelForProvider("codegraff", gateway_only) == null);
+    const worker = try subagentProvider(keys, root, "codegraff", gateway_only, true);
+    try std.testing.expectEqualStrings("codegraff", worker.id);
+    try std.testing.expectEqualStrings(gateway_only, worker.model);
+    // Consent is still required to cross the provider boundary, and a bare
+    // name with no provider still has to be a catalogued model.
+    try std.testing.expectError(error.CrossProviderConsentRequired, subagentProvider(keys, root, "codegraff", gateway_only, false));
+    try std.testing.expectError(error.UnknownModel, subagentProvider(keys, root, null, gateway_only, false));
 }
 
 test "defaultLadderModel: descends one rung per provider, bottom rung inherits" {
