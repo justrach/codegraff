@@ -151,6 +151,13 @@ test "claude-agent fresh session: earlier history is a checkpoint, the prompt ke
     try std.testing.expect(std.mem.indexOf(u8, cp, "secret") == null); // no thinking text
     try std.testing.expectEqualStrings("now add a test", blocks[1].object.get("text").?.string);
     try std.testing.expect(blocks[1].object.get("cache_control") == null);
+    // A prompt followed by graff's own notice is still the prompt, not history.
+    const noticed = try parse(a,
+        \\[{"role":"user","content":"spawn two workers"},{"role":"user","content":"Already loaded for this turn: subagent."}]
+    );
+    const fresh = try history.freshContent(a, noticed.array.items);
+    try std.testing.expectEqual(@as(usize, 2), fresh.array.items.len);
+    try std.testing.expectEqualStrings("spawn two workers", fresh.array.items[0].object.get("text").?.string);
     // Ending on tool results (a restart mid-loop): everything is checkpoint.
     const mid = try history.freshContent(a, msgs.array.items[0..3]);
     try std.testing.expectEqual(@as(usize, 2), mid.array.items.len);

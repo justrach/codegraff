@@ -53,15 +53,20 @@ fn hasToolResult(m: Value) bool {
 }
 
 /// Content for the first message of a fresh session: the checkpoint of
-/// everything before the latest user prompt, then that prompt's own blocks.
+/// everything up to the last assistant reply, then the user messages after
+/// it as the prompt (graff may follow a prompt with notices of its own).
 pub fn freshContent(a: Allocator, items: []const Value) !Value {
     var blocks: std.json.Array = .init(a);
-    const last_is_prompt = items.len > 0 and std.mem.eql(u8, role(items[items.len - 1]), "user") and !hasToolResult(items[items.len - 1]);
-    const head = if (last_is_prompt) items[0 .. items.len - 1] else items;
+    var start = items.len;
+    while (start > 0 and std.mem.eql(u8, role(items[start - 1]), "user")) start -= 1;
+    var prompt_run = start < items.len;
+    for (items[start..]) |m| if (hasToolResult(m)) {
+        prompt_run = false; // results of a call in the checkpoint: no new prompt
+    };
+    const head = if (prompt_run) items[0..start] else items;
     if (head.len > 0) try blocks.append(try textBlock(a, try checkpoint(a, head)));
-    if (last_is_prompt) {
-        const c = items[items.len - 1].object.get("content") orelse Value{ .string = "" };
-        try appendPromptBlocks(a, &blocks, c);
+    if (prompt_run) {
+        for (items[start..]) |m| try appendPromptBlocks(a, &blocks, m.object.get("content") orelse Value{ .string = "" });
     } else if (head.len > 0) {
         try blocks.append(try textBlock(a, "Continue from where the checkpoint ends."));
     }

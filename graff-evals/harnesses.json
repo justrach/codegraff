@@ -440,16 +440,16 @@
     "answer": "stdout",
     "usage": "graff-stderr",
     "capabilities": [],
-    "env": {"GRAFF_CLAUDE_AGENT": "1", "GRAFF_MCP_CONFIG": "{repo}/graff-evals/empty-mcp.json", "GRAFF_POST_DEADLINE_SECS": "90"},
+    "env": {"GRAFF_CLAUDE_AGENT": "1", "GRAFF_MCP_CONFIG": "{repo}/graff-evals/no-global-mcp.json", "GRAFF_POST_DEADLINE_SECS": "90"},
     "default_model": "sonnet",
-    "note": "graff on the Claude Agent provider (ADR 0309): the user's own `claude` login runs the model; graff's prompt, tools and loop. Global MCP off; a task's .mcp.json still loads. Pass a Claude Code model alias (sonnet, opus, haiku)."
+    "note": "graff on the Claude Agent provider (ADR 0309): the user's own `claude` login runs the model; graff's prompt, tools and loop. GRAFF_MCP_CONFIG names a file that does not exist: no global MCP servers, while a task's .mcp.json still loads (an existing empty file would switch MCP off entirely). Pass a Claude Code model alias (sonnet, opus, haiku)."
   },
   "graff-dev-claude-agent-ccprompt": {
     "cmd": ["{repo}/zig-out/bin/graff", "-p", "{prompt}", "--model", "claude-agent/{model}", "--yolo"],
     "answer": "stdout",
     "usage": "graff-stderr",
     "capabilities": [],
-    "env": {"GRAFF_CLAUDE_AGENT": "1", "GRAFF_CLAUDE_AGENT_PROMPT": "claude", "GRAFF_MCP_CONFIG": "{repo}/graff-evals/empty-mcp.json", "GRAFF_POST_DEADLINE_SECS": "90"},
+    "env": {"GRAFF_CLAUDE_AGENT": "1", "GRAFF_CLAUDE_AGENT_PROMPT": "claude", "GRAFF_MCP_CONFIG": "{repo}/graff-evals/no-global-mcp.json", "GRAFF_POST_DEADLINE_SECS": "90"},
     "default_model": "sonnet",
     "note": "graff-dev-claude-agent keeping Claude Code's system prompt with graff's appended."
   },
