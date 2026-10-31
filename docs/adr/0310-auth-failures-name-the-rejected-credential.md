@@ -52,3 +52,19 @@ as signed out. `reauth_required` and its wire positions are unchanged.
 A client can tell "replace the key" from "sign in" without parsing provider
 words, and an old client no longer offers a sign-in for a rejected key. The
 generic message text is gone; anything matching it must match the new phrases.
+
+## Addendum: an expired Console sign-in
+
+An Anthropic Console token past `expires_at` with no refresh token stored is
+not renewable: `ant auth print-credentials --access-token` warns, exits 0 and
+prints the same expired token, which graff used to accept as a refresh and
+then send, getting a 401 on every request (also when it was parked behind a
+Claude plan as the fallback). `anthropic_profile` now treats a renewal that
+returns the old token as failed: at startup such a token is neither seated nor
+parked, and mid-session `fresh` offers no token instead of the dead one. The
+texts say what happened: "Anthropic Console sign-in has expired: run `graff
+login console` again. Your sign-in is not affected." (or "...the fallback
+Console sign-in has expired..." after a plan handoff), and a spent plan with no
+fallback for that reason says "Anthropic plan is out of quota, and the Console
+sign-in that would take over has expired". The `api_key_rejected` data is
+unchanged.

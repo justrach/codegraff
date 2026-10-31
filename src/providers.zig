@@ -162,6 +162,7 @@ pub fn failoverEligible(provider_id: []const u8, detail: []const u8) bool {
         "authentication failed",
         "sign-in was rejected", // auth_recovery.failureText (ADR 0310)
         "api key was rejected",
+        "console sign-in has expired",
         "invalid api key",
         "invalid_api_key",
         "invalid x-api-key",
@@ -399,6 +400,7 @@ test "failoverEligible: accepts unavailable credentials/models, rejects transien
     try std.testing.expect(failoverEligible("codex", "model_not_found: rollout ended"));
     try std.testing.expect(failoverEligible("kimi", "Kimi sign-in was rejected: sign in again (graff login kimi)"));
     try std.testing.expect(failoverEligible("anthropic", "Anthropic plan is out of usage, and the fallback API key was rejected (Console profile): wait"));
+    try std.testing.expect(failoverEligible("anthropic", "Anthropic Console sign-in has expired: run `graff login console` again. Your sign-in is not affected."));
     try std.testing.expect(failoverEligible("codegraff", "insufficient_quota"));
     try std.testing.expect(!failoverEligible("codex", "network error: HttpConnectionClosing"));
     try std.testing.expect(!failoverEligible("codex", "rate limited (429)"));

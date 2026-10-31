@@ -97,6 +97,11 @@ pub fn failureText(a: std.mem.Allocator, p: provider.Provider, promoted: bool) [
         return std.fmt.allocPrint(a, "{s} sign-in was rejected: sign in again ({s} {s})", .{ name, login.command, args }) catch
             "provider sign-in was rejected: sign in again";
     }
+    // A Console token past expiry that `ant` cannot renew: name that, not "key".
+    if (std.mem.eql(u8, p.id, "anthropic") and p.source == .profile and @import("anthropic_profile.zig").expired()) return if (promoted)
+        "Anthropic plan is out of usage, and the fallback Console sign-in has expired: run `graff login console` again, or wait for the plan to reset. Your sign-in is not affected."
+    else
+        "Anthropic Console sign-in has expired: run `graff login console` again. Your sign-in is not affected.";
     if (promoted) return std.fmt.allocPrint(
         a,
         "{s} plan is out of usage, and the fallback " ++ api_key_rejected_phrase ++ " ({s}): replace or remove the key, or wait for the plan to reset.",
