@@ -32,6 +32,14 @@ pub const rows = [_]ModelInfo{
     .{ .provider = "anthropic", .name = "claude-haiku-5-5", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-opus-4-5", .context = 200_000 },
     .{ .provider = "anthropic", .name = "claude-sonnet-4-5", .context = 200_000 },
+    // Claude Agent (ADR 0309): Claude Code's own aliases (the prefix keeps
+    // bare `opus`/`sonnet` on their existing routes), which follow its current
+    // models. `claude-agent/<id>` passes any id Claude Code accepts. 200k is
+    // the window Claude Code reports without a `[1m]` suffix.
+    .{ .provider = "claude-agent", .name = "claude-agent-sonnet", .context = 200_000 },
+    .{ .provider = "claude-agent", .name = "claude-agent-opus", .context = 200_000 },
+    .{ .provider = "claude-agent", .name = "claude-agent-haiku", .context = 200_000 },
+    .{ .provider = "claude-agent", .name = "claude-agent-fable", .context = 200_000 },
     .{ .provider = "deepseek", .name = "deepseek-v4-pro", .context = 1_000_000 },
     .{ .provider = "deepseek", .name = "deepseek-v4-flash", .context = 1_000_000 },
     .{ .provider = "deepseek", .name = "deepseek-chat", .context = 1_000_000 },

@@ -37,7 +37,7 @@ fn contextWindowFor(provider_id: []const u8, model: []const u8) u64 {
 /// provider_specs; one additional OpenAI-compatible router may be loaded from
 /// `.graff/.config.router` at startup.
 pub const ProviderSpec = struct {
-    pub const LoginKind = enum { api_key, codegraff_device, codex_device, kimi_device, xai_device, zai_cli, chatgpt_browser, anthropic_browser };
+    pub const LoginKind = enum { api_key, codegraff_device, codex_device, kimi_device, xai_device, zai_cli, chatgpt_browser, anthropic_browser, claude_cli };
     pub const CatalogKind = enum { baked, codex, kimi, openai, anthropic };
 
     id: []const u8,
@@ -131,6 +131,9 @@ pub const provider_specs = [_]ProviderSpec{
     // (see loadCodexAuth), the same on-disk-credential trick used for the
     // codegraff gateway key in ~/forge/.credentials.json.
     .{ .id = "codex", .display_name = "Codex (ChatGPT)", .kind = .responses, .auth = .bearer, .url = "https://chatgpt.com/backend-api/codex/responses", .env_key = "CODEX_DISABLED", .default_model = "gpt-6-sol", .login = .codex_device, .sub_login = true, .catalog = .codex },
+    // claude-agent (ADR 0309): Claude through the user's own `claude` and its login, opted into with
+    // `graff login claude-agent`. No URL: claude_agent.zig drives the child. The "key" is its path.
+    .{ .id = "claude-agent", .display_name = "Claude Agent", .kind = .anthropic, .auth = .bearer, .url = "stdio:claude", .env_key = "GRAFF_CLAUDE_AGENT", .default_model = "claude-agent-sonnet", .login = .claude_cli, .sub_login = true, .takes_effort = true },
 };
 
 /// Optional workspace-local router loaded from `.graff/.config.router`.

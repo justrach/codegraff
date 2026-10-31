@@ -340,7 +340,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // args.loginTarget owns the names.
     if (flags.login_flag) {
         const home = keys_cli.homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
-        if (flags.anthropic_console_login) try @import("anthropic_profile.zig").login(io, arena, init.environ_map, home) else if (flags.anthropic_login) try @import("oauth_anthropic.zig").login(io, gpa, arena, home, flags.refresh_flag) else if (flags.chatgpt_login) try @import("oauth_chatgpt.zig").login(io, gpa, arena, home) else if (flags.xai_login) try oauth.xaiLogin(io, gpa, arena, home) else if (flags.kimi_login) try oauth.kimiLogin(io, gpa, arena, home) else if (flags.zai_login) try oauth.zaiLogin(io, gpa, arena, home) else if (flags.codex_login or flags.refresh_flag) try oauth.codexLogin(io, gpa, arena, home, flags.refresh_flag) else try oauth.codegraffLogin(io, gpa, arena, home);
+        if (flags.claude_agent_login) try @import("claude_agent_login.zig").login(io, arena, init.environ_map, home) else if (flags.anthropic_console_login) try @import("anthropic_profile.zig").login(io, arena, init.environ_map, home) else if (flags.anthropic_login) try @import("oauth_anthropic.zig").login(io, gpa, arena, home, flags.refresh_flag) else if (flags.chatgpt_login) try @import("oauth_chatgpt.zig").login(io, gpa, arena, home) else if (flags.xai_login) try oauth.xaiLogin(io, gpa, arena, home) else if (flags.kimi_login) try oauth.kimiLogin(io, gpa, arena, home) else if (flags.zai_login) try oauth.zaiLogin(io, gpa, arena, home) else if (flags.codex_login or flags.refresh_flag) try oauth.codexLogin(io, gpa, arena, home, flags.refresh_flag) else try oauth.codegraffLogin(io, gpa, arena, home);
         return true;
     }
 
@@ -348,8 +348,12 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "logout")) {
         const home = keys_cli.homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
         const target = if (flags.positionals.items.len > 1) flags.positionals.items[1] else "";
+        if (std.mem.eql(u8, @import("args.zig").loginTarget(target) orelse "", "claude-agent")) {
+            try @import("claude_agent_login.zig").logout(io, arena, home);
+            return true;
+        }
         const plan = std.mem.eql(u8, @import("args.zig").loginTarget(target) orelse "", "chatgpt-new");
-        if (!plan) std.process.fatal("graff logout supports: chatgpt", .{});
+        if (!plan) std.process.fatal("graff logout supports: chatgpt, claude-agent", .{});
         try @import("oauth_chatgpt.zig").logout(io, gpa, arena, home);
         return true;
     }
