@@ -110,6 +110,11 @@ pub fn leanKeeps(name: []const u8) bool {
     for (lean_tools) |tool| {
         if (std.mem.eql(u8, name, tool)) return true;
     }
+    // A folded native the turn loaded (mcp_preload, load_tool_schemas) is on
+    // the wire: the load note says it is callable, so lean must not drop it.
+    // `agent_output` was the casualty: a subagent request loaded it, the
+    // catalog left it out, and the model polled it without a schema.
+    if (@import("native_fold.zig").isLoaded(name)) return true;
     // A workspace that ships skills keeps `skill` beside its catalog.
     return @import("skill_docs.zig").g_workspace_skills and std.mem.eql(u8, name, "skill");
 }
@@ -451,4 +456,17 @@ test "lean catalog drops overflow pager and empty load_tool_schemas" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"load_tool_schemas\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"rlm\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"read_file\"") != null);
+}
+
+test "lean keeps a folded native the turn loaded: the load note's agent_output is on the wire" {
+    const fold = @import("native_fold.zig");
+    const saved = lean;
+    defer lean = saved;
+    lean = true;
+    fold.clearLoadedSession();
+    defer fold.clearLoadedSession();
+    try std.testing.expect(!leanKeeps("agent_output"));
+    fold.markLoaded("agent_output");
+    try std.testing.expect(leanKeeps("agent_output"));
+    try std.testing.expect(!leanKeeps("workflow"));
 }

@@ -50,6 +50,28 @@ class Acp:
         finally:
             self.chunks.put(None)
 
+    def exit_detail(self):
+        """How graff ended: its exit status (a signal by name) and the tail of
+        its stderr, so a crash in CI names its cause instead of only that it
+        happened."""
+        try:
+            code = self.proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            code = None
+        how = f"exit {code}"
+        if code is not None and code < 0:
+            try:
+                how += f" ({signal.Signals(-code).name})"
+            except ValueError:
+                pass
+        self.err.flush()
+        try:
+            with open(self.err.name, errors="replace") as handle:
+                tail = handle.read()[-2000:]
+        except OSError:
+            tail = ""
+        return f"{how}; stderr tail:\n{tail}"
+
     def request(self, method, params=None, timeout=25):
         self.next_id += 1
         target = self.next_id
@@ -64,7 +86,7 @@ class Acp:
                 except queue.Empty:
                     continue
                 if chunk is None:
-                    raise AssertionError(f"ACP exited during {method}")
+                    raise AssertionError(f"ACP exited during {method}: {self.exit_detail()}")
                 self.pending += chunk
             while b"\n" in self.pending:
                 line, self.pending = self.pending.split(b"\n", 1)

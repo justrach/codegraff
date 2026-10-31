@@ -1,0 +1,5 @@
+I couldn't find a `logs/` directory, so I haven't counted anything or written `summary.json`.
+
+The working directory is `/Users/rachpradhan/.harness/worktrees/codegraff/swift-falcon`. There's no `logs/` in it, and a search up to three levels deep turned up no directory with that name. I didn't search outside the worktree.
+
+Where are the logs? If you give me the path, I'll start one sub-agent per service (auth, billing, search, mailer) in parallel, then combine their counts into `summary.json`.

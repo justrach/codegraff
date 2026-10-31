@@ -360,6 +360,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             .{ .name = "chatgpt", .desc = "ChatGPT sign-in (also: codex, openai)" },
             .{ .name = "anthropic", .desc = "Claude subscription sign-in (also: ant)" },
             .{ .name = "console", .desc = "metered Console sign-in through the ant CLI" },
+            .{ .name = "claude-agent", .desc = "your own Claude Code login, through `claude`" },
             .{ .name = "kimi", .desc = "Kimi Code sign-in (device-code OAuth)" },
             .{ .name = "xai", .desc = "Grok / SuperGrok sign-in (device-code OAuth)" },
             .{ .name = "zai", .desc = "Z.AI Coding Plan sign-in (CLI OAuth)" },
@@ -421,6 +422,13 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 try out.flush();
                 return true;
             };
+        } else if (std.mem.eql(u8, target, "claude-agent")) {
+            const ca = @import("claude_agent_login.zig");
+            ca.login(root.io, arena, @import("anthropic_profile.zig").ProcessEnv{}, home) catch |err| {
+                try out.print("\xe2\x9c\x97 claude-agent login failed: {t}\n", .{err});
+                try out.flush();
+                return true;
+            };
         } else if (std.mem.eql(u8, target, "chatgpt-new")) {
             @import("oauth_chatgpt.zig").login(root.io, root.gpa, arena, home) catch |err| {
                 try out.print("\xe2\x9c\x97 chatgpt-new login failed: {t}\n", .{err});
@@ -434,7 +442,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 try out.flush();
                 return true;
             }
-            try out.print("can't log into '{s}' \xe2\x80\x94 try /login codegraff | chatgpt | anthropic | console | kimi | xai | zai (others: /key <provider> <key>)\n", .{target});
+            try out.print("can't log into '{s}' \xe2\x80\x94 try /login codegraff | chatgpt | anthropic | console | claude-agent | kimi | xai | zai (others: /key <provider> <key>)\n", .{target});
             try out.flush();
             return true;
         }

@@ -281,6 +281,7 @@ pub const usage_text =
     \\  graff login chatgpt              ChatGPT sign-in (also: codex, openai)
     \\  graff login anthropic            Claude subscription browser sign-in (also: ant)
     \\  graff login console              metered Console sign-in through the `ant` CLI
+    \\  graff login claude-agent         Claude through your own Claude Code login (`claude`)
     \\  graff login kimi                 Kimi Code OAuth login (device-code)
     \\  graff login xai                  Grok/SuperGrok OAuth login (device-code)
     \\  graff login zai                  Z.AI Coding Plan OAuth login

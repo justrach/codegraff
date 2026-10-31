@@ -40,6 +40,10 @@ pub fn run(ctx: ToolCtx, args_json: []const u8) ToolOutput {
         };
     }
     defer if (permit) |*p| p.release();
+    // Claude Agent has no HTTP endpoint: every model call goes through the
+    // session's `claude` child (ADR 0309), which a nested query cannot share.
+    if (std.mem.eql(u8, ctx.provider.id, "claude-agent"))
+        return .{ .text = ctx.gpa.dupe(u8, "rlm: llm_query is not available on Claude Agent; work with the data directly") catch &.{}, .is_error = true };
     const body = buildBody(ctx.gpa, ctx.provider, prompt) catch {
         return .{ .text = ctx.gpa.dupe(u8, "rlm: llm_query could not build request") catch &.{}, .is_error = true };
     };
