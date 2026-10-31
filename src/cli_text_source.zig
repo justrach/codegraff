@@ -5,6 +5,10 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.61
+    \\  • Claude Agent: Claude models through your own Claude Code login (graff login claude-agent)
+    \\  • subagent requests keep agent_output in lean mode, so the turn waits for its workers
+    \\
     \\0.302.60
     \\  • a resumed session keeps its real context size instead of re-estimating compaction state
     \\  • large compaction items work over WebSocket without re-running the turn
