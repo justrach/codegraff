@@ -59,8 +59,7 @@ pub fn login(io: Io, arena: Allocator, environ_map: anytype, home: []const u8) !
     var st = status(io, arena, exe) catch |err| switch (err) {
         error.FileNotFound => {
             try out.writeAll(
-                \\Claude Agent runs your own Claude Code (`claude`), which isn't installed.
-                \\Install it (https://code.claude.com/docs/en/setup), then run `graff login claude-agent` again.
+                \\✗ Claude Agent runs your own Claude Code (`claude`), which isn't installed. Install it (https://code.claude.com/docs/en/setup), then sign in to Claude Agent again.
                 \\
             );
             try out.flush();
@@ -68,19 +67,26 @@ pub fn login(io: Io, arena: Allocator, environ_map: anytype, home: []const u8) !
         },
         else => return err,
     };
+    // The login belongs to `claude`. With no terminal (a client such as the
+    // desktop app runs this), say where to sign in rather than start it.
+    if (!st.logged_in and !(Io.File.stdin().isTty(io) catch false)) {
+        try out.writeAll("✗ Claude Code is not signed in. Run `claude auth login` in a terminal, then sign in to Claude Agent again.\n");
+        try out.flush();
+        return error.ClaudeNotSignedIn;
+    }
     if (!st.logged_in) {
         try out.writeAll("Claude Code is not signed in; starting `claude auth login`.\n");
         try out.flush();
         var child = try std.process.spawn(io, .{ .argv = &.{ exe, "auth", "login" }, .stdin = .inherit, .stdout = .inherit, .stderr = .inherit });
         const term = try child.wait(io);
         if (term != .exited or term.exited != 0) {
-            try out.writeAll("claude auth login did not finish; nothing changed.\n");
+            try out.writeAll("✗ claude auth login did not finish; nothing changed.\n");
             try out.flush();
             return error.ClaudeLoginIncomplete;
         }
         st = try status(io, arena, exe);
         if (!st.logged_in) {
-            try out.writeAll("Claude Code still reports no login; nothing changed.\n");
+            try out.writeAll("✗ Claude Code still reports no login; nothing changed.\n");
             try out.flush();
             return error.ClaudeLoginIncomplete;
         }
