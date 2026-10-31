@@ -12,6 +12,10 @@ loop has run it, then answers. Asserts:
   `_meta["claudecode/toolUseId"]`, and the file graff wrote exists
 - the second step reuses the same `claude` process (one spawn per run)
 - Claude Code's own login is never read: the fake sees no graff credential
+
+A second run has the model call `rlm` with `llm_query`: the sub-query runs on
+its own tools-off `claude` process and its answer reaches the held call,
+while the chat's process carries on (no restart, one process each).
 """
 import json, os, shutil, subprocess, sys, tempfile
 from pathlib import Path
@@ -32,19 +36,38 @@ def mcp(rid, msg):
     out({"type": "control_request", "request_id": rid, "request": {"subtype": "mcp_message", "server_name": "graff", "message": msg}})
     return read()
 init = read()
+usage = {"input_tokens": 10, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "output_tokens": 1}
+def ready(): out({"type": "control_response", "response": {"subtype": "success", "request_id": init["request_id"], "response": {"claude_code_version": "2.1.304", "models": []}}})
+def answer(msg_id, parts):
+    ev({"type": "message_start", "message": {"id": msg_id, "type": "message", "role": "assistant", "model": "claude-test", "content": [], "usage": usage}})
+    ev({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})
+    for p in parts: ev({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": p}})
+    ev({"type": "content_block_stop", "index": 0})
+    ev({"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": 3}})
+    ev({"type": "message_stop"})
+    out({"type": "result", "subtype": "success", "is_error": False, "result": "".join(parts)})
+if "sdkMcpServers" not in init["request"]:
+    # A tools-off side call (llm_query): answer once, then wait to be stopped.
+    note("mode", "side"); ready(); read()
+    answer("msg_side", ["SUB-", "ANSWER-42"])
+    while True: read()
+note("mode", "main")
 # As claude does: connect the SDK server before answering initialize.
 mcp("m1", {"method": "initialize", "params": {"protocolVersion": "2025-11-25"}, "jsonrpc": "2.0", "id": 0})
 mcp("m2", {"method": "tools/list", "jsonrpc": "2.0", "id": 1})
-out({"type": "control_response", "response": {"subtype": "success", "request_id": init["request_id"], "response": {"claude_code_version": "2.1.304", "models": []}}})
+ready()
 user = read()
-usage = {"input_tokens": 10, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "output_tokens": 1}
+if os.environ.get("FAKE_SCENARIO") == "llm_query":
+    name, args = "rlm", {"code": 'a = llm_query("what is six times seven")\nprint(a)'}
+else:
+    name, args = "write_file", {"path": "out.txt", "content": "from claude agent\n"}
 ev({"type": "message_start", "message": {"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-test", "content": [], "usage": usage}})
-ev({"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "toolu_1", "name": "mcp__graff__write_file", "input": {}}})
-ev({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": json.dumps({"path": "out.txt", "content": "from claude agent\n"})}})
+ev({"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "toolu_1", "name": "mcp__graff__" + name, "input": {}}})
+ev({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": json.dumps(args)}})
 ev({"type": "content_block_stop", "index": 0})
 ev({"type": "message_delta", "delta": {"stop_reason": "tool_use", "stop_sequence": None}, "usage": {"output_tokens": 20}})
 ev({"type": "message_stop"})
-reply = mcp("m3", {"method": "tools/call", "params": {"name": "write_file", "arguments": {"path": "out.txt", "content": "from claude agent\n"}, "_meta": {"claudecode/toolUseId": "toolu_1"}}, "jsonrpc": "2.0", "id": 2})
+reply = mcp("m3", {"method": "tools/call", "params": {"name": name, "arguments": args, "_meta": {"claudecode/toolUseId": "toolu_1"}}, "jsonrpc": "2.0", "id": 2})
 ev({"type": "message_start", "message": {"id": "msg_2", "type": "message", "role": "assistant", "model": "claude-test", "content": [], "usage": usage}})
 ev({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})
 ev({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "FAKE-DONE"}})
@@ -106,8 +129,37 @@ def main():
         assert call['id'] == 2 and not call['result'].get('isError'), call
         assert 'out.txt' in call['result']['content'][0]['text'], call
         print('PASS claude-agent: graff tools as the SDK server, a held call answered with graff\'s result, one process', flush=True)
+        llm_query_case(binary, temp, env)
     finally:
         shutil.rmtree(temp, ignore_errors=True)
+
+
+def llm_query_case(binary, temp, base_env):
+    """rlm's llm_query on Claude Agent: a throwaway tools-off process answers
+    it, and the chat's own process is neither restarted nor shared."""
+    log = temp / 'llm_query.log'
+    work = temp / 'proj-llm-query'
+    work.mkdir()
+    env = dict(base_env, FAKE_CLAUDE_LOG=str(log), FAKE_SCENARIO='llm_query')
+    run = subprocess.run([binary, '--model', 'claude-agent/sonnet', '--yolo', '-p', 'ask the sub-model'], cwd=work, env=env,
+                         capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120)
+    assert run.returncode == 0, run.stderr[-2000:]
+    assert 'FAKE-DONE' in run.stdout, (run.stdout[-500:], run.stderr[-1500:])
+    rows = [json.loads(l) for l in log.read_text().splitlines() if l.strip()]
+    inputs = [r['obj'] for r in rows if r['kind'] == 'in']
+    replies = {i['response']['request_id']: i['response'] for i in inputs if i.get('type') == 'control_response'}
+    call = replies['m3']['response']['mcp_response']
+    text = call['result']['content'][0]['text']
+    assert not call['result'].get('isError') and 'SUB-ANSWER-42' in text, call
+    modes = [r['obj'] for r in rows if r['kind'] == 'mode']
+    assert sorted(modes) == ['main', 'side'], f'expected the chat process and one side process, got {modes}'
+    side_argv = [r['obj'] for r in rows if r['kind'] == 'argv' and '--allowedTools' not in r['obj']]
+    assert len(side_argv) == 1 and side_argv[0][side_argv[0].index('--model') + 1] == 'sonnet', side_argv
+    side_init = [i['request'] for i in inputs if i.get('type') == 'control_request' and 'sdkMcpServers' not in i['request']]
+    assert len(side_init) == 1 and side_init[0]['systemPrompt'], side_init
+    users = [i for i in inputs if i.get('type') == 'user']
+    assert any('what is six times seven' in json.dumps(u['message']['content']) for u in users), users
+    print('PASS claude-agent: llm_query runs on its own tools-off process; the chat\'s process carries on', flush=True)
 
 
 if __name__ == '__main__':
