@@ -177,7 +177,7 @@ fn turnError(d: *Dispatch, w: *Io.Writer, req: proto.Request, err: anyerror) !vo
         return respond(w, req, .{ .stopReason = "max_turn_requests" });
     const message = if (d.error_message) |describe| describe(d.ctx, err) else @errorName(err);
     if (d.error_recovery) |recover| if (recover(d.ctx, err)) |data| {
-        if (req.id != null) try proto.writeErrorData(w, req.id, err_auth_required, message, data);
+        if (req.id != null) try proto.writeErrorData(w, req.id, data.rpcCode(), message, data);
         return;
     };
     return respondError(w, req, err_internal, message);

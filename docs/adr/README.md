@@ -333,6 +333,7 @@ record only when you need the evidence or the edge cases.
 | [0306](0306-model-catalogs-never-hold-startup.md) | Boot and `graff/models` never wait on a catalog GET past a budget: cached catalogs activate now and refresh behind on detached workers whose only output is the disk cache; only uncached ones wait, together, up to 800ms. |
 | [0307](0307-resumed-sessions-keep-their-compaction-state-count.md) | A session saves the provider's count of its compaction state, scoped to provider, model, size and digest; loading reapplies it before rebasing the meter, so a restart neither inflates the meter nor forces a compaction. |
 | [0309](0309-claude-agent-runs-the-users-claude.md) | Claude Agent runs the user's own `claude` over the SDK control protocol: graff's tools as an in-process MCP server with held calls, graff's history as the source of truth, never reading Claude Code's login. |
+| [0310](0310-auth-failures-name-the-rejected-credential.md) | A terminal auth rejection names the seat that failed: sign-in text keeps "sign in again"; key and promoted-key texts say "API key was rejected" and never the signed-out phrases. Key seats carry `{"kind":"api_key_rejected","provider":…}` (v1 `-32603` data, v2 `_meta["graff/recovery"]`); `reauth_required` is unchanged. |
 
 | [0302](0302-sse-idle-watchdogs-follow-body-byte-progress.md) | SSE idle watchdogs observe partial body-byte progress, while separate unfinished-event time and size bounds preserve recovery. |
 
