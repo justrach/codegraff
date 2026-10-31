@@ -34,6 +34,13 @@ pub const Job = union(enum) {
 /// frees itself here, never into a session allocator's leak report.
 const alloc = std.heap.smp_allocator;
 
+/// Workers still running, abandoned or not. A test waits for this to drain
+/// (`waitIdle`) so no worker outlives the test that started it: the test
+/// runner gives each test its own Io and tears it down on return, which puts
+/// back the process's default SIGIO action, and a worker still inside its
+/// own Io would then be killed by that Io's next SIGIO.
+var live: std.atomic.Value(usize) = .init(0);
+
 const running: u8 = 0;
 const finished: u8 = 1;
 const abandoned: u8 = 2;
@@ -52,6 +59,7 @@ const Task = struct {
     }
 
     fn run(t: *Task) void {
+        defer _ = live.fetchSub(1, .release);
         var threaded = privateThreaded();
         defer threaded.deinit();
         const io = threaded.io();
@@ -88,7 +96,9 @@ fn start(job: Job, home: []const u8, key: []const u8) ?*Task {
         return null;
     };
     t.* = .{ .job = job, .home = home_d, .key = key_d };
+    _ = live.fetchAdd(1, .acquire);
     const thread = std.Thread.spawn(.{}, Task.run, .{t}) catch {
+        _ = live.fetchSub(1, .release);
         t.destroy();
         return null;
     };
@@ -100,6 +110,19 @@ fn start(job: Job, home: []const u8, key: []const u8) ?*Task {
 pub fn detach(job: Job, home: []const u8, key: []const u8) void {
     const t = start(job, home, key) orelse return;
     if (t.state.cmpxchgStrong(running, abandoned, .acq_rel, .acquire) != null) t.destroy();
+}
+
+/// Wait up to `budget` for every worker, abandoned ones included, to finish.
+/// For tests: production never waits on an abandoned worker.
+pub fn waitIdle(io: Io, budget: Io.Duration) bool {
+    const step: Io.Duration = .fromMilliseconds(5);
+    var left = budget.nanoseconds;
+    while (live.load(.acquire) != 0) {
+        if (left <= 0) return false;
+        io.sleep(step, .awake) catch return false;
+        left -= step.nanoseconds;
+    }
+    return true;
 }
 
 pub const max_tasks = provider.provider_specs.len + 2;
@@ -154,7 +177,7 @@ pub const Batch = struct {
     }
 };
 
-/// The abandoned worker keeps reading its spec after the test returns.
+/// The abandoned worker reads its spec until the test releases it.
 var test_url_buf: [64]u8 = undefined;
 
 test "a batch that misses its budget returns on time and abandons the fetch" {
@@ -178,6 +201,10 @@ test "a batch that misses its budget returns on time and abandons the fetch" {
     batch.wait(io, .fromMilliseconds(100));
     try std.testing.expect(Io.Timestamp.now(io, .awake).nanoseconds - started < std.time.ns_per_s);
     try std.testing.expect(!batch.fetched(slot));
+    // Release the abandoned worker and let it finish inside this test.
+    const parked = try server.accept(io);
+    parked.close(io);
+    try std.testing.expect(waitIdle(io, .fromSeconds(10)));
 }
 
 test "a finished worker never reinstates the default SIGIO action" {

@@ -51,7 +51,7 @@ pub fn refreshAt(io: Io, arena: Allocator, home: []const u8, spec: provider.Prov
     return router.activateCached(io, arena, home, spec);
 }
 
-/// The 50ms call's worker is abandoned and keeps reading its spec after the test.
+/// The 50ms call's worker is abandoned and reads its spec until the test releases it.
 var test_url_buf: [64]u8 = undefined;
 
 test "gateway picker refresh uses live aliases and preserves its snapshot on timeout" {
@@ -85,6 +85,9 @@ test "gateway picker refresh uses live aliases and preserves its snapshot on tim
     try std.testing.expect(!refreshAt(io, arena.allocator(), home, spec, "test-key", .environment, .fromMilliseconds(50)));
     try std.testing.expect(Io.Timestamp.now(io, .awake).nanoseconds - started < 2 * std.time.ns_per_s);
     try std.testing.expectEqual(before.ptr, pricing.active_model_table.ptr);
+    // Close the stalled connection and let the abandoned worker finish inside this test.
+    group.cancel(io);
+    try std.testing.expect(catalog_bounded.waitIdle(io, .fromSeconds(10)));
 }
 
 fn answer(io: Io, server: *Io.net.Server) void {
