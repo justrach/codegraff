@@ -38,10 +38,14 @@ plain newline-delimited JSON over the child's stdio, verified against
 `claude-agent` is a provider (`.kind = .anthropic`, login `claude_cli`). It
 is seated only after `graff login claude-agent` (which runs
 `claude auth status`, then `claude auth login` if needed, and writes a
-marker naming the binary) or `GRAFF_CLAUDE_AGENT=1`. The catalog lists Claude Code's aliases as
-`claude-agent-sonnet`, `-opus`, `-haiku` and `-fable` (prefixed so bare
-`opus` keeps its Anthropic route); `claude-agent/<id>` passes any id Claude
-Code accepts.
+marker naming the binary) or `GRAFF_CLAUDE_AGENT=1`. Once chosen it is the Claude plan: its catalog lists
+the models Claude Code's aliases resolve to under their real names
+(`claude-opus-5-5`, `claude-fable-5-1`, `claude-sonnet-5-5`,
+`claude-haiku-5-5`, and the 5.0 models it still offers), and those names
+route to Claude Agent ahead of the `anthropic` provider, the way the ChatGPT
+plan's sign-in outranks the Codex login. `anthropic/<model>` still reaches
+the API route; `claude-agent/<id>` passes any id Claude Code accepts; the
+first `claude-agent-<alias>` names keep working.
 
 `Agent.postLive` routes the provider to `claude_agent.zig`, which returns an
 Anthropic SSE body, so `assembleAnthropic`, `stepAnthropic`, `runTools`,

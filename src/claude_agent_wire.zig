@@ -72,8 +72,15 @@ pub fn dropsEnv(name: []const u8) bool {
     return false;
 }
 
-/// The catalog's `claude-agent-sonnet` is Claude Code's `sonnet`; any other id
-/// (`claude-agent/claude-opus-5-5[1m]`) goes through as given.
+/// Whether a model name belongs to Claude Agent once it is chosen: a model in
+/// its catalog, or one of the `claude-agent-<alias>` names it first shipped.
+pub fn routes(model: []const u8) bool {
+    if (std.mem.startsWith(u8, model, "claude-agent-")) return true;
+    return @import("pricing.zig").providerModelInTable("claude-agent", model);
+}
+
+/// An early `claude-agent-sonnet` is Claude Code's `sonnet`; any other id
+/// (`claude-opus-5-5`, `claude-opus-5-5[1m]`) goes through as given.
 pub fn modelArg(model: []const u8) []const u8 {
     const prefix = "claude-agent-";
     return if (std.mem.startsWith(u8, model, prefix)) model[prefix.len..] else model;

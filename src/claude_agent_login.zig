@@ -97,7 +97,7 @@ pub fn login(io: Io, arena: Allocator, environ_map: anytype, home: []const u8) !
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data });
     try out.print("{s}✓{s} Claude Agent is ready: graff runs your Claude Code login", .{ style.green, style.reset });
     if (st.method.len > 0) try out.print(" ({s}{s}{s})", .{ st.method, if (st.plan.len > 0) ", " else "", st.plan });
-    try out.writeAll(".\n  Pick it with `graff --model claude-agent-sonnet` (or -opus, -haiku, -fable), or /model.\n");
+    try out.writeAll(".\n  Claude models now run through it: `graff --model claude-opus-5-5` (or sonnet, haiku, fable), or /model.\n");
     try out.flush();
 }
 
