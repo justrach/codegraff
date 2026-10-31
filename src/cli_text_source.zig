@@ -5,6 +5,9 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.63
+    \\  • auth errors say which credential was rejected: the sign-in, or the API key (and when it was the fallback)
+    \\
     \\0.302.62
     \\  • rlm's llm_query works on Claude Agent, on a throwaway claude process
     \\
