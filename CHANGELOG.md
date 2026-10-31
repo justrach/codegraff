@@ -10,6 +10,12 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.63
+
+- An authentication failure names the credential that was rejected. A sign-in says "<Provider> sign-in was rejected: sign in again (<login command>)"; an API key says "<Provider> API key was rejected (<source>): replace or remove the key. Your sign-in is not affected."; and a key graff fell back to after a plan ran out says "<Provider> plan is out of usage, and the fallback API key was rejected (<source>)". Before, every case read "provider authentication failed: sign in again or check the API key", so a client showed "Log in" when the key was the problem (#1779, ADR 0310).
+- Over ACP a rejected key carries `{"kind":"api_key_rejected","provider":"<id>"}` (v1 error data on -32603; v2 `_meta["graff/recovery"]`), so clients can offer "Update key" instead of a sign-in. `reauth_required` is unchanged.
+- Retains all changes from v0.302.62.
+
 ## v0.302.62
 
 - `rlm`'s `llm_query` works on Claude Agent. Each sub-query runs on its own short-lived, tools-off `claude` process, the way titles and recaps do, so the chat's `claude` process and its prompt cache carry on untouched. Before, it answered "llm_query is not available on Claude Agent" (#1777, ADR 0309).
