@@ -201,3 +201,22 @@ test "claude-agent history hash: a grown history keeps its prefix identity, a re
     try std.testing.expectEqual(history.hashMessages(a, one.array.items), history.hashMessages(a, two.array.items[0..2]));
     try std.testing.expect(history.hashMessages(a, one.array.items) != history.hashMessages(a, edited.array.items));
 }
+
+test "claude-agent routing: once chosen it is the Claude plan; otherwise Claude names stay on anthropic" {
+    const provider = @import("provider.zig");
+    var keys: provider.Keys = .{ .values = @splat(null) };
+    try std.testing.expect(keys.set("anthropic", "sk-ant-test", .environment));
+    try std.testing.expectEqualStrings("anthropic", (try keys.providerFor("claude-opus-5-5")).id);
+    try std.testing.expect(keys.set("claude-agent", "claude", .login));
+    const opus = try keys.providerFor("claude-opus-5-5");
+    try std.testing.expectEqualStrings("claude-agent", opus.id);
+    try std.testing.expectEqualStrings("claude-agent", (try keys.providerFor("claude-opus-5")).id);
+    try std.testing.expectEqualStrings("claude-opus-5-5", wire.modelArg(opus.model));
+    // The first aliases still work, and still mean Claude Code's alias.
+    const alias = try keys.providerFor("claude-agent-opus");
+    try std.testing.expectEqualStrings("claude-agent", alias.id);
+    try std.testing.expectEqualStrings("opus", wire.modelArg(alias.model));
+    // A Claude model Claude Agent does not list keeps its own route.
+    try std.testing.expectEqualStrings("anthropic", (try keys.providerFor("claude-opus-4-8")).id);
+    try std.testing.expectEqualStrings("anthropic", (try keys.providerById("anthropic", "claude-opus-5-5")).id);
+}

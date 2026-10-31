@@ -133,7 +133,7 @@ pub const provider_specs = [_]ProviderSpec{
     .{ .id = "codex", .display_name = "Codex (ChatGPT)", .kind = .responses, .auth = .bearer, .url = "https://chatgpt.com/backend-api/codex/responses", .env_key = "CODEX_DISABLED", .default_model = "gpt-6-sol", .login = .codex_device, .sub_login = true, .catalog = .codex },
     // claude-agent (ADR 0309): Claude through the user's own `claude` and its login, opted into with
     // `graff login claude-agent`. No URL: claude_agent.zig drives the child. The "key" is its path.
-    .{ .id = "claude-agent", .display_name = "Claude Agent", .kind = .anthropic, .auth = .bearer, .url = "stdio:claude", .env_key = "GRAFF_CLAUDE_AGENT", .default_model = "claude-agent-sonnet", .login = .claude_cli, .sub_login = true, .takes_effort = true },
+    .{ .id = "claude-agent", .display_name = "Claude Agent", .kind = .anthropic, .auth = .bearer, .url = "stdio:claude", .env_key = "GRAFF_CLAUDE_AGENT", .default_model = "claude-opus-5-5", .login = .claude_cli, .sub_login = true, .takes_effort = true },
 };
 
 /// Optional workspace-local router loaded from `.graff/.config.router`.
@@ -421,6 +421,8 @@ pub const Keys = struct {
         // Moonshot's platform id is also `kimi-k3`; when the kimi login is
         // present it still wins. When only MOONSHOT_API_KEY is set, phase 0
         // seats the moonshot row instead of falling through to the gateway.
+        // Claude Agent is the Claude plan once chosen (ADR 0309): its models, and its old aliases, route there first.
+        if (keys.get("claude-agent")) |exe| if (@import("claude_agent_wire.zig").routes(model)) return keys.build(specFor("claude-agent").?, exe, model);
         if (keys.get("kimi")) |kimi_key| {
             if (pricing.familyAliasEquals("kimi", "k3", model)) {
                 const spec = specFor("kimi") orelse return error.MissingKey;
