@@ -10,6 +10,15 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.61
+
+- Claude Agent: Claude models through your own Claude Code (`claude`) and its login. Sign in with `graff login claude-agent` (or `/login claude-agent`); graff checks `claude auth status`, never reads Claude Code's credentials, and runs your installed `claude` with graff's tools, prompt, history and loop. Calls are flat-rate on a Claude plan (#1773, ADR 0309).
+- Once chosen it is your Claude plan: `/model` lists `claude-opus-5-5`, `claude-fable-5-1`, `claude-sonnet-5-5` and `claude-haiku-5-5` under Claude Agent, and those names route to it. `anthropic/<model>` still reaches the API route (#1774).
+- Without a terminal (a client such as the desktop app), `graff login claude-agent` says to run `claude auth login` instead of starting it.
+- Lean mode keeps `agent_output` once a subagent request loads it, so a turn that starts background workers can wait for them instead of ending early.
+- Catalog tests wait for the workers they abandon, which crashed the Linux test job with SIGIO (#1772).
+- Retains all changes from v0.302.60.
+
 ## v0.302.60
 
 - A resumed session keeps the provider's count of its Responses compaction state. A restart no longer re-estimates that opaque state from its size, which could show the context meter far over 100% and force a compaction the session did not need. The count is saved with the session and reapplied only to the same state, provider and model (#1686).

@@ -183,6 +183,9 @@ pub fn build(b: *std.Build) void {
     const usage_trace_test = b.addSystemCommand(&.{ "python3", "scripts/test-usage-trace.py" });
     usage_trace_test.addArtifactArg(exe);
     test_step.dependOn(&usage_trace_test.step);
+    const claude_agent_test = b.addSystemCommand(&.{ "python3", "scripts/test-claude-agent.py" });
+    claude_agent_test.addArtifactArg(exe);
+    test_step.dependOn(&claude_agent_test.step);
     const acp_view_meta_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-view-meta.py" });
     acp_view_meta_test.addArtifactArg(exe);
     test_step.dependOn(&acp_view_meta_test.step);

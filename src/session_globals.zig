@@ -15,4 +15,6 @@ pub fn release(gpa: Allocator, io: Io) void {
     presence.deinit(gpa);
     // #1196: filled by the first successful MCP tool result.
     @import("mcp_shapes.zig").shutdown(io);
+    // ADR 0309: held `claude` children end with the run.
+    @import("claude_agent_session.zig").stopAll(io);
 }
