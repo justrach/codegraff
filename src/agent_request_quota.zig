@@ -124,7 +124,12 @@ pub fn handle(self: *@import("agent.zig").Agent, etype: []const u8, code: ?[]con
     const auth = @import("auth_recovery.zig");
     if (fault == .authentication) self.last_api_reauth = auth.forAuthFault(self.provider, code orelse "authentication_error");
     self.last_api_error = switch (fault) {
-        .quota => "provider quota/billing cap: credit or allowance exhausted; retry requires account action",
+        // The Console sign-in that would have taken over was skipped at startup
+        // because it expired beyond renewal (anthropic_profile.load).
+        .quota => if (std.mem.eql(u8, self.provider.id, "anthropic") and self.provider.source == .login and @import("anthropic_profile.zig").expired())
+            "Anthropic plan is out of quota, and the Console sign-in that would take over has expired: run `graff login console` again, or wait for the plan to reset"
+        else
+            "provider quota/billing cap: credit or allowance exhausted; retry requires account action",
         .authentication => auth.failureText(self.arena, self.provider, @import("credential_failover.zig").promoted(self.provider.id)),
         .access_denied => "provider access denied: check account permissions or route eligibility",
     };
