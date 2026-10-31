@@ -440,8 +440,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     self.ws_api_error_pending = false;
                     const diagnostic = try responses.failureDiagnostic(self.arena, self.provider.id, failure);
                     if (@import("agent_async_tools.zig").started(self)) {
-                        self.last_api_reauth = @import("auth_recovery.zig").forFailure(self.provider, failure.code, msg);
-                        try self.sayApiError("{s}", .{diagnostic});
+                        try quota.afterToolsStarted(self, failure.code, msg, diagnostic);
                         return error.ApiError;
                     }
                     if (ws_error_frame) if (self.tracer) |tr| tr.note("ws_api_error", diagnostic);

@@ -117,6 +117,14 @@ pub fn writeFailed(w: *Io.Writer, sid: []const u8, message: []const u8) !void {
 pub fn writeFailedRecovery(w: *Io.Writer, sid: []const u8, message: []const u8, recovery: ?@import("auth_recovery.zig").Recovery) !void {
     const data = recovery orelse return writeFailed(w, sid, message);
     breakMessage();
+    // ADR 0310: only a sign-in action rides `graff/reauth`, which clients read
+    // as "signed out"; a rejected API key rides `graff/recovery`.
+    if (data.login == null) return notify(w, sid, .{
+        .sessionUpdate = "state_update",
+        .state = "idle",
+        .stopReason = "_error",
+        ._meta = .{ .@"graff/error" = message, .@"graff/recovery" = data },
+    });
     try notify(w, sid, .{
         .sessionUpdate = "state_update",
         .state = "idle",
