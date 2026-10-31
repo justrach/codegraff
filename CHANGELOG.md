@@ -10,6 +10,11 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.62
+
+- `rlm`'s `llm_query` works on Claude Agent. Each sub-query runs on its own short-lived, tools-off `claude` process, the way titles and recaps do, so the chat's `claude` process and its prompt cache carry on untouched. Before, it answered "llm_query is not available on Claude Agent" (#1777, ADR 0309).
+- Retains all changes from v0.302.61.
+
 ## v0.302.61
 
 - Claude Agent: Claude models through your own Claude Code (`claude`) and its login. Sign in with `graff login claude-agent` (or `/login claude-agent`); graff checks `claude auth status`, never reads Claude Code's credentials, and runs your installed `claude` with graff's tools, prompt, history and loop. Calls are flat-rate on a Claude plan (#1773, ADR 0309).
