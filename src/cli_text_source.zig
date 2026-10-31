@@ -5,6 +5,9 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.62
+    \\  • rlm's llm_query works on Claude Agent, on a throwaway claude process
+    \\
     \\0.302.61
     \\  • Claude Agent: Claude models through your own Claude Code login (graff login claude-agent)
     \\  • subagent requests keep agent_output in lean mode, so the turn waits for its workers
