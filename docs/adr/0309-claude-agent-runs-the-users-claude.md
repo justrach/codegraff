@@ -72,7 +72,9 @@ approvals, sinks, ACP, usage and compaction run unchanged:
 - graff's system prompt replaces Claude Code's by default;
   `GRAFF_CLAUDE_AGENT_PROMPT=claude` keeps Claude Code's and appends graff's.
 - Usage is Claude Code's per-response counts; billing is the flat-rate plan.
-- `rlm`'s nested `llm_query` reports that it is unavailable (no endpoint).
+- `rlm`'s nested `llm_query` runs on a throwaway child too, tools off at low
+  effort, with a short system prompt in place of Claude Code's. It never
+  takes the chat's held session, so that child and its cache carry on.
 
 ## Measurements
 

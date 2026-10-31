@@ -25,11 +25,12 @@ const wire = @import("claude_agent_wire.zig");
 const history = @import("claude_agent_history.zig");
 const session = @import("claude_agent_session.zig");
 const Session = session.Session;
+const Tracer = @import("trace.zig").Tracer;
 
 pub const provider_id = "claude-agent";
 /// Claude Code retries and backs off on its own; silence this long means the
 /// child is stuck, not thinking (thinking summaries stream as deltas).
-const turn_budget_ms: u64 = 300_000;
+pub const turn_budget_ms: u64 = 300_000;
 const init_budget_ms: u64 = 60_000;
 const init_id = "graff_init";
 
@@ -148,10 +149,26 @@ fn staleBecause(a: std.mem.Allocator, s: *const Session, props_fp: u64, rewrites
 }
 
 fn start(self: *Agent, a: std.mem.Allocator, spawn: wire.Spawn, mode: wire.PromptMode, system: []const u8, tools: ?Value, props_fp: u64, poll: bool) !*Session {
+    const owner: Owner = .{ .gpa = self.gpa, .io = self.io, .cwd = self.agent_cwd, .tracer = self.tracer, .note = if (sideCall(self)) "started (side call)" else "started" };
+    return open(owner, a, spawn, mode, system, tools, props_fp, poll);
+}
+
+/// Who a new `claude` process is for: an Agent's step, or a query made
+/// without one (claude_agent_query.zig).
+pub const Owner = struct {
+    gpa: std.mem.Allocator,
+    io: Io,
+    cwd: ?[]const u8,
+    tracer: ?*Tracer,
+    note: []const u8,
+};
+
+/// Start `claude` and wait for its `initialize` answer.
+pub fn open(owner: Owner, a: std.mem.Allocator, spawn: wire.Spawn, mode: wire.PromptMode, system: []const u8, tools: ?Value, props_fp: u64, poll: bool) !*Session {
     const argv = try wire.argv(a, spawn);
-    const s = try Session.start(self.gpa, self.io, argv, @import("mcp_lazy.zig").parent_env, self.agent_cwd, props_fp);
+    const s = try Session.start(owner.gpa, owner.io, argv, @import("mcp_lazy.zig").parent_env, owner.cwd, props_fp);
     errdefer s.stop();
-    if (self.tracer) |tr| tr.note("claude-agent", if (sideCall(self)) "started (side call)" else "started");
+    if (owner.tracer) |tr| tr.note("claude-agent", owner.note);
     try s.send(try wire.initRequest(a, init_id, mode, system, spawn.has_tools));
     while (true) {
         const line = try s.readLine(poll, init_budget_ms);
@@ -191,7 +208,7 @@ fn refreshTools(s: *Session, a: std.mem.Allocator, tools: ?Value, poll: bool) !v
     try control(s, a, "graff_tools_on", "{\"subtype\":\"mcp_set_servers\",\"servers\":{\"" ++ wire.server_name ++ "\":{\"type\":\"sdk\",\"name\":\"" ++ wire.server_name ++ "\"}}}", tools, poll);
 }
 
-fn startProblem(e: anyerror) []const u8 {
+pub fn startProblem(e: anyerror) []const u8 {
     return switch (e) {
         error.FileNotFound => "Claude Code isn't installed. Install it (https://code.claude.com/docs/en/setup), sign in with `claude auth login`, then try again.",
         error.ClaudeAgentTooOld => "Claude Code is too old for Claude Agent; version " ++ wire.min_version ++ " or later is required. Run `claude update`.",
@@ -233,7 +250,7 @@ fn pendingIndex(s: *Session, tool_use_id: []const u8) ?usize {
 
 /// Answer a control request from Claude Code. A `tools/call` graff already
 /// has a result for is answered at once; any other is held for graff's loop.
-fn service(s: *Session, a: std.mem.Allocator, c: wire.Control, tools: ?Value) !void {
+pub fn service(s: *Session, a: std.mem.Allocator, c: wire.Control, tools: ?Value) !void {
     if (std.mem.eql(u8, c.subtype, "mcp_message")) {
         const msg = c.request.get("message") orelse return s.send(try wire.controlErr(a, c.request_id, "missing message"));
         if (msg != .object) return s.send(try wire.controlErr(a, c.request_id, "bad message"));
@@ -337,7 +354,7 @@ fn turn(self: *Agent, a: std.mem.Allocator, s: *Session, tools: ?Value, poll: bo
     return .{ .sse = try full.toOwnedSlice() };
 }
 
-fn problem(a: std.mem.Allocator, text: []const u8) ![]const u8 {
+pub fn problem(a: std.mem.Allocator, text: []const u8) ![]const u8 {
     if (std.mem.indexOf(u8, text, "Not logged in") != null or std.mem.indexOf(u8, text, "/login") != null)
         return "Claude Code is not logged in. Run `claude auth login` in a terminal, then try again.";
     return std.fmt.allocPrint(a, "Claude Code stopped: {s}", .{text});

@@ -5,6 +5,8 @@
 //! `rlm_query`. Here the host function is that sub-call: one bounded
 //! completion, no tools, so spec_ptc can launch it the moment the prompt
 //! literal closes — overlapping generation of the rest of the script.
+//! On Claude Agent (ADR 0309) the call goes to a throwaway `claude` process
+//! instead of an HTTP endpoint (claude_agent_query.zig).
 
 const std = @import("std");
 const Io = std.Io;
@@ -40,14 +42,14 @@ pub fn run(ctx: ToolCtx, args_json: []const u8) ToolOutput {
         };
     }
     defer if (permit) |*p| p.release();
-    // Claude Agent has no HTTP endpoint: every model call goes through the
-    // session's `claude` child (ADR 0309), which a nested query cannot share.
-    if (std.mem.eql(u8, ctx.provider.id, "claude-agent"))
-        return .{ .text = ctx.gpa.dupe(u8, "rlm: llm_query is not available on Claude Agent; work with the data directly") catch &.{}, .is_error = true };
     const body = buildBody(ctx.gpa, ctx.provider, prompt) catch {
         return .{ .text = ctx.gpa.dupe(u8, "rlm: llm_query could not build request") catch &.{}, .is_error = true };
     };
     defer ctx.gpa.free(body);
+    // Claude Agent has no HTTP endpoint (ADR 0309). The query runs on its own
+    // throwaway `claude` process, like a title; the chat's held session is
+    // keyed by its Agent and never taken here.
+    if (std.mem.eql(u8, ctx.provider.id, "claude-agent")) return viaClaudeAgent(ctx, body);
     const raw = http.postWatched(ctx.gpa, ctx.io, ctx.client, ctx.provider, body, null) catch |err| {
         return .{
             .text = std.fmt.allocPrint(ctx.gpa, "rlm: llm_query failed: {s}", .{@errorName(err)}) catch &.{},
@@ -56,6 +58,25 @@ pub fn run(ctx: ToolCtx, args_json: []const u8) ToolOutput {
     };
     defer ctx.gpa.free(raw);
     return extract(ctx.gpa, ctx.provider.kind, raw);
+}
+
+fn viaClaudeAgent(ctx: ToolCtx, body: []const u8) ToolOutput {
+    const reply = @import("claude_agent_query.zig").post(ctx.gpa, ctx.io, ctx.provider, body, .{
+        .cwd = ctx.agent_cwd,
+        .effort = "low",
+        .tracer = ctx.tracer,
+    }) catch |err| return .{
+        .text = std.fmt.allocPrint(ctx.gpa, "rlm: llm_query failed: {s}", .{@errorName(err)}) catch &.{},
+        .is_error = true,
+    };
+    defer reply.deinit(ctx.gpa);
+    return switch (reply) {
+        .message => |raw| extract(ctx.gpa, .anthropic, raw),
+        .problem => |text| .{
+            .text = std.fmt.allocPrint(ctx.gpa, "rlm: llm_query failed: {s}", .{text}) catch &.{},
+            .is_error = true,
+        },
+    };
 }
 
 pub fn buildBody(gpa: Allocator, provider: Provider, prompt: []const u8) ![]u8 {
