@@ -10,6 +10,11 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.64
+
+- An expired Anthropic Console sign-in that can't be renewed is skipped instead of sent. With no refresh token stored, `ant auth print-credentials` exits 0 and prints the same expired token; graff took that as a refresh, so the dead token was used (or kept as the fallback behind a Claude plan) and every request came back 401. Errors now say "Anthropic Console sign-in has expired: run `graff login console` again", including after a plan handoff, and a spent plan whose fallback was skipped says why (#1781, ADR 0310).
+- Retains all changes from v0.302.63.
+
 ## v0.302.63
 
 - An authentication failure names the credential that was rejected. A sign-in says "<Provider> sign-in was rejected: sign in again (<login command>)"; an API key says "<Provider> API key was rejected (<source>): replace or remove the key. Your sign-in is not affected."; and a key graff fell back to after a plan ran out says "<Provider> plan is out of usage, and the fallback API key was rejected (<source>)". Before, every case read "provider authentication failed: sign in again or check the API key", so a client showed "Log in" when the key was the problem (#1779, ADR 0310).
