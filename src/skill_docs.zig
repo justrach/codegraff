@@ -76,14 +76,14 @@ pub const tool_schema =
     \\{"type": "object", "properties": {"name": {"type": "string", "description": "Skill name to load; omit to list every available skill"}}}
 ;
 
-const Parsed = struct { name: []const u8, desc: []const u8, body: []const u8 };
+pub const Parsed = struct { name: []const u8, desc: []const u8, body: []const u8 };
 
 /// Split a SKILL.md into frontmatter fields + body. Same YAML-ish shape as
 /// fleet.zig's persona files: a leading "---\n…\n---\n" block with `name:` and
 /// `description:` lines. No frontmatter is fine — the file is all body and the
 /// name comes from the filename. Comptime-callable (the bundled skills are
 /// parsed at build time).
-fn parseDoc(fallback_name: []const u8, data: []const u8) Parsed {
+pub fn parseDoc(fallback_name: []const u8, data: []const u8) Parsed {
     var out: Parsed = .{ .name = fallback_name, .desc = "", .body = std.mem.trim(u8, data, " \t\r\n") };
     // A CRLF checkout (Windows CI, notepad-authored skills) opens "---\r\n";
     // the rest of the parser already tolerates \r via per-line trims.
