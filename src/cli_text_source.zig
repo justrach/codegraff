@@ -5,6 +5,9 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.64
+    \\  • an expired Console sign-in is skipped, and the error says to run graff login console
+    \\
     \\0.302.63
     \\  • auth errors say which credential was rejected: the sign-in, or the API key (and when it was the fallback)
     \\
