@@ -67,6 +67,7 @@ const billing = @import("billing.zig"); // #471: seat billing class (flat-rate l
 const bench_priors = @import("bench_priors.zig");
 const fleet = @import("fleet.zig");
 const selection = @import("subagent_selection.zig");
+const catalog_selection = @import("catalog_selection.zig");
 const tier_ladder = @import("subagent_tier_ladder.zig");
 const route_policy = @import("route_policy.zig"); // #372 learned (shape, role) tier policy
 
@@ -116,6 +117,8 @@ pub const Outcome = enum {
     rung_pricier, // the rung would cost more than the child's current model
     sub_routed, // the rung went to a logged-in flat-rate subscription instead
     model_sub_routed, // an exact pin the child's provider does not serve went to a logged-in sub that does
+    cross_provider_unconsented, // a `<provider>/<model>` pin names another provider and the session has no consent
+    no_login, // a `<provider>/<model>` pin names a provider with no key or login
 
     pub fn describe(self: Outcome) []const u8 {
         return switch (self) {
@@ -129,6 +132,8 @@ pub const Outcome = enum {
             .rung_pricier => "tier pin ignored: that rung is pricier than this agent's model — cost never escalates implicitly; pin the model by name to escalate",
             .sub_routed => "tier routed to a logged-in flat-rate subscription — marginal cost zero outranks metered spend; the login is the user's standing consent for that vendor",
             .model_sub_routed => "model pin routed to a logged-in flat-rate subscription that serves it — the child's provider does not; the login is the user's standing consent for that vendor",
+            .cross_provider_unconsented => "model pin ignored: it names another provider — start with --allow-cross-provider-subagents to let workers send prompts and code there",
+            .no_login => "model pin ignored: no key or login for the provider it names — kept the session default",
         };
     }
 };
@@ -237,7 +242,10 @@ pub fn resolve(base: Provider, pin: Pin) Resolved {
 /// so learning can never escalate spend either.
 pub fn resolveIn(base: Provider, pin: Pin, cell: Cell) Resolved {
     const pin_src: Source = if (pin.from_persona) .persona else .explicit_pin;
-    if (pin.model) |query| return finish(base, selection.modelForProvider(base.id, query), pin_src);
+    if (pin.model) |query| {
+        if (qualified(base, query, pin_src)) |r| return r;
+        return finish(base, selection.modelForProvider(base.id, query), pin_src);
+    }
     if (pin.tier) |tier| {
         const ladder = tier_ladder.forModel(base.id, base.model) orelse return .{ .outcome = .no_ladder };
         const rung = ladder.modelFor(tier) orelse return .{ .outcome = .no_rung };
@@ -390,6 +398,26 @@ pub fn rungAffordable(base_model: []const u8, rung_model: []const u8) bool {
     const bp = pricing.priceFor(base_model) orelse return true;
     const rp = pricing.priceFor(rung_model) orelse return false;
     return rp.in + rp.out <= bp.in + bp.out;
+}
+
+/// A pin written `<provider>/<model>` names its provider, so a role persona can
+/// seat itself on another service (`model: codegraff/mercury-3` for a scout
+/// under a subscription root). The same provider just drops the prefix.
+/// Another provider is a boundary crossing: it needs the session's
+/// --allow-cross-provider-subagents consent and a login, and then takes the
+/// exact name under the rule `--model <provider>/<model>` uses, since a
+/// gateway serves models the baked table does not list.
+fn qualified(base: Provider, query: []const u8, src: Source) ?Resolved {
+    const slash = std.mem.indexOfScalar(u8, query, '/') orelse return null;
+    const spec = provider_mod.specFor(query[0..slash]) orelse return null;
+    const name = query[slash + 1 ..];
+    if (std.mem.eql(u8, spec.id, base.id)) return finish(base, selection.modelForProvider(base.id, name), src);
+    if (!selection.g_cross_provider_consent) return .{ .outcome = .cross_provider_unconsented, .source = src };
+    const model = selection.modelForProvider(spec.id, name) orelse
+        (if (catalog_selection.acceptsExplicitModel(spec, name)) name else return .{ .outcome = .unknown_model, .source = src });
+    const keys = bench_priors.g_keys orelse return .{ .outcome = .no_login, .source = src };
+    const prov = keys.providerById(spec.id, model) catch return .{ .outcome = .no_login, .source = src };
+    return .{ .provider = prov, .outcome = .pinned, .source = src };
 }
 
 fn finish(base: Provider, name: ?[]const u8, source: Source) Resolved {

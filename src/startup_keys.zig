@@ -371,7 +371,7 @@ pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map
     // network I/O; model surfaces go online via ensure() when they need it.
     if (catalog_selection.startupMayUse(keys, "codex", model_flag, saved_model))
         model_catalog.ensureCached(io, gpa, arena, home, keys.get("codex") orelse "", keys.codex_account);
-    router_catalog.ensureForStartup(io, gpa, arena, home, keys, model_flag, saved_model);
+    router_catalog.ensureForStartup(io, gpa, arena, home, keys, model_flag, saved_model, worker_provider_hint);
     if (home.len != 0) {
         // Apply the independent models.dev price/context overlay after routing
         // discovery. Provider-specific Codex windows remain authoritative.
