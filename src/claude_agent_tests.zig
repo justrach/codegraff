@@ -84,6 +84,23 @@ test "claude-agent classify: stream events, held tool calls, results; subagent e
     try std.testing.expect(resp.response.ok);
 }
 
+test "claude-agent MCP: a new tool list is announced with list_changed, never a server reset (ADR 0311)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const init = try parse(a, try wire.initializeResult(a, "2025-06-18"));
+    const caps = init.object.get("capabilities").?.object.get("tools").?.object;
+    try std.testing.expect(caps.get("listChanged").?.bool);
+    const req = try parse(a, wire.tools_changed_request);
+    try std.testing.expectEqualStrings("mcp_message", req.object.get("subtype").?.string);
+    try std.testing.expectEqualStrings(wire.server_name, req.object.get("server_name").?.string);
+    const msg = req.object.get("message").?.object;
+    try std.testing.expectEqualStrings("notifications/tools/list_changed", msg.get("method").?.string);
+    try std.testing.expect(msg.get("id") == null); // a notification: Claude Code answers with a tools/list
+    const src = @embedFile("claude_agent.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "\\\"servers\\\":{}") == null);
+}
+
 test "claude-agent MCP: tools/list renames input_schema; a tool_result becomes MCP content" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

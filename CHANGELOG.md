@@ -10,6 +10,13 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.67
+
+- Claude Agent refreshes a changed tool list in place. Removing and re-adding graff's tools (to make Claude Code re-read them) failed the `load_tool_schemas` call that caused the change with "Connection closed", and the model often ended its turn or got "No such tool available"; graff now sends `tools/list_changed` and keeps the connection (#1789, ADR 0311).
+- A turn started by unread peer mail has `peer_message` loaded with its first request (#1789).
+- A task that ended with `attempt_completion` still hears mail addressed to it, as a task that ended with an ordinary answer does; room mail still waits for the next prompt (#1789).
+- Retains all changes from v0.302.66.
+
 ## v0.302.66
 
 - A one-shot (`-p`) answer built on the provider's hosted search is kept. Hosted search runs inside the model call and never counted as a local tool call, so graff took a search-backed answer for a described change, printed "[described a change with no tool call — asking once more]", and the follow-up reply replaced the answer (#1786, #1787).

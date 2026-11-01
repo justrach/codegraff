@@ -175,7 +175,7 @@ test "#1137 peer arrival after attempt_completion does not auto-run" {
     }
     _ = peer_inbox.parkHeard(&.{.{ .from_pid = 2, .from_start = 1, .from_session = "s-peer", .text = "hold gui" }}, &.{});
     peer_idle.noteCompletion();
-    try std.testing.expect(peer_idle.idleWakeSuppressed());
+    try std.testing.expect(peer_idle.isSettled());
     try std.testing.expect(!shouldInjectAuthoritative(false, 1));
     var buf: [256]u8 = undefined;
     try std.testing.expect(peer_idle.takeIdleWake(std.testing.io, &buf) == null);

@@ -219,8 +219,12 @@ pub fn mcpReply(a: Allocator, request_id: []const u8, rpc_id: ?[]const u8, resul
     return controlOk(a, request_id, inner);
 }
 
+/// Control request telling Claude Code that graff's server has a new tool
+/// list (MCP `notifications/tools/list_changed`, client to CLI).
+pub const tools_changed_request = "{\"subtype\":\"mcp_message\",\"server_name\":\"" ++ server_name ++ "\",\"message\":{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}}";
+
 pub fn initializeResult(a: Allocator, protocol_version: []const u8) ![]u8 {
-    return std.fmt.allocPrint(a, "{{\"protocolVersion\":{f},\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"" ++ server_name ++ "\",\"version\":\"1\"}}}}", .{std.json.fmt(protocol_version, .{})});
+    return std.fmt.allocPrint(a, "{{\"protocolVersion\":{f},\"capabilities\":{{\"tools\":{{\"listChanged\":true}}}},\"serverInfo\":{{\"name\":\"" ++ server_name ++ "\",\"version\":\"1\"}}}}", .{std.json.fmt(protocol_version, .{})});
 }
 
 /// graff's Anthropic tool list (`[{name, description, input_schema}]`) as an
