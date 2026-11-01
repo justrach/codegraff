@@ -257,9 +257,10 @@ pub fn toolsList(a: Allocator, tools: ?Value) ![]u8 {
 
 /// An Anthropic `tool_result` block as an MCP `tools/call` result. Text that
 /// graff appended to the same user message (reminders, a steer) rides along
-/// as one more text item: the model reads it with the result, as it would
-/// on the Messages wire.
-pub fn toolResult(a: Allocator, block: ObjectMap, extra_text: []const u8) ![]u8 {
+/// as one more text item, and Anthropic image blocks that came with it as
+/// MCP image items (#1792): the model reads them with the result, as it
+/// would on the Messages wire.
+pub fn toolResult(a: Allocator, block: ObjectMap, extra_text: []const u8, extra_images: []const Value) ![]u8 {
     var aw: std.Io.Writer.Allocating = .init(a);
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     try s.beginObject();
@@ -272,23 +273,12 @@ pub fn toolResult(a: Allocator, block: ObjectMap, extra_text: []const u8) ![]u8 
             const kind = strField(item.object, "type") orelse continue;
             if (std.mem.eql(u8, kind, "text")) {
                 try textItem(&s, strField(item.object, "text") orelse "");
-            } else if (std.mem.eql(u8, kind, "image")) {
-                const src = item.object.get("source") orelse continue;
-                if (src != .object) continue;
-                const data = strField(src.object, "data") orelse continue;
-                try s.beginObject();
-                try s.objectField("type");
-                try s.write("image");
-                try s.objectField("data");
-                try s.write(data);
-                try s.objectField("mimeType");
-                try s.write(strField(src.object, "media_type") orelse "image/png");
-                try s.endObject();
-            }
+            } else if (std.mem.eql(u8, kind, "image")) try imageItem(&s, item.object);
         },
         else => {},
     };
     if (extra_text.len > 0) try textItem(&s, extra_text);
+    for (extra_images) |img| if (img == .object) try imageItem(&s, img.object);
     try s.endArray();
     if (block.get("is_error")) |e| if (e == .bool and e.bool) {
         try s.objectField("isError");
@@ -296,6 +286,21 @@ pub fn toolResult(a: Allocator, block: ObjectMap, extra_text: []const u8) ![]u8 
     };
     try s.endObject();
     return aw.toOwnedSlice();
+}
+
+/// An Anthropic base64 image block as an MCP image item; others are skipped.
+fn imageItem(s: *std.json.Stringify, block: ObjectMap) !void {
+    const src = block.get("source") orelse return;
+    if (src != .object) return;
+    const data = strField(src.object, "data") orelse return;
+    try s.beginObject();
+    try s.objectField("type");
+    try s.write("image");
+    try s.objectField("data");
+    try s.write(data);
+    try s.objectField("mimeType");
+    try s.write(strField(src.object, "media_type") orelse "image/png");
+    try s.endObject();
 }
 
 fn textItem(s: *std.json.Stringify, text: []const u8) !void {

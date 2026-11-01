@@ -111,7 +111,7 @@ test "claude-agent MCP: tools/list renames input_schema; a tool_result becomes M
     try std.testing.expectEqualStrings("shell", t0.get("name").?.string);
     try std.testing.expectEqualStrings("object", t0.get("inputSchema").?.object.get("type").?.string);
     const block = try parse(a, "{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"is_error\":true,\"content\":[{\"type\":\"text\",\"text\":\"boom\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/jpeg\",\"data\":\"AAAA\"}}]}");
-    const result = try parse(a, try wire.toolResult(a, block.object, "steer: also check tests"));
+    const result = try parse(a, try wire.toolResult(a, block.object, "steer: also check tests", &.{}));
     const content = result.object.get("content").?.array.items;
     try std.testing.expectEqual(@as(usize, 3), content.len);
     try std.testing.expectEqualStrings("boom", content[0].object.get("text").?.string);
@@ -236,4 +236,39 @@ test "claude-agent routing: once chosen it is the Claude plan; otherwise Claude 
     // A Claude model Claude Agent does not list keeps its own route.
     try std.testing.expectEqualStrings("anthropic", (try keys.providerFor("claude-opus-4-8")).id);
     try std.testing.expectEqualStrings("anthropic", (try keys.providerById("anthropic", "claude-opus-5-5")).id);
+}
+
+test "claude-agent: a prompt after a call's result keeps its image, fresh or live (#1792)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The turn ended on attempt_completion; the user then sent a screenshot.
+    const msgs = try parse(a,
+        \\[{"role":"user","content":"build it"},
+        \\ {"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"attempt_completion","input":{}}]},
+        \\ {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"completion recorded"}]},
+        \\ {"role":"user","content":[{"type":"text","text":"what is that?"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}]}]
+    );
+    const fresh = (try history.freshContent(a, msgs.array.items)).array.items;
+    try std.testing.expectEqual(@as(usize, 3), fresh.len);
+    const cp = fresh[0].object.get("text").?.string;
+    try std.testing.expect(std.mem.indexOf(u8, cp, "completion recorded") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cp, "what is that?") == null);
+    try std.testing.expect(std.mem.indexOf(u8, cp, "[image]") == null);
+    try std.testing.expectEqualStrings("what is that?", fresh[1].object.get("text").?.string);
+    try std.testing.expectEqualStrings("image", fresh[2].object.get("type").?.string);
+
+    // A live session waiting on that call: the image rides with the result.
+    const d = (try history.delta(a, msgs.array.items[1..])).?;
+    try std.testing.expectEqual(@as(usize, 1), d.results.len);
+    try std.testing.expectEqualStrings("what is that?", d.extra_text);
+    try std.testing.expectEqual(@as(usize, 1), d.extra_images.len);
+    const wire_out = try wire.toolResult(a, d.results[0].block, d.extra_text, d.extra_images);
+    try std.testing.expect(std.mem.indexOf(u8, wire_out, "[image]") == null);
+    const result = try parse(a, wire_out);
+    const items = result.object.get("content").?.array.items;
+    try std.testing.expectEqual(@as(usize, 3), items.len);
+    try std.testing.expectEqualStrings("image", items[2].object.get("type").?.string);
+    try std.testing.expectEqualStrings("iVBORw0KGgo=", items[2].object.get("data").?.string);
+    try std.testing.expectEqualStrings("image/png", items[2].object.get("mimeType").?.string);
 }
