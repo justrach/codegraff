@@ -5,6 +5,9 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.66
+    \\  • a one-shot answer built on hosted search is kept, not bounced and replaced
+    \\
     \\0.302.65
     \\  • Claude Agent models use their full 1M context window (was listed as 200k)
     \\

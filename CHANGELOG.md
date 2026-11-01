@@ -10,6 +10,11 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.66
+
+- A one-shot (`-p`) answer built on the provider's hosted search is kept. Hosted search runs inside the model call and never counted as a local tool call, so graff took a search-backed answer for a described change, printed "[described a change with no tool call — asking once more]", and the follow-up reply replaced the answer (#1786, #1787).
+- Retains all changes from v0.302.65.
+
 ## v0.302.65
 
 - Claude Agent models report and use their 1M context window. Claude Code runs the current Claude models at 1M natively, but graff listed every `claude-agent` model at 200k, so it compacted at a fifth of the window and clients showed "200k context". A `<id>[1m]` name now resolves to 1M as well (#1783).

@@ -74,6 +74,35 @@ pub fn isServerSideCall(itype: []const u8, name: []const u8) bool {
         std.mem.eql(u8, name, "x_thread_fetch");
 }
 
+/// True when these output items carry a search the provider ran itself. Those
+/// calls never count as local tool calls, so a reply built on them would
+/// otherwise look like a bare text answer.
+pub fn ranServerSideSearch(items: []const Value) bool {
+    for (items) |item| {
+        if (item != .object) continue;
+        const itype = if (item.object.get("type")) |t| (if (t == .string) t.string else "") else "";
+        const name = if (item.object.get("name")) |n| (if (n == .string) n.string else "") else "";
+        if (isServerSideCall(itype, name)) return true;
+    }
+    return false;
+}
+
+test "ranServerSideSearch finds hosted search items, not local calls or text" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    for ([_][]const u8{
+        "[{\"type\":\"x_search_call\"},{\"type\":\"message\"}]",
+        "[{\"type\":\"web_search_call\"}]",
+        "[{\"type\":\"custom_tool_call\",\"name\":\"x_keyword_search\"}]",
+    }) |raw| {
+        const v = try std.json.parseFromSliceLeaky(Value, a, raw, .{});
+        try std.testing.expect(ranServerSideSearch(v.array.items));
+    }
+    const local = try std.json.parseFromSliceLeaky(Value, a, "[{\"type\":\"function_call\",\"name\":\"shell\"},{\"type\":\"message\"}]", .{});
+    try std.testing.expect(!ranServerSideSearch(local.array.items));
+}
+
 test "active only for xAI Responses while enabled" {
     const saved = enabled;
     defer enabled = saved;
