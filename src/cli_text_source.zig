@@ -5,6 +5,10 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.67
+    \\  • Claude Agent: loading a tool no longer drops the call or ends the turn
+    \\  • a finished task still hears peers who message it directly
+    \\
     \\0.302.66
     \\  • a one-shot answer built on hosted search is kept, not bounced and replaced
     \\
