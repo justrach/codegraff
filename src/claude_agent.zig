@@ -268,7 +268,8 @@ fn sendDelta(self: *Agent, a: std.mem.Allocator, s: *Session, items: []const Val
     }
     const last_extra = if (note.len == 0) d.extra_text else if (d.extra_text.len == 0) note else try std.mem.concat(a, u8, &.{ d.extra_text, "\n\n", note });
     for (d.results, 0..) |r, i| {
-        const result = try wire.toolResult(a, r.block, if (i + 1 == d.results.len) last_extra else "");
+        const last = i + 1 == d.results.len;
+        const result = try wire.toolResult(a, r.block, if (last) last_extra else "", if (last) d.extra_images else &.{});
         if (pendingIndex(s, r.id)) |pi| {
             const p = s.pending.items[pi];
             try s.send(try wire.mcpReply(a, p.request_id, p.rpc_id, result));

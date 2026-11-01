@@ -53,20 +53,23 @@ fn hasToolResult(m: Value) bool {
 }
 
 /// Content for the first message of a fresh session: the checkpoint of
-/// everything up to the last assistant reply, then the user messages after
-/// it as the prompt (graff may follow a prompt with notices of its own).
+/// everything up to the last assistant reply or tool result, then the user
+/// messages after it as the prompt (graff may follow a prompt with notices
+/// of its own). A turn that ended on a call (`attempt_completion`) leaves
+/// its result first in the trailing user run: the prompt after it keeps
+/// its blocks, images too, instead of joining the checkpoint as text (#1792).
 pub fn freshContent(a: Allocator, items: []const Value) !Value {
     var blocks: std.json.Array = .init(a);
     var start = items.len;
     while (start > 0 and std.mem.eql(u8, role(items[start - 1]), "user")) start -= 1;
-    var prompt_run = start < items.len;
-    for (items[start..]) |m| if (hasToolResult(m)) {
-        prompt_run = false; // results of a call in the checkpoint: no new prompt
+    var cut = start;
+    for (items[start..], start..) |m, i| if (hasToolResult(m)) {
+        cut = i + 1; // results of a call belong to the checkpoint
     };
-    const head = if (prompt_run) items[0..start] else items;
+    const head = items[0..cut];
     if (head.len > 0) try blocks.append(try textBlock(a, try checkpoint(a, head)));
-    if (prompt_run) {
-        for (items[start..]) |m| try appendPromptBlocks(a, &blocks, m.object.get("content") orelse Value{ .string = "" });
+    if (cut < items.len) {
+        for (items[cut..]) |m| try appendPromptBlocks(a, &blocks, m.object.get("content") orelse Value{ .string = "" });
     } else if (head.len > 0) {
         try blocks.append(try textBlock(a, "Continue from where the checkpoint ends."));
     }
@@ -170,6 +173,9 @@ pub const Delta = struct {
     results: []const ToolRes,
     /// Non-result text that arrived with results (reminders, a steer).
     extra_text: []const u8,
+    /// Images that arrived with results (a prompt after a call, a vision
+    /// attachment): sent with the last result as images, not text (#1792).
+    extra_images: []const Value = &.{},
     /// A new prompt when there are no results.
     user: ?Value,
 };
@@ -200,13 +206,19 @@ pub fn delta(a: Allocator, items: []const Value) !?Delta {
         }
     }
     if (results.items.len > 0) {
+        var images: std.ArrayList(Value) = .empty;
         for (prompt.items) |b| {
-            const t = wire.strField(b.object, "text") orelse "[image]";
+            const kind = wire.strField(b.object, "type") orelse "";
+            if (std.mem.eql(u8, kind, "image")) {
+                try images.append(a, b);
+                continue;
+            }
+            const t = wire.strField(b.object, "text") orelse try std.fmt.allocPrint(a, "[{s}]", .{kind});
             if (t.len == 0) continue;
             if (extra.items.len > 0) try extra.append(a, '\n');
             try extra.appendSlice(a, t);
         }
-        return .{ .results = results.items, .extra_text = extra.items, .user = null };
+        return .{ .results = results.items, .extra_text = extra.items, .extra_images = images.items, .user = null };
     }
     if (prompt.items.len == 0) return null;
     return .{ .results = &.{}, .extra_text = "", .user = .{ .array = prompt } };
