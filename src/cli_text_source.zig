@@ -5,6 +5,9 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.65
+    \\  • Claude Agent models use their full 1M context window (was listed as 200k)
+    \\
     \\0.302.64
     \\  • an expired Console sign-in is skipped, and the error says to run graff login console
     \\

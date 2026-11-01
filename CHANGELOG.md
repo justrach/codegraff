@@ -10,6 +10,11 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.65
+
+- Claude Agent models report and use their 1M context window. Claude Code runs the current Claude models at 1M natively, but graff listed every `claude-agent` model at 200k, so it compacted at a fifth of the window and clients showed "200k context". A `<id>[1m]` name now resolves to 1M as well (#1783).
+- Retains all changes from v0.302.64.
+
 ## v0.302.64
 
 - An expired Anthropic Console sign-in that can't be renewed is skipped instead of sent. With no refresh token stored, `ant auth print-credentials` exits 0 and prints the same expired token; graff took that as a refresh, so the dead token was used (or kept as the fallback behind a Claude plan) and every request came back 401. Errors now say "Anthropic Console sign-in has expired: run `graff login console` again", including after a plan handoff, and a spent plan whose fallback was skipped says why (#1781, ADR 0310).
