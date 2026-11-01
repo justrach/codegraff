@@ -101,12 +101,23 @@ pub fn post(self: *Agent, body: []const u8) ![]u8 {
         s.stop();
         held = null;
     } else if (self.tracer) |tr| tr.note("claude-agent", "reused");
+    var relisted = false;
     if (held) |s| if (s.tools_fp != tools_fp) {
-        refreshTools(s, a, tools, poll) catch |e| {
-            s.stop();
-            return e;
-        };
-        if (self.tracer) |tr| tr.note("claude-agent", "tool list refreshed");
+        if (refreshTools(s, a, tools, poll)) {
+            relisted = true;
+            if (self.tracer) |tr| tr.note("claude-agent", "tool list refreshed");
+        } else |e| switch (e) {
+            error.Interrupted => {
+                s.stop();
+                return e;
+            },
+            else => {
+                // A fresh session reads the new list at start.
+                s.stop();
+                held = null;
+                if (self.tracer) |tr| tr.note("claude-agent", "restart: tool list was not re-read");
+            },
+        }
     };
 
     var restarts: u8 = 0;
@@ -117,7 +128,7 @@ pub fn post(self: *Agent, body: []const u8) ![]u8 {
         };
         held = s;
         s.tools_fp = tools_fp;
-        if (try sendDelta(self, a, s, items)) break s;
+        if (try sendDelta(self, a, s, items, if (relisted) relisted_note else "")) break s;
         // The new messages are not something this session can take: replay
         // everything into a fresh one, once.
         s.stop();
@@ -200,12 +211,28 @@ fn control(s: *Session, a: std.mem.Allocator, id: []const u8, request_json: []co
     }
 }
 
-/// graff's tool list changed: remove and re-add its server, which makes
-/// Claude Code initialize it again and re-read tools/list. The session and
-/// its history stay; only the prompt cache past the tools is rewritten.
+/// How long Claude Code gets to re-read the tool list after being told.
+const relist_budget_ms: u64 = 15_000;
+
+/// graff's tool list changed (load_tool_schemas, an MCP server joining).
+/// Tell Claude Code with MCP's tools/list_changed and serve the tools/list it
+/// sends back before answering anything, so the next model request already
+/// has the new tools. The server stays connected, so a call graff is still
+/// holding (usually the load_tool_schemas that changed the list) stays open.
+/// Removing and re-adding the server instead failed that call with
+/// "Connection closed", and the model often ended its turn there.
 fn refreshTools(s: *Session, a: std.mem.Allocator, tools: ?Value, poll: bool) !void {
-    try control(s, a, "graff_tools_off", "{\"subtype\":\"mcp_set_servers\",\"servers\":{}}", tools, poll);
-    try control(s, a, "graff_tools_on", "{\"subtype\":\"mcp_set_servers\",\"servers\":{\"" ++ wire.server_name ++ "\":{\"type\":\"sdk\",\"name\":\"" ++ wire.server_name ++ "\"}}}", tools, poll);
+    const listed = s.tools_listed;
+    try control(s, a, "graff_tools_changed", wire.tools_changed_request, tools, poll);
+    const deadline = nowMs(s.io) + @as(i64, relist_budget_ms);
+    while (s.tools_listed == listed) {
+        const left = deadline - nowMs(s.io);
+        if (left <= 0) return error.ClaudeAgentToolsNotRelisted;
+        switch (try wire.classify(a, try s.readLine(poll, @intCast(left)))) {
+            .control => |c| try service(s, a, c, tools),
+            else => {},
+        }
+    }
 }
 
 pub fn startProblem(e: anyerror) []const u8 {
@@ -217,9 +244,16 @@ pub fn startProblem(e: anyerror) []const u8 {
     };
 }
 
+/// Told with the results that follow a tool-list refresh. load_tool_schemas
+/// prints schemas under graff's own names, and without this the model's
+/// first call to a tool it just loaded used that bare name, which Claude
+/// Code rejects ("No such tool available").
+const relisted_note = "Your tool list was just updated. Call the newly loaded tools by their names in your tool list: graff's tools are named " ++ wire.tool_prefix ++ "<name>.";
+
 /// Send what Claude Code has not seen. False when the session cannot take
-/// it and a fresh one must start from a checkpoint.
-fn sendDelta(self: *Agent, a: std.mem.Allocator, s: *Session, items: []const Value) !bool {
+/// it and a fresh one must start from a checkpoint. `note` rides with the
+/// last result.
+fn sendDelta(self: *Agent, a: std.mem.Allocator, s: *Session, items: []const Value, note: []const u8) !bool {
     _ = self;
     if (s.seen == 0) {
         try s.send(try wire.userLine(a, try history.freshContent(a, items)));
@@ -232,8 +266,9 @@ fn sendDelta(self: *Agent, a: std.mem.Allocator, s: *Session, items: []const Val
         try s.send(try wire.userLine(a, d.user.?));
         return true;
     }
+    const last_extra = if (note.len == 0) d.extra_text else if (d.extra_text.len == 0) note else try std.mem.concat(a, u8, &.{ d.extra_text, "\n\n", note });
     for (d.results, 0..) |r, i| {
-        const result = try wire.toolResult(a, r.block, if (i + 1 == d.results.len) d.extra_text else "");
+        const result = try wire.toolResult(a, r.block, if (i + 1 == d.results.len) last_extra else "");
         if (pendingIndex(s, r.id)) |pi| {
             const p = s.pending.items[pi];
             try s.send(try wire.mcpReply(a, p.request_id, p.rpc_id, result));
@@ -268,10 +303,10 @@ pub fn service(s: *Session, a: std.mem.Allocator, c: wire.Control, tools: ?Value
         }
         const result: []const u8 = if (std.mem.eql(u8, method, "initialize"))
             try wire.initializeResult(a, if (params) |p| wire.strField(p, "protocolVersion") orelse "2025-06-18" else "2025-06-18")
-        else if (std.mem.eql(u8, method, "tools/list"))
-            try wire.toolsList(a, tools)
-        else
-            "{}";
+        else if (std.mem.eql(u8, method, "tools/list")) blk: {
+            s.tools_listed +%= 1;
+            break :blk try wire.toolsList(a, tools);
+        } else "{}";
         return s.send(try wire.mcpReply(a, c.request_id, rpc_id, result));
     }
     if (std.mem.eql(u8, c.subtype, "can_use_tool")) {

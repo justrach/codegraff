@@ -212,7 +212,7 @@ test "parkedDirectives sees a [daddy] body and takeIdleText fires after completi
         @import("peer_idle.zig").resetForTest();
     }
     @import("peer_idle.zig").noteCompletion();
-    try std.testing.expect(@import("peer_idle.zig").idleWakeSuppressed());
+    try std.testing.expect(@import("peer_idle.zig").isSettled());
     try std.testing.expect(!parkedDirectives());
     _ = peer_inbox.parkHeard(&.{.{ .from_session = "s-dad", .text = "[daddy] switch to the tests" }}, &.{});
     try std.testing.expect(parkedDirectives());

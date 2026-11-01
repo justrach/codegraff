@@ -38,6 +38,8 @@ pub const Session = struct {
     props_fp: u64,
     /// The tool list Claude Code last read from graff's server.
     tools_fp: u64 = 0,
+    /// How many times Claude Code has read graff's tools/list.
+    tools_listed: u32 = 0,
     /// graff messages Claude Code already holds, and a hash of them.
     seen: usize = 0,
     seen_fp: u64 = 0,
