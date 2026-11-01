@@ -221,7 +221,7 @@ pub fn request(server: *Server, response_alloc: Allocator, params: []const u8, m
             }, id) catch |err| {
                 // A modern request is cancelled by dropping it; a legacy
                 // session is told which request to stop.
-                if (err == error.McpCancelled and !modern) mcp_http.notifyCancelled(http, server.protocol_version, id);
+                if (err == error.McpCancelled and !modern) @import("mcp_cancel_notice.zig").notify(http, server.protocol_version, id);
                 return err;
             }) orelse return error.BadMcpResponse;
             defer http.client.allocator.free(response_body);

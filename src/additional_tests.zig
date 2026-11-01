@@ -28,6 +28,7 @@ test {
     _ = @import("engine_events_tests.zig");
     _ = @import("run_task_meta.zig");
     _ = @import("acp_run_task_tests.zig");
+    _ = @import("mcp_cancel_notice.zig");
     // Claude Agent provider (ADR 0309).
     _ = @import("claude_agent_tests.zig");
     _ = @import("claude_agent_login.zig");
