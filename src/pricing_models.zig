@@ -34,16 +34,17 @@ pub const rows = [_]ModelInfo{
     .{ .provider = "anthropic", .name = "claude-sonnet-4-5", .context = 200_000 },
     // Claude Agent (ADR 0309): the models Claude Code's opus/fable/sonnet/
     // haiku aliases resolve to, under their real names, so the plan reads like
-    // any other. `claude-agent/<id>` passes any id Claude Code accepts. 200k is
-    // the window Claude Code reports without a `[1m]` suffix.
-    .{ .provider = "claude-agent", .name = "claude-opus-5-5", .context = 200_000 },
-    .{ .provider = "claude-agent", .name = "claude-fable-5-1", .context = 200_000 },
-    .{ .provider = "claude-agent", .name = "claude-sonnet-5-5", .context = 200_000 },
-    .{ .provider = "claude-agent", .name = "claude-haiku-5-5", .context = 200_000 },
+    // any other. `claude-agent/<id>` passes any id Claude Code accepts. Claude
+    // Code runs each of these at 1M natively (its result reports contextWindow
+    // 1000000 with or without a `[1m]` suffix), so the window matches Anthropic's.
+    .{ .provider = "claude-agent", .name = "claude-opus-5-5", .context = 1_000_000 },
+    .{ .provider = "claude-agent", .name = "claude-fable-5-1", .context = 1_000_000 },
+    .{ .provider = "claude-agent", .name = "claude-sonnet-5-5", .context = 1_000_000 },
+    .{ .provider = "claude-agent", .name = "claude-haiku-5-5", .context = 1_000_000 },
     // The previous generation Claude Code still offers by name.
-    .{ .provider = "claude-agent", .name = "claude-opus-5", .context = 200_000 },
-    .{ .provider = "claude-agent", .name = "claude-fable-5", .context = 200_000 },
-    .{ .provider = "claude-agent", .name = "claude-sonnet-5", .context = 200_000 },
+    .{ .provider = "claude-agent", .name = "claude-opus-5", .context = 1_000_000 },
+    .{ .provider = "claude-agent", .name = "claude-fable-5", .context = 1_000_000 },
+    .{ .provider = "claude-agent", .name = "claude-sonnet-5", .context = 1_000_000 },
     .{ .provider = "deepseek", .name = "deepseek-v4-pro", .context = 1_000_000 },
     .{ .provider = "deepseek", .name = "deepseek-v4-flash", .context = 1_000_000 },
     .{ .provider = "deepseek", .name = "deepseek-chat", .context = 1_000_000 },
