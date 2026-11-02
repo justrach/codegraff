@@ -114,10 +114,17 @@ pub const Fetch = struct {
 
 pub fn fetch(io: Io, gpa: Allocator, arena: Allocator, access: []const u8) Fetch {
     if (access.len == 0) return .{ .source = "baked fallback — no Kimi login" };
+    const body = fetchBody(io, gpa, arena, access) orelse return .{};
+    const rows = parseModels(arena, body) orelse
+        return .{ .source = "baked fallback — invalid live catalog" };
+    return .{ .rows = rows, .source = "live account catalog" };
+}
+
+fn fetchBody(io: Io, gpa: Allocator, arena: Allocator, access: []const u8) ?[]const u8 {
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
     var aw: Io.Writer.Allocating = .init(arena);
-    const bearer = std.fmt.allocPrint(arena, "Bearer {s}", .{access}) catch return .{};
+    const bearer = std.fmt.allocPrint(arena, "Bearer {s}", .{access}) catch return null;
     var extra: [8]std.http.Header = undefined;
     extra[0] = .{ .name = "Authorization", .value = bearer };
     extra[1] = .{ .name = "Accept", .value = "application/json" };
@@ -128,11 +135,51 @@ pub fn fetch(io: Io, gpa: Allocator, arena: Allocator, access: []const u8) Fetch
         .response_writer = &aw.writer,
         .headers = .{ .user_agent = .{ .override = user_agent } },
         .extra_headers = extra[0..sent],
-    }) catch return .{};
-    if (@backingInt(response.status) != 200) return .{};
-    const rows = parseModels(arena, aw.writer.buffered()) orelse
-        return .{ .source = "baked fallback — invalid live catalog" };
-    return .{ .rows = rows, .source = "live account catalog" };
+    }) catch return null;
+    if (@backingInt(response.status) != 200) return null;
+    return aw.writer.buffered();
+}
+
+/// The account catalog as last fetched, so boot activates it instead of
+/// waiting on the network; `catalog_bounded` rewrites it in the background.
+pub const cache_ttl_ms: i64 = 6 * 60 * 60 * 1000;
+
+fn cachePaths(arena: Allocator, home: []const u8) [2][]const u8 {
+    if (home.len == 0) return .{ "", "" };
+    return .{
+        std.fmt.allocPrint(arena, "{s}/.codegraff/kimi-models.json", .{home}) catch "",
+        std.fmt.allocPrint(arena, "{s}/.codegraff-kimi-models.json", .{home}) catch "",
+    };
+}
+
+/// Fetch the catalog and store the raw body; true when a valid catalog was
+/// written. Runs on a `catalog_bounded` worker with its own Io and allocator.
+pub fn fetchToCache(io: Io, gpa: Allocator, home: []const u8, access: []const u8) bool {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const body = fetchBody(io, gpa, a, access) orelse return false;
+    if (parseModels(a, body) == null) return false;
+    for (cachePaths(a, home)) |path| {
+        if (path.len == 0) continue;
+        @import("credential_store.zig").replaceFile(io, Io.Dir.cwd(), path, body, .default_file) catch continue;
+        return true;
+    }
+    return false;
+}
+
+pub const Cached = struct { rows: []const pricing.ModelInfo, fresh: bool };
+
+pub fn cached(io: Io, arena: Allocator, home: []const u8) ?Cached {
+    for (cachePaths(arena, home)) |path| {
+        if (path.len == 0) continue;
+        const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(1024 * 1024)) catch continue;
+        const rows = parseModels(arena, data) orelse continue;
+        const stat = Io.Dir.cwd().statFile(io, path, .{}) catch return .{ .rows = rows, .fresh = false };
+        const age = util.unixMs(io) - @as(i64, @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms)));
+        return .{ .rows = rows, .fresh = age >= 0 and age <= cache_ttl_ms };
+    }
+    return null;
 }
 
 fn retain(arena: Allocator, rows: []const pricing.ModelInfo) ?[]const pricing.ModelInfo {
@@ -163,7 +210,7 @@ pub fn commit(arena: Allocator, rows: []const pricing.ModelInfo, source: []const
         catalog_source = source;
         return;
     };
-    catalog_source = if (pricing.activateKimiModels(arena, kept)) "live account catalog" else source;
+    catalog_source = if (pricing.activateKimiModels(arena, kept)) source else "baked fallback — catalog rows rejected";
 }
 
 /// Claim the once-per-process fetch. Startup's fan-out calls this before
@@ -236,4 +283,25 @@ test "commit installs fetched Kimi rows into the active table" {
     try std.testing.expectEqualStrings("live account catalog", catalog_source);
     try std.testing.expect(pricing.providerModelInTable("kimi", "k9-fanout"));
     try std.testing.expect(pricing.providerModelInTable("anthropic", "claude-opus-4-8"));
+}
+
+test "the cached account catalog activates at boot and reports its age" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    const a = state.allocator();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+    try std.testing.expect(cached(io, a, home) == null);
+    try tmp.dir.createDir(io, ".codegraff", .default_dir);
+    const path = try std.fmt.allocPrint(a, "{s}/.codegraff/kimi-models.json", .{home});
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data =
+        \\{"object":"list","data":[{"id":"k9-cached","context_length":262144}]}
+    });
+    const hit = cached(io, a, home) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(hit.fresh);
+    try std.testing.expectEqualStrings("k9-cached", hit.rows[0].name);
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "not json" });
+    try std.testing.expect(cached(io, a, home) == null);
 }

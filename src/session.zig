@@ -177,6 +177,7 @@ fn fingerprint(root: *Agent, name: []const u8) u64 {
         f.text(t.status);
         f.num(t.epoch);
         f.flag(t.retired); // #394: retiring a finished checklist is a real state change, so it must reach disk
+        f.text(t.reason); // #1520
     }
     if (root.session_parent) |parent| f.text(parent) else f.flag(false);
     f.text(root.session_title orelse sessionTitle(root));
@@ -319,6 +320,10 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
             try s.objectField("retired");
             try s.write(true);
         }
+        if (t.reason.len > 0) { // #1520: why a cancelled item was withdrawn; absent otherwise
+            try s.objectField("reason");
+            try s.write(t.reason);
+        }
         try s.endObject();
     }
     try s.endArray();
@@ -350,6 +355,9 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
     // this component with today's prompt/tool-schema estimate.
     try s.objectField("context_local_tokens");
     try s.write(@min(context_estimate.local, @as(u64, std.math.maxInt(i64))));
+    // #1686: the local component above uses this process's count of the
+    // compaction state; a resume needs that count, not bytes/16.
+    try @import("opaque_state_persist.zig").write(&s, root.provider, Value{ .array = saved_msgs });
     try root.compaction_window.write(&s);
     // #330: the --json protocol sequence high-water mark. A REPLACEMENT graff
     // resuming this session continues the numbering from here instead of
@@ -410,7 +418,8 @@ pub fn appendTodosFromValue(arena: Allocator, todos: *std.ArrayList(agent_mod.To
         // Absent in sessions written before #394: those items are live, and the
         // first new ask retires them if they turn out to be a finished list.
         const retired = if (item.object.get("retired")) |r| (r == .bool and r.bool) else false;
-        try todos.append(arena, .{ .content = content, .status = status, .epoch = epoch, .retired = retired });
+        const reason = if (item.object.get("reason")) |r| (if (r == .string) r.string else "") else "";
+        try todos.append(arena, .{ .content = content, .status = status, .epoch = epoch, .retired = retired, .reason = reason });
     }
 }
 
@@ -536,6 +545,9 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     root.goal_note_age = 0;
     root.session_parent = parent;
     root.session_title = title;
+    // #1686: reapply the saved count of this exact compaction state first, so
+    // the rebased meter does not fall back to bytes/16 in a new process.
+    @import("opaque_state_persist.zig").restore(root.provider, .{ .array = root.messages }, obj);
     // Rebase the saved server-only delta onto today's prompt/tool-schema input.
     restoreContextMeter(root, saved_context_tokens, saved_local_tokens);
     root.cap_new = false; // per-provider (like sox/effort below); relearn on rejection

@@ -467,8 +467,12 @@ test "citation annotations stay out of reasoning and fold replay" {
         }
         try std.testing.expectEqualStrings(citation_clean, a.thinking_text.items);
         sink.emit(std.testing.io, .thinking_fold_toggle);
+        try std.testing.expect(a.thinking_folded);
         sink.emit(std.testing.io, .thinking_fold_toggle);
+        try std.testing.expect(!a.thinking_folded);
         const output = aw.writer.buffered();
+        try std.testing.expect(std.mem.indexOf(u8, output, "Ctrl+T collapse") != null);
+        try std.testing.expect(std.mem.indexOf(u8, output, "Ctrl+T expand") != null);
         try std.testing.expect(!@import("cite_markup.zig").contains(output));
         try std.testing.expect(std.mem.indexOf(u8, output, "turn0") == null);
         try std.testing.expect(std.mem.indexOf(u8, output, citation_clean) != null);

@@ -21,6 +21,7 @@ const std = @import("std");
 const Value = std.json.Value;
 
 const Agent = @import("agent.zig").Agent;
+const sse_error = @import("sse_error_event.zig");
 
 /// One in-flight step. `text` and `args` accumulate across deltas.
 const StepAcc = struct {
@@ -49,10 +50,14 @@ pub fn assemble(self: *Agent, body: []const u8) !?std.json.ObjectMap {
     var status: []const u8 = "";
     var interaction_id: []const u8 = "";
     var saw_event = false;
+    var named_error = false; // the data lines follow an `event: error` name
 
     var it = std.mem.tokenizeScalar(u8, body, '\n');
     while (it.next()) |raw_line| {
-        const payload = ssePayload(raw_line) orelse continue;
+        const payload = ssePayload(raw_line) orelse {
+            named_error = sse_error.namesError(raw_line, named_error);
+            continue;
+        };
         if (std.mem.eql(u8, payload, "[DONE]")) {
             saw_event = true;
             continue;
@@ -62,8 +67,14 @@ pub fn assemble(self: *Agent, body: []const u8) !?std.json.ObjectMap {
         const v = std.json.parseFromSliceLeaky(Value, self.scratchAlloc(), payload, .{ .allocate = .alloc_always }) catch continue;
         if (v != .object) continue;
         saw_event = true;
+        // An error event used to reassemble as an empty interaction: a silent
+        // empty turn. Hand it back as the error root request() reports (#748),
+        // whether it arrives on its own or inside a failed interaction.
+        if (try sse_error.envelope(arena, v.object, named_error)) |env| return env;
+        named_error = false;
 
         if (v.object.get("interaction")) |ix| if (ix == .object) {
+            if (try sse_error.envelope(arena, ix.object, false)) |env| return env;
             if (str(ix.object, "id").len > 0) interaction_id = try arena.dupe(u8, str(ix.object, "id"));
             if (str(ix.object, "status").len > 0) status = try arena.dupe(u8, str(ix.object, "status"));
             if (ix.object.get("usage")) |u| usage = try @import("util.zig").dupeJsonValue(arena, u);

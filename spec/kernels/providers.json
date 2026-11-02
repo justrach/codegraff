@@ -226,6 +226,15 @@
       "catalog": "codex",
       "sub_login": true,
       "takes_effort": false
+    },
+    {
+      "id": "claude-agent",
+      "kind": "anthropic",
+      "auth": "bearer",
+      "login": "claude_cli",
+      "catalog": "baked",
+      "sub_login": true,
+      "takes_effort": true
     }
   ]
 }

@@ -291,7 +291,10 @@ pub fn buildRootAgent(
     // Background the fleet-champion pull: a ~0.3s TLS round-trip that used to block
     // the first prompt. Spawn it now; joinElites() reaps it on the main thread at the
     // first turn, so the user's typing hides the fetch (prompt paints ~0.3s sooner).
-    fleet.g_elites_future = io.async(fleet.pullElites, .{ io, arena, client, telemetry.g_telem, telem_endpoint, scoring.providerClass(root.provider.model), arena.dupe(u8, pull_esh) catch pull_esh, fleet.g_agent_types });
+    // `concurrent`, not `async`: async runs inline when the pool is busy, as it
+    // is at boot, and then boot waited up to the pull's 3s deadline.
+    const pull_args = .{ io, arena, client, telemetry.g_telem, telem_endpoint, scoring.providerClass(root.provider.model), arena.dupe(u8, pull_esh) catch pull_esh, fleet.g_agent_types };
+    fleet.g_elites_future = io.concurrent(fleet.pullElites, pull_args) catch io.async(fleet.pullElites, pull_args);
     return root;
 }
 

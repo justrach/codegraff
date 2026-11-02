@@ -30,6 +30,8 @@ const Agent = agent_mod.Agent;
 const TodoItem = agent_mod.TodoItem;
 const goal_state = @import("goal_state.zig");
 const goal_verify_kind = @import("goal_verify_kind.zig");
+const todo_cancel = @import("todo_cancel.zig"); // #1520: the cancelled status's reason and authorization rules
+const contentOf = todo_cancel.contentOf;
 
 pub const ReplaceClear = struct { dropped_open: usize = 0, kept_verify: usize = 0 };
 
@@ -133,7 +135,9 @@ pub fn applyTodoWrite(root: *Agent, list: ?Value) !WriteResult {
     const priors = try root.gpa.alloc(?TodoItem, incoming.items.len);
     defer root.gpa.free(priors);
     for (incoming.items, priors) |c, *p| p.* = priorItem(root.todos.items, epoch, c);
-    const ask_now = askFingerprint(root);
+    // #1520: every cancel says why. Rejected whole, before anything changes.
+    if (try todo_cancel.missingReason(root.arena, asArray(list).?, priors)) |msg| return .{ .text = msg, .rejected = true };
+    const ask_now = todo_cancel.askFingerprint(root);
     const cleared = clearEpochForReplaceEx(&root.todos, epoch, incoming.items);
     goal_state.noteTodoWrite(root); // list changed; open verification still fails allDone (#844)
     var refused_cancel: usize = 0;
@@ -143,8 +147,8 @@ pub fn applyTodoWrite(root: *Agent, list: ?Value) !WriteResult {
             const content = contentOf(item) orelse continue;
             const prior = priors[k];
             k += 1;
-            var status = if (item.object.get("status")) |st| (if (st == .string) st.string else "pending") else "pending";
-            if (!cancelAllowed(status, content, prior, ask_now)) {
+            var status = todo_cancel.statusOf(item);
+            if (!todo_cancel.allowed(status, content, prior, ask_now)) {
                 status = if (prior) |p| p.status else "pending";
                 refused_cancel += 1;
             }
@@ -153,35 +157,17 @@ pub fn applyTodoWrite(root: *Agent, list: ?Value) !WriteResult {
                 .status = try root.arena.dupe(u8, status),
                 .epoch = epoch,
                 .ask_fp = if (prior) |p| p.ask_fp else ask_now, // the request it was FIRST written under
+                .reason = if (todo_cancel.isCancel(status)) try root.arena.dupe(u8, todo_cancel.reasonOf(item, prior)) else "",
             });
         }
     }
     var res = try writeResult(root, epoch, incoming.items, cleared);
     if (refused_cancel > 0) {
-        const note = try std.fmt.allocPrint(root.arena, "\n({d} verification item(s) were not cancelled: a verification item can be cancelled only after a newer user message changes scope; they keep their previous status)", .{refused_cancel});
+        const note = try std.fmt.allocPrint(root.arena, "\n({d} verification item(s) were not cancelled: a verification item can be cancelled only after a newer user message or an ask_user answer changes scope; they keep their previous status)", .{refused_cancel});
         res.text = try std.mem.concat(root.arena, u8, &.{ res.text, note });
         res.model_text = try std.mem.concat(root.arena, u8, &.{ res.reply(), note });
     }
     return res;
-}
-
-/// #1545: cancelling ordinary work is always allowed (omitting it drops it
-/// anyway). A verification item is the #844 obligation, so only the USER can
-/// lift it: the latest user request must differ from the one it was written
-/// under. A brand-new item has nothing to cancel.
-fn cancelAllowed(status: []const u8, content: []const u8, prior: ?TodoItem, ask_now: u64) bool {
-    if (!std.mem.eql(u8, status, "cancelled")) return true;
-    if (!goal_verify_kind.isVerification(content)) return true;
-    const p = prior orelse return false;
-    return p.ask_fp != ask_now;
-}
-
-/// Fingerprint of the latest real user request (notices excluded). Compaction
-/// keeps the current turn's opening message verbatim, so it is stable within
-/// a request and changes when the user sends a new one or steers mid-run.
-fn askFingerprint(root: *const Agent) u64 {
-    const t = @import("messages.zig").latestUserText(root.messages.items);
-    return std.hash.Wyhash.hash(0x1545, t) | 1; // never 0: 0 marks a legacy item
 }
 
 fn priorItem(todos: []const TodoItem, epoch: u64, content: []const u8) ?TodoItem {
@@ -211,13 +197,6 @@ fn asArray(list: ?Value) ?[]const Value {
     const l = list orelse return null;
     if (l != .array) return null;
     return l.array.items;
-}
-
-fn contentOf(item: Value) ?[]const u8 {
-    if (item != .object) return null;
-    const c = item.object.get("content") orelse return null;
-    if (c != .string) return null;
-    return c.string;
 }
 
 /// A root agent in the shape the todo helpers read; no live turn behind it.
@@ -505,7 +484,7 @@ test "#1545 cancelled and dropped records coexist without reopening or adopting 
     var root = todoRoot(ar);
     _ = try applyTodoWrite(&root, try todosArg(ar,
         \\{"todos":[{"content":"finished work","status":"completed"},
-        \\          {"content":"cancelled work","status":"cancelled"},
+        \\          {"content":"cancelled work","status":"cancelled","reason":"user moved on"},
         \\          {"content":"abandoned work","status":"dropped"}]}
     ));
     try std.testing.expectEqual(@as(usize, 0), goal_state.openCount(root.todos.items, 0));
@@ -516,7 +495,7 @@ test "#1545 cancelled and dropped records coexist without reopening or adopting 
     ));
     try std.testing.expectEqual(@as(usize, 4), root.todos.items.len);
     try std.testing.expectEqual(@as(usize, 0), res.dropped_open);
-    try std.testing.expect(std.mem.indexOf(u8, res.text, "[-] cancelled work") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.text, "[-] cancelled work (cancelled: user moved on)") != null);
     try std.testing.expect(std.mem.indexOf(u8, res.text, "[-] abandoned work") != null);
     goal_state.adoptTodos(root.todos.items, 0, 1);
     for (root.todos.items[0..3]) |t| try std.testing.expectEqual(@as(u64, 0), t.epoch);

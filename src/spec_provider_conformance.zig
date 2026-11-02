@@ -35,6 +35,7 @@ fn loginName(l: ProviderSpec.LoginKind) []const u8 {
         .zai_cli => "zai_cli",
         .chatgpt_browser => "chatgpt_browser",
         .anthropic_browser => "anthropic_browser",
+        .claude_cli => "claude_cli",
     };
 }
 

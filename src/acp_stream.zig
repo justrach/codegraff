@@ -221,6 +221,7 @@ pub fn translateTracked(
             return .tool_end;
         }
         try writeToolDone(w, session_id, use_id, is_error, text, @import("run_task_meta.zig").fromEvent(ev));
+        try @import("acp_workspace.zig").emitMoved(w, session_id); // #1737: `workspace use` mid-turn
         return .tool_end;
     }
     if (std.mem.eql(u8, typ, "ask_user")) {

@@ -166,6 +166,8 @@ fn handleWithWait(self: *Agent, final_text: []const u8, hist_len: usize, comptim
     if (@import("task_intent.zig").current(self) == .informational) return false;
     if (@import("exact_reply.zig").requested(messages.latestUserText(self.messages.items))) return false;
     if (no_local_tools.enabled) return false;
+    // #1786: an answer built on the provider's own searches did its work this completion.
+    if (@import("xai_hosted.zig").ranServerSideSearch(self.messages.items[@min(hist_len, self.messages.items.len)..])) return false;
     // #1518: a question answered in text is done, and a retry the model-call
     // budget cannot pay for turns a valid answer into a budget failure.
     if (!@import("task_intent.zig").requestsAction(messages.latestUserText(self.messages.items))) return false;
@@ -278,9 +280,10 @@ pub const PendingWork = struct {
 
 test {
     _ = @import("run_idle.zig");
+    _ = @import("agent_empty_completion_tests.zig");
 }
 
-fn pendingFixture(arena: std.mem.Allocator) Agent {
+pub fn pendingFixture(arena: std.mem.Allocator) Agent {
     var self: Agent = undefined;
     self.arena = arena;
     self.io = std.testing.io;
@@ -490,40 +493,6 @@ test "exact reply bypasses only fake done while mixed requests and empty replies
         const empty = std.mem.trim(u8, case[1], " \t\r\n").len == 0;
         try std.testing.expectEqual(@as(usize, if (case[2] and !empty) before + 1 else before), self.messages.items.len);
         try std.testing.expectEqual(@as(u8, if (empty) 1 else 0), self.empty_completion_retries);
-    }
-}
-
-test "#1518 lean bounce skips questions and a spent model-call budget" {
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    const old_unattended = main_mod.unattended;
-    const old_lean = no_local_tools.lean;
-    const old_enabled = no_local_tools.enabled;
-    main_mod.unattended = true;
-    no_local_tools.lean = true;
-    no_local_tools.enabled = false;
-    defer {
-        main_mod.unattended = old_unattended;
-        no_local_tools.lean = old_lean;
-        no_local_tools.enabled = old_enabled;
-    }
-    var budget: @import("run_budget.zig").RunBudget = .{ .max_model_calls = 1 };
-    budget.model_calls.store(1, .release);
-    const cases = .{
-        .{ "What does parse() return for an empty string?", false, false },
-        .{ "Fix the off-by-one in fib.py", true, false },
-        .{ "Fix the off-by-one in fib.py", false, true },
-    };
-    inline for (cases) |case| {
-        var self = pendingFixture(state.allocator());
-        self.empty_completion_retries = 0;
-        self.call_kind = .title; // suppress fixture notices without initializing a writer
-        self.tool_calls_this_turn = 0;
-        self.model_calls_this_turn = 1;
-        if (case[1]) self.run_budget = &budget;
-        try self.messages.append(try messages.textMessage(self.arena, "user", case[0]));
-        const before = self.messages.items.len;
-        try std.testing.expectEqual(case[2], try handle(&self, "It returns an empty list.", before));
     }
 }
 

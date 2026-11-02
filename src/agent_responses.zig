@@ -7,11 +7,16 @@ const Agent = @import("agent.zig").Agent;
 const policy = @import("agent_request_policy.zig");
 const errorCode = policy.errorCode;
 const util = @import("util.zig");
+const sse_error = @import("sse_error_event.zig");
 
 pub const ResponsesFailure = struct {
     message: []const u8,
     code: ?[]const u8 = null,
     request_id: ?[]const u8 = null,
+    /// The provider's error class (`error.type`, e.g. invalid_request_error),
+    /// so the retry classifiers can tell a deterministic rejection from a
+    /// transient one (#748). Empty when the provider sent none.
+    etype: []const u8 = "",
 
     /// The text to test for an auth failure. The ChatGPT plan route's
     /// subscription_sharing_invalid_user 401 names it only in the code.
@@ -48,21 +53,43 @@ pub fn parseResponses(self: *Agent, body: []const u8) !ResponsesResult {
     var err_msg: ?[]const u8 = null;
     var err_code: ?[]const u8 = null;
     var err_rid: ?[]const u8 = null;
+    var err_type: []const u8 = "";
+    var named_error = false; // the data lines follow an `event: error` name
     var it = std.mem.tokenizeScalar(u8, body, '\n');
     while (it.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \r");
-        if (!std.mem.startsWith(u8, line, "data:")) continue;
+        if (!std.mem.startsWith(u8, line, "data:")) {
+            named_error = sse_error.namesError(line, named_error);
+            continue;
+        }
         const payload = std.mem.trim(u8, line["data:".len..], " ");
         if (payload.len == 0 or std.mem.eql(u8, payload, "[DONE]")) continue;
         const v = std.json.parseFromSliceLeaky(Value, scratch, payload, .{ .allocate = .alloc_always }) catch continue;
         if (v != .object) continue;
-        const t = v.object.get("type") orelse continue;
-        if (t != .string) continue;
-        if (std.mem.eql(u8, t.string, "response.output_item.done")) {
+        const named = named_error;
+        named_error = false;
+        const tname: []const u8 = if (v.object.get("type")) |tv| (if (tv == .string) tv.string else "") else "";
+        // #748: `response.failed`, a typed `error` event, an untyped
+        // `{"error":…}` frame, or a bare frame under `event: error` all end
+        // the stream as a failure carrying the provider's type and message.
+        // Before, the last two parsed as nothing and the body as Unparseable.
+        if (std.mem.eql(u8, tname, "response.failed") or std.mem.eql(u8, tname, "error") or named or
+            (tname.len == 0 and sse_error.isErrorEvent(v.object, false)))
+        {
+            err_msg = if (errorMessage(v.object)) |m|
+                result_arena.dupe(u8, m) catch "codex stream reported a failure"
+            else
+                "codex stream reported a failure";
+            if (errorCode(v.object)) |code| err_code = result_arena.dupe(u8, code) catch null;
+            if (errorRequestId(v.object)) |id| err_rid = result_arena.dupe(u8, id) catch null;
+            err_type = result_arena.dupe(u8, errorType(v.object)) catch "";
+            continue;
+        }
+        if (std.mem.eql(u8, tname, "response.output_item.done")) {
             if (v.object.get("item")) |item| try items.append(try util.dupeJsonValue(result_arena, item));
-        } else if (std.mem.eql(u8, t.string, "response.completed") or std.mem.eql(u8, t.string, "response.incomplete")) {
-            saw_completed = std.mem.eql(u8, t.string, "response.completed");
-            saw_incomplete = std.mem.eql(u8, t.string, "response.incomplete");
+        } else if (std.mem.eql(u8, tname, "response.completed") or std.mem.eql(u8, tname, "response.incomplete")) {
+            saw_completed = std.mem.eql(u8, tname, "response.completed");
+            saw_incomplete = std.mem.eql(u8, tname, "response.incomplete");
             if (v.object.get("response")) |r| if (r == .object) {
                 try terminal.record(result_arena, r.object);
                 if (r.object.get("usage")) |u| {
@@ -73,24 +100,17 @@ pub fn parseResponses(self: *Agent, body: []const u8) !ResponsesResult {
                     resp_id = try result_arena.dupe(u8, idv.string);
                 };
             };
-        } else if (std.mem.eql(u8, t.string, @import("agent_ws_steer.zig").applied_type)) {
+        } else if (std.mem.eql(u8, tname, @import("agent_ws_steer.zig").applied_type)) {
             // A steer the server applied here: the user's words where the model read them.
             if (v.object.get("text")) |txt| if (txt == .string)
                 try items.append(try @import("session_wake.zig").message(result_arena, txt.string));
-        } else if (std.mem.eql(u8, t.string, "response.failed") or std.mem.eql(u8, t.string, "error")) {
-            err_msg = if (errorMessage(v.object)) |m|
-                result_arena.dupe(u8, m) catch "codex stream reported a failure"
-            else
-                "codex stream reported a failure";
-            if (errorCode(v.object)) |code| err_code = result_arena.dupe(u8, code) catch null;
-            if (errorRequestId(v.object)) |id| err_rid = result_arena.dupe(u8, id) catch null;
         }
     }
     // A terminal failure wins even if the stream produced partial completed
     // items first. Committing those items as a successful compaction summary
     // would replace live history with a response the provider explicitly
     // rejected.
-    if (err_msg) |m| return .{ .err = .{ .message = m, .code = err_code, .request_id = err_rid } };
+    if (err_msg) |m| return .{ .err = .{ .message = m, .code = err_code, .request_id = err_rid, .etype = err_type } };
     if (saw_completed or saw_incomplete or items.items.len > 0) {
         var resp: std.json.ObjectMap = .empty;
         try resp.put(result_arena, "output", .{ .array = items });
@@ -120,6 +140,7 @@ pub fn parseResponses(self: *Agent, body: []const u8) !ResponsesResult {
                 .message = result_arena.dupe(u8, m) catch "unparseable provider error",
                 .code = code,
                 .request_id = rid,
+                .etype = result_arena.dupe(u8, errorType(v.object)) catch "",
             } };
         }
     }
@@ -333,6 +354,56 @@ pub fn errorMessage(obj: std.json.ObjectMap) ?[]const u8 {
     };
     if (obj.get("message")) |m| if (m == .string) return m.string;
     return null;
+}
+
+/// The error class from `error.type` or `response.error.type`; the frame's
+/// own top-level `type` is the event name, never the class.
+fn errorType(obj: std.json.ObjectMap) []const u8 {
+    const holder = if (obj.get("response")) |r| (if (r == .object and obj.get("error") == null) r.object else obj) else obj;
+    const e = holder.get("error") orelse return "";
+    if (e != .object) return "";
+    const t = e.object.get("type") orelse return "";
+    return if (t == .string) t.string else "";
+}
+
+test "#748: error-only Responses SSE is a typed failure, never Unparseable" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var agent: Agent = undefined;
+    agent.arena = arena_state.allocator();
+    agent.scratch_arena = null;
+    agent.message_mutation_arena = null;
+    const bodies = [_][]const u8{
+        // Typed error event (already handled): the class now survives.
+        "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"code\":\"invalid_value\",\"message\":\"Invalid tool schema\"}}\n\n",
+        // response.failed carries the class under response.error.
+        "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"type\":\"invalid_request_error\",\"code\":\"invalid_value\",\"message\":\"Invalid tool schema\"}}}\n\n",
+        // An untyped frame from a proxy used to be skipped, leaving the body Unparseable.
+        "event: error\ndata: {\"error\":{\"type\":\"invalid_request_error\",\"code\":\"invalid_value\",\"message\":\"Invalid tool schema\"}}\n\n",
+    };
+    for (bodies) |body| switch (try parseResponses(&agent, body)) {
+        .err => |failure| {
+            try std.testing.expectEqualStrings("Invalid tool schema", failure.message);
+            try std.testing.expectEqualStrings("invalid_value", failure.code.?);
+            try std.testing.expectEqualStrings("invalid_request_error", failure.etype);
+        },
+        .ok => return error.TestUnexpectedResult,
+    };
+    // A bare frame is a failure only because the SSE event named it one.
+    switch (try parseResponses(&agent, "event: error\ndata: {\"message\":\"Upstream rejected the request\",\"code\":\"bad_request\"}\n\n")) {
+        .err => |failure| {
+            try std.testing.expectEqualStrings("Upstream rejected the request", failure.message);
+            try std.testing.expectEqualStrings("bad_request", failure.code.?);
+        },
+        .ok => return error.TestUnexpectedResult,
+    }
+    // The class decides the retry: an invalid request is deterministic, an
+    // overload stays on the transient ladder.
+    const gw = @import("agent_gateway_retry.zig");
+    try std.testing.expect(!gw.isTransientServerError("invalid_request_error", "invalid_value", "Invalid tool schema"));
+    try std.testing.expect(!gw.isShortGatewayFlake("invalid_request_error", null, "An error occurred while processing your request."));
+    try std.testing.expect(gw.isShortGatewayFlake("", null, "An error occurred while processing your request."));
+    try std.testing.expect(gw.isTransientServerError("server_error", null, "The server is overloaded"));
 }
 
 test "parseResponses reads the ChatGPT plan route's expired-token envelope" {

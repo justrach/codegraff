@@ -46,9 +46,13 @@ pub fn namedServers(self: *Agent) bool {
 
 /// Folded natives a message asks for outright. A request to split work across
 /// subagents spawns them and waits on what they return, so both load with the
-/// request instead of one load call each.
+/// request instead of one load call each. A peer wake says "peer_message
+/// action=inbox": the turn it starts reads the inbox first, and on Claude
+/// Agent a call to the unloaded tool is refused by Claude Code itself
+/// ("No such tool available"), which also costs a fresh session (ADR 0311).
 const named_natives = [_]struct { words: []const []const u8, tools: []const []const u8 }{
     .{ .words = &.{ "subagent", "subagents", "sub-agent", "sub-agents" }, .tools = &.{ "subagent", "agent_output" } },
+    .{ .words = &.{"peer_message"}, .tools = &.{"peer_message"} },
 };
 
 fn namedNatives(arena: std.mem.Allocator, text: []const u8, loaded: *std.ArrayList(u8)) void {
@@ -121,6 +125,22 @@ test "asking for subagents loads subagent and agent_output with the request (ADR
     if (fold.enabled) {
         try std.testing.expectEqualStrings("subagent, agent_output", loaded.items);
         try std.testing.expect(fold.isLoaded("subagent") and fold.isLoaded("agent_output"));
+    }
+}
+
+test "a peer wake loads peer_message with the turn it starts (ADR 0311)" {
+    const fold = @import("native_fold.zig");
+    fold.clearLoadedSession();
+    defer fold.clearLoadedSession();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var loaded: std.ArrayList(u8) = .empty;
+    namedNatives(arena_state.allocator(), "Message the peer when you are done.", &loaded);
+    try std.testing.expectEqual(@as(usize, 0), loaded.items.len);
+    namedNatives(arena_state.allocator(), "[peer] 1 unread from lead \u{2014} parked; peer_message action=inbox when relevant", &loaded);
+    if (fold.enabled) {
+        try std.testing.expectEqualStrings("peer_message", loaded.items);
+        try std.testing.expect(fold.isLoaded("peer_message"));
     }
 }
 

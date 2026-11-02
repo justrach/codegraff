@@ -78,7 +78,22 @@ fn assertLogin(data: std.json.ObjectMap, id: []const u8, command: []const u8) !v
     try std.testing.expectEqual(@as(usize, 3), data.count());
 }
 
-fn assertV2Failure(a: std.mem.Allocator, output: []const u8, id: ?[]const u8) !void {
+fn assertKeyRejected(a: std.mem.Allocator, output: []const u8, id: []const u8, suffix: []const u8) !void {
+    const result = try std.json.parseFromSliceLeaky(std.json.Value, a, std.mem.sliceTo(output, '\n'), .{});
+    const err = result.object.get("error").?.object;
+    try std.testing.expectEqual(@as(i64, -32603), err.get("code").?.integer);
+    const data = err.get("data").?.object;
+    try std.testing.expectEqualStrings("api_key_rejected", data.get("kind").?.string);
+    try std.testing.expectEqualStrings(id, data.get("provider").?.string);
+    try std.testing.expectEqual(@as(usize, 2), data.count());
+    const message = err.get("message").?.string;
+    try std.testing.expect(std.mem.endsWith(u8, message, suffix));
+    for (recovery.signed_out_phrases) |phrase| try std.testing.expect(@import("util.zig").indexOfIgnoreCase(message, phrase) == null);
+}
+
+const V2Expect = union(enum) { none, reauth: []const u8, key_rejected: []const u8 };
+
+fn assertV2Failure(a: std.mem.Allocator, output: []const u8, expect: V2Expect) !void {
     var lines = std.mem.tokenizeScalar(u8, output, '\n');
     var accepted: usize = 0;
     var failures: usize = 0;
@@ -95,9 +110,26 @@ fn assertV2Failure(a: std.mem.Allocator, output: []const u8, id: ?[]const u8) !v
         if (meta.object.get("graff/error") == null) continue;
         try std.testing.expectEqualStrings("idle", update.object.get("state").?.string);
         try std.testing.expectEqualStrings("_error", update.object.get("stopReason").?.string);
-        if (id) |expected| {
-            try assertLogin(meta.object.get("graff/reauth").?.object, expected, if (std.mem.eql(u8, expected, "codex")) "codex" else "graff");
-        } else try std.testing.expect(meta.object.get("graff/reauth") == null);
+        switch (expect) {
+            .reauth => |expected| {
+                try assertLogin(meta.object.get("graff/reauth").?.object, expected, if (std.mem.eql(u8, expected, "codex")) "codex" else "graff");
+                try std.testing.expect(meta.object.get("graff/recovery") == null);
+            },
+            .key_rejected => |expected| {
+                // Never on `graff/reauth`: clients read that as signed out.
+                try std.testing.expect(meta.object.get("graff/reauth") == null);
+                const data = meta.object.get("graff/recovery").?.object;
+                try std.testing.expectEqualStrings("api_key_rejected", data.get("kind").?.string);
+                try std.testing.expectEqualStrings(expected, data.get("provider").?.string);
+                try std.testing.expectEqual(@as(usize, 2), data.count());
+                const message = meta.object.get("graff/error").?.string;
+                try std.testing.expect(std.mem.indexOf(u8, message, recovery.api_key_rejected_phrase) != null);
+            },
+            .none => {
+                try std.testing.expect(meta.object.get("graff/reauth") == null);
+                try std.testing.expect(meta.object.get("graff/recovery") == null);
+            },
+        }
         failures += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), accepted);
@@ -150,10 +182,24 @@ test "typed reauth: production terminal handler gates actions and clears stale m
                 try std.testing.expectError(case.err, quota.handle(&agent, case.etype, case.code, case.msg, &refreshed));
                 try std.testing.expect(refreshed);
                 const action = case.action and source == .login and !std.mem.eql(u8, id, "openai");
-                try std.testing.expectEqual(action, agent.last_api_reauth != null);
+                // ADR 0310: a metered seat names the rejected key, never a login.
+                const key_rejected = case.action and source != .login;
+                try std.testing.expectEqual(action or key_rejected, agent.last_api_reauth != null);
                 if (agent.last_api_reauth) |data| {
                     try std.testing.expectEqualStrings(id, data.provider);
-                    try std.testing.expectEqualStrings(if (std.mem.eql(u8, id, "codex")) "codex" else "graff", data.login.command);
+                    if (key_rejected) {
+                        try std.testing.expectEqualStrings("api_key_rejected", data.kind);
+                        try std.testing.expect(data.login == null);
+                    } else try std.testing.expectEqualStrings(if (std.mem.eql(u8, id, "codex")) "codex" else "graff", data.login.?.command);
+                }
+                if (case.err == error.ProviderAuthenticationFailed) {
+                    const text = agent.last_api_error.?;
+                    if (source == .login) {
+                        try std.testing.expect(std.mem.indexOf(u8, text, "sign-in was rejected: sign in again") != null);
+                    } else {
+                        try std.testing.expect(std.mem.indexOf(u8, text, recovery.api_key_rejected_phrase) != null);
+                        for (recovery.signed_out_phrases) |phrase| try std.testing.expect(@import("util.zig").indexOfIgnoreCase(text, phrase) == null);
+                    }
                 }
             }
             agent.last_api_reauth = recovery.forFailure(route("codex"), "401", "");
@@ -191,7 +237,10 @@ test "typed reauth: v1 parsed HTTP and stream auth errors carry route-specific l
             try std.testing.expectEqual(@as(i64, -32000), err.get("code").?.integer);
             try assertLogin(err.get("data").?.object, id, if (std.mem.eql(u8, id, "codex")) "codex" else "graff");
             try std.testing.expect(result.object.get("result") == null);
-            try std.testing.expectEqualStrings("provider authentication failed: sign in again or check the API key", err.get("message").?.string);
+            try std.testing.expectEqualStrings(if (std.mem.eql(u8, id, "codex"))
+                "Codex (ChatGPT) sign-in was rejected: sign in again (codex login)"
+            else
+                "ChatGPT plan (new sign-in) sign-in was rejected: sign in again (graff login chatgpt-new)", err.get("message").?.string);
             try std.testing.expect(LiveTurn.errorRecovery(&live, error.StreamDropped) == null);
             try std.testing.expect(LiveTurn.errorRecovery(&live, error.ProviderQuotaExceeded) == null);
             try std.testing.expect(LiveTurn.errorRecovery(&live, error.ProviderAccessDenied) == null);
@@ -209,16 +258,23 @@ test "typed reauth: v1 parsed HTTP and stream auth errors carry route-specific l
             try std.testing.expectEqual(@as(i64, -32603), err.get("code").?.integer);
             try std.testing.expect(err.get("data") == null);
         }
+        // ADR 0310: a metered seat stays an internal error, with data naming
+        // the rejected key and no login action.
         agent.provider.source = .environment;
         for (auth_bodies) |body| {
             out.clearRetainingCapacity();
             try engine.handleLine(&d, a, &out.writer, try prompt(a, body));
-            const result = try std.json.parseFromSliceLeaky(std.json.Value, a, std.mem.sliceTo(out.writer.buffered(), '\n'), .{});
-            const err = result.object.get("error").?.object;
-            try std.testing.expectEqual(@as(i64, -32603), err.get("code").?.integer);
-            try std.testing.expect(err.get("data") == null);
+            try assertKeyRejected(a, out.writer.buffered(), id, "API key was rejected (environment): replace or remove the key. Your sign-in is not affected.");
         }
     }
+    // A key a spent plan handed over to says so.
+    failover.park("anthropic", "metered", .profile);
+    _ = failover.promote("anthropic").?;
+    agent.provider = route("anthropic");
+    agent.provider.source = .profile;
+    out.clearRetainingCapacity();
+    try engine.handleLine(&d, a, &out.writer, try prompt(a, "http:401"));
+    try assertKeyRejected(a, out.writer.buffered(), "anthropic", "plan is out of usage, and the fallback API key was rejected (Console profile): replace or remove the key, or wait for the plan to reset.");
     out.clearRetainingCapacity();
     agent.last_api_reauth = recovery.forFailure(route("codex"), "invalid_token", "Unauthorized");
     try engine.handleLine(&d, a, &out.writer, try prompt(a, "ok"));
@@ -250,19 +306,19 @@ test "typed reauth: v2 accepted prompt carries the same action on the failed idl
         for (auth_bodies) |body| {
             out.clearRetainingCapacity();
             try engine.handleLine(&d, a, &out.writer, try prompt(a, body));
-            try assertV2Failure(a, out.writer.buffered(), id);
+            try assertV2Failure(a, out.writer.buffered(), .{ .reauth = id });
         }
         for (non_auth_bodies) |body| {
             out.clearRetainingCapacity();
             agent.last_api_reauth = recovery.forFailure(agent.provider, "401", "");
             try engine.handleLine(&d, a, &out.writer, try prompt(a, body));
-            try assertV2Failure(a, out.writer.buffered(), null);
+            try assertV2Failure(a, out.writer.buffered(), .none);
         }
         agent.provider.source = .environment;
         for (auth_bodies) |body| {
             out.clearRetainingCapacity();
             try engine.handleLine(&d, a, &out.writer, try prompt(a, body));
-            try assertV2Failure(a, out.writer.buffered(), null);
+            try assertV2Failure(a, out.writer.buffered(), .{ .key_rejected = id });
         }
     }
     out.clearRetainingCapacity();
@@ -271,4 +327,23 @@ test "typed reauth: v2 accepted prompt carries the same action on the failed idl
     try std.testing.expect(agent.last_api_reauth == null);
     try std.testing.expect(std.mem.indexOf(u8, out.writer.buffered(), "end_turn") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.writer.buffered(), "reauth_required") == null);
+}
+
+test "typed reauth: a failure after async tools started names the rejected credential too" {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    var agent = root(state.allocator());
+    agent.provider = route("openai");
+    agent.provider.source = .stored;
+    try quota.afterToolsStarted(&agent, "invalid_api_key", "Incorrect API key provided", "raw provider diagnostic");
+    try std.testing.expectEqualStrings("OpenAI API key was rejected (secure store): replace or remove the key. Your sign-in is not affected.", agent.last_api_error.?);
+    try std.testing.expectEqualStrings("api_key_rejected", agent.last_api_reauth.?.kind);
+    agent.provider = route("chatgpt-new");
+    try quota.afterToolsStarted(&agent, "token_expired", "Provided authentication token is expired.", "raw provider diagnostic");
+    try std.testing.expectEqualStrings("ChatGPT plan (new sign-in) sign-in was rejected: sign in again (graff login chatgpt-new)", agent.last_api_error.?);
+    try std.testing.expectEqualStrings("reauth_required", agent.last_api_reauth.?.kind);
+    // A non-auth failure keeps the provider's own diagnostic and no metadata.
+    try quota.afterToolsStarted(&agent, "server_error", "upstream unavailable", "raw provider diagnostic");
+    try std.testing.expectEqualStrings("raw provider diagnostic", agent.last_api_error.?);
+    try std.testing.expect(agent.last_api_reauth == null);
 }

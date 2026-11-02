@@ -52,8 +52,50 @@ pub fn stateTokens(bytes: usize) u64 {
     return bytes / compaction_state_bytes_per_token;
 }
 
+/// The provider's count for `bytes` of compaction state, or null while this
+/// process has only the bytes/16 estimate.
+pub fn calibratedState(bytes: usize) ?u64 {
+    if (bytes == 0) return null;
+    for (&g_state_counts) |*slot| {
+        const v = slot.load(.monotonic);
+        if (v >> token_bits == bytes) return v & token_mask;
+    }
+    return null;
+}
+
 pub fn compactionStateBytes(value: Value) usize {
     return mediaStats(value).compaction_state_bytes;
+}
+
+/// Which compaction state a history carries: its total size (the calibration
+/// key) and an order-independent digest of every state blob, so a persisted
+/// count is reapplied only to the same state, never to a different blob that
+/// happens to have the same length.
+pub const StateIdentity = struct { bytes: usize = 0, digest: u64 = 0 };
+
+pub fn compactionStateIdentity(value: Value) StateIdentity {
+    var id: StateIdentity = .{};
+    switch (value) {
+        .array => |items| for (items.items) |item| {
+            const child = compactionStateIdentity(item);
+            id.bytes +|= child.bytes;
+            id.digest +%= child.digest;
+        },
+        .object => |obj| {
+            if (compactionStateLen(obj)) |len| {
+                id.bytes +|= len;
+                id.digest +%= std.hash.Wyhash.hash(0, stringValue(obj.get("encrypted_content")).?);
+            }
+            var it = obj.iterator();
+            while (it.next()) |entry| {
+                const child = compactionStateIdentity(entry.value_ptr.*);
+                id.bytes +|= child.bytes;
+                id.digest +%= child.digest;
+            }
+        },
+        else => {},
+    }
+    return id;
 }
 
 /// Learn the state's share from a counted request: the reported input less

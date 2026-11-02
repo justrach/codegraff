@@ -222,6 +222,8 @@ pub const LiveTurn = struct {
                 defer output_lock.unlock(self.root.io);
                 try proto.writeSessionUpdate(self.out, self.session_id, marker);
             }
+            // #1729: same row as the REPL, so resending this prompt is a new ask.
+            try @import("turn_dedup.zig").settleFailedTurn(self.root, arena, err);
             // #753: an API interruption is a failed turn, not a dead ACP
             // process. Save so the next prompt (and a respawn --resume) still
             // sees the tool results and the background-agent ledger.

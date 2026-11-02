@@ -37,7 +37,7 @@ fn contextWindowFor(provider_id: []const u8, model: []const u8) u64 {
 /// provider_specs; one additional OpenAI-compatible router may be loaded from
 /// `.graff/.config.router` at startup.
 pub const ProviderSpec = struct {
-    pub const LoginKind = enum { api_key, codegraff_device, codex_device, kimi_device, xai_device, zai_cli, chatgpt_browser, anthropic_browser };
+    pub const LoginKind = enum { api_key, codegraff_device, codex_device, kimi_device, xai_device, zai_cli, chatgpt_browser, anthropic_browser, claude_cli };
     pub const CatalogKind = enum { baked, codex, kimi, openai, anthropic };
 
     id: []const u8,
@@ -131,6 +131,9 @@ pub const provider_specs = [_]ProviderSpec{
     // (see loadCodexAuth), the same on-disk-credential trick used for the
     // codegraff gateway key in ~/forge/.credentials.json.
     .{ .id = "codex", .display_name = "Codex (ChatGPT)", .kind = .responses, .auth = .bearer, .url = "https://chatgpt.com/backend-api/codex/responses", .env_key = "CODEX_DISABLED", .default_model = "gpt-6-sol", .login = .codex_device, .sub_login = true, .catalog = .codex },
+    // claude-agent (ADR 0309): Claude through the user's own `claude` and its login, opted into with
+    // `graff login claude-agent`. No URL: claude_agent.zig drives the child. The "key" is its path.
+    .{ .id = "claude-agent", .display_name = "Claude Agent", .kind = .anthropic, .auth = .bearer, .url = "stdio:claude", .env_key = "GRAFF_CLAUDE_AGENT", .default_model = "claude-opus-5-5", .login = .claude_cli, .sub_login = true, .takes_effort = true },
 };
 
 /// Optional workspace-local router loaded from `.graff/.config.router`.
@@ -156,10 +159,11 @@ pub fn specFor(id: []const u8) ?ProviderSpec {
 pub const kimi_native_url = "https://api.kimi.com/coding/v1/chat/completions";
 pub const kimi_anthropic_url = "https://api.kimi.com/coding/v1/messages?beta=true";
 
-/// Endpoint overrides (GRAFF_CODEX_URL / GRAFF_XAI_URL / GRAFF_ZAI_URL /
-/// GRAFF_VERCEL_URL). Parsed before Keys.build so startup, /model, and
-/// session restore share one URL.
+/// Endpoint overrides (GRAFF_CODEX_URL / GRAFF_CHATGPT_URL / GRAFF_XAI_URL /
+/// GRAFF_ZAI_URL / GRAFF_VERCEL_URL). Parsed before Keys.build so startup,
+/// /model, and session restore share one URL.
 pub var g_codex_url_override: ?[]const u8 = null;
+pub var g_chatgpt_url_override: ?[]const u8 = null;
 pub var g_xai_url_override: ?[]const u8 = null;
 pub var g_zai_url_override: ?[]const u8 = null;
 pub var g_vercel_url_override: ?[]const u8 = null;
@@ -170,6 +174,7 @@ pub const vercel_v1_url = "https://ai-gateway.vercel.sh/v1/chat/completions";
 fn resolvedUrl(spec: ProviderSpec, model: []const u8) []const u8 {
     if (std.mem.eql(u8, spec.id, "kimi") and pricing.kimiProtocol(model) == .anthropic) return kimi_anthropic_url;
     if (std.mem.eql(u8, spec.id, "codex")) return g_codex_url_override orelse spec.url;
+    if (std.mem.eql(u8, spec.id, "chatgpt-new")) return g_chatgpt_url_override orelse spec.url;
     if (std.mem.eql(u8, spec.id, "xai")) return g_xai_url_override orelse if (g_xai_responses) xai_responses_url else spec.url;
     if (std.mem.eql(u8, spec.id, "zai")) return g_zai_url_override orelse spec.url;
     if (std.mem.eql(u8, spec.id, "vercel")) return g_vercel_url_override orelse spec.url;
@@ -416,6 +421,8 @@ pub const Keys = struct {
         // Moonshot's platform id is also `kimi-k3`; when the kimi login is
         // present it still wins. When only MOONSHOT_API_KEY is set, phase 0
         // seats the moonshot row instead of falling through to the gateway.
+        // Claude Agent is the Claude plan once chosen (ADR 0309): its models, and its old aliases, route there first.
+        if (keys.get("claude-agent")) |exe| if (@import("claude_agent_wire.zig").routes(model)) return keys.build(specFor("claude-agent").?, exe, model);
         if (keys.get("kimi")) |kimi_key| {
             if (pricing.familyAliasEquals("kimi", "k3", model)) {
                 const spec = specFor("kimi") orelse return error.MissingKey;

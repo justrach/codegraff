@@ -228,6 +228,10 @@ pub const StandingTodo = struct {
     done: bool = false,
     /// `todo_write` in_progress — the ◌ mark in the WORKING tree.
     active: bool = false,
+    /// #1520: cancelled (withdrawn or delegated) with its required reason.
+    /// Not counted in `todos_done`/`todos_total`.
+    cancelled: bool = false,
+    reason: []const u8 = "",
 };
 
 /// Standing work the line REPL may draw above the model prompt. Empty

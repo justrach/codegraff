@@ -338,6 +338,9 @@ test {
     _ = @import("worker_jev.zig"); // ADR 0232: a child asks Jev for its own effort mid-run
     _ = @import("piped_paste.zig"); // ADR 0231
     _ = @import("mcp_connect_notice.zig"); // ADR 0230
+    _ = @import("image_sniff.zig"); // #1762: image media type from the bytes
+    _ = @import("catalog_bounded.zig"); // model discovery: catalog GETs never hold boot past a budget
+    _ = @import("opaque_state_persist_tests.zig"); // #1686: a resumed session keeps its compaction-state count
     _ = @import("oauth_callback.zig");
     _ = @import("cache_key_tests.zig"); // ADR 0223: moved off http_headers.zig (600-line cap)
     _ = @import("router_headers_tests.zig"); // moved off http_headers.zig (600-line cap)
@@ -378,6 +381,7 @@ test {
     _ = @import("commands_resume.zig"); // #697: --resume SOURCE --branch DEST parser
     _ = @import("session_list.zig"); // #712: device-wide saved-session listing
     _ = @import("turn_dedup.zig"); // #714: identical user turns do not replay
+    _ = @import("turn_dedup_tests.zig"); // #1729: a failed turn's retry is a new ask
     _ = @import("net_efficiency_test.zig");
     _ = @import("codex_tool_search.zig"); // hosted tool_search on gpt-5.4+ Codex
     _ = @import("acp_tool_view.zig"); // #1287/#1289: ACP locations and edit diffs

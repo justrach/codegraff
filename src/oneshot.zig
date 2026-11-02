@@ -70,6 +70,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
         if (telemetry.g_telem) |t| t.flush();
         if (tracer.behavior) |behavior| behavior.finish(.failed);
         pricing.printUsageFooter(io);
+        @import("turn_dedup.zig").settleFailedTurn(root, arena, err) catch {}; // #1729: a resumed retry is a new ask
         const saved = save(root, arena);
         const detail = root.last_api_error orelse @errorName(err);
         const failure = result.classify(err, detail);

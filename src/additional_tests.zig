@@ -28,6 +28,10 @@ test {
     _ = @import("engine_events_tests.zig");
     _ = @import("run_task_meta.zig");
     _ = @import("acp_run_task_tests.zig");
+    // Claude Agent provider (ADR 0309).
+    _ = @import("claude_agent_tests.zig");
+    _ = @import("claude_agent_login.zig");
+    _ = @import("claude_agent.zig");
 }
 
 test "oneshot -p still uses the live stall-watched transport" {

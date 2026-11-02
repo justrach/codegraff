@@ -8,6 +8,7 @@ const Value = std.json.Value;
 const Agent = @import("agent.zig").Agent;
 const util = @import("util.zig");
 const tool_call_args = @import("tool_call_args.zig");
+const sse_error = @import("sse_error_event.zig");
 
 const ssePayload = Agent.ssePayload;
 const sseIndex = Agent.sseIndex;
@@ -47,11 +48,22 @@ pub fn assembleAnthropic(self: *Agent, body: []const u8) !?std.json.ObjectMap {
     var stop_details: ?Value = null; // a refusal's category (ADR 0219)
     var usage_delta: ?Value = null;
     var saw_block_stop = false;
+    var named_error = false; // the data lines follow an `event: error` name
     var it = std.mem.tokenizeScalar(u8, body, '\n');
     while (it.next()) |raw_line| {
-        const payload = ssePayload(raw_line) orelse continue;
+        const payload = ssePayload(raw_line) orelse {
+            named_error = sse_error.namesError(raw_line, named_error);
+            continue;
+        };
         const v = std.json.parseFromSliceLeaky(Value, scratch, payload, .{ .allocate = .alloc_always }) catch continue;
         if (v != .object) continue;
+        // An error event (typed, untyped from a proxy, or a bare frame under
+        // `event: error`) becomes the root: request()'s type=="error" check
+        // reports it with the provider's type and message (#748). Detached
+        // from scratch: the rebuild loop can reset the scratch arena before
+        // the message is done being read.
+        if (try sse_error.envelope(result_arena, v.object, named_error)) |env| return env;
+        named_error = false;
         const t = v.object.get("type") orelse continue;
         if (t != .string) continue;
         if (std.mem.eql(u8, t.string, "message_start")) {
@@ -90,12 +102,6 @@ pub fn assembleAnthropic(self: *Agent, body: []const u8) !?std.json.ObjectMap {
             if (v.object.get("usage")) |u| if (u == .object) {
                 usage_delta = u;
             };
-        } else if (std.mem.eql(u8, t.string, "error")) {
-            // Hand the envelope back as the root: request()'s existing
-            // type=="error" check reports it. Detached from scratch — the
-            // rebuild loop can reset the scratch arena before the message
-            // is done being read.
-            return (try util.dupeJsonValue(result_arena, v)).object;
         }
     }
     var r = root orelse return null;

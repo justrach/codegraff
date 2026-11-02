@@ -311,6 +311,8 @@ pub var context_overlay: []const ModelInfo = &.{};
 /// Context window for a model as served by a specific provider; falls back
 /// to any provider's row for the name, then to the conservative default.
 pub fn contextFor(provider_id: []const u8, model: []const u8) u64 {
+    // `<id>[1m]` is Claude Code's spelling of an id's 1M window (claude-agent passes it through).
+    if (std.mem.endsWith(u8, model, "[1m]")) return @max(1_000_000, contextFor(provider_id, model[0 .. model.len - "[1m]".len]));
     // The ChatGPT plan route caps input like the Codex backend it shares.
     const is_codex = std.mem.eql(u8, provider_id, "codex") or std.mem.eql(u8, provider_id, "chatgpt-new");
     const subscription_cap = if (std.mem.eql(u8, model, "gpt-6.1-sol")) sol_subscription_context_window else codex_context_window;

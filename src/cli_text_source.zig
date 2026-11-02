@@ -5,6 +5,72 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.68
+    \\  • Claude Agent: compaction writes a summary instead of continuing the task
+    \\  • Claude Agent: a prompt after a finished turn keeps its images
+    \\
+    \\0.302.67
+    \\  • Claude Agent: loading a tool no longer drops the call or ends the turn
+    \\  • a finished task still hears peers who message it directly
+    \\
+    \\0.302.66
+    \\  • a one-shot answer built on hosted search is kept, not bounced and replaced
+    \\
+    \\0.302.65
+    \\  • Claude Agent models use their full 1M context window (was listed as 200k)
+    \\
+    \\0.302.64
+    \\  • an expired Console sign-in is skipped, and the error says to run graff login console
+    \\
+    \\0.302.63
+    \\  • auth errors say which credential was rejected: the sign-in, or the API key (and when it was the fallback)
+    \\
+    \\0.302.62
+    \\  • rlm's llm_query works on Claude Agent, on a throwaway claude process
+    \\
+    \\0.302.61
+    \\  • Claude Agent: Claude models through your own Claude Code login (graff login claude-agent)
+    \\  • subagent requests keep agent_output in lean mode, so the turn waits for its workers
+    \\
+    \\0.302.60
+    \\  • a resumed session keeps its real context size instead of re-estimating compaction state
+    \\  • large compaction items work over WebSocket without re-running the turn
+    \\
+    \\0.302.59
+    \\  • steadily arriving partial SSE events no longer trigger false stalls or replay
+    \\  • genuine stalls still time out and unfinished events remain bounded
+    \\
+    \\0.302.58
+    \\  • ACP startup and model discovery no longer wait on slow model-catalog hosts
+    \\  • note_constraint states its 240-byte limit up front
+    \\
+    \\0.302.57
+    \\  • images are typed by their bytes, so a mislabelled file no longer wedges a chat
+    \\  • resending a prompt after a failed request makes a new request
+    \\  • stream error events surface the provider's error instead of retrying
+    \\  • withdrawn checklist items can be cancelled with a reason
+    \\
+    \\0.302.56
+    \\  • native file tools follow dependency symlinks that stay inside the workspace
+    \\  • escaping, dangling, and cyclic links remain blocked
+    \\
+    \\0.302.55
+    \\  • help, release history, and bundled playbooks are compressed until needed
+    \\  • long home paths keep the macOS background-launch protection
+    \\
+    \\0.302.54
+    \\  • normal terminal startup is quiet; diagnostics stay opt-in
+    \\  • live thinking shows Ctrl+T collapse/expand beside its header
+    \\
+    \\0.302.53
+    \\  • smaller binaries share prompt text and compress runtime resources
+    \\  • release builds keep safety checks and leave local learning optional
+    \\  • workflow synthesis keeps its catalog at the final report boundary
+    \\
+    \\0.302.52
+    \\  • clearer terminal status, Markdown emphasis, and checklist styling
+    \\  • /workers opens a read-only browser of subagent activity and reports
+    \\
     \\0.302.51
     \\  • Kimi API keys and logins work again (no more RstStream)
     \\  • a used-up Kimi plan window stops instead of retrying
@@ -242,7 +308,8 @@ pub const usage_text =
     \\  graff login chatgpt              ChatGPT sign-in (also: codex, openai)
     \\  graff login anthropic            Claude subscription browser sign-in (also: ant)
     \\  graff login console              metered Console sign-in through the `ant` CLI
-    \\  graff login kimi                 Kimi Code OAuth login (device-code)
+    \\  graff login claude-agent         Claude through your own Claude Code login (`claude`)
+    \\  graff login kimi                 Kimi Code OAuth login (kimi.ai; kimi.com for China)
     \\  graff login xai                  Grok/SuperGrok OAuth login (device-code)
     \\  graff login zai                  Z.AI Coding Plan OAuth login
     \\  graff key set <provider> <key>   store a key (Keychain; POSIX 0600 file; Windows home ACL)
