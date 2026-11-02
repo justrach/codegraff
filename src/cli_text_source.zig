@@ -5,6 +5,10 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.69
+    \\  • reading peer mail no longer rewrites history the model was already sent
+    \\  • workers can use gateway models; graff harness-tree shows the harness as one tree
+    \\
     \\0.302.68
     \\  • Claude Agent: compaction writes a summary instead of continuing the task
     \\  • Claude Agent: a prompt after a finished turn keeps its images
