@@ -13,6 +13,8 @@ current is part of cutting a release.
 ## v0.302.69
 
 - Reading peer mail no longer rewrites history the model was already sent: only wake lines it was never sent are removed. On Claude Agent every woken turn used to start a fresh Claude Code process; on other providers the cached prefix changed after each inbox read (#1799).
+- `graff login kimi` signs international accounts in on kimi.ai and mainland China accounts on kimi.com (from the saved login, or clock and locale); `graff login kimi.ai|kimi.com` choose outright and refresh returns to the issuing site. Sign-in links are copied to the clipboard, over SSH too, and no browser opens where it can't be seen (#1733).
+- OpenAI Responses GPT-5.6+: `GRAFF_OPENAI_CACHE_TTL=12h` / `openai_cache_ttl` puts a 12-hour breakpoint on the stable prefix; the default stays 30m until a live probe confirms it. Usage parses cache writes by TTL (#1698, ADR 0312).
 - Workers can use gateway models and name their own provider: `--subagent-model` with `--subagent-provider codegraff` accepts a gateway model the built-in catalog does not list, a persona's `model: <provider>/<model>` pin runs on that provider, and its calls report cost (#1769).
 - `graff harness-tree show|digest|check|apply|diff` reads the instruction file, skills, subagents, scripts and hooks graff loads as one tree (#1770).
 - MCP over HTTP retries a cancel notice when local ports run out (#1796, #1794).

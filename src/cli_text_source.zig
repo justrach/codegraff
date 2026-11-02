@@ -7,6 +7,7 @@ pub const changelog_text =
     \\──────────
     \\0.302.69
     \\  • reading peer mail no longer rewrites history the model was already sent
+    \\  • graff login kimi works for kimi.ai (international) accounts; sign-in links are copied
     \\  • workers can use gateway models; graff harness-tree shows the harness as one tree
     \\
     \\0.302.68
