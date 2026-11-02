@@ -313,7 +313,7 @@ pub const usage_text =
     \\  graff login anthropic            Claude subscription browser sign-in (also: ant)
     \\  graff login console              metered Console sign-in through the `ant` CLI
     \\  graff login claude-agent         Claude through your own Claude Code login (`claude`)
-    \\  graff login kimi                 Kimi Code OAuth login (device-code)
+    \\  graff login kimi                 Kimi Code OAuth login (kimi.ai; kimi.com for China)
     \\  graff login xai                  Grok/SuperGrok OAuth login (device-code)
     \\  graff login zai                  Z.AI Coding Plan OAuth login
     \\  graff key set <provider> <key>   store a key (Keychain; POSIX 0600 file; Windows home ACL)
