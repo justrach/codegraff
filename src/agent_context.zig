@@ -149,15 +149,11 @@ pub fn recordUsage(self: *Agent, root: std.json.ObjectMap, req_body_len: usize) 
             self.last_usage_includes_output = reported_total > 0 and
                 (total > 0 or if (u.get("completion_tokens")) |v| v == .integer and v.integer >= 0 else false);
             // deepseek reports prompt_cache_hit_tokens; the OpenAI shape
-            // nests cached_tokens under prompt_tokens_details.
-            var cache = usageInt(u, "prompt_cache_hit_tokens");
-            var cache_write: i64 = 0;
-            if (u.get("prompt_tokens_details")) |d| if (d == .object) {
-                if (cache == 0) cache = usageInt(d.object, "cached_tokens");
-                cache_write = usageInt(d.object, "cache_write_tokens");
-            };
-            if (cache > 0) self.last_cache_read = @intCast(cache);
-            self.recordCost(@max(usageInt(u, "prompt_tokens") - cache - cache_write, 0), cache, cache_write, usageInt(u, "completion_tokens"));
+            // nests cached_tokens / cache_write_tokens(_details) under prompt_tokens_details.
+            const cache = @import("openai_prompt_cache.zig").readChatUsage(u);
+            if (cache.cached > 0) self.last_cache_read = @intCast(cache.cached);
+            self.recordCost(@max(usageInt(u, "prompt_tokens") - cache.cached - cache.written, 0), cache.cached, cache.written, usageInt(u, "completion_tokens"));
+            @import("openai_prompt_cache.zig").billTwelveHour(self, cache);
         },
         .responses => {}, // codex uses recordUsageResponses on its own path.
     }
@@ -480,14 +476,12 @@ pub fn recordUsageResponses(self: *Agent, response: std.json.ObjectMap, req_body
     // Without it a long Extra-high session reads "95k/270k" right up until the
     // backend rejects the resend for exceeding the window, and auto-compaction
     // (gated on this meter) never rescues it.
-    var cached: i64 = 0;
-    var cache_write: i64 = 0;
-    if (u.get("input_tokens_details")) |d| if (d == .object) {
-        cached = usageInt(d.object, "cached_tokens");
-        cache_write = usageInt(d.object, "cache_write_tokens");
-        if (cached > 0) self.last_cache_read = @intCast(cached);
-    };
-    if (usage_known) self.recordCost(@max(in_tokens - cached - cache_write, 0), cached, cache_write, out_tokens);
+    const cache = @import("openai_prompt_cache.zig").readResponsesUsage(u);
+    if (cache.cached > 0) self.last_cache_read = @intCast(cache.cached);
+    if (usage_known) {
+        self.recordCost(@max(in_tokens - cache.cached - cache.written, 0), cache.cached, cache.written, out_tokens);
+        @import("openai_prompt_cache.zig").billTwelveHour(self, cache);
+    }
 }
 
 test "recordUsageResponses: usage fallbacks never lower an authoritative meter" {

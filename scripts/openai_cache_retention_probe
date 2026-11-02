@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+"""OpenAI 12h prompt-cache retention probe.
+
+Builds requests through graff's OpenAI provider (`Agent.buildBody`), then
+POSTs them to the Responses API.
+
+  scripts/openai_cache_retention_probe write
+      materialize unique 12h + 30m prefixes, POST both, immediately resend,
+      append bench/openai-cache-retention.json
+
+  scripts/openai_cache_retention_probe --check
+      resend the saved prefixes and append cached_tokens
+
+A 12h hit after 1h / 3h / 6h / ~11.5h is the success signal. A 30m hit after
+~1h is recorded, not a failure — OpenAI may keep entries longer than the
+minimum. Requires OPENAI_API_KEY for POST. Bodies contain no secrets.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+STATE_PATH = ROOT / "bench" / "openai-cache-retention-state.json"
+LOG_PATH = ROOT / "bench" / "openai-cache-retention.json"
+URL = "https://api.openai.com/v1/responses"
+PINNED_KEY = "graff-openai-cache-retention-v1"
+
+
+def iso_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def load_json(path: Path, default):
+    if not path.exists():
+        return default
+    return json.loads(path.read_text())
+
+
+def save_json(path: Path, value) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2) + "\n")
+
+
+def materialize(stamp: str, model: str) -> dict:
+    env = os.environ.copy()
+    env["GRAFF_OPENAI_CACHE_RETENTION"] = "materialize"
+    env["GRAFF_OPENAI_CACHE_RETENTION_STAMP"] = stamp
+    env["GRAFF_OPENAI_CACHE_RETENTION_MODEL"] = model
+    env["GRAFF_OPENAI_CACHE_RETENTION_STATE"] = str(STATE_PATH)
+    cmd = [
+        "zig",
+        "build",
+        "openai-cache-retention",
+        "-Dtest-filter=openai cache retention materialize",
+    ]
+    print("materialize:", " ".join(cmd), file=sys.stderr)
+    subprocess.run(cmd, cwd=ROOT, env=env, check=True)
+    state = load_json(STATE_PATH, None)
+    if not state or "cases" not in state:
+        raise SystemExit(f"materialize did not write {STATE_PATH}")
+    for name, case in state["cases"].items():
+        nonce = case.get("nonce") or ""
+        if stamp not in nonce:
+            raise SystemExit(
+                f"materialize reused a cached body for {name}: nonce={nonce!r} stamp={stamp!r}"
+            )
+    state["prompt_cache_key"] = PINNED_KEY
+    state["materialized_at"] = iso_now()
+    save_json(STATE_PATH, state)
+    return state
+
+
+def usage_from(payload: dict) -> dict:
+    usage = payload.get("usage") or {}
+    details = usage.get("input_tokens_details") or {}
+    writes = details.get("cache_write_tokens_details") or {}
+    return {
+        "id": payload.get("id"),
+        "status": payload.get("status") or payload.get("error"),
+        "input_tokens": usage.get("input_tokens"),
+        "cached_tokens": details.get("cached_tokens"),
+        "cache_write_tokens": details.get("cache_write_tokens"),
+        "ttl_30m_tokens": writes.get("ttl_30m_tokens"),
+        "ttl_12h_tokens": writes.get("ttl_12h_tokens"),
+    }
+
+
+def post(request: dict, api_key: str) -> tuple[int, dict]:
+    body = json.dumps(request).encode()
+    req = urllib.request.Request(
+        URL,
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return resp.status, json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode()
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = {"error": {"message": raw[:500], "type": "http_error"}}
+        return exc.code, payload
+
+
+def append_log(entry: dict) -> None:
+    log = load_json(LOG_PATH, [])
+    if not isinstance(log, list):
+        log = []
+    log.append(entry)
+    save_json(LOG_PATH, log)
+
+
+def run_pair(state: dict, api_key: str, phase: str) -> dict:
+    results = {"phase": phase, "ts": iso_now(), "prompt_cache_key": PINNED_KEY, "cases": {}}
+    for name, case in state["cases"].items():
+        request = case["request"]
+        request["prompt_cache_key"] = PINNED_KEY
+        status, payload = post(request, api_key)
+        usage = usage_from(payload)
+        row = {
+            "http_status": status,
+            "nonce": case.get("nonce"),
+            "ttl": case.get("ttl"),
+            **usage,
+        }
+        if status != 200:
+            err = (payload.get("error") or {})
+            row["error_type"] = err.get("type")
+            row["error_code"] = err.get("code")
+            row["error_message"] = err.get("message")
+        results["cases"][name] = row
+        print(
+            f"{phase} {name}: http={status} id={usage.get('id')} "
+            f"input={usage.get('input_tokens')} cached={usage.get('cached_tokens')} "
+            f"write={usage.get('cache_write_tokens')} "
+            f"12h={usage.get('ttl_12h_tokens')} 30m={usage.get('ttl_30m_tokens')}",
+            file=sys.stderr,
+        )
+    append_log(results)
+    return results
+
+
+def write(model: str) -> int:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    state = materialize(stamp, model)
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        state["status"] = "not_run"
+        state["reason"] = "OPENAI_API_KEY unset"
+        save_json(STATE_PATH, state)
+        print("OPENAI_API_KEY is unset; wrote request bodies only.", file=sys.stderr)
+        print(f"state: {STATE_PATH}", file=sys.stderr)
+        print(f"rerun: OPENAI_API_KEY=... {Path(__file__).name} write", file=sys.stderr)
+        return 0
+    written = run_pair(state, api_key, "write")
+    time.sleep(2)
+    checked = run_pair(state, api_key, "immediate_check")
+    state["status"] = "written"
+    state["written_at"] = written["ts"]
+    for name, row in written["cases"].items():
+        state["cases"][name]["write"] = row
+    for name, row in checked["cases"].items():
+        state["cases"][name]["immediate_check"] = row
+    save_json(STATE_PATH, state)
+    print(f"state: {STATE_PATH}", file=sys.stderr)
+    print(f"log:   {LOG_PATH}", file=sys.stderr)
+    print(
+        f"rerun --check: {Path(__file__).name} --check",
+        file=sys.stderr,
+    )
+    print(f"nonce/state file: {STATE_PATH} (prompt_cache_key={PINNED_KEY})", file=sys.stderr)
+    twelve = checked["cases"].get("12h") or {}
+    if twelve.get("http_status") != 200:
+        return 1
+    return 0
+
+
+def check() -> int:
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        print("OPENAI_API_KEY is unset; --check was not sent.", file=sys.stderr)
+        return 1
+    state = load_json(STATE_PATH, None)
+    if not state or "cases" not in state:
+        raise SystemExit(f"missing state file {STATE_PATH}; run write first")
+    results = run_pair(state, api_key, "check")
+    state["last_check_at"] = results["ts"]
+    for name, row in results["cases"].items():
+        checks = state["cases"][name].setdefault("checks", [])
+        checks.append(row)
+    save_json(STATE_PATH, state)
+    print(f"appended {LOG_PATH}", file=sys.stderr)
+    return 0 if all(c.get("http_status") == 200 for c in results["cases"].values()) else 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", nargs="?", default="write", choices=("write", "check"))
+    parser.add_argument("--check", action="store_true", help="resend saved prefixes")
+    parser.add_argument("--model", default=os.environ.get("GRAFF_OPENAI_CACHE_RETENTION_MODEL", "gpt-5.6"))
+    args = parser.parse_args()
+    if args.check or args.command == "check":
+        return check()
+    return write(args.model)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

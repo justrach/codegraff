@@ -159,6 +159,14 @@ pub fn build(b: *std.Build) void {
     // scripts `test` adds below. `-Dtest-filter` narrows it to named tests.
     const unit_step = b.step("unit", "Run only the unit tests (-Dtest-filter narrows them)");
     unit_step.dependOn(&run_tests.step);
+    // Operator probe: env-gated and writes a file, so the run cannot be cached.
+    const run_openai_cache_retention = b.addRunArtifact(unit_tests);
+    run_openai_cache_retention.has_side_effects = true;
+    const openai_cache_retention_step = b.step(
+        "openai-cache-retention",
+        "Run the env-gated OpenAI cache retention materialize/live tests",
+    );
+    openai_cache_retention_step.dependOn(&run_openai_cache_retention.step);
     const acp_preauth_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-preauth.py" });
     acp_preauth_test.addArtifactArg(exe);
     test_step.dependOn(&acp_preauth_test.step);
