@@ -10,6 +10,15 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.70
+
+- Claude Agent: a reply the model starts while graff refreshes its tool list arrives whole. graff dropped what Claude Code sent during the re-list, so the reply lost its start and the turn failed with "unparseable response" (#1804).
+- A turn that ends after the provider returns empty replies 6 times in a row now says so over ACP: the turn stopped, the conversation is kept, and sending again retries. It used to end with a bare `EmptyCompletion` (#1802).
+- Simulator tests no longer overwrite the Mac's clipboard. With the Simulator app open and Edit > Automatically Sync Pasteboard on, a command that runs simulator tests (`xcodebuild test`, `xctest`) or writes a simulator pasteboard (`simctl pbcopy`/`pbsync`) is refused with steps to fix it. graff never changes the setting or touches the clipboard; `GRAFF_ALLOW_SIM_PASTEBOARD=1` turns the check off (#1801).
+- Large request bodies are no longer cut off while they are still uploading. Connecting, uploading and waiting for the response each have their own time limit; the upload limit grows with the body and follows its progress, and a peer that stops reading still fails (#1785).
+- An ACP chat that was loaded or forked is a peer under its own session id, so mail addressed to it reaches it (#1803).
+- Retains all changes from v0.302.69.
+
 ## v0.302.69
 
 - Reading peer mail no longer rewrites history the model was already sent: only wake lines it was never sent are removed. On Claude Agent every woken turn used to start a fresh Claude Code process; on other providers the cached prefix changed after each inbox read (#1799).
