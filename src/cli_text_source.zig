@@ -5,6 +5,11 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.70
+    \\  • Claude Agent: a reply that starts during a tool-list refresh no longer fails
+    \\  • simulator tests can't overwrite your clipboard; large uploads aren't cut off
+    \\  • an empty-reply failure says what happened and how to retry
+    \\
     \\0.302.69
     \\  • reading peer mail no longer rewrites history the model was already sent
     \\  • graff login kimi works for kimi.ai (international) accounts; sign-in links are copied
