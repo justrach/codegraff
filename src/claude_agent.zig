@@ -203,11 +203,24 @@ pub fn open(owner: Owner, a: std.mem.Allocator, spawn: wire.Spawn, mode: wire.Pr
 fn control(s: *Session, a: std.mem.Allocator, id: []const u8, request_json: []const u8, tools: ?Value, poll: bool) !void {
     try s.send(try std.fmt.allocPrint(a, "{{\"type\":\"control_request\",\"request_id\":\"{s}\",\"request\":{s}}}", .{ id, request_json }));
     while (true) {
-        switch (try wire.classify(a, try s.readLine(poll, init_budget_ms))) {
+        const line = try s.readLine(poll, init_budget_ms);
+        switch (try wire.classify(a, line)) {
             .response => |r| if (std.mem.eql(u8, r.request_id, id)) return if (r.ok) {} else error.ClaudeAgentControlFailed,
-            .control => |c| try service(s, a, c, tools),
-            else => {},
+            else => |l| try aside(s, a, l, line, tools),
         }
+    }
+}
+
+/// A line read while graff waited on something else. Claude Code can still be
+/// streaming the model's next response (it answers a call it refused by
+/// itself); dropping those events left the turn a response with no
+/// message_start, which failed as "unparseable response".
+fn aside(s: *Session, a: std.mem.Allocator, l: wire.Line, line: []const u8, tools: ?Value) !void {
+    switch (l) {
+        .control => |c| try service(s, a, c, tools),
+        .cancel => |id| s.cancel(id),
+        .event, .result => try s.kept.keep(s.gpa, line),
+        .response, .ignore => {},
     }
 }
 
@@ -228,10 +241,8 @@ fn refreshTools(s: *Session, a: std.mem.Allocator, tools: ?Value, poll: bool) !v
     while (s.tools_listed == listed) {
         const left = deadline - nowMs(s.io);
         if (left <= 0) return error.ClaudeAgentToolsNotRelisted;
-        switch (try wire.classify(a, try s.readLine(poll, @intCast(left)))) {
-            .control => |c| try service(s, a, c, tools),
-            else => {},
-        }
+        const line = try s.readLine(poll, @intCast(left));
+        try aside(s, a, try wire.classify(a, line), line, tools);
     }
 }
 
@@ -337,7 +348,7 @@ fn turn(self: *Agent, a: std.mem.Allocator, s: *Session, tools: ?Value, poll: bo
     var responses: usize = 0;
     var first_token = false;
     while (true) {
-        const line = try s.readLine(poll, turn_budget_ms);
+        const line = try s.nextLine(a, poll, turn_budget_ms);
         switch (try wire.classify(a, line)) {
             .event => |event| {
                 var ev = event;
@@ -368,12 +379,7 @@ fn turn(self: *Agent, a: std.mem.Allocator, s: *Session, tools: ?Value, poll: bo
                 if (std.mem.eql(u8, kind, "message_stop") and std.mem.eql(u8, stop_reason, "tool_use")) break;
             },
             .control => |c| try service(s, a, c, tools),
-            .cancel => |id| {
-                for (s.pending.items, 0..) |p, i| if (std.mem.eql(u8, p.request_id, id)) {
-                    s.dropPending(i);
-                    break;
-                };
-            },
+            .cancel => |id| s.cancel(id),
             .result => |r| {
                 if (r.is_error) {
                     const sse = try failSse(self, a, try problem(a, r.text));
