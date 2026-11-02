@@ -53,7 +53,7 @@ pub const Segment = struct { name: []const u8, text: []const u8, gate: Gate };
 /// THE root prompt, in order. This table is the single source of both the
 /// comptime full-capability constant and the runtime gated composition, so the
 /// two can never drift apart or reorder relative to each other.
-pub const segments = [_]Segment{
+pub const segment_table = [_]Segment{
     .{ .name = "intro", .text = text.intro_note, .gate = .always },
     .{ .name = "local_tools", .text = text.local_tools_note, .gate = .local_tools },
     .{ .name = "orchestration", .text = text.orchestration_note, .gate = .subagents },
@@ -77,11 +77,28 @@ pub const segments = [_]Segment{
     .{ .name = "parallel_tail", .text = text.parallel_tail_note, .gate = .always },
 };
 
-pub const main_system_prompt = blk: {
+/// The root prompt, then the strict and ultracode notes, as one string. The
+/// full prompt, its strict variant, the ultra-strict variant and every segment
+/// below are slices of it, so the binary carries the prompt text once rather
+/// than once per variant.
+const prompt_backing = blk: {
     var out: []const u8 = "";
-    for (segments) |seg| out = out ++ seg.text;
+    for (segment_table) |seg| out = out ++ seg.text;
+    break :blk out ++ strict_note ++ ultracode_system_note;
+};
+
+/// `segment_table` with each text pointing into `prompt_backing`.
+pub const segments = blk: {
+    var out = segment_table;
+    var at: usize = 0;
+    for (&out) |*seg| {
+        seg.text = prompt_backing[at..][0..seg.text.len];
+        at += seg.text.len;
+    }
     break :blk out;
 };
+
+pub const main_system_prompt = prompt_backing[0 .. prompt_backing.len - strict_note.len - ultracode_system_note.len];
 
 /// One-shot (-p) sessions have no user to approve tool calls. The gate's REAL
 /// map (agent_tool_gate.zig): at the ROOT, bash/edit_file/write_file and
@@ -268,7 +285,7 @@ pub const strict_note =
     \\attempt_completion with your final answer in the "result" field.
 ;
 
-pub const main_system_prompt_strict = main_system_prompt ++ strict_note;
+pub const main_system_prompt_strict = prompt_backing[0 .. main_system_prompt.len + strict_note.len];
 
 /// Appended once to the active system-prompt variant when ultracode mode is
 /// active (#326), instead of pasted onto every turn's user message the way
@@ -285,6 +302,10 @@ pub const ultracode_system_note =
     \\
     \\
 ++ shapes.shape_catalog_note;
+
+/// `main_system_prompt_strict ++ ultracode_system_note`: Agent's comptime
+/// default for sys_ultra_strict.
+pub const main_system_prompt_ultra_strict = prompt_backing;
 
 /// The exact condition the persistent-steering call sites (session_run.zig,
 /// mainloop.zig) use to decide a turn is ultracode-steered: `/effort ultra`
@@ -482,51 +503,7 @@ test { // #421/#410: prompt snapshots and goal-prefix behavior must stay reachab
     _ = @import("prompt_lean_tests.zig");
     _ = @import("prompt_goal_tests.zig");
     _ = @import("publication_policy_tests.zig");
-}
-
-// The harness has always run a returned tool batch concurrently, for subagents
-// exactly as for the root (agent_tools.zig dispatches every external call as a
-// future before awaiting any). Nothing ASKED for a batch, though, so the
-// capability rode entirely on the model's own initiative - openai/codex spells
-// it out in its base instructions and graff did not. Pin it on BOTH prompts:
-// the subagent one is the easier of the two to forget, since it is five lines
-// long and does not share a base with the root.
-test "both prompts ask for parallel tool calls, with the dependency caveat" {
-    for ([_][]const u8{ main_system_prompt, sub_system_prompt, main_system_prompt_strict }) |p| {
-        try std.testing.expect(std.mem.indexOf(u8, p, "Parallelize tool calls") != null);
-        try std.testing.expect(std.mem.indexOf(u8, p, "ONE response") != null);
-        // Without the caveat this instruction is actively harmful: graff runs
-        // the whole batch concurrently, so two writes to one file would race.
-        try std.testing.expect(std.mem.indexOf(u8, p, "same file") != null);
-        try std.testing.expect(std.mem.indexOf(u8, p, "depends on an earlier") != null);
-    }
-    // Composing must not have cost either prompt its own identity.
-    try std.testing.expect(std.mem.indexOf(u8, sub_system_prompt, "subagent spawned by an orchestrator") != null);
-    try std.testing.expect(std.mem.indexOf(u8, sub_system_prompt, "do not broaden") != null);
-    try std.testing.expect(std.mem.indexOf(u8, sub_system_prompt, "Do not narrate") != null);
-    try std.testing.expect(std.mem.indexOf(u8, sub_system_prompt, "rlm(code)") == null);
-    try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "Be direct and concise") != null);
-    try std.testing.expect(std.mem.indexOf(u8, main_system_prompt_strict, "STRICT MODE") != null);
-}
-
-// #351: agent-authored PRs described only the diff, which a reviewer can already
-// read. The rationale — the failure mode, why this design, what it trades off —
-// exists only in the agent's head at authoring time and is unrecoverable later,
-// so the prompt has to demand it. The proportionality clause is load-bearing in
-// the other direction: without it a one-line typo fix grows four empty headings.
-test "root prompt (#351) requires what+why rationale in PR descriptions, scaled to the change" {
-    for ([_][]const u8{ "## What changed", "## Why", "Problem/failure mode", "Reason for this approach", "Constraints or trade-offs", "Rejected alternatives" }) |section|
-        try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, section) != null);
-    try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "Scale the rationale to the change") != null);
-    try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "never pad a small change with boilerplate") != null);
-}
-
-test "root prompt permits explicit external targets without weakening confinement" {
-    try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "explicitly names") != null);
-    try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "permission-gated bash") != null);
-    try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "not covered by /rewind") != null);
-    try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "Do not claim a relaunch is required") != null);
-    try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "Never extend") != null);
+    _ = @import("prompt_content_tests.zig");
 }
 
 // #326: setSystemPrompts is the single funnel every production site must go

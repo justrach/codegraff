@@ -56,7 +56,7 @@ pub fn keyFor(arena: Allocator, cfg: std.json.ObjectMap) []const u8 {
 /// Order-independent hash of an `env` object's pairs.
 fn envHash(arena: Allocator, env: std.json.ObjectMap) u64 {
     const keys = arena.dupe([]const u8, env.keys()) catch return 0;
-    std.mem.sort([]const u8, keys, {}, struct {
+    @import("stable_sort.zig").sort([]const u8, keys, {}, struct {
         fn lt(_: void, x: []const u8, y: []const u8) bool {
             return std.mem.lessThan(u8, x, y);
         }

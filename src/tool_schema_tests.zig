@@ -390,6 +390,12 @@ test "note_constraint (#789): root-only, project-explicit, append-only schema" {
         try std.testing.expect(std.mem.indexOf(u8, t.desc, "Do not call for temporary") != null);
         try std.testing.expect(std.mem.indexOf(u8, t.desc, "copy text verbatim") != null);
         try std.testing.expect(std.mem.indexOf(u8, t.desc, "survive compaction") != null);
+        // #1764: the byte ceiling noteConstraint enforces is advertised, from
+        // the same constant, so a model never learns it from a rejection.
+        const ceiling = std.fmt.comptimePrint("at most {d} bytes", .{@import("playbook.zig").max_text});
+        try std.testing.expect(std.mem.indexOf(u8, t.desc, ceiling) != null);
+        const text_desc = properties.get("text").?.object.get("description").?.string;
+        try std.testing.expect(std.mem.indexOf(u8, text_desc, ceiling) != null);
     };
     try std.testing.expect(found);
     // A subagent must never be handed it: a child never saw the rejection, so

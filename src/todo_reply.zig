@@ -42,6 +42,7 @@ pub fn text(arena: Allocator, todos: []const TodoItem, epoch: u64, incoming: []c
         if (!kept_header) try w.writeAll("\nKept from before (not in your list):");
         kept_header = true;
         try w.print("\n{s} {s}", .{ mark(t.status), t.content });
+        if (t.reason.len > 0) try w.print(" (cancelled: {s})", .{t.reason}); // #1520
     }
     if (kept_verify > 0) try w.print("\n({d} verification item(s) you left out were kept as unresolved acceptance requirements)", .{kept_verify});
     if (dropped_open > 0) try w.print("\n({d} open item(s) you left out were dropped; re-list one to keep it)", .{dropped_open});
@@ -100,7 +101,7 @@ test "#1545 todo reply distinguishes cancelled and dropped records from pending 
     defer arena_state.deinit();
     const todos = [_]TodoItem{
         .{ .content = "finished", .status = "completed", .epoch = 1 },
-        .{ .content = "scope changed", .status = "cancelled", .epoch = 1 },
+        .{ .content = "scope changed", .status = "cancelled", .epoch = 1, .reason = "delegated to another session" },
         .{ .content = "abandoned", .status = "dropped", .epoch = 1 },
         .{ .content = "remaining", .status = "pending", .epoch = 1 },
     };
@@ -108,7 +109,7 @@ test "#1545 todo reply distinguishes cancelled and dropped records from pending 
     try std.testing.expectEqualStrings(
         \\Todo list saved: 1 done, 0 in progress, 1 pending, 1 cancelled. 1 dropped (abandoned by user order; no longer blocks completion).
         \\Kept from before (not in your list):
-        \\[-] scope changed
+        \\[-] scope changed (cancelled: delegated to another session)
         \\[-] abandoned
     , got);
 }

@@ -35,7 +35,7 @@ fn field(out: *std.Io.Writer, text: []const u8) !void {
 pub fn write(arena: std.mem.Allocator, out: *std.Io.Writer, peers: []const Owner, mine: []const u8, now: i64) !void {
     const sorted = try arena.dupe(Owner, peers);
     defer arena.free(sorted);
-    std.mem.sort(Owner, sorted, {}, lessThan);
+    @import("stable_sort.zig").sort(Owner, sorted, {}, lessThan);
     for ([_]bool{ true, false }) |local_group| {
         var heading = false;
         for (sorted) |p| {

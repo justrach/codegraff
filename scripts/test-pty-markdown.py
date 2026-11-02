@@ -10,9 +10,8 @@ from pty_harness import run_to_exit
 
 _arg = sys.argv[1] if len(sys.argv) > 1 else "graff"
 GRAFF = os.path.abspath(_arg) if os.sep in _arg else _arg
-# Headings were coral; the palette alignment moved them to the emerald accent
-# (ansi.zig style.accent — coral read as error red).
-ACCENT = b"\x1b[38;2;5;150;105m"
+# Match the production line REPL's Harness Codegraff Dark palette.
+ACCENT = b"\x1b[38;2;232;163;61m"
 
 
 def main() -> None:
@@ -48,6 +47,7 @@ def main() -> None:
         "◆ Gaps",
         "• No bot-specific route tests exist.",
         "• Pin install.sh and verify its checksum.",
+        "• Emphasis: Coding agents / harnesses, readable, strong, foo_bar.",
         "◆ Recommended implementation order",
         "1. Immediately: require collaborator permission.",
         "2) Next: deduplicate X-GitHub-Delivery.",
@@ -83,7 +83,7 @@ def main() -> None:
             )
     if b"\x1b[" in plain_result.raw:
         raise SystemExit("Markdown no-color render unexpectedly contains ANSI")
-    for ansi in (ACCENT, b"\x1b[33m", b"\x1b[32m"):
+    for ansi in (ACCENT, b"\x1b[38;2;217;164;65m", b"\x1b[38;2;127;168;107m", b"\x1b[3m"):
         if ansi not in color_result.raw:
             raise SystemExit(f"Markdown render missing ANSI style {ansi!r}")
     print("ok    PTY Markdown color/no-color links, blocks, inline styles, and ANSI")

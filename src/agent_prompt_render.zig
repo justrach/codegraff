@@ -91,7 +91,16 @@ fn cwdName(cwd: []const u8) []const u8 {
 }
 
 fn modeSegment(w: *Io.Writer, text: []const u8) !void {
-    try w.print(" · {s}{s}{s}{s}{s}{s}", .{ style.reset, style.accent, style.bold, text, style.reset, style.dim });
+    try w.print(" · {s}{s}{s}{s}{s}{s}", .{ style.reset, style.accent, style.bold, text, style.reset, style.muted });
+}
+
+fn metadataPrefix(w: *Io.Writer, first: *bool, gap: usize) !void {
+    if (first.* and gap > 0) {
+        for (0..gap) |_| try w.writeByte(' ');
+    } else {
+        try w.writeAll(" · ");
+    }
+    first.* = false;
 }
 
 fn line(w: *Io.Writer, st: PromptStatus, cols: usize) !void {
@@ -99,8 +108,11 @@ fn line(w: *Io.Writer, st: PromptStatus, cols: usize) !void {
     // Reuse the blank separator row, not another panel or an editor border.
     // Leave a column free so the rule never triggers terminal autowrap.
     if (style.accent.len > 0 and cols > 1) {
-        try w.writeAll(style.dim);
-        for (0..cols - 1) |_| try w.writeAll("─");
+        const lead = @min(@as(usize, 3), cols - 1);
+        try w.writeAll(style.accent);
+        for (0..lead) |_| try w.writeAll("─");
+        try w.print("{s}{s}", .{ style.reset, style.faint });
+        for (lead..cols - 1) |_| try w.writeAll("─");
         try w.writeAll(style.reset);
     }
     try w.writeByte('\n');
@@ -148,6 +160,7 @@ fn line(w: *Io.Writer, st: PromptStatus, cols: usize) !void {
     const show_plan = st.plan and fitsSegment(&used, avail, 3 + "Plan".len);
     const show_strict = st.strict and fitsSegment(&used, avail, 3 + "Strict".len);
     const show_ultra = st.ultracode and fitsSegment(&used, avail, 3 + "Ultracode".len);
+    const identity_width = used;
     const show_cwd = folder.len > 0 and fitsSegment(&used, avail, 3 + 2 + folder.len);
     const show_ctx = ctx.len > 0 and fitsSegment(&used, avail, 3 + ctx.len);
     const show_cache = show_ctx and cache.len > 0 and fitsSegment(&used, avail, 3 + cache.len);
@@ -157,20 +170,39 @@ fn line(w: *Io.Writer, st: PromptStatus, cols: usize) !void {
     const show_session = st.standing.session.len > 0 and
         fitsSegment(&used, avail, 3 + st.standing.session.len);
 
-    try w.print("{s}{s}{s}{s}{s}", .{ style.bold, style.accent, st.model, style.reset, style.dim });
+    try w.print("{s}{s}{s}{s}{s}", .{ style.bold, style.accent, st.model, style.reset, style.muted });
     if (show_fast) try modeSegment(w, "Fast");
     if (show_effort) try w.print(" · {s}", .{reasoningLabel(st.effort.?)});
     if (show_fallback) try modeSegment(w, "Fallback");
     if (show_plan) try modeSegment(w, "Plan");
     if (show_strict) try modeSegment(w, "Strict");
     if (show_ultra) try modeSegment(w, "Ultracode");
-    if (show_cwd) try w.print(" · ~/{s}", .{folder});
-    if (show_ctx) try w.print(" · {s}", .{ctx});
-    if (show_cache) try w.print(" · {s}", .{cache});
-    if (show_cost) try w.print(" · {s}", .{cost});
-    if (show_resume) try w.print(" · {s}", .{resume_hint});
-    if (show_image) try w.print(" · image", .{});
-    if (show_session) try w.print(" · {s}", .{st.standing.session});
+    // Keep the active seat on the left and quiet metadata on the right.
+    // The first metadata separator becomes whitespace, not another badge.
+    // Byte-based budgets remain conservative for non-ASCII labels; plain
+    // terminals retain their exact compact, unpadded transcript.
+    const gap = if (style.accent.len > 0 and used > identity_width)
+        avail -| (used - 3)
+    else
+        0;
+    var first_metadata = true;
+    if (show_cwd) {
+        try metadataPrefix(w, &first_metadata, gap);
+        try w.print("~/{s}", .{folder});
+    }
+    const Metadata = struct { show: bool, text: []const u8 };
+    for ([_]Metadata{
+        .{ .show = show_ctx, .text = ctx },
+        .{ .show = show_cache, .text = cache },
+        .{ .show = show_cost, .text = cost },
+        .{ .show = show_resume, .text = resume_hint },
+        .{ .show = show_image, .text = "image" },
+        .{ .show = show_session, .text = st.standing.session },
+    }) |segment| {
+        if (!segment.show) continue;
+        try metadataPrefix(w, &first_metadata, gap);
+        try w.writeAll(segment.text);
+    }
     try w.print("{s}\n{s}{s}›{s} ", .{ style.reset, style.bold, style.accent, style.reset });
     try w.flush();
 }
@@ -460,6 +492,9 @@ test "terminal chrome bounds its divider and separates identity from metadata" {
         const text = aw.written();
         const end = std.mem.indexOfScalar(u8, text, '\n').?;
         try std.testing.expectEqual(cols - 1, std.mem.count(u8, text[0..end], "─"));
+        if (cols >= 4) try std.testing.expect(std.mem.startsWith(u8, text, "\x1b[38;2;5;150;105m───\x1b[0m\x1b[2m"));
+        try std.testing.expect(std.mem.indexOf(u8, text, " · ~/w") == null);
+        if (cols == 18) try std.testing.expect(std.mem.indexOf(u8, text, "      ~/w\x1b[0m\n") != null);
         try std.testing.expect(std.mem.indexOf(u8, text, "\x1b[1m\x1b[38;2;5;150;105mm\x1b[0m\x1b[2m") != null);
         try std.testing.expect(std.mem.endsWith(u8, text, "\n\x1b[1m\x1b[38;2;5;150;105m›\x1b[0m "));
     }

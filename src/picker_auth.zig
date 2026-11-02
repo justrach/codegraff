@@ -98,6 +98,12 @@ pub fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, login_id: []c
                 source.* = .login;
                 reloaded = true;
             }
+        } else if (std.mem.eql(u8, provider_id, "claude-agent")) {
+            if (@import("claude_agent_login.zig").enabled(root.io, arena, @import("anthropic_profile.zig").ProcessEnv{}, home)) |exe| {
+                value.* = root.arena.dupe(u8, exe) catch exe;
+                source.* = .login;
+                reloaded = true;
+            }
         } else if (std.mem.eql(u8, provider_id, "chatgpt-new")) {
             if (@import("oauth_chatgpt.zig").loadChatgptOAuth(root.io, root.gpa, arena, home, false, null)) |k| {
                 value.* = k;

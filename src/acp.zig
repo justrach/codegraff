@@ -126,7 +126,7 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
     // Hydrate deferred local metadata without network refresh or MCP startup.
     @import("acp_model_option.zig").hydrate(live);
     const er = @import("effort_route.zig");
-    if (@import("gateway_picker_catalog.zig").requested(req.params)) @import("gateway_picker_catalog.zig").refresh(root.gpa, root.io, root.arena, keys.*);
+    if (@import("gateway_picker_catalog.zig").requested(req.params)) @import("gateway_picker_catalog.zig").refresh(root.io, root.arena, root.home, keys.*);
     const catalog = pricing.models();
     const Row = struct {
         name: []const u8,
@@ -147,7 +147,7 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
             billing.costFor(m.provider, keys.source(m.provider)),
         ),
     };
-    std.mem.sort(models_rank.Scored, ranked, {}, models_rank.scoredLess);
+    @import("stable_sort.zig").sort(models_rank.Scored, ranked, {}, models_rank.scoredLess);
     const rows = try arena.alloc(Row, catalog.len);
     for (ranked, rows) |r, *row| {
         const m = catalog[r.idx];

@@ -35,21 +35,27 @@ pub fn catalog(a: std.mem.Allocator, source: []const u8, apps: bool) !Value {
     return value;
 }
 
-const template = @embedFile("mcp_task_app.html");
-const marker = "/* CODEGRAFF_THEME */";
-const theme_offset = std.mem.indexOf(u8, template, marker).?;
-const html = template[0..theme_offset] ++ @embedFile("ui_theme") ++ template[theme_offset + marker.len ..];
-
-const payload = .{ .contents = .{.{
-    .uri = uri,
-    .mimeType = mime,
-    .text = html,
-    ._meta = .{ .ui = .{
-        .csp = .{ .connectDomains = [0][]const u8{}, .resourceDomains = [0][]const u8{} },
-        .prefersBorder = true,
-    } },
-}} };
-
-pub fn contents() @TypeOf(payload) {
-    return payload;
+/// The page and its theme ship gzipped (build.zig); the theme is spliced in
+/// where the page marks it.
+pub fn contents(a: std.mem.Allocator) !Contents {
+    const gunzip = @import("update_archive.zig").gunzip;
+    const template = try gunzip(a, @embedFile("mcp_task_app.gz"));
+    const marker = "/* CODEGRAFF_THEME */";
+    const at = std.mem.indexOf(u8, template, marker).?;
+    const html = try std.mem.concat(a, u8, &.{ template[0..at], try gunzip(a, @embedFile("ui_theme.gz")), template[at + marker.len ..] });
+    return .{ .contents = .{.{ .text = html }} };
 }
+
+pub const Contents = struct {
+    contents: [1]struct {
+        uri: []const u8 = uri,
+        mimeType: []const u8 = mime,
+        text: []const u8,
+        _meta: struct {
+            ui: struct {
+                csp: struct { connectDomains: [0][]const u8 = .{}, resourceDomains: [0][]const u8 = .{} } = .{},
+                prefersBorder: bool = true,
+            } = .{},
+        } = .{},
+    },
+};

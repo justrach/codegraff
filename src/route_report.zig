@@ -52,6 +52,7 @@ pub fn loginOnDisk(io: Io, arena: Allocator, home: []const u8, spec: provider_mo
         .kimi_device => credential_store.oauthPath(arena, home, ".kimi"),
         .xai_device => credential_store.oauthPath(arena, home, ".xai"),
         .anthropic_browser => credential_store.oauthPath(arena, home, ".anthropic"),
+        .claude_cli => @import("claude_agent_login.zig").markerPath(arena, home),
         .zai_cli => credential_store.oauthPath(arena, home, ".zai"),
         .chatgpt_browser => return @import("oauth_chatgpt.zig").onDisk(io, arena, home),
         .codex_device => blk: {

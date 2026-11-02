@@ -303,7 +303,7 @@ pub fn history(io: Io, arena: Allocator, ctx: Ctx, last: usize, window: u64) []c
             if (sees) out.append(arena, .{ .room = r.room, .m = m }) catch break;
         }
     }
-    std.mem.sort(Heard, out.items, {}, struct {
+    @import("stable_sort.zig").sort(Heard, out.items, {}, struct {
         fn lt(_: void, a: Heard, b: Heard) bool {
             return a.m.ts_ms < b.m.ts_ms;
         }

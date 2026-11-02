@@ -32,6 +32,7 @@ import http.server
 import json
 import socketserver
 import threading
+import time
 from typing import Any
 
 
@@ -129,6 +130,8 @@ class ScriptedModel:
                 }).encode(), "application/json")
 
             def _stream(self, reply: dict[str, Any]) -> None:
+                self._fragment_bytes = reply.get("stream_fragment_bytes", 0)
+                self._fragment_delay = reply.get("stream_fragment_delay_ms", 0) / 1000
                 self.send_response(200)
                 self.send_header("content-type", "text/event-stream")
                 self.send_header("cache-control", "no-cache")
@@ -176,7 +179,14 @@ class ScriptedModel:
 
             def _chunk(self, payload: dict[str, Any]) -> None:
                 framed = dict(payload, id="mock", object="chat.completion.chunk", model="mock")
-                self.wfile.write(b"data: " + json.dumps(framed).encode() + b"\n\n")
+                wire = b"data: " + json.dumps(framed).encode() + b"\n\n"
+                if not self._fragment_bytes:
+                    self.wfile.write(wire)
+                    return
+                for start in range(0, len(wire), self._fragment_bytes):
+                    self.wfile.write(wire[start:start + self._fragment_bytes])
+                    self.wfile.flush()
+                    time.sleep(self._fragment_delay)
 
             def log_message(self, *_args) -> None:
                 pass

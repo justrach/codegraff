@@ -42,20 +42,29 @@ pub fn isBusy() bool {
     return turn_busy.load(.acquire);
 }
 
-/// Accepted `attempt_completion` ends the task. Parked mail stays readable
-/// but must not start another assistant/tool cycle (#1137).
+/// Accepted `attempt_completion` ends the task the same way a final answer
+/// does (ADR 0311): room mail stays parked for the next human prompt, and
+/// only mail addressed to this session can start a turn. Which of the two a
+/// model happens to end with must not decide whether a peer's follow-up is
+/// heard.
 pub fn noteCompletion() void {
-    suppress_idle_wake = true;
+    settled = true;
 }
 
 /// A root turn ended with an ordinary final answer (#1137). The human task
-/// is done just as after `attempt_completion`, but more softly: mail posted
-/// to the folder's room is ambient coordination and no longer starts a turn
-/// on its own. It stays parked and readable, and the next human prompt sees
-/// it. Mail addressed to this session (a DM, or the user's own `/tell`) is an
-/// explicit request and still wakes, so peers can still hand work over.
+/// is done: mail posted to the folder's room is ambient coordination and no
+/// longer starts a turn on its own. It stays parked and readable, and the
+/// next human prompt sees it. Mail addressed to this session (a DM, or the
+/// user's own `/tell`) is an explicit request and still wakes, so peers can
+/// still hand work over.
 pub fn noteFinalAnswer() void {
     settled = true;
+}
+
+/// The last task ended (final answer or attempt_completion) and no human
+/// prompt has come since.
+pub fn isSettled() bool {
+    return settled;
 }
 
 /// Whether the parked mail at or after `from` may start a turn by itself.
@@ -182,7 +191,7 @@ test "#1001 idle wake fires once per new unread batch" {
     try std.testing.expect(takeIdleWake(io, &buf) == null);
 }
 
-test "#1137 idle wake is silent after attempt_completion until a human prompt" {
+test "ADR 0311: after attempt_completion only mail addressed to this session wakes" {
     peer_inbox.resetForTest();
     resetForTest();
     defer {
@@ -190,6 +199,10 @@ test "#1137 idle wake is silent after attempt_completion until a human prompt" {
         resetForTest();
     }
     var buf: [256]u8 = undefined;
+    noteCompletion();
+    try std.testing.expect(isSettled() and !idleWakeSuppressed());
+    _ = peer_inbox.parkHeard(&.{.{ .from_pid = 2, .from_start = 1, .from_session = "s-peer", .text = "room chatter" }}, &.{});
+    try std.testing.expect(takeIdleWake(std.testing.io, &buf) == null);
     const msg: presence_chan.Message = .{
         .from_pid = 2,
         .from_start = 1,
@@ -198,10 +211,7 @@ test "#1137 idle wake is silent after attempt_completion until a human prompt" {
         .to = "s-me",
     };
     _ = peer_inbox.parkHeard(&.{msg}, &.{});
-    noteCompletion();
-    try std.testing.expect(takeIdleWake(std.testing.io, &buf) == null);
-    noteHumanPrompt();
-    const wake = takeIdleWake(std.testing.io, &buf) orelse return error.ExpectedWakeAfterHuman;
+    const wake = takeIdleWake(std.testing.io, &buf) orelse return error.ExpectedAddressedWake;
     try std.testing.expect(std.mem.indexOf(u8, wake, "[peer]") != null);
 }
 

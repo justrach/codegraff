@@ -123,7 +123,7 @@ def main() -> None:
         # across providers until the workspace explicitly allowlists it.
         with launch(str(cwd), env, codex_home=None) as session:
             session.wait_for_literal("Cross-provider use is blocked")
-            session.wait_for_literal("mimo-v2.6-pro · Off · ~/repo · Fallback")
+            session.wait_for(r"(?m)^mimo-v2\.6-pro · Off · Fallback {2,}~/repo(?: · [^\r\n]*)?$")
             session.wait_for_prompt()
             cursor = len(session.raw)
             session.send_line("must not reach a provider")
@@ -137,7 +137,7 @@ def main() -> None:
         # With explicit consent persisted, the same fallback is ready for use.
         with launch(str(cwd), env, codex_home=None) as session:
             session.wait_for_literal("saved preference kept")
-            session.wait_for_literal("mimo-v2.6-pro · Off · ~/repo · Fallback")
+            session.wait_for(r"(?m)^mimo-v2\.6-pro · Off · Fallback {2,}~/repo(?: · [^\r\n]*)?$")
             session.wait_for_prompt()
             clean_exit(session)
 

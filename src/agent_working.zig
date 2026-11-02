@@ -14,10 +14,14 @@ pub const Item = struct {
     content: []const u8,
     done: bool = false,
     active: bool = false,
+    /// #1520: withdrawn or delegated. Drawn ⊘ with its reason, outside the done/total count.
+    cancelled: bool = false,
+    reason: []const u8 = "",
 };
 
 const title_clip: usize = 40;
 const item_clip: usize = 48;
+const reason_clip: usize = 40;
 const max_items: usize = 8;
 
 fn clip(s: []const u8, n: usize) []const u8 {
@@ -30,20 +34,32 @@ pub fn write(w: *Io.Writer, title: []const u8, items: []const Item) void {
     if (items.len == 0 and title.len == 0) return;
     const shown = if (title.len > 0) clip(title, title_clip) else "work";
     var done: usize = 0;
+    var counted: usize = 0;
     for (items) |it| {
+        if (it.cancelled) continue;
+        counted += 1;
         if (it.done) done += 1;
     }
-    w.print("{s}WORKING{s}  {s}{s}{s}", .{ style.dim, style.reset, style.bold, shown, style.reset }) catch return;
-    if (items.len > 0) w.print("  {s}{d}/{d}{s}", .{ style.dim, done, items.len, style.reset }) catch return;
+    w.print("{s}WORKING{s}  {s}{s}{s}{s}", .{ style.muted, style.reset, style.bold, style.text, shown, style.reset }) catch return;
+    if (counted > 0) w.print("  {s}{d}/{d}{s}", .{ style.muted, done, counted, style.reset }) catch return;
     w.writeByte('\n') catch return;
     const n = @min(items.len, max_items);
     for (items[0..n], 0..) |it, i| {
         const branch: []const u8 = if (i + 1 == n) "└ " else "├ ";
-        const mark: []const u8 = if (it.done) "✓" else if (it.active) "◌" else "○";
-        const color = if (it.done) style.dim else if (it.active) style.accent else "";
+        if (it.cancelled) {
+            w.print("{s}{s}⊘ {s}", .{ style.faint, branch, clip(it.content, item_clip) }) catch return;
+            if (it.reason.len > 0) w.print(" ({s})", .{clip(it.reason, reason_clip)}) catch return;
+            w.print("{s}\n", .{style.reset}) catch return;
+            continue;
+        }
+        const mark: []const u8 = if (it.done) "✓" else if (it.active)
+            (if (style.accent.len > 0) "●" else "◌")
+        else
+            "○";
+        const color = if (it.active and !it.done) style.accent else style.muted;
         const weight = if (it.active and !it.done) style.bold else "";
         w.print("{s}{s}{s}{s}{s}{s} {s}{s}\n", .{
-            style.dim, branch, style.reset, color, weight, mark, clip(it.content, item_clip), style.reset,
+            style.faint, branch, style.reset, color, weight, mark, clip(it.content, item_clip), style.reset,
         }) catch return;
     }
 }
@@ -53,11 +69,12 @@ pub fn writeFromStanding(w: *Io.Writer, st: engine_events.StandingWork) void {
     defer writeWaiting(w, st.waiting);
     // Keep completed history, but do not redraw a finished checklist as WORKING.
     // Use the full counts: an open item may be beyond the displayed slice.
-    if (st.todos_total > 0 and st.todos_done == st.todos_total) return;
+    // Cancelled items sit outside the counts (#1520), so all-cancelled is finished too.
+    if ((st.todos_total > 0 or st.todos.len > 0) and st.todos_done == st.todos_total) return;
     var buf: [max_items]Item = undefined;
     const n = @min(st.todos.len, buf.len);
     for (st.todos[0..n], 0..) |t, i| {
-        buf[i] = .{ .content = t.content, .done = t.done, .active = t.active };
+        buf[i] = .{ .content = t.content, .done = t.done, .active = t.active, .cancelled = t.cancelled, .reason = t.reason };
     }
     write(w, st.goal, buf[0..n]);
 }
@@ -67,7 +84,7 @@ pub fn writeFromStanding(w: *Io.Writer, st: engine_events.StandingWork) void {
 fn writeWaiting(w: *Io.Writer, waiting: []const u8) void {
     if (waiting.len == 0) return;
     w.print("{s}↻{s}{s} waiting on {s} — graff continues when it finishes{s}\n", .{
-        style.accent, style.reset, style.dim, waiting, style.reset,
+        style.accent, style.reset, style.muted, waiting, style.reset,
     }) catch return;
 }
 
@@ -91,6 +108,15 @@ pub fn writeFromTodoText(w: *Io.Writer, title: []const u8, text: []const u8) voi
             n += 1;
         } else if (std.mem.eql(u8, mark, "[ ]")) {
             buf[n] = .{ .content = rest };
+            n += 1;
+        } else if (std.mem.eql(u8, mark, "[-]")) {
+            // goal_state.renderTodos writes "[-] content (cancelled: reason)".
+            const cut = std.mem.lastIndexOf(u8, rest, " (cancelled: ");
+            const has_reason = cut != null and std.mem.endsWith(u8, rest, ")");
+            buf[n] = if (has_reason)
+                .{ .content = rest[0..cut.?], .reason = rest[cut.? + " (cancelled: ".len .. rest.len - 1], .cancelled = true }
+            else
+                .{ .content = rest, .cancelled = true };
             n += 1;
         }
     }
@@ -118,7 +144,7 @@ test "completed checklist stays out of idle prompt redraws" {
 
 test "terminal working block highlights active work without hiding waiting" {
     const saved = style.*;
-    style.* = @import("ansi.zig").Style.ansi;
+    style.* = @import("ansi.zig").Style.harness;
     defer style.* = saved;
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
@@ -129,9 +155,9 @@ test "terminal working block highlights active work without hiding waiting" {
     };
     writeFromStanding(&aw.writer, .{ .goal = "ship it", .todos = &items, .todos_done = 1, .todos_total = 3, .waiting = "agent 4" });
     const text = aw.written();
-    try std.testing.expect(std.mem.indexOf(u8, text, "\x1b[2m✓ finished\x1b[0m") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "\x1b[38;2;5;150;105m\x1b[1m◌ current\x1b[0m") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "○ next") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\x1b[38;2;154;147;132m✓ finished\x1b[0m") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\x1b[38;2;232;163;61m\x1b[1m● current\x1b[0m") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\x1b[38;2;154;147;132m○ next\x1b[0m") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "waiting on agent 4 — graff continues when it finishes") != null);
 }
 
@@ -155,6 +181,27 @@ test "a checklist is WORKING plus a tree, not [~] dump lines" {
             "└ ○ commit + push\n",
         aw.writer.buffered(),
     );
+}
+
+test "#1520 a cancelled item is drawn with its reason, outside the done count" {
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    writeFromTodoText(&aw.writer, "ship", "[x] land the fix\n[ ] run the tests\n[-] verify the release (cancelled: delegated to the release session)\n");
+    try std.testing.expectEqualStrings(
+        "WORKING  ship  1/2\n" ++
+            "├ ✓ land the fix\n" ++
+            "├ ○ run the tests\n" ++
+            "└ ⊘ verify the release (delegated to the release session)\n",
+        aw.writer.buffered(),
+    );
+    aw.clearRetainingCapacity();
+    // Everything else done: the idle prompt treats the list as finished.
+    const items = [_]engine_events.StandingTodo{
+        .{ .content = "land the fix", .done = true },
+        .{ .content = "verify the release", .cancelled = true, .reason = "delegated" },
+    };
+    writeFromStanding(&aw.writer, .{ .todos = &items, .todos_done = 1, .todos_total = 1 });
+    try std.testing.expectEqualStrings("", aw.written());
 }
 
 test "writeFromStanding uses the goal title and active/done marks" {

@@ -222,7 +222,7 @@ test "--help and --schema state the default ceiling the binary actually applies"
     // Every mode name is checked, not just the current one, so flipping
     // default_mode without moving the text fails here rather than in a user's
     // reading of the docs.
-    const usage_text = @import("cli.zig").usage_text;
+    const usage_text = @import("cli_text_source.zig").usage_text;
     const schema_flags_json = @import("schema.zig").schema_flags_json;
     const documented = "default " ++ @tagName(default_mode);
     try std.testing.expect(std.mem.indexOf(u8, usage_text, documented) != null);

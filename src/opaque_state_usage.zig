@@ -1,15 +1,20 @@
-//! #1686: calibrate compaction state from the provider's own count. A full
-//! (unchained) Responses request carrying a compaction item reports its input
-//! tokens; the state's share replaces the bytes/16 estimate for that state
-//! (context_tokens.learnState). A chained request sends only a delta, so its
-//! count says nothing about the state and is skipped.
+//! #1686: calibrate compaction state from the provider's own count. A Responses
+//! request carrying a compaction item reports its input tokens; the state's
+//! share replaces the bytes/16 estimate for that state
+//! (context_tokens.learnState).
+//!
+//! A chained request (previous_response_id, the WebSocket delta) counts too:
+//! OpenAI bills every earlier input token in the chain as input, so its
+//! input_tokens covers the whole context, the same reading the context meter
+//! already takes from it, and Codex's own occupancy uses every response's usage
+//! the same way. Skipping it left a WebSocket session (chatgpt-new's default)
+//! with no count until a compaction forced a full resend.
 
 const std = @import("std");
 const Agent = @import("agent.zig").Agent;
 const context_tokens = @import("context_tokens.zig");
 
 pub fn learn(self: *Agent, response: std.json.ObjectMap) void {
-    if (self.codex_prev_id != null) return;
     const usage = response.get("usage") orelse return;
     if (usage != .object) return;
     const input = usage.object.get("input_tokens") orelse return;

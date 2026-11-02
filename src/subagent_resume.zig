@@ -28,7 +28,7 @@ pub fn refuse(ctx: tools.ToolCtx, reason: []const u8) !tools.ToolOutput {
     return .{ .text = try std.fmt.allocPrint(ctx.gpa, "Worker follow-up refused: {s}", .{reason}), .is_error = true };
 }
 pub fn queued(ctx: tools.ToolCtx, id: []const u8, message: []const u8) !tools.ToolOutput {
-    const state = retained.load(ctx, id) catch |err| return refuse(ctx, @errorName(err));
+    const state = retained.load(ctx, id) catch |err| return refuse(ctx, retained.loadFailureText(err));
     defer state.deinit(ctx.gpa, ctx.io);
     const ack = try ctx.gpa.dupe(u8, "Feedback retained without starting a turn. Use subagent_resume with this task_id to continue.");
     errdefer ctx.gpa.free(ack);
@@ -45,7 +45,7 @@ pub fn exec(ctx: tools.ToolCtx, input: std.json.Value) !tools.ToolOutput {
     const id = tools.strField(input, "task_id") orelse return tools.missingArg(ctx.gpa, "task_id");
     const action = tools.strField(input, "action") orelse "resume";
     if (!std.mem.eql(u8, action, "resume") and !std.mem.eql(u8, action, "forget")) return refuse(ctx, "unknown action");
-    const state = retained.load(ctx, id) catch |err| return refuse(ctx, @errorName(err));
+    const state = retained.load(ctx, id) catch |err| return refuse(ctx, retained.loadFailureText(err));
     var transferred = false;
     defer if (!transferred) state.deinit(ctx.gpa, ctx.io);
     if (std.mem.eql(u8, action, "forget")) {

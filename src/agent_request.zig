@@ -274,6 +274,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     if (err == error.Interrupted) return error.Interrupted;
                     if (err == error.Steered) if (@import("steer_now.zig").supersede(self)) continue :rebuild;
                     if (err == error.Canceled) return error.Canceled;
+                    if (err == error.StreamTooLong or err == error.StreamEventDeadline) return err; // deterministic event bounds: replay cannot repair them
                     if (quota.transportCode(err)) |code| {
                         if (try quota.handle(self, "", code, "", &auth_refreshed)) continue;
                         return err;
@@ -439,8 +440,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     self.ws_api_error_pending = false;
                     const diagnostic = try responses.failureDiagnostic(self.arena, self.provider.id, failure);
                     if (@import("agent_async_tools.zig").started(self)) {
-                        self.last_api_reauth = @import("auth_recovery.zig").forFailure(self.provider, failure.code, msg);
-                        try self.sayApiError("{s}", .{diagnostic});
+                        try quota.afterToolsStarted(self, failure.code, msg, diagnostic);
                         return error.ApiError;
                     }
                     if (ws_error_frame) if (self.tracer) |tr| tr.note("ws_api_error", diagnostic);
@@ -480,7 +480,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     // Codex Responses reports capacity failures through this
                     // response.failed arm too. Keep it on the same bounded
                     // overload retry path as SSE and JSON error envelopes.
-                    if (try policy.afterServerErrorOrParseReject(self, "", failure.code, msg, &server_retries, &gw_retry)) continue :rebuild;
+                    if (try policy.afterServerErrorOrParseReject(self, failure.etype, failure.code, msg, &server_retries, &gw_retry)) continue :rebuild; // #748: the class keeps invalid requests off the flake ladder
                     self.last_api_reauth = @import("auth_recovery.zig").forFailure(self.provider, failure.code, msg);
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                     try self.sayApiError("{s}", .{diagnostic});

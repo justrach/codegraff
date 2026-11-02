@@ -22,6 +22,15 @@ pub const State = struct {
         return self.enabled and self.requests > evidence_requests;
     }
 
+    pub fn keepsCatalog(self: State, agent: *const Agent) bool {
+        if (!self.reporting() or (self.prior_text_only orelse true)) return false;
+        return switch (agent.provider.kind) {
+            .responses => true,
+            .openai => !@import("meta_wire.zig").restricted(agent.provider.id, agent.provider.model),
+            else => false,
+        };
+    }
+
     pub fn beforeRequest(self: *State, agent: *Agent) !void {
         if (!self.enabled) return;
         // Kept on the worker, not the turn stack: transport retries cannot
@@ -81,13 +90,14 @@ test "workflow synthesis restores the original tool restriction before retention
         agent.synthesis = .{ .enabled = true, .requests = 8 };
         try agent.synthesis.beforeRequest(&agent);
         try std.testing.expect(agent.text_only);
+        try std.testing.expectEqual(!prior, agent.synthesis.keepsCatalog(&agent));
         agent.synthesis.finish(&agent);
         try std.testing.expectEqual(prior, agent.text_only);
         try std.testing.expectError(error.WorkflowSynthesisLimit, agent.synthesis.beforeRequest(&agent));
     }
 }
 
-test "workflow synthesis gate refuses tools even when a model ignores tool withdrawal" {
+test "workflow synthesis gate refuses tools even when a model ignores report-only choice" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var agent = fixture(arena.allocator());
@@ -96,6 +106,21 @@ test "workflow synthesis gate refuses tools even when a model ignores tool withd
     const denied = (try agent.rejectToolCall(call)).?;
     try std.testing.expect(denied.is_error);
     try std.testing.expectEqualStrings(tool_refusal, denied.text);
+}
+
+test "workflow synthesis withdraws catalogs on unsupported report-only wires" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var agent = fixture(arena.allocator());
+    agent.synthesis = .{ .enabled = true, .requests = 8 };
+    try agent.synthesis.beforeRequest(&agent);
+    for ([_]@import("provider.zig").Provider.Kind{ .anthropic, .interactions }) |kind| {
+        agent.provider.kind = kind;
+        try std.testing.expect(!agent.synthesis.keepsCatalog(&agent));
+    }
+    agent.provider.kind = .openai;
+    agent.provider.id = "meta";
+    try std.testing.expect(!agent.synthesis.keepsCatalog(&agent));
 }
 
 test "workflow synthesis does not cap ordinary workers or discard earlier findings" {

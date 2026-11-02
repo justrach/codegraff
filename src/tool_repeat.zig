@@ -16,8 +16,11 @@
 //!   code) breaks this run: quiet commands in a row are ordinary work.
 //!
 //! A batch still waiting on work breaks both runs: a pending or cancelled
-//! result, or a shell job poll that reports the job is still running
-//! (`[job N: running…]`), which is how a model waits on CI or a build. Reset
+//! result, a shell job poll that reports the job is still running
+//! (`[job N: running…]`), which is how a model waits on CI or a build, or an
+//! `agent_output` snapshot of a subagent still running (`[agent N: running]`).
+//! `clock_sleep` is not waiting by itself: it keeps no rail bypass (#225), and
+//! a sleep between re-checks puts a different batch between them anyway. Reset
 //! at `runTurn`, except when a worker's transient-failure re-ask resumes the
 //! same history (`carryOver`): a fresh count there would let a looping worker
 //! repeat up to `stop_at - 1` more batches per ask.
@@ -103,6 +106,25 @@ fn jobRunning(text: []const u8) bool {
     return std.mem.indexOf(u8, head, ": running") != null;
 }
 
+/// An `agent_output` snapshot of a subagent that has not finished
+/// (`subagent.agentStatusText`). With `ids`, one report per agent is joined
+/// by blank lines, so any line of that exact shape means one is still out.
+fn agentRunning(text: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "[agent ") or !std.mem.endsWith(u8, line, ": running]")) continue;
+        const id = line["[agent ".len .. line.len - ": running]".len];
+        if (id.len > 0 and std.mem.indexOfNone(u8, id, "0123456789") == null) return true;
+    }
+    return false;
+}
+
+/// The result says the work it reports on is still going: polling it again
+/// and reading the same line is waiting, not repeating.
+fn stillRunning(text: []const u8) bool {
+    return jobRunning(text) or agentRunning(text);
+}
+
 /// Inputs that only bound or label a call. A model that varies them, or the
 /// spacing inside a command, to dodge the guard is still repeating itself:
 /// one live run polled `cat status.txt` as `cat  status.txt`, then with
@@ -161,7 +183,7 @@ fn writeInput(w: *std.Io.Writer, v: std.json.Value, top: bool) !void {
 pub fn fingerprint(keys: []const []const u8, results: []const tools.ExecResult) ?u64 {
     var h = std.hash.Wyhash.init(0x1706);
     for (keys, results) |key, r| {
-        if (r.pending or r.cancelled or jobRunning(r.text)) return null;
+        if (r.pending or r.cancelled or stillRunning(r.text)) return null;
         h.update(key);
         h.update(&.{ 0, @intFromBool(r.is_error) });
         h.update(r.text);
@@ -277,6 +299,25 @@ test "polling a job that is still running never counts, a finished job's output 
     i = 1;
     while (i <= stop_at) : (i += 1) _ = t.calls.note(fingerprint(&keys, &exited));
     try std.testing.expect(t.stopText() != null);
+}
+
+test "polling a subagent that is still running never counts, its finished report does" {
+    var t: Tracker = .{};
+    const keys = [_][]const u8{"agent_output\n{\"id\":7}"};
+    const running = [_]tools.ExecResult{.{ .text = "[agent 7: running]", .is_error = false }};
+    const many = [_]tools.ExecResult{.{ .text = "[agent 6: completed in 900ms · 2 tool call(s) · ~10 context token(s) · 0 cache-read token(s)]\n\nreport\n\n[agent 7: running]", .is_error = false }};
+    const done = [_]tools.ExecResult{.{ .text = "[agent 7: completed in 1200ms · 3 tool call(s) · ~4500 context token(s) · 100 cache-read token(s)]\n\nreport", .is_error = false }};
+    const lookalike = [_]tools.ExecResult{.{ .text = "[agent x: running]", .is_error = false }};
+    var i: u8 = 0;
+    while (i < 2 * stop_at) : (i += 1) {
+        try std.testing.expectEqual(@as(u8, 0), t.calls.note(fingerprint(&keys, &running)));
+        try std.testing.expectEqual(@as(u8, 0), t.calls.note(fingerprint(&keys, &many)));
+    }
+    try std.testing.expect(t.stopText() == null);
+    try std.testing.expect(fingerprint(&keys, &lookalike) != null);
+    i = 1;
+    while (i <= stop_at) : (i += 1) _ = t.calls.note(fingerprint(&keys, &done));
+    try std.testing.expectEqual(@as(?[]const u8, stop_text), t.stopText());
 }
 
 test "an empty-argument error loop still stops" {

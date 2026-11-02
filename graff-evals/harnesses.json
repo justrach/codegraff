@@ -434,5 +434,31 @@
     "model_prefix": "codegraff",
     "default_model": "gemini-4-argon",
     "note": "graff --json on the Codegraff gateway, set_effort default before the prompt (-p has no effort flag)"
+  },
+  "graff-dev-claude-agent": {
+    "cmd": ["{repo}/zig-out/bin/graff", "-p", "{prompt}", "--model", "claude-agent/{model}", "--yolo"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": [],
+    "env": {"GRAFF_CLAUDE_AGENT": "1", "GRAFF_MCP_CONFIG": "{repo}/graff-evals/no-global-mcp.json", "GRAFF_POST_DEADLINE_SECS": "90"},
+    "default_model": "sonnet",
+    "note": "graff on the Claude Agent provider (ADR 0309): the user's own `claude` login runs the model; graff's prompt, tools and loop. GRAFF_MCP_CONFIG names a file that does not exist: no global MCP servers, while a task's .mcp.json still loads (an existing empty file would switch MCP off entirely). Pass a Claude Code model alias (sonnet, opus, haiku)."
+  },
+  "graff-dev-claude-agent-ccprompt": {
+    "cmd": ["{repo}/zig-out/bin/graff", "-p", "{prompt}", "--model", "claude-agent/{model}", "--yolo"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": [],
+    "env": {"GRAFF_CLAUDE_AGENT": "1", "GRAFF_CLAUDE_AGENT_PROMPT": "claude", "GRAFF_MCP_CONFIG": "{repo}/graff-evals/no-global-mcp.json", "GRAFF_POST_DEADLINE_SECS": "90"},
+    "default_model": "sonnet",
+    "note": "graff-dev-claude-agent keeping Claude Code's system prompt with graff's appended."
+  },
+  "claude-code-clean": {
+    "cmd": ["python3", "{repo}/graff-evals/claude_code_run.py", "{model}", "{prompt}"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "env": {"CLAUDE_CODE_RUN_ISOLATED": "1", "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1", "DISABLE_TELEMETRY": "1", "DISABLE_AUTOUPDATER": "1", "DISABLE_ERROR_REPORTING": "1"},
+    "default_model": "sonnet",
+    "note": "`claude -p` on its own login with no user settings, hooks, plugins, CLAUDE.md or global MCP: the isolation graff-dev-claude-agent runs with. Launch the runner without an enclosing Claude Code session's CLAUDE* variables."
   }
 }
