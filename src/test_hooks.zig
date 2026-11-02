@@ -340,7 +340,9 @@ test {
     _ = @import("mcp_connect_notice.zig"); // ADR 0230
     _ = @import("image_sniff.zig"); // #1762: image media type from the bytes
     _ = @import("catalog_bounded.zig"); // model discovery: catalog GETs never hold boot past a budget
+    _ = @import("subagent_pin_qualified_tests.zig"); // a role persona can name its own provider
     _ = @import("opaque_state_persist_tests.zig"); // #1686: a resumed session keeps its compaction-state count
+    _ = @import("harness_tree_tests.zig"); // the harness as one value: surface, load/write, digest, check
     _ = @import("oauth_callback.zig");
     _ = @import("cache_key_tests.zig"); // ADR 0223: moved off http_headers.zig (600-line cap)
     _ = @import("router_headers_tests.zig"); // moved off http_headers.zig (600-line cap)

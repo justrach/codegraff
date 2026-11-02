@@ -36,6 +36,18 @@ pub fn queryMayUse(provider_id: []const u8, query: []const u8) bool {
     return true;
 }
 
+/// startupMayUse, plus the providers workers may be seated on: the explicit
+/// --subagent-provider, and, once the session consented to cross-provider
+/// workers, any provider with a login (a persona may name it as
+/// `<provider>/<model>`). Loading their catalogs is what lets those workers'
+/// models resolve and their calls be priced.
+pub fn startupLoads(keys: provider.Keys, provider_id: []const u8, model_flag: ?[]const u8, saved: ?serde.SavedModel, worker_hint: ?[]const u8) bool {
+    if (startupMayUse(keys, provider_id, model_flag, saved)) return true;
+    if (keys.get(provider_id) == null) return false;
+    if (worker_hint) |h| if (std.mem.eql(u8, std.mem.trim(u8, h, " \t"), provider_id)) return true;
+    return @import("subagent_selection.zig").g_cross_provider_consent;
+}
+
 pub fn startupMayUse(keys: provider.Keys, provider_id: []const u8, model_flag: ?[]const u8, saved: ?serde.SavedModel) bool {
     if (keys.get(provider_id) == null) return false;
     if (model_flag) |query| return queryMayUse(provider_id, query);
@@ -72,4 +84,21 @@ test "catalog selection is provider-driven rather than catalog-specific" {
     try std.testing.expect(!startupMayUse(keys, "codegraff", "kimi", null));
     try std.testing.expect(startupMayUse(keys, "codegraff", null, .{ .pid = "codegraff", .model = "deepseek-v4-pro" }));
     try std.testing.expect(!startupMayUse(keys, "codegraff", null, .{ .pid = "kimi", .model = "k3" }));
+}
+
+test "startup loads the catalog of a provider workers may be seated on" {
+    const selection = @import("subagent_selection.zig");
+    const saved_consent = selection.g_cross_provider_consent;
+    defer selection.g_cross_provider_consent = saved_consent;
+    var keys: provider.Keys = .{ .values = @splat(null) };
+    for (provider.provider_specs, &keys.values) |spec, *value| {
+        if (std.mem.eql(u8, spec.id, "codex") or std.mem.eql(u8, spec.id, "codegraff")) value.* = "test-token";
+    }
+    selection.g_cross_provider_consent = false;
+    try std.testing.expect(!startupLoads(keys, "codegraff", "codex", null, null));
+    try std.testing.expect(startupLoads(keys, "codegraff", "codex", null, "codegraff"));
+    selection.g_cross_provider_consent = true;
+    try std.testing.expect(startupLoads(keys, "codegraff", "codex", null, null));
+    // A provider with no login is never loaded for workers.
+    try std.testing.expect(!startupLoads(keys, "openrouter", "codex", null, null));
 }

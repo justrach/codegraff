@@ -5,6 +5,11 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.69
+    \\  • reading peer mail no longer rewrites history the model was already sent
+    \\  • graff login kimi works for kimi.ai (international) accounts; sign-in links are copied
+    \\  • workers can use gateway models; graff harness-tree shows the harness as one tree
+    \\
     \\0.302.68
     \\  • Claude Agent: compaction writes a summary instead of continuing the task
     \\  • Claude Agent: a prompt after a finished turn keeps its images
@@ -309,7 +314,7 @@ pub const usage_text =
     \\  graff login anthropic            Claude subscription browser sign-in (also: ant)
     \\  graff login console              metered Console sign-in through the `ant` CLI
     \\  graff login claude-agent         Claude through your own Claude Code login (`claude`)
-    \\  graff login kimi                 Kimi Code OAuth login (device-code)
+    \\  graff login kimi                 Kimi Code OAuth login (kimi.ai; kimi.com for China)
     \\  graff login xai                  Grok/SuperGrok OAuth login (device-code)
     \\  graff login zai                  Z.AI Coding Plan OAuth login
     \\  graff key set <provider> <key>   store a key (Keychain; POSIX 0600 file; Windows home ACL)

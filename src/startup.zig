@@ -236,6 +236,8 @@ fn serveConfig(flags: args.Flags, environ: anytype) serve.ServeConfig {
 /// every other terminal trajectory keeps resolveKeys' existing fatal behavior.
 pub fn resolveKeysOrRunAcpPreAuth(io: Io, gpa: Allocator, arena: Allocator, init: std.process.Init, flags: args.Flags) !?ResolvedKeys {
     const worker_hint = flags.subagent_provider_flag orelse init.environ_map.get("GRAFF_SUBAGENT_PROVIDER");
+    // Before key resolution: the startup catalog load reads it (catalog_selection.startupLoads).
+    if (flags.allow_cross_provider_subagents_flag) @import("subagent_selection.zig").g_cross_provider_consent = true;
     const is_acp = flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "acp");
     if (!is_acp) return try resolveKeys(io, gpa, arena, init.environ_map, flags.model_flag, worker_hint);
     if (try startup_keys.resolveKeysOptional(io, gpa, arena, init.environ_map, flags.model_flag, worker_hint)) |resolved| return resolved;
@@ -340,7 +342,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // args.loginTarget owns the names.
     if (flags.login_flag) {
         const home = keys_cli.homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
-        if (flags.claude_agent_login) @import("claude_agent_login.zig").login(io, arena, init.environ_map, home) catch std.process.exit(1) else if (flags.anthropic_console_login) try @import("anthropic_profile.zig").login(io, arena, init.environ_map, home) else if (flags.anthropic_login) try @import("oauth_anthropic.zig").login(io, gpa, arena, home, flags.refresh_flag) else if (flags.chatgpt_login) try @import("oauth_chatgpt.zig").login(io, gpa, arena, home) else if (flags.xai_login) try oauth.xaiLogin(io, gpa, arena, home) else if (flags.kimi_login) try oauth.kimiLogin(io, gpa, arena, home) else if (flags.zai_login) try oauth.zaiLogin(io, gpa, arena, home) else if (flags.codex_login or flags.refresh_flag) try oauth.codexLogin(io, gpa, arena, home, flags.refresh_flag) else try oauth.codegraffLogin(io, gpa, arena, home);
+        if (flags.claude_agent_login) @import("claude_agent_login.zig").login(io, arena, init.environ_map, home) catch std.process.exit(1) else if (flags.anthropic_console_login) try @import("anthropic_profile.zig").login(io, arena, init.environ_map, home) else if (flags.anthropic_login) try @import("oauth_anthropic.zig").login(io, gpa, arena, home, flags.refresh_flag) else if (flags.chatgpt_login) try @import("oauth_chatgpt.zig").login(io, gpa, arena, home) else if (flags.xai_login) try oauth.xaiLogin(io, gpa, arena, home) else if (flags.kimi_login) try oauth.kimiLogin(io, gpa, arena, home, flags.kimi_region) else if (flags.zai_login) try oauth.zaiLogin(io, gpa, arena, home) else if (flags.codex_login or flags.refresh_flag) try oauth.codexLogin(io, gpa, arena, home, flags.refresh_flag) else try oauth.codegraffLogin(io, gpa, arena, home);
         return true;
     }
 
@@ -421,6 +423,13 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // clean commit on the current branch, then removes the worktree + branch.
     if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "worktree")) {
         try jobs.worktreeCommand(gpa, io, arena, flags.positionals.items[1..]);
+        return true;
+    }
+
+    // `graff harness-tree …`: the harness (instructions, skills, subagents,
+    // scripts, hooks) as one value: show, digest, check, apply, diff.
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "harness-tree")) {
+        try @import("harness_tree_cli.zig").command(io, arena, flags.positionals.items[1..]);
         return true;
     }
 

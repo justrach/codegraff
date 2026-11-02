@@ -10,6 +10,18 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.69
+
+- Reading peer mail no longer rewrites history the model was already sent: only wake lines it was never sent are removed. On Claude Agent every woken turn used to start a fresh Claude Code process; on other providers the cached prefix changed after each inbox read (#1799).
+- `graff login kimi` signs international accounts in on kimi.ai and mainland China accounts on kimi.com (from the saved login, or clock and locale); `graff login kimi.ai|kimi.com` choose outright and refresh returns to the issuing site. Sign-in links are copied to the clipboard, over SSH too, and no browser opens where it can't be seen (#1733).
+- OpenAI Responses GPT-5.6+: `GRAFF_OPENAI_CACHE_TTL=12h` / `openai_cache_ttl` puts a 12-hour breakpoint on the stable prefix; the default stays 30m until a live probe confirms it. Usage parses cache writes by TTL (#1698, ADR 0312).
+- Workers can use gateway models and name their own provider: `--subagent-model` with `--subagent-provider codegraff` accepts a gateway model the built-in catalog does not list, a persona's `model: <provider>/<model>` pin runs on that provider, and its calls report cost (#1769).
+- `graff harness-tree show|digest|check|apply|diff` reads the instruction file, skills, subagents, scripts and hooks graff loads as one tree (#1770).
+- MCP over HTTP retries a cancel notice when local ports run out (#1796, #1794).
+- ADR 0308: a cheaper scout worker is an opt-in persona, not a default route (#1771).
+- The tier-2 review-checkpoint case reads a different file each call, so the identical-call guard no longer ends it (#1722).
+- Retains all changes from v0.302.68.
+
 ## v0.302.68
 
 - Claude Agent compaction sends its summary request as the request. Cut mid tool loop, the request was folded into the conversation checkpoint and followed by "Continue from where the checkpoint ends.", so in a long chat the model carried on with the task or asked a question, and that reply was installed as the summary (#1792, #1793, #1797).

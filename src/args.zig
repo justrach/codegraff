@@ -42,6 +42,7 @@ pub const Flags = struct {
     refresh_flag: bool = false,
     codex_login: bool = false,
     kimi_login: bool = false,
+    kimi_region: ?@import("oauth_kimi.zig").Region = null, // `graff login kimi.ai` / `kimi.com`
     xai_login: bool = false,
     zai_login: bool = false,
     chatgpt_login: bool = false,
@@ -122,7 +123,7 @@ pub fn parse(init: std.process.Init) !Flags {
         _ = it.next(); // argv[0]
         while (it.next()) |arg| {
             if (flags.positionals.items.len > 0 and
-                (std.mem.eql(u8, flags.positionals.items[0], "mcp") or std.mem.eql(u8, flags.positionals.items[0], "learn") or std.mem.eql(u8, flags.positionals.items[0], "peer") or std.mem.eql(u8, flags.positionals.items[0], "keys")))
+                (std.mem.eql(u8, flags.positionals.items[0], "mcp") or std.mem.eql(u8, flags.positionals.items[0], "learn") or std.mem.eql(u8, flags.positionals.items[0], "peer") or std.mem.eql(u8, flags.positionals.items[0], "keys") or std.mem.eql(u8, flags.positionals.items[0], "harness-tree")))
             {
                 try flags.positionals.append(arena, try arena.dupe(u8, arg));
             } else if (std.mem.startsWith(u8, arg, "-")) {
@@ -274,6 +275,7 @@ pub fn parse(init: std.process.Init) !Flags {
                 std.process.fatal("unknown login '{s}' — graff login [codegraff|chatgpt|anthropic|claude-agent|kimi|xai|zai]", .{name});
             flags.codex_login = std.mem.eql(u8, target, "codex");
             flags.kimi_login = std.mem.eql(u8, target, "kimi");
+            flags.kimi_region = @import("oauth_kimi.zig").regionFromLoginName(name);
             flags.xai_login = std.mem.eql(u8, target, "xai");
             flags.zai_login = std.mem.eql(u8, target, "zai");
             flags.chatgpt_login = std.mem.eql(u8, target, "chatgpt-new");
@@ -288,7 +290,7 @@ pub fn parse(init: std.process.Init) !Flags {
     flags.is_subcommand = flags.positionals.items.len > 0 and
         (std.mem.eql(u8, flags.positionals.items[0], "login") or std.mem.eql(u8, flags.positionals.items[0], "logout") or std.mem.eql(u8, flags.positionals.items[0], "key") or std.mem.eql(u8, flags.positionals.items[0], "mcp") or std.mem.eql(u8, flags.positionals.items[0], "learn") or
             std.mem.eql(u8, flags.positionals.items[0], "serve") or std.mem.eql(u8, flags.positionals.items[0], "update") or std.mem.eql(u8, flags.positionals.items[0], "title") or std.mem.eql(u8, flags.positionals.items[0], "repl") or (!flags.print_flag and std.mem.eql(u8, flags.positionals.items[0], "tui")) or
-            std.mem.eql(u8, flags.positionals.items[0], "worktree") or std.mem.eql(u8, flags.positionals.items[0], "sandboxes") or std.mem.eql(u8, flags.positionals.items[0], "cube") or std.mem.eql(u8, flags.positionals.items[0], "models") or
+            std.mem.eql(u8, flags.positionals.items[0], "worktree") or std.mem.eql(u8, flags.positionals.items[0], "harness-tree") or std.mem.eql(u8, flags.positionals.items[0], "sandboxes") or std.mem.eql(u8, flags.positionals.items[0], "cube") or std.mem.eql(u8, flags.positionals.items[0], "models") or
             std.mem.eql(u8, flags.positionals.items[0], "remote-control") or std.mem.eql(u8, flags.positionals.items[0], "remote") or @import("acp.zig").isAcpSubcommand(flags.positionals.items[0])); // `acp` also arms ACP's stdout discipline (json_mode) — see acp.isAcpSubcommand
     if (!flags.is_subcommand and flags.positionals.items.len > 0) {
         flags.oneshot_prompt = try std.mem.join(arena, " ", flags.positionals.items);
@@ -353,6 +355,7 @@ pub fn loginTarget(name: []const u8) ?[]const u8 {
     };
     for (aliases) |pair| if (std.ascii.eqlIgnoreCase(name, pair[0])) return pair[1];
     if (@import("oauth_zai.zig").isLoginName(name)) return "zai";
+    if (@import("oauth_kimi.zig").isLoginName(name)) return "kimi";
     if (@import("oauth_chatgpt.zig").isLoginName(name)) return "chatgpt-new";
     return null;
 }
@@ -363,6 +366,7 @@ test "loginTarget: every ChatGPT name, codex included, is the plan's sign-in; un
     try std.testing.expectEqualStrings("codegraff", loginTarget("graff").?);
     try std.testing.expectEqualStrings("xai", loginTarget("grok").?);
     try std.testing.expectEqualStrings("kimi", loginTarget("kimi").?);
+    try std.testing.expectEqualStrings("kimi", loginTarget("kimi.ai").?);
     for ([_][]const u8{ "ant", "anthropic", "ANT", "Anthropic", "console", "Console" }) |name|
         try std.testing.expectEqualStrings("anthropic", loginTarget(name).?);
     try std.testing.expectEqualStrings("zai", loginTarget("zai").?);

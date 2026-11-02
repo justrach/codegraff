@@ -38,6 +38,8 @@ const Usage = struct {
     /// Of `output`, the reasoning the server reports (Responses
     /// output_tokens_details); null when the wire has no split.
     reasoning: ?i64 = null,
+    cache_write_12h: ?i64 = null,
+    cache_write_30m: ?i64 = null,
 };
 
 threadlocal var pending: ?Usage = null;
@@ -69,7 +71,12 @@ pub fn note(self: *const Agent, ordinary: i64, cache_read: i64, cache_write: i64
         // Sent as previous_response_id + the new items on a held socket.
         .chained = self.codex_prev_id != null,
         .gap_ms = gap,
-        .cache_ttl = if (cache_ttl.control(self)) |c| (if (std.mem.eql(u8, c, cache_ttl.ephemeral_1h)) "1h" else null) else null,
+        .cache_ttl = blk: {
+            if (cache_ttl.control(self)) |c| if (std.mem.eql(u8, c, cache_ttl.ephemeral_1h)) break :blk "1h";
+            const oai = @import("openai_prompt_cache.zig");
+            if (oai.active(self)) break :blk oai.current().label();
+            break :blk null;
+        },
         .prefix_changed = !snap.same,
         .prefix_bust = if (snap.same) null else hud.bustLabel(snap.last_bust),
         .cache_miss = cache_ttl.missReason(cache_read, input, !snap.same, gap),
@@ -98,7 +105,16 @@ pub fn emit(tr: anytype, label: []const u8, from_sub: bool, model: []const u8) v
         .prefix_bust = u.prefix_bust,
         .cache_miss = u.cache_miss,
         .reasoning_tokens = u.reasoning,
+        .cache_write_12h_tokens = u.cache_write_12h,
+        .cache_write_30m_tokens = u.cache_write_30m,
     });
+}
+
+/// After recordCost: named OpenAI write lifetimes from input_tokens_details.
+pub fn noteWriteSplit(write_12h: i64, write_30m: i64) void {
+    if (pending == null) return;
+    if (write_12h > 0) pending.?.cache_write_12h = write_12h;
+    if (write_30m > 0) pending.?.cache_write_30m = write_30m;
 }
 
 /// From Tracer.api on a failed call: nothing was billed for it.
