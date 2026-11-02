@@ -10,6 +10,12 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.68
+
+- Claude Agent compaction sends its summary request as the request. Cut mid tool loop, the request was folded into the conversation checkpoint and followed by "Continue from where the checkpoint ends.", so in a long chat the model carried on with the task or asked a question, and that reply was installed as the summary (#1792, #1793, #1797).
+- Claude Agent: a prompt sent after a turn that ended on a tool call keeps its text and images instead of joining the checkpoint as text (#1792, #1793).
+- Retains all changes from v0.302.67.
+
 ## v0.302.67
 
 - Claude Agent refreshes a changed tool list in place. Removing and re-adding graff's tools (to make Claude Code re-read them) failed the `load_tool_schemas` call that caused the change with "Connection closed", and the model often ended its turn or got "No such tool available"; graff now sends `tools/list_changed` and keeps the connection (#1789, ADR 0311).

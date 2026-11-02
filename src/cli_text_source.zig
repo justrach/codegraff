@@ -5,6 +5,10 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.68
+    \\  • Claude Agent: compaction writes a summary instead of continuing the task
+    \\  • Claude Agent: a prompt after a finished turn keeps its images
+    \\
     \\0.302.67
     \\  • Claude Agent: loading a tool no longer drops the call or ends the turn
     \\  • a finished task still hears peers who message it directly

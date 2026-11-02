@@ -147,6 +147,38 @@ test "claude-agent version floor" {
     try std.testing.expect(wire.effortFlag("none") == null);
 }
 
+test "claude-agent compaction mid tool loop: the summary request is the prompt, never checkpoint to continue" {
+    // Compaction runs on a fresh tools-off process. Cut mid loop, its history
+    // ends on tool results (or a call) and then the summary request. Folding
+    // the request into the checkpoint and adding "Continue from where the
+    // checkpoint ends." made the model carry on with the task, or ask the
+    // user a question, and that text was installed as the "summary".
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const request = "Write a handoff summary of the conversation so far.";
+    const shapes = [_][]const u8{
+        \\[{"role":"user","content":"fix the bug"},
+        \\ {"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"read_file","input":{"path":"a.zig"}}]},
+        \\ {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"fn main() {}"}]},
+        \\ {"role":"user","content":"Write a handoff summary of the conversation so far."}]
+        ,
+        \\[{"role":"user","content":"fix the bug"},
+        \\ {"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"read_file","input":{"path":"a.zig"}}]},
+        \\ {"role":"user","content":"Write a handoff summary of the conversation so far."}]
+        ,
+    };
+    for (shapes) |shape| {
+        const msgs = try parse(a, shape);
+        const blocks = (try history.freshContent(a, msgs.array.items)).array.items;
+        try std.testing.expectEqual(@as(usize, 2), blocks.len);
+        const cp = blocks[0].object.get("text").?.string;
+        try std.testing.expect(std.mem.indexOf(u8, cp, "read_file") != null);
+        try std.testing.expect(std.mem.indexOf(u8, cp, request) == null);
+        try std.testing.expectEqualStrings(request, blocks[1].object.get("text").?.string);
+    }
+}
+
 test "claude-agent fresh session: earlier history is a checkpoint, the prompt keeps its blocks" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
