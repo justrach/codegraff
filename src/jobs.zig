@@ -549,6 +549,7 @@ pub fn jobsReap(gpa: Allocator, io: Io) void {
     for (jobs) |job| freeJob(gpa, io, job);
     gpa.free(jobs);
     // toOwnedSlice already emptied the pool; deinit would poison reuse.
+    _ = @import("sim_ledger.zig").g.release(gpa, io); // #407: after the jobs that may use them
 }
 
 test { // split-out modules: unreferenced, their tests silently never run

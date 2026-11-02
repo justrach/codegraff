@@ -7,10 +7,21 @@ const Approvals = @import("approvals.zig").Approvals;
 
 pub const Owned = struct {
     arena: std.heap.ArenaAllocator,
+    history: ?std.heap.ArenaAllocator = null,
     approvals: Approvals = .{},
 
     pub fn init(gpa: std.mem.Allocator) Owned {
         return .{ .arena = .init(gpa) };
+    }
+
+    pub fn releaseHistory(self: *Owned) void {
+        if (self.history) |*arena| arena.deinit();
+        self.history = null;
+    }
+
+    pub fn deinit(self: *Owned) void {
+        self.releaseHistory();
+        self.arena.deinit();
     }
 
     pub fn provider(self: *Owned, source: Provider) !Provider {
@@ -33,6 +44,10 @@ pub const Owned = struct {
         copy.parent_tool_call_id = try a.dupe(u8, source.parent_tool_call_id);
         copy.parent_task = try a.dupe(u8, source.parent_task);
         copy.parent_messages = &.{}; // the caller's history moves on once this call returns
+        if (source.fork_source) |snapshot| {
+            self.history = .init(source.gpa);
+            copy.fork_source = try snapshot.clone(self.history.?.allocator());
+        }
         if (source.worker_id) |id| copy.worker_id = try a.dupe(u8, id);
         if (source.approvals) |ap| {
             ap.mutex.lockUncancelable(source.io);

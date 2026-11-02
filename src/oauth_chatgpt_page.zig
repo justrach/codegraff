@@ -9,9 +9,9 @@ const Allocator = std.mem.Allocator;
 
 pub const State = enum { first, ok, noplan, denied, @"error" };
 
-const template = @embedFile("oauth_page/chatgpt_callback.html");
-const emblem = @embedFile("oauth_page/codegraff-emblem-96.png");
-const art = @embedFile("oauth_page/auth-handoff-760.jpg");
+const template_gz = @embedFile("chatgpt_callback.gz");
+const emblem = @embedFile("oauth_page/codegraff-emblem-96.webp");
+const art = @embedFile("oauth_page/auth-handoff-760.webp");
 
 fn dataUri(arena: Allocator, mime: []const u8, bytes: []const u8) ![]const u8 {
     const enc = std.base64.standard.Encoder;
@@ -35,11 +35,11 @@ fn escapeHtml(arena: Allocator, text: []const u8) ![]const u8 {
 /// The page body for one outcome. `account` is the signed-in email, shown in
 /// the states that have one.
 pub fn render(arena: Allocator, state: State, account: []const u8) ![]const u8 {
-    var page: []const u8 = template;
+    var page: []const u8 = try @import("update_archive.zig").gunzip(arena, template_gz);
     page = try std.mem.replaceOwned(u8, arena, page, "{{state}}", @tagName(state));
     page = try std.mem.replaceOwned(u8, arena, page, "{{account}}", try escapeHtml(arena, account));
-    page = try std.mem.replaceOwned(u8, arena, page, "{{emblem}}", try dataUri(arena, "image/png", emblem));
-    return std.mem.replaceOwned(u8, arena, page, "{{art}}", try dataUri(arena, "image/jpeg", art));
+    page = try std.mem.replaceOwned(u8, arena, page, "{{emblem}}", try dataUri(arena, "image/webp", emblem));
+    return std.mem.replaceOwned(u8, arena, page, "{{art}}", try dataUri(arena, "image/webp", art));
 }
 
 /// The whole HTTP response: not cached, no referrer, connection closed.
@@ -61,7 +61,7 @@ test "ChatGPT callback page: every state renders complete, escaped and self-cont
         try std.testing.expect(std.mem.indexOf(u8, page, "{{") == null);
         // No network fetch while the code is in the address bar.
         try std.testing.expect(std.mem.indexOf(u8, page, "src=\"http") == null);
-        try std.testing.expect(std.mem.indexOf(u8, page, "data:image/jpeg;base64,") != null);
+        try std.testing.expect(std.mem.indexOf(u8, page, "data:image/webp;base64,") != null);
     }
     const hostile = try render(a, .ok, "<script>x</script>@example.com");
     try std.testing.expect(std.mem.indexOf(u8, hostile, "<script>x") == null);

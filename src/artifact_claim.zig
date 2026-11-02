@@ -191,7 +191,7 @@ pub fn gateCommandIn(arena: Allocator, io: Io, cmd: []const u8, key: []const u8,
     }
     // A failed `gh pr view` is unknown identity, not "PR N in no repo" (#1344).
     const unresolved = kind == .pull_request and resolved == null and (!builtin.is_test or unresolved_mod.g_force_for_test);
-    var target: @import("artifact_claim_target.zig").Target = if (unresolved) unresolved_mod.target(cmd) else if (kind == .pull_request and !builtin.is_test)
+    var target: @import("artifact_claim_target.zig").Target = if (unresolved) unresolved_mod.target(arena, cmd) else if (kind == .pull_request and !builtin.is_test)
         resolved.?
     else
         resolved orelse @import("artifact_claim_target.zig").explicit(cmd, kind) orelse .{ .kind = if (kind == .issue) Kind.issue else Kind.branch, .key = key };
@@ -199,7 +199,7 @@ pub fn gateCommandIn(arena: Allocator, io: Io, cmd: []const u8, key: []const u8,
     for (ledger.slice()) |c| {
         if (!claimRelevant(c.kind, kind)) continue;
         if (unresolved) {
-            if (sameOwner(c.owner, me) or !ownerLive(io, c.owner) or unresolved_mod.provablyUnrelated(c, target)) continue;
+            if (sameOwner(c.owner, me) or !ownerLive(io, c.owner) or unresolved_mod.provablyUnrelated(ledger.slice(), me, c, target)) continue;
             return unresolved_mod.refuseText(arena, c, target);
         }
         const branch_claim = c.kind == .publication or c.kind == .branch;

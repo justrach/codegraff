@@ -12,9 +12,11 @@ const session_peer = @import("session_peer.zig");
 const session_wake = @import("session_wake.zig");
 
 /// Mid-turn mail only parks. A history wake waits for idle (#1136) and is
-/// never placed after a human prompt (that would steal authority).
+/// never placed after a human prompt (that would steal authority). After a
+/// final answer, room mail is held for the next human prompt.
 pub fn shouldInjectAuthoritative(busy: bool, newly_parked: usize) bool {
-    return !busy and newly_parked > 0 and !peer_idle.idleWakeSuppressed();
+    return !busy and newly_parked > 0 and !peer_idle.idleWakeSuppressed() and
+        !peer_idle.ambientHeld(peer_inbox.unread() -| newly_parked);
 }
 
 /// Same unread generation is exposed at most once. Busy does not block a
@@ -88,6 +90,59 @@ test "#1137 peer arrival between tool batches is not an authoritative user turn"
     peer_idle.noteTurnEnd();
 }
 
+fn humanTurns(msgs: []const std.json.Value) usize {
+    var n: usize = 0;
+    for (msgs) |m| {
+        if (session_peer.isHumanUserTurn(m)) n += 1;
+    }
+    return n;
+}
+
+test "#1137 peer batches during tool work, then a final answer: no new turn, no reopened task" {
+    peer_inbox.resetForTest();
+    peer_idle.resetForTest();
+    defer {
+        peer_inbox.resetForTest();
+        peer_idle.resetForTest();
+    }
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var msgs = std.json.Array.init(a);
+    try msgs.append(try userText(a, "inspect the parser"));
+    var root = dummyRoot(a, msgs);
+    var buf: [256]u8 = undefined;
+
+    // Multi-step tool work: room mail lands at two step boundaries.
+    peer_idle.noteTurnStart();
+    _ = peer_inbox.parkHeard(&.{.{ .from_pid = 2, .from_start = 1, .from_session = "s-a", .text = "I only touch gui/src" }}, &.{});
+    try std.testing.expect(!shouldInjectAuthoritative(peer_idle.isBusy(), 1));
+    placeWaitingBeforeHuman(&root);
+    try root.messages.append(try @import("messages.zig").textMessage(a, "assistant", "reading the lexer"));
+    _ = peer_inbox.parkHeard(&.{.{ .from_pid = 3, .from_start = 1, .from_session = "s-b", .text = "docs are mine this hour" }}, &.{});
+    try std.testing.expect(!shouldInjectAuthoritative(peer_idle.isBusy(), 1));
+    placeWaitingBeforeHuman(&root);
+    // The human prompt is still the only authoritative user turn.
+    try std.testing.expectEqual(@as(usize, 1), humanTurns(root.messages.items));
+    try std.testing.expect(!session_peer.isHumanUserTurn(root.messages.items[root.messages.items.len - 1]));
+
+    // The turn ends with an ordinary final answer. The parked room mail must
+    // not reopen it, by idle wake or by a history inject.
+    try root.messages.append(try @import("messages.zig").textMessage(a, "assistant", "The parser is fine."));
+    peer_idle.noteFinalAnswer();
+    peer_idle.noteTurnEnd();
+    try std.testing.expect(peer_idle.takeIdleWake(std.testing.io, &buf) == null);
+    try std.testing.expect(!shouldInjectAuthoritative(false, 1));
+    try std.testing.expectEqual(@as(usize, 2), peer_inbox.unread());
+
+    // A later human turn still sees the waiting mail, ahead of its prompt.
+    try root.messages.append(try userText(a, "next task"));
+    placeWaitingBeforeHuman(&root);
+    const items = root.messages.items;
+    try std.testing.expect(session_peer.isHumanUserTurn(items[items.len - 1]));
+    try std.testing.expect(peer_context.isPeerInject(items[items.len - 2]));
+}
+
 test "#1137 duplicate unread state is idempotent" {
     peer_inbox.resetForTest();
     peer_idle.resetForTest();
@@ -120,7 +175,7 @@ test "#1137 peer arrival after attempt_completion does not auto-run" {
     }
     _ = peer_inbox.parkHeard(&.{.{ .from_pid = 2, .from_start = 1, .from_session = "s-peer", .text = "hold gui" }}, &.{});
     peer_idle.noteCompletion();
-    try std.testing.expect(peer_idle.idleWakeSuppressed());
+    try std.testing.expect(peer_idle.isSettled());
     try std.testing.expect(!shouldInjectAuthoritative(false, 1));
     var buf: [256]u8 = undefined;
     try std.testing.expect(peer_idle.takeIdleWake(std.testing.io, &buf) == null);

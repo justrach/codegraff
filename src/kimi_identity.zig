@@ -7,13 +7,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
-const Allocator = std.mem.Allocator;
 
 pub const user_agent = "graff/" ++ @import("build_options").version;
 pub const platform = "graff";
 pub const version = @import("build_options").version;
 
-pub var device_id: []const u8 = "unknown";
 pub var device_name: []const u8 = "unknown";
 pub var device_model: []const u8 = "unknown";
 pub var os_version: []const u8 = "unknown";
@@ -22,9 +20,6 @@ var device_name_buf: [256]u8 = undefined;
 var device_model_buf: [128]u8 = undefined;
 var os_version_buf: [128]u8 = undefined;
 var host_fields_ready = false;
-
-const private_file_permissions: Io.File.Permissions = if (Io.File.Permissions.has_executable_bit) @fromBackingInt(@intCast(0o600)) else .default_file;
-const private_dir_permissions: Io.File.Permissions = if (Io.File.Permissions.has_executable_bit) @fromBackingInt(@intCast(0o700)) else .default_dir;
 
 /// Node `os.arch()` names. kimi-code puts these in `X-Msh-Device-Model`.
 pub fn nodeArch(tag: std.Target.Cpu.Arch) []const u8 {
@@ -69,22 +64,6 @@ pub fn persistAscii(buf: []u8, value: []const u8) []const u8 {
     }
     const trimmed = std.mem.trim(u8, buf[0..n], " \t\r\n");
     return if (trimmed.len == 0) "unknown" else trimmed;
-}
-
-fn secureDir(io: Io, path: []const u8) void {
-    const dir = Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
-    defer dir.close(io);
-    if (builtin.os.tag != .windows) dir.setPermissions(io, private_dir_permissions) catch {};
-}
-
-fn validDeviceId(value: []const u8) bool {
-    if (value.len != 36) return false;
-    for (value, 0..) |c, i| {
-        if (i == 8 or i == 13 or i == 18 or i == 23) {
-            if (c != '-') return false;
-        } else if (!std.ascii.isHex(c)) return false;
-    }
-    return true;
 }
 
 fn readHostname(buf: []u8) []const u8 {
@@ -156,62 +135,15 @@ pub fn fillHostFields() void {
     device_model = formatDeviceModel(&device_model_buf, builtin.os.tag, os_version, product, arch);
 }
 
-/// Kimi Code sends a stable random device id with its X-Msh identity headers.
-/// Graff owns a separate ~/.kimi/device_id so it never mutates another CLI's
-/// credential store or impersonates that installation.
-pub fn initIdentity(io: Io, arena: Allocator, home: []const u8) void {
-    fillHostFields();
-    if (!std.mem.eql(u8, device_id, "unknown") or home.len == 0) return;
-    const dir = std.fmt.allocPrint(arena, "{s}/.kimi", .{home}) catch return;
-    const path = std.fmt.allocPrint(arena, "{s}/device_id", .{dir}) catch return;
-    if (Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(128))) |raw| {
-        const value = std.mem.trim(u8, raw, " \t\r\n");
-        if (validDeviceId(value)) {
-            device_id = arena.dupe(u8, value) catch "unknown";
-            secureDir(io, dir);
-            const file = Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only }) catch return;
-            defer file.close(io);
-            file.setPermissions(io, private_file_permissions) catch {};
-            return;
-        }
-    } else |_| {}
-    var random: [16]u8 = undefined;
-    io.random(&random);
-    random[6] = (random[6] & 0x0f) | 0x40;
-    random[8] = (random[8] & 0x3f) | 0x80;
-    const hex = std.fmt.bytesToHex(random, .lower);
-    const id = arena.alloc(u8, 36) catch return;
-    @memcpy(id[0..8], hex[0..8]);
-    id[8] = '-';
-    @memcpy(id[9..13], hex[8..12]);
-    id[13] = '-';
-    @memcpy(id[14..18], hex[12..16]);
-    id[18] = '-';
-    @memcpy(id[19..23], hex[16..20]);
-    id[23] = '-';
-    @memcpy(id[24..36], hex[20..32]);
-    device_id = id;
-    Io.Dir.cwd().createDir(io, dir, private_dir_permissions) catch {};
-    secureDir(io, dir);
-    const file = Io.Dir.cwd().createFile(io, path, .{ .permissions = private_file_permissions }) catch return;
-    defer file.close(io);
-    file.setPermissions(io, private_file_permissions) catch {};
-    var buf: [64]u8 = undefined;
-    var writer = file.writer(io, &buf);
-    writer.interface.print("{s}\n", .{id}) catch return;
-    writer.interface.flush() catch {};
-}
-
 pub fn identityHeaders(buf: []std.http.Header) []std.http.Header {
     fillHostFields();
-    if (buf.len < 6) return buf[0..0];
+    if (buf.len < 5) return buf[0..0];
     buf[0] = .{ .name = "X-Msh-Platform", .value = platform };
     buf[1] = .{ .name = "X-Msh-Version", .value = version };
     buf[2] = .{ .name = "X-Msh-Device-Name", .value = device_name };
     buf[3] = .{ .name = "X-Msh-Device-Model", .value = device_model };
     buf[4] = .{ .name = "X-Msh-Os-Version", .value = os_version };
-    buf[5] = .{ .name = "X-Msh-Device-Id", .value = device_id };
-    return buf[0..6];
+    return buf[0..5];
 }
 
 test "user_agent is graff/<version>, not a spoofed kimi-code-cli token" {
@@ -255,9 +187,11 @@ test "persistAscii strips non-ASCII and falls back like kimi-code asciiHeader" {
 }
 
 test "identityHeaders use hostname and Node-shaped model, not zig os tags" {
-    var headers: [6]std.http.Header = undefined;
+    var headers: [5]std.http.Header = undefined;
     const got = identityHeaders(&headers);
-    try std.testing.expectEqual(@as(usize, 6), got.len);
+    try std.testing.expectEqual(@as(usize, 5), got.len);
+    // No device id: graff keeps no persistent install identifier for Kimi.
+    for (got) |h| try std.testing.expect(!std.ascii.eqlIgnoreCase(h.name, "X-Msh-Device-Id"));
     try std.testing.expectEqualStrings("X-Msh-Platform", got[0].name);
     // graff states its own platform; it never reports the Kimi CLI's (#1297).
     try std.testing.expectEqualStrings("graff", got[0].value);

@@ -235,7 +235,7 @@ pub fn render(w: *Io.Writer) !void {
     }
     try w.writeAll(
         \\  remaining max
-        \\    GRAFF_OPENAI_CACHE_TTL  12h (default) / 30m / off; OpenAI Responses GPT-5.6+
+        \\    GRAFF_OPENAI_CACHE_TTL  30m (default) / 12h / off; OpenAI Responses GPT-5.6+
         \\    GRAFF_STABLE_CATALOG=0  opt out: loads rewrite tools JSON (stable is the default)
         \\    /goal /never /strict    each prefix rewrite is one miss; compaction already pays one
         \\    leave skill bodies      and file: paths out of the prefix (already the default)

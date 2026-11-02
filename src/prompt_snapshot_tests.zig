@@ -114,6 +114,7 @@ test "#421: a gated-off capability's tool names disappear from the prompt entire
             "Never run git commands that discard work",
             "Parallelize tool calls",
             "Be direct and concise",
+            "A comment alone does not complete a recurrence report.", // #1701: MCP can report without local tools
         }) |keep| {
             std.testing.expect(std.mem.indexOf(u8, out, keep) != null) catch |err| {
                 std.debug.print("config '{s}' lost '{s}'\n", .{ row.name, keep });

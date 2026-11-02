@@ -39,7 +39,7 @@ fn reject(w: *Io.Writer, req: proto.Request, message: []const u8) !void {
     if (req.id != null) try proto.writeError(w, req.id, invalid_params, message);
 }
 
-fn replayHistory(arena: Allocator, root: *@import("agent.zig").Agent, w: *Io.Writer, sid: []const u8) !void {
+pub fn replayHistory(arena: Allocator, root: *@import("agent.zig").Agent, w: *Io.Writer, sid: []const u8) !void {
     // The provider context can be compacted. The append-only transcript keeps
     // earlier visible turns; a legacy save without one uses current history.
     var retained: std.ArrayList(std.json.Value) = .empty;
@@ -70,38 +70,16 @@ pub fn load(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request
     // The client's cwd becomes the session's; naming the checkout that owns a
     // `-w` or auto-isolated tree keeps that tree (acp_workspace.adopt).
     acp_workspace.adopt(env, arena, params) catch |err| return reject(w, req, acp_workspace.errorText(err));
-    // No discovery fallback to the user's home or a sibling checkout. A save
-    // with this basename in another workspace is a different conversation.
-    // The one exception is this checkout's own `.graff/worktrees/*` (ADR 0202).
-    const path = try session.sessionPath(arena, sid);
-    const stat = Io.Dir.cwd().statFile(live.root.io, path, .{}) catch blk: {
-        if (!acp_workspace.enterSavedTree(env, arena, sid)) return reject(w, req, "Unknown session ID in the selected workspace");
-        break :blk Io.Dir.cwd().statFile(live.root.io, path, .{}) catch
-            return reject(w, req, "Unknown session ID in the selected workspace");
+    const provider = switch (savedHere(live, env, arena, sid)) {
+        .provider => |id| id,
+        .rejected => |message| return reject(w, req, message),
     };
-    const canonical_active = workspace_switch.currentAbs(live.root.io, arena);
-    if (stat.kind != .file) return reject(w, req, "Unknown session ID in the selected workspace");
-    const bytes = Io.Dir.cwd().readFileAlloc(live.root.io, path, arena, .limited(session_index.max_session_bytes)) catch |err|
-        return reject(w, req, loadErrorText(arena, if (err == error.StreamTooLong) error.SessionTooLarge else err, ""));
-    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, bytes, .{ .allocate = .alloc_always }) catch
-        return reject(w, req, "Saved session could not be loaded");
-    if (parsed != .object) return reject(w, req, "Saved session could not be loaded");
-    const provider = parsed.object.get("provider") orelse return reject(w, req, "Saved session could not be loaded");
-    const model = parsed.object.get("model") orelse return reject(w, req, "Saved session could not be loaded");
-    const messages = parsed.object.get("messages") orelse return reject(w, req, "Saved session could not be loaded");
-    if (provider != .string or model != .string or messages != .array)
-        return reject(w, req, "Saved session could not be loaded");
-    if (util.strFieldObj(parsed.object, "workspace")) |saved_workspace| {
-        const canonical_saved = Io.Dir.cwd().realPathFileAlloc(live.root.io, saved_workspace, arena) catch saved_workspace;
-        if (!session_index.sameWorkspace(canonical_saved, canonical_active))
-            return reject(w, req, "Saved session belongs to another workspace");
-    }
     // Flush the outgoing conversation before replacing provider-native state.
     session.saveSession(live.root, arena, live.root.session_name) catch |err| {
         return proto.writeError(w, req.id, engine.err_internal, @errorName(err));
     };
     session.loadSession(live.root, live.keys, arena, sid) catch |err| {
-        return proto.writeError(w, req.id, invalid_params, loadErrorText(arena, err, if (provider == .string) provider.string else ""));
+        return proto.writeError(w, req.id, invalid_params, loadErrorText(arena, err, provider));
     };
     // Same precedence as CLI resume: the host respawns with --model to switch.
     if (live.model_override) |p| @import("session_branch.zig").applyModelOverride(live.root, arena, p);
@@ -114,6 +92,39 @@ pub fn load(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request
     const options = engine.configOptions(d, arena) catch |err| return proto.writeError(w, req.id, engine.err_internal, @errorName(err));
     try proto.writeResult(w, req.id, .{ .configOptions = options, ._meta = acp_workspace.meta(env, arena) });
     try proto.writeAvailableCommands(w, live.session_id, try @import("acp_t3.zig").commands(arena, proto.slashCommands()));
+}
+
+pub const Saved = union(enum) { provider: []const u8, rejected: []const u8 };
+
+/// A save `sid` in the selected workspace that session/load (and session/fork)
+/// may restore, or why not. Names its provider for a credential error.
+pub fn savedHere(live: *LiveTurn, env: acp_workspace.Env, arena: Allocator, sid: []const u8) Saved {
+    // No discovery fallback to the user's home or a sibling checkout. A save
+    // with this basename in another workspace is a different conversation.
+    // The one exception is this checkout's own `.graff/worktrees/*` (ADR 0202).
+    const path = session.sessionPath(arena, sid) catch return .{ .rejected = "Invalid session ID" };
+    const stat = Io.Dir.cwd().statFile(live.root.io, path, .{}) catch blk: {
+        if (!acp_workspace.enterSavedTree(env, arena, sid)) return .{ .rejected = "Unknown session ID in the selected workspace" };
+        break :blk Io.Dir.cwd().statFile(live.root.io, path, .{}) catch
+            return .{ .rejected = "Unknown session ID in the selected workspace" };
+    };
+    const canonical_active = workspace_switch.currentAbs(live.root.io, arena);
+    if (stat.kind != .file) return .{ .rejected = "Unknown session ID in the selected workspace" };
+    const bytes = Io.Dir.cwd().readFileAlloc(live.root.io, path, arena, .limited(session_index.max_session_bytes)) catch |err|
+        return .{ .rejected = loadErrorText(arena, if (err == error.StreamTooLong) error.SessionTooLarge else err, "") };
+    const unloadable: Saved = .{ .rejected = "Saved session could not be loaded" };
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, bytes, .{ .allocate = .alloc_always }) catch return unloadable;
+    if (parsed != .object) return unloadable;
+    const provider = parsed.object.get("provider") orelse return unloadable;
+    const model = parsed.object.get("model") orelse return unloadable;
+    const messages = parsed.object.get("messages") orelse return unloadable;
+    if (provider != .string or model != .string or messages != .array) return unloadable;
+    if (util.strFieldObj(parsed.object, "workspace")) |saved_workspace| {
+        const canonical_saved = Io.Dir.cwd().realPathFileAlloc(live.root.io, saved_workspace, arena) catch saved_workspace;
+        if (!session_index.sameWorkspace(canonical_saved, canonical_active))
+            return .{ .rejected = "Saved session belongs to another workspace" };
+    }
+    return .{ .provider = provider.string };
 }
 
 /// #1557: the save parsed and its fields are present, so a failure here is
@@ -140,7 +151,7 @@ test "loadErrorText names a missing credential instead of blaming the save (#155
     try std.testing.expect(std.mem.indexOf(u8, loadErrorText(a, error.SessionTooLarge, "x"), "read limit") != null);
 }
 
-fn replayFromStart(params: std.json.Value) bool {
+pub fn replayFromStart(params: std.json.Value) bool {
     const from = params.object.get("replayFrom") orelse return false;
     if (from != .object) return false;
     return std.mem.eql(u8, util.strFieldObj(from.object, "type") orelse "", "start");

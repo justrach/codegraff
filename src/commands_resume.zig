@@ -1,4 +1,4 @@
-//! `/resume` and clone-on-write `/resume SOURCE --branch DEST`.
+//! `/resume`, clone-on-write `/resume SOURCE --branch DEST`, and `/fork`.
 
 const std = @import("std");
 const Io = std.Io;
@@ -50,7 +50,26 @@ fn reject(out: *Io.Writer, comptime fmt: []const u8, args: anytype) !bool {
     return true;
 }
 
+/// `/fork [NAME]`: branch the current conversation and continue in the branch.
+fn tryFork(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
+    if (!std.mem.startsWith(u8, line, "/fork") or (line.len > 5 and line[5] != ' ' and line[5] != '\t')) return false;
+    const arg = std.mem.trim(u8, line["/fork".len..], " \t");
+    if (std.mem.indexOfAny(u8, arg, " \t") != null) return reject(out, "usage: /fork [NAME]\n", .{});
+    const forked = @import("session_fork.zig").forkCurrent(root, keys, arena, if (arg.len == 0) null else arg, null) catch |err| return switch (err) {
+        error.NothingToFork => reject(out, "fork failed: this conversation has nothing to fork yet\n", .{}),
+        error.InvalidSessionName => reject(out, "fork failed: invalid session or branch name\n", .{}),
+        error.BranchMatchesSource => reject(out, "fork failed: the branch name must differ from the current session\n", .{}),
+        error.BranchAlreadyExists => reject(out, "fork failed: a session named {s} already exists\n", .{arg}),
+        else => reject(out, "fork failed: {t}\n", .{err}),
+    };
+    presence.noteLabelsFrom(root.io, root.gpa, arena, root.session_title, root.session_name);
+    try out.print("forked {s} into {s} ({d} messages); you are on the branch, /resume {s} returns to the original\n", .{ forked.source, forked.target, root.messages.items.len, forked.source });
+    try out.flush();
+    return true;
+}
+
 pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
+    if (try tryFork(root, keys, arena, line, out)) return true;
     if (!std.mem.startsWith(u8, line, "/resume") or (line.len > 7 and line[7] != ' ' and line[7] != '\t')) return false;
     const parsed = session_branch.parseSpec(line["/resume".len..]) orelse return reject(out, "usage: /resume SOURCE [--branch DEST]\n", .{});
     var source = parsed.source;

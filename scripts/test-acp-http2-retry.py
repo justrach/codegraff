@@ -2,7 +2,7 @@
 """Offline ACP regression for an ambiguous HTTP/2 failure after POST flush.
 
 Builds with a verified copy of the pinned http-zig dependency. Only the local
-CA trust source and a one-shot post-flush fault are injected into that copy.
+CA trust source and controlled post-flush faults are injected into that copy.
 The production harness and retry policy are used unchanged.
 """
 import importlib.util
@@ -48,8 +48,22 @@ def build(root):
     site = '        try self.sendBody(sid, req.body);'
     position = contents.index(site, start)
     assert contents.find(site, position + len(site), contents.index('\n    }', start)) == -1
-    contents = contents[:position + len(site)] + '\n        // Test-only fault after the complete POST flush.\n        if (!retry_fault_once.swap(true, .acq_rel)) return error.EndOfStream;' + contents[position + len(site):]
-    contents = contents.replace('const std = @import("std");', 'const std = @import("std");\nvar retry_fault_once: std.atomic.Value(bool) = .init(false);', 1)
+    fault = '''
+        // Test-only faults before the engine receives any response bytes:
+        // recover once, exhaust a turn, then fail four times for cancellation.
+        if (std.mem.eql(u8, req.authority, "localhost") and std.mem.eql(u8, req.method, "POST")) {
+            const n = retry_fault_calls.fetchAdd(1, .acq_rel);
+            if (n == 0 or (n >= 2 and n < 8) or (n >= 9 and n < 13)) {
+                // Synchronize with the peer: an immediate close can race delivery
+                // of the flushed POST, making the duplicate-body assertion flaky.
+                var received = try self.readResponse(sid);
+                received.deinit();
+                return error.EndOfStream;
+            }
+        }
+'''
+    contents = contents[:position + len(site)] + fault + contents[position + len(site):]
+    contents = contents.replace('const std = @import("std");', 'const std = @import("std");\nvar retry_fault_calls: std.atomic.Value(usize) = .init(0);', 1)
     conn.write_text(contents)
     fixture.run(['zig', 'build', '--system', str(packages), '--cache-dir', str(root/'cache'),
                  '-p', str(root/'install')], cwd=REPO, timeout=240)
@@ -116,11 +130,11 @@ def exercise(root, binary):
             result, updates = call('session/prompt', {'sessionId':sid, 'prompt':[{'type':'text', 'text':'Say OK.'}]}, 3)
             assert result.get('result', {}).get('stopReason') == 'end_turn', result
             reply_chunks = chunks(updates)
-            # #1274: the 250 ms first flake step is jittered upward by at most 25%.
-            retry_line = re.fullmatch(
-                r'\[network error: EndOfStream — retrying in (\d+)ms \(1/6\)\]', reply_chunks[0]
-            ) if len(reply_chunks) == 2 else None
-            assert retry_line and 250 <= int(retry_line.group(1)) <= 312 and reply_chunks[1] == 'OK', reply_chunks
+            # #625: retry housekeeping is chrome, never answer/thought content.
+            # ACP has no retry-status channel; do not counterfeit a message.
+            assert reply_chunks == ['OK'], reply_chunks
+            assert not any('network error:' in json.dumps(event) or 'retrying in' in json.dumps(event)
+                           for event in updates), updates
             rows = [json.loads(line) for line in log.read_text().splitlines()]
             posts = [row for row in rows if row['event'] == 'post']
             assert len(posts) == 2, posts
@@ -137,7 +151,104 @@ def exercise(root, binary):
             assert posts[1]['atMs'] - posts[0]['atMs'] >= 200, 'Second POST bypassed the 250ms request-level retry'
             after_cost = [json.loads(line) for line in log.read_text().splitlines()]
             assert len([row for row in after_cost if row['event'] == 'post']) == 2, '/cost caused a model POST'
-            print('ACP HTTP/2 post-flush retry: 2 matching h2 POSTs, outer retry observed, 1 failed attempt reported')
+            failed, failed_updates = call('session/prompt', {'sessionId':sid, 'prompt':[{'type':'text', 'text':'Exercise the exhausted transport fixture.'}]}, 5)
+            assert failed.get('error', {}).get('code') == -32603, failed
+            assert 'EndOfStream (gave up after 6 attempts)' in failed['error']['message'], failed
+            assert chunks(failed_updates) == [], failed_updates
+            assert not any('network error:' in json.dumps(event) or 'retrying in' in json.dumps(event)
+                           for event in failed_updates), failed_updates
+            failed_posts = [json.loads(line) for line in log.read_text().splitlines()
+                            if json.loads(line)['event'] == 'post'][2:]
+            assert len(failed_posts) == 6, failed_posts
+            assert len({row['sha256'] for row in failed_posts}) == 1, failed_posts
+            assert all(row['protocol'] == 'h2' for row in failed_posts), failed_posts
+            resumed, resumed_updates = call('session/prompt', {'sessionId':sid, 'prompt':[{'type':'text', 'text':'Try again explicitly.'}]}, 6)
+            assert resumed.get('result', {}).get('stopReason') == 'end_turn', resumed
+            assert chunks(resumed_updates) == ['OK'], resumed_updates
+            for mode in ('json', 'oneshot'):
+                work = case/mode
+                work.mkdir()
+                before = len([row for row in map(json.loads, log.read_text().splitlines())
+                              if row['event'] == 'post'])
+                args = [str(binary), '--model', 'vercel', '--yolo']
+                stdin = ''
+                if mode == 'json':
+                    args += ['--json']
+                    stdin = json.dumps({'type':'user', 'text':'Say OK.'}) + '\n'
+                else:
+                    args += ['-p', 'Say OK.']
+                run = subprocess.Popen(args, cwd=work, env=env, stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       text=True, start_new_session=True)
+                try:
+                    stdout, stderr = run.communicate(stdin, timeout=45)
+                    assert run.returncode == 0, (mode, stderr)
+                finally:
+                    fixture.terminate(run)
+                assert 'network error:' not in stdout and 'retrying in' not in stdout, stdout
+                assert '· retry' not in stdout, stdout
+                if mode == 'json':
+                    wire = [json.loads(line) for line in stdout.splitlines()]
+                    turns = [event for event in wire if event.get('type') == 'turn']
+                    assert len(turns) == 1 and turns[0]['text'] == 'OK', turns
+                    text = ''.join(event.get('text', '') for event in wire if event.get('type') == 'text')
+                    assert text == 'OK', text
+                    sequence = [event['seq'] for event in wire]
+                    assert sequence == list(range(sequence[0], sequence[0] + len(sequence))), sequence
+                else:
+                    assert stdout.strip() == 'OK', stdout
+                posts = [row for row in map(json.loads, log.read_text().splitlines())
+                         if row['event'] == 'post'][before:]
+                assert len(posts) == 2 and posts[0]['sha256'] == posts[1]['sha256'], (mode, posts)
+                assert all(row['protocol'] == 'h2' for row in posts), (mode, posts)
+                trace = [row for path in (work/'.graff/traces').glob('*.jsonl')
+                         for row in map(json.loads, path.read_text().splitlines())]
+                assert any(row.get('ev') == 'retry' for row in trace), (mode, 'retry breadcrumb missing')
+                print(f'PASS {mode} retry chrome: two matching POSTs, clean answer, raw retry trace retained')
+            def retries():
+                count = 0
+                for path in (case/'.graff/traces').glob('*.jsonl'):
+                    for line in path.read_text().splitlines(keepends=True):
+                        # A trace append may be in flight; only parse full rows.
+                        if line.endswith('\n') and json.loads(line).get('ev') == 'retry':
+                            count += 1
+                return count
+
+            before = len([row for row in map(json.loads, log.read_text().splitlines())
+                          if row['event'] == 'post'])
+            retry_count = retries()
+            worker.stdin.write(json.dumps({'jsonrpc':'2.0', 'id':7, 'method':'session/prompt',
+                                           'params':{'sessionId':sid, 'prompt':[{'type':'text', 'text':'Exercise the cancelled transport fixture.'}]}}) + '\n')
+            worker.stdin.flush()
+            deadline = time.monotonic() + 15
+            # Wait for the fourth retry breadcrumb: its two-second backoff is
+            # now in progress, rather than guessing when a request failed.
+            while retries() < retry_count + 4:
+                assert time.monotonic() < deadline, 'Transport backoff was not reached'
+                time.sleep(.01)
+            started = time.monotonic()
+            worker.stdin.write(json.dumps({'jsonrpc':'2.0', 'method':'session/cancel',
+                                           'params':{'sessionId':sid}}) + '\n')
+            worker.stdin.flush()
+            cancelled_updates = []
+            while True:
+                event = events.get(timeout=max(.01, started + 5 - time.monotonic()))
+                assert isinstance(event, dict), 'ACP exited during retry cancellation'
+                if event.get('id') == 7:
+                    assert event.get('result', {}).get('stopReason') == 'cancelled', event
+                    break
+                cancelled_updates.append(event)
+            assert time.monotonic() - started < 2, 'Cancellation waited out the retry backoff'
+            assert chunks(cancelled_updates) == [], cancelled_updates
+            cancelled_posts = [row for row in map(json.loads, log.read_text().splitlines())
+                               if row['event'] == 'post'][before:]
+            assert len(cancelled_posts) == 4, cancelled_posts
+            assert len({row['sha256'] for row in cancelled_posts}) == 1, cancelled_posts
+            after_cancel, after_cancel_updates = call('session/prompt', {'sessionId':sid, 'prompt':[{'type':'text', 'text':'Try once more explicitly.'}]}, 8)
+            assert after_cancel.get('result', {}).get('stopReason') == 'end_turn', after_cancel
+            assert chunks(after_cancel_updates) == ['OK'], after_cancel_updates
+            print('PASS ACP retry cancellation: interrupts backoff, no extra POST or answer, same session remains usable')
+            print('PASS ACP HTTP/2 retry chrome: recovery, six-attempt exhaustion, explicit retry; no retry text in answers')
         finally:
             fixture.terminate(worker)
             fixture.terminate(server)

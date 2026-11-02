@@ -116,6 +116,7 @@ pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
         emitAbort(self, .dropped, true);
         return error.StreamDropped;
     }
+    if (@import("claude_agent.zig").owns(self)) return @import("claude_agent.zig").post(self, body); // ADR 0309
     if (!wsEligible(self)) return self.postStream(body);
     const response = postResponsesWs(self, body) catch |e| {
         if (@import("agent_async_tools.zig").started(self)) return e;

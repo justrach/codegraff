@@ -8,6 +8,8 @@ const ModelInfo = @import("pricing.zig").ModelInfo;
 pub const rows = [_]ModelInfo{
     // Local Apple-Silicon model served by mlx-lm (mlx_lm.server, OpenAI-compatible).
     .{ .provider = "mlx", .name = "mlx-community/Qwen3.6-27B-OptiQ-4bit", .context = 262_144 },
+    // Recursive Flint INT4 through `rec serve --port 8080`, which serves it as "flint".
+    .{ .provider = "mlx", .name = "flint", .context = 262_144 },
     // LM Studio serves whatever model is loaded; "lmstudio" is a routing alias —
     // swap for your loaded model id if LM Studio requires an exact match (GET :1234/v1/models).
     .{ .provider = "lmstudio", .name = "lmstudio", .context = 200_000 },
@@ -30,6 +32,19 @@ pub const rows = [_]ModelInfo{
     .{ .provider = "anthropic", .name = "claude-haiku-5-5", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-opus-4-5", .context = 200_000 },
     .{ .provider = "anthropic", .name = "claude-sonnet-4-5", .context = 200_000 },
+    // Claude Agent (ADR 0309): the models Claude Code's opus/fable/sonnet/
+    // haiku aliases resolve to, under their real names, so the plan reads like
+    // any other. `claude-agent/<id>` passes any id Claude Code accepts. Claude
+    // Code runs each of these at 1M natively (its result reports contextWindow
+    // 1000000 with or without a `[1m]` suffix), so the window matches Anthropic's.
+    .{ .provider = "claude-agent", .name = "claude-opus-5-5", .context = 1_000_000 },
+    .{ .provider = "claude-agent", .name = "claude-fable-5-1", .context = 1_000_000 },
+    .{ .provider = "claude-agent", .name = "claude-sonnet-5-5", .context = 1_000_000 },
+    .{ .provider = "claude-agent", .name = "claude-haiku-5-5", .context = 1_000_000 },
+    // The previous generation Claude Code still offers by name.
+    .{ .provider = "claude-agent", .name = "claude-opus-5", .context = 1_000_000 },
+    .{ .provider = "claude-agent", .name = "claude-fable-5", .context = 1_000_000 },
+    .{ .provider = "claude-agent", .name = "claude-sonnet-5", .context = 1_000_000 },
     .{ .provider = "deepseek", .name = "deepseek-v4-pro", .context = 1_000_000 },
     .{ .provider = "deepseek", .name = "deepseek-v4-flash", .context = 1_000_000 },
     .{ .provider = "deepseek", .name = "deepseek-chat", .context = 1_000_000 },

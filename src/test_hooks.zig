@@ -338,8 +338,12 @@ test {
     _ = @import("worker_jev.zig"); // ADR 0232: a child asks Jev for its own effort mid-run
     _ = @import("piped_paste.zig"); // ADR 0231
     _ = @import("mcp_connect_notice.zig"); // ADR 0230
+    _ = @import("image_sniff.zig"); // #1762: image media type from the bytes
+    _ = @import("catalog_bounded.zig"); // model discovery: catalog GETs never hold boot past a budget
+    _ = @import("opaque_state_persist_tests.zig"); // #1686: a resumed session keeps its compaction-state count
     _ = @import("oauth_callback.zig");
     _ = @import("cache_key_tests.zig"); // ADR 0223: moved off http_headers.zig (600-line cap)
+    _ = @import("router_headers_tests.zig"); // moved off http_headers.zig (600-line cap)
     _ = @import("mcp_shapes_tests.zig"); // ADR 0225: moved off mcp_shapes.zig (600-line cap)
     _ = json_controls;
     _ = effort_route;
@@ -377,6 +381,7 @@ test {
     _ = @import("commands_resume.zig"); // #697: --resume SOURCE --branch DEST parser
     _ = @import("session_list.zig"); // #712: device-wide saved-session listing
     _ = @import("turn_dedup.zig"); // #714: identical user turns do not replay
+    _ = @import("turn_dedup_tests.zig"); // #1729: a failed turn's retry is a new ask
     _ = @import("net_efficiency_test.zig");
     _ = @import("codex_tool_search.zig"); // hosted tool_search on gpt-5.4+ Codex
     _ = @import("acp_tool_view.zig"); // #1287/#1289: ACP locations and edit diffs
@@ -403,6 +408,8 @@ test {
     _ = @import("subagent_brief.zig"); // structured delegation brief + harness environment header
     _ = @import("idle_wake_sources.zig"); // shared idle auto-turn sources for REPL / TUI / ACP
     _ = @import("tool_env.zig"); // #1267/#1268: tool children's environment
+    _ = @import("gui_background.zig"); // #832: tool commands launch apps in the background
+    _ = @import("sim_ledger.zig"); // #407: sessions shut down the simulators they booted
     _ = @import("destructive_git.zig"); // #1269: destructive-git tokenizer tables
     _ = @import("output_elide.zig"); // #1271: over-cap output keeps head and tail
     _ = @import("graff_dir.zig"); // #1273: .graff/.gitignore keeps run state out of git

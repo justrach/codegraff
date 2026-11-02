@@ -31,7 +31,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     try s.write(http_headers.requestCacheKey(self.io, self.label, self, self.provider, &ckbuf));
     const oai_cache = @import("openai_prompt_cache.zig");
     // Root keeps implicit latest-message (30m). Children are explicit-only so
-    // a unique task suffix is not written. ADR 0298 puts 12h on the prefix.
+    // a unique task suffix is not written. ADR 0312 can put 12h on the prefix (opt-in).
     if (oai_cache.active(self)) try oai_cache.writeOptions(s, self.sub);
     // Held-socket delta: previous_response_id + only the new items. xAI's
     // published WS contract supports this with store:false via the in-memory
@@ -74,7 +74,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
         try s.objectField("tools");
         try serde.writeOpenAITools(s, self.scratchAlloc(), async_payload); // #261 follow-up
         try s.objectField("tool_choice");
-        try s.write(if (force_tool) "required" else "auto");
+        try s.write(if (self.synthesis.keepsCatalog(self)) "none" else if (force_tool) "required" else "auto");
         try s.objectField("parallel_tool_calls");
         try s.write(true);
     }

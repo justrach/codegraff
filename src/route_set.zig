@@ -137,7 +137,7 @@ pub fn winner(entries: []const Entry, keys: Keys) ?Entry {
         _ = key;
         const source = keys.source(e.provider);
         const score: f64 = switch (billing.forSeat(e.provider, e.model, source)) {
-            .sub => -1,
+            .sub, .local => -1,
             .priced => blk: {
                 const p = pricing.priceFor(e.model) orelse break :blk std.math.inf(f64);
                 break :blk p.in + p.out;
@@ -156,6 +156,7 @@ fn billingLabel(entry: Entry, keys: Keys) []const u8 {
     if (keys.get(entry.provider) == null) return "no key";
     return switch (billing.forSeat(entry.provider, entry.model, keys.source(entry.provider))) {
         .sub => "flat-rate",
+        .local => "local",
         .priced => "metered",
         .unpriced => "unpriced",
     };

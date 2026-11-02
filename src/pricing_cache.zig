@@ -6,7 +6,7 @@ const std = @import("std");
 const five_minute_write: f64 = 1.25;
 /// Anthropic's 1-hour cache write (ADR 0220).
 const one_hour_write: f64 = 2.0;
-/// OpenAI GPT-5.6+ Responses 12-hour cache write (ADR 0298).
+/// OpenAI GPT-5.6+ Responses 12-hour cache write (ADR 0312).
 const twelve_hour_write: f64 = 2.5;
 
 /// USD for one request (negative token counts clamp to zero). Cache writes are
@@ -59,7 +59,7 @@ test "ADR 0220: a 1-hour cache write costs 2x input on Claude" {
     try std.testing.expectEqual(@as(f64, 0), hourWriteExtraUsd(flat, flat.name, 100_000, 100_000));
 }
 
-test "ADR 0298: a 12-hour OpenAI cache write costs 2.5x input" {
+test "ADR 0312: a 12-hour OpenAI cache write costs 2.5x input" {
     const sol = @import("pricing.zig").priceFor("gpt-6.1-sol").?;
     // 100k tokens: usdForUsage already charged 1.25x of $2/MTok = $0.25; +1.25x more at 12h.
     try std.testing.expectApproxEqAbs(@as(f64, 0.25), usdForUsage(sol, "gpt-6.1-sol", 0, 0, 100_000, 0), 1e-9);

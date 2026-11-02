@@ -26,13 +26,17 @@ spec.loader.exec_module(f)
 
 
 def reply(r):
+    # A different file each call: a long review, not a loop (#1706).
     if r.ordinal <= 21:
-        return f.tool("read_file", {"path": "target.txt"}, r.ordinal)
+        return f.tool("read_file", {"path": f.long_review_note(r.ordinal)}, r.ordinal)
     return f.message("Review result after the checkpoint.", r.ordinal)
 
 
 with tempfile.TemporaryDirectory(prefix="graff-review-acp-probe-") as tmp:
     pathlib.Path(tmp, "target.txt").write_text("original")
+    pathlib.Path(tmp, "notes").mkdir()
+    for ordinal in range(1, 22):
+        pathlib.Path(tmp, f.long_review_note(ordinal)).write_text(f"note {ordinal}\n")
     mock = f.CodexMock(events_for_request=reply)
     port = mock.start()
     proc = subprocess.Popen(

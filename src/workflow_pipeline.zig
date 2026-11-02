@@ -28,7 +28,7 @@ const ToolOutput = tools.ToolOutput;
 const failure = tools.failure;
 
 const subagent = @import("subagent.zig");
-const runSub = subagent.runSub;
+const runWorkflow = subagent.runWorkflow;
 const subagent_run = @import("subagent_run.zig");
 const failureAllowsRetry = subagent_run.failureAllowsRetry;
 
@@ -131,7 +131,8 @@ fn pipelineChainShared(ctx: ToolCtx, item: []const u8, stages: []const StageSpec
         // Counters only — the fitness fold happens per STAGE after run()'s
         // join (#296), never here where it would be a per-item row (#290).
         stat.noteAttempt();
-        var out = if (runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche, .shared_cwd, st.isolation_fallback, st.seat.pin, null)) |r| r.output else |e| failure(gpa, e);
+        const stage_ctx = @import("workflow_synthesis.zig").context(ctx, st.label);
+        var out = if (runWorkflow(stage_ctx, "workflow_task", st.label, prompt, st.override, st.niche, .shared_cwd, st.isolation_fallback, st.seat.pin)) |r| r.output else |e| failure(gpa, e);
         if (out.is_error) {
             // Only spend the one retry (#2) when the harness's own
             // classification hasn't already ruled it out (auth, invalid
@@ -141,7 +142,7 @@ fn pipelineChainShared(ctx: ToolCtx, item: []const u8, stages: []const StageSpec
                 gpa.free(out.text);
                 // The SAME seat: a retry that changed model would break the
                 // stage uniformity the fitness row attributes to.
-                out = if (runSub(ctx, "workflow_retry", st.label, prompt, st.override, st.niche, .shared_cwd, st.isolation_fallback, st.seat.pin, null)) |r| r.output else |e| failure(gpa, e);
+                out = if (runWorkflow(stage_ctx, "workflow_retry", st.label, prompt, st.override, st.niche, .shared_cwd, st.isolation_fallback, st.seat.pin)) |r| r.output else |e| failure(gpa, e);
             }
             if (out.is_error) {
                 // #248 — excerpt the stage's own error BEFORE freeing it, so
@@ -153,10 +154,10 @@ fn pipelineChainShared(ctx: ToolCtx, item: []const u8, stages: []const StageSpec
                     std.fmt.allocPrint(gpa, "(pipeline stopped at stage {d}/{d} \"{s}\": task failed)\n{s}", .{ stage_no, stages.len, st.label, detail })
                 else
                     std.fmt.allocPrint(gpa, "(pipeline stopped at stage {d}/{d} \"{s}\": task failed)", .{ stage_no, stages.len, st.label });
-                return .{
-                    .text = msg catch (gpa.dupe(u8, "(pipeline stage failed)") catch ""),
-                    .is_error = true,
-                };
+                const failed = msg catch return failure(gpa, error.OutOfMemory);
+                defer gpa.free(failed);
+                const evidence = @import("workflow_synthesis.zig").withEvidence(arena, failed, prev) catch return failure(gpa, error.OutOfMemory);
+                return .{ .text = gpa.dupe(u8, evidence) catch return failure(gpa, error.OutOfMemory), .is_error = true };
             }
         }
         stat.noteOk();

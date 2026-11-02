@@ -256,6 +256,7 @@ fn missingCredentials() noreturn {
         \\  graff login anthropic               Claude subscription browser sign-in (also: ant)
         \\  graff key set <provider> <key>      store a key (macOS Keychain, else 0600 file)
         \\  graff login console                 Anthropic Console account (its workspace's API credits)
+        \\  graff login claude-agent            your own Claude Code login, through `claude` (Claude Agent)
         \\  export ANTHROPIC_API_KEY=sk-ant-…   or CODEGRAFF/DEEPSEEK/OPENAI/MINIMAX/XIAOMI/KIMI/MOONSHOT/XAI/ZAI _API_KEY
         \\a Codex CLI login (~/.codex/auth.json) is also picked up automatically.
     , .{});
@@ -265,6 +266,11 @@ fn missingCredentials() noreturn {
 /// failures without manufacturing a provider. All successful resolution and
 /// model-selection behavior is shared with resolveKeys above.
 pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytype, model_flag: ?[]const u8, worker_provider_hint: ?[]const u8) !?ResolvedKeys {
+    // GRAFF_CHATGPT_URL: chatgpt-new's Responses endpoint for localhost mocks,
+    // read before Keys.build and the startup catalog load so neither goes live.
+    if (environ_map.get("GRAFF_CHATGPT_URL")) |v| {
+        if (v.len > 0) provider_mod.g_chatgpt_url_override = v;
+    }
     var keys: provider_mod.Keys = .{ .values = undefined };
     for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
         value.* = environ_map.get(spec.env_key);
@@ -301,6 +307,16 @@ pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map
             }
             keys.codex_account = auth.account;
             codex_account = auth.account;
+        }
+    }
+    // Claude Agent (ADR 0309) is seated only once chosen: `graff login
+    // claude-agent` or GRAFF_CLAUDE_AGENT=1. Its "key" is the `claude` to run.
+    {
+        const exe = @import("claude_agent_login.zig").enabled(io, arena, environ_map, keys_cli.homeEnv(environ_map) orelse "");
+        for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
+            if (!std.mem.eql(u8, spec.id, "claude-agent")) continue;
+            value.* = exe;
+            source.* = if (exe != null) .login else .none;
         }
     }
     // #471: the kimi/xAI device logins outrank their env keys, and the metered

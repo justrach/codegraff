@@ -98,6 +98,12 @@ pub fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, login_id: []c
                 source.* = .login;
                 reloaded = true;
             }
+        } else if (std.mem.eql(u8, provider_id, "claude-agent")) {
+            if (@import("claude_agent_login.zig").enabled(root.io, arena, @import("anthropic_profile.zig").ProcessEnv{}, home)) |exe| {
+                value.* = root.arena.dupe(u8, exe) catch exe;
+                source.* = .login;
+                reloaded = true;
+            }
         } else if (std.mem.eql(u8, provider_id, "chatgpt-new")) {
             if (@import("oauth_chatgpt.zig").loadChatgptOAuth(root.io, root.gpa, arena, home, false, null)) |k| {
                 value.* = k;
@@ -368,7 +374,7 @@ pub fn offerProviderAuth(
         const dup = arena.dupe(u8, key) catch key;
         const saved = storeKey(root.io, root.gpa, arena, root.home, pid, dup);
         _ = keys.set(pid, dup, if (saved) .stored else .session);
-        if (std.mem.eql(u8, pid, "kimi")) _ = kimi_catalog.load(root.io, root.gpa, arena, root.home, dup);
+        if (std.mem.eql(u8, pid, "kimi")) _ = kimi_catalog.load(root.io, root.gpa, arena, dup);
         try out.print("\xe2\x9c\x93 {s} key set (live{s})\n", .{ pid, if (saved) " + Keychain" else "" });
     }
 

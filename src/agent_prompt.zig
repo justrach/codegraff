@@ -85,7 +85,8 @@ fn standing(self: *const Agent) engine_events.StandingWork {
     var items: std.ArrayList(engine_events.StandingTodo) = .empty;
     for (self.todos.items) |t| {
         if (t.epoch != epoch or t.retired) continue;
-        out.todos_total += 1;
+        const cancelled = std.mem.eql(u8, t.status, "cancelled"); // #1520: shown with its reason, not counted
+        if (!cancelled) out.todos_total += 1;
         const done = std.mem.eql(u8, t.status, "completed");
         const active = std.mem.eql(u8, t.status, "in_progress");
         if (done) out.todos_done += 1;
@@ -94,6 +95,8 @@ fn standing(self: *const Agent) engine_events.StandingWork {
                 .content = util.utf8Prefix(t.content, 48),
                 .done = done,
                 .active = active,
+                .cancelled = cancelled,
+                .reason = t.reason,
             }) catch {};
         }
     }
@@ -111,7 +114,11 @@ fn standing(self: *const Agent) engine_events.StandingWork {
 /// unpriced, and only then is a real figure snapshotted.
 fn cost(self: *Agent) engine_events.CostMeter {
     if (!main_mod.show_cost) return .hidden;
-    if (@import("billing.zig").forProvider(self.provider) == .sub) return .subscription;
+    switch (@import("billing.zig").forProvider(self.provider)) {
+        .sub => return .subscription,
+        .local => return .{ .usd = 0 },
+        .priced, .unpriced => {},
+    }
     if (pricing.priceForProvider(self.provider.id, self.provider.model) == null) return .unpriced;
     return .{ .usd = pricing.g_cost.snap(self.io).usd };
 }
@@ -266,6 +273,11 @@ test "standing work snapshots goal, checklist, session, and a staged image" {
     try std.testing.expectEqualStrings("open item", sw.todos[1].content);
     try std.testing.expect(!sw.todos[1].done);
     try std.testing.expect(sw.image);
+    // #1520: a cancelled item is listed with its reason but kept out of the counts.
+    try agent.todos.append(agent.gpa, .{ .content = "publish", .status = "cancelled", .epoch = 1, .reason = "delegated" });
+    sw = standing(&agent);
+    try std.testing.expectEqual(@as(u32, 2), sw.todos_total);
+    try std.testing.expect(sw.todos[2].cancelled and std.mem.eql(u8, sw.todos[2].reason, "delegated"));
 
     // A completed goal is not standing work; the default session name stays hidden.
     agent.goal.?.status = .complete;

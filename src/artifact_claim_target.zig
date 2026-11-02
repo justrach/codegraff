@@ -4,7 +4,7 @@ const claims = @import("artifact_claim.zig");
 
 pub const Target = struct { kind: claims.Kind, key: []const u8, repo: ?[]const u8 = null, branch: ?[]const u8 = null, head_repo: ?[]const u8 = null };
 
-fn unqualifiedHead(head: []const u8) []const u8 {
+pub fn unqualifiedHead(head: []const u8) []const u8 {
     return if (std.mem.lastIndexOfScalar(u8, head, ':')) |i| head[i + 1 ..] else head;
 }
 

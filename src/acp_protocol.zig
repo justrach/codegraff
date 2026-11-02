@@ -26,6 +26,21 @@ pub const PromptCapabilities = struct {
     embeddedContext: bool = true,
 };
 
+/// `agentCapabilities.sessionCapabilities`: `{"fork":{}}` when the live CLI can
+/// branch a session (acp_session_fork.zig), `{}` for an embed without saves.
+pub const SessionCapabilities = struct {
+    fork: bool = false,
+
+    pub fn jsonStringify(self: @This(), s: anytype) !void {
+        try s.beginObject();
+        if (self.fork) {
+            try s.objectField("fork");
+            try s.write(struct {}{});
+        }
+        try s.endObject();
+    }
+};
+
 pub const AgentImplementation = struct {
     name: []const u8 = "graff",
     title: []const u8 = "graff",

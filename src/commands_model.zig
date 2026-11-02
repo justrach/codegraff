@@ -112,7 +112,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const arg = std.mem.trim(u8, line["/model".len..], " \t");
         providers.ensureModelQueryCatalogs(root, keys.*, arg);
         if (arg.len == 0) {
-            @import("gateway_picker_catalog.zig").refresh(root.gpa, root.io, root.arena, keys.*);
+            @import("gateway_picker_catalog.zig").refresh(root.io, root.arena, root.home, keys.*);
             if (main_mod.use_color) { // interactive TTY → fuzzy picker
                 if (modelPicker(root, keys, arena, out)) |idx| {
                     const m = pricing.models()[idx];
@@ -340,7 +340,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const home = root.home;
         const saved = storeKey(root.io, root.gpa, arena, home, pid, key); // persist
         _ = keys.set(pid, live_key, if (saved) .stored else .session);
-        if (std.mem.eql(u8, pid, "kimi")) _ = kimi_catalog.load(root.io, root.gpa, arena, home, live_key);
+        if (std.mem.eql(u8, pid, "kimi")) _ = kimi_catalog.load(root.io, root.gpa, arena, live_key);
         try out.print("✓ {s} key set (live{s}) — now: /model {s}\n", .{ pid, if (saved) " + Keychain" else "", pid });
         try out.flush();
         return true;
@@ -360,6 +360,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             .{ .name = "chatgpt", .desc = "ChatGPT sign-in (also: codex, openai)" },
             .{ .name = "anthropic", .desc = "Claude subscription sign-in (also: ant)" },
             .{ .name = "console", .desc = "metered Console sign-in through the ant CLI" },
+            .{ .name = "claude-agent", .desc = "your own Claude Code login, through `claude`" },
             .{ .name = "kimi", .desc = "Kimi Code sign-in (device-code OAuth)" },
             .{ .name = "xai", .desc = "Grok / SuperGrok sign-in (device-code OAuth)" },
             .{ .name = "zai", .desc = "Z.AI Coding Plan sign-in (CLI OAuth)" },
@@ -421,6 +422,13 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 try out.flush();
                 return true;
             };
+        } else if (std.mem.eql(u8, target, "claude-agent")) {
+            const ca = @import("claude_agent_login.zig");
+            ca.login(root.io, arena, @import("anthropic_profile.zig").ProcessEnv{}, home) catch |err| {
+                try out.print("\xe2\x9c\x97 claude-agent login failed: {t}\n", .{err});
+                try out.flush();
+                return true;
+            };
         } else if (std.mem.eql(u8, target, "chatgpt-new")) {
             @import("oauth_chatgpt.zig").login(root.io, root.gpa, arena, home) catch |err| {
                 try out.print("\xe2\x9c\x97 chatgpt-new login failed: {t}\n", .{err});
@@ -434,7 +442,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 try out.flush();
                 return true;
             }
-            try out.print("can't log into '{s}' \xe2\x80\x94 try /login codegraff | chatgpt | anthropic | console | kimi | xai | zai (others: /key <provider> <key>)\n", .{target});
+            try out.print("can't log into '{s}' \xe2\x80\x94 try /login codegraff | chatgpt | anthropic | console | claude-agent | kimi | xai | zai (others: /key <provider> <key>)\n", .{target});
             try out.flush();
             return true;
         }
@@ -472,7 +480,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             .no_vision => try out.print("⚠ {s} can't see images — switch to a vision model first, e.g. /model claude-opus-4-8 or /model gpt-6-sol\n", .{root.provider.model}),
             .ok => |o| try out.print("📎 attached {s} ({s}) — sent with your next message\n", .{ path, vision.fmtBytes(mbuf[0..16], o.bytes) }),
             // Sized, distinct lines instead of "missing, or larger than 5MB" (#349).
-            .too_large, .not_found, .read_error => try out.print("{s}\n", .{vision.stageMessage(&mbuf, staged, path)}),
+            .too_large, .not_found, .read_error, .unsupported => try out.print("{s}\n", .{vision.stageMessage(&mbuf, staged, path)}),
         }
         try out.flush();
         return true;

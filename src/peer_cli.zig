@@ -18,12 +18,12 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const accord = @import("accord");
 const presence = @import("presence.zig");
 const presence_chan = @import("presence_chan.zig");
 const presence_record = @import("presence_record.zig");
 const presence_accord = @import("presence_accord.zig");
 const peer_target = @import("peer_target.zig");
+const peer_wake = @import("peer_wake.zig");
 const proc_identity = @import("proc_identity.zig");
 const worktree_lease = @import("worktree_lease.zig");
 const util = @import("util.zig");
@@ -94,6 +94,8 @@ pub const Ctx = struct {
     name: []const u8,
     owner: proc_identity.Record,
     identity: []const u8,
+    /// Budget for the whole live-wake fan-out after a send (#1718).
+    wake_deadline_ms: u32 = peer_wake.default_deadline_ms,
 };
 
 pub const Room = enum { tree, device };
@@ -301,7 +303,7 @@ pub fn history(io: Io, arena: Allocator, ctx: Ctx, last: usize, window: u64) []c
             if (sees) out.append(arena, .{ .room = r.room, .m = m }) catch break;
         }
     }
-    std.mem.sort(Heard, out.items, {}, struct {
+    @import("stable_sort.zig").sort(Heard, out.items, {}, struct {
         fn lt(_: void, a: Heard, b: Heard) bool {
             return a.m.ts_ms < b.m.ts_ms;
         }
@@ -342,33 +344,27 @@ pub fn writeHeard(w: *Io.Writer, h: Heard) !void {
     });
 }
 
-/// Wake a live graff session over its Accord socket. The receiver only needs
-/// the frame kind to start draining, so an oversize line is replaced by a
-/// small marker instead of being dropped.
-pub fn wake(io: Io, gpa: Allocator, dir_path: []const u8, rec: Owner, line: []const u8) void {
-    if (!presence_accord.enabled()) return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = std.fmt.bufPrint(&path_buf, "{s}/{d}-{x}.accord.sock", .{ dir_path, rec.pid, rec.start_id }) catch return;
-    if (!presence_accord.fitsUnixSocketPath(path)) return;
-    const addr = Io.net.UnixAddress.init(path) catch return;
-    const stream = addr.connect(io) catch return;
-    const sess = gpa.create(accord.Session) catch {
-        stream.close(io);
-        return;
-    };
-    defer gpa.destroy(sess);
-    sess.* = .{ .io = io, .gpa = gpa, .role = .client, .stream = stream };
-    sess.start() catch {
-        sess.shutdown();
-        return;
-    };
-    defer sess.shutdown();
-    const payload = if (line.len <= accord.max_payload) line else "{\"kind\":\"wake\"}";
-    sess.send(1, .msg, .{}, payload) catch {};
+/// The Accord socket a live graff session with this owner binds, or null
+/// when it cannot be addressed.
+fn wakePath(arena: Allocator, dir_path: []const u8, rec: Owner) ?[]const u8 {
+    const path = std.fmt.allocPrint(arena, "{s}/{d}-{x}.accord.sock", .{ dir_path, rec.pid, rec.start_id }) catch return null;
+    return if (presence_accord.fitsUnixSocketPath(path)) path else null;
+}
+
+/// Wake one live graff session over its Accord socket, bounded by the
+/// default deadline (peer_wake.zig). True when it took the frame.
+pub fn wake(io: Io, gpa: Allocator, dir_path: []const u8, rec: Owner, line: []const u8) bool {
+    if (!presence_accord.enabled()) return false;
+    var buf: [std.fs.max_path_bytes + 64]u8 = undefined;
+    var fba: std.heap.FixedBufferAllocator = .init(&buf);
+    const path = wakePath(fba.allocator(), dir_path, rec) orelse return false;
+    return peer_wake.wakeAll(io, gpa, &.{path}, line, peer_wake.default_deadline_ms).woke == 1;
 }
 
 pub const SendResult = union(enum) {
-    posted: struct { room: Room, target: ?Owner, woke: usize },
+    /// `woke` took the live frame; `missed` were eligible but did not answer
+    /// within the deadline (they still read the durable post).
+    posted: struct { room: Room, target: ?Owner, woke: usize, missed: usize = 0 },
     held: []const Heard,
     no_target,
     ambiguous: []const Owner,
@@ -406,15 +402,21 @@ pub fn send(io: Io, gpa: Allocator, arena: Allocator, dir_path: []const u8, ctx:
     var aw: Io.Writer.Allocating = .init(arena);
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     s.write(msg) catch {};
-    var woke: usize = 0;
-    // Wake only who hears it: the DM target, or this worktree's agents.
-    for (peers) |p| {
+    // Wake only who hears it: the DM target, or this worktree's agents. The
+    // post above is the delivery; the wake is best effort under one deadline.
+    var paths: std.ArrayList([]const u8) = .empty;
+    var unaddressable: usize = 0;
+    if (presence_accord.enabled()) for (peers) |p| {
         const hears = if (target) |t| p.pid == t.pid and p.start_id == t.start_id else std.mem.eql(u8, p.identity, ctx.identity);
         if (!hears or std.mem.eql(u8, p.activity, "external")) continue;
-        wake(io, gpa, dir_path, p, aw.writer.buffered());
-        woke += 1;
-    }
-    return .{ .posted = .{ .room = room, .target = target, .woke = woke } };
+        const path = wakePath(arena, dir_path, p) orelse {
+            unaddressable += 1;
+            continue;
+        };
+        paths.append(arena, path) catch break;
+    };
+    const live = peer_wake.wakeAll(io, gpa, paths.items, aw.writer.buffered(), ctx.wake_deadline_ms);
+    return .{ .posted = .{ .room = room, .target = target, .woke = live.woke, .missed = live.missed + unaddressable } };
 }
 
 fn readStdin(io: Io, arena: Allocator) []const u8 {
@@ -502,10 +504,15 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, home: []const u8, env_n
         const text = if (opts.text.len > 0) opts.text else readStdin(io, arena);
         if (text.len == 0) std.process.fatal("graff peer send: no message (pass TEXT or pipe it on stdin)", .{});
         switch (send(io, gpa, arena, dir_path, ctx, &cur, opts.to, text, opts.anyway)) {
-            .posted => |p| if (p.target) |t|
-                try out.print("sent to {s} ({s} room, {d} woken)\n", .{ if (t.title.len > 0) t.title else t.session_id, @tagName(p.room), p.woke })
-            else
-                try out.print("posted to this worktree's room ({d} woken)\n", .{p.woke}),
+            .posted => |p| {
+                if (p.target) |t|
+                    try out.print("sent to {s} ({s} room, {d} woken", .{ if (t.title.len > 0) t.title else t.session_id, @tagName(p.room), p.woke })
+                else
+                    try out.print("posted to this worktree's room ({d} woken", .{p.woke});
+                // A miss is not a lost message: it is in the room either way.
+                if (p.missed > 0) try out.print(", {d} not reachable live; they read it from the room", .{p.missed});
+                try out.writeAll(")\n");
+            },
             .held => |heard| {
                 saveCursor(io, arena, ctx, cur);
                 try out.writeAll("NOT SENT: they wrote to you after your last read. Read this, then resend (or pass --anyway):\n");
@@ -524,4 +531,5 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, home: []const u8, env_n
 
 test {
     _ = @import("peer_cli_tests.zig");
+    _ = @import("peer_wake_test.zig"); // #1718 bounded live wake
 }

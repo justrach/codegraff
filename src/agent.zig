@@ -34,9 +34,8 @@ pub const TodoItem = struct {
     epoch: u64 = 0, // the goal epoch that authored this item (#318); 0 = no goal
     retired: bool = false, // a LATER user ask retired this finished item (#394): kept as the session's archive, invisible to every epoch-scoped query
     ask_fp: u64 = 0, // #1545: fingerprint of the user request this item was first written under; "cancelled" needs a newer one (0 = legacy/restored)
-
-    /// Completed or cancelled: no longer open work. A cancelled item is parked,
-    /// never verified (goal_verify.taskVerified still refuses it).
+    reason: []const u8 = "", // #1520: why a "cancelled" item was withdrawn or delegated; required, shown with it (todo_cancel.zig)
+    /// Completed or cancelled: no longer open work. A cancelled item is parked, never verified (goal_verify.taskVerified refuses it).
     pub fn closed(t: TodoItem) bool {
         return std.mem.eql(u8, t.status, "completed") or std.mem.eql(u8, t.status, "cancelled");
     }
@@ -106,6 +105,7 @@ pub const Agent = struct {
     /// score re-reading files it had already been given. With no tools it must
     /// answer from the excerpt in one call, which is what it was designed for.
     text_only: bool = false,
+    synthesis: @import("workflow_synthesis.zig").State = .{},
     read_only: bool = false, // informational child: reads kept, writes refused (#1360, agent_tool_gate)
     label: []const u8,
     out: ?*Io.Writer,
@@ -130,6 +130,7 @@ pub const Agent = struct {
     tools_used: trace.ToolSink = .{}, // external tool calls this agent made (per turn for the root)
     tool_calls_this_turn: u64 = 0,
     read_miss: @import("read_miss.zig").Tracker = .{}, // #1116: same-prefix / incrementing read_file misses
+    tool_repeat: @import("tool_repeat.zig").Tracker = .{}, // #1706: identical batches in a row end the turn
     model_calls_this_turn: u64 = 0,
     handle_note_shown: bool = false, // #541: the handle-protocol lesson rides this agent's FIRST handle, once
     seen_tool_keys: std.ArrayList([]const u8) = .empty, // root-only per-turn dedupe keys
@@ -183,7 +184,7 @@ pub const Agent = struct {
     sys_base: []const u8 = "", // #381: the last BASE handed to prompts.setSystemPrompts, WITHOUT the playbook block — what a mid-session constraint re-composes from (playbook_glue.refreshRoot)
     sys_strict: []const u8 = prompts.main_system_prompt_strict,
     sys_ultra: []const u8 = prompts.main_system_prompt ++ prompts.ultracode_system_note, // #326: comptime defaults only — prompts.setSystemPrompts() is the sole production writer
-    sys_ultra_strict: []const u8 = prompts.main_system_prompt_strict ++ prompts.ultracode_system_note, // composes onto sys_strict, never replaces it
+    sys_ultra_strict: []const u8 = prompts.main_system_prompt_ultra_strict, // composes onto sys_strict, never replaces it
     tools_anthropic: []const u8 = schema.tools_anthropic_sub,
     tools_openai: []const u8 = schema.tools_openai_sub,
     tools_responses: []const u8 = schema.tools_responses_sub,

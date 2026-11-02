@@ -140,3 +140,42 @@ test "#1511: a computer-use tools/call carries one _meta with the turn context a
         try std.testing.expectEqual(modern, meta.get("io.modelcontextprotocol/protocolVersion") != null);
     }
 }
+
+test "#1580: the first computer-use call reaches a server that exits on a duplicate key" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest; // /bin/sh
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const Registry = @import("mcp.zig").Registry;
+    var reg = Registry.empty(gpa, io);
+    defer reg.deinit();
+    reg.stdio_probe = false;
+    reg.lazy_stdio = false;
+    // Like the real adapter's JSON-RPC reader: a request line with a
+    // duplicate `_meta` does not parse, and the server stops reading and
+    // exits. graff saw that as McpClosed on the first call (#1580).
+    const script =
+        \\while read -r l; do
+        \\  case "$l" in *'"_meta":'*'"_meta":'*) exit 0 ;; esac
+        \\  id=$(printf '%s' "$l" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9]*\),.*/\1/p')
+        \\  [ -z "$id" ] && continue
+        \\  case "$l" in
+        \\    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"f","version":"1"}}}\n' "$id" ;;
+        \\    *'"method":"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"js","description":"d","inputSchema":{"type":"object"}}]}}\n' "$id" ;;
+        \\    *'"method":"tools/call"'*'"x-codex-turn-metadata"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"state"}]}}\n' "$id" ;;
+        \\    *) printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32602,"message":"missing turn metadata"}}\n' "$id" ;;
+        \\  esac
+        \\done
+    ;
+    try std.testing.expectEqual(@as(usize, 1), try reg.addServer("cua_repl", "/bin/sh", &.{ "-c", script }));
+    var state: State = .{};
+    state.begin(io);
+    const input = try std.json.parseFromSlice(std.json.Value, gpa, "{\"code\":\"await cua.getState();\"}", .{});
+    defer input.deinit();
+    const first = try reg.callWithContext(gpa, "mcp__cua_repl__js", input.value, state.value);
+    defer gpa.free(first.text);
+    try std.testing.expectEqualStrings("state", first.text);
+    try std.testing.expect(!first.is_error);
+    // The process that answered is the one that started: no close, no restart.
+    try std.testing.expect(reg.servers[0].transport == .stdio);
+    try std.testing.expectEqual(@as(u8, 0), reg.servers[0].transport.stdio.relaunch.?.restarts);
+}

@@ -107,6 +107,7 @@ pub fn costFor(provider_id: []const u8, source: CredentialSource) CostClass {
 
 /// The billing class of one API call on this seat.
 pub fn forSeat(provider_id: []const u8, model: []const u8, source: CredentialSource) Billing {
+    if (localSeat(provider_id)) return .local;
     if (source == .login and subscriptionLogin(provider_id)) return .sub;
     if (planKey(provider_id) and source != .none) return .sub;
     return if (pricing.priceForProvider(provider_id, model) != null) .priced else .unpriced;
@@ -123,7 +124,10 @@ pub fn forProvider(p: provider_mod.Provider) Billing {
 /// the same nothing. Ranking such a seat by score-per-dollar is meaningless
 /// (and divides by zero); callers should rank by capability alone.
 pub fn freeAtTheMargin(p: provider_mod.Provider) bool {
-    return forProvider(p) == .sub;
+    return switch (forProvider(p)) {
+        .sub, .local => true,
+        .priced, .unpriced => false,
+    };
 }
 
 test "a flat-rate login and a metered key on the same seat bill differently (#471)" {
@@ -151,6 +155,11 @@ test "a flat-rate login and a metered key on the same seat bill differently (#47
 
     // Unpriced stays unpriced: no plan, no price row.
     try std.testing.expectEqual(Billing.unpriced, forSeat("openai", "mystery-model", .environment));
+
+    // A server on this machine costs nothing, whatever model it serves.
+    try std.testing.expectEqual(Billing.local, forSeat("mlx", "flint", .environment));
+    try std.testing.expectEqual(Billing.local, forSeat("omlx", "any-served-model", .stored));
+    try std.testing.expectEqual(Billing.local, forSeat("lmstudio", "lmstudio", .none));
 }
 
 test "subscriptionLogin is declared on the spec, not a hardcoded id list" {
@@ -180,6 +189,7 @@ test "freeAtTheMargin follows the credential, not the vendor" {
     try std.testing.expect(freeAtTheMargin(seat("xai", "grok-4.3", .login)));
     try std.testing.expect(!freeAtTheMargin(seat("xai", "grok-4.3", .environment)));
     try std.testing.expect(!freeAtTheMargin(seat("anthropic", "claude-opus-4-8", .environment)));
+    try std.testing.expect(freeAtTheMargin(seat("mlx", "flint", .environment)));
 }
 
 test "costFor: the picker's badge follows the credential, then the provider" {

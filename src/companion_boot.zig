@@ -60,9 +60,8 @@ fn interactive(flags: args.Flags, json_mode: bool) bool {
 /// every other path still `addServer`s on this thread.
 pub fn connectCompanion(io: Io, arena: Allocator, registry: *mcp.Registry, flags: args.Flags, out: *Io.Writer, json_mode: bool, environ_map: anytype) !void {
     const sink = engine_sink.writerSink(out);
-    const speak = interactive(flags, json_mode);
+    const speak = interactive(flags, json_mode) and environ_map.get("GRAFF_REPL_DEBUG") != null;
     const background = deferCompanion(flags, json_mode);
-    _ = environ_map;
     connect: {
         for (skills.companion_servers) |c| {
             if (mcp_boot.alreadyStarting(registry, c.server)) break :connect;

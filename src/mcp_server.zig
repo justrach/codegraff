@@ -93,7 +93,7 @@ pub const Server = struct {
         if (std.mem.eql(u8, method, "resources/read")) {
             const uri = string(params, "uri") orelse return failure(out, id, -32602, "Resource URI is required");
             if (!std.mem.eql(u8, uri, app.uri)) return failure(out, id, -32002, "Resource not found");
-            return answer.send(app.contents(), true);
+            return answer.send(try app.contents(a), true);
         }
         if (!std.mem.eql(u8, method, "tools/call")) return failure(out, id, -32601, "Method not found");
         const name = string(params, "name") orelse return failure(out, id, -32602, "Tool name is required");

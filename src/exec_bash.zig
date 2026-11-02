@@ -383,8 +383,12 @@ pub fn exec(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
             .clear => {},
         }
     };
+    // #407: a simulator this command boots is shut down when the session ends.
+    const sim_ledger = @import("sim_ledger.zig");
+    const sim_bracket = if (approved) sim_ledger.g.before(ctx.gpa, ctx.io, cmd) else null;
     var result = try execUnchecked(ctx, call);
     errdefer ctx.gpa.free(result.text);
+    if (sim_bracket) |b| sim_ledger.g.after(ctx.gpa, ctx.io, b, !result.pending);
     try @import("cli_path_hint.zig").append(ctx.gpa, ctx.io, cmd, &result);
     if (warning) {
         const text = try std.mem.concat(ctx.gpa, u8, &.{ server_port.unknown_warning, result.text });

@@ -23,6 +23,7 @@ pub fn run(self: *Agent, root_turn_prepared: *std.atomic.Value(bool)) anyerror![
     self.completed = null;
     self.yielded = null;
     self.read_miss.reset();
+    self.tool_repeat.reset();
     self.mcp_context.begin(self.io);
     @import("named_work.zig").beginTurn(self);
     try self.ensureRootTools(self.provider.kind);
@@ -79,8 +80,9 @@ pub fn run(self: *Agent, root_turn_prepared: *std.atomic.Value(bool)) anyerror![
                 try self.ensureRootTools(self.provider.kind);
             }
         }
+        if (self.sub) try self.synthesis.beforeRequest(self);
         const hist_len = self.messages.items.len;
-        const root = self.request(if (self.text_only) null else self.toolsJson()) catch |err| {
+        const root = self.request(if (self.text_only and !self.synthesis.keepsCatalog(self)) null else self.toolsJson()) catch |err| {
             if (try @import("agent_length_cutoff.zig").recoverRunaway(self, err, hist_len)) continue;
             return review_deadline.finish(try @import("agent_model_loop.zig").finishError(self, err));
         };
@@ -90,6 +92,11 @@ pub fn run(self: *Agent, root_turn_prepared: *std.atomic.Value(bool)) anyerror![
         const reply_start = self.messages.items.len;
         defer @import("agent_length_cutoff.zig").discardEmptyReply(self, root, reply_start);
         const done = try length.step(self, root);
+        if (done == null) if (self.tool_repeat.stopText()) |stop| { // #1706: every wire's tool batch lands here
+            try self.say("{s}\n", .{stop});
+            _ = @import("tool_call_repair.zig").endsTurn(self, stop);
+            return review_deadline.finish(stop);
+        };
         if (done) |final_text| {
             if (self.yielded != null) return review_deadline.finish(final_text);
             if (@import("tool_call_repair.zig").endsTurn(self, final_text)) return review_deadline.finish(final_text); // final: no retry/nudge
@@ -98,12 +105,21 @@ pub fn run(self: *Agent, root_turn_prepared: *std.atomic.Value(bool)) anyerror![
             if (try @import("named_work.zig").handle(self, final_text)) continue;
             if (try pending_work.finish(self, bounced_answer.finish(self, final_text))) |text| {
                 if (self.feedback) |inbox| if (!inbox.tryFinish(self.io)) continue;
+                settleFinal(self);
                 return review_deadline.finish(text);
             }
             continue;
         }
         self.empty_completion_retries = 0;
     }
+}
+
+/// A root turn that ends with its answer settles the human task (#1137):
+/// ambient peer mail then waits for the next human prompt instead of
+/// reopening it. A yielded turn is a handoff, already latched harder; a
+/// stopped tool loop did not finish the task and settles nothing.
+fn settleFinal(self: *Agent) void {
+    if (!self.sub) @import("peer_idle.zig").noteFinalAnswer();
 }
 
 /// #1686: the previous compaction left the context over the line; wait for

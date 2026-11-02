@@ -364,6 +364,7 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
             \\## Gaps
             \\- No bot-specific route tests exist.
             \\- Pin `install.sh` and verify its checksum.
+            \\- Emphasis: *Coding agents / harnesses*, _readable_, __strong__, foo_bar.
             \\
             \\## Recommended implementation order
             \\1. **Immediately:** require collaborator permission.

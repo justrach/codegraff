@@ -118,3 +118,85 @@ test "#1116: sequential missing reads under one prefix stop and point at list_di
     try std.testing.expect(!kept.is_error);
     try std.testing.expectEqualStrings("kept\n", kept.text);
 }
+
+fn nativeCall(cwd: []const u8, name: []const u8, json: []const u8) !tools.ToolOutput {
+    var parsed = try std.json.parseFromSlice(Value, std.testing.allocator, json, .{});
+    defer parsed.deinit();
+    var client: std.http.Client = undefined;
+    return exec.execTool(testCtx(&client, cwd, null), .{
+        .id = "symlink-fixture",
+        .name = name,
+        .input = parsed.value,
+    });
+}
+
+fn dependencyFixture(tmp: *std.testing.TmpDir) !void {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    try tmp.dir.createDirPath(io, "checkout/node_modules/.store/pkg/docs");
+    try tmp.dir.createDirPath(io, "outside");
+    try tmp.dir.writeFile(io, .{ .sub_path = "checkout/node_modules/.store/pkg/docs/guide.md", .data = "dependency guide\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "outside/secret.md", .data = "outside\n" });
+    try tmp.dir.symLink(io, ".store/pkg", "checkout/node_modules/pkg", .{ .is_directory = true });
+    try tmp.dir.symLink(io, "../outside", "checkout/escape", .{ .is_directory = true });
+    try tmp.dir.symLink(io, "../outside/secret.md", "checkout/secret.md", .{});
+    try tmp.dir.symLink(io, "../outside/missing.md", "checkout/dangling.md", .{});
+}
+
+test "native tools #1748: read_file and codedb list_dir accept in-root dependency links only" {
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try dependencyFixture(&tmp);
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, "checkout", gpa);
+    defer gpa.free(root);
+    const read = try readFile(root, "{\"path\":\"node_modules/pkg/docs/guide.md\"}");
+    defer gpa.free(read.text);
+    try std.testing.expect(!read.is_error);
+    try std.testing.expectEqualStrings("dependency guide\n", read.text);
+    const listing = try nativeCall(root, "codedb", "{\"command\":\"list_dir node_modules/pkg\"}");
+    defer gpa.free(listing.text);
+    try std.testing.expect(!listing.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, listing.text, "guide.md") != null);
+    const escaped_listing = try nativeCall(root, "codedb", "{\"command\":\"list_dir escape\"}");
+    defer gpa.free(escaped_listing.text);
+    try std.testing.expect(escaped_listing.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, escaped_listing.text, "outside the working directory") != null);
+    for ([_][]const u8{ "{\"path\":\"escape/secret.md\"}", "{\"path\":\"secret.md\"}" }) |json| {
+        const denied = try readFile(root, json);
+        defer gpa.free(denied.text);
+        try std.testing.expect(denied.is_error);
+        try std.testing.expect(std.mem.indexOf(u8, denied.text, "outside the working directory") != null);
+    }
+}
+
+test "native tools #1748: new writes beneath internal links work without permitting escapes" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try dependencyFixture(&tmp);
+    const root = try tmp.dir.realPathFileAlloc(io, "checkout", gpa);
+    defer gpa.free(root);
+    const written = try nativeCall(root, "write_file", "{\"path\":\"node_modules/pkg/docs/new/note.md\",\"content\":\"new guide\\n\"}");
+    defer gpa.free(written.text);
+    try std.testing.expect(!written.is_error);
+    const content = try tmp.dir.readFileAlloc(io, "checkout/node_modules/.store/pkg/docs/new/note.md", gpa, .limited(100));
+    defer gpa.free(content);
+    try std.testing.expectEqualStrings("new guide\n", content);
+    for ([_][]const u8{
+        "{\"path\":\"escape/new/note.md\",\"content\":\"denied\"}",
+        "{\"path\":\"secret.md\",\"content\":\"denied\",\"replace\":true}",
+        "{\"path\":\"dangling.md\",\"content\":\"denied\"}",
+    }) |json| {
+        const denied = try nativeCall(root, "write_file", json);
+        defer gpa.free(denied.text);
+        try std.testing.expect(denied.is_error);
+        try std.testing.expect(std.mem.indexOf(u8, denied.text, "outside the working directory") != null);
+    }
+    const outside = try tmp.dir.readFileAlloc(io, "outside/secret.md", gpa, .limited(100));
+    defer gpa.free(outside);
+    try std.testing.expectEqualStrings("outside\n", outside);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "outside/missing.md", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "outside/new/note.md", .{}));
+}

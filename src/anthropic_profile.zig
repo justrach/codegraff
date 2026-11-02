@@ -52,6 +52,19 @@ var remembered: ?Located = null;
 /// Anthropic's CLI; tests point it at a stand-in.
 pub var ant_bin: []const u8 = "ant";
 var last_failed_ms: i64 = 0;
+/// The profile's token is past its expiry and `ant` could not renew it: with
+/// no refresh token stored, `ant auth print-credentials` still exits 0 and
+/// prints the same expired token. Such a token is never seated or sent.
+var expired_unrenewable: bool = false;
+
+/// Did the Console sign-in expire beyond renewal (`graff login console` fixes it)?
+pub fn expired() bool {
+    return expired_unrenewable;
+}
+
+fn pastExpiry(p: Profile, now_ms: i64) bool {
+    return if (p.expires_at) |exp| exp * 1000 <= now_ms else false;
+}
 
 pub fn locate(arena: Allocator, environ_map: anytype, home: []const u8) ?Located {
     const dir: []const u8 = blk: {
@@ -123,7 +136,23 @@ pub fn load(io: Io, arena: Allocator, environ_map: anytype, home: []const u8, na
     if (named_only and !loc.named) return null;
     const p = read(io, arena, loc) orelse return null;
     remember(loc, p);
+    expired_unrenewable = false;
+    // An expired token is only worth seating (or parking behind a plan) if
+    // `ant` can renew it; otherwise every request it carries is a 401.
+    if (pastExpiry(p, @import("util.zig").unixMs(io))) {
+        const t = renewed(io, arena, loc, p.token) orelse {
+            expired_unrenewable = true;
+            return null;
+        };
+        return std.heap.page_allocator.dupe(u8, t) catch null;
+    }
     return std.heap.page_allocator.dupe(u8, p.token) catch null;
+}
+
+/// A token `ant` renewed, or null when it failed or handed back `old`.
+fn renewed(io: Io, arena: Allocator, loc: Located, old: []const u8) ?[]const u8 {
+    const t = refreshViaAnt(io, arena, profileName(io, arena, loc)) orelse return null;
+    return if (std.mem.eql(u8, t, old)) null else t;
 }
 
 fn remember(loc: Located, p: Profile) void {
@@ -140,17 +169,26 @@ pub fn fresh(io: Io, gpa: Allocator, arena: Allocator, force: bool) ?[]const u8 
     const loc = remembered orelse return null;
     const p = read(io, arena, loc) orelse return null;
     const now_ms = @import("util.zig").unixMs(io);
+    _ = gpa;
     const near = if (p.expires_at) |exp| exp * 1000 - now_ms <= refresh_margin_s * 1000 else false;
     if (!force and !near) return p.token;
-    if (now_ms - last_failed_ms < retry_after_ms) return p.token;
-    return refreshViaAnt(io, gpa, arena, profileName(io, arena, loc)) orelse {
+    // Past expiry, the old token is a sure 401: offer nothing instead.
+    const fallback: ?[]const u8 = if (pastExpiry(p, now_ms)) null else p.token;
+    if (now_ms - last_failed_ms < retry_after_ms) return fallback;
+    const t = refreshViaAnt(io, arena, profileName(io, arena, loc)) orelse {
         last_failed_ms = now_ms;
-        return p.token;
+        return fallback;
     };
+    if (fallback == null and std.mem.eql(u8, t, p.token)) {
+        last_failed_ms = now_ms;
+        expired_unrenewable = true;
+        return null;
+    }
+    expired_unrenewable = false;
+    return t;
 }
 
-fn refreshViaAnt(io: Io, gpa: Allocator, arena: Allocator, profile: []const u8) ?[]const u8 {
-    _ = gpa;
+fn refreshViaAnt(io: Io, arena: Allocator, profile: []const u8) ?[]const u8 {
     const pr = @import("process_runner.zig");
     const run = pr.runCappedWithOptions(arena, io, &.{ ant_bin, "auth", "print-credentials", "--access-token", "--profile", profile }, 8192, 8192, 20_000, .{}) catch return null;
     if (!pr.ranOk(run)) return null;
@@ -323,7 +361,9 @@ test "an expiring Console token is refreshed through ant, and sent as a bearer t
     last_failed_ms = 0;
 
     const env = Env{ .map = &.{.{ "ANTHROPIC_CONFIG_DIR", dir }} };
-    try testing.expectEqualStrings("sk-ant-oat01-old", load(io, a, env, "", false).?);
+    // Already expired at startup: renewed before it is seated.
+    try testing.expectEqualStrings("sk-ant-oat01-new", load(io, a, env, "", false).?);
+    try testing.expect(!expired());
     try testing.expectEqualStrings("sk-ant-oat01-new", fresh(io, testing.allocator, a, false).?);
 
     // The provider built from it authenticates with Bearer, not x-api-key.
@@ -365,6 +405,45 @@ test "an expiring Console token is refreshed through ant, and sent as a bearer t
     try testing.expectEqualStrings("sk-ant-oat01-new", agent.provider.api_key);
     try testing.expectEqual(provider_mod.Keys.CredentialSource.profile, agent.provider.source);
     try testing.expect(!policy.retryAfterAuthRefresh(&agent, "Unauthorized", &attempted));
+}
+
+test "an expired Console token ant cannot renew is never seated, parked or sent" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest; // /bin/sh stand-in
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir = buf[0..try tmp.dir.realPath(io, &buf)];
+    try writeFile(io, tmp.dir, "configs/default.json",
+        \\{"authentication":{"type":"user_oauth","client_id":"c"}}
+    );
+    try writeFile(io, tmp.dir, "credentials/default.json",
+        \\{"access_token":"sk-ant-oat01-dead","expires_at":1}
+    );
+    // With no refresh token stored, `ant` warns, exits 0 and prints the same token.
+    try writeFile(io, tmp.dir, "ant", "#!/bin/sh\necho 'warning: no refresh_token is stored' >&2\necho sk-ant-oat01-dead\n");
+    const script = try std.fs.path.join(a, &.{ dir, "ant" });
+    try Io.Dir.cwd().setFilePermissions(io, script, .fromMode(0o755), .{});
+    const saved = ant_bin;
+    defer ant_bin = saved;
+    ant_bin = script;
+    last_failed_ms = 0;
+    defer expired_unrenewable = false;
+
+    const env = Env{ .map = &.{.{ "ANTHROPIC_CONFIG_DIR", dir }} };
+    try testing.expect(load(io, a, env, "", false) == null);
+    try testing.expect(expired());
+    try testing.expect(fresh(io, testing.allocator, a, true) == null);
+
+    var p: @import("provider.zig").Provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .bearer, .url = "", .api_key = "k", .model = "m", .context = 1000, .source = .profile };
+    const text = @import("auth_recovery.zig").failureText(a, p, false);
+    try testing.expectEqualStrings("Anthropic Console sign-in has expired: run `graff login console` again. Your sign-in is not affected.", text);
+    try testing.expect(std.mem.indexOf(u8, @import("auth_recovery.zig").failureText(a, p, true), "fallback Console sign-in has expired") != null);
+    p.source = .environment; // an ordinary key keeps the key wording
+    try testing.expect(std.mem.indexOf(u8, @import("auth_recovery.zig").failureText(a, p, false), "API key was rejected") != null);
 }
 
 test "sign-in pastes a code whenever no local browser can finish it" {

@@ -3,10 +3,10 @@
 //! A model can emit any JSON shape as tool arguments — nothing constrains it
 //! to what a tool's schema promises. Reading `v.object`/`v.string`/`v.array`
 //! off a `std.json.Value` without first checking its active tag panics in a
-//! Debug build but is UNDEFINED BEHAVIOR in ReleaseFast (the shipped build):
-//! the union access is unchecked there, so a wrong-tag read silently
-//! reinterprets whatever bytes happen to be in the payload as an object/
-//! string/array header. Every accessor below returns null (or false, for
+//! Debug or ReleaseSafe (the shipped build) and is UNDEFINED BEHAVIOR in
+//! ReleaseFast, where the union access is unchecked and a wrong-tag read
+//! silently reinterprets whatever bytes happen to be in the payload as an
+//! object/string/array header. Every accessor below returns null (or false, for
 //! `flag`) on a tag mismatch instead, so a caller can turn a malformed
 //! argument tree into an ordinary `is_error` tool result the model can see
 //! and react to, rather than a memory-safety incident.

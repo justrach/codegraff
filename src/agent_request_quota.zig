@@ -21,16 +21,18 @@ pub const quota_cap_marker = "quota/billing cap";
 pub fn isQuotaExceeded(body: []const u8) bool {
     // ChatGPT plan usage limits (ADR 0221): stop, never retry into them.
     const needles = [_][]const u8{
-        plan_limit_code,                                "insufficient_quota",    "insufficient quota",
-        "exceeded your current quota",                  "quota exceeded",        quota_cap_marker,
-        "exhausted credit",                             "credits exhausted",     "credit exhausted",
-        "insufficient credit",                          "not enough credit",     "no credits",
-        "out of credits",                               "credit balance",        "requires more credits",
-        "payment required",                             "payment_required",      "billing limit",
-        "billing_hard_limit_reached",                   "billing hard limit",    "insufficient_credits",
-        "credits_exhausted",                            "credit_limit_exceeded", "insufficient_funds",
-        "http 402",                                     "exhausted_credit",      "credit_balance_too_low",
+        plan_limit_code,                                "insufficient_quota",           "insufficient quota",
+        "exceeded your current quota",                  "quota exceeded",               quota_cap_marker,
+        "exhausted credit",                             "credits exhausted",            "credit exhausted",
+        "insufficient credit",                          "not enough credit",            "no credits",
+        "out of credits",                               "credit balance",               "requires more credits",
+        "payment required",                             "payment_required",             "billing limit",
+        "billing_hard_limit_reached",                   "billing hard limit",           "insufficient_credits",
+        "credits_exhausted",                            "credit_limit_exceeded",        "insufficient_funds",
+        "http 402",                                     "exhausted_credit",             "credit_balance_too_low",
         "subscription_sharing_v2_usage_limit_exceeded",
+        // Kimi Code's plan window: "You've reached your 5-hour usage limit".
+        "exceeded_current_quota_error",
         // A Claude subscription past its extra usage answers 400
         // invalid_request_error with only this phrase to go on.
         "out of extra usage",
@@ -117,11 +119,18 @@ pub fn handle(self: *@import("agent.zig").Agent, etype: []const u8, code: ?[]con
     // faults, after the existing refresh/handoff policy has declined a retry.
     // Classification already established auth; retain any structured code so
     // a non-auth code still vetoes a login action (including generic 403).
-    if (fault == .authentication)
-        self.last_api_reauth = @import("auth_recovery.zig").forFailure(self.provider, code orelse "authentication_error", "");
+    // ADR 0310: the text and metadata name the seat that failed: a sign-in,
+    // or a metered key (perhaps the one a spent plan handed over to).
+    const auth = @import("auth_recovery.zig");
+    if (fault == .authentication) self.last_api_reauth = auth.forAuthFault(self.provider, code orelse "authentication_error");
     self.last_api_error = switch (fault) {
-        .quota => "provider quota/billing cap: credit or allowance exhausted; retry requires account action",
-        .authentication => "provider authentication failed: sign in again or check the API key",
+        // The Console sign-in that would have taken over was skipped at startup
+        // because it expired beyond renewal (anthropic_profile.load).
+        .quota => if (std.mem.eql(u8, self.provider.id, "anthropic") and self.provider.source == .login and @import("anthropic_profile.zig").expired())
+            "Anthropic plan is out of quota, and the Console sign-in that would take over has expired: run `graff login console` again, or wait for the plan to reset"
+        else
+            "provider quota/billing cap: credit or allowance exhausted; retry requires account action",
+        .authentication => auth.failureText(self.arena, self.provider, @import("credential_failover.zig").promoted(self.provider.id)),
         .access_denied => "provider access denied: check account permissions or route eligibility",
     };
     if (self.tracer) |tr| tr.note("provider_terminal", self.last_api_error.?);
@@ -130,6 +139,19 @@ pub fn handle(self: *@import("agent.zig").Agent, etype: []const u8, code: ?[]con
         .authentication => error.ProviderAuthenticationFailed,
         .access_denied => error.ProviderAccessDenied,
     };
+}
+
+/// A failure after async tools started skips the retry ladder (the turn has
+/// side effects in flight), but an authentication rejection still names the
+/// credential that failed, as handle() does.
+pub fn afterToolsStarted(self: *@import("agent.zig").Agent, code: ?[]const u8, msg: []const u8, diagnostic: []const u8) !void {
+    const auth = @import("auth_recovery.zig");
+    if (classify("", code, msg) != .authentication) {
+        self.last_api_reauth = auth.forFailure(self.provider, code, msg);
+        return self.sayApiError("{s}", .{diagnostic});
+    }
+    self.last_api_reauth = if (self.provider.source == .login) auth.forFailure(self.provider, code, msg) else auth.forAuthFault(self.provider, code orelse "authentication_error");
+    try self.sayApiError("{s}", .{auth.failureText(self.arena, self.provider, @import("credential_failover.zig").promoted(self.provider.id))});
 }
 
 // ChatGPT plan errors, as OpenAI's errors-and-recovery page classifies them
@@ -176,6 +198,7 @@ test "isQuotaExceeded (#opencode-parity): billing cap detected, transient thrott
     try std.testing.expect(isQuotaExceeded("{\"error\":{\"code\":\"insufficient_quota\",\"message\":\"You exceeded your current quota\"}}"));
     try std.testing.expect(isQuotaExceeded("Quota Exceeded for this key"));
     try std.testing.expect(isQuotaExceeded("{\"error\":{\"code\":\"subscription_sharing_usage_limit_exceeded\"}}"));
+    try std.testing.expect(isQuotaExceeded("{\"error\":{\"message\":\"You've reached your 5-hour usage limit.\",\"type\":\"exceeded_current_quota_error\"}}"));
     try std.testing.expectEqual(Fault.quota, classify("invalid_request_error", null, "You're out of extra usage. Add more at claude.ai/settings/usage and keep going.").?);
     // transient rate-limit -> NOT a quota cap; must still retry
     try std.testing.expect(!isQuotaExceeded("Rate limit reached. Please try again in 20s."));
@@ -247,15 +270,20 @@ test "terminal provider faults: numeric HTTP status codes survive envelope parsi
 }
 
 test "terminal provider faults: hard caps and env auth stop without a refresh or retry" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
     var self: @import("agent.zig").Agent = undefined;
     self.provider = .{ .id = "codegraff", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "test", .context = 1000, .source = .environment };
     self.tracer = null;
+    self.arena = arena.allocator();
     var refreshed = false;
     try std.testing.expectError(error.ProviderQuotaExceeded, handle(&self, "server_error", null, "API key: exhausted credit; try again", &refreshed));
     try std.testing.expect(!refreshed);
     try std.testing.expect(isQuotaExceeded(self.last_api_error.?));
     try std.testing.expectError(error.ProviderAuthenticationFailed, handle(&self, "authentication_error", null, "overloaded", &refreshed));
     try std.testing.expect(!refreshed);
+    try std.testing.expectEqualStrings("Codegraff API key was rejected (environment): replace or remove the key. Your sign-in is not affected.", self.last_api_error.?);
+    try std.testing.expectEqualStrings("api_key_rejected", self.last_api_reauth.?.kind);
     try std.testing.expectError(error.ProviderAccessDenied, handle(&self, "permission_error", "403", "", &refreshed));
     try std.testing.expect(!try handle(&self, "server_error", null, "overloaded", &refreshed));
     self.provider.source = .login;

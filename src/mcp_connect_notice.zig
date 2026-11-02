@@ -1,9 +1,8 @@
 //! What a background MCP connect tells the session (ADR 0230). Handshakes no
-//! longer hold up the start, so the session says when the first request goes
-//! out while servers are still connecting, and the request that merges a
-//! finished one names it: connected with its tool count, or did not connect.
-//! The registry queues them under its lock; the root agent's request drains
-//! them through the agent's own sink (`drain`), which is what a TUI shows.
+//! longer hold up the start. The registry queues connection receipts under
+//! its lock; the root request drains them through its sink only when startup
+//! diagnostics are enabled. Normal sessions stay quiet; `/mcp` still exposes
+//! connection state without waiting for a handshake.
 
 const std = @import("std");
 const Io = std.Io;
@@ -62,7 +61,7 @@ pub fn drain(reg: *mcp.Registry, sink: EngineSink, io: Io) void {
     const queued = reg.connect_notices;
     reg.connect_notices = .{};
     reg.mutex.unlock(reg.io);
-    queued.emitTo(sink, io);
+    if (reg.show_diagnostics) queued.emitTo(sink, io);
 }
 
 /// Servers whose start is still running, for `/mcp`. Call after `joinReady`
@@ -108,4 +107,40 @@ test "a finished start is named once it merges; an unfinished one stays connecti
     try std.testing.expectEqualStrings("slow", still[0]);
     busy.store(true, .release);
     _ = boot.joinPending(&reg);
+}
+
+test "background MCP notices require diagnostics and drain only once" {
+    const Capture = struct {
+        count: usize = 0,
+        failed: bool = false,
+        fn emit(ctx: *anyopaque, event: @import("engine_sink.zig").Stamped) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            switch (event.event) {
+                .session_notice => |n| {
+                    self.count += 1;
+                    if (std.mem.indexOf(u8, n.text, "did not connect") != null) self.failed = true;
+                },
+                else => {},
+            }
+        }
+        const vt: @import("engine_sink.zig").VTable = .{ .emit = emit, .durable = false };
+    };
+    for ([_]bool{ false, true }) |debug| {
+        var reg = mcp.Registry.empty(std.testing.allocator, std.testing.io);
+        defer reg.deinit();
+        reg.show_diagnostics = debug;
+        reg.connect_notices.still_connecting = true;
+        reg.connect_notices.n = 2;
+        reg.connect_notices.names[0] = "ready";
+        reg.connect_notices.tools[0] = 3;
+        reg.connect_notices.names[1] = "unavailable";
+        reg.connect_notices.tools[1] = null;
+        var capture: Capture = .{};
+        const sink: EngineSink = .{ .ctx = &capture, .vt = &Capture.vt };
+        drain(&reg, sink, std.testing.io);
+        try std.testing.expectEqual(@as(usize, if (debug) 3 else 0), capture.count);
+        try std.testing.expectEqual(debug, capture.failed);
+        drain(&reg, sink, std.testing.io);
+        try std.testing.expectEqual(@as(usize, if (debug) 3 else 0), capture.count);
+    }
 }

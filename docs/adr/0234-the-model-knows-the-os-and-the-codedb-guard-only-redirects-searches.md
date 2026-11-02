@@ -29,12 +29,16 @@ calls did work the task asked for.
   (BSD tools: `sed -i ''`, no GNU-only flags)" in a macOS build, "on Linux" in
   a Linux build, and nothing elsewhere. The text is fixed per build, so the
   cached prefix does not change between turns.
-- The codedb guard lets two shapes through (`codedb_guard_scope.zig`):
+- The codedb guard lets three shapes through (`codedb_guard_scope.zig`):
   - an in-place `sed` edit (`-i`, `-i ''`, `-i.bak`, `-Ei`, `--in-place`) in
     the command's first segment;
   - a plain whole-file read (`cat`, `head`, `tail`, `nl`, `wc`, `bat`) with no
     pipe, when every file it names exists and is at most 16 KiB, the size a
-    tool result keeps inline before it becomes a handle.
+    tool result keeps inline before it becomes a handle;
+  - a write-only `cat` (#1709): its first segment names no input file and
+    sends stdout to a file, as in `cat > f <<'EOF'` or `cat >> f <<EOF`. An
+    output redirection target is a destination, so its size never counts
+    toward the read limit; a file operand or `<` input still makes it a read.
 
   Searches (`grep`, `rg`, `awk`, `sed` without `-i`, or a read piped into
   one) and reads of bigger files still go to codedb. Both checks run before

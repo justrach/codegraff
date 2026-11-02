@@ -177,7 +177,7 @@ fn turnError(d: *Dispatch, w: *Io.Writer, req: proto.Request, err: anyerror) !vo
         return respond(w, req, .{ .stopReason = "max_turn_requests" });
     const message = if (d.error_message) |describe| describe(d.ctx, err) else @errorName(err);
     if (d.error_recovery) |recover| if (recover(d.ctx, err)) |data| {
-        if (req.id != null) try proto.writeErrorData(w, req.id, err_auth_required, message, data);
+        if (req.id != null) try proto.writeErrorData(w, req.id, data.rpcCode(), message, data);
         return;
     };
     return respondError(w, req, err_internal, message);
@@ -199,7 +199,7 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
     if (d.bind_session) |bind| bind(d.ctx, sid);
     @import("acp_citations.zig").endTurn(sid); // a failed turn must not leave a marker open
     const config_before = configOptions(d, arena) catch |err| return turnError(d, w, req, err);
-    const workspace_before = acp_workspace.snapshot(d.workspace, arena);
+    acp_workspace.snapshot(d.workspace);
     // Before slash handling: an agent's room line must not run as a command.
     const flat = try flattenPrompt(arena, if (obj) |o| o.get("prompt") else null);
     const text = try @import("acp_room.zig").frame(arena, req.params, flat);
@@ -211,7 +211,7 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
         if (reply) |plain| {
             if (plain.len > 0) try writeSessionUpdate(w, sid, try @import("acp_t3.zig").slashReply(arena, plain));
             emitConfigChange(d, arena, w, sid, config_before) catch |config_err| return turnError(d, w, req, config_err);
-            try acp_workspace.emitChange(d.workspace, arena, w, sid, workspace_before);
+            try acp_workspace.emitChange(d.workspace, arena, w, sid);
             try emitMeter(d, w, sid);
             if (resend_key) |key| resent.finish(key, 0, "end_turn");
             return respondStop(d, w, req, sid, "end_turn");
@@ -224,7 +224,7 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
     };
     if (final.len > 0) try writeSessionUpdate(w, sid, final);
     emitConfigChange(d, arena, w, sid, config_before) catch |config_err| return turnError(d, w, req, config_err);
-    try acp_workspace.emitChange(d.workspace, arena, w, sid, workspace_before);
+    try acp_workspace.emitChange(d.workspace, arena, w, sid);
     try emitMeter(d, w, sid);
     const extra = if (extra_cancelled) |f| f() else false;
     const stop: []const u8 = if (cancel_flag.load(.acquire) or extra) "cancelled" else "end_turn";
@@ -265,6 +265,7 @@ fn respondInitialize(w: *Io.Writer, req: proto.Request, can_load: bool) !void {
         .protocolVersion = negotiateVersion(req.params),
         .agentCapabilities = .{
             .loadSession = can_load,
+            .sessionCapabilities = proto.SessionCapabilities{ .fork = can_load },
             ._meta = .{ .@"codegraff/usage" = can_load, .@"graff/backgroundSubagents" = true },
             .promptCapabilities = proto.PromptCapabilities{ .image = can_load },
             // session/new and session/load connect a client's MCP servers
@@ -339,8 +340,7 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
         cancel_flag.store(true, .release);
         @import("cancel_source.zig").noteAcp(req.params);
         if (on_cancel) |hook| hook();
-        if (req.id != null) return respond(w, req, struct {}{});
-        return;
+        return respond(w, req, struct {}{});
     }
     if (v2.on() and std.mem.eql(u8, req.method, "session/close")) return respond(w, req, struct {}{});
     if (std.mem.eql(u8, req.method, if (v2.on()) "session/resume" else "session/load")) {

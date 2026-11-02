@@ -223,7 +223,7 @@ build_from_source() {
   fi
 
   printf "  ${D}│${N} %-10s " "build"
-  ( cd "$src" && zig build -Doptimize=ReleaseFast ) >/dev/null 2>&1 \
+  ( cd "$src" && zig build -Doptimize=ReleaseSafe -Dlearn=false ) >/dev/null 2>&1 \
     && printf "${G}✓${N}\n" \
     || { printf "${R}failed${N}\n\n  ${R}zig build failed${N} — run it manually in $src to see the error\n\n" >&2; exit 1; }
 

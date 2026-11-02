@@ -8,11 +8,15 @@ const Isolation = @import("fleet.zig").Isolation;
 const Effort = @import("main.zig").ReasoningEffort;
 
 pub fn foreground(ctx: tools.ToolCtx, label: []const u8, prompt: []const u8, system: ?[]const u8, niche: []const u8, isolation: Isolation, fallback: bool, pin: ?Provider, effort: ?Effort) !subagent.SubRun {
+    return foregroundKind(ctx, "subagent", label, prompt, system, niche, isolation, fallback, pin, effort);
+}
+
+pub fn foregroundKind(ctx: tools.ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8, system: ?[]const u8, niche: []const u8, isolation: Isolation, fallback: bool, pin: ?Provider, effort: ?Effort) !subagent.SubRun {
     const state = try retained.create(ctx, label);
     defer state.deinit(ctx.gpa, ctx.io);
     var child = ctx;
     child.retained_worker = state;
-    var run = try subagent.runSub(child, "subagent", label, prompt, system, niche, isolation, fallback, pin, effort);
+    var run = try subagent.runSub(child, kind, label, prompt, system, niche, isolation, fallback, pin, effort);
     errdefer ctx.gpa.free(run.output.text);
     const text = try std.fmt.allocPrint(ctx.gpa, "{s}\n\n[task_id {s}: retained worker; agent_message queues, subagent_resume continues]", .{ run.output.text, state.record.id });
     ctx.gpa.free(run.output.text);
@@ -24,7 +28,7 @@ pub fn refuse(ctx: tools.ToolCtx, reason: []const u8) !tools.ToolOutput {
     return .{ .text = try std.fmt.allocPrint(ctx.gpa, "Worker follow-up refused: {s}", .{reason}), .is_error = true };
 }
 pub fn queued(ctx: tools.ToolCtx, id: []const u8, message: []const u8) !tools.ToolOutput {
-    const state = retained.load(ctx, id) catch |err| return refuse(ctx, @errorName(err));
+    const state = retained.load(ctx, id) catch |err| return refuse(ctx, retained.loadFailureText(err));
     defer state.deinit(ctx.gpa, ctx.io);
     const ack = try ctx.gpa.dupe(u8, "Feedback retained without starting a turn. Use subagent_resume with this task_id to continue.");
     errdefer ctx.gpa.free(ack);
@@ -41,7 +45,7 @@ pub fn exec(ctx: tools.ToolCtx, input: std.json.Value) !tools.ToolOutput {
     const id = tools.strField(input, "task_id") orelse return tools.missingArg(ctx.gpa, "task_id");
     const action = tools.strField(input, "action") orelse "resume";
     if (!std.mem.eql(u8, action, "resume") and !std.mem.eql(u8, action, "forget")) return refuse(ctx, "unknown action");
-    const state = retained.load(ctx, id) catch |err| return refuse(ctx, @errorName(err));
+    const state = retained.load(ctx, id) catch |err| return refuse(ctx, retained.loadFailureText(err));
     var transferred = false;
     defer if (!transferred) state.deinit(ctx.gpa, ctx.io);
     if (std.mem.eql(u8, action, "forget")) {

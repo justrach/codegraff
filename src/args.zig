@@ -47,6 +47,7 @@ pub const Flags = struct {
     chatgpt_login: bool = false,
     anthropic_login: bool = false,
     anthropic_console_login: bool = false,
+    claude_agent_login: bool = false,
     help_flag: bool = false,
     version_flag: bool = false,
     print_flag: bool = false,
@@ -270,7 +271,7 @@ pub fn parse(init: std.process.Init) !Flags {
         if (flags.login_flag and flags.positionals.items.len > 1) {
             const name = flags.positionals.items[1];
             const target = loginTarget(name) orelse
-                std.process.fatal("unknown login '{s}' — graff login [codegraff|chatgpt|anthropic|kimi|xai|zai]", .{name});
+                std.process.fatal("unknown login '{s}' — graff login [codegraff|chatgpt|anthropic|claude-agent|kimi|xai|zai]", .{name});
             flags.codex_login = std.mem.eql(u8, target, "codex");
             flags.kimi_login = std.mem.eql(u8, target, "kimi");
             flags.xai_login = std.mem.eql(u8, target, "xai");
@@ -278,6 +279,7 @@ pub fn parse(init: std.process.Init) !Flags {
             flags.chatgpt_login = std.mem.eql(u8, target, "chatgpt-new");
             flags.anthropic_console_login = std.ascii.eqlIgnoreCase(name, "console");
             flags.anthropic_login = std.mem.eql(u8, target, "anthropic") and !flags.anthropic_console_login;
+            flags.claude_agent_login = std.mem.eql(u8, target, "claude-agent");
         }
     }
 
@@ -344,10 +346,10 @@ pub fn acpLoginIsLogin(positionals: *std.ArrayList([]const u8)) void {
 
 pub fn loginTarget(name: []const u8) ?[]const u8 {
     const aliases = [_][2][]const u8{
-        .{ "codex", "chatgpt-new" }, .{ "chatgpt", "chatgpt-new" }, .{ "openai", "chatgpt-new" }, .{ "gpt", "chatgpt-new" },
-        .{ "oai", "chatgpt-new" },   .{ "codegraff", "codegraff" }, .{ "graff", "codegraff" },    .{ "kimi", "kimi" },
-        .{ "xai", "xai" },           .{ "grok", "xai" },            .{ "ant", "anthropic" },      .{ "anthropic", "anthropic" },
-        .{ "console", "anthropic" },
+        .{ "codex", "chatgpt-new" }, .{ "chatgpt", "chatgpt-new" },       .{ "openai", "chatgpt-new" },  .{ "gpt", "chatgpt-new" },
+        .{ "oai", "chatgpt-new" },   .{ "codegraff", "codegraff" },       .{ "graff", "codegraff" },     .{ "kimi", "kimi" },
+        .{ "xai", "xai" },           .{ "grok", "xai" },                  .{ "ant", "anthropic" },       .{ "anthropic", "anthropic" },
+        .{ "console", "anthropic" }, .{ "claude-agent", "claude-agent" }, .{ "claude", "claude-agent" },
     };
     for (aliases) |pair| if (std.ascii.eqlIgnoreCase(name, pair[0])) return pair[1];
     if (@import("oauth_zai.zig").isLoginName(name)) return "zai";
@@ -364,6 +366,8 @@ test "loginTarget: every ChatGPT name, codex included, is the plan's sign-in; un
     for ([_][]const u8{ "ant", "anthropic", "ANT", "Anthropic", "console", "Console" }) |name|
         try std.testing.expectEqualStrings("anthropic", loginTarget(name).?);
     try std.testing.expectEqualStrings("zai", loginTarget("zai").?);
+    try std.testing.expectEqualStrings("claude-agent", loginTarget("claude-agent").?);
+    try std.testing.expectEqualStrings("claude-agent", loginTarget("Claude").?);
     try std.testing.expect(loginTarget("chatgptt") == null);
     try std.testing.expect(loginTarget("") == null);
 }

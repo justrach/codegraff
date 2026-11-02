@@ -62,7 +62,9 @@ const sock_buf_cap = 64 * 1024;
 // Plaintext TLS buffers.
 const tls_buf_cap = 64 * 1024;
 /// Hard cap on one reassembled inbound message (a single Responses event).
-const message_cap = 4 * 1024 * 1024;
+/// The SSE cap too: 4 MiB refused a compaction item's opaque state, so the
+/// turn was retried on a fresh socket and then SSE, each re-running it.
+const message_cap = @import("stream_read_progress.zig").max_event_bytes;
 
 comptime {
     if (sock_buf_cap < tls.max_ciphertext_record_len) @compileError("sock_buf_cap < tls min_buffer_len");
@@ -361,4 +363,31 @@ test "counted forced WS failures exhaust exactly" {
         &.{},
     ));
     try std.testing.expectEqual(@as(u8, 0), g_force_connect_failure_count);
+}
+
+test "an inbound message may carry a compaction item's multi-megabyte state" {
+    const gpa = std.testing.allocator;
+    const len: usize = 5 * 1024 * 1024; // over the old 4 MiB cap
+    const frame = try gpa.alloc(u8, 10 + len);
+    defer gpa.free(frame);
+    frame[0] = 0x81; // FIN | text
+    frame[1] = 127;
+    std.mem.writeInt(u64, frame[2..10], len, .big);
+    @memset(frame[10..], 'x');
+    var reader: Io.Reader = .fixed(frame);
+    var client: WsClient = undefined;
+    client.r = &reader;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    try std.testing.expectEqual(Opcode.text, try client.readMessage(gpa, &out));
+    try std.testing.expectEqual(len, out.items.len);
+
+    // A header claiming more than the cap is refused before any allocation.
+    var oversized: [10]u8 = undefined;
+    oversized[0] = 0x81;
+    oversized[1] = 127;
+    std.mem.writeInt(u64, oversized[2..10], message_cap + 1, .big);
+    var over_reader: Io.Reader = .fixed(&oversized);
+    client.r = &over_reader;
+    try std.testing.expectError(error.MessageTooLong, client.readMessage(gpa, &out));
 }

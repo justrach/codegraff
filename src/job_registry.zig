@@ -85,7 +85,7 @@ pub fn list(io: Io, arena: Allocator, base: []const u8) []const Record {
         const rec = std.json.parseFromSliceLeaky(Record, arena, data, .{ .ignore_unknown_fields = true }) catch continue;
         out.append(arena, rec) catch break;
     }
-    std.mem.sort(Record, out.items, {}, earlier);
+    @import("stable_sort.zig").sort(Record, out.items, {}, earlier);
     return out.items;
 }
 

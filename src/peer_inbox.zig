@@ -98,6 +98,18 @@ pub fn anyNeedsTurnFrom(from: usize) bool {
     return false;
 }
 
+/// Whether any message parked at or after `from` was addressed to this
+/// session (a DM, or the user's own `/tell` on the device room) and asks for
+/// a turn. Unaddressed posts in this folder's room are ambient.
+pub fn anyAddressedNeedsTurnFrom(from: usize) bool {
+    var i = from;
+    while (i < g_len) : (i += 1) {
+        const p = itemAt(i);
+        if ((p.dm or p.device) and !isFyi(textSlice(p))) return true;
+    }
+    return false;
+}
+
 pub fn anyTextPrefixed(want: []const u8) bool {
     var i: usize = 0;
     while (i < g_len) : (i += 1) {

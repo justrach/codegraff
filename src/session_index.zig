@@ -178,7 +178,7 @@ pub fn listSavedSessions(root: *Agent, arena: Allocator) std.ArrayList(SessionEn
     defer dir.close(root.io);
     const cwd = if (main_mod.g_cwd_display.len > 0) main_mod.g_cwd_display else ".";
     const entries = listFromDir(root.io, arena, dir, cwd, true);
-    std.mem.sort(SessionEntry, entries.items, {}, newerFirst);
+    @import("stable_sort.zig").sort(SessionEntry, entries.items, {}, newerFirst);
     return entries;
 }
 
@@ -204,7 +204,7 @@ pub fn listSavedSessionsAll(root: *Agent, arena: Allocator) std.ArrayList(Sessio
         }
         if (!seen) entries.append(arena, e) catch {};
     }
-    std.mem.sort(SessionEntry, entries.items, {}, newerFirst);
+    @import("stable_sort.zig").sort(SessionEntry, entries.items, {}, newerFirst);
     return entries;
 }
 

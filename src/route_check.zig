@@ -89,6 +89,7 @@ test "qualified route keeps the selected provider and credential" {
 pub fn billingLabel(b: pricing.Billing) []const u8 {
     return switch (b) {
         .sub => "subscription, flat-rate",
+        .local => "local, no per-token cost",
         .priced => "metered",
         .unpriced => "unpriced (gateway/license)",
     };

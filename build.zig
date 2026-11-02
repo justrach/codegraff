@@ -3,7 +3,8 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const lean_release = optimize == .fast or optimize == .small;
+    // Every release mode ships stripped; ReleaseSafe is the shipped one.
+    const lean_release = optimize != .debug;
 
     // `--version` string: stamped from `git describe` at build time so every
     // binary says which commit built it; `-Dversion=X.Y.Z` overrides (the
@@ -36,43 +37,69 @@ pub fn build(b: *std.Build) void {
         "telemetry-endpoint",
         "default OTLP endpoint baked into builds (pass \"\" to disable; default = the deployed collector)",
     ) orelse "https://harness-telemetry.rachpradhan.workers.dev";
+    // `graff learn` (local policy learning) and its embedded Python kit. Dev
+    // builds keep it so CI exercises it; release builds leave it out.
+    const learn = b.option(bool, "learn", "include `graff learn` local policy learning (default true)") orelse true;
     const opts = b.addOptions();
     opts.addOption([]const u8, "version", version);
     opts.addOption([]const u8, "telemetry_endpoint", telemetry_endpoint);
+    opts.addOption(bool, "learn", learn);
 
+    // Release binaries ship without unwind tables or frame pointers: they are
+    // stripped, so a panic can't print a useful trace anyway. On Windows only
+    // graff's module drops them: the root's setting also builds the MinGW
+    // startup code, which registers SEH handlers and needs its tables.
+    const no_unwind = lean_release and target.result.os.tag != .windows;
+    // graff's own code is its own module so it keeps the requested build mode
+    // (ReleaseSafe checks overflow, bounds and union tags). The root module
+    // only forwards to it; std and other generic library code follow the root,
+    // which a ReleaseSafe release builds for size.
+    const app_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .strip = lean_release,
+        // Linux cross-builds (x86_64-linux for in-container evals) must say
+        // libc explicitly; macOS resolves it implicitly and never notices.
+        .link_libc = true,
+        .unwind_tables = if (lean_release) .none else null,
+        .omit_frame_pointer = if (lean_release) true else null,
+        .error_tracing = if (lean_release) false else null,
+    });
     const exe = b.addExecutable(.{
         .name = "graff",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
+            .root_source_file = b.path("src/entry.zig"),
             .target = target,
-            .optimize = optimize,
+            .optimize = if (optimize == .safe) .small else optimize,
             .strip = lean_release,
-            // Linux cross-builds (x86_64-linux for in-container evals) must say
-            // libc explicitly; macOS resolves it implicitly and never notices.
             .link_libc = true,
+            .unwind_tables = if (no_unwind) .none else null,
+            .omit_frame_pointer = if (lean_release) true else null,
         }),
     });
-    exe.root_module.addOptions("build_options", opts);
+    exe.root_module.addImport("graff", app_mod);
+    app_mod.addOptions("build_options", opts);
     const accord_dep = b.dependency("accord", .{ .target = target, .optimize = optimize });
     const accord_mod = accord_dep.module("accord");
-    exe.root_module.addImport("accord", accord_mod);
+    app_mod.addImport("accord", accord_mod);
     const http_zig_dep = b.dependency("http_zig", .{ .target = target, .optimize = optimize });
     const http_zig_mod = http_zig_dep.module("http_zig");
-    exe.root_module.addImport("http_zig", http_zig_mod);
+    app_mod.addImport("http_zig", http_zig_mod);
     // Shared model-ranking module used by the line-REPL picker.
     const models_rank_mod = b.createModule(.{
         .root_source_file = b.path("src/models_rank.zig"),
         .target = target,
         .optimize = optimize,
     });
-    exe.root_module.addImport("models_rank", models_rank_mod);
+    app_mod.addImport("models_rank", models_rank_mod);
     // Shared nearest-command speller for the REPL/ACP catalog.
     const slash_suggest_mod = b.createModule(.{
         .root_source_file = b.path("src/slash_suggest.zig"),
         .target = target,
         .optimize = optimize,
     });
-    exe.root_module.addImport("slash_suggest", slash_suggest_mod);
+    app_mod.addImport("slash_suggest", slash_suggest_mod);
     const install_graff = b.addInstallArtifact(exe, .{});
     b.getInstallStep().dependOn(&install_graff.step);
     const graff_step = b.step("graff", "Build and install only the release CLI");
@@ -109,8 +136,6 @@ pub fn build(b: *std.Build) void {
     unit_tests.root_module.addImport("slash_suggest", slash_suggest_mod);
     // spec/ fixtures live outside src/; importing them here makes @embedFile
     // legal and rebuilds the suite when the exported semantics change.
-    exe.root_module.addAnonymousImport("ui_theme", .{ .root_source_file = b.path("src/ui_theme.css") });
-    unit_tests.root_module.addAnonymousImport("ui_theme", .{ .root_source_file = b.path("src/ui_theme.css") });
     unit_tests.root_module.addAnonymousImport("spec_tool_catalog", .{ .root_source_file = b.path("spec/kernels/tool_catalog.json") });
     unit_tests.root_module.addAnonymousImport("spec_transport", .{ .root_source_file = b.path("spec/kernels/transport.json") });
     unit_tests.root_module.addAnonymousImport("spec_providers", .{ .root_source_file = b.path("spec/kernels/providers.json") });
@@ -145,6 +170,9 @@ pub fn build(b: *std.Build) void {
     const acp_preauth_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-preauth.py" });
     acp_preauth_test.addArtifactArg(exe);
     test_step.dependOn(&acp_preauth_test.step);
+    const issue_acp_test = b.addSystemCommand(&.{ "python3", "scripts/test-issue-acp.py" });
+    issue_acp_test.addArtifactArg(exe);
+    test_step.dependOn(&issue_acp_test.step);
     const acp_goal_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-goal.py" });
     acp_goal_test.addArtifactArg(exe);
     test_step.dependOn(&acp_goal_test.step);
@@ -163,6 +191,9 @@ pub fn build(b: *std.Build) void {
     const usage_trace_test = b.addSystemCommand(&.{ "python3", "scripts/test-usage-trace.py" });
     usage_trace_test.addArtifactArg(exe);
     test_step.dependOn(&usage_trace_test.step);
+    const claude_agent_test = b.addSystemCommand(&.{ "python3", "scripts/test-claude-agent.py" });
+    claude_agent_test.addArtifactArg(exe);
+    test_step.dependOn(&claude_agent_test.step);
     const acp_view_meta_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-view-meta.py" });
     acp_view_meta_test.addArtifactArg(exe);
     test_step.dependOn(&acp_view_meta_test.step);
@@ -232,12 +263,24 @@ pub fn build(b: *std.Build) void {
     const acp_stream_drop_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-stream-drop.py" });
     acp_stream_drop_test.addArtifactArg(exe);
     test_step.dependOn(&acp_stream_drop_test.step);
+    const retry_cancellation_test = b.addSystemCommand(&.{ "python3", "scripts/test-retry-cancellation.py" });
+    retry_cancellation_test.addArtifactArg(exe);
+    test_step.dependOn(&retry_cancellation_test.step);
+    const offline_recovery_test = b.addSystemCommand(&.{ "python3", "scripts/test-offline-recovery.py" });
+    offline_recovery_test.addArtifactArg(exe);
+    test_step.dependOn(&offline_recovery_test.step);
     const run_tool_budget_test = b.addSystemCommand(&.{ "python3", "scripts/test-run-tool-budget.py" });
     run_tool_budget_test.addArtifactArg(exe);
     test_step.dependOn(&run_tool_budget_test.step);
     const subagent_resume_test = b.addSystemCommand(&.{ "python3", "scripts/test-subagent-resume.py" });
     subagent_resume_test.addArtifactArg(exe);
     test_step.dependOn(&subagent_resume_test.step);
+    const subagent_fork_test = b.addSystemCommand(&.{ "python3", "scripts/test-subagent-fork.py" });
+    subagent_fork_test.addArtifactArg(exe);
+    test_step.dependOn(&subagent_fork_test.step);
+    const workflow_synthesis_test = b.addSystemCommand(&.{ "python3", "scripts/test-workflow-synthesis.py" });
+    workflow_synthesis_test.addArtifactArg(exe);
+    test_step.dependOn(&workflow_synthesis_test.step);
     const learn_formal_test = b.addSystemCommand(&.{ "python3", "tests/learn_formal_e2e.py", "--graff" });
     learn_formal_test.addArtifactArg(exe);
     test_step.dependOn(&learn_formal_test.step);
@@ -248,7 +291,6 @@ pub fn build(b: *std.Build) void {
     // into a workspace so zero-configuration learning needs no repo checkout.
     // Embedded by name (src/learn_assets.zig `@embedFile`s these imports).
     for ([_]struct { import: []const u8, path: []const u8 }{
-        .{ .import = "mcp_installer", .path = "scripts/install-mcp.py" },
         .{ .import = "learn_kit_mutator", .path = "examples/learn_graff_mutator.py" },
         .{ .import = "learn_kit_evaluator", .path = "examples/learn_graff_evaluator.py" },
         .{ .import = "learn_kit_case", .path = "examples/learn_graff_case.py" },
@@ -257,8 +299,60 @@ pub fn build(b: *std.Build) void {
         .{ .import = "learn_kit_generate", .path = "examples/learn_generate_suites.py" },
         .{ .import = "learn_kit_scorer", .path = "scripts/score_run.py" },
     }) |asset| {
-        exe.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
+        app_mod.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
         unit_tests.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
+    }
+
+    // Text only needed at run time ships gzipped; callers inflate it with
+    // update_archive.gunzip. Imported as "<name>.gz".
+    const gzip_asset = b.addExecutable(.{
+        .name = "gzip_asset",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("scripts/gzip_asset.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    for ([_]struct { import: []const u8, path: []const u8 }{
+        .{ .import = "mcp_installer.gz", .path = "scripts/install-mcp.py" },
+        .{ .import = "chatgpt_callback.gz", .path = "src/oauth_page/chatgpt_callback.html" },
+        .{ .import = "mcp_app_host.gz", .path = "src/mcp_app_host.html" },
+        .{ .import = "mcp_task_app.gz", .path = "src/mcp_task_app.html" },
+        .{ .import = "ui_theme.gz", .path = "src/ui_theme.css" },
+    }) |asset| {
+        const gzip_run = b.addRunArtifact(gzip_asset);
+        gzip_run.addFileArg(b.path(asset.path));
+        const gz = gzip_run.addOutputFileArg(asset.import);
+        app_mod.addAnonymousImport(asset.import, .{ .root_source_file = gz });
+        unit_tests.root_module.addAnonymousImport(asset.import, .{ .root_source_file = gz });
+    }
+
+    // Evaluate the CLI's Zig text constants on the host, including the learn
+    // conditional, then reuse the same compressor as the other runtime assets.
+    const cli_source = b.createModule(.{
+        .root_source_file = b.path("src/cli_text_source.zig"),
+        .target = b.graph.host,
+    });
+    cli_source.addOptions("build_options", opts);
+    const cli_text = b.addExecutable(.{
+        .name = "cli_text",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("scripts/cli_text.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    cli_text.root_module.addImport("cli_text_source", cli_source);
+    const text_run = b.addRunArtifact(cli_text);
+    const help_text = text_run.addOutputFileArg("cli_help.txt");
+    const changelog_text = text_run.addOutputFileArg("cli_changelog.txt");
+    for ([_]struct { name: []const u8, text: std.Build.LazyPath }{
+        .{ .name = "cli_help.gz", .text = help_text },
+        .{ .name = "cli_changelog.gz", .text = changelog_text },
+    }) |asset| {
+        const gzip_run = b.addRunArtifact(gzip_asset);
+        gzip_run.addFileArg(asset.text);
+        const gz = gzip_run.addOutputFileArg(asset.name);
+        app_mod.addAnonymousImport(asset.name, .{ .root_source_file = gz });
+        unit_tests.root_module.addAnonymousImport(asset.name, .{ .root_source_file = gz });
     }
 
     // Bundled skills: SKILL.md playbooks compiled into every binary (embedded
@@ -271,8 +365,14 @@ pub fn build(b: *std.Build) void {
         .{ .import = "skill_doc_jspace", .path = "assets/skills/jspace.md" },
         .{ .import = "skill_doc_workspace", .path = "assets/skills/workspace.md" },
     }) |asset| {
-        exe.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
+        app_mod.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
         unit_tests.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
+        const gzip_run = b.addRunArtifact(gzip_asset);
+        gzip_run.addFileArg(b.path(asset.path));
+        const gzip_import = b.fmt("{s}.gz", .{asset.import});
+        const gz = gzip_run.addOutputFileArg(gzip_import);
+        app_mod.addAnonymousImport(gzip_import, .{ .root_source_file = gz });
+        unit_tests.root_module.addAnonymousImport(gzip_import, .{ .root_source_file = gz });
     }
 
     const external_tui_test = b.addSystemCommand(&.{ "python3", "scripts/test-external-tui.py" });

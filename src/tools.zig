@@ -146,6 +146,9 @@ pub const ToolCtx = struct {
     parent_effort: ?main_mod.ReasoningEffort = null, // ADR 0232: the caller's live effort (/effort or Jev); an unpinned child runs at it
     parent_messages: []const std.json.Value = &.{}, // ADR 0232: the caller's history, read only while its tool batch runs
     parent_task: []const u8 = "", // ADR 0232: the user's prompts a spawned child sees as context
+    fork_source: ?@import("subagent_history.zig").Snapshot = null,
+    retain_children: bool = false, // explicit workflow retention, not inherited by judges
+    synthesis: bool = false, // canonical workflow synthesis, not ordinary delegated work
     read_only_shell: bool = false, // ADR 0232: a read-only child's foreground shell runs under the seatbelt sandbox
 };
 
@@ -252,9 +255,9 @@ pub fn codedbGuard(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
         is_scanner = true;
     };
     if (!is_scanner) return null;
-    // ADR 0234: an in-place edit and a whole read of small files cost a round trip to refuse and save nothing.
+    // ADR 0234: an in-place edit, a write-only cat (#1709) and a whole read of small files cost a round trip to refuse and save nothing.
     const scope = @import("codedb_guard_scope.zig");
-    if (scope.inPlaceEdit(tool, trimmed) or scope.smallReadIn(ctx.io, ctx.agent_cwd, tool, trimmed)) return null;
+    if (scope.exempt(ctx.io, ctx.agent_cwd, tool, trimmed)) return null;
 
     // …aimed at a concrete source file (not a glob — codedb glob/tree cover that).
     const src_path = extractSourceFilePath(cmd) orelse return null;

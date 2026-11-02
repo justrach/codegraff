@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 GH = r'''
-import json, pathlib, subprocess, sys, time
+import json, pathlib, subprocess, sys, time, urllib.parse
 root=pathlib.Path(__file__).resolve().parent.parent
 state=json.loads((root/'gh-state.json').read_text())
 args=sys.argv[1:]
@@ -33,6 +33,75 @@ elif args[:2]==['run','list']:
     print(json.dumps([{'status':'queued' if status=='pending' else 'completed','conclusion':None if status=='pending' else status}]))
 elif args[:1]==['api']:
     print(state.get('base_sha', state['initial_head']) if '/heads/fixture-base' in ' '.join(args) else state.get('remote_head', head))
+elif args[:1]==['issue'] and len(args)>1 and args[1] in ('list','view','comment','reopen','create'):
+    # Stateful local issue tracker: unsupported operations fail closed, never
+    # delegate to a real gh. Both successful and denied mutations are recorded.
+    def option(*names, default=None):
+        for name in names:
+            if name in args:return args[args.index(name)+1]
+        return default
+    def save():
+        (root/'gh-state.json').write_text(json.dumps(state))
+    def emit(value):
+        fields=option('--json')
+        if fields:
+            selected=fields.split(',')
+            value=[{k:v.get(k) for k in selected} for v in value] if isinstance(value,list) else {k:value.get(k) for k in selected}
+        query=option('--jq')
+        if query:
+            if query not in ('.state','.number','.url','.stateReason'):sys.exit(87)
+            print(value[query[1:]])
+        else:print(json.dumps(value))
+    selected=option('--repo','-R',default=state.get('repo','fixture/primary'))
+    if selected!=state.get('repo','fixture/primary'):sys.exit(86)
+    issues=state.setdefault('issues',{})
+    action=args[1]
+    if action=='list':
+        if state.get('issue_list_denied'):
+            print('GraphQL: Resource not accessible by integration (search)',file=sys.stderr)
+            sys.exit(1)
+        wanted=option('--state','-s',default='open').upper()
+        search=option('--search','-S',default='').lower()
+        found=[v for v in issues.values() if (wanted=='ALL' or v['state']==wanted) and (not search or search in (v['title']+' '+v.get('body','')).lower())]
+        emit(found[:int(option('--limit','-L',default='30'))])
+    else:
+        if action=='create':
+            number=str(max([int(n) for n in issues]+[0])+1)
+        else:
+            selector=args[2]
+            if '://' in selector:
+                url=urllib.parse.urlsplit(selector)
+                parts=url.path.strip('/').split('/')
+                if url.scheme!='https' or url.netloc!='github.com' or len(parts)!=4 or parts[2]!='issues' or '/'.join(parts[:2])!=selected:sys.exit(86)
+                number=parts[3]
+            else:number=selector
+            if not number.isdecimal() or number not in issues:sys.exit(85)
+        if action=='view':
+            if issues[number].get('deny_view_after_mutation') and (root/'mutations.jsonl').exists():
+                print('GraphQL: Resource not accessible by integration (issue)',file=sys.stderr)
+                sys.exit(1)
+            emit(issues[number])
+        else:
+            with (root/'mutations.jsonl').open('a') as f:f.write(json.dumps(args)+'\n')
+            if action=='reopen':
+                if issues[number].get('deny_reopen'):
+                    print('GraphQL: Resource not accessible by integration (reopenIssue)',file=sys.stderr)
+                    sys.exit(1)
+                issues[number].update(state='OPEN',stateReason='',closedAt=None)
+            else:
+                if action=='comment' and issues[number].get('deny_comment'):
+                    print('GraphQL: Resource not accessible by integration (addComment)',file=sys.stderr)
+                    sys.exit(1)
+                body=option('--body','-b')
+                if body is None:
+                    filename=option('--body-file','-F')
+                    if not filename:sys.exit(84)
+                    body=sys.stdin.read() if filename=='-' else pathlib.Path(filename).read_text()
+                if action=='create':
+                    issues[number]=dict(number=int(number),title=option('--title','-t',default='fixture'),body=body,state='OPEN',stateReason='',comments=[],url='https://github.com/'+selected+'/issues/'+number)
+                else:issues[number].setdefault('comments',[]).append({'body':body})
+            save()
+            print(issues[number].get('url','https://github.com/'+selected+'/issues/'+number))
 elif args[:2]==['pr','list']:
     print('[]')
 elif args[:2]==['pr','view']:

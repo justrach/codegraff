@@ -44,6 +44,7 @@ const prompts = @import("prompts.zig");
 const learn_store = @import("learn_store.zig");
 const learn_bootstrap = @import("learn_bootstrap.zig");
 const learn_auto = @import("learn_auto.zig");
+const build_options = @import("build_options"); // .learn: is `graff learn` in this build
 const imagegen = @import("imagegen.zig"); // #352: codex-skill detection + the personal-tier skill mirror
 
 const plugins = @import("plugins.zig");
@@ -95,7 +96,9 @@ pub fn buildSystemPrompt(
     // authoring guidance is only sent where a repository exists to act on.
     prompts.probeGitRepo(io);
     // A learned policy is used unless this session opted out of it.
-    const learned: ?learn_store.ActiveAgent = if (system_prompt_flag == null and learn_auto.enabled(learned_policy_env)) learnedRootPolicy(io, arena) else null;
+    const learned: ?learn_store.ActiveAgent = if (comptime !build_options.learn)
+        null
+    else if (system_prompt_flag == null and learn_auto.enabled(learned_policy_env)) learnedRootPolicy(io, arena) else null;
     if (learned) |policy| if (!quiet) {
         try out.print("root policy: learned generation {d} ({s})\n", .{ policy.generation, policy.genome_id[0..12] });
         try out.flush();
@@ -263,7 +266,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     if (flags.help_flag or flags.version_flag) {
         var hbuf: [4096]u8 = undefined;
         var hw = Io.File.stdout().writer(io, &hbuf);
-        if (flags.help_flag) try hw.interface.writeAll(cli.usage_text) else try hw.interface.print("graff {s}\n\n{s}", .{ main_mod.harness_version, cli.changelog_text });
+        try @import("cli_text.zig").print(gpa, &hw.interface, flags.help_flag, main_mod.harness_version);
         try hw.interface.flush();
         return true;
     }
@@ -281,10 +284,12 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // the login flow writes instead of "/.kimi/...".
     oauth.initHome(keys_cli.homeEnv(init.environ_map) orelse "");
     job_registry.home = keys_cli.homeEnv(init.environ_map) orelse ""; // #199: ownership records for background jobs
+    @import("sim_ledger.zig").init(arena, io, keys_cli.homeEnv(init.environ_map) orelse "", init.environ_map); // #407
     // #1267: tool children get graff's environment minus its credentials.
     // After router_config.load (its key is one of them), before `serve` and
     // the other subcommands below can spawn a tool.
     @import("tool_env.zig").init(arena, init.environ_map);
+    @import("gui_background.zig").install(io, keys_cli.homeEnv(init.environ_map) orelse "", @import("gui_background.zig").real_open); // #832
     // #557: same pin for GRAFF_PRICES_PATH, before `graff models` is dispatched
     // below — the hydration points (router_catalog, models_cache) all sit well
     // under the last call that still holds the environment.
@@ -321,6 +326,8 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // resolution and normal session construction; configured child tools get
     // only their explicitly allowlisted environment.
     if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "learn")) {
+        if (comptime !build_options.learn)
+            std.process.fatal("learn: `graff learn` is not included in this build", .{});
         learn_cli.command(io, gpa, arena, init, flags.positionals.items[1..]) catch |err|
             std.process.fatal("learn: {s}", .{@errorName(err)});
         return true;
@@ -333,7 +340,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // args.loginTarget owns the names.
     if (flags.login_flag) {
         const home = keys_cli.homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
-        if (flags.anthropic_console_login) try @import("anthropic_profile.zig").login(io, arena, init.environ_map, home) else if (flags.anthropic_login) try @import("oauth_anthropic.zig").login(io, gpa, arena, home, flags.refresh_flag) else if (flags.chatgpt_login) try @import("oauth_chatgpt.zig").login(io, gpa, arena, home) else if (flags.xai_login) try oauth.xaiLogin(io, gpa, arena, home) else if (flags.kimi_login) try oauth.kimiLogin(io, gpa, arena, home) else if (flags.zai_login) try oauth.zaiLogin(io, gpa, arena, home) else if (flags.codex_login or flags.refresh_flag) try oauth.codexLogin(io, gpa, arena, home, flags.refresh_flag) else try oauth.codegraffLogin(io, gpa, arena, home);
+        if (flags.claude_agent_login) @import("claude_agent_login.zig").login(io, arena, init.environ_map, home) catch std.process.exit(1) else if (flags.anthropic_console_login) try @import("anthropic_profile.zig").login(io, arena, init.environ_map, home) else if (flags.anthropic_login) try @import("oauth_anthropic.zig").login(io, gpa, arena, home, flags.refresh_flag) else if (flags.chatgpt_login) try @import("oauth_chatgpt.zig").login(io, gpa, arena, home) else if (flags.xai_login) try oauth.xaiLogin(io, gpa, arena, home) else if (flags.kimi_login) try oauth.kimiLogin(io, gpa, arena, home) else if (flags.zai_login) try oauth.zaiLogin(io, gpa, arena, home) else if (flags.codex_login or flags.refresh_flag) try oauth.codexLogin(io, gpa, arena, home, flags.refresh_flag) else try oauth.codegraffLogin(io, gpa, arena, home);
         return true;
     }
 
@@ -341,8 +348,12 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "logout")) {
         const home = keys_cli.homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
         const target = if (flags.positionals.items.len > 1) flags.positionals.items[1] else "";
+        if (std.mem.eql(u8, @import("args.zig").loginTarget(target) orelse "", "claude-agent")) {
+            try @import("claude_agent_login.zig").logout(io, arena, home);
+            return true;
+        }
         const plan = std.mem.eql(u8, @import("args.zig").loginTarget(target) orelse "", "chatgpt-new");
-        if (!plan) std.process.fatal("graff logout supports: chatgpt", .{});
+        if (!plan) std.process.fatal("graff logout supports: chatgpt, claude-agent", .{});
         try @import("oauth_chatgpt.zig").logout(io, gpa, arena, home);
         return true;
     }
@@ -479,7 +490,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
             true,
         );
         const kimi_token = init.environ_map.get("KIMI_API_KEY") orelse oauth.loadKimiOAuth(io, gpa, arena, home, false, null) orelse "";
-        _ = kimi_catalog.load(io, gpa, arena, home, kimi_token);
+        _ = kimi_catalog.load(io, gpa, arena, kimi_token);
         var router_keys: provider_mod.Keys = .{ .values = @splat(null) };
         for (provider_mod.provider_specs, &router_keys.values, &router_keys.sources) |spec, *value, *source| {
             if (!router_catalog.dynamic(spec)) continue;
@@ -555,7 +566,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         return true;
     }
 
-    if (!main_mod.json_mode and flags.oneshot_prompt == null)
+    if (!main_mod.json_mode and flags.oneshot_prompt == null and init.environ_map.get("GRAFF_REPL_DEBUG") != null)
         @import("server_diagnostics.zig").warnStartup(arena, io);
 
     return false;

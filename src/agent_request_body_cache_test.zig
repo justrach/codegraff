@@ -152,3 +152,48 @@ test "model x API x setting gate matrix" {
         try std.testing.expectEqual(c.want_options, has_options);
     }
 }
+
+test "workflow synthesis report keeps chat and Responses cache prefixes" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const catalog = "[{\"type\":\"function\",\"function\":{\"name\":\"ping\",\"description\":\"fixture\",\"parameters\":{\"type\":\"object\"}}}]";
+    for ([_]@import("provider.zig").Provider.Kind{ .openai, .responses }) |kind| {
+        var agent = try bodies.testAgentFor(a, "openai", kind, "gpt-5.6");
+        agent.sub = true;
+        agent.label = "synthesize";
+        agent.synthesis = .{ .enabled = true, .requests = 7 };
+        try agent.synthesis.beforeRequest(&agent);
+        const before = try agent.buildBody(catalog, true, true, true);
+        defer std.testing.allocator.free(before);
+        try agent.synthesis.beforeRequest(&agent);
+        const after = try agent.buildBody(if (agent.synthesis.keepsCatalog(&agent)) catalog else null, true, true, true);
+        defer std.testing.allocator.free(after);
+        const first = try std.json.parseFromSliceLeaky(std.json.Value, a, before, .{});
+        const report = try std.json.parseFromSliceLeaky(std.json.Value, a, after, .{});
+        try std.testing.expectEqualStrings(
+            try std.json.Stringify.valueAlloc(a, first.object.get("tools").?, .{}),
+            try std.json.Stringify.valueAlloc(a, report.object.get("tools").?, .{}),
+        );
+        try std.testing.expectEqualStrings(first.object.get("prompt_cache_key").?.string, report.object.get("prompt_cache_key").?.string);
+        const first_prefix = if (kind == .responses) first.object.get("instructions").? else first.object.get("messages").?.array.items[0];
+        const report_prefix = if (kind == .responses) report.object.get("instructions").? else report.object.get("messages").?.array.items[0];
+        try std.testing.expectEqualStrings(
+            try std.json.Stringify.valueAlloc(a, first_prefix, .{}),
+            try std.json.Stringify.valueAlloc(a, report_prefix, .{}),
+        );
+        try std.testing.expectEqualStrings("required", first.object.get("tool_choice").?.string);
+        try std.testing.expectEqualStrings("none", report.object.get("tool_choice").?.string);
+    }
+}
+
+test "ADR 0312: the default sends no 12h ttl (opt-in until a live probe)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    cache.clearOverride();
+    try std.testing.expectEqual(cache.Ttl.thirty_m, cache.default_ttl);
+    const b = try bodyOf(arena.allocator(), "openai", .responses, "gpt-5.6");
+    defer std.testing.allocator.free(b);
+    try std.testing.expect(std.mem.indexOf(u8, b, "\"prompt_cache_breakpoint\":{\"mode\":\"explicit\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b, "\"ttl\":\"12h\"") == null);
+}

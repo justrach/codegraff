@@ -187,6 +187,13 @@ test "contextFor known model and default fallback" {
     try std.testing.expectEqual(@as(u64, pricing.default_context), pricing.contextFor("nope", "unknown-xyz"));
 }
 
+test "contextFor gives Claude Agent the 1M window Claude Code runs" {
+    try std.testing.expectEqual(@as(u64, 1_000_000), pricing.contextFor("claude-agent", "claude-opus-5-5"));
+    try std.testing.expectEqual(@as(u64, 1_000_000), pricing.contextFor("claude-agent", "claude-sonnet-5-5[1m]"));
+    try std.testing.expectEqual(@as(u64, 1_000_000), pricing.contextFor("claude-agent", "claude-opus-4-5[1m]"));
+    try std.testing.expectEqual(@as(u64, pricing.default_context), pricing.contextFor("nope", "unknown-xyz"));
+}
+
 test "Kimi discovery preserves Codex and chooses the newest pure generation" {
     const saved = pricing.active_model_table;
     defer pricing.active_model_table = saved;

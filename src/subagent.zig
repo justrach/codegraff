@@ -75,7 +75,10 @@ pub fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     if (ask.blocked) return .{ .text = try vision_ask.blockMessage(ctx.gpa, ask), .is_error = true };
     // ADR 0232: the child sees the user's request and runs at its parent's effort unless pinned.
     const effort = @import("subagent_fork.zig").effort(ctx.parent_effort, ask.pin.effort, ask.pin.provider orelse base);
+    var source_arena = std.heap.ArenaAllocator.init(ctx.gpa);
+    defer source_arena.deinit();
     var forked = ctx;
+    forked.fork_source = @import("subagent_history.zig").fromInput(ctx, input, source_arena.allocator()) catch |err| return failure(ctx.gpa, err);
     forked.parent_task = try @import("subagent_fork.zig").task(ctx.gpa, ctx.parent_messages);
     defer ctx.gpa.free(forked.parent_task);
     const keep = tools.json_args.flag(input, "retained");
@@ -253,9 +256,11 @@ pub fn agentJobPump(job: *AgentJob, gpa: Allocator, io: Io) void {
     job.done = true;
     const retained_state = job.ctx.retained_worker;
     job.ctx.retained_worker = null; // completed jobs retain reports, not full conversation arenas
+    job.ctx.fork_source = null;
     g_agent_jobs.active -= 1;
     g_agent_jobs.mutex.unlock(io);
     if (retained_state) |state| state.deinit(gpa, io);
+    if (job.owned) |owned| owned.releaseHistory();
     ledger.finish(gpa, io, job.id, job.is_error, job.result, job.usage);
     admitNext(gpa, io);
 }
@@ -347,7 +352,7 @@ pub fn agentJobsReap(gpa: Allocator, io: Io) void {
         job.feedback.deinit(gpa);
         if (job.ctx.retained_worker) |state| state.deinit(gpa, io);
         if (job.owned) |owned| {
-            owned.arena.deinit();
+            owned.deinit();
             gpa.destroy(owned);
         }
         gpa.free(job.label);
@@ -367,7 +372,7 @@ pub fn workflowTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_ove
     // `seat` is the PHASE's one model (route_phase.forPhase, resolved once and
     // handed to every task alike), never a per-task pin: the variants still
     // share one configuration (#290). The effort axis stays unpinned.
-    const run = runSub(ctx, "workflow_task", label, prompt, sys_override, niche, isolation, isolation_fallback, seat, null) catch |err| return failure(ctx.gpa, err);
+    const run = runWorkflow(ctx, "workflow_task", label, prompt, sys_override, niche, isolation, isolation_fallback, seat) catch |err| return failure(ctx.gpa, err);
     return run.output;
 }
 
@@ -375,8 +380,13 @@ pub fn workflowTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_ove
 /// the same invocation-wide atomic ceiling and concurrency limiter.
 pub fn workflowRetryTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool, seat: ?Provider) ToolOutput {
     // The SAME phase seat: a retry that changed model would break uniformity.
-    const run = runSub(ctx, "workflow_retry", label, prompt, sys_override, niche, isolation, isolation_fallback, seat, null) catch |err| return failure(ctx.gpa, err);
+    const run = runWorkflow(ctx, "workflow_retry", label, prompt, sys_override, niche, isolation, isolation_fallback, seat) catch |err| return failure(ctx.gpa, err);
     return run.output;
+}
+
+pub fn runWorkflow(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8, system: ?[]const u8, niche: []const u8, isolation: Isolation, fallback: bool, seat: ?Provider) !SubRun {
+    if (ctx.retain_children) return @import("subagent_resume.zig").foregroundKind(ctx, kind, label, prompt, system, niche, isolation, fallback, seat, null);
+    return runSub(ctx, kind, label, prompt, system, niche, isolation, fallback, seat, null);
 }
 
 /// The --judge LLM-as-judge run (see runEval in main): an isolated subagent

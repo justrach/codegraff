@@ -27,7 +27,9 @@ pub const Ttl = enum {
     }
 };
 
-pub const default_ttl: Ttl = .twelve_h;
+/// 30m sends ADR 0009's bytes. 12h stays opt-in until a live probe shows
+/// OpenAI accepts the field and keeps the entry (ADR 0312).
+pub const default_ttl: Ttl = .thirty_m;
 
 threadlocal var override_ttl: ?Ttl = null;
 var saved_ttl: ?Ttl = null;

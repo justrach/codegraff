@@ -1,6 +1,6 @@
-# 0298. OpenAI Platform 12-hour prompt cache on the stable prefix
+# 0312. OpenAI Platform 12-hour prompt cache on the stable prefix is opt-in
 
-Status: accepted 2026-10-21
+Status: accepted 2026-11-02 (proposed 2026-10-21 as 0298)
 
 ## Context
 
@@ -18,12 +18,18 @@ pay to rewrite that prefix after a 30-minute gap.
 
 ## Decision
 
-- On the direct OpenAI Responses route for GPT-5.6 and later, the stable
-  prefix breakpoint sends `prompt_cache_breakpoint.ttl = "12h"`. The
-  request keeps `prompt_cache_options.ttl = "30m"` for session context.
-  The current user turn is never marked.
+- On the direct OpenAI Responses route for GPT-5.6 and later, with 12h
+  selected, the stable prefix breakpoint sends
+  `prompt_cache_breakpoint.ttl = "12h"`. The request keeps
+  `prompt_cache_options.ttl = "30m"` for session context. The current user
+  turn is never marked.
 - `GRAFF_OPENAI_CACHE_TTL` / `.harness/settings.json` `openai_cache_ttl`
-  select `12h` (default), `30m` (ADR 0009 bytes), or `off`.
+  select `30m` (default, ADR 0009 bytes), `12h`, or `off`.
+- 12h is opt-in until a live probe records it. The API reference still
+  documents only `"30m"`, an unsupported value is a 400 on every request,
+  and a 12-hour write costs 2.5× uncached input against 1.25×, so the
+  default changes only after `scripts/openai_cache_retention_probe write`
+  succeeds and a later `--check` shows the prefix still cached.
 - Chat Completions, Codex, ChatGPT-new, xAI, and models before GPT-5.6
   receive no new fields.
 - `prompt_cache_key` is unchanged. Usage parses `cached_tokens`,
@@ -31,6 +37,6 @@ pay to rewrite that prefix after a 30-minute gap.
 
 ## Consequences
 
-The cold prefix write costs 2.5× instead of 1.25× when 12h is on. A later
+With the default nothing changes on the wire. The cold prefix write costs 2.5× instead of 1.25× when 12h is on. A later
 request hours later can still read that prefix. Codex remains on its
 keyed automatic path: it 400s on `prompt_cache_options`.

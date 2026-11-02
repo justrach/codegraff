@@ -384,6 +384,7 @@
     "note": "Claude Code (`claude -p`, stream-json) with the task's .mcp.json as its only MCP config. Set ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN for the endpoint; a chat-completions-only endpoint needs an Anthropic-format proxy in front (evals/graff-vs-claude-code). Pass --model."
   },
   "graff-deepseek": {"cmd": ["{repo}/zig-out/bin/graff", "repl", "--model", "{model}", "--yolo"], "stdin": "\u001b[200~{prompt}\u001b[201~\n", "answer": "stdout", "usage": "graff-stderr", "env": {"GRAFF_POST_DEADLINE_SECS": "90", "GRAFF_NO_TELEMETRY": "1"}, "model_prefix": "deepseek", "default_model": "deepseek-v4-pro", "note": "scripted graff repl on DeepSeek's own API (DEEPSEEK_API_KEY)"},
+  "graff-mlx-repl": {"cmd": ["{repo}/zig-out/bin/graff", "repl", "--model", "{model}", "--yolo"], "stdin": "\u001b[200~{prompt}\u001b[201~\n", "answer": "stdout", "usage": "graff-stderr", "env": {"GRAFF_POST_DEADLINE_SECS": "300", "GRAFF_NO_TELEMETRY": "1"}, "model_prefix": "mlx", "default_model": "flint", "note": "scripted graff repl on a local MLX server at 127.0.0.1:8080 (MLX_API_KEY; for Flint, `rec serve --port 8080` and MLX_API_KEY=$(rec auth token)). The server keeps one prompt cache, so run -j 1; the longer post deadline covers a cold local prefill"},
   "deepseek-harness": {"cmd": ["python3", "{repo}/graff-evals/dsh_run.py", "{model}", "{prompt}"], "answer": "stdout", "usage": "graff-stderr", "env": {"DSH_PERMISSION_MODE": "danger-full-access"}, "default_model": "deepseek-v4-pro", "note": "deepseek-harness (@deepseek-ai/dsh, DSH_BIN when dsh is not on PATH) headless on DeepSeek's own API; the model and the task's MCP servers go in a patch layer"},
   "graff-gateway-repl-norlm": {"cmd": ["{repo}/zig-out/bin/graff", "repl", "--model", "{model}", "--yolo"], "stdin": "\u001b[200~{prompt}\u001b[201~\n", "answer": "stdout", "usage": "graff-stderr", "env": {"GRAFF_POST_DEADLINE_SECS": "90", "GRAFF_NO_TELEMETRY": "1", "GRAFF_RLM": "0"}, "model_prefix": "codegraff", "note": "graff-gateway-repl with rlm off (GRAFF_RLM=0: the structured-only catalog), the counterfactual for code-mode comparisons; pass --model"},
   "pi1": {"cmd": ["python3", "{repo}/graff-evals/pi1_run.py", "{model}", "{prompt}"], "answer": "stdout", "usage": "graff-stderr", "model_prefix": "codegraff", "env": {"PI1_CODEMODE": "0"}, "note": "Pi 1.0 (@earendil-works/pi-coding-agent 1.x) headless with its default tools; MCP tools are reached through codemode, Pi's default MCP exposure. PI1_MODELS / PI1_AUTH copy a models.json / auth.json into the run's private ~/.pi/agent, PI1_THINKING passes --thinking (match the other arm's effort), PI1_BIN picks Pi 1.x; pass --model provider/model for a provider other than codegraff"},
@@ -433,5 +434,31 @@
     "model_prefix": "codegraff",
     "default_model": "gemini-4-argon",
     "note": "graff --json on the Codegraff gateway, set_effort default before the prompt (-p has no effort flag)"
+  },
+  "graff-dev-claude-agent": {
+    "cmd": ["{repo}/zig-out/bin/graff", "-p", "{prompt}", "--model", "claude-agent/{model}", "--yolo"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": [],
+    "env": {"GRAFF_CLAUDE_AGENT": "1", "GRAFF_MCP_CONFIG": "{repo}/graff-evals/no-global-mcp.json", "GRAFF_POST_DEADLINE_SECS": "90"},
+    "default_model": "sonnet",
+    "note": "graff on the Claude Agent provider (ADR 0309): the user's own `claude` login runs the model; graff's prompt, tools and loop. GRAFF_MCP_CONFIG names a file that does not exist: no global MCP servers, while a task's .mcp.json still loads (an existing empty file would switch MCP off entirely). Pass a Claude Code model alias (sonnet, opus, haiku)."
+  },
+  "graff-dev-claude-agent-ccprompt": {
+    "cmd": ["{repo}/zig-out/bin/graff", "-p", "{prompt}", "--model", "claude-agent/{model}", "--yolo"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": [],
+    "env": {"GRAFF_CLAUDE_AGENT": "1", "GRAFF_CLAUDE_AGENT_PROMPT": "claude", "GRAFF_MCP_CONFIG": "{repo}/graff-evals/no-global-mcp.json", "GRAFF_POST_DEADLINE_SECS": "90"},
+    "default_model": "sonnet",
+    "note": "graff-dev-claude-agent keeping Claude Code's system prompt with graff's appended."
+  },
+  "claude-code-clean": {
+    "cmd": ["python3", "{repo}/graff-evals/claude_code_run.py", "{model}", "{prompt}"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "env": {"CLAUDE_CODE_RUN_ISOLATED": "1", "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1", "DISABLE_TELEMETRY": "1", "DISABLE_AUTOUPDATER": "1", "DISABLE_ERROR_REPORTING": "1"},
+    "default_model": "sonnet",
+    "note": "`claude -p` on its own login with no user settings, hooks, plugins, CLAUDE.md or global MCP: the isolation graff-dev-claude-agent runs with. Launch the runner without an enclosing Claude Code session's CLAUDE* variables."
   }
 }

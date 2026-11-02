@@ -45,7 +45,7 @@ pub fn choices(arena: Allocator, catalog: []const pricing.ModelInfo, keys: anyty
         .idx = i,
         .score = models_rank.electionRank(keys.get(m.provider) != null, billing.costFor(m.provider, keys.source(m.provider))),
     };
-    std.mem.sort(models_rank.Scored, ranked, {}, models_rank.scoredLess);
+    @import("stable_sort.zig").sort(models_rank.Scored, ranked, {}, models_rank.scoredLess);
     var out: std.ArrayList(Choice) = .empty;
     try out.append(arena, current);
     for (ranked) |r| {

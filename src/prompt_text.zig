@@ -107,9 +107,8 @@ pub const harness_issue_note =
     \\...`), never in the current working repository's issue tracker.
     \\Search open and closed issues there first, by the error text and the
     \\operation (`gh issue list --repo justrach/codegraff --state all --search
-    \\'...'`). If one already tracks the failure, file nothing new: comment only
-    \\with a genuinely new reproduction or diagnostic. If the search fails, keep
-    \\the finding in your reply instead of filing.
+    \\'...'`). If one already tracks the failure, file nothing new.
+    \\If the search fails, keep the finding in your reply instead of filing.
     \\Open the body with the versions it was seen on: the running graff's
     \\`--version` (inside Harness that is `~/.harness/bin/graff`, not the one on
     \\PATH) beside the latest release (`gh release view --repo justrach/codegraff
@@ -146,7 +145,8 @@ pub const public_write_note =
     \\generic permission to file, delegate or publish is not disclosure approval.
     \\A worker unable to ask must return a sanitized draft or request approval
     \\through its orchestrator, not infer consent. Never disclose secrets.
-;
+    \\
+++ @import("issue_reporting.zig").guidance;
 
 /// Always present (#840): who may publish to a claimed target. PR readiness
 /// is not gated (ADR 0250); ownership of a claimed branch or issue still is.

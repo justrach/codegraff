@@ -52,6 +52,21 @@ test "failureAllowsRetry keys off the harness's own retry-safety classification"
     try std.testing.expect(failureAllowsRetry("subagent finished without a report"));
 }
 
+test "cancelled and synthesis-limited workers are not unknown retryable failures" {
+    const gpa = std.testing.allocator;
+    for ([_]anyerror{ error.Interrupted, error.Canceled, error.WorkflowSynthesisLimit }) |err| {
+        const out = subagentFailure(gpa, "worker", err, null, 1);
+        defer gpa.free(out.text);
+        try std.testing.expect(out.is_error);
+        try std.testing.expect(!failureAllowsRetry(out.text));
+        try std.testing.expectEqual(err != error.WorkflowSynthesisLimit, out.cancelled);
+        const kind = run.classifyFailure(err, "503 stale transport detail");
+        try std.testing.expect(!kind.retrySafe());
+        try std.testing.expect(!subagent_retry.shouldRetry(err, kind, null, 1));
+        try std.testing.expect(std.mem.indexOf(u8, out.text, "unknown failure") == null);
+    }
+}
+
 test "a worker failure names how many asks it actually made (fleet honesty)" {
     const gpa = std.testing.allocator;
 
