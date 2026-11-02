@@ -16,6 +16,11 @@ loop has run it, then answers. Asserts:
 A second run has the model call `rlm` with `llm_query`: the sub-query runs on
 its own tools-off `claude` process and its answer reaches the held call,
 while the chat's process carries on (no restart, one process each).
+
+A third run loads a tool, so graff tells Claude Code its list changed; the
+fake is already streaming the next response then. Those first events must
+reach the turn, not be dropped while graff waits for the re-list (that left a
+response with no message_start: "unparseable response").
 """
 import json, os, shutil, subprocess, sys, tempfile
 from pathlib import Path
@@ -57,8 +62,11 @@ mcp("m1", {"method": "initialize", "params": {"protocolVersion": "2025-11-25"}, 
 mcp("m2", {"method": "tools/list", "jsonrpc": "2.0", "id": 1})
 ready()
 user = read()
-if os.environ.get("FAKE_SCENARIO") == "llm_query":
+scenario = os.environ.get("FAKE_SCENARIO")
+if scenario == "llm_query":
     name, args = "rlm", {"code": 'a = llm_query("what is six times seven")\nprint(a)'}
+elif scenario == "relist_streaming":
+    name, args = "load_tool_schemas", {"tools": ["subagent"]}
 else:
     name, args = "write_file", {"path": "out.txt", "content": "from claude agent\n"}
 ev({"type": "message_start", "message": {"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-test", "content": [], "usage": usage}})
@@ -68,8 +76,18 @@ ev({"type": "content_block_stop", "index": 0})
 ev({"type": "message_delta", "delta": {"stop_reason": "tool_use", "stop_sequence": None}, "usage": {"output_tokens": 20}})
 ev({"type": "message_stop"})
 reply = mcp("m3", {"method": "tools/call", "params": {"name": name, "arguments": args, "_meta": {"claudecode/toolUseId": "toolu_1"}}, "jsonrpc": "2.0", "id": 2})
-ev({"type": "message_start", "message": {"id": "msg_2", "type": "message", "role": "assistant", "model": "claude-test", "content": [], "usage": usage}})
-ev({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})
+if scenario == "relist_streaming":
+    changed = reply
+    assert changed["request"]["message"]["method"] == "notifications/tools/list_changed", changed
+    # The next response is already under way when graff asks for the re-list.
+    ev({"type": "message_start", "message": {"id": "msg_2", "type": "message", "role": "assistant", "model": "claude-test", "content": [], "usage": usage}})
+    ev({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})
+    out({"type": "control_response", "response": {"subtype": "success", "request_id": changed["request_id"], "response": {}}})
+    mcp("m4", {"method": "tools/list", "jsonrpc": "2.0", "id": 3})
+    reply = read()
+else:
+    ev({"type": "message_start", "message": {"id": "msg_2", "type": "message", "role": "assistant", "model": "claude-test", "content": [], "usage": usage}})
+    ev({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})
 ev({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "FAKE-DONE"}})
 ev({"type": "content_block_stop", "index": 0})
 ev({"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": 3}})
@@ -130,6 +148,7 @@ def main():
         assert 'out.txt' in call['result']['content'][0]['text'], call
         print('PASS claude-agent: graff tools as the SDK server, a held call answered with graff\'s result, one process', flush=True)
         llm_query_case(binary, temp, env)
+        relist_streaming_case(binary, temp, env)
     finally:
         shutil.rmtree(temp, ignore_errors=True)
 
@@ -160,6 +179,26 @@ def llm_query_case(binary, temp, base_env):
     users = [i for i in inputs if i.get('type') == 'user']
     assert any('what is six times seven' in json.dumps(u['message']['content']) for u in users), users
     print('PASS claude-agent: llm_query runs on its own tools-off process; the chat\'s process carries on', flush=True)
+
+
+def relist_streaming_case(binary, temp, base_env):
+    """A tool load re-lists graff's tools while the model's next response is
+    already streaming: the response arrives whole, on the same process."""
+    log = temp / 'relist.log'
+    work = temp / 'proj-relist'
+    work.mkdir()
+    env = dict(base_env, FAKE_CLAUDE_LOG=str(log), FAKE_SCENARIO='relist_streaming')
+    run = subprocess.run([binary, '--model', 'claude-agent/sonnet', '--yolo', '-p', 'load a tool'], cwd=work, env=env,
+                         capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120)
+    assert run.returncode == 0, run.stderr[-2000:]
+    assert 'FAKE-DONE' in run.stdout and 'unparseable' not in run.stdout + run.stderr, (run.stdout[-500:], run.stderr[-1500:])
+    rows = [json.loads(l) for l in log.read_text().splitlines() if l.strip()]
+    assert len([r for r in rows if r['kind'] == 'argv']) == 1, 'expected one claude process'
+    inputs = [r['obj'] for r in rows if r['kind'] == 'in']
+    replies = {i['response']['request_id']: i['response'] for i in inputs if i.get('type') == 'control_response'}
+    relisted = [t['name'] for t in replies['m4']['response']['mcp_response']['result']['tools']]
+    assert 'subagent' in relisted, relisted
+    print('PASS claude-agent: a response streaming during a tool re-list reaches the turn whole', flush=True)
 
 
 if __name__ == '__main__':

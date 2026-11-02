@@ -87,6 +87,8 @@ pub fn load(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request
     live.session_id = live.root.session_name;
     d.session_id = live.session_id;
     d.durable_session_id = live.session_id;
+    // Peers address this chat by its session id: re-register under the loaded one.
+    @import("presence.zig").noteLabelsFrom(live.root.io, live.root.gpa, arena, live.root.session_title, live.root.session_name);
     // v2 session/resume replays only when asked (`replayFrom: {type: start}`).
     if (!v2.on() or replayFromStart(params)) try replayHistory(arena, live.root, w, live.session_id);
     const options = engine.configOptions(d, arena) catch |err| return proto.writeError(w, req.id, engine.err_internal, @errorName(err));

@@ -33,6 +33,9 @@ test {
     _ = @import("claude_agent_tests.zig");
     _ = @import("claude_agent_login.zig");
     _ = @import("claude_agent.zig");
+    _ = @import("claude_agent_session.zig");
+    _ = @import("sim_pasteboard.zig");
+    _ = @import("acp_live_turn.zig");
 }
 
 test "oneshot -p still uses the live stall-watched transport" {

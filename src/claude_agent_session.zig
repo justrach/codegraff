@@ -49,6 +49,10 @@ pub const Session = struct {
     /// (it runs a response's calls one after another): tool_use id → MCP
     /// result JSON. gpa-owned keys and values.
     results: std.StringHashMapUnmanaged([]u8) = .empty,
+    /// Response lines that arrived while graff waited on a control answer
+    /// (a tool-list re-read while the model was already answering), kept in
+    /// order for the turn that reads them.
+    kept: Kept = .{},
     used_ms: i64 = 0,
 
     pub fn start(gpa: Allocator, io: Io, argv: []const []const u8, parent_env: ?*const std.process.Environ.Map, cwd: ?[]const u8, props_fp: u64) !*Session {
@@ -99,6 +103,20 @@ pub const Session = struct {
         w.writeAll(line) catch return error.ClaudeAgentExited;
         w.writeByte('\n') catch return error.ClaudeAgentExited;
         w.flush() catch return error.ClaudeAgentExited;
+    }
+
+    /// A kept line first (copied onto `a`), then the next one read.
+    pub fn nextLine(self: *Session, a: Allocator, poll_stdin: bool, budget_ms: u64) ![]u8 {
+        if (try self.kept.take(self.gpa, a)) |line| return line;
+        return self.readLine(poll_stdin, budget_ms);
+    }
+
+    /// Claude Code abandoned a call it was waiting on.
+    pub fn cancel(self: *Session, request_id: []const u8) void {
+        for (self.pending.items, 0..) |p, i| if (std.mem.eql(u8, p.request_id, request_id)) {
+            self.dropPending(i);
+            return;
+        };
     }
 
     /// The next line, or a stall/Esc error once `budget_ms` passes silent.
@@ -171,12 +189,60 @@ pub const Session = struct {
             self.gpa.free(kv.value_ptr.*);
         }
         self.results.deinit(self.gpa);
+        self.kept.deinit(self.gpa);
         if (self.env) |*m| m.deinit();
         self.gpa.free(self.in_buf);
         self.gpa.free(self.out_buf);
         self.gpa.destroy(self);
     }
 };
+
+/// Lines read ahead of the turn that owns them, oldest first. gpa-owned.
+pub const Kept = struct {
+    lines: std.ArrayList([]u8) = .empty,
+    head: usize = 0,
+
+    pub fn keep(self: *Kept, gpa: Allocator, line: []const u8) !void {
+        const copy = try gpa.dupe(u8, line);
+        errdefer gpa.free(copy);
+        try self.lines.append(gpa, copy);
+    }
+
+    /// The oldest kept line, copied onto `a`, or null when none is left.
+    pub fn take(self: *Kept, gpa: Allocator, a: Allocator) !?[]u8 {
+        if (self.head == self.lines.items.len) return null;
+        const line = try a.dupe(u8, self.lines.items[self.head]);
+        gpa.free(self.lines.items[self.head]);
+        self.head += 1;
+        if (self.head == self.lines.items.len) {
+            self.lines.clearRetainingCapacity();
+            self.head = 0;
+        }
+        return line;
+    }
+
+    pub fn deinit(self: *Kept, gpa: Allocator) void {
+        for (self.lines.items[self.head..]) |line| gpa.free(line);
+        self.lines.deinit(gpa);
+        self.* = .{};
+    }
+};
+
+test "kept lines come back in order, and what is left is freed" {
+    const gpa = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    var kept: Kept = .{};
+    defer kept.deinit(gpa);
+    try kept.keep(gpa, "message_start");
+    try kept.keep(gpa, "content_block_start");
+    try std.testing.expectEqualStrings("message_start", (try kept.take(gpa, arena.allocator())).?);
+    try kept.keep(gpa, "content_block_delta");
+    try std.testing.expectEqualStrings("content_block_start", (try kept.take(gpa, arena.allocator())).?);
+    try std.testing.expectEqualStrings("content_block_delta", (try kept.take(gpa, arena.allocator())).?);
+    try std.testing.expectEqual(@as(?[]u8, null), try kept.take(gpa, arena.allocator()));
+    try kept.keep(gpa, "left for stop");
+}
 
 fn readLineTask(r: *Io.Reader) anyerror![]u8 {
     while (true) {

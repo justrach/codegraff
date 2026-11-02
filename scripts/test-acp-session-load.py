@@ -264,6 +264,15 @@ def plan_login_restore(binary):
     print("ACP session/load restores a plan-login save after a cross-provider --model respawn: ok")
 
 
+def peer_session(binary, cwd, home, pid):
+    """The session id `graff peer list` shows for the graff process `pid`."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("GRAFF_", "HARNESS_"))}
+    env.update(HOME=str(home), GRAFF_NO_TELEMETRY="1", NO_COLOR="1")
+    out = subprocess.run([str(binary), "peer", "list", "--json"], cwd=cwd, env=env, capture_output=True, text=True, timeout=30)
+    rows = json.loads(out.stdout or "[]")
+    return next((r.get("session_id") for r in rows if r.get("pid") == pid), None)
+
+
 def run(binary):
     claude_import(binary)
     plan_login_restore(binary)
@@ -335,6 +344,8 @@ def run(binary):
             assert wrong["error"]["code"] == -32602
             before = len(b.events)
             loaded = b.request("session/load", {"sessionId": sid, "cwd": str(cwd), "mcpServers": []})
+            # Peers (and Harness's send_message) address a chat by its ACP session id.
+            assert peer_session(binary, cwd, home, b.proc.pid) == sid
             selected = b.request("graff/models")["result"]["current"]
             assert selected["provider"] == "vercel", selected
             assert selected["model"] == "alibaba/qwen3.8-27b", selected

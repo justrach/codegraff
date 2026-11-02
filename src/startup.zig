@@ -287,6 +287,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     oauth.initHome(keys_cli.homeEnv(init.environ_map) orelse "");
     job_registry.home = keys_cli.homeEnv(init.environ_map) orelse ""; // #199: ownership records for background jobs
     @import("sim_ledger.zig").init(arena, io, keys_cli.homeEnv(init.environ_map) orelse "", init.environ_map); // #407
+    @import("sim_pasteboard.zig").init(init.environ_map); // #1801
     // #1267: tool children get graff's environment minus its credentials.
     // After router_config.load (its key is one of them), before `serve` and
     // the other subcommands below can spawn a tool.
