@@ -468,13 +468,13 @@ fn startKimi(io: Io, batch: *catalog_bounded.Batch, arena: Allocator, home: []co
 /// behind. Hosts with no cache fetch concurrently under one budget, so boot
 /// pays at most `startup_budget` however slow DNS or TLS is; a fetch that
 /// misses it still caches its list for the next process.
-pub fn ensureForStartup(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys, model_flag: ?[]const u8, saved: ?serde.SavedModel) void {
+pub fn ensureForStartup(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys, model_flag: ?[]const u8, saved: ?serde.SavedModel, worker_hint: ?[]const u8) void {
     _ = gpa;
     var batch: catalog_bounded.Batch = .{};
     const kimi_slot = startKimi(io, &batch, arena, home, keys, model_flag, saved);
     var slots: [provider.provider_specs.len + 1]?usize = @splat(null);
     for (provider.provider_specs, 0..) |spec, index| {
-        if (!dynamic(spec) or !catalog_selection.startupMayUse(keys, spec.id, model_flag, saved)) continue;
+        if (!dynamic(spec) or !catalog_selection.startupLoads(keys, spec.id, model_flag, saved, worker_hint)) continue;
         if (attempted[index]) continue;
         const key = keys.get(spec.id) orelse continue;
         if (key.len == 0) continue;
@@ -482,7 +482,7 @@ pub fn ensureForStartup(io: Io, gpa: Allocator, arena: Allocator, home: []const 
         slots[index] = startSpec(io, &batch, arena, home, spec, key, keys.source(spec.id));
     }
     if (provider.additional_router) |spec| {
-        if (catalog_selection.startupMayUse(keys, spec.id, model_flag, saved) and !additional_attempted) {
+        if (catalog_selection.startupLoads(keys, spec.id, model_flag, saved, worker_hint) and !additional_attempted) {
             if (keys.get(spec.id)) |key| if (key.len != 0) {
                 additional_attempted = true;
                 slots[provider.provider_specs.len] = startSpec(io, &batch, arena, home, spec, key, keys.source(spec.id));
