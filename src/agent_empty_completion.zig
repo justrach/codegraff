@@ -134,6 +134,11 @@ test "#1013 without a bounce note the follow-up is the answer" {
     try std.testing.expectEqualStrings("Current answer", current.finish(&self, "Current answer"));
 }
 
+/// Why the turn ended, for the user (#1802): nothing earlier is lost, and
+/// sending again is the retry.
+pub const exhausted_text = "The provider returned an empty reply " ++ std.fmt.comptimePrint("{d}", .{max_consecutive + 1}) ++
+    " times in a row, so this turn stopped. The conversation is kept; send a message to try again.";
+
 /// Handle a degenerate completion inside runTurn. Returns true when the
 /// caller should `continue` the loop.
 pub fn handle(self: *Agent, final_text: []const u8, hist_len: usize) !bool {
@@ -144,7 +149,7 @@ fn handleWithWait(self: *Agent, final_text: []const u8, hist_len: usize, comptim
     if (std.mem.trim(u8, final_text, " \t\r\n").len == 0) {
         if (Agent.esc_cancel.load(.acquire) or @import("acp_engine.zig").cancel_flag.load(.acquire)) return error.Interrupted;
         if (!shouldRetry(final_text, self.empty_completion_retries)) {
-            self.last_api_error = "provider returned empty completions after 5 retries";
+            self.last_api_error = exhausted_text;
             return error.EmptyCompletion;
         }
         try checkBudget(self);

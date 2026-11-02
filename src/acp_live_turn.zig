@@ -59,10 +59,7 @@ pub const LiveTurn = struct {
 
     pub fn errorMessage(ctx: *anyopaque, err: anyerror) []const u8 {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
-        return switch (err) {
-            error.ApiError, error.ProviderAuthenticationFailed => self.root.last_api_error orelse "Provider request failed",
-            else => @errorName(err),
-        };
+        return describeError(err, self.root.last_api_error);
     }
 
     pub fn signalCancel() void {
@@ -250,6 +247,25 @@ pub const LiveTurn = struct {
         return final;
     }
 };
+
+/// What an ACP client shows for a failed turn. An exhausted empty-reply retry
+/// carries its own explanation (#1802); a bare error name told the user nothing.
+pub fn describeError(err: anyerror, last_api_error: ?[]const u8) []const u8 {
+    return switch (err) {
+        error.ApiError, error.ProviderAuthenticationFailed => last_api_error orelse "Provider request failed",
+        error.EmptyCompletion => last_api_error orelse @import("agent_empty_completion.zig").exhausted_text,
+        else => @errorName(err),
+    };
+}
+
+test "#1802: an exhausted empty-reply retry is explained, not named" {
+    const exhausted = @import("agent_empty_completion.zig").exhausted_text;
+    try std.testing.expectEqualStrings(exhausted, describeError(error.EmptyCompletion, exhausted));
+    try std.testing.expectEqualStrings(exhausted, describeError(error.EmptyCompletion, null));
+    try std.testing.expect(std.mem.indexOf(u8, exhausted, "6 times") != null);
+    try std.testing.expectEqualStrings("Provider request failed", describeError(error.ApiError, null));
+    try std.testing.expectEqualStrings("Interrupted", describeError(error.Interrupted, "stale"));
+}
 
 test "session/prompt receipt is traced even when dedup skips the turn" {
     const dedup = @import("turn_dedup.zig");
