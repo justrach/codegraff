@@ -17,7 +17,7 @@ const engine_sink = @import("engine_sink.zig");
 const http_zig = @import("http_zig");
 const WatchdogFired = http.WatchdogFired;
 const watchdogError = http.watchdogError;
-const deadlineStallTask = http.deadlineStallTask;
+const http_send = @import("http_send.zig");
 const stream_progress = @import("stream_read_progress.zig");
 
 const ssePayload = Agent.ssePayload;
@@ -86,10 +86,11 @@ pub fn postStream(self: *Agent, body: []const u8, poll_stdin: bool) !?[]u8 {
     var keep = false;
     defer head.deinit(keep);
 
-    // Dial, send and time-to-first-HEADERS race the head-stall watchdog, as
-    // the HTTP/1.1 send + receiveHead do (issue #54): a half-open socket or a
-    // server that accepts the stream and goes silent must not hang the turn.
-    switch (try raceHead(self.io, &head, poll_stdin, http_stall.headBudgetMs(provider.url, http.head_stall_ms, http_stall.streamPolicy(provider.model, provider.url, http.stream_stall_ms)))) {
+    // Dial, send and time-to-first-HEADERS race the staged watchdog, as on
+    // HTTP/1.1 (#54, #1785): a half-open socket or a server that accepts the
+    // stream and goes silent must not hang the turn. http-zig reports no DATA
+    // progress, so the upload gets only its size-scaled total.
+    switch (try raceHead(self.io, &head, poll_stdin, http_send.Budget.forRequest(body.len, provider.url, provider.model).blind())) {
         .ok => {},
         .fallback => return null,
     }
@@ -209,14 +210,15 @@ const Head = struct {
 
 const HeadResult = enum { ok, fallback };
 
-fn raceHead(io: Io, head: *Head, poll_stdin: bool, budget_ms: u64) !HeadResult {
+fn raceHead(io: Io, head: *Head, poll_stdin: bool, budget: http_send.Budget) !HeadResult {
+    var watch: http_send.Watch = .init(io, budget);
     const HeadDone = union(enum) { done: anyerror!void, stall: WatchdogFired };
     var hd_buf: [2]HeadDone = undefined;
     var hsel: Io.Select(HeadDone) = .init(io, &hd_buf);
     // #56 Fix-B: no slot for the task means no watchdog either. Nothing has
     // been sent, so fail retryable instead of blocking the turn.
-    hsel.concurrent(.done, headTask, .{head}) catch return error.HungRequest;
-    hsel.concurrent(.stall, deadlineStallTask, .{ io, poll_stdin, budget_ms }) catch {};
+    hsel.concurrent(.done, headTask, .{ head, &watch }) catch return error.HungRequest;
+    hsel.concurrent(.stall, http_send.Watch.watch, .{ &watch, poll_stdin }) catch {};
     const first = hsel.await() catch |e| {
         hsel.cancelDiscard();
         return e;
@@ -267,14 +269,16 @@ test "HTTP/1.1 fallback only when the request provably never reached the server"
     try std.testing.expect(!mayResendOnH1(.send, error.Canceled));
 }
 
-fn headTask(head: *Head) anyerror!void {
+fn headTask(head: *Head, watch: *http_send.Watch) anyerror!void {
     head.phase = .dial;
     head.lease = try http2_pool.acquire(head.gpa, head.io, head.origin.host, head.origin.port);
     const sess = head.lease.?.session;
     if (sess.h1_only) return error.H1NoStream;
     head.phase = .send;
+    watch.enter(.upload);
     head.lines = try sess.startLines(head.req);
     head.phase = .wait;
+    watch.enter(.head);
     const lines = &head.lines.?;
     head.status = try lines.waitStatus();
     // Error bodies are read here, still under the head watchdog: request()

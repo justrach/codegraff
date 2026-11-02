@@ -29,10 +29,9 @@ const http_headers = @import("http_headers.zig");
 const providerUserAgent = http.providerUserAgent;
 const capture5xxBodyStream = http.capture5xxBodyStream;
 const WatchdogFired = http.WatchdogFired;
-const sendHeadTask = http.sendHeadTask;
+const http_send = @import("http_send.zig");
 const stream_progress = @import("stream_read_progress.zig");
 const streamLineTask = stream_progress.lineTask;
-const deadlineStallTask = http.deadlineStallTask;
 const watchdogError = http.watchdogError;
 const http_stall = @import("http_stall.zig");
 
@@ -121,74 +120,33 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     // HTTP/2 first, under the same raw-stdin window so Esc and steering work
     // there too; null means "not sent, use HTTP/1.1".
     if (try @import("agent_stream_h2.zig").postStream(self, body, orig_tio != null)) |full| return full;
-    var req = transport.request(.POST, try std.Uri.parse(provider.url), .{
+    var head: http_send.H1 = .{ .client = transport, .uri = try std.Uri.parse(provider.url), .body = body, .options = .{
         .redirect_behavior = .unhandled,
         .headers = .{
             .content_type = .{ .override = "application/json" },
             .user_agent = providerUserAgent(provider),
         },
         .extra_headers = extra,
-    }) catch |err| {
-        if (http_client.constructionTlsFailure(err, provider.url)) return http_client.constructionTlsError(transport);
-        return err;
-    };
-    defer req.deinit();
+    } };
+    defer if (head.req) |*r| r.deinit();
     // A failed SEND leaves reader.state == .ready, which Request.deinit
     // reads as "connection still clean" and returns it to the keep-alive
     // pool — every retry (and every later turn) then pulls the same dead
     // connection back out: HttpConnectionClosing once, WriteFailed
     // forever after (observed in the wild). Poison it on any error so
     // deinit discards it and the retry dials fresh.
-    errdefer if (req.connection) |conn| {
+    errdefer if (head.req) |*r| if (r.connection) |conn| {
         conn.closing = true;
     };
-    // Race the send + head receive against a stall watchdog so a
-    // freshly-redialed connection that the server accepts but never
-    // answers can't hang the turn (issue #54: "retrying (1/3)" then
-    // "thinking… forever"). Mirrors the SSE line-loop and postWatched
-    // patterns. Falls back to a bare send+receiveHead (the old behavior)
-    // when no spare concurrency exists.
-    var response: std.http.Client.Response = undefined;
-    head: {
-        const HeadDone = union(enum) { sent: anyerror!void, stall: WatchdogFired };
-        var hd_buf: [2]HeadDone = undefined;
-        var hsel: Io.Select(HeadDone) = .init(self.io, &hd_buf);
-        hsel.concurrent(.sent, sendHeadTask, .{ &req, body, &response }) catch {
-            // #56 Fix-B: Io pool exhausted (deep subagent fan-out saturated the
-            // thread pool) — we can't spawn the head-stall watchdog. A bare
-            // send+receiveHead here could hang forever on a half-open socket with
-            // nothing to trip it. Nothing has streamed yet, so fail safe: poison the
-            // connection and return a retryable HungRequest so request() backs off
-            // and redials once a pool slot frees, instead of blocking the turn.
-            if (req.connection) |conn| conn.closing = true;
-            return error.HungRequest;
-        };
-        hsel.concurrent(.stall, deadlineStallTask, .{ self.io, orig_tio != null, http_stall.headBudgetMs(provider.url, http.head_stall_ms, http_stall.streamPolicy(provider.model, provider.url, http.stream_stall_ms)) }) catch {
-            const r = hsel.await() catch |e| {
-                hsel.cancelDiscard();
-                return e;
-            };
-            hsel.cancelDiscard();
-            r.sent catch |e| {
-                return e;
-            };
-            break :head;
-        };
-        const first = hsel.await() catch |e| {
-            hsel.cancelDiscard();
-            return e;
-        };
-        hsel.cancelDiscard();
-        switch (first) {
-            .sent => |s| s catch |e| {
-                return e;
-            },
-            .stall => |w| {
-                if (req.connection) |conn| conn.closing = true;
-                return watchdogError(w, error.HungRequest);
-            },
-        }
-    }
+    // Connect, upload and head wait race a staged watchdog, so a server that
+    // accepts and never answers can't hang the turn (#54) and a large body
+    // still draining isn't killed by the head deadline (#1785).
+    http_send.raceH1(self.io, &head, orig_tio != null, http_send.Budget.forRequest(body.len, provider.url, provider.model)) catch |err| {
+        if (head.req == null and http_client.constructionTlsFailure(err, provider.url)) return http_client.constructionTlsError(transport);
+        return err;
+    };
+    const req = &head.req.?;
+    const response = &head.response;
 
     // 429/5xx before any body: a retryable throttle — request() backs
     // off and retries (surfaced in the trace as a "retry" note).
@@ -198,17 +156,17 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
         return err;
     }
     if (status_code == 429 or status_code >= 500) {
-        http.captureRetryAfter(&response); // #retry-after: honor the provider's requested backoff
+        http.captureRetryAfter(response); // #retry-after: honor the provider's requested backoff
         // Drain a snippet for quota classifiers. Do not echo it on the REPL
         // retry line — vendor envelopes include user ids and routing docs.
-        capture5xxBodyStream(self.gpa, &response);
+        capture5xxBodyStream(self.gpa, response);
         if (req.connection) |conn| conn.closing = true;
         return if (status_code == 429) error.RateLimited else error.ServerError;
     }
     // #opencode-parity: OpenAI proper spuriously 404s available models — retry a
     // 404 from an openai-* provider like a 5xx instead of hard-failing the turn.
     if (status_code == 404 and std.mem.startsWith(u8, self.provider.id, "openai")) {
-        capture5xxBodyStream(self.gpa, &response);
+        capture5xxBodyStream(self.gpa, response);
         if (req.connection) |conn| conn.closing = true;
         return error.OpenAiFlaky404;
     }
