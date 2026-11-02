@@ -383,6 +383,10 @@ pub fn exec(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
             .clear => {},
         }
     };
+    // #1801: a simulator test must not overwrite the Mac's clipboard.
+    if (approved) if (@import("sim_pasteboard.zig").refusal(ctx.gpa, ctx.io, cmd)) |why| {
+        return .{ .text = try ctx.gpa.dupe(u8, why), .is_error = true };
+    };
     // #407: a simulator this command boots is shut down when the session ends.
     const sim_ledger = @import("sim_ledger.zig");
     const sim_bracket = if (approved) sim_ledger.g.before(ctx.gpa, ctx.io, cmd) else null;
