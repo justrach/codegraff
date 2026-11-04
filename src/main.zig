@@ -54,7 +54,6 @@ test {
     _ = @import("repo_transaction.zig");
     _ = .{ @import("pr_command.zig"), @import("pr_evidence.zig"), @import("artifact_repository.zig"), @import("artifact_claim_ledger.zig"), @import("artifact_claim_store.zig"), @import("artifact_claim_stale.zig"), @import("artifact_claim_unresolved.zig"), @import("artifact_claim_inventory.zig") };
     _ = .{ @import("argstream_citation_tests.zig"), @import("acp_reauth_tests.zig"), @import("auth_recovery.zig") }; // unit_tests' root is main.zig only, so reference every split-out module or its tests silently never run
-    _ = @import("codex_node_repl.zig");
     _ = pricing;
     _ = models_cache;
     _ = .{ ansi, @import("agent_markdown_inline.zig"), @import("terminal_workers_tests.zig") };
@@ -596,5 +595,5 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = .{ @import("acp_agent_activity.zig"), @import("acp_subagent_live.zig"), @import("acp_line_writer.zig") };
     _ = .{ @import("acp_replay.zig"), @import("python_version.zig"), @import("jev_auto.zig"), @import("background_wait.zig"), @import("gateway_compact_tests.zig") };
     _ = @import("read_image.zig");
-    _ = .{ @import("mcp_interop_tests.zig"), @import("mcp_inbound.zig"), @import("mcp_names.zig"), @import("workspace_history.zig"), @import("file_worktree.zig"), @import("mcp_turn_context.zig"), @import("review_deadline.zig"), @import("issue_cmd.zig"), @import("shell_tool.zig"), @import("acp_ask.zig"), @import("side_steer.zig"), @import("task_workspace_tests.zig"), @import("workspace_prepare_tests.zig"), @import("worktree_reap.zig") };
+    _ = .{ @import("mcp_interop_tests.zig"), @import("mcp_inbound.zig"), @import("mcp_names.zig"), @import("workspace_history.zig"), @import("file_worktree.zig"), @import("review_deadline.zig"), @import("issue_cmd.zig"), @import("shell_tool.zig"), @import("acp_ask.zig"), @import("side_steer.zig"), @import("task_workspace_tests.zig"), @import("workspace_prepare_tests.zig"), @import("worktree_reap.zig") };
 }

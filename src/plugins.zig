@@ -269,7 +269,7 @@ pub fn mergeMcp(io: Io, arena: Allocator, home: []const u8, dir: Io.Dir, servers
     const n = dir.realPath(io, &buf) catch Io.Dir.cwd().realPathFile(io, ".", &buf) catch 0;
     const cwd = if (n > 0) buf[0..n] else null;
     const plugs = discover(io, arena, if (home.len > 0) home else null, dir);
-    @import("plugin_mcp_variant.zig").merge(io, arena, home, cwd orelse "", plugs, servers, found);
+    for (plugs) |p| if (p.mcp) layout.mergeMcp(io, arena, p.path, cwd orelse "", servers, found);
     if (home.len > 0) {
         takeAbs(io, arena, servers, found, join(arena, home, ".claude.json"), cwd);
         takeAbs(io, arena, servers, found, join(arena, home, ".claude/settings.json"), null);

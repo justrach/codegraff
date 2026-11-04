@@ -1,6 +1,6 @@
 # 0119. Computer tools receive caller-owned turn context
 
-Status: accepted 2026-09-15
+Status: superseded by [0313](0313-graff-does-not-load-codex-computer-use.md). Accepted 2026-09-15.
 
 ## Context
 

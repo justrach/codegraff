@@ -402,8 +402,7 @@ test {
     _ = @import("update_cmd.zig");
     _ = @import("update_tests.zig");
     _ = @import("update_windows.zig");
-    _ = @import("mcp_elicitation.zig"); // #768: Computer Use form elicitation
-    _ = @import("skill_runtime_adapter.zig"); // #768: read-only get_app_state adapter
+    _ = @import("mcp_elicitation.zig");
     _ = @import("edit_worktree_tests.zig"); // #747: edit lands on the selected worktree
     _ = @import("mcp.zig");
     _ = @import("mcp_rpc.zig");

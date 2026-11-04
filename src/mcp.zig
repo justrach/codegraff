@@ -441,12 +441,9 @@ pub const Registry = struct {
 
     /// Calls and runtime registration share one lock, including tool lookup.
     pub fn call(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value) !@import("mcp_call.zig").CallResult {
-        return reg.callWithContext(out_alloc, qualified, input, null);
-    }
-    pub fn callWithContext(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value, context: ?@import("mcp_turn_context.zig").Snapshot) !@import("mcp_call.zig").CallResult {
         reg.mutex.lockUncancelable(reg.io);
         defer reg.mutex.unlock(reg.io);
-        return @import("mcp_call.zig").call(reg, out_alloc, qualified, input, context);
+        return @import("mcp_call.zig").call(reg, out_alloc, qualified, input);
     }
 };
 

@@ -83,15 +83,6 @@ fn readManifest(io: Io, arena: Allocator, plugin_path: []const u8) ?Value {
     return null;
 }
 
-/// Codex bundled plugins can select a host-provided content surface instead
-/// of their raw MCP declaration. Computer Use uses this to require the signed
-/// node_repl bridge (#618).
-pub fn usesNodeRepl(io: Io, arena: Allocator, plugin_path: []const u8) bool {
-    const manifest = readManifest(io, arena, plugin_path) orelse return false;
-    const variant = manifest.object.get("bundledContentVariant") orelse return false;
-    return variant == .string and std.mem.eql(u8, variant.string, "node-repl");
-}
-
 pub fn expandPlaceholders(arena: Allocator, text: []const u8, plugin_root: []const u8, project_dir: []const u8) []const u8 {
     if (std.mem.indexOf(u8, text, "${CLAUDE_") == null) return text;
     const step = std.mem.replaceOwned(u8, arena, text, "${CLAUDE_PLUGIN_ROOT}", plugin_root) catch text;
@@ -391,22 +382,6 @@ test "mergeMcp: plugin-relative command and cwd resolve from the plugin (#618)" 
     const relative = servers.get("relative").?.object;
     try testing.expectEqualStrings("./bin/server", relative.get("command").?.string);
     try testing.expectEqualStrings(plug, relative.get("cwd").?.string);
-}
-
-test "usesNodeRepl reads the Codex bundled content variant (#618)" {
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const base = try tmpBase(testing.io, &tmp, arena);
-    const plug = join(arena, base, "computer-use");
-    try Io.Dir.cwd().createDirPath(testing.io, join(arena, plug, ".codex-plugin"));
-    try Io.Dir.cwd().writeFile(testing.io, .{
-        .sub_path = join(arena, plug, ".codex-plugin/plugin.json"),
-        .data = "{\"name\":\"computer-use\",\"bundledContentVariant\":\"node-repl\"}",
-    });
-    try testing.expect(usesNodeRepl(testing.io, arena, plug));
 }
 
 test "resolveRel refuses parent-directory escapes" {

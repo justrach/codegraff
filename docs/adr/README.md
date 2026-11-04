@@ -46,7 +46,7 @@ record only when you need the evidence or the edge cases.
 | [0033](0033-user-can-retire-a-standing-constraint.md) | Only the user retires a standing constraint: TTY `/never` picker (two confirms), ACP/`rm`, or an explicit override. The model cannot. |
 | [0034](0034-remote-images-stay-native.md) | JSON/serve image inputs are a typed URL/base64 union, validated atomically and preserved as native provider vision blocks; never flatten pixels into prompt text. |
 | [0035](0035-first-turn-skips-deferred-mcp-join.md) | First model call after a deferred MCP boot does not wait for the handshake; companion auto-connect is the same defer; native tools run now. |
-| [0036](0036-computer-use-keeps-the-signed-codex-bridge.md) | Codex Computer Use keeps its authenticated node_repl process chain: Graff launches it through the signed Codex sandbox wrapper, never embeds V8 or spoofs the service. |
+| [0036](0036-computer-use-keeps-the-signed-codex-bridge.md) | Superseded by [0313](0313-graff-does-not-load-codex-computer-use.md). Graff launched Codex Computer Use through its signed sandbox wrapper. |
 | [0037](0037-experiment-pool-is-opt-in.md) | `--experiment N` / `/experiment N` pre-mints a child worktree pool; the root must spawn; pool trees are listed and delivered back, never auto-deleted. |
 | [0038](0038-in-process-acp-core.md) | Same-process embed is `libgraff` + `graff-core.wasm` + `createGraffAgent()` (ACP core, echo turn). Live coding stays `graff acp`. |
 | [0039](0039-local-tools-are-project-scripts.md) | Agent-authored local tools are project scripts under `.graff/tools/`; skills stay instructions. Runtime catalog extras, not `schema.effectiveRootSpecs`. |
@@ -127,7 +127,7 @@ record only when you need the evidence or the edge cases.
 | [0114](0114-live-citations-are-terminal-presentation.md) | Live terminal citations use per-stream display filters with independent reasoning state; structured JSON/ACP output stays unchanged. |
 | [0116](0116-informational-turns-have-bounded-scope.md) | Summary turns gather bounded evidence; coding completion requirements apply to requested changes. |
 | [0118](0118-file-edits-check-target-worktree.md) | File edits checkpoint the target Git worktree; unresolved paths retain the caller checkpoint. |
-| [0119](0119-computer-tools-receive-caller-context.md) | Computer-use MCP requests receive opaque caller-owned session and turn context. |
+| [0119](0119-computer-tools-receive-caller-context.md) | Superseded by [0313](0313-graff-does-not-load-codex-computer-use.md). Computer-use MCP requests carried caller-owned session and turn context. |
 | [0120](0120-draft-publication-does-not-complete-verification.md) | Superseded by [0250](0250-pr-publication-is-not-gated.md). Draft PRs cannot satisfy verified completion. A draft completes as a labeled, unverified handoff with no user command; ready PRs need passing current-head checks. |
 | [0121](0121-claims-include-repository-identity.md) | Claims include repository identity; literal PR mutations compare the observed repository, PR number and branch, while unknown scopes stay conservative. |
 
@@ -337,6 +337,7 @@ record only when you need the evidence or the edge cases.
 | [0310](0310-auth-failures-name-the-rejected-credential.md) | A terminal auth rejection names the seat that failed: sign-in text keeps "sign in again"; key and promoted-key texts say "API key was rejected" and never the signed-out phrases. Key seats carry `{"kind":"api_key_rejected","provider":…}` (v1 `-32603` data, v2 `_meta["graff/recovery"]`); `reauth_required` is unchanged. |
 | [0311](0311-tool-refresh-and-addressed-wakes.md) | Claude Agent refreshes a changed tool list with MCP `tools/list_changed` (served before anything else; fresh session if not re-read in 15 s) instead of removing and re-adding its server, which failed held calls. `attempt_completion` settles a task like a final answer: room mail waits for the next human prompt, addressed mail can still start a turn; `yield_turn` stays strict. A peer wake preloads `peer_message`. |
 | [0312](0312-openai-12h-prompt-cache-is-opt-in.md) | OpenAI Responses GPT-5.6+ can put a 12h explicit breakpoint on the stable prefix (`GRAFF_OPENAI_CACHE_TTL=12h` or `openai_cache_ttl`); the default stays 30m (ADR 0009 bytes) until a live probe confirms OpenAI accepts the field and keeps the entry. Usage parses cache writes by TTL. |
+| [0313](0313-graff-does-not-load-codex-computer-use.md) | Graff has no computer use and does not load Codex's `computer-use` or `unified-computer-use` plugins; every MCP elicitation is declined. Supersedes 0036 and 0119. |
 
 | [0302](0302-sse-idle-watchdogs-follow-body-byte-progress.md) | SSE idle watchdogs observe partial body-byte progress, while separate unfinished-event time and size bounds preserve recovery. |
 
