@@ -131,6 +131,10 @@ change. The workspace the agent runs in is not chrome.
 - While you work, run only what you touched: `zig build unit -Dtest-filter="<part of a test name>"` builds and runs just the unit tests (repeat the flag for several names).
 - `zig build test` also runs the subprocess integration scripts and takes several minutes. Run it once before you push; the pre-push hook does.
 
+## nanocua: this repo holds the original
+
+`apps/nanocua` is graff's computer use on macOS (ADR 0314), its own package with its own `zig build test`, pinned to a nanoui release. graff links none of it. nanoui's `apps/nanocua` is generated from this one by `scripts/vendor-nanocua.sh` and keeps this repository's license; change it here and copy it there, never the reverse.
+
 ## Tests must be reachable
 
 - `zig build test` only runs the tests in files the test root pulls in. A new module's `test {}` blocks compile to nothing until something references it, and the suite still reports green.

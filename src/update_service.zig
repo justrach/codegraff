@@ -86,6 +86,8 @@ pub const Opts = struct {
     fetch: Fetch,
     channel: enum { stable, beta } = .stable,
     cancel: ?*const std.atomic.Value(bool) = null,
+    /// Where nanocua.app goes on macOS (empty: it isn't installed).
+    home: []const u8 = "",
 };
 
 var install_busy = std.atomic.Value(bool).init(false);
@@ -303,6 +305,10 @@ pub fn install(opts: Opts, consent: Consent) Report {
     }, tag_copy, viewed.installed(), "artifact verification failed");
     defer opts.gpa.free(bin);
     if (cancelled(opts)) return snapshot(opts, .cancelled, tag_copy, viewed.installed(), "update cancelled");
+
+    // The app that ships with graff (ADR 0314). It has its own uses, so failing
+    // to place it doesn't stop graff updating.
+    if (builtin.os.tag == .macos) _ = @import("nanocua_install.zig").fromArchive(opts.io, opts.gpa, opts.home, tarball) catch {};
 
     if (existingMatches(opts.io, opts.gpa, opts.target_path, bin)) {
         writeInstalledVersion(opts.io, opts.target_path, version_status.stripV(tag_copy));
