@@ -128,6 +128,7 @@ pub const commands = [_]Item{
     .{ .name = "/theme", .usage = "/theme [name]", .desc = "pick a color theme; /theme off resets to your terminal default; persists" },
     .{ .name = "/fleet", .usage = "/fleet [on|off]", .desc = "federated DGM contribution (propose/submit/elite_pull)" },
     .{ .name = "/mcp", .usage = "/mcp [add … | reconnect <name>]", .desc = "list MCP servers/tools; /mcp add <name> <cmd> [args...] connects one live; /mcp reconnect <name> starts one again" },
+    .{ .name = "/computer", .usage = "/computer [status | stop | off … | allow … | grant … | open]", .desc = "nanocua's switches: what's on, stop it, ask to turn things on (macOS)" },
     .{ .name = "/import-claude", .desc = "copy Claude/Cursor setup and import this project's Claude conversations for /resume" },
     .{ .name = "/help", .desc = "list every command" },
 };

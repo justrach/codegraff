@@ -111,6 +111,8 @@ pub fn runCommand(self: *Model, line: []const u8) void {
         self.push(.info, "running shell commands needs the agent loop — use the main `graff` session, or your shell") catch {};
     } else if (std.mem.eql(u8, cmd, "/mcp")) {
         self.push(.info, "MCP servers attach to the agent loop, not the chat repl") catch {};
+    } else if (std.mem.eql(u8, cmd, "/computer")) {
+        self.push(.info, "computer use attaches to the agent loop, not the chat repl; `graff computer` works from a shell") catch {};
     } else if (std.mem.eql(u8, cmd, "/skills")) {
         self.push(.info, "skills (codedb, zigrep, …) attach to the agent loop, not the chat repl") catch {};
     } else if (std.mem.eql(u8, cmd, "/agents")) {

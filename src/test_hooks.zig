@@ -404,6 +404,7 @@ test {
     _ = @import("update_windows.zig");
     _ = @import("mcp_elicitation.zig");
     _ = @import("nanocua_default.zig");
+    _ = @import("computer_cli.zig");
     // POSIX file modes; only macOS installs it, Linux runs its tests too.
     if (@import("builtin").os.tag != .windows) _ = @import("nanocua_install.zig");
     _ = @import("edit_worktree_tests.zig"); // #747: edit lands on the selected worktree

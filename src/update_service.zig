@@ -308,7 +308,7 @@ pub fn install(opts: Opts, consent: Consent) Report {
 
     // The app that ships with graff (ADR 0314). It has its own uses, so failing
     // to place it doesn't stop graff updating.
-    if (builtin.os.tag == .macos) _ = @import("nanocua_install.zig").fromArchive(opts.io, opts.gpa, opts.home, tarball) catch {};
+    if (builtin.os.tag == .macos) _ = @import("nanocua_install.zig").fromArchive(opts.io, opts.gpa, @import("nanocua_default.zig").userHome(opts.home), tarball) catch {};
 
     if (existingMatches(opts.io, opts.gpa, opts.target_path, bin)) {
         writeInstalledVersion(opts.io, opts.target_path, version_status.stripV(tag_copy));

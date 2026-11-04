@@ -12,6 +12,25 @@ const Allocator = std.mem.Allocator;
 pub const server_name = "nanocua";
 const executable = "nanocua.app/Contents/MacOS/nanocua";
 
+/// Whether `home` is `real` or a folder inside it, as an account's HOME under
+/// Harness is. A $HOME anywhere else is a sandbox, and stays one.
+pub fn within(home: []const u8, real: []const u8) bool {
+    const h = std.mem.trimEnd(u8, home, "/");
+    const r = std.mem.trimEnd(u8, real, "/");
+    if (r.len == 0 or !std.mem.startsWith(u8, h, r)) return false;
+    return h.len == r.len or h[r.len] == '/';
+}
+
+/// The home the one app on this Mac is under: the user's real one when $HOME is
+/// inside it. A sandbox's HOME is used as it is, so a test running graff can't
+/// find or replace the app installed on the machine running it.
+pub fn userHome(home: []const u8) []const u8 {
+    if (builtin.is_test or builtin.os.tag != .macos) return home;
+    const user = std.c.getpwuid(std.c.getuid()) orelse return home;
+    const real = std.mem.span(user.dir orelse return home);
+    return if (within(home, real)) real else home;
+}
+
 /// Where install.sh and `graff update` put the app.
 pub fn installRoot(arena: Allocator, home: []const u8) ?[]const u8 {
     if (home.len == 0) return null;
@@ -24,11 +43,14 @@ fn inRoot(io: Io, arena: Allocator, root: []const u8) ?[]const u8 {
     return path;
 }
 
-/// The shipped app's program. Tests look only under their own home, so an app
-/// installed on the machine running them doesn't change what they see.
+/// The shipped app's program. Unit tests and a sandbox's HOME look only under
+/// that home, so an app installed on the machine doesn't change what they see.
 pub fn find(io: Io, arena: Allocator, home: []const u8) ?[]const u8 {
     if (installRoot(arena, home)) |root| if (inRoot(io, arena, root)) |p| return p;
     if (builtin.is_test) return null;
+    const user = userHome(home);
+    if (!within(home, user)) return null;
+    if (installRoot(arena, user)) |root| if (inRoot(io, arena, root)) |p| return p;
     if (inRoot(io, arena, "/Applications")) |p| return p;
     // An unpacked release tarball, which has it beside graff.
     const exe = std.process.executablePathAlloc(io, arena) catch return null;
@@ -73,6 +95,16 @@ fn tmpHome(io: Io, arena: Allocator, tmp: *testing.TmpDir, with_app: bool) ![]co
         try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "" });
     }
     return home;
+}
+
+test "only a home inside the user's own leads back to it" {
+    try testing.expect(within("/Users/ada", "/Users/ada"));
+    try testing.expect(within("/Users/ada/", "/Users/ada"));
+    try testing.expect(within("/Users/ada/.harness/accounts/two", "/Users/ada"));
+    try testing.expect(!within("/Users/adam", "/Users/ada"));
+    try testing.expect(!within("/tmp/sandbox", "/Users/ada"));
+    try testing.expect(!within("/var/folders/x/T/home", "/Users/ada"));
+    try testing.expect(!within("/Users/ada", ""));
 }
 
 test "the shipped app becomes the nanocua server" {

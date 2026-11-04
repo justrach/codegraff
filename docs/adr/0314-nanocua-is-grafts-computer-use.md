@@ -41,6 +41,29 @@ codegraff holds the original. nanoui's `apps/nanocua` is generated from it by
 MIT. nanoui does not import it, so nanoui itself stays MIT. Linking the other way
 is fine: `apps/nanocua` depends on nanoui, pinned, like any MIT library.
 
+## Who changes the switches
+
+`nanocua ctl` is the one way in from outside the panel. `graff computer` and
+`/computer` run it, and Harness runs it directly, because an older graff would
+take `graff computer` for a prompt. Status, stop and turning things off happen at
+once, for anyone on the user's socket. Turning something on (input, whole screen,
+resume) only asks: a question appears in nanocua's window, and only a person's
+click on Allow there answers it.
+
+That split exists because Harness runs graff with `--yolo` and agents have shells:
+a command that turned input on would let an agent turn on its own input, so the
+switches would protect against nothing. Allow arms after 0.7s, so a click meant
+for what was under the pointer can't answer it. A question goes away after 60s,
+and a Deny refuses new ones for 15s. nanocua checks that a click came from
+hardware, not a program, and only for turning things on: Stop works however it's
+clicked. Switch Control and Voice Control post their own clicks, so they can't
+turn things on. nanoui's `--nanoui-*` flags are refused outside debug builds,
+since they drive the same window.
+
+A process running as the user can still attack this in ways nanocua can't see,
+such as editing what the app loads. The check closes the easy route, not every one.
+macOS's own permissions stay in System Settings; nothing here can flip them.
+
 ## Consequences
 
 - The desktop app runs `graff acp`, so it offers nanocua too once the app is in
@@ -53,5 +76,6 @@ is fine: `apps/nanocua` depends on nanoui, pinned, like any MIT library.
   computer use. An ad hoc app would lose its permissions on every update.
 - Background input is delivered per process. Apps may ignore it, Chromium's web
   content most likely; agents fall back to refs or ask for the whole screen.
-- Two agents share one app, one target and one set of refs, calls one at a time.
+- Agents share one app, calls one at a time, but each connection has its own refs
+  and target. Harness's graff chats and a terminal graff use the same app.
 - Beta releases are not signed, so they carry no app.
