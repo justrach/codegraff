@@ -122,7 +122,7 @@ pub fn run(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, args: []c
 /// `graff computer …`.
 pub fn command(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, args: []const []const u8) !void {
     var buf: [4096]u8 = undefined;
-    var w = Io.File.stdout().writer(io, &buf);
+    var w = Io.File.stdout().writerStreaming(io, &buf);
     const ok = try run(io, gpa, arena, home, args, &w.interface);
     try w.interface.flush();
     if (!ok) std.process.exit(1);
