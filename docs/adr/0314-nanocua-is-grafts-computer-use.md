@@ -58,7 +58,9 @@ and a Deny refuses new ones for 15s. nanocua checks that a click came from
 hardware, not a program, and only for turning things on: Stop works however it's
 clicked. Switch Control and Voice Control post their own clicks, so they can't
 turn things on. nanoui's `--nanoui-*` flags are refused outside debug builds,
-since they drive the same window.
+since they drive the same window. The panel's own whole-screen switch asks on the
+same card, because nanoui's windows act on the click that brings them forward, and
+a click meant only to focus the window could otherwise hand over the real pointer.
 
 A process running as the user can still attack this in ways nanocua can't see,
 such as editing what the app loads. The check closes the easy route, not every one.
