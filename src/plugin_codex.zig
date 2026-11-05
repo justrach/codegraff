@@ -3,7 +3,8 @@
 //! Codex never writes `installed_plugins.json` and never lists `plugins/cache/`.
 //! Enabled ids in `config.toml` (`[plugins."name@marketplace"]`) resolve to
 //! `plugins/cache/<marketplace>/<name>/<version>`. Prefer version `local`,
-//! else the last sorted version dir. Disabled and invalid keys are skipped.
+//! else the last sorted version dir. Disabled and invalid keys are skipped, and
+//! Codex's computer-use plugins are never loaded (ADR 0313).
 //!
 //! Skill bodies stay off the system-prompt prefix (prompt-cache max): this
 //! module only yields install roots; `skill_docs.promptCatalog` prints names.
@@ -31,11 +32,15 @@ pub fn load(io: Io, arena: Allocator, codex_home: []const u8) []const Entry {
     const text = Io.Dir.cwd().readFileAlloc(io, toml_path, arena, file_cap) catch return &.{};
     var out: std.ArrayList(Entry) = .empty;
     for (keys(arena, text)) |k| {
-        if (!k.enabled or out.items.len >= cap) continue;
+        if (!k.enabled or out.items.len >= cap or isComputerUse(k.name)) continue;
         const path = activeRoot(io, arena, codex_home, k.name, k.marketplace) orelse continue;
         out.append(arena, .{ .name = k.name, .path = path }) catch {};
     }
     return out.items;
+}
+
+fn isComputerUse(name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(name, "computer-use") or std.ascii.eqlIgnoreCase(name, "unified-computer-use");
 }
 
 fn keys(arena: Allocator, text: []const u8) []const Key {
@@ -288,4 +293,26 @@ test "discover: Codex store is visible; cache/ is still not walked" {
     try testing.expectEqualStrings("pack", list[0].name);
     try testing.expectEqualStrings("codex", list[0].origin);
     try testing.expect(list[0].skills);
+}
+
+test "load: Codex's computer-use plugins stay out even when enabled (ADR 0313)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &buf);
+    const home = try arena.dupe(u8, buf[0..n]);
+    for ([_][]const u8{ "computer-use", "unified-computer-use", "other" }) |name| {
+        try Io.Dir.cwd().createDirPath(io, try std.fmt.allocPrint(arena, "{s}/plugins/cache/m/{s}/1.0.0", .{ home, name }));
+    }
+    try Io.Dir.cwd().writeFile(io, .{
+        .sub_path = try std.fmt.allocPrint(arena, "{s}/config.toml", .{home}),
+        .data = "[plugins.\"computer-use@m\"]\nenabled = true\n[plugins.\"unified-computer-use@m\"]\nenabled = true\n[plugins.\"other@m\"]\nenabled = true\n",
+    });
+    const got = load(io, arena, home);
+    try std.testing.expectEqual(@as(usize, 1), got.len);
+    try std.testing.expectEqualStrings("other", got[0].name);
 }

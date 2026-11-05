@@ -42,13 +42,12 @@ pub const Stdio = struct {
     writer: *Io.Writer,
     reader: *Io.Reader,
     sink: *mcp_notify.Sink,
-    elicit_source: []const u8,
 };
 
 fn readReply(s: Stdio, io: Io, a: Allocator, id: i64) !Value {
     while (true) {
         const line = try mcp_stdio.takeLine(s.reader);
-        if (try mcp_elicitation.replyStdio(s.writer, a, line, s.elicit_source)) continue;
+        if (try mcp_elicitation.replyStdio(s.writer, a, line)) continue;
         if (try mcp_inbound.replyStdio(s.writer, a, line)) continue;
         if (mcp_http.matchingResponse(a, line, id)) |parsed| return parsed;
         _ = mcp_notify.observe(s.sink, io, line);
@@ -113,7 +112,7 @@ test "awaitStdio: notifications are observed and the matching reply returns" {
     var out_buf: [512]u8 = undefined;
     var out: Io.Writer = .fixed(&out_buf);
     var sink: mcp_notify.Sink = .{ .server = "demo" };
-    const got = try readReply(.{ .writer = &out, .reader = &in, .sink = &sink, .elicit_source = "" }, testing.io, a, 3);
+    const got = try readReply(.{ .writer = &out, .reader = &in, .sink = &sink }, testing.io, a, 3);
     try testing.expect(got.object.get("result").?.object.get("ok").?.bool);
     try testing.expect(sink.tools_stale.load(.acquire));
 }
@@ -141,7 +140,7 @@ test "MCP inbound ping: wait reader answers interleaved pings without losing pro
     var out_buf: [512]u8 = undefined;
     var out: Io.Writer = .fixed(&out_buf);
     var sink: mcp_notify.Sink = .{ .server = "demo" };
-    const got = try readReply(.{ .writer = &out, .reader = &in, .sink = &sink, .elicit_source = "" }, testing.io, arena.allocator(), 3);
+    const got = try readReply(.{ .writer = &out, .reader = &in, .sink = &sink }, testing.io, arena.allocator(), 3);
     try testing.expect(Progress.observed);
     try testing.expectEqualStrings("done", got.object.get("result").?.object.get("content").?.array.items[0].object.get("text").?.string);
     try testing.expectEqualStrings(
@@ -163,7 +162,7 @@ test "awaitStdio: a cancel already requested sends notifications/cancelled" {
     var out_buf: [512]u8 = undefined;
     var out: Io.Writer = .fixed(&out_buf);
     var sink: mcp_notify.Sink = .{};
-    try testing.expectError(error.McpCancelled, awaitStdio(.{ .writer = &out, .reader = &in, .sink = &sink, .elicit_source = "" }, testing.io, arena.allocator(), 11));
+    try testing.expectError(error.McpCancelled, awaitStdio(.{ .writer = &out, .reader = &in, .sink = &sink }, testing.io, arena.allocator(), 11));
     try testing.expect(std.mem.indexOf(u8, out.buffered(), "\"notifications/cancelled\"") != null);
     try testing.expect(std.mem.indexOf(u8, out.buffered(), "\"requestId\":11") != null);
 }
