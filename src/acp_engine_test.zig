@@ -11,6 +11,38 @@ fn echoTurn(_: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const 
     return std.fmt.allocPrint(arena, "echo:{s}", .{text});
 }
 
+test "explicit command intent keeps literal slash prompts out of command dispatch in v1 and v2" {
+    const v2 = @import("acp_v2.zig");
+    defer v2.resetForTest();
+    const Fixture = struct {
+        fn slash(_: *anyopaque, _: Allocator, _: []const u8) anyerror!?[]const u8 {
+            return "command executed";
+        }
+    };
+    for ([_]bool{ false, true }) |draft| {
+        v2.resetForTest();
+        var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer state.deinit();
+        const a = state.allocator();
+        var out: Io.Writer.Allocating = .init(a);
+        var d: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .slash = Fixture.slash };
+        if (draft) {
+            v2.gate = true;
+            try handleLine(&d, a, &out.writer, "{\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":2,\"capabilities\":{},\"info\":{\"name\":\"test\",\"version\":\"1\"}}}");
+        }
+        out.clearRetainingCapacity();
+        try handleLine(&d, a, &out.writer, "{\"id\":2,\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"/ widgets are prose\"}],\"_meta\":{\"harness/command\":false}}}");
+        try std.testing.expect(std.mem.indexOf(u8, out.writer.buffered(), "echo:/ widgets are prose") != null);
+        try std.testing.expect(std.mem.indexOf(u8, out.writer.buffered(), "command executed") == null);
+        out.clearRetainingCapacity();
+        try handleLine(&d, a, &out.writer, "{\"id\":3,\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"/help\"}],\"_meta\":{\"harness/command\":true}}}");
+        try std.testing.expect(std.mem.indexOf(u8, out.writer.buffered(), "command executed") != null);
+        out.clearRetainingCapacity();
+        try handleLine(&d, a, &out.writer, "{\"id\":4,\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"/help\"}]}}");
+        try std.testing.expect(std.mem.indexOf(u8, out.writer.buffered(), "command executed") != null);
+    }
+}
+
 test "slash commands refresh occupancy before their terminal response" {
     const Fixture = struct {
         fn slash(_: *anyopaque, _: Allocator, _: []const u8) anyerror!?[]const u8 {
@@ -77,4 +109,20 @@ test "interrupted ACP prompt preserves cancellation provenance in its terminal r
     try std.testing.expect(std.mem.indexOf(u8, output, "\"stopReason\":\"cancelled\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"graff/cancelSource\":\"none\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "harness cancelled the turn") != null);
+}
+
+test "failed slash command returns an ACP error instead of killing the worker loop" {
+    const Fixture = struct {
+        fn slash(_: *anyopaque, _: Allocator, _: []const u8) anyerror!?[]const u8 {
+            return error.ApiError;
+        }
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [2048]u8 = undefined;
+    var writer: Io.Writer = .fixed(&buf);
+    var dispatch: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .slash = Fixture.slash };
+    try handleLine(&dispatch, arena.allocator(), &writer, "{\"id\":1,\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"/compact\"}]}}");
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "ApiError") != null);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "end_turn") == null);
 }
