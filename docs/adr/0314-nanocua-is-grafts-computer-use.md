@@ -33,8 +33,11 @@ app's decision, not graff's or the agent's:
 - the real pointer and keyboard and pictures of the whole display need a second
   switch; Stop refuses everything; agents cannot reach nanocua's own window.
 
-Its instructions tell agents to prefer the project's own commands for showing
-their work and not to chase permissions, which is ADR 0209's failure.
+The descriptions of `list_apps` and `get_ui_tree` tell agents to prefer the
+project's own commands for showing their work and not to chase permissions, which
+is ADR 0209's failure. That text is in the tool descriptions because graff doesn't
+read an MCP server's `instructions`, so a handshake's text alone never reaches its
+model. Other clients get it there too.
 
 codegraff holds the original. nanoui's `apps/nanocua` is generated from it by
 `scripts/vendor-nanocua.sh` and stays under codegraff's license, not nanoui's
