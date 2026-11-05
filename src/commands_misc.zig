@@ -211,6 +211,10 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
+    if (std.mem.eql(u8, line, "/computer") or std.mem.startsWith(u8, line, "/computer ")) {
+        try @import("computer_cli.zig").slash(root.io, root.gpa, arena, root.home, line, out);
+        return true;
+    }
     if (std.mem.startsWith(u8, line, "/mcp")) {
         const arg = std.mem.trim(u8, line["/mcp".len..], " \t");
         const reg = root.registry.?; // always present now

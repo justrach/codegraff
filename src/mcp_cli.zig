@@ -54,6 +54,7 @@ pub fn countMcpServers(merged: mcp_config.Merged) usize {
     var n: usize = 0;
     var it = merged.servers.iterator();
     while (it.next()) |entry| {
+        if (merged.shipped_nanocua and std.mem.eql(u8, entry.key_ptr.*, @import("nanocua_default.zig").server_name)) continue;
         if (!trustedMcpEntry(entry.key_ptr.*, entry.value_ptr.*)) n += 1;
     }
     return n;

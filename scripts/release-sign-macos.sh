@@ -4,7 +4,7 @@
 #
 #   scripts/release-sign-macos.sh <aarch64-macos|x86_64-macos>
 #
-# Needs CODESIGN_IDENTITY, AC_API_KEY_ID, AC_API_ISSUER_ID, the notary key at
+# Needs Zig, a checkout with apps/nanocua, CODESIGN_IDENTITY, AC_API_KEY_ID, AC_API_ISSUER_ID, the notary key at
 # $RUNNER_TEMP/ac_api_key.p8, and dist/graff-<target>.tar.gz. Writes
 # signed/graff-<target>.tar.gz. docs/notarization.md is the manual version.
 set -euo pipefail
@@ -31,6 +31,10 @@ xattr -cr "$work/$name"
 codesign --force --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$bin"
 codesign --verify --strict --verbose=2 "$bin"
 
+# nanocua ships beside graff (ADR 0314), signed by the same identity and in the
+# same notarization, so macOS keeps its permissions across updates.
+VERSION="${GITHUB_REF_NAME:-}" sh apps/nanocua/macos/package.sh "$target" "$work/$name"
+
 # ditto, not zip: keep the signed bytes and metadata exact.
 ditto -c -k --keepParent "$work/$name" "$work/$name.notarize.zip"
 # notarytool exits 0 even when the submission is Invalid, so the status field
@@ -48,4 +52,6 @@ if [ "$status" != Accepted ]; then
 fi
 # Bare CLIs cannot be stapled (stapler error 73); the ticket is bound to the
 # cdhash and checked online. Ship the accepted bytes.
+# An app can be, so it opens offline too.
+xcrun stapler staple "$work/$name/nanocua.app"
 (cd "$work" && tar -czf "$GITHUB_WORKSPACE/signed/$name.tar.gz" "$name")

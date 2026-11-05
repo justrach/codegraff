@@ -82,6 +82,19 @@ darwin_sign() {
   codesign -s - --force --identifier "$identifier" "$bin" >/dev/null 2>&1 || true
 }
 
+# macOS release tarballs carry nanocua.app, graff's computer use (ADR 0314).
+# ~/Applications needs no administrator, and Launch Services finds it there. A
+# tarball without it changes nothing. It runs nothing until an agent needs it.
+place_nanocua() {
+  [ "$(uname -s)" = Darwin ] || return 0
+  local app
+  app="$(find "$1" -maxdepth 2 -type d -name nanocua.app 2>/dev/null | head -1)"
+  [ -n "$app" ] || return 0
+  mkdir -p "$HOME/Applications"
+  rm -rf "$HOME/Applications/nanocua.app"
+  cp -R "$app" "$HOME/Applications/nanocua.app" || return 0
+}
+
 # Drop the binary onto a *fresh inode*: overwriting a running macOS binary in
 # place gets the replacement SIGKILLed by the kernel's signature cache.
 place_bin() {
@@ -155,6 +168,7 @@ fetch_release() {
   fi
   [ -n "$binpath" ] && [ -f "$binpath" ] || { rm -rf "$tmpd"; return 1; }
   place_bin "$binpath"
+  place_nanocua "$tmpd"
   rm -rf "$tmpd"
   # Fail closed: if the binary didn't actually land, return non-zero so the
   # caller falls back to a source build instead of falsely reporting success.

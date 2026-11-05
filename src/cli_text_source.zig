@@ -334,6 +334,7 @@ pub const usage_text =
     \\  graff mcp install                configure local HTTP service and MCP clients
     \\  graff mcp serve [--http] [--port N] expose run_task to MCP clients
     \\  graff plugins [load <name>]       list Claude/Cursor/Grok/Codex plugin trees (in place)
+    \\  graff computer [status|stop|off|allow|grant|open]  nanocua's switches (macOS)
     \\
 ++ learn_usage ++
     \\  graff worktree list              list -w tabs and experiment-pool trees (tagged)

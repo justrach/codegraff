@@ -1,6 +1,7 @@
 # 0313. graff does not load Codex's computer-use plugins
 
 Status: accepted 2026-11-04. Supersedes [0036](0036-computer-use-keeps-the-signed-codex-bridge.md) and [0119](0119-computer-tools-receive-caller-context.md).
+Computer use came back as nanocua: [0314](0314-nanocua-is-grafts-computer-use.md).
 
 ## Context
 
