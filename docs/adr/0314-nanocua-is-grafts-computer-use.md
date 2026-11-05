@@ -79,8 +79,10 @@ macOS's own permissions stay in System Settings; nothing here can flip them.
   answers that each tool is unsupported.
 - A release built without the signing secrets has no app, so that install has no
   computer use. An ad hoc app would lose its permissions on every update.
-- Background input is delivered per process. Apps may ignore it, Chromium's web
-  content most likely; agents fall back to refs or ask for the whole screen.
+- Background input is delivered per process, and an app may ignore it. Replies say
+  when a click isn't confirmed. Chrome acted on it in testing, except that a press
+  through accessibility on a page's button reports success and does nothing, so
+  web pages get click events instead.
 - Agents share one app, calls one at a time, but each connection has its own refs
   and target. Harness's graff chats and a terminal graff use the same app.
 - Beta releases are not signed, so they carry no app.
