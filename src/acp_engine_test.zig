@@ -43,6 +43,178 @@ test "explicit command intent keeps literal slash prompts out of command dispatc
     }
 }
 
+test "explicit command intent metadata preserves legacy defaults and rejects malformed flags" {
+    const selected = @import("acp_command_intent.zig").selected;
+    const Case = struct { json: []const u8, commands: bool };
+    const cases = [_]Case{
+        .{ .json = "null", .commands = true },
+        .{ .json = "[]", .commands = true },
+        .{ .json = "false", .commands = true },
+        .{ .json = "{}", .commands = true },
+        .{ .json = "{\"harness/command\":false}", .commands = true },
+        .{ .json = "{\"_meta\":null}", .commands = true },
+        .{ .json = "{\"_meta\":false}", .commands = true },
+        .{ .json = "{\"_meta\":[]}", .commands = true },
+        .{ .json = "{\"_meta\":{}}", .commands = true },
+        .{ .json = "{\"_meta\":{\"other\":false}}", .commands = true },
+        .{ .json = "{\"_meta\":{\"harness/command\":true}}", .commands = true },
+        .{ .json = "{\"_meta\":{\"harness/command\":false}}", .commands = false },
+        .{ .json = "{\"_meta\":{\"harness/command\":null}}", .commands = false },
+        .{ .json = "{\"_meta\":{\"harness/command\":\"true\"}}", .commands = false },
+        .{ .json = "{\"_meta\":{\"harness/command\":\"false\"}}", .commands = false },
+        .{ .json = "{\"_meta\":{\"harness/command\":0}}", .commands = false },
+        .{ .json = "{\"_meta\":{\"harness/command\":1}}", .commands = false },
+        .{ .json = "{\"_meta\":{\"harness/command\":1.5}}", .commands = false },
+        .{ .json = "{\"_meta\":{\"harness/command\":[]}}", .commands = false },
+        .{ .json = "{\"_meta\":{\"harness/command\":{}}}", .commands = false },
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expect(selected(null));
+    for (cases) |case| {
+        const params = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), case.json, .{});
+        try std.testing.expectEqual(case.commands, selected(params));
+    }
+}
+
+const IntentFixture = struct {
+    turns: usize = 0,
+    slashes: usize = 0,
+    inserted: usize = 0,
+    last: []const u8 = "",
+
+    fn turn(ctx: *anyopaque, _: Allocator, text: []const u8) anyerror![]const u8 {
+        const self: *IntentFixture = @ptrCast(@alignCast(ctx));
+        self.turns += 1;
+        self.last = text;
+        return "model answered";
+    }
+    fn slash(ctx: *anyopaque, _: Allocator, text: []const u8) anyerror!?[]const u8 {
+        const self: *IntentFixture = @ptrCast(@alignCast(ctx));
+        self.slashes += 1;
+        if (std.mem.eql(u8, text, "/fail")) return error.ApiError;
+        return if (std.mem.startsWith(u8, text, "/")) "command executed" else null;
+    }
+    fn after(ctx: *anyopaque, _: Allocator, _: []const u8, _: ?std.json.Value) void {
+        const self: *IntentFixture = @ptrCast(@alignCast(ctx));
+        self.inserted += 1;
+    }
+};
+
+fn intentInit(d: *Dispatch, a: Allocator, w: *Io.Writer, draft: bool) !void {
+    const v2 = @import("acp_v2.zig");
+    v2.resetForTest();
+    v2.gate = draft;
+    try handleLine(d, a, w, "{\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":2,\"capabilities\":{},\"info\":{\"name\":\"test\",\"version\":\"1\"}}}");
+    try std.testing.expectEqual(draft, v2.on());
+}
+
+fn intentPrompt(d: *Dispatch, a: Allocator, w: *Io.Writer, text: []const u8, suffix: []const u8) !void {
+    const encoded = try std.json.Stringify.valueAlloc(a, text, .{});
+    const request = try std.fmt.allocPrint(a, "{{\"id\":2,\"method\":\"session/prompt\",\"params\":{{\"prompt\":[{{\"type\":\"text\",\"text\":{s}}}]{s}}}}}", .{ encoded, suffix });
+    try handleLine(d, a, w, request);
+}
+
+test "explicit command intent resets across prompts including malformed metadata and command failure v1 v2" {
+    defer @import("acp_v2.zig").resetForTest();
+    const Case = struct { text: []const u8 = "/help", suffix: []const u8, commands: bool };
+    const cases = [_]Case{
+        .{ .suffix = ",\"_meta\":{\"harness/command\":false}", .commands = false },
+        .{ .suffix = "", .commands = true },
+        .{ .suffix = ",\"_meta\":{\"harness/command\":null}", .commands = false },
+        .{ .suffix = ",\"_meta\":{\"harness/command\":true}", .commands = true },
+        .{ .suffix = ",\"_meta\":{\"harness/command\":\"true\"}", .commands = false },
+        .{ .suffix = ",\"_meta\":null", .commands = true },
+        .{ .suffix = ",\"_meta\":{\"harness/command\":1}", .commands = false },
+        .{ .text = "/fail", .suffix = ",\"_meta\":{\"harness/command\":true}", .commands = true },
+        .{ .suffix = ",\"_meta\":{\"harness/command\":false}", .commands = false },
+        .{ .suffix = ",\"_meta\":{}", .commands = true },
+    };
+    for ([_]bool{ false, true }) |draft| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var out: Io.Writer.Allocating = .init(a);
+        var fixture: IntentFixture = .{};
+        var d: Dispatch = .{ .turn = IntentFixture.turn, .slash = IntentFixture.slash, .after_user = IntentFixture.after, .ctx = &fixture };
+        try intentInit(&d, a, &out.writer, draft);
+        var turns: usize = 0;
+        var slashes: usize = 0;
+        for (cases) |case| {
+            out.clearRetainingCapacity();
+            try intentPrompt(&d, a, &out.writer, case.text, case.suffix);
+            try std.testing.expectEqual(case.commands, d.commands);
+            if (case.commands) slashes += 1 else turns += 1;
+            try std.testing.expectEqual(turns, fixture.turns);
+            try std.testing.expectEqual(slashes, fixture.slashes);
+            try std.testing.expectEqual(turns, fixture.inserted);
+            if (!case.commands) try std.testing.expectEqualStrings(case.text, fixture.last);
+            const output = out.writer.buffered();
+            if (std.mem.eql(u8, case.text, "/fail")) {
+                try std.testing.expect(std.mem.indexOf(u8, output, "ApiError") != null);
+            } else {
+                try std.testing.expect(std.mem.indexOf(u8, output, "end_turn") != null);
+                const expected = if (case.commands) "command executed" else "model answered";
+                try std.testing.expect(std.mem.indexOf(u8, output, expected) != null);
+            }
+        }
+    }
+}
+
+test "explicit command intent preserves known commands UTF8 Markdown and whitespace byte for byte v1 v2" {
+    defer @import("acp_v2.zig").resetForTest();
+    const literals = [_][]const u8{
+        "/",                                                      "/help",              "/goal literal objective", "/review literal review", "/issue literal report",
+        "/btw literal aside",                                     "/loop literal loop", "/resuem",                 " /help ",                "\t/goal literal\r\n",
+        "/help\n**bold** `code` [link](https://example.invalid)",
+        "/你好 café e\u{301} 🧪",
+        "\n/help\n",                                              "intro\n/help",
+    };
+    for ([_]bool{ false, true }) |draft| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var out: Io.Writer.Allocating = .init(a);
+        var fixture: IntentFixture = .{};
+        var d: Dispatch = .{ .turn = IntentFixture.turn, .slash = IntentFixture.slash, .after_user = IntentFixture.after, .ctx = &fixture };
+        try intentInit(&d, a, &out.writer, draft);
+        for (literals, 0..) |text, i| {
+            out.clearRetainingCapacity();
+            try intentPrompt(&d, a, &out.writer, text, ",\"_meta\":{\"harness/command\":false}");
+            try std.testing.expectEqualStrings(text, fixture.last);
+            try std.testing.expectEqual(i + 1, fixture.turns);
+            try std.testing.expectEqual(i + 1, fixture.inserted);
+            try std.testing.expectEqual(@as(usize, 0), fixture.slashes);
+            try std.testing.expect(std.mem.indexOf(u8, out.writer.buffered(), "end_turn") != null);
+        }
+    }
+}
+
+test "explicit command intent cannot bypass agent room framing v1 v2" {
+    defer @import("acp_v2.zig").resetForTest();
+    for ([_]bool{ false, true }) |draft| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var out: Io.Writer.Allocating = .init(a);
+        var fixture: IntentFixture = .{};
+        var d: Dispatch = .{ .turn = IntentFixture.turn, .slash = IntentFixture.slash, .ctx = &fixture };
+        try intentInit(&d, a, &out.writer, draft);
+        for ([_][]const u8{ "false", "true" }) |flag| {
+            for ([_][]const u8{ "false", "null", "\"true\"" }) |from_user| {
+                const suffix = try std.fmt.allocPrint(a, ",\"_meta\":{{\"harness/command\":{s},\"harness/room\":{{\"room_id\":\"synthetic\",\"from_member\":\"test-agent\",\"from_user\":{s},\"framed\":true}}}}", .{ flag, from_user });
+                out.clearRetainingCapacity();
+                const before = fixture.turns;
+                try intentPrompt(&d, a, &out.writer, "/help", suffix);
+                try std.testing.expectEqual(before + 1, fixture.turns);
+                try std.testing.expect(std.mem.startsWith(u8, fixture.last, "[room message from test-agent"));
+                try std.testing.expect(std.mem.indexOf(u8, fixture.last, "advisory]: /help") != null);
+                try std.testing.expect(std.mem.indexOf(u8, out.writer.buffered(), "command executed") == null);
+            }
+        }
+    }
+}
+
 test "slash commands refresh occupancy before their terminal response" {
     const Fixture = struct {
         fn slash(_: *anyopaque, _: Allocator, _: []const u8) anyerror!?[]const u8 {
