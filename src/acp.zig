@@ -83,7 +83,8 @@ fn liveSlash(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror!?[]co
 
 fn liveAfter(ctx: *anyopaque, arena: Allocator, text: []const u8, prompt: ?std.json.Value) void {
     const live: *LiveTurn = @ptrCast(@alignCast(ctx));
-    _ = playbook_glue.applyUserOverride(live.root, arena, text);
+    if (if (live.dispatch) |d| d.commands else true)
+        _ = playbook_glue.applyUserOverride(live.root, arena, text);
     // ACP image blocks join the next model request (promptCapabilities.image).
     _ = @import("acp_images.zig").stage(live.root, prompt);
 }

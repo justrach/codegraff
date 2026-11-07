@@ -98,8 +98,9 @@ pub const LiveTurn = struct {
         // An objective sets state AND starts this turn, unlike lifecycle verbs (#1528).
         const goal_pacing = @import("goal_pacing.zig");
         const line = std.mem.trim(u8, text, " \t\r\n");
-        const objective = @import("repl_glue.zig").goalPromptFromLine(line);
-        const auto = try goal_pacing.autonomousFromLine(arena, line, objective, false);
+        const commands = if (self.dispatch) |d| d.commands else true;
+        const objective = if (commands) @import("repl_glue.zig").goalPromptFromLine(line) else null;
+        const auto = if (commands) try goal_pacing.autonomousFromLine(arena, line, objective, false) else null;
         var clock: goal_pacing.LoopClock = .{};
         defer clock.clear(self.root);
         if (auto) |invocation| {
@@ -112,8 +113,8 @@ pub const LiveTurn = struct {
             try proto.writeSessionUpdate(self.out, self.session_id, try std.fmt.allocPrint(arena, "{s}\n", .{notice}));
             try self.out.flush();
         }
-        const review_prompt = review.promptFromLine(text);
-        const issue_report = @import("issue_cmd.zig").promptFromLine(text);
+        const review_prompt = if (commands) review.promptFromLine(text) else null;
+        const issue_report = if (commands) @import("issue_cmd.zig").promptFromLine(text) else null;
         const parent_override = self.root.sys_override;
         const parent_review_mode = self.root.review_mode;
         self.root.review_mode = review_prompt != null;
@@ -125,7 +126,7 @@ pub const LiveTurn = struct {
             self.root.sys_override = try review.systemPrompt(arena, self.root.sys_normal);
         var context = review.Context.begin(arena, self.root, review_prompt != null);
         defer if (context.restore(self.root)) self.root.rebaseContextMeter();
-        if (@import("side_steer.zig").isSideRequest(text))
+        if (commands and @import("side_steer.zig").isSideRequest(text))
             return @import("side_steer.zig").spawnSide(self.root, arena, null, text);
         // Match REPL expansion order: review, issue brief, then goal pacing.
         const base_prompt = review_prompt orelse if (issue_report) |report| try @import("issue_cmd.zig").userText(arena, report) else if (auto) |invocation| invocation.prompt else text;

@@ -339,6 +339,7 @@ record only when you need the evidence or the edge cases.
 | [0312](0312-openai-12h-prompt-cache-is-opt-in.md) | OpenAI Responses GPT-5.6+ can put a 12h explicit breakpoint on the stable prefix (`GRAFF_OPENAI_CACHE_TTL=12h` or `openai_cache_ttl`); the default stays 30m (ADR 0009 bytes) until a live probe confirms OpenAI accepts the field and keeps the entry. Usage parses cache writes by TTL. |
 | [0313](0313-graff-does-not-load-codex-computer-use.md) | Graff does not load Codex's `computer-use` or `unified-computer-use` plugins; every MCP elicitation is declined. Supersedes 0036 and 0119. |
 | [0314](0314-nanocua-is-grafts-computer-use.md) | Computer use on macOS is nanocua, a signed app shipped beside graff and offered as one MCP server; it works inside one app in the background, and the app's panel, not graff, says what it may do: graff and Harness can read its state and turn things off, but turning anything on takes a person's click in its window. nanoui's copy is generated from codegraff's and keeps codegraff's license. |
+| [0315](0315-acp-explicit-command-intent.md) | Harness carries explicit command completion intent in ACP `_meta["harness/command"]`; literal slash prose bypasses dispatch and expansion, while legacy clients retain their syntax. |
 
 | [0302](0302-sse-idle-watchdogs-follow-body-byte-progress.md) | SSE idle watchdogs observe partial body-byte progress, while separate unfinished-event time and size bounds preserve recovery. |
 

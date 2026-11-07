@@ -12,6 +12,7 @@ const util = @import("util.zig");
 const v2 = @import("acp_v2.zig");
 
 pub fn promptTurn(d: *engine.Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request) !void {
+    d.commands = @import("acp_command_intent.zig").selected(req.params);
     const obj: ?std.json.ObjectMap = if (req.params) |p| (if (p == .object) p.object else null) else null;
     const sid = blk: {
         if (obj) |o| if (util.strFieldObj(o, "sessionId")) |s| break :blk s;
@@ -50,7 +51,7 @@ const Outcome = union(enum) {
 
 fn run(d: *engine.Dispatch, arena: Allocator, w: *Io.Writer, sid: []const u8, text: []const u8, prompt: ?std.json.Value) Outcome {
     @import("acp_citations.zig").endTurn(sid); // a failed turn must not leave a marker open
-    if (d.slash) |slash| {
+    if (if (d.commands) d.slash else null) |slash| {
         const reply = slash(d.ctx, arena, text) catch |err| return failure(d, err);
         if (reply) |plain| {
             if (plain.len > 0) proto.writeSessionUpdate(w, sid, plain) catch |err| return failure(d, err);
