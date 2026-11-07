@@ -129,7 +129,7 @@ pub fn parseResponses(self: *Agent, body: []const u8) !ResponsesResult {
 /// Each field is single-lined and bounded before it reaches last_api_error or
 /// the default-on trace.
 pub fn failureDiagnostic(allocator: std.mem.Allocator, provider: []const u8, failure: ResponsesFailure) ![]u8 {
-    var buf: [768]u8 = undefined;
+    var buf: [1024]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     try writeDiagnosticField(&w, provider, 40);
     try w.writeAll(" api error");
@@ -145,6 +145,8 @@ pub fn failureDiagnostic(allocator: std.mem.Allocator, provider: []const u8, fai
         try writeDiagnosticField(&w, rid, 96);
         try w.writeByte(']');
     }
+    if (@import("compaction_window.zig").rejectedByProvider(failure.message, failure.code))
+        try w.writeAll(@import("compaction_window.zig").rejection_hint);
     // A spent ChatGPT plan allowance, often mid-stream (ADR 0221).
     if (policy.isPlanUsageLimit(failure.code)) try w.writeAll(" \xe2\x80\x94 " ++ @import("oauth_chatgpt.zig").usage_hint);
     // Reached only after the one refresh-and-retry could not help.
@@ -168,6 +170,21 @@ test "failureDiagnostic points a spent ChatGPT plan at its usage page, a rejecte
     // A message that already reads as auth keeps it; a plan limit is no sign-in.
     try std.testing.expectEqualStrings("Unauthorized", (ResponsesFailure{ .message = "Unauthorized", .code = "server_error" }).authText());
     try std.testing.expectEqualStrings("Usage limit reached.", (ResponsesFailure{ .message = "Usage limit reached.", .code = "subscription_sharing_usage_limit_exceeded" }).authText());
+}
+
+test "failureDiagnostic makes rejected encrypted state terminal and history-preserving" {
+    const a = std.testing.allocator;
+    const diagnostic = try failureDiagnostic(a, "codex", .{
+        .message = "Encrypted content could not be decrypted or parsed.",
+        .code = "invalid_encrypted_content",
+    });
+    defer a.free(diagnostic);
+    try std.testing.expect(std.mem.indexOf(u8, diagnostic, "history is unchanged") != null);
+    try std.testing.expect(std.mem.endsWith(u8, diagnostic, @import("compaction_window.zig").rejection_hint));
+
+    const ordinary = try failureDiagnostic(a, "codex", .{ .message = "bad request", .code = "invalid_request_error" });
+    defer a.free(ordinary);
+    try std.testing.expect(std.mem.indexOf(u8, ordinary, "compaction state") == null);
 }
 
 fn writeDiagnosticField(w: *std.Io.Writer, raw: []const u8, max: usize) !void {

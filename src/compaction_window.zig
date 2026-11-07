@@ -16,6 +16,16 @@ pub fn latestBlob(items: []const Value) ?usize {
     return latest;
 }
 
+/// The provider could not consume its opaque compaction state. A chained
+/// request may re-anchor once with full input; an unchained rejection is
+/// terminal for that context and must not enter a generic retry ladder.
+pub fn rejectedByProvider(message: []const u8, code: ?[]const u8) bool {
+    if (code) |c| return std.ascii.eqlIgnoreCase(c, "invalid_encrypted_content");
+    return std.mem.indexOf(u8, message, "invalid_encrypted_content") != null;
+}
+
+pub const rejection_hint = " — history is unchanged; retrying the same encrypted compaction state will not recover it. Start a new session or restore an earlier saved session.";
+
 fn fingerprint(a: Allocator, item: Value) ![32]u8 {
     const bytes = try std.json.Stringify.valueAlloc(a, item, .{});
     defer a.free(bytes);
