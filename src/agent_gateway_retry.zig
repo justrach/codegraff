@@ -95,7 +95,8 @@ pub fn afterServerErrorOrParseReject(self: *Agent, etype: []const u8, code: ?[]c
     // its diagnostic also mentions capacity or a request-body parse error,
     // or a ChatGPT plan code OpenAI says to stop on, such as a spent allowance
     // whose message says "try again later" (ADR 0221).
-    if (quota.classify(etype, code, msg) != null or isModelUnavailable(code) or isStructuredOverflow(code) or quota.isPlanStop(code)) return false;
+    if (quota.classify(etype, code, msg) != null or isModelUnavailable(code) or isStructuredOverflow(code) or quota.isPlanStop(code) or
+        @import("compaction_window.zig").rejectedByProvider(msg, code)) return false;
     if (try retryTransientServerError(self, etype, code, msg, server_retries)) return true;
     if (try retryShortGatewayFlake(self, etype, code, msg, server_retries)) return true;
     return retryBodyParseAfterTimeouts(self, msg, state);
@@ -338,6 +339,22 @@ test "structured context overflow wins over gateway flake wording" {
     try std.testing.expect(!isShortGatewayFlake("api_error", "context_window_exceeded", "Body must be valid JSON"));
     try std.testing.expect(isShortGatewayFlake("api_error", null, "try again"));
     try std.testing.expect(isShortGatewayFlake("invalid_request_error", null, "Body must be valid JSON"));
+}
+
+test "rejected encrypted state bypasses every generic retry ladder" {
+    var agent: Agent = undefined; // the terminal guard returns before touching it
+    var retries: usize = 0;
+    var state: GatewayRetryState = .{ .transport_timeouts = 3 };
+    try std.testing.expect(!try afterServerErrorOrParseReject(
+        &agent,
+        "api_error",
+        "invalid_encrypted_content",
+        "server_error: encrypted content could not be decrypted or parsed; try again",
+        &retries,
+        &state,
+    ));
+    try std.testing.expectEqual(@as(usize, 0), retries);
+    try std.testing.expectEqual(@as(usize, 0), state.parse_retries);
 }
 
 test "isTransientServerError (#opencode-parity): overload/server_error retry; quota/invalid/auth do not" {
