@@ -179,6 +179,9 @@ pub fn build(b: *std.Build) void {
     const acp_meta_status_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-meta-tool-status.py" });
     acp_meta_status_test.addArtifactArg(exe);
     test_step.dependOn(&acp_meta_status_test.step);
+    const encrypted_recovery_test = b.addSystemCommand(&.{ "python3", "scripts/test-encrypted-recovery.py" });
+    encrypted_recovery_test.addArtifactArg(exe);
+    test_step.dependOn(&encrypted_recovery_test.step);
     const acp_yield_once_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-yield-once.py" });
     acp_yield_once_test.addArtifactArg(exe);
     test_step.dependOn(&acp_yield_once_test.step);

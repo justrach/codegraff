@@ -567,7 +567,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = .{ @import("repo_map.zig"), @import("cli_text.zig") };
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests
     _ = @import("agent_gateway_retry.zig"); // #1019: flake vs overflow classification must stay reachable
-    _ = @import("agent_responses.zig"); // #1019: type:error frame message extraction
+    _ = .{ @import("agent_responses.zig"), @import("compaction_checkpoint_tests.zig") }; // Responses failures and exact checkpoint recovery
     _ = @import("agent_server_compact.zig"); // server-side autocompact (codex Responses)
     _ = .{ @import("compact_status.zig"), @import("compact_mix.zig"), @import("compact_backoff.zig") }; // compact status + GRAFF_COMPACT_MIX mixture arm + #1686 backoff
     _ = .{ @import("agent_clef_compact.zig"), @import("agent_clef_compact_tests.zig"), @import("agent_clef_archive.zig") }; // gateway /v1/compact client (Clef pruning) + archive mode
@@ -576,7 +576,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("agent_ws_steer.zig");
     _ = @import("agent_ws_signal.zig");
     _ = .{ @import("agent_ws_prewarm.zig"), @import("agent_ws_headers.zig") };
-    _ = .{ @import("http2_pool.zig"), @import("agent_stream_h2.zig"), @import("agent_stream_h2_transport_test.zig"), @import("agent_stream_progress_test.zig"), @import("agent_stream_h2_progress_test.zig"), @import("stream_read_progress.zig"), @import("http_send.zig"), @import("http_send_test.zig") }; // transport contracts, partial-event byte progress, staged send budgets
+    _ = .{ @import("http2_pool.zig"), @import("agent_stream_h2.zig"), @import("agent_stream_h2_transport_test.zig"), @import("agent_stream_progress_test.zig"), @import("agent_stream_h2_progress_test.zig"), @import("stream_read_progress.zig"), @import("http_send.zig"), @import("http_send_test.zig"), @import("agent_tls_retry_tests.zig") }; // transport contracts, partial-event byte progress, staged send budgets
     _ = @import("acp_preauth.zig"); // credential-free ACP loop must stay in the test root
     _ = .{ @import("acp_protocol.zig"), @import("acp_v2.zig"), @import("acp_v2_prompt.zig"), @import("acp_session_load.zig"), @import("acp_session_fork.zig"), @import("session_fork.zig"), @import("acp_elicit.zig"), @import("hot_context.zig"), @import("history_translate.zig"), @import("mcp_notify.zig"), @import("mcp_wait.zig"), @import("mcp_pages.zig"), @import("mcp_mrtr.zig"), @import("ask_user_args.zig"), @import("mcp_add.zig"), @import("mcp_lazy.zig"), @import("mcp_share.zig"), @import("acp_room.zig"), @import("mcp_catalog.zig"), @import("mcp_watch.zig"), @import("acp_engine_test.zig"), @import("subagent_mimo_tests.zig"), @import("mimo_effort_tests.zig"), @import("gateway_picker_catalog.zig"), @import("ask_user_answers.zig"), @import("job_class.zig"), @import("startup_claim.zig") };
     _ = @import("task_outcome.zig"); // goal-outcome telemetry events

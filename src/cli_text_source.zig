@@ -5,6 +5,10 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74
+    \\  • rejected compaction state restores exact input when a private checkpoint is available
+    \\  • short TLS-construction outages get a longer bounded recovery window
+    \\
     \\0.302.71
     \\  • computer use on macOS: graff ships nanocua, an app that lets agents work in other apps
     \\  • graff computer and /computer: status, stop, switches; turning input on takes your click

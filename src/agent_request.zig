@@ -1,8 +1,4 @@
-//! Provider round trip and retry loop.
-//!
-//! Request policy, context accounting, Responses reassembly, and body
-//! serialization live in focused sibling modules and are re-exported here so
-//! Agent's public method aliases remain source-compatible.
+//! Provider round trip and retry loop; focused policy helpers are re-exported below.
 
 const std = @import("std");
 const Io = std.Io;
@@ -171,21 +167,8 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     @import("history_wire.zig").prepare(message_arena, self.provider.kind, &self.messages);
     // ADR 0221: on the ChatGPT plan route loaded tools ride additional_tools items, so `tools` never changes.
     if (!self.compaction_request and !self.server_compaction_request) @import("additional_tools.zig").sync(self);
-    // #193 follow-up: bound any single oversized tool output (an uncapped MCP
-    // result, a huge fetch on a small-window model) before send. The responses
-    // path already hard-caps output above (normalizeResponsesHistory); this is the
-    // provider-agnostic sibling so one pathological result can't alone overflow the
-    // window past what the in-turn recovery below can reclaim (it keeps the most
-    // recent outputs verbatim). Window-proportional, so large-context models keep
-    // full tool results untouched.
-    //
-    // #440 narrowed this to a BACKSTOP. Every tool result this process produced
-    // already met the handle contract at tool time, under a threshold clamped to
-    // this very cap (tool_handle.effectiveThreshold), so nothing from runTools can
-    // reach here oversized. What still can: a session resumed from a build that
-    // predates #440, and any future path that appends a tool output without going
-    // through runTools. Both are exactly the cases where destroying the bytes
-    // would be the alternative, so the pass stays.
+    // #193/#440: window-proportional backstop for resumed legacy or externally
+    // appended outputs; runTools already meets the durable handle contract.
     const spills_before = tool_spill.spillCount();
     const capped = self.capOversizedToolOutputs(self.provider.perOutputCap());
     if (capped > 0) {
@@ -206,6 +189,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         }
     }
     var context_retried = false; // #193: at most one in-turn overflow recovery per request
+    var encrypted_restores: u8 = 0;
     // #56: bounded stream-stall / drop reconnect budget (codex's stream_max_retries analog), outside the rebuild loop so a WS reanchor can't reset it.
     self.stall = .{}; // #680: a fresh widen ladder + tripped budget per request
     var stall_retries: usize = 0;
@@ -215,6 +199,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     var openai404_retries: usize = 0; // #opencode-parity: bounded retries for OpenAI's spurious model 404s
     const max_openai404_retries: usize = 2;
     var gw_retry = policy.GatewayRetryState{}; // #gateway-artifact state (agent_gateway_retry.zig)
+    var tls_failures: usize = 0; // Construction-only budget survives every body/WS rebuild.
     @import("cache_ttl.zig").begin(self); // #1320: before request_started moves
     var call: @import("model_call.zig").Call = .{}; // #1665: pairs every started attempt
     errdefer call.fail(self, false);
@@ -249,9 +234,10 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         // few times with a fresh connection; on persistent failure surface
         // error.ApiError so the REPL returns to the prompt, never crashes.
         const resp_body = blk: {
-            var attempt: usize = 0;
+            var ordinary_attempts: usize = 0;
             var retry_limit: ?usize = null;
-            while (true) : (attempt += 1) {
+            while (true) {
+                ordinary_attempts += 1;
                 var conv_buf: [96]u8 = undefined;
                 const conv = http_headers.requestCacheKey(self.io, self.label, self, self.provider, &conv_buf);
                 usage_attempts.begin();
@@ -340,18 +326,21 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                         if (telemetry.g_telem) |t| t.errorEvent("openai_404", self.last_api_error orelse "openai 404");
                         return error.ApiError;
                     }
-                    // 429/5xx: the server asked us to back off — wait
-                    // (1s·2ⁿ, capped at 8s; Esc cancels) and allow a few
-                    // more attempts than a plain transport flake gets.
+                    const construction_tls = err == error.TlsRequestConstructionFailed or err == error.TlsRequestConstructionCaWarmFailed;
+                    if (construction_tls) {
+                        ordinary_attempts -= 1;
+                        tls_failures += 1;
+                    }
+                    const attempt = if (construction_tls) tls_failures - 1 else ordinary_attempts - 1;
                     const throttled = err == error.RateLimited or err == error.ServerError;
-                    const max_attempts = retry_limit orelse RetryPlan.maxAttempts(throttled);
-                    retry_limit = max_attempts;
+                    const max_attempts = if (construction_tls) RetryPlan.tls_construction_attempts else retry_limit orelse RetryPlan.maxAttempts(throttled);
+                    if (!construction_tls) retry_limit = max_attempts;
                     // A proxy may wrap a billing/auth refusal in 429 OR 5xx.
                     // Terminal account faults outrank the generic retry status.
                     if (throttled and main_mod.g_5xx_body_len > 0) {
                         if (try quota.handle(self, "", null, main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len], &auth_refreshed)) continue;
                     }
-                    if (err == error.TlsRequestConstructionFailed or err == error.TlsRequestConstructionCaWarmFailed) if (self.tracer) |tr| tr.note(
+                    if (construction_tls) if (self.tracer) |tr| tr.note(
                         "tls_request_construction",
                         if (err == error.TlsRequestConstructionCaWarmFailed) "rotated shared HTTP client generation; replacement CA prewarm failed" else "rotated shared HTTP client generation",
                     );
@@ -372,8 +361,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                             policy.noteRetry(self, what);
                             self.sleepInterruptible(delay_ms) catch return error.Interrupted;
                         } else {
-                            // Transport flakes back off; rapid retries against a
-                            // just-closed keep-alive re-fail (#86). Cap: 4s/6 tries.
+                            // Ordinary flakes keep six attempts; only construction TLS gets a longer outage window.
                             const delay_ms = jitter.ms(self.io, RetryPlan.delayMs(throttled, attempt));
                             if (scratch.showRecoveredTransportRetry(self.call_kind))
                                 @import("turn_chrome.zig").emitRetryNotice(self.io, @errorName(err), attempt + 1, max_attempts);
@@ -450,6 +438,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                         if (self.tracer) |tr| tr.note("ws", "server dropped previous_response_id — re-anchoring with full input");
                         continue :rebuild;
                     }
+                    if (@import("agent_encrypted_recovery.zig").recover(self, msg, failure.code, &encrypted_restores)) continue :rebuild;
                     // #174: a context-window rejection means the true input
                     // size blew past the wall while the chained meter lagged —
                     // and the rejected request never returns usage to correct

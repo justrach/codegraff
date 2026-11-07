@@ -243,7 +243,8 @@ test "#692: a generic error frame is returned as the terminal API body before pe
     var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
     defer server.deinit(io);
     var done: std.atomic.Value(bool) = .init(false);
-    var fut = io.async(Mock.run, .{ io, &server, Mock.Mode.generic_error_then_close, &done });
+    // The peer must start before dialing; async may defer it until await.
+    var fut = try io.concurrent(Mock.run, .{ io, &server, Mock.Mode.generic_error_then_close, &done });
     defer fut.await(io);
     defer done.store(true, .release);
 

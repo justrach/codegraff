@@ -19,9 +19,8 @@
 //!     (serverOnly); GRAFF_SERVER_COMPACT=0 is the opt-out.
 //!   - every other provider kind: unchanged legacy policy.
 //!
-//! The opaque blob's server-side lifetime under store:false is unknown; if a
-//! resumed session's blob is ever rejected, the ordinary overflow recovery
-//! ladder (agent_overflow.zig) is the safety net.
+//! Before replacing history, retain a private checkpoint so rejected opaque
+//! state can be expanded back into its original input without losing context.
 
 const std = @import("std");
 const Io = std.Io;
@@ -179,6 +178,7 @@ pub fn compactBody(self: *const Agent) ![]u8 {
 fn installItems(self: *Agent, items: []const std.json.Value) !void {
     var fresh = std.json.Array.init(self.arena);
     try fresh.appendSlice(items);
+    try @import("compaction_checkpoint.zig").preserve(self, self.messages.items, fresh.items);
     self.messages = fresh;
     self.last_context_tokens = 0;
     self.context_local_tokens = 0;
@@ -403,6 +403,7 @@ pub fn pruneIf(self: *Agent, server_arm: bool) bool {
     const dropped = k;
     var fresh = std.json.Array.init(self.arena);
     fresh.appendSlice(items[k..]) catch return false;
+    @import("compaction_checkpoint.zig").preserve(self, items[0..k], fresh.items[0..1]) catch return false;
     self.messages = fresh;
     self.compaction_window = .{}; // a newer in-stream blob supersedes the canonical window
     // Mirror compact()'s post-install meter reset: both anchors recompute
@@ -524,6 +525,7 @@ pub fn installCompactionItem(self: *Agent, resp: []const u8) bool {
     const dropped = self.messages.items.len;
     var fresh = std.json.Array.init(self.arena);
     fresh.append(blob) catch return false;
+    @import("compaction_checkpoint.zig").preserve(self, self.messages.items, fresh.items) catch return false;
     self.messages = fresh;
     // Mirror pruneIf's meter/goal reset: both anchors recompute lazily, the
     // goal note died with the folded history (#318), and pasted-state readers

@@ -10,6 +10,11 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74
+
+- Rejected encrypted compaction state can recover from a private pre-compaction checkpoint without losing later conversation. New server compactions retain exact input before replacing it; unavailable or invalid checkpoints leave history unchanged (#1822, ADR 0316).
+- Short TLS-construction outages receive a longer bounded recovery window. Ordinary network retries, cancellation and certificate verification remain unchanged.
+
 ## v0.302.73
 
 - ACP clients can mark explicitly selected commands with per-prompt intent metadata. Literal slash-prefixed prose now reaches the agent instead of being consumed as a command, including goal, review, issue, loop and side-request expansion. Clients that omit the marker retain their existing command syntax (#1817, ADR 0315).

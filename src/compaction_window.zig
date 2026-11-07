@@ -17,14 +17,14 @@ pub fn latestBlob(items: []const Value) ?usize {
 }
 
 /// The provider could not consume its opaque compaction state. A chained
-/// request may re-anchor once with full input; an unchained rejection is
-/// terminal for that context and must not enter a generic retry ladder.
+/// request may re-anchor once with full input, then restore an exact local
+/// checkpoint. Without one it must not enter a generic retry ladder.
 pub fn rejectedByProvider(message: []const u8, code: ?[]const u8) bool {
     if (code) |c| return std.ascii.eqlIgnoreCase(c, "invalid_encrypted_content");
     return std.mem.indexOf(u8, message, "invalid_encrypted_content") != null;
 }
 
-pub const rejection_hint = " — history is unchanged; retrying the same encrypted compaction state will not recover it. Start a new session or restore an earlier saved session.";
+pub const rejection_hint = " — history is unchanged; no usable pre-compaction checkpoint was available within the recovery limit. Retrying the same encrypted state will not recover it. Restore an earlier saved session or start a new session.";
 
 fn fingerprint(a: Allocator, item: Value) ![32]u8 {
     const bytes = try std.json.Stringify.valueAlloc(a, item, .{});
