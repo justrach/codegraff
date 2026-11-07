@@ -56,9 +56,6 @@ pub const Server = struct {
     probe_fallback: ?LegacyReason = null,
     /// In-flight HTTP `notifications/initialized` (not awaited before tools/list).
     pending_initialized: ?Io.Future(void) = null,
-    /// Borrowed `tools/call` JSON while `request` is in flight; used to accept
-    /// read-only Computer Use `get_app_state` elicitation (#768).
-    elicit_source: []const u8 = "",
     /// Notifications seen while waiting: stale catalog, SSE resume point.
     notes: mcp_notify.Sink = .{},
 };
@@ -208,7 +205,6 @@ pub fn request(server: *Server, response_alloc: Allocator, params: []const u8, m
                 .writer = &stdio.stdin_writer.interface,
                 .reader = &stdio.stdout_reader.interface,
                 .sink = &server.notes,
-                .elicit_source = server.elicit_source,
             }, stdio.stdout_reader.io, response_alloc, id);
         },
         .http => |*http| {

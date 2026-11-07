@@ -114,7 +114,6 @@ pub const Agent = struct {
     /// process mode (engine_sink.forAgent); set to inject a custom frontend.
     sink: ?@import("engine_sink.zig").EngineSink = null,
     registry: ?*mcp.Registry = null,
-    mcp_context: @import("mcp_turn_context.zig").State = .{},
     permission: ?@import("engine_permission.zig").Handler = null,
     approvals: ?*approvals_mod.Approvals = null, // shared bash-approval state, set by main()
     tracer: ?*trace.Tracer = null, // shared JSONL event trace, set by main()

@@ -80,6 +80,32 @@ fn isGraffMember(name: []const u8) bool {
     return std.mem.eql(u8, base, "graff") or std.mem.eql(u8, base, "graff.exe");
 }
 
+/// A tarball's regular files, in order.
+pub const Members = struct {
+    tar: []const u8,
+    off: usize = 0,
+
+    pub const Member = struct { name: []const u8, payload: []const u8 };
+
+    pub fn init(tar: []const u8) Members {
+        return .{ .tar = tar };
+    }
+
+    pub fn next(m: *Members) Error!?Member {
+        while (m.off + 512 <= m.tar.len) {
+            const hdr = m.tar[m.off .. m.off + 512];
+            if (isZeroBlock(hdr)) return null;
+            const size = tarSize(hdr) orelse return error.Malformed;
+            m.off += 512;
+            if (m.off + size > m.tar.len) return error.Malformed;
+            const payload = m.tar[m.off .. m.off + @as(usize, @intCast(size))];
+            m.off += std.mem.alignForward(usize, @as(usize, @intCast(size)), 512);
+            if (hdr[156] == 0 or hdr[156] == '0') return .{ .name = tarName(hdr), .payload = payload };
+        }
+        return null;
+    }
+};
+
 pub fn extractGraff(gpa: Allocator, tar_bytes: []const u8) Error![]u8 {
     if (tar_bytes.len < 512) return error.Malformed;
     var off: usize = 0;

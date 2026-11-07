@@ -10,6 +10,17 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.72
+
+- Compaction recovery now retries rejected encrypted state once with the full compacted window when the failed request used a chain. If the rejection persists, graff stops instead of repeatedly resending the same state, preserves history, and explains how to recover (#1823).
+
+## v0.302.71
+
+- Computer use on macOS is now nanocua, an app graff ships. Signed macOS releases carry `nanocua.app` beside `graff`, and `install.sh` and `graff update` place it in `~/Applications`. graff offers it as an MCP server below every config file, so your own `nanocua` entry wins and `graff mcp disable nanocua` turns it off (#1816).
+- `graff computer` and `/computer`: see what's on, stop every agent at once, turn a switch off, ask to turn one on, or open macOS's permission prompts. Turning something on only asks: a real click in nanocua's window answers it (#1816).
+- graff no longer loads Codex's `computer-use` and `unified-computer-use` plugins, and the adapter behind them is gone. graff shows no forms, so every MCP elicitation is now declined (#1815).
+- Retains all changes from v0.302.70.
+
 ## v0.302.70
 
 - Claude Agent: a reply the model starts while graff refreshes its tool list arrives whole. graff dropped what Claude Code sent during the re-list, so the reply lost its start and the turn failed with "unparseable response" (#1804).

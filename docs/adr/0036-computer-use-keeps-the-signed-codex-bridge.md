@@ -1,6 +1,6 @@
 # 0036. Computer Use keeps the signed Codex bridge
 
-Status: accepted 2026-08-26
+Status: superseded by [0313](0313-graff-does-not-load-codex-computer-use.md). Accepted 2026-08-26.
 
 ## Context
 

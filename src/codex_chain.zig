@@ -72,6 +72,10 @@ pub fn chainBrandOk(provider_id: []const u8) bool {
 /// A failed turn must drop the chain: not-found (ZDR / store:false evict),
 /// the 25-minute connection cap, or a generic previous_response_id reject.
 pub fn shouldDropChain(message: []const u8, code: ?[]const u8) bool {
+    // A delta chained onto rejected opaque state cannot repair that state.
+    // Re-anchor once with the complete canonical window instead; if that is
+    // rejected too, shouldReanchorRequest is false and the error surfaces.
+    if (@import("compaction_window.zig").rejectedByProvider(message, code)) return true;
     if (code) |c| {
         if (std.mem.indexOf(u8, c, "previous_response_not_found") != null) return true;
         if (std.mem.indexOf(u8, c, "websocket_connection_limit_reached") != null) return true;
@@ -222,4 +226,15 @@ test "shouldReanchorRequest requires a rejected previous_response_id request" {
     try std.testing.expect(shouldReanchorRequest(chained, "unsupported previous_response_id", "invalid_request_error"));
     try std.testing.expect(!shouldReanchorRequest(full, "missing", "previous_response_not_found"));
     try std.testing.expect(!shouldReanchorRequest(chained, "bad request", "invalid_request_error"));
+}
+
+test "rejected encrypted state earns one full resend, never a retry loop" {
+    const chained = "{\"previous_response_id\":\"resp_1\",\"input\":[]}";
+    const full = "{\"input\":[{\"type\":\"compaction\"}]}";
+    const msg = "Encrypted content could not be decrypted or parsed.";
+    try std.testing.expect(shouldReanchorRequest(chained, msg, "invalid_encrypted_content"));
+    // Once the request already carries full input there is no new recovery
+    // shape to try; the terminal diagnostic must reach the user instead.
+    try std.testing.expect(!shouldReanchorRequest(full, msg, "invalid_encrypted_content"));
+    try std.testing.expect(!shouldReanchorRequest(chained, msg, "invalid_request_error"));
 }

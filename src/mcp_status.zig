@@ -40,7 +40,7 @@ pub const ToolRow = struct { name: []const u8, description: []const u8 };
 
 pub const Row = struct {
     name: []const u8,
-    /// project | global | imported | session
+    /// project | global | shipped | imported | session
     source: []const u8,
     /// stdio | http
     transport: []const u8,
@@ -62,6 +62,7 @@ pub const Row = struct {
 pub fn sourceOf(merged: mcp_config.Merged, name: []const u8) []const u8 {
     if (merged.project.get(name) != null) return "project";
     if (merged.global.get(name) != null) return "global";
+    if (merged.shipped_nanocua and std.mem.eql(u8, name, @import("nanocua_default.zig").server_name)) return "shipped";
     if (merged.servers.get(name) != null) return "imported";
     return "session";
 }

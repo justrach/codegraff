@@ -254,6 +254,27 @@ jobs:
   # Windows build + smoke — the harness has a Win32 console backend, so verify
   # it compiles, passes tests, and the binary loads + runs on a real Windows
   # runner (the macOS/Linux jobs above can't exercise the console backend).
+  nanocua:
+    name: nanocua (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-codegraff-zig
+      - name: zig fmt --check
+        working-directory: apps/nanocua
+        run: zig fmt --check build.zig src
+      - name: zig build test
+        working-directory: apps/nanocua
+        run: zig build test --summary all
+      - name: Linux and Windows still build
+        working-directory: apps/nanocua
+        run: |
+          zig build -Dtarget=aarch64-linux-gnu --prefix zig-out/linux
+          zig build -Dtarget=x86_64-windows-gnu --prefix zig-out/windows
+      - name: The app packages
+        run: sh apps/nanocua/macos/package.sh aarch64-macos "$RUNNER_TEMP"
+
   windows:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork
     runs-on: windows-latest

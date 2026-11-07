@@ -64,6 +64,8 @@ pub const Merged = struct {
     /// (a client switched a server off) or be `{}` (an imported name).
     global_off: std.json.ObjectMap = .empty,
     project_off: std.json.ObjectMap = .empty,
+    /// `nanocua` in `servers` is the entry graff added for the app it shipped.
+    shipped_nanocua: bool = false,
     /// What the off-lists took out of `servers`, with the config each had.
     disabled: std.json.ObjectMap = .empty,
 
@@ -194,6 +196,9 @@ pub fn load(io: Io, arena: Allocator, dir: Io.Dir, project_path: []const u8, glo
     // Plugin / Claude / Cursor / Grok configs fill names still missing. They
     // never beat a graff file. `home` empty keeps tests off the real $HOME.
     plugins.mergeMcp(io, arena, home, dir, &merged.servers, &merged.found);
+    // Computer use on macOS, when the app is there (ADR 0314). Below everything
+    // the user wrote; above the off-lists, so they can switch it off.
+    merged.shipped_nanocua = @import("nanocua_default.zig").merge(io, arena, home, &merged.servers, &merged.found);
     // Off-lists last, so they reach imported names too. A project defining a
     // server itself keeps it even if the global file switched that name off.
     var global_off_it = merged.global_off.iterator();

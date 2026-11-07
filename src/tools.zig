@@ -128,7 +128,6 @@ pub const ToolCtx = struct {
     interactive_children: bool = false,
     session_name: []const u8 = "",
     registry: ?*mcp.Registry,
-    mcp_context: ?@import("mcp_turn_context.zig").Snapshot = null,
     from_sub: bool,
     rlm_host: bool = false, // ADR 0238: a host call from inside an rlm script (its MCP result binds whole; rlm slims what it prints)
     has_eval: bool = false, // the root's --eval loop: escalation's strongest verifier

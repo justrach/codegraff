@@ -5,6 +5,11 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.71
+    \\  • computer use on macOS: graff ships nanocua, an app that lets agents work in other apps
+    \\  • graff computer and /computer: status, stop, switches; turning input on takes your click
+    \\  • Codex's computer-use plugins are no longer loaded
+    \\
     \\0.302.70
     \\  • Claude Agent: a reply that starts during a tool-list refresh no longer fails
     \\  • simulator tests can't overwrite your clipboard; large uploads aren't cut off
@@ -334,6 +339,7 @@ pub const usage_text =
     \\  graff mcp install                configure local HTTP service and MCP clients
     \\  graff mcp serve [--http] [--port N] expose run_task to MCP clients
     \\  graff plugins [load <name>]       list Claude/Cursor/Grok/Codex plugin trees (in place)
+    \\  graff computer [status|stop|off|allow|grant|open]  nanocua's switches (macOS)
     \\
 ++ learn_usage ++
     \\  graff worktree list              list -w tabs and experiment-pool trees (tagged)

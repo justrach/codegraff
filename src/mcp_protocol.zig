@@ -67,8 +67,8 @@ pub fn negotiatedProtocol(response: Value, transport: Transport) ![]const u8 {
 
 /// The three reserved `_meta` keys (basic/index § `_meta`), pre-rendered as a
 /// single JSON object member. graff supports exactly one modern version and
-/// advertises form elicitation so Computer Use `node_repl` can confirm
-/// (`elicitation/create`) instead of crashing (#768).
+/// advertises form elicitation, which it answers by declining
+/// (mcp_elicitation.zig).
 pub const modern_meta =
     \\"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"codegraff","version":"1"},"io.modelcontextprotocol/clientCapabilities":{"elicitation":{"form":{}},"extensions":{"io.modelcontextprotocol/ui":{"mimeTypes":["text/html;profile=mcp-app"]}}}}
 ;
@@ -95,9 +95,8 @@ pub fn buildRequest(a: Allocator, id: i64, method: []const u8, params: []const u
             \\{{"jsonrpc":"2.0","id":{d},"method":"{s}","params":{{{s}}}}}
         , .{ id, method, modern_meta });
     }
-    // #1511: params that already lead with `_meta` (computer-use turn
-    // context) get the envelope merged in; a second `_meta` key is a
-    // duplicate a strict server rejects.
+    // #1511: params that already lead with `_meta` get the envelope merged
+    // in; a second `_meta` key is a duplicate a strict server rejects.
     const meta_open = "\"_meta\":{";
     if (std.mem.startsWith(u8, inner, meta_open)) {
         const envelope = modern_meta[meta_open.len .. modern_meta.len - 1];
@@ -470,4 +469,23 @@ test "resultIsComplete: absent is the MUST-complete default for older servers" {
     try std.testing.expect(!resultIsComplete(input_required));
     const malformed = (try std.json.parseFromSliceLeaky(Value, a, "{\"resultType\":42}", .{})).object;
     try std.testing.expect(!resultIsComplete(malformed));
+}
+
+test "#1511: params leading with _meta merge the envelope and progress token into one _meta" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const p = "{\"_meta\":{\"caller\":\"x\"},\"name\":\"js\",\"arguments\":{}}";
+    for ([_]bool{ false, true }) |modern| {
+        const built = try buildRequest(a, 9, "tools/call", p, modern);
+        const line = try @import("mcp_notify.zig").withProgressToken(a, built, 9);
+        // A duplicate key is a parse error here, as it is for a strict server.
+        const v = try std.json.parseFromSliceLeaky(std.json.Value, a, line, .{ .duplicate_field_behavior = .@"error" });
+        const params = v.object.get("params").?.object;
+        try std.testing.expectEqualStrings("js", params.get("name").?.string);
+        const meta = params.get("_meta").?.object;
+        try std.testing.expectEqual(@as(i64, 9), meta.get("progressToken").?.integer);
+        try std.testing.expectEqualStrings("x", meta.get("caller").?.string);
+        try std.testing.expectEqual(modern, meta.get("io.modelcontextprotocol/protocolVersion") != null);
+    }
 }

@@ -47,7 +47,6 @@ fn toolCtx(self: *Agent) tools_mod.ToolCtx {
         .jev_effort_pending = &self.jev_effort_pending,
         .subagent_provider = self.subagent_provider,
         .subagent_cross_provider = self.subagent_cross_provider,
-        .mcp_context = self.mcp_context.value,
         .registry = if (self.sub) null else self.registry,
         .from_sub = self.sub,
         .interactive_children = !self.sub and @import("subagent_interactive.zig").enabled.load(.acquire),

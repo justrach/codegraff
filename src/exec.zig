@@ -183,7 +183,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             return failure(gpa, err);
         };
         defer prepared.deinit(gpa);
-        const r = reg.callWithContext(gpa, call.name, prepared.value, ctx.mcp_context) catch |err| {
+        const r = reg.call(gpa, call.name, prepared.value) catch |err| {
             codedbpro_report.onFailure(ctx, call.name, @errorName(err));
             return failure(gpa, err);
         };

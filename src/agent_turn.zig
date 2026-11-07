@@ -24,7 +24,6 @@ pub fn run(self: *Agent, root_turn_prepared: *std.atomic.Value(bool)) anyerror![
     self.yielded = null;
     self.read_miss.reset();
     self.tool_repeat.reset();
-    self.mcp_context.begin(self.io);
     @import("named_work.zig").beginTurn(self);
     try self.ensureRootTools(self.provider.kind);
     var task_scope = @import("task_intent.zig").State.begin(self);
