@@ -134,6 +134,7 @@ fn makeOpts(root: *Agent, target: []const u8, fetch: update_service.Fetch, asset
         .asset_name = asset,
         .fetch = fetch,
         .cancel = test_cancel,
+        .home = root.home,
     };
 }
 

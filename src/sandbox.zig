@@ -272,7 +272,7 @@ pub fn list(io: Io, dir: Io.Dir, arena: Allocator, session: []const u8) Allocato
         const m = parseManifest(arena, bytes) orelse continue;
         try found.append(arena, m);
     }
-    std.mem.sort(Manifest, found.items, {}, byCapture);
+    @import("stable_sort.zig").sort(Manifest, found.items, {}, byCapture);
     return found.items;
 }
 

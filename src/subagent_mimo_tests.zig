@@ -35,8 +35,8 @@ test "MiMo small workers stay on Flash despite a Luna subscription" {
     const inherited = selection.resolveSubagentProvider(keys, base, null, null, false, false).?;
     try std.testing.expectEqualStrings("mimo-v2.6-flash", inherited.model);
     // An exact human pin still wins; this is a default, not a model ban.
-    const exact = pin.forSpawn(base, request(arena.allocator(), "{\"model\":\"gpt-5.6-luna\"}"), true);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", exact.provider.?.model);
+    const exact = pin.forSpawn(base, request(arena.allocator(), "{\"model\":\"gpt-6-luna\"}"), true);
+    try std.testing.expectEqualStrings("gpt-6-luna", exact.provider.?.model);
     try std.testing.expect(selection.resolveSubagentProvider(keys, base.withModel("mimo-v2.6-flash"), null, null, false, false) == null);
 }
 
@@ -120,7 +120,7 @@ test "MiMo routing does not cross to a metered provider without an explicit requ
     defer bench.g_keys = saved_keys;
     var keys: provider.Keys = .{ .values = @splat("test-key") };
     bench.g_keys = &keys;
-    const base = try keys.providerById("codex", "gpt-5.6-sol");
+    const base = try keys.providerById("codex", "gpt-6-sol");
     try std.testing.expectError(error.CrossProviderConsentRequired, selection.subagentProvider(keys, base, "xiaomi", "mimo-v2.6-flash", false));
     const selected = try selection.subagentProvider(keys, base, "xiaomi", "mimo-v2.6-flash", true);
     try std.testing.expectEqualStrings("xiaomi", selected.id);

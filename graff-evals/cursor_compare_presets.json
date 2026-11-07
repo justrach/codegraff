@@ -1,0 +1,26 @@
+{
+  "tasks": [
+    "exact-reply", "fix-fib", "file-ops", "json-transform", "regex-count",
+    "refactor-rename", "write-tests", "git-ops", "recall-noise", "csv-sum",
+    "dead-code", "linear-issues", "linear-warm", "linear-sidecar", "linear-split",
+    "linear-quiet", "linear-quiet-warm", "linear-nohint", "linear-nohint-warm",
+    "linear-reduce", "linear-reduce-warm"
+  ],
+  "smoke_tasks": ["exact-reply", "file-ops", "linear-issues"],
+  "presets": {
+    "argon": {
+      "provider": "codegraff",
+      "models": {"graff": "gemini-4-argon", "cursor": "gemini-4-argon-low"},
+      "cursor_label": "Gemini 4 Argon Low",
+      "effort": "low",
+      "description": "Argon via Codegraff login versus native Cursor, low effort"
+    },
+    "xai-sub": {
+      "provider": "xai",
+      "models": {"graff": "grok-4.7", "cursor": "grok-4.7-high"},
+      "cursor_label": "Grok 4.7 256K High",
+      "effort": "high",
+      "description": "Grok 4.7 via xAI subscription versus native Cursor, high effort"
+    }
+  }
+}

@@ -62,12 +62,19 @@ the newest beta. Both check the download against the release's `SHA256SUMS`.
 
 ```sh
 graff login chatgpt             # ChatGPT sign-in (same as: graff login codex)
+graff login anthropic           # Claude subscription browser sign-in (alias: ant)
 graff login kimi
 graff login zai
 graff login xai
+graff login console             # Anthropic Console account (API credits), via Anthropic's `ant` CLI
 graff key set deepseek sk-...   # any provider by API key
 graff --model grok-4.6
 ```
+
+Anthropic browser login uses native OAuth, not the Claude CLI or its credential
+files. It requires an eligible account and upstream permission for third-party
+subscription access; support can change. `ANTHROPIC_API_KEY` remains the separate
+metered route. See [Anthropic sign-in](docs/anthropic-login.md).
 
 From a checkout: `./install.sh` puts the binary in `~/bin`
 (`HARNESS_NO_PATH=1` skips PATH edits).
@@ -167,7 +174,7 @@ sandbox MCP.
 ```
 graff [flags]                 interactive session
 graff -p "prompt"             one question (answer on stdout)
-graff login [codegraff|chatgpt|kimi|xai|zai]   (codex = chatgpt)
+graff login [codegraff|chatgpt|anthropic|kimi|xai|zai]   (codex = chatgpt)
 graff key set <provider> <key>
 graff mcp add <name | url | @scope/pkg | uvx:pkg | json>
 graff mcp add <name> -- <cmd>
@@ -212,6 +219,13 @@ Providers: Anthropic, OpenAI, DeepSeek, xAI, Z.AI, Kimi, ChatGPT plan, Codex,
 Vercel, OpenRouter, MiniMax, Xiaomi, Groq, Cerebras, Mistral, plus one
 workspace router in `.graff/.config.router`. `graff models refresh` pulls the
 catalogs. Claude-subscription OAuth is deliberately not supported.
+
+Local servers: `omlx` (the oMLX app on `127.0.0.1:8000`), `lmstudio`
+(`:1234`), and `mlx` (`mlx_lm.server` on `:8080`). They are billed as local.
+oMLX requires its API key: `graff key set omlx <key>` or `OMLX_API_KEY`.
+`graff models` lists the models oMLX serves, `graff --model omlx` starts on
+the first one, and `graff --model omlx/<model>` picks one. `/effort` is sent
+as `reasoning_effort`.
 
 </details>
 

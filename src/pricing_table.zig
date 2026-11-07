@@ -36,7 +36,8 @@ pub const rows = [_]ModelPrice{
     .{ .name = "claude-opus-4.8", .in = 5, .out = 25, .cache = 0.5 },
     .{ .name = "claude-sonnet-4-6", .in = 3, .out = 15, .cache = 0.3 },
     .{ .name = "claude-sonnet-4.6", .in = 3, .out = 15, .cache = 0.3 },
-    .{ .name = "claude-haiku-4-5", .in = 1, .out = 5, .cache = 0.1 },
+    // Haiku 5.5 prices by prompt length: over 100K tokens the request pays the higher rates.
+    .{ .name = "claude-haiku-5-5", .in = 0.1, .out = 0.5, .cache = 0.01, .high_at = 100_000, .high_in = 0.5, .high_out = 2.5, .high_cache = 0.05 },
     .{ .name = "MiniMax-M3", .in = 0.3, .out = 1.2, .cache = 0.06 },
     .{ .name = "minimax-m3", .in = 0.3, .out = 1.2, .cache = 0.06 },
     .{ .name = "mimo-v2.6-pro", .in = 0.435, .out = 0.87, .cache = 0.0036 },

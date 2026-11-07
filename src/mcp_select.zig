@@ -60,7 +60,7 @@ pub fn searchInto(arena: Allocator, all: []const mcp.Tool, input: Value) !mcp_sc
     if (hits.items.len == 0) {
         return .{ .text = try std.fmt.allocPrint(arena, "no deferred MCP tool matched '{s}'. Use load_tool_schemas with no args to list what is deferred.", .{query}), .is_error = true };
     }
-    std.mem.sort(@TypeOf(hits.items[0]), hits.items, {}, struct {
+    @import("stable_sort.zig").sort(@TypeOf(hits.items[0]), hits.items, {}, struct {
         fn lessThan(_: void, a: @TypeOf(hits.items[0]), b: @TypeOf(hits.items[0])) bool {
             return a.score > b.score;
         }

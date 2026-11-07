@@ -25,6 +25,7 @@ esac
 # Env overrides: HARNESS_REPO (source repo), HARNESS_DIR (install dir),
 # HARNESS_BUILD=source (skip the release download and compile),
 # HARNESS_NO_GRAFF=1 (skip the codedb/zigrep companion suite),
+# HARNESS_NO_CODEDB=1 (leave codedb alone),
 # HARNESS_NO_PATH=1 (do not append the install dir to ~/.zshrc / ~/.bashrc).
 
 REPO="${HARNESS_REPO:-https://github.com/justrach/codegraff}"
@@ -72,13 +73,26 @@ need_zig() {
 # --yolo pages in more than --version. Ad-hoc is the correct local signature.
 darwin_sign() {
   [ "$(uname -s)" = Darwin ] || return 0
-  local bin="$1"
+  local bin="$1" identifier="${2:-graff}"
   [ -f "$bin" ] || return 0
   if codesign --verify --strict "$bin" >/dev/null 2>&1 \
     && codesign -dv --verbose=2 "$bin" 2>&1 | grep -q 'Authority=Developer ID Application'; then
     return 0
   fi
-  codesign -s - --force --identifier graff "$bin" >/dev/null 2>&1 || true
+  codesign -s - --force --identifier "$identifier" "$bin" >/dev/null 2>&1 || true
+}
+
+# macOS release tarballs carry nanocua.app, graff's computer use (ADR 0314).
+# ~/Applications needs no administrator, and Launch Services finds it there. A
+# tarball without it changes nothing. It runs nothing until an agent needs it.
+place_nanocua() {
+  [ "$(uname -s)" = Darwin ] || return 0
+  local app
+  app="$(find "$1" -maxdepth 2 -type d -name nanocua.app 2>/dev/null | head -1)"
+  [ -n "$app" ] || return 0
+  mkdir -p "$HOME/Applications"
+  rm -rf "$HOME/Applications/nanocua.app"
+  cp -R "$app" "$HOME/Applications/nanocua.app" || return 0
 }
 
 # Drop the binary onto a *fresh inode*: overwriting a running macOS binary in
@@ -154,12 +168,56 @@ fetch_release() {
   fi
   [ -n "$binpath" ] && [ -f "$binpath" ] || { rm -rf "$tmpd"; return 1; }
   place_bin "$binpath"
+  place_nanocua "$tmpd"
   rm -rf "$tmpd"
   # Fail closed: if the binary didn't actually land, return non-zero so the
   # caller falls back to a source build instead of falsely reporting success.
   # (set -e is suppressed inside the `if fetch_release` guard, so the install
   # error above does not abort on its own.)
   [ -x "$INSTALL_DIR/$BIN" ] || return 1
+}
+
+# codedb backs graff's codedb tool. Install it when missing and bring an
+# existing copy up to codedb's latest release, so `graff update` keeps it
+# current too. Only a download that matches the release's checksums.sha256
+# and runs `--version` is installed. Prints current, installed or failed.
+CODEDB_REPO="${CODEDB_REPO:-https://github.com/justrach/codedb}"
+update_codedb() {
+  local platform="$1" asset="codedb-$1" tag latest current dest tmpd staged
+  tag="$(curl -fsSLI --max-time 30 -o /dev/null -w '%{url_effective}' "$CODEDB_REPO/releases/latest" 2>/dev/null)" || { echo failed; return 0; }
+  latest="${tag##*/v}"
+  case "$latest" in ''|*/*) echo failed; return 0 ;; esac
+  dest="$(command -v codedb 2>/dev/null || true)"
+  if [ -n "$dest" ]; then
+    current="$("$dest" --version 2>/dev/null | awk '{print $NF}')"
+    [ "$current" = "$latest" ] && { echo current; return 0; }
+  fi
+  tmpd="$(mktemp -d)"
+  if ! curl -fsSL --max-time 120 "$CODEDB_REPO/releases/download/v$latest/$asset" -o "$tmpd/$asset" \
+    || ! curl -fsSL --max-time 30 "$CODEDB_REPO/releases/download/v$latest/checksums.sha256" -o "$tmpd/checksums.sha256"; then
+    rm -rf "$tmpd"; echo failed; return 0
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$tmpd" && grep " $asset\$" checksums.sha256 | sha256sum -c - >/dev/null 2>&1)
+  else
+    (cd "$tmpd" && grep " $asset\$" checksums.sha256 | shasum -a 256 -c - >/dev/null 2>&1)
+  fi || { rm -rf "$tmpd"; echo failed; return 0; }
+  chmod 0755 "$tmpd/$asset"
+  "$tmpd/$asset" --version >/dev/null 2>&1 || { rm -rf "$tmpd"; echo failed; return 0; }
+  # Replace the codedb on PATH when we may write it; otherwise install next to graff.
+  if [ -z "$dest" ] || [ ! -w "$dest" ]; then dest="$INSTALL_DIR/codedb"; fi
+  mkdir -p "$(dirname "$dest")" || { rm -rf "$tmpd"; echo failed; return 0; }
+  # Stage a fresh inode beside the destination, then replace it atomically.
+  # A failed install or signature must leave the existing binary untouched.
+  staged="$(mktemp "${dest}.XXXXXX")" || { rm -rf "$tmpd"; echo failed; return 0; }
+  if ! install -m 0755 "$tmpd/$asset" "$staged" \
+    || ! darwin_sign "$staged" codedb \
+    || ! { [ "$(uname -s)" != Darwin ] || codesign --verify --strict "$staged" >/dev/null 2>&1; } \
+    || ! mv -f "$staged" "$dest"; then
+    rm -f "$staged"; rm -rf "$tmpd"; echo failed; return 0
+  fi
+  rm -rf "$tmpd"
+  echo "installed $latest"
 }
 
 build_from_source() {
@@ -179,7 +237,7 @@ build_from_source() {
   fi
 
   printf "  ${D}│${N} %-10s " "build"
-  ( cd "$src" && zig build -Doptimize=ReleaseFast ) >/dev/null 2>&1 \
+  ( cd "$src" && zig build -Doptimize=ReleaseSafe -Dlearn=false ) >/dev/null 2>&1 \
     && printf "${G}✓${N}\n" \
     || { printf "${R}failed${N}\n\n  ${R}zig build failed${N} — run it manually in $src to see the error\n\n" >&2; exit 1; }
 
@@ -242,6 +300,16 @@ main() {
       fi
       rm -f "$suite_log"
     fi
+  fi
+
+  # After the suite, which may install codedb itself: keep codedb current.
+  if [ -z "${HARNESS_NO_GRAFF:-}" ] && [ -z "${HARNESS_NO_CODEDB:-}" ]; then
+    printf "  ${D}│${N} %-10s " "codedb"
+    case "$(update_codedb "$platform")" in
+      current) printf "${G}✓${N} (up to date)\n" ;;
+      installed*) printf "${G}✓${N} (updated)\n" ;;
+      *) printf "${Y}skipped${N} ${D}(codedb release unavailable — graff still works)${N}\n" ;;
+    esac
   fi
 
   ensure_path

@@ -137,15 +137,8 @@ pub fn mcpServerConnected(tools: []const mcp.Tool, server: []const u8) bool {
 }
 
 pub fn binOnPath(io: Io, name: []const u8) bool {
-    var it = std.mem.splitScalar(u8, main_mod.g_path_env, ':');
     var buf: [1024]u8 = undefined;
-    while (it.next()) |dir| {
-        if (dir.len == 0) continue;
-        const full = std.fmt.bufPrint(&buf, "{s}/{s}", .{ dir, name }) catch continue;
-        Io.Dir.cwd().access(io, full, .{}) catch continue;
-        return true;
-    }
-    return false;
+    return @import("path_lookup.zig").resolve(io, main_mod.g_path_env, name, &buf) != null;
 }
 
 pub fn skillInstalled(io: Io, sk: SkillDef) bool {

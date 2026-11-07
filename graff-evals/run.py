@@ -183,6 +183,25 @@ def _parse_gemini_json(stdout):
     return answer, usage
 
 
+def _parse_agy_json(stdout):
+    """Antigravity CLI `-p --output-format json`: one object; input_tokens excludes the
+    cache_read part and output_tokens includes thinking. num_turns counts conversation
+    turns, not model calls, so calls stays unknown."""
+    answer, usage = stdout.strip(), {}
+    for line in reversed(stdout.strip().splitlines()):
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        u = data.get("usage") or {}
+        answer = (data.get("response") or "").strip()
+        cached = int(u.get("cache_read_tokens") or 0)
+        usage = {"in": int(u.get("input_tokens") or 0) + cached, "cached": cached,
+                 "out": int(u.get("output_tokens") or 0), "reasoning": int(u.get("thinking_tokens") or 0)}
+        break
+    return answer, usage
+
+
 def parse_answer_and_usage(harness, stdout, stderr, sandbox=""):
     answer, usage = stdout.strip(), {}
     if harness["answer"] == "grok-stream":
@@ -239,6 +258,8 @@ def parse_answer_and_usage(harness, stdout, stderr, sandbox=""):
         answer, usage = _parse_opencode_json(stdout)
     if harness["answer"] == "gemini-json":
         answer, usage = _parse_gemini_json(stdout)
+    if harness["answer"] == "agy-json":
+        answer, usage = _parse_agy_json(stdout)
     if harness["answer"] == "muse" or harness.get("usage") == "muse":
         answer = stdout.strip()
         usage = {}

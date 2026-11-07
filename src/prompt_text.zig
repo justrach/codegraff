@@ -43,6 +43,9 @@ pub const local_tools_note =
     \\read, so write a new file without first checking that its path is free.
     \\When a script computes a file's content, let that script write the file
     \\instead of printing it for write_file.
+    \\For long artifacts requested as files, save sections incrementally with
+    \\small, complete file-writing calls instead of drafting the whole artifact
+    \\in a reply. Keep the final reply a summary unless full inline content is requested.
     \\For a read-only exact-key lookup in one known file,
     \\call read_file once with contains set to the exact key and answer from its
     \\output; do not request the whole file first. To navigate code — finding symbols,
@@ -104,9 +107,8 @@ pub const harness_issue_note =
     \\...`), never in the current working repository's issue tracker.
     \\Search open and closed issues there first, by the error text and the
     \\operation (`gh issue list --repo justrach/codegraff --state all --search
-    \\'...'`). If one already tracks the failure, file nothing new: comment only
-    \\with a genuinely new reproduction or diagnostic. If the search fails, keep
-    \\the finding in your reply instead of filing.
+    \\'...'`). If one already tracks the failure, file nothing new.
+    \\If the search fails, keep the finding in your reply instead of filing.
     \\Open the body with the versions it was seen on: the running graff's
     \\`--version` (inside Harness that is `~/.harness/bin/graff`, not the one on
     \\PATH) beside the latest release (`gh release view --repo justrach/codegraff
@@ -143,7 +145,8 @@ pub const public_write_note =
     \\generic permission to file, delegate or publish is not disclosure approval.
     \\A worker unable to ask must return a sanitized draft or request approval
     \\through its orchestrator, not infer consent. Never disclose secrets.
-;
+    \\
+++ @import("issue_reporting.zig").guidance;
 
 /// Always present (#840): who may publish to a claimed target. PR readiness
 /// is not gated (ADR 0250); ownership of a claimed branch or issue still is.

@@ -99,7 +99,8 @@ process rather than restarting anything.
   flat-rate, and its request shape differs from the metered API's.
 - **`graff login chatgpt-new`** (or `chat-gpt-new`). The first sign-in registers with
   `client_id=dynamic_agent_client` and `agent_name_hint=Graff`; later sign-ins
-  reuse the issued client id with `id_token_hint` and `login_hint`. PKCE S256,
+  reuse the issued client id with `login_hint` (never `id_token_hint`: the
+  URL reaches the browser opener's argv, so it carries no saved token). PKCE S256,
   an OIDC nonce, `resource=https://api.openai.com/v1`, a loopback callback on
   `127.0.0.1` (port 1455, then 1456–1459), and one `ext_agent_host_id`
   (`urn:uuid:`, version 4) per machine.

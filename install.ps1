@@ -50,7 +50,12 @@ try {
     $line = Get-Content (Join-Path $tmp 'SHA256SUMS') | Where-Object { $_ -match "\s\*?$([regex]::Escape($asset))$" } | Select-Object -First 1
     if (-not $line) { Fail "SHA256SUMS has no entry for $asset" }
     $expected = ($line -split '\s+')[0].ToLowerInvariant()
-    $actual = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp $asset)).Hash.ToLowerInvariant()
+    # .NET directly, not Get-FileHash: that cmdlet's module may not load
+    # (Windows PowerShell started from PowerShell 7 inherits its module path).
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::OpenRead((Join-Path $tmp $asset))
+    try { $actual = -join ($sha.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') }) }
+    finally { $stream.Dispose(); $sha.Dispose() }
     if ($expected -ne $actual) { Fail "checksum mismatch for $asset (expected $expected, got $actual)" }
     Write-Host '  verify    sha256 ok'
 
@@ -89,8 +94,13 @@ if ($env:GRAFF_NO_PATH -ne '1') {
     if (($env:Path -split ';') -notcontains $dir) { $env:Path = "$env:Path;$dir" }
 }
 
-$version = & (Join-Path $dir 'graff.exe') --version 2>&1 | Select-Object -First 1
-if ($LASTEXITCODE -ne 0) { Fail "graff.exe did not start: $version" }
+# Capture everything before taking the first line: `| Select-Object -First 1`
+# closes the pipe while graff still prints its what's-new list, and the write
+# error made a working graff.exe exit non-zero ("did not start").
+$output = & (Join-Path $dir 'graff.exe') --version 2>&1
+$code = $LASTEXITCODE
+$version = $output | Select-Object -First 1
+if ($code -ne 0) { Fail "graff.exe did not start: $version" }
 Write-Host "  version   $version"
 
 Write-Host ''

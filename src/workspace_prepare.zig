@@ -1,5 +1,6 @@
-//! After minting a task worktree: copy selected gitignored files and run
-//! project scripts from `.graff/workspace.toml`.
+//! After minting a task worktree: link and copy selected gitignored files and
+//! run project scripts from `.graff/workspace.toml`, or the tool-neutral
+//! `.agents/prepare` + `.agents/linked` (agents_prepare.zig).
 
 const std = @import("std");
 const Io = std.Io;
@@ -28,6 +29,7 @@ pub const Scripts = struct {
 
 pub const Report = struct {
     copied: usize = 0,
+    linked: usize = 0,
     setup_ran: bool = false,
     setup_ok: bool = true,
 };
@@ -68,11 +70,14 @@ pub fn loadScripts(arena: Allocator, io: Io, root: []const u8) Scripts {
 pub fn afterCreate(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8, dest: []const u8, name: []const u8) Report {
     const root = mainCheckout(gpa, io, arena, cwd);
     var report: Report = .{};
+    const agents = @import("agents_prepare.zig");
+    // Link before copying, so a linked path becomes a symlink, not a stale copy.
+    report.linked = agents.linkShared(gpa, io, arena, root, dest);
     report.copied = copyIgnored(gpa, io, arena, root, dest);
     const scripts = loadScripts(arena, io, root);
-    if (scripts.setup.len == 0) return report;
+    const setup = if (scripts.setup.len > 0) scripts.setup else agents.setupCommand(arena, io, dest) orelse return report;
     report.setup_ran = true;
-    report.setup_ok = runScript(gpa, io, arena, scripts.setup, dest, root, name, setup_ms);
+    report.setup_ok = runScript(gpa, io, arena, setup, dest, root, name, setup_ms);
     return report;
 }
 

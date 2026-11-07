@@ -140,7 +140,11 @@ def run_snapshot(binary):
             assert response.get('result',{}).get('stopReason')=='end_turn',response
             updates=[e.get('params',{}).get('update',{}) for e in client.events if e.get('method')=='session/update']
             assert any('[agent 1: running]' in json.dumps(u) for u in updates), 'zero-wait lost running snapshot'
-            assert model.child_started.is_set() and not model.child_finished.is_set(), 'snapshot waited for child exit'
+            # On a slow runner the parent's turn can end before the background
+            # child reaches the model: the snapshot is right either way. Wait
+            # for the child to start, then check it is still held.
+            assert model.child_started.wait(10), 'background child never reached the model'
+            assert not model.child_finished.is_set(), 'snapshot waited for child exit'
         finally:
             model.release_child.set()
             client.close(); model.stop()

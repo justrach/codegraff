@@ -99,6 +99,12 @@ try {
 
   const smoke = `
 import { Harness } from "@codegraff/sdk";
+import { ManagedHarness } from "@codegraff/sdk/managed";
+import { createOtlpExporter } from "@codegraff/sdk/otel";
+import { createWorkerAgent } from "@codegraff/sdk/worker";
+import * as sandbox from "@codegraff/sdk/worker-sandbox";
+if ([ManagedHarness, createOtlpExporter, createWorkerAgent].some(value => typeof value !== "function") ||
+    Object.keys(sandbox).length === 0) throw new Error("missing packed SDK execution exports");
 const harness = Harness.init({ env: { ...process.env, PATH: process.env.CLEAN_PATH, Path: process.env.CLEAN_PATH, GRAFF_NO_TELEMETRY: "1" } });
 try {
   ${suppliedBinary ? "await harness.setEffort(\"low\");" : "const text = await harness.ask(\"out-of-box\"); if (text !== \"user:out-of-box\") throw new Error(`unexpected reply: \${text}`);"}

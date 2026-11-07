@@ -42,7 +42,7 @@ pub const LoadSessionFn = *const fn (ctx: *anyopaque, arena: Allocator, w: *Io.W
 /// Optional per-turn context meter: used and window tokens (plus the known
 /// session cost) for the standard `usage_update` (acp_context_meter.zig).
 /// Null when the embed has no live agent (pure in-process loop, tests).
-pub const Meter = struct { used: u64, window: u64, cost_usd: ?f64 = null };
+pub const Meter = struct { used: u64, window: u64, cost_usd: ?f64 = null, savings: @import("context_savings.zig").Snapshot = .{} };
 pub const MeterFn = *const fn (ctx: *anyopaque) Meter;
 /// Vendor-method escape hatch: gets every request the core loop does not
 /// claim; returns true when it answered (false falls through to -32601).
@@ -75,13 +75,20 @@ pub const Dispatch = struct {
     load_session: ?LoadSessionFn = null,
     /// Live CLI saves under this stable name; embeds retain generated IDs.
     durable_session_id: ?[]const u8 = null,
+    /// #1529: the save the live session writes now; `/resume` can move it off
+    /// the transport ID, and the prompt result names it (`respondStop`).
+    durable_name: ?*const fn (ctx: *anyopaque) ?[]const u8 = null,
     meter: ?MeterFn = null,
     extra: ?ExtraFn = null,
     config: ?ConfigFn = null,
     set_config: ?SetConfigFn = null,
+    /// The `model` option; only T3 Code's profile offers it (acp_model_option.zig).
+    model_config: ?ConfigFn = null,
+    set_model: ?SetConfigFn = null,
     mcp_servers: ?McpServersFn = null,
     error_message: ?*const fn (ctx: *anyopaque, err: anyerror) []const u8 = null,
     cancel_info: ?*const fn (ctx: *anyopaque) ?Cancellation = null,
+    error_recovery: ?*const fn (ctx: *anyopaque, err: anyerror) ?@import("auth_recovery.zig").Recovery = null,
     /// Live CLI: adopt the client's cwd, report `_meta["graff/worktree"]` (acp_workspace.zig).
     workspace: ?acp_workspace.Env = null,
     /// ACP v1 draft subagent updates are opt-in at initialize.
@@ -115,26 +122,16 @@ fn supportsBackgroundSubagents(params: ?std.json.Value) bool {
 }
 
 pub fn configOptions(d: *Dispatch, arena: Allocator) ![]const ConfigOption {
-    const config = d.config orelse return &.{};
-    const option = try config(d.ctx, arena) orelse return &.{};
-    const items = try arena.alloc(ConfigOption, 1);
-    items[0] = option;
-    return items;
-}
-
-fn sameConfig(before: []const ConfigOption, after: []const ConfigOption) bool {
-    if (before.len != after.len) return false;
-    for (before, after) |a, b| {
-        if (!std.mem.eql(u8, a.currentValue, b.currentValue) or a.options.len != b.options.len) return false;
-        for (a.options, b.options) |av, bv| if (!std.mem.eql(u8, av.value, bv.value)) return false;
-    }
-    return true;
+    var items: std.ArrayList(ConfigOption) = .empty;
+    if (d.model_config) |model| if (try model(d.ctx, arena)) |option| try items.append(arena, option);
+    if (d.config) |config| if (try config(d.ctx, arena)) |option| try items.append(arena, option);
+    return items.items;
 }
 
 pub fn emitConfigChange(d: *Dispatch, arena: Allocator, w: *Io.Writer, sid: []const u8, before: []const ConfigOption) !void {
     if (d.config == null) return;
     const after = try configOptions(d, arena);
-    if (sameConfig(before, after)) return;
+    if (@import("acp_model_option.zig").same(before, after)) return;
     try proto.writeNotification(w, "session/update", .{ .sessionId = sid, .update = .{
         .sessionUpdate = "config_option_update",
         .configOptions = after,
@@ -178,7 +175,12 @@ fn turnError(d: *Dispatch, w: *Io.Writer, req: proto.Request, err: anyerror) !vo
     }
     if (err == error.RunBudgetExhausted)
         return respond(w, req, .{ .stopReason = "max_turn_requests" });
-    return respondError(w, req, err_internal, if (d.error_message) |message| message(d.ctx, err) else @errorName(err));
+    const message = if (d.error_message) |describe| describe(d.ctx, err) else @errorName(err);
+    if (d.error_recovery) |recover| if (recover(d.ctx, err)) |data| {
+        if (req.id != null) try proto.writeErrorData(w, req.id, data.rpcCode(), message, data);
+        return;
+    };
+    return respondError(w, req, err_internal, message);
 }
 
 fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request) !void {
@@ -197,21 +199,22 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
     if (d.bind_session) |bind| bind(d.ctx, sid);
     @import("acp_citations.zig").endTurn(sid); // a failed turn must not leave a marker open
     const config_before = configOptions(d, arena) catch |err| return turnError(d, w, req, err);
-    const workspace_before = acp_workspace.snapshot(d.workspace, arena);
+    acp_workspace.snapshot(d.workspace);
     // Before slash handling: an agent's room line must not run as a command.
-    const text = try @import("acp_room.zig").frame(arena, req.params, try flattenPrompt(arena, if (obj) |o| o.get("prompt") else null));
+    const flat = try flattenPrompt(arena, if (obj) |o| o.get("prompt") else null);
+    const text = try @import("acp_room.zig").frame(arena, req.params, flat);
     if (d.slash) |slash| {
-        const reply = slash(d.ctx, arena, text) catch |err| {
+        const reply = slash(d.ctx, arena, @import("acp_t3.zig").slashText(if (obj) |o| o.get("prompt") else null, flat, text)) catch |err| {
             emitConfigChange(d, arena, w, sid, config_before) catch |config_err| return turnError(d, w, req, config_err);
             return turnError(d, w, req, err);
         };
         if (reply) |plain| {
-            if (plain.len > 0) try writeSessionUpdate(w, sid, plain);
+            if (plain.len > 0) try writeSessionUpdate(w, sid, try @import("acp_t3.zig").slashReply(arena, plain));
             emitConfigChange(d, arena, w, sid, config_before) catch |config_err| return turnError(d, w, req, config_err);
-            try acp_workspace.emitChange(d.workspace, arena, w, sid, workspace_before);
+            try acp_workspace.emitChange(d.workspace, arena, w, sid);
             try emitMeter(d, w, sid);
             if (resend_key) |key| resent.finish(key, 0, "end_turn");
-            return respond(w, req, .{ .stopReason = "end_turn" });
+            return respondStop(d, w, req, sid, "end_turn");
         }
     }
     if (d.after_user) |after| after(d.ctx, arena, text, if (obj) |o| o.get("prompt") else null);
@@ -221,19 +224,38 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
     };
     if (final.len > 0) try writeSessionUpdate(w, sid, final);
     emitConfigChange(d, arena, w, sid, config_before) catch |config_err| return turnError(d, w, req, config_err);
-    try acp_workspace.emitChange(d.workspace, arena, w, sid, workspace_before);
+    try acp_workspace.emitChange(d.workspace, arena, w, sid);
     try emitMeter(d, w, sid);
     const extra = if (extra_cancelled) |f| f() else false;
     const stop: []const u8 = if (cancel_flag.load(.acquire) or extra) "cancelled" else "end_turn";
     if (resend_key) |key| resent.finish(key, 0, stop);
-    try respond(w, req, .{ .stopReason = stop });
+    try respondStop(d, w, req, sid, stop);
+}
+
+/// The save the session writes, when it is no longer the transport ID `sid`.
+pub fn movedDurableName(d: *const Dispatch, sid: []const u8) ?[]const u8 {
+    const current = d.durable_name orelse return null;
+    const name = current(d.ctx) orelse return null;
+    if (std.mem.eql(u8, name, sid)) return null;
+    return name;
+}
+
+/// A prompt's result. When a command moved the session onto another save, the
+/// result names it and the dispatch's durable identity follows (#1529); the
+/// transport ID keeps routing this connection.
+fn respondStop(d: *Dispatch, w: *Io.Writer, req: proto.Request, sid: []const u8, stop: []const u8) !void {
+    if (movedDurableName(d, sid)) |name| {
+        d.durable_session_id = name;
+        return respond(w, req, .{ .stopReason = stop, ._meta = .{ .@"graff/durableSessionId" = name } });
+    }
+    return respond(w, req, .{ .stopReason = stop });
 }
 
 pub fn emitMeter(d: *Dispatch, w: *Io.Writer, sid: []const u8) !void {
     if (d.meter) |meter| {
         // Report live occupancy independently of the model catalog.
         const m = meter(d.ctx);
-        if (m.window > 0) try @import("acp_context_meter.zig").write(w, sid, m.used, m.window, m.cost_usd);
+        if (m.window > 0) try @import("acp_context_meter.zig").write(w, sid, m.used, m.window, m.cost_usd, m.savings);
     }
 }
 
@@ -243,6 +265,7 @@ fn respondInitialize(w: *Io.Writer, req: proto.Request, can_load: bool) !void {
         .protocolVersion = negotiateVersion(req.params),
         .agentCapabilities = .{
             .loadSession = can_load,
+            .sessionCapabilities = proto.SessionCapabilities{ .fork = can_load },
             ._meta = .{ .@"codegraff/usage" = can_load, .@"graff/backgroundSubagents" = true },
             .promptCapabilities = proto.PromptCapabilities{ .image = can_load },
             // session/new and session/load connect a client's MCP servers
@@ -271,6 +294,7 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
     const req = parseRequest(arena, line) orelse return;
     if (std.mem.eql(u8, req.method, "initialize")) {
         v2.negotiate(req.params, d.seed);
+        @import("acp_t3.zig").note(req.params);
         @import("acp_elicit.zig").configure(req.params);
         @import("acp_compaction.zig").noteInitialize(req.params);
         // The draft child-session RFD is a v1 shape; v2 gets tool-call progress.
@@ -300,7 +324,7 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
             try respond(w, req, .{ .sessionId = d.session_id.?, ._meta = acp_workspace.meta(env, arena) })
         else
             try respond(w, req, .{ .sessionId = d.session_id.? });
-        try proto.writeAvailableCommands(w, d.session_id.?, proto.slashCommands());
+        try proto.writeAvailableCommands(w, d.session_id.?, try @import("acp_t3.zig").commands(arena, proto.slashCommands()));
         return;
     }
     if ((d.load_session != null and (std.mem.eql(u8, req.method, "session/prompt") or std.mem.eql(u8, req.method, "session/cancel") or std.mem.eql(u8, req.method, "session/close"))) or
@@ -314,9 +338,9 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
     }
     if (std.mem.eql(u8, req.method, "session/cancel")) {
         cancel_flag.store(true, .release);
+        @import("cancel_source.zig").noteAcp(req.params);
         if (on_cancel) |hook| hook();
-        if (req.id != null) return respond(w, req, struct {}{});
-        return;
+        return respond(w, req, struct {}{});
     }
     if (v2.on() and std.mem.eql(u8, req.method, "session/close")) return respond(w, req, struct {}{});
     if (std.mem.eql(u8, req.method, if (v2.on()) "session/resume" else "session/load")) {
@@ -330,9 +354,8 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
         if (params != .object) return respondError(w, req, -32602, "Invalid configuration option");
         const id = util.strFieldObj(params.object, "configId") orelse return respondError(w, req, -32602, "Invalid configuration option");
         const value = util.strFieldObj(params.object, "value") orelse return respondError(w, req, -32602, "Invalid configuration value");
-        if (!std.mem.eql(u8, id, "thought_level"))
-            return respondError(w, req, -32602, "Invalid configuration value");
-        const accepted = d.set_config.?(d.ctx, value) catch |err| return respondError(w, req, err_internal, @errorName(err));
+        const setter = if (std.mem.eql(u8, id, "thought_level")) d.set_config.? else if (std.mem.eql(u8, id, "model")) d.set_model orelse return respondError(w, req, -32602, "Invalid configuration value") else return respondError(w, req, -32602, "Invalid configuration value");
+        const accepted = setter(d.ctx, value) catch |err| return respondError(w, req, err_internal, @errorName(err));
         if (!accepted) return respondError(w, req, -32602, "Invalid configuration value");
         const options = configOptions(d, arena) catch |err| return respondError(w, req, err_internal, @errorName(err));
         return respond(w, req, .{ .configOptions = options });

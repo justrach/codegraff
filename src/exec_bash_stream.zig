@@ -60,8 +60,7 @@ fn emitOne(ctx: ?*anyopaque, which: u8, chunk: []const u8) void {
     if (main_mod.json_mode) {
         main_mod.g_gui_mu.lockUncancelable(c.io);
         defer main_mod.g_gui_mu.unlock(c.io);
-        var s: std.json.Stringify = .{ .writer = w };
-        s.write(.{ .type = "bash_output_chunk", .name = "bash", .stream = if (which == 0) "stdout" else "stderr", .text = chunk }) catch return;
+        @import("protocol_seq.zig").writeEvent(w, .{ .type = "bash_output_chunk", .name = "bash", .stream = if (which == 0) "stdout" else "stderr", .text = chunk }) catch return;
         w.writeByte('\n') catch return;
         w.flush() catch {};
         return;
@@ -71,6 +70,54 @@ fn emitOne(ctx: ?*anyopaque, which: u8, chunk: []const u8) void {
     if (!@import("repl.zig").g_debug) return;
     w.writeAll(chunk) catch return;
     w.flush() catch {};
+}
+
+test "bash progress shares contiguous JSON sequencing with core events and resume" {
+    const seq = @import("protocol_seq.zig");
+    seq.resetForTest();
+    defer seq.resetForTest();
+    seq.restore(40);
+    const old_mode = main_mod.json_mode;
+    const old_out = main_mod.g_out;
+    defer {
+        main_mod.json_mode = old_mode;
+        main_mod.g_out = old_out;
+    }
+    var buf: [max_delta_bytes * 2]u8 = undefined;
+    var writer: Io.Writer = .fixed(&buf);
+    main_mod.json_mode = true;
+    main_mod.g_out = &writer;
+    var ctx: Ctx = .{ .io = std.testing.io };
+    try seq.writeEvent(&writer, .{ .type = "tool_call_started", .name = "bash" });
+    try writer.writeByte('\n');
+    emit(&ctx, 0, ""); // No line means no sequence consumed.
+    var chunk: [max_delta_bytes + 32]u8 = undefined;
+    @memset(&chunk, 'x');
+    emit(&ctx, 0, &chunk);
+    emit(&ctx, 1, "stderr\n");
+    try seq.writeEvent(&writer, .{ .type = "tool_call_finished", .name = "bash" });
+    try writer.writeByte('\n');
+    var lines = std.mem.tokenizeScalar(u8, writer.buffered(), '\n');
+    var id: u64 = 40;
+    var progress: usize = 0;
+    while (lines.next()) |line| {
+        id += 1;
+        try std.testing.expectEqual(id, seq.seqOf(line).?);
+        const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, line, .{});
+        defer parsed.deinit();
+        const obj = parsed.value.object;
+        if (std.mem.eql(u8, obj.get("type").?.string, "bash_output_chunk")) {
+            progress += 1;
+            const text = obj.get("text").?.string;
+            try std.testing.expectEqualStrings("bash", obj.get("name").?.string);
+            try std.testing.expect(text.len <= max_delta_bytes);
+            try std.testing.expectEqualStrings(if (progress == 3) "stderr" else "stdout", obj.get("stream").?.string);
+            if (progress == 3) try std.testing.expectEqualStrings("stderr\n", text);
+        }
+    }
+    try std.testing.expectEqual(@as(u64, 45), id);
+    try std.testing.expectEqual(id, seq.current());
+    try std.testing.expectEqual(@as(usize, 3), progress);
 }
 
 test "frames longer than grok-build's 16KiB cap are split" {

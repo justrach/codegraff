@@ -12,13 +12,17 @@ pub const marker = "stopped: model loop";
 
 pub const Stream = struct {
     detector: Detector = .{},
+    /// This reply's size before any tool call (agent_length_cutoff.zig).
+    size: @import("agent_length_cutoff.zig").ReplySize = .{},
 
-    /// Parse only actual assistant text. Never inspect reasoning or tool args.
+    /// The loop detector reads only assistant text; the runaway size check also
+    /// counts reasoning and stops counting once a tool call starts.
     /// Capture works even when the frontend doesn't paint streaming deltas.
     pub fn event(self: *Stream, agent: *Agent, payload: []const u8, paint: bool) !void {
         const parsed = std.json.parseFromSlice(Value, agent.gpa, payload, .{}) catch return;
         defer parsed.deinit();
         const text = delta(agent.provider.kind, parsed.value);
+        if (self.size.feed(agent, parsed.value, text.len)) return error.ReplyRunaway;
         if (text.len == 0) return;
         const enabled = !agent.compaction_request and agent.output_schema == null;
         const n = if (enabled) self.detector.feed(text) else text.len;
@@ -136,7 +140,8 @@ pub fn checkResponse(agent: *Agent, root: std.json.ObjectMap) !void {
 /// only unseen text plus a short marker. The ordinary final event remains the
 /// caller's responsibility, exactly as for an ordinary completed answer.
 pub fn finishError(agent: *Agent, err: anyerror) ![]const u8 {
-    if (err != error.ModelLoop) return err;
+    // A runaway with no rewind left ends the turn the same way (agent_length_cutoff.zig).
+    if (err != error.ModelLoop and err != error.ReplyRunaway) return err;
     return finish(agent);
 }
 

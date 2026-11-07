@@ -24,7 +24,7 @@ pub fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, s
     const owned = try gpa.create(@import("subagent_owned.zig").Owned);
     owned.* = .init(gpa);
     errdefer {
-        owned.arena.deinit();
+        owned.deinit();
         gpa.destroy(owned);
     }
     const owned_ctx = try owned.context(ctx);

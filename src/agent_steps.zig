@@ -25,6 +25,7 @@ const toolResultMessage = messages_mod.toolResultMessage;
 const turn_checkpoint = @import("turn_checkpoint.zig");
 const tool_call_args = @import("tool_call_args.zig");
 const tool_call_repair = @import("tool_call_repair.zig");
+const length = @import("agent_length.zig");
 
 pub fn surfaceUnstreamedText(self: *Agent, text: []const u8) !void {
     if (self.sub or self.streamed_text or text.len == 0) return;
@@ -108,7 +109,8 @@ pub fn stepResponses(self: *Agent, response: std.json.ObjectMap) !?[]const u8 {
             const call_id = if (item.object.get("call_id")) |c| (if (c == .string) c.string else continue) else continue;
             const args = if (item.object.get("arguments")) |a| (if (a == .string) a.string else "") else "";
             const parsed = tool_call_args.parse(self.scratchAlloc(), args); // #124: execution-only tree
-            try calls.append(self.gpa, .{ .id = call_id, .name = name, .input = parsed.input, .args_ok = parsed.valid });
+            const cut = length.callCut(self.gpa, length.limited(.responses, response), item.object, args);
+            try calls.append(self.gpa, .{ .id = call_id, .name = name, .input = parsed.input, .args_ok = parsed.valid and !cut, .cut = cut });
         }
     }
     tool_call_args.repairHistory(self.gpa, self.arena, self.messages.items);
@@ -180,6 +182,11 @@ pub fn stepAnthropic(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
         return line;
     }
 
+    const oauth = @import("anthropic_oauth_wire.zig");
+    if (oauth.active(self.provider)) {
+        const names = try oauth.ToolNames.init(self.scratchAlloc(), self.toolsJson());
+        try names.decodeContent(self.arena, content);
+    }
     var assistant: std.json.ObjectMap = .empty;
     try assistant.put(self.arena, "role", .{ .string = "assistant" });
     try assistant.put(self.arena, "content", content);
@@ -202,7 +209,9 @@ pub fn stepAnthropic(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
             const id = if (block.object.get("id")) |x| (if (x == .string) x.string else "") else "";
             const why = tool_call_args.takeInvalidMark(&block.object);
             const input = block.object.get("input") orelse Value{ .object = .empty };
-            try calls.append(self.gpa, .{ .id = id, .name = name, .input = input, .args_ok = why == .none, .cut = why == .cut });
+            const cut = why == .cut or (length.limited(.anthropic, root) and !block.object.contains("input"));
+            if (!block.object.contains("input") or input != .object) try block.object.put(self.arena, "input", .{ .object = .empty });
+            try calls.append(self.gpa, .{ .id = id, .name = name, .input = input, .args_ok = why == .none and !cut and input == .object, .cut = cut });
         }
     }
     self.pairContextMeterWithCurrentLocal();
@@ -230,23 +239,13 @@ pub fn stepAnthropic(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
     }
 
     if (std.mem.eql(u8, stop_reason, "pause_turn")) return null;
-    if (!std.mem.eql(u8, stop_reason, "end_turn")) try self.say("[stopped: {s}]\n", .{stop_reason});
+    if (!std.mem.eql(u8, stop_reason, "end_turn") and !length.limited(.anthropic, root)) try self.say("[stopped: {s}]\n", .{stop_reason});
     return final_text;
 }
 
 /// Trailing sampler markers some models leak into chat content (grok-4.6
 /// emits `<|eos|>` after strict-schema JSON — caught by graff-evals).
-pub fn stripEosSuffix(text: []const u8) []const u8 {
-    var t = std.mem.trimEnd(u8, text, " \t\r\n");
-    for ([_][]const u8{ "<|eos|>", "<|eot|>", "<|endoftext|>" }) |marker| {
-        if (std.mem.endsWith(u8, t, marker)) {
-            t = std.mem.trimEnd(u8, t[0 .. t.len - marker.len], " \t\r\n");
-            break;
-        }
-    }
-    return t;
-}
-
+pub const stripEosSuffix = @import("agent_chat_step.zig").stripEosSuffix;
 test "stripEosSuffix drops a leaked trailing sampler marker, nothing else" {
     try std.testing.expectEqualStrings("{\"a\":1}", stripEosSuffix("{\"a\":1}<|eos|>"));
     try std.testing.expectEqualStrings("{\"a\":1}", stripEosSuffix("{\"a\":1}<|eos|>\n"));
@@ -255,92 +254,7 @@ test "stripEosSuffix drops a leaked trailing sampler marker, nothing else" {
 }
 
 pub fn stepOpenAI(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
-    const choices = root.get("choices");
-    // #287/#299: same as the anthropic step — the parent only ever sees what
-    // sayApiError records, so these three shapes must name themselves.
-    if (choices == null or choices.? != .array or choices.?.array.items.len == 0 or choices.?.array.items[0] != .object) {
-        try self.sayApiError("api error: response had no choices", .{});
-        return error.ApiError;
-    }
-    const choice = choices.?.array.items[0].object;
-    var message = choice.get("message") orelse {
-        try self.sayApiError("api error: choice had no message", .{});
-        return error.ApiError;
-    };
-    // Lost arguments rebuilt from the reply's own tool-call markup (MiMo only).
-    if (@import("effort_route.zig").mimoRoute(self.provider.id, self.provider.model))
-        _ = try tool_call_repair.repairCalls(self.arena, self.scratchAlloc(), &message, self.toolsJson());
-    // Announced tools come back untyped where the wire types only declared ones (MiMo, Claude).
-    if (@import("additional_tools.zig").active(self.provider))
-        _ = try tool_call_repair.retypeArgs(self.arena, self.scratchAlloc(), &message, self.toolsJson());
-    // #1247: calls the server's parser left in `content` as markup.
-    _ = try tool_call_repair.recoverInlineCalls(self.arena, self.scratchAlloc(), &message, self.toolsJson());
-    const msg_obj = tools_mod.json_args.object(message) orelse {
-        try self.sayApiError("api error: choice message was not an object", .{});
-        return error.ApiError;
-    };
-    try self.messages.append(message); // echo verbatim (content may be null)
-
-    var final_text: []const u8 = "";
-    if (msg_obj.get("content")) |c| if (c == .string and c.string.len > 0) {
-        // grok-4.6 structured outputs (response_format) leak a literal
-        // sampler end marker after the JSON on the chat wire (#502) — a
-        // trailing `<|eos|>` is never legitimate answer text.
-        final_text = stripEosSuffix(c.string);
-        try surfaceUnstreamedText(self, final_text);
-    };
-
-    var calls: std.ArrayList(ToolCall) = .empty;
-    defer calls.deinit(self.gpa);
-    if (msg_obj.get("tool_calls")) |tcs| if (tcs == .array) {
-        for (tcs.array.items) |*tc| { // by pointer: the cut marker is removed in place
-            if (tc.* != .object) continue;
-            const why = tool_call_args.takeInvalidMark(&tc.object);
-            const function = tc.object.get("function") orelse continue;
-            if (function != .object) continue;
-            const args_str = if (function.object.get("arguments")) |a| (if (a == .string) a.string else "") else "";
-            const parsed = tool_call_args.parse(self.scratchAlloc(), args_str); // #124: execution-only tree
-            const name = if (function.object.get("name")) |n| (if (n == .string) n.string else "") else "";
-            if (name.len == 0) continue; // can't dispatch a nameless call
-            const id = if (tc.object.get("id")) |x| (if (x == .string) x.string else "") else "";
-            try calls.append(self.gpa, .{ .id = id, .name = name, .input = parsed.input, .args_ok = parsed.valid and why == .none, .cut = why == .cut });
-        }
-    };
-    tool_call_args.repairMessage(self.gpa, self.arena, &self.messages.items[self.messages.items.len - 1]);
-    self.pairContextMeterWithCurrentLocal();
-
-    if (calls.items.len > 0) {
-        const results = try self.runTools(calls.items);
-        for (calls.items, results) |call, r| {
-            const tool_msg = try toolResultMessage(self.arena, .openai, call.id, r.text, r.is_error);
-            try self.messages.append(tool_msg);
-        }
-        // Judged before the checkpoint, which may append queued images.
-        const stuck = tool_call_repair.brokenCallLoop(self.messages.items);
-        try turn_checkpoint.afterToolBatch(self);
-        // runTurn returns this text as-is (isLoopStop): no nudge re-opens it.
-        if (stuck) {
-            try self.say("{s}\n", .{tool_call_repair.loop_stop_text});
-            return tool_call_repair.loop_stop_text;
-        }
-        if (eval_control.shouldStopAfterBatch(calls.items, self.eval_repair_pending)) {
-            if (try grantRepairTurn(self)) return null;
-            return eval_control.verifier_hard_stop;
-        }
-        if (self.yielded) |handoff| return handoff;
-        if (self.completed) |result| return result;
-        return null;
-    }
-
-    // finish_reason is optional on raw provider JSON — some gateways omit it,
-    // and the non-streaming subagent path runs stepOpenAI on that raw JSON
-    // (the reassembled stream always fills it in, but a subagent/plain body may
-    // not). An unconditional `.?` here panicked the whole harness on that input;
-    // null-guard it like every other field read in this file (#134 audit P0).
-    if (choice.get("finish_reason")) |finish| {
-        if (finish == .string and !std.mem.eql(u8, finish.string, "stop")) try self.say("[stopped: {s}]\n", .{finish.string});
-    }
-    return final_text;
+    return @import("agent_chat_step.zig").step(@import("agent_chat_native.zig"), self, root);
 }
 
 /// One turn's response, handed to the step function for this wire.
@@ -369,6 +283,7 @@ pub fn assembleStream(self: *Agent, body: []const u8) !?std.json.ObjectMap {
 pub const assembleAnthropic = @import("anthropic_assemble.zig").assembleAnthropic;
 
 const chat_tool_calls = @import("chat_tool_calls.zig");
+const sse_error = @import("sse_error_event.zig");
 
 pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
     const result_arena = self.messageMutationAlloc();
@@ -384,10 +299,12 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
     var extra_content: ?Value = null;
     var saw_chunk = false;
     var saw_done = false; // `data: [DONE]`: the stream ended on purpose even without a finish_reason
+    var named_error = false; // the data lines follow an `event: error` name
     var it = std.mem.tokenizeScalar(u8, body, '\n');
     while (it.next()) |raw_line| {
         const payload = ssePayload(raw_line) orelse {
             saw_done = saw_done or std.mem.eql(u8, std.mem.trim(u8, raw_line, " \r"), "data: [DONE]");
+            named_error = sse_error.namesError(raw_line, named_error);
             continue;
         };
         const v = std.json.parseFromSliceLeaky(Value, self.scratchAlloc(), payload, .{ .allocate = .alloc_always }) catch continue; // #124: per-event parse tree is transient (deltas are appendSlice'd into session accumulators)
@@ -395,15 +312,8 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
         // Error-only SSE (`event: error` / `data: {"error":…}`) has no
         // choices chunk. Hand the envelope back so request() reports it
         // instead of falling through to the truncated-body retry (#748).
-        if (v.object.get("error")) |err| if (err != .null) {
-            var env: std.json.ObjectMap = .empty;
-            try env.put(result_arena, "type", .{ .string = "error" });
-            try env.put(result_arena, "error", try util.dupeJsonValue(result_arena, err));
-            return env;
-        };
-        if (v.object.get("type")) |t| if (t == .string and std.mem.eql(u8, t.string, "error")) {
-            return (try util.dupeJsonValue(result_arena, v)).object;
-        };
+        if (try sse_error.envelope(result_arena, v.object, named_error)) |env| return env;
+        named_error = false;
         // The final usage chunk (stream_options.include_usage) may have
         // an empty choices array.
         if (v.object.get("usage")) |u| if (u == .object) {
@@ -515,4 +425,5 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
 test {
     _ = @import("agent_steps_tests.zig");
     _ = @import("anthropic_assemble.zig");
+    _ = @import("sse_error_event.zig");
 }

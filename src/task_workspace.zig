@@ -48,6 +48,7 @@ pub const Workspace = struct {
     branch: []const u8,
     base: []const u8 = "",
     copied: usize = 0,
+    linked: usize = 0,
     setup_ran: bool = false,
     setup_ok: bool = true,
 };
@@ -255,6 +256,7 @@ pub fn create(gpa: Allocator, io: Io, arena: Allocator, opts: CreateOpts) (Creat
         .branch = named.branch,
         .base = readHead(gpa, io, arena, path),
         .copied = prep.copied,
+        .linked = prep.linked,
         .setup_ran = prep.setup_ran,
         .setup_ok = prep.setup_ok,
     };

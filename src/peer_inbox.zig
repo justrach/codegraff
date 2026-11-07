@@ -81,6 +81,35 @@ pub fn pending() bool {
 }
 
 /// True when any parked body starts with `want` (daddy directives).
+/// #1137: a sender marks a status or scope update that needs nothing from the
+/// recipient. It stays readable but never starts a turn on its own.
+pub const fyi_marker = "[fyi] ";
+
+pub fn isFyi(text: []const u8) bool {
+    return std.mem.startsWith(u8, std.mem.trimStart(u8, text, " \t\r\n"), std.mem.trimEnd(u8, fyi_marker, " "));
+}
+
+/// Whether any message parked at or after index `from` asks for a turn.
+pub fn anyNeedsTurnFrom(from: usize) bool {
+    var i = from;
+    while (i < g_len) : (i += 1) {
+        if (!isFyi(textSlice(itemAt(i)))) return true;
+    }
+    return false;
+}
+
+/// Whether any message parked at or after `from` was addressed to this
+/// session (a DM, or the user's own `/tell` on the device room) and asks for
+/// a turn. Unaddressed posts in this folder's room are ambient.
+pub fn anyAddressedNeedsTurnFrom(from: usize) bool {
+    var i = from;
+    while (i < g_len) : (i += 1) {
+        const p = itemAt(i);
+        if ((p.dm or p.device) and !isFyi(textSlice(p))) return true;
+    }
+    return false;
+}
+
 pub fn anyTextPrefixed(want: []const u8) bool {
     var i: usize = 0;
     while (i < g_len) : (i += 1) {
@@ -186,6 +215,10 @@ pub fn formatWake(arena: Allocator) []const u8 {
     return std.fmt.allocPrint(arena, "[peer] {d} unread {s} — parked; peer_message action=inbox when relevant", .{ g_len, who }) catch "[peer] unread — peer_message action=inbox when relevant";
 }
 
+/// #1137: replying is the exception. An unconditional "reply" here produced
+/// acknowledgement turns and restated answers after informational mail.
+pub const inbox_footer = "(inbox cleared — reply with peer_message only to a message that asks you something; [fyi] updates need no reply. Omit session for the room, or name one peer to DM)";
+
 /// Read+clear only after the complete tool result is allocated successfully.
 pub fn takeAll(arena: Allocator) Allocator.Error![]const u8 {
     if (!pending()) return "inbox empty";
@@ -197,7 +230,7 @@ pub fn takeAll(arena: Allocator) Allocator.Error![]const u8 {
         const flag = if (p.device and p.dm) " · device DM" else if (p.device) " · device" else if (p.dm) " · DM" else "";
         buf.writer.print("[peer message from {s}{s}]: {s}\n", .{ fromSlice(p), flag, textSlice(p) }) catch return error.OutOfMemory;
     }
-    buf.writer.writeAll("(inbox cleared — reply with peer_message; omit session for the room, or name one peer to DM)") catch return error.OutOfMemory;
+    buf.writer.writeAll(inbox_footer) catch return error.OutOfMemory;
     const result = try buf.toOwnedSlice();
     clear();
     return result;

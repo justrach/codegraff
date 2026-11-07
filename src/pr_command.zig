@@ -59,12 +59,7 @@ pub const Command = struct {
                 if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
                     if (takesValue(arg[0..eq])) continue;
                 }
-                var known = false;
-                for ([_][]const u8{ "--draft", "--draft=true", "--undo", "--help", "--web", "--force", "--delete-branch", "--squash", "--merge", "--rebase", "--auto", "--disable-auto", "--admin", "--remove-milestone", "--edit-last", "--delete-last", "--create-if-none", "--yes" }) |option| if (std.mem.eql(u8, arg, option)) {
-                    known = true;
-                    break;
-                };
-                if (!known) return error.UnsupportedOption;
+                if (!isSwitch(arg)) return error.UnsupportedOption;
                 continue;
             }
             if (selected != null) return error.AmbiguousSelector;
@@ -74,7 +69,13 @@ pub const Command = struct {
     }
 };
 
-fn takesValue(arg: []const u8) bool {
+/// A known option that takes no value.
+pub fn isSwitch(arg: []const u8) bool {
+    for ([_][]const u8{ "--draft", "--draft=true", "--undo", "--help", "--web", "--force", "--delete-branch", "--squash", "--merge", "--rebase", "--auto", "--disable-auto", "--admin", "--remove-milestone", "--edit-last", "--delete-last", "--create-if-none", "--yes" }) |option| if (std.mem.eql(u8, arg, option)) return true;
+    return false;
+}
+
+pub fn takesValue(arg: []const u8) bool {
     for ([_][]const u8{ "--body", "-b", "--body-file", "-F", "--title", "-t", "--head", "-H", "--base", "-B", "--repo", "-R", "--reviewer", "-r", "--assignee", "-a", "--label", "-l", "--milestone", "-m", "--project", "-p", "--template", "-T" }) |flag| if (std.mem.eql(u8, arg, flag)) return true;
     // #1344: edit/close/comment/merge options; an unknown one used to make an
     // explicit `gh pr edit N` unresolvable, so the claim gate blocked on any

@@ -71,13 +71,21 @@ def main() -> None:
 
             reader = threading.Thread(target=read_stdout, daemon=True)
             reader.start()
+            # Drain stderr while graff runs: an unread pipe fills (about 4 KB on Windows)
+            # and blocks graff mid-write, which reads as a hung reply.
+            stderr_lines: list = []
+            stderr_reader = threading.Thread(target=lambda: stderr_lines.extend(proc.stderr), daemon=True)
+            stderr_reader.start()
 
             def request(rpc_id: int, method: str, params: dict) -> list:
                 proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params}) + "\n")
                 proc.stdin.flush()
                 events = []
                 while True:
-                    event = responses.get(timeout=45)
+                    try:
+                        event = responses.get(timeout=45)
+                    except queue.Empty:
+                        raise AssertionError("no reply to %s within 45s; graff stderr tail:\n%s" % (method, "".join(stderr_lines)[-3000:]))
                     assert "invalid_stdout" not in event and "eof" not in event, event
                     events.append(event)
                     if event.get("id") == rpc_id:
@@ -118,7 +126,7 @@ def main() -> None:
                         prompt(command)
                         assert len(model.requests) == count, command + " unexpectedly started work"
                 proc.stdin.close()
-                assert proc.wait(timeout=15) == 0, proc.stderr.read()
+                assert proc.wait(timeout=15) == 0, "".join(stderr_lines)
             finally:
                 if proc.poll() is None:
                     proc.kill()

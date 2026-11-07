@@ -348,6 +348,13 @@ test "remote image validation rejects malformed data before staging (#615)" {
     , .{});
     try std.testing.expect(!@import("remote_images.zig").stage(&root, bad.object));
     try std.testing.expectEqual(@as(u8, 0), root.pending_image_len);
+    // #1762: a recognized format overrides the declared media_type.
+    const webp = try std.json.parseFromSliceLeaky(Value, arena,
+        \\{"type":"user","text":"read it","images":[
+        \\ {"type":"image_base64","media_type":"image/png","data":"UklGRiQAAABXRUJQVlA4IA=="}]}
+    , .{});
+    try std.testing.expect(@import("remote_images.zig").stage(&root, webp.object));
+    try std.testing.expectEqualStrings("image/webp", root.pending_image.?.media_type);
 }
 
 test "placeholder-only ask_user reply gets an explicit fallback" {

@@ -540,11 +540,12 @@ test "recentContextStart keeps NOTHING verbatim for a subagent-shaped history (t
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
+    // Only the newest model turn and its unread result stay (unreadToolBatch).
     const short = try th.paddedSubHistory(a, 1, "ok");
-    try std.testing.expectEqual(short.items.len, recentContextStart(short.items, 8000));
+    try std.testing.expectEqual(short.items.len - 2, recentContextStart(short.items, 8000));
     const pad = util.repeatBytes("x", 4000);
     const long = try th.paddedSubHistory(a, 10, &pad);
-    try std.testing.expectEqual(long.items.len, recentContextStart(long.items, 8000));
+    try std.testing.expectEqual(long.items.len - 2, recentContextStart(long.items, 8000));
 }
 test "a compacting subagent's handoff restates its task prompt verbatim" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);

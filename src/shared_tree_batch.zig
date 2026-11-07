@@ -1,6 +1,6 @@
 //! #1553: one shared-tree checkpoint holds the whole batch.
 //!
-//! The checkpoint fires once per live peer and acknowledges it on the spot, so
+//! The checkpoint fires once for the peers live now and acknowledges them, so
 //! the re-issued call proceeds. Gating a parallel batch call by call let the
 //! first mutation take the checkpoint and every sibling after it pass the
 //! now-acknowledged gate: one result said "NOT performed" while the other

@@ -81,14 +81,13 @@ window, so compaction is per-provider-per-model.
 
 | Provider | Kind | Auth | Key env |
 |---|---|---|---|
-| anthropic | anthropic | x-api-key | `ANTHROPIC_API_KEY` |
+| anthropic | anthropic | x-api-key (bearer for a Console sign-in) | `ANTHROPIC_API_KEY`, or `graff login anthropic` |
 | codegraff | openai | bearer | `CODEGRAFF_API_KEY` |
 | deepseek | openai | bearer | `DEEPSEEK_API_KEY` |
 | openai | openai | bearer | `OPENAI_API_KEY` |
 | minimax | anthropic | bearer | `MINIMAX_API_KEY` |
 | xiaomi | openai | bearer | `XIAOMI_API_KEY` |
 | codex | responses | bearer | `~/.codex/auth.json` (ChatGPT OAuth) |
-| claude | anthropic | bearer | Claude Code OAuth (`~/.claude/.credentials.json` or macOS keychain) |
 
 `Provider.Kind` has a third variant, `responses` — the OpenAI **Responses
 API** as served by the ChatGPT backend (Codex login). `loadCodexAuth` reads
@@ -103,22 +102,12 @@ synthetic `{output, usage}` object that `stepResponses` consumes — appending
 message/function_call/reasoning items verbatim (they're valid next-turn input)
 and emitting `function_call_output` items for tool results.
 
-The `claude` provider is the **subscription-login** analogue of codex, on the
-Anthropic side: same `anthropic` wire format as the `anthropic` provider, but
-it authenticates with the Claude Code subscription instead of an API key.
-`loadClaudeAuth` reads the `sk-ant-oat…` OAuth access token from Claude Code's
-credentials at startup — `~/.claude/.credentials.json` on Linux, or the macOS
-login keychain (service `Claude Code-credentials`, read by spawning the
-`security` CLI) — and injects it into the `claude` key slot (its `env_key` is a
-non-existent var). Two extra requirements gate that token to the official
-client, both satisfied for this provider: `providerHeaders` adds
-`anthropic-beta: oauth-2025-04-20`, and `buildBody` sends `system` as an array
-of text blocks whose **first** block is exactly the Claude Code identity line,
-with the harness's real prompt as a second (cache-broken) block. Routing places
-`claude` late in `provider_specs`, so a real `ANTHROPIC_API_KEY` always wins for
-the same model name; the subscription is the fallback. The token is read, never
-refreshed — on a 401 after expiry, run `claude` once to refresh it (same caveat
-as codex).
+The `anthropic` provider also accepts an **Anthropic Console sign-in** (ADR
+0281): the `user_oauth` profile Anthropic's CLI writes with `ant auth login`,
+read in the Anthropic SDK's precedence (`ANTHROPIC_API_KEY` wins). Its
+`sk-ant-oat…` token is sent as `Authorization: Bearer` and refreshed through
+`ant auth print-credentials --access-token`. It bills the workspace's API
+credits. graff does not use a claude.ai subscription login.
 
 ### Streaming
 

@@ -1,0 +1,115 @@
+name: release cache benchmark
+
+# Branch-only experiment: no tags, releases, signing, or production cache keys.
+on:
+  push:
+    branches: [perf/nanocompile-ci-measure]
+
+permissions:
+  contents: read
+
+jobs:
+  cold:
+    name: cold (${{ matrix.mode }}, ${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [plain, nano]
+        target: [aarch64-macos, x86_64-macos, x86_64-linux, aarch64-linux, x86_64-windows, aarch64-windows]
+    steps:
+      - uses: actions/checkout@v7
+
+      # Do not use the normal setup action: it restores previous build caches.
+      - name: Install pinned Zig without build caches
+        run: python3 scripts/install-zig-ci.py
+
+      - name: Setup pinned nanocompile
+        if: matrix.mode == 'nano'
+        id: nanocompile
+        uses: ./.github/actions/setup-nanocompile-binary
+        with:
+          binary-base-url: ${{ secrets.NANOCOMPILE_BINARY_BASE_URL }}
+
+      - name: Require the object-store binary for this experiment
+        if: matrix.mode == 'nano'
+        env:
+          RESTORED: ${{ steps.nanocompile.outputs.restored }}
+        run: test "$RESTORED" = true
+
+      - name: Cold build
+        run: python3 scripts/benchmark-release-cache.py --target '${{ matrix.target }}' --mode '${{ matrix.mode }}' --phase cold --portable-host
+
+      - name: Save measured build caches
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            .zig-cache
+            .zig-global-cache
+            zig-pkg
+            .nanocompile-cache
+            .benchmark-state
+          key: release-benchmark-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.mode }}-${{ matrix.target }}
+
+      - name: Save timing results
+        uses: actions/upload-artifact@v7
+        with:
+          name: cold-${{ matrix.mode }}-${{ matrix.target }}
+          path: .benchmark-results/*.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  warm:
+    name: warm (${{ matrix.mode }}, ${{ matrix.target }})
+    needs: cold
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [plain, nano]
+        target: [aarch64-macos, x86_64-macos, x86_64-linux, aarch64-linux, x86_64-windows, aarch64-windows]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pinned Zig without build caches
+        run: python3 scripts/install-zig-ci.py
+
+      - name: Setup pinned nanocompile
+        if: matrix.mode == 'nano'
+        id: nanocompile
+        uses: ./.github/actions/setup-nanocompile-binary
+        with:
+          binary-base-url: ${{ secrets.NANOCOMPILE_BINARY_BASE_URL }}
+
+      - name: Require the object-store binary for this experiment
+        if: matrix.mode == 'nano'
+        env:
+          RESTORED: ${{ steps.nanocompile.outputs.restored }}
+        run: test "$RESTORED" = true
+
+      - name: Restore measured build caches
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            .zig-cache
+            .zig-global-cache
+            zig-pkg
+            .nanocompile-cache
+            .benchmark-state
+          key: release-benchmark-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.mode }}-${{ matrix.target }}
+          fail-on-cache-miss: true
+
+      - name: Warm rebuild or declared-task restore
+        run: python3 scripts/benchmark-release-cache.py --target '${{ matrix.target }}' --mode '${{ matrix.mode }}' --phase warm --portable-host
+
+      - name: Save timing results
+        uses: actions/upload-artifact@v7
+        with:
+          name: warm-${{ matrix.mode }}-${{ matrix.target }}
+          path: .benchmark-results/*.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7

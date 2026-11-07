@@ -9,6 +9,6 @@
     "rootDir": ".",
     "rewriteRelativeImportExtensions": true
   },
-  "include": ["harness.ts", "remote.ts", "orchestrate.ts", "acp.ts", "embed.ts"],
+  "include": ["harness.ts", "remote.ts", "orchestrate.ts", "acp.ts", "embed.ts", "managed.ts", "otel.ts", "worker.ts", "worker-sandbox.ts"],
   "exclude": ["*.test.ts"]
 }

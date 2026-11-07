@@ -108,23 +108,79 @@ and scope task calls appropriately. Review resulting edits before integrating.
   "name": "run_task",
   "arguments": {
     "prompt": "Explain how the configuration parser handles missing values. Cite the relevant files. Do not change files.",
+    "context": "We are on release/v0.0.292; the parser was rewritten last week and the old walker is gone.",
     "timeout_seconds": 120,
     "max_model_calls": 8
   }
 }
 ```
 
-A useful brief includes the concrete task, relevant context, permitted scope,
-and acceptance criteria. There is no inherited client conversation. Prefer
+A useful brief includes the concrete task, permitted scope, and acceptance
+criteria; background the child cannot re-derive goes in `context`. There is no
+inherited client conversation: the child sees only what you pass. Prefer
 small explanations, focused reviews, test runs, and narrowly scoped fixes.
 
 - `prompt`: required, nonblank, at most 32 KiB of UTF-8 text.
-- `timeout_seconds`: 1–300, default 120.
-- `max_model_calls`: 1–32, default 8, shared across the child invocation.
+- `context`: optional background for the child — relevant history, decisions,
+  file paths or constraints. Nonblank, at most 32 KiB of UTF-8 text. It is
+  appended to the child's system prompt. At or below 8 KiB it is passed through
+  verbatim; above that the server summarizes it first, because a fresh child
+  cannot consume the gateway's opaque compaction state and a large handover
+  would otherwise crowd out the task itself. Summarizing runs under the same
+  credentials, so it bills to the same account, and it never touches the
+  workspace: the summarizer runs `--safe` with no tool budget.
+- `timeout_seconds`: 1–300, default 120. The summarizer's own deadline is
+  capped separately at 60s and does not consume this budget.
+- `max_model_calls`: 1–32, default 8, shared across the child invocation. The
+  summarizer runs on its own single-call budget.
 - Root tool calls are capped at 64 per turn.
 
+When Graff calls this tool over HTTP, its transport waits for the validated
+child budget, any required context summarization, and 15 seconds for cleanup
+and the final partial-output reply. Discovery and unrelated tools retain their
+normal deadlines. Other MCP hosts control their own transport timeouts: allow
+at least the task timeout plus 15 seconds, or plus 75 seconds when context
+exceeds 8 KiB. A shorter host timeout can discard the reply; it does not prove
+the child stopped, and this tool has no continuation handle.
+
+`context` carries text only. It cannot set cwd, credentials, model, permission
+mode, or any CLI flag — those still come from the server launch.
+
 The MCP result contains text, `isError`, and schema-described `structuredContent`
-with `text`, `status`, `output_truncated`, `timeout_seconds`, and `max_model_calls`.
+with `text`, `status`, `output_truncated`, `timeout_seconds`, `max_model_calls`,
+`context_chars`, `context_summarized`, `context_used_chars`, `usage_reported`,
+`usage_unavailable_reason`, and `preprocess`. The last three context fields report the context
+the caller sent, whether it was summarized, and how much text the child actually
+received. If summarization fails the task is not run and the error says so,
+rather than silently dropping the context.
+
+The same object is also mirrored under `_meta["codegraff/runTask"]` on the tool
+result, so a client that renders the raw result can show supplied-context size
+and summarization state without parsing prose. Those facts also cross into ACP:
+a completed `tool_call_update` carries `_meta["codegraff/runTask"]` (alongside
+`_meta["graff/view"]` when the result opened a view), so an ACP client such as
+Harness renders them the same way. Only the fields above travel — never the
+task's text and never the caller's context.
+
+**Per-task usage and charge for the child's own execution are not reported.**
+`usage_reported` is always `false`, with `usage_unavailable_reason` naming the
+cause: the task child runs in print mode, which exposes no settled gateway
+charge, and a charge is never derived from list rates
+(`src/pricing_settled.zig`). This is a known limit, not an unimplemented field —
+account-wide gateway usage remains authoritative for what a task cost.
+
+**Preprocessing is reported, separately.** When context had to be summarized,
+`preprocess` carries `cost_usd`, `usage_complete`, `input_tokens`,
+`output_tokens` and `unavailable_reason`. The summarizer runs as a `--json`
+child — print mode reports no settled charge — with its one request line on a
+file-backed stdin, so the engine's exact-charge ingestion supplies the number
+and no pipe has to be fed concurrently. An incomplete report
+(`usage_complete: false`, or any `unpriced_calls` / `missing_usage_calls`) yields
+`cost_usd: null` with a reason; a list-rate estimate is never presented as a
+settlement. Preprocessing is reported in its own object and never folded into
+the child total, so it cannot be double-counted. When no summarization was
+needed, `unavailable_reason` says so and the tokens are zero.
+
 Status is `completed`, `failed`, `timed_out`, or `cancelled`. Process failures and deadlines
 return an error with partial output; changes made before failure are not
 rolled back. Successful exit reports the harness answer, not independent

@@ -21,8 +21,8 @@ NDJSON: split on LF / CR / CRLF. Skip blank lines. Each other line is one
 JSON value.
 
 JSON text sequences: records start with RS (`0x1e`). Strip at most one
-trailing LF per record, then parse one JSON value. Empty payload yields
-nothing.
+trailing LF per record, then parse one JSON value. An empty or
+whitespace-only payload yields nothing.
 
 If `streaming=True`, a second call on the same consumed stream raises
 `StreamConsumed`. In-memory (`streaming=False`) iteration is repeatable —

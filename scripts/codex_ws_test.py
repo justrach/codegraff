@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Deterministic real-PTY tests for Codex transport and mid-turn compaction.
+"""Deterministic real-PTY tests for Codex transport and compaction.
 
 The transport smokes cover WebSocket primary, forced SSE fallback, and
-GRAFF_CODEX_WS=off. The regression scenarios drive real tool loops whose
-server-reported usage crosses compact@ while local history stays tiny. They
-prove both successful compaction and transactional rollback after an empty
-summary across WS -> quiet SSE compaction -> fresh WS.
+GRAFF_CODEX_WS=off. The regression scenarios cross compact@ in a tool loop,
+read the pending results before compaction (ADR 0272), and prove successful
+handoff or empty-summary rollback on a fresh WebSocket for the next turn.
 """
 
 import json
@@ -386,333 +385,6 @@ def run_scenario(
         return ctx_k * 1000
 
 
-def is_repo_context(item: object) -> bool:
-    """ADR 0243's developer item: the repo's instructions section and layout."""
-    if not (isinstance(item, dict) and item.get("role") == "developer"):
-        return False
-    content = item.get("content")
-    first = content[0] if isinstance(content, list) and content else None
-    text = first.get("text", "") if isinstance(first, dict) else ""
-    return isinstance(text, str) and text.startswith(("# Project instructions (from ", "# Project layout ("))
-
-
-def assert_midturn_requests(mock: CodexMock) -> None:
-    requests = mock.recorded_requests()
-    # Four, since #391: the real turn, the pre-compaction note-to-self, the
-    # compaction summary, then the continuation. This scenario is a PLANNED
-    # rollover by construction (the server meter is 90% — over compact@ 80%,
-    # under the 95% recovery boundary; see MIDTURN_TOTAL_TOKENS above), which
-    # is exactly the case #391's note fires on. On the salvage paths — a
-    # provider over-window rejection, or >=95% where compactOrRecover may drop
-    # real history — compact_note.decideContext refuses it and this stays three.
-    if len(requests) != 4:
-        raise AssertionError(
-            f"midturn: expected exactly 4 model requests, got {len(requests)}: {requests!r}"
-        )
-    first, note, compact, final = requests
-    if any("max_output_tokens" in request.body for request in requests):
-        raise AssertionError("midturn: Responses requests must omit max_output_tokens")
-    transports = [request.transport for request in requests]
-    if transports != ["ws", "sse", "sse", "ws"]:
-        raise AssertionError(
-            f"midturn: expected WS -> SSE(note) -> SSE(summary) -> WS, got {transports!r}"
-        )
-    if mock.ws_turns != 2 or mock.sse_turns != 2 or mock.ws_connections != 2:
-        raise AssertionError(
-            "midturn: expected two turns on two fresh WS connections plus two quiet "
-            f"SSE turns; ws_turns={mock.ws_turns} sse_turns={mock.sse_turns} "
-            f"ws_connections={mock.ws_connections}"
-        )
-    # The two synthetic turns are identified by CONTENT, not position, so this
-    # cannot silently pass if their order ever swaps.
-    if not last_user_text(note).startswith("Your context is about to be compacted"):
-        shapes = [
-            (
-                request.transport,
-                last_user_text(request)[:80],
-                str(request.body.get("instructions", ""))[:80],
-            )
-            for request in requests
-        ]
-        raise AssertionError(f"midturn: request 2 is not the #391 note turn: {shapes!r}")
-    if not last_user_text(compact).startswith("Summarize this entire conversation"):
-        raise AssertionError(
-            f"midturn: request 3 is not the compaction summary: {last_user_text(compact)[:120]!r}"
-        )
-    # #195's invariant, checked rather than assumed: the note turn is a quiet
-    # SSE request that opens NO WebSocket. It runs inside runTurn's existing
-    # closeCodexWs bracket, against a throwaway clone of history, so it must
-    # not appear in the WS choreography at all — ws_connections stays 2 and
-    # the post-compaction turn still re-anchors on a socket the pre-compaction
-    # turn never used.
-    if note.connection_id is not None:
-        raise AssertionError(
-            f"midturn: the note turn opened a WebSocket (conn {note.connection_id}); "
-            "it must stay off the WS session it is compacting around"
-        )
-    if first.connection_id == final.connection_id:
-        raise AssertionError("midturn: final request reused the pre-compaction WS")
-    for request in requests:
-        if not mock.has_fresh_parent(request):
-            raise AssertionError(
-                f"midturn: request {request.ordinal} carried stale previous_response_id: "
-                f"{request.body['previous_response_id']!r}"
-            )
-        mock.assert_fresh_anchor(request)
-
-    # The note turn is a bounded, tool-less auxiliary call on its own persona —
-    # never the root prompt, which would hand it the whole tool catalog and its
-    # own previous note.
-    if "tools" in note.body or not str(note.body.get("instructions", "")).startswith(
-        "You are writing a private note to your future self"
-    ):
-        raise AssertionError(
-            f"midturn: the note turn was not the bounded tool-less persona call: {note.body!r}"
-        )
-
-    # #391 END TO END, on the wire. The note is written before the summary, so
-    # every request AFTER it must carry it in `instructions` — the system
-    # prompt, which compaction cannot rewrite — while the request before it
-    # carries nothing.
-    if NOTE_BLOCK_HEADER in str(first.body.get("instructions", "")):
-        raise AssertionError("midturn: a note block existed before any note was written")
-    for label, request in (("summary", compact), ("post-compaction", final)):
-        instructions = str(request.body.get("instructions", ""))
-        if NOTE_BLOCK_HEADER not in instructions or MIDTURN_NOTE not in instructions:
-            raise AssertionError(
-                f"midturn: the {label} request did not carry the note-to-self VERBATIM "
-                f"in its system prompt: {instructions[-400:]!r}"
-            )
-    # …and it is STATE, not conversation: the post-compaction turn's history is
-    # the handoff summary alone. If the note ever appears in `input` it has
-    # become something a later compaction can summarize away.
-    final_json = json.dumps(final.body.get("input") or [], separators=(",", ":"))
-    if NOTE_BLOCK_HEADER in final_json or MIDTURN_NOTE in final_json:
-        raise AssertionError(
-            "midturn: the note leaked into conversation history, where the next "
-            f"compaction would paraphrase it away: {final_json[:400]!r}"
-        )
-
-    first_input = first.body.get("input")
-    if (
-        first.body.get("type") != "response.create"
-        or not isinstance(first_input, list)
-        or not any(user_text(item) == MIDTURN_PROMPT for item in first_input)
-        or "tools" not in first.body
-    ):
-        raise AssertionError(
-            f"midturn: first WS request was not full tool-enabled input: {first.body!r}"
-        )
-
-    compact_input = compact.body.get("input")
-    compact_texts = (
-        [text for item in compact_input if (text := user_text(item)) is not None]
-        if isinstance(compact_input, list)
-        else []
-    )
-    compact_types = (
-        [item.get("type") for item in compact_input if isinstance(item, dict)]
-        if isinstance(compact_input, list)
-        else []
-    )
-    compact_json = json.dumps(compact.body, separators=(",", ":"))
-    if "reasoning" in compact_types or MIDTURN_REASONING_MARKER in compact_json:
-        raise AssertionError(
-            "midturn: SSE compaction request retained the active-loop reasoning item"
-        )
-    if (
-        compact.connection_id is not None
-        or "tools" in compact.body
-        or MIDTURN_PROMPT not in compact_texts
-        or "function_call" not in compact_types
-        or "function_call_output" not in compact_types
-        or not any(
-            text.startswith("Summarize this entire conversation")
-            for text in compact_texts
-        )
-    ):
-        raise AssertionError(
-            f"midturn: compaction request was not a full, tool-free SSE summary request: {compact.body!r}"
-        )
-
-    final_input = final.body.get("input")
-    # ADR 0221: where loaded tools ride additional_tools items, a compacted
-    # history re-announces them next to the handoff. ADR 0243: a full
-    # re-anchor leads with the repo context (project instructions, layout) as
-    # one developer item. Nothing else may ride along.
-    handoff_items = (
-        [
-            item
-            for item in final_input
-            if not (isinstance(item, dict) and (item.get("type") == "additional_tools" or is_repo_context(item)))
-        ]
-        if isinstance(final_input, list)
-        else []
-    )
-    if isinstance(final_input, list) and any(is_repo_context(item) for item in final_input[1:]):
-        raise AssertionError(f"midturn: the repo context item must lead the re-anchor: {final_input!r}")
-    final_texts = (
-        [text for item in final_input if (text := user_text(item)) is not None]
-        if isinstance(final_input, list)
-        else []
-    )
-    if (
-        final.body.get("type") != "response.create"
-        or not isinstance(final_input, list)
-        or len(handoff_items) != 1
-        or len(final_texts) != 1
-        or not final_texts[0].startswith(
-            "Context: the earlier conversation was compacted"
-        )
-        or MIDTURN_SUMMARY not in final_texts[0]
-        or "tools" not in final.body
-    ):
-        raise AssertionError(
-            "midturn: final WS request did not fully re-anchor on the handoff: "
-            f"{final.body!r}"
-        )
-
-
-def assert_transactional_requests(mock: CodexMock) -> None:
-    requests = mock.recorded_requests()
-    # Four since #391 — the note turn precedes the summary here too. The note
-    # is written and kept even though this compaction then FAILS: it is state
-    # about the live conversation, not about the summary, and the rollback
-    # restores history the note still describes correctly.
-    if len(requests) != 4:
-        raise AssertionError(
-            "transactional: expected exactly 4 model requests, "
-            f"got {len(requests)}: {requests!r}"
-        )
-    first, note, compact, final = requests
-    if any("max_output_tokens" in request.body for request in requests):
-        raise AssertionError("transactional: Responses requests must omit max_output_tokens")
-    transports = [request.transport for request in requests]
-    if transports != ["ws", "sse", "sse", "ws"]:
-        raise AssertionError(
-            f"transactional: expected WS -> SSE(note) -> SSE(summary) -> WS, got {transports!r}"
-        )
-    if mock.ws_turns != 2 or mock.sse_turns != 2 or mock.ws_connections != 2:
-        raise AssertionError(
-            "transactional: expected two turns on two fresh WS connections plus "
-            f"two quiet SSE turns; ws_turns={mock.ws_turns} sse_turns={mock.sse_turns} "
-            f"ws_connections={mock.ws_connections}"
-        )
-    if not last_user_text(note).startswith(NOTE_INSTRUCTION_HEAD):
-        raise AssertionError(
-            f"transactional: request 2 is not the #391 note turn: {last_user_text(note)[:120]!r}"
-        )
-    if note.connection_id is not None or "tools" in note.body:
-        raise AssertionError(
-            "transactional: the note turn must be a tool-less SSE request that "
-            f"opens no WebSocket: {note.body!r}"
-        )
-    if first.connection_id == final.connection_id:
-        raise AssertionError(
-            "transactional: final request reused the pre-compaction WS"
-        )
-    for request in requests:
-        if not mock.has_fresh_parent(request):
-            raise AssertionError(
-                f"transactional: request {request.ordinal} carried stale "
-                f"previous_response_id: {request.body['previous_response_id']!r}"
-            )
-        mock.assert_fresh_anchor(request)
-
-    first_input = first.body.get("input")
-    if (
-        first.body.get("type") != "response.create"
-        or not isinstance(first_input, list)
-        or not any(user_text(item) == TRANSACTIONAL_PROMPT for item in first_input)
-        or "tools" not in first.body
-    ):
-        raise AssertionError(
-            "transactional: first WS request was not full tool-enabled input: "
-            f"{first.body!r}"
-        )
-
-    compact_input = compact.body.get("input")
-    compact_texts = (
-        [text for item in compact_input if (text := user_text(item)) is not None]
-        if isinstance(compact_input, list)
-        else []
-    )
-    compact_json = json.dumps(compact.body, separators=(",", ":"))
-    if (
-        compact.connection_id is not None
-        or "tools" in compact.body
-        or TRANSACTIONAL_PROMPT not in compact_texts
-        or TRANSACTIONAL_REASONING_MARKER in compact_json
-        or not any(
-            text.startswith("Summarize this entire conversation")
-            for text in compact_texts
-        )
-    ):
-        raise AssertionError(
-            "transactional: second request was not the pruned, synthetic SSE "
-            f"summary request: {compact.body!r}"
-        )
-
-    final_input = final.body.get("input")
-    final_texts = (
-        [text for item in final_input if (text := user_text(item)) is not None]
-        if isinstance(final_input, list)
-        else []
-    )
-    final_objects = (
-        [item for item in final_input if isinstance(item, dict)]
-        if isinstance(final_input, list)
-        else []
-    )
-    reasoning = [
-        item
-        for item in final_objects
-        if item.get("type") == "reasoning" and item.get("id") == "rs_transactional_1"
-    ]
-    calls = [
-        item
-        for item in final_objects
-        if item.get("type") == "function_call"
-        and item.get("id") == "fc_transactional_1"
-        and item.get("call_id") == TRANSACTIONAL_CALL_ID
-    ]
-    outputs = [
-        item
-        for item in final_objects
-        if item.get("type") == "function_call_output"
-        and item.get("call_id") == TRANSACTIONAL_CALL_ID
-        and isinstance(item.get("output"), str)
-        and len(item["output"]) > 0
-    ]
-    leaked_summary_response = any(
-        item.get("id") == "msg_transactional_empty_summary" for item in final_objects
-    )
-    if (
-        final.body.get("type") != "response.create"
-        or not isinstance(final_input, list)
-        or "tools" not in final.body
-        or TRANSACTIONAL_PROMPT not in final_texts
-        or any(
-            text.startswith("Summarize this entire conversation")
-            for text in final_texts
-        )
-        or not any(
-            isinstance(item.get("encrypted_content"), str)
-            and item["encrypted_content"].startswith(TRANSACTIONAL_REASONING_MARKER)
-            and len(item["encrypted_content"]) == MIDTURN_REASONING_BYTES
-            for item in reasoning
-        )
-        or len(calls) != 1
-        or len(outputs) != 1
-        or leaked_summary_response
-    ):
-        raise AssertionError(
-            "transactional: final WS request did not restore the original prompt, "
-            "reasoning, function call, and output without the synthetic compact "
-            f"instruction: {final.body!r}"
-        )
-
-
 def run_midturn_compaction_scenario(
     tmp: str, codex_home: str, port: int, mock: CodexMock
 ) -> None:
@@ -750,6 +422,10 @@ def run_midturn_compaction_scenario(
         session.pump_for(0.1)
         rendered = terminal_text(bytes(session.raw[cursor:]))
         assert_compaction_meter("midturn", rendered)
+        session.wait_for_prompt(start=cursor)
+        followup = len(session.raw)
+        session.send_line("continue after the context handoff")
+        session.wait_for_literal(MIDTURN_FINAL, start=followup)
         assert_midturn_requests(mock)
         session.send_key("ctrl-d")
         result = session.read_until_exit(5.0)
@@ -801,6 +477,15 @@ def run_transactional_compaction_scenario(
             raise AssertionError(
                 f"transactional: empty summary was incorrectly installed:\n{rendered}"
             )
+        session.wait_for_prompt(start=cursor)
+        # Inspect rollback after ONE empty summary, not #379's repeated-failure
+        # escalation. Keep the next real turn below the automatic cut line.
+        setting = len(session.raw)
+        session.send_line("/compact-at 95")
+        session.wait_for_prompt(start=setting)
+        followup = len(session.raw)
+        session.send_line("continue after the failed context handoff")
+        session.wait_for_literal(TRANSACTIONAL_FINAL, start=followup)
         assert_transactional_requests(mock)
         session.send_key("ctrl-d")
         result = session.read_until_exit(5.0)
@@ -809,3 +494,6 @@ def run_transactional_compaction_scenario(
                 "transactional: REPL did not exit cleanly: "
                 f"exit={result.exit_code} timed_out={result.timed_out}"
             )
+
+
+from codex_ws_assertions import assert_midturn_requests, assert_transactional_requests

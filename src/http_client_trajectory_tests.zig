@@ -1,4 +1,5 @@
 //! Production-shaped model-call trajectories that sit above the transport adapter.
+//! Workers explicitly share the fixture cwd: Git worktree lifecycle is not under test.
 
 const std = @import("std");
 const Io = std.Io;
@@ -69,13 +70,14 @@ test "background subagent tool recovers TLS and completes through agent_output" 
         .io = io,
         .client = &runtime.client,
         .provider = support.provider(url),
+        .agent_cwd = ".",
         .registry = null,
         .from_sub = false,
         .approvals = null,
         .tracer = null,
     };
     const parsed = try std.json.parseFromSlice(std.json.Value, gpa,
-        \\{"description":"tls-background-child","prompt":"reply once","run_in_background":true}
+        \\{"description":"tls-background-child","prompt":"reply once","run_in_background":true,"isolation":"shared_cwd"}
     , .{});
     defer parsed.deinit();
 
@@ -142,12 +144,13 @@ test "#753 backtest: three background handles replay after the live table is gon
         .from_sub = false,
         .approvals = null,
         .tracer = null,
+        .agent_cwd = ".",
     };
 
     var ids: [3]u32 = undefined;
     for (0..3) |i| {
         const parsed = try std.json.parseFromSlice(std.json.Value, gpa,
-            \\{"description":"scan","prompt":"reply once","run_in_background":true}
+            \\{"description":"scan","prompt":"reply once","run_in_background":true,"isolation":"shared_cwd"}
         , .{});
         defer parsed.deinit();
         http_client.injectConstructionTlsForTest(0);
@@ -160,6 +163,7 @@ test "#753 backtest: three background handles replay after the live table is gon
     for (ids) |id| {
         const first = try subagent.agentOutput(gpa, io, id, 1);
         defer gpa.free(first.text);
+        if (first.is_error) std.debug.print("background fixture failed: {s}\n", .{first.text});
         try std.testing.expect(!first.is_error);
         try std.testing.expect(std.mem.indexOf(u8, first.text, "child-ok") != null);
     }

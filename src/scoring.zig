@@ -39,10 +39,12 @@ pub fn providerClass(model: []const u8) []const u8 {
         .{ .needle = "-mini", .tier = "small" }, // -mini suffix, not "minimax"/"gemini"
         .{ .needle = "lite", .tier = "small" },
         .{ .needle = "nano", .tier = "small" },
-        // gpt-5.x rungs (#291): family-agnostic like "haiku"/"flash" so a
-        // future gpt-5.7-terra keeps its tier; must precede "gpt-5".
+        // GPT rungs (#291): family-agnostic like "haiku"/"flash" so a later
+        // generation keeps its tier; must precede "gpt-6"/"gpt-5". Sol is the
+        // mid rung under Astra on the GPT-6 ladder.
         .{ .needle = "terra", .tier = "mid" },
         .{ .needle = "luna", .tier = "small" },
+        .{ .needle = "-sol", .tier = "mid" },
         .{ .needle = "opus", .tier = "frontier" },
         .{ .needle = "gpt-6", .tier = "frontier" }, // astra and later GPT-6 flagships
         .{ .needle = "gpt-5", .tier = "frontier" }, // sol and bare gpt-5.x stay frontier
@@ -261,10 +263,10 @@ test "score signing message is canonical and cross-language stable" {
 test "providerClass buckets models by capability tier" {
     try std.testing.expectEqualStrings("frontier", providerClass("claude-opus-4-8"));
     try std.testing.expectEqualStrings("frontier", providerClass("gpt-5.5"));
-    try std.testing.expectEqualStrings("frontier", providerClass("gpt-5.6-sol"));
     try std.testing.expectEqualStrings("frontier", providerClass("gpt-6-astra"));
-    try std.testing.expectEqualStrings("mid", providerClass("gpt-5.6-terra")); // rung needle beats "gpt-5"
-    try std.testing.expectEqualStrings("small", providerClass("gpt-5.6-luna"));
+    try std.testing.expectEqualStrings("mid", providerClass("gpt-6-sol")); // rung needle beats "gpt-6"
+    try std.testing.expectEqualStrings("mid", providerClass("gpt-6.1-sol"));
+    try std.testing.expectEqualStrings("small", providerClass("gpt-6-luna"));
     try std.testing.expectEqualStrings("frontier", providerClass("deepseek-v4-pro"));
     try std.testing.expectEqualStrings("frontier", providerClass("grok-4.3"));
     try std.testing.expectEqualStrings("small", providerClass("claude-haiku-4-5"));

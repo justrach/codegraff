@@ -44,11 +44,24 @@ pub fn detect(text: []const u8) ?View {
     return null;
 }
 
-/// The completed `tool_call_update` for a result with text, plus the view
-/// metadata when the text opens with a saved view.
-pub fn writeDone(w: *Io.Writer, session_id: []const u8, id: []const u8, status: []const u8, text: []const u8) !void {
+/// The completed `tool_call_update` for a result with text, plus the metadata
+/// a client needs to render it without parsing prose: the view snapshot when
+/// the text opens with one, and the delegated task's context/usage facts when
+/// it carried them. The two coexist under one `_meta` object.
+pub fn writeDone(w: *Io.Writer, session_id: []const u8, id: []const u8, status: []const u8, text: []const u8, run_task: ?@import("engine_events.zig").RunTaskMeta) !void {
     const content = .{.{ .type = "content", .content = .{ .type = "text", .text = text } }};
-    if (detect(text)) |v| {
+    const base = .{
+        .sessionUpdate = "tool_call_update",
+        .toolCallId = id,
+        .status = status,
+        .content = content,
+    };
+    const view = detect(text);
+    const m = run_task;
+    if (view == null and m == null) {
+        return proto.writeNotification(w, "session/update", .{ .sessionId = session_id, .update = base });
+    }
+    if (view != null and m == null) {
         return proto.writeNotification(w, "session/update", .{
             .sessionId = session_id,
             .update = .{
@@ -56,17 +69,30 @@ pub fn writeDone(w: *Io.Writer, session_id: []const u8, id: []const u8, status: 
                 .toolCallId = id,
                 .status = status,
                 .content = content,
-                ._meta = .{ .@"graff/view" = v },
+                ._meta = .{ .@"graff/view" = view.? },
             },
         });
     }
-    try proto.writeNotification(w, "session/update", .{
+    if (view == null) {
+        return proto.writeNotification(w, "session/update", .{
+            .sessionId = session_id,
+            .update = .{
+                .sessionUpdate = "tool_call_update",
+                .toolCallId = id,
+                .status = status,
+                .content = content,
+                ._meta = .{ .@"codegraff/runTask" = m.? },
+            },
+        });
+    }
+    return proto.writeNotification(w, "session/update", .{
         .sessionId = session_id,
         .update = .{
             .sessionUpdate = "tool_call_update",
             .toolCallId = id,
             .status = status,
             .content = content,
+            ._meta = .{ .@"graff/view" = view.?, .@"codegraff/runTask" = m.? },
         },
     });
 }
@@ -97,12 +123,40 @@ test "detect: anything else is plain text" {
 test "writeDone: a view result carries _meta graff/view; other results do not" {
     var buf: [4096]u8 = undefined;
     var w: Io.Writer = .fixed(&buf);
-    try writeDone(&w, "s1", "call-1", "completed", "[Rendered view](/h/.graff/views/" ++ hex ++ ".html) — shown");
+    try writeDone(&w, "s1", "call-1", "completed", "[Rendered view](/h/.graff/views/" ++ hex ++ ".html) — shown", null);
     const out = w.buffered();
     try testing.expect(std.mem.indexOf(u8, out, "\"graff/view\":{\"kind\":\"html\",\"path\":\"/h/.graff/views/" ++ hex ++ ".html\",\"id\":\"" ++ hex ++ "\"}") != null);
     try testing.expect(std.mem.indexOf(u8, out, "[Rendered view]") != null); // the text link stays
     var buf2: [1024]u8 = undefined;
     var w2: Io.Writer = .fixed(&buf2);
-    try writeDone(&w2, "s1", "call-2", "completed", "plain");
+    try writeDone(&w2, "s1", "call-2", "completed", "plain", null);
     try testing.expect(std.mem.indexOf(u8, w2.buffered(), "graff/view") == null);
+}
+
+const task_meta: @import("engine_events.zig").RunTaskMeta = .{
+    .context_chars = 40,
+    .context_used_chars = 7,
+    .context_summarized = true,
+    .usage_reported = false,
+    .usage_unavailable_reason = "no settlement",
+};
+
+test "writeDone: a delegated task's facts ride _meta alongside a view, and alone" {
+    var buf: [4096]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try writeDone(&w, "s1", "call-1", "completed", "plain answer", task_meta);
+    const out = w.buffered();
+    try testing.expect(std.mem.indexOf(u8, out, "\"codegraff/runTask\":{\"context_chars\":40,\"context_used_chars\":7,\"context_summarized\":true,\"usage_reported\":false,\"usage_unavailable_reason\":\"no settlement\"}") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "graff/view") == null);
+    // Neither the answer nor the caller's context travels with the facts.
+    try testing.expect(std.mem.indexOf(u8, out, "plain answer") != null); // still the tool content
+    try testing.expect(std.mem.count(u8, out, "plain answer") == 1);
+    // A view and the facts coexist in one _meta object.
+    var buf2: [4096]u8 = undefined;
+    var w2: Io.Writer = .fixed(&buf2);
+    try writeDone(&w2, "s1", "call-2", "completed", "[MCP app](/h/.graff/mcp-apps/" ++ hex ++ ".html)", task_meta);
+    const both = w2.buffered();
+    try testing.expect(std.mem.indexOf(u8, both, "\"graff/view\":") != null);
+    try testing.expect(std.mem.indexOf(u8, both, "\"codegraff/runTask\":") != null);
+    try testing.expect(std.mem.indexOf(u8, both, "\"_meta\":{\"graff/view\":") != null);
 }

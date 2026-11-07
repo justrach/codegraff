@@ -54,7 +54,7 @@ pub fn writeRows(
             ),
         };
     }
-    std.mem.sort(models_rank.Scored, ranked, {}, models_rank.scoredLess);
+    @import("stable_sort.zig").sort(models_rank.Scored, ranked, {}, models_rank.scoredLess);
     for (ranked) |r| {
         const m = models[r.idx];
         try writeRow(out, .{

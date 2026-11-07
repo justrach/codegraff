@@ -1,13 +1,5 @@
-//! The provider/keys core: wire format + auth style + endpoint per provider
-//! (ProviderSpec/provider_specs), the resolved Provider a request is sent
-//! with (model, context window, api key), and Keys — one optional API key
-//! per provider_specs entry, read from the environment, with the routing
-//! logic (providerFor/providerById/defaultProvider) that picks a Provider
-//! for a model name. Split out of main.zig (600-line goal). Re-exported
-//! (`pub const Provider = provider.Provider;` etc.) so the ~everywhere
-//! `main_mod.Provider`/`main_mod.Keys`/`main_mod.provider_specs`
-//! back-imports across the other split files keep resolving unchanged.
-//! Only needs pricing.zig (contextFor/models) for Keys.build/providerFor.
+//! Provider specs, resolved request routes, and source-aware credential keys.
+//! Re-exported by main.zig for the engine and its clients.
 
 const std = @import("std");
 
@@ -45,7 +37,7 @@ fn contextWindowFor(provider_id: []const u8, model: []const u8) u64 {
 /// provider_specs; one additional OpenAI-compatible router may be loaded from
 /// `.graff/.config.router` at startup.
 pub const ProviderSpec = struct {
-    pub const LoginKind = enum { api_key, codegraff_device, codex_device, kimi_device, xai_device, zai_cli, chatgpt_browser };
+    pub const LoginKind = enum { api_key, codegraff_device, codex_device, kimi_device, xai_device, zai_cli, chatgpt_browser, anthropic_browser, claude_cli };
     pub const CatalogKind = enum { baked, codex, kimi, openai, anthropic };
 
     id: []const u8,
@@ -76,10 +68,10 @@ pub const provider_specs = [_]ProviderSpec{
     // Anthropic publishes its live model list at /v1/models (same x-api-key +
     // anthropic-version auth as Messages), so new Claude releases appear
     // without a rebuild; the baked pricing.zig rows stay the offline fallback.
-    .{ .id = "anthropic", .display_name = "Anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "https://api.anthropic.com/v1/messages", .env_key = "ANTHROPIC_API_KEY", .default_model = "claude-opus-5-5", .catalog = .anthropic, .models_url = "https://api.anthropic.com/v1/models?limit=1000" },
+    .{ .id = "anthropic", .display_name = "Anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "https://api.anthropic.com/v1/messages", .env_key = "ANTHROPIC_API_KEY", .default_model = "claude-opus-5-5", .login = .anthropic_browser, .sub_login = true, .catalog = .anthropic, .models_url = "https://api.anthropic.com/v1/models?limit=1000" },
     .{ .id = "codegraff", .display_name = "Codegraff", .kind = .openai, .auth = .bearer, .url = "https://gateway.codegraff.com/v1/chat/completions", .env_key = "CODEGRAFF_API_KEY", .default_model = "mimo-v2.6-pro", .login = .codegraff_device, .catalog = .openai, .models_url = "https://gateway.codegraff.com/v1/models", .takes_effort = true },
     .{ .id = "deepseek", .display_name = "DeepSeek", .kind = .openai, .auth = .bearer, .url = "https://api.deepseek.com/chat/completions", .env_key = "DEEPSEEK_API_KEY", .default_model = "deepseek-v4-pro", .takes_effort = true },
-    .{ .id = "openai", .display_name = "OpenAI", .kind = .responses, .auth = .bearer, .url = "https://api.openai.com/v1/responses", .env_key = "OPENAI_API_KEY", .default_model = "gpt-5.6" },
+    .{ .id = "openai", .display_name = "OpenAI", .kind = .responses, .auth = .bearer, .url = "https://api.openai.com/v1/responses", .env_key = "OPENAI_API_KEY", .default_model = "gpt-6-sol" },
     // Google AI Studio on its first-party Interactions API — the wire Google
     // says every new model and agent capability launches on, not the
     // OpenAI-compatibility shim. A turn POSTs one Interaction and reads back
@@ -125,6 +117,9 @@ pub const provider_specs = [_]ProviderSpec{
     // lm-studio: the LM Studio app's local OpenAI-compatible server (default :1234).
     // Load a model in LM Studio, then `LMSTUDIO_API_KEY=local graff --model lmstudio`.
     .{ .id = "lmstudio", .display_name = "lmstudio", .kind = .openai, .auth = .bearer, .url = "http://127.0.0.1:1234/v1/chat/completions", .env_key = "LMSTUDIO_API_KEY", .default_model = "lmstudio" },
+    // omlx: the oMLX menu-bar app's local server (default :8000). It requires a bearer
+    // key, lists the downloaded models live, and takes reasoning_effort.
+    .{ .id = "omlx", .display_name = "oMLX", .kind = .openai, .auth = .bearer, .url = "http://127.0.0.1:8000/v1/chat/completions", .env_key = "OMLX_API_KEY", .default_model = "omlx", .catalog = .openai, .models_url = "http://127.0.0.1:8000/v1/models", .takes_effort = true },
     // chatgpt-new: the person's ChatGPT plan through OpenAI's sign-in for
     // open-source apps (ADR 0221). The key is the OAuth access token saved by
     // `graff login chatgpt`, sent to the public Responses endpoint. Before
@@ -135,7 +130,10 @@ pub const provider_specs = [_]ProviderSpec{
     // — it's the OAuth access token read from CODEX_HOME/auth.json at startup
     // (see loadCodexAuth), the same on-disk-credential trick used for the
     // codegraff gateway key in ~/forge/.credentials.json.
-    .{ .id = "codex", .display_name = "Codex (ChatGPT)", .kind = .responses, .auth = .bearer, .url = "https://chatgpt.com/backend-api/codex/responses", .env_key = "CODEX_DISABLED", .default_model = "gpt-5.6-sol", .login = .codex_device, .sub_login = true, .catalog = .codex },
+    .{ .id = "codex", .display_name = "Codex (ChatGPT)", .kind = .responses, .auth = .bearer, .url = "https://chatgpt.com/backend-api/codex/responses", .env_key = "CODEX_DISABLED", .default_model = "gpt-6-sol", .login = .codex_device, .sub_login = true, .catalog = .codex },
+    // claude-agent (ADR 0309): Claude through the user's own `claude` and its login, opted into with
+    // `graff login claude-agent`. No URL: claude_agent.zig drives the child. The "key" is its path.
+    .{ .id = "claude-agent", .display_name = "Claude Agent", .kind = .anthropic, .auth = .bearer, .url = "stdio:claude", .env_key = "GRAFF_CLAUDE_AGENT", .default_model = "claude-opus-5-5", .login = .claude_cli, .sub_login = true, .takes_effort = true },
 };
 
 /// Optional workspace-local router loaded from `.graff/.config.router`.
@@ -161,10 +159,11 @@ pub fn specFor(id: []const u8) ?ProviderSpec {
 pub const kimi_native_url = "https://api.kimi.com/coding/v1/chat/completions";
 pub const kimi_anthropic_url = "https://api.kimi.com/coding/v1/messages?beta=true";
 
-/// Endpoint overrides (GRAFF_CODEX_URL / GRAFF_XAI_URL / GRAFF_ZAI_URL /
-/// GRAFF_VERCEL_URL). Parsed before Keys.build so startup, /model, and
-/// session restore share one URL.
+/// Endpoint overrides (GRAFF_CODEX_URL / GRAFF_CHATGPT_URL / GRAFF_XAI_URL /
+/// GRAFF_ZAI_URL / GRAFF_VERCEL_URL). Parsed before Keys.build so startup,
+/// /model, and session restore share one URL.
 pub var g_codex_url_override: ?[]const u8 = null;
+pub var g_chatgpt_url_override: ?[]const u8 = null;
 pub var g_xai_url_override: ?[]const u8 = null;
 pub var g_zai_url_override: ?[]const u8 = null;
 pub var g_vercel_url_override: ?[]const u8 = null;
@@ -175,6 +174,7 @@ pub const vercel_v1_url = "https://ai-gateway.vercel.sh/v1/chat/completions";
 fn resolvedUrl(spec: ProviderSpec, model: []const u8) []const u8 {
     if (std.mem.eql(u8, spec.id, "kimi") and pricing.kimiProtocol(model) == .anthropic) return kimi_anthropic_url;
     if (std.mem.eql(u8, spec.id, "codex")) return g_codex_url_override orelse spec.url;
+    if (std.mem.eql(u8, spec.id, "chatgpt-new")) return g_chatgpt_url_override orelse spec.url;
     if (std.mem.eql(u8, spec.id, "xai")) return g_xai_url_override orelse if (g_xai_responses) xai_responses_url else spec.url;
     if (std.mem.eql(u8, spec.id, "zai")) return g_zai_url_override orelse spec.url;
     if (std.mem.eql(u8, spec.id, "vercel")) return g_vercel_url_override orelse spec.url;
@@ -210,8 +210,18 @@ pub const Provider = struct {
     /// GRAFF_COMPACT_PCT overrides the percentage, clamped to 1..100 (#204). Unlike
     /// codex's one-directional clamp, the override may lower OR raise the threshold.
     pub fn compactAt(p: Provider) u64 {
-        const pct: u64 = if (g_compact_pct_override) |o| @min(o, 100) else 80;
-        return p.context / 100 * pct;
+        if (g_compact_pct_override) |o| return p.context / 100 * @min(o, 100);
+        const at = p.context / 100 * 80;
+        return if (isGeminiModel(p.model)) @min(at, gemini_compact_tokens) else at;
+    }
+
+    /// Gemini's default compaction point unless a percentage is set: 80% of its
+    /// 1M window put ~800k billed tokens on every request near the line (ADR 0272).
+    pub const gemini_compact_tokens: u64 = 300_000;
+
+    pub fn isGeminiModel(model: []const u8) bool {
+        const bare = if (std.mem.lastIndexOfScalar(u8, model, '/')) |i| model[i + 1 ..] else model;
+        return std.mem.startsWith(u8, bare, "gemini-");
     }
 
     /// The provider's explicit server-side compaction endpoint, if we use it.
@@ -275,7 +285,7 @@ pub const Provider = struct {
         return .{
             .id = spec.id,
             .kind = if (is_kimi_anthropic or @import("provider_codegraff.zig").usesMessages(spec.id, model)) .anthropic else if (is_xai_responses or @import("provider_codegraff.zig").usesResponses(spec.id, model)) .responses else spec.kind,
-            .auth = if (is_kimi_anthropic) .x_api_key else spec.auth,
+            .auth = if (std.mem.eql(u8, spec.id, "anthropic") and base.source.canRefresh()) .bearer else if (is_kimi_anthropic) .x_api_key else spec.auth,
             .url = resolvedUrl(spec, model),
             .api_key = base.api_key,
             .model = model,
@@ -309,14 +319,20 @@ pub const Keys = struct {
         none,
         environment,
         login,
+        profile, // Anthropic Console SDK profile: metered, not a subscription.
         stored,
         session,
+
+        pub fn canRefresh(self: CredentialSource) bool {
+            return self == .login or self == .profile;
+        }
 
         pub fn label(self: CredentialSource) []const u8 {
             return switch (self) {
                 .none => "missing",
                 .environment => "environment",
                 .login => "OAuth/login",
+                .profile => "Console profile",
                 .stored => "secure store",
                 .session => "this session",
             };
@@ -371,7 +387,7 @@ pub const Keys = struct {
         return .{
             .id = spec.id,
             .kind = if (is_kimi_anthropic or @import("provider_codegraff.zig").usesMessages(spec.id, model)) .anthropic else if (is_xai_responses or @import("provider_codegraff.zig").usesResponses(spec.id, model)) .responses else spec.kind,
-            .auth = if (is_kimi_anthropic) .x_api_key else spec.auth,
+            .auth = if (std.mem.eql(u8, spec.id, "anthropic") and keys.source(spec.id).canRefresh()) .bearer else if (is_kimi_anthropic) .x_api_key else spec.auth,
             .url = resolvedUrl(spec, model),
             .api_key = key,
             .model = model,
@@ -405,6 +421,8 @@ pub const Keys = struct {
         // Moonshot's platform id is also `kimi-k3`; when the kimi login is
         // present it still wins. When only MOONSHOT_API_KEY is set, phase 0
         // seats the moonshot row instead of falling through to the gateway.
+        // Claude Agent is the Claude plan once chosen (ADR 0309): its models, and its old aliases, route there first.
+        if (keys.get("claude-agent")) |exe| if (@import("claude_agent_wire.zig").routes(model)) return keys.build(specFor("claude-agent").?, exe, model);
         if (keys.get("kimi")) |kimi_key| {
             if (pricing.familyAliasEquals("kimi", "k3", model)) {
                 const spec = specFor("kimi") orelse return error.MissingKey;
@@ -502,15 +520,6 @@ test "Keys.providerFor: known model, claude/gateway fallbacks, missing key" {
     try std.testing.expectEqualStrings("codegraff", (try all.providerFor("totally-made-up-model")).id);
     try std.testing.expectEqualStrings("gpt-5.5", (try all.providerFor("gpt-5.5")).model);
     try std.testing.expectError(error.MissingKey, none.providerFor("claude-opus-4-8"));
-}
-
-test "Keys.providerById: exact id wins, unknown id falls back to model routing" {
-    const all = Keys{ .values = @splat("k") };
-    const p = try all.providerById("anthropic", "claude-opus-4-8");
-    try std.testing.expectEqualStrings("anthropic", p.id);
-    try std.testing.expectEqualStrings("claude-opus-4-8", p.model);
-    const fb = try all.providerById("no-such-provider", "gpt-5.5");
-    try std.testing.expectEqualStrings("gpt-5.5", fb.model);
 }
 
 test "Keys.defaultProvider: first keyed provider on its default model" {

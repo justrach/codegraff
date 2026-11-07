@@ -261,6 +261,11 @@ pub const tty = struct {
         return n > 0;
     }
 
+    /// Picker/inspector readiness includes bytes already queued by the editor.
+    pub fn pollPrompt(in: *std.Io.Reader, timeout_ms: i32) bool {
+        return queued_pos < queued_len or in.buffered().len > 0 or poll(timeout_ms);
+    }
+
     /// Non-blocking read of pending raw stdin bytes (terminal already in raw
     /// mode); returns the byte count. On Windows it drains queued console
     /// records and emits the ASCII byte of each key-down (Esc->0x1b,
@@ -525,8 +530,8 @@ test "#396 firewall: both completion paths release the terminal" {
     // pin follows the emission, and a second pin holds the sink arm that turns
     // it back into a release. Both halves have to exist or the run never gives
     // the terminal back.
-    const oneshot = @embedFile("session_run.zig");
-    const answer_at = std.mem.indexOf(u8, oneshot, "session.saveSession(root, arena, root.session_name)").?;
+    const oneshot = @embedFile("oneshot.zig");
+    const answer_at = std.mem.lastIndexOf(u8, oneshot, "const saved = save(root, arena);").?;
     const release_at = std.mem.indexOf(u8, oneshot, ".emit(io, .run_finished);").?;
     try std.testing.expect(answer_at < release_at);
     const sink = @embedFile("session_render.zig");

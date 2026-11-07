@@ -1,7 +1,7 @@
 {
   "name": "@codegraff/sdk",
-  "version": "0.4.4",
-  "description": "TypeScript / Node SDK for the codegraff agent — drives `graff --json` over stdio. Types auto-generated from `graff --schema`.",
+  "version": "0.5.0",
+  "description": "TypeScript SDK for native, managed-device, and experimental Worker-native Graff agents.",
   "type": "module",
   "main": "dist/harness.js",
   "types": "dist/harness.d.ts",
@@ -15,6 +15,16 @@
       "types": "./dist/remote.d.ts",
       "import": "./dist/remote.js",
       "default": "./dist/remote.js"
+    },
+    "./managed": {
+      "types": "./dist/managed.d.ts",
+      "import": "./dist/managed.js",
+      "default": "./dist/managed.js"
+    },
+    "./otel": {
+      "types": "./dist/otel.d.ts",
+      "import": "./dist/otel.js",
+      "default": "./dist/otel.js"
     },
     "./orchestrate": {
       "types": "./dist/orchestrate.d.ts",
@@ -30,6 +40,16 @@
       "types": "./dist/embed.d.ts",
       "import": "./dist/embed.js",
       "default": "./dist/embed.js"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "import": "./dist/worker.js",
+      "default": "./dist/worker.js"
+    },
+    "./worker-sandbox": {
+      "types": "./dist/worker-sandbox.d.ts",
+      "import": "./dist/worker-sandbox.js",
+      "default": "./dist/worker-sandbox.js"
     },
     "./package.json": "./package.json",
     "./core.wasm": "./graff-core.wasm"
@@ -51,19 +71,20 @@
   "files": [
     "dist",
     "graff-core.wasm",
-    "README.md"
+    "README.md",
+    "MANAGED.md"
   ],
   "engines": {
     "node": ">=18"
   },
   "license": "Apache-2.0",
   "optionalDependencies": {
-    "@codegraff/graff-darwin-arm64": "0.4.4",
-    "@codegraff/graff-darwin-x64": "0.4.4",
-    "@codegraff/graff-linux-arm64": "0.4.4",
-    "@codegraff/graff-linux-x64": "0.4.4",
-    "@codegraff/graff-win32-arm64": "0.4.4",
-    "@codegraff/graff-win32-x64": "0.4.4"
+    "@codegraff/graff-darwin-arm64": "0.5.0",
+    "@codegraff/graff-darwin-x64": "0.5.0",
+    "@codegraff/graff-linux-arm64": "0.5.0",
+    "@codegraff/graff-linux-x64": "0.5.0",
+    "@codegraff/graff-win32-arm64": "0.5.0",
+    "@codegraff/graff-win32-x64": "0.5.0"
   },
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",

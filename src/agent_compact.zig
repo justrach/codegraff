@@ -118,8 +118,11 @@ pub fn compactPrelude(self: *Agent) ?usize {
 pub fn compact(self: *Agent) anyerror!usize {
     // An opaque item anywhere in history needs the server, never a local summary.
     if (@import("compaction_window.zig").latestBlob(self.messages.items) != null) return error.ServerCompactionRequired;
-    // Clef gateway pruning replaces the client summary when eligible.
-    if (@import("agent_clef_compact.zig").tryCompact(self)) |n| return n;
+    // ADR 0261: both hosted paths require the existing experimental opt-in.
+    const hosted = @import("gateway_compact.zig");
+    if (@import("agent_clef_compact.zig").enabled() and hosted.hasLogin(self.io)) {
+        if (try hosted.run(self)) |freed| return freed;
+    } else if (@import("agent_clef_compact.zig").tryCompact(self)) |n| return n;
     const fork = @import("cache_fork.zig").begin(self); // ADR 0220: read the cached history, not rewrite it
     defer @import("cache_fork.zig").end();
     const pending_tokens = compactPrelude(self) orelse {
@@ -244,6 +247,7 @@ pub fn compact(self: *Agent) anyerror!usize {
     self.goal_note_fp = 0; // the injected goal note died with the old history - re-state in full (#318)
     self.history_rewrites +%= 1; // readers of pasted state (the run's checklist gate) re-carry it (#318)
     installed_summary = true;
+    @import("context_savings.zig").noteCompaction(live_effective_context, self.fullRequestEstimateTokens());
     acp_run.finish(.completed, summary, null);
     // #445: the history the model was reading is gone and the durable file is
     // now the only place its exact wording survives, so THIS is where the #410
@@ -286,7 +290,7 @@ pub fn handoffMessage(self: *Agent, summary: []const u8, discarded: []const Valu
     return handoff_note.handoff(self.arena, self, base, standing, discarded);
 }
 
-fn rootHandoff(self: *Agent, summary: []const u8) ![]const u8 {
+pub fn rootHandoff(self: *Agent, summary: []const u8) ![]const u8 {
     return std.fmt.allocPrint(self.arena,
         \\Context: the earlier conversation was compacted to save space.
         \\Summary of the earlier work:

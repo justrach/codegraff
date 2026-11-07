@@ -71,7 +71,6 @@ fn ctxFromRoot(root: *Agent) ToolCtx {
         .provider = root.provider,
         .subagent_provider = root.subagent_provider,
         .subagent_cross_provider = root.subagent_cross_provider,
-        .mcp_context = root.mcp_context.value,
         .registry = root.registry,
         .from_sub = root.sub,
         .interactive_children = !root.sub and @import("subagent_interactive.zig").enabled.load(.acquire),

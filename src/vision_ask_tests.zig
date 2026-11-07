@@ -25,7 +25,7 @@ fn deepseek() Provider {
 }
 
 fn codex() Provider {
-    return .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-5.6-sol", .context = 270_000 };
+    return .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-6-astra", .context = 270_000 };
 }
 
 /// A Keys table with `logged_in` providers holding a token, installed as the
@@ -89,7 +89,7 @@ test "#380 re-route: an automatic seat that cannot see images moves to one that 
     try std.testing.expectEqual(policy.Source.vision_ask, ask.source);
     // Sub-first: the logged-in flat-rate codex subscription, cheapest rung.
     try std.testing.expectEqualStrings("codex", ask.pin.provider.?.id);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", ask.pin.provider.?.model);
+    try std.testing.expectEqualStrings("gpt-6-luna", ask.pin.provider.?.model);
     try std.testing.expectEqualStrings("vision-ask", ask.source.label());
     try std.testing.expect(ask.note() != null);
 
@@ -202,7 +202,7 @@ test "#380 fast fail: no vision-capable model anywhere refuses the spawn, action
 test "#380 candidate search: sub-first, then provider-local under the cost ceiling" {
     // Ladder rungs bottom-up, so a re-route descends price rather than seizing
     // the frontier model.
-    try std.testing.expectEqualStrings("gpt-5.6-luna", va.visionModelFor("codex").?);
+    try std.testing.expectEqualStrings("gpt-6-luna", va.visionModelFor("codex").?);
     try std.testing.expectEqualStrings("claude-sonnet-5-5", va.visionModelFor("anthropic").?);
     try std.testing.expect(va.visionModelFor("deepseek") == null); // no vision model at any rung
 
@@ -219,7 +219,7 @@ test "#380 candidate search: sub-first, then provider-local under the cost ceili
     withKeys(&keys, &.{"codex"});
     const seat = va.visionSeat(deepseek()).?;
     try std.testing.expectEqualStrings("codex", seat.id);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", seat.model);
+    try std.testing.expectEqualStrings("gpt-6-luna", seat.model);
 
     // An anthropic base with no sub logged in resolves provider-locally, and
     // only because sonnet-5-5 is CHEAPER than the opus it replaces.
@@ -328,8 +328,8 @@ test "#380 phase seat: a whole phase moves at once, and only an automatic one" {
     // uniformly, and reported as vision-ask rather than learned-policy.
     const moved = va.phaseSeat(ladder_seat, &image_tasks, false);
     try std.testing.expect(moved.vision);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", moved.provider.model);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", moved.pin.?.model); // every worker gets it
+    try std.testing.expectEqualStrings("gpt-6-luna", moved.provider.model);
+    try std.testing.expectEqualStrings("gpt-6-luna", moved.pin.?.model); // every worker gets it
     try std.testing.expectEqual(policy.Source.vision_ask, moved.sourceFor(false));
     try std.testing.expectEqual(policy.Source.vision_ask, moved.sourceFor(true)); // even with a genome override
 
@@ -351,8 +351,8 @@ test "#380 phase seat: a whole phase moves at once, and only an automatic one" {
 test "#380 trace: the routing line carries source=vision-ask in #372's own format" {
     var buf: [320]u8 = undefined;
     try std.testing.expectEqualStrings(
-        "shape=adhoc role=- tier=small resolved_model=gpt-5.6-luna source=vision-ask policy_or_genome_id=-",
-        policy.formatDecision(&buf, .{ .tier = .small, .resolved_model = "gpt-5.6-luna", .source = .vision_ask }),
+        "shape=adhoc role=- tier=small resolved_model=gpt-6-luna source=vision-ask policy_or_genome_id=-",
+        policy.formatDecision(&buf, .{ .tier = .small, .resolved_model = "gpt-6-luna", .source = .vision_ask }),
     );
     // The spelling is hyphenated like every other source, and distinct.
     try std.testing.expectEqualStrings("vision-ask", policy.Source.vision_ask.label());

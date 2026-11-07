@@ -26,6 +26,12 @@ pub const Hit = struct {
     tools: Value,
 };
 
+/// The cache identity of a config entry. A stdio entry is its command line
+/// plus its `cwd` and `env`: plugin servers often share one launcher command
+/// (`sh -c 'exec node ./server.mjs'`) and differ only in the directory they
+/// start in, and keyed by the command alone each advertised the others'
+/// tools until a live re-list overwrote the entry. Env values are hashed so
+/// no secret lands in the cache file.
 pub fn keyFor(arena: Allocator, cfg: std.json.ObjectMap) []const u8 {
     if (cfg.get("url")) |u| if (u == .string) {
         return std.fmt.allocPrint(arena, "url:{s}", .{u.string}) catch "";
@@ -38,7 +44,53 @@ pub fn keyFor(arena: Allocator, cfg: std.json.ObjectMap) []const u8 {
             aw.writer.print(" {s}", .{arg.string}) catch {};
         };
     };
+    if (cfg.get("cwd")) |cwd| if (cwd == .string and cwd.string.len > 0) {
+        aw.writer.print(" cwd:{s}", .{cwd.string}) catch {};
+    };
+    if (cfg.get("env")) |env| if (env == .object and env.object.count() > 0) {
+        aw.writer.print(" env:{x:0>16}", .{envHash(arena, env.object)}) catch {};
+    };
     return aw.writer.buffered();
+}
+
+/// Order-independent hash of an `env` object's pairs.
+fn envHash(arena: Allocator, env: std.json.ObjectMap) u64 {
+    const keys = arena.dupe([]const u8, env.keys()) catch return 0;
+    @import("stable_sort.zig").sort([]const u8, keys, {}, struct {
+        fn lt(_: void, x: []const u8, y: []const u8) bool {
+            return std.mem.lessThan(u8, x, y);
+        }
+    }.lt);
+    var h = std.hash.Wyhash.init(0);
+    for (keys) |k| {
+        h.update(k);
+        h.update("=");
+        if (env.get(k)) |v| if (v == .string) h.update(v.string);
+        h.update("\x00");
+    }
+    return h.final();
+}
+
+/// Drop one server's cached catalog so its next start lists tools afresh
+/// (`graff mcp reconnect`). Best-effort, under the same lock as `store`.
+pub fn forget(io: Io, arena: Allocator, home: []const u8, key: []const u8) void {
+    if (key.len == 0 or home.len == 0) return;
+    const path = cachePath(arena, home);
+    if (path.len == 0) return;
+    const lock_path = std.fmt.allocPrint(arena, "{s}.lock", .{path}) catch return;
+    const lock = Io.Dir.cwd().createFile(io, lock_path, .{ .truncate = false, .lock = .exclusive }) catch return;
+    defer lock.close(io);
+    const data = readFile(io, arena, home) orelse return;
+    var root_map = parseRoot(arena, data) orelse return;
+    const servers = root_map.get("servers") orelse return;
+    if (servers != .object) return;
+    var servers_map = servers.object;
+    if (!servers_map.swapRemove(key)) return;
+    root_map.put(arena, "servers", .{ .object = servers_map }) catch return;
+    var aw: Io.Writer.Allocating = .init(arena);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    s.write(Value{ .object = root_map }) catch return;
+    credential_store.replaceFile(io, Io.Dir.cwd(), path, aw.writer.buffered(), .default_file) catch {};
 }
 
 fn cachePath(arena: Allocator, home: []const u8) []const u8 {
@@ -210,6 +262,45 @@ test "keyFor distinguishes url and command+args" {
     try args.append(.{ .string = "foo" });
     try cmd_cfg.put(a, "args", .{ .array = args });
     try std.testing.expectEqualStrings("cmd:npx -y foo", keyFor(a, cmd_cfg));
+}
+
+test "one launcher command in two directories caches two catalogs" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const home = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{&tmp.sub_path});
+    var args = std.json.Array.init(a);
+    try args.append(.{ .string = "-c" });
+    try args.append(.{ .string = "exec node ./server.mjs" });
+    var review: std.json.ObjectMap = .empty;
+    try review.put(a, "command", .{ .string = "/bin/sh" });
+    try review.put(a, "args", .{ .array = args });
+    try review.put(a, "cwd", .{ .string = "/plugins/review" });
+    var apptools = try review.clone(a);
+    try apptools.put(a, "cwd", .{ .string = "/plugins/app-tools" });
+    const review_key = keyFor(a, review);
+    try std.testing.expect(!std.mem.eql(u8, review_key, keyFor(a, apptools)));
+
+    // Env values change the key but never appear in it.
+    var env: std.json.ObjectMap = .empty;
+    try env.put(a, "TOKEN", .{ .string = "s3cret" });
+    var with_env = try review.clone(a);
+    try with_env.put(a, "env", .{ .object = env });
+    const env_key = keyFor(a, with_env);
+    try std.testing.expect(!std.mem.eql(u8, review_key, env_key));
+    try std.testing.expect(std.mem.indexOf(u8, env_key, "s3cret") == null);
+
+    // forget drops one entry and leaves the other.
+    var result: std.json.ObjectMap = .empty;
+    try result.put(a, "tools", .{ .array = std.json.Array.init(a) });
+    store(io, a, home, review_key, .legacy, "2025-11-25", .{ .object = result }, 1_000);
+    store(io, a, home, env_key, .legacy, "2025-11-25", .{ .object = result }, 1_000);
+    forget(io, a, home, review_key);
+    try std.testing.expect(lookupAnyAge(io, a, home, review_key) == null);
+    try std.testing.expect(lookupAnyAge(io, a, home, env_key) != null);
 }
 
 test "ttlFromResult honors CacheableResult ttlMs and clamps" {

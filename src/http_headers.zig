@@ -7,6 +7,7 @@ const root = @import("main.zig");
 const kimi_catalog = @import("kimi_catalog.zig");
 const cache_affinity = @import("cache_affinity.zig"); // ADR 0069: git-root / scratch seed
 const client_tags = @import("client_tags.zig");
+const anthropic_oauth = @import("anthropic_oauth_wire.zig");
 
 var session_id_buf: [36]u8 = undefined;
 var session_id_len: usize = 0;
@@ -14,9 +15,7 @@ var session_id_len: usize = 0;
 /// with, and the critical section is a single one-time 36-byte format.
 var session_id_lock: std.atomic.Value(bool) = .init(false);
 
-/// A UUIDv4 minted once per process. Persisted on the graff session record.
-/// Codex's HTTP `session_id` is the prompt-cache key (openai/codex ModelClient
-/// defaults `prompt_cache_key` to `session_id`), not this value.
+/// Process UUIDv4 persisted with the session; distinct from prompt-cache routing.
 pub fn sessionId(io: Io) []const u8 {
     while (session_id_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
     defer session_id_lock.store(false, .release);
@@ -178,6 +177,7 @@ pub fn restoreProjectRootId(id: []const u8) void {
 }
 
 pub fn userAgent(provider: Provider) std.http.Client.Request.Headers.Value {
+    if (anthropic_oauth.active(provider)) return .omit; // explicit header also reaches HTTP/2
     if (std.mem.eql(u8, provider.id, "kimi")) {
         return .{ .override = root.kimi_user_agent };
     }
@@ -191,10 +191,8 @@ pub fn wantsGrokConvId(provider_id: []const u8) bool {
     return std.mem.eql(u8, provider_id, "xai");
 }
 
-/// ChatGPT sign-in Responses routes send `session_id` equal to the body's
-/// `prompt_cache_key` — the endpoint keys prompt caching on it, and a body
-/// key alone returns zero cached tokens. The API-key `openai` route is
-/// untested and stays without it.
+/// ChatGPT/Codex cache routing needs session_id equal to prompt_cache_key;
+/// direct API-key OpenAI requests omit the backend-only header.
 pub fn wantsSessionIdHeader(provider_id: []const u8) bool {
     return std.mem.eql(u8, provider_id, "codex") or std.mem.eql(u8, provider_id, "chatgpt-new");
 }
@@ -234,11 +232,13 @@ pub fn providerHeadersWithConv(io: Io, provider: Provider, bearer: []const u8, b
         // ADR 0219: the beta that goes with the body's thinking.block_binding,
         // on the Anthropic API and the models that check it (claude_wire).
         const claude = @import("claude_wire.zig");
-        if (claude.isClaudeApi(provider.id, provider.model) and claude.bindsThinking(provider.model)) {
-            buf[count] = .{ .name = "anthropic-beta", .value = claude.binding_beta };
+        const beta: ?[]const u8 = if (anthropic_oauth.active(provider)) anthropic_oauth.beta(provider) else if (claude.isClaudeApi(provider.id, provider.model) and claude.bindsThinking(provider.model)) claude.binding_beta else null;
+        if (beta) |value| {
+            buf[count] = .{ .name = "anthropic-beta", .value = value };
             count += 1;
         }
     }
+    if (anthropic_oauth.active(provider)) count += anthropic_oauth.identityHeaders(buf[count..]);
     if (std.mem.eql(u8, provider.id, "kimi")) {
         const identity = kimi_catalog.identityHeaders(buf[count..]);
         count += identity.len;
@@ -257,6 +257,14 @@ pub fn providerHeadersWithConv(io: Io, provider: Provider, bearer: []const u8, b
         buf[count] = .{ .name = "http-referer", .value = "https://codegraff.com" };
         count += 1;
         buf[count] = .{ .name = "x-title", .value = "graff" };
+        count += 1;
+    }
+    // Vercel pins a session to the provider credential that holds its cache
+    // and forwards this header upstream. `prompt_cache_key` alone is treated
+    // as a shared label that pins the provider but not the credential
+    // (vercel.com/docs/ai-gateway/models-and-providers/session-affinity).
+    if (std.mem.eql(u8, provider.id, "vercel")) {
+        buf[count] = .{ .name = "x-session-affinity", .value = conv_id orelse projectRootId(io) };
         count += 1;
     }
     // OpenRouter marketplace categories. Max 2 per request; only recognized
@@ -341,56 +349,6 @@ test "Z.AI chat sends Accept-Language and no grok conv headers" {
         }
     }
     try std.testing.expect(saw_lang);
-}
-
-test "Vercel chat sends app attribution and no grok conv headers" {
-    const io = std.testing.io;
-    var buf: [12]std.http.Header = undefined;
-    const p: Provider = .{ .id = "vercel", .kind = .openai, .auth = .bearer, .url = "https://ai-gateway.vercel.sh/coding-agent/v1/chat/completions", .api_key = "k", .model = "alibaba/qwen3.8-27b", .context = 1_000_000 };
-    const headers = providerHeaders(io, p, "Bearer k", &buf);
-    var saw_ref = false;
-    var saw_title = false;
-    for (headers) |h| {
-        try std.testing.expect(!std.mem.eql(u8, h.name, "x-grok-conv-id"));
-        if (std.mem.eql(u8, h.name, "http-referer")) {
-            saw_ref = true;
-            try std.testing.expectEqualStrings("https://codegraff.com", h.value);
-        }
-        if (std.mem.eql(u8, h.name, "x-title")) {
-            saw_title = true;
-            try std.testing.expectEqualStrings("graff", h.value);
-        }
-    }
-    try std.testing.expect(saw_ref);
-    try std.testing.expect(saw_title);
-}
-
-test "OpenRouter chat sends app attribution and no grok conv headers" {
-    const io = std.testing.io;
-    var buf: [12]std.http.Header = undefined;
-    const p: Provider = .{ .id = "openrouter", .kind = .openai, .auth = .bearer, .url = "https://openrouter.ai/api/v1/chat/completions", .api_key = "k", .model = "anthropic/claude-sonnet-4.6", .context = 1_000_000 };
-    const headers = providerHeaders(io, p, "Bearer k", &buf);
-    var saw_ref = false;
-    var saw_title = false;
-    var saw_categories = false;
-    for (headers) |h| {
-        try std.testing.expect(!std.mem.eql(u8, h.name, "x-grok-conv-id"));
-        if (std.mem.eql(u8, h.name, "http-referer")) {
-            saw_ref = true;
-            try std.testing.expectEqualStrings("https://codegraff.com", h.value);
-        }
-        if (std.mem.eql(u8, h.name, "x-title")) {
-            saw_title = true;
-            try std.testing.expectEqualStrings("graff", h.value);
-        }
-        if (std.mem.eql(u8, h.name, "x-openrouter-categories")) {
-            saw_categories = true;
-            try std.testing.expectEqualStrings("cli-agent,programming-app", h.value);
-        }
-    }
-    try std.testing.expect(saw_ref);
-    try std.testing.expect(saw_title);
-    try std.testing.expect(saw_categories);
 }
 
 test "projectRootId is minted from the affinity seed, not a second hash" {

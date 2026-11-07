@@ -119,7 +119,14 @@ def main() -> None:
             "description": "Interactive terminal login (codegraff / Codex / Kimi)",
             "type": "terminal",
             "args": ["login"],
-        }
+        },
+        {
+            "id": "graff-login-anthropic",
+            "name": "graff login anthropic",
+            "description": "Claude subscription browser sign-in (alias: ant)",
+            "type": "terminal",
+            "args": ["login", "anthropic"],
+        },
     ]
     if responses[0].get("id") != 1 or result.get("protocolVersion") != 1:
         fail("initialize response did not correlate or negotiate ACP v1", proc)

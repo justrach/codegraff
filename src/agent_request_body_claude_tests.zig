@@ -245,3 +245,50 @@ test "Claude's own error text takes the retry-without ladder (ADR 0219)" {
     // Anything else is a real failure.
     try std.testing.expect(!retryWithout(&agent, "messages: at least one message is required", &force, &stream_usage));
 }
+
+test "ADR 0282: the Claude system breakpoint closes before the per-repo blocks" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const layouts = [_][]const u8{
+        "\n\n# Project layout (working tree at session start, depth 3; may omit later changes)\nlogs/\nlogs/auth.log\n",
+        "\n\n# Project layout (working tree at session start, depth 3; may omit later changes)\napi/\napi/routes.py\n",
+    };
+    var heads: [2][]const u8 = undefined;
+    for (layouts, 0..) |layout, i| {
+        var agent = try claudeAgent(a, "claude-sonnet-5-5");
+        const sys = try std.mem.concat(a, u8, &.{ "BASE", layout, "\n\n# Skills\nstatic tail" });
+        agent.sys_base = sys;
+        agent.sys_normal = sys;
+        agent.repo_map_snapshot = layout;
+        const body = try agent.buildBody(bash_tools, false, true, true);
+        defer std.testing.allocator.free(body);
+        const parsed = try std.json.parseFromSliceLeaky(Value, a, try a.dupe(u8, body), .{});
+        const blocks = parsed.object.get("system").?.array.items;
+        try std.testing.expectEqual(@as(usize, 2), blocks.len);
+        // The breakpoint sits on the static block; the tail carries none.
+        try std.testing.expect(blocks[0].object.get("cache_control") != null);
+        try std.testing.expect(blocks[1].object.get("cache_control") == null);
+        const head = blocks[0].object.get("text").?.string;
+        const tail = blocks[1].object.get("text").?.string;
+        // Same bytes as one block: only the cache boundary moved.
+        try std.testing.expectEqualStrings(sys, try std.mem.concat(a, u8, &.{ head, tail }));
+        heads[i] = head;
+    }
+    // Two repos share the cached block byte for byte.
+    try std.testing.expectEqualStrings("BASE", heads[0]);
+    try std.testing.expectEqualStrings(heads[0], heads[1]);
+}
+
+test "ADR 0282: a Claude system prompt without per-repo blocks stays one block" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = try claudeAgent(a, "claude-sonnet-5-5");
+    const body = try agent.buildBody(bash_tools, false, true, true);
+    defer std.testing.allocator.free(body);
+    const parsed = try std.json.parseFromSliceLeaky(Value, a, try a.dupe(u8, body), .{});
+    const blocks = parsed.object.get("system").?.array.items;
+    try std.testing.expectEqual(@as(usize, 1), blocks.len);
+    try std.testing.expect(blocks[0].object.get("cache_control") != null);
+}

@@ -15,9 +15,101 @@ pub const image_tokens: u64 = 4_096;
 /// A server compaction item's `encrypted_content` is compressed, encrypted
 /// state, not text: a 1.4 MB blob reports ~70k input tokens. Counting it at
 /// /4 put a blob-anchored history over the window, so every step re-ran a
-/// compaction that could not shrink it. /16 stays above the observed ratio;
-/// the provider's reported usage remains the authority above this floor.
+/// compaction that could not shrink it. /16 stays above the observed ratio
+/// until the provider has counted that state itself (calibrateState).
 pub const compaction_state_bytes_per_token: usize = 16;
+
+/// #1686: the bytes-per-token of compaction state is not fixed. A 1.4 MB blob
+/// counted ~70k tokens, a 9.8 MB one ~80k, so /16 read the second as ~612k and
+/// held an almost empty history over the compaction line. After the provider
+/// counts a request carrying state, the state's share of its input is kept by
+/// size and replaces /16 for that state. Packed (bytes << 24 | tokens) so a
+/// subagent's thread never reads a torn pair; a few slots cover root and
+/// subagent histories.
+var g_state_counts: [4]std.atomic.Value(u64) = .{ .init(0), .init(0), .init(0), .init(0) };
+var g_state_next: std.atomic.Value(usize) = .init(0);
+const token_bits = 24;
+const token_mask: u64 = (1 << token_bits) - 1;
+
+pub fn calibrateState(bytes: usize, tokens: u64) void {
+    if (bytes == 0 or bytes >= (1 << 40)) return;
+    const packed_count = (@as(u64, bytes) << token_bits) | @min(@max(tokens, 1), token_mask);
+    for (&g_state_counts) |*slot| {
+        if (slot.load(.monotonic) >> token_bits == bytes) return slot.store(packed_count, .monotonic);
+    }
+    const i = g_state_next.fetchAdd(1, .monotonic) % g_state_counts.len;
+    g_state_counts[i].store(packed_count, .monotonic);
+}
+
+/// Estimated tokens for `bytes` of compaction state: the provider's own count
+/// once calibrated, else bytes / compaction_state_bytes_per_token.
+pub fn stateTokens(bytes: usize) u64 {
+    if (bytes == 0) return 0;
+    for (&g_state_counts) |*slot| {
+        const v = slot.load(.monotonic);
+        if (v >> token_bits == bytes) return v & token_mask;
+    }
+    return bytes / compaction_state_bytes_per_token;
+}
+
+/// The provider's count for `bytes` of compaction state, or null while this
+/// process has only the bytes/16 estimate.
+pub fn calibratedState(bytes: usize) ?u64 {
+    if (bytes == 0) return null;
+    for (&g_state_counts) |*slot| {
+        const v = slot.load(.monotonic);
+        if (v >> token_bits == bytes) return v & token_mask;
+    }
+    return null;
+}
+
+pub fn compactionStateBytes(value: Value) usize {
+    return mediaStats(value).compaction_state_bytes;
+}
+
+/// Which compaction state a history carries: its total size (the calibration
+/// key) and an order-independent digest of every state blob, so a persisted
+/// count is reapplied only to the same state, never to a different blob that
+/// happens to have the same length.
+pub const StateIdentity = struct { bytes: usize = 0, digest: u64 = 0 };
+
+pub fn compactionStateIdentity(value: Value) StateIdentity {
+    var id: StateIdentity = .{};
+    switch (value) {
+        .array => |items| for (items.items) |item| {
+            const child = compactionStateIdentity(item);
+            id.bytes +|= child.bytes;
+            id.digest +%= child.digest;
+        },
+        .object => |obj| {
+            if (compactionStateLen(obj)) |len| {
+                id.bytes +|= len;
+                id.digest +%= std.hash.Wyhash.hash(0, stringValue(obj.get("encrypted_content")).?);
+            }
+            var it = obj.iterator();
+            while (it.next()) |entry| {
+                const child = compactionStateIdentity(entry.value_ptr.*);
+                id.bytes +|= child.bytes;
+                id.digest +%= child.digest;
+            }
+        },
+        else => {},
+    }
+    return id;
+}
+
+/// Learn the state's share from a counted request: the reported input less
+/// the estimate for everything else in it (`request_estimate` includes the
+/// state at its current estimate). Never below one token per KiB of state.
+pub fn learnState(bytes: usize, reported_input: u64, request_estimate: u64) void {
+    if (bytes == 0 or reported_input == 0) return;
+    const rest = request_estimate -| stateTokens(bytes);
+    calibrateState(bytes, @max(reported_input -| rest, bytes / 1024));
+}
+
+pub fn resetStateCountsForTest() void {
+    for (&g_state_counts) |*slot| slot.store(0, .monotonic);
+}
 
 const MediaStats = struct {
     payload_bytes: usize = 0,
@@ -182,7 +274,7 @@ pub fn estimatedTokensFromLen(value: Value, total_bytes: usize) u64 {
     const text_bytes = total_bytes -| media.payload_bytes -| media.compaction_state_bytes;
     return @as(u64, @intCast(text_bytes / 4)) +|
         media.images *| image_tokens +|
-        @as(u64, @intCast(media.compaction_state_bytes / compaction_state_bytes_per_token));
+        stateTokens(media.compaction_state_bytes);
 }
 
 pub fn estimatedTokens(value: Value) u64 {
@@ -313,4 +405,31 @@ test "JSON length retains generic Zig serialization contracts" {
     try expectSerializedLen(.{ .name = "generic\nstruct", .count = @as(u32, 42) });
     try expectSerializedLen([_]u8{ 0xff, 0x00 });
     try expectSerializedLen(@as(?u32, null));
+}
+
+test "#1686 a counted request recalibrates compaction state, and other sizes keep /16" {
+    resetStateCountsForTest();
+    defer resetStateCountsForTest();
+    const bytes: usize = 9_791_416;
+    const rest: u64 = 8_000; // instructions, tools and the short visible history
+    try std.testing.expectEqual(@as(u64, bytes / compaction_state_bytes_per_token), stateTokens(bytes));
+    learnState(bytes, 82_202, rest + stateTokens(bytes));
+    try std.testing.expectEqual(@as(u64, 74_202), stateTokens(bytes));
+    // A second sample for the same state replaces the first.
+    learnState(bytes, 84_414, rest + stateTokens(bytes));
+    try std.testing.expectEqual(@as(u64, 76_414), stateTokens(bytes));
+    // Another size is untouched, and a count below the floor is clamped.
+    try std.testing.expectEqual(@as(u64, 1_400_000 / compaction_state_bytes_per_token), stateTokens(1_400_000));
+    learnState(1_400_000, 100, 200_000);
+    try std.testing.expectEqual(@as(u64, 1_400_000 / 1024), stateTokens(1_400_000));
+    // Estimates of a value carrying that state follow the calibration.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const state = try arena.alloc(u8, bytes);
+    @memset(state, 'g');
+    var blob: std.json.ObjectMap = .empty;
+    try blob.put(arena, "type", .{ .string = "compaction" });
+    try blob.put(arena, "encrypted_content", .{ .string = state });
+    try std.testing.expect(estimatedTokens(.{ .object = blob }) < 80_000);
 }

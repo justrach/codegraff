@@ -83,7 +83,13 @@ def review_events(request: RecordedRequest) -> list[dict]:
 def long_review_events(request: RecordedRequest) -> list[dict]:
     if request.ordinal > 45:
         return message(LONG_REPLY, request.ordinal)
-    return tool("read_file", {"path": "target.txt"}, request.ordinal)
+    # A different file each call: a long review, not a loop of one call
+    # (graff ends a turn that repeats an identical call, #1706).
+    return tool("read_file", {"path": long_review_note(request.ordinal)}, request.ordinal)
+
+
+def long_review_note(ordinal: int) -> str:
+    return os.path.join("notes", f"{ordinal:02}.txt")
 
 
 def tool_budget_events(request: RecordedRequest) -> list[dict]:
@@ -262,6 +268,10 @@ def main() -> None:
         if len(mock.recorded_requests()) != 5:
             raise AssertionError("review did not follow the expected policy tool loop")
 
+        os.makedirs(os.path.join(tmp, "notes"), exist_ok=True)
+        for ordinal in range(1, 46):
+            with open(os.path.join(tmp, long_review_note(ordinal)), "w", encoding="utf-8") as fh:
+                fh.write(f"note {ordinal}\n")
         long_mock = CodexMock(events_for_request=long_review_events)
         long_port = long_mock.start()
         try:

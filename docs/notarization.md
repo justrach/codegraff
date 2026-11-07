@@ -14,6 +14,11 @@ half are ordering rules that are easy to get subtly wrong.
 | Linux / Windows tarballs | nobody | CI (`release.yml`) builds and uploads them |
 | macOS CLI tarballs | Developer ID Application, then Apple notarized | CI `macos-sign` job when the secrets exist; otherwise **locally**, after CI's draft exists |
 
+The macOS tarballs also carry `nanocua.app` (ADR 0314), built, signed and
+notarized with the `graff` beside it by `scripts/release-sign-macos.sh`, and
+stapled. The manual steps below cover `graff` alone: a tarball they produce has no
+app unless you run `apps/nanocua/macos/package.sh` before notarizing.
+
 ## The CI path
 
 `release.yml` runs `build` (cross-compile on Linux) → `macos-sign` (macOS

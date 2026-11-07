@@ -72,6 +72,113 @@ test "MCP argument validation bounds work and rejects configuration injection" {
     try std.testing.expectEqual(@as(u64, 32), task.max_model_calls);
 }
 
+test "MCP context is bounded text, never configuration" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const task = try mcp.parseTask(try std.json.parseFromSliceLeaky(Value, a, "{\"prompt\":\"x\",\"context\":\"prior decisions\"}", .{}));
+    try std.testing.expectEqualStrings("prior decisions", task.context.?);
+    // Absent context stays absent: the flag is only added when there is text.
+    try std.testing.expect((try mcp.parseTask(try std.json.parseFromSliceLeaky(Value, a, "{\"prompt\":\"x\"}", .{}))).context == null);
+    const filler = try a.alloc(u8, 32769);
+    @memset(filler, 'a');
+    const over = try std.fmt.allocPrint(a, "{{\"prompt\":\"x\",\"context\":\"{s}\"}}", .{filler});
+    for ([_][]const u8{
+        "{\"prompt\":\"x\",\"context\":\"\"}",
+        "{\"prompt\":\"x\",\"context\":\"  \"}",
+        "{\"prompt\":\"x\",\"context\":5}",
+        "{\"prompt\":\"x\",\"context\":\"a\\u0000b\"}",
+        over,
+    }) |input| {
+        const value = try std.json.parseFromSliceLeaky(Value, a, input, .{});
+        try std.testing.expectError(error.InvalidArguments, mcp.parseTask(value));
+    }
+}
+
+test "MCP task argv appends context as text and keeps server-owned policy" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ctx: mcp.Context = .{ .io = std.testing.io, .exe = "/fake/graff", .env = undefined };
+    const task: mcp.Task = .{ .prompt = "do the thing", .context = "prior decisions", .max_model_calls = 3 };
+    const argv = try mcp.taskArgv(a, &ctx, task, "\n\nBackground context:\n\nprior decisions");
+    const joined = try std.mem.join(a, "\u{1}", argv);
+    try std.testing.expect(std.mem.indexOf(u8, joined, "--append-system-prompt\u{1}\n\nBackground context:\n\nprior decisions") != null);
+    try std.testing.expect(std.mem.indexOf(u8, joined, "--safe") != null);
+    try std.testing.expect(std.mem.indexOf(u8, joined, "--yolo") == null);
+    // The task prompt is still the last argument, and context never becomes a flag.
+    try std.testing.expect(std.mem.endsWith(u8, joined, "-p\u{1}do the thing"));
+    // No context means no flag at all.
+    const bare = try mcp.taskArgv(a, &ctx, .{ .prompt = "x" }, null);
+    try std.testing.expect(std.mem.indexOf(u8, try std.mem.join(a, "\u{1}", bare), "--append-system-prompt") == null);
+}
+
+test "MCP reports the context it carried" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var server: mcp.Server = .{ .execute = fake_context, .initialized = true, .ready = true };
+    var out: std.Io.Writer.Allocating = .init(a);
+    try server.handle(a, &out.writer, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"run_task\",\"arguments\":{\"prompt\":\"x\",\"context\":\"hi\"}}}");
+    const response = try std.json.parseFromSliceLeaky(Value, a, out.written(), .{});
+    const result = response.object.get("result").?;
+    const data = result.object.get("structuredContent").?;
+    try std.testing.expectEqual(@as(i64, 40), data.object.get("context_chars").?.integer);
+    try std.testing.expect(data.object.get("context_summarized").?.bool);
+    try std.testing.expectEqual(@as(i64, 7), data.object.get("context_used_chars").?.integer);
+    // Unavailable usage is stated, not omitted: a client must be able to tell
+    // "no charge reported" apart from "the field was dropped".
+    try std.testing.expect(!data.object.get("usage_reported").?.bool);
+    try std.testing.expect(data.object.get("usage_unavailable_reason").?.string.len > 0);
+    // The same metadata rides the namespaced slot for raw-result readers.
+    const meta = result.object.get("_meta").?.object.get("codegraff/runTask").?;
+    try std.testing.expectEqual(@as(i64, 40), meta.object.get("context_chars").?.integer);
+    try std.testing.expectEqual(@as(i64, 7), meta.object.get("context_used_chars").?.integer);
+    try std.testing.expect(!meta.object.get("usage_reported").?.bool);
+    try std.testing.expectEqualStrings(data.object.get("usage_unavailable_reason").?.string, meta.object.get("usage_unavailable_reason").?.string);
+}
+
+fn fake_context(_: ?*anyopaque, a: std.mem.Allocator, task: mcp.Task) !mcp.Result {
+    _ = a;
+    return .{ .text = task.prompt, .context_chars = 40, .context_summarized = true, .context_used_chars = 7 };
+}
+
+// The summarizer's settled-charge parsing, without spawning a child.
+// A charge is reported only when the engine said the usage was complete and
+// nothing was unpriced or missing; otherwise the cost is null, never guessed.
+test "summarizer usage: a settled charge is read, an incomplete one is not invented" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const good = try mcp.parseTurn(a, "{\"type\":\"text\",\"text\":\"noise\"}\n" ++
+        "{\"type\":\"turn\",\"text\":\"  the summary  \",\"cost_usd\":0.0012,\"usage_complete\":true," ++
+        "\"input_tokens\":1200,\"output_tokens\":30,\"unpriced_calls\":0,\"missing_usage_calls\":0}\n");
+    try std.testing.expectEqualStrings("the summary", good.text);
+    try std.testing.expect(good.usage.usage_complete);
+    try std.testing.expectEqual(@as(f64, 0.0012), good.usage.cost_usd.?);
+    try std.testing.expectEqual(@as(u64, 1200), good.usage.input_tokens);
+    try std.testing.expectEqual(@as(u64, 30), good.usage.output_tokens);
+
+    // Every way the report can be incomplete: no number is claimed.
+    for ([_][]const u8{
+        "{\"type\":\"turn\",\"text\":\"s\",\"cost_usd\":0.5,\"usage_complete\":false}",
+        "{\"type\":\"turn\",\"text\":\"s\",\"cost_usd\":0.5,\"usage_complete\":true,\"unpriced_calls\":1}",
+        "{\"type\":\"turn\",\"text\":\"s\",\"cost_usd\":0.5,\"usage_complete\":true,\"missing_usage_calls\":2}",
+        "{\"type\":\"turn\",\"text\":\"s\",\"usage_complete\":true}",
+    }) |line| {
+        const m = try mcp.parseTurn(a, line);
+        try std.testing.expect(m.usage.cost_usd == null);
+        try std.testing.expect(!m.usage.usage_complete);
+    }
+
+    // No turn event at all, and an empty answer, are failures — not an empty
+    // context handed to a child.
+    try std.testing.expectError(error.ContextSummarizationFailed, mcp.parseTurn(a, "{\"type\":\"text\",\"text\":\"x\"}\n"));
+    try std.testing.expectError(error.ContextSummarizationFailed, mcp.parseTurn(a, "{\"type\":\"turn\",\"text\":\"   \"}\n"));
+    try std.testing.expectError(error.ContextSummarizationFailed, mcp.parseTurn(a, "not json at all\n"));
+}
+
 test "MCP execution errors are tool errors and server remains usable" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -81,6 +188,37 @@ test "MCP execution errors are tool errors and server remains usable" {
     try std.testing.expect(std.mem.indexOf(u8, result, "\"isError\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "MockFailure") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"id\":3,\"result\":{}") != null);
+}
+
+test "MCP task HTTP deadline outlives the validated child budget" {
+    const a = std.testing.allocator;
+    const default = "{\"params\":{\"arguments\":{\"prompt\":\"hello\"}}}";
+    try std.testing.expectEqual(@as(i64, 135), mcp.transportTimeoutSeconds(a, "tools/call", "run_task", default));
+    const bounded = "{\"params\":{\"arguments\":{\"prompt\":\"hello\",\"timeout_seconds\":300}}}";
+    try std.testing.expectEqual(@as(i64, 315), mcp.transportTimeoutSeconds(a, "tools/call", "run_task", bounded));
+    try std.testing.expectEqual(@as(i64, 15), mcp.transportTimeoutSeconds(a, "tools/list", "run_task", bounded));
+    try std.testing.expectEqual(@as(i64, 15), mcp.transportTimeoutSeconds(a, "tools/call", "other", bounded));
+    try std.testing.expectEqual(@as(i64, 15), mcp.transportTimeoutSeconds(a, "tools/call", null, bounded));
+}
+
+test "MCP task HTTP deadline includes only required context preprocessing" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const context = try a.alloc(u8, 8193);
+    @memset(context, 'x');
+    const long = try std.fmt.allocPrint(a, "{{\"params\":{{\"arguments\":{{\"prompt\":\"hello\",\"context\":\"{s}\",\"timeout_seconds\":300}}}}}}", .{context});
+    try std.testing.expectEqual(@as(i64, 375), mcp.transportTimeoutSeconds(a, "tools/call", "run_task", long));
+    const short = try std.fmt.allocPrint(a, "{{\"params\":{{\"arguments\":{{\"prompt\":\"hello\",\"context\":\"{s}\",\"timeout_seconds\":300}}}}}}", .{context[0..8192]});
+    try std.testing.expectEqual(@as(i64, 315), mcp.transportTimeoutSeconds(a, "tools/call", "run_task", short));
+}
+
+test "MCP task HTTP deadline rejects unbounded or malformed inputs" {
+    const a = std.testing.allocator;
+    for ([_][]const u8{
+        "not json",                                                                "null",                                                                   "{}",                                                                      "{\"params\":[]}",
+        "{\"params\":{\"arguments\":{\"prompt\":\"x\",\"timeout_seconds\":301}}}", "{\"params\":{\"arguments\":{\"prompt\":\"x\",\"timeout_seconds\":-1}}}", "{\"params\":{\"arguments\":{\"prompt\":\"x\",\"timeout_seconds\":1.5}}}", "{\"params\":{\"arguments\":{\"prompt\":\"x\",\"cwd\":\"other\"}}}",
+    }) |input| try std.testing.expectEqual(@as(i64, 15), mcp.transportTimeoutSeconds(a, "tools/call", "run_task", input));
 }
 
 test "MCP failed task preserves partial output and truncation markers" {
@@ -126,6 +264,9 @@ test "MCP Apps negotiate metadata and serve only the declared resource" {
     const resource = read.object.get("result").?.object.get("contents").?.array.items[0];
     try std.testing.expectEqualStrings(app.mime, resource.object.get("mimeType").?.string);
     try std.testing.expect(std.mem.startsWith(u8, resource.object.get("text").?.string, "<!doctype html>"));
+    // The gzipped theme is spliced into its slot, not left as the marker.
+    try std.testing.expect(std.mem.indexOf(u8, resource.object.get("text").?.string, "CODEGRAFF_THEME") == null);
+    try std.testing.expect(std.mem.indexOf(u8, resource.object.get("text").?.string, "Shared Codegraff desktop") != null);
     const rejected = try std.json.parseFromSliceLeaky(Value, a, lines.next().?, .{});
     try std.testing.expectEqual(@as(i64, -32002), rejected.object.get("error").?.object.get("code").?.integer);
 }

@@ -33,6 +33,15 @@ writes a local report and does not upload it.
 Use the session and start identity from a fresh list response. Changed or
 ambiguous recipients fail instead of silently targeting another process.
 
+For a selected peer, `action: "children"` lists its subagents and
+`action: "activity", child: "<id>"` reads one child's snapshot. Both return
+`model` and `provider` from the resolved worker configuration, including an
+inherited/default selection or fallback from an unavailable model request.
+Older activity records omit these fields and read as empty strings; clients
+should show unknown rather than infer the parent model. Live ACP progress also
+includes the resolved model in the tool title and `_meta["graff/subagent"]`;
+draft and background child spawn labels carry it before any child text arrives.
+
 The desktop's short-lived observer runs the same vendor extension before model,
 credential, MCP and session startup. It remains available during another Graff's
 active turn. It accepts only local peer requests and creates no session.

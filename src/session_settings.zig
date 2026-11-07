@@ -71,6 +71,7 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     main_mod.g_path_env = try arena.dupe(u8, environ_map.get("PATH") orelse "");
     plugins.applyEnv(environ_map);
     jev_tool.configure(environ_map);
+    try @import("gateway_compact.zig").configure(arena, environ_map); // ADR 0252: GRAFF_HOSTED_COMPACT, GRAFF_COMPACT_URL/_MODEL
     main_mod.g_codedb_guard = environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
     job_idle.applyEnv(environ_map); // #199: background-job idle warn/stop, minutes (0 = off)
     @import("run_idle.zig").applyEnv(environ_map); // GRAFF_HEARTBEAT_SECS: a waiting run's heartbeat (0 = off)
@@ -160,6 +161,8 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     // GRAFF_CODEX_FULL_RESEND: presence-based — never chain previous_response_id
     // (codex_chain); the opencode-shape experiment for cache-hit measurement.
     if (environ_map.get("GRAFF_CODEX_FULL_RESEND") != null) @import("codex_chain.zig").g_force_full_resend = true;
+    // GRAFF_INTERACTIONS_STORE=0: Google Interactions stays stateless (store:false, full replay; interactions_chain).
+    if (environ_map.get("GRAFF_INTERACTIONS_STORE")) |v| @import("interactions_chain.zig").g_store = !(std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "off") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "no"));
     if (environ_map.get("GRAFF_WS_PREWARM")) |v| @import("agent_ws_prewarm.zig").g_enabled = std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "true");
     // GRAFF_NO_NATIVE_FOLD: presence-based — restore full power-tool schemas
     // in every request (the pre-fold interactive surface).
@@ -240,7 +243,7 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
         @import("agent_clef_archive.zig").g_enabled = !off;
     }
     // #502: xAI defaults to the Responses wire (api.x.ai/v1/responses) —
-    // first-party server compaction + WS turns. GRAFF_XAI_WIRE=chat (anything
+    // WS turns + client-summary compaction. GRAFF_XAI_WIRE=chat (anything
     // but "responses") moves it back to chat completions; unset keeps the default.
     if (environ_map.get("GRAFF_XAI_WIRE")) |v| {
         provider_mod.g_xai_responses = std.ascii.eqlIgnoreCase(std.mem.trim(u8, v, " \t"), "responses");
@@ -300,8 +303,11 @@ fn codegraffLoginKey(io: Io, arena: Allocator, environ_map: anytype) ?[]const u8
 pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: *Io.Writer, flags: args.Flags, use_color: bool, json_mode: bool, cwd_display: []const u8) !ThemeSetup {
     try applyEnvKnobs(arena, environ_map);
     @import("compact_at.zig").applyStartup(io, arena); // --compact-at > GRAFF_COMPACT_PCT > saved /compact-at
+    @import("openai_prompt_cache.zig").applyStartup(io, arena); // GRAFF_OPENAI_CACHE_TTL > openai_cache_ttl
     @import("python_version.zig").detect(io, environ_map.get("PATH")); // ADR 0242: before any catalog renders
-    _ = jev_tool.setCodegraffLoginKey(io, codegraffLoginKey(io, arena, environ_map));
+    const codegraff_key = codegraffLoginKey(io, arena, environ_map);
+    _ = jev_tool.setCodegraffLoginKey(io, codegraff_key);
+    @import("gateway_compact.zig").setLoginKey(io, codegraff_key); // ADR 0252: the login also compacts
     skills.loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     anim.loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
     anim.loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme
@@ -358,6 +364,7 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
             \\## Gaps
             \\- No bot-specific route tests exist.
             \\- Pin `install.sh` and verify its checksum.
+            \\- Emphasis: *Coding agents / harnesses*, _readable_, __strong__, foo_bar.
             \\
             \\## Recommended implementation order
             \\1. **Immediately:** require collaborator permission.

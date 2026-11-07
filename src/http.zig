@@ -222,18 +222,6 @@ test "watchdogError (#134): Esc -> Interrupted; a deadline is the caller's error
     try std.testing.expect(watchdogError(.deadline, error.StreamStalled) != error.Interrupted);
 }
 
-/// Watchdog arm for postWatched: ticks every 200ms so a user Esc aborts a
-/// stuck subagent request promptly; otherwise fires at the hard deadline.
-fn postWatchdog(io: Io) WatchdogFired {
-    var waited: u64 = 0;
-    while (waited < post_deadline_ms) {
-        io.sleep(.fromMilliseconds(200), .awake) catch return .deadline; // canceled: loser arm, result discarded
-        waited += 200;
-        if (Agent.esc_cancel.load(.acquire)) return .esc;
-    }
-    return .deadline;
-}
-
 // A streaming response idle THIS LONG (not total response time — the watchdog
 // resets its clock on every line, so it measures the gap between tokens/
 // keep-alives/reasoning deltas) is a dead or hung connection. This is the
@@ -366,7 +354,7 @@ pub fn postWatched(gpa: Allocator, io: Io, client: *std.http.Client, provider: P
     var sel: Io.Select(Done) = .init(io, &done_buf);
     sel.concurrent(.posted, postTask, .{ gpa, client, provider, body, conv_id }) catch
         return error.HungRequest; // #56 Fix-B: pool exhausted — don't fall back to a bare blocking post() that can hang a subagent turn with no Esc path; return retryable so request() retries + backs off
-    sel.concurrent(.watchdog, postWatchdog, .{io}) catch {
+    sel.concurrent(.watchdog, deadlineStallTask, .{ io, false, stall.postBudgetMs(provider.url, post_deadline_ms) }) catch {
         const r = sel.await() catch |e| { // posted is the only arm
             sel.cancelDiscard();
             return e;

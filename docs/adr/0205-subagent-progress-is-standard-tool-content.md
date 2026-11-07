@@ -22,8 +22,13 @@ agents report delegated work the same way.
   message it is writing. Tool events publish immediately; text is throttled.
 - These rows carry no `status`. The parent's own tool result still completes
   or fails the call, and a detached child's spawn call stays completed.
-- `_meta["graff/subagent"]` carries `{sessionId, name, state}` for clients
-  that want to link the row to `graff/agents` inspection.
+- `_meta["graff/subagent"]` carries `{sessionId, name, state, provider, model}`
+  for clients that want to link the row to `graff/agents` inspection. The model
+  is the resolved worker model, not an unvalidated spawn argument or the parent
+  model. An initial progress update publishes it before any child activity.
+- The standard tool title includes the worker name and resolved model so clients
+  without metadata badges can show the same identity. Draft and background spawn
+  names include it too, with structured model/provider fields for inspection.
 - The draft child-session stream replaces this when both sides opt in.
   `GRAFF_ACP_SUBAGENT_PROGRESS=0` turns the progress rows off.
 - Only while the parent prompt is active, like 0194.

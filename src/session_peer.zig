@@ -45,6 +45,28 @@ pub fn messagesForSave(arena: Allocator, items: []const Value) !std.json.Array {
     return out;
 }
 
+/// Drop wakes the model has not been sent yet: those after the last
+/// non-user message. A wake earlier in history was already sent and
+/// answered; removing it rewrote history the provider had cached (and made
+/// Claude Agent start a fresh process) on every step after an inbox read.
+pub fn dropUnsentInjects(msgs: *std.json.Array) void {
+    var start = msgs.items.len;
+    while (start > 0) : (start -= 1) {
+        const m = msgs.items[start - 1];
+        if (m != .object) break;
+        const role = m.object.get("role") orelse break;
+        if (role != .string or !std.mem.eql(u8, role.string, "user")) break;
+    }
+    var i = start;
+    while (i < msgs.items.len) {
+        if (peer_context.isPeerInject(msgs.items[i])) {
+            _ = msgs.orderedRemove(i);
+            continue;
+        }
+        i += 1;
+    }
+}
+
 pub fn dropAllInjects(msgs: *std.json.Array) void {
     var i: usize = 0;
     while (i < msgs.items.len) {

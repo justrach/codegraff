@@ -145,6 +145,36 @@ test "parseModels is reusable for a newly configured router" {
     try std.testing.expectEqual(pricing.default_context, snapshot.models[2].context);
 }
 
+test "oMLX is a local live-catalog seat whose first listed model is the default" {
+    const spec = provider.specFor("omlx") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(provider.Provider.Kind.openai, spec.kind);
+    try std.testing.expectEqual(provider.Provider.Auth.bearer, spec.auth);
+    try std.testing.expectEqualStrings("http://127.0.0.1:8000/v1/chat/completions", spec.url);
+    try std.testing.expectEqualStrings("OMLX_API_KEY", spec.env_key);
+    try std.testing.expectEqual(provider.ProviderSpec.CatalogKind.openai, spec.catalog);
+    try std.testing.expectEqualStrings("http://127.0.0.1:8000/v1/models", modelsUrl(spec));
+    try std.testing.expect(spec.takes_effort);
+    // Offline (no catalog yet) the default is the baked alias.
+    try std.testing.expectEqualStrings("omlx", pricing.providerDefaultModel("omlx", spec.default_model));
+
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    const snapshot = parseModels(state.allocator(), "omlx",
+        \\{"object":"list","data":[
+        \\ {"id":"Local-27B-4bit","object":"model","owned_by":"omlx","max_model_len":262144},
+        \\ {"id":"Local-8B-4bit","object":"model","owned_by":"omlx"}
+        \\]}
+    ) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u64, 262_144), snapshot.models[0].context); // max_model_len read
+    try std.testing.expectEqual(pricing.default_context, snapshot.models[1].context);
+
+    const saved = pricing.active_model_table;
+    defer pricing.active_model_table = saved;
+    try std.testing.expect(activate(state.allocator(), spec, snapshot.models));
+    try std.testing.expectEqualStrings("Local-27B-4bit", pricing.providerDefaultModel("omlx", spec.default_model));
+    try std.testing.expect(!pricing.providerModelInTable("omlx", "omlx")); // the live list replaced the alias
+}
+
 test "fireworks catalog is live and parses the AIP gateway shape" {
     const spec = provider.specFor("fireworks") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(provider.ProviderSpec.CatalogKind.openai, spec.catalog);
@@ -252,7 +282,6 @@ test "alwaysLive is xAI-only so other OpenAI routers keep the disk TTL" {
     try std.testing.expect(!alwaysLive(provider.specFor("codegraff").?));
     try std.testing.expect(!alwaysLive(provider.specFor("anthropic").?));
     try std.testing.expect(!alwaysLive(provider.specFor("fireworks").?));
-    try std.testing.expectEqual(@as(i64, 500), rc.live_budget_ms);
 }
 
 test "xAI /v1/models rows inherit baked context windows" {
@@ -424,17 +453,19 @@ test "router discovery replaces only its provider slice" {
     try std.testing.expect(pricing.providerModelInTable("codegraff", "kimi-k3"));
     try std.testing.expect(!pricing.providerModelInTable("codegraff", "claude-opus-4.8"));
     try std.testing.expect(pricing.providerModelInTable("anthropic", "claude-opus-4-8"));
-    try std.testing.expect(pricing.providerModelInTable("codex", "gpt-5.6-sol"));
+    try std.testing.expect(pricing.providerModelInTable("codex", "gpt-6-sol"));
 }
 
-test "startup catalog loads fan out concurrently with Kimi" {
+test "startup catalog loads fan out with Kimi under one bounded wait" {
     const src = @embedFile("router_catalog.zig");
-    try std.testing.expect(std.mem.indexOf(u8, src, "io.concurrent(fetchSpecTask") != null);
-    try std.testing.expect(std.mem.indexOf(u8, src, "io.concurrent(kimiFetchTask") != null);
-    try std.testing.expect(std.mem.indexOf(u8, src, "fn spawnKimi") != null);
-    try std.testing.expect(std.mem.indexOf(u8, src, "startBackgroundRefresh") != null);
-    try std.testing.expect(std.mem.indexOf(u8, src, "live_budget_ms") != null);
-    try std.testing.expect(std.mem.indexOf(u8, src, "if (alwaysLive(spec)) return false") == null);
+    const start = std.mem.indexOf(u8, src, "pub fn ensureForStartup") orelse return error.TestUnexpectedResult;
+    const end = std.mem.indexOfPos(u8, src, start, "\nfn startSpec") orelse return error.TestUnexpectedResult;
+    const body = src[start..end];
+    // Boot never awaits a catalog GET: one batch, one budget, then the cache.
+    try std.testing.expect(std.mem.indexOf(u8, body, "startKimi(io, &batch") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "batch.wait(io, catalog_bounded.startup_budget)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, ".await(io)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "if (alwaysLive(spec)) catalog_bounded.detach(job") != null);
 }
 
 // ── provider.zig routing tests parked here under its 600-line ceiling ──────
@@ -450,7 +481,7 @@ test "providerFor (#377): family-prefixed spelling routes to the direct provider
     try std.testing.expectEqualStrings("kimi", p.id);
     try std.testing.expectEqualStrings("k3", p.model);
     // Exact catalog names keep absolute priority over the family alias.
-    try std.testing.expectEqualStrings("gpt-5.6-sol", (try all.providerFor("gpt-5.6-sol")).model);
+    try std.testing.expectEqualStrings("gpt-6-sol", (try all.providerFor("gpt-6-sol")).model);
     // Without the kimi credential, Moonshot's platform id `kimi-k3` is an
     // exact catalog row — not the gateway.
     var values: [provider.provider_specs.len]?[]const u8 = @splat("k");
@@ -499,11 +530,22 @@ test "xAI defaults to the Responses wire; GRAFF_XAI_WIRE=chat opts out (#502)" {
     try std.testing.expectEqual(Provider.Kind.responses, moved.kind);
     try std.testing.expectEqualStrings(provider.xai_responses_url, moved.url);
     // codex keeps in-stream compaction — never the explicit endpoint.
-    const codex = try all.providerById("codex", "gpt-5.6-sol");
+    const codex = try all.providerById("codex", "gpt-6-sol");
     try std.testing.expect(codex.serverCompactUrl() == null);
     // every other provider is untouched by the knob: openai keeps its native
     // Responses wire (default since v0.0.250) and its own endpoint.
-    const oai = try all.providerById("openai", "gpt-5.6");
+    const oai = try all.providerById("openai", "gpt-6-sol");
     try std.testing.expectEqual(Provider.Kind.responses, oai.kind);
     try std.testing.expect(std.mem.indexOf(u8, oai.url, "api.openai.com") != null);
+}
+
+test "GRAFF_CHATGPT_URL keeps chatgpt-new discovery on the override origin" {
+    const saved = provider.g_chatgpt_url_override;
+    defer provider.g_chatgpt_url_override = saved;
+    const spec = provider.specFor("chatgpt-new").?;
+    provider.g_chatgpt_url_override = null;
+    try std.testing.expectEqualStrings(spec.models_url, modelsUrl(spec));
+    provider.g_chatgpt_url_override = "http://127.0.0.1:4321/v1/responses";
+    try std.testing.expectEqualStrings("http://127.0.0.1:4321/v1/models", modelsUrl(spec));
+    try std.testing.expectEqualStrings(provider.specFor("codex").?.models_url, modelsUrl(provider.specFor("codex").?));
 }

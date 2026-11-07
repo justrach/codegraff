@@ -85,7 +85,7 @@ fn readChildren(io: Io, arena: Allocator, root: []const u8, parent: *Node) void 
         n.top = if (parent.depth == 0) n else parent.top;
         parent.kids.append(arena, n) catch continue;
     }
-    std.mem.sort(*Node, parent.kids.items, {}, nodeLt);
+    @import("stable_sort.zig").sort(*Node, parent.kids.items, {}, nodeLt);
 }
 
 fn take(b: *Budget, n: *Node) void {

@@ -56,7 +56,7 @@ const Model = struct {
                 const flag: usize = @as(usize, @intFromBool(entry.dm)) + 2 * @as(usize, @intFromBool(entry.device));
                 try expected.writer.print("[peer message from {s}{s}]: {s}\n", .{ entry.from, flags[flag], entry.text });
             }
-            try expected.writer.writeAll("(inbox cleared — reply with peer_message; omit session for the room, or name one peer to DM)");
+            try expected.writer.writeAll(inbox.inbox_footer);
         }
         try testing.expectEqualStrings(expected.writer.buffered(), try inbox.takeAll(a));
         self.clear();

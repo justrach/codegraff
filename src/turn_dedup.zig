@@ -79,6 +79,24 @@ pub fn enqueueOrSkip(root: *Agent, arena: Allocator, out: ?*Io.Writer, text: []c
     return try enqueue(root, arena, out, text) != .started;
 }
 
+/// #1729: a turn that ended in an error before any reply left its prompt as
+/// the last row of history, so resending the same words read as the host
+/// re-submitting a pending row and was skipped without a request. Close the
+/// failed turn with an assistant row that says what streamed (if anything)
+/// and why no reply came. It is persisted with the session, so the boundary
+/// survives a checkpoint reload, and the model sees the request failed. A
+/// no-op when the turn already left a row after the prompt (a cancel or
+/// stream-end marker, a tool result), so those paths keep their own text.
+pub fn settleFailedTurn(root: *Agent, arena: Allocator, err: anyerror) !void {
+    const items = root.messages.items;
+    if (items.len == 0 or messages.userPromptText(items[items.len - 1]) == null) return;
+    const why = root.last_api_error orelse @errorName(err);
+    const marker = try std.fmt.allocPrint(arena, "[request failed: {s}; no reply was received]", .{why});
+    const partial = std.mem.trim(u8, root.partial_text.items, " \t\r\n");
+    const text = if (partial.len == 0) marker else try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ partial, marker });
+    try root.messages.append(try messages.textMessage(arena, "assistant", text));
+}
+
 test "#714: the first copy of a prompt proceeds" {
     resetForTest();
     defer resetForTest();

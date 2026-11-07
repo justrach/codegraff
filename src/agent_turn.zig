@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const Agent = @import("agent.zig").Agent;
+const main_mod = @import("main.zig");
 const empty_completion = @import("agent_empty_completion.zig");
 const turn_inbox = @import("turn_inbox.zig");
 
@@ -16,10 +17,13 @@ pub fn run(self: *Agent, root_turn_prepared: *std.atomic.Value(bool)) anyerror![
     defer if (!self.sub) @import("peer_idle.zig").noteTurnEnd();
     var pending_work = empty_completion.PendingWork.begin(self);
     var bounced_answer: empty_completion.BounceAnswer = .{};
+    var length: @import("agent_length.zig").State = .{};
+    self.empty_completion_retries = 0;
+    self.length_cutoffs = 0; // agent_length_cutoff.zig: rewinds this turn
     self.completed = null;
     self.yielded = null;
     self.read_miss.reset();
-    self.mcp_context.begin(self.io);
+    self.tool_repeat.reset();
     @import("named_work.zig").beginTurn(self);
     try self.ensureRootTools(self.provider.kind);
     var task_scope = @import("task_intent.zig").State.begin(self);
@@ -43,7 +47,9 @@ pub fn run(self: *Agent, root_turn_prepared: *std.atomic.Value(bool)) anyerror![
         // meter (last_context_tokens, server-reported) catches up. Estimate the
         // full input locally and compact BEFORE sending so we never ship an
         // over-cap request (codex run_pre_sampling_compact / opencode isOverflow).
-        if (self.inputOverCompactThreshold()) {
+        const over_compact = self.inputOverCompactThreshold();
+        @import("compact_backoff.zig").step(&self.compact_backoff, self.history_rewrites, over_compact);
+        if (over_compact and !readBatchFirst(self) and !compactionHeld(self)) {
             // Bracket the compaction with codex-WS resets, mirroring how every
             // other compactOrRecover call site is bookended by runTurn's
             // closeCodexWs (299 + defer 300). Mid-turn the WS can be live with a
@@ -73,9 +79,23 @@ pub fn run(self: *Agent, root_turn_prepared: *std.atomic.Value(bool)) anyerror![
                 try self.ensureRootTools(self.provider.kind);
             }
         }
+        if (self.sub) try self.synthesis.beforeRequest(self);
         const hist_len = self.messages.items.len;
-        const root = self.request(if (self.text_only) null else self.toolsJson()) catch |err| return review_deadline.finish(try @import("agent_model_loop.zig").finishError(self, err));
-        const done = try @import("agent_steps.zig").stepForWire(self, root);
+        const root = self.request(if (self.text_only and !self.synthesis.keepsCatalog(self)) null else self.toolsJson()) catch |err| {
+            if (try @import("agent_length_cutoff.zig").recoverRunaway(self, err, hist_len)) continue;
+            return review_deadline.finish(try @import("agent_model_loop.zig").finishError(self, err));
+        };
+        // request() may compact history; capture this reply's actual boundary.
+        // Keep reasoning available to recovery, then exclude non-replayable
+        // empty length replies on every exit before another call or save.
+        const reply_start = self.messages.items.len;
+        defer @import("agent_length_cutoff.zig").discardEmptyReply(self, root, reply_start);
+        const done = try length.step(self, root);
+        if (done == null) if (self.tool_repeat.stopText()) |stop| { // #1706: every wire's tool batch lands here
+            try self.say("{s}\n", .{stop});
+            _ = @import("tool_call_repair.zig").endsTurn(self, stop);
+            return review_deadline.finish(stop);
+        };
         if (done) |final_text| {
             if (self.yielded != null) return review_deadline.finish(final_text);
             if (@import("tool_call_repair.zig").endsTurn(self, final_text)) return review_deadline.finish(final_text); // final: no retry/nudge
@@ -84,10 +104,53 @@ pub fn run(self: *Agent, root_turn_prepared: *std.atomic.Value(bool)) anyerror![
             if (try @import("named_work.zig").handle(self, final_text)) continue;
             if (try pending_work.finish(self, bounced_answer.finish(self, final_text))) |text| {
                 if (self.feedback) |inbox| if (!inbox.tryFinish(self.io)) continue;
+                settleFinal(self);
                 return review_deadline.finish(text);
             }
             continue;
         }
         self.empty_completion_retries = 0;
     }
+}
+
+/// A root turn that ends with its answer settles the human task (#1137):
+/// ambient peer mail then waits for the next human prompt instead of
+/// reopening it. A yielded turn is a handoff, already latched harder; a
+/// stopped tool loop did not finish the task and settles nothing.
+fn settleFinal(self: *Agent) void {
+    if (!self.sub) @import("peer_idle.zig").noteFinalAnswer();
+}
+
+/// #1686: the previous compaction left the context over the line; wait for
+/// real growth (or the 95% wall) instead of compacting on every step.
+fn compactionHeld(self: *Agent) bool {
+    const context = self.effectiveContextTokens();
+    const backoff = @import("compact_backoff.zig");
+    switch (backoff.gate(&self.compact_backoff, context, self.provider.context, self.provider.nearContextLimit(context))) {
+        .compact => return false,
+        .hold => return true,
+        .hold_started => {
+            if (self.tracer) |tr| tr.note("compact", "held: the last compaction left the context over the line");
+            if (!main_mod.json_mode) self.say("[compaction freed too little room; compacting again once the context grows]\n", .{}) catch {};
+            return true;
+        },
+    }
+}
+
+/// Over the compaction line, but the history ends on a tool batch the model
+/// has not read and almost everything else is that batch. A compaction keeps
+/// the batch verbatim (compact_cut.unreadToolBatch), so it could only
+/// summarize the small prefix in front of it: a summary round trip that buys
+/// little. Send the request instead and compact once the model has read the
+/// batch. Near the window (95%) the ordinary recovery runs regardless.
+fn readBatchFirst(self: *Agent) bool {
+    const compact_cut = @import("compact_cut.zig");
+    const items = self.messages.items;
+    if (compact_cut.unreadToolBatch(items) == null) return false;
+    if (self.provider.nearContextLimit(self.effectiveContextTokens())) return false;
+    const start = compact_cut.recentContextStart(items, @import("agent_compact.zig").recent_context_tokens);
+    const prefix = compact_cut.suffixTokens(items[0..start], 0);
+    if (prefix >= self.provider.compactAt() / 4) return false;
+    if (self.tracer) |tr| tr.note("compact", "deferred: the model has not read the newest tool results");
+    return true;
 }

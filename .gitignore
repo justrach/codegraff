@@ -1,5 +1,6 @@
 # build output
 .zig-cache/
+.zig-global-cache/
 zig-out/
 zig-pkg/
 target/
@@ -15,6 +16,11 @@ harness.trajectory.jsonl
 .mcp.json
 .simple-harness-keys.json
 .simple-harness-codegraff.json
+
+# release task-cache checkout, tool and artifact stores
+.nanocompile-source/
+.nanocompile-tools/
+.nanocompile-cache/
 
 # tooling artifacts
 .zigrep_archive

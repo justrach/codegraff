@@ -1,0 +1,12 @@
+{"type":"run_started","run_id":"0923cccfa4a5ab6f","session_id":"session-1793428962555-2630","parent_session_id":null}
+calling claude-agent-sonnet
+›
+›
+›
+›
+  [main] I couldn't find a `logs/` directory, so I haven't counted anything or written `summary.json`.
+
+The working directory is `/Users/rachpradhan/.harness/worktrees/codegraff/swift-falcon`. There's no `logs/` in it, and a search up to three levels deep turned up no directory with that name. I didn't search outside the worktree.
+
+Where are the logs? If you give me the path, I'll start one sub-agent per service (auth, billing, search, mailer) in parallel, then combine their counts into `summary.json`.
+[usage] 4 api call(s) · 44589 in (37470 cached, 7111 cache writes) + 522 out tokens · $0.00000000 · 4 subscription call(s), flat-rate (not in $)

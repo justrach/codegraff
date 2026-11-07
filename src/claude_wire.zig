@@ -61,6 +61,13 @@ fn fiveFiveEra(model: []const u8) bool {
     };
 }
 
+/// Haiku 5.5 thinks adaptively and takes effort and the binding field like the
+/// 5.5-era models, but still accepts a forced tool (probed against the API).
+fn haikuFiveFive(model: []const u8) bool {
+    const v = version(model) orelse return false;
+    return v.family == .haiku and atLeast(v, 5, 5);
+}
+
 /// `tool_choice` any/tool returns a 400 on this model.
 pub fn rejectsForcedTools(model: []const u8) bool {
     return fiveFiveEra(model);
@@ -69,18 +76,18 @@ pub fn rejectsForcedTools(model: []const u8) bool {
 /// The API checks replayed thinking against its prefix on this model.
 /// Mythos 5.1 does not run the check, but takes the field.
 pub fn bindsThinking(model: []const u8) bool {
-    return fiveFiveEra(model);
+    return fiveFiveEra(model) or haikuFiveFive(model);
 }
 
 /// Whether `output_config.effort` is accepted (Opus 4.5 and later, Sonnet
-/// 4.6 and later, every Fable and Mythos; never Haiku).
+/// 4.6 and later, every Fable and Mythos, Haiku 5.5 and later).
 pub fn takesEffort(model: []const u8) bool {
     const v = version(model) orelse return false;
     return switch (v.family) {
         .opus => atLeast(v, 4, 5),
         .sonnet => atLeast(v, 4, 6),
         .fable, .mythos => true,
-        .haiku => false,
+        .haiku => atLeast(v, 5, 5),
     };
 }
 
@@ -93,7 +100,7 @@ pub fn takesEffort(model: []const u8) bool {
 pub fn effortWire(model: []const u8, effort: ReasoningEffort) ?[]const u8 {
     return switch (effort) {
         .none => null,
-        .medium => if (fiveFiveEra(model)) "medium" else null,
+        .medium => if (fiveFiveEra(model) or haikuFiveFive(model)) "medium" else null,
         .low => "low",
         .high => "high",
         .xhigh => "xhigh",
@@ -109,14 +116,14 @@ pub fn effortFor(model: []const u8, effort: ReasoningEffort, kind: CallKind) ?[]
     return effortWire(model, effort);
 }
 
-/// Thinking is on by default (Opus and Sonnet 5 and later, Fable, Mythos):
+/// Thinking is on by default (Opus and Sonnet 5 and later, Haiku 5.5, Fable, Mythos):
 /// max_tokens is spent on thinking before the answer.
 pub fn thinksByDefault(model: []const u8) bool {
     const v = version(model) orelse return false;
     return switch (v.family) {
         .opus, .sonnet => atLeast(v, 5, 0),
         .fable, .mythos => true,
-        .haiku => false,
+        .haiku => atLeast(v, 5, 5),
     };
 }
 
@@ -169,11 +176,21 @@ test "5.5-era models are never forced to a tool and bind their thinking" {
     }
 }
 
+test "Haiku 5.5 binds its thinking but may still be forced to a tool" {
+    const t = std.testing;
+    try t.expect(bindsThinking("claude-haiku-5-5"));
+    try t.expect(!rejectsForcedTools("claude-haiku-5-5"));
+    try t.expect(thinksByDefault("claude-haiku-5-5"));
+    try t.expect(!thinksByDefault("claude-haiku-4-5"));
+}
+
 test "effort goes on the wire only where it is taken; 5.5-era models get graff's level as shown" {
     const t = std.testing;
     try t.expect(takesEffort("claude-opus-5-5") and takesEffort("claude-sonnet-5-5") and takesEffort("claude-fable-5-1"));
     try t.expect(takesEffort("claude-opus-4-5") and takesEffort("claude-sonnet-4-6"));
     try t.expect(!takesEffort("claude-haiku-4-5") and !takesEffort("claude-sonnet-4-5") and !takesEffort("claude-opus-4-1"));
+    try t.expect(takesEffort("claude-haiku-5-5"));
+    try t.expectEqualStrings("medium", effortWire("claude-haiku-5-5", .medium).?);
     // ADR 0220: medium is sent to the models whose default is not medium.
     try t.expectEqualStrings("medium", effortWire("claude-sonnet-5-5", .medium).?);
     try t.expectEqualStrings("medium", effortWire("claude-opus-5-5", .medium).?);
@@ -195,6 +212,7 @@ test "max_tokens leaves room for thinking on 128K-output models" {
     try t.expectEqual(@as(u32, 128_000), maxTokens("claude-opus-5-5", .max, 16_000));
     try t.expectEqual(@as(u32, 128_000), maxTokens("claude-fable-5-1", .xhigh, 16_000));
     try t.expectEqual(@as(u32, 16_000), maxTokens("claude-haiku-4-5", .max, 16_000));
+    try t.expectEqual(@as(u32, 128_000), maxTokens("claude-haiku-5-5", .max, 16_000));
     try t.expectEqual(@as(u32, 16_000), maxTokens("claude-opus-4-8", .high, 16_000));
     try t.expectEqual(@as(u32, 16_000), maxTokens("minimax-m3", .high, 16_000));
 }

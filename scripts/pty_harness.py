@@ -275,8 +275,14 @@ class PtySession:
             if match:
                 return len(self.raw)
             if self.poll() is not None:
+                # Drain what the child wrote last (a panic message, say): it is
+                # the evidence for why it exited.
+                while self.pump(0.05):
+                    pass
+                tail = self.text[-2000:]
                 raise PtyFailure(
                     f"child exited with {self.exit_code} before matching {pattern.pattern!r}"
+                    f"\n--- transcript tail ---\n{tail}"
                 )
             remaining = deadline - time.monotonic()
             if remaining <= 0:

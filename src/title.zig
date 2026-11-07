@@ -87,9 +87,18 @@ pub fn printSessionHeader(w: *Io.Writer, title: []const u8, folder: []const u8) 
 /// codex/responses a `response.reasoning_summary_text.delta`.
 pub fn reasoningDelta(kind: Provider.Kind, obj: std.json.ObjectMap) []const u8 {
     return switch (kind) {
-        // Gemini never streams reasoning PROSE — a thought step carries only an
-        // opaque signature, so there is nothing to show in the thinking panel.
-        .interactions => "",
+        // A thought step streams its summary as `thought_summary` deltas
+        // (`thinking_summaries` defaults to auto); its signature is opaque.
+        .interactions => blk: {
+            const d = obj.get("delta") orelse break :blk "";
+            if (d != .object) break :blk "";
+            const dt = d.object.get("type") orelse break :blk "";
+            if (dt != .string or !std.mem.eql(u8, dt.string, "thought_summary")) break :blk "";
+            const c = d.object.get("content") orelse break :blk "";
+            if (c != .object) break :blk "";
+            const x = c.object.get("text") orelse break :blk "";
+            break :blk if (x == .string) x.string else "";
+        },
         .anthropic => blk: {
             const d = obj.get("delta") orelse break :blk "";
             if (d != .object) break :blk "";
@@ -247,6 +256,11 @@ test "reasoningDelta extracts thinking/reasoning per provider wire format (#75)"
     // codex/responses stream a reasoning summary delta
     const re = mk(a, "{\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"plan\"}");
     try std.testing.expectEqualStrings("plan", reasoningDelta(.responses, re));
+    // gemini (Interactions) streams a thought summary; the signature is opaque
+    const gs = mk(a, "{\"index\":0,\"delta\":{\"type\":\"thought_summary\",\"content\":{\"text\":\"**Assessing**\"}}}");
+    try std.testing.expectEqualStrings("**Assessing**", reasoningDelta(.interactions, gs));
+    const sig = mk(a, "{\"index\":0,\"delta\":{\"type\":\"thought_signature\",\"signature\":\"OPAQUE\"}}");
+    try std.testing.expectEqualStrings("", reasoningDelta(.interactions, sig));
     // a plain answer-text delta carries no reasoning
     const txt = mk(a, "{\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}");
     try std.testing.expectEqualStrings("", reasoningDelta(.openai, txt));

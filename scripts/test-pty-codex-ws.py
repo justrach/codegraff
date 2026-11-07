@@ -127,7 +127,7 @@ def main() -> None:
         finally:
             mock.stop()
         print(
-            "ok    codex server meter + reasoning prune: WS tool call -> "
+            "ok    server meter + reasoning prune: WS tool call -> read results -> "
             "SSE compaction -> fresh full-input WS"
         )
 
@@ -138,7 +138,7 @@ def main() -> None:
         finally:
             mock.stop()
         print(
-            "ok    empty mid-turn summary: transactional rollback -> "
+            "ok    empty summary after reading results: transactional rollback -> "
             "fresh full-input WS"
         )
 

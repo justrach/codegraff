@@ -29,11 +29,8 @@ pub fn feedback(r: Result) []const u8 {
 }
 
 fn matchesMagic(mime: []const u8, bytes: []const u8) bool {
-    if (std.mem.eql(u8, mime, "image/png")) return std.mem.startsWith(u8, bytes, "\x89PNG\r\n\x1a\n");
-    if (std.mem.eql(u8, mime, "image/jpeg")) return std.mem.startsWith(u8, bytes, "\xff\xd8\xff");
-    if (std.mem.eql(u8, mime, "image/gif")) return std.mem.startsWith(u8, bytes, "GIF87a") or std.mem.startsWith(u8, bytes, "GIF89a");
-    if (std.mem.eql(u8, mime, "image/webp")) return bytes.len >= 12 and std.mem.eql(u8, bytes[0..4], "RIFF") and std.mem.eql(u8, bytes[8..12], "WEBP");
-    return false;
+    const actual = @import("image_sniff.zig").sniff(bytes) orelse return false;
+    return std.mem.eql(u8, mime, actual);
 }
 
 /// Called on the actual bracketed-paste path, before normal paste expansion.

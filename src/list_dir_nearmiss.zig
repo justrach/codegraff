@@ -117,7 +117,7 @@ fn suggestBudget(io: Io, arena: Allocator, resolved: []const u8, display: []cons
 
     var aw: Io.Writer.Allocating = .init(arena);
     const w = &aw.writer;
-    std.mem.sort(Entry, entries.items, {}, byDist);
+    @import("stable_sort.zig").sort(Entry, entries.items, {}, byDist);
     var close: usize = 0;
     for (entries.items) |e| {
         if (e.dist > threshold(leaf) or close == max_close) break;
@@ -126,7 +126,7 @@ fn suggestBudget(io: Io, arena: Allocator, resolved: []const u8, display: []cons
     }
     if (close > 0) w.writeAll(".") catch return null;
 
-    std.mem.sort(Entry, entries.items, {}, byName);
+    @import("stable_sort.zig").sort(Entry, entries.items, {}, byName);
     if (limited)
         w.print(" Visible entries among {d} scanned in {s} ({d}): ", .{ scanned, parent_display, entries.items.len }) catch return null
     else

@@ -50,14 +50,13 @@ const learn_eval = @import("learn_eval.zig");
 const learn_cli = @import("learn_cli.zig");
 test {
     _ = .{ @import("http2_buffered.zig"), @import("clipboard_native.zig"), @import("clipboard_edge_tests.zig"), @import("clipboard_failure_tests.zig"), @import("process_runner_clipboard_tests.zig") };
-    _ = @import("server_orphan.zig");
+    _ = .{ @import("server_orphan.zig"), @import("term_sender.zig") };
     _ = @import("repo_transaction.zig");
-    _ = .{ @import("pr_command.zig"), @import("pr_evidence.zig"), @import("artifact_repository.zig"), @import("artifact_claim_ledger.zig"), @import("artifact_claim_store.zig"), @import("artifact_claim_stale.zig"), @import("artifact_claim_unresolved.zig") };
-    _ = @import("argstream_citation_tests.zig"); // unit_tests' root is main.zig only, so reference every split-out module or its tests silently never run
-    _ = @import("codex_node_repl.zig");
+    _ = .{ @import("pr_command.zig"), @import("pr_evidence.zig"), @import("artifact_repository.zig"), @import("artifact_claim_ledger.zig"), @import("artifact_claim_store.zig"), @import("artifact_claim_stale.zig"), @import("artifact_claim_unresolved.zig"), @import("artifact_claim_inventory.zig") };
+    _ = .{ @import("argstream_citation_tests.zig"), @import("acp_reauth_tests.zig"), @import("auth_recovery.zig") }; // unit_tests' root is main.zig only, so reference every split-out module or its tests silently never run
     _ = pricing;
     _ = models_cache;
-    _ = ansi;
+    _ = .{ ansi, @import("agent_markdown_inline.zig"), @import("terminal_workers_tests.zig") };
     _ = serve;
     _ = .{ @import("json_inbox.zig"), @import("acp_inbox.zig"), @import("cite_markup.zig"), @import("server_diagnostics.zig"), @import("server_discovery.zig"), @import("job_browser_guard.zig"), @import("preview_consumers.zig"), @import("plan_usage.zig"), @import("server_port.zig"), @import("job_registry_stop_tests.zig") };
     _ = util;
@@ -252,9 +251,9 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
     const arena = init.arena.allocator();
-    // #122: raise the open-file soft limit to the OS hard cap (Darwin defaults
-    // to 256). Raising it avoids ProcessFdQuotaExceeded during parallel tools.
+    // #122: raise the open-file soft limit to the OS hard cap (Darwin defaults to 256) to avoid ProcessFdQuotaExceeded during parallel tools.
     std.process.raiseFileDescriptorLimit();
+    @import("term_sender.zig").install(); // a SIGTERM names its sender on stderr
     // #124: a per-turn scratch arena for the root agent's transient parse garbage,
     // reset each request() so a long REPL/--json/serve session's RSS stays flat.
     var scratch_state = std.heap.ArenaAllocator.init(gpa);
@@ -549,9 +548,7 @@ const http = @import("http.zig"); // HTTP transport and watchdogs.
 // Subprocess execution (runCapped, git-worktree mgmt, background bash-job pool) lives in jobs.zig; jobsReap is aliased back for main()'s cleanup defer.
 const jobs = @import("jobs.zig");
 const jobsReap = jobs.jobsReap;
-// Tool execution (ToolCtx, /rewind snapshots, pre/post-tool hook dispatch, codedb-guard #626, metered-companion router) lives in tools.zig, imported
-// as tools_mod since Agent.request/buildBody already have a `tools` param a bare import would shadow. Snapshots is a local alias (main() constructs
-// one for /rewind). Subagent/workflow-task spawning (subagent.zig/workflow.zig) and the dispatcher (exec.zig) are imported only for their test{} blocks.
+// Tool dispatch and snapshots live in tools.zig; spawning/workflow/exec imports below also expose their tests.
 const tools_mod = @import("tools.zig");
 const Snapshots = tools_mod.Snapshots;
 const subagent = @import("subagent.zig");
@@ -560,41 +557,43 @@ const workflow = @import("workflow_test.zig"); // the engine's tests live here (
 const exec = @import("exec.zig");
 test { // ── Unit tests (`zig build test`): pull in tests from imported modules (mcp.zig)
     _ = .{ @import("beta_feed.zig"), @import("jev_tool.zig"), @import("jev_model_scope.zig"), @import("jev_provider_switch_tests.zig"), @import("jev_effort_state.zig"), @import("gemini_turns.zig"), @import("gemini_turns_tests.zig") };
-    _ = .{ @import("mcp_apps.zig"), @import("html_view.zig"), @import("usage_trace.zig"), @import("providers_confirmation_tests.zig"), @import("repl_model_confirmation_tests.zig"), @import("repl_model_pick_tests.zig"), @import("engine_sink_citation_tests.zig"), @import("cite_markup_stream_tests.zig"), @import("oneshot_citation_tests.zig"), @import("acp_permission.zig"), @import("acp_usage.zig") };
+    _ = .{ @import("mcp_apps.zig"), @import("html_view.zig"), @import("usage_trace.zig"), @import("providers_confirmation_tests.zig"), @import("repl_model_confirmation_tests.zig"), @import("repl_model_pick_tests.zig"), @import("engine_sink_citation_tests.zig"), @import("cite_markup_stream_tests.zig"), @import("oneshot_citation_tests.zig"), @import("acp_permission.zig"), @import("acp_usage.zig"), @import("context_savings.zig") };
     _ = .{ @import("mcp_server_tests.zig"), @import("main_test.zig"), @import("artifact_claim_command.zig"), @import("cli_path_hint.zig"), @import("run_budget.zig") };
-    _ = .{ @import("session_catalog.zig"), @import("session_prompt.zig"), @import("session_discovery.zig"), @import("session_workspaces.zig"), @import("commands_resume.zig"), @import("peer_live.zig"), @import("presence_tests.zig"), @import("mcp_rpc_tests.zig") };
-    _ = .{ @import("prompt_astra.zig"), @import("prompt_guidance.zig"), @import("oauth_chatgpt.zig"), @import("chatgpt_reauth.zig") }; // per-model guidance (Astra, GPT-5.6); ChatGPT plan sign-in (ADR 0253)
-    _ = .{ @import("agent_empty_completion.zig"), @import("agent_model_loop.zig"), @import("publication_policy_tests.zig"), @import("jobs_completion_tests.zig") };
-    _ = .{ @import("provider_routing_tests.zig"), @import("codegraff_messages_tests.zig"), @import("tool_result_empty_tests.zig"), @import("history_wire.zig"), @import("readline_paste_number_tests.zig"), @import("test_hooks.zig"), @import("peer_wake_loop.zig") };
-    _ = .{ @import("list_dir_nearmiss.zig"), @import("tool_preview_tests.zig") };
-    _ = @import("repo_map.zig");
+    _ = .{ @import("session_catalog.zig"), @import("session_size_tests.zig"), @import("session_prompt.zig"), @import("session_discovery.zig"), @import("session_workspaces.zig"), @import("commands_resume.zig"), @import("peer_live.zig"), @import("presence_tests.zig"), @import("presence_ack.zig"), @import("mcp_rpc_tests.zig") };
+    _ = .{ @import("prompt_astra.zig"), @import("prompt_guidance.zig"), @import("oauth_chatgpt.zig"), @import("chatgpt_reauth.zig"), @import("oauth_anthropic.zig"), @import("anthropic_oauth_wire.zig"), @import("anthropic_login_tests.zig") };
+    _ = .{ @import("agent_empty_completion.zig"), @import("agent_length_cutoff.zig"), @import("agent_model_loop.zig"), @import("publication_policy_tests.zig"), @import("jobs_completion_tests.zig"), @import("headless_result.zig"), @import("oneshot.zig"), @import("agent_length.zig"), @import("agent_length_tests.zig") };
+    _ = .{ @import("provider_routing_tests.zig"), @import("codegraff_messages_tests.zig"), @import("tool_result_empty_tests.zig"), @import("history_wire.zig"), @import("path_lookup.zig"), @import("agents_prepare.zig"), @import("catalog_price.zig"), @import("readline_paste_number_tests.zig"), @import("test_hooks.zig"), @import("peer_wake_loop.zig") };
+    _ = .{ @import("list_dir_nearmiss.zig"), @import("tool_preview_tests.zig"), @import("stream_reconnect.zig"), @import("oauth_kimi.zig"), @import("signin_link.zig") };
+    _ = .{ @import("repo_map.zig"), @import("cli_text.zig") };
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests
     _ = @import("agent_gateway_retry.zig"); // #1019: flake vs overflow classification must stay reachable
     _ = @import("agent_responses.zig"); // #1019: type:error frame message extraction
     _ = @import("agent_server_compact.zig"); // server-side autocompact (codex Responses)
-    _ = .{ @import("compact_status.zig"), @import("compact_mix.zig") }; // compact status + GRAFF_COMPACT_MIX mixture arm
-    _ = @import("agent_request_search_tests.zig");
+    _ = .{ @import("compact_status.zig"), @import("compact_mix.zig"), @import("compact_backoff.zig") }; // compact status + GRAFF_COMPACT_MIX mixture arm + #1686 backoff
+    _ = .{ @import("agent_clef_compact.zig"), @import("agent_clef_compact_tests.zig"), @import("agent_clef_archive.zig") }; // gateway /v1/compact client (Clef pruning) + archive mode
+    _ = @import("agent_compact_recover.zig"); // compaction last-resort recovery (split for the ceiling)
+    _ = .{ @import("agent_request_search_tests.zig"), @import("model_call.zig") }; // #1665: model-call event pairing
     _ = @import("agent_ws_steer.zig");
     _ = @import("agent_ws_signal.zig");
     _ = .{ @import("agent_ws_prewarm.zig"), @import("agent_ws_headers.zig") };
-    _ = .{ @import("http2_pool.zig"), @import("agent_stream_h2.zig"), @import("agent_stream_h2_transport_test.zig") }; // h2 stream path, and graff's request/response contract over the pinned http-zig
+    _ = .{ @import("http2_pool.zig"), @import("agent_stream_h2.zig"), @import("agent_stream_h2_transport_test.zig"), @import("agent_stream_progress_test.zig"), @import("agent_stream_h2_progress_test.zig"), @import("stream_read_progress.zig"), @import("http_send.zig"), @import("http_send_test.zig") }; // transport contracts, partial-event byte progress, staged send budgets
     _ = @import("acp_preauth.zig"); // credential-free ACP loop must stay in the test root
-    _ = .{ @import("acp_protocol.zig"), @import("acp_v2.zig"), @import("acp_v2_prompt.zig"), @import("acp_session_load.zig"), @import("acp_elicit.zig"), @import("hot_context.zig"), @import("history_translate.zig"), @import("mcp_notify.zig"), @import("mcp_wait.zig"), @import("mcp_pages.zig"), @import("mcp_mrtr.zig"), @import("ask_user_args.zig"), @import("mcp_add.zig"), @import("mcp_lazy.zig"), @import("mcp_share.zig"), @import("acp_room.zig"), @import("mcp_catalog.zig"), @import("mcp_watch.zig"), @import("acp_engine_test.zig"), @import("subagent_mimo_tests.zig"), @import("mimo_effort_tests.zig"), @import("gateway_picker_catalog.zig"), @import("ask_user_answers.zig"), @import("job_class.zig"), @import("startup_claim.zig") };
+    _ = .{ @import("acp_protocol.zig"), @import("acp_v2.zig"), @import("acp_v2_prompt.zig"), @import("acp_session_load.zig"), @import("acp_session_fork.zig"), @import("session_fork.zig"), @import("acp_elicit.zig"), @import("hot_context.zig"), @import("history_translate.zig"), @import("mcp_notify.zig"), @import("mcp_wait.zig"), @import("mcp_pages.zig"), @import("mcp_mrtr.zig"), @import("ask_user_args.zig"), @import("mcp_add.zig"), @import("mcp_lazy.zig"), @import("mcp_share.zig"), @import("acp_room.zig"), @import("mcp_catalog.zig"), @import("mcp_watch.zig"), @import("acp_engine_test.zig"), @import("subagent_mimo_tests.zig"), @import("mimo_effort_tests.zig"), @import("gateway_picker_catalog.zig"), @import("ask_user_answers.zig"), @import("job_class.zig"), @import("startup_claim.zig") };
     _ = @import("task_outcome.zig"); // goal-outcome telemetry events
     _ = @import("learn_delete.zig"); // #303: its tests were dead until listed here
-    _ = .{ @import("additional_tests.zig"), @import("req_stats.zig"), @import("exact_reply.zig"), @import("rlm_order_tests.zig"), @import("async_tool_policy.zig"), @import("agent_async_tools.zig"), @import("request_usage_attempts.zig"), @import("learn_formal.zig") };
+    _ = .{ @import("additional_tests.zig"), @import("req_stats.zig"), @import("exact_reply.zig"), @import("rlm_order_tests.zig"), @import("async_tool_policy.zig"), @import("agent_async_tools.zig"), @import("request_usage_attempts.zig"), @import("learn_formal.zig"), @import("claude_agent_query.zig") };
     _ = @import("goal_pacing_autonomous_test.zig");
-    _ = .{ @import("goal_state.zig"), @import("agent_compact_recover.zig"), @import("agent_clef_compact.zig"), @import("agent_clef_compact_tests.zig"), @import("agent_clef_archive.zig") }; // + compaction recovery split, Clef arm (ADR 0260/0261)
+    _ = .{ @import("goal_state.zig"), @import("goal_state_tests.zig") };
     _ = @import("goal_persist_tests.zig");
     _ = @import("agent_render_cleanup.zig");
     _ = .{ @import("goal_flow.zig"), @import("shell_identity.zig") };
-    _ = @import("goal_todo.zig");
+    _ = .{ @import("goal_todo.zig"), @import("todo_cancel.zig") };
     _ = @import("goal_pacing.zig");
     _ = .{ @import("presence_accord.zig"), @import("peer_idle.zig"), @import("acp_idle.zig"), @import("presence_chan.zig"), @import("presence_record.zig"), @import("daddy.zig"), @import("peer_inbox_content_test.zig"), @import("peer_inbox_failure_test.zig"), @import("peer_inbox_storage_test.zig"), @import("peer_inbox_sequence_test.zig"), @import("peer_inbox_snapshot_test.zig") };
     _ = .{ @import("acp_agents.zig"), @import("repo_context_tests.zig") };
-    _ = .{ @import("subagent_activity.zig"), @import("subagent_interactive.zig"), @import("subagent_recovery.zig"), @import("subagent_retained.zig"), @import("subagent_run_tests.zig") };
+    _ = .{ @import("subagent_activity.zig"), @import("subagent_interactive.zig"), @import("subagent_recovery.zig"), @import("subagent_retained.zig"), @import("subagent_history.zig"), @import("subagent_history_copy.zig"), @import("subagent_history_tests.zig"), @import("subagent_run_tests.zig"), @import("workflow_synthesis.zig") };
     _ = .{ @import("acp_agent_activity.zig"), @import("acp_subagent_live.zig"), @import("acp_line_writer.zig") };
-    _ = .{ @import("acp_replay.zig"), @import("python_version.zig"), @import("jev_auto.zig"), @import("background_wait.zig") };
+    _ = .{ @import("acp_replay.zig"), @import("python_version.zig"), @import("jev_auto.zig"), @import("background_wait.zig"), @import("gateway_compact_tests.zig") };
     _ = @import("read_image.zig");
-    _ = .{ @import("mcp_names.zig"), @import("workspace_history.zig"), @import("file_worktree.zig"), @import("mcp_turn_context.zig"), @import("review_deadline.zig"), @import("issue_cmd.zig"), @import("shell_tool.zig"), @import("acp_ask.zig"), @import("side_steer.zig"), @import("task_workspace_tests.zig"), @import("workspace_prepare_tests.zig"), @import("worktree_reap.zig") };
+    _ = .{ @import("mcp_interop_tests.zig"), @import("mcp_inbound.zig"), @import("mcp_names.zig"), @import("workspace_history.zig"), @import("file_worktree.zig"), @import("review_deadline.zig"), @import("issue_cmd.zig"), @import("shell_tool.zig"), @import("acp_ask.zig"), @import("side_steer.zig"), @import("task_workspace_tests.zig"), @import("workspace_prepare_tests.zig"), @import("worktree_reap.zig") };
 }

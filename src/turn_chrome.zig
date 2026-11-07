@@ -88,6 +88,69 @@ test "formatRetryNotice names HungRequest and UnknownHostName with attempt n/N" 
     try std.testing.expectEqualStrings("· retry 1/6 · UnknownHostName", formatRetryNotice(&buf, "UnknownHostName", 1, 6));
 }
 
+test "retry chrome stays out of ACP JSON and one-shot answer writers" {
+    const main_mod = @import("main.zig");
+    const prev_json = main_mod.json_mode;
+    const prev_unattended = main_mod.unattended;
+    const prev_out = main_mod.g_out;
+    defer {
+        main_mod.json_mode = prev_json;
+        main_mod.unattended = prev_unattended;
+        main_mod.g_out = prev_out;
+    }
+    var output: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    main_mod.g_out = &output.writer;
+    for ([_][2]bool{ .{ true, false }, .{ false, true }, .{ true, true } }) |mode| {
+        main_mod.json_mode = mode[0];
+        main_mod.unattended = mode[1];
+        emitRetryNotice(undefined, "UnknownHostName", 1, 6);
+        emitRetryNotice(undefined, "HungRequest", 2, 6);
+        try std.testing.expectEqualStrings("", output.written());
+    }
+    main_mod.json_mode = false;
+    main_mod.unattended = false;
+    emitRetryNotice(undefined, "UnknownHostName", 1, 6);
+    emitRetryNotice(undefined, "HungRequest", 2, 6);
+    const text = output.written();
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, text, "\n"));
+    try std.testing.expect(std.mem.indexOf(u8, text, "· retry 1/6 · UnknownHostName") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "· retry 2/6 · HungRequest") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "[network error:") == null);
+}
+
+test "hosted retry chrome is one dim presentation notice, not a durable answer" {
+    const sinks = @import("engine_sink.zig");
+    const events = @import("engine_events.zig");
+    const Capture = struct {
+        count: usize = 0,
+        dim: bool = false,
+        durable: bool = false,
+        text: [120]u8 = undefined,
+        len: usize = 0,
+        fn emit(ctx: *anyopaque, stamped: sinks.Stamped) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.count += 1;
+            self.durable = events.durable(stamped.event);
+            if (stamped.event == .session_notice) {
+                const notice = stamped.event.session_notice;
+                self.dim = notice.tone == .dim;
+                self.len = notice.text.len;
+                @memcpy(self.text[0..self.len], notice.text);
+            }
+        }
+    };
+    var capture: Capture = .{};
+    const vt: sinks.VTable = .{ .emit = Capture.emit, .durable = false };
+    sinks.bindTurnSink(.{ .ctx = &capture, .vt = &vt });
+    defer sinks.unbindTurnSink();
+    emitRetryNotice(undefined, "HungRequest", 3, 6);
+    try std.testing.expectEqual(@as(usize, 1), capture.count);
+    try std.testing.expect(capture.dim);
+    try std.testing.expect(!capture.durable);
+    try std.testing.expectEqualStrings("· retry 3/6 · HungRequest", capture.text[0..capture.len]);
+}
+
 test "formatTurnPulse stays off the transcript (ADR 0021)" {
     var buf: [80]u8 = undefined;
     try std.testing.expectEqualStrings("", formatTurnPulse(&buf, 3, 0, 11));

@@ -81,7 +81,7 @@ fn finishCall(arena: Allocator, w: *Io.Writer, sid: []const u8, calls: *std.Arra
     };
     const text = try visibleText(arena, output);
     if (text.len > 0) {
-        try @import("acp_view_meta.zig").writeDone(w, sid, id, if (failed) "failed" else "completed", text);
+        try @import("acp_view_meta.zig").writeDone(w, sid, id, if (failed) "failed" else "completed", text, null);
     } else {
         try proto.writeNotification(w, "session/update", .{
             .sessionId = sid,

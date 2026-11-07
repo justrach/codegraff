@@ -253,7 +253,10 @@ fn missingCredentials() noreturn {
     std.process.fatal(
         \\no API key found. quickest fixes:
         \\  graff login                         free codegraff key (device-code OAuth)
+        \\  graff login anthropic               Claude subscription browser sign-in (also: ant)
         \\  graff key set <provider> <key>      store a key (macOS Keychain, else 0600 file)
+        \\  graff login console                 Anthropic Console account (its workspace's API credits)
+        \\  graff login claude-agent            your own Claude Code login, through `claude` (Claude Agent)
         \\  export ANTHROPIC_API_KEY=sk-ant-…   or CODEGRAFF/DEEPSEEK/OPENAI/MINIMAX/XIAOMI/KIMI/MOONSHOT/XAI/ZAI _API_KEY
         \\a Codex CLI login (~/.codex/auth.json) is also picked up automatically.
     , .{});
@@ -263,6 +266,11 @@ fn missingCredentials() noreturn {
 /// failures without manufacturing a provider. All successful resolution and
 /// model-selection behavior is shared with resolveKeys above.
 pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytype, model_flag: ?[]const u8, worker_provider_hint: ?[]const u8) !?ResolvedKeys {
+    // GRAFF_CHATGPT_URL: chatgpt-new's Responses endpoint for localhost mocks,
+    // read before Keys.build and the startup catalog load so neither goes live.
+    if (environ_map.get("GRAFF_CHATGPT_URL")) |v| {
+        if (v.len > 0) provider_mod.g_chatgpt_url_override = v;
+    }
     var keys: provider_mod.Keys = .{ .values = undefined };
     for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
         value.* = environ_map.get(spec.env_key);
@@ -301,6 +309,16 @@ pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map
             codex_account = auth.account;
         }
     }
+    // Claude Agent (ADR 0309) is seated only once chosen: `graff login
+    // claude-agent` or GRAFF_CLAUDE_AGENT=1. Its "key" is the `claude` to run.
+    {
+        const exe = @import("claude_agent_login.zig").enabled(io, arena, environ_map, keys_cli.homeEnv(environ_map) orelse "");
+        for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
+            if (!std.mem.eql(u8, spec.id, "claude-agent")) continue;
+            value.* = exe;
+            source.* = if (exe != null) .login else .none;
+        }
+    }
     // #471: the kimi/xAI device logins outrank their env keys, and the metered
     // key is parked rather than dropped — credential_failover.preferPlan owns
     // that policy. #274: the gate stays here because only startup knows what
@@ -316,6 +334,12 @@ pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map
     // candidate providers. Load those stored keys now; model/fallback/resume
     // surfaces fill the rest on demand. Aliases/default startup still need all
     // keys because availability participates in their routing tie-break.
+    // Anthropic Console sign-in (anthropic_profile.zig): a profile named by
+    // ANTHROPIC_PROFILE outranks a stored key; the active one fills in after.
+    const ap = @import("anthropic_profile.zig");
+    if (keys.get("anthropic") == null) if (ap.load(io, arena, environ_map, keys_cli.homeEnv(environ_map) orelse "", true)) |t| {
+        _ = keys.set("anthropic", t, .profile);
+    };
     const selective_stored_keys = hasSelectiveStoredKeyScope(model_flag);
     var stored_keys_loaded = !selective_stored_keys;
     if (keys_cli.homeEnv(environ_map)) |home| {
@@ -331,6 +355,13 @@ pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map
         } else keys_cli.loadMissingStoredKeys(io, gpa, arena, home, &keys, .all);
     }
     const home = keys_cli.homeEnv(environ_map) orelse "";
+    if (keys.get("anthropic") == null) {
+        if (ap.load(io, arena, environ_map, home, false)) |t| _ = keys.set("anthropic", t, .profile);
+    } else if (keys.source("anthropic") == .login and !credential_failover.standingBy("anthropic")) {
+        // The Claude plan took the slot first; keep the Console sign-in in
+        // reserve so a spent plan hands over instead of failing every turn.
+        if (ap.load(io, arena, environ_map, home, false)) |t| credential_failover.parkBehindPlan("anthropic", .login, t, .profile);
+    }
     var model_catalog: models_cache.LazyCodexCatalog = .{ .codex_home = oauth.codexHomeDir(arena, home) orelse "" };
     const saved_model: ?serde.SavedModel = if (model_flag == null) serde.loadModel(io, arena, home) else null;
     // Dynamic Codex discovery is observable only when startup may select
@@ -340,7 +371,7 @@ pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map
     // network I/O; model surfaces go online via ensure() when they need it.
     if (catalog_selection.startupMayUse(keys, "codex", model_flag, saved_model))
         model_catalog.ensureCached(io, gpa, arena, home, keys.get("codex") orelse "", keys.codex_account);
-    router_catalog.ensureForStartup(io, gpa, arena, home, keys, model_flag, saved_model);
+    router_catalog.ensureForStartup(io, gpa, arena, home, keys, model_flag, saved_model, worker_provider_hint);
     if (home.len != 0) {
         // Apply the independent models.dev price/context overlay after routing
         // discovery. Provider-specific Codex windows remain authoritative.
@@ -377,6 +408,13 @@ pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map
             // message must point at the right login rather than "see /models".
             var pbuf: [provider_mod.provider_specs.len + 1][]const u8 = undefined;
             const serving = provider_mod.catalogProvidersFor(&pbuf, nm);
+            // The gateway also serves it: name that route too, since a gateway
+            // user never set up the direct provider (#294 keeps the bare name
+            // from switching to the gateway on its own).
+            if (serving.len > 0 and keys.get("codegraff") != null and @import("pricing_gateway.zig").find(nm) != null) std.process.fatal(
+                "'{s}' is served by {s}, which has no valid credential — run `graff login {s}`, or use your Codegraff sign-in with `--model codegraff/{s}`",
+                .{ nm, serving[0], serving[0], nm },
+            );
             if (serving.len > 0) std.process.fatal(
                 "'{s}' is served by {s}, which has no valid credential — run `graff login {s}` or `graff key set {s} <key>`",
                 .{ nm, serving[0], serving[0], serving[0] },
@@ -396,4 +434,8 @@ pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map
         };
     }
     return .{ .keys = @import("bench_priors.zig").noteKeysAtStartup(keys, io, arena, keys_cli.homeEnv(environ_map)), .default_provider = default_provider, .stale_saved_model = stale_saved_model, .preferred_provider = preferred_provider, .codex_account = codex_account, .model_catalog = model_catalog, .stored_keys_loaded = stored_keys_loaded };
+}
+
+test {
+    _ = @import("anthropic_profile.zig");
 }

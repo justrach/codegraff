@@ -29,10 +29,9 @@ const http_headers = @import("http_headers.zig");
 const providerUserAgent = http.providerUserAgent;
 const capture5xxBodyStream = http.capture5xxBodyStream;
 const WatchdogFired = http.WatchdogFired;
-const sendHeadTask = http.sendHeadTask;
-const headStallTask = http.headStallTask;
-const streamLineTask = http.streamLineTask;
-const deadlineStallTask = http.deadlineStallTask;
+const http_send = @import("http_send.zig");
+const stream_progress = @import("stream_read_progress.zig");
+const streamLineTask = stream_progress.lineTask;
 const watchdogError = http.watchdogError;
 const http_stall = @import("http_stall.zig");
 
@@ -121,90 +120,53 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     // HTTP/2 first, under the same raw-stdin window so Esc and steering work
     // there too; null means "not sent, use HTTP/1.1".
     if (try @import("agent_stream_h2.zig").postStream(self, body, orig_tio != null)) |full| return full;
-    var req = transport.request(.POST, try std.Uri.parse(provider.url), .{
+    var head: http_send.H1 = .{ .client = transport, .uri = try std.Uri.parse(provider.url), .body = body, .options = .{
         .redirect_behavior = .unhandled,
         .headers = .{
             .content_type = .{ .override = "application/json" },
             .user_agent = providerUserAgent(provider),
         },
         .extra_headers = extra,
-    }) catch |err| {
-        if (http_client.constructionTlsFailure(err, provider.url)) return http_client.constructionTlsError(transport);
-        return err;
-    };
-    defer req.deinit();
+    } };
+    defer if (head.req) |*r| r.deinit();
     // A failed SEND leaves reader.state == .ready, which Request.deinit
     // reads as "connection still clean" and returns it to the keep-alive
     // pool — every retry (and every later turn) then pulls the same dead
     // connection back out: HttpConnectionClosing once, WriteFailed
     // forever after (observed in the wild). Poison it on any error so
     // deinit discards it and the retry dials fresh.
-    errdefer if (req.connection) |conn| {
+    errdefer if (head.req) |*r| if (r.connection) |conn| {
         conn.closing = true;
     };
-    // Race the send + head receive against a stall watchdog so a
-    // freshly-redialed connection that the server accepts but never
-    // answers can't hang the turn (issue #54: "retrying (1/3)" then
-    // "thinking… forever"). Mirrors the SSE line-loop and postWatched
-    // patterns. Falls back to a bare send+receiveHead (the old behavior)
-    // when no spare concurrency exists.
-    var response: std.http.Client.Response = undefined;
-    head: {
-        const HeadDone = union(enum) { sent: anyerror!void, stall: WatchdogFired };
-        var hd_buf: [2]HeadDone = undefined;
-        var hsel: Io.Select(HeadDone) = .init(self.io, &hd_buf);
-        hsel.concurrent(.sent, sendHeadTask, .{ &req, body, &response }) catch {
-            // #56 Fix-B: Io pool exhausted (deep subagent fan-out saturated the
-            // thread pool) — we can't spawn the head-stall watchdog. A bare
-            // send+receiveHead here could hang forever on a half-open socket with
-            // nothing to trip it. Nothing has streamed yet, so fail safe: poison the
-            // connection and return a retryable HungRequest so request() backs off
-            // and redials once a pool slot frees, instead of blocking the turn.
-            if (req.connection) |conn| conn.closing = true;
-            return error.HungRequest;
-        };
-        hsel.concurrent(.stall, headStallTask, .{ self.io, orig_tio != null }) catch {
-            const r = hsel.await() catch |e| {
-                hsel.cancelDiscard();
-                return e;
-            };
-            hsel.cancelDiscard();
-            r.sent catch |e| {
-                return e;
-            };
-            break :head;
-        };
-        const first = hsel.await() catch |e| {
-            hsel.cancelDiscard();
-            return e;
-        };
-        hsel.cancelDiscard();
-        switch (first) {
-            .sent => |s| s catch |e| {
-                return e;
-            },
-            .stall => |w| {
-                if (req.connection) |conn| conn.closing = true;
-                return watchdogError(w, error.HungRequest);
-            },
-        }
-    }
+    // Connect, upload and head wait race a staged watchdog, so a server that
+    // accepts and never answers can't hang the turn (#54) and a large body
+    // still draining isn't killed by the head deadline (#1785).
+    http_send.raceH1(self.io, &head, orig_tio != null, http_send.Budget.forRequest(body.len, provider.url, provider.model)) catch |err| {
+        if (head.req == null and http_client.constructionTlsFailure(err, provider.url)) return http_client.constructionTlsError(transport);
+        return err;
+    };
+    const req = &head.req.?;
+    const response = &head.response;
 
     // 429/5xx before any body: a retryable throttle — request() backs
     // off and retries (surfaced in the trace as a "retry" note).
     const status_code = @backingInt(response.head.status);
+    if (@import("agent_request_quota.zig").httpError(status_code)) |err| {
+        if (req.connection) |conn| conn.closing = true;
+        return err;
+    }
     if (status_code == 429 or status_code >= 500) {
-        http.captureRetryAfter(&response); // #retry-after: honor the provider's requested backoff
+        http.captureRetryAfter(response); // #retry-after: honor the provider's requested backoff
         // Drain a snippet for quota classifiers. Do not echo it on the REPL
         // retry line — vendor envelopes include user ids and routing docs.
-        capture5xxBodyStream(self.gpa, &response);
+        capture5xxBodyStream(self.gpa, response);
         if (req.connection) |conn| conn.closing = true;
         return if (status_code == 429) error.RateLimited else error.ServerError;
     }
     // #opencode-parity: OpenAI proper spuriously 404s available models — retry a
     // 404 from an openai-* provider like a 5xx instead of hard-failing the turn.
     if (status_code == 404 and std.mem.startsWith(u8, self.provider.id, "openai")) {
-        capture5xxBodyStream(self.gpa, &response);
+        capture5xxBodyStream(self.gpa, response);
         if (req.connection) |conn| conn.closing = true;
         return error.OpenAiFlaky404;
     }
@@ -236,6 +198,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     var phase: @import("agent_ws_signal.zig").Phase = .{}; // ADR 0248: commentary does not tighten
     defer line.deinit();
 
+    const policy = http_stall.streamPolicy(self.provider.model, self.provider.url, http.stream_stall_ms);
     stream: while (true) {
         // Race the line read against an idle-stall watchdog so a dead stream can't
         // hang the turn (the Esc escape below is TTY-only, so --json/GUI sessions
@@ -246,8 +209,10 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
             var rd_buf: [2]ReadDone = undefined;
             var rsel: Io.Select(ReadDone) = .init(self.io, &rd_buf);
             // #680: widened by each stall reconnect this request has already made.
-            const stall_budget = http_stall.interFrameBudgetMs(http.stream_stall_ms, got_body, prose_open, self.stall.widen);
-            rsel.concurrent(.line, streamLineTask, .{ reader, &line.writer }) catch {
+            // A terminal finish_reason may precede usage; never extend that completed response's trailer wait.
+            const stall_budget = if (saw_done) http_stall.interFrameBudgetMs(http.stream_stall_ms, got_body, prose_open, self.stall.widen) else policy.interFrameBudgetMs(got_body, prose_open, self.stall.widen);
+            var progress = stream_progress.Progress.init(self.io, .{ .idle_ms = stall_budget });
+            rsel.concurrent(.line, streamLineTask, .{ reader, &line.writer, &progress }) catch {
                 // #56 Fix-B: pool exhausted — no idle-stall watchdog for this read.
                 // A bare blocking streamDelimiterEnding here is the last forever-hang:
                 // on a half-open socket it never returns and nothing can trip it. Fail
@@ -261,7 +226,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
                 if (req.connection) |conn| conn.closing = true;
                 return error.StreamStalled;
             };
-            rsel.concurrent(.stall, deadlineStallTask, .{ self.io, orig_tio != null, stall_budget }) catch {
+            rsel.concurrent(.stall, stream_progress.Progress.watch, .{ &progress, orig_tio != null }) catch {
                 const r = rsel.await() catch |e| {
                     rsel.cancelDiscard();
                     return e;
@@ -303,7 +268,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
                     if (w == .deadline) self.stall.tripped_ms = stall_budget; // #680: the turn-ending message reports THIS wait
                     if (w == .deadline) sink.emit(self.io, .{ .transport_aborted = .{ .reason = .stalled, .turn_ending = false } }) else sink.emit(self.io, .{ .stream_aborted = .interrupted });
                     if (req.connection) |conn| conn.closing = true;
-                    return watchdogError(w, error.StreamStalled);
+                    return watchdogError(w, progress.deadlineError());
                 },
             }
         }
@@ -420,28 +385,8 @@ test {
     _ = @import("agent_model_loop.zig");
 }
 
-/// #680: what request() does before each stall reconnect. The partial is
-/// cleared so the fresh stream re-streams cleanly (no concat), and the
-/// between-lines budget widens (http_stall.budgetMsWidened) so the retry can
-/// outlast the pause that killed the last attempt, instead of re-paying the
-/// whole generation into the identical wait.
-pub fn noteStallRetry(self: *Agent, retries: usize) void {
-    self.partial_text.clearRetainingCapacity();
-    self.stall.widen = @intCast(@min(retries, 255));
-    if (self.tracer) |tr| {
-        const widened = http_stall.budgetMsWidened(http.stream_stall_ms, true, self.stall.widen);
-        tr.note("stall_budget", std.fmt.allocPrint(self.arena, "reconnect {d}: between-lines budget {d}s", .{ retries, widened / 1000 }) catch "widened");
-    }
-}
-
-/// #680: the turn-ending stall message, from the budget that actually tripped
-/// rather than the configured total (the between-lines wait is a fraction of
-/// it, so "120s" was never what a mid-response stall had waited).
-pub fn stallGiveUpMessage(self: *Agent, retries: usize) ?[]const u8 {
-    const base = http.stream_stall_ms;
-    const waited = if (self.stall.tripped_ms != 0) self.stall.tripped_ms else base;
-    return std.fmt.allocPrint(self.arena, "stream stalled: no data from the model for {d}s — ended the turn after {d} reconnect attempts, each waiting longer, up to GRAFF_STREAM_STALL_SECS={d}s between lines (raise it if your model pauses longer mid-response)", .{ waited / 1000, retries, base / 1000 }) catch null;
-}
+pub const noteStallRetry = @import("agent_stream_stall.zig").noteStallRetry;
+pub const stallGiveUpMessage = @import("agent_stream_stall.zig").stallGiveUpMessage;
 
 /// Extract the user-visible content from one SSE line and dispatch it as
 /// typed events through the sink. Best-effort: parse failures are ignored

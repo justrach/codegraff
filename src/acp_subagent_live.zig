@@ -90,7 +90,7 @@ fn backgroundSend(io: Io, handle: BackgroundHandle, id: []const u8, seq: u64, ev
     return backgroundSendLocked(io, handle, id, seq, event);
 }
 
-pub fn announceBackground(a: std.mem.Allocator, io: Io, id: []const u8, name: []const u8, task: []const u8, parent_call_id: []const u8) ?BackgroundHandle {
+pub fn announceBackground(a: std.mem.Allocator, io: Io, id: []const u8, name: []const u8, task: []const u8, parent_call_id: []const u8, provider: []const u8, model: []const u8) ?BackgroundHandle {
     main.g_gui_mu.lockUncancelable(io);
     defer main.g_gui_mu.unlock(io);
     const state = background orelse return null;
@@ -100,10 +100,13 @@ pub fn announceBackground(a: std.mem.Allocator, io: Io, id: []const u8, name: []
         .generation = state.generation,
         .parent_call_id = parent_call_id,
     };
+    var title: [768]u8 = undefined;
     if (!backgroundSendLocked(io, handle, id, 0, .{
         .type = "spawn",
-        .name = util.utf8Prefix(name, 256),
+        .name = progress.displayName(&title, name, model),
         .task = util.utf8Prefix(task, 2048),
+        .provider = provider,
+        .model = model,
     })) return null;
     return handle;
 }
@@ -128,19 +131,20 @@ pub fn uninstall(io: Io) void {
     active = null;
 }
 
-pub fn announce(io: Io, id: []const u8, name: []const u8, task: []const u8, parent_call_id: []const u8) bool {
+pub fn announce(io: Io, id: []const u8, name: []const u8, task: []const u8, parent_call_id: []const u8, provider: []const u8, model: []const u8) bool {
     main.g_gui_mu.lockUncancelable(io);
     defer main.g_gui_mu.unlock(io);
     const state = active orelse return false;
     if (state.mode != .draft) return false;
     state.output_lock.lockUncancelable(io);
     defer state.output_lock.unlock(io);
+    var title: [768]u8 = undefined;
     proto.writeNotification(state.out, "session/update", .{ .sessionId = state.parent, .update = .{
         .sessionUpdate = "subagent_update",
         .subagentSessionId = id,
-        .name = util.utf8Prefix(name, 256),
+        .name = progress.displayName(&title, name, model),
         .task = util.utf8Prefix(task, 2048),
-        ._meta = .{ .@"graff/parentToolCallId" = parent_call_id },
+        ._meta = .{ .@"graff/parentToolCallId" = parent_call_id, .@"graff/subagent" = .{ .name = name, .provider = provider, .model = model } },
     } }) catch return false;
     state.out.flush() catch {};
     return true;
@@ -215,9 +219,9 @@ pub const ChildSink = struct {
             },
             .tool_result => |v| {
                 if (v.ask_user or std.mem.eql(u8, v.name, "attempt_completion")) return;
-                stream.writeToolDone(w, self.id, v.id, v.is_error or v.cancelled, v.text) catch return;
+                stream.writeToolDone(w, self.id, v.id, v.is_error or v.cancelled, v.text, v.run_task) catch return;
             },
-            .tool_rejected => |v| stream.writeToolDone(w, self.id, v.id, true, v.message) catch return,
+            .tool_rejected => |v| stream.writeToolDone(w, self.id, v.id, true, v.message, null) catch return,
             else => return,
         }
         w.flush() catch {};
@@ -262,6 +266,11 @@ pub const ChildSink = struct {
         state.out.flush() catch {};
     }
 
+    /// Publish identity before the first text/tool event (reasoning can take time).
+    pub fn startProgress(self: *ChildSink) void {
+        self.publishProgress("running");
+    }
+
     /// The child's last word on its parent's tool call. The parent's own tool
     /// result, when it has one, follows and replaces this.
     pub fn finishProgress(self: *ChildSink, outcome: []const u8) void {
@@ -286,9 +295,9 @@ pub const ChildSink = struct {
             },
             .tool_result => |v| {
                 if (v.ask_user or std.mem.eql(u8, v.name, "attempt_completion")) return;
-                stream.writeToolDone(w, self.id, v.id, v.is_error or v.cancelled, v.text) catch return;
+                stream.writeToolDone(w, self.id, v.id, v.is_error or v.cancelled, v.text, v.run_task) catch return;
             },
-            .tool_rejected => |v| stream.writeToolDone(w, self.id, v.id, true, v.message) catch return,
+            .tool_rejected => |v| stream.writeToolDone(w, self.id, v.id, true, v.message, null) catch return,
             else => return,
         }
         const parsed = std.json.parseFromSliceLeaky(std.json.Value, a, w.buffered(), .{}) catch return;
@@ -308,7 +317,7 @@ test "negotiated child stream announces before activity and terminates on parent
     var state: State = .{ .out = &out, .parent = "parent", .output_lock = &output_lock };
     install(io, &state);
     defer uninstall(io);
-    try std.testing.expect(announce(io, "child", "Scout", "Inspect the code", "spawn-1"));
+    try std.testing.expect(announce(io, "child", "Scout", "Inspect the code", "spawn-1", "fixture", "reader-model"));
     var child: ChildSink = .{ .id = "child", .io = io };
     const emit_sink = child.engineSink();
     emit_sink.emit(io, .{ .reasoning_delta = .{ .text = "I will inspect it" } });
@@ -325,6 +334,8 @@ test "negotiated child stream announces before activity and terminates on parent
     try std.testing.expect(announced < thought and thought < call and call < answer and answer < terminal);
     try std.testing.expect(std.mem.indexOf(u8, wire, "\"sessionId\":\"child\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, wire, "\"graff/parentToolCallId\":\"spawn-1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wire, "\"name\":\"Scout · reader-model\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wire, "\"model\":\"reader-model\"") != null);
 }
 
 test "draft child sessions exclude detached and nested workers" {
@@ -343,11 +354,13 @@ test "default progress mode streams the child's work onto the parent tool call" 
     install(io, &state);
     defer uninstall(io);
     // The draft announcement is not used in progress mode.
-    try std.testing.expect(!announce(io, "child", "Scout", "Inspect", "spawn-1"));
+    try std.testing.expect(!announce(io, "child", "Scout", "Inspect", "spawn-1", "fixture", "reader-model"));
     try std.testing.expect(progressFor(io, "subagent", 0, "spawn-1"));
     try std.testing.expect(!progressFor(io, "subagent", 1, "spawn-1"));
     try std.testing.expect(!progressFor(io, "subagent", 0, ""));
-    var child: ChildSink = .{ .id = "child", .io = io, .progress = .{ .parent_call_id = "spawn-1", .child_id = "child", .name = "Scout" } };
+    var child: ChildSink = .{ .id = "child", .io = io, .progress = .{ .parent_call_id = "spawn-1", .child_id = "child", .name = "Scout", .provider = "fixture", .model = "reader-model" } };
+    child.startProgress();
+    try std.testing.expect(std.mem.indexOf(u8, out.buffered(), "\"title\":\"Scout · reader-model\"") != null);
     const emit_sink = child.engineSink();
     var input: std.json.ObjectMap = .empty;
     defer input.deinit(std.testing.allocator);
@@ -362,6 +375,8 @@ test "default progress mode streams the child's work onto the parent tool call" 
     try std.testing.expect(std.mem.indexOf(u8, wire, "bash failed") != null);
     try std.testing.expect(std.mem.indexOf(u8, wire, "finished") != null);
     try std.testing.expect(std.mem.indexOf(u8, wire, "\"sessionId\":\"parent\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wire, "\"model\":\"reader-model\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wire, "\"provider\":\"fixture\"") != null);
     // No child session, no draft updates, and no status flip on the parent call.
     try std.testing.expect(std.mem.indexOf(u8, wire, "subagent_update") == null);
     try std.testing.expect(std.mem.indexOf(u8, wire, "\"status\"") == null);

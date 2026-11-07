@@ -14,7 +14,7 @@ const style = &@import("ansi.zig").style;
 const util = @import("util.zig");
 const strFieldObj = util.strFieldObj;
 const intFieldObj = util.intFieldObj;
-const openBrowser = @import("oauth_helpers.zig").openBrowser;
+const signin_link = @import("signin_link.zig");
 const credential_store = @import("credential_store.zig");
 const provider_mod = @import("provider.zig");
 const credential_failover = @import("credential_failover.zig");
@@ -352,9 +352,11 @@ pub fn login(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !void {
         return;
     };
 
-    try out.print("\nTo log in to Z.AI Coding Plan, open this URL (browser should open automatically):\n\n  {s}\n\nwaiting for authorization\xe2\x80\xa6\n", .{init.authorize_url});
+    try out.print("\nTo log in to Z.AI Coding Plan, open this URL (browser should open automatically):\n\n  {s}\n", .{init.authorize_url});
+    try signin_link.offer(io, out, init.authorize_url);
+    try out.writeAll("\nwaiting for authorization\xe2\x80\xa6\n");
     try out.flush();
-    if (!main_mod.g_no_browser) openBrowser(io, init.authorize_url);
+    signin_link.open(io, init.authorize_url);
 
     const poll_url = try std.fmt.allocPrint(arena, "{s}/oauth/cli/poll/{s}", .{ cli_base, init.flow_id });
     var ready: ?ReadyData = null;

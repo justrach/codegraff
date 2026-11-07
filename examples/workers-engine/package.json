@@ -1,0 +1,17 @@
+{
+  "name": "graff-workers-engine-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "cf dev",
+    "build": "cf build",
+    "typecheck": "cf workers types && tsc",
+    "test": "node --test runtime.test.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "beta",
+    "cf": "1.0.0-beta.18",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
+  }
+}

@@ -14,6 +14,7 @@
 //! restores today's plain inherit-root behavior.
 const std = @import("std");
 
+const catalog_selection = @import("catalog_selection.zig");
 const pricing = @import("pricing.zig");
 const provider_mod = @import("provider.zig");
 const tier_ladder = @import("subagent_tier_ladder.zig");
@@ -63,10 +64,9 @@ pub fn modelForProvider(provider_id: []const u8, query: []const u8) ?[]const u8 
 /// for this provider's ladder — an off-ladder or unrecognized root model
 /// returns null rather than guessing at the nearest rung.
 ///
-/// GPT-6 Astra stays on Astra. Demoting it onto gpt-5.6-sol/terra is a
-/// SWE-bench regression (Astra-low beats Sol-high). Unpinned workers inherit;
-/// `tier: small` still seats luna for cheap search. A Sol root still drops
-/// one rung onto terra.
+/// GPT-6 roots keep their model: demoting Astra onto Sol is a SWE-bench
+/// regression (Astra-low beats Sol-high). Unpinned workers inherit;
+/// `tier: mid` / `tier: small` still seat Sol / Luna when asked.
 fn defaultLadderModel(root: provider_mod.Provider) ?[]const u8 {
     const ladder = tier_ladder.forModel(root.id, root.model) orelse return null;
     if (std.mem.startsWith(u8, root.model, "gpt-6")) return null;
@@ -76,8 +76,7 @@ fn defaultLadderModel(root: provider_mod.Provider) ?[]const u8 {
             return null;
         }
     }
-    if (std.mem.eql(u8, root.model, ladder.frontier) or std.mem.eql(u8, root.model, "gpt-5.6-sol"))
-        return ladder.mid orelse ladder.small;
+    if (std.mem.eql(u8, root.model, ladder.frontier)) return ladder.mid orelse ladder.small;
     if (ladder.mid) |mid| {
         if (std.mem.eql(u8, root.model, mid)) return ladder.small;
     }
@@ -120,13 +119,26 @@ pub fn subagentProvider(
         return error.CrossProviderConsentRequired;
 
     const requested_model = std.mem.trim(u8, model_query, " \t\r\n");
-    const model = modelForProvider(requested_provider, requested_model) orelse {
+    const model = modelForProvider(requested_provider, requested_model) orelse explicit: {
+        // Same rule as `--model <provider>/<model>`: a login-served router
+        // (the codegraff gateway) serves what its live catalog lists, which
+        // the baked table does not carry, so an explicitly named worker
+        // provider takes the exact model name the way the root model does.
+        if (provider_query != null) if (provider_mod.specFor(requested_provider)) |spec| {
+            if (catalog_selection.acceptsExplicitModel(spec, requested_model)) break :explicit requested_model;
+        };
         if (pricing.resolveModelName(keys, requested_model) != null)
             return error.ModelNotOnProvider;
         return error.UnknownModel;
     };
     return keys.providerById(requested_provider, model) catch error.MissingKey;
 }
+
+/// The session consented (--allow-cross-provider-subagents) to workers on
+/// another provider. Latches on at startup; a later model switch re-resolving
+/// the worker without the flag does not withdraw it. Read by per-persona
+/// `<provider>/<model>` pins (subagent_pin.zig).
+pub var g_cross_provider_consent: bool = false;
 
 pub fn resolveSubagentProvider(
     keys: provider_mod.Keys,
@@ -136,6 +148,7 @@ pub fn resolveSubagentProvider(
     allow_cross_provider: bool,
     disable_default_ladder: bool,
 ) ?provider_mod.Provider {
+    if (allow_cross_provider) g_cross_provider_consent = true;
     const raw_provider = provider_query orelse "";
     const requested_provider = std.mem.trim(u8, raw_provider, " \t\r\n");
     const raw_model = model_query orelse {
@@ -163,10 +176,10 @@ test "worker selection stays provider-local unless explicitly allowed" {
         if (std.mem.eql(u8, spec.id, "codex") or
             std.mem.eql(u8, spec.id, "kimi")) value.* = "test-token";
     }
-    const root = try keys.providerById("codex", "gpt-5.6-sol");
-    const terra = try subagentProvider(keys, root, null, "5.6-terra", false);
-    try std.testing.expectEqualStrings("codex", terra.id);
-    try std.testing.expectEqualStrings("gpt-5.6-terra", terra.model);
+    const root = try keys.providerById("codex", "gpt-6-astra");
+    const luna = try subagentProvider(keys, root, null, "gpt-6-luna", false);
+    try std.testing.expectEqualStrings("codex", luna.id);
+    try std.testing.expectEqualStrings("gpt-6-luna", luna.model);
     try std.testing.expectError(
         error.CrossProviderConsentRequired,
         subagentProvider(keys, root, "kimi", "k3", false),
@@ -176,7 +189,7 @@ test "worker selection stays provider-local unless explicitly allowed" {
     try std.testing.expectEqualStrings("k3", kimi.model);
     try std.testing.expectError(
         error.ModelNotOnProvider,
-        subagentProvider(keys, root, null, "gpt-5.6", false),
+        subagentProvider(keys, root, null, "deepseek-v4-pro", false),
     );
     try std.testing.expectError(
         error.UnknownModel,
@@ -188,20 +201,36 @@ test "worker selection stays provider-local unless explicitly allowed" {
     );
 }
 
+test "an explicit worker provider takes a gateway model the baked table lacks" {
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    for (provider_mod.provider_specs, &keys.values) |spec, *value| {
+        if (std.mem.eql(u8, spec.id, "codex") or
+            std.mem.eql(u8, spec.id, "codegraff")) value.* = "test-token";
+    }
+    const root = try keys.providerById("codex", "gpt-6.1-sol");
+    const gateway_only = "gateway-only-model-not-in-the-baked-table";
+    try std.testing.expect(modelForProvider("codegraff", gateway_only) == null);
+    const worker = try subagentProvider(keys, root, "codegraff", gateway_only, true);
+    try std.testing.expectEqualStrings("codegraff", worker.id);
+    try std.testing.expectEqualStrings(gateway_only, worker.model);
+    // Consent is still required to cross the provider boundary, and a bare
+    // name with no provider still has to be a catalogued model.
+    try std.testing.expectError(error.CrossProviderConsentRequired, subagentProvider(keys, root, "codegraff", gateway_only, false));
+    try std.testing.expectError(error.UnknownModel, subagentProvider(keys, root, null, gateway_only, false));
+}
+
 test "defaultLadderModel: descends one rung per provider, bottom rung inherits" {
     const mk = struct {
         fn p(id: []const u8, model: []const u8) provider_mod.Provider {
             return .{ .id = id, .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = model, .context = 0 };
         }
     }.p;
-    // codex: sol -> terra -> luna -> (bottom, inherit)
-    try std.testing.expectEqualStrings("gpt-5.6-terra", defaultLadderModel(mk("codex", "gpt-5.6-sol")).?);
-    try std.testing.expect(defaultLadderModel(mk("codex", "gpt-6-astra")) == null);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", defaultLadderModel(mk("codex", "gpt-5.6-terra")).?);
-    try std.testing.expect(defaultLadderModel(mk("codex", "gpt-5.6-luna")) == null);
-    // openai: same shape, sibling names
-    try std.testing.expectEqualStrings("gpt-5.6-terra", defaultLadderModel(mk("openai", "gpt-5.6")).?);
-    try std.testing.expect(defaultLadderModel(mk("openai", "gpt-6-astra")) == null);
+    // codex / openai: GPT-6 roots keep their model (Astra-low beats Sol-high);
+    // tier pins still reach Sol and Luna.
+    for ([_][]const u8{ "codex", "openai" }) |id| {
+        for ([_][]const u8{ "gpt-6-astra", "gpt-6-sol", "gpt-6-luna" }) |model|
+            try std.testing.expect(defaultLadderModel(mk(id, model)) == null);
+    }
     // anthropic: opus-5-5 -> sonnet-5-5 -> (bottom) (ADR 0219). #471: a rung
     // must be a cheaper seat, so older opus generations are not rungs, and a
     // root still on one is off-ladder and inherits.
@@ -227,11 +256,6 @@ test "default ladder: resolves the mid sibling when no flags are given" {
         if (std.mem.eql(u8, spec.id, "codex") or std.mem.eql(u8, spec.id, "anthropic"))
             value.* = "test-token";
     }
-    const codex_root = try keys.providerById("codex", "gpt-5.6-sol");
-    const worker = resolveSubagentProvider(keys, codex_root, null, null, false, false).?;
-    try std.testing.expectEqualStrings("codex", worker.id); // provider-local, unpinned
-    try std.testing.expectEqualStrings("gpt-5.6-terra", worker.model);
-
     const astra_root = try keys.providerById("codex", "gpt-6-astra");
     try std.testing.expect(resolveSubagentProvider(keys, astra_root, null, null, false, false) == null);
 
@@ -247,7 +271,7 @@ test "default ladder: bottom-rung and off-ladder roots inherit (resolve to null)
         if (std.mem.eql(u8, spec.id, "codex") or std.mem.eql(u8, spec.id, "xai"))
             value.* = "test-token";
     }
-    const luna_root = try keys.providerById("codex", "gpt-5.6-luna");
+    const luna_root = try keys.providerById("codex", "gpt-6-luna");
     try std.testing.expect(resolveSubagentProvider(keys, luna_root, null, null, false, false) == null);
 
     const xai_root = try keys.providerById("xai", "grok-4.3"); // unlisted family, never guess
@@ -257,9 +281,10 @@ test "default ladder: bottom-rung and off-ladder roots inherit (resolve to null)
 test "--no-subagent-tier opts out of the default ladder back to plain inherit" {
     var keys: provider_mod.Keys = .{ .values = @splat(null) };
     for (provider_mod.provider_specs, &keys.values) |spec, *value| {
-        if (std.mem.eql(u8, spec.id, "codex")) value.* = "test-token";
+        if (std.mem.eql(u8, spec.id, "anthropic")) value.* = "test-token";
     }
-    const root = try keys.providerById("codex", "gpt-5.6-sol");
+    const root = try keys.providerById("anthropic", "claude-opus-5-5");
+    try std.testing.expect(resolveSubagentProvider(keys, root, null, null, false, false) != null);
     try std.testing.expect(resolveSubagentProvider(keys, root, null, null, false, true) == null);
 }
 
@@ -268,10 +293,10 @@ test "explicit --subagent-model still wins over the default ladder" {
     for (provider_mod.provider_specs, &keys.values) |spec, *value| {
         if (std.mem.eql(u8, spec.id, "codex")) value.* = "test-token";
     }
-    const root = try keys.providerById("codex", "gpt-5.6-sol");
-    // The ladder default would be terra; an explicit pin to luna wins.
-    const pinned = resolveSubagentProvider(keys, root, null, "gpt-5.6-luna", false, false).?;
-    try std.testing.expectEqualStrings("gpt-5.6-luna", pinned.model);
+    const root = try keys.providerById("codex", "gpt-6-astra");
+    // The ladder default would inherit Astra; an explicit pin to luna wins.
+    const pinned = resolveSubagentProvider(keys, root, null, "gpt-6-luna", false, false).?;
+    try std.testing.expectEqualStrings("gpt-6-luna", pinned.model);
 }
 
 test "default ladder never crosses a provider boundary implicitly" {
@@ -283,8 +308,8 @@ test "default ladder never crosses a provider boundary implicitly" {
     }
     const Case = struct { id: []const u8, model: []const u8 };
     for ([_]Case{
-        .{ .id = "codex", .model = "gpt-5.6-sol" },
-        .{ .id = "openai", .model = "gpt-5.6" },
+        .{ .id = "codex", .model = "gpt-6-sol" },
+        .{ .id = "openai", .model = "gpt-6-astra" },
         .{ .id = "anthropic", .model = "claude-opus-4-8" },
         .{ .id = "deepseek", .model = "deepseek-v4-pro" },
     }) |case| {
@@ -298,13 +323,13 @@ test "ladder rungs vs providerClass: documented, intentional disagreement (#291)
     // #291 requires ladder tier labels to match scoring.providerClass()
     // output for the same models, "or report the discrepancy rather than
     // papering over it." The gpt family now agrees end-to-end with the
-    // ladder, like claude: "terra"/"luna" are tier-distinct needles in
+    // ladder, like claude: "sol"/"luna" are tier-distinct needles in
     // providerClass (as opus/sonnet/haiku are), so pullElites and fleet
-    // propose events keyed on the class are no longer rung-blind — a terra
-    // root pulls "mid" elites, not elites grown on sol.
-    try std.testing.expectEqualStrings("frontier", @import("scoring.zig").providerClass("gpt-5.6-sol"));
-    try std.testing.expectEqualStrings("mid", @import("scoring.zig").providerClass("gpt-5.6-terra")); // ladder rung: mid
-    try std.testing.expectEqualStrings("small", @import("scoring.zig").providerClass("gpt-5.6-luna")); // ladder rung: small
+    // propose events keyed on the class are no longer rung-blind — a sol
+    // root pulls "mid" elites, not elites grown on astra.
+    try std.testing.expectEqualStrings("frontier", @import("scoring.zig").providerClass("gpt-6-astra"));
+    try std.testing.expectEqualStrings("mid", @import("scoring.zig").providerClass("gpt-6-sol")); // ladder rung: mid
+    try std.testing.expectEqualStrings("small", @import("scoring.zig").providerClass("gpt-6-luna")); // ladder rung: small
     try std.testing.expectEqualStrings("frontier", @import("scoring.zig").providerClass("deepseek-v4-pro"));
     try std.testing.expectEqualStrings("small", @import("scoring.zig").providerClass("deepseek-v4-flash")); // ladder rung: small
     // Claude agrees end-to-end (opus/sonnet/haiku are tier-distinct needles

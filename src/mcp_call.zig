@@ -6,10 +6,9 @@ const Value = std.json.Value;
 const Registry = @import("mcp.zig").Registry;
 const mcp_rpc = @import("mcp_rpc.zig");
 const mcp_protocol = @import("mcp_protocol.zig");
-const mcp_elicitation = @import("mcp_elicitation.zig");
 const initializeServer = mcp_rpc.initializeServer;
 const request = mcp_rpc.request;
-const renderContent = @import("mcp_content.zig").renderContent;
+const renderResult = @import("mcp_content.zig").renderResult;
 const Server = mcp_rpc.Server;
 
 /// One server/tool for MRTR retries (mcp_mrtr.resolve).
@@ -21,18 +20,35 @@ const McpCall = struct {
     }
 };
 
-pub const CallResult = struct { text: []u8, is_error: bool };
+pub const CallResult = struct {
+    text: []u8,
+    is_error: bool,
+    /// Borrowed slice of `text`, not a second allocation. RLM consumes this
+    /// JSON value rather than parsing a server's human-readable summary.
+    structured_text: ?[]const u8 = null,
+    /// The delegated task's `codegraff/runTask` mirror, when the server sent
+    /// one. Copied out of the response arena before it dies.
+    run_task: ?@import("engine_events.zig").RunTaskMeta = null,
+
+    pub fn takeHostText(self: CallResult, a: Allocator) ![]u8 {
+        if (self.structured_text) |structured| {
+            defer a.free(self.text);
+            return try a.dupe(u8, structured);
+        }
+        return self.text;
+    }
+};
 
 /// A tool whose server connection closed or failed this session (#1523).
 /// Remembered so a later call or schema load names the closed service
 /// instead of reporting a tool that was never registered.
 pub const Withdrawn = struct { qualified_name: []const u8, server: []const u8, reason: []const u8 };
 
-const restart_hint = "Inspect /mcp, restart the service and this session, then reload its tool schemas.";
+const restart_hint = "Inspect /mcp; `/mcp reconnect <server>` starts it again without a new session, then reload its tool schemas.";
 
 /// The registry lock is held throughout. Never replay a possibly executed call.
-pub fn call(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value, context: ?@import("mcp_turn_context.zig").Snapshot) !CallResult {
-    return invoke(reg, out_alloc, qualified, input, context) catch |err| switch (err) {
+pub fn call(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value) !CallResult {
+    return invoke(reg, out_alloc, qualified, input) catch |err| switch (err) {
         error.McpClosed, error.ReadFailed, error.WriteFailed, error.BrokenPipe, error.ConnectionResetByPeer => blk: {
             if (try @import("mcp_restart.zig").closeForRestart(reg, out_alloc, qualified, @errorName(err))) |text| break :blk .{ .text = text, .is_error = true };
             try withdrawServer(reg, qualified, @errorName(err));
@@ -97,7 +113,7 @@ pub fn unavailableLoad(reg: *Registry, a: Allocator, input: Value) ?[]const u8 {
     return std.fmt.allocPrint(a, "MCP service {s} is unavailable: its connection closed or failed earlier in this session ({s}) and its tools were withdrawn, so nothing was loaded and {s} cannot be called. " ++ restart_hint, .{ hit.server, hit.reason, hit.qualified_name }) catch null;
 }
 
-fn invoke(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value, context: ?@import("mcp_turn_context.zig").Snapshot) !CallResult {
+fn invoke(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value) !CallResult {
     const tool = for (reg.tools) |t| {
         if (std.mem.eql(u8, t.qualified_name, qualified)) break t;
     } else {
@@ -105,12 +121,11 @@ fn invoke(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Va
         // first; this call then reports the same closed service.
         if (withdrawnTool(reg, qualified)) |w| return .{ .text = try std.fmt.allocPrint(out_alloc, "MCP service connection closed or failed earlier in this session ({s}). Its tools have been withdrawn from the catalog; this call was not sent. " ++ restart_hint, .{w.reason}), .is_error = true };
         reg.catalog_dirty.store(true, .release);
-        return .{ .text = try out_alloc.dupe(u8, "MCP tool is not registered in the current connection. Its loaded schema may be stale. The next catalog will reflect the current registration. Inspect /mcp, restart the session to reconnect the configured service, then reload its schema before retrying."), .is_error = true };
+        return .{ .text = try out_alloc.dupe(u8, "MCP tool is not registered in the current connection. Its loaded schema may be stale. The next catalog will reflect the current registration. Inspect /mcp; `/mcp reconnect <server>` starts the configured service again, then reload its schema before retrying."), .is_error = true };
     };
 
     const server = reg.servers[tool.server_index];
-    const turn_ctx = @import("mcp_turn_context.zig").effective(context, reg.io, server.name);
-    const params = try @import("mcp_turn_context.zig").params(reg.gpa, server.name, tool.original_name, input, turn_ctx);
+    const params = try std.json.Stringify.valueAlloc(reg.gpa, .{ .name = tool.original_name, .arguments = input }, .{});
     defer reg.gpa.free(params);
 
     // Tool responses can be large and numerous; keep them out of the
@@ -121,8 +136,6 @@ fn invoke(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Va
     if (server.transport == .dormant) @import("mcp_lazy.zig").wake(reg, server) catch |err|
         return .{ .text = try std.fmt.allocPrint(out_alloc, "MCP server {s} failed to start: {t}", .{ server.name, err }), .is_error = true };
     if (!server.initialized) try initializeServer(server, response_alloc, reg.arena(), null);
-    server.elicit_source = params;
-    defer server.elicit_source = "";
     const first_resp = request(server, response_alloc, params, "tools/call", tool.original_name) catch |err| switch (err) {
         // Streamable HTTP servers use 404 to expire a session. Re-run the
         // MCP handshake once, then retry the call without the stale ID.
@@ -157,8 +170,6 @@ fn invoke(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Va
             const c = e.object.get("code") orelse break :blk 0;
             break :blk if (c == .integer) c.integer else 0;
         } else 0;
-        if (mcp_elicitation.looksUnavailable(msg))
-            return .{ .text = try out_alloc.dupe(u8, mcp_elicitation.fallback), .is_error = true };
         const text = if (code != 0)
             try std.fmt.allocPrint(out_alloc, "MCP error {d}: {s}", .{ code, msg })
         else
@@ -178,6 +189,7 @@ fn invoke(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Va
     if (!mcp_protocol.resultIsComplete(result))
         return .{ .text = try out_alloc.dupe(u8, "MCP server returned an unsupported resultType"), .is_error = true };
     const is_error = if (result.get("isError")) |v| (v == .bool and v.bool) else false;
+    const run_task = @import("run_task_meta.zig").fromMcpResult(out_alloc, result);
 
     var ow: Io.Writer.Allocating = .init(out_alloc);
     errdefer ow.deinit();
@@ -188,25 +200,12 @@ fn invoke(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Va
             try ow.writer.print("[MCP app]({s}) — saved interactive result; /mcp apps opens it in a browser.\n", .{p});
         } else try ow.writer.writeAll("[MCP app view unavailable; ordinary tool output follows.]\n");
     }
-    const prefix_len = ow.writer.buffered().len;
-    if (result.get("content")) |content| try renderContent(&ow.writer, content, .{
+    const structured_range = try renderResult(&ow.writer, result, .{
         .arena = reg.arena(),
         .slot = &reg.pending_image,
         .label = qualified,
         .supports_vision = reg.vision_capable,
-    });
-    // 2025-06-18+ structured tool output: if the server sent only
-    // structuredContent (no text blocks), surface it instead of "".
-    if (ow.writer.buffered().len == prefix_len) {
-        if (result.get("structuredContent")) |sc| {
-            var sw: std.json.Stringify = .{ .writer = &ow.writer };
-            try sw.write(sc);
-        }
-    }
+    }, response_alloc);
     const text = try ow.toOwnedSlice();
-    if (mcp_elicitation.looksUnavailable(text)) {
-        out_alloc.free(text);
-        return .{ .text = try out_alloc.dupe(u8, mcp_elicitation.fallback), .is_error = true };
-    }
-    return .{ .text = text, .is_error = is_error };
+    return .{ .text = text, .is_error = is_error, .run_task = run_task, .structured_text = if (structured_range) |range| text[range.start..range.end] else null };
 }

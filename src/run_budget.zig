@@ -53,6 +53,8 @@ pub const RunBudget = struct {
     max_tool_calls: ?u64 = null,
     tool_calls: std.atomic.Value(u64) = .init(0),
     tool_exhausted: std.atomic.Value(bool) = .init(false),
+    /// Tools were forcibly withheld for the last admitted model call.
+    model_landed: std.atomic.Value(bool) = .init(false),
     max_concurrency: u32 = default_max_concurrency,
     max_depth: u8 = default_max_depth,
     model_calls: std.atomic.Value(u64) = .init(0),

@@ -26,7 +26,7 @@ def run(binary, preview, capability, json_mode=False, progress_on=True):
         model = load.ScriptedModel([
             {'tool': 'subagent', 'arguments': {'description': 'Inspect example',
                 'prompt': 'Read example.txt and report its content.', 'isolation': 'shared_cwd',
-                'run_in_background': False}},
+                'run_in_background': False, 'model': 'unavailable-fixture-model'}},
             {'text': 'Child is inspecting.', 'tool': 'read_file',
                 'arguments': {'path': 'example.txt'}},
             {'text': 'Child found SUBAGENT-FIXTURE-CONTENT.'},
@@ -72,6 +72,14 @@ def run(binary, preview, capability, json_mode=False, progress_on=True):
                     assert not progress, rows
                     return
                 assert progress, rows
+                actual_model = model.requests[1]['model']
+                assert actual_model != 'unavailable-fixture-model'
+                for _, update in progress:
+                    meta = update['_meta']['graff/subagent']
+                    assert meta['model'] == actual_model and meta['provider'] == 'vercel', update
+                    assert actual_model in update['title'], update
+                assert progress[0][0] < next(i for i, update in progress
+                    if 'read_file: example.txt' in str(update.get('content'))), progress
                 assert all('status' not in update for _, update in progress), progress
                 assert any('read_file: example.txt' in str(update.get('content')) for _, update in progress), progress
                 last = progress[-1][1]
@@ -88,6 +96,10 @@ def run(binary, preview, capability, json_mode=False, progress_on=True):
             assert child_id != sid
             assert announced['task'] == 'Read example.txt and report its content.'
             assert announced['_meta']['graff/parentToolCallId'] == parent_id
+            actual_model = model.requests[1]['model']
+            meta = announced['_meta']['graff/subagent']
+            assert meta['model'] == actual_model and meta['provider'] == 'vercel', announced
+            assert actual_model in announced['name'], announced
             assert finished['subagentSessionId'] == child_id
             assert finished['state'] == 'completed'
             assert finished['_meta']['graff/parentToolCallId'] == parent_id

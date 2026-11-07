@@ -29,6 +29,13 @@ harness under test spends model calls.
 | `mcp-hard` | Linear-shaped fixture MCP tasks that need more than ids and titles: cross-reference issue keys against `src/` (with decoy keys), roll issues up by priority, and join issues with git history by author date. Opt-in. |
 | `aggregate` | Aggregate local data in one script: a per-directory commit digest over a pinned slice of this repository's history, fetched from GitHub in setup. Opt-in. |
 
+For private solo, same-route-team and mixed-route comparisons on the paired fixtures, see [Private Worker Comparisons](WORKER-MATRIX.md). The four-arm example compares two routes alone and with their own workers. Summaries separate lead and worker rate estimates from native full cost; `--summarize` reads saved results offline without rerunning models. Preparation and offline regression checks make no model calls.
+
+For repeatable native Cursor comparisons, see [Cursor Comparisons](CURSOR-COMPARISON.md).
+The `argon` preset runs Argon through Codegraff versus Cursor at low effort;
+`xai-sub` runs Grok 4.7 through the xAI subscription versus Cursor at high effort.
+Both reuse the same 21 core/MCP fixtures with isolated logins and routing checks.
+
 Terminal-Bench and other Harbor datasets run graff through the adapter in [harbor/](harbor/README.md).
 
 Published live board (2026-09-09, five harnesses on grok-4.6 SuperGrok):
@@ -211,6 +218,8 @@ folders containing the explicit saved provider/model selection; the runner
 removes `--model` so production startup loads that provider's catalog. No
 other provider credentials, user skills, saved sessions, or MCP configuration
 are inherited. Root API trace model identity must match for a run to qualify.
+
+For opt-in private lead/worker route comparisons on the existing paired fixtures, see [Private Worker Comparisons](WORKER-MATRIX.md). Preparation and offline regression checks make no model calls.
 
 ```sh
 python3 graff-evals/run.py --suite swe --task config-parse \

@@ -1,0 +1,800 @@
+{
+ "model": "Recursive Flint INT4 (flint-int4), served locally by rec 0.1.0 as an OpenAI-compatible server",
+ "tasks": 21,
+ "reps": 2,
+ "arms": {
+  "graff": "graff (this branch) as a scripted graff repl on the mlx provider"
+ },
+ "summary": {
+  "all": {
+   "graff": {
+    "runs": 42,
+    "passed": 39,
+    "wall_s_per_task": 80.4,
+    "cached_input_share": 0.844,
+    "output_tokens_per_task": 3439,
+    "model_calls_per_task": 6.6
+   }
+  },
+  "core": {
+   "graff": {
+    "runs": 22,
+    "passed": 22,
+    "wall_s_per_task": 16.8,
+    "cached_input_share": 0.803,
+    "output_tokens_per_task": 619,
+    "model_calls_per_task": 4.2
+   }
+  },
+  "mcp": {
+   "graff": {
+    "runs": 20,
+    "passed": 17,
+    "wall_s_per_task": 150.4,
+    "cached_input_share": 0.855,
+    "output_tokens_per_task": 6541,
+    "model_calls_per_task": 9.3
+   }
+  }
+ },
+ "per_task": {
+  "csv-sum": {
+   "suite": "core",
+   "graff": {
+    "passed": 2,
+    "runs": 2,
+    "wall_s": 21.2,
+    "model_calls": 6.0,
+    "output_tokens": 513
+   }
+  },
+  "dead-code": {
+   "suite": "core",
+   "graff": {
+    "passed": 2,
+    "runs": 2,
+    "wall_s": 13.2,
+    "model_calls": 3.0,
+    "output_tokens": 496
+   }
+  },
+  "exact-reply": {
+   "suite": "core",
+   "graff": {
+    "passed": 2,
+    "runs": 2,
+    "wall_s": 6.6,
+    "model_calls": 1.0,
+    "output_tokens": 123
+   }
+  },
+  "file-ops": {
+   "suite": "core",
+   "graff": {
+    "passed": 2,
+    "runs": 2,
+    "wall_s": 14.3,
+    "model_calls": 3.0,
+    "output_tokens": 551
+   }
+  },
+  "fix-fib": {
+   "suite": "core",
+   "graff": {
+    "passed": 2,
+    "runs": 2,
+    "wall_s": 23.5,
+    "model_calls": 5.5,
+    "output_tokens": 1035
+   }
+  },
+  "git-ops": {
+   "suite": "core",
+   "graff": {
+    "passed": 2,
+    "runs": 2,
+    "wall_s": 16.2,
+    "model_calls": 3.5,
+    "output_tokens": 456
+   }
+  },
+  "json-transform": {
+   "suite": "core",
+   "graff": {
+    "passed": 2,
+    "runs": 2,
+    "wall_s": 10.2,
+    "model_calls": 3.0,
+    "output_tokens": 417
+   }
+  },
+  "linear-issues": {
+   "suite": "mcp",
+   "graff": {
+    "passed": 2,
+    "runs": 2,
+    "wall_s": 86.7,
+    "model_calls": 7.0,
+    "output_tokens": 5545
+   }
+  },
+  "linear-nohint": {
+   "suite": "mcp",
+   "graff": {
+    "passed": 2,
+    "runs": 2,
+    "wall_s": 172.0,
+    "model_calls": 11.5,
+    "output_tokens": 11315
+   }
+  },
+  "linear-nohint-warm": {
+   "suite": "mcp",
+   "graff": {
+    "passed": 2,
+    "runs": 2,
+    "wall_s": 125.1,
+    "model_calls": 6.0,
+    "output_tokens": 6642
+   }
+  },
+  "linear-quiet": {
+   "suite": "mcp",
+   "graff": {
+    "passed": 1,
+    "runs": 2,
+    "wall_s": 213.5,
+    "model_calls": 5.0,
+    "output_tokens": 5338
+   }
+  },
+  "linear-quiet-warm": {
+   "suite": "mcp",
+   "graff": {
+    "passed": 2,
+    "runs": 2,
+    "wall_s": 134.0,
+    "model_calls": 7.0,
+    "output_tokens": 8904
+   }
+  },
+  "linear-reduce": {
+   "suite": "mcp",
+   "graff": {
+    "passed": 2,
+    "runs": 2,
+    "wall_s": 97.2,
+    "model_calls": 12.0,
+    "output_tokens": 5691
+   }
+  },
+  "linear-reduce-warm": {
+   "suite": "mcp",
+   "graff": {
+    "passed": 2,
+    "runs": 2,
+    "wall_s": 93.9,
+    "model_calls": 8.0,
+    "output_tokens": 5941
+   }
+  },
+  "linear-sidecar": {
+   "suite": "mcp",
+   "graff": {
+    "passed": 2,
+    "runs": 2,
+    "wall_s": 211.0,
+    "model_calls": 18.5,
+    "output_tokens": 9802
+   }
+  },
+  "linear-split": {
+   "suite": "mcp",
+   "graff": {
+    "passed": 0,
+    "runs": 2,
+    "wall_s": 240.1,
+    "model_calls": 0.0,
+    "output_tokens": 0
+   }
+  },
+  "linear-warm": {
+   "suite": "mcp",
+   "graff": {
+    "passed": 2,
+    "runs": 2,
+    "wall_s": 130.3,
+    "model_calls": 18.0,
+    "output_tokens": 6234
+   }
+  },
+  "recall-noise": {
+   "suite": "core",
+   "graff": {
+    "passed": 2,
+    "runs": 2,
+    "wall_s": 7.4,
+    "model_calls": 2.0,
+    "output_tokens": 104
+   }
+  },
+  "refactor-rename": {
+   "suite": "core",
+   "graff": {
+    "passed": 2,
+    "runs": 2,
+    "wall_s": 16.0,
+    "model_calls": 6.0,
+    "output_tokens": 395
+   }
+  },
+  "regex-count": {
+   "suite": "core",
+   "graff": {
+    "passed": 2,
+    "runs": 2,
+    "wall_s": 30.9,
+    "model_calls": 6.0,
+    "output_tokens": 1740
+   }
+  },
+  "write-tests": {
+   "suite": "core",
+   "graff": {
+    "passed": 2,
+    "runs": 2,
+    "wall_s": 25.6,
+    "model_calls": 7.0,
+    "output_tokens": 977
+   }
+  }
+ },
+ "runs": [
+  {
+   "arm": "graff",
+   "task": "exact-reply",
+   "suite": "core",
+   "rep": 1,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 11.53,
+   "model_calls": 1,
+   "input_tokens": 7383,
+   "cached_input_tokens": 0,
+   "output_tokens": 123
+  },
+  {
+   "arm": "graff",
+   "task": "exact-reply",
+   "suite": "core",
+   "rep": 2,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 1.74,
+   "model_calls": 1,
+   "input_tokens": 7383,
+   "cached_input_tokens": 7383,
+   "output_tokens": 123
+  },
+  {
+   "arm": "graff",
+   "task": "fix-fib",
+   "suite": "core",
+   "rep": 1,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 21.99,
+   "model_calls": 5,
+   "input_tokens": 40572,
+   "cached_input_tokens": 31977,
+   "output_tokens": 1018
+  },
+  {
+   "arm": "graff",
+   "task": "fix-fib",
+   "suite": "core",
+   "rep": 2,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 25.05,
+   "model_calls": 6,
+   "input_tokens": 49192,
+   "cached_input_tokens": 39276,
+   "output_tokens": 1052
+  },
+  {
+   "arm": "graff",
+   "task": "file-ops",
+   "suite": "core",
+   "rep": 1,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 21.58,
+   "model_calls": 3,
+   "input_tokens": 23001,
+   "cached_input_tokens": 15119,
+   "output_tokens": 551
+  },
+  {
+   "arm": "graff",
+   "task": "file-ops",
+   "suite": "core",
+   "rep": 2,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 6.98,
+   "model_calls": 3,
+   "input_tokens": 23001,
+   "cached_input_tokens": 22519,
+   "output_tokens": 551
+  },
+  {
+   "arm": "graff",
+   "task": "json-transform",
+   "suite": "core",
+   "rep": 1,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 15.2,
+   "model_calls": 3,
+   "input_tokens": 22774,
+   "cached_input_tokens": 14986,
+   "output_tokens": 417
+  },
+  {
+   "arm": "graff",
+   "task": "json-transform",
+   "suite": "core",
+   "rep": 2,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 5.17,
+   "model_calls": 3,
+   "input_tokens": 22774,
+   "cached_input_tokens": 22422,
+   "output_tokens": 417
+  },
+  {
+   "arm": "graff",
+   "task": "regex-count",
+   "suite": "core",
+   "rep": 1,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 30.89,
+   "model_calls": 6,
+   "input_tokens": 48802,
+   "cached_input_tokens": 39557,
+   "output_tokens": 1740
+  },
+  {
+   "arm": "graff",
+   "task": "regex-count",
+   "suite": "core",
+   "rep": 2,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 30.87,
+   "model_calls": 6,
+   "input_tokens": 48802,
+   "cached_input_tokens": 39557,
+   "output_tokens": 1740
+  },
+  {
+   "arm": "graff",
+   "task": "refactor-rename",
+   "suite": "core",
+   "rep": 1,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 16.05,
+   "model_calls": 6,
+   "input_tokens": 45850,
+   "cached_input_tokens": 38014,
+   "output_tokens": 395
+  },
+  {
+   "arm": "graff",
+   "task": "refactor-rename",
+   "suite": "core",
+   "rep": 2,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 15.99,
+   "model_calls": 6,
+   "input_tokens": 45850,
+   "cached_input_tokens": 38014,
+   "output_tokens": 395
+  },
+  {
+   "arm": "graff",
+   "task": "write-tests",
+   "suite": "core",
+   "rep": 1,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 28.5,
+   "model_calls": 7,
+   "input_tokens": 54706,
+   "cached_input_tokens": 46467,
+   "output_tokens": 977
+  },
+  {
+   "arm": "graff",
+   "task": "write-tests",
+   "suite": "core",
+   "rep": 2,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 22.78,
+   "model_calls": 7,
+   "input_tokens": 54706,
+   "cached_input_tokens": 46467,
+   "output_tokens": 977
+  },
+  {
+   "arm": "graff",
+   "task": "git-ops",
+   "suite": "core",
+   "rep": 1,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 18.74,
+   "model_calls": 4,
+   "input_tokens": 30916,
+   "cached_input_tokens": 22913,
+   "output_tokens": 678
+  },
+  {
+   "arm": "graff",
+   "task": "git-ops",
+   "suite": "core",
+   "rep": 2,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 13.71,
+   "model_calls": 3,
+   "input_tokens": 22744,
+   "cached_input_tokens": 15011,
+   "output_tokens": 234
+  },
+  {
+   "arm": "graff",
+   "task": "recall-noise",
+   "suite": "core",
+   "rep": 1,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 12.69,
+   "model_calls": 2,
+   "input_tokens": 15103,
+   "cached_input_tokens": 7423,
+   "output_tokens": 104
+  },
+  {
+   "arm": "graff",
+   "task": "recall-noise",
+   "suite": "core",
+   "rep": 2,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 2.08,
+   "model_calls": 2,
+   "input_tokens": 15103,
+   "cached_input_tokens": 14846,
+   "output_tokens": 104
+  },
+  {
+   "arm": "graff",
+   "task": "csv-sum",
+   "suite": "core",
+   "rep": 1,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 18.11,
+   "model_calls": 6,
+   "input_tokens": 46154,
+   "cached_input_tokens": 38248,
+   "output_tokens": 513
+  },
+  {
+   "arm": "graff",
+   "task": "csv-sum",
+   "suite": "core",
+   "rep": 2,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 24.26,
+   "model_calls": 6,
+   "input_tokens": 46154,
+   "cached_input_tokens": 38248,
+   "output_tokens": 513
+  },
+  {
+   "arm": "graff",
+   "task": "dead-code",
+   "suite": "core",
+   "rep": 1,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 19.54,
+   "model_calls": 3,
+   "input_tokens": 23067,
+   "cached_input_tokens": 15061,
+   "output_tokens": 496
+  },
+  {
+   "arm": "graff",
+   "task": "dead-code",
+   "suite": "core",
+   "rep": 2,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 6.91,
+   "model_calls": 3,
+   "input_tokens": 23067,
+   "cached_input_tokens": 22500,
+   "output_tokens": 496
+  },
+  {
+   "arm": "graff",
+   "task": "linear-issues",
+   "suite": "mcp",
+   "rep": 1,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 85.67,
+   "model_calls": 7,
+   "input_tokens": 83930,
+   "cached_input_tokens": 68400,
+   "output_tokens": 5545
+  },
+  {
+   "arm": "graff",
+   "task": "linear-issues",
+   "suite": "mcp",
+   "rep": 2,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 87.73,
+   "model_calls": 7,
+   "input_tokens": 83930,
+   "cached_input_tokens": 68400,
+   "output_tokens": 5545
+  },
+  {
+   "arm": "graff",
+   "task": "linear-warm",
+   "suite": "mcp",
+   "rep": 1,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 105.88,
+   "model_calls": 15,
+   "input_tokens": 216467,
+   "cached_input_tokens": 195962,
+   "output_tokens": 5380
+  },
+  {
+   "arm": "graff",
+   "task": "linear-warm",
+   "suite": "mcp",
+   "rep": 2,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 154.68,
+   "model_calls": 21,
+   "input_tokens": 329725,
+   "cached_input_tokens": 306385,
+   "output_tokens": 7088
+  },
+  {
+   "arm": "graff",
+   "task": "linear-sidecar",
+   "suite": "mcp",
+   "rep": 1,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 198.91,
+   "model_calls": 18,
+   "input_tokens": 239522,
+   "cached_input_tokens": 195069,
+   "output_tokens": 9145
+  },
+  {
+   "arm": "graff",
+   "task": "linear-sidecar",
+   "suite": "mcp",
+   "rep": 2,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 223.02,
+   "model_calls": 19,
+   "input_tokens": 234962,
+   "cached_input_tokens": 187402,
+   "output_tokens": 10460
+  },
+  {
+   "arm": "graff",
+   "task": "linear-split",
+   "suite": "mcp",
+   "rep": 1,
+   "pass": false,
+   "timed_out": true,
+   "wall_s": 240.24,
+   "model_calls": 0,
+   "input_tokens": 0,
+   "cached_input_tokens": 0,
+   "output_tokens": 0
+  },
+  {
+   "arm": "graff",
+   "task": "linear-split",
+   "suite": "mcp",
+   "rep": 2,
+   "pass": false,
+   "timed_out": true,
+   "wall_s": 240.05,
+   "model_calls": 0,
+   "input_tokens": 0,
+   "cached_input_tokens": 0,
+   "output_tokens": 0
+  },
+  {
+   "arm": "graff",
+   "task": "linear-quiet",
+   "suite": "mcp",
+   "rep": 1,
+   "pass": false,
+   "timed_out": true,
+   "wall_s": 240.46,
+   "model_calls": 0,
+   "input_tokens": 0,
+   "cached_input_tokens": 0,
+   "output_tokens": 0
+  },
+  {
+   "arm": "graff",
+   "task": "linear-quiet",
+   "suite": "mcp",
+   "rep": 2,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 186.56,
+   "model_calls": 10,
+   "input_tokens": 185550,
+   "cached_input_tokens": 159596,
+   "output_tokens": 10675
+  },
+  {
+   "arm": "graff",
+   "task": "linear-quiet-warm",
+   "suite": "mcp",
+   "rep": 1,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 125.34,
+   "model_calls": 8,
+   "input_tokens": 122586,
+   "cached_input_tokens": 104167,
+   "output_tokens": 8128
+  },
+  {
+   "arm": "graff",
+   "task": "linear-quiet-warm",
+   "suite": "mcp",
+   "rep": 2,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 142.6,
+   "model_calls": 6,
+   "input_tokens": 90117,
+   "cached_input_tokens": 70946,
+   "output_tokens": 9680
+  },
+  {
+   "arm": "graff",
+   "task": "linear-nohint",
+   "suite": "mcp",
+   "rep": 1,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 160.13,
+   "model_calls": 11,
+   "input_tokens": 182826,
+   "cached_input_tokens": 160142,
+   "output_tokens": 10346
+  },
+  {
+   "arm": "graff",
+   "task": "linear-nohint",
+   "suite": "mcp",
+   "rep": 2,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 183.87,
+   "model_calls": 12,
+   "input_tokens": 192222,
+   "cached_input_tokens": 170078,
+   "output_tokens": 12284
+  },
+  {
+   "arm": "graff",
+   "task": "linear-nohint-warm",
+   "suite": "mcp",
+   "rep": 1,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 103.22,
+   "model_calls": 7,
+   "input_tokens": 115728,
+   "cached_input_tokens": 94807,
+   "output_tokens": 5589
+  },
+  {
+   "arm": "graff",
+   "task": "linear-nohint-warm",
+   "suite": "mcp",
+   "rep": 2,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 146.95,
+   "model_calls": 5,
+   "input_tokens": 80083,
+   "cached_input_tokens": 57615,
+   "output_tokens": 7695
+  },
+  {
+   "arm": "graff",
+   "task": "linear-reduce",
+   "suite": "mcp",
+   "rep": 1,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 96.76,
+   "model_calls": 12,
+   "input_tokens": 144080,
+   "cached_input_tokens": 128395,
+   "output_tokens": 5691
+  },
+  {
+   "arm": "graff",
+   "task": "linear-reduce",
+   "suite": "mcp",
+   "rep": 2,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 97.62,
+   "model_calls": 12,
+   "input_tokens": 144080,
+   "cached_input_tokens": 128395,
+   "output_tokens": 5691
+  },
+  {
+   "arm": "graff",
+   "task": "linear-reduce-warm",
+   "suite": "mcp",
+   "rep": 1,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 94.09,
+   "model_calls": 8,
+   "input_tokens": 95572,
+   "cached_input_tokens": 80041,
+   "output_tokens": 5941
+  },
+  {
+   "arm": "graff",
+   "task": "linear-reduce-warm",
+   "suite": "mcp",
+   "rep": 2,
+   "pass": true,
+   "timed_out": false,
+   "wall_s": 93.7,
+   "model_calls": 8,
+   "input_tokens": 95572,
+   "cached_input_tokens": 80041,
+   "output_tokens": 5941
+  }
+ ]
+}

@@ -26,28 +26,28 @@ fn codex(model: []const u8) Provider {
 /// (0.60 vs 0.40) and is not dominated by it, so any re-seating that happens
 /// is provably the lived evidence talking, not the priors.
 const demo_sheet = [_]bench.Entry{
-    .{ .model = "gpt-5.6-terra", .effort = "medium", .score = 0.60, .cost = 0.9 }, // effective $0.90
-    .{ .model = "gpt-5.6-luna", .effort = "max", .score = 0.40, .cost = 0.61 }, // effective $0.61
+    .{ .model = "gpt-6-sol", .effort = "medium", .score = 0.60, .cost = 0.9 }, // effective $0.90
+    .{ .model = "gpt-6-luna", .effort = "max", .score = 0.40, .cost = 0.61 }, // effective $0.61
 };
 
 /// Lived scores from a `research` shape's `sweep` phase: terra (the ladder's
 /// mid rung) did badly, luna did well. Written in the exact self-describing
 /// `kind:"score"` shape route_trace.captureScore emits.
 const demo_archive =
-    \\{"kind":"score","prompt_sha":"aa","score":0.2,"shape":"research","role":"sweep","tier":"mid","model":"gpt-5.6-terra"}
-    \\{"kind":"score","prompt_sha":"aa","score":0.2,"shape":"research","role":"sweep","tier":"mid","model":"gpt-5.6-terra"}
-    \\{"kind":"score","prompt_sha":"aa","score":0.2,"shape":"research","role":"sweep","tier":"mid","model":"gpt-5.6-terra"}
-    \\{"kind":"score","prompt_sha":"bb","score":0.95,"shape":"research","role":"sweep","tier":"small","model":"gpt-5.6-luna"}
-    \\{"kind":"score","prompt_sha":"bb","score":0.95,"shape":"research","role":"sweep","tier":"small","model":"gpt-5.6-luna"}
-    \\{"kind":"score","prompt_sha":"bb","score":0.95,"shape":"research","role":"sweep","tier":"small","model":"gpt-5.6-luna"}
+    \\{"kind":"score","prompt_sha":"aa","score":0.2,"shape":"research","role":"sweep","tier":"mid","model":"gpt-6-sol"}
+    \\{"kind":"score","prompt_sha":"aa","score":0.2,"shape":"research","role":"sweep","tier":"mid","model":"gpt-6-sol"}
+    \\{"kind":"score","prompt_sha":"aa","score":0.2,"shape":"research","role":"sweep","tier":"mid","model":"gpt-6-sol"}
+    \\{"kind":"score","prompt_sha":"bb","score":0.95,"shape":"research","role":"sweep","tier":"small","model":"gpt-6-luna"}
+    \\{"kind":"score","prompt_sha":"bb","score":0.95,"shape":"research","role":"sweep","tier":"small","model":"gpt-6-luna"}
+    \\{"kind":"score","prompt_sha":"bb","score":0.95,"shape":"research","role":"sweep","tier":"small","model":"gpt-6-luna"}
 ;
 
 test "#372 trace line: every source kind renders its own attribution, absent fields render -" {
     var buf: [320]u8 = undefined;
     // The line the issue specifies, field for field.
     try std.testing.expectEqualStrings(
-        "shape=research role=sweep tier=mid resolved_model=gpt-5.6-terra source=ladder policy_or_genome_id=ladder:codex",
-        policy.formatDecision(&buf, .{ .shape = .research, .role = "sweep", .tier = .mid, .resolved_model = "gpt-5.6-terra", .source = .ladder, .policy_id = "ladder:codex" }),
+        "shape=research role=sweep tier=mid resolved_model=gpt-6-sol source=ladder policy_or_genome_id=ladder:codex",
+        policy.formatDecision(&buf, .{ .shape = .research, .role = "sweep", .tier = .mid, .resolved_model = "gpt-6-sol", .source = .ladder, .policy_id = "ladder:codex" }),
     );
     // Each source kind is spelled with hyphens on the wire, and each is
     // distinguishable — that is the whole point of the field.
@@ -82,14 +82,14 @@ test "#372 trace: the --json agent_route event carries the same six fields" {
     route_trace.g_test_sink = &sink;
     defer route_trace.g_test_sink = null;
 
-    route_trace.emitSpawn(std.testing.io, null, "sweep the callers", "codex", "gpt-5.6-terra", .{ .shape = .research, .role = "sweep" }, .ladder, "");
+    route_trace.emitSpawn(std.testing.io, null, "sweep the callers", "codex", "gpt-6-sol", .{ .shape = .research, .role = "sweep" }, .ladder, "");
     const line = std.mem.trimEnd(u8, sink.writer.buffered(), "\n");
     try std.testing.expect(std.mem.indexOfScalar(u8, line, '\n') == null); // one complete object per line
     const ev = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), line, .{});
     try std.testing.expectEqualStrings("agent_route", ev.object.get("type").?.string);
     try std.testing.expectEqualStrings("research", ev.object.get("shape").?.string);
     try std.testing.expectEqualStrings("sweep", ev.object.get("role").?.string);
-    try std.testing.expectEqualStrings("gpt-5.6-terra", ev.object.get("resolved_model").?.string);
+    try std.testing.expectEqualStrings("gpt-6-sol", ev.object.get("resolved_model").?.string);
     try std.testing.expectEqualStrings("ladder", ev.object.get("source").?.string);
     try std.testing.expectEqualStrings("sweep the callers", ev.object.get("task").?.string);
     // The tier is READ BACK off the resolved model, so an inherited route —
@@ -127,9 +127,9 @@ test "#372: the shape is read off the phase titles the root model authored" {
     try std.testing.expectEqualStrings("review", policy.roleOf("do the thing", "review the diff"));
     try std.testing.expectEqualStrings("", policy.roleOf("do the thing", "some-persona"));
     // tierOf is the ladder inverse the trace needs for an unpinned worker.
-    try std.testing.expectEqual(tier_ladder.Tier.mid, policy.tierOf("codex", "gpt-5.6-terra").?);
+    try std.testing.expectEqual(tier_ladder.Tier.mid, policy.tierOf("codex", "gpt-6-sol").?);
     try std.testing.expectEqual(tier_ladder.Tier.frontier, policy.tierOf("codex", "gpt-6-astra").?);
-    try std.testing.expect(policy.tierOf("codex", "gpt-5.6-sol") == null);
+    try std.testing.expect(policy.tierOf("codex", "gpt-6.1-sol") == null);
     try std.testing.expect(policy.tierOf("codex", "claude-opus-4-8") == null); // off this ladder
     try std.testing.expectEqualStrings("", policy.tierLabelFor("xai", "grok-4.3")); // no ladder at all
 }
@@ -139,12 +139,12 @@ test "#372 foldCells: only self-describing score rows become observations" {
     defer arena_state.deinit();
     const a = arena_state.allocator();
     const archive =
-        \\{"kind":"score","prompt_sha":"aa","score":0.5,"shape":"research","role":"sweep","tier":"mid","model":"gpt-5.6-terra"}
-        \\{"kind":"score","prompt_sha":"aa","score":0.7,"shape":"research","role":"sweep","tier":"mid","model":"gpt-5.6-terra"}
+        \\{"kind":"score","prompt_sha":"aa","score":0.5,"shape":"research","role":"sweep","tier":"mid","model":"gpt-6-sol"}
+        \\{"kind":"score","prompt_sha":"aa","score":0.7,"shape":"research","role":"sweep","tier":"mid","model":"gpt-6-sol"}
         \\{"kind":"score","prompt_sha":"zz","score":0.9}
         \\{"kind":"score","prompt_sha":"zz","score":0.9,"shape":"research","role":"sweep","tier":"mid"}
-        \\{"kind":"score","prompt_sha":"zz","score":40,"shape":"research","role":"sweep","tier":"mid","model":"gpt-5.6-luna"}
-        \\{"kind":"recipe","prompt_sha":"aa","model":"gpt-5.6-luna","effort":"max"}
+        \\{"kind":"score","prompt_sha":"zz","score":40,"shape":"research","role":"sweep","tier":"mid","model":"gpt-6-luna"}
+        \\{"kind":"recipe","prompt_sha":"aa","model":"gpt-6-luna","effort":"max"}
         \\not json at all
     ;
     const cells = policy.foldCells(a, archive);
@@ -154,7 +154,7 @@ test "#372 foldCells: only self-describing score rows become observations" {
     try std.testing.expectEqualStrings("research", cells[0].shape);
     try std.testing.expectEqualStrings("sweep", cells[0].role);
     try std.testing.expectEqualStrings("mid", cells[0].tier);
-    try std.testing.expectEqualStrings("gpt-5.6-terra", cells[0].model);
+    try std.testing.expectEqualStrings("gpt-6-sol", cells[0].model);
     try std.testing.expectEqual(@as(u32, 2), cells[0].n);
     try std.testing.expectApproxEqAbs(@as(f64, 0.6), cells[0].mean(), 1e-9);
     // An archive with nothing in it is the bootstrap case: zero cells, so
@@ -166,8 +166,8 @@ test "#372 DEMONSTRATION: a dominated mid rung is re-seated, an unobserved cell 
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const cells = policy.foldCells(arena_state.allocator(), demo_archive);
-    const ladder_mid = tier_ladder.forProvider("codex").?.mid.?; // today's answer: gpt-5.6-terra
-    try std.testing.expectEqualStrings("gpt-5.6-terra", ladder_mid);
+    const ladder_mid = tier_ladder.forProvider("codex").?.mid.?; // today's answer: gpt-6-sol
+    try std.testing.expectEqualStrings("gpt-6-sol", ladder_mid);
 
     // BASELINE — the sheet alone, no lived evidence: terra outscores luna on
     // the sheet, so nothing dominates it and today's ladder answer stands.
@@ -178,7 +178,7 @@ test "#372 DEMONSTRATION: a dominated mid rung is re-seated, an unobserved cell 
     // luna now matches-and-beats terra's quality for $0.61 against $0.90, so
     // it DOMINATES it and the (research, sweep) mid rung is re-seated.
     const reseated = policy.learnedRungIn(cells, &demo_sheet, "codex", .{ .shape = .research, .role = "sweep" }, ladder_mid);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", reseated.?);
+    try std.testing.expectEqualStrings("gpt-6-luna", reseated.?);
 
     // SPARSE — a cell nobody has ever scored has no basis to move anything,
     // so it falls through the whole hierarchy to today's ladder answer.
@@ -197,30 +197,30 @@ test "#372 hierarchy: exact cell decides, a silent cell borrows its shape, a sil
     // A DIFFERENT role in the same shape has no rows of its own, so it
     // borrows the shape-level pool (`sweep`'s evidence) — rung two.
     const cells = policy.foldCells(a, demo_archive);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", policy.learnedRungIn(cells, &demo_sheet, "codex", .{ .shape = .research, .role = "synthesize" }, ladder_mid).?);
+    try std.testing.expectEqualStrings("gpt-6-luna", policy.learnedRungIn(cells, &demo_sheet, "codex", .{ .shape = .research, .role = "synthesize" }, ladder_mid).?);
 
     // But an exact cell that HAS evidence decides for itself, including
     // deciding to keep the ladder's answer — it must not fall through to a
     // shape-level pool that would have overridden it. Here `synthesize` says
     // terra is excellent and luna is poor, so terra survives.
     const keeps =
-        \\{"kind":"score","prompt_sha":"aa","score":0.2,"shape":"research","role":"sweep","tier":"mid","model":"gpt-5.6-terra"}
-        \\{"kind":"score","prompt_sha":"aa","score":0.2,"shape":"research","role":"sweep","tier":"mid","model":"gpt-5.6-terra"}
-        \\{"kind":"score","prompt_sha":"bb","score":0.95,"shape":"research","role":"sweep","tier":"small","model":"gpt-5.6-luna"}
-        \\{"kind":"score","prompt_sha":"bb","score":0.95,"shape":"research","role":"sweep","tier":"small","model":"gpt-5.6-luna"}
-        \\{"kind":"score","prompt_sha":"cc","score":1,"shape":"research","role":"synthesize","tier":"mid","model":"gpt-5.6-terra"}
-        \\{"kind":"score","prompt_sha":"cc","score":1,"shape":"research","role":"synthesize","tier":"mid","model":"gpt-5.6-terra"}
-        \\{"kind":"score","prompt_sha":"dd","score":0,"shape":"research","role":"synthesize","tier":"small","model":"gpt-5.6-luna"}
-        \\{"kind":"score","prompt_sha":"dd","score":0,"shape":"research","role":"synthesize","tier":"small","model":"gpt-5.6-luna"}
+        \\{"kind":"score","prompt_sha":"aa","score":0.2,"shape":"research","role":"sweep","tier":"mid","model":"gpt-6-sol"}
+        \\{"kind":"score","prompt_sha":"aa","score":0.2,"shape":"research","role":"sweep","tier":"mid","model":"gpt-6-sol"}
+        \\{"kind":"score","prompt_sha":"bb","score":0.95,"shape":"research","role":"sweep","tier":"small","model":"gpt-6-luna"}
+        \\{"kind":"score","prompt_sha":"bb","score":0.95,"shape":"research","role":"sweep","tier":"small","model":"gpt-6-luna"}
+        \\{"kind":"score","prompt_sha":"cc","score":1,"shape":"research","role":"synthesize","tier":"mid","model":"gpt-6-sol"}
+        \\{"kind":"score","prompt_sha":"cc","score":1,"shape":"research","role":"synthesize","tier":"mid","model":"gpt-6-sol"}
+        \\{"kind":"score","prompt_sha":"dd","score":0,"shape":"research","role":"synthesize","tier":"small","model":"gpt-6-luna"}
+        \\{"kind":"score","prompt_sha":"dd","score":0,"shape":"research","role":"synthesize","tier":"small","model":"gpt-6-luna"}
     ;
     const split = policy.foldCells(a, keeps);
     try std.testing.expect(policy.learnedRungIn(split, &demo_sheet, "codex", .{ .shape = .research, .role = "synthesize" }, ladder_mid) == null);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", policy.learnedRungIn(split, &demo_sheet, "codex", .{ .shape = .research, .role = "sweep" }, ladder_mid).?);
+    try std.testing.expectEqualStrings("gpt-6-luna", policy.learnedRungIn(split, &demo_sheet, "codex", .{ .shape = .research, .role = "sweep" }, ladder_mid).?);
 
     // A single lucky run is SPARSE (min_model_obs) and moves nothing.
     const one_run =
-        \\{"kind":"score","prompt_sha":"aa","score":0.1,"shape":"research","role":"sweep","tier":"mid","model":"gpt-5.6-terra"}
-        \\{"kind":"score","prompt_sha":"bb","score":1,"shape":"research","role":"sweep","tier":"small","model":"gpt-5.6-luna"}
+        \\{"kind":"score","prompt_sha":"aa","score":0.1,"shape":"research","role":"sweep","tier":"mid","model":"gpt-6-sol"}
+        \\{"kind":"score","prompt_sha":"bb","score":1,"shape":"research","role":"sweep","tier":"small","model":"gpt-6-luna"}
     ;
     try std.testing.expect(policy.learnedRungIn(policy.foldCells(a, one_run), &demo_sheet, "codex", .{ .shape = .research, .role = "sweep" }, ladder_mid) == null);
 }
@@ -232,14 +232,14 @@ test "#372: the learned policy can only ever trade DOWN on cost, never up" {
     // is also the CHEAP one, so asking about the `small` rung can never be
     // answered with the pricier terra however well terra scored.
     const archive =
-        \\{"kind":"score","prompt_sha":"aa","score":1,"shape":"research","role":"sweep","tier":"mid","model":"gpt-5.6-terra"}
-        \\{"kind":"score","prompt_sha":"aa","score":1,"shape":"research","role":"sweep","tier":"mid","model":"gpt-5.6-terra"}
-        \\{"kind":"score","prompt_sha":"bb","score":0,"shape":"research","role":"sweep","tier":"small","model":"gpt-5.6-luna"}
-        \\{"kind":"score","prompt_sha":"bb","score":0,"shape":"research","role":"sweep","tier":"small","model":"gpt-5.6-luna"}
+        \\{"kind":"score","prompt_sha":"aa","score":1,"shape":"research","role":"sweep","tier":"mid","model":"gpt-6-sol"}
+        \\{"kind":"score","prompt_sha":"aa","score":1,"shape":"research","role":"sweep","tier":"mid","model":"gpt-6-sol"}
+        \\{"kind":"score","prompt_sha":"bb","score":0,"shape":"research","role":"sweep","tier":"small","model":"gpt-6-luna"}
+        \\{"kind":"score","prompt_sha":"bb","score":0,"shape":"research","role":"sweep","tier":"small","model":"gpt-6-luna"}
     ;
     const cells = policy.foldCells(arena_state.allocator(), archive);
     const small = tier_ladder.forProvider("codex").?.small.?;
-    try std.testing.expectEqualStrings("gpt-5.6-luna", small);
+    try std.testing.expectEqualStrings("gpt-6-luna", small);
     try std.testing.expect(policy.learnedRungIn(cells, &demo_sheet, "codex", .{ .shape = .research, .role = "sweep" }, small) == null);
 }
 
@@ -260,34 +260,34 @@ test "#372: a learned cell reroutes a TIER pin, and an explicit model pin still 
     bench.g_entries = &demo_sheet;
     policy.g_cells = policy.foldCells(arena_state.allocator(), demo_archive);
 
-    const root = codex("gpt-5.6-sol");
+    const root = codex("gpt-6-astra");
     const cell: Cell = .{ .shape = .research, .role = "sweep" };
 
     // A `tier: mid` ask in this cell now resolves to the model the cell
     // measured as strictly better value, and says so.
     const learned = pin_mod.resolveIn(root, .{ .tier = .mid }, cell);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", learned.provider.?.model);
+    try std.testing.expectEqualStrings("gpt-6-luna", learned.provider.?.model);
     try std.testing.expectEqual(pin_mod.Source.learned_policy, learned.source);
     try std.testing.expectEqualStrings("codex", learned.provider.?.id); // provider-local, always
 
     // The SAME ask in an unmeasured cell keeps today's ladder answer.
     const unmeasured = pin_mod.resolveIn(root, .{ .tier = .mid }, .{ .shape = .feature, .role = "implement" });
-    try std.testing.expectEqualStrings("gpt-5.6-terra", unmeasured.provider.?.model);
+    try std.testing.expectEqualStrings("gpt-6-sol", unmeasured.provider.?.model);
     try std.testing.expectEqual(pin_mod.Source.ladder, unmeasured.source);
 
     // AN EXPLICIT USER PIN OUTRANKS EVERYTHING LEARNED. Same cell, same
     // session, but the call named a model: the learned layer is never even
     // consulted, and the trace attributes the choice to the human.
-    const explicit = pin_mod.resolveIn(root, .{ .model = "gpt-5.6-terra" }, cell);
-    try std.testing.expectEqualStrings("gpt-5.6-terra", explicit.provider.?.model);
+    const explicit = pin_mod.resolveIn(root, .{ .model = "gpt-6-sol" }, cell);
+    try std.testing.expectEqualStrings("gpt-6-sol", explicit.provider.?.model);
     try std.testing.expectEqual(pin_mod.Source.explicit_pin, explicit.source);
     // A persona's exact `model:` frontmatter pin likewise wins, and is
     // attributed to the persona rather than to the user's call.
-    const persona = pin_mod.resolveIn(root, .{ .model = "gpt-5.6-terra", .from_persona = true }, cell);
-    try std.testing.expectEqualStrings("gpt-5.6-terra", persona.provider.?.model);
+    const persona = pin_mod.resolveIn(root, .{ .model = "gpt-6-sol", .from_persona = true }, cell);
+    try std.testing.expectEqualStrings("gpt-6-sol", persona.provider.?.model);
     try std.testing.expectEqual(pin_mod.Source.persona, persona.source);
     // And the cell-less entry point (every pre-#372 caller) is unchanged.
-    try std.testing.expectEqualStrings("gpt-5.6-terra", pin_mod.resolve(root, .{ .tier = .mid }).provider.?.model);
+    try std.testing.expectEqualStrings("gpt-6-sol", pin_mod.resolve(root, .{ .tier = .mid }).provider.?.model);
 }
 
 test "#372 round trip: what captureVariant writes is exactly what foldCells learns from" {
@@ -305,8 +305,8 @@ test "#372 round trip: what captureVariant writes is exactly what foldCells lear
 
     // Three judged `sweep` variants on the mid rung, three on the small one —
     // the capture the scoring path makes, with no hand-written JSON anywhere.
-    for (0..3) |_| route_trace.captureVariant(codex("gpt-5.6-terra"), .research, "sweep the repo", "sweep", "aa", 0.2);
-    for (0..3) |_| route_trace.captureVariant(codex("gpt-5.6-luna"), .research, "sweep the repo", "sweep", "bb", 0.95);
+    for (0..3) |_| route_trace.captureVariant(codex("gpt-6-sol"), .research, "sweep the repo", "sweep", "aa", 0.2);
+    for (0..3) |_| route_trace.captureVariant(codex("gpt-6-luna"), .research, "sweep the repo", "sweep", "bb", 0.95);
 
     const cells = policy.foldCells(a, out.writer.buffered());
     try std.testing.expectEqual(@as(usize, 2), cells.len);
@@ -315,12 +315,12 @@ test "#372 round trip: what captureVariant writes is exactly what foldCells lear
         try std.testing.expectEqualStrings("research", c.shape);
         try std.testing.expectEqualStrings("sweep", c.role);
         try std.testing.expectEqual(@as(u32, 3), c.n);
-        try std.testing.expectEqualStrings(if (std.mem.eql(u8, c.model, "gpt-5.6-terra")) "mid" else "small", c.tier);
+        try std.testing.expectEqualStrings(if (std.mem.eql(u8, c.model, "gpt-6-sol")) "mid" else "small", c.tier);
     }
     // ...and the policy reaches the same verdict as the hand-written archive.
     try std.testing.expectEqualStrings(
-        "gpt-5.6-luna",
-        policy.learnedRungIn(cells, &demo_sheet, "codex", .{ .shape = .research, .role = "sweep" }, "gpt-5.6-terra").?,
+        "gpt-6-luna",
+        policy.learnedRungIn(cells, &demo_sheet, "codex", .{ .shape = .research, .role = "sweep" }, "gpt-6-sol").?,
     );
 }
 
@@ -328,8 +328,9 @@ test "#372/#376 firewall: a phase task takes the PHASE's seat, and still no per-
     // The trace makes routing VISIBLE; #376 lets the policy make it VARY —
     // but only per PHASE, never per task inside one. workflowTask and
     // workflowRetryTask are the only doors a phase task goes through, and
-    // both hand runSub the `seat` their caller resolved once for the whole
-    // phase (route_phase.forPhase), plus a null EFFORT: no axis of a phase
+    // both hand runWorkflow the `seat` their caller resolved once for the whole
+    // phase (route_phase.forPhase). Both wrapper paths pass null EFFORT:
+    // no axis of a phase
     // task's configuration is readable off the task itself, so scoreVariants
     // keeps ranking prompt genomes that ran on one identical configuration.
     // Pinned as source text because the property is about the call site, not
@@ -337,10 +338,15 @@ test "#372/#376 firewall: a phase task takes the PHASE's seat, and still no per-
     const src = @embedFile("subagent.zig");
     const wf = std.mem.indexOf(u8, src, "pub fn workflowTask(").?;
     const wf_end = std.mem.indexOf(u8, src[wf..], "\n}").?;
-    try std.testing.expect(std.mem.indexOf(u8, src[wf .. wf + wf_end], "isolation_fallback, seat, null)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src[wf .. wf + wf_end], "runWorkflow(ctx, \"workflow_task\", label, prompt, sys_override, niche, isolation, isolation_fallback, seat)") != null);
     const rt = std.mem.indexOf(u8, src, "pub fn workflowRetryTask(").?;
     const rt_end = std.mem.indexOf(u8, src[rt..], "\n}").?;
-    try std.testing.expect(std.mem.indexOf(u8, src[rt .. rt + rt_end], "isolation_fallback, seat, null)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src[rt .. rt + rt_end], "runWorkflow(ctx, \"workflow_retry\", label, prompt, sys_override, niche, isolation, isolation_fallback, seat)") != null);
+    const wrapper = std.mem.indexOf(u8, src, "pub fn runWorkflow(").?;
+    const wrapper_end = std.mem.indexOf(u8, src[wrapper..], "\n}").?;
+    const wrapper_src = src[wrapper .. wrapper + wrapper_end];
+    try std.testing.expect(std.mem.indexOf(u8, wrapper_src, "foregroundKind(ctx, kind, label, prompt, system, niche, isolation, fallback, seat, null)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrapper_src, "runSub(ctx, kind, label, prompt, system, niche, isolation, fallback, seat, null)") != null);
     // `seat` is a parameter of both, never derived from the task's own fields.
     try std.testing.expect(std.mem.indexOf(u8, src[wf .. wf + wf_end], "isolation_fallback: bool, seat: ?Provider)") != null);
     try std.testing.expect(std.mem.indexOf(u8, src[rt .. rt + rt_end], "isolation_fallback: bool, seat: ?Provider)") != null);

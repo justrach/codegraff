@@ -308,7 +308,7 @@ pub const PostOptions = struct {
 /// Cancellation unwinds the request, whose errdefer poisons the connection so
 /// a timed-out socket is never pooled.
 pub fn post(http: *HttpTransport, body: []const u8, meta: RequestMeta, expected_id: ?i64) !?[]u8 {
-    return postWith(http, body, meta, expected_id, .{});
+    return postWith(http, body, meta, expected_id, .{ .timeout_s = @import("mcp_server.zig").transportTimeoutSeconds(http.client.allocator, meta.method, meta.name, body) });
 }
 
 pub fn postWith(http: *HttpTransport, body: []const u8, meta: RequestMeta, expected_id: ?i64, opts: PostOptions) !?[]u8 {
@@ -351,16 +351,6 @@ pub fn postWith(http: *HttpTransport, body: []const u8, meta: RequestMeta, expec
             return error.McpCancelled;
         },
     }
-}
-
-/// Tell a legacy session to stop request `id`. Best effort: bounded, and the
-/// turn's cancel flag (still set) must not abort this send.
-pub fn notifyCancelled(http: *HttpTransport, protocol_version: []const u8, id: i64) void {
-    var buf: [256]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
-    const line = mcp_notify.cancelledLine(fba.allocator(), id) catch return;
-    const reply = postWith(http, line, .{ .protocol_version = protocol_version, .method = "notifications/cancelled", .modern = false }, null, .{ .watch_cancel = false, .timeout_s = 3 }) catch return;
-    if (reply) |bytes| http.client.allocator.free(bytes);
 }
 
 /// A probe reply: the raw status and (if any) body, on ANY status — unlike

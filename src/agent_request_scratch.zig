@@ -23,20 +23,17 @@ pub fn reset(scratch: *std.heap.ArenaAllocator) void {
     }
 }
 
+/// A terminal request failure is a completed attempt, not an unanswered host
+/// replay. Keep a truthful boundary in history so an identical retry works,
+/// including after saving and loading the conversation.
+pub fn preserveFailedRequest(self: *Agent) !void {
+    try self.messages.append(try @import("messages.zig").textMessage(self.arena, "assistant", "[The model request failed before a complete response was received. Earlier work remains in this conversation. Retry when the connection or service is available.]"));
+}
+
 /// Detached recaps are cosmetic: keep recovered transport details in the trace,
 /// but do not surface them as raw worker chatter in the normal REPL.
 pub fn showRecoveredTransportRetry(kind: run_budget_mod.CallKind) bool {
     return kind != .recap;
-}
-
-/// Preserve the existing notice in JSON/ACP, where say() is deliberately silent.
-pub fn announceNetworkRetry(self: *Agent, err: anyerror, delay_ms: u64, attempt: usize, limit: usize) !void {
-    try self.say("[network error: {t} — retrying in {d}ms ({d}/{d})]\n", .{ err, delay_ms, attempt, limit });
-    if (@import("main.zig").json_mode and !self.sub) {
-        var buf: [192]u8 = undefined;
-        const text = try std.fmt.bufPrint(&buf, "[network error: {t} — retrying in {d}ms ({d}/{d})]", .{ err, delay_ms, attempt, limit });
-        self.emit(.{ .type = "text", .text = text });
-    }
 }
 
 /// A response body of only SSE comment lines (`: OPENROUTER PROCESSING` …)

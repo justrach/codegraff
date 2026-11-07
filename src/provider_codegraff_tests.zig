@@ -25,7 +25,7 @@ test "Codegraff selects the gateway wire and endpoint per model" {
 test "Codegraff-only credentials route native aliases without live discovery" {
     var keys: provider.Keys = .{ .values = @splat(null) };
     try std.testing.expect(keys.set("codegraff", "key", .environment));
-    for ([_][]const u8{ "gpt-5.6", "grok-4.6" }) |model| {
+    for ([_][]const u8{ "gpt-6-sol", "grok-4.6" }) |model| {
         const got = try keys.providerFor(model);
         try std.testing.expectEqualStrings("codegraff", got.id);
         try std.testing.expectEqual(provider.Provider.Kind.responses, got.kind);
@@ -256,5 +256,5 @@ test "GPT6 Sol fallback routes preserve explicit provider and existing defaults"
         try std.testing.expectEqualStrings("gpt-6-sol", selected.model);
         try std.testing.expectEqual(provider.Provider.Kind.responses, selected.kind);
     }
-    try std.testing.expect(!pricing.providerModelInTable("codegraff", "gpt-6-sol"));
+    try std.testing.expect(pricing.providerModelInTable("codegraff", "gpt-6-sol"));
 }

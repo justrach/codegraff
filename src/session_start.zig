@@ -450,6 +450,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
     // Grok/Codex MCP trees. applyEnvKnobs sets it too, but only after the
     // registry has already connected their servers.
     @import("plugins.zig").applyEnv(environ_map);
+    @import("mcp_lazy.zig").remember(environ_map); // also for /mcp add|trust after a declined consent
     const global_path = mcp_config.globalPath(arena, home, environ_map);
     const sink = engine_sink.writerSink(out);
     // First interactive session copies Claude/Cursor MCP into ~/.codegraff once.
@@ -522,7 +523,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
         sink.emit(io, dimNotice(mcp_line));
     }
     const mcp_t0 = Io.Timestamp.now(io, .awake);
-    var registry: mcp.Registry = if (connect_mcp and !skip_imported) ((mcp.Registry.init(gpa, io, mcp_config_path, global_path, home, json_mode or flags.oneshot_prompt != null or environ_map.get("GRAFF_REPL_DEBUG") != null, environ_map, defer_join) catch |err| inner: {
+    var registry: mcp.Registry = if (connect_mcp and !skip_imported) ((mcp.Registry.init(gpa, io, mcp_config_path, global_path, home, environ_map.get("GRAFF_REPL_DEBUG") != null, environ_map, defer_join) catch |err| inner: {
         sink.emit(io, .{ .session_notice = .{ .text = try std.fmt.allocPrint(arena, "[mcp] init failed: {t} — continuing without MCP", .{err}) } });
         if (telemetry.g_telem) |t| t.errorEvent("mcp", @errorName(err));
         break :inner null;

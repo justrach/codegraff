@@ -54,6 +54,7 @@ pub fn countMcpServers(merged: mcp_config.Merged) usize {
     var n: usize = 0;
     var it = merged.servers.iterator();
     while (it.next()) |entry| {
+        if (merged.shipped_nanocua and std.mem.eql(u8, entry.key_ptr.*, @import("nanocua_default.zig").server_name)) continue;
         if (!trustedMcpEntry(entry.key_ptr.*, entry.value_ptr.*)) n += 1;
     }
     return n;
@@ -208,6 +209,7 @@ fn mcpCliUsage(w: *Io.Writer) !void {
         \\  graff mcp install [--directory PATH] [--port N]   install HTTP service and client entries
         \\  graff mcp serve [--http] [--port N] [--model NAME] [--yolo]   expose run_task over stdio or HTTP
         \\  graff mcp                      list servers in .mcp.json + ~/.codegraff/mcp.json
+        \\  graff mcp list --json          the same as JSON, with each server's source (no secret values)
         \\  graff mcp import               copy setup and import this project's Claude history
         \\  graff mcp import-session <id>  import only one Claude conversation into graff
         \\  graff mcp add <url | @scope/package | uvx:package | '{json}' | ->   infer, save, then connect to check it
@@ -215,6 +217,9 @@ fn mcpCliUsage(w: *Io.Writer) !void {
         \\  graff mcp add … --everywhere   save to ~/.codegraff/mcp.json (every project) instead of ./.mcp.json
         \\  graff mcp add <name> --url <https://...> [--header KEY=VALUE ...]
         \\  graff mcp login <name>        OAuth login for a remote server
+        \\  graff mcp status [--json]     each server's state and tools, without starting any
+        \\  graff mcp reconnect <name>|--all [--json]   start fresh and refresh the cached tools
+        \\  graff mcp enable|disable <name>   switch a server on or off everywhere
         \\  graff mcp add <name> [--env KEY=VALUE ...] -- <command> [args...]
         \\  graff mcp add <name> <command> [args...]
         \\
@@ -277,6 +282,7 @@ fn addInferred(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, envir
 }
 
 pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, environ_map: anytype, args: []const []const u8) !void {
+    @import("mcp_lazy.zig").remember(environ_map); // add/reconnect start servers too
     if (args.len > 0 and std.mem.eql(u8, args[0], "install")) {
         // The installer sets up a launchd/systemd service; spawning it on
         // Windows failed with a bare FileNotFound.
@@ -289,7 +295,8 @@ pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, en
         }
         const exe = try std.process.executablePathAlloc(io, arena);
         var argv: std.ArrayList([]const u8) = .empty;
-        try argv.appendSlice(arena, &.{ "python3", "-c", @embedFile("mcp_installer"), "--binary", exe });
+        const installer = try @import("update_archive.zig").gunzip(arena, @embedFile("mcp_installer.gz"));
+        try argv.appendSlice(arena, &.{ "python3", "-c", installer, "--binary", exe });
         try argv.appendSlice(arena, args[1..]);
         const result = try @import("process_runner.zig").runCappedWithOptions(arena, io, argv.items, 16384, 4096, 30000, .{ .environ_map = environ_map });
         var buffer: [4096]u8 = undefined;
@@ -325,8 +332,18 @@ pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, en
         return;
     }
 
+    if (args.len > 0) if (@import("mcp_status_cli.zig").verb(args[0])) {
+        const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path, home, mcp_config.isEnvOverride(environ_map));
+        return @import("mcp_status_cli.zig").run(io, gpa, arena, home, merged, args, &out.interface, environ_map);
+    };
+
     if (args.len == 0 or std.mem.eql(u8, args[0], "list")) {
         const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path, home, mcp_config.isEnvOverride(environ_map));
+        if (args.len > 1 and std.mem.eql(u8, args[1], "--json")) {
+            try @import("mcp_list_json.zig").write(arena, merged, mcp_config_path, global_path, &out.interface);
+            try out.interface.flush();
+            return;
+        }
         try mcp_config.reportInvalid(merged, &out.interface, mcp_config_path, global_path, "", "");
         if (merged.servers.count() == 0) {
             try out.interface.writeAll("no MCP servers configured. Add one with `graff mcp add <name> -- <command> [args...]`,\nor list servers for every project in ~/" ++ mcp_config.global_rel_path ++ ".\n");
@@ -502,6 +519,13 @@ pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, en
     if (verify_after) try checkSaved(io, gpa, arena, home, name, &out.interface);
     try out.interface.writeAll("  a running session connects it before its next request; otherwise `/mcp trust` if startup is waiting for consent.\n");
     try out.interface.flush();
+}
+test "graff mcp install: the bundled installer inflates to the whole script" {
+    const script = try @import("update_archive.zig").gunzip(std.testing.allocator, @embedFile("mcp_installer.gz"));
+    defer std.testing.allocator.free(script);
+    // No line ending in the needle: a Windows checkout may have CRLF.
+    try std.testing.expect(std.mem.startsWith(u8, script, "#!/usr/bin/env python3"));
+    try std.testing.expect(std.mem.indexOf(u8, script, "'--binary', required=True") != null);
 }
 test "trustedMcpEntry: only the exact companion shape skips the consent gate" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);

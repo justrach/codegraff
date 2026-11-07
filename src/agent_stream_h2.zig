@@ -17,8 +17,8 @@ const engine_sink = @import("engine_sink.zig");
 const http_zig = @import("http_zig");
 const WatchdogFired = http.WatchdogFired;
 const watchdogError = http.watchdogError;
-const deadlineStallTask = http.deadlineStallTask;
-const headStallTask = http.headStallTask;
+const http_send = @import("http_send.zig");
+const stream_progress = @import("stream_read_progress.zig");
 
 const ssePayload = Agent.ssePayload;
 const escPressed = Agent.escPressed;
@@ -86,19 +86,22 @@ pub fn postStream(self: *Agent, body: []const u8, poll_stdin: bool) !?[]u8 {
     var keep = false;
     defer head.deinit(keep);
 
-    // Dial, send and time-to-first-HEADERS race the head-stall watchdog, as
-    // the HTTP/1.1 send + receiveHead do (issue #54): a half-open socket or a
-    // server that accepts the stream and goes silent must not hang the turn.
-    switch (try raceHead(self.io, &head, poll_stdin)) {
+    // Dial, send and time-to-first-HEADERS race the staged watchdog, as on
+    // HTTP/1.1 (#54, #1785): a half-open socket or a server that accepts the
+    // stream and goes silent must not hang the turn. http-zig reports no DATA
+    // progress, so the upload gets only its size-scaled total.
+    switch (try raceHead(self.io, &head, poll_stdin, http_send.Budget.forRequest(body.len, provider.url, provider.model).blind())) {
         .ok => {},
         .fallback => return null,
     }
+    if (@import("agent_request_quota.zig").httpError(head.status)) |err| return err;
     if (head.status == 429) return error.RateLimited;
     if (head.status >= 500) return error.ServerError;
     if (head.status == 404 and head.openai) return error.OpenAiFlaky404;
     // Esc pressed while connecting / waiting for headers? Stop before the body.
     if (poll_stdin and escPressed(true)) return error.Interrupted;
     const lines = &head.lines.?;
+    var reader: stream_progress.H2Lines = .{ .source = lines };
 
     // Any other status streams its body like the HTTP/1.1 path does: a 4xx
     // error envelope is what request()'s parser classifies.
@@ -110,10 +113,14 @@ pub fn postStream(self: *Agent, body: []const u8, poll_stdin: bool) !?[]u8 {
     var loop_guard: @import("agent_model_loop.zig").Stream = .{};
     var got_body = false;
     var saw_done = false;
+    var prose_open = false;
+    var phase: @import("agent_ws_signal.zig").Phase = .{}; // ADR 0241/0248, same as HTTP/1.1
+    const policy = http_stall.streamPolicy(provider.model, provider.url, http.stream_stall_ms);
 
     while (true) {
-        const stall_budget = http_stall.interFrameBudgetMs(http.stream_stall_ms, got_body, self.partial_text.items.len != 0, self.stall.widen);
-        const got = raceLine(self.io, lines, &line, gpa, poll_stdin, stall_budget) orelse {
+        // Buffered generation is over once finish_reason arrives; usage trailers keep the normal deadline.
+        const stall_budget = if (saw_done) http_stall.interFrameBudgetMs(http.stream_stall_ms, got_body, prose_open, self.stall.widen) else policy.interFrameBudgetMs(got_body, prose_open, self.stall.widen);
+        const got = raceLine(self.io, &reader, &line, gpa, poll_stdin, stall_budget) orelse {
             // #56 Fix-B: no spare concurrency for the read. Fail safe.
             if (saw_done) break;
             self.stall.tripped_ms = stall_budget;
@@ -123,7 +130,7 @@ pub fn postStream(self: *Agent, body: []const u8, poll_stdin: bool) !?[]u8 {
         switch (got) {
             .line => |r| {
                 const more = r catch |e| {
-                    if (e == error.Canceled) return e;
+                    if (e == error.Canceled or e == error.StreamTooLong or e == error.StreamEventDeadline) return e;
                     if (saw_done) break;
                     if (got_body) {
                         sink.emit(self.io, .{ .stream_aborted = .dropped });
@@ -148,7 +155,10 @@ pub fn postStream(self: *Agent, body: []const u8, poll_stdin: bool) !?[]u8 {
         try full.writer.writeAll(line.items);
         try full.writer.writeByte('\n');
         got_body = true;
+        const prose_len = self.partial_text.items.len;
         self.printDelta(line.items);
+        phase.feed(gpa, line.items);
+        if (self.partial_text.items.len > prose_len) prose_open = !phase.commentary else if (@import("agent_ws_signal.zig").closesItem(gpa, line.items)) prose_open = false;
         if (main_mod.g_thinking_fold_request) {
             main_mod.g_thinking_fold_request = false;
             sink.emit(self.io, .thinking_fold_toggle);
@@ -156,7 +166,7 @@ pub fn postStream(self: *Agent, body: []const u8, poll_stdin: bool) !?[]u8 {
         if (self.provider.kind == .openai and openaiComplete(line.items)) saw_done = true;
         if (isStreamEnd(self.scratchAlloc(), self.provider.kind, line.items)) {
             saw_done = true;
-            keep = settleAfterEnd(self.io, lines, gpa);
+            keep = settleAfterEnd(self.io, &reader, gpa);
             break;
         }
         if ((poll_stdin and escPressed(true)) or (self.sub and Agent.esc_cancel.load(.acquire))) {
@@ -200,14 +210,15 @@ const Head = struct {
 
 const HeadResult = enum { ok, fallback };
 
-fn raceHead(io: Io, head: *Head, poll_stdin: bool) !HeadResult {
+fn raceHead(io: Io, head: *Head, poll_stdin: bool, budget: http_send.Budget) !HeadResult {
+    var watch: http_send.Watch = .init(io, budget);
     const HeadDone = union(enum) { done: anyerror!void, stall: WatchdogFired };
     var hd_buf: [2]HeadDone = undefined;
     var hsel: Io.Select(HeadDone) = .init(io, &hd_buf);
     // #56 Fix-B: no slot for the task means no watchdog either. Nothing has
     // been sent, so fail retryable instead of blocking the turn.
-    hsel.concurrent(.done, headTask, .{head}) catch return error.HungRequest;
-    hsel.concurrent(.stall, headStallTask, .{ io, poll_stdin }) catch {};
+    hsel.concurrent(.done, headTask, .{ head, &watch }) catch return error.HungRequest;
+    hsel.concurrent(.stall, http_send.Watch.watch, .{ &watch, poll_stdin }) catch {};
     const first = hsel.await() catch |e| {
         hsel.cancelDiscard();
         return e;
@@ -258,14 +269,16 @@ test "HTTP/1.1 fallback only when the request provably never reached the server"
     try std.testing.expect(!mayResendOnH1(.send, error.Canceled));
 }
 
-fn headTask(head: *Head) anyerror!void {
+fn headTask(head: *Head, watch: *http_send.Watch) anyerror!void {
     head.phase = .dial;
     head.lease = try http2_pool.acquire(head.gpa, head.io, head.origin.host, head.origin.port);
     const sess = head.lease.?.session;
     if (sess.h1_only) return error.H1NoStream;
     head.phase = .send;
+    watch.enter(.upload);
     head.lines = try sess.startLines(head.req);
     head.phase = .wait;
+    watch.enter(.head);
     const lines = &head.lines.?;
     head.status = try lines.waitStatus();
     // Error bodies are read here, still under the head watchdog: request()
@@ -290,42 +303,36 @@ fn captureErrorBody(gpa: std.mem.Allocator, lines: *http_zig.LineStream) void {
     }
 }
 
-const ReadDone = union(enum) { line: anyerror!bool, stall: WatchdogFired };
+pub const ReadDone = union(enum) { line: anyerror!bool, stall: WatchdogFired };
 
 /// One readLine raced against the between-lines watchdog. Null when there is
 /// no concurrency slot for the read at all.
-fn raceLine(io: Io, lines: *http_zig.LineStream, line: *std.ArrayList(u8), gpa: std.mem.Allocator, poll_stdin: bool, budget_ms: u64) ?ReadDone {
+pub fn raceLine(io: Io, reader: *stream_progress.H2Lines, line: *std.ArrayList(u8), gpa: std.mem.Allocator, poll_stdin: bool, budget_ms: u64) ?ReadDone {
     var rd_buf: [2]ReadDone = undefined;
     var rsel: Io.Select(ReadDone) = .init(io, &rd_buf);
-    rsel.concurrent(.line, lineTask, .{ lines, line, gpa }) catch return null;
-    rsel.concurrent(.stall, deadlineStallTask, .{ io, poll_stdin, budget_ms }) catch {};
+    var progress = stream_progress.Progress.init(io, .{ .idle_ms = budget_ms });
+    rsel.concurrent(.line, stream_progress.H2Lines.readLine, .{ reader, line, gpa, &progress }) catch return null;
+    rsel.concurrent(.stall, stream_progress.Progress.watch, .{ &progress, poll_stdin }) catch {};
     const first = rsel.await() catch |e| {
         rsel.cancelDiscard();
         return .{ .line = e };
     };
     rsel.cancelDiscard();
+    if (first == .stall and first.stall == .deadline and progress.assembly_expired)
+        return .{ .line = error.StreamEventDeadline };
     return first;
 }
 
 /// The terminal event landed. Reuse the connection only if END_STREAM
 /// follows promptly; a server that holds the stream open costs one dial.
-fn settleAfterEnd(io: Io, lines: *http_zig.LineStream, gpa: std.mem.Allocator) bool {
+fn settleAfterEnd(io: Io, reader: *stream_progress.H2Lines, gpa: std.mem.Allocator) bool {
     var junk: std.ArrayList(u8) = .empty;
     defer junk.deinit(gpa);
     while (true) {
-        if (lines.ended) {
-            while (lines.readLine(&junk) catch return false) {}
-            return true;
-        }
-        const got = raceLine(io, lines, &junk, gpa, false, trailing_end_ms) orelse return false;
+        const got = raceLine(io, reader, &junk, gpa, false, trailing_end_ms) orelse return false;
         switch (got) {
-            .line => |r| if (!(r catch return false)) return lines.ended,
+            .line => |r| if (!(r catch return false)) return reader.source.ended,
             .stall => return false,
         }
     }
-}
-
-fn lineTask(ls: *http_zig.LineStream, dest: *std.ArrayList(u8), gpa: std.mem.Allocator) !bool {
-    _ = gpa;
-    return ls.readLine(dest);
 }

@@ -112,6 +112,12 @@ pub const CappedRunOptions = struct {
     /// Clipboard export is not a user turn. Esc would kill osascript and
     /// Ctrl-V would report a cancelled clipboard read (#1146).
     ignore_cancel: bool = false,
+    /// Passed to the child as its stdin. A `--json` child reads one request
+    /// line, runs the turn and exits on EOF, so this drives a machine-readable
+    /// one-shot (the summarizer) without a pipe the parent would have to feed
+    /// concurrently — a write larger than the pipe buffer would deadlock
+    /// against a child that has not started reading yet.
+    stdin_file: ?Io.File = null,
     /// #1271: over the cap, keep the first third and the LAST two thirds of
     /// each stream around a `[... N bytes truncated ...]` gap instead of only
     /// the first `cap` bytes. The tail lives in a fixed ring (never more than
@@ -251,7 +257,7 @@ pub fn runCappedWithOptions(gpa: Allocator, io: Io, argv: []const []const u8, st
         .argv = argv,
         .cwd = options.cwd,
         .environ_map = options.environ_map,
-        .stdin = .ignore,
+        .stdin = if (options.stdin_file) |f| .{ .file = f } else .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
         .pgid = if (posix_process_groups and options.kill_process_tree) 0 else null,

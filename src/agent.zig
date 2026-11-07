@@ -34,9 +34,8 @@ pub const TodoItem = struct {
     epoch: u64 = 0, // the goal epoch that authored this item (#318); 0 = no goal
     retired: bool = false, // a LATER user ask retired this finished item (#394): kept as the session's archive, invisible to every epoch-scoped query
     ask_fp: u64 = 0, // #1545: fingerprint of the user request this item was first written under; "cancelled" needs a newer one (0 = legacy/restored)
-
-    /// Completed or cancelled: no longer open work. A cancelled item is parked,
-    /// never verified (goal_verify.taskVerified still refuses it).
+    reason: []const u8 = "", // #1520: why a "cancelled" item was withdrawn or delegated; required, shown with it (todo_cancel.zig)
+    /// Completed or cancelled: no longer open work. A cancelled item is parked, never verified (goal_verify.taskVerified refuses it).
     pub fn closed(t: TodoItem) bool {
         return std.mem.eql(u8, t.status, "completed") or std.mem.eql(u8, t.status, "cancelled");
     }
@@ -96,6 +95,7 @@ pub const Agent = struct {
     codex_props_fp: u64 = 0, // request properties the server anchored on (model/effort/fast/tools/instructions)
     codex_ws_used_ms: i64 = 0, // .awake-clock ms of the WS's last successful use; gates the idle preemptive re-anchor (#codex-ws)
     codex_ws_opened_ms: i64 = 0, // first connect time; xAI/codex WS hard-cap is 25 minutes
+    ix_chain: @import("interactions_chain.zig").Chain = .{}, // Interactions previous_interaction_id chain (interactions_chain.zig)
     sub: bool,
     /// This agent is served NO tools at all — the `tools` field is omitted
     /// from the request rather than sent empty, which every provider accepts.
@@ -105,6 +105,7 @@ pub const Agent = struct {
     /// score re-reading files it had already been given. With no tools it must
     /// answer from the excerpt in one call, which is what it was designed for.
     text_only: bool = false,
+    synthesis: @import("workflow_synthesis.zig").State = .{},
     read_only: bool = false, // informational child: reads kept, writes refused (#1360, agent_tool_gate)
     label: []const u8,
     out: ?*Io.Writer,
@@ -113,7 +114,6 @@ pub const Agent = struct {
     /// process mode (engine_sink.forAgent); set to inject a custom frontend.
     sink: ?@import("engine_sink.zig").EngineSink = null,
     registry: ?*mcp.Registry = null,
-    mcp_context: @import("mcp_turn_context.zig").State = .{},
     permission: ?@import("engine_permission.zig").Handler = null,
     approvals: ?*approvals_mod.Approvals = null, // shared bash-approval state, set by main()
     tracer: ?*trace.Tracer = null, // shared JSONL event trace, set by main()
@@ -129,6 +129,7 @@ pub const Agent = struct {
     tools_used: trace.ToolSink = .{}, // external tool calls this agent made (per turn for the root)
     tool_calls_this_turn: u64 = 0,
     read_miss: @import("read_miss.zig").Tracker = .{}, // #1116: same-prefix / incrementing read_file misses
+    tool_repeat: @import("tool_repeat.zig").Tracker = .{}, // #1706: identical batches in a row end the turn
     model_calls_this_turn: u64 = 0,
     handle_note_shown: bool = false, // #541: the handle-protocol lesson rides this agent's FIRST handle, once
     seen_tool_keys: std.ArrayList([]const u8) = .empty, // root-only per-turn dedupe keys
@@ -182,13 +183,14 @@ pub const Agent = struct {
     sys_base: []const u8 = "", // #381: the last BASE handed to prompts.setSystemPrompts, WITHOUT the playbook block — what a mid-session constraint re-composes from (playbook_glue.refreshRoot)
     sys_strict: []const u8 = prompts.main_system_prompt_strict,
     sys_ultra: []const u8 = prompts.main_system_prompt ++ prompts.ultracode_system_note, // #326: comptime defaults only — prompts.setSystemPrompts() is the sole production writer
-    sys_ultra_strict: []const u8 = prompts.main_system_prompt_strict ++ prompts.ultracode_system_note, // composes onto sys_strict, never replaces it
+    sys_ultra_strict: []const u8 = prompts.main_system_prompt_ultra_strict, // composes onto sys_strict, never replaces it
     tools_anthropic: []const u8 = schema.tools_anthropic_sub,
     tools_openai: []const u8 = schema.tools_openai_sub,
     tools_responses: []const u8 = schema.tools_responses_sub,
     tools_interactions: []const u8 = @import("schema_interactions.zig").tools_interactions_sub,
     worker_tools: []const u8 = "", // ADR 0227: a spawned child's catalog plus the MCP tools its root loaded (worker_mcp.inherit); empty = the static child catalog
     todos: std.ArrayList(TodoItem) = .empty,
+    pending_nudged_fp: ?u64 = null, // #1545: fingerprint of the open set the reconciliation guard last nudged; a repeat plain final on an unchanged checklist stops instead of re-reminding
     eval_cmd: ?[]const u8 = null, // --eval: shell command that scores the current output (eval-driven loop)
     eval_target: u8 = 90, // --until: stop when the score reaches this (0-100)
     eval_niche: []const u8 = "", // --niche: fleet niche this eval session optimizes; tags submitted scores into a promotable (niche × tier × suite) cell
@@ -208,6 +210,7 @@ pub const Agent = struct {
     /// Detail of the most recent API error — carried into the --json `error`
     /// event, which otherwise only knows "api error".
     last_api_error: ?[]const u8 = null,
+    last_api_reauth: ?@import("auth_recovery.zig").Recovery = null,
     /// Text streamed so far in the current request — on Esc-interrupt this is
     /// what survives into history (with an "[interrupted]" marker appended).
     partial_text: std.ArrayList(u8) = .empty,
@@ -222,7 +225,9 @@ pub const Agent = struct {
     compact_summary_failures: u8 = 0, // #379: consecutive complete-but-unusable (empty/truncated) summaries
     compact_pin_degraded: bool = false, // #581: pinned suffix over budget — skip+say once per unresolved turn
     compact_stall: @import("compact_cut.zig").Stall = .{}, // #706: same-boundary no-progress cuts
+    compact_backoff: @import("compact_backoff.zig").Backoff = .{}, // #1686: compactions that bought no room
     empty_completion_retries: u8 = 0, // degenerate empty completions re-asked this turn (agent_empty_completion.zig)
+    length_cutoffs: u8 = 0, // cut-off or runaway replies rewound this turn (agent_length_cutoff.zig)
     named_work_nudges: u8 = 0, // named-file / zero-tool nudge this turn (named_work.zig)
     named_work_task: []const u8 = "", // this turn's user text; arena-owned, never a child pointer
     named_work_settled: []const u8 = "", // mention already nudged or tooled
@@ -521,4 +526,72 @@ test {
     _ = @import("agent_prompt.zig");
     _ = @import("effort_route.zig");
     try agent_tests.lazyRootTools(Agent);
+}
+
+fn pendingStateFixture(arena: Allocator) Agent {
+    return .{
+        .gpa = arena,
+        .arena = arena,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = .{ .id = "test", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "test", .context = 100_000 },
+        .messages = .init(arena),
+        .sub = false,
+        .label = "pending",
+        .out = null,
+        .tool_calls_this_turn = 3,
+        .model_calls_this_turn = 4,
+    };
+}
+
+test "#1545 a repeat plain final on an unchanged checklist stops without re-reminding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const PendingWork = @import("agent_empty_completion.zig").PendingWork;
+    var self = pendingStateFixture(arena.allocator());
+    try self.todos.append(self.arena, .{ .content = "credit grant", .status = "pending" });
+    try self.todos.append(self.arena, .{ .content = "roll out", .status = "in_progress" });
+    // Turn 1: the one retry.
+    var first: PendingWork = .{};
+    try std.testing.expect((try first.finish(&self, "stopping")) == null);
+    try std.testing.expectEqual(@as(usize, 1), self.messages.items.len);
+    // Turn 2 (fresh per-turn state, same checklist): footer, no new message.
+    var second: PendingWork = .{};
+    const final = (try second.finish(&self, "stopping")).?;
+    try std.testing.expect(std.mem.indexOf(u8, final, "Root execution has stopped with 2 open checklist items") != null);
+    try std.testing.expectEqual(@as(usize, 1), self.messages.items.len);
+    // Re-planned work re-arms: cancelling one item changes the open set.
+    self.todos.items[0].status = "cancelled";
+    var third: PendingWork = .{};
+    try std.testing.expect((try third.finish(&self, "stopping again")) == null);
+    try std.testing.expectEqual(@as(usize, 2), self.messages.items.len);
+}
+
+test "#1545 cancelled items are records: skipped by open/allDone, kept by replace, rendered [-]" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const PendingWork = @import("agent_empty_completion.zig").PendingWork;
+    var self = pendingStateFixture(arena.allocator());
+    try self.todos.append(self.arena, .{ .content = "live", .status = "pending" });
+    try self.todos.append(self.arena, .{ .content = "abandoned", .status = "cancelled" });
+    const goals = @import("goal_state.zig");
+    try std.testing.expectEqual(@as(usize, 1), goals.openCount(self.todos.items, 0));
+    try std.testing.expect(!goals.allDone(self.todos.items, 0));
+    self.todos.items[0].status = "completed";
+    try std.testing.expect(goals.allDone(self.todos.items, 0));
+    // A replace that omits the cancelled item keeps it (retention, like completed).
+    // "live" is mentioned so it clears here (applyTodoWrite re-appends it);
+    // the cancelled item survives and nothing counts as cancelled-open.
+    const incoming = [_][]const u8{"live"};
+    const cleared = @import("goal_todo.zig").clearEpochForReplaceEx(&self.todos, 0, &incoming);
+    try std.testing.expectEqual(@as(usize, 0), cleared.dropped_open);
+    try std.testing.expectEqual(@as(usize, 1), self.todos.items.len);
+    try std.testing.expectEqualStrings("abandoned", self.todos.items[0].content);
+    const rendered = goals.renderTodos(&self, 0);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "[-] abandoned") != null);
+    // And the guard goes quiet: no open work left once live completes; live
+    // is completed here, cancelled never counted, so the final passes through.
+    var state: PendingWork = .{};
+    try std.testing.expectEqualStrings("done", (try state.finish(&self, "done")).?);
+    try std.testing.expectEqual(@as(usize, 0), self.messages.items.len);
 }

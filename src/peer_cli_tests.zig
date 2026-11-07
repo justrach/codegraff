@@ -42,7 +42,7 @@ test "wake: an external send lands one msg frame on a graff session's Accord soc
     defer got.deinit(gpa);
     try testing.expectEqual(accord.Kind.msg, got.kind);
     try testing.expectEqualStrings("{\"text\":\"hi\"}", got.payload);
-    sender.await(io);
+    try testing.expect(sender.await(io));
 }
 
 test "parseOpts: action, flags, and the rest joined as the message" {

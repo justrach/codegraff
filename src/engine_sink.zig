@@ -422,7 +422,7 @@ fn jsonEmit(ctx: *anyopaque, ev: Stamped) void {
         .text_delta => |d| jsonLine(w, ev.cursor, .{ .type = "text", .text = d.text }),
         .tool_call_announced => |t| if (t.id.len > 0) jsonLine(w, ev.cursor, .{ .id = t.id, .type = "tool_call", .name = t.name, .input = t.input }) else jsonLine(w, ev.cursor, .{ .type = "tool_call", .name = t.name, .input = t.input }),
         .tool_call_started => |t| if (t.id.len > 0) jsonLine(w, ev.cursor, .{ .id = t.id, .type = "tool_call_started", .name = t.name, .input = t.input }) else jsonLine(w, ev.cursor, .{ .type = "tool_call_started", .name = t.name, .input = t.input }),
-        .tool_result => |r| if (r.id.len > 0) jsonLine(w, ev.cursor, .{ .id = r.id, .type = "tool_result", .name = r.name, .is_error = r.is_error, .text = r.text }) else jsonLine(w, ev.cursor, .{ .type = "tool_result", .name = r.name, .is_error = r.is_error, .text = r.text }),
+        .tool_result => |r| writeToolResultJson(w, ev.cursor, r),
         .tool_call_finished => |r| if (r.id.len > 0) jsonLine(w, ev.cursor, .{ .id = r.id, .type = "tool_call_finished", .name = r.name, .is_error = r.is_error, .ms = r.ms }) else jsonLine(w, ev.cursor, .{ .type = "tool_call_finished", .name = r.name, .is_error = r.is_error, .ms = r.ms }),
         .tool_rejected => |r| if (r.id.len > 0) jsonLine(w, ev.cursor, .{ .id = r.id, .type = "tool_rejected", .name = r.name, .reason = r.reason, .input = r.input, .message = r.message }) else jsonLine(w, ev.cursor, .{ .type = "tool_rejected", .name = r.name, .reason = r.reason, .input = r.input, .message = r.message }),
         // The failover's wire half (slice 2). Its `note` is a FIXED wire
@@ -449,6 +449,18 @@ fn jsonLine(w: *Io.Writer, cursor: engine_events.Cursor, payload: anytype) void 
     protocol_seq.writeEventStamped(w, cursor.sequence, payload) catch return;
     w.writeByte('\n') catch return;
     w.flush() catch return;
+}
+
+/// The tool_result wire line. `run_task` is appended only when a delegated
+/// MCP task reported it: every other result keeps the exact bytes it had, so
+/// a client parsing this stream sees no new field it did not ask for.
+fn writeToolResultJson(w: *Io.Writer, cursor: engine_events.Cursor, r: engine_events.ToolOutcome) void {
+    const m = r.run_task orelse {
+        if (r.id.len > 0) return jsonLine(w, cursor, .{ .id = r.id, .type = "tool_result", .name = r.name, .is_error = r.is_error, .text = r.text });
+        return jsonLine(w, cursor, .{ .type = "tool_result", .name = r.name, .is_error = r.is_error, .text = r.text });
+    };
+    if (r.id.len > 0) return jsonLine(w, cursor, .{ .id = r.id, .type = "tool_result", .name = r.name, .is_error = r.is_error, .text = r.text, .run_task = m });
+    jsonLine(w, cursor, .{ .type = "tool_result", .name = r.name, .is_error = r.is_error, .text = r.text, .run_task = m });
 }
 
 pub fn shortTool(name: []const u8) []const u8 {

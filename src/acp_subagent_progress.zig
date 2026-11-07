@@ -23,6 +23,8 @@ pub const Progress = struct {
     parent_call_id: []const u8,
     child_id: []const u8,
     name: []const u8,
+    provider: []const u8 = "",
+    model: []const u8 = "",
     lines: [max_lines][line_max]u8 = undefined,
     lens: [max_lines]usize = @splat(0),
     count: usize = 0,
@@ -98,18 +100,26 @@ pub const Progress = struct {
     }
 };
 
+/// Keep the resolved model visible even in clients without extension badges.
+pub fn displayName(buf: []u8, name: []const u8, model: []const u8) []const u8 {
+    if (model.len == 0) return name;
+    return std.fmt.bufPrint(buf, "{s} · {s}", .{ util.utf8Prefix(name, 256), util.utf8Prefix(model, 256) }) catch name;
+}
+
 /// One progress update on the parent's tool call, in the parent's session.
 pub fn write(w: *Io.Writer, parent_session: []const u8, p: *const Progress, state: []const u8) !void {
     var buf: [max_lines * (line_max + 1) + tail_max + 8]u8 = undefined;
+    var title: [768]u8 = undefined;
     try proto.writeNotification(w, "session/update", .{
         .sessionId = parent_session,
         .update = .{
             .sessionUpdate = "tool_call_update",
             .toolCallId = p.parent_call_id,
+            .title = displayName(&title, p.name, p.model),
             .content = .{
                 .{ .type = "content", .content = .{ .type = "text", .text = p.render(&buf) } },
             },
-            ._meta = .{ .@"graff/subagent" = .{ .sessionId = p.child_id, .name = p.name, .state = state } },
+            ._meta = .{ .@"graff/subagent" = .{ .sessionId = p.child_id, .name = p.name, .state = state, .provider = p.provider, .model = p.model } },
         },
     });
 }

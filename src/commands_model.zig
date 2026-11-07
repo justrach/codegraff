@@ -112,7 +112,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const arg = std.mem.trim(u8, line["/model".len..], " \t");
         providers.ensureModelQueryCatalogs(root, keys.*, arg);
         if (arg.len == 0) {
-            @import("gateway_picker_catalog.zig").refresh(root.gpa, root.io, root.arena, keys.*);
+            @import("gateway_picker_catalog.zig").refresh(root.io, root.arena, root.home, keys.*);
             if (main_mod.use_color) { // interactive TTY → fuzzy picker
                 if (modelPicker(root, keys, arena, out)) |idx| {
                     const m = pricing.models()[idx];
@@ -217,9 +217,16 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     if (std.mem.eql(u8, line, "/compact")) {
-        _ = root.manualCompact() catch |err| switch (err) {
-            error.ApiError, error.EmptySummary, error.IncompleteSummary, error.InvalidCompactionResponse => {},
-            else => |e| return e,
+        // #1620: every failure says so here. A propagated error ended the REPL
+        // loop, and the exit save then printed "session saved" over a history
+        // compaction never touched.
+        const was_degraded = root.compact_pin_degraded;
+        _ = root.manualCompact() catch |err| {
+            const announced = err == error.ActivePromptPinned and !was_degraded and root.compact_pin_degraded;
+            if (compactFailureText(err, announced)) |text| {
+                try out.print("{s}[{s}]{s}\n", .{ style.dim, text, style.reset });
+                try out.flush();
+            }
         };
         return true;
     }
@@ -333,7 +340,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const home = root.home;
         const saved = storeKey(root.io, root.gpa, arena, home, pid, key); // persist
         _ = keys.set(pid, live_key, if (saved) .stored else .session);
-        if (std.mem.eql(u8, pid, "kimi")) _ = kimi_catalog.load(root.io, root.gpa, arena, home, live_key);
+        if (std.mem.eql(u8, pid, "kimi")) _ = kimi_catalog.load(root.io, root.gpa, arena, live_key);
         try out.print("✓ {s} key set (live{s}) — now: /model {s}\n", .{ pid, if (saved) " + Keychain" else "", pid });
         try out.flush();
         return true;
@@ -351,7 +358,10 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const login_targets = [_]PickItem{
             .{ .name = "codegraff", .desc = "free codegraff key (device-code OAuth)" },
             .{ .name = "chatgpt", .desc = "ChatGPT sign-in (also: codex, openai)" },
-            .{ .name = "kimi", .desc = "Kimi Code sign-in (device-code OAuth)" },
+            .{ .name = "anthropic", .desc = "Claude subscription sign-in (also: ant)" },
+            .{ .name = "console", .desc = "metered Console sign-in through the ant CLI" },
+            .{ .name = "claude-agent", .desc = "your own Claude Code login, through `claude`" },
+            .{ .name = "kimi", .desc = "Kimi Code sign-in (kimi.ai; /login kimi.com for China)" },
             .{ .name = "xai", .desc = "Grok / SuperGrok sign-in (device-code OAuth)" },
             .{ .name = "zai", .desc = "Z.AI Coding Plan sign-in (CLI OAuth)" },
         };
@@ -370,6 +380,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         }
         // Same names as `graff login`: every ChatGPT name, codex included, is
         // the plan's sign-in, chatgpt-new (ADR 0229).
+        const console_login = std.ascii.eqlIgnoreCase(target, "console");
+        const kimi_region = @import("oauth_kimi.zig").regionFromLoginName(target);
         target = @import("args.zig").loginTarget(target) orelse target;
 
         const home = root.home;
@@ -381,7 +393,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 return true;
             };
         } else if (std.mem.eql(u8, target, "kimi")) {
-            oauth.kimiLogin(root.io, root.gpa, arena, home) catch |err| {
+            oauth.kimiLogin(root.io, root.gpa, arena, home, kimi_region) catch |err| {
                 try out.print("\xe2\x9c\x97 kimi login failed: {t}\n", .{err});
                 try out.flush();
                 return true;
@@ -398,6 +410,26 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 try out.flush();
                 return true;
             };
+        } else if (console_login) {
+            const profile = @import("anthropic_profile.zig");
+            profile.login(root.io, arena, profile.ProcessEnv{}, home) catch |err| {
+                try out.print("\xe2\x9c\x97 Console login failed: {t}\n", .{err});
+                try out.flush();
+                return true;
+            };
+        } else if (std.mem.eql(u8, target, "anthropic")) {
+            @import("oauth_anthropic.zig").login(root.io, root.gpa, arena, home, false) catch |err| {
+                try out.print("\xe2\x9c\x97 anthropic login failed: {t}\n", .{err});
+                try out.flush();
+                return true;
+            };
+        } else if (std.mem.eql(u8, target, "claude-agent")) {
+            const ca = @import("claude_agent_login.zig");
+            ca.login(root.io, arena, @import("anthropic_profile.zig").ProcessEnv{}, home) catch |err| {
+                try out.print("\xe2\x9c\x97 claude-agent login failed: {t}\n", .{err});
+                try out.flush();
+                return true;
+            };
         } else if (std.mem.eql(u8, target, "chatgpt-new")) {
             @import("oauth_chatgpt.zig").login(root.io, root.gpa, arena, home) catch |err| {
                 try out.print("\xe2\x9c\x97 chatgpt-new login failed: {t}\n", .{err});
@@ -411,12 +443,12 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 try out.flush();
                 return true;
             }
-            try out.print("can't log into '{s}' \xe2\x80\x94 try /login codegraff | chatgpt | kimi | xai | zai (others: /key <provider> <key>)\n", .{target});
+            try out.print("can't log into '{s}' \xe2\x80\x94 try /login codegraff | chatgpt | anthropic | console | claude-agent | kimi | xai | zai (others: /key <provider> <key>)\n", .{target});
             try out.flush();
             return true;
         }
         // Login wrote its credential file; pull the key into the live session.
-        reloadLoginKey(root, keys, arena, target);
+        reloadLoginKey(root, keys, arena, if (console_login) "console" else target);
         try out.flush();
         return true;
     }
@@ -446,10 +478,10 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         var mbuf: [320]u8 = undefined; // the message, or (first 16 bytes) just the size
         const staged = stageImagePath(root, path);
         switch (staged) {
-            .no_vision => try out.print("⚠ {s} can't see images — switch to a vision model first, e.g. /model claude-opus-4-8 or /model gpt-5.5\n", .{root.provider.model}),
+            .no_vision => try out.print("⚠ {s} can't see images — switch to a vision model first, e.g. /model claude-opus-4-8 or /model gpt-6-sol\n", .{root.provider.model}),
             .ok => |o| try out.print("📎 attached {s} ({s}) — sent with your next message\n", .{ path, vision.fmtBytes(mbuf[0..16], o.bytes) }),
             // Sized, distinct lines instead of "missing, or larger than 5MB" (#349).
-            .too_large, .not_found, .read_error => try out.print("{s}\n", .{vision.stageMessage(&mbuf, staged, path)}),
+            .too_large, .not_found, .read_error, .unsupported => try out.print("{s}\n", .{vision.stageMessage(&mbuf, staged, path)}),
         }
         try out.flush();
         return true;
@@ -467,6 +499,46 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     return false;
+}
+
+/// The one line `/compact` prints when it leaves history unchanged; null when
+/// the compaction path already printed its own (empty/incomplete summary, a
+/// first pinned-turn skip).
+pub fn compactFailureText(err: anyerror, announced: bool) ?[]const u8 {
+    return switch (err) {
+        error.EmptySummary, error.IncompleteSummary => null,
+        error.ActivePromptPinned => if (announced) null else "compaction skipped: the current turn must stay verbatim, history unchanged",
+        error.ServerCompactionRequired => "compaction failed: history holds a provider compaction item and the provider did not compact it, history unchanged",
+        error.InvalidCompactionResponse => "compaction failed: incomplete or invalid compacted history, history unchanged",
+        error.Interrupted, error.Canceled => "compaction cancelled, history unchanged",
+        error.ApiError => "compaction failed: provider error, history unchanged",
+        error.CompactionOff => "compaction is off: Codegraff credits are used up",
+        else => "compaction failed, history unchanged",
+    };
+}
+
+test "#1620 /compact names every failure instead of ending the session" {
+    try std.testing.expect(compactFailureText(error.EmptySummary, false) == null);
+    try std.testing.expect(compactFailureText(error.ActivePromptPinned, true) == null);
+    for ([_]anyerror{ error.ActivePromptPinned, error.ServerCompactionRequired, error.InvalidCompactionResponse, error.ApiError, error.OutOfMemory }) |err|
+        try std.testing.expect(std.mem.indexOf(u8, compactFailureText(err, false).?, "unchanged") != null);
+}
+
+test "#1620 a /compact that cannot run prints why and keeps the REPL going" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const support = @import("agent_compact_test_support.zig");
+    var root = support.subAgent(a, false);
+    root.compact_pin_degraded = false;
+    // An opaque provider compaction item: a local summary must refuse it.
+    root.messages = try support.msg1(a, "user", "earlier");
+    try root.messages.append(try std.json.parseFromSliceLeaky(Value, a, "{\"type\":\"compaction\",\"encrypted_content\":\"x\"}", .{}));
+    var keys: Keys = .{ .values = @splat("test") };
+    var aw: Io.Writer.Allocating = .init(a);
+    try std.testing.expect(try tryHandle(&root, &keys, a, "/compact", &aw.writer));
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "history unchanged") != null);
+    try std.testing.expectEqual(@as(usize, 2), root.messages.items.len);
 }
 
 test {

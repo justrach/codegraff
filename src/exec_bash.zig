@@ -66,7 +66,15 @@ fn spawnFailText(gpa: Allocator, err: anyerror) ![]u8 {
     // #122: backgrounding costs MORE fds (pipes + pump task), so the generic
     // "run it in the foreground" advice is right for every error except the
     // fd-quota ones. #253: SYSTEM-wide exhaustion is not a ulimit problem.
-    if (err == error.ShellIdentityHomeRequired or err == error.ShellIdentityStoreInvalid or err == error.ShellIdentityExhausted or err == error.ShellIdentityUnavailable)
+    if (err == error.ShellIdentityUnavailable) {
+        const shell_identity = @import("shell_identity.zig");
+        const cause = shell_identity.last_cause orelse error.Unexpected;
+        // #1619: name the cause; only a storage fault is a permissions problem.
+        if (!shell_identity.storageFault(cause))
+            return std.fmt.allocPrint(gpa, "could not reserve a durable shell handle (ShellIdentityUnavailable: {t}); no command was started. This was retried and is usually transient: run the command again.", .{cause});
+        return std.fmt.allocPrint(gpa, "could not reserve a durable shell handle (ShellIdentityUnavailable: {t}); no command was started. Check HOME and its .codegraff directory permissions. Preserve existing shell-id files when repairing storage.", .{cause});
+    }
+    if (err == error.ShellIdentityHomeRequired or err == error.ShellIdentityStoreInvalid or err == error.ShellIdentityExhausted)
         return std.fmt.allocPrint(gpa, "could not reserve a durable shell handle ({t}); no command was started. Check HOME and its .codegraff directory permissions. Preserve existing shell-id files when repairing storage.", .{err});
     return if (err == error.ProcessFdQuotaExceeded)
         try gpa.dupe(u8, "could not start background job (ProcessFdQuotaExceeded) — graff hit its open-file limit. Wait for running jobs/tools to finish, then retry with less parallel fan-out; if it recurs, raise the limit (`ulimit -n 4096`) before starting graff.")
@@ -375,8 +383,16 @@ pub fn exec(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
             .clear => {},
         }
     };
+    // #1801: a simulator test must not overwrite the Mac's clipboard.
+    if (approved) if (@import("sim_pasteboard.zig").refusal(ctx.gpa, ctx.io, cmd)) |why| {
+        return .{ .text = try ctx.gpa.dupe(u8, why), .is_error = true };
+    };
+    // #407: a simulator this command boots is shut down when the session ends.
+    const sim_ledger = @import("sim_ledger.zig");
+    const sim_bracket = if (approved) sim_ledger.g.before(ctx.gpa, ctx.io, cmd) else null;
     var result = try execUnchecked(ctx, call);
     errdefer ctx.gpa.free(result.text);
+    if (sim_bracket) |b| sim_ledger.g.after(ctx.gpa, ctx.io, b, !result.pending);
     try @import("cli_path_hint.zig").append(ctx.gpa, ctx.io, cmd, &result);
     if (warning) {
         const text = try std.mem.concat(ctx.gpa, u8, &.{ server_port.unknown_warning, result.text });
@@ -432,6 +448,7 @@ fn execUnchecked(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
                 // finite one keeps the wait-until-exit `action=output`.
                 const server = server_like;
                 if (server) jobs.markPersistent(io, r.id);
+                jobs.markParked(io, r.id); // #1486
                 @import("subagent_interactive.zig").request(ctx);
                 break :blk .{ .text = try startedText(gpa, r.id, cmd, ssh, if (server) .server else .finite, wait_ms / 1000, r.output), .pending = true };
             },
@@ -455,4 +472,19 @@ fn execUnchecked(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
     defer gpa.free(run.stdout);
     defer gpa.free(run.stderr);
     return formatCapped(gpa, cmd, run);
+}
+
+test "#1619 a shell handle failure names its cause and blames storage only for storage faults" {
+    const shell_identity = @import("shell_identity.zig");
+    defer shell_identity.last_cause = null;
+    shell_identity.last_cause = error.ProcessFdQuotaExceeded;
+    const transient = try spawnFailText(std.testing.allocator, error.ShellIdentityUnavailable);
+    defer std.testing.allocator.free(transient);
+    try std.testing.expect(std.mem.indexOf(u8, transient, "ShellIdentityUnavailable: ProcessFdQuotaExceeded") != null);
+    try std.testing.expect(std.mem.indexOf(u8, transient, "permissions") == null);
+    shell_identity.last_cause = error.AccessDenied;
+    const storage = try spawnFailText(std.testing.allocator, error.ShellIdentityUnavailable);
+    defer std.testing.allocator.free(storage);
+    try std.testing.expect(std.mem.indexOf(u8, storage, "ShellIdentityUnavailable: AccessDenied") != null);
+    try std.testing.expect(std.mem.indexOf(u8, storage, "permissions") != null);
 }

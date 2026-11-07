@@ -18,7 +18,7 @@ pub fn list(a: A, io: Io, dir: Io.Dir) ![]activity.Meta {
         const row = std.json.parseFromSliceLeaky(activity.Meta, a, bytes, .{ .ignore_unknown_fields = true }) catch continue;
         if (activity.validId(row.id)) try rows.append(a, row);
     }
-    std.mem.sort(activity.Meta, rows.items, {}, struct {
+    @import("stable_sort.zig").sort(activity.Meta, rows.items, {}, struct {
         fn less(_: void, x: activity.Meta, y: activity.Meta) bool {
             return x.updatedAt > y.updatedAt;
         }
@@ -41,7 +41,7 @@ pub fn updates(a: A, snapshot: activity.Snapshot) ![]std.json.Value {
             try input.put(a, @tagName(event.input_key), .{ .string = event.text });
             try stream.writeToolCall(w, snapshot.agent.id, event.id, event.name, .{ .object = input });
         } else if (std.mem.eql(u8, event.type, "tool_result")) {
-            try stream.writeToolDone(w, snapshot.agent.id, event.id, event.is_error, event.text);
+            try stream.writeToolDone(w, snapshot.agent.id, event.id, event.is_error, event.text, null);
         } else continue;
         try rows.append(a, try std.json.parseFromSliceLeaky(std.json.Value, a, w.buffered(), .{}));
     }
@@ -135,12 +135,18 @@ test "child inspection verifies parent identity scope and child without consumin
     defer first.deinit();
     var second = try activity.Recorder.init(std.testing.allocator, io, registry, "child-b", "Second child", "Review");
     defer second.deinit();
+    first.setModel("provider-a", "resolved-model-a");
+    second.setModel("provider-b", "resolved-model-b");
     first.finish(true, "First child result");
     second.finish(false, "Second child failed");
+    const legacy = "{\"id\":\"child-old\",\"label\":\"Legacy child\",\"task\":\"Inspect\"}";
+    try first.dir.writeFile(io, .{ .sub_path = "child-old.meta", .data = legacy });
+    try first.dir.writeFile(io, .{ .sub_path = "child-old.json", .data = "{\"agent\":" ++ legacy ++ ",\"events\":[],\"response\":\"Legacy result\"}" });
     const cases = .{
         .{ "children", "device", self.start_id, "", "First child", "Second child" },
         .{ "activity", "device", self.start_id, "child-a", "First child result", "!Second child failed" },
         .{ "activity", "device", self.start_id, "child-b", "Second child failed", "!First child result" },
+        .{ "activity", "device", self.start_id, "child-old", "Legacy result", "!First child result" },
         .{ "activity", "workspace", self.start_id, "child-a", "Parent session changed", "!First child result" },
         .{ "activity", "device", @as(u64, 0), "child-a", "Parent session changed", "!First child result" },
         .{ "activity", "device", self.start_id, "../child-a", "Invalid sub-agent", "!First child result" },
@@ -156,6 +162,35 @@ test "child inspection verifies parent identity scope and child without consumin
         if (case[5][0] == '!') {
             try std.testing.expect(std.mem.indexOf(u8, out.writer.buffered(), case[5][1..]) == null);
         } else try std.testing.expect(std.mem.indexOf(u8, out.writer.buffered(), case[5]) != null);
+        const reply = try std.json.parseFromSliceLeaky(std.json.Value, a, out.writer.buffered(), .{});
+        if (reply.object.get("result")) |result| {
+            const models = .{
+                .{ "child-a", "provider-a", "resolved-model-a" },
+                .{ "child-b", "provider-b", "resolved-model-b" },
+                .{ "child-old", "", "" },
+            };
+            if (result.object.get("children")) |children| {
+                try std.testing.expectEqual(@as(usize, 3), children.array.items.len);
+                inline for (models) |identity| {
+                    var found = false;
+                    for (children.array.items) |child_meta| {
+                        if (!std.mem.eql(u8, child_meta.object.get("id").?.string, identity[0])) continue;
+                        try std.testing.expectEqualStrings(identity[1], child_meta.object.get("provider").?.string);
+                        try std.testing.expectEqualStrings(identity[2], child_meta.object.get("model").?.string);
+                        found = true;
+                    }
+                    try std.testing.expect(found);
+                }
+            }
+            if (result.object.get("agent")) |child_meta| {
+                inline for (models) |identity| {
+                    if (std.mem.eql(u8, child_meta.object.get("id").?.string, identity[0])) {
+                        try std.testing.expectEqualStrings(identity[1], child_meta.object.get("provider").?.string);
+                        try std.testing.expectEqualStrings(identity[2], child_meta.object.get("model").?.string);
+                    }
+                }
+            }
+        }
     }
     try std.testing.expectEqual(@as(usize, 0), (try peers.tail(a, io, live, presence.device_room)).len);
 }

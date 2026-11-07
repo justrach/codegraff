@@ -28,7 +28,7 @@ const policy = @import("agent_request_policy.zig");
 
 const overflow = @import("agent_overflow.zig");
 const errorCode = policy.errorCode;
-const isQuotaExceeded = policy.isQuotaExceeded;
+const quota = @import("agent_request_quota.zig");
 const recoverContextOverflow = overflow.recoverContextOverflow;
 // #414: an HTTP 200 that overflowed silently — the provider accepted an
 // over-window input and answered with nothing (z.ai), or truncated our input
@@ -85,6 +85,7 @@ fn sayTypedApiError(self: *Agent, etype: []const u8, ecode: ?[]const u8, emsg: [
 }
 
 pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
+    self.last_api_reauth = null;
     // Pool-thread Jev results become session state only on this owner thread.
     if (Agent.esc_cancel.load(.acquire) or @import("acp_engine.zig").cancel_flag.load(.acquire))
         self.jev_effort_pending.invalidate(self.io)
@@ -141,6 +142,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     if (self.run_budget) |b| if (budget_permit) |p| {
         if (b.max_model_calls != 0 and p.call_number == b.max_model_calls and tools != null) {
             tools = null;
+            b.model_landed.store(true, .release);
             try self.messages.append(try wire_messages.userNote(self.arena, self.provider.kind, landing_note));
             if (self.tracer) |tr| tr.note("budget", "final call: tools withheld so the run lands its answer (#390)");
         }
@@ -207,13 +209,15 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     // #56: bounded stream-stall / drop reconnect budget (codex's stream_max_retries analog), outside the rebuild loop so a WS reanchor can't reset it.
     self.stall = .{}; // #680: a fresh widen ladder + tripped budget per request
     var stall_retries: usize = 0;
-    const max_stall_retries: usize = 2;
-    const stall_reconnect_backoff_ms = 750; // brief pause before reconnecting on a fresh stream
+    var drop_retries: usize = 0; // #1639: a peer close earns its own, larger budget (stream_reconnect.zig)
+    const reconnect = @import("stream_reconnect.zig");
     var server_retries: usize = 0; // #opencode-parity: bounded retries for a transient in-stream server overload
     var openai404_retries: usize = 0; // #opencode-parity: bounded retries for OpenAI's spurious model 404s
     const max_openai404_retries: usize = 2;
     var gw_retry = policy.GatewayRetryState{}; // #gateway-artifact state (agent_gateway_retry.zig)
     @import("cache_ttl.zig").begin(self); // #1320: before request_started moves
+    var call: @import("model_call.zig").Call = .{}; // #1665: pairs every started attempt
+    errdefer call.fail(self, false);
     rebuild: while (true) {
         if (@import("agent_async_tools.zig").started(self)) return error.AsyncToolStreamFailed;
         const live = self.usesLiveTransport();
@@ -239,7 +243,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         const t0: Io.Timestamp = .now(self.io, .awake);
         self.request_started = t0;
         self.first_token_traced = false;
-        if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_started", .provider = self.provider.id, .model = self.provider.model });
+        call.start(self);
         // HTTP calls are flaky: a kept-alive connection the server closed
         // (HttpConnectionClosing), a reset, a truncated TLS read. Retry a
         // few times with a fresh connection; on persistent failure surface
@@ -257,7 +261,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     postWatched(self.gpa, self.io, self.client, self.provider, body, conv);
                 if (attempt_body) |ok| break :blk ok else |err| {
                     if (@import("agent_async_tools.zig").started(self)) return err;
-                    if (err == error.ModelLoop) return err; // #743: repeated prose ends the turn WITHOUT retry (tier2 model-loop-bounded-prose)
+                    if (err == error.ModelLoop or err == error.ReplyRunaway) return err; // #743: repeated prose ends the turn WITHOUT retry (tier2 model-loop-bounded-prose)
                     if (self.streamed_text) if (self.out) |w| {
                         w.writeAll("\n") catch {};
                         w.flush() catch {};
@@ -270,6 +274,11 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     if (err == error.Interrupted) return error.Interrupted;
                     if (err == error.Steered) if (@import("steer_now.zig").supersede(self)) continue :rebuild;
                     if (err == error.Canceled) return error.Canceled;
+                    if (err == error.StreamTooLong or err == error.StreamEventDeadline) return err; // deterministic event bounds: replay cannot repair them
+                    if (quota.transportCode(err)) |code| {
+                        if (try quota.handle(self, "", code, "", &auth_refreshed)) continue;
+                        return err;
+                    }
                     // #56: a mid-stream idle stall or a connection drop (the
                     // provider closed/reset before its terminal event) — NOT a
                     // user Esc, which is handled above. Usually transient, so
@@ -282,24 +291,25 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     if (err == error.StreamStalled or err == error.StreamDropped) {
                         const stalled = err == error.StreamStalled;
                         const what: []const u8 = if (stalled) "stream stalled" else "stream dropped";
-                        if (stall_retries < max_stall_retries) {
-                            stall_retries += 1;
+                        const retries = if (stalled) &stall_retries else &drop_retries;
+                        if (retries.* < reconnect.maxRetries(stalled)) {
+                            retries.* += 1;
                             // #56: give a fresh WS one reconnect; if it stalls again,
                             // fall back to the reliable SSE transport for the rest of
                             // the session — codex's WS→SSE fallback, and consistent
                             // with how a WS transport error is already handled (ws_off).
-                            if (stall_retries > 1) self.ws_off = true;
+                            if (stall_retries + drop_retries > 1) self.ws_off = true;
                             if (self.tracer) |tr| tr.note("stream_retry", what);
                             if (telemetry.g_telem) |t| t.errorEvent("stream_retry", what);
-                            @import("agent_stream.zig").noteStallRetry(self, stall_retries); // #680: clears the partial (fresh stream, no concat) + widens the between-lines budget
+                            @import("agent_stream.zig").noteStallRetry(self, stall_retries); // #680: clears the partial (fresh stream, no concat) + widens the between-lines budget (stalls only)
                             self.closeCodexWs(); // tear down the dead WS + null codex_prev_id for a full re-send (no-op off codex WS)
-                            self.sleepInterruptible(jitter.ms(self.io, stall_reconnect_backoff_ms)) catch return error.Interrupted; // #1274: desync parallel reconnects
+                            self.sleepInterruptible(jitter.ms(self.io, reconnect.backoffMs(stalled, retries.*))) catch return error.Interrupted; // #1274: desync parallel reconnects
                             continue :rebuild;
                         }
                         // Budget gone: the turn is ending. Mid-turn cuts stayed silent.
                         @import("engine_sink.zig").forAgent(self).emit(self.io, .{ .transport_aborted = .{ .reason = if (stalled) .stalled else .dropped, .turn_ending = true } });
                         if (stalled) {
-                            self.last_api_error = @import("agent_stream.zig").stallGiveUpMessage(self, max_stall_retries); // #680: reports the wait that tripped, not the configured total
+                            self.last_api_error = @import("agent_stream.zig").stallGiveUpMessage(self, reconnect.max_stall_retries); // #680: reports the wait that tripped, not the configured total
                             if (telemetry.g_telem) |t| t.errorEvent("stream_stall", self.last_api_error orelse "stream stalled");
                             if (self.tracer) |tr| tr.note("stream_stall", self.last_api_error orelse "stream stalled");
                             return error.StreamStalled;
@@ -336,24 +346,10 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     const throttled = err == error.RateLimited or err == error.ServerError;
                     const max_attempts = retry_limit orelse RetryPlan.maxAttempts(throttled);
                     retry_limit = max_attempts;
-                    // #opencode-parity: a 429 that's a billing/quota cap (not
-                    // transient throttling) won't clear by retrying — fail fast so
-                    // cross-provider /fallback can take over, instead of burning all
-                    // 5 attempts (~23s). Detected from the captured 429 body.
-                    if (err == error.RateLimited and main_mod.g_5xx_body_len > 0 and
-                        isQuotaExceeded(main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len]))
-                    {
-                        // #471: a flat-rate plan that has run out is exactly
-                        // when the metered key it outranked earns its keep.
-                        // Hand over and retry rather than failing a session
-                        // with a working credential sitting unused. One-way
-                        // and announced — see credential_failover.
-                        if (policy.handOffExhaustedPlan(self)) continue;
-                        const plan_hint = if (std.mem.eql(u8, self.provider.id, "chatgpt-new")) " \xe2\x80\x94 " ++ @import("oauth_chatgpt.zig").usage_hint else "";
-                        self.last_api_error = std.fmt.allocPrint(self.arena, "rate limited (429): {s}{s}", .{ policy.quota_cap_marker, plan_hint }) catch "rate limited (429): quota exceeded";
-                        if (telemetry.g_telem) |t| t.errorEvent("quota", self.last_api_error orelse "quota exceeded");
-                        if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, 0, body.len, 0, 0, 0, true);
-                        return error.ApiError;
+                    // A proxy may wrap a billing/auth refusal in 429 OR 5xx.
+                    // Terminal account faults outrank the generic retry status.
+                    if (throttled and main_mod.g_5xx_body_len > 0) {
+                        if (try quota.handle(self, "", null, main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len], &auth_refreshed)) continue;
                     }
                     if (err == error.TlsRequestConstructionFailed or err == error.TlsRequestConstructionCaWarmFailed) if (self.tracer) |tr| tr.note(
                         "tls_request_construction",
@@ -379,9 +375,8 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                             // Transport flakes back off; rapid retries against a
                             // just-closed keep-alive re-fail (#86). Cap: 4s/6 tries.
                             const delay_ms = jitter.ms(self.io, RetryPlan.delayMs(throttled, attempt));
-                            @import("turn_chrome.zig").emitRetryNotice(self.io, @errorName(err), attempt + 1, max_attempts);
                             if (scratch.showRecoveredTransportRetry(self.call_kind))
-                                try scratch.announceNetworkRetry(self, err, delay_ms, attempt + 1, max_attempts);
+                                @import("turn_chrome.zig").emitRetryNotice(self.io, @errorName(err), attempt + 1, max_attempts);
                             // Same trace breadcrumb the 429/5xx branch leaves: a
                             // transport-flake retry is otherwise invisible in the
                             // session trace, hiding how flaky a provider really is.
@@ -390,11 +385,14 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                         }
                         continue;
                     }
-                    try self.say("[request failed: {t} — giving up this turn]\n", .{err});
+                    // A refused loopback connection means the local server (oMLX, LM Studio, mlx-lm) is not running: name it.
+                    const down: []const u8 = if (err == error.ConnectionRefused and @import("keys_cli.zig").isLocalUrl(self.provider.url)) self.provider.url else "";
+                    try self.say("[request failed: {t}{s}{s} — giving up this turn]\n", .{ err, if (down.len > 0) " at " else "", down });
                     // Preserve whether this was provider throttling or a transport failure in the failed turn's JSON/trajectory (#86).
                     const failure_kind = if (err == error.RateLimited) "rate limited (429)" else if (err == error.ServerError) "server error (5xx)" else "network error";
-                    self.last_api_error = std.fmt.allocPrint(self.arena, "{s}: {s} (gave up after {d} attempts)", .{ failure_kind, @errorName(err), max_attempts }) catch null;
+                    self.last_api_error = std.fmt.allocPrint(self.arena, "{s}: {s}{s}{s} (gave up after {d} attempts)", .{ failure_kind, @errorName(err), if (down.len > 0) " at " else "", down, max_attempts }) catch null;
                     self.last_request_write_failed = std.mem.eql(u8, @errorName(err), "WriteFailed");
+                    try scratch.preserveFailedRequest(self);
                     if (telemetry.g_telem) |t| t.errorEvent("net", @errorName(err));
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, 0, body.len, 0, 0, 0, true);
                     return error.ApiError;
@@ -420,6 +418,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     if (!self.compaction_request) self.compact_transport_failures = 0;
                     usage_attempts.completed();
                     @import("agent_ws_steer.zig").billEnded(self, obj); // the responses a steer ended, before the last
+                    @import("opaque_state_usage.zig").learn(self, obj); // #1686: before the meter reads the estimate
                     self.recordUsageResponses(obj, body.len);
                     @import("usage_trace.zig").noteReasoning(obj);
                     try @import("agent_async_tools.zig").join(self);
@@ -431,7 +430,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                         continue :rebuild;
                     }
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
-                    if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
+                    call.finish(self, ms);
                     try @import("agent_model_loop.zig").checkResponse(self, obj);
                     return obj;
                 },
@@ -441,10 +440,11 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     self.ws_api_error_pending = false;
                     const diagnostic = try responses.failureDiagnostic(self.arena, self.provider.id, failure);
                     if (@import("agent_async_tools.zig").started(self)) {
-                        try self.sayApiError("{s}", .{diagnostic});
+                        try quota.afterToolsStarted(self, failure.code, msg, diagnostic);
                         return error.ApiError;
                     }
                     if (ws_error_frame) if (self.tracer) |tr| tr.note("ws_api_error", diagnostic);
+                    if (try quota.handle(self, "", failure.code, msg, &auth_refreshed)) continue :rebuild;
                     if (codex_chain.shouldReanchorRequest(body, msg, failure.code)) {
                         self.closeCodexWs();
                         if (self.tracer) |tr| tr.note("ws", "server dropped previous_response_id — re-anchoring with full input");
@@ -480,7 +480,8 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     // Codex Responses reports capacity failures through this
                     // response.failed arm too. Keep it on the same bounded
                     // overload retry path as SSE and JSON error envelopes.
-                    if (try policy.afterServerErrorOrParseReject(self, "", failure.code, msg, &server_retries, &gw_retry)) continue :rebuild;
+                    if (try policy.afterServerErrorOrParseReject(self, failure.etype, failure.code, msg, &server_retries, &gw_retry)) continue :rebuild; // #748: the class keeps invalid requests off the flake ladder
+                    self.last_api_reauth = @import("auth_recovery.zig").forFailure(self.provider, failure.code, msg);
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                     try self.sayApiError("{s}", .{diagnostic});
                     return error.ApiError;
@@ -498,7 +499,9 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     const eo = if (root.get("error")) |ev| (if (ev == .object) ev.object else null) else null;
                     const etype = if (eo) |e| (if (e.get("type")) |tv| (if (tv == .string) tv.string else "error") else "error") else "error";
                     const emsg = if (eo) |e| (if (e.get("message")) |mv| (if (mv == .string) mv.string else "") else "") else "";
-                    const ecode = if (eo) |e| (if (e.get("code")) |cv| (if (cv == .string) cv.string else null) else null) else null;
+                    const ecode = errorCode(root);
+                    if (try quota.handle(self, etype, ecode, emsg, &auth_refreshed)) continue;
+                    if (@import("interactions_chain.zig").dropRejected(self, body)) continue; // stored Interaction gone → full replay
                     if (recoverContextOverflow(self, emsg, ecode, &context_retried)) continue; // #193/#203: streamed error event overflow (by code or phrasing) → trim + retry
                     if (policy.retryWithout(self, emsg, &force, &stream_usage)) continue; // ADR 0219: Anthropic errors take the ladder too
                     if (try policy.afterServerErrorOrParseReject(self, etype, ecode, emsg, &server_retries, &gw_retry)) continue;
@@ -515,7 +518,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                 if (recoverBehavioralOverflow(self, root, &context_retried)) continue; // #414: silent overflow / upstream truncation → trim + retry
                 if (!self.compaction_request) self.compact_transport_failures = 0;
                 if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
-                if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
+                call.finish(self, ms);
                 try @import("agent_model_loop.zig").checkResponse(self, root);
                 return root;
             }
@@ -548,7 +551,9 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             const eo = if (root.get("error")) |ev| (if (ev == .object) ev.object else null) else null;
             const etype = if (eo) |e| (if (e.get("type")) |tv| (if (tv == .string) tv.string else "error") else "error") else "error";
             const emsg = if (eo) |e| (if (e.get("message")) |mv| (if (mv == .string) mv.string else "") else "") else "";
-            const ecode = if (eo) |e| (if (e.get("code")) |cv| (if (cv == .string) cv.string else null) else null) else null;
+            const ecode = errorCode(root);
+            if (try quota.handle(self, etype, ecode, emsg, &auth_refreshed)) continue;
+            if (@import("interactions_chain.zig").dropRejected(self, body)) continue; // stored Interaction gone → full replay
             if (recoverContextOverflow(self, emsg, ecode, &context_retried)) continue; // #193/#203: {"type":"error"} overflow (by code or phrasing) → trim + retry
             if (policy.retryWithout(self, emsg, &force, &stream_usage)) continue; // ADR 0219: Anthropic errors take the ladder too
             if (try policy.afterServerErrorOrParseReject(self, etype, ecode, emsg, &server_retries, &gw_retry)) continue;
@@ -557,6 +562,8 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             return error.ApiError;
         };
         if (apiErrorMessage(root)) |msg| {
+            if (try quota.handle(self, "", errorCode(root), msg, &auth_refreshed)) continue;
+            if (@import("interactions_chain.zig").dropRejected(self, body)) continue; // stored Interaction gone → full replay
             if (policy.retryWithout(self, msg, &force, &stream_usage)) continue;
             // #148: a stale login token 401s here with the provider's "API Key
             // invalid/expired"; adopt a newer on-disk token or force a refresh
@@ -585,7 +592,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         if (recoverBehavioralOverflow(self, root, &context_retried)) continue; // #414: same, on the non-streamed body
         if (!self.compaction_request) self.compact_transport_failures = 0;
         if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
-        if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
+        call.finish(self, ms);
         try @import("agent_model_loop.zig").checkResponse(self, root);
         return root;
     }

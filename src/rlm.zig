@@ -247,6 +247,13 @@ fn runHostRaw(ctx: ToolCtx, call: spec_ptc.Call) ToolOutput {
     // A denial is an error result, so the script stops here.
     const host_call: tools.ToolCall = .{ .id = if (ctx.host_gate) |gate| gate.call_id else "rlm", .name = ready.name, .input = parsed.value };
     if (ctx.host_gate) |gate| if (gate.check(gate.context, host_call)) |denied| return denied;
+    // #1413: schema loading enables catalog calls, not host bindings for
+    // agent-managed tools. Their handlers mutate Agent state inline; they
+    // cannot run through the pool-thread executor used by RLM.
+    if (@import("schema.zig").isMetaName(ready.name)) return .{
+        .text = std.fmt.allocPrint(ctx.gpa, "rlm: {s} is agent-managed and is not supported inside rlm; call {s} directly as a structured tool.", .{ ready.name, ready.name }) catch &.{},
+        .is_error = true,
+    };
     var host_ctx = ctx;
     host_ctx.rlm_host = true;
     return exec_mod.execTool(host_ctx, host_call);

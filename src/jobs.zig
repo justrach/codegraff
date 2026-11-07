@@ -80,6 +80,7 @@ pub const Job = struct { // session-global; pump drains pipes or capture files; 
     dropped: bool = false,
     quiet: bool = false, // skip job_notify until auto-bg (#620)
     persistent: bool = false, // started with run_in_background (#810)
+    parked: bool = false, // #1486: a parked foreground command keeps a record of its outcome
     future: Io.Future(void) = undefined,
     stream: ?process_runner.StreamFn = null,
     stream_ctx: ?*anyopaque = null,
@@ -93,6 +94,7 @@ const browser_guard = @import("job_browser_guard.zig");
 const job_idle = @import("job_idle.zig"); // #199
 const job_registry = @import("job_registry.zig"); // #199
 const job_capture = @import("job_capture.zig"); // ADR 0218
+const job_parked = @import("job_parked.zig"); // #1486
 const proc_identity = @import("proc_identity.zig");
 const util = @import("util.zig");
 const tool_pulse = @import("tool_pulse.zig"); // silence heartbeat during waitForeground
@@ -113,6 +115,16 @@ const Jobs = struct {
 };
 
 pub var g_jobs: Jobs = .{};
+
+/// #1486: the foreground wait parked this job; record it so its handle
+/// keeps an answer after this graff is gone.
+pub fn markParked(io: Io, id: u64) void {
+    g_jobs.mutex.lockUncancelable(io);
+    defer g_jobs.mutex.unlock(io);
+    const job = g_jobs.find(id) orelse return;
+    job.parked = true;
+    job_parked.begin(io, job.id, job.cmd);
+}
 
 pub fn markPersistent(io: Io, id: u64) void {
     g_jobs.mutex.lockUncancelable(io);
@@ -387,6 +399,7 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u64, wait_ms: u64) !ToolOutput {
         g_jobs.mutex.lockUncancelable(io);
         const job = g_jobs.find(id) orelse {
             g_jobs.mutex.unlock(io);
+            if (job_parked.describe(gpa, io, id)) |known| return .{ .text = known.text, .is_error = known.is_error };
             return .{ .text = try std.fmt.allocPrint(gpa, "background job {d} has no live owner in this process — interrupted or unknown outcome; do not assume it never ran or rerun it automatically; /jobs lists current jobs", .{id}), .is_error = true };
         };
         browser_guard.touch(job, nowMs(io)); // a read or a blocking wait is activity (#199)
@@ -449,7 +462,10 @@ pub fn jobKill(gpa: Allocator, io: Io, id: u64) !ToolOutput {
     {
         g_jobs.mutex.lockUncancelable(io);
         defer g_jobs.mutex.unlock(io);
-        const job = g_jobs.find(id) orelse return .{ .text = try std.fmt.allocPrint(gpa, "background job {d} has no live owner in this process — interrupted or unknown outcome; no process was stopped; /jobs lists current jobs", .{id}), .is_error = true };
+        const job = g_jobs.find(id) orelse {
+            if (job_parked.describe(gpa, io, id)) |known| return .{ .text = known.text, .is_error = known.is_error };
+            return .{ .text = try std.fmt.allocPrint(gpa, "background job {d} has no live owner in this process — interrupted or unknown outcome; no process was stopped; /jobs lists current jobs", .{id}), .is_error = true };
+        };
         if (job.done) {
             consumed(io, job); // already-finished also reports the exit
             const unread = job.buf.items.len - job.cursor;
@@ -485,6 +501,7 @@ pub const waitForeground = job_foreground.waitForeground;
 
 fn freeJob(gpa: Allocator, io: Io, job: *Job) void {
     job.future.await(io);
+    if (job.parked) job_parked.finish(io, job.id, job.cmd, .{ .exit_code = job.exit_code, .done = job.done, .killed = job.killed, .session_end = job.exit_cleanup, .unread = job.buf.items[job.cursor..] });
     // A kept job still writes to its capture: a later resume re-attaches it.
     if (job.capture) |c| job_capture.release(gpa, io, c, !job.detach);
     job.buf.deinit(gpa);
@@ -532,6 +549,7 @@ pub fn jobsReap(gpa: Allocator, io: Io) void {
     for (jobs) |job| freeJob(gpa, io, job);
     gpa.free(jobs);
     // toOwnedSlice already emptied the pool; deinit would poison reuse.
+    _ = @import("sim_ledger.zig").g.release(gpa, io); // #407: after the jobs that may use them
 }
 
 test { // split-out modules: unreferenced, their tests silently never run
@@ -539,6 +557,7 @@ test { // split-out modules: unreferenced, their tests silently never run
     _ = @import("worktree_lease.zig");
     _ = .{ job_wait, job_notify, job_idle, job_registry, browser_guard, job_capture };
     _ = @import("job_durable.zig");
+    _ = job_parked;
     _ = @import("job_recover.zig");
     _ = @import("jobs_tests.zig");
 }

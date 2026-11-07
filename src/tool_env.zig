@@ -21,6 +21,9 @@
 //! instead. Not on Windows, where these commands and that failure mode do
 //! not apply the same way.
 //!
+//! #832: on macOS `open` in a tool child launches apps in the background
+//! (gui_background.zig puts its shim first on PATH).
+//!
 //! Children graff launches as graff (learning runs) and MCP servers do not
 //! come through here: they keep the full environment, because they are the
 //! ones that legitimately read those keys. Subagents run in-process.
@@ -96,6 +99,7 @@ pub fn build(gpa: Allocator, parent: *const Map) Allocator.Error!Map {
         for (non_interactive) |kv| if (!passed(pass, kv[0])) try m.put(kv[0], kv[1]);
         try gitEditors(&m, pass);
     }
+    try @import("gui_background.zig").applyTo(&m, builtin.os.tag); // #832: `open` launches in the background
     return m;
 }
 
@@ -164,7 +168,7 @@ test "#1267: tool env drops the provider keys graff reads and keeps the rest" {
     defer m.deinit();
     for ([_][]const u8{ "OPENAI_API_KEY", "XAI_API_KEY", "CODEGRAFF_API_KEY", "GRAFF_TELEMETRY_KEY", "MYROUTER_API_KEY" }) |name|
         try std.testing.expect(m.get(name) == null);
-    try std.testing.expectEqualStrings("/usr/bin:/bin", m.get("PATH").?);
+    try std.testing.expect(std.mem.endsWith(u8, m.get("PATH").?, "/usr/bin:/bin")); // #832 may put its shim first
     try std.testing.expectEqualStrings("/tmp", m.get("HOME").?);
     try std.testing.expectEqualStrings("sk-fake-openai", parent.get("OPENAI_API_KEY").?); // graff keeps its own
 }
@@ -208,7 +212,7 @@ test "#1267: a real tool child (both shell paths) cannot see the key" {
     const run = try jobs.runCappedWithOptions(gpa, io, &sh, 64 * 1024, 4096, 10_000, jobs.toolRunOptions(null));
     defer gpa.free(run.stdout);
     defer gpa.free(run.stderr);
-    try std.testing.expect(std.mem.indexOf(u8, run.stdout, "PATH=/usr/bin:/bin") != null);
+    try std.testing.expect(std.mem.indexOf(u8, run.stdout, "/usr/bin:/bin\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, run.stdout, "sk-fake-openai") == null);
     try std.testing.expect(std.mem.indexOf(u8, run.stdout, "OPENAI_API_KEY") == null);
 
@@ -223,7 +227,7 @@ test "#1267: a real tool child (both shell paths) cannot see the key" {
         .cancelled => |c| gpa.free(c.output),
     };
     try std.testing.expect(waited == .done);
-    try std.testing.expect(std.mem.indexOf(u8, waited.done.output, "PATH=/usr/bin:/bin") != null);
+    try std.testing.expect(std.mem.indexOf(u8, waited.done.output, "/usr/bin:/bin\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, waited.done.output, "xai-fake") == null);
     try std.testing.expect(std.mem.indexOf(u8, waited.done.output, "OPENAI_API_KEY") == null);
 }
@@ -319,7 +323,7 @@ test "#1267: control flags and essentials survive a provider env_key naming them
     provider.additional_router = .{ .id = "myrouter", .display_name = "My Router", .kind = .openai, .auth = .bearer, .url = "http://127.0.0.1:9/v1/chat/completions", .env_key = "PATH", .default_model = "m" };
     var m = try build(gpa, &parent);
     defer m.deinit();
-    try std.testing.expectEqualStrings("/usr/bin:/bin", m.get("PATH").?);
+    try std.testing.expect(std.mem.endsWith(u8, m.get("PATH").?, "/usr/bin:/bin"));
     try std.testing.expectEqualStrings("1", m.get("CODEX_DISABLED").?);
     try std.testing.expect(m.get("OPENAI_API_KEY") == null);
 }
@@ -394,4 +398,19 @@ test "#1268: an explicit git -c core.editor / sequence.editor still wins in a to
     try std.testing.expect(std.mem.indexOf(u8, run.stdout, "plain=3\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, run.stdout, "squash=2\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, run.stdout, "subject=edited\n") != null);
+}
+
+test "#832: a tool child's PATH finds the background-launch `open` first on macOS" {
+    const gpa = std.testing.allocator;
+    var parent = try fakeParent(gpa);
+    defer parent.deinit();
+    var m = try build(gpa, &parent);
+    defer m.deinit();
+    const want = if (builtin.os.tag == .macos) "/tmp/.codegraff/shims/background-gui:/usr/bin:/bin" else "/usr/bin:/bin";
+    try std.testing.expectEqualStrings(want, m.get("PATH").?);
+    // Foreground asked for in graff's own environment: PATH is left alone.
+    try parent.put("GRAFF_GUI_FOREGROUND", "1");
+    var fg = try build(gpa, &parent);
+    defer fg.deinit();
+    try std.testing.expectEqualStrings("/usr/bin:/bin", fg.get("PATH").?);
 }

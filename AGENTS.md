@@ -94,7 +94,7 @@ new load-bearing decision, add a record in the same branch.
 
 ## Terminal UI: what's ours to change
 
-- **Colors, bold/dim, glyphs, layout are ours.** Styling travels in the output byte stream as SGR escape sequences, so the app controls it per character. The palette lives in `src/ansi.zig` (the accent is codegraff.com's emerald `#059669`; coral/red hues are reserved for errors).
+- **Colors, bold/dim, glyphs, layout are ours.** Styling travels in the output byte stream as SGR escape sequences, so the app controls it per character. The palette lives in `src/ansi.zig` (the line REPL follows Harness's Codegraff Dark theme: amber `#e8a33d`, cream text, and warm neutrals; coral/red hues are reserved for errors).
 - **The font is not ours.** The terminal emulator owns the typeface — it loads the font, measures the cell grid, and rasterizes glyphs itself; the wire protocol has no sequence for an app to request a font. (xterm's legacy `OSC 50` is unimplemented by modern emulators and would hijack the user's whole terminal — do not emit it.) If a user asks to "change the REPL font," the answer is their terminal's config, e.g. `font-family = Geist Mono` (the site's typeface) in Ghostty — never a code change here.
 - **HDR/wide-gamut color is not ours either.** Truecolor SGR is 8-bit sRGB per channel — the protocol's ceiling; no sequence expresses Display P3 or EDR headroom, and macOS terminals clip app colors to SDR regardless of the panel. Pick values that look right on both P3 and sRGB displays (as `#059669` does); that's the whole lever.
 
@@ -130,6 +130,10 @@ change. The workspace the agent runs in is not chrome.
 
 - While you work, run only what you touched: `zig build unit -Dtest-filter="<part of a test name>"` builds and runs just the unit tests (repeat the flag for several names).
 - `zig build test` also runs the subprocess integration scripts and takes several minutes. Run it once before you push; the pre-push hook does.
+
+## nanocua: this repo holds the original
+
+`apps/nanocua` is graff's computer use on macOS (ADR 0314), its own package with its own `zig build test`, pinned to a nanoui release. graff links none of it. nanoui's `apps/nanocua` is generated from this one by `scripts/vendor-nanocua.sh` and keeps this repository's license; change it here and copy it there, never the reverse.
 
 ## Tests must be reachable
 

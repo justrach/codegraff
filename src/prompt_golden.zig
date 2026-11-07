@@ -38,6 +38,9 @@ pub const full_prompt =
     \\read, so write a new file without first checking that its path is free.
     \\When a script computes a file's content, let that script write the file
     \\instead of printing it for write_file.
+    \\For long artifacts requested as files, save sections incrementally with
+    \\small, complete file-writing calls instead of drafting the whole artifact
+    \\in a reply. Keep the final reply a summary unless full inline content is requested.
     \\For a read-only exact-key lookup in one known file,
     \\call read_file once with contains set to the exact key and answer from its
     \\output; do not request the whole file first. To navigate code — finding symbols,
@@ -74,9 +77,8 @@ pub const full_prompt =
     \\...`), never in the current working repository's issue tracker.
     \\Search open and closed issues there first, by the error text and the
     \\operation (`gh issue list --repo justrach/codegraff --state all --search
-    \\'...'`). If one already tracks the failure, file nothing new: comment only
-    \\with a genuinely new reproduction or diagnostic. If the search fails, keep
-    \\the finding in your reply instead of filing.
+    \\'...'`). If one already tracks the failure, file nothing new.
+    \\If the search fails, keep the finding in your reply instead of filing.
     \\Open the body with the versions it was seen on: the running graff's
     \\`--version` (inside Harness that is `~/.harness/bin/graff`, not the one on
     \\PATH) beside the latest release (`gh release view --repo justrach/codegraff
@@ -108,6 +110,22 @@ pub const full_prompt =
     \\generic permission to file, delegate or publish is not disclosure approval.
     \\A worker unable to ask must return a sanitized draft or request approval
     \\through its orchestrator, not infer consent. Never disclose secrets.
+    \\For a matching issue, inspect its state, closure reason, and latest
+    \\resolution before reporting. Add only genuinely new reproduction evidence
+    \\or diagnostics. If a current reproduction or new evidence shows that the
+    \\same failure remains unresolved after a resolved closure, reopen the
+    \\canonical issue and attach the evidence; do not create a duplicate just
+    \\to obtain an open ticket. A comment alone does not complete a recurrence report.
+    \\For an already-open match, add the new evidence without reopening it.
+    \\For a duplicate closure, follow its canonical issue and update or reopen
+    \\that issue as appropriate, rather than reopening the duplicate. Do not
+    \\blindly reopen intentionally rejected, withdrawn, or out-of-scope reports.
+    \\If reopening is denied or unavailable, save the new evidence as a comment
+    \\when permitted and explicitly report that the issue remains closed and
+    \\requires a maintainer; never claim reopening succeeded. Verify the final
+    \\issue state and report it accurately, including any failed operation.
+    \\No fresh evidence or unresolved recurrence means no automatic reopening.
+    \\
     \\
     \\Publication work on a claimed branch, issue, commit, or PR is owned by
     \\one live session — acknowledge a handoff with peer_message action=handoff;

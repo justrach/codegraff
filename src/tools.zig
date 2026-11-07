@@ -37,6 +37,9 @@ pub const ExecResult = struct {
     cancelled: bool = false, // ended by user Esc, not by failing (#266)
     pending: bool = false, // asynchronous work has no terminal result yet
     ms: i64 = 0, // wall-clock of the tool exec (external tools only; --timing)
+    /// Set only when a delegated MCP task reported context/usage metadata
+    /// (run_task_meta.zig). Arena-owned like `text`.
+    run_task: ?@import("engine_events.zig").RunTaskMeta = null,
 };
 
 pub const AnswerRequest = struct {
@@ -85,6 +88,8 @@ pub const ToolOutput = struct {
     cancelled: bool = false, // ended by user Esc, not by failing (#266)
     pending: bool = false, // asynchronous work has no terminal result yet
     ms: i64 = 0, // set by execTool
+    /// Delegated MCP task facts, when the call reported them (run_task_meta.zig).
+    run_task: ?@import("engine_events.zig").RunTaskMeta = null,
 };
 
 // `/rewind`'s pre-write file history lives in snapshots.zig (this file is at
@@ -123,7 +128,6 @@ pub const ToolCtx = struct {
     interactive_children: bool = false,
     session_name: []const u8 = "",
     registry: ?*mcp.Registry,
-    mcp_context: ?@import("mcp_turn_context.zig").Snapshot = null,
     from_sub: bool,
     rlm_host: bool = false, // ADR 0238: a host call from inside an rlm script (its MCP result binds whole; rlm slims what it prints)
     has_eval: bool = false, // the root's --eval loop: escalation's strongest verifier
@@ -141,6 +145,9 @@ pub const ToolCtx = struct {
     parent_effort: ?main_mod.ReasoningEffort = null, // ADR 0232: the caller's live effort (/effort or Jev); an unpinned child runs at it
     parent_messages: []const std.json.Value = &.{}, // ADR 0232: the caller's history, read only while its tool batch runs
     parent_task: []const u8 = "", // ADR 0232: the user's prompts a spawned child sees as context
+    fork_source: ?@import("subagent_history.zig").Snapshot = null,
+    retain_children: bool = false, // explicit workflow retention, not inherited by judges
+    synthesis: bool = false, // canonical workflow synthesis, not ordinary delegated work
     read_only_shell: bool = false, // ADR 0232: a read-only child's foreground shell runs under the seatbelt sandbox
 };
 
@@ -247,9 +254,9 @@ pub fn codedbGuard(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
         is_scanner = true;
     };
     if (!is_scanner) return null;
-    // ADR 0234: an in-place edit and a whole read of small files cost a round trip to refuse and save nothing.
+    // ADR 0234: an in-place edit, a write-only cat (#1709) and a whole read of small files cost a round trip to refuse and save nothing.
     const scope = @import("codedb_guard_scope.zig");
-    if (scope.inPlaceEdit(tool, trimmed) or scope.smallReadIn(ctx.io, ctx.agent_cwd, tool, trimmed)) return null;
+    if (scope.exempt(ctx.io, ctx.agent_cwd, tool, trimmed)) return null;
 
     // …aimed at a concrete source file (not a glob — codedb glob/tree cover that).
     const src_path = extractSourceFilePath(cmd) orelse return null;

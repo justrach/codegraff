@@ -15,7 +15,12 @@ const no_local_tools = @import("no_local_tools.zig");
 const messages = @import("messages.zig");
 
 /// Retries allowed per turn for consecutive degenerate completions.
-pub const max_consecutive: u8 = 2;
+pub const max_consecutive: u8 = 5;
+
+const retry = @import("agent_empty_retry.zig");
+pub const retryDelayMs = retry.retryDelayMs;
+pub const wait = retry.wait;
+const checkBudget = retry.checkBudget;
 
 /// True when `final_text` is a degenerate completion worth one more ask.
 /// `retries` = attempts already spent on this turn. Whitespace-only text is
@@ -129,10 +134,26 @@ test "#1013 without a bounce note the follow-up is the answer" {
     try std.testing.expectEqualStrings("Current answer", current.finish(&self, "Current answer"));
 }
 
+/// Why the turn ended, for the user (#1802): nothing earlier is lost, and
+/// sending again is the retry.
+pub const exhausted_text = "The provider returned an empty reply " ++ std.fmt.comptimePrint("{d}", .{max_consecutive + 1}) ++
+    " times in a row, so this turn stopped. The conversation is kept; send a message to try again.";
+
 /// Handle a degenerate completion inside runTurn. Returns true when the
 /// caller should `continue` the loop.
 pub fn handle(self: *Agent, final_text: []const u8, hist_len: usize) !bool {
-    if (shouldRetry(final_text, self.empty_completion_retries)) {
+    return handleWithWait(self, final_text, hist_len, wait);
+}
+
+fn handleWithWait(self: *Agent, final_text: []const u8, hist_len: usize, comptime sleep: anytype) !bool {
+    if (std.mem.trim(u8, final_text, " \t\r\n").len == 0) {
+        if (Agent.esc_cancel.load(.acquire) or @import("acp_engine.zig").cancel_flag.load(.acquire)) return error.Interrupted;
+        if (!shouldRetry(final_text, self.empty_completion_retries)) {
+            self.last_api_error = exhausted_text;
+            return error.EmptyCompletion;
+        }
+        try checkBudget(self);
+        const delay_ms = @import("retry_jitter.zig").ms(self.io, retryDelayMs(self.empty_completion_retries));
         const keep = @min(hist_len, self.messages.items.len);
         const reasoned = reasonedWithoutAnswer(self.messages.items[keep..]);
         self.empty_completion_retries += 1;
@@ -140,13 +161,18 @@ pub fn handle(self: *Agent, final_text: []const u8, hist_len: usize) !bool {
         self.messages.shrinkRetainingCapacity(keep);
         if (reasoned) {
             try self.messages.append(try messages.userNote(self.arena, self.provider.kind, reasoning_budget_note));
-            try self.say("[model reasoned without answering — retrying with a brief-answer note ({d}/{d})]\n", .{ self.empty_completion_retries, max_consecutive });
-        } else try self.say("[model returned an empty completion — retrying ({d}/{d})]\n", .{ self.empty_completion_retries, max_consecutive });
+            try self.say("[model reasoned without answering — retrying with a brief-answer note in {d}s ({d}/{d})]\n", .{ delay_ms / 1000, self.empty_completion_retries, max_consecutive });
+        } else try self.say("[model returned an empty completion — retrying in {d}s ({d}/{d})]\n", .{ delay_ms / 1000, self.empty_completion_retries, max_consecutive });
+        if (self.tracer) |tr| tr.note("retry", "empty completion; bounded jittered backoff");
+        try sleep(self, delay_ms);
+        try checkBudget(self); // a sibling may have spent the shared budget while waiting
         return true;
     }
     if (@import("task_intent.zig").current(self) == .informational) return false;
     if (@import("exact_reply.zig").requested(messages.latestUserText(self.messages.items))) return false;
     if (no_local_tools.enabled) return false;
+    // #1786: an answer built on the provider's own searches did its work this completion.
+    if (@import("xai_hosted.zig").ranServerSideSearch(self.messages.items[@min(hist_len, self.messages.items.len)..])) return false;
     // #1518: a question answered in text is done, and a retry the model-call
     // budget cannot pay for turns a valid answer into a budget failure.
     if (!@import("task_intent.zig").requestsAction(messages.latestUserText(self.messages.items))) return false;
@@ -163,6 +189,7 @@ pub fn handle(self: *Agent, final_text: []const u8, hist_len: usize) !bool {
 /// on the runTurn stack: tool progress and compaction must not reset it.
 /// Background work still running is live work too: after the reminder, a
 /// headless run waits for it to report (run_idle.zig).
+/// The Agent dedupes reminders across turns for the same ask and open set.
 pub const PendingWork = struct {
     nudged: bool = false,
     idle: @import("run_idle.zig").Hold = .{},
@@ -197,6 +224,18 @@ pub const PendingWork = struct {
         "If stopping is appropriate, explain the actual blocker or status and say root execution is stopping. Never imply the root keeps working after a final reply. " ++
         "Update the checklist only to reflect real progress; do not mark unfinished work completed to bypass this check.";
 
+    /// New user requests or re-planned open work re-arm the reminder.
+    fn openFingerprint(self: *const Agent, epoch: u64) u64 {
+        var h = std.hash.Wyhash.init(epoch);
+        h.update(messages.latestUserText(self.messages.items));
+        for (self.todos.items) |t| {
+            if (t.epoch != epoch or t.retired or t.closed()) continue;
+            h.update(t.content);
+            h.update(t.status);
+        }
+        return h.final();
+    }
+
     fn open(self: *const Agent) usize {
         if (self.sub or self.review_mode or self.text_only or self.completed != null or main_mod.plan_mode) return 0;
         if (self.goal) |g| if (g.status == .paused or g.status == .blocked) return 0;
@@ -204,7 +243,7 @@ pub const PendingWork = struct {
         return goals.openCount(self.todos.items, goals.currentEpoch(self.goal));
     }
 
-    fn canRequest(self: *const Agent) bool {
+    pub fn canRequest(self: *const Agent) bool {
         if (self.run_budget) |b| if (!b.canAfford(1)) return false;
         if (main_mod.max_tool_calls) |max| if (self.tool_calls_this_turn >= max) return false;
         const cap = @import("turn_chrome.zig").max_turn_model_calls;
@@ -219,12 +258,18 @@ pub const PendingWork = struct {
         // The reminder first, so independent work runs beside the background
         // work; the wait applies once the model stops again.
         if (count > 0 and !state.nudged and canRequest(self)) {
-            state.nudged = true;
             const goals = @import("goal_state.zig");
-            const body = try std.fmt.allocPrint(self.arena, "{s}\n\n{s}", .{ note, goals.renderTodos(self, goals.currentEpoch(self.goal)) });
-            try self.messages.append(try @import("session_wake.zig").mark(self.arena, try @import("named_work.zig").userNudge(self.arena, self.provider.kind, body)));
-            if (self.tracer) |tr| tr.note("pending_work", "plain final reconciled; one retry granted");
-            return null;
+            const epoch = goals.currentEpoch(self.goal);
+            const fp = openFingerprint(self, epoch);
+            state.nudged = true;
+            if (self.pending_nudged_fp != fp) {
+                self.pending_nudged_fp = fp;
+                const body = try std.fmt.allocPrint(self.arena, "{s}\n\n{s}", .{ note, goals.renderTodos(self, epoch) });
+                try self.messages.append(try @import("session_wake.zig").mark(self.arena, try @import("named_work.zig").userNudge(self.arena, self.provider.kind, body)));
+                if (self.tracer) |tr| tr.note("pending_work", "plain final reconciled; one retry granted");
+                return null;
+            }
+            if (self.tracer) |tr| tr.note("pending_work", "checklist unchanged since last nudge; stopping without re-reminding");
         }
         if (canRequest(self) and try state.idle.wait(self)) return null;
         if (count == 0) return text;
@@ -240,11 +285,13 @@ pub const PendingWork = struct {
 
 test {
     _ = @import("run_idle.zig");
+    _ = @import("agent_empty_completion_tests.zig");
 }
 
-fn pendingFixture(arena: std.mem.Allocator) Agent {
+pub fn pendingFixture(arena: std.mem.Allocator) Agent {
     var self: Agent = undefined;
     self.arena = arena;
+    self.io = std.testing.io;
     self.sub = false;
     self.review_mode = false;
     self.text_only = false;
@@ -253,9 +300,11 @@ fn pendingFixture(arena: std.mem.Allocator) Agent {
     self.todos = .empty;
     self.messages = .init(arena);
     self.provider.kind = .openai;
+    self.depth = 0;
     self.run_budget = null;
     self.tool_calls_this_turn = 3; // unlike the zero-tool guards, tools ran
     self.model_calls_this_turn = 4;
+    self.pending_nudged_fp = null;
     self.tracer = null;
     self.streamed_text = false;
     return self;
@@ -445,44 +494,10 @@ test "exact reply bypasses only fake done while mixed requests and empty replies
         self.model_calls_this_turn = 1;
         try self.messages.append(try messages.textMessage(self.arena, "user", case[0]));
         const before = self.messages.items.len;
-        try std.testing.expectEqual(case[2], try handle(&self, case[1], before));
+        try std.testing.expectEqual(case[2], try handleWithWait(&self, case[1], before, testWait));
         const empty = std.mem.trim(u8, case[1], " \t\r\n").len == 0;
         try std.testing.expectEqual(@as(usize, if (case[2] and !empty) before + 1 else before), self.messages.items.len);
         try std.testing.expectEqual(@as(u8, if (empty) 1 else 0), self.empty_completion_retries);
-    }
-}
-
-test "#1518 lean bounce skips questions and a spent model-call budget" {
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    const old_unattended = main_mod.unattended;
-    const old_lean = no_local_tools.lean;
-    const old_enabled = no_local_tools.enabled;
-    main_mod.unattended = true;
-    no_local_tools.lean = true;
-    no_local_tools.enabled = false;
-    defer {
-        main_mod.unattended = old_unattended;
-        no_local_tools.lean = old_lean;
-        no_local_tools.enabled = old_enabled;
-    }
-    var budget: @import("run_budget.zig").RunBudget = .{ .max_model_calls = 1 };
-    budget.model_calls.store(1, .release);
-    const cases = .{
-        .{ "What does parse() return for an empty string?", false, false },
-        .{ "Fix the off-by-one in fib.py", true, false },
-        .{ "Fix the off-by-one in fib.py", false, true },
-    };
-    inline for (cases) |case| {
-        var self = pendingFixture(state.allocator());
-        self.empty_completion_retries = 0;
-        self.call_kind = .title; // suppress fixture notices without initializing a writer
-        self.tool_calls_this_turn = 0;
-        self.model_calls_this_turn = 1;
-        if (case[1]) self.run_budget = &budget;
-        try self.messages.append(try messages.textMessage(self.arena, "user", case[0]));
-        const before = self.messages.items.len;
-        try std.testing.expectEqual(case[2], try handle(&self, "It returns an empty list.", before));
     }
 }
 
@@ -506,4 +521,47 @@ test "#1582 an informational question does not resume an earlier task's untouche
     try self.messages.append(try messages.textMessage(self.arena, "user", "Keep going and fix it"));
     state = PendingWork.begin(&self);
     try std.testing.expect((try state.finish(&self, "Stopping here.")) == null);
+}
+
+fn testWait(_: *Agent, ms: u64) !void {
+    try std.testing.expect(ms >= 10_000 and ms <= 150_000);
+}
+
+test "empty completion recovery backs off, keeps reasoning note, fails explicitly and obeys budgets and cancellation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var self = pendingFixture(arena.allocator());
+    self.in = null;
+    self.codex_ws = null;
+    self.codex_prev_id = null;
+    self.call_kind = .title;
+    self.empty_completion_retries = 0;
+    const reasoning = try std.json.parseFromSliceLeaky(std.json.Value, self.arena, "[{\"type\":\"reasoning\",\"summary\":[]}]", .{});
+    try self.messages.append(reasoning.array.items[0]);
+    try std.testing.expect(try handleWithWait(&self, "", 0, testWait));
+    try std.testing.expectEqualStrings(reasoning_budget_note, self.messages.items[0].object.get("content").?.string);
+    var total: u64 = 0;
+    for (0..max_consecutive) |i| total += retryDelayMs(@intCast(i));
+    try std.testing.expectEqual(@as(u64, 270_000), total);
+    self.empty_completion_retries = max_consecutive;
+    try std.testing.expectError(error.EmptyCompletion, handleWithWait(&self, " \n", 0, testWait));
+    self.empty_completion_retries = 0;
+    var budget: @import("run_budget.zig").RunBudget = .{ .max_model_calls = 1 };
+    budget.model_calls.store(1, .release);
+    self.run_budget = &budget;
+    try std.testing.expectError(error.RunBudgetExhausted, handleWithWait(&self, "", 0, testWait));
+    try std.testing.expectEqual(@as(u8, 0), self.empty_completion_retries);
+    self.run_budget = null;
+    const old_cap = @import("turn_chrome.zig").max_turn_model_calls;
+    @import("turn_chrome.zig").max_turn_model_calls = self.model_calls_this_turn;
+    defer @import("turn_chrome.zig").max_turn_model_calls = old_cap;
+    try std.testing.expectError(error.RunBudgetExhausted, handleWithWait(&self, "", 0, testWait));
+    const old_cancel = Agent.esc_cancel.swap(true, .acq_rel);
+    defer Agent.esc_cancel.store(old_cancel, .release);
+    try std.testing.expectError(error.Interrupted, wait(&self, 120_000));
+    try std.testing.expectError(error.Interrupted, handleWithWait(&self, "", 0, testWait));
+    Agent.esc_cancel.store(false, .release);
+    const old_acp_cancel = @import("acp_engine.zig").cancel_flag.swap(true, .acq_rel);
+    defer @import("acp_engine.zig").cancel_flag.store(old_acp_cancel, .release);
+    try std.testing.expectError(error.Interrupted, wait(&self, 120_000));
 }

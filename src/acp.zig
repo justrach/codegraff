@@ -88,17 +88,17 @@ fn liveAfter(ctx: *anyopaque, arena: Allocator, text: []const u8, prompt: ?std.j
     _ = @import("acp_images.zig").stage(live.root, prompt);
 }
 
-fn liveBind(ctx: *anyopaque, session_id: []const u8) void {
-    const live: *LiveTurn = @ptrCast(@alignCast(ctx));
-    live.session_id = session_id;
-}
-
 /// Per-turn context meter: the live occupancy estimate against the model's
 /// wall, so the client can render remaining context without reading history.
 fn liveMeter(ctx: *anyopaque) engine.Meter {
     const live: *LiveTurn = @ptrCast(@alignCast(ctx));
     const root = live.root;
-    return .{ .used = root.effectiveContextTokens(), .window = root.provider.context, .cost_usd = @import("acp_context_meter.zig").knownCostUsd(root.io) };
+    return .{
+        .used = root.effectiveContextTokens(),
+        .window = root.provider.context,
+        .cost_usd = @import("acp_context_meter.zig").knownCostUsd(root.io),
+        .savings = @import("context_savings.zig").snap(root.io),
+    };
 }
 
 /// The ACP user message: GUI `@[image]` attachments become native vision
@@ -117,21 +117,16 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
     const live: *LiveTurn = @ptrCast(@alignCast(ctx));
     if (try @import("acp_agents.zig").handle(arena, live.root.io, live.root.home, w, req)) return true;
     if (try @import("acp_changes.zig").handle(arena, live.root.io, w, req)) return true;
+    if (try @import("acp_session_fork.zig").handle(live, arena, w, req)) return true;
     if (try @import("acp_mcp_app.zig").handle(arena, w, req, live.root)) return true;
     if (!std.mem.eql(u8, req.method, "graff/models")) return false;
     if (req.id == null) return true;
     const keys = live.keys;
     const root = live.root;
     // Hydrate deferred local metadata without network refresh or MCP startup.
-    root.ensureStoredKeys(keys);
-    if (root.model_catalog) |*cached|
-        cached.ensureCached(root.io, root.gpa, root.arena, root.home, keys.get("codex") orelse "", keys.codex_account);
-    if (!live.local_catalog_loaded) {
-        if (root.home.len > 0) @import("router_catalog.zig").loadCachedAll(root.io, root.arena, root.home);
-        live.local_catalog_loaded = true;
-    }
+    @import("acp_model_option.zig").hydrate(live);
     const er = @import("effort_route.zig");
-    if (@import("gateway_picker_catalog.zig").requested(req.params)) @import("gateway_picker_catalog.zig").refresh(root.gpa, root.io, root.arena, keys.*);
+    if (@import("gateway_picker_catalog.zig").requested(req.params)) @import("gateway_picker_catalog.zig").refresh(root.io, root.arena, root.home, keys.*);
     const catalog = pricing.models();
     const Row = struct {
         name: []const u8,
@@ -152,7 +147,7 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
             billing.costFor(m.provider, keys.source(m.provider)),
         ),
     };
-    std.mem.sort(models_rank.Scored, ranked, {}, models_rank.scoredLess);
+    @import("stable_sort.zig").sort(models_rank.Scored, ranked, {}, models_rank.scoredLess);
     const rows = try arena.alloc(Row, catalog.len);
     for (ranked, rows) |r, *row| {
         const m = catalog[r.idx];
@@ -236,11 +231,12 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
         .turn = LiveTurn.run,
         .error_message = LiveTurn.errorMessage,
         .cancel_info = LiveTurn.cancelInfo,
+        .error_recovery = LiveTurn.errorRecovery,
         .ctx = &live,
         .seed = @bitCast(util.unixMs(io)),
         .slash = liveSlash,
         .after_user = liveAfter,
-        .bind_session = liveBind,
+        .bind_session = LiveTurn.bindSession,
         .meter = liveMeter,
         .extra = liveModels,
         .mcp_servers = @import("acp_mcp_servers.zig").attach,
@@ -540,6 +536,7 @@ test {
     _ = @import("transport_gate.zig");
     _ = @import("acp_mcp_app.zig");
     _ = @import("acp_view_meta.zig");
+    _ = @import("acp_tool_terminal.zig");
     _ = @import("model_maker.zig");
 }
 

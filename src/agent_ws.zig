@@ -116,10 +116,11 @@ pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
         emitAbort(self, .dropped, true);
         return error.StreamDropped;
     }
+    if (@import("claude_agent.zig").owns(self)) return @import("claude_agent.zig").post(self, body); // ADR 0309
     if (!wsEligible(self)) return self.postStream(body);
     const response = postResponsesWs(self, body) catch |e| {
         if (@import("agent_async_tools.zig").started(self)) return e;
-        if (e == error.Interrupted or e == error.StreamStalled or e == error.ModelLoop or e == error.Steered) return e;
+        if (e == error.Interrupted or e == error.StreamStalled or e == error.ModelLoop or e == error.ReplyRunaway or e == error.Steered) return e;
         // Preemptive idle expiry is not a failed transport attempt; it only asks
         // request() to rebuild the already-created delta as full input.
         if (e == error.CodexWsReanchor) return e;

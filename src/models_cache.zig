@@ -552,7 +552,7 @@ pub fn list(out: *Io.Writer) !void {
         const ctx = pricing.contextFor(m.provider, m.name);
         if (std.mem.eql(u8, m.provider, "codex")) {
             try out.print("  {s:<34}{d:>10} ctx   (subscription)\n", .{ m.name, ctx });
-        } else if (pricing.priceFor(m.name)) |p| {
+        } else if (pricing.priceForProvider(m.provider, m.name)) |p| {
             try out.print("  {s:<34}{d:>10} ctx   ${d}/{d} per 1M\n", .{ m.name, ctx, p.in, p.out });
         } else {
             try out.print("  {s:<34}{d:>10} ctx   (unpriced)\n", .{ m.name, ctx });

@@ -4,6 +4,7 @@ const readline_commit = @import("readline_commit.zig");
 
 test {
     _ = @import("readline_history.zig");
+    _ = @import("stable_sort.zig");
     _ = @import("codedbpro_paths.zig");
     _ = @import("agent_request_body_responses.zig");
     _ = @import("agent_server_compact_tests.zig");
@@ -22,6 +23,19 @@ test {
     _ = @import("vault_refresh.zig");
     _ = @import("vault_live.zig");
     _ = @import("peer_cli.zig");
+    // engine_events.zig's tests (that file hit the 600-line cap), and the
+    // codegraff/runTask facts that cross MCP result -> tool_result -> ACP _meta.
+    _ = @import("engine_events_tests.zig");
+    _ = @import("run_task_meta.zig");
+    _ = @import("acp_run_task_tests.zig");
+    _ = @import("mcp_cancel_notice.zig");
+    // Claude Agent provider (ADR 0309).
+    _ = @import("claude_agent_tests.zig");
+    _ = @import("claude_agent_login.zig");
+    _ = @import("claude_agent.zig");
+    _ = @import("claude_agent_session.zig");
+    _ = @import("sim_pasteboard.zig");
+    _ = @import("acp_live_turn.zig");
 }
 
 test "oneshot -p still uses the live stall-watched transport" {
@@ -59,6 +73,10 @@ test "submitted prompt keeps key material masked" {
 }
 
 test "submitted prompt retains attachment chip styling" {
+    const ansi = @import("ansi.zig");
+    const saved = ansi.style;
+    ansi.style = ansi.Style.harness;
+    defer ansi.style = saved;
     var output: Io.Writer.Allocating = .init(std.testing.allocator);
     defer output.deinit();
     const mark = "[Image #1]";
@@ -66,6 +84,6 @@ test "submitted prompt retains attachment chip styling" {
     try std.testing.expect(std.mem.indexOf(
         u8,
         output.writer.buffered(),
-        "\x1b[7;38;2;5;150;105m[Image #1]\x1b[0m caption",
+        "\x1b[38;2;232;163;61m\x1b[7m[Image #1]\x1b[0m caption",
     ) != null);
 }

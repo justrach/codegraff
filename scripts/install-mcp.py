@@ -199,6 +199,29 @@ def start_detached(command, directory, token, log_path):
     log.close()
 
 
+def systemd_unit(command, directory, token):
+    """The user unit. ExecStart arguments are quoted words; WorkingDirectory is
+    one literal path that systemd does not unquote (a quoted value is "not
+    absolute"), so it only escapes the % specifier character."""
+    directory = str(directory)
+    if '\n' in directory or not directory.startswith('/'):
+        raise ValueError('Workspace path cannot be written to a systemd unit')
+    quote = lambda value: json.dumps(str(value).replace('%', '%%').replace('$', '$$'))
+    return (MARKER + '\n[Unit]\nDescription=Codegraff local MCP\n[Service]\n' +
+            'ExecStart=' + ' '.join(quote(part) for part in command) + '\n' +
+            'WorkingDirectory=' + directory.replace('%', '%%') + '\nEnvironment=GRAFF_MCP_TOKEN=' + token +
+            '\nRestart=on-failure\nRestartSec=10\n[Install]\nWantedBy=default.target\n')
+
+
+def systemctl(*args):
+    """systemctl --user, failing with systemd's own explanation."""
+    result = run_managed(['systemctl', '--user', *args], check=False)
+    if result.returncode != 0:
+        detail = (result.stderr or b'').decode(errors='replace').strip() or f'exit {result.returncode}'
+        raise ValueError(f'systemctl --user {" ".join(args)} failed: {detail}')
+    return result
+
+
 def service(home, executable, directory, port, token):
     state = home / '.graff/mcp'
     command = [str(executable), 'mcp', 'serve', '--http', '--port', str(port)]
@@ -220,15 +243,11 @@ def service(home, executable, directory, port, token):
         target = home / '.config/systemd/user/codegraff-mcp.service'
         if target.exists() and MARKER not in target.read_text():
             raise ValueError('Existing service is not managed by Codegraff')
-        quote = lambda value: json.dumps(str(value).replace('%', '%%').replace('$', '$$'))
-        atomic(target, MARKER + '\n[Unit]\nDescription=Codegraff local MCP\n[Service]\n' +
-            'ExecStart=' + ' '.join(quote(part) for part in command) + '\n' +
-            'WorkingDirectory=' + quote(directory) + '\nEnvironment=GRAFF_MCP_TOKEN=' + token +
-            '\nRestart=on-failure\nRestartSec=10\n[Install]\nWantedBy=default.target\n')
+        atomic(target, systemd_unit(command, directory, token))
         if linux_user_systemd():
-            run_managed(['systemctl', '--user', 'daemon-reload'])
-            run_managed(['systemctl', '--user', 'enable', '--now', 'codegraff-mcp.service'])
-            run_managed(['systemctl', '--user', 'restart', 'codegraff-mcp.service'])
+            systemctl('daemon-reload')
+            systemctl('enable', '--now', 'codegraff-mcp.service')
+            systemctl('restart', 'codegraff-mcp.service')
             return
     if sys.platform.startswith('linux'):
         start_detached(command, directory, token, home / '.graff/mcp/service.log')

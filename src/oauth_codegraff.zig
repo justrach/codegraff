@@ -9,7 +9,7 @@ const style = &@import("ansi.zig").style;
 const util = @import("util.zig");
 const strFieldObj = util.strFieldObj;
 const intFieldObj = util.intFieldObj;
-const openBrowser = @import("oauth_helpers.zig").openBrowser;
+const signin_link = @import("signin_link.zig");
 const credential_store = @import("credential_store.zig");
 const codegraff_device_base = @import("main.zig").codegraff_device_base;
 
@@ -56,9 +56,11 @@ pub fn login(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !void {
     // Print the link that carries the code: a person who copies it (the
     // browser did not open, or opened elsewhere) lands on the approval itself,
     // not on a page with nowhere to type the code.
-    try out.print("\nTo authorize, open:\n\n  {s}\n\nand check it shows the code {s}{s}{s}\n\nwaiting for approval …\n", .{ complete_uri, style.bold, user_code, style.reset });
+    try out.print("\nTo authorize, open:\n\n  {s}\n", .{complete_uri});
+    try signin_link.offer(io, out, complete_uri);
+    try out.print("\nand check it shows the code {s}{s}{s}\n\nwaiting for approval …\n", .{ style.bold, user_code, style.reset });
     try out.flush();
-    openBrowser(io, complete_uri);
+    signin_link.open(io, complete_uri);
 
     const poll_body = try std.fmt.allocPrint(arena, "{{\"device_code\":\"{s}\"}}", .{device_code});
     var waited: i64 = 0;

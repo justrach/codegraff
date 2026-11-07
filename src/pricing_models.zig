@@ -8,9 +8,14 @@ const ModelInfo = @import("pricing.zig").ModelInfo;
 pub const rows = [_]ModelInfo{
     // Local Apple-Silicon model served by mlx-lm (mlx_lm.server, OpenAI-compatible).
     .{ .provider = "mlx", .name = "mlx-community/Qwen3.6-27B-OptiQ-4bit", .context = 262_144 },
+    // Recursive Flint INT4 through `rec serve --port 8080`, which serves it as "flint".
+    .{ .provider = "mlx", .name = "flint", .context = 262_144 },
     // LM Studio serves whatever model is loaded; "lmstudio" is a routing alias —
     // swap for your loaded model id if LM Studio requires an exact match (GET :1234/v1/models).
     .{ .provider = "lmstudio", .name = "lmstudio", .context = 200_000 },
+    // oMLX needs an exact id. Its live /v1/models list replaces this offline alias
+    // and its first row becomes the default (pricing.providerDefaultModel).
+    .{ .provider = "omlx", .name = "omlx", .context = 200_000 },
     // Anthropic: no-key/offline FALLBACK ONLY; with a key, router_catalog swaps
     // in the live /v1/models list. Rows exist so boot, --schema and routing
     // (the default, ladder and vision picks) resolve before that fetch.
@@ -24,9 +29,22 @@ pub const rows = [_]ModelInfo{
     .{ .provider = "anthropic", .name = "claude-opus-4-7", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-opus-4-6", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-sonnet-4-6", .context = 1_000_000 },
-    .{ .provider = "anthropic", .name = "claude-haiku-4-5", .context = 200_000 },
+    .{ .provider = "anthropic", .name = "claude-haiku-5-5", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-opus-4-5", .context = 200_000 },
     .{ .provider = "anthropic", .name = "claude-sonnet-4-5", .context = 200_000 },
+    // Claude Agent (ADR 0309): the models Claude Code's opus/fable/sonnet/
+    // haiku aliases resolve to, under their real names, so the plan reads like
+    // any other. `claude-agent/<id>` passes any id Claude Code accepts. Claude
+    // Code runs each of these at 1M natively (its result reports contextWindow
+    // 1000000 with or without a `[1m]` suffix), so the window matches Anthropic's.
+    .{ .provider = "claude-agent", .name = "claude-opus-5-5", .context = 1_000_000 },
+    .{ .provider = "claude-agent", .name = "claude-fable-5-1", .context = 1_000_000 },
+    .{ .provider = "claude-agent", .name = "claude-sonnet-5-5", .context = 1_000_000 },
+    .{ .provider = "claude-agent", .name = "claude-haiku-5-5", .context = 1_000_000 },
+    // The previous generation Claude Code still offers by name.
+    .{ .provider = "claude-agent", .name = "claude-opus-5", .context = 1_000_000 },
+    .{ .provider = "claude-agent", .name = "claude-fable-5", .context = 1_000_000 },
+    .{ .provider = "claude-agent", .name = "claude-sonnet-5", .context = 1_000_000 },
     .{ .provider = "deepseek", .name = "deepseek-v4-pro", .context = 1_000_000 },
     .{ .provider = "deepseek", .name = "deepseek-v4-flash", .context = 1_000_000 },
     .{ .provider = "deepseek", .name = "deepseek-chat", .context = 1_000_000 },
@@ -59,7 +77,8 @@ pub const rows = [_]ModelInfo{
     // These rows keep Codex usable when auth or discovery is unavailable.
     .{ .provider = "codex", .name = "gpt-6-astra", .context = 272_000, .default_effort = "medium", .default_verbosity = "low" },
     .{ .provider = "codex", .name = "gpt-6-sol", .context = 272_000, .default_effort = "medium", .default_verbosity = "low" },
-    .{ .provider = "codex", .name = "gpt-6.1-sol", .context = 272_000, .default_effort = "low", .default_verbosity = "low" },
+    .{ .provider = "codex", .name = "gpt-6.1-sol", .context = 500_000, .default_effort = "low", .default_verbosity = "low" },
+    .{ .provider = "codex", .name = "gpt-6-luna", .context = 272_000 },
     .{ .provider = "codex", .name = "gpt-5.6-sol", .context = 272_000 },
     .{ .provider = "codex", .name = "gpt-5.6-terra", .context = 272_000 },
     .{ .provider = "codegraff", .name = "muse-spark-1.2", .context = 262_144 },
@@ -71,9 +90,9 @@ pub const rows = [_]ModelInfo{
     .{ .provider = "codex", .name = "gpt-5.4", .context = 272_000 },
     .{ .provider = "codex", .name = "gpt-5.4-mini", .context = 272_000 },
     .{ .provider = "codex", .name = "gpt-5.3-codex-spark", .context = 128_000 },
-    // The ChatGPT plan through the new sign-in (ADR 0221): the same ~272k input
-    // cap as Codex. Offline rows only; there is no live catalog for it yet.
-    .{ .provider = "chatgpt-new", .name = "gpt-6.1-sol", .context = 272_000 },
+    // The ChatGPT plan through the new sign-in (ADR 0221): subscription
+    // defaults, with GPT-6.1 Sol at 500k (ADR 0292). Offline fallback rows.
+    .{ .provider = "chatgpt-new", .name = "gpt-6.1-sol", .context = 500_000 },
     .{ .provider = "chatgpt-new", .name = "gpt-6-astra", .context = 272_000 },
     .{ .provider = "chatgpt-new", .name = "gpt-6-sol", .context = 272_000 },
     .{ .provider = "chatgpt-new", .name = "gpt-6-luna", .context = 272_000 },
@@ -119,11 +138,9 @@ pub const rows = [_]ModelInfo{
     .{ .provider = "codegraff", .name = "deepseek-v4-flash", .context = 1_000_000 },
     .{ .provider = "codegraff", .name = "minimax-m3", .context = 1_000_000 },
     .{ .provider = "codegraff", .name = "gpt-6-astra", .context = 1_050_000 },
-    .{ .provider = "codegraff", .name = "gpt-5.6-sol", .context = 1_050_000 },
-    .{ .provider = "codegraff", .name = "gpt-5.6-terra", .context = 1_050_000 },
-    .{ .provider = "codegraff", .name = "gpt-5.6-luna", .context = 1_050_000 },
-    .{ .provider = "codegraff", .name = "gpt-5.6", .context = 1_050_000 },
-    .{ .provider = "codegraff", .name = "gpt-5.5", .context = 1_050_000 },
+    .{ .provider = "codegraff", .name = "gpt-6-sol", .context = 1_050_000 },
+    .{ .provider = "codegraff", .name = "gpt-6.1-sol", .context = 1_050_000 },
+    .{ .provider = "codegraff", .name = "gpt-6-luna", .context = 1_050_000 },
     .{ .provider = "codegraff", .name = "kimi-k2.6", .context = 262_144 },
     .{ .provider = "codegraff", .name = "grok-4.7", .context = 500_000 },
     .{ .provider = "codegraff", .name = "grok-4.6", .context = 500_000 },
@@ -165,6 +182,7 @@ pub const rows = [_]ModelInfo{
     // contextFor falls to default_context and a 1M model compacts at 160k.
     // Efforts mirror the compat layer's own rejection message: "Valid values
     // are: high, low, medium, minimal, none".
+    .{ .provider = "google", .name = "gemini-4-argon", .context = 1_048_576, .supports_reasoning = true, .thinking_support = .both, .support_efforts = &.{ "low", "medium", "high" }, .default_effort = "medium" },
     .{ .provider = "google", .name = "gemini-3.8-flash", .context = 1_048_576, .supports_reasoning = true, .thinking_support = .both, .support_efforts = &.{ "minimal", "low", "medium", "high" }, .default_effort = "medium" },
     .{ .provider = "google", .name = "gemini-3.7-flash", .context = 1_048_576, .supports_reasoning = true, .thinking_support = .both, .support_efforts = &.{ "minimal", "low", "medium", "high" }, .default_effort = "medium" },
     .{ .provider = "google", .name = "gemini-3.6-flash", .context = 1_048_576, .supports_reasoning = true, .thinking_support = .both },

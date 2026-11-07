@@ -110,6 +110,16 @@ pub fn spinnerStop(self: *Agent) void {
     }
 }
 
+fn writeThinkingHeader(self: *Agent) !void {
+    const w = self.out orelse return;
+    const label = if (self.thinking_folded) "▶ Thinking · Ctrl+T expand" else "▼ Thinking · Ctrl+T collapse";
+    try w.print("{s}{s}{s}\n{s}", .{ style.muted, label, style.reset, style.muted });
+    self.thinking_rows = 0;
+    self.thinking_col = 0;
+    advanceThinkingRows(&self.thinking_rows, &self.thinking_col, termCols(), label);
+    advanceThinkingRows(&self.thinking_rows, &self.thinking_col, termCols(), "\n");
+}
+
 /// Stream a chunk of the model's reasoning into a live, dimmed "Thinking"
 /// block in the terminal, opening the block (and handing the line off from
 /// the spinner) on the first chunk. Gated by /thinking; when off the block is
@@ -125,12 +135,10 @@ pub fn streamThinking(self: *Agent, chunk: []const u8) void {
     if (visible.len == 0) return;
     if (!self.thinking_open) {
         self.spinnerStop();
-        w.print("{s}▼ Thinking{s}\n{s}", .{ style.dim, style.reset, style.dim }) catch return;
+        self.thinking_overflow = false;
+        writeThinkingHeader(self) catch return;
         self.thinking_open = true;
         main_mod.g_thinking_open = true;
-        self.thinking_rows = 1; // the header newline already moved us down one line
-        self.thinking_col = 0;
-        self.thinking_overflow = false;
         // The block owns every row below this one and collapses them by cursor
         // math — a child's tick printed inside it would be erased with the
         // block (or shift the erase onto real output). Hold until it closes.
@@ -178,18 +186,13 @@ pub fn closeThinkingBlock(self: *Agent) void {
 pub fn toggleThinkingFold(self: *Agent) void {
     if (!self.thinking_open or self.thinking_overflow or !main_mod.use_color) return;
     const w = self.out orelse return;
+    w.print("\x1b[{d}F\x1b[0J", .{self.thinking_rows}) catch return;
+    self.thinking_folded = !self.thinking_folded;
+    writeThinkingHeader(self) catch return;
     if (!self.thinking_folded) {
-        w.print("\x1b[{d}F\x1b[0J{s}▶ Thinking (folded · ^T){s}\n", .{ self.thinking_rows, style.dim, style.reset }) catch return;
-        self.thinking_folded = true;
-        self.thinking_rows = 1;
-        self.thinking_col = 0;
-    } else {
-        w.print("\x1b[1F\x1b[0J{s}▼ Thinking{s}\n{s}", .{ style.dim, style.reset, style.dim }) catch return;
-        self.thinking_folded = false;
-        self.thinking_rows = 1;
-        self.thinking_col = 0;
         w.writeAll(self.thinking_text.items) catch return;
         advanceThinkingRows(&self.thinking_rows, &self.thinking_col, termCols(), self.thinking_text.items);
+        if (self.thinking_rows + 1 >= termRows()) self.thinking_overflow = true;
     }
     w.flush() catch return;
 }

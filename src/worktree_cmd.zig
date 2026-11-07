@@ -244,6 +244,7 @@ fn runTo(gpa: Allocator, io: Io, arena: Allocator, args: []const []const u8, out
             return;
         };
         try out.print("✓ workspace {s}\n  path {s}\n  branch {s}\n", .{ wt.name, wt.path, wt.branch });
+        if (wt.linked > 0) try out.print("  linked {d} shared file(s) from the main checkout\n", .{wt.linked});
         if (wt.copied > 0) try out.print("  copied {d} gitignored file(s)\n", .{wt.copied});
         if (wt.setup_ran) try out.print("  setup {s}\n", .{if (wt.setup_ok) "ok" else "failed (workspace kept)"});
         return;

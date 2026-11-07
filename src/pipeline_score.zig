@@ -119,7 +119,7 @@ test "#296: a pipeline stage accrues exactly ONE fitness row, celled on its slot
     var stat: StageStat = .{};
     for (0..5) |_| stat.noteAttempt();
     for (0..4) |_| stat.noteOk();
-    try std.testing.expect(captureStage(codex("gpt-5.6-terra"), "transform each file", "transform each file", "Apply the codemod; keep behavior identical.", &stat));
+    try std.testing.expect(captureStage(codex("gpt-6-sol"), "transform each file", "transform each file", "Apply the codemod; keep behavior identical.", &stat));
     const rows = out.writer.buffered();
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, rows, "\"kind\":\"score\""));
 
@@ -130,7 +130,7 @@ test "#296: a pipeline stage accrues exactly ONE fitness row, celled on its slot
     try std.testing.expectEqualStrings("migration", cells[0].shape);
     try std.testing.expectEqualStrings("transform", cells[0].role);
     try std.testing.expectEqualStrings("mid", cells[0].tier);
-    try std.testing.expectEqualStrings("gpt-5.6-terra", cells[0].model);
+    try std.testing.expectEqualStrings("gpt-6-sol", cells[0].model);
     try std.testing.expectEqual(@as(u32, 1), cells[0].n);
     try std.testing.expectApproxEqAbs(@as(f64, 0.8), cells[0].mean(), 1e-9);
 }
@@ -150,20 +150,20 @@ test "#296: rounds with no signal file nothing — unreached, all-fail, off-voca
 
     // A stage no item reached says nothing about its genome.
     var unreached: StageStat = .{};
-    try std.testing.expect(!captureStage(codex("gpt-5.6-terra"), "transform each file", "", "g", &unreached));
+    try std.testing.expect(!captureStage(codex("gpt-6-sol"), "transform each file", "", "g", &unreached));
     // Total failure is skipped, not filed as a cell-poisoning 0.
     var all_fail: StageStat = .{};
     all_fail.noteAttempt();
-    try std.testing.expect(!captureStage(codex("gpt-5.6-terra"), "transform each file", "", "g", &all_fail));
+    try std.testing.expect(!captureStage(codex("gpt-6-sol"), "transform each file", "", "g", &all_fail));
     // An off-vocabulary stage runs fine but stays uncelled, like a phase.
     var clean: StageStat = .{};
     clean.noteAttempt();
     clean.noteOk();
-    try std.testing.expect(!captureStage(codex("gpt-5.6-terra"), "polish the files", "some-persona", "g", &clean));
+    try std.testing.expect(!captureStage(codex("gpt-6-sol"), "polish the files", "some-persona", "g", &clean));
     // The fleet master switch gates local capture the same way it gates
     // scoreVariants.
     main_mod.g_fleet = false;
-    try std.testing.expect(!captureStage(codex("gpt-5.6-terra"), "transform each file", "", "g", &clean));
+    try std.testing.expect(!captureStage(codex("gpt-6-sol"), "transform each file", "", "g", &clean));
     try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, out.writer.buffered(), "\"kind\":\"score\""));
 }
 
@@ -182,5 +182,5 @@ test "#296/#290 firewall: capture is per STAGE after the join, and every item ru
     const seat_at = std.mem.indexOf(u8, src, "sp.seat = route_phase.forPhase(").?;
     try std.testing.expect(seat_at < std.mem.indexOf(u8, src, "ctx.io.async(pipelineChain").?);
     // Both spawn attempts — first try and retry — receive that seat verbatim.
-    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, src, "st.isolation_fallback, st.seat.pin, null)"));
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, src, "st.isolation_fallback, st.seat.pin)"));
 }

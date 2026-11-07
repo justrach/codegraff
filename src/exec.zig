@@ -183,20 +183,20 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             return failure(gpa, err);
         };
         defer prepared.deinit(gpa);
-        const r = reg.callWithContext(gpa, call.name, prepared.value, ctx.mcp_context) catch |err| {
+        const r = reg.call(gpa, call.name, prepared.value) catch |err| {
             codedbpro_report.onFailure(ctx, call.name, @errorName(err));
             return failure(gpa, err);
         };
         if (r.is_error) codedbpro_report.onFailure(ctx, call.name, r.text);
         if (!r.is_error) {
             const shapes = @import("mcp_shapes.zig");
-            shapes.remember(ctx, call.name, r.text);
+            shapes.remember(ctx, call.name, r.structured_text orelse r.text);
             // ADR 0238: an rlm bind keeps every field. rlm slims only what it
             // prints, so a script can still project or save a dropped field.
-            if (ctx.rlm_host) return .{ .text = r.text, .is_error = false };
-            return .{ .text = shapes.takeSlimKept(gpa, .{ .io = io, .dir = .cwd() }, r.text), .is_error = false };
+            if (ctx.rlm_host) return .{ .text = try r.takeHostText(gpa), .is_error = false, .run_task = r.run_task };
+            return .{ .text = shapes.takeSlimKept(gpa, .{ .io = io, .dir = .cwd() }, r.text), .is_error = false, .run_task = r.run_task };
         }
-        return .{ .text = r.text, .is_error = r.is_error };
+        return .{ .text = r.text, .is_error = r.is_error, .run_task = r.run_task };
     }
 
     const input = call.input;

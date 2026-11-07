@@ -224,6 +224,10 @@ pub fn record(
     const shape = finalResponseShape(root.messages.items);
     var shape_buf: [40]u8 = undefined;
     const shape_types = shape.typeSet(&shape_buf);
+    // #1472: a turn that ended on an error has to say which, or an answered
+    // question followed by `executed: false` cannot be told apart from a
+    // cancel, an expired login, or a dropped stream.
+    const turn_error: ?[]const u8 = if (result) |_| null else |err| turnErrorDetail(root, err);
 
     if (root.tracer) |tracer| tracer.write(.{
         .t = tracer.elapsedMs(),
@@ -250,6 +254,7 @@ pub fn record(
         .resp_blocks = shape.blocks,
         .resp_types = shape_types,
         .resp_text_len = shape.text_len,
+        .turn_error = turn_error,
     });
 
     if (trace.g_traj) |trajectory| {
@@ -282,19 +287,31 @@ pub fn record(
             .resp_types = shape_types,
             .resp_text_len = shape.text_len,
         });
-        if (!turn_ok) {
-            const detail: []const u8 = if (result) |_| "" else |err| switch (err) {
-                error.ApiError => root.last_api_error orelse "api error",
-                error.StreamStalled => root.last_api_error orelse "stream stalled — ended turn",
-                error.StreamDropped => root.last_api_error orelse "stream dropped — ended turn",
-                else => @errorName(err),
-            };
+        if (turn_error) |detail|
             trajectory.node(.{ .kind = "turn_error", .parent = turn_id, .t = trajectory.elapsedMs(), .detail = detail });
-        }
         if (telemetry.g_telem) |item| item.runEvent(&prompt_fp, mutated, turn_ok, turn_ms, turn_tools);
         prev_turn_id.* = turn_id;
         prev_prompt_fp.* = prompt_fp;
     }
+}
+
+/// Why a turn ended on an error: the provider's message when one came back.
+pub fn turnErrorDetail(root: *const agent_mod.Agent, err: anyerror) []const u8 {
+    return switch (err) {
+        error.ApiError => root.last_api_error orelse "api error",
+        error.StreamStalled => root.last_api_error orelse "stream stalled — ended turn",
+        error.StreamDropped => root.last_api_error orelse "stream dropped — ended turn",
+        else => @errorName(err),
+    };
+}
+
+test "#1472 a failed turn names its error" {
+    var root: agent_mod.Agent = undefined;
+    root.last_api_error = null;
+    try std.testing.expectEqualStrings("Interrupted", turnErrorDetail(&root, error.Interrupted));
+    try std.testing.expectEqualStrings("api error", turnErrorDetail(&root, error.ApiError));
+    root.last_api_error = "401 token expired";
+    try std.testing.expectEqualStrings("401 token expired", turnErrorDetail(&root, error.ApiError));
 }
 
 /// Parse a history array and shape it. ResponseShape holds no pointers into

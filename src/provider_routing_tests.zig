@@ -33,7 +33,7 @@ test "providerFor (#294): a catalogued model with no keyed provider fails instea
 
     // A model served by several providers still falls through to whichever is
     // keyed — losing one credential must not break a model another can serve.
-    try std.testing.expectEqualStrings("openai", (try no_codex.providerFor("gpt-5.6-terra")).id);
+    try std.testing.expectEqualStrings("openai", (try no_codex.providerFor("gpt-6-luna")).id);
 
     // The gateway fallback survives for genuinely UNCATALOGUED models, which is
     // all it was ever meant to cover.

@@ -284,14 +284,7 @@ pub fn loadedRef(stdout: []const u8) ?[]const u8 {
 /// binary is not installed — the "docker is absent" answer, decided before any
 /// process is spawned.
 pub fn resolveInto(io: Io, path_env: []const u8, name: []const u8, buf: []u8) ?[]const u8 {
-    var it = std.mem.splitScalar(u8, path_env, ':');
-    while (it.next()) |dir| {
-        if (dir.len == 0) continue;
-        const full = std.fmt.bufPrint(buf, "{s}/{s}", .{ dir, name }) catch continue;
-        Io.Dir.cwd().access(io, full, .{}) catch continue;
-        return full;
-    }
-    return null;
+    return @import("path_lookup.zig").resolve(io, path_env, name, buf);
 }
 
 // ── Child-process plumbing ─────────────────────────────────────────────────

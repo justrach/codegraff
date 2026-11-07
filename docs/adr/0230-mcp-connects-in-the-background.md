@@ -23,12 +23,16 @@ ahead without a server that is not ready, and reports each server's startup.
 - No model request waits for a handshake. Each request merges the starts
   that have finished (ADR 0035, 0221), and the catalog rebuilds when one
   joined.
-- The root request reports what changed: "MCP still connecting — native
-  tools this turn" on the first request that goes out while servers connect,
-  then "mcp: NAME connected (N tool(s))" or "mcp: NAME did not connect" when
-  a start finishes. The registry queues the notices under its lock; the root
-  agent's request emits them through the agent's own sink, which is what the
-  TUI shows.
+- The root request drains connection receipts after each merge. Normal
+  interactive sessions keep these diagnostics quiet, avoiding startup chatter
+  interleaved with the prompt. `GRAFF_REPL_DEBUG=1` exposes "MCP still
+  connecting — native tools this turn", followed by each server's connection
+  result. The registry's existing diagnostic switch gates emission, not
+  connection, catalog updates, consent, or the explicit `/mcp` status view.
+  Companion auto-connect receipts and legacy-listener startup probes use the
+  same opt-in; `graff servers` remains available and no ownership or stop
+  authority is inferred from a marker. Boot timing remains in the trace;
+  `GRAFF_BOOT_DEBUG=1` opts into phase lines on stderr, even for slow phases.
 - ACP `session/new` and `session/load` wait at most 250 ms for the servers
   the client named: enough for one restored from the tool cache, never a
   real handshake.

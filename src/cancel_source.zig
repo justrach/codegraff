@@ -26,6 +26,9 @@ pub const Source = enum(u8) {
     json_cancel,
     /// ACP `session/cancel`.
     acp_cancel,
+    /// ACP `session/cancel` that its client marked as its own lifecycle,
+    /// not the user's (`_meta["graff/cancelSource"] = "client"`, #1611).
+    acp_client,
     /// The fullscreen TUI's Esc / Ctrl+C / force / quit.
     ui_cancel,
 };
@@ -68,12 +71,37 @@ pub fn take(tracer: ?*Tracer) Source {
 }
 
 pub fn byUser(s: Source) bool {
-    return s != .none and s != .review_deadline;
+    return s != .none and s != .review_deadline and s != .acp_client;
+}
+
+/// The source of an ACP `session/cancel`. A client that marks its own
+/// lifecycle cancels (Harness replacing or shutting down a run) is not
+/// blamed on the user; a bare cancel still reads as the user's (#1611).
+pub fn fromAcp(params: ?std.json.Value) Source {
+    const p = params orelse return .acp_cancel;
+    if (p != .object) return .acp_cancel;
+    const meta = p.object.get("_meta") orelse return .acp_cancel;
+    if (meta != .object) return .acp_cancel;
+    const v = meta.object.get("graff/cancelSource") orelse return .acp_cancel;
+    return if (v == .string and std.mem.eql(u8, v.string, "client")) .acp_client else .acp_cancel;
+}
+
+/// The engine's cancel hook takes no arguments, so the dispatcher notes the
+/// request's source here first and the hook reads it back.
+var acp_pending: std.atomic.Value(u8) = .init(@backingInt(Source.acp_cancel));
+
+pub fn noteAcp(params: ?std.json.Value) void {
+    acp_pending.store(@backingInt(fromAcp(params)), .release);
+}
+
+pub fn takeAcp() Source {
+    return @fromBackingInt(@intCast(acp_pending.swap(@backingInt(Source.acp_cancel), .acq_rel)));
 }
 
 /// The transcript marker appended as the (incomplete) assistant turn.
 pub fn marker(s: Source) []const u8 {
     if (s == .review_deadline) return "[review stopped: wall-time limit reached; findings are incomplete]";
+    if (s == .acp_client) return "[response ended early: stopped by the client, not the user]";
     return if (byUser(s)) "[response interrupted by user]" else "[response ended early: cancelled by the harness, not the user]";
 }
 
@@ -84,6 +112,7 @@ pub fn chrome(s: Source) []const u8 {
         .esc_key => "✗ interrupted (esc)",
         .force_steer => "✗ interrupted (force)",
         .json_cancel, .acp_cancel, .ui_cancel => "✗ interrupted (cancel)",
+        .acp_client => "✗ ended early (the client stopped the run)",
         .none => "✗ ended early (harness cancel — no user action recorded)",
     };
 }
@@ -135,4 +164,30 @@ test "#728: an unsourced cancel is labelled a harness cancel, never a user one" 
     var buf: [48]u8 = undefined;
     try std.testing.expectEqualStrings("interrupted source=none", note(&buf, .none));
     try std.testing.expectEqualStrings("interrupted source=acp_cancel", note(&buf, .acp_cancel));
+}
+
+test "an ACP client's own cancel is not blamed on the user (#1611)" {
+    const a = std.testing.allocator;
+    const parse = struct {
+        fn f(alloc: std.mem.Allocator, text: []const u8) !std.json.Parsed(std.json.Value) {
+            return std.json.parseFromSlice(std.json.Value, alloc, text, .{});
+        }
+    }.f;
+    const client = try parse(a, "{\"sessionId\":\"s\",\"_meta\":{\"graff/cancelSource\":\"client\",\"graff/cancelReason\":\"replace: mailbox closed\"}}");
+    defer client.deinit();
+    const user = try parse(a, "{\"sessionId\":\"s\",\"_meta\":{\"graff/cancelSource\":\"user\"}}");
+    defer user.deinit();
+    const bare = try parse(a, "{\"sessionId\":\"s\"}");
+    defer bare.deinit();
+    try std.testing.expectEqual(Source.acp_client, fromAcp(client.value));
+    try std.testing.expectEqual(Source.acp_cancel, fromAcp(user.value));
+    try std.testing.expectEqual(Source.acp_cancel, fromAcp(bare.value));
+    try std.testing.expectEqual(Source.acp_cancel, fromAcp(null));
+    try std.testing.expect(!byUser(.acp_client));
+    try std.testing.expectEqualStrings("[response ended early: stopped by the client, not the user]", marker(.acp_client));
+    try std.testing.expectEqualStrings("[response interrupted by user]", marker(.acp_cancel));
+    // The engine hook reads the noted source once, then falls back to a bare cancel.
+    noteAcp(client.value);
+    try std.testing.expectEqual(Source.acp_client, takeAcp());
+    try std.testing.expectEqual(Source.acp_cancel, takeAcp());
 }

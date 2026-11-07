@@ -40,6 +40,7 @@ runs:
         path: |
           ${{ github.workspace }}/.zig-cache
           ${{ github.workspace }}/.zig-global-cache
-        key: codegraff-zig-build-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}-${{ github.sha }}
+          ${{ github.workspace }}/zig-pkg
+        key: codegraff-zig-build-v2-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}-${{ github.sha }}
         restore-keys: |
-          codegraff-zig-build-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}-
+          codegraff-zig-build-v2-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}-

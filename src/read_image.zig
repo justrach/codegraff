@@ -15,6 +15,7 @@ const ToolCtx = tools.ToolCtx;
 const ToolOutput = tools.ToolOutput;
 const vision = @import("vision.zig");
 const clip = @import("vision_clipboard.zig");
+const sniff = @import("image_sniff.zig");
 
 /// Stage pixels after exec has confined the path. The tool-batch checkpoint
 /// delivers them to the next model request as a native image content block.
@@ -29,21 +30,35 @@ pub fn pngDims(bytes: []const u8) ?[2]u32 {
     return .{ std.mem.readInt(u32, bytes[16..20], .big), std.mem.readInt(u32, bytes[20..24], .big) };
 }
 
-fn fileDims(io: Io, path: []const u8) ?[2]u32 {
+/// The first bytes of `path`: enough for a PNG's dimensions and any
+/// `image_sniff` signature. Null when the file cannot be read.
+fn fileHead(io: Io, path: []const u8, buf: *[24]u8) ?[]const u8 {
     const file = Io.Dir.cwd().openFile(io, path, .{}) catch return null;
     defer file.close(io);
-    var head: [24]u8 = undefined;
-    const got = file.readPositionalAll(io, &head, 0) catch return null;
-    return pngDims(head[0..got]);
+    const got = file.readPositionalAll(io, buf, 0) catch return null;
+    return buf[0..got];
+}
+
+fn fileDims(io: Io, path: []const u8) ?[2]u32 {
+    var buf: [24]u8 = undefined;
+    return pngDims(fileHead(io, path, &buf) orelse return null);
+}
+
+fn notRaster(gpa: Allocator, path: []const u8) !?ToolOutput {
+    return .{ .text = try std.fmt.allocPrint(gpa, "Image could not be attached: {s} is not a {s} image (its bytes match none of them, whatever its extension says), so it was not sent. Convert it to one of those formats first.", .{ path, sniff.supported_names }), .is_error = true };
 }
 
 fn stageWith(gpa: Allocator, io: Io, ctx: ToolCtx, resolved: []const u8, path: []const u8, size: u64, resize: clip.Resizer) !?ToolOutput {
     const reg = ctx.registry orelse return .{ .text = try gpa.dupe(u8, "Image could not be attached: the image queue is unavailable."), .is_error = true };
     if (size == 0) return .{ .text = try gpa.dupe(u8, "Image could not be attached: the file is empty."), .is_error = true };
-    const media_type = vision.imageMediaType(path);
+    // #1762: the type comes from the bytes. The extension is only a label for
+    // a model that will not see the pixels anyway.
+    var head_buf: [24]u8 = undefined;
+    const sniffed = sniff.sniff(fileHead(io, resolved, &head_buf) orelse return null);
     if (!vision.visionCapable(ctx.provider)) return .{
-        .text = try std.fmt.allocPrint(gpa, "[image: {s}, {d} bytes — the active model does not accept images, so it was not attached]", .{ media_type, size }),
+        .text = try std.fmt.allocPrint(gpa, "[image: {s}, {d} bytes — the active model does not accept images, so it was not attached]", .{ sniffed orelse vision.imageMediaType(path), size }),
     };
+    const media_type = sniffed orelse return notRaster(gpa, path);
     const limit = clip.max_staged_image_bytes;
     const fit = switch (clip.planStage(io, gpa, resolved, limit, resize)) {
         .not_found => return null,
@@ -58,9 +73,9 @@ fn stageWith(gpa: Allocator, io: Io, ctx: ToolCtx, resolved: []const u8, path: [
     defer if (fit.temp) clip.discard(io, gpa, fit.path);
     const data = Io.Dir.cwd().readFileAlloc(io, fit.path, gpa, .limited(@intCast(limit))) catch return null;
     defer gpa.free(data);
-    // A downscale step is always PNG (sipsResize forces it, fitToBudget checks
-    // the magic), so the media type follows the file actually encoded.
-    const sent_type = if (fit.temp) vision.imageMediaType(fit.path) else media_type;
+    // The type of the bytes actually encoded: a downscale step re-encodes
+    // (sipsResize forces PNG), so it is sniffed again rather than assumed.
+    const sent_type = sniff.sniff(data) orelse return notRaster(gpa, path);
     const enc = std.base64.standard.Encoder;
     const b64 = try gpa.alloc(u8, enc.calcSize(data.len));
     defer gpa.free(b64);
@@ -135,6 +150,60 @@ test "native image read stages pixels and tool checkpoint sends them without a u
     try std.testing.expect(reg.pending_image == null);
 }
 
+test "#1737: after workspace use, an image in the new tree attaches; one outside both trees is refused" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest; // enterPath is POSIX-only
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const policy = @import("harness_policy.zig");
+    const switcher = @import("workspace_switch.zig");
+    const main_mod = @import("main.zig");
+    var launch = std.testing.tmpDir(.{});
+    defer launch.cleanup();
+    var other = std.testing.tmpDir(.{});
+    defer other.cleanup();
+    var outside = std.testing.tmpDir(.{});
+    defer outside.cleanup();
+    try other.dir.writeFile(io, .{ .sub_path = "shot.png", .data = tiny_png });
+    try outside.dir.writeFile(io, .{ .sub_path = "shot.png", .data = tiny_png });
+    var orig = try Io.Dir.cwd().openDir(io, ".", .{});
+    defer orig.close(io);
+    defer _ = std.posix.system.fchdir(orig.handle);
+    const saved = .{ main_mod.g_cwd_display, main_mod.g_worktree_branch };
+    defer {
+        main_mod.g_cwd_display = saved[0];
+        main_mod.g_worktree_branch = saved[1];
+        switcher.deinitDisplay(a);
+        @import("tool_spill.zig").resetForTest();
+    }
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const other_abs = try arena.allocator().dupe(u8, buf[0..try other.dir.realPath(io, &buf)]);
+    const outside_abs = try arena.allocator().dupe(u8, buf[0..try outside.dir.realPath(io, &buf)]);
+    if (std.posix.system.fchdir(launch.dir.handle) != 0) return error.ChdirFailed;
+    _ = try switcher.enterPath(a, io, arena.allocator(), other_abs);
+
+    // The native tools' own confinement now roots at the switched tree.
+    try std.testing.expect(policy.confinedPath("shot.png") and policy.noSymlinkEscape(io, "shot.png", null));
+    const resolved = try @import("codedbpro_paths.zig").sessionAbs(a, io, null, "shot.png");
+    defer a.free(resolved);
+    try std.testing.expect(std.mem.startsWith(u8, resolved, other_abs));
+    var reg = @import("mcp.zig").Registry.empty(a, io);
+    defer reg.deinit();
+    var ctx: ToolCtx = undefined;
+    ctx.registry = &reg;
+    ctx.provider = .{ .id = "test", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 100000 };
+    const out = (try stage(a, io, ctx, resolved, "shot.png", tiny_png.len)).?;
+    defer a.free(out.text);
+    try std.testing.expect(!out.is_error);
+    try std.testing.expect(reg.pending_image != null);
+
+    // Outside both the launch tree and the switched tree: still refused.
+    const escaped = try std.fmt.allocPrint(arena.allocator(), "{s}/shot.png", .{outside_abs});
+    try std.testing.expect(!policy.confinedPath(escaped) and !policy.noSymlinkEscape(io, escaped, null));
+    try std.testing.expect(!policy.confinedPath("../outside/shot.png"));
+}
+
 /// 1x1 PNG a fake resizer "downscales" to.
 const tiny_png = "\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x04\x00\x00\x00\xb5\x1c\x0c\x02\x00\x00\x00\x0b\x49\x44\x41\x54\x78\xda\x63\xfc\xff\x1f\x00\x03\x03\x02\x00\xef\x9a\x0f\x5b\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82";
 
@@ -187,4 +256,38 @@ test "#1272: an oversize image is downscaled or refused, never queued as-is" {
     try std.testing.expectEqual(std.base64.standard.Encoder.calcSize(tiny_png.len), pending.b64.len);
     try std.testing.expectEqualStrings("image/png", pending.media_type);
     try std.testing.expect(std.mem.indexOf(u8, scaled.text, "downscaled from 4000x3000 to 1x1") != null);
+}
+
+test "#1762: read_image types a WebP named .png by its bytes, and refuses non-raster bytes" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var reg = @import("mcp.zig").Registry.empty(a, io);
+    defer reg.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var ctx: ToolCtx = undefined;
+    ctx.registry = &reg;
+    ctx.provider = .{ .id = "test", .kind = .anthropic, .auth = .bearer, .url = "", .api_key = "", .model = "claude-x", .context = 100000 };
+    const webp = "RIFF\x24\x00\x00\x00WEBPVP8 \x18\x00\x00\x00";
+    try tmp.dir.writeFile(io, .{ .sub_path = "shot.png", .data = webp });
+    const webp_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/shot.png", .{tmp.sub_path});
+    defer a.free(webp_path);
+    const out = (try stageWith(a, io, ctx, webp_path, "shot.png", webp.len, noResizer)).?;
+    defer a.free(out.text);
+    try std.testing.expect(!out.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, out.text, "image/webp") != null);
+    const pending = reg.pending_image orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("image/webp", pending.media_type);
+    reg.pending_image = null;
+
+    // Text saved as .png: a tool error, and no block that would wedge the chat.
+    const text = "not an image at all";
+    try tmp.dir.writeFile(io, .{ .sub_path = "notes.png", .data = text });
+    const text_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/notes.png", .{tmp.sub_path});
+    defer a.free(text_path);
+    const refused = (try stageWith(a, io, ctx, text_path, "notes.png", text.len, noResizer)).?;
+    defer a.free(refused.text);
+    try std.testing.expect(refused.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, refused.text, sniff.supported_names) != null);
+    try std.testing.expect(reg.pending_image == null);
 }

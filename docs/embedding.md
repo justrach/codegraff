@@ -1,8 +1,9 @@
 # Embedding graff
 
-graff is a subprocess a host spawns, not a library you link and not a WASM
-runtime. Two stdio APIs cover a hosted agent. Pick one; do not speak both on
-the same child.
+Graff supports native subprocess hosting and an experimental Worker-native
+Zig/Wasm host. Two stdio APIs cover a native hosted agent. Pick one; do not
+speak both on the same child. The Worker-native host is described separately
+below and does not provide full native CLI parity.
 
 | Host API | Wire | When |
 |---|---|---|
@@ -166,7 +167,8 @@ zig build libgraff     # zig-out/lib/libgraff.so (C ABI)
 
 `createGraffAgent()` is the JS host. The first-slice turn is `echo:` —
 protocol + handshake in-process. Live tools / TLS / bash still go through
-`graff acp` (above). A host-imported model turn is the next slice.
+`graff acp` (above). The experimental Worker host below adds model/tool turns
+through a separate ABI; this ACP surface remains echo-only.
 
 C ABI (wasm exports and the shared library):
 
@@ -177,8 +179,50 @@ C ABI (wasm exports and the shared library):
 | `graff_acp_feed(len)` | dispatch |
 | `graff_acp_out_ptr` / `out_len` / `out_consume` | read newline-framed replies |
 
+## Experimental Worker-native turns
+
+`zig build wasm-worker` builds `zig-out/bin/graff-worker.wasm`.
+`@codegraff/sdk/worker` provides a fetch-only JSPI host for a statically bundled
+`WebAssembly.Module`. Zig owns conversation history and executes the same chat
+step as the native REPL and ACP paths; JavaScript supplies HTTP and registered,
+input-validated tools. Credentials stay outside Wasm. No native proxy is used.
+
+The first slice supports nonstreaming Chat Completions and host tools. It is
+not the complete native `Agent`: native shell/git, persistent sessions,
+compaction, goals and other CLI features are not yet portable. Create one
+instance per request or serialize a session's turns; recreate after failures
+rather than replaying uncertain effects.
+
+See [the cf/workerd example](../examples/workers-engine/README.md) for setup,
+the real model/tool/model runtime test, authentication and deployment dry-run.
+The Wasm artifact is built separately; it is not fetched or compiled dynamically
+inside Workers, and is not included in the existing `core.wasm` package export.
+
+### Existing Codegraff sandboxes
+
+`@codegraff/sdk/worker-sandbox` is a fetch-only client for Codegraff's hosted VMs.
+The [Durable Object sandbox example](../examples/workers-sandbox/README.md)
+keeps the agent in Zig/Wasm and delegates shell execution to a disposable VM.
+Its opt-in live test uses real inference, independently checks a Python repair,
+and requires VM deletion. A DO records cleanup ownership and coordinates the
+task; it does not itself become a Linux process environment. Credentials remain
+outside Wasm and the VM. This is separate from the local `graff mcp serve`
+`run_task` endpoint, which may not have sandbox execution permission.
+
+## Durability and shared observability
+
+The [managed SDK](../sdk/ts/MANAGED.md) is a separate native-device transport:
+its receipt/cursor reconnects replay the device's event tape and completed
+conversation checkpoints. The Worker-native sandbox example instead persists
+cleanup ownership; it does not yet checkpoint or resume a conversation.
+
+Both SDK hosts accept the same optional metadata-only observer from
+`@codegraff/sdk/otel`. Export is explicitly flushed by the host, and observer
+failure cannot fail or hold execution open. Tracing is not a checkpoint or an
+exactly-once guarantee. Custom integrations: **rach@standardharness.com**.
+
 ## Not this
 
-No full-agent `fx-core.wasm` (HTTP + bash + git inside the isolate). No
-Node-API addon yet — `libgraff` is a C ABI, not a `.node`. Those stay a
-later slice on this continuation branch.
+No full CLI with bash + git inside the isolate, and no Node-API addon yet —
+`libgraff` is a C ABI, not a `.node`. The existing subprocess and remote-bridge
+recipes remain distinct from the experimental Worker-native host.

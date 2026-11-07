@@ -66,7 +66,7 @@ pub const AgentType = struct {
     // validated here — resolution happens per spawn against the live catalog
     // (subagent_pin.zig) so an unavailable pin degrades to the session
     // default instead of failing a persona load or a spawn mid-fleet.
-    model: ?[]const u8 = null, // frontmatter `model: gpt-5.6-terra`
+    model: ?[]const u8 = null, // frontmatter `model: gpt-6-luna`
     tier: ?Tier = null, // frontmatter `tier: mid`
     effort: ?root.ReasoningEffort = null, // frontmatter `effort: max` — reasoning depth, an axis independent of model/tier (vocabulary: subagent_pin.parseEffort)
 };

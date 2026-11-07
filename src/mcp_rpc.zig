@@ -10,12 +10,12 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 const mcp_elicitation = @import("mcp_elicitation.zig");
 const mcp_http = @import("mcp_http.zig");
+const mcp_inbound = @import("mcp_inbound.zig");
 const mcp_protocol = @import("mcp_protocol.zig");
 const mcp_stdio = @import("mcp_stdio.zig");
 const mcp_teardown = @import("mcp_teardown.zig");
 const mcp_notify = @import("mcp_notify.zig");
 const mcp_wait = @import("mcp_wait.zig");
-
 const legacy_protocol = mcp_protocol.legacy_protocol;
 const modern_protocol = mcp_protocol.modern_protocol;
 
@@ -56,9 +56,6 @@ pub const Server = struct {
     probe_fallback: ?LegacyReason = null,
     /// In-flight HTTP `notifications/initialized` (not awaited before tools/list).
     pending_initialized: ?Io.Future(void) = null,
-    /// Borrowed `tools/call` JSON while `request` is in flight; used to accept
-    /// read-only Computer Use `get_app_state` elicitation (#768).
-    elicit_source: []const u8 = "",
     /// Notifications seen while waiting: stale catalog, SSE resume point.
     notes: mcp_notify.Sink = .{},
 };
@@ -208,7 +205,6 @@ pub fn request(server: *Server, response_alloc: Allocator, params: []const u8, m
                 .writer = &stdio.stdin_writer.interface,
                 .reader = &stdio.stdout_reader.interface,
                 .sink = &server.notes,
-                .elicit_source = server.elicit_source,
             }, stdio.stdout_reader.io, response_alloc, id);
         },
         .http => |*http| {
@@ -221,7 +217,7 @@ pub fn request(server: *Server, response_alloc: Allocator, params: []const u8, m
             }, id) catch |err| {
                 // A modern request is cancelled by dropping it; a legacy
                 // session is told which request to stop.
-                if (err == error.McpCancelled and !modern) mcp_http.notifyCancelled(http, server.protocol_version, id);
+                if (err == error.McpCancelled and !modern) @import("mcp_cancel_notice.zig").notify(http, server.protocol_version, id);
                 return err;
             }) orelse return error.BadMcpResponse;
             defer http.client.allocator.free(response_body);
@@ -318,12 +314,12 @@ pub fn finishInitialized(server: *Server) void {
 /// graff already spends on the same child's `initialize`. `GRAFF_MCP_PROBE_MS`
 /// moves it either way.
 pub var stdio_probe_timeout_ms: i64 = 5_000;
-
 fn stdioProbeReadTask(server: *Server, response_alloc: Allocator, id: i64) anyerror!Value {
     const stdio = &server.transport.stdio;
     const r = &stdio.stdout_reader.interface;
     while (true) {
         const line = try mcp_stdio.takeLine(r);
+        if (try mcp_inbound.replyStdio(&stdio.stdin_writer.interface, response_alloc, line)) continue;
         if (mcp_http.matchingResponse(response_alloc, line, id)) |parsed| return parsed;
     }
 }

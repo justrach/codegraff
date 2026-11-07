@@ -260,7 +260,13 @@ test "brokenCallLoop: three all-unusable batches in a row, not two or a mixed on
 test "brokenCallLoop stop runs the batch checkpoint, then ends the turn past every nudge" {
     const steps = @embedFile("agent_steps.zig");
     const step = steps[std.mem.indexOf(u8, steps, "pub fn stepOpenAI").?..];
-    try std.testing.expect(std.mem.indexOf(u8, step, "turn_checkpoint.afterToolBatch(self)").? < std.mem.indexOf(u8, step, "return tool_call_repair.loop_stop_text").?);
+    try std.testing.expect(std.mem.indexOf(u8, step, "step(@import(\"agent_chat_native.zig\"), self, root)") != null);
+    const shared = @embedFile("agent_chat_step.zig");
+    try std.testing.expect(std.mem.indexOf(u8, shared, "Host.afterTools(self, calls.items, stuck)") != null);
+    const native = @embedFile("agent_chat_native.zig");
+    const checkpoint = std.mem.indexOf(u8, native, "@import(\"turn_checkpoint.zig\").afterToolBatch(self)") orelse return error.TestUnexpectedResult;
+    const stop = std.mem.indexOf(u8, native, "return repair_calls.loop_stop_text") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(checkpoint < stop);
     const agent = @embedFile("agent_turn.zig");
     const loop = agent[std.mem.indexOf(u8, agent, "pub fn run(").?..];
     try std.testing.expect(std.mem.indexOf(u8, loop, "endsTurn(").? < std.mem.indexOf(u8, loop, "bounced_answer.retry(").?);

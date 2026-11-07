@@ -40,16 +40,30 @@ pub const LiveTurn = struct {
         const window = self.root.provider.context;
         if (window == 0 or used == self.last_meter_used) return;
         self.last_meter_used = used;
-        meter.write(w, self.session_id, used, window, meter.knownCostUsd(self.root.io)) catch {};
+        meter.write(w, self.session_id, used, window, meter.knownCostUsd(self.root.io), @import("context_savings.zig").snap(self.root.io)) catch {};
+    }
+
+    pub fn bindSession(ctx: *anyopaque, session_id: []const u8) void {
+        const self: *LiveTurn = @ptrCast(@alignCast(ctx));
+        self.session_id = session_id;
+        self.root.last_api_reauth = null;
+    }
+
+    pub fn errorRecovery(ctx: *anyopaque, err: anyerror) ?@import("auth_recovery.zig").Recovery {
+        const self: *LiveTurn = @ptrCast(@alignCast(ctx));
+        return switch (err) {
+            error.ApiError, error.ProviderAuthenticationFailed => self.root.last_api_reauth,
+            else => null,
+        };
     }
 
     pub fn errorMessage(ctx: *anyopaque, err: anyerror) []const u8 {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
-        return if (err == error.ApiError) self.root.last_api_error orelse "Provider request failed" else @errorName(err);
+        return describeError(err, self.root.last_api_error);
     }
 
     pub fn signalCancel() void {
-        cancel_source.cancel(.acp_cancel); // #728
+        cancel_source.cancel(cancel_source.takeAcp()); // #728, #1611
     }
 
     pub fn cancelled() bool {
@@ -99,6 +113,7 @@ pub const LiveTurn = struct {
             try self.out.flush();
         }
         const review_prompt = review.promptFromLine(text);
+        const issue_report = @import("issue_cmd.zig").promptFromLine(text);
         const parent_override = self.root.sys_override;
         const parent_review_mode = self.root.review_mode;
         self.root.review_mode = review_prompt != null;
@@ -112,7 +127,9 @@ pub const LiveTurn = struct {
         defer if (context.restore(self.root)) self.root.rebaseContextMeter();
         if (@import("side_steer.zig").isSideRequest(text))
             return @import("side_steer.zig").spawnSide(self.root, arena, null, text);
-        const prompt = try @import("goal_state.zig").applyGoalSteering(arena, self.root, review_prompt orelse if (auto) |invocation| invocation.prompt else text);
+        // Match REPL expansion order: review, issue brief, then goal pacing.
+        const base_prompt = review_prompt orelse if (issue_report) |report| try @import("issue_cmd.zig").userText(arena, report) else if (auto) |invocation| invocation.prompt else text;
+        const prompt = try @import("goal_state.zig").applyGoalSteering(arena, self.root, base_prompt);
         switch (try @import("turn_dedup.zig").enqueue(self.root, arena, self.out, prompt)) {
             .started => {},
             .skipped => return "",
@@ -182,6 +199,13 @@ pub const LiveTurn = struct {
                     cancel_source.marker(self.cancelled_source.?),
                 ));
             }
+            // #1639: like the REPL, a turn the transport ended keeps its
+            // partial reply and says why, so the next prompt (and a resume)
+            // sees where the answer stopped instead of no reply at all.
+            if (!isolated and (err == error.StreamDropped or err == error.StreamStalled)) {
+                const ended = try @import("stream_reconnect.zig").endedEarlyText(arena, self.root.partial_text.items, err == error.StreamStalled);
+                try self.root.messages.append(try messages.textMessage(arena, "assistant", ended));
+            }
             if (isolated) {
                 const marker = if (err == error.Interrupted or err == error.Canceled)
                     cancel_source.marker(self.cancelled_source.?)
@@ -195,6 +219,8 @@ pub const LiveTurn = struct {
                 defer output_lock.unlock(self.root.io);
                 try proto.writeSessionUpdate(self.out, self.session_id, marker);
             }
+            // #1729: same row as the REPL, so resending this prompt is a new ask.
+            try @import("turn_dedup.zig").settleFailedTurn(self.root, arena, err);
             // #753: an API interruption is a failed turn, not a dead ACP
             // process. Save so the next prompt (and a respawn --resume) still
             // sees the tool results and the background-agent ledger.
@@ -221,6 +247,25 @@ pub const LiveTurn = struct {
         return final;
     }
 };
+
+/// What an ACP client shows for a failed turn. An exhausted empty-reply retry
+/// carries its own explanation (#1802); a bare error name told the user nothing.
+pub fn describeError(err: anyerror, last_api_error: ?[]const u8) []const u8 {
+    return switch (err) {
+        error.ApiError, error.ProviderAuthenticationFailed => last_api_error orelse "Provider request failed",
+        error.EmptyCompletion => last_api_error orelse @import("agent_empty_completion.zig").exhausted_text,
+        else => @errorName(err),
+    };
+}
+
+test "#1802: an exhausted empty-reply retry is explained, not named" {
+    const exhausted = @import("agent_empty_completion.zig").exhausted_text;
+    try std.testing.expectEqualStrings(exhausted, describeError(error.EmptyCompletion, exhausted));
+    try std.testing.expectEqualStrings(exhausted, describeError(error.EmptyCompletion, null));
+    try std.testing.expect(std.mem.indexOf(u8, exhausted, "6 times") != null);
+    try std.testing.expectEqualStrings("Provider request failed", describeError(error.ApiError, null));
+    try std.testing.expectEqualStrings("Interrupted", describeError(error.Interrupted, "stale"));
+}
 
 test "session/prompt receipt is traced even when dedup skips the turn" {
     const dedup = @import("turn_dedup.zig");

@@ -54,7 +54,7 @@ test "recordUsage (#202): floors the meter from the local estimate when usage is
     var response: std.json.ObjectMap = .empty;
     try response.put(a, "usage", .{ .object = usage });
     recordUsage(&agent, response, 400);
-    try std.testing.expectEqual(@max(fullRequestEstimateTokens(&agent), @as(u64, 15)), agent.last_context_tokens);
+    try std.testing.expectEqual(@max(measuredRequestTokens(&agent, context_tokens.serializedLen(Value{ .array = agent.messages })), @as(u64, 15)), agent.last_context_tokens);
 
     // A malformed smaller total must not override stronger component evidence.
     try usage.put(a, "prompt_tokens", .{ .integer = 220_000 });
@@ -149,15 +149,11 @@ pub fn recordUsage(self: *Agent, root: std.json.ObjectMap, req_body_len: usize) 
             self.last_usage_includes_output = reported_total > 0 and
                 (total > 0 or if (u.get("completion_tokens")) |v| v == .integer and v.integer >= 0 else false);
             // deepseek reports prompt_cache_hit_tokens; the OpenAI shape
-            // nests cached_tokens under prompt_tokens_details.
-            var cache = usageInt(u, "prompt_cache_hit_tokens");
-            var cache_write: i64 = 0;
-            if (u.get("prompt_tokens_details")) |d| if (d == .object) {
-                if (cache == 0) cache = usageInt(d.object, "cached_tokens");
-                cache_write = usageInt(d.object, "cache_write_tokens");
-            };
-            if (cache > 0) self.last_cache_read = @intCast(cache);
-            self.recordCost(@max(usageInt(u, "prompt_tokens") - cache - cache_write, 0), cache, cache_write, usageInt(u, "completion_tokens"));
+            // nests cached_tokens / cache_write_tokens(_details) under prompt_tokens_details.
+            const cache = @import("openai_prompt_cache.zig").readChatUsage(u);
+            if (cache.cached > 0) self.last_cache_read = @intCast(cache.cached);
+            self.recordCost(@max(usageInt(u, "prompt_tokens") - cache.cached - cache.written, 0), cache.cached, cache.written, usageInt(u, "completion_tokens"));
+            @import("openai_prompt_cache.zig").billTwelveHour(self, cache);
         },
         .responses => {}, // codex uses recordUsageResponses on its own path.
     }
@@ -172,13 +168,13 @@ pub fn floorContextTokens(self: *Agent, est: u64) void {
     self.context_local_tokens = estimate.local;
 }
 
-/// A full-history request's nonzero provider usage is authoritative enough to
-/// correct a stale high meter after an explicit trim/provider mutation. Still
-/// retain the complete local request estimate as a structural lower bound.
+/// A full-history request's provider usage replaces the local estimate, whose 8k
+/// pre-usage baseline read ~3k high on Anthropic. Plain bytes/4 under-counts code
+/// on every provider measured, so a report below it is not credible and floors there.
 pub fn replaceContextTokens(self: *Agent, reported: u64) void {
-    const local = self.fullRequestEstimateTokens();
-    self.last_context_tokens = @max(local, reported);
-    self.context_local_tokens = local;
+    const input_bytes = context_tokens.serializedLen(Value{ .array = self.messages });
+    self.last_context_tokens = @max(reported, measuredRequestTokens(self, input_bytes));
+    self.context_local_tokens = requestEstimateFromInputBytes(self, input_bytes);
 }
 
 /// An integer usage field, or 0 if absent / wrong type.
@@ -208,17 +204,19 @@ pub fn fullInputEstimateTokens(self: *Agent) u64 {
     return context_tokens.estimatedTokens(Value{ .array = self.messages });
 }
 
-/// Estimate the complete fixed+history input sent by a normal model request.
-/// fullInputEstimateTokens intentionally covers messages only; the pre-send gate
-/// must additionally count the mutable system prompt and active tool schema. Keep
-/// the old 8k conservative baseline when those serialize smaller, but never let it
-/// hide an unbounded set_system_prompt/set_agent payload.
+/// The complete fixed+history input of a normal request (fullInputEstimateTokens is
+/// messages only): system prompt and tool schema too, with the 8k conservative
+/// baseline when those serialize smaller, never hiding a large set_system_prompt.
 fn requestEstimateFromInputBytes(self: *Agent, input_bytes: usize) u64 {
     const input_tokens = context_tokens.estimatedTokensFromLen(Value{ .array = self.messages }, input_bytes);
-    const fixed_bytes = context_tokens.serializedLen(self.systemPrompt()) +| self.toolsJson().len;
-    const measured = input_tokens +| @as(u64, @intCast(fixed_bytes / 4));
     const baseline = @min(@as(u64, 8000), self.provider.context / 8);
-    return @max(measured, input_tokens +| baseline);
+    return @max(measuredRequestTokens(self, input_bytes), input_tokens +| baseline);
+}
+
+/// bytes/4 of history + system prompt + tool schema, with no baseline.
+pub fn measuredRequestTokens(self: *Agent, input_bytes: usize) u64 {
+    const fixed_bytes = context_tokens.serializedLen(self.systemPrompt()) +| self.toolsJson().len;
+    return context_tokens.estimatedTokensFromLen(Value{ .array = self.messages }, input_bytes) +| @as(u64, @intCast(fixed_bytes / 4));
 }
 
 pub fn fullRequestEstimateTokens(self: *Agent) u64 {
@@ -245,10 +243,8 @@ pub fn contextEstimate(self: *Agent) ContextEstimate {
 /// Reusing the observed byte count avoids a redundant full JSON walk.
 pub fn contextEstimateFromInputBytes(self: *Agent, input_bytes: usize) ContextEstimate {
     const local = requestEstimateFromInputBytes(self, input_bytes);
-    return .{
-        .local = local,
-        .effective = local +| (self.last_context_tokens -| self.context_local_tokens),
-    };
+    const last = self.last_context_tokens; // a provider sample may sit below the local estimate
+    return .{ .local = local, .effective = if (last == 0 or last >= self.context_local_tokens) local +| (last - @min(last, self.context_local_tokens)) else last +| (local -| self.context_local_tokens) };
 }
 
 /// Current context occupancy: today's locally measurable request plus the
@@ -264,9 +260,7 @@ pub fn effectiveContextTokens(self: *Agent) u64 {
 /// advancing only the local anchor prevents counting them twice.
 pub fn pairContextMeterWithCurrentLocal(self: *Agent) void {
     if (!self.last_usage_includes_output) return;
-    const local = self.fullRequestEstimateTokens();
-    self.last_context_tokens = @max(self.last_context_tokens, local);
-    self.context_local_tokens = local;
+    self.context_local_tokens = self.fullRequestEstimateTokens();
     self.last_usage_includes_output = false;
 }
 
@@ -279,6 +273,7 @@ pub fn rebaseContextMeter(self: *Agent) void {
 }
 
 test "rebaseContextMeter preserves hidden context while replacing local input" {
+    _ = @import("agent_context_meter_tests.zig"); // the provider-count meter tests ride along
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
@@ -481,14 +476,12 @@ pub fn recordUsageResponses(self: *Agent, response: std.json.ObjectMap, req_body
     // Without it a long Extra-high session reads "95k/270k" right up until the
     // backend rejects the resend for exceeding the window, and auto-compaction
     // (gated on this meter) never rescues it.
-    var cached: i64 = 0;
-    var cache_write: i64 = 0;
-    if (u.get("input_tokens_details")) |d| if (d == .object) {
-        cached = usageInt(d.object, "cached_tokens");
-        cache_write = usageInt(d.object, "cache_write_tokens");
-        if (cached > 0) self.last_cache_read = @intCast(cached);
-    };
-    if (usage_known) self.recordCost(@max(in_tokens - cached - cache_write, 0), cached, cache_write, out_tokens);
+    const cache = @import("openai_prompt_cache.zig").readResponsesUsage(u);
+    if (cache.cached > 0) self.last_cache_read = @intCast(cache.cached);
+    if (usage_known) {
+        self.recordCost(@max(in_tokens - cache.cached - cache.written, 0), cache.cached, cache.written, out_tokens);
+        @import("openai_prompt_cache.zig").billTwelveHour(self, cache);
+    }
 }
 
 test "recordUsageResponses: usage fallbacks never lower an authoritative meter" {
@@ -533,9 +526,9 @@ test "recordUsageResponses: usage fallbacks never lower an authoritative meter" 
     try smaller_usage.put(a, "total_tokens", .{ .integer = 100 });
     var smaller_response: std.json.ObjectMap = .empty;
     try smaller_response.put(a, "usage", .{ .object = smaller_usage });
-    // A full re-anchor trusts its provider reading (with the local floor).
+    // A full re-anchor is its provider reading; the pre-usage floor no longer lifts it.
     recordUsageResponses(&agent, smaller_response, 400);
-    try std.testing.expectEqual(@max(fullRequestEstimateTokens(&agent), @as(u64, 100)), agent.last_context_tokens);
+    try std.testing.expectEqual(@as(u64, 100), agent.last_context_tokens);
     try std.testing.expect(agent.last_usage_includes_output);
 
     // The aggregate is advisory when larger input/output components are

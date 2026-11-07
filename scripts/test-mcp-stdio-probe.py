@@ -164,6 +164,7 @@ def run_graff(graff: Path, fixture: Path, probe: bool) -> subprocess.CompletedPr
                 "GRAFF_FLEET": "off",
                 "GRAFF_NO_SMOLIFY": "1",
                 "GRAFF_NO_TELEMETRY": "1",
+                "GRAFF_REPL_DEBUG": "1",
                 # A private home per run: the user's own servers stay out, and
                 # the tools/list cache the gate-off run writes cannot turn the
                 # gate-on run into a cache hit that skips the probe.

@@ -24,7 +24,15 @@ pub const terminal_login = AuthMethod{
     .args = &.{"login"},
 };
 
-pub const advertised = [_]AuthMethod{terminal_login};
+pub const anthropic_login = AuthMethod{
+    .id = "graff-login-anthropic",
+    .name = "graff login anthropic",
+    .description = "Claude subscription browser sign-in (alias: ant)",
+    .type = "terminal",
+    .args = &.{ "login", "anthropic" },
+};
+
+pub const advertised = [_]AuthMethod{ terminal_login, anthropic_login };
 
 pub const required_message = "Authentication required: run `graff login`, then restart the ACP agent.";
 
@@ -50,6 +58,8 @@ test "terminal_login is the registry Terminal Auth shape" {
     try std.testing.expectEqualStrings("graff-login", terminal_login.id);
     try std.testing.expectEqualStrings("terminal", terminal_login.type);
     try std.testing.expectEqualStrings("login", terminal_login.args[0]);
+    try std.testing.expectEqualStrings("anthropic", advertised[1].args[1]);
+    try std.testing.expectEqualStrings("terminal", advertised[1].type);
 }
 
 test "clientAllowsTerminal reads the v1 capability" {

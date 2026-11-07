@@ -60,7 +60,38 @@ test "thought-level options follow the active model allowlist and normalized cur
     try std.testing.expectEqualStrings("xhigh", narrow.options[3].value);
     root.provider.id = "anthropic";
     root.provider.kind = .anthropic;
-    root.provider.model = "claude-opus-4-8";
+    root.provider.model = "claude-opus-4-4";
+    try std.testing.expect((try option(&live, arena)) == null);
+}
+
+test "Claude thought-level discovery matches native effort support" {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    const arena = state.allocator();
+    var root = try @import("agent_request_body_responses.zig").testAgentFor(arena, "anthropic", .anthropic, "claude-opus-5-5");
+    var keys: @import("provider.zig").Keys = .{ .values = @splat(null) };
+    var live: LiveTurn = .{ .root = &root, .keys = &keys, .out = undefined };
+    root.reasoning = .medium;
+    for ([_][]const u8{ "claude-opus-5-5", "claude-opus-4-5", "claude-sonnet-4-6", "claude-fable-5-1", "claude-mythos-5-1" }) |model| {
+        root.provider.model = model;
+        try std.testing.expect(root.effortApplies());
+        const offered = (try option(&live, arena)).?;
+        try std.testing.expectEqualStrings("medium", offered.currentValue);
+        var medium_offered = false;
+        for (offered.options) |value| {
+            if (std.mem.eql(u8, value.value, "medium")) medium_offered = true;
+        }
+        try std.testing.expect(medium_offered);
+    }
+    for ([_][]const u8{ "claude-opus-4-4", "claude-sonnet-4-5", "claude-haiku-4-5", "unknown" }) |model| {
+        root.provider.model = model;
+        try std.testing.expect(!root.effortApplies());
+        try std.testing.expect((try option(&live, arena)) == null);
+        try std.testing.expect(!try set(&live, "medium"));
+    }
+    root.provider.id = "minimax";
+    root.provider.model = "claude-opus-5-5";
+    try std.testing.expect(!root.effortApplies());
     try std.testing.expect((try option(&live, arena)) == null);
 }
 

@@ -56,45 +56,9 @@ pub const PendingStart = struct {
     }
 };
 
-const StartCtx = struct {
-    gpa: Allocator,
-    io: Io,
-    home: []const u8,
-    show_diagnostics: bool,
-    stdio_probe: bool,
-    lazy_stdio: bool = true,
-    ready: ?*std.atomic.Value(bool) = null,
-};
+const StartCtx = @import("mcp_start.zig").Ctx; // one start + its one retry
+const startServerTask = @import("mcp_start.zig").task;
 
-fn startServerTask(ctx: StartCtx, name: []const u8, cfg: std.json.ObjectMap) StartOutcome {
-    defer if (ctx.ready) |flag| flag.store(true, .release);
-    var outcome: StartOutcome = .{};
-    var arena_state = std.heap.ArenaAllocator.init(ctx.gpa);
-    const a = arena_state.allocator();
-    var servers: std.ArrayList(*mcp_rpc.Server) = .empty;
-    var tools: std.ArrayList(mcp.Tool) = .empty;
-    // Task-local Registry: only gpa/io/home/flags are read by startServer.
-    // Must not point at init()'s stack `reg` — that dies when defer_join returns.
-    var tmp: Registry = .{
-        .gpa = ctx.gpa,
-        .io = ctx.io,
-        .home = ctx.home,
-        .arena_state = std.heap.ArenaAllocator.init(ctx.gpa),
-        .stdio_probe = ctx.stdio_probe,
-        .lazy_stdio = ctx.lazy_stdio,
-        .show_diagnostics = ctx.show_diagnostics,
-    };
-    defer tmp.arena_state.deinit();
-    tmp.startServer(a, &servers, &tools, name, cfg) catch |err| {
-        if (ctx.show_diagnostics) std.debug.print("  [mcp:{s}] failed to start: {t}\n", .{ name, err });
-        arena_state.deinit();
-        return outcome;
-    };
-    outcome.server = servers.items[0];
-    outcome.tools = tools.items;
-    outcome.arena_state = arena_state;
-    return outcome;
-}
 /// Load the workspace `.mcp.json` merged with the user-level global config,
 /// then handshake every server CONCURRENTLY. Returns null (no error) when
 /// neither file exists — MCP is optional. `global_path` is borrowed: it must
@@ -112,6 +76,7 @@ pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]con
         .global_config_path = global_path,
         .global_is_override = mcp_config.isEnvOverride(environ_map),
     };
+    @import("mcp_lazy.zig").remember(environ_map); // the base each server `env` overlays
     mcp_rpc.applyHandshakeTimeoutEnv(environ_map); // #275 GRAFF_MCP_HANDSHAKE_SECS + #327 GRAFF_MCP_PROBE_MS, on the same pass as the probe flag
 
     errdefer reg.deinit();
@@ -128,8 +93,9 @@ pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]con
     const Entry = struct { name: []const u8, cfg: std.json.ObjectMap };
     var entries: std.ArrayList(Entry) = .empty;
     var it = merged.servers.iterator();
+    const state = @import("mcp_state.zig").load(io, a, home); // `graff mcp enable|disable`
     while (it.next()) |entry| {
-        if (@import("tool_surface.zig").skipOptionalAtBoot(entry.key_ptr.*, environ_map, merged.isGlobalOnly(entry.key_ptr.*))) continue;
+        if (@import("mcp_state.zig").skipReason(state, entry.key_ptr.*, if (entry.value_ptr.* == .object) entry.value_ptr.*.object else null, environ_map, merged.isGlobalOnly(entry.key_ptr.*)) != .none) continue;
         if (entry.value_ptr.* != .object) continue;
         try entries.append(a, .{ .name = try a.dupe(u8, entry.key_ptr.*), .cfg = entry.value_ptr.*.object });
     }

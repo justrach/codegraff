@@ -167,5 +167,34 @@ class InstallTests(unittest.TestCase):
         self.assertIn('Codegraff managed MCP service', unit.read_text())
         self.assertIn('mcp', unit.read_text())
 
+    def test_systemd_unit_working_directory_is_a_literal_path(self):
+        directory = Path('/home/user/my 100% $proj')
+        unit = installer.systemd_unit(['/usr/bin/graff', 'mcp', 'serve'], directory, self.token)
+        line = next(l for l in unit.splitlines() if l.startswith('WorkingDirectory='))
+        # Unquoted (systemd takes the rest of the line as one path); only % escaped.
+        self.assertEqual(line, 'WorkingDirectory=/home/user/my 100%% $proj')
+        self.assertIn('ExecStart="/usr/bin/graff" "mcp" "serve"', unit)
+        with self.assertRaises(ValueError):
+            installer.systemd_unit(['graff'], 'relative/dir', self.token)
+
+    @unittest.skipUnless(sys.platform.startswith('linux') and installer.shutil.which('systemd-analyze'),
+                         'needs systemd-analyze')
+    def test_systemd_accepts_the_unit(self):
+        workspace = self.home / 'my 100% proj'
+        workspace.mkdir()
+        unit = self.home / 'codegraff-mcp.service'
+        unit.write_text(installer.systemd_unit(['/bin/true'], workspace, self.token))
+        result = subprocess.run(['systemd-analyze', '--user', 'verify', str(unit)],
+                                capture_output=True, text=True)
+        self.assertNotIn('not absolute', result.stderr)
+        self.assertNotIn('WorkingDirectory', result.stderr)
+
+    def test_systemctl_failure_carries_its_stderr(self):
+        failed = subprocess.CompletedProcess(['systemctl'], 1, b'', b'Failed to enable unit: Unit file is masked.')
+        with patch.object(installer, 'run_managed', return_value=failed):
+            with self.assertRaises(ValueError) as caught:
+                installer.systemctl('enable', '--now', 'codegraff-mcp.service')
+        self.assertIn('Unit file is masked', str(caught.exception))
+
 if __name__ == '__main__':
     unittest.main()

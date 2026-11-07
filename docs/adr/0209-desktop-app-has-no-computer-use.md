@@ -25,10 +25,10 @@ clicks and keystrokes to Codegraff's own window. Nothing in the app or the MCP
 server can reach it, and it never requests permissions.
 
 graff's bridge for the Codex Computer Use plugin (ADR 0036, 0119) is separate
-and unchanged.
+and unchanged. (Since removed: ADR 0313. Computer use returned outside the app,
+as an MCP server every surface sees: ADR 0314.)
 
 ## Consequences
 
-The agent cannot drive other macOS apps from the desktop app. A workflow that
-needs that uses the Codex Computer Use plugin through graff, which keeps its
-own signed process chain. GUI tests keep native input coverage.
+The agent cannot drive other macOS apps from the desktop app. GUI tests keep
+native input coverage.

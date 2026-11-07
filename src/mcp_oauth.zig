@@ -326,6 +326,15 @@ fn credentialPath(arena: Allocator, home: []const u8, resource_url: []const u8) 
     return std.fmt.allocPrint(arena, "{s}/.simple-harness-mcp/{s}.json", .{ home, &hex });
 }
 
+/// Whether a sign-in for `resource_url` is stored (`graff mcp status`; no
+/// network, no refresh).
+pub fn hasCredentials(io: Io, arena: Allocator, home: []const u8, resource_url: []const u8) bool {
+    if (home.len == 0) return false;
+    const path = credentialPath(arena, home, resource_url) catch return false;
+    _ = Io.Dir.cwd().statFile(io, path, .{}) catch return false;
+    return true;
+}
+
 fn secureWindowsCredentials(io: Io, dir: []const u8, path: []const u8) !void {
     // Zig 0.16 does not implement chmod on Windows. Remove inherited ACLs and
     // grant full control only to the file owner, using a fixed SID and a
@@ -420,7 +429,8 @@ fn loginInner(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, server
     defer listener.deinit(io);
     try out.print("\nOpen this URL to authorize (the browser should open automatically):\n\n{s}\n\nWaiting for the callback on {s} …\n", .{ authorization_url, redirect_uri });
     try out.flush();
-    openBrowser(io, authorization_url);
+    // GRAFF_NO_BROWSER: a client (the fullscreen TUI) opens the printed URL itself.
+    if (!@import("main.zig").g_no_browser) openBrowser(io, authorization_url);
 
     // Only this attempt's redirect (its state) ends the wait.
     var read_buffer: [16 * 1024]u8 = undefined;

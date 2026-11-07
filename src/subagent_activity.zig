@@ -10,10 +10,25 @@ const private_dir: Io.File.Permissions = if (@import("builtin").os.tag == .windo
 pub const max_events = 96;
 pub const max_text = 2048;
 pub const file_limit = 2 * 1024 * 1024;
+/// Every publish rewrites the whole snapshot (up to `max_events` events of
+/// `max_text` bytes each), and tool calls used to force one apiece, so a busy
+/// sub-agent rewrote hundreds of KB a second (#1640). Publishes are spaced so
+/// they average at most this many bytes a second; status changes still force.
+pub const publish_bytes_per_sec = 32 * 1024;
+pub const min_publish_interval_ms = 500;
+pub const max_publish_interval_ms = 3000;
+
+/// How long after a publish of `snapshot_bytes` the next unforced one waits.
+pub fn publishIntervalMs(snapshot_bytes: usize) i64 {
+    const spaced: i64 = @intCast(@min(snapshot_bytes * 1000 / publish_bytes_per_sec, max_publish_interval_ms));
+    return @max(spaced, min_publish_interval_ms);
+}
 pub const Meta = struct {
     id: []const u8,
     label: []const u8,
     task: []const u8,
+    provider: []const u8 = "",
+    model: []const u8 = "",
     status: []const u8 = "working",
     updatedAt: i64 = 0,
     truncated: bool = false,
@@ -48,13 +63,15 @@ pub fn cleanup(io: Io, registry: Io.Dir, pid: i32, start_id: u64) void {
     var buf: [80]u8 = undefined;
     registry.deleteTree(io, directory(&buf, pid, start_id) catch return) catch {};
 }
-fn writeAtomic(io: Io, a: A, dir: Io.Dir, name: []const u8, value: anytype) !void {
+/// Returns the bytes written.
+fn writeAtomic(io: Io, a: A, dir: Io.Dir, name: []const u8, value: anytype) !usize {
     const bytes = try std.json.Stringify.valueAlloc(a, value, .{});
     defer a.free(bytes);
     var f = try dir.createFileAtomic(io, name, .{ .permissions = private_file, .replace = true });
     defer f.deinit(io);
     try f.file.writeStreamingAll(io, bytes);
     try f.replace(io);
+    return bytes.len;
 }
 
 pub const Recorder = struct {
@@ -65,6 +82,10 @@ pub const Recorder = struct {
     events: std.ArrayList(Event) = .empty,
     mu: Io.Mutex = .init,
     last_write: i64 = 0,
+    /// Size of the last snapshot written; spaces the next unforced publish.
+    last_bytes: usize = 0,
+    /// Snapshots written, for tests.
+    writes: usize = 0,
     response: []const u8 = "",
     pub fn init(a: A, io: Io, registry_path: []const u8, id: []const u8, label: []const u8, task: []const u8) !Recorder {
         if (!validId(id)) return error.InvalidChildId;
@@ -84,6 +105,14 @@ pub const Recorder = struct {
         for (self.events.items) |event| self.freeEvent(event);
         self.events.deinit(self.a);
         self.dir.close(self.io);
+    }
+    /// Identity strings are borrowed for the recorder's run lifetime, like label/task.
+    pub fn setModel(self: *Recorder, provider: []const u8, model: []const u8) void {
+        self.mu.lockUncancelable(self.io);
+        defer self.mu.unlock(self.io);
+        self.meta.provider = util.utf8Prefix(provider, 256);
+        self.meta.model = util.utf8Prefix(model, 256);
+        self.publish(true);
     }
     pub fn engineSink(self: *Recorder) sink.EngineSink {
         return .{ .ctx = self, .vt = &vtable };
@@ -108,7 +137,7 @@ pub const Recorder = struct {
             else => return,
         };
         self.append(ev) catch return;
-        self.publish(std.mem.eql(u8, ev.type, "tool_call") or std.mem.eql(u8, ev.type, "tool_result"));
+        self.publish(false);
     }
     fn inputTitle(input: std.json.Value) []const u8 {
         if (input != .object) return "";
@@ -174,7 +203,7 @@ pub const Recorder = struct {
             if (!validId(meta.id) or std.mem.eql(u8, meta.status, "working")) continue;
             completed.append(a, meta) catch return;
         }
-        std.mem.sort(Meta, completed.items, {}, struct {
+        @import("stable_sort.zig").sort(Meta, completed.items, {}, struct {
             fn less(_: void, x: Meta, y: Meta) bool {
                 return x.updatedAt > y.updatedAt;
             }
@@ -187,14 +216,16 @@ pub const Recorder = struct {
     }
     fn publish(self: *Recorder, force: bool) void {
         const now = util.unixMs(self.io);
-        if (!force and now - self.last_write < 500) return;
+        if (!force and now - self.last_write < publishIntervalMs(self.last_bytes)) return;
         self.meta.updatedAt = now;
         var buf: [100]u8 = undefined;
         const data_name = std.fmt.bufPrint(&buf, "{s}.json", .{self.meta.id}) catch return;
-        writeAtomic(self.io, self.a, self.dir, data_name, Snapshot{ .agent = self.meta, .events = self.events.items, .response = self.response }) catch return;
+        const written = writeAtomic(self.io, self.a, self.dir, data_name, Snapshot{ .agent = self.meta, .events = self.events.items, .response = self.response }) catch return;
         const meta_name = std.fmt.bufPrint(&buf, "{s}.meta", .{self.meta.id}) catch return;
-        writeAtomic(self.io, self.a, self.dir, meta_name, self.meta) catch return;
+        _ = writeAtomic(self.io, self.a, self.dir, meta_name, self.meta) catch return;
         self.last_write = now;
+        self.last_bytes = written;
+        self.writes += 1;
     }
 };
 
@@ -216,6 +247,28 @@ test "cancel file marks a working child interrupted even if it later finishes" {
     try std.testing.expectEqualStrings("failed", r.meta.status);
 }
 
+test "child activity publishes are spaced by snapshot size, not forced per tool call" {
+    try std.testing.expectEqual(@as(i64, min_publish_interval_ms), publishIntervalMs(0));
+    try std.testing.expectEqual(@as(i64, min_publish_interval_ms), publishIntervalMs(8 * 1024));
+    try std.testing.expectEqual(@as(i64, 2000), publishIntervalMs(64 * 1024));
+    try std.testing.expectEqual(@as(i64, max_publish_interval_ms), publishIntervalMs(200 * 1024));
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var r: Recorder = .{ .a = std.testing.allocator, .io = std.testing.io, .dir = try tmp.dir.openDir(std.testing.io, ".", .{}), .meta = .{ .id = "child", .label = "test", .task = "test", .status = "completed" } };
+    defer r.deinit();
+    // A burst of tool calls is one publish, not two per call.
+    const child_sink = r.engineSink();
+    for (0..40) |_| {
+        child_sink.emit(std.testing.io, .{ .tool_call_announced = .{ .name = "read_file", .input = .null } });
+        child_sink.emit(std.testing.io, .{ .tool_result = .{ .name = "read_file", .text = "ok", .is_error = false, .ms = 1 } });
+    }
+    try std.testing.expectEqual(@as(usize, 80), r.events.items.len);
+    try std.testing.expectEqual(@as(usize, 1), r.writes);
+    r.publish(true);
+    try std.testing.expectEqual(@as(usize, 2), r.writes);
+}
+
 test "child activity coalesces deltas and bounds retained events and text" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -229,6 +282,16 @@ test "child activity coalesces deltas and bounds retained events and text" {
     try std.testing.expect(r.meta.truncated);
     try std.testing.expect(!validId("../elsewhere"));
     try std.testing.expect(validId("sa-001-abc"));
+    var identity: [257]u8 = undefined;
+    @memset(identity[0..255], 'a');
+    @memcpy(identity[255..], "é");
+    r.setModel(&identity, &identity);
+    try std.testing.expectEqual(@as(usize, 255), r.meta.provider.len);
+    try std.testing.expectEqualStrings(identity[0..255], r.meta.model);
+    const legacy = try std.json.parseFromSlice(Meta, std.testing.allocator, "{\"id\":\"old-child\",\"label\":\"Old\",\"task\":\"Review\"}", .{});
+    defer legacy.deinit();
+    try std.testing.expectEqualStrings("", legacy.value.provider);
+    try std.testing.expectEqualStrings("", legacy.value.model);
 }
 
 test "frontendless child SSE reaches its own activity sink and final snapshot" {
@@ -240,6 +303,18 @@ test "frontendless child SSE reaches its own activity sink and final snapshot" {
     defer a.free(root);
     var recorder = try Recorder.init(a, io, root, "child-one", "Review", "Check the boundary");
     defer recorder.deinit();
+    recorder.setModel("provider-a", "resolved-model-a");
+    // Identity is visible before any engine event, despite the publish throttle.
+    inline for (.{ "child-one.meta", "child-one.json" }) |name| {
+        const identity_bytes = try recorder.dir.readFileAlloc(io, name, a, .limited(file_limit));
+        defer a.free(identity_bytes);
+        const T = if (comptime std.mem.endsWith(u8, name, ".meta")) Meta else Snapshot;
+        const identity = try std.json.parseFromSlice(T, a, identity_bytes, .{});
+        defer identity.deinit();
+        const meta = if (T == Meta) identity.value else identity.value.agent;
+        try std.testing.expectEqualStrings("provider-a", meta.provider);
+        try std.testing.expectEqualStrings("resolved-model-a", meta.model);
+    }
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     var agent: @import("agent.zig").Agent = .{
@@ -266,6 +341,8 @@ test "frontendless child SSE reaches its own activity sink and final snapshot" {
     defer a.free(bytes);
     const parsed = try std.json.parseFromSlice(Snapshot, a, bytes, .{});
     defer parsed.deinit();
+    try std.testing.expectEqualStrings("provider-a", parsed.value.agent.provider);
+    try std.testing.expectEqualStrings("resolved-model-a", parsed.value.agent.model);
     try std.testing.expectEqualStrings("completed", parsed.value.agent.status);
     try std.testing.expectEqualStrings("Review finished", parsed.value.response);
     try std.testing.expectEqual(@as(usize, 4), parsed.value.events.len);
@@ -283,7 +360,7 @@ test "child retention preserves working children and removes oldest completed sn
         var id_buf: [64]u8 = undefined;
         const id = try std.fmt.bufPrint(&id_buf, "completed-{d}", .{i});
         var file_buf: [80]u8 = undefined;
-        try writeAtomic(io, a, r.dir, try std.fmt.bufPrint(&file_buf, "{s}.meta", .{id}), Meta{ .id = id, .label = "Done", .task = "Review", .status = "completed", .updatedAt = @intCast(i) });
+        _ = try writeAtomic(io, a, r.dir, try std.fmt.bufPrint(&file_buf, "{s}.meta", .{id}), Meta{ .id = id, .label = "Done", .task = "Review", .status = "completed", .updatedAt = @intCast(i) });
         try r.dir.writeFile(io, .{ .sub_path = try std.fmt.bufPrint(&file_buf, "{s}.json", .{id}), .data = "{}" });
     }
     r.prune();

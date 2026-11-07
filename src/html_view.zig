@@ -21,7 +21,7 @@ const tools = @import("tools.zig");
 
 pub const tool_name = "render_html";
 pub const tool_desc =
-    "Draw something for the user as a live HTML page and show it in the desktop transcript. Reach for it when a result is easier to SEE than to read — a chart, a diagram, a timeline, a before/after comparison, a small layout mock, or something they can poke at — not for ordinary prose, code, or a file list, which belong in your reply. The page is saved as one private local snapshot and rendered in an isolated frame: no network at all (inline images as data: URIs; no CDNs, no fonts, no fetch), no access to the app or its APIs, no forms, no popups, and links stay inside the frame. Make it self-contained — one document with its own inline <style>/<script> — and keep it under 1 MB. One call makes one view; the user can close it and the saved path stays openable later.";
+    "Draw something for the user as a live HTML page they open from the transcript. Reach for it when a result is easier to SEE than to read — a chart, a diagram, a timeline, a before/after comparison, a small layout mock, or something they can poke at — not for ordinary prose, code, or a file list, which belong in your reply. The page is saved as one private local snapshot and rendered in an isolated frame: no network at all (inline images as data: URIs; no CDNs, no fonts, no fetch), no access to the app or its APIs, no forms, no popups, and links stay inside the frame. Make it self-contained — one document with its own inline <style>/<script> — and keep it under 1 MB. One call makes one view and the saved path stays openable later. Saving is not showing: tell the user the page is ready to open, never that it is displayed above.";
 pub const tool_schema =
     \\{"type": "object", "properties": {"html": {"type": "string", "description": "The complete page: markup plus whatever inline <style>/<script> it needs. It must stand alone — nothing is fetched and nothing outside it is available."}}, "required": ["html"]}
 ;
@@ -56,9 +56,12 @@ fn refusal(html: []const u8, a: Allocator) !?[]u8 {
 }
 
 /// The one line the transcript and the model see. The page itself never
-/// travels in it — the GUI matches the opaque path.
+/// travels in it — the GUI matches the opaque path. Saving is all this tool
+/// can vouch for: no client acknowledges display, and a client that shows no
+/// views still gets this line, so it must not claim the page is on screen
+/// (#1677).
 fn marker(a: Allocator, path: []const u8) ![]u8 {
-    return std.fmt.allocPrint(a, "[Rendered view]({s}) — this page is now shown in the desktop transcript; it renders with no network and no access to the app.", .{path});
+    return std.fmt.allocPrint(a, "[Rendered view]({s}) — saved. The user opens it from this tool's row in the transcript; it renders with no network and no access to the app. Say it is ready to open, not that it is displayed.", .{path});
 }
 
 /// Write the page to one private snapshot and return its path (caller-owned).
@@ -155,4 +158,8 @@ test "the marker carries the path and never the page" {
     defer a.free(text);
     try testing.expect(std.mem.indexOf(u8, text, "/.graff/views/0123456789abcdef0123456789abcdef.html") != null);
     try testing.expect(std.mem.indexOf(u8, text, "<") == null);
+    // Saving is all the tool knows; the ACP view hint still finds the path.
+    try testing.expect(std.mem.indexOf(u8, text, "saved") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "shown") == null);
+    try testing.expect(@import("acp_view_meta.zig").detect(text) != null);
 }

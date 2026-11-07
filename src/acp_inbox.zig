@@ -22,6 +22,8 @@ pub const Inbox = struct {
     eof: bool = false,
     session_id: ?[]u8 = null,
     cancelled: bool = false,
+    /// Who the pending cancel came from (#1611).
+    cancel_kind: cancel_source.Source = .acp_cancel,
     active: bool = false,
     tick: bool = false,
     future: ?Io.Future(void) = null,
@@ -92,7 +94,7 @@ pub const Inbox = struct {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         self.active = true;
-        if (self.cancelled) cancel_source.cancel(.acp_cancel);
+        if (self.cancelled) cancel_source.cancel(self.cancel_kind);
     }
 
     pub fn end(self: *Inbox) void {
@@ -129,7 +131,8 @@ pub const Inbox = struct {
                 if (self.session_id) |current| {
                     if (sid == null or std.mem.eql(u8, sid.?, current)) {
                         self.cancelled = true;
-                        if (self.active) cancel_source.cancel(.acp_cancel);
+                        self.cancel_kind = cancel_source.fromAcp(r.params);
+                        if (self.active) cancel_source.cancel(self.cancel_kind);
                         acp_ask.cancelIfWaiting();
                         if (self.permission) |bridge| bridge.cancel();
                     }

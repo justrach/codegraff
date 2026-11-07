@@ -213,7 +213,10 @@ class MeasurementTests(unittest.TestCase):
             self.assertNotIn('AWS_SECRET_ACCESS_KEY', env)
             self.assertNotIn('GRAFF_CODEX_URL', env)
             self.assertTrue(env['HOME'].startswith(temp))
-            self.assertTrue(Path(env['GRAFF_MCP_CONFIG']).is_file())
+            # Inside the isolated home and absent: no user servers, and not the
+            # empty-file off-switch that would drop the task's .mcp.json (#549).
+            self.assertTrue(env['GRAFF_MCP_CONFIG'].startswith(temp))
+            self.assertFalse(Path(env['GRAFF_MCP_CONFIG']).exists())
         with self.assertRaises(ValueError):
             measurement.provider_environment('codegraff', '/unused', {})
 

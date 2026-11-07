@@ -263,7 +263,7 @@ pub fn modelPicker(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer)
                 scored.append(arena, .{ .idx = i, .score = s + models_rank.electionRank(has_key, seat) }) catch {};
             }
         }
-        std.mem.sort(Scored, scored.items, {}, scoredLess);
+        @import("stable_sort.zig").sort(Scored, scored.items, {}, scoredLess);
         for (scored.items) |s| filtered.append(arena, s.idx) catch {};
         if (filtered.items.len == 0) sel = 0 else if (sel >= filtered.items.len) sel = filtered.items.len - 1;
         if (select_current) {
@@ -390,7 +390,7 @@ pub fn listPickerAt(root: *Agent, arena: Allocator, out: *Io.Writer, title: []co
             if (pickScore(item, query.items)) |s|
                 scored.append(arena, .{ .idx = i, .score = s }) catch {};
         }
-        std.mem.sort(Scored, scored.items, {}, scoredLess);
+        @import("stable_sort.zig").sort(Scored, scored.items, {}, scoredLess);
         filtered.clearRetainingCapacity();
         for (scored.items) |s| filtered.append(arena, s.idx) catch {};
         if (filtered.items.len == 0) sel = 0 else if (sel >= filtered.items.len) sel = filtered.items.len - 1;

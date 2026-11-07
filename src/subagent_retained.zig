@@ -34,6 +34,8 @@ pub const State = struct {
     arena: std.heap.ArenaAllocator,
     record: Record,
     path: []const u8,
+    /// The folder `path` was derived from (see `remember`).
+    root: []const u8 = "",
     lock: ?Io.File = null,
     persisted: bool = false,
 
@@ -63,12 +65,66 @@ fn pathFor(a: std.mem.Allocator, root: []const u8, owner: []const u8, id: []cons
     const hex = std.fmt.bytesToHex(digest, .lower);
     return std.fmt.allocPrint(a, "{s}/.graff/sessions/{s}/workers/{s}.json", .{ root, hex, id });
 }
+/// The folder each checkpoint this process created lives under. The path was
+/// rebuilt from the process cwd on every load, so any chdir between spawn and
+/// resume (`workspace use`, ACP cwd adoption, session/load re-entering a
+/// tree) looked in the wrong tree and refused with a bare FileNotFound
+/// (#1724). A small ring: an evicted or foreign id falls back to the cwd.
+const known_cap = 64;
+var known_ids: [known_cap][32]u8 = undefined;
+var known_roots: [known_cap][std.fs.max_path_bytes]u8 = undefined;
+var known_lens: [known_cap]usize = @splat(0);
+var known_next: usize = 0;
+var known_lock = std.atomic.Value(bool).init(false);
+
+fn lockKnown() void {
+    while (known_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
+}
+fn remember(id: []const u8, root: []const u8) void {
+    if (id.len != 32 or root.len > std.fs.max_path_bytes) return;
+    lockKnown();
+    defer known_lock.store(false, .release);
+    const slot = known_next % known_cap;
+    known_next += 1;
+    @memcpy(&known_ids[slot], id);
+    @memcpy(known_roots[slot][0..root.len], root);
+    known_lens[slot] = root.len;
+}
+fn knownRoot(a: std.mem.Allocator, id: []const u8) !?[]const u8 {
+    if (id.len != 32) return null;
+    lockKnown();
+    defer known_lock.store(false, .release);
+    for (0..known_cap) |slot| {
+        if (known_lens[slot] == 0 or !std.mem.eql(u8, &known_ids[slot], id)) continue;
+        return try a.dupe(u8, known_roots[slot][0..known_lens[slot]]);
+    }
+    return null;
+}
+pub fn resetKnownForTest() void {
+    known_lens = @splat(0);
+    known_next = 0;
+}
+
+/// Why a task_id could not be continued, phrased for the parent model: what
+/// happened and what to do next, instead of a bare error name (#1724).
+pub fn loadFailureText(err: anyerror) []const u8 {
+    return switch (err) {
+        error.InvalidWorkerId => "task_id is not a retained worker id. Pass the 32-character hex task_id from the worker's start receipt or report, not the numeric agent id.",
+        error.FileNotFound => "no saved checkpoint for this task_id in this session's workspace. The worker was not retained, its state was never saved, or it was created by an earlier process in another folder. Its conversation cannot be continued; brief a new worker with the context it needs.",
+        error.WorkerOwnershipMismatch => "this task_id belongs to another parent session, so it cannot be continued here. Brief a new worker with the context it needs.",
+        error.WorkerForgotten => "this worker was forgotten and its history cleared. Brief a new worker with the context it needs.",
+        error.WouldBlock => "this worker is still running or another follow-up holds it. Wait for its report (agent_output) before resuming.",
+        else => "the worker's saved checkpoint could not be read. Brief a new worker with the context it needs.",
+    };
+}
+
 fn allocate(ctx: tools.ToolCtx, id: []const u8, root_override: ?[]const u8) !*State {
     const state = try ctx.gpa.create(State);
     state.* = .{ .arena = .init(ctx.gpa), .record = undefined, .path = undefined };
     errdefer state.deinit(ctx.gpa, ctx.io);
     const a = state.arena.allocator();
-    const root = root_override orelse try Io.Dir.cwd().realPathFileAlloc(ctx.io, ".", a);
+    const root = root_override orelse try knownRoot(a, id) orelse try Io.Dir.cwd().realPathFileAlloc(ctx.io, ".", a);
+    state.root = root;
     state.path = try pathFor(a, root, family(ctx), id);
     try Io.Dir.cwd().createDirPath(ctx.io, std.fs.path.dirname(state.path).?);
     const lock_path = try std.fmt.allocPrint(a, "{s}.lock", .{state.path});
@@ -86,6 +142,7 @@ pub fn create(ctx: tools.ToolCtx, label: []const u8) !*State {
     const id = std.fmt.bytesToHex(random, .lower);
     const state = try allocate(ctx, &id, null);
     errdefer state.deinit(ctx.gpa, ctx.io);
+    remember(&id, state.root);
     const a = state.arena.allocator();
     state.record = .{
         .id = try a.dupe(u8, &id),
@@ -226,6 +283,57 @@ test "retained worker history round trips without credentials and rejects parall
     try std.testing.expectEqual(@as(usize, 2), agent.messages.items.len);
     try std.testing.expectEqualStrings(root, agent.agent_cwd.?);
 }
+test "#1724: a retained checkpoint survives a parent workspace switch; a missing one is explained" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest; // fchdir
+    const ctx = testContext();
+    var launch = std.testing.tmpDir(.{});
+    defer launch.cleanup();
+    var other = std.testing.tmpDir(.{});
+    defer other.cleanup();
+    var orig = try Io.Dir.cwd().openDir(ctx.io, ".", .{});
+    defer orig.close(ctx.io);
+    defer _ = std.posix.system.fchdir(orig.handle);
+    defer resetKnownForTest();
+    const launch_root = try launch.dir.realPathFileAlloc(ctx.io, ".", ctx.gpa);
+    defer ctx.gpa.free(launch_root);
+
+    // Spawn: the checkpoint is created and saved under the launch tree.
+    if (std.posix.system.fchdir(launch.dir.handle) != 0) return error.ChdirFailed;
+    var id: [32]u8 = undefined;
+    {
+        const state = try create(ctx, "worker");
+        defer state.deinit(ctx.gpa, ctx.io);
+        @memcpy(&id, state.record.id);
+        try write(ctx.io, state);
+    }
+
+    // The parent moves (`workspace use`); the follow-up still finds it.
+    if (std.posix.system.fchdir(other.dir.handle) != 0) return error.ChdirFailed;
+    const loaded = try load(ctx, &id);
+    try std.testing.expect(std.mem.startsWith(u8, loaded.path, launch_root));
+    try std.testing.expectEqualStrings(&id, loaded.record.id);
+    loaded.deinit(ctx.gpa, ctx.io);
+
+    // A well-formed id with no checkpoint and a malformed id get distinct,
+    // actionable refusals instead of a bare error name.
+    const resume_tool = @import("subagent_resume.zig");
+    var arena: std.heap.ArenaAllocator = .init(ctx.gpa);
+    defer arena.deinit();
+    const missing = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), "{\"task_id\":\"" ++ test_id ++ "\",\"message\":\"continue\"}", .{});
+    const gone = try resume_tool.exec(ctx, missing);
+    defer ctx.gpa.free(gone.text);
+    try std.testing.expect(gone.is_error);
+    try std.testing.expect(std.mem.startsWith(u8, gone.text, "Worker follow-up refused: no saved checkpoint"));
+    try std.testing.expect(std.mem.indexOf(u8, gone.text, "brief a new worker") != null);
+    try std.testing.expect(std.mem.indexOf(u8, gone.text, "FileNotFound") == null);
+    const bad = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), "{\"task_id\":\"3\",\"message\":\"continue\"}", .{});
+    const wrong = try resume_tool.exec(ctx, bad);
+    defer ctx.gpa.free(wrong.text);
+    try std.testing.expect(wrong.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, wrong.text, "not a retained worker id") != null);
+    try std.testing.expect(!std.mem.eql(u8, loadFailureText(error.FileNotFound), loadFailureText(error.InvalidWorkerId)));
+}
+
 test "retained worker ownership and path validation fail closed" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

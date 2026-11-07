@@ -69,7 +69,7 @@ pub fn atLineStart(self: *const Agent) bool {
 
 pub const MdKind = enum { classify, hold, prose, header, fenced, pre };
 
-pub const MdSpan = enum { normal, star, bold_empty, bold, bold_star, code };
+pub const MdSpan = @import("agent_markdown_inline.zig").State;
 
 const TaskItem = struct { checked: bool, text: []const u8 };
 
@@ -252,53 +252,7 @@ pub fn mdStartProse(self: *Agent, w: *Io.Writer) void {
 /// styling on as soon as it's seen instead of waiting for the closer.
 /// Literal bytes route through mdWrapByte (terminal-width word wrap);
 /// style sequences through mdStyle (zero-width, ordered with the word).
-pub fn mdSpanByte(self: *Agent, w: *Io.Writer, b: u8) void {
-    switch (self.md_span) {
-        .normal => switch (b) {
-            '*' => {
-                if (markdown_url.containsHttp(self.md_word.items))
-                    self.mdWrapByte(w, b)
-                else
-                    self.md_span = .star;
-            },
-            '`' => {
-                self.mdStyle(w, style.yellow);
-                self.md_span = .code;
-            },
-            else => self.mdWrapByte(w, b),
-        },
-        .star => if (b == '*') {
-            self.mdStyle(w, style.bold);
-            self.md_span = .bold_empty;
-        } else {
-            self.mdWrapByte(w, '*'); // lone star is literal
-            self.md_span = .normal;
-            self.mdSpanByte(w, b);
-        },
-        .bold_empty => if (b == '*') {
-            self.md_span = .bold_star;
-        } else {
-            self.md_span = .bold;
-            self.mdSpanByte(w, b);
-        },
-        .bold => switch (b) {
-            '*' => self.md_span = .bold_star,
-            else => self.mdWrapByte(w, b),
-        },
-        .bold_star => if (b == '*') {
-            self.mdStyle(w, style.reset);
-            self.md_span = .normal;
-        } else {
-            self.mdWrapByte(w, '*');
-            self.md_span = .bold;
-            self.mdSpanByte(w, b);
-        },
-        .code => if (b == '`') {
-            self.mdStyle(w, style.reset);
-            self.md_span = .normal;
-        } else self.mdWrapByte(w, b),
-    }
-}
+pub const mdSpanByte = @import("agent_markdown_inline.zig").byte;
 
 /// Terminal-width word wrap for streamed prose. Literal bytes buffer
 /// into the current word; a space flushes it — and a word that would
@@ -363,27 +317,7 @@ pub fn mdWidth(self: *Agent) usize {
 
 /// Settle the span machine at line end: pending markers print literally,
 /// open spans close their styling.
-pub fn mdSpanEnd(self: *Agent, w: *Io.Writer) void {
-    if (self.md_span == .star) {
-        self.mdWrapByte(w, '*');
-        self.md_span = .normal;
-    }
-    self.mdFlushWord(w);
-    switch (self.md_span) {
-        .normal => {},
-        .star => unreachable,
-        .bold_empty => {
-            w.writeAll(style.reset) catch {};
-            w.writeAll("**") catch {};
-        },
-        .bold, .code => w.writeAll(style.reset) catch {},
-        .bold_star => {
-            w.writeByte('*') catch {};
-            w.writeAll(style.reset) catch {};
-        },
-    }
-    self.md_span = .normal;
-}
+pub const mdSpanEnd = @import("agent_markdown_inline.zig").finish;
 
 /// End of line (newline or stream end): render anything still held,
 /// settle styling, and reset the per-line state. Returns false when the
@@ -447,8 +381,8 @@ pub fn flushStreamTail(self: *Agent) void {
 
 /// Render one markdown line to ANSI (portable SGR only — bold/color, no
 /// italic, so iTerm/Ghostty/Terminal/Windows-Terminal all agree): code
-/// fences + fenced bodies dimmed, ATX headers bold-emerald, `-`/`*`/`+`
-/// bullets → emerald •, and inline `**bold**` / `` `code` `` spans.
+/// fences + fenced bodies dimmed, ATX headers accented, `-`/`*`/`+`
+/// bullets → accented •, with inline emphasis, bold and code spans.
 pub fn renderMdLine(self: *Agent, w: *Io.Writer, line: []const u8) void {
     var lead: usize = 0;
     while (lead < line.len and line[lead] == ' ') lead += 1;
@@ -546,42 +480,7 @@ pub fn isRule(body: []const u8) bool {
 
 /// Emit a line with inline `**bold**` and `` `code` `` spans styled; the
 /// markers themselves are dropped. Unmatched markers print literally.
-pub fn renderInline(w: *Io.Writer, s: []const u8) void {
-    var i: usize = 0;
-    while (i < s.len) {
-        if (s[i] == '*' or s[i] == '_' or s[i] == '~' or s[i] == '`' or s[i] == 'h') {
-            var token_end = i;
-            while (token_end < s.len and s[token_end] != ' ') token_end += 1;
-            if (markdown_url.unwrapToken(s[i..token_end])) |match| {
-                w.writeAll(match.url) catch {};
-                w.writeAll(match.suffix) catch {};
-                i = token_end;
-                continue;
-            }
-            if (std.mem.startsWith(u8, s[i..], "http://") or std.mem.startsWith(u8, s[i..], "https://")) {
-                w.writeAll(s[i..token_end]) catch {};
-                i = token_end;
-                continue;
-            }
-        }
-        if (i + 1 < s.len and s[i] == '*' and s[i + 1] == '*') {
-            if (std.mem.indexOfPos(u8, s, i + 2, "**")) |end| {
-                w.print("{s}{s}{s}", .{ style.bold, s[i + 2 .. end], style.reset }) catch {};
-                i = end + 2;
-                continue;
-            }
-        }
-        if (s[i] == '`') {
-            if (std.mem.indexOfScalarPos(u8, s, i + 1, '`')) |end| {
-                w.print("{s}{s}{s}", .{ style.yellow, s[i + 1 .. end], style.reset }) catch {};
-                i = end + 1;
-                continue;
-            }
-        }
-        w.writeByte(s[i]) catch {};
-        i += 1;
-    }
-}
+pub const renderInline = @import("agent_markdown_inline.zig").render;
 
 test "codepointCount: counts UTF-8 codepoints, not bytes" {
     try std.testing.expectEqual(@as(usize, 5), codepointCount("hello"));

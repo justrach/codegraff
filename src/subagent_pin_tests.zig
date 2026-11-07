@@ -21,7 +21,7 @@ fn obj(a: Allocator, s: []const u8) std.json.ObjectMap {
 /// credentials; withModel only ever reads `id`/`api_key`/`account`/`source`
 /// off it.
 fn codexBase() Provider {
-    return .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "https://example.invalid", .api_key = "k", .model = "gpt-5.6-sol", .context = 272_000 };
+    return .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "https://example.invalid", .api_key = "k", .model = "gpt-6-astra", .context = 272_000 };
 }
 
 test "persona frontmatter parse: model/tier land on AgentType, a bad tier is dropped" {
@@ -37,14 +37,14 @@ test "persona frontmatter parse: model/tier land on AgentType, a bad tier is dro
     defer fleet.g_agent_types = saved;
     fleet.g_agent_types = &.{
         .{ .name = "implementer", .desc = "", .prompt = "x", .tier = Tier.parse("mid") },
-        .{ .name = "reviewer", .desc = "", .prompt = "x", .model = "gpt-5.6-terra" },
+        .{ .name = "reviewer", .desc = "", .prompt = "x", .model = "gpt-6-sol" },
         .{ .name = "typo", .desc = "", .prompt = "x", .tier = Tier.parse("cheap") }, // off-vocabulary
         .{ .name = "plain", .desc = "", .prompt = "x" },
     };
 
     try std.testing.expectEqual(Tier.mid, pin_mod.personaPin("implementer").tier.?);
     try std.testing.expect(pin_mod.personaPin("implementer").model == null);
-    try std.testing.expectEqualStrings("gpt-5.6-terra", pin_mod.personaPin("reviewer").model.?);
+    try std.testing.expectEqualStrings("gpt-6-sol", pin_mod.personaPin("reviewer").model.?);
     // A persona whose `tier:` did not parse contributes nothing at all — the
     // spawn keeps the session default rather than inheriting a guess.
     try std.testing.expect(pin_mod.personaPin("typo").isNone());
@@ -54,8 +54,8 @@ test "persona frontmatter parse: model/tier land on AgentType, a bad tier is dro
     try std.testing.expect(pin_mod.personaPin("").isNone());
 
     // …and the pin reaches a spawn that only names the persona.
-    try std.testing.expectEqualStrings("gpt-5.6-terra", pin_mod.forSpawn(codexBase(), obj(a, "{\"agent\":\"implementer\"}"), true).provider.?.model);
-    try std.testing.expectEqualStrings("gpt-5.6-terra", pin_mod.forSpawn(codexBase(), obj(a, "{\"agent\":\"reviewer\"}"), true).provider.?.model);
+    try std.testing.expectEqualStrings("gpt-6-sol", pin_mod.forSpawn(codexBase(), obj(a, "{\"agent\":\"implementer\"}"), true).provider.?.model);
+    try std.testing.expectEqualStrings("gpt-6-sol", pin_mod.forSpawn(codexBase(), obj(a, "{\"agent\":\"reviewer\"}"), true).provider.?.model);
     try std.testing.expect(pin_mod.forSpawn(codexBase(), obj(a, "{\"agent\":\"typo\"}"), true).provider == null);
     try std.testing.expect(pin_mod.forSpawn(codexBase(), obj(a, "{\"agent\":\"plain\"}"), true).provider == null);
 }
@@ -72,12 +72,12 @@ test "researcher is the small/luna search seat on Codex, including Astra roots" 
 
     try std.testing.expectEqual(Tier.small, pin_mod.personaPin("researcher").tier.?);
     const sol = pin_mod.forSpawn(codexBase(), obj(a, "{\"agent\":\"researcher\"}"), true);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", sol.provider.?.model);
+    try std.testing.expectEqualStrings("gpt-6-luna", sol.provider.?.model);
 
     var astra = codexBase();
     astra.model = "gpt-6-astra";
     const from_astra = pin_mod.forSpawn(astra, obj(a, "{\"agent\":\"researcher\"}"), true);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", from_astra.provider.?.model);
+    try std.testing.expectEqualStrings("gpt-6-luna", from_astra.provider.?.model);
 }
 
 test "spawn override resolution: exact name, alias, ladder rung, and no-op" {
@@ -87,29 +87,29 @@ test "spawn override resolution: exact name, alias, ladder rung, and no-op" {
     const base = codexBase();
 
     // Exact catalog name.
-    const exact = pin_mod.forSpawn(base, obj(a, "{\"model\":\"gpt-5.6-luna\"}"), true);
+    const exact = pin_mod.forSpawn(base, obj(a, "{\"model\":\"gpt-6-luna\"}"), true);
     try std.testing.expectEqual(pin_mod.Outcome.pinned, exact.outcome);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", exact.provider.?.model);
+    try std.testing.expectEqualStrings("gpt-6-luna", exact.provider.?.model);
     try std.testing.expectEqualStrings("codex", exact.provider.?.id); // provider-local, always
     try std.testing.expectEqualStrings("k", exact.provider.?.api_key); // same credential
     // The context window is re-derived for the new model, not inherited.
     try std.testing.expect(exact.provider.?.context != 0);
 
     // Abbreviation: the same resolver --subagent-model uses (unique substring).
-    const alias = pin_mod.forSpawn(base, obj(a, "{\"model\":\" 5.6-terra \"}"), true); // whitespace trimmed
-    try std.testing.expectEqualStrings("gpt-5.6-terra", alias.provider.?.model);
+    const alias = pin_mod.forSpawn(base, obj(a, "{\"model\":\" 6.1-sol \"}"), true); // whitespace trimmed
+    try std.testing.expectEqualStrings("gpt-6.1-sol", alias.provider.?.model);
 
     // Ladder rung instead of a name.
     const rung = pin_mod.forSpawn(base, obj(a, "{\"tier\":\"small\"}"), true);
     try std.testing.expectEqual(pin_mod.Outcome.pinned, rung.outcome);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", rung.provider.?.model);
-    try std.testing.expectEqualStrings("gpt-5.6-terra", pin_mod.forSpawn(base, obj(a, "{\"tier\":\"mid\"}"), true).provider.?.model);
+    try std.testing.expectEqualStrings("gpt-6-luna", rung.provider.?.model);
+    try std.testing.expectEqualStrings("gpt-6-sol", pin_mod.forSpawn(base, obj(a, "{\"tier\":\"mid\"}"), true).provider.?.model);
 
-    // Codex frontier is Astra; a Sol child asking for frontier is a real pin.
+    // Codex frontier is Astra: an Astra root asking for frontier, or naming
+    // its own model, is a no-op.
     const flagship = pin_mod.forSpawn(base, obj(a, "{\"tier\":\"frontier\"}"), true);
-    try std.testing.expectEqual(pin_mod.Outcome.pinned, flagship.outcome);
-    try std.testing.expectEqualStrings("gpt-6-astra", flagship.provider.?.model);
-    const same = pin_mod.forSpawn(base, obj(a, "{\"model\":\"gpt-5.6-sol\"}"), true);
+    try std.testing.expectEqual(pin_mod.Outcome.same, flagship.outcome);
+    const same = pin_mod.forSpawn(base, obj(a, "{\"model\":\"gpt-6-astra\"}"), true);
     try std.testing.expectEqual(pin_mod.Outcome.same, same.outcome);
     try std.testing.expect(same.provider == null);
 
@@ -127,36 +127,36 @@ test "precedence: spawn param > persona pin > session default" {
     const saved = fleet.g_agent_types;
     defer fleet.g_agent_types = saved;
     fleet.g_agent_types = &.{
-        .{ .name = "pinned-frontier", .desc = "", .prompt = "x", .model = "gpt-5.6-sol" },
+        .{ .name = "pinned-frontier", .desc = "", .prompt = "x", .model = "gpt-6-astra" },
         .{ .name = "pinned-mid", .desc = "", .prompt = "x", .tier = .mid },
-        .{ .name = "both", .desc = "", .prompt = "x", .model = "gpt-5.6-terra", .tier = .small },
+        .{ .name = "both", .desc = "", .prompt = "x", .model = "gpt-6-sol", .tier = .small },
     };
     // The session default is whatever the caller already resolved — here the
     // #291 ladder's answer for a sol root, i.e. terra.
-    const session_default: Provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-5.6-terra", .context = 272_000 };
+    const session_default: Provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-6-sol", .context = 272_000 };
 
     // 1. An explicit spawn param beats the persona, in BOTH directions —
     //    including lowering a persona that pinned itself to the flagship,
     //    which is the case a merge-instead-of-replace rule would break.
     try std.testing.expectEqualStrings(
-        "gpt-5.6-luna",
+        "gpt-6-luna",
         pin_mod.forSpawn(session_default, obj(a, "{\"agent\":\"pinned-frontier\",\"tier\":\"small\"}"), true).provider.?.model,
     );
     try std.testing.expectEqualStrings(
-        "gpt-5.6-sol",
-        pin_mod.forSpawn(session_default, obj(a, "{\"agent\":\"pinned-mid\",\"model\":\"gpt-5.6-sol\"}"), true).provider.?.model,
+        "gpt-6-astra",
+        pin_mod.forSpawn(session_default, obj(a, "{\"agent\":\"pinned-mid\",\"model\":\"gpt-6-astra\"}"), true).provider.?.model,
     );
     // 2. No spawn param → the persona's pin applies over the session default.
     try std.testing.expectEqualStrings(
-        "gpt-5.6-sol",
+        "gpt-6-astra",
         pin_mod.forSpawn(session_default, obj(a, "{\"agent\":\"pinned-frontier\"}"), true).provider.?.model,
     );
     // 3. Neither → the session default is kept untouched.
     try std.testing.expect(pin_mod.forSpawn(session_default, obj(a, "{\"prompt\":\"y\"}"), true).provider == null);
     // Within one level, an exact model beats a tier (both on the call…
     try std.testing.expectEqualStrings(
-        "gpt-5.6-sol",
-        pin_mod.forSpawn(session_default, obj(a, "{\"model\":\"gpt-5.6-sol\",\"tier\":\"small\"}"), true).provider.?.model,
+        "gpt-6-astra",
+        pin_mod.forSpawn(session_default, obj(a, "{\"model\":\"gpt-6-astra\",\"tier\":\"small\"}"), true).provider.?.model,
     );
     // …and both on the persona).
     try std.testing.expectEqual(pin_mod.Outcome.same, pin_mod.forSpawn(session_default, obj(a, "{\"agent\":\"both\"}"), true).outcome);
@@ -254,14 +254,14 @@ test "sub-first routing: a logged-in flat-rate sub outranks metered for explicit
     // does not serve falls through to a logged-in sub that serves it exactly
     // — the same standing consent as the tier path, rescuing a pin that used
     // to silently no-op.
-    const mrouted = pin_mod.forSpawn(dsv, obj(a, "{\"model\":\"gpt-5.6-luna\"}"), true);
+    const mrouted = pin_mod.forSpawn(dsv, obj(a, "{\"model\":\"gpt-6-luna\"}"), true);
     try std.testing.expectEqual(pin_mod.Outcome.model_sub_routed, mrouted.outcome);
     try std.testing.expectEqualStrings("codex", mrouted.provider.?.id);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", mrouted.provider.?.model);
+    try std.testing.expectEqualStrings("gpt-6-luna", mrouted.provider.?.model);
     try std.testing.expect(mrouted.outcome.describe().len > 0);
     // …under the identical gates: an explicit --subagent-provider
     // (sub_ok=false) forbids the hop…
-    try std.testing.expectEqual(pin_mod.Outcome.unknown_model, pin_mod.forSpawn(dsv, obj(a, "{\"model\":\"gpt-5.6-luna\"}"), false).outcome);
+    try std.testing.expectEqual(pin_mod.Outcome.unknown_model, pin_mod.forSpawn(dsv, obj(a, "{\"model\":\"gpt-6-luna\"}"), false).outcome);
     // …and the match is strictly exact/alias — a substring must NOT cross a
     // provider boundary to find a model the pin did not name.
     try std.testing.expectEqual(pin_mod.Outcome.unknown_model, pin_mod.forSpawn(dsv, obj(a, "{\"model\":\"luna\"}"), true).outcome);
@@ -271,7 +271,7 @@ test "sub-first routing: a logged-in flat-rate sub outranks metered for explicit
     const nologin = pin_mod.forSpawn(dsv, obj(a, "{\"tier\":\"small\"}"), true);
     try std.testing.expectEqual(pin_mod.Outcome.pinned, nologin.outcome);
     try std.testing.expectEqualStrings("deepseek-v4-flash", nologin.provider.?.model);
-    try std.testing.expectEqual(pin_mod.Outcome.unknown_model, pin_mod.forSpawn(dsv, obj(a, "{\"model\":\"gpt-5.6-luna\"}"), true).outcome);
+    try std.testing.expectEqual(pin_mod.Outcome.unknown_model, pin_mod.forSpawn(dsv, obj(a, "{\"model\":\"gpt-6-luna\"}"), true).outcome);
 
     // Same family through a codegraff login: stay on gateway flash, not luna.
     bench.g_keys = &keys;
@@ -294,14 +294,14 @@ test "exact pin: the child's own provider wins over a logged-in sub serving the 
         if (std.mem.eql(u8, spec.id, "codex")) keys.values[i] = "tok";
     }
     bench.g_keys = &keys;
-    // openai's own catalog serves gpt-5.6-luna — the pin resolves locally
+    // openai's own catalog serves gpt-6-luna — the pin resolves locally
     // (.pinned), never hopping to the codex sub that serves the same name:
     // a locally-served pin crosses no boundary and moves no billing.
-    const oai: Provider = .{ .id = "openai", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-5.6", .context = 1_050_000 };
-    const got = pin_mod.forSpawn(oai, obj(a, "{\"model\":\"gpt-5.6-luna\"}"), true);
+    const oai: Provider = .{ .id = "openai", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-6-astra", .context = 1_050_000 };
+    const got = pin_mod.forSpawn(oai, obj(a, "{\"model\":\"gpt-6-luna\"}"), true);
     try std.testing.expectEqual(pin_mod.Outcome.pinned, got.outcome);
     try std.testing.expectEqualStrings("openai", got.provider.?.id);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", got.provider.?.model);
+    try std.testing.expectEqualStrings("gpt-6-luna", got.provider.?.model);
 }
 
 test "two logins split the tiers: k3 is mid, luna is the mechanical rung (#471)" {
@@ -328,7 +328,7 @@ test "two logins split the tiers: k3 is mid, luna is the mechanical rung (#471)"
     const want = [_]struct { tier: []const u8, pid: []const u8, model: []const u8 }{
         .{ .tier = "frontier", .pid = "codex", .model = "gpt-6-astra" },
         .{ .tier = "mid", .pid = "kimi", .model = "k3" },
-        .{ .tier = "small", .pid = "codex", .model = "gpt-5.6-luna" },
+        .{ .tier = "small", .pid = "codex", .model = "gpt-6-luna" },
     };
     for (want) |w| {
         const body = std.fmt.allocPrint(a, "{{\"tier\":\"{s}\"}}", .{w.tier}) catch unreachable;
@@ -427,7 +427,7 @@ test "without a login, a pin never crosses a provider boundary" {
         .{ .id = "deepseek", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "deepseek-v4-pro", .context = 128_000 },
     };
     for (bases) |base| {
-        for ([_][]const u8{ "{\"tier\":\"mid\"}", "{\"tier\":\"small\"}", "{\"model\":\"gpt-5.6-luna\"}", "{\"model\":\"claude-haiku-4-5\"}" }) |args| {
+        for ([_][]const u8{ "{\"tier\":\"mid\"}", "{\"tier\":\"small\"}", "{\"model\":\"gpt-6-luna\"}", "{\"model\":\"claude-haiku-4-5\"}" }) |args| {
             const got = pin_mod.forSpawn(base, obj(a, args), true);
             const p = got.provider orelse continue;
             try std.testing.expectEqualStrings(base.id, p.id);
@@ -445,8 +445,8 @@ test "promotion carries a persona's model/tier policy, and it round-trips" {
     defer fleet.g_agent_types = saved;
     fleet.g_agent_types = &.{
         .{ .name = "worker", .desc = "", .prompt = "old genome", .isolation = .worktree, .tier = .mid },
-        .{ .name = "exact", .desc = "", .prompt = "old genome", .model = "gpt-5.6-luna" },
-        .{ .name = "luna-max", .desc = "", .prompt = "old genome", .model = "gpt-5.6-luna", .effort = .max },
+        .{ .name = "exact", .desc = "", .prompt = "old genome", .model = "gpt-6-luna" },
+        .{ .name = "luna-max", .desc = "", .prompt = "old genome", .model = "gpt-6-luna", .effort = .max },
         .{ .name = "bare", .desc = "", .prompt = "old genome" },
     };
 
@@ -457,10 +457,10 @@ test "promotion carries a persona's model/tier policy, and it round-trips" {
 
     const policy = pin_mod.personaPolicyFrontmatter(a, "worker");
     try std.testing.expectEqualStrings("isolation: worktree\ntier: mid\n", policy);
-    try std.testing.expectEqualStrings("model: gpt-5.6-luna\n", pin_mod.personaPolicyFrontmatter(a, "exact"));
+    try std.testing.expectEqualStrings("model: gpt-6-luna\n", pin_mod.personaPolicyFrontmatter(a, "exact"));
     // #292 follow-up: the effort pin is policy too — promote must not un-pin
     // it, and the emitted line round-trips through the loader's parse.
-    try std.testing.expectEqualStrings("model: gpt-5.6-luna\neffort: max\n", pin_mod.personaPolicyFrontmatter(a, "luna-max"));
+    try std.testing.expectEqualStrings("model: gpt-6-luna\neffort: max\n", pin_mod.personaPolicyFrontmatter(a, "luna-max"));
     var round_eff: ?pin_mod.Effort = null;
     var eff_lines = std.mem.tokenizeScalar(u8, pin_mod.personaPolicyFrontmatter(a, "luna-max"), '\n');
     while (eff_lines.next()) |ln| {
@@ -489,8 +489,8 @@ test "promotion carries a persona's model/tier policy, and it round-trips" {
 
 test "withModel: rebuilds the model-derived fields, keeps the credential (#292)" {
     const base = codexBase();
-    const luna = base.withModel("gpt-5.6-luna");
-    try std.testing.expectEqualStrings("gpt-5.6-luna", luna.model);
+    const luna = base.withModel("gpt-6-luna");
+    try std.testing.expectEqualStrings("gpt-6-luna", luna.model);
     try std.testing.expectEqualStrings("codex", luna.id);
     try std.testing.expectEqualStrings("k", luna.api_key);
     try std.testing.expectEqual(base.kind, luna.kind);
@@ -521,14 +521,14 @@ test "effort pin: spawn param, persona frontmatter, and axis independence (#292 
     defer fleet.g_agent_types = saved;
     fleet.g_agent_types = &.{
         // The tweet-shaped persona: an exact model AND a depth — "Luna Max".
-        .{ .name = "luna-worker", .desc = "", .prompt = "x", .model = "gpt-5.6-luna", .effort = .max },
+        .{ .name = "luna-worker", .desc = "", .prompt = "x", .model = "gpt-6-luna", .effort = .max },
         .{ .name = "thinker", .desc = "", .prompt = "x", .effort = .xhigh },
     };
 
     // Persona effort reaches a spawn that only names the persona, riding
     // alongside the persona's model pin.
     const luna = pin_mod.forSpawn(base, obj(a, "{\"agent\":\"luna-worker\"}"), true);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", luna.provider.?.model);
+    try std.testing.expectEqualStrings("gpt-6-luna", luna.provider.?.model);
     try std.testing.expectEqual(pin_mod.Effort.max, luna.effort.?);
     try std.testing.expectEqual(pin_mod.EffortOutcome.pinned, luna.effort_outcome);
 
@@ -538,11 +538,11 @@ test "effort pin: spawn param, persona frontmatter, and axis independence (#292 
 
     // AXIS INDEPENDENCE — an effort-only call keeps the persona's model pin…
     const eff_only = pin_mod.forSpawn(base, obj(a, "{\"agent\":\"luna-worker\",\"effort\":\"high\"}"), true);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", eff_only.provider.?.model);
+    try std.testing.expectEqualStrings("gpt-6-luna", eff_only.provider.?.model);
     try std.testing.expectEqual(pin_mod.Effort.high, eff_only.effort.?);
     // …and a model-only call keeps the persona's effort.
-    const mdl_only = pin_mod.forSpawn(base, obj(a, "{\"agent\":\"luna-worker\",\"model\":\"gpt-5.6-terra\"}"), true);
-    try std.testing.expectEqualStrings("gpt-5.6-terra", mdl_only.provider.?.model);
+    const mdl_only = pin_mod.forSpawn(base, obj(a, "{\"agent\":\"luna-worker\",\"model\":\"gpt-6-sol\"}"), true);
+    try std.testing.expectEqualStrings("gpt-6-sol", mdl_only.provider.?.model);
     try std.testing.expectEqual(pin_mod.Effort.max, mdl_only.effort.?);
 
     // An effort pin alone never touches the model: provider stays null.

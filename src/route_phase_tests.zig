@@ -19,24 +19,24 @@ fn codex(model: []const u8) Provider {
 }
 
 /// The same synthetic sheet #372's demonstration uses: on the SHEET ALONE
-/// terra outscores luna and is not dominated by it, so anything that moves
+/// sol outscores luna and is not dominated by it, so anything that moves
 /// below is provably the lived evidence talking, not the priors.
 const demo_sheet = [_]bench.Entry{
-    .{ .model = "gpt-5.6-terra", .effort = "medium", .score = 0.60, .cost = 0.9 }, // effective $0.90
-    .{ .model = "gpt-5.6-luna", .effort = "max", .score = 0.40, .cost = 0.61 }, // effective $0.61
+    .{ .model = "gpt-6-sol", .effort = "medium", .score = 0.60, .cost = 0.9 }, // effective $0.90
+    .{ .model = "gpt-6-luna", .effort = "max", .score = 0.40, .cost = 0.61 }, // effective $0.61
 };
 
 /// Lived scores from a `research` shape's `sweep` phase: the ladder's mid rung
-/// (terra) did badly there, the cheap rung (luna) did well. Exactly the rows
+/// (sol) did badly there, the cheap rung (luna) did well. Exactly the rows
 /// route_trace.captureScore writes — no recipe rows, so bench_priors' own
 /// #374 sheet feedback is deliberately NOT what is being exercised here.
 const demo_archive =
-    \\{"kind":"score","prompt_sha":"aa","score":0.2,"shape":"research","role":"sweep","tier":"mid","model":"gpt-5.6-terra"}
-    \\{"kind":"score","prompt_sha":"aa","score":0.2,"shape":"research","role":"sweep","tier":"mid","model":"gpt-5.6-terra"}
-    \\{"kind":"score","prompt_sha":"aa","score":0.2,"shape":"research","role":"sweep","tier":"mid","model":"gpt-5.6-terra"}
-    \\{"kind":"score","prompt_sha":"bb","score":0.95,"shape":"research","role":"sweep","tier":"small","model":"gpt-5.6-luna"}
-    \\{"kind":"score","prompt_sha":"bb","score":0.95,"shape":"research","role":"sweep","tier":"small","model":"gpt-5.6-luna"}
-    \\{"kind":"score","prompt_sha":"bb","score":0.95,"shape":"research","role":"sweep","tier":"small","model":"gpt-5.6-luna"}
+    \\{"kind":"score","prompt_sha":"aa","score":0.2,"shape":"research","role":"sweep","tier":"mid","model":"gpt-6-sol"}
+    \\{"kind":"score","prompt_sha":"aa","score":0.2,"shape":"research","role":"sweep","tier":"mid","model":"gpt-6-sol"}
+    \\{"kind":"score","prompt_sha":"aa","score":0.2,"shape":"research","role":"sweep","tier":"mid","model":"gpt-6-sol"}
+    \\{"kind":"score","prompt_sha":"bb","score":0.95,"shape":"research","role":"sweep","tier":"small","model":"gpt-6-luna"}
+    \\{"kind":"score","prompt_sha":"bb","score":0.95,"shape":"research","role":"sweep","tier":"small","model":"gpt-6-luna"}
+    \\{"kind":"score","prompt_sha":"bb","score":0.95,"shape":"research","role":"sweep","tier":"small","model":"gpt-6-luna"}
 ;
 
 /// Install `demo_archive` + `demo_sheet` as the session's live policy, with
@@ -82,26 +82,26 @@ test "role prior: search roles ride the small rung; judged roles keep the sessio
     const saved = Env.install(a, "", true);
     defer saved.restore();
 
-    const find = phase.forPhase(codex("gpt-5.6-terra"), .review, "find the defects", &.{}, true);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", find.provider.model);
+    const find = phase.forPhase(codex("gpt-6-sol"), .review, "find the defects", &.{}, true);
+    try std.testing.expectEqualStrings("gpt-6-luna", find.provider.model);
     try std.testing.expect(find.pin != null);
     try std.testing.expect(find.role_prior);
     // The source stays the ladder's — a hand rule must not claim evidence.
     try std.testing.expectEqual(policy.Source.ladder, find.sourceFor(false));
 
-    const sweep = phase.forPhase(codex("gpt-5.6-terra"), .research, "sweep the sources", &.{}, true);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", sweep.provider.model);
+    const sweep = phase.forPhase(codex("gpt-6-sol"), .research, "sweep the sources", &.{}, true);
+    try std.testing.expectEqualStrings("gpt-6-luna", sweep.provider.model);
 
-    const verify = phase.forPhase(codex("gpt-5.6-terra"), .review, "verify each finding", &.{}, true);
+    const verify = phase.forPhase(codex("gpt-6-sol"), .review, "verify each finding", &.{}, true);
     try std.testing.expect(verify.pin == null);
-    try std.testing.expectEqualStrings("gpt-5.6-terra", verify.provider.model);
+    try std.testing.expectEqualStrings("gpt-6-sol", verify.provider.model);
 
     // A user-chosen seat is never moved by the prior, same as #372's rule.
     const pinned = Env.install(a, "", false);
     defer pinned.restore();
-    const kept = phase.forPhase(codex("gpt-5.6-terra"), .review, "find the defects", &.{}, true);
+    const kept = phase.forPhase(codex("gpt-6-sol"), .review, "find the defects", &.{}, true);
     try std.testing.expect(kept.pin == null);
-    try std.testing.expectEqualStrings("gpt-5.6-terra", kept.provider.model);
+    try std.testing.expectEqualStrings("gpt-6-sol", kept.provider.model);
 }
 
 test "#376 uniformRole: a phase routes only when all of its workers agree on one role" {
@@ -128,19 +128,19 @@ test "#376 DEMONSTRATION: an observed phase re-seats EVERY worker; an unobserved
     const env = Env.install(arena_state.allocator(), demo_archive, true);
     defer env.restore();
 
-    // The session descended the #291 ladder to terra; the (research, sweep)
+    // The session descended the #291 ladder to sol; the (research, sweep)
     // cell has measured luna as strictly better value there.
-    const base = codex("gpt-5.6-terra");
+    const base = codex("gpt-6-sol");
     const seat = phase.forPhase(base, .research, "sweep the repo", &sweep_niches, true);
     try std.testing.expect(seat.pin != null);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", seat.provider.model);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", seat.pin.?.model);
+    try std.testing.expectEqualStrings("gpt-6-luna", seat.provider.model);
+    try std.testing.expectEqualStrings("gpt-6-luna", seat.pin.?.model);
 
     // PHASE-UNIFORM: one seat, so every worker of the phase resolves to the
     // same model and files under the same cell — with or without a
     // root-authored genome. That is the property #290 needs preserved.
     for (sweep_niches) |niche| {
-        try std.testing.expectEqualStrings("gpt-5.6-luna", seat.provider.model);
+        try std.testing.expectEqualStrings("gpt-6-luna", seat.provider.model);
         const cell = seat.cellOf(niche);
         try std.testing.expectEqual(policy.Shape.research, cell.shape);
         try std.testing.expectEqualStrings("sweep", cell.role);
@@ -153,7 +153,7 @@ test "#376 DEMONSTRATION: an observed phase re-seats EVERY worker; an unobserved
     // including today's `source` attribution.
     const quiet = phase.forPhase(base, .feature, "implement the fix", &.{"implementer"}, true);
     try std.testing.expect(quiet.pin == null);
-    try std.testing.expectEqualStrings("gpt-5.6-terra", quiet.provider.model);
+    try std.testing.expectEqualStrings("gpt-6-sol", quiet.provider.model);
     try std.testing.expectEqual(policy.Source.ladder, quiet.sourceFor(false));
     try std.testing.expectEqual(policy.Source.workflow_override, quiet.sourceFor(true));
 }
@@ -170,7 +170,7 @@ test "#376: the re-seated phase's trace says learned-policy on every worker" {
     defer route_trace.g_test_sink = null;
 
     // Drive the exact emission workflow.zig makes, once per worker.
-    const seat = phase.forPhase(codex("gpt-5.6-terra"), .research, "sweep the repo", &sweep_niches, true);
+    const seat = phase.forPhase(codex("gpt-6-sol"), .research, "sweep the repo", &sweep_niches, true);
     for (sweep_niches) |niche| {
         route_trace.emitSpawnProvider(std.testing.io, null, niche, seat.provider, seat.cellOf(niche), seat.sourceFor(false), null, niche);
     }
@@ -180,7 +180,7 @@ test "#376: the re-seated phase's trace says learned-policy on every worker" {
     while (lines.next()) |ln| : (n += 1) {
         const ev = try std.json.parseFromSliceLeaky(std.json.Value, a, ln, .{});
         try std.testing.expectEqualStrings("agent_route", ev.object.get("type").?.string);
-        try std.testing.expectEqualStrings("gpt-5.6-luna", ev.object.get("resolved_model").?.string);
+        try std.testing.expectEqualStrings("gpt-6-luna", ev.object.get("resolved_model").?.string);
         try std.testing.expectEqualStrings("learned-policy", ev.object.get("source").?.string);
         try std.testing.expectEqualStrings("research", ev.object.get("shape").?.string);
         try std.testing.expectEqualStrings("sweep", ev.object.get("role").?.string);
@@ -196,7 +196,7 @@ test "#376: the re-seated phase's trace says learned-policy on every worker" {
 test "#376: an explicitly chosen worker model outranks the phase policy" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
-    const base = codex("gpt-5.6-terra");
+    const base = codex("gpt-6-sol");
 
     // --subagent-model: the session named the worker model, so the route is
     // `session-default`, not the ladder's, and evidence never overrides a
@@ -206,7 +206,7 @@ test "#376: an explicitly chosen worker model outranks the phase policy" {
         defer env.restore();
         const seat = phase.forPhase(base, .research, "sweep the repo", &sweep_niches, true);
         try std.testing.expect(seat.pin == null);
-        try std.testing.expectEqualStrings("gpt-5.6-terra", seat.provider.model);
+        try std.testing.expectEqualStrings("gpt-6-sol", seat.provider.model);
         try std.testing.expectEqual(policy.Source.session_default, seat.sourceFor(false));
     }
     // A plain inherit-the-root (no worker provider at all) is the same story:
@@ -225,20 +225,20 @@ test "#376: the phase seat can only trade DOWN on cost, and never leaves the pro
     defer arena_state.deinit();
     const a = arena_state.allocator();
 
-    // The mirror image of the demonstration: terra is the loved model but it
+    // The mirror image of the demonstration: sol is the loved model but it
     // is also the DEARER one, so a phase already seated on luna can never be
-    // moved up to it however well terra scored in the cell.
+    // moved up to it however well sol scored in the cell.
     const upward =
-        \\{"kind":"score","prompt_sha":"aa","score":1,"shape":"research","role":"sweep","tier":"mid","model":"gpt-5.6-terra"}
-        \\{"kind":"score","prompt_sha":"aa","score":1,"shape":"research","role":"sweep","tier":"mid","model":"gpt-5.6-terra"}
-        \\{"kind":"score","prompt_sha":"bb","score":0,"shape":"research","role":"sweep","tier":"small","model":"gpt-5.6-luna"}
-        \\{"kind":"score","prompt_sha":"bb","score":0,"shape":"research","role":"sweep","tier":"small","model":"gpt-5.6-luna"}
+        \\{"kind":"score","prompt_sha":"aa","score":1,"shape":"research","role":"sweep","tier":"mid","model":"gpt-6-sol"}
+        \\{"kind":"score","prompt_sha":"aa","score":1,"shape":"research","role":"sweep","tier":"mid","model":"gpt-6-sol"}
+        \\{"kind":"score","prompt_sha":"bb","score":0,"shape":"research","role":"sweep","tier":"small","model":"gpt-6-luna"}
+        \\{"kind":"score","prompt_sha":"bb","score":0,"shape":"research","role":"sweep","tier":"small","model":"gpt-6-luna"}
     ;
     const env = Env.install(a, upward, true);
     defer env.restore();
-    const seat = phase.forPhase(codex("gpt-5.6-luna"), .research, "sweep the repo", &sweep_niches, true);
+    const seat = phase.forPhase(codex("gpt-6-luna"), .research, "sweep the repo", &sweep_niches, true);
     try std.testing.expect(seat.pin == null);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", seat.provider.model);
+    try std.testing.expectEqualStrings("gpt-6-luna", seat.provider.model);
 
     // And whatever it decides, the seat is provider-local by construction: the
     // id, the credential and the account all ride across unchanged, so no
@@ -248,7 +248,7 @@ test "#376: the phase seat can only trade DOWN on cost, and never leaves the pro
     // explicit `tier` ask, which a phase task never makes.
     const env2 = Env.install(a, demo_archive, true);
     defer env2.restore();
-    const base = codex("gpt-5.6-terra");
+    const base = codex("gpt-6-sol");
     const moved = phase.forPhase(base, .research, "sweep the repo", &sweep_niches, true);
     try std.testing.expect(moved.pin != null);
     try std.testing.expectEqualStrings(base.id, moved.provider.id);
@@ -261,7 +261,7 @@ test "#376: an uncelled phase, and a bootstrap install, keep today's behavior ex
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    const base = codex("gpt-5.6-terra");
+    const base = codex("gpt-6-sol");
     {
         const env = Env.install(a, demo_archive, true);
         defer env.restore();
@@ -269,7 +269,7 @@ test "#376: an uncelled phase, and a bootstrap install, keep today's behavior ex
         // evidence that WOULD have moved a `sweep` phase moves nothing.
         const seat = phase.forPhase(base, .research, "ponder", &.{ "researcher", "review the diff" }, true);
         try std.testing.expect(seat.pin == null);
-        try std.testing.expectEqualStrings("gpt-5.6-terra", seat.provider.model);
+        try std.testing.expectEqualStrings("gpt-6-sol", seat.provider.model);
     }
     {
         // An install with no archive at all: zero cells — the learned layer
@@ -280,7 +280,7 @@ test "#376: an uncelled phase, and a bootstrap install, keep today's behavior ex
         defer env.restore();
         const seat = phase.forPhase(base, .research, "sweep the repo", &sweep_niches, true);
         try std.testing.expect(seat.pin != null);
-        try std.testing.expectEqualStrings("gpt-5.6-luna", seat.provider.model);
+        try std.testing.expectEqualStrings("gpt-6-luna", seat.provider.model);
         try std.testing.expect(seat.role_prior);
         try std.testing.expectEqual(policy.Source.ladder, seat.sourceFor(false));
     }

@@ -78,8 +78,7 @@ fn warnUnpersistedRefresh(self: *Agent) void {
 /// heals a live session without waiting for it to 401 first. Runs for the root
 /// and for subagents alike: the credential resolver needs neither the root's
 /// model catalog nor a `home`, and it resolves the ONE directory every login
-/// flow writes (oauth.codexHomeDir), so this read can no longer revert a
-/// `/login` that just succeeded — the reported #402 symptom.
+/// flow writes (oauth.codexHomeDir), so this read cannot revert a successful `/login`.
 ///
 /// kimi/xai refresh only near expiry; the codex read is unconditional, because a
 /// ChatGPT access token carries no expiry field we could check cheaply.
@@ -91,10 +90,10 @@ fn warnUnpersistedRefresh(self: *Agent) void {
 /// life of the child. adoptFreshAuth dupes what it keeps onto the session arena,
 /// so nothing here outlives this frame.
 pub fn refreshLoginKeyBeforeSend(self: *Agent) void {
-    if (self.provider.source != .login) return;
+    if (!self.provider.source.canRefresh()) return;
     var scratch = std.heap.ArenaAllocator.init(self.gpa);
     defer scratch.deinit();
-    const fresh = oauth.refreshOAuthKey(self.io, self.gpa, scratch.allocator(), self.home, self.provider.id, false, null, self.provider.account) orelse return;
+    const fresh = oauth.refreshOAuthKeyForSource(self.io, self.gpa, scratch.allocator(), self.home, self.provider.id, false, null, self.provider.account, self.provider.source) orelse return;
     // Only adopt on a real CHANGE: an unchanged credential must not churn the
     // session arena, nor hand the WS transport latch back on every request.
     if (std.mem.eql(u8, fresh.key, self.provider.api_key)) return;
@@ -206,10 +205,10 @@ pub fn retryWithout(self: *Agent, msg: []const u8, force: *bool, stream_usage: *
 /// have helped either, so it does not earn a retry. Neither does a credential
 /// belonging to a DIFFERENT ChatGPT account (refreshOAuthKey returns null).
 pub fn retryAfterAuthRefresh(self: *Agent, msg: []const u8, refreshed: *bool) bool {
-    if (refreshed.* or self.provider.source != .login or !isAuthError(msg)) return false;
+    if (refreshed.* or !self.provider.source.canRefresh() or quota.isQuotaExceeded(msg) or !isAuthError(msg)) return false;
     refreshed.* = true;
     // ADR 0253: when the refresh cannot help, an interactive ChatGPT session signs in again.
-    const fresh = oauth.refreshOAuthKey(self.io, self.gpa, self.scratchAlloc(), self.home, self.provider.id, true, self.provider.api_key, self.provider.account) orelse return @import("chatgpt_reauth.zig").renewed(self);
+    const fresh = oauth.refreshOAuthKeyForSource(self.io, self.gpa, self.scratchAlloc(), self.home, self.provider.id, true, self.provider.api_key, self.provider.account, self.provider.source) orelse return @import("chatgpt_reauth.zig").renewed(self);
     warnUnpersistedRefresh(self);
     if (std.mem.eql(u8, fresh.key, self.provider.api_key)) return @import("chatgpt_reauth.zig").renewed(self);
     adoptFreshAuth(self, fresh);
@@ -384,11 +383,13 @@ pub fn errorCode(root: std.json.ObjectMap) ?[]const u8 {
         if (ev == .object) {
             if (ev.object.get("code")) |cv| {
                 if (cv == .string) return cv.string;
+                if (quota.numericStatusCode(cv)) |c| return c;
             }
         }
     }
     if (root.get("code")) |cv| {
         if (cv == .string) return cv.string;
+        if (quota.numericStatusCode(cv)) |c| return c;
     }
     // The ChatGPT plan route's 401: {"detail":{"error_code":"invalid_token"}}.
     if (root.get("detail")) |dv| {
@@ -587,6 +588,7 @@ pub fn handOffExhaustedPlan(self: *Agent) bool {
     const promotion = credential_failover.promote(self.provider.id) orelse return false;
     self.provider.api_key = self.arena.dupe(u8, promotion.key) catch promotion.key;
     self.provider.source = promotion.source;
+    self.provider = @import("provider.zig").Provider.withModel(self.provider, self.provider.model);
     self.ws_off = false;
     self.ws_transport_failures = 0;
     if (self.tracer) |tr| tr.note("credential_failover", "plan exhausted — switched to the parked metered key");

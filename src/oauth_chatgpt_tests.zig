@@ -44,11 +44,12 @@ test "ChatGPT sign-in: a returning sign-in reuses the issued app id with account
         .nonce = "no",
         .challenge = "ch",
         .host_id = host,
-        .id_token_hint = "a.b.c",
         .login_hint = "you@example.com",
     });
-    for ([_][]const u8{ "client_id=oaiapp_x&", "id_token_hint=a.b.c", "login_hint=you%40example.com", "127.0.0.1%3A1456" }) |part|
+    for ([_][]const u8{ "client_id=oaiapp_x&", "login_hint=you%40example.com", "127.0.0.1%3A1456" }) |part|
         try std.testing.expect(std.mem.indexOf(u8, url, part) != null);
+    // A saved token never rides in the URL: openers expose it in argv.
+    try std.testing.expect(std.mem.indexOf(u8, url, "id_token_hint") == null);
     // The name hint is for first registrations only.
     try std.testing.expect(std.mem.indexOf(u8, url, "agent_name_hint") == null);
 }
@@ -76,9 +77,9 @@ test "ChatGPT sign-in: the chatgpt-new provider is a flat-rate plan on the publi
     try std.testing.expect(spec.sub_login);
     try std.testing.expectEqualStrings("https://api.openai.com/v1/responses", spec.url);
     try std.testing.expectEqual(@import("billing.zig").Billing.sub, @import("billing.zig").forSeat("chatgpt-new", "gpt-6.1-sol", .login));
-    // The route caps input like the Codex backend and refuses /responses/compact.
-    try std.testing.expectEqual(@import("pricing.zig").codex_context_window, @import("pricing.zig").contextFor("chatgpt-new", "gpt-6.1-sol"));
-    const p: provider.Provider = .{ .id = "chatgpt-new", .kind = .responses, .auth = .bearer, .url = spec.url, .api_key = "", .model = "gpt-6.1-sol", .context = 270_000 };
+    // The route uses the verified subscription default, not the API maximum.
+    try std.testing.expectEqual(@as(u64, 500_000), @import("pricing.zig").contextFor("chatgpt-new", "gpt-6.1-sol"));
+    const p: provider.Provider = .{ .id = "chatgpt-new", .kind = .responses, .auth = .bearer, .url = spec.url, .api_key = "", .model = "gpt-6.1-sol", .context = 500_000 };
     try std.testing.expectEqual(@import("agent_server_compact.zig").ManualRoute.in_stream, @import("agent_server_compact.zig").manualRoute(p));
 }
 

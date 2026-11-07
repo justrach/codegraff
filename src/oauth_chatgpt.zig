@@ -263,7 +263,6 @@ pub const Attempt = struct {
     nonce: []const u8,
     challenge: []const u8,
     host_id: []const u8,
-    id_token_hint: []const u8 = "",
     login_hint: []const u8 = "",
 };
 
@@ -277,7 +276,10 @@ pub fn authorizeUrl(arena: Allocator, a: Attempt) ![]const u8 {
     });
     // The name hint belongs only to a first registration.
     if (std.mem.eql(u8, a.client_id, dynamic_client)) try pairs.append(arena, .{ "agent_name_hint", agent_name });
-    if (a.id_token_hint.len > 0) try pairs.append(arena, .{ "id_token_hint", a.id_token_hint });
+    // No id_token_hint: the browser opener gets this URL as a process
+    // argument any local process can read, so it carries no saved token.
+    // The issued client id and the email hint keep a returning sign-in
+    // consent-free, and finish() checks the account still matches.
     if (a.login_hint.len > 0) try pairs.append(arena, .{ "login_hint", a.login_hint });
     return std.fmt.allocPrint(arena, "{s}?{s}", .{ authorize_url, try form(arena, pairs.items) });
 }
@@ -394,18 +396,14 @@ pub fn login(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !void {
         .nonce = randomToken(io, arena, 24),
         .challenge = helpers.b64url(arena, &digest),
         .host_id = try hostId(io, arena, home),
-        .id_token_hint = if (returning) saved.?.id_token else "",
         .login_hint = if (returning) saved.?.email else "",
     };
     const url = try authorizeUrl(arena, attempt);
-    // With an id_token_hint the URL carries a credential: never print it.
-    if (attempt.id_token_hint.len == 0)
-        try out.print("\nSign in with ChatGPT (your browser should open it):\n\n{s}\n\n", .{url})
-    else
-        try out.writeAll("\nOpening your browser to sign in with ChatGPT…\n");
-    try out.print("waiting for the sign-in on {s} …\n", .{attempt.redirect});
+    try out.print("\nSign in with ChatGPT (your browser should open it):\n\n{s}\n", .{url});
+    try @import("signin_link.zig").offer(io, out, url);
+    try out.print("\nwaiting for the sign-in on {s} …\n", .{attempt.redirect});
     try out.flush();
-    helpers.openBrowser(io, url);
+    @import("signin_link.zig").open(io, url);
     // Only this attempt's redirect ends the wait; a tab left from an earlier
     // attempt gets a page saying so (oauth_callback.zig).
     var rbuf: [16 * 1024]u8 = undefined;
@@ -482,7 +480,14 @@ fn refreshed(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, r: Reco
     next.earliest_refresh_at = util.intFieldObj(tok, "earliest_refresh_at", 0);
     if (strFieldObj(tok, "scope")) |s| next.scopes = splitScopes(arena, s);
     if (strFieldObj(tok, "id_token")) |t| {
-        if (jwt.verify(io, gpa, arena, t, r.client_id, null, now_s)) |_| {
+        if (jwt.verify(io, gpa, arena, t, r.client_id, null, now_s)) |claims| {
+            // Tokens for another account must never run under this sign-in
+            // (OpenAI's SIWC DevKit refuses them as account_mismatch). The
+            // grant already rotated, so this ends the session: sign in again.
+            if (r.subject.len > 0 and !std.mem.eql(u8, claims.sub, r.subject)) {
+                recordRefreshFailure(io, arena, home, r, "account_mismatch", "the renewed sign-in belongs to a different ChatGPT account");
+                return null;
+            }
             next.id_token = t;
         } else |_| {}
     }

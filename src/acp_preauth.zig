@@ -87,12 +87,16 @@ test "pre-auth answers multiple initialize requests from the shared engine" {
         \\
     , &buf);
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, output, "\"authMethods\""));
-    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, output, "graff-login"));
     var replies = std.mem.tokenizeScalar(u8, output, '\n');
     var count: usize = 0;
     while (replies.next()) |line| {
         const reply = try std.json.parseFromSliceLeaky(std.json.Value, state.allocator(), line, .{});
         const result = reply.object.get("result").?.object;
+        const methods = result.get("authMethods").?.array.items;
+        try std.testing.expectEqual(@as(usize, 2), methods.len);
+        try std.testing.expectEqualStrings("graff-login", methods[0].object.get("id").?.string);
+        try std.testing.expectEqualStrings("graff-login-anthropic", methods[1].object.get("id").?.string);
+        try std.testing.expectEqualStrings("anthropic", methods[1].object.get("args").?.array.items[1].string);
         for ([_][]const u8{ "agentInfo", "agentImplementation" }) |field| {
             try std.testing.expectEqualStrings("preauth-test", result.get(field).?.object.get("version").?.string);
         }

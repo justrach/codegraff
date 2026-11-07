@@ -137,7 +137,7 @@ pub fn handle(a: A, io: Io, home: []const u8, out: *Io.Writer, req: proto.Reques
         };
         if (relevant) try messages.append(a, m);
     }
-    std.mem.sort(chan.Message, messages.items, {}, struct {
+    @import("stable_sort.zig").sort(chan.Message, messages.items, {}, struct {
         fn less(_: void, x: chan.Message, y: chan.Message) bool {
             return x.ts_ms < y.ts_ms;
         }

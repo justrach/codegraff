@@ -9,12 +9,13 @@ pub const Scope = struct {
     io: std.Io,
     tree: worktree.AgentWorktree,
     finished: bool = false,
+    retained: bool = false,
 
     pub fn init(ctx: tools.ToolCtx) !Scope {
         var arena = std.heap.ArenaAllocator.init(ctx.gpa);
         errdefer arena.deinit();
         const tree = try worktree.agentWorktreeCreateAt(ctx.gpa, ctx.io, arena.allocator(), "workflow", ctx.agent_cwd orelse ".");
-        return .{ .arena = arena, .gpa = ctx.gpa, .io = ctx.io, .tree = tree };
+        return .{ .arena = arena, .gpa = ctx.gpa, .io = ctx.io, .tree = tree, .retained = ctx.retain_children };
     }
 
     pub fn context(self: *const Scope, parent: tools.ToolCtx) tools.ToolCtx {
@@ -24,6 +25,14 @@ pub const Scope = struct {
     }
 
     pub fn finish(self: *Scope, out: tools.ToolOutput) !tools.ToolOutput {
+        if (self.retained) {
+            self.finished = true;
+            defer self.gpa.free(out.text);
+            return .{
+                .text = try std.fmt.allocPrint(self.gpa, "{s}\n\n[workflow workspace retained for worker continuation — path: {s}, branch: {s}]", .{ out.text, self.tree.path, self.tree.branch }),
+                .is_error = out.is_error,
+            };
+        }
         const outcome = worktree.agentWorktreeFinish(self.gpa, self.io, self.tree);
         self.finished = true;
         if (!outcome.kept) return out;
@@ -35,7 +44,7 @@ pub const Scope = struct {
     }
 
     pub fn deinit(self: *Scope) void {
-        if (!self.finished) _ = worktree.agentWorktreeFinish(self.gpa, self.io, self.tree);
+        if (!self.finished and !self.retained) _ = worktree.agentWorktreeFinish(self.gpa, self.io, self.tree);
         self.arena.deinit();
     }
 };

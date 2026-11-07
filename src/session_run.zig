@@ -146,111 +146,7 @@ pub fn runFrontendCommands(gpa: Allocator, io: Io, environ_map: anytype, root: *
 /// denies anything not pre-approved instead of prompting (there's no one to
 /// ask). Moved out of main() verbatim (600-line goal); `root`/`tracer` are
 /// already stable main()-owned storage by the time this runs.
-pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_mod.Agent, keys: *provider_mod.Keys, tracer: *trace.Tracer, out: *Io.Writer, prompt_text: []const u8) !void {
-    if (@import("goal_pacing.zig").oneshotSlashRefusal(prompt_text)) |why| std.process.fatal("{s}", .{why}); // usage error, not a prompt
-    main_mod.unattended = true;
-    @import("run_idle.zig").enabled = true; // nothing wakes a finished one-shot: wait for its background work
-    @import("named_work.zig").rememberOn(root, prompt_text);
-    root.in = null; // gate: deny instead of prompt; ask_user: self-decide
-    root.out = null; // tool progress → stderr; stdout carries only the answer
-    root.stream_quiet = true;
-    // stderr only: same class of "process is live" as Pi's JSONL session line.
-    // Eval first_out used to wait for the call-2 stdout pulse (ADR 0046).
-    std.debug.print("calling {s}\n", .{root.provider.model});
-    const ultracode_msg = try shapes.applyUltracodeSteering(arena, prompt_text, prompt_text, prompts.ultracodeActive(root));
-    if (ultracode_msg.explicit) {
-        tracer.note("ultracode", prompt_text[0..@min(prompt_text.len, 120)]);
-        if (telemetry.g_telem) |t| t.ultracode();
-    }
-    const goal_note = try repl_glue.goalSteeringNote(arena, root.goal);
-    const eval_note = try repl_glue.evalSteeringNote(
-        arena,
-        root.eval_cmd,
-        root.eval_target,
-        root.eval_judge != null,
-        root.eval_verified,
-        root.eval_repair_pending,
-        eval_memory.load(root),
-    );
-    var oneshot_user = if (goal_note.len > 0) try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ ultracode_msg.text, goal_note }) else ultracode_msg.text;
-    if (eval_note.len > 0) oneshot_user = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ oneshot_user, eval_note });
-    try root.messages.append(try @import("named_work.zig").userNudge(arena, root.provider.kind, oneshot_user));
-    if (telemetry.g_telem) |t| t.beginTurn(@intCast(@min(prompt_text.len, std.math.maxInt(u32))), root.provider.model);
-    // #502: --output-schema runs TWO-PHASE. A strict grammar on every message
-    // pulls the model into answering immediately instead of touching tools
-    // (graff-evals caught grok-4.6 guessing a file-inspection answer), so the
-    // agentic phase runs unconstrained and one tools-off formatting turn then
-    // restates the final answer under the schema — same conversation, so it
-    // reads the real evidence.
-    const pending_schema = root.output_schema;
-    root.output_schema = null;
-    var final_text = providers.runTurnWithFallback(root, keys, arena, null) catch |err| {
-        // std.process.fatal does not unwind main's defers. Mirror their order:
-        // join the fleet, reap jobs/pumps, then the terminal behavioral event.
-        fleet.joinElites(io);
-        jobs.jobsReap(gpa, io);
-        // Flush buffered OTLP too: a fatal one-shot stays visible in ordinary telemetry.
-        if (telemetry.g_telem) |t| t.flush();
-        if (tracer.behavior) |behavior| behavior.finish(.failed);
-        pricing.printUsageFooter(io); // #387/#389: fatal exits still owe cost accounting
-        if (root.tools_used.count() > 0) std.debug.print("note: {d} tool call(s) completed before the failure; their work was not rolled back\n", .{root.tools_used.count()});
-        switch (err) {
-            error.FallbackConsentRequired => std.process.fatal("saved model unavailable; provider '{s}' is not allowlisted — run graff interactively, then /fallback allow {s}", .{ root.provider.id, root.provider.id }),
-            error.ApiError => std.process.fatal("{s}", .{root.last_api_error orelse "api error"}),
-            error.RunBudgetExhausted => @import("run_budget.zig").RunBudget.exhaustedFatal(if (root.run_budget) |b| b.max_model_calls else 0, &@import("scoring.zig").g_run_id), // #368
-            else => |e| std.process.fatal("turn failed: {t}", .{e}),
-        }
-    };
-    const had_schema = pending_schema != null;
-    if (pending_schema) |schema_json| {
-        root.output_schema = schema_json;
-        // Gemini (via the gateway) accepts json_schema then ignores it, so the
-        // #543 sox path never learns. Force schema-in-prompt + structured_output.
-        if (std.mem.startsWith(u8, root.provider.model, "gemini")) root.sox_json_object = true;
-        root.text_only = true;
-        defer {
-            root.text_only = false;
-            root.output_schema = null;
-        }
-        try root.messages.append(try messages_mod.textMessage(arena, "user", "Return ONLY the final answer matching the enforced output schema: call the structured_output tool if it is offered, otherwise reply with a single JSON object. No prose."));
-        if (telemetry.g_telem) |t| t.countTurn();
-        final_text = providers.runTurnWithFallback(root, keys, arena, null) catch blk: {
-            // Best-effort: schema-shaping must never lose a finished answer.
-            std.debug.print("warning: output-schema formatting call failed — printing the unshaped answer\n", .{});
-            break :blk final_text;
-        };
-    }
-    const answer = if (had_schema) unwrapFencedJson(final_text) else final_text;
-    // Live -p deltas already rode stdout (`printDelta`); reprinting would
-    // duplicate the answer and push first_out to the footer.
-    if (!root.streamed_text) try out.print("{s}\n", .{answer}) else try out.writeAll("\n");
-    try out.flush();
-    // Usage summary → stderr, so stdout stays exactly the answer.
-    pricing.printUsageFooter(io);
-    session.saveSession(root, arena, root.session_name) catch |err| {
-        std.debug.print("⚠ session save failed: {s}\n", .{@errorName(err)});
-    };
-
-    // --worktree: checkpoint the one-shot's edits to the scratch branch too.
-    // Headless swarm agents (graff -w name -p "task") are the main -w use
-    // case — they must not exit with their work left uncommitted.
-    jobs.worktreeAutoCommit(gpa, io, std.fmt.allocPrint(arena, "wip: {s}", .{title_mod.titleFromPrompt(prompt_text)}) catch "wip: graff oneshot");
-    // One-shot returns here, before the REPL cleanup defer below is even
-    // registered, so free the root's gpa-backed buffers explicitly (else a
-    // tool-using one-shot leaks its tool log / render buffers on exit).
-    @import("subagent.zig").agentJobsReap(gpa, io);
-    @import("agent_render_cleanup.zig").deinit(root);
-    root.tools_used.deinit(gpa);
-    // Presence announced this session at boot (#469); a one-shot returns
-    // before finalizeSession, so retire + free its gpa-owned globals here or
-    // they reach the exit-time leak check — and our record would linger in
-    // the registry until a peer's liveness probe reaps it.
-    @import("session_globals.zig").release(gpa, io);
-    // #396: the run is over. The frontend hands the terminal back and latches
-    // its reader shut before main()'s teardown — a terminal-ownership move the
-    // sink owns now, in EVERY mode, exactly as the old unconditional call did.
-    engine_sink.writerSink(out).emit(io, .run_finished);
-}
+pub const runOneshotPrompt = @import("oneshot.zig").runOneshotPrompt;
 
 /// Loads persisted command/tool approvals + lifecycle hooks + the MAP-Elites
 /// agent-type registry (builtins + .harness/agents/*.{md,toml}), and prints the
@@ -395,7 +291,10 @@ pub fn buildRootAgent(
     // Background the fleet-champion pull: a ~0.3s TLS round-trip that used to block
     // the first prompt. Spawn it now; joinElites() reaps it on the main thread at the
     // first turn, so the user's typing hides the fetch (prompt paints ~0.3s sooner).
-    fleet.g_elites_future = io.async(fleet.pullElites, .{ io, arena, client, telemetry.g_telem, telem_endpoint, scoring.providerClass(root.provider.model), arena.dupe(u8, pull_esh) catch pull_esh, fleet.g_agent_types });
+    // `concurrent`, not `async`: async runs inline when the pool is busy, as it
+    // is at boot, and then boot waited up to the pull's 3s deadline.
+    const pull_args = .{ io, arena, client, telemetry.g_telem, telem_endpoint, scoring.providerClass(root.provider.model), arena.dupe(u8, pull_esh) catch pull_esh, fleet.g_agent_types };
+    fleet.g_elites_future = io.concurrent(fleet.pullElites, pull_args) catch io.async(fleet.pullElites, pull_args);
     return root;
 }
 
@@ -553,6 +452,7 @@ pub fn shouldAutoLearn(unattended: bool, json_mode: bool) bool {
 /// does not wait on suite generation; the next session that finds a store
 /// starts the cadence.
 pub fn startBackgroundLearning(gpa: Allocator, arena: Allocator, io: Io, environ_map: *const std.process.Environ.Map, budget: *const run_budget_mod.RunBudget, telemetry_allowed: bool) void {
+    if (comptime !@import("build_options").learn) return;
     if (!shouldAutoLearn(main_mod.unattended, main_mod.json_mode)) return;
     const options: learn_auto.Options = .{
         .model_calls = budget.used(),
@@ -565,28 +465,4 @@ pub fn startBackgroundLearning(gpa: Allocator, arena: Allocator, io: Io, environ
         .needs_store => _ = autoInitLearning(gpa, io),
         .skipped => {},
     }
-}
-
-/// `--output-schema` checks `json.load` the printed answer. Models that ignore
-/// json_schema often wrap the object in a markdown fence; strip that only.
-fn unwrapFencedJson(text: []const u8) []const u8 {
-    const trimmed = std.mem.trim(u8, text, " \t\r\n");
-    if (!std.mem.startsWith(u8, trimmed, "```")) return trimmed;
-    var rest = trimmed[3..];
-    if (std.mem.startsWith(u8, rest, "json")) rest = rest[4..];
-    rest = std.mem.trimStart(u8, rest, " \t\r\n");
-    if (std.mem.lastIndexOf(u8, rest, "```")) |end| return std.mem.trim(u8, rest[0..end], " \t\r\n");
-    return rest;
-}
-
-test "unwrapFencedJson strips a markdown fence and leaves bare JSON alone" {
-    try std.testing.expectEqualStrings("{\"a\":1}", unwrapFencedJson("```json\n{\"a\":1}\n```\n"));
-    try std.testing.expectEqualStrings("{\"a\":1}", unwrapFencedJson("{\"a\":1}"));
-}
-
-test "one-shot and --json do not auto-init a learning store" {
-    try std.testing.expect(!shouldAutoLearn(true, false));
-    try std.testing.expect(!shouldAutoLearn(false, true));
-    try std.testing.expect(!shouldAutoLearn(true, true));
-    try std.testing.expect(shouldAutoLearn(false, false));
 }

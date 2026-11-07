@@ -83,6 +83,8 @@ pub fn poll(reg: *mcp.Registry) bool {
         if (isKnown(name)) continue;
         g.known.append(alloc, nameHash(name)) catch {};
         if (e.value_ptr.* != .object or mcp_boot.alreadyStarting(reg, name)) continue;
+        const state = @import("mcp_state.zig").load(reg.io, reg.arena(), reg.home);
+        if (state.isDisabled(name) or (!state.isEnabled(name) and @import("mcp_state.zig").offInConfig(e.value_ptr.*.object))) continue;
         if (!mcp_boot.queueConfig(reg, name, e.value_ptr.*.object)) continue;
         names.append(alloc, name) catch continue;
         if (@import("engine_sink.zig").hostedSink()) |sink| {

@@ -107,7 +107,8 @@ pub fn directive(self: anytype) ?u64 {
     if (self.provider.serverCompactUrl() != null) return null;
     if (self.server_compaction_request and manualRoute(self.provider) == .in_stream) return 1_000;
     if (!enabled(self.provider)) return null;
-    const threshold = self.provider.compactAt();
+    // #1686: while a compaction that bought no room holds the next one.
+    const threshold = @import("compact_backoff.zig").threshold(self.compact_backoff, self.provider.compactAt(), self.provider.context);
     // A request carrying the directive answers every GPT-6 `response.steer`
     // with steering_not_supported (probed on Codex). It is inert below its
     // threshold, so a root turn that can steer leaves it off until the

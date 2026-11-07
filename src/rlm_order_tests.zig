@@ -286,6 +286,61 @@ test "rlm bash and write_file at the root ask the permission handler like catalo
     }
 }
 
+test "rlm loaded peer_message reports structured-only support and stops the script (#1413)" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const fold = @import("native_fold.zig");
+    const saved_enabled = fold.enabled;
+    defer {
+        fold.enabled = saved_enabled;
+        fold.resetSession();
+    }
+    fold.enabled = true;
+    fold.resetSession();
+    var agent: Agent = .{ .gpa = gpa, .arena = arena.allocator(), .io = io, .client = &f.client, .provider = .{ .id = "fixture", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "fixture", .context = 1000 }, .messages = .init(arena.allocator()), .sub = false, .label = "root", .out = null, .agent_cwd = f.cwd };
+    defer agent.tools_used.deinit(gpa);
+    const load = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), "{\"tools\":[\"peer_message\"]}", .{});
+    const loaded = try agent.runTools(&.{.{ .id = "load", .name = "load_tool_schemas", .input = load }});
+    try std.testing.expect(!loaded[0].is_error);
+    try std.testing.expect(fold.isLoaded("peer_message"));
+    const results = try agent.runTools(&.{try rlmCall(arena.allocator(), "p = peer_message(action=\"inbox\")\nw = write_file(path=\"marker\", content=\"ran\")\nprint(p)")});
+    try std.testing.expect(results[0].is_error);
+    try std.testing.expectEqualStrings("rlm: peer_message is agent-managed and is not supported inside rlm; call peer_message directly as a structured tool.", results[0].text);
+    try std.testing.expectError(error.FileNotFound, f.tmp.dir.openFile(io, "marker", .{}));
+    // Loading still enables the normal inline handler, not a host function.
+    const input = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), "{\"action\":\"invalid-fixture-action\"}", .{});
+    const direct = try agent.runTools(&.{.{ .id = "direct", .name = "peer_message", .input = input }});
+    try std.testing.expect(direct[0].is_error);
+    try std.testing.expect(std.mem.startsWith(u8, direct[0].text, "peer_message action must be "));
+}
+
+test "rlm agent-managed hosts refuse direct nested and each calls without executing the tail (#1413)" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    for (@import("schema.zig").meta_names) |name| {
+        const code = try std.fmt.allocPrint(gpa, "x = {s}()\nw = write_file(path=\"marker\", content=\"ran\")", .{name});
+        defer gpa.free(code);
+        const out = try f.run(code);
+        defer gpa.free(out.text);
+        try std.testing.expect(out.is_error);
+        try std.testing.expect(std.mem.indexOf(u8, out.text, "is not supported inside rlm") != null);
+        try std.testing.expect(std.mem.indexOf(u8, out.text, name) != null);
+        try std.testing.expectError(error.FileNotFound, f.tmp.dir.openFile(io, "marker", .{}));
+    }
+    for ([_][]const u8{
+        "print(peer_message(action=\"inbox\"), write_file(path=\"marker\", content=\"ran\"))",
+        "x = each([\"inbox\", \"list\"], \"peer_message\", \"action\")\nw = write_file(path=\"marker\", content=\"ran\")",
+    }) |code| {
+        const out = try f.run(code);
+        defer gpa.free(out.text);
+        try std.testing.expect(out.is_error);
+        try std.testing.expect(std.mem.indexOf(u8, out.text, "call peer_message directly as a structured tool") != null);
+        try std.testing.expectError(error.FileNotFound, f.tmp.dir.openFile(io, "marker", .{}));
+    }
+}
+
 test "rlm destructive git in a yolo subagent hits the subagent block (#1292)" {
     var f = try Fixture.init();
     defer f.deinit();

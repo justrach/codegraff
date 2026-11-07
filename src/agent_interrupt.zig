@@ -91,18 +91,19 @@ pub fn restoreStdin(orig: tty.RawState) void {
     tty.restore(orig);
 }
 
-/// Sleep `ms` watching stdin for Esc (when the root is on a TTY), so the
-/// user can cancel a retry backoff instead of waiting it out.
+/// Sleep `ms` watching both the engine cancel flag (ACP/JSON/hosted clients)
+/// and stdin Esc when the root is on a TTY. Never wait out a cancelled backoff.
 pub fn sleepInterruptible(self: *Agent, ms: u64) error{Interrupted}!void {
+    if (Agent.esc_cancel.load(.acquire)) return error.Interrupted;
     const watch = !self.sub and self.in != null and main_mod.use_color and !main_mod.json_mode;
     const orig_tio: ?tty.RawState = if (watch) rawNonblockStdin() else null;
     defer if (orig_tio) |o| tty.restore(o);
     var left = ms;
     while (left > 0) {
         const chunk = @min(left, 100);
-        self.io.sleep(.fromMilliseconds(@intCast(chunk)), .awake) catch {};
+        self.io.sleep(.fromMilliseconds(@intCast(chunk)), .awake) catch return error.Interrupted;
         left -= chunk;
-        if (orig_tio != null and escPressed(true)) return error.Interrupted;
+        if (Agent.esc_cancel.load(.acquire) or (orig_tio != null and escPressed(true))) return error.Interrupted;
     }
 }
 
@@ -120,6 +121,92 @@ pub fn sseIndex(obj: std.json.ObjectMap) ?usize {
     const ix = obj.get("index") orelse return null;
     if (ix != .integer or ix.integer < 0) return null;
     return @intCast(ix.integer);
+}
+
+const BackoffSleepProbe = struct {
+    calls: u64 = 0,
+    total_ms: u64 = 0,
+    max_ms: u64 = 0,
+    cancel_at: u64 = 0,
+    cancel_io: bool = false,
+
+    fn sleep(ctx: ?*anyopaque, timeout: Io.Timeout) Io.Cancelable!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx.?));
+        const ms: u64 = @intCast(timeout.duration.raw.toMilliseconds());
+        std.debug.assert(timeout.duration.clock == .awake);
+        self.calls += 1;
+        self.total_ms += ms;
+        self.max_ms = @max(self.max_ms, ms);
+        if (self.cancel_io) return error.Canceled;
+        if (self.calls == self.cancel_at) Agent.esc_cancel.store(true, .release);
+    }
+};
+
+test "retry backoff preserves its full duration in bounded sleep chunks" {
+    const previous = Agent.esc_cancel.swap(false, .acq_rel);
+    defer Agent.esc_cancel.store(previous, .release);
+    var vtable = std.testing.io.vtable.*;
+    vtable.sleep = BackoffSleepProbe.sleep;
+    var agent: Agent = undefined;
+    agent.in = null;
+    agent.sub = false;
+    for ([_]u64{ 0, 1, 99, 100, 101, 250, 65_535 }) |ms| {
+        var probe: BackoffSleepProbe = .{};
+        agent.io = .{ .userdata = &probe, .vtable = &vtable };
+        try sleepInterruptible(&agent, ms);
+        try std.testing.expectEqual(ms, probe.total_ms);
+        try std.testing.expectEqual((ms + 99) / 100, probe.calls);
+        try std.testing.expect(probe.max_ms <= 100);
+    }
+}
+
+test "retry backoff stops when cancellation arrives during a sleep chunk" {
+    const previous = Agent.esc_cancel.load(.acquire);
+    defer Agent.esc_cancel.store(previous, .release);
+    var vtable = std.testing.io.vtable.*;
+    vtable.sleep = BackoffSleepProbe.sleep;
+    var agent: Agent = undefined;
+    agent.in = null;
+    for ([_]bool{ false, true }) |sub| {
+        agent.sub = sub;
+        for ([_]u64{ 1, 2 }) |cancel_at| {
+            Agent.esc_cancel.store(false, .release);
+            var probe: BackoffSleepProbe = .{ .cancel_at = cancel_at };
+            agent.io = .{ .userdata = &probe, .vtable = &vtable };
+            try std.testing.expectError(error.Interrupted, sleepInterruptible(&agent, 10_000));
+            try std.testing.expectEqual(cancel_at, probe.calls);
+            try std.testing.expectEqual(cancel_at * 100, probe.total_ms);
+        }
+    }
+}
+
+test "retry backoff propagates I/O cancellation without another sleep" {
+    const previous = Agent.esc_cancel.swap(false, .acq_rel);
+    defer Agent.esc_cancel.store(previous, .release);
+    var vtable = std.testing.io.vtable.*;
+    vtable.sleep = BackoffSleepProbe.sleep;
+    var agent: Agent = undefined;
+    agent.in = null;
+    agent.sub = false;
+    var probe: BackoffSleepProbe = .{ .cancel_io = true };
+    agent.io = .{ .userdata = &probe, .vtable = &vtable };
+    try std.testing.expectError(error.Interrupted, sleepInterruptible(&agent, 10_000));
+    try std.testing.expectEqual(@as(u64, 1), probe.calls);
+    try std.testing.expect(!Agent.esc_cancel.load(.acquire));
+}
+
+test "retry backoff respects a pending non-TTY cancellation without sleeping" {
+    const previous = Agent.esc_cancel.swap(true, .acq_rel);
+    defer Agent.esc_cancel.store(previous, .release);
+    var agent: Agent = undefined;
+    agent.in = null;
+    for ([_]bool{ false, true }) |sub| {
+        agent.sub = sub;
+        // io is deliberately undefined: even a long wait must return before
+        // touching it, including for a child or a zero-duration backoff.
+        try std.testing.expectError(error.Interrupted, sleepInterruptible(&agent, 60_000));
+        try std.testing.expectError(error.Interrupted, sleepInterruptible(&agent, 0));
+    }
 }
 
 test { // #728: cancel_source has no other path into the test root

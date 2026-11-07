@@ -70,7 +70,8 @@ pub fn emitNotice(io: Io, comptime fmt: []const u8, args: anytype) void {
     w.flush() catch {};
 }
 
-/// Line-REPL only. Hosted TUI/ACP still get the pulse via `hostedSink`.
+/// Line-REPL only. Hosted frontends get the pulse via a bound `hostedSink`.
+/// ACP has no bound chrome sink, so --json keeps retries off its answer stream.
 /// `-p` / `--json` keep stdout as the answer (in-house atomic-symlink-write
 /// captured `· turn still going ·` when the pulse rode `g_out`).
 pub fn chromeGoesToStdout() bool {

@@ -13421,13 +13421,13 @@
       "source": "needle"
     },
     {
-      "id": "gpt-5.5",
+      "id": "gpt-6-astra",
       "tier": "frontier",
       "source": "needle"
     },
     {
-      "id": "gpt-5.6-sol",
-      "tier": "frontier",
+      "id": "gpt-6-sol",
+      "tier": "mid",
       "source": "needle"
     },
     {
@@ -13436,7 +13436,7 @@
       "source": "needle"
     },
     {
-      "id": "gpt-5.6-luna",
+      "id": "gpt-6-luna",
       "tier": "small",
       "source": "needle"
     },

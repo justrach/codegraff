@@ -12,7 +12,7 @@
 //! `frontier`/`mid`/`small` here are the ladder's OWN rung labels; they are
 //! NOT guaranteed to equal scoring.providerClass(name) for that literal
 //! model string — see the "ladder rungs vs providerClass" pinned test in
-//! subagent_selection.zig: the gpt-5.6 family and DeepSeek flash now agree
+//! subagent_selection.zig: the GPT-6 family and DeepSeek flash now agree
 //! end-to-end with providerClass.
 const std = @import("std");
 
@@ -62,8 +62,8 @@ pub const TierLadder = struct {
 };
 
 pub const ladders = [_]TierLadder{
-    .{ .provider = "codex", .frontier = "gpt-6-astra", .mid = "gpt-5.6-terra", .small = "gpt-5.6-luna" },
-    .{ .provider = "openai", .frontier = "gpt-5.6", .mid = "gpt-5.6-terra", .small = "gpt-5.6-luna" },
+    .{ .provider = "codex", .frontier = "gpt-6-astra", .mid = "gpt-6-sol", .small = "gpt-6-luna" },
+    .{ .provider = "openai", .frontier = "gpt-6-astra", .mid = "gpt-6-sol", .small = "gpt-6-luna" },
     // #471: the rungs below frontier must be cheaper SEATS. opus-5-5 ($4/$20)
     // and sonnet-5-5 ($2/$10) are the current lineup (ADR 0219); descending to
     // an older opus saves nothing, and sonnet-5-5 halves both halves of the bill.
@@ -87,7 +87,7 @@ pub const ladders = [_]TierLadder{
 
 /// Is `rung` a genuinely cheaper SEAT than `frontier` — strictly less $/MTok
 /// on the real price sheet? Unknown on either side answers true: an unpriced
-/// model cannot be disproved (codex's `gpt-5.6-sol` has no row at all), and
+/// model cannot be disproved (a model with no price row at all), and
 /// #291's descent must keep working there.
 ///
 /// #471: the bench sheet ranks by $/TASK, which folds the seat's rate together
@@ -196,8 +196,8 @@ test "Tier.parse/modelFor: the rung vocabulary #292 pins against (#291 names)" {
 
     const codex = forProvider("codex").?;
     try std.testing.expectEqualStrings("gpt-6-astra", codex.modelFor(.frontier).?);
-    try std.testing.expectEqualStrings("gpt-5.6-terra", codex.modelFor(.mid).?);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", codex.modelFor(.small).?);
+    try std.testing.expectEqualStrings("gpt-6-sol", codex.modelFor(.mid).?);
+    try std.testing.expectEqualStrings("gpt-6-luna", codex.modelFor(.small).?);
     // A family with no such rung answers null rather than the nearest rung.
     try std.testing.expectEqualStrings("deepseek-v4-flash", forProvider("deepseek").?.modelFor(.small).?);
     try std.testing.expectEqualStrings("deepseek-v4-flash", forProvider("codegraff").?.modelFor(.small).?);
@@ -213,10 +213,10 @@ test "#471 a rung must be a cheaper SEAT, not merely a terser one" {
     try std.testing.expect(!cheaperSeat("claude-opus-5", "claude-fable-5"));
     // sonnet-5 is the real thing: $2/$10 against $5/$25, cheaper on both halves.
     try std.testing.expect(cheaperSeat("claude-opus-5", "claude-sonnet-5"));
-    // Unknown on either side cannot be disproved, and #291's descent has to
-    // keep working on providers whose models carry no price row at all
-    // (codex's gpt-5.6-sol is the live example).
-    try std.testing.expect(cheaperSeat("gpt-5.6-sol", "gpt-5.6-luna"));
+    // The GPT-6 rungs are real descents; unknown on either side cannot be
+    // disproved, so #291's descent keeps working on unpriced models.
+    try std.testing.expect(cheaperSeat("gpt-6-astra", "gpt-6-sol"));
+    try std.testing.expect(cheaperSeat("gpt-6-sol", "gpt-6-luna"));
     try std.testing.expect(cheaperSeat("claude-opus-5", "no-such-model"));
 }
 
@@ -241,8 +241,8 @@ test "#471 a derived ladder offering no real descent yields to the compiled row"
     // measured data outranks the hand-picked default, which is the whole
     // point of #373. Only the empty-after-checking case yields.
     const real = [_]TierLadder{
-        .{ .provider = "anthropic", .frontier = "claude-opus-5", .small = "claude-haiku-4-5" },
+        .{ .provider = "anthropic", .frontier = "claude-opus-5", .small = "claude-haiku-5-5" },
     };
     bench.g_ladders = &real;
-    try std.testing.expectEqualStrings("claude-haiku-4-5", forProvider("anthropic").?.small.?);
+    try std.testing.expectEqualStrings("claude-haiku-5-5", forProvider("anthropic").?.small.?);
 }

@@ -55,7 +55,7 @@ test "MCP recovery #1467: first call EOF returns restart guidance without replay
     defer std.testing.allocator.free(result.text);
     try std.testing.expect(result.is_error);
     try std.testing.expect(std.mem.indexOf(u8, result.text, "McpClosed") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.text, "restart the service and this session") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "/mcp reconnect <server>") != null);
     try std.testing.expectEqual(@as(i64, 2), spawned.server.next_id);
     try std.testing.expectEqual(@as(usize, 0), (try reg.snapshotTools(reg.arena())).len);
     try std.testing.expect(reg.catalog_dirty.load(.acquire));
@@ -391,7 +391,7 @@ test "probeStdio (#327): the DEFAULT deadline covers a cold-starting server" {
     try std.testing.expect(spawned.server.probe_fallback == null);
 }
 
-test "request (#768): mid-call form elicitation for get_app_state is accepted" {
+test "request: a mid-call form elicitation is declined and the call still completes" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const io = std.testing.io;
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -399,16 +399,15 @@ test "request (#768): mid-call form elicitation for get_app_state is accepted" {
     const a = arena_state.allocator();
 
     // First JSON-RPC id is 1 (`Server.next_id`). The fixture emits a form
-    // elicitation, then the tools/call result only after it reads the accept.
+    // elicitation, then the tools/call result only after it reads the decline.
     var spawned = try spawnReplying(a, io,
         \\read line
         \\printf '%s\n' '{"jsonrpc":"2.0","id":99,"method":"elicitation/create","params":{"message":"Inspect app state","requestedSchema":{"type":"object","properties":{}}}}'
         \\read reply
-        \\printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"ok":true}}'
+        \\case "$reply" in *'"action":"decline"'*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"ok":true}}' ;; esac
         \\cat >/dev/null
     );
     defer mcp_stdio.stopChild(io, &spawned.child);
-    spawned.server.elicit_source = "sky.get_app_state({ app: \"Codegraff\", disableDiff: true })";
     spawned.server.era = .legacy;
     spawned.server.initialized = true;
     const resp = try mcp_rpc.request(spawned.server, a, "{\"name\":\"js\",\"arguments\":{}}", "tools/call", "js");

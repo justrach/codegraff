@@ -328,13 +328,11 @@ pub fn gateCheckIdentity(io: Io, arena: Allocator, identity: []const u8) ?[]cons
     var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return null;
     defer dir.close(io);
     const peers = listPeers(io, arena, dir);
-    const peer = unackedPeer(peers, identity, proc_identity.selfPid(), g_session, g_acked[0..g_acked_len]) orelse return null;
-    if (g_acked_len < g_acked.len) {
-        g_acked[g_acked_len] = ackKey(peer);
-        g_acked_len += 1;
-    }
+    const acked = @import("presence_ack.zig").ackLive(peers, identity, proc_identity.selfPid(), g_session, &g_acked, &g_acked_len);
+    const peer = acked.first orelse return null;
     const warning = worktree_lease.duplicateOwnerWarning(arena, peer, unixMs(io) - peer.last_seen_ms);
-    return std.fmt.allocPrint(arena, "{s}shared-tree checkpoint: the action was NOT performed. Re-issue the identical call to proceed — this fires once per live peer, across git mutations, file writes, and shell moves alike — coordinate first via the peer_message tool (session \"{s}\"), or keep your edits disjoint from theirs.", .{ warning, peer.session_id }) catch warning;
+    const others = if (acked.fresh > 1) std.fmt.allocPrint(arena, " and {d} other live peer(s)", .{acked.fresh - 1}) catch "" else "";
+    return std.fmt.allocPrint(arena, "{s}shared-tree checkpoint: the action was NOT performed. Re-issue the identical call to proceed — this one checkpoint covers every peer live now; only a peer that starts later fires another — coordinate first via the peer_message tool (session \"{s}\"{s}), or keep your edits disjoint from theirs.", .{ warning, peer.session_id, others }) catch warning;
 }
 
 // The channel's wire format (Message, chanName, postMessage, readNewMessages)

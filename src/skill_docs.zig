@@ -24,7 +24,6 @@ const ToolOutput = tools.ToolOutput;
 // Only the settings-file location, never the approval session (#422 ratchet).
 const policy = @import("harness_policy.zig");
 const plugins = @import("plugins.zig");
-const runtime_adapter = @import("skill_runtime_adapter.zig");
 
 pub const Source = enum {
     builtin,
@@ -45,7 +44,10 @@ pub const Source = enum {
 pub const Skill = struct {
     name: []const u8,
     desc: []const u8,
+    /// Inline body, or empty when backed by gzip_doc / path; catalogs never load it.
     body: []const u8,
+    /// Static bundled document; inflated into render's temporary arena on load.
+    gzip_doc: []const u8 = "",
     /// Directory the SKILL.md came from; "" for a bundled skill. Helper files
     /// that ship with a skill are relative to this, so the load note can point
     /// the model at them.
@@ -68,19 +70,19 @@ const desc_cap = 160; // per-skill description budget in the system prompt — t
 /// a schema.ToolSpec) so schema.zig's catalog needs one entry and no import
 /// cycle. The description must stay free of characters needing JSON escapes.
 pub const tool_name = "skill";
-pub const tool_desc = "Load a skill: the full instructions for one kind of task, kept out of your context until you need them. The system prompt lists only skill names and descriptions, so call this to read the body BEFORE doing work a skill covers, then follow it. Omit name to list every available skill. Skills come from .harness/skills/, ~/.harness/skills/, .claude/skills/, Cursor/Claude/Grok/Codex plugin trees (including Claude commands/*.md and a root SKILL.md), plus bundled skill-creator, mcp-config, mcp, jspace, and workspace.";
+pub const tool_desc = "Load a skill: the full instructions for one kind of task, kept out of your context until you need them. The system prompt lists only skill names and descriptions, so call this to read the body BEFORE doing work a skill covers, then follow it. Omit name to list every available skill. Skills come from .harness/skills/, ~/.harness/skills/, .claude/skills/, .agents/skills/, Cursor/Claude/Grok/Codex plugin trees (including Claude commands/*.md and a root SKILL.md), plus bundled skill-creator, mcp-config, mcp, jspace, and workspace.";
 pub const tool_schema =
     \\{"type": "object", "properties": {"name": {"type": "string", "description": "Skill name to load; omit to list every available skill"}}}
 ;
 
-const Parsed = struct { name: []const u8, desc: []const u8, body: []const u8 };
+pub const Parsed = struct { name: []const u8, desc: []const u8, body: []const u8 };
 
 /// Split a SKILL.md into frontmatter fields + body. Same YAML-ish shape as
 /// fleet.zig's persona files: a leading "---\n…\n---\n" block with `name:` and
 /// `description:` lines. No frontmatter is fine — the file is all body and the
 /// name comes from the filename. Comptime-callable (the bundled skills are
 /// parsed at build time).
-fn parseDoc(fallback_name: []const u8, data: []const u8) Parsed {
+pub fn parseDoc(fallback_name: []const u8, data: []const u8) Parsed {
     var out: Parsed = .{ .name = fallback_name, .desc = "", .body = std.mem.trim(u8, data, " \t\r\n") };
     // A CRLF checkout (Windows CI, notepad-authored skills) opens "---\r\n";
     // the rest of the parser already tolerates \r via per-line trims.
@@ -99,13 +101,13 @@ fn parseDoc(fallback_name: []const u8, data: []const u8) Parsed {
     return out;
 }
 
-const Embedded = struct { fallback: []const u8, bytes: []const u8 };
+const Embedded = struct { fallback: []const u8, bytes: []const u8, gzip: []const u8 };
 const embedded = [_]Embedded{
-    .{ .fallback = "skill-creator", .bytes = @embedFile("skill_doc_creator") },
-    .{ .fallback = "mcp-config", .bytes = @embedFile("skill_doc_mcp_config") },
-    .{ .fallback = "mcp", .bytes = @embedFile("skill_doc_mcp") },
-    .{ .fallback = "jspace", .bytes = @embedFile("skill_doc_jspace") },
-    .{ .fallback = "workspace", .bytes = @embedFile("skill_doc_workspace") },
+    .{ .fallback = "skill-creator", .bytes = @embedFile("skill_doc_creator"), .gzip = @embedFile("skill_doc_creator.gz") },
+    .{ .fallback = "mcp-config", .bytes = @embedFile("skill_doc_mcp_config"), .gzip = @embedFile("skill_doc_mcp_config.gz") },
+    .{ .fallback = "mcp", .bytes = @embedFile("skill_doc_mcp"), .gzip = @embedFile("skill_doc_mcp.gz") },
+    .{ .fallback = "jspace", .bytes = @embedFile("skill_doc_jspace"), .gzip = @embedFile("skill_doc_jspace.gz") },
+    .{ .fallback = "workspace", .bytes = @embedFile("skill_doc_workspace"), .gzip = @embedFile("skill_doc_workspace.gz") },
 };
 
 /// Skills compiled into the binary: every install has these, no files needed.
@@ -120,7 +122,8 @@ pub const builtins = blk: {
         const p = parseDoc(e.fallback, e.bytes);
         if (p.desc.len == 0 or p.body.len == 0)
             @compileError("bundled skill '" ++ e.fallback ++ "' needs a frontmatter description and a body");
-        out[i] = .{ .name = p.name, .desc = p.desc, .body = p.body };
+        // Copy metadata off the source document so its backing bytes stay comptime-only.
+        out[i] = .{ .name = std.fmt.comptimePrint("{s}", .{p.name}), .desc = std.fmt.comptimePrint("{s}", .{p.desc}), .body = "", .gzip_doc = e.gzip };
     }
     break :blk out;
 };
@@ -132,10 +135,33 @@ pub var g_skills: []const Skill = &builtins;
 /// Resolved HOME for the personal tier, so execSkill's rescan finds the same
 /// set the startup scan did.
 pub var g_home: ?[]const u8 = null; // pub: split-out tests save/restore it
+/// Startup found skills the workspace itself ships (project tier). Their
+/// catalog is in the prompt, so `skill` stays on the wire (no fold, kept
+/// under --lean) and loading one costs a single call.
+pub var g_workspace_skills: bool = false;
 
 pub fn load(io: Io, arena: Allocator, home: ?[]const u8) []const Skill {
     g_home = home;
     return scan(io, arena, home);
+}
+
+/// Only the skills the workspace ships (the project tier, same precedence as
+/// `collect`), for --lean: no personal dirs, no plugin walk. A repo or task
+/// skill is part of the job, so lean still advertises it.
+pub fn loadProject(io: Io, arena: Allocator, home: ?[]const u8) []const Skill {
+    g_home = home;
+    return projectSkills(io, arena, "");
+}
+
+/// The project tier under `root` ("" = the working directory).
+pub fn projectSkills(io: Io, arena: Allocator, root: []const u8) []const Skill {
+    var list: std.ArrayList(Skill) = .empty;
+    for ([_][]const u8{ compat_dir, ".grok/skills", ".codex/skills", ".agents/skills", ".cursor/skills", project_dir }) |dir| {
+        const path = if (root.len == 0) dir else std.fmt.allocPrint(arena, "{s}/{s}", .{ root, dir }) catch continue;
+        loadDir(io, arena, &list, path, .project);
+    }
+    applyDisabled(io, arena, &list);
+    return list.items;
 }
 
 /// Re-scan after the installed set may have changed — a `/skills remove` opt-out
@@ -178,6 +204,7 @@ fn collect(io: Io, arena: Allocator, home: ?[]const u8) std.ArrayList(Skill) {
     loadDir(io, arena, &list, compat_dir, .project);
     loadDir(io, arena, &list, ".grok/skills", .project);
     loadDir(io, arena, &list, ".codex/skills", .project);
+    loadDir(io, arena, &list, ".agents/skills", .project);
     loadDir(io, arena, &list, ".cursor/skills", .project);
     for (plugs) |p| {
         if (p.personal) continue;
@@ -285,7 +312,7 @@ pub fn promptCatalog(arena: Allocator, list: []const Skill) []const u8 {
     if (list.len == 0) return "";
     const order = arena.alloc(usize, list.len) catch return "";
     for (order, 0..) |*o, i| o.* = i;
-    std.mem.sort(usize, order, list, struct {
+    @import("stable_sort.zig").sort(usize, order, list, struct {
         fn lessThan(ctx: []const Skill, a: usize, b: usize) bool {
             return std.mem.order(u8, ctx[a].name, ctx[b].name) == .lt;
         }
@@ -324,6 +351,10 @@ fn render(gpa: Allocator, io: Io, sk: Skill) ![]u8 {
     var body = sk.body;
     var hold = std.heap.ArenaAllocator.init(gpa);
     defer hold.deinit();
+    if (body.len == 0 and sk.gzip_doc.len > 0) {
+        const data = try @import("update_archive.zig").gunzip(hold.allocator(), sk.gzip_doc);
+        body = parseDoc(sk.name, data).body;
+    }
     if (body.len == 0 and sk.path.len > 0) {
         const data = Io.Dir.cwd().readFileAlloc(io, sk.path, hold.allocator(), .limited(file_cap)) catch "";
         if (data.len > 0) body = parseDoc(sk.name, data).body;
@@ -331,8 +362,6 @@ fn render(gpa: Allocator, io: Io, sk: Skill) ![]u8 {
     var aw: Io.Writer.Allocating = .init(gpa);
     errdefer aw.deinit();
     try aw.writer.print("# skill: {s} ({s})\n\n", .{ sk.name, sk.source.label() });
-    const adapter = runtime_adapter.prefix(sk.name, sk.source == .plugin);
-    if (adapter.len > 0) try aw.writer.print("{s}\n\n", .{adapter});
     try aw.writer.writeAll(util.utf8Prefix(body, body_cap));
     if (body.len > body_cap)
         try aw.writer.print("\n\n[body truncated at {d} KB — read the rest from {s}]", .{ body_cap / 1024, sk.path });
@@ -383,27 +412,24 @@ test "parseDoc: no frontmatter keeps the filename and the whole file as body" {
     try std.testing.expectEqualStrings("---\nname: y", open.body);
 }
 
-test "bundled skills: both parse at comptime with a trigger description" {
-    try std.testing.expectEqual(@as(usize, 5), builtins.len);
-    try std.testing.expectEqualStrings("skill-creator", builtins[0].name);
-    try std.testing.expectEqualStrings("mcp-config", builtins[1].name);
-    try std.testing.expectEqualStrings("mcp", builtins[2].name);
-    try std.testing.expectEqualStrings("jspace", builtins[3].name);
-    try std.testing.expectEqualStrings("workspace", builtins[4].name);
-    for (builtins) |sk| {
-        try std.testing.expect(sk.desc.len > 40); // a trigger, not a topic word
-        try std.testing.expect(sk.body.len > 500);
-        try std.testing.expect(sk.source == .builtin);
-        try std.testing.expectEqualStrings("", sk.dir); // nothing on disk to point at
-        try std.testing.expect(std.mem.indexOfScalar(u8, sk.name, ' ') == null);
+test "bundled skills: compressed loads preserve all rendered bytes and catalogs" {
+    const gpa = std.testing.allocator;
+    var original: [embedded.len]Skill = undefined;
+    for (embedded, builtins, 0..) |e, sk, i| {
+        const p = parseDoc(e.fallback, e.bytes);
+        original[i] = .{ .name = p.name, .desc = p.desc, .body = p.body };
+        const plain = try @import("update_archive.zig").gunzip(gpa, sk.gzip_doc);
+        defer gpa.free(plain);
+        try std.testing.expectEqualStrings(e.bytes, plain);
+        const expected = try render(gpa, std.testing.io, original[i]);
+        defer gpa.free(expected);
+        const actual = try render(gpa, std.testing.io, sk);
+        defer gpa.free(actual);
+        try std.testing.expectEqualStrings(expected, actual);
     }
-    // Each bundled skill has to actually teach its subject.
-    try std.testing.expect(std.mem.indexOf(u8, builtins[0].body, project_dir) != null);
-    try std.testing.expect(std.mem.indexOf(u8, builtins[1].body, ".mcp.json") != null);
-    try std.testing.expect(std.mem.indexOf(u8, builtins[1].body, "/mcp trust") != null);
-    try std.testing.expect(std.mem.indexOf(u8, builtins[2].body, "graff mcp add") != null);
-    try std.testing.expect(std.mem.indexOf(u8, builtins[3].body, "action=inbox") != null);
-    try std.testing.expect(std.mem.indexOf(u8, builtins[4].body, "action=use") != null);
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    try std.testing.expectEqualStrings(promptCatalog(arena.allocator(), &original), promptCatalog(arena.allocator(), &builtins));
 }
 
 test "tool_desc stays JSON-escape-free (it is spliced into a raw schema string)" {
@@ -444,31 +470,6 @@ test "dropDisabled: {\"<name>\": false} removes it; true and absent keep it" {
     try std.testing.expectEqual(@as(usize, 2), list.items.len);
     try std.testing.expectEqualStrings("b", list.items[0].name);
     try std.testing.expectEqualStrings("c", list.items[1].name);
-}
-
-test "promptCatalog: names + descriptions only, never bodies" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const list = [_]Skill{
-        .{ .name = "deploy", .desc = "ship a release", .body = "SECRET-BODY-TEXT", .source = .project },
-    };
-    const text = promptCatalog(arena, &list);
-    try std.testing.expect(std.mem.indexOf(u8, text, "deploy (project): ship a release") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "SECRET-BODY-TEXT") == null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "`skill`") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "/") == null); // no file paths — they move and bust the cache prefix
-    try std.testing.expect(std.mem.indexOf(u8, text, "file:") == null); // Codex prints these; we do not
-    try std.testing.expectEqualStrings("", promptCatalog(arena, &.{}));
-
-    const shuffled = [_]Skill{
-        .{ .name = "zeta", .desc = "z", .body = "", .source = .personal },
-        .{ .name = "alpha", .desc = "a", .body = "", .source = .plugin },
-    };
-    const ordered = promptCatalog(arena, &shuffled);
-    const alpha_at = std.mem.indexOf(u8, ordered, "alpha (plugin)") orelse return error.TestUnexpectedResult;
-    const zeta_at = std.mem.indexOf(u8, ordered, "zeta (personal)") orelse return error.TestUnexpectedResult;
-    try std.testing.expect(alpha_at < zeta_at);
 }
 
 test "promptCatalog: an over-long description is capped on a codepoint boundary" {

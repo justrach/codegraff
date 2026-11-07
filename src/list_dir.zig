@@ -171,7 +171,7 @@ fn nameLess(_: void, a: *Node, b: *Node) bool {
 
 fn sortTree(n: *Node, partial: bool) void {
     n.partial = partial;
-    std.mem.sort(*Node, n.kids.items, {}, nameLess);
+    @import("stable_sort.zig").sort(*Node, n.kids.items, {}, nameLess);
     for (n.kids.items) |k| sortTree(k, partial);
 }
 
@@ -187,7 +187,7 @@ fn summary(arena: Allocator, n: *Node) ![]const u8 {
     var pairs: std.ArrayList(ExtPair) = .empty;
     var it = n.ext.iterator();
     while (it.next()) |e| try pairs.append(arena, .{ .k = e.key_ptr.*, .n = e.value_ptr.* });
-    std.mem.sort(ExtPair, pairs.items, {}, extLess);
+    @import("stable_sort.zig").sort(ExtPair, pairs.items, {}, extLess);
     const take = @min(pairs.items.len, top_k_exts);
     var aw: Io.Writer.Allocating = .init(arena);
     const word: []const u8 = if (n.file_count == 1) "file" else "files";

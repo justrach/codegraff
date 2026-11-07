@@ -97,8 +97,40 @@ test "usdFor: per-million math, cache writes, and negative clamping" {
     try std.testing.expectApproxEqAbs(@as(f64, 0.2 + 0.01 + 10.0), pricing.usdForUsage(sol61, "gpt-6.1-sol", 100_000, 100_000, 0, 1_000_000), 1e-9);
     try std.testing.expectApproxEqAbs(@as(f64, 0.8 + 0.04 + 1.5), pricing.usdForUsage(sol61, "gpt-6.1-sol", 200_000, 200_000, 0, 100_000), 1e-9); // long-context tier
     try std.testing.expectEqual(@as(u64, 1_050_000), pricing.contextFor("openai", "gpt-6.1-sol"));
-    try std.testing.expectEqual(pricing.codex_context_window, pricing.contextFor("codex", "gpt-6.1-sol"));
+    try std.testing.expectEqual(@as(u64, 500_000), pricing.contextFor("codex", "gpt-6.1-sol"));
     try std.testing.expect(pricing.providerModelInTable("codex", "gpt-6.1-sol"));
+}
+
+test "Sol subscription context honors route caps and smaller catalogs" {
+    const saved_models = pricing.active_model_table;
+    const saved_overlay = pricing.context_overlay;
+    const saved_pct = provider_mod.g_compact_pct_override;
+    defer pricing.active_model_table = saved_models;
+    defer pricing.context_overlay = saved_overlay;
+    defer provider_mod.g_compact_pct_override = saved_pct;
+    provider_mod.g_compact_pct_override = null;
+    const keys: provider_mod.Keys = .{ .values = @splat(null) };
+    for ([_][]const u8{ "codex", "chatgpt-new" }) |route| {
+        pricing.active_model_table = pricing.model_table[0..];
+        const p = keys.build(provider_mod.specFor(route).?, "", "gpt-6.1-sol");
+        try std.testing.expectEqual(@as(u64, 500_000), p.context);
+        try std.testing.expectEqual(@as(u64, 400_000), p.compactAt());
+        try std.testing.expectEqual(pricing.codex_context_window, pricing.contextFor(route, "gpt-6-sol"));
+        try std.testing.expectEqual(@as(u64, 128_000), pricing.contextFor("codex", "gpt-5.3-codex-spark"));
+        for ([_]u64{ 272_000, 500_000, 1_050_000 }) |advertised| {
+            const rows = [_]pricing.ModelInfo{.{ .provider = route, .name = "gpt-6.1-sol", .context = advertised }};
+            pricing.active_model_table = &rows;
+            try std.testing.expectEqual(@min(advertised, @as(u64, 500_000)), pricing.contextFor(route, "gpt-6.1-sol"));
+        }
+        // A name-only API window cannot bypass the subscription clamp.
+        pricing.active_model_table = &.{};
+        pricing.context_overlay = &.{.{ .provider = "", .name = "gpt-6.1-sol", .context = 1_050_000 }};
+        try std.testing.expectEqual(@as(u64, 500_000), pricing.contextFor(route, "gpt-6.1-sol"));
+        pricing.context_overlay = &.{};
+        pricing.active_model_table = &.{.{ .provider = "openai", .name = "gpt-6.1-sol", .context = 1_050_000 }};
+        try std.testing.expectEqual(@as(u64, 500_000), pricing.contextFor(route, "gpt-6.1-sol"));
+        try std.testing.expectEqual(@as(u64, 1_050_000), pricing.contextFor("openai", "gpt-6.1-sol"));
+    }
 }
 
 test "grok-4.6 window is 500k and compact-at is 80%" {
@@ -152,6 +184,13 @@ test "grok-4.7 window and dual-band prices match 4.6" {
 
 test "contextFor known model and default fallback" {
     try std.testing.expectEqual(@as(u64, 1_048_576), pricing.contextFor("kimi", "k3"));
+    try std.testing.expectEqual(@as(u64, pricing.default_context), pricing.contextFor("nope", "unknown-xyz"));
+}
+
+test "contextFor gives Claude Agent the 1M window Claude Code runs" {
+    try std.testing.expectEqual(@as(u64, 1_000_000), pricing.contextFor("claude-agent", "claude-opus-5-5"));
+    try std.testing.expectEqual(@as(u64, 1_000_000), pricing.contextFor("claude-agent", "claude-sonnet-5-5[1m]"));
+    try std.testing.expectEqual(@as(u64, 1_000_000), pricing.contextFor("claude-agent", "claude-opus-4-5[1m]"));
     try std.testing.expectEqual(@as(u64, pricing.default_context), pricing.contextFor("nope", "unknown-xyz"));
 }
 
@@ -324,12 +363,12 @@ test "pricing Astra has metered catalog entries and cache write premium" {
 }
 
 test "pricing gateway aliases do not inherit vendor rates or cache writes" {
-    const gateway = pricing.priceForProvider("codegraff", "gpt-5.5").?;
-    const direct = pricing.priceForProvider("openai", "gpt-5.5").?;
-    try std.testing.expectEqual(@as(f64, 4), gateway.in);
-    try std.testing.expectEqual(@as(f64, 5), direct.in);
+    const gateway = pricing.priceForProvider("codegraff", "gpt-6-sol").?;
+    const direct = pricing.priceForProvider("openai", "gpt-6-sol").?;
+    try std.testing.expectApproxEqAbs(@as(f64, 2.2), gateway.in, 1e-9);
+    try std.testing.expectEqual(@as(f64, 2), direct.in);
     const astra = pricing.priceForProvider("codegraff", "gpt-6-astra").?;
-    try std.testing.expectApproxEqAbs(@as(f64, 1), pricing.usdForUsage(astra, astra.name, 0, 0, 100_000, 0), 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.1), pricing.usdForUsage(astra, astra.name, 0, 0, 100_000, 0), 1e-9);
 }
 
 test "pricing gateway tally respects priced and free rows without vendor fallback" {
@@ -338,7 +377,9 @@ test "pricing gateway tally respects priced and free rows without vendor fallbac
     try std.testing.expectApproxEqAbs(@as(f64, 0.13086), tally.usd, 1e-9);
     const zero = pricing.priceForProvider("codegraff", "ling-3.0-flash-fin").?;
     try std.testing.expectEqual(@as(f64, 0), pricing.usdFor(zero, 100, 100, 100));
-    try std.testing.expect(pricing.priceForProvider("codegraff", "gpt-6-sol") == null);
+    // A retired gateway alias has no gateway row and never borrows the vendor's.
+    try std.testing.expect(pricing.priceFor("gpt-5.5") != null);
+    try std.testing.expect(pricing.priceForProvider("codegraff", "gpt-5.5") == null);
 }
 
 test "pricing gateway overrides name-only runtime prices and long bands" {

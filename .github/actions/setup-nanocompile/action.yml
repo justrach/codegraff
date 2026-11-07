@@ -1,0 +1,22 @@
+name: Setup nanocompile release cache
+description: Restore a pinned nanocompile and the target's declared-task cache
+inputs:
+  target:
+    description: Release-matrix target
+    required: true
+  binary-base-url:
+    description: Optional HTTPS object-store base URL for pinned tool binaries
+    default: ''
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/setup-nanocompile-binary
+      with:
+        binary-base-url: ${{ inputs.binary-base-url }}
+    - name: Restore nanocompile task artifacts
+      uses: actions/cache@v6
+      with:
+        path: .nanocompile-cache
+        key: nanocompile-release-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.target }}-8b9a747-${{ github.sha }}
+        restore-keys: |
+          nanocompile-release-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.target }}-8b9a747-

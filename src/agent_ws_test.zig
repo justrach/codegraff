@@ -95,9 +95,9 @@ test "the codex .responses arm refreshes auth and re-anchors before resending (#
     try std.testing.expect(std.mem.indexOf(u8, src[arm_end..], "retryAfterAuthRefresh(self, msg, &auth_refreshed)") != null);
 
     // response.failed uses the shared transient retry, then the gateway-artifact retry.
-    try std.testing.expect(std.mem.indexOf(u8, arm, "policy.afterServerErrorOrParseReject(self, \"\", failure.code, msg, &server_retries, &gw_retry)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, arm, "policy.afterServerErrorOrParseReject(self, failure.etype, failure.code, msg, &server_retries, &gw_retry)") != null);
     const overflow_at = std.mem.indexOf(u8, arm, "recoverContextOverflow(self, msg, failure.code, &context_retried)") orelse return error.ResponsesPathHasNoOverflowRecovery;
-    try std.testing.expect(overflow_at < std.mem.indexOf(u8, arm, "policy.afterServerErrorOrParseReject(self, \"\", failure.code, msg, &server_retries, &gw_retry)").?);
+    try std.testing.expect(overflow_at < std.mem.indexOf(u8, arm, "policy.afterServerErrorOrParseReject(self, failure.etype, failure.code, msg, &server_retries, &gw_retry)").?);
     const gate = @embedFile("agent_gateway_retry.zig");
     try std.testing.expect(std.mem.indexOf(u8, gate, "retryTransientServerError(self, etype, code, msg, server_retries)") != null);
 

@@ -111,6 +111,8 @@ pub fn runCommand(self: *Model, line: []const u8) void {
         self.push(.info, "running shell commands needs the agent loop — use the main `graff` session, or your shell") catch {};
     } else if (std.mem.eql(u8, cmd, "/mcp")) {
         self.push(.info, "MCP servers attach to the agent loop, not the chat repl") catch {};
+    } else if (std.mem.eql(u8, cmd, "/computer")) {
+        self.push(.info, "computer use attaches to the agent loop, not the chat repl; `graff computer` works from a shell") catch {};
     } else if (std.mem.eql(u8, cmd, "/skills")) {
         self.push(.info, "skills (codedb, zigrep, …) attach to the agent loop, not the chat repl") catch {};
     } else if (std.mem.eql(u8, cmd, "/agents")) {
@@ -119,7 +121,7 @@ pub fn runCommand(self: *Model, line: []const u8) void {
         self.push(.info, "hooks run around the agent loop, not the chat repl") catch {};
     } else if (eqlAny(cmd, &.{ "/trace", "/trajectory", "/cache" })) {
         self.push(.info, "trace/trajectory/cache logging is a main-session feature") catch {};
-    } else if (eqlAny(cmd, &.{ "/save", "/resume", "/sessions", "/workspace", "/ws", "/plugins" })) {
+    } else if (eqlAny(cmd, &.{ "/save", "/resume", "/fork", "/sessions", "/workspace", "/ws", "/plugins" })) {
         self.push(.info, "the chat repl is ephemeral — session save/resume/list/workspace/plugins lives in the main `graff` session") catch {};
     } else if (std.mem.eql(u8, cmd, "/images")) {
         self.push(.info, "/images opens image URLs from tool output (e.g. a `gh issue view` result); the chat repl runs no tools — use the main `graff` session for it") catch {};

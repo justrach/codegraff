@@ -132,7 +132,9 @@ class McpFixture(BaseHTTPRequestHandler):
 
             assert self.headers.get("Mcp-Protocol-Version") == NEGOTIATED_PROTOCOL
             assert self.headers.get("Mcp-Session-Id") == SESSION_ID
-            if ordinal == 3:
+            assert ordinal in (3, 4)
+            # HTTP initialization is sent concurrently with tools/list.
+            if message["method"] == "notifications/initialized":
                 assert message == {
                     "jsonrpc": "2.0",
                     "method": "notifications/initialized",
@@ -141,7 +143,6 @@ class McpFixture(BaseHTTPRequestHandler):
                 self._respond(202)
                 return
 
-            assert ordinal == 4
             assert message["method"] == "tools/list"
             assert message["id"] == 3
             body = json.dumps(
@@ -202,6 +203,7 @@ def run(graff: Path) -> None:
                     "GRAFF_FLEET": "off",
                     "GRAFF_NO_SMOLIFY": "1",
                     "GRAFF_NO_TELEMETRY": "1",
+                    "GRAFF_REPL_DEBUG": "1",
                     # Private home: no user servers, no cached era from a past run.
                     "HOME": str(workspace),
                     "USERPROFILE": str(workspace),
@@ -226,6 +228,9 @@ def run(graff: Path) -> None:
             if McpFixture.failure is not None:
                 raise AssertionError("MCP fixture rejected a request") from McpFixture.failure
             assert len(McpFixture.requests) == 4, McpFixture.requests
+            assert sorted(req["message"]["method"] for req in McpFixture.requests[2:]) == [
+                "notifications/initialized", "tools/list"
+            ]
             assert (
                 f"[mcp:fixture] connected (mcp {NEGOTIATED_PROTOCOL}) — 1 tool(s)"
                 in completed.stderr

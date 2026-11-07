@@ -20,13 +20,14 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
       # One runner per target instead of a serial six-target loop: wall time
-      # drops from ~24 min to roughly a single ReleaseFast build (~4-5 min).
+      # drops from ~24 min to roughly a single release build (~4-5 min).
       # fail-fast stays on (the default) so a broken target cancels the rest
       # instead of publishing a partial set.
       matrix:
@@ -46,6 +47,11 @@ jobs:
       - name: Install Zig
         uses: ./.github/actions/setup-codegraff-zig
 
+      - uses: ./.github/actions/setup-nanocompile
+        with:
+          target: ${{ matrix.target }}
+          binary-base-url: ${{ secrets.NANOCOMPILE_BINARY_BASE_URL }}
+
       - name: Cross-compile (${{ matrix.target }})
         env:
           TARGET: ${{ matrix.target }}
@@ -55,7 +61,7 @@ jobs:
           # Release builds phone usage/evolution telemetry here by default
           # (anonymous, opt out with --no-telemetry / GRAFF_NO_TELEMETRY).
           TELEMETRY_ENDPOINT="https://harness-telemetry.rachpradhan.workers.dev"
-          zig build graff -Doptimize=ReleaseFast -Dtarget="$TARGET" -Dversion="$VERSION" -Dtelemetry-endpoint="$TELEMETRY_ENDPOINT"
+          python3 scripts/build-release.py --target "$TARGET" --version "$VERSION" --telemetry-endpoint "$TELEMETRY_ENDPOINT" --verify-restore --portable-host
           name="graff-$TARGET"
           mkdir "$name"
           # Windows targets emit graff.exe; every other target emits graff.
@@ -63,7 +69,7 @@ jobs:
             *-windows) bin=graff.exe ;;
             *) bin=graff ;;
           esac
-          cp "zig-out/bin/$bin" "$name/$bin"
+          cp "zig-out/$TARGET/bin/$bin" "$name/$bin"
           cp README.md LICENSE "$name/"
           tar -czf "$name.tar.gz" "$name"
 
@@ -107,8 +113,17 @@ jobs:
       - uses: actions/checkout@v7
         if: steps.signing.outputs.enabled == 'true'
         with:
-          sparse-checkout: scripts/release-sign-macos.sh
+          sparse-checkout: |
+            scripts/release-sign-macos.sh
+            scripts/install-zig-ci.py
+            .github/actions/setup-codegraff-zig
+            apps/nanocua
           sparse-checkout-cone-mode: false
+
+      # nanocua.app is built here: it needs the macOS SDK.
+      - name: Install Zig
+        if: steps.signing.outputs.enabled == 'true'
+        uses: ./.github/actions/setup-codegraff-zig
 
       - uses: actions/download-artifact@v7
         if: steps.signing.outputs.enabled == 'true'
@@ -173,7 +188,7 @@ jobs:
           for target in aarch64-macos x86_64-macos; do
             name="graff-$target"
             # Same member layout as the Linux-built tarball, no AppleDouble files.
-            members="$(tar -tzf "signed/$name.tar.gz" | sed 's:/$::' | LC_ALL=C sort | tr '\n' ' ')"
+            members="$(tar -tzf "signed/$name.tar.gz" | grep -v '/nanocua\.app/' | sed 's:/$::' | LC_ALL=C sort | tr '\n' ' ')"
             [ "$members" = "$name $name/LICENSE $name/README.md $name/graff " ] \
               || { echo "$name: unexpected tarball members: $members" >&2; exit 1; }
             tar -xzf "signed/$name.tar.gz" -C "$check"
@@ -181,6 +196,10 @@ jobs:
             info="$(codesign -dv --verbose=2 "$check/$name/graff" 2>&1)"
             grep -q 'Authority=Developer ID Application' <<<"$info"
             grep -q 'flags=.*runtime' <<<"$info"
+            app="$check/$name/nanocua.app"
+            codesign --verify --deep --strict "$app"
+            codesign -dv --verbose=2 "$app" 2>&1 | grep -q 'Authority=Developer ID Application'
+            xcrun stapler validate "$app"
           done
           shasum -a 256 signed/*.tar.gz
 
@@ -197,8 +216,23 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/release.keychain-db" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/ac_api_key.p8"
 
+  # Builds run beside CI; nothing is published unless CI passed on this
+  # exact push (scripts/wait-for-ci.py).
+  ci-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts/wait-for-ci.py
+          sparse-checkout-cone-mode: false
+      - name: Wait for CI on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/wait-for-ci.py --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --ref "$GITHUB_REF_NAME"
+
   release:
-    needs: [build, macos-sign]
+    needs: [build, macos-sign, ci-gate]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

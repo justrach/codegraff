@@ -113,7 +113,7 @@ pub fn attemptBudget(kind: FailKind, detail: ?[]const u8) u8 {
         // Structural: an unavailable model, a malformed request, or the
         // harness's own dry call budget. Re-asking is guaranteed to fail
         // identically, and is still CHARGED for trying.
-        .model, .invalid, .budget_exhausted => 1,
+        .model, .invalid, .budget_exhausted, .cancelled, .synthesis_limit => 1,
     };
 }
 

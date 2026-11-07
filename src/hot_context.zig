@@ -13,7 +13,10 @@
 //!
 //! Keys:
 //! - `core/instructions`: the first of AGENTS.md / HARNESS.md / CLAUDE.md in
-//!   the working directory, capped like the startup copy.
+//!   the working directory, capped like the startup copy. It follows the
+//!   directory, so a `workspace use` into another worktree delivers that
+//!   tree's file; the update names its directory so two worktrees' copies
+//!   of the same file can be told apart (#1676).
 //! - `core/date`: the UTC date. Not in the startup prompt; announced only when
 //!   it changes during the session.
 
@@ -48,6 +51,9 @@ const State = struct {
     stat_size: u64 = 0,
     stat_mtime: i128 = 0,
     stat_name: []const u8 = "",
+    /// The directory the probe last looked in: a `workspace use` into
+    /// another tree is a change even when its file's size and mtime match.
+    stat_dir_hash: u64 = 0,
     date: [10]u8 = undefined,
     date_len: u8 = 0,
     /// The date the model believes, when it differs from the session start.
@@ -91,12 +97,18 @@ fn currentInstructions(io: Io, a: Allocator) ?struct { name: []const u8, body: [
     return null;
 }
 
-/// Cheap change probe: size + mtime of whichever instruction file exists.
+/// Cheap change probe: size + mtime of whichever instruction file exists,
+/// and the directory it was found in.
 fn instructionsTouched(io: Io) bool {
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = std.process.currentPath(io, &dir_buf) catch 0;
+    const dir_hash = std.hash.Wyhash.hash(0, dir_buf[0..dir_len]);
+    const moved = dir_hash != g.stat_dir_hash;
+    g.stat_dir_hash = dir_hash;
     for (instruction_names) |name| {
         const st = Io.Dir.cwd().statFile(io, name, .{}) catch continue;
         const mtime: i128 = st.mtime.nanoseconds;
-        const touched = st.size != g.stat_size or mtime != g.stat_mtime or !std.mem.eql(u8, name, g.stat_name);
+        const touched = moved or st.size != g.stat_size or mtime != g.stat_mtime or !std.mem.eql(u8, name, g.stat_name);
         g.stat_size = st.size;
         g.stat_mtime = mtime;
         g.stat_name = name;
@@ -145,8 +157,11 @@ pub fn collect(io: Io, a: Allocator, now_ms: i64, out: *std.ArrayList(Update)) !
     const hash: u64 = if (cur) |c| std.hash.Wyhash.hash(0, c.body) else 0;
     if (hash == g.believed_hash) return;
     g.believed_hash = hash;
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = std.process.currentPath(io, &dir_buf) catch 0;
+    const dir = dir_buf[0..dir_len];
     const text = if (cur) |c|
-        try std.fmt.allocPrint(a, "<context key=\"core/instructions\" source=\"{s}\">\nThe project instructions changed during this session. This version replaces the one in the system prompt.\n\n{s}\n</context>", .{ c.name, c.body })
+        try std.fmt.allocPrint(a, "<context key=\"core/instructions\" source=\"{s}{s}{s}\">\nThe project instructions for the working directory changed during this session (the file was edited, or the session moved to another tree). This version replaces the one in the system prompt.\n\n{s}\n</context>", .{ dir, if (dir.len > 0) "/" else "", c.name, c.body })
     else
         try a.dupe(u8, "<context key=\"core/instructions\">\nThe project instructions file was removed during this session. The version in the system prompt no longer applies.\n</context>");
     try out.append(a, .{ .key = .instructions, .text = text });
@@ -321,4 +336,42 @@ test "a hot context message is a notice with its own origin" {
     try testing.expect(isHotContext(msg));
     try testing.expect(@import("session_wake.zig").isNotice(msg));
     try testing.expect(!isHumanPrompt(msg));
+}
+
+test "#1676: switching to a tree with other instructions delivers that tree's file" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    resetForTest();
+    defer resetForTest();
+    const io = testing.io;
+    var tree_a = testing.tmpDir(.{});
+    defer tree_a.cleanup();
+    var tree_b = testing.tmpDir(.{});
+    defer tree_b.cleanup();
+    try tree_a.dir.writeFile(io, .{ .sub_path = "AGENTS.md", .data = "use tabs!" });
+    try tree_b.dir.writeFile(io, .{ .sub_path = "AGENTS.md", .data = "use space" });
+    var orig = try Io.Dir.cwd().openDir(io, ".", .{});
+    defer orig.close(io);
+    defer _ = std.posix.system.fchdir(orig.handle);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var out: std.ArrayList(Update) = .empty;
+    const now: i64 = 20_000 * 86_400_000;
+    if (std.posix.system.fchdir(tree_a.dir.handle) != 0) return error.ChdirFailed;
+    try collect(io, a, now, &out); // arms on tree A's file
+    try collect(io, a, now, &out);
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+    if (std.posix.system.fchdir(tree_b.dir.handle) != 0) return error.ChdirFailed;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tree_b_path = buf[0 .. std.process.currentPath(io, &buf) catch return error.SkipZigTest];
+    try collect(io, a, now, &out);
+    try testing.expectEqual(@as(usize, 1), out.items.len);
+    const text = out.items[0].text;
+    try testing.expectEqual(Key.instructions, out.items[0].key);
+    try testing.expect(std.mem.indexOf(u8, text, "use space") != null);
+    const source = try std.fmt.allocPrint(a, "source=\"{s}/AGENTS.md\"", .{tree_b_path});
+    try testing.expect(std.mem.indexOf(u8, text, source) != null);
+    // Settled: nothing more until the file or the tree changes again.
+    try collect(io, a, now, &out);
+    try testing.expectEqual(@as(usize, 1), out.items.len);
 }

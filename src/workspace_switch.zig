@@ -278,7 +278,7 @@ fn run(gpa: Allocator, io: Io, arena: Allocator, from_sub: bool, action: []const
                 .is_error = true,
             };
             break :blk .{
-                .text = tryText(arena, "now at {s} ({s}) — read_file, edit_file, and bash use this tree. Project instructions stay the ones from session start until /clear.", .{ abs, if (e.branch.len > 0) e.branch else "detached" }),
+                .text = tryText(arena, "now at {s} ({s}) — read_file, edit_file, and bash use this tree. Project instructions follow it: if this tree's AGENTS.md differs, the next request delivers it in place of the copy from session start.", .{ abs, if (e.branch.len > 0) e.branch else "detached" }),
                 .is_error = false,
             };
         },

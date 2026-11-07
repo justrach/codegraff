@@ -59,7 +59,7 @@ pub const Store = struct {
             .label = label,
             .body = owned_body,
         });
-        std.mem.sort(Entry, self.entries.items, {}, lessThan);
+        @import("stable_sort.zig").sort(Entry, self.entries.items, {}, lessThan);
         cursor.* += label.len;
     }
 

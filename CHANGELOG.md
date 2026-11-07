@@ -10,6 +10,345 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.71
+
+- Computer use on macOS is now nanocua, an app graff ships. Signed macOS releases carry `nanocua.app` beside `graff`, and `install.sh` and `graff update` place it in `~/Applications`. graff offers it as an MCP server below every config file, so your own `nanocua` entry wins and `graff mcp disable nanocua` turns it off (#1816).
+- `graff computer` and `/computer`: see what's on, stop every agent at once, turn a switch off, ask to turn one on, or open macOS's permission prompts. Turning something on only asks: a real click in nanocua's window answers it (#1816).
+- graff no longer loads Codex's `computer-use` and `unified-computer-use` plugins, and the adapter behind them is gone. graff shows no forms, so every MCP elicitation is now declined (#1815).
+- Retains all changes from v0.302.70.
+
+## v0.302.70
+
+- Claude Agent: a reply the model starts while graff refreshes its tool list arrives whole. graff dropped what Claude Code sent during the re-list, so the reply lost its start and the turn failed with "unparseable response" (#1804).
+- A turn that ends after the provider returns empty replies 6 times in a row now says so over ACP: the turn stopped, the conversation is kept, and sending again retries. It used to end with a bare `EmptyCompletion` (#1802).
+- Simulator tests no longer overwrite the Mac's clipboard. With the Simulator app open and Edit > Automatically Sync Pasteboard on, a command that runs simulator tests (`xcodebuild test`, `xctest`) or writes a simulator pasteboard (`simctl pbcopy`/`pbsync`) is refused with steps to fix it. graff never changes the setting or touches the clipboard; `GRAFF_ALLOW_SIM_PASTEBOARD=1` turns the check off (#1801).
+- Large request bodies are no longer cut off while they are still uploading. Connecting, uploading and waiting for the response each have their own time limit; the upload limit grows with the body and follows its progress, and a peer that stops reading still fails (#1785).
+- An ACP chat that was loaded or forked is a peer under its own session id, so mail addressed to it reaches it (#1803).
+- Retains all changes from v0.302.69.
+
+## v0.302.69
+
+- Reading peer mail no longer rewrites history the model was already sent: only wake lines it was never sent are removed. On Claude Agent every woken turn used to start a fresh Claude Code process; on other providers the cached prefix changed after each inbox read (#1799).
+- `graff login kimi` signs international accounts in on kimi.ai and mainland China accounts on kimi.com (from the saved login, or clock and locale); `graff login kimi.ai|kimi.com` choose outright and refresh returns to the issuing site. Sign-in links are copied to the clipboard, over SSH too, and no browser opens where it can't be seen (#1733).
+- OpenAI Responses GPT-5.6+: `GRAFF_OPENAI_CACHE_TTL=12h` / `openai_cache_ttl` puts a 12-hour breakpoint on the stable prefix; the default stays 30m until a live probe confirms it. Usage parses cache writes by TTL (#1698, ADR 0312).
+- Workers can use gateway models and name their own provider: `--subagent-model` with `--subagent-provider codegraff` accepts a gateway model the built-in catalog does not list, a persona's `model: <provider>/<model>` pin runs on that provider, and its calls report cost (#1769).
+- `graff harness-tree show|digest|check|apply|diff` reads the instruction file, skills, subagents, scripts and hooks graff loads as one tree (#1770).
+- MCP over HTTP retries a cancel notice when local ports run out (#1796, #1794).
+- ADR 0308: a cheaper scout worker is an opt-in persona, not a default route (#1771).
+- The tier-2 review-checkpoint case reads a different file each call, so the identical-call guard no longer ends it (#1722).
+- Retains all changes from v0.302.68.
+
+## v0.302.68
+
+- Claude Agent compaction sends its summary request as the request. Cut mid tool loop, the request was folded into the conversation checkpoint and followed by "Continue from where the checkpoint ends.", so in a long chat the model carried on with the task or asked a question, and that reply was installed as the summary (#1792, #1793, #1797).
+- Claude Agent: a prompt sent after a turn that ended on a tool call keeps its text and images instead of joining the checkpoint as text (#1792, #1793).
+- Retains all changes from v0.302.67.
+
+## v0.302.67
+
+- Claude Agent refreshes a changed tool list in place. Removing and re-adding graff's tools (to make Claude Code re-read them) failed the `load_tool_schemas` call that caused the change with "Connection closed", and the model often ended its turn or got "No such tool available"; graff now sends `tools/list_changed` and keeps the connection (#1789, ADR 0311).
+- A turn started by unread peer mail has `peer_message` loaded with its first request (#1789).
+- A task that ended with `attempt_completion` still hears mail addressed to it, as a task that ended with an ordinary answer does; room mail still waits for the next prompt (#1789).
+- Retains all changes from v0.302.66.
+
+## v0.302.66
+
+- A one-shot (`-p`) answer built on the provider's hosted search is kept. Hosted search runs inside the model call and never counted as a local tool call, so graff took a search-backed answer for a described change, printed "[described a change with no tool call — asking once more]", and the follow-up reply replaced the answer (#1786, #1787).
+- Retains all changes from v0.302.65.
+
+## v0.302.65
+
+- Claude Agent models report and use their 1M context window. Claude Code runs the current Claude models at 1M natively, but graff listed every `claude-agent` model at 200k, so it compacted at a fifth of the window and clients showed "200k context". A `<id>[1m]` name now resolves to 1M as well (#1783).
+- Retains all changes from v0.302.64.
+
+## v0.302.64
+
+- An expired Anthropic Console sign-in that can't be renewed is skipped instead of sent. With no refresh token stored, `ant auth print-credentials` exits 0 and prints the same expired token; graff took that as a refresh, so the dead token was used (or kept as the fallback behind a Claude plan) and every request came back 401. Errors now say "Anthropic Console sign-in has expired: run `graff login console` again", including after a plan handoff, and a spent plan whose fallback was skipped says why (#1781, ADR 0310).
+- Retains all changes from v0.302.63.
+
+## v0.302.63
+
+- An authentication failure names the credential that was rejected. A sign-in says "<Provider> sign-in was rejected: sign in again (<login command>)"; an API key says "<Provider> API key was rejected (<source>): replace or remove the key. Your sign-in is not affected."; and a key graff fell back to after a plan ran out says "<Provider> plan is out of usage, and the fallback API key was rejected (<source>)". Before, every case read "provider authentication failed: sign in again or check the API key", so a client showed "Log in" when the key was the problem (#1779, ADR 0310).
+- Over ACP a rejected key carries `{"kind":"api_key_rejected","provider":"<id>"}` (v1 error data on -32603; v2 `_meta["graff/recovery"]`), so clients can offer "Update key" instead of a sign-in. `reauth_required` is unchanged.
+- Retains all changes from v0.302.62.
+
+## v0.302.62
+
+- `rlm`'s `llm_query` works on Claude Agent. Each sub-query runs on its own short-lived, tools-off `claude` process, the way titles and recaps do, so the chat's `claude` process and its prompt cache carry on untouched. Before, it answered "llm_query is not available on Claude Agent" (#1777, ADR 0309).
+- Retains all changes from v0.302.61.
+
+## v0.302.61
+
+- Claude Agent: Claude models through your own Claude Code (`claude`) and its login. Sign in with `graff login claude-agent` (or `/login claude-agent`); graff checks `claude auth status`, never reads Claude Code's credentials, and runs your installed `claude` with graff's tools, prompt, history and loop. Calls are flat-rate on a Claude plan (#1773, ADR 0309).
+- Once chosen it is your Claude plan: `/model` lists `claude-opus-5-5`, `claude-fable-5-1`, `claude-sonnet-5-5` and `claude-haiku-5-5` under Claude Agent, and those names route to it. `anthropic/<model>` still reaches the API route (#1774).
+- Without a terminal (a client such as the desktop app), `graff login claude-agent` says to run `claude auth login` instead of starting it.
+- Lean mode keeps `agent_output` once a subagent request loads it, so a turn that starts background workers can wait for them instead of ending early.
+- Catalog tests wait for the workers they abandon, which crashed the Linux test job with SIGIO (#1772).
+- Retains all changes from v0.302.60.
+
+## v0.302.60
+
+- A resumed session keeps the provider's count of its Responses compaction state. A restart no longer re-estimates that opaque state from its size, which could show the context meter far over 100% and force a compaction the session did not need. The count is saved with the session and reapplied only to the same state, provider and model (#1686).
+- The count is learned from chained (WebSocket) replies as well as full requests, so chatgpt-new sessions are counted during normal use.
+- WebSocket accepts events as large as SSE does (128 MiB). A large compaction item over WebSocket previously failed, retried, and fell back to SSE, re-running the turn each time.
+- `GRAFF_CHATGPT_URL` points chatgpt-new at a local mock for testing.
+- Retains all changes from v0.302.59.
+
+## v0.302.59
+
+- Large, steadily arriving SSE events no longer trigger false stream stalls or replay a request merely because the next newline has not arrived (#1765).
+- Genuine stalled streams still time out. Unfinished events have bounded assembly time and size, and local assembly-limit failures are not retried.
+- Retains all changes from v0.302.58.
+
+## v0.302.58
+
+- ACP startup and `graff/models` no longer wait on slow model-catalog requests. A cached catalog, fresh or stale, loads immediately and refreshes in the background; only a provider with no cache waits, at most 800ms in total. A cold DNS lookup or slow host can no longer make a client report that model discovery timed out. The Kimi account catalog is now cached for 6 hours.
+- `note_constraint` states its 240-byte limit in the tool description and the `text` field, so a model learns it before writing a rule rather than from a rejection (#1764).
+- Retains all changes from v0.302.57.
+
+## v0.302.57
+
+- Images are typed by their bytes rather than their file extension. A WebP saved as `.png` is sent as WebP, and a file that is not PNG, JPEG, GIF, or WebP is refused before it reaches the transcript instead of failing every later turn (#1762).
+- A turn that fails before any reply records the failure in history, so resending the same prompt makes a new request instead of being skipped as a duplicate. The boundary is saved with the session (#1729).
+- Streams that carry only an error event surface the provider's error type and message on every wire instead of being retried as truncated bodies; deterministic invalid-request errors are no longer retried (#748).
+- Checklist items the user withdrew or delegated can be marked `cancelled` with a required, visible reason, and the completion gate accepts them without counting them as verified. An `ask_user` answer counts as the user's scope change (#1520).
+- ACP clients receive `session_info_update` as soon as `workspace use` moves the session, with the new folder as `_meta["graff/cwd"]`, so client-served tools can follow the switch within the same turn (#1737).
+- Retained workers remember the folder their checkpoint was saved under, so `subagent_resume` still finds it after a workspace switch; refusals now explain what happened and what to do (#1724).
+- The repeated-tool-call guard no longer counts polls of a background subagent that is still running (#1706).
+- Retains all changes from v0.302.56.
+
+## v0.302.56
+
+- Native file tools can follow dependency symlinks whose targets remain inside their selected tool root. Reads, directory listings, edits, and writes share the same confinement policy.
+- Escaping, dangling, and cyclic links remain denied. Missing ordinary paths remain available for new writes, and explicitly allowed extra roots keep their own boundaries.
+- Retains all changes from v0.302.55.
+
+## v0.302.55
+
+- Command-line help, release history, and bundled playbooks are compressed until requested, reducing duplicated runtime text without removing content or changing the build's safety settings.
+- Long home paths no longer prevent installation of the macOS background-launch shim.
+- Includes the quiet terminal startup and live thinking controls from v0.302.54, and retains all changes from v0.302.53.
+
+## v0.302.54
+
+- Normal terminal startup keeps background connection receipts and legacy-listener diagnostics behind `GRAFF_REPL_DEBUG=1`; boot timing stays behind `GRAFF_BOOT_DEBUG=1`. Explicit `/mcp` and `graff servers` inspection remains available, and listener ownership protections are unchanged.
+- Live thinking shows `Ctrl+T collapse` and `Ctrl+T expand` beside its header. Enable it with `/thinking on`; completed terminal scrollback remains read-only.
+- Retains all changes from v0.302.53.
+
+## v0.302.53
+
+- Embedded runtime resources are compressed, prompt variants share their common text, and optional tool catalogs are built on first use to keep release binaries smaller without changing their contents.
+- Release builds retain runtime safety checks while sharing library code more efficiently. Local learning remains available in development builds rather than being included in release binaries.
+- Routed requests use stable session affinity, and usage prices follow the router's published catalog.
+- Workflow synthesis preserves its tool catalog at the final report-only boundary while refusing further tool execution.
+- Retains all changes from v0.302.52.
+
+## v0.302.52
+
+- The terminal REPL has a clearer session strip, a subtle divider, and distinct styling for active and completed checklist items. The bare prompt, scrollback, and plain output remain intact; no native window or graphical toolkit is required.
+- Operational modes stay visible before workspace metadata when a terminal pane is narrow.
+- The line REPL uses a warm amber palette with cream text and muted status metadata.
+- Markdown emphasis renders in streamed replies and agent reports instead of leaving single-marker formatting literal.
+- `/workers` opens a read-only subagent browser with clickable rows, live activity, Markdown reports, and keyboard navigation. `/agents` still lists agent types.
+- Includes independent conversation forks for subagents and workflow fan-out, optional retained workers, and bounded workflow synthesis that preserves earlier findings.
+- Release binaries are built ReleaseSafe: an out-of-range index or overflow stops graff with a clear panic instead of silently corrupting state, and the stripped binaries are about 17-20% smaller.
+- `graff learn` is no longer part of the release binary, which is about 300 KB smaller for it; sessions no longer start background learning trials.
+- Release binaries are another 50-120 KB smaller: the MCP installer and two HTML pages ship gzipped, the sign-in page's images are WebP, and graff's own code on Windows drops its unwind tables like the other platforms.
+- Release binaries are about 100 KB smaller again: the system prompt's variants share one copy, subagent tool lists for gated sessions are built when first needed instead of compiled in, and the MCP task page ships gzipped.
+- Retains all changes from v0.302.51.
+
+## v0.302.51
+
+- Kimi works again with an API key or `graff login kimi`. Every Kimi request had been failing with `network error: RstStream` (or a 400 over HTTP/1.1) because graff sent a corrupted device-id header; graff no longer sends a device id or keeps `~/.kimi/device_id`.
+- A used-up Kimi plan window (`exceeded_current_quota_error`) stops at once as a quota cap instead of being retried as throttling.
+- Retrying the same prompt after a connection failure works again, including after loading the failed conversation. Earlier work stays in history; reconnecting does not require a new chat.
+- Includes independent conversation forks for subagents and workflow fan-out (`fork_from`), with optional retained workers for later continuation.
+- Includes bounded workflow synthesis that returns earlier findings when the final report cannot complete.
+- Retains all changes from v0.302.50.
+
+## v0.302.48
+
+- oMLX is a built-in local provider (`omlx`, `127.0.0.1:8000`). Set its key with `graff key set omlx <key>` or `OMLX_API_KEY`. `graff models` lists the models it serves, `--model omlx` starts on the first one, `/effort` is sent as `reasoning_effort`, and it is billed as local (#1695).
+- Live model catalogs read a `max_model_len` context window, which oMLX and vLLM-style servers report.
+- When a local server refuses the connection, the failed turn names its URL, so a stopped server is easy to spot.
+- Compaction state is counted by the provider's own measure after the first full request that carries it, so a large state blob no longer reads as far over the compaction point and compacts every turn (#1686).
+- Retains all changes from v0.302.47.
+
+## v0.302.47
+
+- When a compaction can't get the context under the compaction point, the next one waits for real growth instead of running on every step (#1686).
+- The shared-tree checkpoint covers every live peer at once and forgets exited ones, so a re-issued call goes through (#1622).
+- `peer_message send` takes `fyi: true`: an informational update stays in the inbox without waking the recipient, and the inbox no longer asks for a reply to everything (#1137).
+- A transient shell-handle reservation failure is retried and names its cause; only storage faults point at HOME's permissions (#1619).
+- `--json` mode pairs every `model_call_started` with a `model_call_finished`; a retried attempt closes with `retried: true` (#1665).
+- Retains all changes from v0.302.46.
+
+## v0.302.46
+
+- Images attached over ACP now reach the hosted default models; graff dropped them before the model saw them.
+- A worker that ran and reported keeps its report and usage when its state can't be saved for follow-ups, instead of coming back as only an error (#1671).
+- A cancel an ACP client marks as its own (`_meta["graff/cancelSource"] = "client"`) ends the turn as stopped by the client, not as interrupted by the user (#1611).
+- Computer Use says that an app owned by a bare process can't be selected, so agents don't read the rejection as a failed launch.
+- Retains all changes from v0.302.45.
+
+## v0.302.45
+
+- Reports what graff kept out of the model's context (tool output kept in handle files, tokens freed by compaction, provider cache reads) on the ACP context meter as `_meta["codegraff/savings"]`; Harness shows it next to its context meter.
+- `render_html` now reports a page as saved and ready to open, never as displayed, and its description no longer promises inline display.
+- `workspace use` says project instructions follow the tree; the instructions update names the directory its file came from, and a switch is noticed even when both files match in size and time.
+- Retains all changes from v0.302.44.
+
+## v0.302.44
+
+- Adds an experimental Worker-native Zig/Wasm chat step with explicit host tools and remote sandbox cleanup.
+- Adds managed-device SDK sessions with persisted receipts, bounded reconnect and device event replay; prompt submissions are never automatically retried.
+- Adds a shared opt-in, metadata-only OTLP exporter for managed and Worker-native execution.
+- Ships SDK 0.5.0 with managed, tracing, Worker and sandbox entry points. Worker-native conversations do not yet have durable checkpoints; managed trace storage requires a separately deployed collector.
+- Retains all changes from v0.302.43.
+
+## v0.302.43
+
+- Uses the updated subscription context default instead of the older blanket cap, avoiding premature compaction.
+- Reports consistent context capacity through the model catalog and ACP usage updates; smaller catalog limits remain respected.
+- Retains all changes from v0.302.42.
+
+## v0.302.42
+
+- Keeps reasoning-only output-limit replies out of subsequent requests and saved history while preserving partial answers and valid tool-call reasoning.
+- Shows each subagent's resolved worker model in ACP activity, including fallback selections, without breaking older activity records.
+- Retains large-session loading, bounded MCP task deadlines, streamed progress, oversized tool results and parked-command outcomes.
+- Reports compaction failures without ending the session and bounds repeated runaway replies.
+- Integrates current main with the existing release fixes; release builds verify cached artifact restoration before packaging.
+
+## v0.302.41
+
+- Adds native subscription browser sign-in with shared CLI, REPL and ACP credential recovery; metered-key access remains separate.
+- Preserves independent MCP structured results, displays resource links and embedded text, and answers inbound pings during initialization and tool waits.
+- Gives loopback inference request-local deadline allowances without extending unrelated remote requests.
+- Adds repeatable isolated native-CLI fixture comparisons with explicit routing checks and separately labeled task subsets.
+- Retains all changes from v0.302.40 and current main.
+
+## v0.302.40
+
+- Integrates the pending stream recovery, claim inventory, workspace skills, stored conversation, MCP configuration, companion update and typed ACP sign-in recovery changes.
+- Preserves partial replies and unread tool results, secret-free configuration listings, and atomic installer replacement.
+- Hosted compaction remains explicitly opt-in; existing local-summary and provider-owned compaction defaults are unchanged.
+- Includes the unattended-run recovery and one-shot result contracts from the unpublished v0.302.39 draft.
+
+See `docs/releases/v0.302.40.md` for the release summary.
+
+## v0.302.39
+
+### Unattended runs
+
+- Output limits continue with bounded recovery and incremental file writes; incomplete tool calls are never executed.
+- Empty replies retry with cancellable, jittered backoff. Account-limit and sign-in failures stop with distinct exit codes instead of wasting retries.
+- `-p --output-format stream-json` emits a session handle at startup and a final result with status, usage, cost completeness and checkpoint status. Forced budget landings report partial work, not completion.
+- Buffered generation gets request-local silence allowances, and raw MCP startup exceptions are debug-only. Recovery still uses session checkpoints, not exactly-once journal replay.
+
+## v0.302.38
+
+### Windows
+
+- graff finds programs on PATH the Windows way. Lookups split PATH on `:`, so on Windows (where the delimiter is `;` and entries hold drive colons) they probed fragments of entries, and one that read as a network path cost seconds at every start before `graff acp` answered; a bare name also never matched the `.exe`, so the code-intelligence companion was never found. Lookups now split on the platform delimiter and try `.exe`, `.cmd`, `.bat` and `.com` (#1637).
+
+## v0.302.37
+
+### Sign-in
+
+- A returning ChatGPT sign-in no longer puts the saved ID token in the sign-in URL. The browser opener received that URL as a process argument any local process could read. The issued app id still skips the consent screen, and the URL is now always printed, so the sign-in for a headless machine can be opened on another computer (#1635).
+- A ChatGPT token renewal that comes back for a different account is refused and recorded, not used (#1635).
+
+## v0.302.36
+
+### Workspaces
+
+- New task worktrees honor the tool-neutral `.agents/` setup. Each gitignored path `.agents/linked` lists becomes a symlink to the main checkout's copy, so a `.env` edited once is current in every worktree; tracked paths, `..`, globs and missing paths are skipped and nothing is moved or deleted. `.agents/prepare` runs from the new checkout when `.graff/workspace.toml` names no setup script. `graff worktree create` reports the linked count (#1633, ADR 0283).
+
+## v0.302.35
+
+### Hosted gateway
+
+- Gateway models are priced from the gateway's own catalog, which now publishes each model's rate. A model the gateway adds is priced on day one, and a changed rate bills correctly without a graff release; the baked snapshot stays the offline fallback (#1631).
+- `graff models` shows gateway models at the gateway's rate. It had looked them up by their direct-provider price, so many showed `(unpriced)` or the wrong number (#1631).
+
+### Models
+
+- `--model` on a model whose direct provider has no credential now also names the hosted route, `--model codegraff/<model>`, when the gateway serves it (#1630).
+- Flag errors say `graff --help` (#1631).
+
+## v0.302.34
+
+### Google Gemini
+
+- Signing in with a Gemini API key works again. The endpoint now rejects role-shaped history ("use step_list input format instead of turn_list"), so every request failed on its first message; graff now sends the prompt, image prompts, resumed sessions and compaction summaries as Interactions steps (#1628).
+- `/effort minimal` and `none` run as `low`: current Gemini models accept only low, medium and high.
+- Gemini 4 Argon is listed with its 1M context, its effort levels and its price, so the usage footer shows its cost.
+
+### Reliability
+
+- An in-stream timeout from the hosted gateway, which says to retry, now takes the server-error retry ladder instead of ending the turn (#1628).
+
+## v0.302.33
+
+### Claude
+
+- On the Anthropic API, a new repo reads graff's tools and instructions from the prompt cache instead of rewriting them. The system prompt goes as two blocks with the same text, and the cache breakpoint now ends before the project instructions and layout. The first session in a repo the cache had not seen wrote 1.2k cache tokens instead of 10.1k on Claude Sonnet 5.5, about half the session's cost (ADR 0282).
+
+## v0.302.32
+
+### ACP
+
+- A `yield_turn` handoff is delivered once. Clients showed the agent's closing message twice, and the handoff's tool row stayed "in progress" (#1615).
+- After `/resume` or `--branch`, the prompt result reports the save the session moved onto (`_meta["graff/durableSessionId"]`), so a client restoring after a restart loads the right conversation instead of failing with "Unknown session ID" (#1529).
+- `graff acp login` signs in instead of starting the ACP server, for clients that run ACP Terminal Auth's `login` argument after `acp` (#1601).
+- A client named `t3-code…` gets a profile: slash commands as the first prompt block, the client's working folder kept as given, a `model` option listing reachable models (#1603).
+
+### Sign-in
+
+- `graff login anthropic` works when no browser on this machine can finish it: driven by a client such as the desktop app, over SSH, or on a server without a display. It used to wait forever for a browser callback; it now has Anthropic's page show a code to paste back.
+
+### Installing and running
+
+- `graff tui` finds a client installed by the desktop app and, with none installed, offers to download and verify one (#1444).
+- The Linux MCP service unit is valid: its working directory was quoted, which systemd rejects (#1593).
+- When something stops graff with SIGTERM, graff names the sending process on stderr before exiting (#1596).
+
+## v0.302.31
+
+### ACP
+
+- Tool rows for tools whose only end is a finish event (`peer_message`, `load_tool_schemas`, `todo_write`) now get their completed or failed status. They stayed "in progress" in clients such as the desktop app. Ordinary tools still end once, on their result (#1600).
+
+### Updating
+
+- `graff update` works on Windows. It ran `install.sh` through `/bin/sh`, which Windows does not have, and failed with "could not launch installer". It now runs the release's `install.ps1`, which verifies the download and replaces the running `graff.exe`, also when graff runs inside PowerShell 7.
+- The Windows installer no longer reports "graff.exe did not start" after a successful install.
+- `graff --help` lists `graff login anthropic`.
+
+## v0.302.30
+
+Releases are now tagged with three parts (`v0.302.N`). `graff update` treats v0.302.30 as newer than every v0.0.302.N.
+
+### MCP servers
+
+- Every configured MCP server now reports its state: ready, starts on first use, failed (with the server's own error), needs sign-in, off, or optional. `graff mcp status [--json]` reads it without starting anything, and `/mcp` shows the same rows inside a session. `/mcp` only suggests `/mcp trust` when consent is what's missing (#1606).
+- `graff mcp reconnect <name>|--all` and `/mcp reconnect <name>` run a fresh handshake and refresh the server's cached tool list. A failed reconnect shows the server's last stderr line.
+- `graff mcp enable|disable <name>` switch a server on or off without editing its config (kept in `~/.codegraff/mcp-state.json`). Entries their own file marks `"enabled": false` are no longer started.
+- Fixed: servers that share a launcher command and differ only in `cwd` no longer advertise each other's tools; a server's `env` now adds to graff's environment instead of replacing it, so `npx` servers with an env var start; a transient start failure is retried once. The last failure is remembered until the server starts.
+- `GRAFF_NO_BROWSER=1` makes `graff mcp login` print the sign-in URL instead of opening a browser.
+
+### Anthropic
+
+- `graff login anthropic` signs in with an Anthropic Console account through Anthropic's `ant` CLI, so requests bill to that account's API credits. graff reads the profile `ant auth login` writes, sends it as a Bearer token, and refreshes it through `ant`. An `ANTHROPIC_API_KEY` still wins (#1607).
+- Claude Haiku 5.5 replaces Claude Haiku 4.5 in the catalog: 1M-token context, long-context pricing above 100k prompt tokens, adaptive thinking and effort (#1608).
+
+## v0.0.302.29
+
+### Codegraff gateway
+
+- Streamed requests to the Codegraff gateway now carry graff's version (`User-Agent: graff/<version>`) as well. In v0.0.302.28 only the device and app reached the usage page for them.
+
 ## v0.0.302.28
 
 ### Codegraff gateway

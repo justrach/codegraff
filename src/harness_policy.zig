@@ -183,36 +183,54 @@ pub fn confinedPath(path: []const u8) bool {
     return true;
 }
 
-/// Defense-in-depth on top of confinedPath: a confined path with no `..` and no
-/// absolute prefix can still escape the cwd through a symlink that points
-/// outside (e.g. `evil -> /etc`, then `read_file evil/passwd`). We refuse to
-/// traverse symlinks at all: walk each path prefix and
-/// reject if any component is a symlink (readLink succeeds). Conservative — a
-/// symlink inside the repo becomes unreadable via the file tools — but it makes
-/// confinement structural rather than lexical. bash (gated) is unaffected.
-/// `base` is the agent's isolated worktree root (#276 P0-1) when its tool
-/// calls are pinned there instead of the shared cwd — each checked prefix is
-/// then resolved under `base` (an absolute path, so `Io.Dir.cwd()` below is
-/// just the dir-fd the readLink call ignores for an absolute sub_path) rather
-/// than the process's real cwd, which a worktree-isolated agent never enters.
-/// `base == null` (the shared-cwd default) keeps the original behavior exactly.
+fn beneath(path: []const u8, root: []const u8) bool {
+    if (!std.mem.startsWith(u8, path, root)) return false;
+    if (path.len == root.len) return true;
+    // A filesystem root already ends in a separator; otherwise require a
+    // component boundary so checkout-sibling is not a child of checkout.
+    return std.fs.path.isSep(root[root.len - 1]) or std.fs.path.isSep(path[root.len]);
+}
+
+/// Defense-in-depth on top of lexical confinement. Permit symlinks only when
+/// every linked prefix resolves beneath the canonical tool root. Check the
+/// final component too, including for write targets. Dangling/looping links
+/// fail closed; genuinely missing components remain legal for new files.
+/// `base` pins relative paths to an agent worktree; null uses cwd. Absolute
+/// paths must belong to an explicit --add-dir root, never to an implicit base.
+/// Root ancestors may themselves be symlinked (e.g. a platform's temp dir).
+/// This is a preflight check, not an atomic sandbox against concurrent renames.
 pub fn noSymlinkEscape(io: Io, path: []const u8, base: ?[]const u8) bool {
+    if (!confinedPath(path)) return false;
+    var root = base orelse ".";
+    var relative = path;
+    if (std.fs.path.isAbsolute(path)) {
+        root = "";
+        for (@import("workspace_roots.zig").items()) |allowed_root| {
+            if (beneath(path, allowed_root) and allowed_root.len > root.len) root = allowed_root;
+        }
+        if (root.len == 0) return false;
+        relative = std.mem.trimStart(u8, path[root.len..], "/\\");
+    }
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = Io.Dir.cwd().realPathFile(io, root, &root_buf) catch return false;
+    const canonical_root = root_buf[0..root_len];
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     var join_buf: [std.fs.max_path_bytes]u8 = undefined;
     var i: usize = 0;
-    while (i <= path.len) {
-        const slash = std.mem.indexOfScalarPos(u8, path, i, '/') orelse path.len;
-        const prefix = path[0..slash];
+    while (i <= relative.len) {
+        const slash = std.mem.indexOfAnyPos(u8, relative, i, "/\\") orelse relative.len;
+        const prefix = relative[0..slash];
         if (prefix.len > 0) {
-            const check_path = if (base) |b|
-                std.fmt.bufPrint(&join_buf, "{s}/{s}", .{ b, prefix }) catch return false
-            else
-                prefix;
+            const check_path = std.fmt.bufPrint(&join_buf, "{s}/{s}", .{ root, prefix }) catch return false;
             if (Io.Dir.cwd().readLink(io, check_path, &buf)) |_| {
-                return false; // this component is a symlink → refuse
-            } else |_| {} // not a symlink (or doesn't exist yet) → fine
+                const n = Io.Dir.cwd().realPathFile(io, check_path, &buf) catch return false;
+                if (!beneath(buf[0..n], canonical_root)) return false;
+            } else |err| switch (err) {
+                error.NotLink, error.FileNotFound, error.NotDir => {},
+                else => return false,
+            }
         }
-        if (slash == path.len) break;
+        if (slash == relative.len) break;
         i = slash + 1;
     }
     return true;
@@ -363,4 +381,113 @@ test "the settings file has one spelling, and it lives in the settings dir" {
     // these two constants; a drift between them would split the file in two.
     try std.testing.expect(std.mem.startsWith(u8, settings_path, settings_dir ++ "/"));
     try std.testing.expect(confinedPath(settings_path)); // never escapes the project
+}
+
+// Regression fixtures for in-checkout dependency links (#1748).
+const builtin = @import("builtin");
+const test_roots = @import("workspace_roots.zig");
+const test_io = std.testing.io;
+const test_allocator = std.testing.allocator;
+
+fn rootPath(tmp: *std.testing.TmpDir, buf: []u8) ![]const u8 {
+    return buf[0..try tmp.dir.realPath(test_io, buf)];
+}
+
+fn setup(tmp: *std.testing.TmpDir) !void {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    try tmp.dir.createDirPath(test_io, "checkout/node_modules/.store/pkg/docs");
+    try tmp.dir.createDirPath(test_io, "checkout-sibling");
+    try tmp.dir.writeFile(test_io, .{ .sub_path = "checkout/node_modules/.store/pkg/docs/guide.md", .data = "guide\n" });
+    try tmp.dir.writeFile(test_io, .{ .sub_path = "checkout-sibling/secret.txt", .data = "outside\n" });
+    try tmp.dir.symLink(test_io, ".store/pkg", "checkout/node_modules/pkg", .{ .is_directory = true });
+}
+
+test "symlink confinement #1748: relative dependency and final file links stay inside" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try setup(&tmp);
+    try tmp.dir.symLink(test_io, "node_modules/pkg/docs/guide.md", "checkout/guide.md", .{});
+    try tmp.dir.symLink(test_io, "pkg", "checkout/node_modules/chained", .{ .is_directory = true });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = try std.fmt.allocPrint(test_allocator, "{s}/checkout", .{try rootPath(&tmp, &buf)});
+    defer test_allocator.free(root);
+    try std.testing.expect(noSymlinkEscape(test_io, "node_modules/pkg/docs/guide.md", root));
+    try std.testing.expect(noSymlinkEscape(test_io, "node_modules/pkg", root));
+    try std.testing.expect(noSymlinkEscape(test_io, "guide.md", root));
+    try std.testing.expect(noSymlinkEscape(test_io, "node_modules/chained/docs/guide.md", root));
+}
+
+test "symlink confinement #1748: absolute in-root links and symlinked root ancestors" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try setup(&tmp);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = try std.fmt.allocPrint(test_allocator, "{s}/checkout", .{try rootPath(&tmp, &buf)});
+    defer test_allocator.free(root);
+    const target = try std.fmt.allocPrint(test_allocator, "{s}/node_modules/.store/pkg", .{root});
+    defer test_allocator.free(target);
+    try tmp.dir.symLink(test_io, target, "checkout/absolute", .{ .is_directory = true });
+    try tmp.dir.symLink(test_io, ".", "alias", .{ .is_directory = true });
+    const alias = try std.fmt.allocPrint(test_allocator, "{s}/../alias/checkout", .{root});
+    defer test_allocator.free(alias);
+    try std.testing.expect(noSymlinkEscape(test_io, "absolute/docs/guide.md", alias));
+    try std.testing.expect(noSymlinkEscape(test_io, "node_modules/pkg/docs/guide.md", alias));
+}
+
+test "symlink confinement #1748: sibling-prefix and final-component escapes are denied" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try setup(&tmp);
+    try tmp.dir.symLink(test_io, "../checkout-sibling", "checkout/outside", .{ .is_directory = true });
+    try tmp.dir.symLink(test_io, "../checkout-sibling/secret.txt", "checkout/secret.txt", .{});
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = try std.fmt.allocPrint(test_allocator, "{s}/checkout", .{try rootPath(&tmp, &buf)});
+    defer test_allocator.free(root);
+    try std.testing.expect(!noSymlinkEscape(test_io, "outside/secret.txt", root));
+    try std.testing.expect(!noSymlinkEscape(test_io, "outside/new/note.txt", root));
+    try std.testing.expect(!noSymlinkEscape(test_io, "secret.txt", root));
+}
+
+test "symlink confinement #1748: dangling and cyclic links fail closed but missing writes work" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try setup(&tmp);
+    try tmp.dir.symLink(test_io, "missing", "checkout/dangling", .{});
+    try tmp.dir.symLink(test_io, "../checkout-sibling/missing", "checkout/dangling-outside", .{});
+    try tmp.dir.symLink(test_io, "loop", "checkout/loop", .{});
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = try std.fmt.allocPrint(test_allocator, "{s}/checkout", .{try rootPath(&tmp, &buf)});
+    defer test_allocator.free(root);
+    for ([_][]const u8{ "dangling", "dangling/child", "dangling-outside", "loop", "loop/child" }) |path|
+        try std.testing.expect(!noSymlinkEscape(test_io, path, root));
+    try std.testing.expect(noSymlinkEscape(test_io, "new/nested/note.txt", root));
+    try std.testing.expect(noSymlinkEscape(test_io, "node_modules/pkg/docs/new.txt", root));
+    try std.testing.expect(!noSymlinkEscape(test_io, "node_modules/../guide.md", root));
+    try std.testing.expect(!noSymlinkEscape(test_io, "/unregistered/guide.md", root));
+}
+
+test "symlink confinement #1748: default cwd and explicitly allowed absolute roots" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try setup(&tmp);
+    // tmpDir is relative to cwd, so exercise the null-base path without chdir.
+    const relative = try std.fmt.allocPrint(test_allocator, ".zig-cache/tmp/{s}/checkout/node_modules/pkg/docs/guide.md", .{tmp.sub_path});
+    defer test_allocator.free(relative);
+    try std.testing.expect(noSymlinkEscape(test_io, relative, null));
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = try std.fmt.allocPrint(test_allocator, "{s}/checkout", .{try rootPath(&tmp, &buf)});
+    defer test_allocator.free(root);
+    var arena = std.heap.ArenaAllocator.init(test_allocator);
+    defer arena.deinit();
+    test_roots.resetForTest();
+    defer test_roots.resetForTest();
+    try test_roots.add(test_io, arena.allocator(), root);
+    const absolute = try std.fmt.allocPrint(test_allocator, "{s}/node_modules/pkg/docs/guide.md", .{root});
+    defer test_allocator.free(absolute);
+    try std.testing.expect(confinedPath(absolute));
+    try std.testing.expect(noSymlinkEscape(test_io, absolute, "/unused-base"));
+    try tmp.dir.symLink(test_io, "../checkout-sibling", "checkout/outside", .{ .is_directory = true });
+    const escaped = try std.fmt.allocPrint(test_allocator, "{s}/outside/secret.txt", .{root});
+    defer test_allocator.free(escaped);
+    try std.testing.expect(!noSymlinkEscape(test_io, escaped, null));
 }

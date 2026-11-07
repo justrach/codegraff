@@ -160,6 +160,9 @@ pub fn failoverEligible(provider_id: []const u8, detail: []const u8) bool {
         "authentication_error",
         "authentication token",
         "authentication failed",
+        "sign-in was rejected", // auth_recovery.failureText (ADR 0310)
+        "api key was rejected",
+        "console sign-in has expired",
         "invalid api key",
         "invalid_api_key",
         "invalid x-api-key",
@@ -187,6 +190,7 @@ pub fn failoverEligible(provider_id: []const u8, detail: []const u8) bool {
     for (needles) |needle| if (util.indexOfIgnoreCase(detail, needle) != null) return true;
     if (!std.mem.eql(u8, provider_id, "codegraff")) return false;
     const gateway_billing = [_][]const u8{
+        @import("agent_request_quota.zig").quota_cap_marker,
         "insufficient_quota",
         "quota exceeded",
         "credits exhausted",
@@ -214,6 +218,7 @@ pub fn runTurnWithFallback(root: *Agent, keys: *Keys, arena: Allocator, out: ?*I
     attempted[0] = root.provider.id;
     while (true) {
         root.last_api_error = null;
+        root.last_api_reauth = null;
         const result = root.runTurn();
         if (result) |text| {
             // #255: no clean per-segment choke point exists across the
@@ -231,7 +236,8 @@ pub fn runTurnWithFallback(root: *Agent, keys: *Keys, arena: Allocator, out: ?*I
         } else |err| {
             // A Codex-shaped review is an isolated one-shot, not a provider switch for its parent.
             if (root.review_mode) return err;
-            if (err != error.ApiError or root.partial_text.items.len != 0 or root.tool_calls_this_turn != 0)
+            const account_failure = err == error.ProviderQuotaExceeded or err == error.ProviderAuthenticationFailed or err == error.ProviderAccessDenied;
+            if ((err != error.ApiError and !account_failure) or root.partial_text.items.len != 0 or root.tool_calls_this_turn != 0)
                 return err;
             const detail = root.last_api_error orelse return err;
             if (!failoverEligible(root.provider.id, detail)) return err;
@@ -308,7 +314,7 @@ fn modelQueryMayUseKimi(query: []const u8) bool {
 pub fn ensureModelQueryCatalogs(root: *Agent, keys: Keys, query: []const u8) void {
     if (modelQueryMayUseCodex(query)) root.ensureModelCatalog(keys);
     if (modelQueryMayUseKimi(query))
-        kimi_catalog.ensure(root.io, root.gpa, root.arena, root.home, keys.get("kimi") orelse "");
+        kimi_catalog.ensure(root.io, root.gpa, root.arena, keys.get("kimi") orelse "");
     router_catalog.ensureForQuery(root.io, root.gpa, root.arena, root.home, keys, query);
 }
 
@@ -331,7 +337,7 @@ pub fn ensureControlRequestCatalogs(root: *Agent, keys: Keys, provider_query: []
     if (controlRequestMayUseCodex(provider_query, model_query, legacy_name)) root.ensureModelCatalog(keys);
     const query = catalog_selection.controlQuery(provider_query, model_query, legacy_name);
     if (modelQueryMayUseKimi(query))
-        kimi_catalog.ensure(root.io, root.gpa, root.arena, root.home, keys.get("kimi") orelse "");
+        kimi_catalog.ensure(root.io, root.gpa, root.arena, keys.get("kimi") orelse "");
     router_catalog.ensureForQuery(root.io, root.gpa, root.arena, root.home, keys, query);
 }
 
@@ -392,6 +398,9 @@ test "failoverEligible: accepts unavailable credentials/models, rejects transien
     try std.testing.expect(failoverEligible("codex", "codex api error: Unauthorized"));
     try std.testing.expect(failoverEligible("codex", "access token has expired"));
     try std.testing.expect(failoverEligible("codex", "model_not_found: rollout ended"));
+    try std.testing.expect(failoverEligible("kimi", "Kimi sign-in was rejected: sign in again (graff login kimi)"));
+    try std.testing.expect(failoverEligible("anthropic", "Anthropic plan is out of usage, and the fallback API key was rejected (Console profile): wait"));
+    try std.testing.expect(failoverEligible("anthropic", "Anthropic Console sign-in has expired: run `graff login console` again. Your sign-in is not affected."));
     try std.testing.expect(failoverEligible("codegraff", "insufficient_quota"));
     try std.testing.expect(!failoverEligible("codex", "network error: HttpConnectionClosing"));
     try std.testing.expect(!failoverEligible("codex", "rate limited (429)"));
@@ -411,6 +420,7 @@ test "failoverEligible: billing needles only fire for the gateway (#294)" {
         "billing limit reached",
         "quota exceeded for this account",
         "insufficient_quota",
+        "provider quota/billing cap: credit or allowance exhausted; retry requires account action",
     };
     for (billing) |detail| {
         try std.testing.expect(failoverEligible("codegraff", detail));

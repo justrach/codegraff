@@ -42,12 +42,17 @@ pub const Flags = struct {
     refresh_flag: bool = false,
     codex_login: bool = false,
     kimi_login: bool = false,
+    kimi_region: ?@import("oauth_kimi.zig").Region = null, // `graff login kimi.ai` / `kimi.com`
     xai_login: bool = false,
     zai_login: bool = false,
     chatgpt_login: bool = false,
+    anthropic_login: bool = false,
+    anthropic_console_login: bool = false,
+    claude_agent_login: bool = false,
     help_flag: bool = false,
     version_flag: bool = false,
     print_flag: bool = false,
+    stream_json_flag: bool = false, // --output-format stream-json: one-shot lifecycle + result
     update_force: bool = false, // graff update --force
     selftest_spinner_flag: bool = false, // --selftest-spinner: headless spinner render for the PTY anti-stealth test
     selftest_markdown_flag: bool = false, // --selftest-markdown: render the real streaming markdown fixture in a PTY
@@ -118,7 +123,7 @@ pub fn parse(init: std.process.Init) !Flags {
         _ = it.next(); // argv[0]
         while (it.next()) |arg| {
             if (flags.positionals.items.len > 0 and
-                (std.mem.eql(u8, flags.positionals.items[0], "mcp") or std.mem.eql(u8, flags.positionals.items[0], "learn") or std.mem.eql(u8, flags.positionals.items[0], "peer") or std.mem.eql(u8, flags.positionals.items[0], "keys")))
+                (std.mem.eql(u8, flags.positionals.items[0], "mcp") or std.mem.eql(u8, flags.positionals.items[0], "computer") or std.mem.eql(u8, flags.positionals.items[0], "learn") or std.mem.eql(u8, flags.positionals.items[0], "peer") or std.mem.eql(u8, flags.positionals.items[0], "keys") or std.mem.eql(u8, flags.positionals.items[0], "harness-tree")))
             {
                 try flags.positionals.append(arena, try arena.dupe(u8, arg));
             } else if (std.mem.startsWith(u8, arg, "-")) {
@@ -165,8 +170,13 @@ pub fn parse(init: std.process.Init) !Flags {
                     main_mod.show_cost = true;
                 } else if (std.mem.eql(u8, arg, "--json")) {
                     main_mod.json_mode = true;
+                } else if (std.mem.eql(u8, arg, "--output-format")) {
+                    const format = it.next() orelse std.process.fatal("--output-format needs text|stream-json", .{});
+                    if (!std.mem.eql(u8, format, "text") and !std.mem.eql(u8, format, "stream-json"))
+                        std.process.fatal("--output-format needs text|stream-json", .{});
+                    flags.stream_json_flag = std.mem.eql(u8, format, "stream-json");
                 } else if (std.mem.eql(u8, arg, "--max-tool-calls")) {
-                    const mv = it.next() orelse std.process.fatal("--max-tool-calls needs a non-negative integer — harness --help", .{});
+                    const mv = it.next() orelse std.process.fatal("--max-tool-calls needs a non-negative integer — graff --help", .{});
                     main_mod.max_tool_calls = std.fmt.parseInt(u64, mv, 10) catch std.process.fatal("--max-tool-calls needs a non-negative integer, got '{s}'", .{mv});
                 } else if (std.mem.eql(u8, arg, "--compact-at")) {
                     const mv = it.next() orelse std.process.fatal("--compact-at needs a percent of the context window (10-95)", .{});
@@ -210,77 +220,86 @@ pub fn parse(init: std.process.Init) !Flags {
                 } else if (std.mem.eql(u8, arg, "--beta")) {
                     flags.update_beta = true;
                 } else if (std.mem.eql(u8, arg, "--resume")) {
-                    const rv = it.next() orelse std.process.fatal("--resume needs a session name — harness --help", .{});
+                    const rv = it.next() orelse std.process.fatal("--resume needs a session name — graff --help", .{});
                     flags.resume_flag = try arena.dupe(u8, rv);
                 } else if (std.mem.eql(u8, arg, "--branch")) {
-                    const bv = it.next() orelse std.process.fatal("--branch needs a destination session name — harness --help", .{});
+                    const bv = it.next() orelse std.process.fatal("--branch needs a destination session name — graff --help", .{});
                     flags.branch_flag = try arena.dupe(u8, bv);
                 } else if (std.mem.eql(u8, arg, "--no-resume")) {
                     flags.no_resume_flag = true;
                 } else if (std.mem.eql(u8, arg, "--new")) {
                     flags.new_session_flag = true;
                 } else if (std.mem.eql(u8, arg, "--model")) {
-                    const mv = it.next() orelse std.process.fatal("--model needs a value — harness --help", .{});
+                    const mv = it.next() orelse std.process.fatal("--model needs a value — graff --help", .{});
                     flags.model_flag = try arena.dupe(u8, mv);
                 } else if (std.mem.eql(u8, arg, "--subagent-provider")) {
-                    const pv = it.next() orelse std.process.fatal("--subagent-provider needs a value — harness --help", .{});
+                    const pv = it.next() orelse std.process.fatal("--subagent-provider needs a value — graff --help", .{});
                     flags.subagent_provider_flag = try arena.dupe(u8, pv);
                 } else if (std.mem.eql(u8, arg, "--subagent-model")) {
-                    const mv = it.next() orelse std.process.fatal("--subagent-model needs a value — harness --help", .{});
+                    const mv = it.next() orelse std.process.fatal("--subagent-model needs a value — graff --help", .{});
                     flags.subagent_model_flag = try arena.dupe(u8, mv);
                 } else if (std.mem.eql(u8, arg, "--allow-cross-provider-subagents")) {
                     flags.allow_cross_provider_subagents_flag = true;
                 } else if (std.mem.eql(u8, arg, "--no-subagent-tier")) {
                     flags.no_subagent_tier_flag = true;
                 } else if (std.mem.eql(u8, arg, "--system-prompt")) {
-                    const sv = it.next() orelse std.process.fatal("--system-prompt needs a value — harness --help", .{});
+                    const sv = it.next() orelse std.process.fatal("--system-prompt needs a value — graff --help", .{});
                     flags.system_prompt_flag = try arena.dupe(u8, sv);
                 } else if (std.mem.eql(u8, arg, "--append-system-prompt")) {
-                    const av = it.next() orelse std.process.fatal("--append-system-prompt needs a value — harness --help", .{});
+                    const av = it.next() orelse std.process.fatal("--append-system-prompt needs a value — graff --help", .{});
                     flags.append_system_flag = try arena.dupe(u8, av);
                 } else if (std.mem.eql(u8, arg, "--host")) {
-                    const hv = it.next() orelse std.process.fatal("--host needs a value — harness --help", .{});
+                    const hv = it.next() orelse std.process.fatal("--host needs a value — graff --help", .{});
                     flags.host_flag = try arena.dupe(u8, hv);
                 } else if (std.mem.eql(u8, arg, "--port")) {
-                    const pv = it.next() orelse std.process.fatal("--port needs a value — harness --help", .{});
+                    const pv = it.next() orelse std.process.fatal("--port needs a value — graff --help", .{});
                     flags.port_flag = std.fmt.parseInt(u16, pv, 10) catch std.process.fatal("--port needs a number 1-65535, got '{s}'", .{pv});
                 } else if (std.mem.eql(u8, arg, "--token")) {
-                    const tv = it.next() orelse std.process.fatal("--token needs a value — harness --help", .{});
+                    const tv = it.next() orelse std.process.fatal("--token needs a value — graff --help", .{});
                     flags.token_flag = try arena.dupe(u8, tv);
                 } else if (std.mem.eql(u8, arg, "--name")) {
-                    const nv = it.next() orelse std.process.fatal("--name needs a value — harness --help", .{});
+                    const nv = it.next() orelse std.process.fatal("--name needs a value — graff --help", .{});
                     flags.name_flag = try arena.dupe(u8, nv);
                 } else {
-                    std.process.fatal("unknown flag '{s}' — harness --help lists them", .{arg});
+                    std.process.fatal("unknown flag '{s}' — graff --help lists them", .{arg});
                 }
             } else {
                 try flags.positionals.append(arena, try arena.dupe(u8, arg));
             }
         }
+        acpLoginIsLogin(&flags.positionals);
         if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "login")) flags.login_flag = true;
         if (flags.login_flag and flags.positionals.items.len > 1) {
             const name = flags.positionals.items[1];
             const target = loginTarget(name) orelse
-                std.process.fatal("unknown login '{s}' — graff login [codegraff|chatgpt|kimi|xai|zai]", .{name});
+                std.process.fatal("unknown login '{s}' — graff login [codegraff|chatgpt|anthropic|claude-agent|kimi|xai|zai]", .{name});
             flags.codex_login = std.mem.eql(u8, target, "codex");
             flags.kimi_login = std.mem.eql(u8, target, "kimi");
+            flags.kimi_region = @import("oauth_kimi.zig").regionFromLoginName(name);
             flags.xai_login = std.mem.eql(u8, target, "xai");
             flags.zai_login = std.mem.eql(u8, target, "zai");
             flags.chatgpt_login = std.mem.eql(u8, target, "chatgpt-new");
+            flags.anthropic_console_login = std.ascii.eqlIgnoreCase(name, "console");
+            flags.anthropic_login = std.mem.eql(u8, target, "anthropic") and !flags.anthropic_console_login;
+            flags.claude_agent_login = std.mem.eql(u8, target, "claude-agent");
         }
     }
 
     // One-shot print mode: `harness -p "prompt"` or a bare positional prompt
     // (`harness "say hi"`). Subcommands (login/key) are not prompts.
     flags.is_subcommand = flags.positionals.items.len > 0 and
-        (std.mem.eql(u8, flags.positionals.items[0], "login") or std.mem.eql(u8, flags.positionals.items[0], "logout") or std.mem.eql(u8, flags.positionals.items[0], "key") or std.mem.eql(u8, flags.positionals.items[0], "mcp") or std.mem.eql(u8, flags.positionals.items[0], "learn") or
+        (std.mem.eql(u8, flags.positionals.items[0], "login") or std.mem.eql(u8, flags.positionals.items[0], "computer") or std.mem.eql(u8, flags.positionals.items[0], "logout") or std.mem.eql(u8, flags.positionals.items[0], "key") or std.mem.eql(u8, flags.positionals.items[0], "mcp") or std.mem.eql(u8, flags.positionals.items[0], "learn") or
             std.mem.eql(u8, flags.positionals.items[0], "serve") or std.mem.eql(u8, flags.positionals.items[0], "update") or std.mem.eql(u8, flags.positionals.items[0], "title") or std.mem.eql(u8, flags.positionals.items[0], "repl") or (!flags.print_flag and std.mem.eql(u8, flags.positionals.items[0], "tui")) or
-            std.mem.eql(u8, flags.positionals.items[0], "worktree") or std.mem.eql(u8, flags.positionals.items[0], "sandboxes") or std.mem.eql(u8, flags.positionals.items[0], "cube") or std.mem.eql(u8, flags.positionals.items[0], "models") or
+            std.mem.eql(u8, flags.positionals.items[0], "worktree") or std.mem.eql(u8, flags.positionals.items[0], "harness-tree") or std.mem.eql(u8, flags.positionals.items[0], "sandboxes") or std.mem.eql(u8, flags.positionals.items[0], "cube") or std.mem.eql(u8, flags.positionals.items[0], "models") or
             std.mem.eql(u8, flags.positionals.items[0], "remote-control") or std.mem.eql(u8, flags.positionals.items[0], "remote") or @import("acp.zig").isAcpSubcommand(flags.positionals.items[0])); // `acp` also arms ACP's stdout discipline (json_mode) — see acp.isAcpSubcommand
     if (!flags.is_subcommand and flags.positionals.items.len > 0) {
         flags.oneshot_prompt = try std.mem.join(arena, " ", flags.positionals.items);
     }
     if (flags.print_flag and flags.oneshot_prompt == null) std.process.fatal("-p needs a prompt: harness -p \"do something\"", .{});
+    if (flags.stream_json_flag) {
+        if (flags.oneshot_prompt == null) std.process.fatal("--output-format stream-json needs a one-shot prompt", .{});
+        main_mod.json_mode = true;
+    }
     if (flags.branch_flag != null and flags.resume_flag == null) std.process.fatal("--branch needs --resume <source>", .{});
     if (flags.branch_flag != null and (flags.new_session_flag or flags.no_resume_flag)) std.process.fatal("--branch cannot be combined with --new or --no-resume", .{});
 
@@ -318,14 +337,25 @@ pub fn parse(init: std.process.Init) !Flags {
 /// <name>` alike. Every ChatGPT name, codex included, is the plan's sign-in,
 /// chatgpt-new: the Codex client's login no longer works (ADR 0229). Null:
 /// not a login.
+/// ACP Terminal Auth advertises `args: ["login"]`. The v1 schema appends them
+/// to the agent command (`graff acp login`); the registry's docs say they
+/// replace it (`graff login`). Both must sign in, never start the server.
+pub fn acpLoginIsLogin(positionals: *std.ArrayList([]const u8)) void {
+    const items = positionals.items;
+    if (items.len > 1 and std.mem.eql(u8, items[0], "acp") and std.mem.eql(u8, items[1], "login"))
+        _ = positionals.orderedRemove(0);
+}
+
 pub fn loginTarget(name: []const u8) ?[]const u8 {
     const aliases = [_][2][]const u8{
-        .{ "codex", "chatgpt-new" }, .{ "chatgpt", "chatgpt-new" }, .{ "openai", "chatgpt-new" }, .{ "gpt", "chatgpt-new" },
-        .{ "oai", "chatgpt-new" },   .{ "codegraff", "codegraff" }, .{ "graff", "codegraff" },    .{ "kimi", "kimi" },
-        .{ "xai", "xai" },           .{ "grok", "xai" },
+        .{ "codex", "chatgpt-new" }, .{ "chatgpt", "chatgpt-new" },       .{ "openai", "chatgpt-new" },  .{ "gpt", "chatgpt-new" },
+        .{ "oai", "chatgpt-new" },   .{ "codegraff", "codegraff" },       .{ "graff", "codegraff" },     .{ "kimi", "kimi" },
+        .{ "xai", "xai" },           .{ "grok", "xai" },                  .{ "ant", "anthropic" },       .{ "anthropic", "anthropic" },
+        .{ "console", "anthropic" }, .{ "claude-agent", "claude-agent" }, .{ "claude", "claude-agent" },
     };
     for (aliases) |pair| if (std.ascii.eqlIgnoreCase(name, pair[0])) return pair[1];
     if (@import("oauth_zai.zig").isLoginName(name)) return "zai";
+    if (@import("oauth_kimi.zig").isLoginName(name)) return "kimi";
     if (@import("oauth_chatgpt.zig").isLoginName(name)) return "chatgpt-new";
     return null;
 }
@@ -336,9 +366,32 @@ test "loginTarget: every ChatGPT name, codex included, is the plan's sign-in; un
     try std.testing.expectEqualStrings("codegraff", loginTarget("graff").?);
     try std.testing.expectEqualStrings("xai", loginTarget("grok").?);
     try std.testing.expectEqualStrings("kimi", loginTarget("kimi").?);
+    try std.testing.expectEqualStrings("kimi", loginTarget("kimi.ai").?);
+    for ([_][]const u8{ "ant", "anthropic", "ANT", "Anthropic", "console", "Console" }) |name|
+        try std.testing.expectEqualStrings("anthropic", loginTarget(name).?);
     try std.testing.expectEqualStrings("zai", loginTarget("zai").?);
+    try std.testing.expectEqualStrings("claude-agent", loginTarget("claude-agent").?);
+    try std.testing.expectEqualStrings("claude-agent", loginTarget("Claude").?);
     try std.testing.expect(loginTarget("chatgptt") == null);
     try std.testing.expect(loginTarget("") == null);
+}
+
+test "acp login is login, with or without a target; plain acp stays acp" {
+    const gpa = std.testing.allocator;
+    for ([_]struct { in: []const []const u8, first: []const u8, len: usize }{
+        .{ .in = &.{ "acp", "login" }, .first = "login", .len = 1 },
+        .{ .in = &.{ "acp", "login", "chatgpt" }, .first = "login", .len = 2 },
+        .{ .in = &.{"acp"}, .first = "acp", .len = 1 },
+        .{ .in = &.{ "acp", "--yolo" }, .first = "acp", .len = 2 },
+        .{ .in = &.{"login"}, .first = "login", .len = 1 },
+    }) |case| {
+        var list: std.ArrayList([]const u8) = .empty;
+        defer list.deinit(gpa);
+        try list.appendSlice(gpa, case.in);
+        acpLoginIsLogin(&list);
+        try std.testing.expectEqualStrings(case.first, list.items[0]);
+        try std.testing.expectEqual(case.len, list.items.len);
+    }
 }
 
 test "tui is a reserved subcommand, not a one-shot prompt" {

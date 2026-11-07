@@ -163,6 +163,12 @@ pub fn graffCredentialPath(arena: Allocator, home: []const u8, name: []const u8)
 
 /// Store an access/refresh/expiry triple at `oauthPath`, 0600 inside 0700 dirs.
 pub fn writeOAuth(io: Io, arena: Allocator, home: []const u8, provider_dir: []const u8, access: []const u8, refresh: []const u8, expires_at: i64) !void {
+    return writeOAuthFrom(io, arena, home, provider_dir, access, refresh, expires_at, "");
+}
+
+/// writeOAuth that also records the sign-in server (`oauth_host`), for
+/// providers whose refresh must return to the host that issued the token.
+pub fn writeOAuthFrom(io: Io, arena: Allocator, home: []const u8, provider_dir: []const u8, access: []const u8, refresh: []const u8, expires_at: i64, oauth_host: []const u8) !void {
     // createDir is one level, so make <home>/<provider_dir> then its credentials/.
     const base = try std.fmt.allocPrint(arena, "{s}/{s}", .{ resolveHome(home), provider_dir });
     const credentials = try std.fmt.allocPrint(arena, "{s}/credentials", .{base});
@@ -179,6 +185,7 @@ pub fn writeOAuth(io: Io, arena: Allocator, home: []const u8, provider_dir: []co
     try obj.put(arena, "access_token", .{ .string = access });
     try obj.put(arena, "refresh_token", .{ .string = refresh });
     try obj.put(arena, "expires_at", .{ .integer = expires_at });
+    if (oauth_host.len > 0) try obj.put(arena, "oauth_host", .{ .string = oauth_host });
     var aw: Io.Writer.Allocating = .init(arena);
     var stringify: std.json.Stringify = .{ .writer = &aw.writer };
     try stringify.write(Value{ .object = obj });

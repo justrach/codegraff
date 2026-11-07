@@ -52,6 +52,9 @@ fn lastUserText(self: *Agent) []const u8 {
 /// Snapshot the user prompt at turn start, while `role=user` still exists.
 /// Does not clear a `-p` remember() if history has no user string yet.
 pub fn rememberFrom(self: *Agent) void {
+    // runSub seeds the actual brief before wrapping it with generated cwd,
+    // ancestor context and pacing metadata. Those are not source requests.
+    if (self.sub and self.named_work_task.len > 0) return;
     const t = lastUserText(self);
     if (t.len > 0) {
         rememberOn(self, t);
@@ -308,6 +311,34 @@ test "informational named-file retries request evidence without demanding an edi
         try std.testing.expect(std.mem.indexOf(u8, encoded, task_intent.read_nudge) != null);
         try std.testing.expect(std.mem.indexOf(u8, encoded, nudge_text) == null);
         try std.testing.expect(!try handle(&agent, "The parser processes input."));
+    }
+}
+
+test "child source nudges classify the brief without generated environment metadata" {
+    resetForTest();
+    defer resetForTest();
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    const a = state.allocator();
+    const brief = @import("subagent_brief.zig");
+    for ([_][]const u8{ "Reply with exactly pong", "Explain parser.zig" }) |task| {
+        const wrapped = try brief.withEnvironment(a, "subagent", task, .{ .cwd = "/tmp/cache.ts/worker", .instructions = "AGENTS.md" });
+        try std.testing.expect(hasNamedSource(wrapped));
+        var msgs = std.json.Array.init(a);
+        try msgs.append(try messages_mod.textMessage(a, "user", wrapped));
+        var agent = testAgent(a, msgs);
+        agent.sub = true;
+        rememberOn(&agent, task);
+        beginTurn(&agent);
+        try std.testing.expectEqualStrings(task, agent.named_work_task);
+        const needs_source = hasNamedSource(task);
+        try std.testing.expectEqual(needs_source, try handle(&agent, "answer"));
+        if (needs_source) {
+            // A retry must not replace the raw task with the injected nudge.
+            beginTurn(&agent);
+            try std.testing.expectEqualStrings(task, agent.named_work_task);
+            try std.testing.expect(!try handle(&agent, "answer"));
+        }
     }
 }
 

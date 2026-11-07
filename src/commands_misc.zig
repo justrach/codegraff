@@ -162,6 +162,7 @@ fn ownedSessionName(arena: Allocator, arg: []const u8, fallback: []const u8) All
 pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
     if (try @import("adopt.zig").trySlash(root.io, arena, root.home, line, out)) return true;
     if (try commands_privacy.tryHandle(root, line, out)) return true;
+    if (try @import("terminal_workers.zig").tryHandle(root, line, out)) return true;
     if (try playbook_glue.command(root, arena, line, out)) return true; // #381 /never | /constraint
     if (std.mem.startsWith(u8, line, "/schedule") and (line.len == 9 or line[9] == ' ' or line[9] == '\t')) return @import("schedule.zig").slashCommand(root, arena, line, out);
     if (std.mem.startsWith(u8, line, "/adapter") and (line.len == 8 or line[8] == ' ' or line[8] == '\t')) return @import("channel_worker.zig").slashCommand(root, arena, line, out);
@@ -210,6 +211,10 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
+    if (std.mem.eql(u8, line, "/computer") or std.mem.startsWith(u8, line, "/computer ")) {
+        try @import("computer_cli.zig").slash(root.io, root.gpa, arena, root.home, line, out);
+        return true;
+    }
     if (std.mem.startsWith(u8, line, "/mcp")) {
         const arg = std.mem.trim(u8, line["/mcp".len..], " \t");
         const reg = root.registry.?; // always present now
@@ -228,6 +233,15 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         if (if (listing) boot.joinReady(reg) else boot.joinPending(reg)) {
             root.invalidateRootTools();
             try root.ensureRootTools(root.provider.kind);
+        }
+        if (std.mem.startsWith(u8, arg, "reconnect")) {
+            if (try @import("mcp_listing.zig").reconnect(reg, arena, out, mcp_config_path, std.mem.trim(u8, arg["reconnect".len..], " \t"))) {
+                root.invalidateRootTools();
+                @import("prompt_cache_hud.zig").noteBust(.mcp);
+                try root.ensureRootTools(root.provider.kind);
+                root.rebaseContextMeter();
+            }
+            return true;
         }
         if (std.mem.startsWith(u8, arg, "add")) {
             // /mcp add <name> <command> [args...] or <name> --url <URL>
@@ -304,7 +318,6 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             return true;
         }
         // Plain /mcp: list servers (with tool counts) then tools.
-        const pending = reg.pendingWorkspace(mcp_config_path);
         if (reg.servers.len == 0) {
             try out.writeAll("no MCP servers connected.\n  add one: /mcp add <name> <command> [args...]\n  e.g.   /mcp add fs npx -y @modelcontextprotocol/server-filesystem .\n");
         } else {
@@ -322,9 +335,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             for (reg.tools) |t| try out.print("    {s}{s}{s}{s}\n", .{ style.dim, t.qualified_name, if (mcp_schema_gate.isDeferred(reg.tools, t)) "  schema deferred (#416); the model loads it on demand" else "", style.reset });
             try out.writeAll("  add more: /mcp add <name> <command> [args...]\n");
         }
-        const still = @import("mcp_connect_notice.zig").connecting(reg, arena);
-        if (still.len > 0) try out.print("  {s}still connecting: {s}{s}\n", .{ style.dim, try std.mem.join(arena, ", ", still), style.reset });
-        if (pending > 0) try out.print("  {s}{d} configured server(s) not connected — /mcp trust to connect them{s}\n", .{ style.dim, pending, style.reset });
+        try @import("mcp_listing.zig").notConnected(reg, arena, out, mcp_config_path); // why each other server is not connected
         try out.flush();
         return true;
     }
@@ -397,7 +408,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             }
             if (printed_header) try out.print("{s}  copy an id above: /model lmstudio <id>{s}\n", .{ style.dim, style.reset });
         }
-        try out.print("{s}tip: /model <name> (fuzzy) · /model <provider> (its default) · /model <provider> <model> (pin, e.g. 'codex gpt-5.5'){s}\n", .{ style.dim, style.reset });
+        try out.print("{s}tip: /model <name> (fuzzy) · /model <provider> (its default) · /model <provider> <model> (pin, e.g. 'codex gpt-6-sol'){s}\n", .{ style.dim, style.reset });
         try out.flush();
         return true;
     }

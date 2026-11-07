@@ -68,15 +68,29 @@ def main():
             if expected == "sibling":
                 sibling.unlink()
         (path_dir / "graff-tui").unlink()
+        # Nothing installed, no terminal, no --yes: explain, download nothing.
         _, code, out, err = run(binary, ["tui"], env)
         assert code != 0 and "graff-tui is not installed" in err, (code, out, err)
-        assert "No files were downloaded" in err, err
+        assert "graff tui --yes" in err and ".sha256" in err, err
         assert not (root / ".graff").exists()
+        assert not (root / ".harness").exists(), "nothing is downloaded without consent"
+        # A client the Harness app (or a first-use install) put under
+        # ~/.harness/tui runs, newest version first, with no network call;
+        # graff's own --yes never reaches it.
+        for version in ("0.2.9", "0.2.10"):
+            bin_dir = root / ".harness" / "tui" / version / "bin"
+            bin_dir.mkdir(parents=True)
+            fixture(bin_dir / "graff-tui", f"installed-{version}")
+        pid, code, out, err = run(binary, ["tui", "--yes", "--ui-only-flag"], env)
+        assert code == 23, (code, out, err)
+        payload = json.loads(out)
+        assert payload["label"] == "installed-0.2.10" and payload["args"] == ["--ui-only-flag"], payload
+        shutil.rmtree(root / ".harness")
         fixture(sibling, "not-a-prompt")
         env.pop("GRAFF_MAX_MODEL_CALLS")
         _, code, out, err = run(binary, ["-p", "tui", "--help"], env)
         assert code == 0 and "not-a-prompt" not in out, (code, out, err)
-    print("external TUI: sibling precedence, PATH fallback, argv/stdio/exec status, missing install, and prompt escape passed")
+    print("external TUI: sibling precedence, PATH fallback, ~/.harness/tui install, argv/stdio/exec status, missing install, and prompt escape passed")
 
 
 if __name__ == "__main__":

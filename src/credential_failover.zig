@@ -43,6 +43,14 @@ pub fn park(provider_id: []const u8, value: []const u8, source: Keys.CredentialS
     g_promoted[i] = false;
 }
 
+/// A metered credential read only after a plan took the slot (Anthropic's
+/// Console profile loads after preferPlan): park it so the plan can still hand
+/// over. Never displaces a credential already parked or a non-plan seat.
+pub fn parkBehindPlan(provider_id: []const u8, seated: Keys.CredentialSource, value: []const u8, source: Keys.CredentialSource) void {
+    if (seated != .login or standingBy(provider_id) or promoted(provider_id)) return;
+    park(provider_id, value, source);
+}
+
 /// Is a metered credential standing by for this provider, unused so far?
 pub fn standingBy(provider_id: []const u8) bool {
     const i = indexOf(provider_id) orelse return false;
@@ -97,6 +105,7 @@ pub fn preferPlan(
         .xai_device => oauth.loadXaiOAuth(io, gpa, arena, home, false, null),
         .zai_cli => oauth.loadZaiOAuth(io, gpa, arena, home, false, null),
         .chatgpt_browser => @import("oauth_chatgpt.zig").loadChatgptOAuth(io, gpa, arena, home, false, null),
+        .anthropic_browser => @import("oauth_anthropic.zig").loadAnthropicOAuth(io, gpa, arena, home, false, null),
         else => null,
     } orelse return;
     if (value.*) |metered| park(spec.id, metered, source.*);
@@ -153,4 +162,21 @@ test "#471 a parked metered key is handed over once, and only once" {
     try std.testing.expect(promote("xai") == null);
     try std.testing.expect(promote("no-such-provider") == null);
     try std.testing.expect(!standingBy("no-such-provider"));
+}
+
+test "a Console profile read after the Claude plan seated is parked behind it" {
+    resetForTest();
+    defer resetForTest();
+
+    // Only a plan seat gets a reserve.
+    parkBehindPlan("anthropic", .stored, "sk-ant-oat01-console", .profile);
+    try std.testing.expect(!standingBy("anthropic"));
+
+    parkBehindPlan("anthropic", .login, "sk-ant-oat01-console", .profile);
+    try std.testing.expect(standingBy("anthropic"));
+    // An earlier reserve (an env key parked by preferPlan) is kept.
+    parkBehindPlan("anthropic", .login, "other", .stored);
+    const p = promote("anthropic").?;
+    try std.testing.expectEqualStrings("sk-ant-oat01-console", p.key);
+    try std.testing.expectEqual(Keys.CredentialSource.profile, p.source);
 }

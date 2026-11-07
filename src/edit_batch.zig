@@ -255,7 +255,7 @@ test "execBatch uses selected worktree, replace_all, one snapshot, and preserves
     try std.testing.expectEqual(@as(std.posix.mode_t, 0o755), (try selected.dir.statFile(io, "task.sh", .{})).permissions.toMode() & 0o777);
 }
 
-test "execBatch replaces without truncating open readers and rejects symlink paths" {
+test "execBatch replaces without truncating open readers and confines symlink paths" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     const io = std.testing.io;
@@ -296,15 +296,33 @@ test "execBatch replaces without truncating open readers and rejects symlink pat
     try std.testing.expectEqualStrings("real.txt", link_target[0..link_len]);
 
     const linked_input = try std.json.parseFromSliceLeaky(Value, input_arena.allocator(),
-        \\{"path":"link.txt","edits":[{"old_string":"after","new_string":"escaped"}]}
+        \\{"path":"link.txt","edits":[{"old_string":"after","new_string":"linked"}]}
     , .{});
-    const refused = try execBatch(ctx, linked_input);
+    const linked = try execBatch(ctx, linked_input);
+    defer gpa.free(linked.text);
+    try std.testing.expect(!linked.is_error);
+    const changed = try tmp.dir.readFileAlloc(io, "real.txt", gpa, .limited(4096));
+    defer gpa.free(changed);
+    try std.testing.expectEqualStrings("linked\n", changed);
+    const kept_link_len = try tmp.dir.readLink(io, "link.txt", &link_target);
+    try std.testing.expectEqualStrings("real.txt", link_target[0..kept_link_len]);
+
+    var outside = std.testing.tmpDir(.{});
+    defer outside.cleanup();
+    try outside.dir.writeFile(io, .{ .sub_path = "secret.txt", .data = "outside\n" });
+    const outside_path = try outside.dir.realPathFileAlloc(io, "secret.txt", gpa);
+    defer gpa.free(outside_path);
+    try tmp.dir.symLink(io, outside_path, "escape.txt", .{});
+    const escaped_input = try std.json.parseFromSliceLeaky(Value, input_arena.allocator(),
+        \\{"path":"escape.txt","edits":[{"old_string":"outside","new_string":"escaped"}]}
+    , .{});
+    const refused = try execBatch(ctx, escaped_input);
     defer gpa.free(refused.text);
     try std.testing.expect(refused.is_error);
     try std.testing.expect(std.mem.indexOf(u8, refused.text, "outside the working directory") != null);
-    const unchanged = try tmp.dir.readFileAlloc(io, "real.txt", gpa, .limited(4096));
+    const unchanged = try outside.dir.readFileAlloc(io, "secret.txt", gpa, .limited(4096));
     defer gpa.free(unchanged);
-    try std.testing.expectEqualStrings("after\n", unchanged);
+    try std.testing.expectEqualStrings("outside\n", unchanged);
 }
 
 test "execBatch and single edit share the same-file write lock" {
@@ -313,14 +331,10 @@ test "execBatch and single edit share the same-file write lock" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(io, .{
-        .sub_path = "slow",
-        .data = "#!/bin/sh\ndir=$(dirname \"$0\")\n: > \"$dir/entered\"\nwhile [ ! -e \"$dir/release\" ]; do /bin/sleep 0.01; done\nexit 1\n",
-        .flags = .{ .permissions = @fromBackingInt(@intCast(0o755)) },
-    });
     var real_buf: [std.fs.max_path_bytes]u8 = undefined;
     const real_len = try tmp.dir.realPath(io, &real_buf);
-    const stub = try std.fmt.allocPrint(gpa, "{s}/slow", .{real_buf[0..real_len]});
+    // Force the native fallback without depending on a shell child starting.
+    const stub = try std.fmt.allocPrint(gpa, "{s}/unavailable-companion", .{real_buf[0..real_len]});
     defer gpa.free(stub);
     const saved = edit_verify.companion_bin;
     defer edit_verify.companion_bin = saved;
@@ -340,31 +354,83 @@ test "execBatch and single edit share the same-file write lock" {
     var client: std.http.Client = undefined;
     const ctx = edit_verify.testCtx(&client);
 
-    try tmp.dir.writeFile(io, .{ .sub_path = "f.txt", .data = "first\nsecond\nthird\n" });
-    var single = try io.concurrent(edit_verify.applyEdit, .{ ctx, rel, resolved, "third", "THIRD", false });
-    var entered = false;
-    for (0..500) |_| {
-        if (tmp.dir.statFile(io, "entered", .{})) |_| {
-            entered = true;
-            break;
-        } else |_| {}
-        try io.sleep(.fromMilliseconds(1), .awake);
-    }
-    if (!entered) try tmp.dir.writeFile(io, .{ .sub_path = "release", .data = "" });
-    try std.testing.expect(entered);
+    const Probe = struct {
+        lock: *Io.Mutex,
+        progress: Io.Event = .unset,
+        blocked: std.atomic.Value(bool) = .init(false),
+        var single_probe: *@This() = undefined;
+        var batch_probe: *@This() = undefined;
 
-    var batch = try io.concurrent(execBatch, .{ ctx, input });
-    // The single edit is inside its companion call while holding the stripe.
-    // A batch that ignores that stripe would finish and change the file here.
-    try io.sleep(.fromMilliseconds(50), .awake);
+        fn wait(self: *@This(), data: ?*anyopaque, ptr: *const u32, expected: u32) void {
+            if (ptr == @as(*const u32, @ptrCast(&self.lock.state.raw))) {
+                self.blocked.store(true, .release);
+                self.progress.set(std.testing.io);
+            }
+            std.testing.io.vtable.futexWaitUncancelable(data, ptr, expected);
+        }
+        fn waitSingle(data: ?*anyopaque, ptr: *const u32, expected: u32) void {
+            single_probe.wait(data, ptr, expected);
+        }
+        fn waitBatch(data: ?*anyopaque, ptr: *const u32, expected: u32) void {
+            batch_probe.wait(data, ptr, expected);
+        }
+        fn runSingle(c: ToolCtx, path: []const u8, abs: []const u8) !ToolOutput {
+            // Also wake on early completion: deleting a lock must fail an
+            // assertion, not leave the test waiting forever for contention.
+            defer single_probe.progress.set(std.testing.io);
+            return edit_verify.applyEdit(c, path, abs, "third", "THIRD", false);
+        }
+        fn runBatch(c: ToolCtx, value: Value) !ToolOutput {
+            defer batch_probe.progress.set(std.testing.io);
+            return execBatch(c, value);
+        }
+    };
+    try tmp.dir.writeFile(io, .{ .sub_path = "f.txt", .data = "first\nsecond\nthird\n" });
+    const lock = edit_verify.lockPath(io, resolved);
+    var locked = true;
+    defer if (locked) lock.unlock(io);
+    var single_probe: Probe = .{ .lock = lock };
+    var batch_probe: Probe = .{ .lock = lock };
+    Probe.single_probe = &single_probe;
+    Probe.batch_probe = &batch_probe;
+    var single_vtable = io.vtable.*;
+    single_vtable.futexWaitUncancelable = Probe.waitSingle;
+    var batch_vtable = io.vtable.*;
+    batch_vtable.futexWaitUncancelable = Probe.waitBatch;
+    var single_ctx = ctx;
+    single_ctx.io.vtable = &single_vtable;
+    var batch_ctx = ctx;
+    batch_ctx.io.vtable = &batch_vtable;
+
+    var single = try io.concurrent(Probe.runSingle, .{ single_ctx, rel, resolved });
+    defer {
+        if (locked) {
+            lock.unlock(io);
+            locked = false;
+        }
+        if (single.await(io)) |out| gpa.free(out.text) else |_| {}
+    }
+    var batch = try io.concurrent(Probe.runBatch, .{ batch_ctx, input });
+    defer {
+        if (locked) {
+            lock.unlock(io);
+            locked = false;
+        }
+        if (batch.await(io)) |out| gpa.free(out.text) else |_| {}
+    }
+    // Observe each writer actually waiting on THIS stripe, not just being
+    // scheduled. No sleep or companion marker can prove that both contended.
+    try single_probe.progress.wait(io);
+    try batch_probe.progress.wait(io);
+    try std.testing.expect(single_probe.blocked.load(.acquire));
+    try std.testing.expect(batch_probe.blocked.load(.acquire));
     const while_blocked = try tmp.dir.readFileAlloc(io, "f.txt", gpa, .limited(4096));
     defer gpa.free(while_blocked);
-    try tmp.dir.writeFile(io, .{ .sub_path = "release", .data = "" });
-    const single_result = try single.await(io);
-    defer gpa.free(single_result.text);
-    const batch_result = try batch.await(io);
-    defer gpa.free(batch_result.text);
     try std.testing.expectEqualStrings("first\nsecond\nthird\n", while_blocked);
+    lock.unlock(io);
+    locked = false;
+    const single_result = try single.await(io);
+    const batch_result = try batch.await(io);
     try std.testing.expect(!single_result.is_error);
     try std.testing.expect(!batch_result.is_error);
     const after = try tmp.dir.readFileAlloc(io, "f.txt", gpa, .limited(4096));

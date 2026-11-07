@@ -1,0 +1,142 @@
+{
+  "model": "gpt-5.6",
+  "prompt_cache_key": "graff-openai-cache-retention-v1",
+  "api": "responses",
+  "url": "https://api.openai.com/v1/responses",
+  "status": "not_run",
+  "cases": {
+    "12h": {
+      "nonce": "graff-12h-20261021T100354Z",
+      "ttl": "12h",
+      "request": {
+        "model": "gpt-5.6",
+        "instructions": "nonce=graff-12h-20261021T100354Z\nStable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. \n\n# GPT-5.6 working guidance\nFor requests to answer, explain, review, diagnose, or plan: inspect the\nrelevant material and report; do not implement changes unless the request\nalso asks for them. For requests to change, build, or fix: make the in-scope\nlocal changes and run relevant non-destructive validation without asking.\nReading files, inspecting logs, editing in-scope code, and running tests are\nsafe local actions. Confirm before external writes, destructive actions, or a\nmaterial expansion of scope; the harness's tool approval gates are the only\napproval flow \u2014 do not invent additional ones.\nBefore the first tool call of a multi-step task, state the first step in one\nor two sentences; afterwards update only when a phase begins or a finding\nchanges the plan. Finish with the most relevant validation available\n(targeted tests, lint or type checks, a build); if it cannot run, say why and\nname the next best check.",
+        "prompt_cache_key": "graff-openai-cache-retention-v1",
+        "prompt_cache_options": {
+          "mode": "implicit",
+          "ttl": "30m"
+        },
+        "input": [
+          {
+            "type": "message",
+            "role": "developer",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "The preceding instructions and available tools are the stable operating context for this session.",
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit",
+                  "ttl": "12h"
+                }
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": "hello"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "name": "probe_echo",
+            "description": "Echo a short acknowledgement. Used only to put a tool definition on the cached prefix.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "note": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "parallel_tool_calls": true,
+        "reasoning": {
+          "effort": "low"
+        },
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "store": false,
+        "context_management": [
+          {
+            "type": "compaction",
+            "compact_threshold": 400000
+          }
+        ],
+        "stream": false,
+        "max_output_tokens": 16
+      }
+    },
+    "30m": {
+      "nonce": "graff-30m-20261021T100354Z",
+      "ttl": "30m",
+      "request": {
+        "model": "gpt-5.6",
+        "instructions": "nonce=graff-30m-20261021T100354Z\nStable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. Stable operating instructions for the OpenAI prompt-cache retention probe. \n\n# GPT-5.6 working guidance\nFor requests to answer, explain, review, diagnose, or plan: inspect the\nrelevant material and report; do not implement changes unless the request\nalso asks for them. For requests to change, build, or fix: make the in-scope\nlocal changes and run relevant non-destructive validation without asking.\nReading files, inspecting logs, editing in-scope code, and running tests are\nsafe local actions. Confirm before external writes, destructive actions, or a\nmaterial expansion of scope; the harness's tool approval gates are the only\napproval flow \u2014 do not invent additional ones.\nBefore the first tool call of a multi-step task, state the first step in one\nor two sentences; afterwards update only when a phase begins or a finding\nchanges the plan. Finish with the most relevant validation available\n(targeted tests, lint or type checks, a build); if it cannot run, say why and\nname the next best check.",
+        "prompt_cache_key": "graff-openai-cache-retention-v1",
+        "prompt_cache_options": {
+          "mode": "implicit",
+          "ttl": "30m"
+        },
+        "input": [
+          {
+            "type": "message",
+            "role": "developer",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "The preceding instructions and available tools are the stable operating context for this session.",
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                }
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": "hello"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "name": "probe_echo",
+            "description": "Echo a short acknowledgement. Used only to put a tool definition on the cached prefix.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "note": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "parallel_tool_calls": true,
+        "reasoning": {
+          "effort": "low"
+        },
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "store": false,
+        "context_management": [
+          {
+            "type": "compaction",
+            "compact_threshold": 400000
+          }
+        ],
+        "stream": false,
+        "max_output_tokens": 16
+      }
+    }
+  },
+  "materialized_at": "2026-10-21T10:03:54Z",
+  "reason": "OPENAI_API_KEY unset"
+}

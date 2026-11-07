@@ -20,6 +20,11 @@ cmd = [CLAUDE, "-p", prompt, "--model", model, "--dangerously-skip-permissions",
        "--output-format", "stream-json", "--verbose"]
 if os.path.exists(".mcp.json"):
     cmd += ["--mcp-config", ".mcp.json", "--strict-mcp-config"]
+elif os.environ.get("CLAUDE_CODE_RUN_ISOLATED"):
+    cmd += ["--strict-mcp-config"]
+if os.environ.get("CLAUDE_CODE_RUN_ISOLATED"):
+    # No user/project settings: hooks, plugins and permissions stay out.
+    cmd += ["--setting-sources", ""]
 
 r = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True)
 per_message, answer, result = {}, "", None

@@ -38,7 +38,7 @@ pub fn tryHandle(root: *Agent, line: []const u8, out: *Io.Writer) !bool {
             switch (pasted) {
                 .ok => |o| try out.print("📎 clipboard image attached ({s}, via {s}) — sent with your next message\n", .{ vision.fmtBytes(pbuf[0..16], o.bytes), grab.flavor.name() }),
                 .no_vision => try out.print("⚠ {s} can't see images\n", .{root.provider.model}),
-                .too_large, .not_found, .read_error => try out.print("{s}\n", .{vision.stageMessage(&pbuf, pasted, "the clipboard image")}),
+                .too_large, .not_found, .read_error, .unsupported => try out.print("{s}\n", .{vision.stageMessage(&pbuf, pasted, "the clipboard image")}),
             }
         },
     }

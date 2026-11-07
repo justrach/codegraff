@@ -4,7 +4,8 @@
 An interactive graff (no --yolo) in a pty, one project MCP server that sleeps
 before answering `initialize`, and a scripted model. After the consent prompt
 is answered, the first message reaches the model while the handshake is still
-running, and the request after it finishes names the server as connected.
+running. Its tools join the next request in quiet and debug modes; only debug
+mode prints the connection receipt.
 """
 import json, os, select, sys, tempfile, time
 from pathlib import Path
@@ -41,12 +42,13 @@ class Timed(ScriptedModel):
         self.arrivals = []
 
     def next_reply(self, body):
+        if not body.get("tools"):
+            return {"text": "Fixture session"}
         self.arrivals.append(time.monotonic())
         return super().next_reply(body)
 
 
-def main():
-    binary = str(Path(sys.argv[1] if len(sys.argv) > 1 else "zig-out/bin/graff").resolve())
+def run(binary, debug):
     model = Timed([{"text": "ok"}, {"text": "ok again"}])
     port = model.start(0)
     with tempfile.TemporaryDirectory(prefix="graff-mcp-async-") as tmp:
@@ -57,11 +59,14 @@ def main():
         (work / ".mcp.json").write_text(json.dumps({"mcpServers": {"slow": {
             "command": sys.executable, "args": [str(root / "server.py"), str(HANDSHAKE_S)]}}}))
         # NO_COLOR (zig build sets it) turns off the interactive consent path.
-        env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY") and k != "NO_COLOR"}
+        env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")
+               and k not in ("NO_COLOR", "GRAFF_REPL_DEBUG", "GRAFF_BOOT_DEBUG")}
         env.update(HOME=str(root), AI_GATEWAY_API_KEY="local", GRAFF_VERCEL_URL=f"http://127.0.0.1:{port}/v1/chat/completions",
                    GRAFF_NO_PLUGINS="1", GRAFF_MCP_PROBE="0", GRAFF_FLEET="off", GRAFF_NO_SMOLIFY="1",
                    GRAFF_NO_CODEDB_GUARD="1", GRAFF_NO_TELEMETRY="1", GRAFF_BEHAVIOR_TRACE="0",
                    TERM="xterm-256color", COLUMNS="120", LINES="40")
+        if debug:
+            env["GRAFF_REPL_DEBUG"] = "1"
         pid, fd = pty.fork()
         if pid == 0:
             # A fresh pty is 0x0 on Linux; give the TUI a real screen.
@@ -94,15 +99,28 @@ def main():
 
             time.sleep(max(0.0, HANDSHAKE_S + 1.0 - (time.monotonic() - consent)))
             os.write(fd, b"again\r")
-            assert read_until(lambda: b"slow connected" in out, 20), "no notice that the slow server joined:\n" + out[-800:].decode("utf-8", "replace")
-            print("PASS the request after the handshake names the server as connected", flush=True)
+            assert read_until(lambda: len(model.requests) >= 2 and b"ok again" in out, 20), "the second request did not finish"
+            assert "slow_echo" not in json.dumps(model.requests[0]), "the first request waited for the slow catalog"
+            assert "slow_echo" in json.dumps(model.requests[1]), "the slow server's tools did not join the next request"
+            if debug:
+                assert out.count(b"slow connected") == 1, "debug mode must name the joined server once"
+            else:
+                assert b"mcp: slow" not in out and b"MCP still connecting" not in out, "normal startup exposed connection diagnostics"
+            print("PASS the catalog joins without blocking; receipts are " + ("visible in debug mode" if debug else "quiet by default"), flush=True)
         finally:
             try:
                 os.kill(pid, 9)
                 os.waitpid(pid, 0)
             except (ProcessLookupError, ChildProcessError):
                 pass
+            os.close(fd)
             model.stop()
+
+
+def main():
+    binary = str(Path(sys.argv[1] if len(sys.argv) > 1 else "zig-out/bin/graff").resolve())
+    for debug in (False, True):
+        run(binary, debug)
 
 
 if __name__ == "__main__":

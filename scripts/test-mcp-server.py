@@ -89,6 +89,55 @@ def main():
             assert model.requests, "task never reached the scripted model"
         finally:
             model.stop()
+        # Caller context: short text rides through, a long handover is summarized
+        # first (the summarizer is the child's own first scripted reply).
+        short_context = "We are on the release branch."
+        long_context = "release notes: " + "detail " * 2000  # over the 8 KiB inline limit
+        model = ScriptedModel([{"text": "MCP_SUMMARY_OK"}] + [{"text": "MCP_TASK_OK"}] * 8,
+                              exhausted_text="MCP_TASK_OK")
+        model.start(1234)
+        try:
+            for ident, context in (("short", short_context), ("big", long_context)):
+                call = request("tools/call", {"name": "run_task", "arguments": {
+                    "prompt": "Reply with MCP_TASK_OK. No files or tools are needed.",
+                    "context": context, "timeout_seconds": 30,
+                }}, ident)
+                replies = exchange(exe, env, workspace, handshake + call, ("--model", "lmstudio"))
+                result = replies[1]["result"]
+                assert not result["isError"], result
+                data = result["structuredContent"]
+                assert data["context_chars"] == len(context), data
+                # Unavailable usage is stated, and the same metadata is mirrored
+                # in the namespaced slot for raw-result readers.
+                assert data["usage_reported"] is False, data
+                assert data["usage_unavailable_reason"], data
+                meta = result["_meta"]["codegraff/runTask"]
+                assert meta["context_chars"] == data["context_chars"], meta
+                assert meta["context_summarized"] == data["context_summarized"], meta
+                assert meta["usage_reported"] is False, meta
+                # Preprocessing is reported separately from child execution, and
+                # an incomplete charge is surfaced as unavailable, never guessed.
+                pre = data["preprocess"]
+                assert isinstance(pre["usage_complete"], bool), pre
+                assert isinstance(pre["input_tokens"], int) and isinstance(pre["output_tokens"], int), pre
+                if pre["usage_complete"]:
+                    assert isinstance(pre["cost_usd"], (int, float)), pre
+                    assert pre["unavailable_reason"] == "", pre
+                else:
+                    assert pre["cost_usd"] is None, pre
+                    assert pre["unavailable_reason"], pre
+                if ident == "short":
+                    # No summarization ran, so there is nothing to charge for.
+                    assert pre["unavailable_reason"] == "no summarization was needed", pre
+                    assert pre["input_tokens"] == 0 and pre["output_tokens"] == 0, pre
+                if ident == "short":
+                    assert data["context_summarized"] is False, data
+                    assert data["context_used_chars"] == len(context), data
+                else:
+                    assert data["context_summarized"] is True, data
+                    assert 0 < data["context_used_chars"] < len(context), data
+        finally:
+            model.stop()
         for yolo in (False, True):
             target = Path(workspace) / "permission-check.txt"
             model = ScriptedModel([
@@ -114,7 +163,7 @@ def main():
                              capture_output=True, env=nested, cwd=workspace, timeout=10)
         assert run.returncode != 0
         assert not run.stdout
-    print("MCP server: discovery, app negotiation and resources, structured results, real task, permission modes, ping, recursion guard passed")
+    print("MCP server: discovery, app negotiation and resources, structured results, real task, caller context, permission modes, ping, recursion guard passed")
 
 
 if __name__ == "__main__":

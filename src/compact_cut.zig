@@ -171,7 +171,39 @@ pub fn recentContextStart(items: []const Value, token_budget: u64) usize {
     if (pinOpening(items)) |t| {
         if (start > t) start = t;
     }
+    if (unreadToolBatch(items)) |u| {
+        if (start > u) start = u;
+    }
     return start;
+}
+
+/// A tool result on any wire, including the Interactions `function_result` step.
+fn isToolResult(m: Value) bool {
+    if (@import("tool_spill.zig").isToolOutputMsg(m)) return true;
+    if (m != .object) return false;
+    const t = m.object.get("type") orelse return false;
+    return t == .string and std.mem.eql(u8, t.string, "function_result");
+}
+
+fn isUserMessage(m: Value) bool {
+    if (m != .object) return false;
+    if (m.object.get("role")) |r| return r == .string and std.mem.eql(u8, r.string, "user");
+    const t = m.object.get("type") orelse return false;
+    return t == .string and std.mem.eql(u8, t.string, "user_input");
+}
+
+/// When history ends on tool results the model has not read yet, the index of
+/// the model turn that asked for them (its calls, plus any text or reasoning
+/// beside them). A compaction keeps everything from there verbatim: summarizing
+/// a batch before the model's first look hands it a summary in place of the
+/// results, and it answers from the summary — or guesses — instead of from
+/// what the tools returned.
+pub fn unreadToolBatch(items: []const Value) ?usize {
+    var i = items.len;
+    while (i > 0 and isToolResult(items[i - 1])) i -= 1;
+    if (i == items.len) return null;
+    while (i > 0 and !isToolResult(items[i - 1]) and !isUserMessage(items[i - 1])) i -= 1;
+    return i;
 }
 
 /// Index to cut history at for an emergency trim: the first clean user turn
@@ -204,7 +236,7 @@ pub fn noteCut(tracer: ?*trace.Tracer, items: []const Value, start: usize) void 
 
 pub fn cleanUserTurn(m: Value) bool {
     if (m != .object) return false;
-    const role = m.object.get("role") orelse return false;
+    const role = m.object.get("role") orelse return interactionsUserTurn(m.object);
     if (role != .string or !std.mem.eql(u8, role.string, "user")) return false;
     const content = m.object.get("content") orelse return true;
     switch (content) {
@@ -222,6 +254,14 @@ pub fn cleanUserTurn(m: Value) bool {
         },
         else => return true,
     }
+}
+
+/// The Interactions wire has no roles: a user turn is a `user_input` step.
+fn interactionsUserTurn(obj: std.json.ObjectMap) bool {
+    const t = obj.get("type") orelse return false;
+    if (t != .string or !std.mem.eql(u8, t.string, "user_input")) return false;
+    const content = obj.get("content") orelse return true;
+    return content != .string or !peer_context.isPeerInjectContent(content.string);
 }
 
 fn imageUser(arena: std.mem.Allocator, kind: []const u8, payload: []const u8) !Value {
@@ -436,4 +476,60 @@ test "noteStall: same boundary with no shrink escalates; a real shrink resets" {
     try std.testing.expect(!noteStall(&s, 10, 40_000));
     try std.testing.expect(!noteStall(&s, 10, 39_000));
     try std.testing.expect(!noteStall(&s, 20, 80_000));
+}
+
+fn parseTest(arena: std.mem.Allocator, text: []const u8) !Value {
+    return std.json.parseFromSliceLeaky(Value, arena, text, .{});
+}
+
+test "an unread tool batch stays verbatim through a compaction cut" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const util = @import("util.zig");
+    const big = &util.repeatBytes("r", 40_000);
+
+    // First turn of a session: the prompt, one model turn of calls, and its
+    // results. Before, the whole run was summarized (start == items.len).
+    var msgs = std.json.Array.init(arena);
+    try msgs.append(try parseTest(arena, "{\"role\":\"user\",\"content\":\"read every part\"}"));
+    try msgs.append(try parseTest(arena, "{\"role\":\"assistant\",\"content\":\"reading\",\"tool_calls\":[{\"id\":\"a\"},{\"id\":\"b\"}]}"));
+    for ([_][]const u8{ "a", "b" }) |id| {
+        var o: std.json.ObjectMap = .empty;
+        try o.put(arena, "role", .{ .string = "tool" });
+        try o.put(arena, "tool_call_id", .{ .string = id });
+        try o.put(arena, "content", .{ .string = big });
+        try msgs.append(.{ .object = o });
+    }
+    try std.testing.expectEqual(@as(?usize, 1), unreadToolBatch(msgs.items));
+    try std.testing.expectEqual(@as(usize, 1), recentContextStart(msgs.items, 8_000));
+
+    // Once the model has answered, the batch is ordinary history again.
+    try msgs.append(try parseTest(arena, "{\"role\":\"assistant\",\"content\":\"done\"}"));
+    try std.testing.expectEqual(@as(?usize, null), unreadToolBatch(msgs.items));
+
+    // A read batch, then a new one: only the newest model turn is held back.
+    try msgs.append(try parseTest(arena, "{\"role\":\"user\",\"content\":\"again\"}"));
+    try msgs.append(try parseTest(arena, "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"c\"}]}"));
+    try msgs.append(try parseTest(arena, "{\"role\":\"tool\",\"tool_call_id\":\"c\",\"content\":\"x\"}"));
+    try msgs.append(try parseTest(arena, "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"d\"}]}"));
+    try msgs.append(try parseTest(arena, "{\"role\":\"tool\",\"tool_call_id\":\"d\",\"content\":\"y\"}"));
+    try std.testing.expectEqual(@as(?usize, 8), unreadToolBatch(msgs.items));
+}
+
+test "Interactions steps: user_input is a turn boundary and function_result an unread batch" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var msgs = std.json.Array.init(arena);
+    try msgs.append(try parseTest(arena, "{\"type\":\"user_input\",\"content\":\"first\"}"));
+    try msgs.append(try parseTest(arena, "{\"type\":\"model_output\",\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}"));
+    try msgs.append(try parseTest(arena, "{\"type\":\"user_input\",\"content\":\"second\"}"));
+    try msgs.append(try parseTest(arena, "{\"type\":\"thought\",\"signature\":\"s\"}"));
+    try msgs.append(try parseTest(arena, "{\"type\":\"function_call\",\"id\":\"c1\",\"name\":\"read_file\",\"arguments\":{}}"));
+    try msgs.append(try parseTest(arena, "{\"type\":\"function_result\",\"call_id\":\"c1\",\"name\":\"read_file\",\"result\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
+    try std.testing.expect(cleanUserTurn(msgs.items[2]));
+    try std.testing.expect(!cleanUserTurn(msgs.items[5]));
+    try std.testing.expectEqual(@as(?usize, 3), unreadToolBatch(msgs.items));
+    try std.testing.expectEqual(@as(?usize, 2), turnOpeningUserIndex(msgs.items));
 }

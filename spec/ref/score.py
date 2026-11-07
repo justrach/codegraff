@@ -90,7 +90,9 @@ NEEDLES: tuple[tuple[str, Tier], ...] = (
     ("nano", "small"),
     ("terra", "mid"),
     ("luna", "small"),
+    ("-sol", "mid"),
     ("opus", "frontier"),
+    ("gpt-6", "frontier"),
     ("gpt-5", "frontier"),
     ("deepseek-v4", "frontier"),
     ("grok-4", "frontier"),
@@ -106,10 +108,10 @@ NEEDLES: tuple[tuple[str, Tier], ...] = (
 # id, expected needle tier (unknown = price fallback, out of the cube)
 MODELS: tuple[tuple[str, Tier], ...] = (
     ("claude-opus-4-8", "frontier"),
-    ("gpt-5.5", "frontier"),
-    ("gpt-5.6-sol", "frontier"),
+    ("gpt-6-astra", "frontier"),
+    ("gpt-6-sol", "mid"),
     ("gpt-5.6-terra", "mid"),
-    ("gpt-5.6-luna", "small"),
+    ("gpt-6-luna", "small"),
     ("deepseek-v4-pro", "frontier"),
     ("grok-4.3", "frontier"),
     ("claude-haiku-4-5", "small"),
@@ -218,6 +220,8 @@ def check_properties() -> int:
         raise ValueError("flash-beats-family")
     if class_of("gpt-5.6-terra") != "mid":
         raise ValueError("terra-beats-family")
+    if class_of("gpt-6-sol") != "mid" or class_of("gpt-6-astra") != "frontier":
+        raise ValueError("sol-beats-family")
     if class_of("deepseek-v4-flash") != "small":
         raise ValueError("deepseek-flash-small")
     check_diagram()

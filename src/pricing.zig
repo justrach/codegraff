@@ -29,17 +29,28 @@ pub fn priceFor(model: []const u8) ?ModelPrice {
 }
 
 /// Gateway aliases have their own prices; vendor overlays must not replace them.
+/// The gateway's live catalog wins over the baked snapshot, so a model or price
+/// it adds bills correctly without a graff release.
 pub fn priceForProvider(provider: []const u8, model: []const u8) ?ModelPrice {
-    if (std.mem.eql(u8, provider, "codegraff")) return @import("pricing_gateway.zig").find(model);
+    // Vercel AI Gateway publishes its own per-route price in /models too.
+    if (std.mem.eql(u8, provider, "vercel")) {
+        if (modelInfoFor(provider, model)) |info| if (info.price) |p| return @import("catalog_price.zig").asModelPrice(info.name, p);
+        return priceFor(model);
+    }
+    if (std.mem.eql(u8, provider, "codegraff")) {
+        if (modelInfoFor(provider, model)) |info| if (info.price) |p| return @import("catalog_price.zig").asModelPrice(info.name, p);
+        return @import("pricing_gateway.zig").find(model);
+    }
     return priceFor(model);
 }
 
 /// Billing class of one API call: a flat-rate subscription login bills nothing
-/// per token, price_table rows bill per token, anything without a reliable
-/// settled charge is unpriced for the session tally.
+/// per token, a server on this machine bills nothing at all, price_table rows
+/// bill per token, anything without a reliable settled charge is unpriced for
+/// the session tally.
 /// Classifying a SEAT is billing.zig's job — it needs the provider spec and the
 /// credential source, neither of which belongs in a price sheet.
-pub const Billing = enum { sub, priced, unpriced };
+pub const Billing = enum { sub, local, priced, unpriced };
 
 pub const usdForUsage = @import("pricing_cache.zig").usdForUsage;
 
@@ -82,6 +93,7 @@ pub const CostTally = struct {
         self.out_tokens +|= @intCast(@max(out, 0));
         switch (billing) {
             .sub => self.sub_calls +|= 1,
+            .local => {}, // a known $0, so the total stays complete
             .unpriced => self.unpriced_calls +|= 1,
             // No `.?`: the class comes from the caller; a dropped row falls back.
             .priced => {
@@ -162,18 +174,22 @@ pub const ModelInfo = struct {
     /// Codex catalog `default_verbosity` (ADR 0226): the `text.verbosity` the
     /// route's own client sends for this model.
     default_verbosity: ?[]const u8 = null,
+    /// What the route charges, when its own catalog publishes it (catalog_price.zig).
+    price: ?CatalogPrice = null,
 };
+
+/// USD per 1M tokens, with the optional whole-request long-context tier.
+pub const CatalogPrice = struct { in: f64, out: f64, cache: f64, high_at: u64 = 0, high_in: f64 = 0, high_out: f64 = 0, high_cache: f64 = 0 };
 
 pub const ModelProtocol = enum { provider_default, kimi, anthropic };
 pub const ThinkingSupport = enum { unknown, no, both, only };
 
-// Hard cap on the usable input for ANY codex (ChatGPT-account) model. The
-// backend enforces ~272k input for every gpt-5.x regardless of what the /models
-// catalog advertises (e.g. 372k for sol/terra/luna, which is NOT honored for
-// input). contextFor() clamps every codex resolution path to this so
-// auto-compaction (80%) fires before the backend's "input exceeds the context
-// window" rejection. 270k -> compaction at 216k, ~56k below the ~272k wall.
+// Conservative subscription input cap for older/unverified models: their
+// advertised total window may exceed what the backend accepts as input.
 pub const codex_context_window: u64 = 270_000;
+// Use GPT-6.1 Sol's announced subscription default, not the API's larger
+// maximum (ADR 0292).
+pub const sol_subscription_context_window: u64 = 500_000;
 
 pub const model_table = @import("pricing_models.zig").rows;
 
@@ -229,14 +245,14 @@ fn pureKimiGeneration(name: []const u8) ?u32 {
     return std.fmt.parseInt(u32, name[1..], 10) catch null;
 }
 
-/// Codex's first visible account model is its dynamic default. Kimi prefers
-/// the newest explicit pure generation (`k3`, then future `k4`, etc.) over
-/// compatibility aliases and K2 point-release ids.
+/// Codex's first visible account model is its dynamic default, and so is the
+/// first model oMLX lists. Kimi prefers the newest explicit pure generation
+/// (`k3`, then future `k4`, etc.) over compatibility aliases and K2 point-release ids.
 pub fn providerDefaultModel(provider_id: []const u8, fallback: []const u8) []const u8 {
     for (models()) |model| if (std.mem.eql(u8, model.provider, provider_id) and
         std.mem.eql(u8, model.name, "mimo-v2.6-pro")) return model.name;
-    if (std.mem.eql(u8, provider_id, "codex")) {
-        for (models()) |model| if (std.mem.eql(u8, model.provider, "codex")) return model.name;
+    if (std.mem.eql(u8, provider_id, "codex") or std.mem.eql(u8, provider_id, "omlx")) {
+        for (models()) |model| if (std.mem.eql(u8, model.provider, provider_id)) return model.name;
         return fallback;
     }
     if (!std.mem.eql(u8, provider_id, "kimi")) return fallback;
@@ -295,21 +311,24 @@ pub var context_overlay: []const ModelInfo = &.{};
 /// Context window for a model as served by a specific provider; falls back
 /// to any provider's row for the name, then to the conservative default.
 pub fn contextFor(provider_id: []const u8, model: []const u8) u64 {
+    // `<id>[1m]` is Claude Code's spelling of an id's 1M window (claude-agent passes it through).
+    if (std.mem.endsWith(u8, model, "[1m]")) return @max(1_000_000, contextFor(provider_id, model[0 .. model.len - "[1m]".len]));
     // The ChatGPT plan route caps input like the Codex backend it shares.
     const is_codex = std.mem.eql(u8, provider_id, "codex") or std.mem.eql(u8, provider_id, "chatgpt-new");
+    const subscription_cap = if (std.mem.eql(u8, model, "gpt-6.1-sol")) sol_subscription_context_window else codex_context_window;
     // Provider-specific baked row is authoritative (gateway gpt-5.5 = 400k, not
     // the API's 1.05M), so it wins over the fresh name-only overlay below.
     for (models()) |m| {
         if (std.mem.eql(u8, m.provider, provider_id) and std.mem.eql(u8, m.name, model))
-            return if (is_codex) @min(m.context, codex_context_window) else m.context;
+            return if (is_codex) @min(m.context, subscription_cap) else m.context;
     }
     // Fresh overlay (models.dev refresh), then the baked name-only fallback. A
     // name-only window may exceed what the Codex backend honors — cap codex.
     for (context_overlay) |m| {
-        if (std.mem.eql(u8, m.name, model)) return if (is_codex) @min(m.context, codex_context_window) else m.context;
+        if (std.mem.eql(u8, m.name, model)) return if (is_codex) @min(m.context, subscription_cap) else m.context;
     }
     for (models()) |m| {
-        if (std.mem.eql(u8, m.name, model)) return if (is_codex) @min(m.context, codex_context_window) else m.context;
+        if (std.mem.eql(u8, m.name, model)) return if (is_codex) @min(m.context, subscription_cap) else m.context;
     }
     return default_context;
 }

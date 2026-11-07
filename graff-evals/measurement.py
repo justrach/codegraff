@@ -136,13 +136,14 @@ def provider_environment(provider, sandbox, source=None, model=None):
         if "\n" in model or "\r" in model:
             raise ValueError("model name must fit one saved-selection line")
         (home / '.simple-harness-model').write_text(f'{provider}\n{model}\n')
-    empty_mcp = home / 'empty-mcp.json'
-    empty_mcp.write_text('{"mcpServers":{}}')
     env = {k: source[k] for k in ('PATH', 'LANG', 'LC_ALL', 'SDKROOT', 'DEVELOPER_DIR', 'SYSTEMROOT') if k in source}
     value = str(Path(source[credential]).expanduser().resolve()) if provider == 'codex' else source[credential]
     env.update({credential: value, 'HOME': str(home), 'USERPROFILE': str(home),
                 'XDG_CONFIG_HOME': str(home / '.config'), 'XDG_CACHE_HOME': str(home / '.cache'),
-                'PWD': sandbox, 'GRAFF_MCP_CONFIG': str(empty_mcp), 'GRAFF_FLEET': 'off',
+                # The global MCP config points inside the isolated home and does not
+                # exist: the user's servers stay out, and the task's .mcp.json still
+                # merges. An existing empty override would switch MCP off (#549).
+                'PWD': sandbox, 'GRAFF_MCP_CONFIG': str(home / '.codegraff' / 'mcp.json'), 'GRAFF_FLEET': 'off',
                 'GRAFF_NO_TELEMETRY': '1', 'GRAFF_NO_SMOLIFY': '1', 'GRAFF_BEHAVIOR_UPLOAD': 'off', 'NO_COLOR': '1'})
     return env
 
@@ -158,7 +159,7 @@ def trace_routing(sandbox, provider, model):
             except ValueError:
                 continue
     api = [row for row in rows if row.get('ev') == 'api']
-    roots = [row for row in api if row.get('agent') == 'main']
+    roots = [row for row in api if row.get('agent') in ('main', 'repl')]
     pairs = sorted({(r['provider'], r['model']) for r in rows
                     if isinstance(r.get('provider'), str) and isinstance(r.get('model'), str)})
     valid = bool(roots) and all(r.get('model') == model for r in roots)

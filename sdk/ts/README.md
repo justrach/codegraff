@@ -1,8 +1,20 @@
 # @codegraff/sdk
 
-TypeScript / Node SDK for the [codegraff](https://github.com/justrach/codegraff)
-agent. It drives the `graff` binary over its `--json` stdio protocol, and the
-types are auto-generated from `graff --schema`.
+TypeScript SDK for the [codegraff](https://github.com/justrach/codegraff)
+agent: native subprocesses, managed-device replay, and experimental Worker-native
+execution. Native protocol types are auto-generated from `graff --schema`.
+
+## Choose an execution path
+
+| Import | Where the agent runs | Tools and persistence |
+|---|---|---|
+| `@codegraff/sdk` / `@codegraff/sdk/acp` | Native child process | Native capabilities and saved conversations |
+| `@codegraff/sdk/remote` / `@codegraff/sdk/managed` | Existing native execution device | Device-owned checkpoints and event replay; managed uses the account relay |
+| `@codegraff/sdk/worker` | Shared Zig chat step inside a Worker via Wasm/JSPI | Explicit host tools; no durable conversation checkpoints or full CLI parity |
+| `@codegraff/sdk/worker-sandbox` | HTTP client for remote OS execution | Adds sandbox capabilities to the Worker host; not another agent engine |
+
+`@codegraff/sdk/otel` is the shared optional metadata-only trace exporter. Tracing
+and sandbox cleanup do not add conversation durability to the Worker-native path.
 
 ## Install
 
@@ -116,6 +128,21 @@ await h.close();
 They work on local `Harness` and edge-safe `RemoteHarness` turns and are
 validated against the selected model and the 16-image/3.7 MB-per-image limits.
 
+## Managed sessions and opt-in traces
+
+The experimental `@codegraff/sdk/managed` client drives existing registered
+execution devices through the account relay, with receipt/cursor-based replay
+from another SDK process. `@codegraff/sdk/otel` adds optional content-free OTLP
+export. See [the managed-session guide](./MANAGED.md) for a short example,
+authentication, deployment requirements and explicit durability limits.
+
+Both `ManagedHarness` and `createWorkerAgent()` accept `observe: exporter.observe`
+from the same `createOtlpExporter()`. Flush explicitly after the turn (await it or
+use the Worker's `ctx.waitUntil`). Observer failures cannot fail or hold a turn
+open; no prompt, tool content or error body is exported.
+
+For custom deployments or integrations, email **rach@standardharness.com**.
+
 ## Orchestration (#276): agent()/parallel()/pipeline(), budgets, resumable runs
 
 `@codegraff/sdk/orchestrate` is a deterministic scripting layer on top of the
@@ -185,6 +212,19 @@ names, `--no-local-tools`, and license: [Embedding graff](../../docs/embedding.m
 
 Same-process (no child): `@codegraff/sdk/embed` `createGraffAgent()` loads
 `graff-core.wasm` (`zig build wasm-core`). First-slice turn is `echo:`.
+
+Experimental Worker-native model/tool turns: `@codegraff/sdk/worker`
+`createWorkerAgent()` accepts a statically bundled `graff-worker.wasm`
+(`zig build wasm-worker`). It shares Graff's native chat step and uses JSPI for
+host HTTP/tools, without a native proxy. Chat Completions only; no shell,
+durable sessions or full CLI parity yet. See the
+[cf/workerd example](../../examples/workers-engine/README.md).
+
+Remote shell capability: `@codegraff/sdk/worker-sandbox` accesses existing
+Codegraff cloud VMs without Node APIs. The
+[Durable Object sandbox example](../../examples/workers-sandbox/README.md)
+keeps model/tool orchestration in the Worker and verifies a repair inside a
+disposable VM. Its live test is opt-in and incurs model/sandbox charges.
 
 ## Links
 

@@ -122,6 +122,13 @@ def run(binary, capability=True, cancel=False, disconnect=False, switch_session=
             spawn = rows[0]
             assert spawn['parentSessionId'] == sid and spawn['seq'] == 0, spawn
             assert spawn['parentToolCallId'], spawn
+            actual_model = next(body['model'] for body in model.requests
+                                if body.get('tools') and not any(
+                                    item.get('function', item).get('name') == 'subagent'
+                                    for item in body['tools']))
+            assert spawn['event']['model'] == actual_model, spawn
+            assert spawn['event']['provider'] == 'vercel', spawn
+            assert actual_model in spawn['event']['name'], spawn
             assert all(row['subagentSessionId'] == spawn['subagentSessionId'] and
                        row['parentToolCallId'] == spawn['parentToolCallId'] for row in rows), rows
             assert not any(row['event']['type'] == 'terminal' for row in rows), rows

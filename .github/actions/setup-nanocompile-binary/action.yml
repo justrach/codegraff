@@ -1,0 +1,40 @@
+name: Setup pinned nanocompile binary
+description: Restore a checksum-pinned executable or build its pinned source
+inputs:
+  binary-base-url:
+    description: Optional HTTPS object-store base URL for pinned tool binaries
+    default: ''
+outputs:
+  restored:
+    description: Whether the checksum-pinned executable was downloaded
+    value: ${{ steps.binary.outputs.restored }}
+runs:
+  using: composite
+  steps:
+    - name: Restore pinned executable
+      id: binary
+      shell: bash
+      env:
+        NANOCOMPILE_BINARY_BASE_URL: ${{ inputs.binary-base-url }}
+      run: python3 scripts/install-nanocompile-ci.py
+
+    - name: Checkout pinned nanocompile source
+      if: steps.binary.outputs.restored != 'true'
+      uses: actions/checkout@v7
+      with:
+        repository: justrach/nanocompile
+        ref: 8b9a74763516919553b71282cdf1d645161e8459
+        path: .nanocompile-source
+        persist-credentials: false
+
+    - name: Build pinned nanocompile source
+      if: steps.binary.outputs.restored != 'true'
+      shell: bash
+      working-directory: .nanocompile-source
+      run: zig build -Doptimize=ReleaseFast --prefix "$GITHUB_WORKSPACE/.nanocompile-tools"
+
+    - name: Export pinned executable
+      shell: bash
+      run: |
+        echo "NANOCOMPILE_EXE=$GITHUB_WORKSPACE/.nanocompile-tools/bin/nanocompile" >> "$GITHUB_ENV"
+        echo "NANOCOMPILE_DIR=$GITHUB_WORKSPACE/.nanocompile-cache" >> "$GITHUB_ENV"

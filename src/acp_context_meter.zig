@@ -21,18 +21,34 @@ pub fn knownCostUsd(io: Io) ?f64 {
     return if (complete and c.api_calls > 0) c.usd else null;
 }
 
-pub fn write(w: *Io.Writer, sid: []const u8, used: u64, size: u64, cost_usd: ?f64) !void {
+/// `savings` rides as `_meta["codegraff/savings"]` once any count is nonzero
+/// (context_savings.zig); clients that don't know it ignore `_meta`.
+pub fn write(w: *Io.Writer, sid: []const u8, used: u64, size: u64, cost_usd: ?f64, savings: Savings) !void {
     const v2 = @import("acp_v2.zig");
     if (v2.on()) return v2.writeUsage(w, sid, used, size);
-    if (cost_usd) |usd| return proto.writeNotification(w, "session/update", .{
+    const meta = .{ .@"codegraff/savings" = savings };
+    if (cost_usd) |usd| {
+        const cost = .{ .amount = usd, .currency = "USD" };
+        if (savings.any()) return proto.writeNotification(w, "session/update", .{
+            .sessionId = sid,
+            .update = .{ .sessionUpdate = "usage_update", .used = used, .size = size, .cost = cost, ._meta = meta },
+        });
+        return proto.writeNotification(w, "session/update", .{
+            .sessionId = sid,
+            .update = .{ .sessionUpdate = "usage_update", .used = used, .size = size, .cost = cost },
+        });
+    }
+    if (savings.any()) return proto.writeNotification(w, "session/update", .{
         .sessionId = sid,
-        .update = .{ .sessionUpdate = "usage_update", .used = used, .size = size, .cost = .{ .amount = usd, .currency = "USD" } },
+        .update = .{ .sessionUpdate = "usage_update", .used = used, .size = size, ._meta = meta },
     });
     try proto.writeNotification(w, "session/update", .{
         .sessionId = sid,
         .update = .{ .sessionUpdate = "usage_update", .used = used, .size = size },
     });
 }
+
+pub const Savings = @import("context_savings.zig").Snapshot;
 
 /// A per-turn step hook for acp_stream.EventSink: emits only when the count
 /// changed since the last meter this session sent.
@@ -44,12 +60,24 @@ pub const Step = struct {
 test "usage_update carries used and size, and cost only when known" {
     var buf: [512]u8 = undefined;
     var w: Io.Writer = .fixed(&buf);
-    try write(&w, "s1", 53000, 200000, null);
+    try write(&w, "s1", 53000, 200000, null, .{});
     const plain = w.buffered();
     try std.testing.expect(std.mem.indexOf(u8, plain, "\"sessionUpdate\":\"usage_update\",\"used\":53000,\"size\":200000}") != null);
     try std.testing.expect(std.mem.indexOf(u8, plain, "cost") == null);
     try std.testing.expect(std.mem.indexOf(u8, plain, "gui_context_meter") == null);
     w = .fixed(&buf);
-    try write(&w, "s1", 1, 2, 0.045);
+    try write(&w, "s1", 1, 2, 0.045, .{});
     try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"cost\":{\"amount\":0.045,\"currency\":\"USD\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "_meta") == null);
+}
+
+test "usage_update carries graff's savings once there are any" {
+    var buf: [512]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try write(&w, "s1", 10, 100, null, .{ .handleBytes = 96000, .compactedTokens = 78000, .cacheReadTokens = 4000 });
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"_meta\":{\"codegraff/savings\":{\"handleBytes\":96000,\"compactedTokens\":78000,\"cacheReadTokens\":4000}}") != null);
+    w = .fixed(&buf);
+    try write(&w, "s1", 10, 100, 0.5, .{ .cacheReadTokens = 1 });
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"cost\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"cacheReadTokens\":1") != null);
 }

@@ -27,9 +27,34 @@ pub fn forJob(io: Io) !Id {
         }
         return reserve(io, test_home.?);
     }
-    return reserve(io, @import("job_registry.zig").home) catch |err| switch (err) {
-        error.ShellIdentityHomeRequired, error.ShellIdentityStoreInvalid, error.ShellIdentityExhausted => return err,
-        else => return error.ShellIdentityUnavailable,
+    const home = @import("job_registry.zig").home;
+    // #1619: an fd or lock hiccup cleared on its own a moment later, while
+    // the message blamed HOME's permissions. Retry those, and keep the cause.
+    var attempt: u8 = 0;
+    while (true) : (attempt += 1) {
+        return reserve(io, home) catch |err| switch (err) {
+            error.ShellIdentityHomeRequired, error.ShellIdentityStoreInvalid, error.ShellIdentityExhausted => return err,
+            error.Canceled => return err,
+            else => {
+                if (!storageFault(err) and attempt < 3) {
+                    io.sleep(.fromMilliseconds(25), .awake) catch return err;
+                    continue;
+                }
+                last_cause = err;
+                return error.ShellIdentityUnavailable;
+            },
+        };
+    }
+}
+
+/// The underlying error behind the last ShellIdentityUnavailable.
+pub threadlocal var last_cause: ?anyerror = null;
+
+/// Errors that say HOME's storage itself is unusable; retrying cannot help.
+pub fn storageFault(err: anyerror) bool {
+    return switch (err) {
+        error.AccessDenied, error.PermissionDenied, error.ReadOnlyFileSystem, error.NoSpaceLeft, error.NotDir, error.FileNotFound, error.SymLinkLoop, error.NameTooLong, error.BadPathName, error.DiskQuota => true,
+        else => false,
     };
 }
 

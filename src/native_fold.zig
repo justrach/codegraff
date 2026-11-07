@@ -75,6 +75,9 @@ pub const folded = [_][]const u8{
 /// structured-only catalog and the meta-tool listing stay unchanged.
 pub fn isFolded(name: []const u8) bool {
     if (std.mem.eql(u8, name, "rlm")) return @import("rlm_spec.zig").available;
+    // The workspace ships skills (its catalog is in the prompt): loading one
+    // is the task's first step, so `skill` is not worth a load_tool_schemas trip.
+    if (std.mem.eql(u8, name, "skill") and @import("skill_docs.zig").g_workspace_skills) return false;
     for (folded) |tool| {
         if (std.mem.eql(u8, name, tool)) return true;
     }
@@ -304,7 +307,7 @@ pub fn renderLoadedTail(s: *std.json.Stringify, kind: @import("provider.zig").Pr
     for (mcp_tools) |m| if (mcp_schema_gate.policyDeferred(mcp_tools, m)) {
         if (mcp_schema_gate.loadSeq(m.qualified_name)) |seq| try loaded.append(out, .{ .seq = seq, .external = m });
     };
-    std.mem.sort(Entry, loaded.items, {}, struct {
+    @import("stable_sort.zig").sort(Entry, loaded.items, {}, struct {
         fn lt(_: void, a: Entry, b: Entry) bool {
             return a.seq < b.seq;
         }

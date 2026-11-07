@@ -14,6 +14,7 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 const mcp_elicitation = @import("mcp_elicitation.zig");
 const mcp_http = @import("mcp_http.zig");
+const mcp_inbound = @import("mcp_inbound.zig");
 const mcp_notify = @import("mcp_notify.zig");
 const mcp_stdio = @import("mcp_stdio.zig");
 
@@ -41,13 +42,13 @@ pub const Stdio = struct {
     writer: *Io.Writer,
     reader: *Io.Reader,
     sink: *mcp_notify.Sink,
-    elicit_source: []const u8,
 };
 
 fn readReply(s: Stdio, io: Io, a: Allocator, id: i64) !Value {
     while (true) {
         const line = try mcp_stdio.takeLine(s.reader);
-        if (try mcp_elicitation.replyStdio(s.writer, a, line, s.elicit_source)) continue;
+        if (try mcp_elicitation.replyStdio(s.writer, a, line)) continue;
+        if (try mcp_inbound.replyStdio(s.writer, a, line)) continue;
         if (mcp_http.matchingResponse(a, line, id)) |parsed| return parsed;
         _ = mcp_notify.observe(s.sink, io, line);
     }
@@ -111,9 +112,42 @@ test "awaitStdio: notifications are observed and the matching reply returns" {
     var out_buf: [512]u8 = undefined;
     var out: Io.Writer = .fixed(&out_buf);
     var sink: mcp_notify.Sink = .{ .server = "demo" };
-    const got = try readReply(.{ .writer = &out, .reader = &in, .sink = &sink, .elicit_source = "" }, testing.io, a, 3);
+    const got = try readReply(.{ .writer = &out, .reader = &in, .sink = &sink }, testing.io, a, 3);
     try testing.expect(got.object.get("result").?.object.get("ok").?.bool);
     try testing.expect(sink.tools_stale.load(.acquire));
+}
+
+test "MCP inbound ping: wait reader answers interleaved pings without losing progress or tool result" {
+    const Progress = struct {
+        var observed = false;
+        fn record(_: Io, server: []const u8, text: []const u8) void {
+            observed = std.mem.eql(u8, server, "demo") and std.mem.eql(u8, text, "1/2 working");
+        }
+    };
+    Progress.observed = false;
+    const saved = mcp_notify.on_progress;
+    defer mcp_notify.on_progress = saved;
+    mcp_notify.on_progress = Progress.record;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var in: Io.Reader = .fixed(
+        \\{"jsonrpc":"2.0","id":3,"method":"ping"}
+        \\{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":3,"progress":1,"total":2,"message":"working"}}
+        \\{"jsonrpc":"2.0","id":"server-ping","method":"ping","params":{}}
+        \\{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"done"}]}}
+        \\
+    );
+    var out_buf: [512]u8 = undefined;
+    var out: Io.Writer = .fixed(&out_buf);
+    var sink: mcp_notify.Sink = .{ .server = "demo" };
+    const got = try readReply(.{ .writer = &out, .reader = &in, .sink = &sink }, testing.io, arena.allocator(), 3);
+    try testing.expect(Progress.observed);
+    try testing.expectEqualStrings("done", got.object.get("result").?.object.get("content").?.array.items[0].object.get("text").?.string);
+    try testing.expectEqualStrings(
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{}}\n" ++
+            "{\"jsonrpc\":\"2.0\",\"id\":\"server-ping\",\"result\":{}}\n",
+        out.buffered(),
+    );
 }
 
 test "awaitStdio: a cancel already requested sends notifications/cancelled" {
@@ -128,7 +162,7 @@ test "awaitStdio: a cancel already requested sends notifications/cancelled" {
     var out_buf: [512]u8 = undefined;
     var out: Io.Writer = .fixed(&out_buf);
     var sink: mcp_notify.Sink = .{};
-    try testing.expectError(error.McpCancelled, awaitStdio(.{ .writer = &out, .reader = &in, .sink = &sink, .elicit_source = "" }, testing.io, arena.allocator(), 11));
+    try testing.expectError(error.McpCancelled, awaitStdio(.{ .writer = &out, .reader = &in, .sink = &sink }, testing.io, arena.allocator(), 11));
     try testing.expect(std.mem.indexOf(u8, out.buffered(), "\"notifications/cancelled\"") != null);
     try testing.expect(std.mem.indexOf(u8, out.buffered(), "\"requestId\":11") != null);
 }

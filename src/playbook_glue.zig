@@ -113,7 +113,7 @@ pub fn noteConstraint(agent: *Agent, input: std.json.Value) ExecResult {
         .is_error = true,
     };
     if (text.len == 0) return .{ .text = "note_constraint needs non-empty exact text from the current user message", .is_error = true };
-    if (text.len > playbook.max_text) return .{ .text = "constraint NOT recorded: exact text exceeds the 240-byte project-constraint limit; ask the user for a shorter standing rule", .is_error = true };
+    if (text.len > playbook.max_text) return .{ .text = std.fmt.comptimePrint("constraint NOT recorded: exact text exceeds the {d}-byte project-constraint limit; ask the user for a shorter standing rule", .{playbook.max_text}), .is_error = true };
     const current_user = currentUserText(agent);
     const answers = @import("ask_user_answers.zig");
     const from_user = current_user.len > 0 and exactUserSegment(current_user, text);

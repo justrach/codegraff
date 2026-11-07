@@ -35,7 +35,7 @@ const textMessage = @import("messages.zig").textMessage;
 const util = @import("util.zig");
 
 const parent_model = "claude-sonnet-4-6";
-const child_model = "claude-haiku-4-5";
+const child_model = "claude-haiku-5-5";
 const parent_context: u64 = 100_000; // compactAt() = 80_000
 
 /// One completed request's provider usage, in the anthropic wire shape

@@ -9,9 +9,10 @@ in the loop, which is why this tier is not in the pre-push hook.
 
 The cases are data - evals/harness_behavior.jsonl - and each one carries the
 regression it guards. A case scripts the model's replies, so the default run is
-offline and free: scripts/eval/mock_model.py replays the script on the fixed
-lmstudio port and records what the harness sent back. Point --provider/--model
-at a real provider to run the same cases against one.
+offline and free: scripts/eval/mock_model.py replays the script on --port and
+records what the harness sent back. The default port uses lmstudio; other ports
+use a workspace-local OpenAI-compatible router. Point --provider/--model at a
+real provider to run the same cases against one.
 
   python3 scripts/eval-tier2.py                       every case, scripted model
   python3 scripts/eval-tier2.py --only todo-empty-write-noop
@@ -170,6 +171,19 @@ def execute(case: dict[str, Any], graff: str, port: int,
                 dest = pathlib.Path(workspace) / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_text(content, encoding="utf-8")
+            selected_model = model or "lmstudio"
+            if not provider and bound != 1234:
+                # lmstudio has a fixed endpoint, not an LMSTUDIO_URL override.
+                # Use the existing workspace router so chat AND catalog calls
+                # stay on the bound loopback port (including --port 0).
+                router = pathlib.Path(workspace) / ".graff" / ".config.router"
+                router.parent.mkdir(parents=True, exist_ok=True)
+                router.write_text(json.dumps({
+                    "id": "tier2", "base_url": f"http://127.0.0.1:{bound}/v1",
+                    "env_key": "TIER2_API_KEY", "default_model": selected_model,
+                }), encoding="utf-8")
+                env["TIER2_API_KEY"] = "local"
+                selected_model = f"tier2/{selected_model}"
             if case.get("claude_transcripts"):
                 canonical = str(pathlib.Path(workspace).resolve())
                 slug = "".join(c if c.isascii() and c.isalnum() else "-" for c in canonical)
@@ -195,7 +209,7 @@ def execute(case: dict[str, Any], graff: str, port: int,
             # any fixture — a forged record can never carry a live start-id.
             if case.get("live_peer"):
                 peer = subprocess.Popen(
-                    [graff, "--json", "--yolo", "--model", model or "lmstudio"],
+                    [graff, "--json", "--yolo", "--model", selected_model],
                     cwd=str(pathlib.Path(workspace) / "nested") if case.get("peer_in_nested_worktree") else workspace, env=env, stdin=subprocess.PIPE,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
                 live_dir = pathlib.Path(workspace) / ".graff" / "live"
@@ -208,7 +222,7 @@ def execute(case: dict[str, Any], graff: str, port: int,
                     time.sleep(0.1)
                 if peer.poll() is not None or not live_dir.is_dir() or not any(live_dir.glob("*.json")):
                     raise RuntimeError("Live-peer fixture did not announce before the deadline")
-            argv = [graff, "--json", "--yolo", "--model", model or "lmstudio"]
+            argv = [graff, "--json", "--yolo", "--model", selected_model]
             if provider:
                 argv += ["--subagent-provider", provider]
             argv += list(case.get("args", []))
@@ -282,7 +296,7 @@ def execute(case: dict[str, Any], graff: str, port: int,
             peer.kill()
         if bound:
             scripted.stop()
-            # The port is fixed, so let the socket clear before the next case.
+            # Let the socket clear before the next case reuses the port.
             time.sleep(0.05)
 
 
@@ -363,7 +377,7 @@ def main() -> None:
     parser.add_argument("--only", action="append", default=[], help="case id (repeatable)")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--dump", help="run one case and print its events and requests")
-    parser.add_argument("--port", type=int, default=1234, help="scripted-model port")
+    parser.add_argument("--port", type=int, default=1234, help="scripted-model port (0 selects a free port)")
     parser.add_argument("--evidence-dir", type=pathlib.Path, help="retain private events, requests, outcomes and harness traces")
     parser.add_argument("--provider", help="run against a real provider instead of the script")
     parser.add_argument("--model", help="model name for --provider")
