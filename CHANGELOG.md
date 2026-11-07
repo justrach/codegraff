@@ -10,6 +10,10 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.72
+
+- Compaction recovery now retries rejected encrypted state once with the full compacted window when the failed request used a chain. If the rejection persists, graff stops instead of repeatedly resending the same state, preserves history, and explains how to recover (#1823).
+
 ## v0.302.71
 
 - Computer use on macOS is now nanocua, an app graff ships. Signed macOS releases carry `nanocua.app` beside `graff`, and `install.sh` and `graff update` place it in `~/Applications`. graff offers it as an MCP server below every config file, so your own `nanocua` entry wins and `graff mcp disable nanocua` turns it off (#1816).
