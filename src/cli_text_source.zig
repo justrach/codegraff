@@ -5,6 +5,11 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.2
+    \\  • Windows installs can recover through GitHub's asset API without skipping checksum verification
+    \\  • nanocua keeps text and refs by default; coordinates are available with include_frames
+    \\  • frameless reads skip unused geometry queries; controls-only filtering remains opt-in
+    \\
     \\0.302.74.1
     \\  • a provider or model switch expands opaque compaction state from its checkpoint instead of replaying it
     \\

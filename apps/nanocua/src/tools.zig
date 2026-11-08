@@ -49,9 +49,11 @@ pub const Tool = enum {
             ++ guidance,
             .get_ui_tree =>
             \\The accessibility tree of an app, in the background (pid or app; else the app you last read, else the
-            \\frontmost): one line per element with a ref like [12], its role, title, value and frame in screen points
-            \\(top-left origin). The app becomes the one you act in. Use refs with click, type_text, scroll and
+            \\frontmost): one line per element with a ref like [12], its role, title and value. Text is retained by default.
+            \\The app becomes the one you act in. Use refs with click, type_text, scroll and
             \\set_value; they stay valid until the next get_ui_tree. Prefer this over screenshots: it is exact and cheap.
+            \\Coordinates are omitted; include_frames:true adds screen points (top-left origin) when needed.
+            \\interactive_only omits static text; use only for navigation, not reading results or verification.
             ++ guidance,
             .screenshot =>
             \\A JPEG of an app's main window, even behind other windows (pid or app; else the app you last read).
@@ -106,7 +108,7 @@ pub const Tool = enum {
         return switch (t) {
             .list_apps => "{\"type\":\"object\",\"properties\":{}}",
             .get_ui_tree =>
-            \\{"type":"object","properties":{"pid":{"type":"integer"},"app":{"type":"string","description":"An app's name"},"max_nodes":{"type":"integer","description":"At most this many elements (default 400)"}}}
+            \\{"type":"object","properties":{"pid":{"type":"integer"},"app":{"type":"string","description":"An app's name"},"max_nodes":{"type":"integer","description":"At most this many elements (default 400)"},"interactive_only":{"type":"boolean","description":"Controls and window context; omits static text (default false)"},"include_frames":{"type":"boolean","default":false,"description":"Include coordinates when needed (default false)"}}}
             ,
             .screenshot =>
             \\{"type":"object","properties":{"app":{"type":"string","description":"An app's name"},"pid":{"type":"integer"},"whole_screen":{"type":"boolean","description":"The display, not one app's window, if the user allows it"},"x":{"type":"number"},"y":{"type":"number"},"width":{"type":"number"},"height":{"type":"number"},"max_size":{"type":"integer","description":"The image's longer side, in pixels (default 1280)"}}}

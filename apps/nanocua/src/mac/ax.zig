@@ -36,31 +36,35 @@ pub const Refs = struct {
     }
 };
 
-const names = [_][]const u8{ "AXRole", "AXSubrole", "AXTitle", "AXDescription", "AXValue", "AXPosition", "AXSize", "AXChildren", "AXEnabled", "AXFocused", "AXSelected" };
-const Attr = enum { role, subrole, title, description, value, position, size, children, enabled, focused, selected };
+// Geometry is last so ref-based reads do not request attributes they discard.
+const names = [_][]const u8{ "AXRole", "AXSubrole", "AXTitle", "AXDescription", "AXValue", "AXChildren", "AXEnabled", "AXFocused", "AXSelected", "AXPosition", "AXSize" };
+const Attr = enum { role, subrole, title, description, value, children, enabled, focused, selected, position, size };
 
-pub const Options = struct {
-    max_nodes: usize = 400,
-    /// The menu bar's items (long; keys reach menus anyway).
-    menus: bool = false,
-};
+fn copyNames(include_frames: bool) !cf.CFArrayRef {
+    const count: usize = if (include_frames) names.len else @backingInt(Attr.position);
+    var refs: [names.len]?*const anyopaque = undefined;
+    for (names[0..count], 0..) |n, i| refs[i] = cf.str(n);
+    defer for (refs[0..count]) |n| cf.CFRelease(@constCast(n.?));
+    return cf.CFArrayCreate(null, &refs, @intCast(count), &cf.kCFTypeArrayCallBacks) orelse error.OutOfMemory;
+}
+
+pub const Options = tree.Options;
 
 const Walk = struct {
     refs: *Refs,
     w: *std.Io.Writer,
     opts: Options,
     names: cf.CFArrayRef,
+    names_len: usize,
     shown: usize = 0,
     full: bool = false,
+    saw_content: bool = false,
 };
 
 /// Writes app `pid`'s tree to `w`, replacing the refs.
 pub fn writeTree(refs: *Refs, w: *std.Io.Writer, pid: i32, opts: Options) !void {
     refs.clear();
-    var name_refs: [names.len]?*const anyopaque = undefined;
-    for (names, 0..) |n, i| name_refs[i] = cf.str(n);
-    defer for (name_refs) |n| cf.CFRelease(@constCast(n.?));
-    const arr = cf.CFArrayCreate(null, &name_refs, names.len, &cf.kCFTypeArrayCallBacks) orelse return error.OutOfMemory;
+    const arr = try copyNames(opts.include_frames);
     defer cf.CFRelease(arr);
     const app = cf.AXUIElementCreateApplication(pid);
     defer cf.CFRelease(app);
@@ -68,17 +72,21 @@ pub fn writeTree(refs: *Refs, w: *std.Io.Writer, pid: i32, opts: Options) !void 
     // that says it's there; everything else ignores this. Until it's built
     // they show no elements, so an empty first read is worth another look.
     _ = set(app, "AXManualAccessibility", cf.kCFBooleanTrue);
-    var walk: Walk = .{ .refs = refs, .w = w, .opts = opts, .names = arr };
+    var walk: Walk = .{ .refs = refs, .w = w, .opts = opts, .names = arr, .names_len = @intCast(cf.CFArrayGetCount(arr)) };
     var title_buf: [128]u8 = undefined;
     try w.print("app \"{s}\" pid {d}\n", .{ copyText(&title_buf, app, "AXTitle"), pid });
     const before = w.end;
     try visit(&walk, app, 0, 0);
     var tries: usize = 0;
-    while (w.end == before and tries < 3) : (tries += 1) {
+    while (!walk.saw_content and w.end == before and tries < 3) : (tries += 1) {
         _ = usleep(300_000);
         try visit(&walk, app, 0, 0);
     }
-    if (w.end == before) try w.writeAll("(no elements: the app shows no windows, or it doesn't support accessibility)\n");
+    if (w.end == before) try w.writeAll(if (walk.saw_content)
+        "(no matching controls: retry without interactive_only to read text)\n"
+    else
+        "(no elements: the app shows no windows, or it doesn't support accessibility)\n");
+    if (opts.interactive_only) try w.writeAll("(controls only; static text omitted)\n");
     if (walk.full) try w.print("(stopped at {d} elements: ask for a larger max_nodes, up to 2000)\n", .{walk.shown});
 }
 
@@ -88,8 +96,8 @@ fn visit(walk: *Walk, el: cf.AXUIElementRef, depth: usize, level: usize) !void {
     if (cf.AXUIElementCopyMultipleAttributeValues(el, walk.names, 0, &out) != 0) return;
     const vals = out orelse return;
     defer cf.CFRelease(vals);
-    var v: [names.len]?*anyopaque = undefined;
-    for (0..names.len) |i| {
+    var v: [names.len]?*anyopaque = @splat(null);
+    for (0..walk.names_len) |i| {
         const x = cf.CFArrayGetValueAtIndex(vals, @intCast(i));
         // Missing attributes come back as AXValues holding an error.
         v[i] = if (x) |p| (if (cf.CFGetTypeID(p) == cf.AXValueGetTypeID() and cf.AXValueGetType(@ptrCast(p)) == 5) null else p) else null;
@@ -116,19 +124,21 @@ fn visit(walk: *Walk, el: cf.AXUIElementRef, depth: usize, level: usize) !void {
     if (std.mem.eql(u8, node.role, "AXMenuBar") and !walk.opts.menus) return;
     var child_depth = depth;
     // The application itself is the header, not a line.
-    if (level > 0 and tree.shown(node)) {
+    if (level > 0 and tree.shown(node)) walk.saw_content = true;
+    if (level > 0 and walk.opts.includes(node)) {
         if (walk.shown >= walk.opts.max_nodes) {
             walk.full = true;
             return;
         }
         const ref = try walk.refs.add(el);
-        try tree.writeLine(walk.w, node, ref, depth);
+        try walk.opts.write(walk.w, node, ref, depth);
         walk.shown += 1;
         child_depth += 1;
     }
     const kids = cf.array(at(&v, .children)) orelse return;
     const n: usize = @intCast(cf.CFArrayGetCount(kids));
     for (0..n) |i| {
+        if (walk.full) break;
         const k = cf.CFArrayGetValueAtIndex(kids, @intCast(i)) orelse continue;
         try visit(walk, @ptrCast(k), child_depth, level + 1);
     }
@@ -219,4 +229,20 @@ pub fn setTimeout(seconds: f32) void {
     const sys = cf.AXUIElementCreateSystemWide();
     defer cf.CFRelease(sys);
     _ = cf.AXUIElementSetMessagingTimeout(sys, seconds);
+}
+
+test "AX batch keeps content and state while geometry is opt-in" {
+    for ([_]bool{ false, true }) |include_frames| {
+        const attrs = try copyNames(include_frames);
+        defer cf.CFRelease(attrs);
+        const expected: usize = if (include_frames) 11 else 9;
+        try std.testing.expectEqual(expected, @as(usize, @intCast(cf.CFArrayGetCount(attrs))));
+        var buf: [64]u8 = undefined;
+        for (0..expected) |i| {
+            try std.testing.expectEqualStrings(names[i], cf.text(&buf, cf.CFArrayGetValueAtIndex(attrs, @intCast(i))));
+        }
+        inline for (.{ .{ Attr.children, "AXChildren" }, .{ Attr.enabled, "AXEnabled" }, .{ Attr.focused, "AXFocused" }, .{ Attr.selected, "AXSelected" } }) |entry| {
+            try std.testing.expectEqualStrings(entry[1], cf.text(&buf, cf.CFArrayGetValueAtIndex(attrs, @backingInt(entry[0]))));
+        }
+    }
 }

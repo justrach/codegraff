@@ -12,6 +12,15 @@ pub fn build(b: *std.Build) void {
     run.addPassthruArgs();
     b.step("run", "Run nanocua (the control panel and the agents' server)").dependOn(&run.step);
 
+    // Isolated fixture formatter, never linked to the real desktop backend.
+    const utility = b.addExecutable(.{ .name = "nanocua-utility-render", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/utility_render.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    }) });
+    b.step("utility-eval", "Build the headless utility comparison adapter").dependOn(&b.addInstallArtifact(utility, .{}).step);
+
     const tests = b.addTest(.{ .root_module = module(b, "src/tests.zig", target, optimize, nanoui, mac) });
     b.step("test", "Run nanocua tests").dependOn(&b.addRunArtifact(tests).step);
     // The tests as a program, for another machine (Linux in a container).
