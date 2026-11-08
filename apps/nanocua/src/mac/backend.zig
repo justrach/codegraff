@@ -192,7 +192,7 @@ const Job = struct {
     ref: ?i64,
     pid: ?i64,
     count: ?i64,
-    max_nodes: ?i64,
+    tree_options: ax.Options,
     max_size: ?i64,
     whole_screen: bool,
     text: ?[]const u8,
@@ -221,7 +221,7 @@ const Job = struct {
             .ref = a.int("ref"),
             .pid = a.int("pid"),
             .count = a.int("count"),
-            .max_nodes = a.int("max_nodes"),
+            .tree_options = .fromArgs(a),
             .max_size = a.int("max_size"),
             .whole_screen = a.boolean("whole_screen") orelse false,
             .text = null,
@@ -286,8 +286,7 @@ const Job = struct {
                 const pid = named orelse j.session.last orelse
                     ax.focusedPid() orelse return j.fail("No app has the keyboard focus: pass pid or app.", .{});
                 if (pid == m.self_pid) return j.fail("That is nanocua itself, which agents don't see. Pass pid or app (see list_apps).", .{});
-                const max: usize = @intCast(std.math.clamp(j.max_nodes orelse 400, 1, 2000));
-                try ax.writeTree(&j.session.refs, w, pid, .{ .max_nodes = max });
+                try ax.writeTree(&j.session.refs, w, pid, j.tree_options);
                 if (windows.main(pid)) |win| if (!win.onscreen) try w.print("\n{s}\n", .{off_this_space});
                 j.session.last = pid;
             },

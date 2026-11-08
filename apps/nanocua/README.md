@@ -37,11 +37,30 @@ guessed coordinate) and cheap (text, not images):
 
 ```
 app "Notes" pid 812
-[1] Window "Groceries" @0,25 1200x800
-  [2] Button desc="New Note" @310,38 28x28
-  [3] SearchField value="" @960,36 220x28
-  [4] TextArea value="eggs\nmilk" @320,80 860x700 focused
+[1] Window "Groceries"
+  [2] Button desc="New Note"
+  [3] SearchField value=""
+  [4] TextArea value="eggs\nmilk" focused
 ```
+
+By default, observations retain readable text, labels, values and state within
+the usual size limits, but omit coordinates. Ref-based actions resolve their own
+current frames, so they do not need geometry in the observation. For coordinate
+work, opt back in:
+
+```json
+{"app":"Notes","include_frames":true}
+```
+
+This restores frames in screen points (top-left origin). Frameless reads also
+skip querying AXPosition and AXSize for each node; they still use one batched
+accessibility call per node. This is less data, not a measured latency guarantee.
+
+`interactive_only: true` remains opt-in for navigation. It keeps known controls,
+window/dialog context and focused or selected elements, but can hide results,
+errors and child labels. Leave it off when reading or verifying results. Every
+tree refresh replaces refs as before. Permissions and Space restrictions are
+unchanged; smaller observations are not equivalent whole-session cost savings.
 
 Agents work **inside one app, in the background**: the app they last read or
 named. `click` with a ref presses the element through accessibility when it can;
@@ -157,6 +176,12 @@ Nothing in the tests moves the pointer, types or captures the screen: the policy
 where calls go, MCP sessions, keys, the tree's text, the socket (over a socket
 pair), the switches from outside and the panel are tested; the macOS backend is
 compiled, not run.
+
+The [utility comparison](evals/utility/README.md) checks whether compact reads
+still let an agent finish tasks, not just whether they produce fewer bytes.
+Build its isolated formatter with `zig build utility-eval`; its offline tests
+and opt-in Codegraff runs cover five stateful synthetic tasks across five read
+policies. No part of that benchmark drives the desktop.
 
 macOS keeps permissions across updates only for an app signed by the same
 identity. Set `CODESIGN_IDENTITY` for `package.sh`; an ad hoc build is asked again
