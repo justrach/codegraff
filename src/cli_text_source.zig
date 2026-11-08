@@ -5,6 +5,9 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.1
+    \\  • a provider or model switch expands opaque compaction state from its checkpoint instead of replaying it
+    \\
     \\0.302.74
     \\  • rejected compaction state restores exact input when a private checkpoint is available
     \\  • short TLS-construction outages get a longer bounded recovery window

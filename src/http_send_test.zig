@@ -7,7 +7,7 @@ const Agent = @import("agent.zig").Agent;
 const http = @import("http.zig");
 const agent_stream = @import("agent_stream.zig");
 
-const head_ms: u64 = 150; // not 30_000: the loopback head exception stays off
+const head_ms: u64 = 400; // not 30_000: the loopback head exception stays off
 const paced_len: usize = 2 * 1024 * 1024;
 
 const Peer = struct {
@@ -30,7 +30,8 @@ const Peer = struct {
             if (line.len > name.len and std.ascii.eqlIgnoreCase(line[0..name.len], name))
                 len = std.fmt.parseInt(usize, std.mem.trim(u8, line[name.len..], " \r"), 10) catch return;
         }
-        // 32 KiB per 10 ms: the whole body takes several head budgets.
+        // 32 KiB per 25 ms: the whole body spans several head budgets, and each
+        // pause stays far under one so a descheduled peer cannot trip it.
         var since_pause: usize = 0;
         while (got.load(.monotonic) < len) {
             const n = @min(len - got.load(.monotonic), 8192);
@@ -39,7 +40,7 @@ const Peer = struct {
             since_pause += n;
             if (since_pause >= 32 * 1024) {
                 since_pause = 0;
-                io.sleep(.fromMilliseconds(10), .awake) catch return;
+                io.sleep(.fromMilliseconds(25), .awake) catch return;
             }
         }
         var output_buf: [1024]u8 = undefined;
@@ -67,7 +68,7 @@ fn exercise(mode: Peer.Mode, body_len: usize) !void {
     if (builtin.os.tag != .windows) std.posix.setsockopt(listener.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVBUF, std.mem.asBytes(&rcvbuf)) catch {};
     var got: std.atomic.Value(usize) = .init(0);
     var done: std.atomic.Value(bool) = .init(false);
-    var peer = io.async(Peer.run, .{ io, &listener, mode, &got, &done });
+    var peer = try io.concurrent(Peer.run, .{ io, &listener, mode, &got, &done });
     defer peer.await(io);
     defer done.store(true, .release);
 

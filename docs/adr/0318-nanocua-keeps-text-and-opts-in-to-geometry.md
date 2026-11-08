@@ -1,4 +1,4 @@
-# 0317. nanocua keeps text and opts in to geometry
+# 0318. nanocua keeps text and opts in to geometry
 
 Status: accepted 2026-11-08. Extends [0314](0314-nanocua-is-grafts-computer-use.md).
 

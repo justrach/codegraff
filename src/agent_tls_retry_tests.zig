@@ -44,6 +44,9 @@ const Fixture = struct {
     previous_cancel: bool,
 
     fn init(self: *Fixture) !void {
+        // Serialize: init installs (and clears) the process-global TLS test hooks.
+        clients.lockTestHooksForTest();
+        errdefer clients.unlockTestHooksForTest();
         const gpa = std.testing.allocator;
         const io = std.testing.io;
         self.runtime.init(gpa, io);
@@ -79,7 +82,10 @@ const Fixture = struct {
     }
 
     fn serve(self: *Fixture, replies: []const transport.Reply) void {
-        self.server_future = std.testing.io.async(transport.serveReplies, .{ std.testing.io, &self.server, replies, &self.accepted });
+        // Eager start: io.async may run inline, so a peer awaited only in deinit
+        // is not guaranteed to be serving while the request under test runs.
+        self.server_future = std.testing.io.concurrent(transport.serveReplies, .{ std.testing.io, &self.server, replies, &self.accepted }) catch
+            @panic("test server task could not start");
     }
 
     fn deinit(self: *Fixture) void {
@@ -95,6 +101,7 @@ const Fixture = struct {
         self.arena.deinit();
         Agent.esc_cancel.store(self.previous_cancel, .release);
         current_probe = null;
+        clients.unlockTestHooksForTest();
     }
 
     fn expectReleased(self: *Fixture) !void {

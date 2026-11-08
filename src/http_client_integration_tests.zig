@@ -311,6 +311,9 @@ test "child retry ladder recovers within the same request" {
 }
 
 test "later root and child recover after the retry ladder exhausts TLS generations" {
+    // Shares the process-global TLS hooks with agent_tls_retry_tests.zig's tests.
+    http_client.lockTestHooksForTest();
+    defer http_client.unlockTestHooksForTest();
     const gpa = std.testing.allocator;
     const io = std.testing.io;
     var runtime: http_client.Runtime = undefined;

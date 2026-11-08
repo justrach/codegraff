@@ -341,7 +341,8 @@ record only when you need the evidence or the edge cases.
 | [0314](0314-nanocua-is-grafts-computer-use.md) | Computer use on macOS is nanocua, a signed app shipped beside graff and offered as one MCP server; it works inside one app in the background, and the app's panel, not graff, says what it may do: graff and Harness can read its state and turn things off, but turning anything on takes a person's click in its window. nanoui's copy is generated from codegraff's and keeps codegraff's license. |
 | [0315](0315-acp-explicit-command-intent.md) | Harness carries explicit command completion intent in ACP `_meta["harness/command"]`; literal slash prose bypasses dispatch and expansion, while legacy clients retain their syntax. |
 | [0316](0316-rejected-compaction-restores-exact-input.md) | Server-compaction replacements retain private exact-input checkpoints; rejected state restores only a matching window plus its later tail, within a bounded recovery budget. |
-| [0317](0317-nanocua-keeps-text-and-opts-in-to-geometry.md) | nanocua retains text by default, omits unrequested geometry from replies and AX batches, and keeps frames and controls-only filtering as explicit options. |
+| [0317](0317-seat-change-expands-opaque-compaction.md) | A provider or model switch expands opaque compaction state from its checkpoint instead of replaying ciphertext the new seat cannot decrypt. |
+| [0318](0318-nanocua-keeps-text-and-opts-in-to-geometry.md) | nanocua retains text by default, omits unrequested geometry from replies and AX batches, and keeps frames and controls-only filtering as explicit options. |
 
 | [0302](0302-sse-idle-watchdogs-follow-body-byte-progress.md) | SSE idle watchdogs observe partial body-byte progress, while separate unfinished-event time and size bounds preserve recovery. |
 
