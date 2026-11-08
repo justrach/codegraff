@@ -36,7 +36,14 @@ pub const Owned = struct {
         var copy = source;
         copy.provider = try self.provider(source.provider);
         if (source.subagent_provider) |p| copy.subagent_provider = try self.provider(p);
-        if (source.agent_cwd) |cwd| copy.agent_cwd = try a.dupe(u8, cwd);
+        if (source.agent_cwd) |cwd| {
+            copy.agent_cwd = try a.dupe(u8, cwd);
+        } else {
+            var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+            if (std.process.currentPath(source.io, &cwd_buf)) |n| {
+                copy.agent_cwd = try a.dupe(u8, cwd_buf[0..n]);
+            } else |_| {}
+        }
         copy.tools_used = null;
         copy.plan_read_owner = null;
         copy.worker_family = try a.dupe(u8, source.worker_family);

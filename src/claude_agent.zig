@@ -345,6 +345,8 @@ fn turn(self: *Agent, a: std.mem.Allocator, s: *Session, tools: ?Value, poll: bo
     errdefer full.deinit();
     var loop_guard: @import("agent_model_loop.zig").Stream = .{};
     var stop_reason: []const u8 = "";
+    var graff_tool_use = false;
+    var skip_block: ?i64 = null;
     var responses: usize = 0;
     var first_token = false;
     while (true) {
@@ -359,8 +361,21 @@ fn turn(self: *Agent, a: std.mem.Allocator, s: *Session, tools: ?Value, poll: bo
                     responses += 1;
                     if (responses > 1) full.clearRetainingCapacity();
                     stop_reason = "";
+                    graff_tool_use = false;
+                    skip_block = null;
                 }
-                _ = wire.unprefixToolUse(&ev);
+                switch (wire.unprefixToolUse(&ev)) {
+                    .graff => graff_tool_use = true,
+                    .foreign => {
+                        skip_block = wire.blockIndex(ev);
+                        continue;
+                    },
+                    .none => {},
+                }
+                if (skip_block) |idx| if (wire.blockIndex(ev) == idx) {
+                    if (std.mem.eql(u8, kind, "content_block_stop")) skip_block = null;
+                    continue;
+                };
                 if (std.mem.eql(u8, kind, "message_delta")) if (ev.object.get("delta")) |d| {
                     if (d == .object) if (wire.strField(d.object, "stop_reason")) |r| {
                         stop_reason = r;
@@ -376,7 +391,7 @@ fn turn(self: *Agent, a: std.mem.Allocator, s: *Session, tools: ?Value, poll: bo
                 }
                 try full.writer.writeAll(sse_line);
                 try full.writer.writeByte('\n');
-                if (std.mem.eql(u8, kind, "message_stop") and std.mem.eql(u8, stop_reason, "tool_use")) break;
+                if (std.mem.eql(u8, kind, "message_stop") and std.mem.eql(u8, stop_reason, "tool_use") and graff_tool_use) break;
             },
             .control => |c| try service(s, a, c, tools),
             .cancel => |id| s.cancel(id),

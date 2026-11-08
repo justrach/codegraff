@@ -378,16 +378,29 @@ pub fn classify(a: Allocator, line: []const u8) !Line {
     return .ignore;
 }
 
+pub const ToolUseKind = enum { none, graff, foreign };
+
 /// Strip graff's MCP server prefix from a streamed tool_use block, in place,
-/// so graff's loop sees its own tool names. True if the event is a tool_use start.
-pub fn unprefixToolUse(ev: *Value) bool {
-    if (ev.* != .object) return false;
-    if (!std.mem.eql(u8, strField(ev.object, "type") orelse "", "content_block_start")) return false;
-    const block = ev.object.getPtr("content_block") orelse return false;
-    if (block.* != .object or !std.mem.eql(u8, strField(block.object, "type") orelse "", "tool_use")) return false;
-    const name = block.object.getPtr("name") orelse return true;
-    if (name.* == .string and std.mem.startsWith(u8, name.string, tool_prefix)) name.* = .{ .string = name.string[tool_prefix.len..] };
-    return true;
+/// so graff's loop sees its own tool names. A bare/foreign tool_use is rejected
+/// by Claude Code itself ("No such tool available") and must never be handed
+/// to graff's tool loop (#1811).
+pub fn unprefixToolUse(ev: *Value) ToolUseKind {
+    if (ev.* != .object) return .none;
+    if (!std.mem.eql(u8, strField(ev.object, "type") orelse "", "content_block_start")) return .none;
+    const block = ev.object.getPtr("content_block") orelse return .none;
+    if (block.* != .object or !std.mem.eql(u8, strField(block.object, "type") orelse "", "tool_use")) return .none;
+    const name = block.object.getPtr("name") orelse return .foreign;
+    if (name.* == .string and std.mem.startsWith(u8, name.string, tool_prefix)) {
+        name.* = .{ .string = name.string[tool_prefix.len..] };
+        return .graff;
+    }
+    return .foreign;
+}
+
+pub fn blockIndex(ev: Value) ?i64 {
+    if (ev != .object) return null;
+    const idx = ev.object.get("index") orelse return null;
+    return if (idx == .integer) idx.integer else null;
 }
 
 /// Whether `version` (e.g. "2.1.304", suffixes ignored) is at least `floor`.

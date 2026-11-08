@@ -52,12 +52,17 @@ fn hasToolResult(m: Value) bool {
     return false;
 }
 
+pub var checkpoint_image_budget: usize = 4 * 1024 * 1024;
+pub const max_checkpoint_images: usize = 8;
+
 /// Content for the first message of a fresh session: the checkpoint of
 /// everything up to the last assistant reply or tool result, then the user
 /// messages after it as the prompt (graff may follow a prompt with notices
 /// of its own). A turn that ended on a call (`attempt_completion`) leaves
 /// its result first in the trailing user run: the prompt after it keeps
 /// its blocks, images too, instead of joining the checkpoint as text (#1792).
+/// Recent images inside the checkpoint itself are also kept as real image
+/// blocks within `checkpoint_image_budget` (#1810).
 pub fn freshContent(a: Allocator, items: []const Value) !Value {
     var blocks: std.json.Array = .init(a);
     var start = items.len;
@@ -67,7 +72,11 @@ pub fn freshContent(a: Allocator, items: []const Value) !Value {
         cut = i + 1; // results of a call belong to the checkpoint
     };
     const head = items[0..cut];
-    if (head.len > 0) try blocks.append(try textBlock(a, try checkpoint(a, head)));
+    if (head.len > 0) {
+        const cp = try checkpointWithImages(a, head);
+        try blocks.append(try textBlock(a, cp.text));
+        for (cp.images) |img| try blocks.append(try stripCacheControl(a, img));
+    }
     if (cut < items.len) {
         for (items[cut..]) |m| try appendPromptBlocks(a, &blocks, m.object.get("content") orelse Value{ .string = "" });
     } else if (head.len > 0) {
@@ -94,7 +103,8 @@ fn appendBlock(a: Allocator, blocks: *std.json.Array, b: Value) !void {
         try blocks.append(try stripCacheControl(a, b));
     } else {
         var out: std.ArrayList(u8) = .empty;
-        try renderBlock(a, &out, b);
+        var plan: ImagePlan = .{};
+        try renderBlock(a, &out, b, &plan);
         if (out.items.len > 0) try blocks.append(try textBlock(a, out.items));
     }
 }
@@ -115,7 +125,74 @@ fn textBlock(a: Allocator, text: []const u8) !Value {
     return .{ .object = o };
 }
 
+const ImagePlan = struct {
+    keep: []const bool = &.{},
+    cursor: usize = 0,
+    attached: usize = 0,
+
+    fn nextKept(self: *ImagePlan) ?usize {
+        const idx = self.cursor;
+        self.cursor += 1;
+        if (idx < self.keep.len and self.keep[idx]) {
+            self.attached += 1;
+            return self.attached;
+        }
+        return null;
+    }
+};
+
+fn imageBytes(b: Value) usize {
+    if (b != .object) return 0;
+    if (b.object.get("source")) |src| if (src == .object) {
+        if (wire.strField(src.object, "data")) |d| return d.len;
+    };
+    if (wire.strField(b.object, "data")) |d| return d.len;
+    return 0;
+}
+
+fn collectImages(a: Allocator, out: *std.ArrayList(Value), b: Value) !void {
+    if (b != .object) return;
+    const kind = wire.strField(b.object, "type") orelse "";
+    if (std.mem.eql(u8, kind, "image")) {
+        try out.append(a, b);
+    } else if (std.mem.eql(u8, kind, "tool_result")) {
+        if (b.object.get("content")) |c| if (c == .array) for (c.array.items) |p| {
+            if (p == .object and std.mem.eql(u8, wire.strField(p.object, "type") orelse "", "image"))
+                try out.append(a, p);
+        };
+    }
+}
+
 pub fn checkpoint(a: Allocator, items: []const Value) ![]const u8 {
+    return (try checkpointWithImages(a, items)).text;
+}
+
+const CheckpointOut = struct { text: []const u8, images: []const Value };
+
+fn checkpointWithImages(a: Allocator, items: []const Value) !CheckpointOut {
+    var all_imgs: std.ArrayList(Value) = .empty;
+    for (items) |m| {
+        if (m != .object) continue;
+        const c = m.object.get("content") orelse continue;
+        if (c == .array) for (c.array.items) |b| try collectImages(a, &all_imgs, b);
+    }
+    const keep = try a.alloc(bool, all_imgs.items.len);
+    @memset(keep, false);
+    var rem = checkpoint_image_budget;
+    var count: usize = 0;
+    var idx = all_imgs.items.len;
+    while (idx > 0) {
+        idx -= 1;
+        const sz = imageBytes(all_imgs.items[idx]);
+        if (sz <= rem and count < max_checkpoint_images) {
+            keep[idx] = true;
+            rem -= sz;
+            count += 1;
+        }
+    }
+    var kept_imgs: std.ArrayList(Value) = .empty;
+    for (all_imgs.items, 0..) |img, k| if (keep[k]) try kept_imgs.append(a, img);
+    var plan: ImagePlan = .{ .keep = keep };
     var out: std.ArrayList(u8) = .empty;
     try out.appendSlice(a, "<conversation-checkpoint>\nThe conversation so far, from before this session started. Tool calls and results are shown as text; continue from where it ends.\n");
     for (items) |m| {
@@ -124,16 +201,16 @@ pub fn checkpoint(a: Allocator, items: []const Value) ![]const u8 {
         const c = m.object.get("content") orelse continue;
         switch (c) {
             .string => |s| try out.appendSlice(a, s),
-            .array => |blocks| for (blocks.items) |b| try renderBlock(a, &out, b),
+            .array => |blocks| for (blocks.items) |b| try renderBlock(a, &out, b, &plan),
             else => {},
         }
         try out.append(a, '\n');
     }
     try out.appendSlice(a, "</conversation-checkpoint>");
-    return out.items;
+    return .{ .text = out.items, .images = kept_imgs.items };
 }
 
-fn renderBlock(a: Allocator, out: *std.ArrayList(u8), b: Value) !void {
+fn renderBlock(a: Allocator, out: *std.ArrayList(u8), b: Value, plan: *ImagePlan) !void {
     if (b != .object) return;
     const kind = wire.strField(b.object, "type") orelse "";
     if (std.mem.eql(u8, kind, "text")) {
@@ -149,16 +226,27 @@ fn renderBlock(a: Allocator, out: *std.ArrayList(u8), b: Value) !void {
             .array => |parts| for (parts.items) |p| {
                 if (p == .object and std.mem.eql(u8, wire.strField(p.object, "type") orelse "", "text"))
                     try out.appendSlice(a, wire.strField(p.object, "text") orelse "")
+                else if (p == .object and std.mem.eql(u8, wire.strField(p.object, "type") orelse "", "image"))
+                    try renderImageRef(a, out, plan, false)
                 else
-                    try out.appendSlice(a, "[image]");
+                    try out.appendSlice(a, "[attachment]");
             },
             else => {},
         };
         try out.appendSlice(a, "</tool_result>\n");
-    } else if (std.mem.eql(u8, kind, "image") or std.mem.eql(u8, kind, "document")) {
+    } else if (std.mem.eql(u8, kind, "image")) {
+        try renderImageRef(a, out, plan, true);
+    } else if (std.mem.eql(u8, kind, "document")) {
         try out.print(a, "[{s}]\n", .{kind});
     }
     // thinking / redacted_thinking: left out of the checkpoint.
+}
+
+fn renderImageRef(a: Allocator, out: *std.ArrayList(u8), plan: *ImagePlan, newline: bool) !void {
+    if (plan.nextKept()) |n|
+        try out.print(a, "[image #{d} attached]{s}", .{ n, if (newline) "\n" else "" })
+    else
+        try out.print(a, "[image omitted: exceeded checkpoint size budget]{s}", .{if (newline) "\n" else ""});
 }
 
 fn isError(b: Value) bool {

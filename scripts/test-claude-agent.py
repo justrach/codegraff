@@ -67,6 +67,17 @@ if scenario == "llm_query":
     name, args = "rlm", {"code": 'a = llm_query("what is six times seven")\nprint(a)'}
 elif scenario == "relist_streaming":
     name, args = "load_tool_schemas", {"tools": ["subagent"]}
+elif scenario == "bare_tool_retry":
+    name, args = "write_file", {"path": "once.txt", "content": "prefixed\n"}
+    # First response calls bare `write_file` (without `mcp__graff__`), which
+    # Claude Code rejects internally ("No such tool available") before
+    # streaming the retry in the same step (#1811).
+    ev({"type": "message_start", "message": {"id": "msg_bare", "type": "message", "role": "assistant", "model": "claude-test", "content": [], "usage": usage}})
+    ev({"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "toolu_bare", "name": "write_file", "input": {}}})
+    ev({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": json.dumps({"path": "unprefixed.txt", "content": "must-not-run\n"})}})
+    ev({"type": "content_block_stop", "index": 0})
+    ev({"type": "message_delta", "delta": {"stop_reason": "tool_use", "stop_sequence": None}, "usage": {"output_tokens": 10}})
+    ev({"type": "message_stop"})
 else:
     name, args = "write_file", {"path": "out.txt", "content": "from claude agent\n"}
 ev({"type": "message_start", "message": {"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-test", "content": [], "usage": usage}})
@@ -149,6 +160,7 @@ def main():
         print('PASS claude-agent: graff tools as the SDK server, a held call answered with graff\'s result, one process', flush=True)
         llm_query_case(binary, temp, env)
         relist_streaming_case(binary, temp, env)
+        bare_tool_retry_case(binary, temp, env)
     finally:
         shutil.rmtree(temp, ignore_errors=True)
 
@@ -199,6 +211,22 @@ def relist_streaming_case(binary, temp, base_env):
     relisted = [t['name'] for t in replies['m4']['response']['mcp_response']['result']['tools']]
     assert 'subagent' in relisted, relisted
     print('PASS claude-agent: a response streaming during a tool re-list reaches the turn whole', flush=True)
+
+
+def bare_tool_retry_case(binary, temp, base_env):
+    """#1811: an unprefixed tool_use rejected by Claude Code itself must not be
+    executed by graff; only the prefixed retry runs."""
+    log = temp / 'bare.log'
+    work = temp / 'proj-bare'
+    work.mkdir()
+    env = dict(base_env, FAKE_CLAUDE_LOG=str(log), FAKE_SCENARIO='bare_tool_retry')
+    run = subprocess.run([binary, '--model', 'claude-agent/sonnet', '--yolo', '-p', 'write once'], cwd=work, env=env,
+                         capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120)
+    assert run.returncode == 0, run.stderr[-2000:]
+    assert 'FAKE-DONE' in run.stdout, (run.stdout[-500:], run.stderr[-1500:])
+    assert not (work / 'unprefixed.txt').exists(), 'unprefixed tool_use must not execute'
+    assert (work / 'once.txt').read_text() == 'prefixed\n'
+    print('PASS claude-agent: unprefixed tool_use rejected by Claude Code does not execute (#1811)', flush=True)
 
 
 if __name__ == '__main__':

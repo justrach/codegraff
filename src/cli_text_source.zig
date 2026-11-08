@@ -5,6 +5,11 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.5
+    \\  • Claude Agent ignores unprefixed tool calls rejected by Claude Code and keeps earlier images across checkpoints
+    \\  • read_tool_result keeps originating workspace handles across workspace switches
+    \\  • background shared_cwd workers stay pinned to their spawn workspace when the root session switches trees
+    \\
     \\0.302.74.4
     \\  • WebSocket Responses turns keep server token counts without re-compacting on ciphertext size
     \\  • compaction and session switches reclaim dropped history memory; ACP startup and session/load are faster

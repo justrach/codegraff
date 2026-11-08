@@ -10,6 +10,13 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.5
+
+- On Claude Agent, unprefixed `tool_use` blocks rejected by Claude Code itself (`"No such tool available"`) are ignored instead of being handed to graff's tool loop, preventing the command from executing twice when the model retries with `mcp__graff__<name>` (#1811).
+- Fresh Claude Agent sessions (including after an interrupted turn) keep recent images from earlier messages and tool results as real `image` content blocks within a size budget instead of replacing them with the literal text `[image]`, and explain when an older image is omitted for size (#1810).
+- `read_tool_result` binds persisted `tr_N` handles to their originating file path and preserves explicit workspace paths instead of resolving old handles against the new workspace after `workspace use` (#1820).
+- Background and foreground `shared_cwd` subagents pin `agent_cwd` to the workspace active when they are spawned, so a subsequent root `workspace create` or `workspace use` does not move an active worker's file-tool boundary (#1768).
+
 ## v0.302.74.4
 
 - Chained Responses WebSocket turns (`GRAFF_CODEX_WS=on`) preserve the server-anchored context token estimate in `floorContextTokens` instead of snapping back up to the local `byte/4` estimate of multi-megabyte `reasoning.encrypted_content` and re-triggering compaction every turn; in-stream server compaction requests (`compactInStream`) retain session tools, reasoning effort, and text verbosity so the compaction call hits the prompt cache prefix.
