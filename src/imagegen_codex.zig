@@ -62,7 +62,14 @@ const max_scan_depth: u8 = 4; // real layout is <save_root>/<session>/<call>.png
 /// its writes to that empty directory. Skipping the check is what lets the
 /// stronger isolation stand; without it the engine simply never runs.
 pub fn buildArgv(arena: Allocator, private_home: []const u8, prompt: []const u8) ![]const []const u8 {
-    return arena.dupe([]const u8, &.{
+    return buildArgvWithRefs(arena, private_home, &.{}, prompt);
+}
+
+/// `#1775`: attach staged absolute reference images with `--image` BEFORE `-c`
+/// so clap's `num_args = 1..` on `--image` terminates cleanly before `prompt`.
+pub fn buildArgvWithRefs(arena: Allocator, private_home: []const u8, refs: []const []const u8, prompt: []const u8) ![]const []const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(arena, &.{
         "env",
         try std.fmt.allocPrint(arena, "CODEX_HOME={s}", .{private_home}),
         "codex",
@@ -70,10 +77,16 @@ pub fn buildArgv(arena: Allocator, private_home: []const u8, prompt: []const u8)
         "--sandbox",
         "workspace-write",
         "--skip-git-repo-check",
+    });
+    for (refs) |ref_path| {
+        try argv.appendSlice(arena, &.{ "--image", ref_path });
+    }
+    try argv.appendSlice(arena, &.{
         "-c",
         "features.image_generation=true",
         prompt,
     });
+    return argv.items;
 }
 
 /// Credentials that make a private CODEX_HOME usable. Symlinked rather than
@@ -188,18 +201,45 @@ fn sanitizePrompt(arena: Allocator, user_prompt: []const u8) ![]const u8 {
 }
 
 pub fn buildPrompt(arena: Allocator, user_prompt: []const u8) ![]const u8 {
+    return buildPromptWithRefs(arena, user_prompt, &.{});
+}
+
+pub fn buildPromptWithRefs(arena: Allocator, user_prompt: []const u8, refs: []const []const u8) ![]const u8 {
+    const clean = try sanitizePrompt(arena, user_prompt);
+    if (refs.len == 0) {
+        return std.fmt.allocPrint(arena,
+            \\Call the built-in image_gen tool exactly once to generate this image:
+            \\
+            \\{s}
+            \\
+            \\Rules: use the image_gen tool and nothing else. Do NOT copy, move, rename or
+            \\convert any file, do NOT resize the image, and do NOT run shell commands to
+            \\save or inspect it - the program that called you collects the generated file
+            \\itself. If the image_gen tool is not available to you, say exactly
+            \\IMAGE_GEN_UNAVAILABLE and stop. Otherwise reply with one short line once the
+            \\tool call has returned.
+        , .{clean});
+    }
+    var ref_lines: std.ArrayList(u8) = .empty;
+    for (refs) |r| {
+        try ref_lines.appendSlice(arena, "- ");
+        try ref_lines.appendSlice(arena, r);
+        try ref_lines.append(arena, '\n');
+    }
     return std.fmt.allocPrint(arena,
         \\Call the built-in image_gen tool exactly once to generate this image:
         \\
         \\{s}
         \\
-        \\Rules: use the image_gen tool and nothing else. Do NOT copy, move, rename or
-        \\convert any file, do NOT resize the image, and do NOT run shell commands to
-        \\save or inspect it - the program that called you collects the generated file
-        \\itself. If the image_gen tool is not available to you, say exactly
-        \\IMAGE_GEN_UNAVAILABLE and stop. Otherwise reply with one short line once the
-        \\tool call has returned.
-    , .{try sanitizePrompt(arena, user_prompt)});
+        \\Reference image(s) (already attached to this message at canonical absolute paths):
+        \\{s}Rules: use the image_gen tool and nothing else. When passing referenced_image_paths
+        \\to image_gen, pass ONLY the exact full absolute path(s) listed above (never
+        \\relative paths). Do NOT copy, move, rename or convert any file, do NOT resize the
+        \\image, and do NOT run shell commands to save or inspect it - the program that
+        \\called you collects the generated file itself. If the image_gen tool is not
+        \\available to you, say exactly IMAGE_GEN_UNAVAILABLE and stop. Otherwise reply
+        \\with one short line once the tool call has returned.
+    , .{ clean, ref_lines.items });
 }
 
 pub const Artifact = struct {
@@ -288,6 +328,18 @@ pub fn saidUnavailable(text: []const u8) bool {
 }
 
 pub const unavailable_text = "codex ran, but reported that the hosted image_gen tool was not available to it — the model your codex config selects does not carry the image-generation capability. Check `codex features list` shows image_generation stable/true and that your configured model supports it, or pass engine \"openai_api\" to use the OPENAI_API_KEY path. Nothing was generated.";
+
+/// #1775: codex failed resolving a reference image (`view_image` in the empty
+/// scratch cwd or `image_gen` deserializing a relative `AbsolutePathBuf`),
+/// which is a missing/unresolvable reference path rather than #352 capability
+/// unavailability.
+pub fn badReferenceInput(text: []const u8) bool {
+    return std.mem.indexOf(u8, text, "AbsolutePathBuf deserialized without a base path") != null or
+        std.mem.indexOf(u8, text, "unable to locate image at ") != null or
+        std.mem.indexOf(u8, text, "unable to read referenced image ") != null;
+}
+
+pub const bad_reference_text = "codex could not read a referenced image path (the codex engine runs in an isolated empty directory and image_gen requires canonical absolute paths). Pass existing workspace-relative image paths via `images` so graff stages and attaches them automatically. Nothing was generated.";
 
 /// No fresh artifact after a clean exit. This is #352's exact signature, so
 /// the message says so rather than leaving it as a puzzling empty result.
@@ -510,4 +562,30 @@ test "#576: buildPrompt strips control characters and invalid UTF-8 from the use
     // A clean prompt passes through byte-identical (modulo the wrapper).
     const clean = try buildPrompt(arena, "a red circle on white");
     try testing.expect(std.mem.indexOf(u8, clean, "a red circle on white") != null);
+}
+
+test "#1775: reference argv terminates --image before prompt, and reference errors do not masquerade as #352" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const refs = [_][]const u8{ "/tmp/s/refs/1-a.png", "/tmp/s/refs/2-b.webp" };
+    const argv = try buildArgvWithRefs(arena, "/tmp/priv", &refs, "PROMPT");
+    // `--image` slots appear before `-c`, so clap's `num_args = 1..` stops at `-c`
+    // and leaves `PROMPT` as the positional instruction.
+    try testing.expectEqualStrings("--image", argv[7]);
+    try testing.expectEqualStrings("/tmp/s/refs/1-a.png", argv[8]);
+    try testing.expectEqualStrings("--image", argv[9]);
+    try testing.expectEqualStrings("/tmp/s/refs/2-b.webp", argv[10]);
+    try testing.expectEqualStrings("-c", argv[11]);
+    try testing.expectEqualStrings("PROMPT", argv[argv.len - 1]);
+
+    const p = try buildPromptWithRefs(arena, "restyle", &refs);
+    try testing.expect(std.mem.indexOf(u8, p, "/tmp/s/refs/1-a.png") != null);
+    try testing.expect(std.mem.indexOf(u8, p, "never\nrelative paths") != null);
+
+    try testing.expect(badReferenceInput("AbsolutePathBuf deserialized without a base path"));
+    try testing.expect(badReferenceInput("unable to locate image at `/tmp/cwd/ref.png`"));
+    try testing.expect(badReferenceInput("unable to read referenced image `/tmp/cwd/ref.png`"));
+    try testing.expect(!badReferenceInput("IMAGE_GEN_UNAVAILABLE"));
 }

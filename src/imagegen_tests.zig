@@ -354,3 +354,166 @@ test "#352 + plan mode: imagegen is refused like write_file, and nothing is spaw
     try std.testing.expect(denied.is_error);
     try std.testing.expect(std.mem.indexOf(u8, denied.text, "plan mode") != null);
 }
+
+test "#1775: root imagegen after workspace chdir stages relative references as canonical abs paths and distinguishes reference errors" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var here_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const here_n = std.process.currentPath(io, &here_buf) catch return error.SkipZigTest;
+    const here = try gpa.dupe(u8, here_buf[0..here_n]);
+    defer gpa.free(here);
+    const chdir = struct {
+        fn go(alloc: Allocator, path: []const u8) !void {
+            const z = try alloc.dupeSentinel(u8, path, 0);
+            defer alloc.free(z);
+            if (std.posix.system.chdir(z.ptr) != 0) return error.ChdirFailed;
+        }
+    }.go;
+    defer chdir(gpa, here) catch {};
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base = real_buf[0..try tmp.dir.realPath(io, &real_buf)];
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const home = try std.fmt.allocPrint(arena, "{s}/codex", .{base});
+    const tree_a = try std.fmt.allocPrint(arena, "{s}/tree-a", .{base});
+    const tree_b = try std.fmt.allocPrint(arena, "{s}/tree-b", .{base});
+    try Io.Dir.cwd().createDirPath(io, home);
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(arena, "{s}/auth.json", .{home}), .data = "{}" });
+    try Io.Dir.cwd().createDirPath(io, tree_a);
+    try Io.Dir.cwd().createDirPath(io, try std.fmt.allocPrint(arena, "{s}/assets", .{tree_b}));
+    const ref_png = "\x89PNG\r\n\x1a\n" ++ @as([512]u8, @splat('r'));
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(arena, "{s}/assets/ref.png", .{tree_b}), .data = ref_png });
+
+    const Inspector = struct {
+        var mode: enum { ok_codex, abs_path_err, ok_openai } = .ok_codex;
+        var saw_abs_image_flag: bool = false;
+        var saw_rewritten_prompt: bool = false;
+        var saw_empty_scratch_cwd: bool = false;
+
+        fn run(a: Allocator, run_io: Io, argv: []const []const u8, _: u64, child_cwd: ?[]const u8) anyerror!run_mod.Outcome {
+            if (std.mem.eql(u8, argv[0], "sips"))
+                return .{ .exit_code = 0, .stdout = "f\n  pixelWidth: 64\n  pixelHeight: 64\n" };
+            if (mode == .ok_openai) {
+                // python3 <script> edit --image=<abs> --prompt=<p> --out=<out> ...
+                if (!std.mem.eql(u8, argv[2], "edit")) return error.TestExpectedEditSubcommand;
+                if (!std.mem.startsWith(u8, argv[3], "--image=/")) return error.TestExpectedAbsImageFlag;
+                saw_abs_image_flag = true;
+                for (argv) |slot| if (std.mem.startsWith(u8, slot, "--out=")) {
+                    const out_file = slot["--out=".len..];
+                    const png = "\x89PNG\r\n\x1a\n" ++ @as([4096]u8, @splat('o'));
+                    try Io.Dir.cwd().writeFile(run_io, .{ .sub_path = out_file, .data = png });
+                };
+                return .{ .exit_code = 0, .stdout = "wrote" };
+            }
+            if (mode == .abs_path_err) {
+                return .{ .exit_code = 0, .stderr = "tool error: AbsolutePathBuf deserialized without a base path" };
+            }
+            // Verify codex runs in an empty scratch cwd (not tree_b), receives
+            // `--image <abs_staged>`, and has relative `assets/ref.png` rewritten.
+            if (child_cwd) |cwd| {
+                saw_empty_scratch_cwd = std.mem.indexOf(u8, cwd, "tree-b") == null and std.mem.endsWith(u8, cwd, "/cwd");
+            }
+            for (argv, 0..) |slot, idx| {
+                if (std.mem.eql(u8, slot, "--image") and idx + 1 < argv.len) {
+                    const staged = argv[idx + 1];
+                    const bytes = try Io.Dir.cwd().readFileAlloc(run_io, staged, a, .limited(4096));
+                    saw_abs_image_flag = std.fs.path.isAbsolute(staged) and std.mem.eql(u8, bytes, ref_png);
+                }
+            }
+            const prompt_slot = argv[argv.len - 1];
+            saw_rewritten_prompt = std.mem.indexOf(u8, prompt_slot, "assets/ref.png") == null;
+
+            const priv = FakeCodex.privateHome(argv) orelse return error.TestMissingCodexHome;
+            const dir = try std.fmt.allocPrint(a, "{s}/generated_images/s1", .{priv});
+            try Io.Dir.cwd().createDirPath(run_io, dir);
+            const png = "\x89PNG\r\n\x1a\n" ++ @as([4096]u8, @splat('g'));
+            try Io.Dir.cwd().writeFile(run_io, .{ .sub_path = try std.fmt.allocPrint(a, "{s}/gen.png", .{dir}), .data = png });
+            return .{ .exit_code = 0, .stdout = "done" };
+        }
+    };
+
+    const saved = .{ imagegen.available, imagegen.codex_ready, imagegen.codex_home, imagegen.scratch_root, imagegen.api_key_present, imagegen.script_path, run_mod.hook };
+    defer {
+        imagegen.available = saved[0];
+        imagegen.codex_ready = saved[1];
+        imagegen.codex_home = saved[2];
+        imagegen.scratch_root = saved[3];
+        imagegen.api_key_present = saved[4];
+        imagegen.script_path = saved[5];
+        run_mod.hook = saved[6];
+    }
+    imagegen.available = true;
+    imagegen.codex_ready = true;
+    imagegen.codex_home = home;
+    imagegen.scratch_root = base;
+    imagegen.api_key_present = true;
+    imagegen.script_path = "/fake/image_gen.py";
+    run_mod.hook = Inspector.run;
+
+    var client: std.http.Client = undefined;
+    // Root session (`agent_cwd = null`): switches from tree_a to tree_b via chdir.
+    const root_ctx: ToolCtx = .{
+        .gpa = gpa,
+        .io = io,
+        .client = &client,
+        .provider = undefined,
+        .registry = null,
+        .from_sub = false,
+        .approvals = null,
+        .tracer = null,
+        .agent_cwd = null,
+    };
+    try chdir(gpa, tree_a);
+    try chdir(gpa, tree_b);
+
+    // 1. Prompt-referenced relative path resolves in tree_b and outputs in tree_b.
+    Inspector.mode = .ok_codex;
+    Inspector.saw_abs_image_flag = false;
+    Inspector.saw_rewritten_prompt = false;
+    Inspector.saw_empty_scratch_cwd = false;
+    var codex_in = try std.json.parseFromSlice(Value, gpa, "{\"prompt\":\"Restyle assets/ref.png as a badge\",\"out\":\"out.png\"}", .{});
+    defer codex_in.deinit();
+    {
+        const r = try execImagegen(root_ctx, codex_in.value);
+        defer gpa.free(r.text);
+        try std.testing.expect(!r.is_error);
+        try std.testing.expect(Inspector.saw_abs_image_flag);
+        try std.testing.expect(Inspector.saw_rewritten_prompt);
+        try std.testing.expect(Inspector.saw_empty_scratch_cwd);
+        try std.testing.expect(Io.Dir.cwd().statFile(io, try std.fmt.allocPrint(arena, "{s}/out.png", .{tree_b}), .{}) != error.FileNotFound);
+        try std.testing.expect(Io.Dir.cwd().statFile(io, try std.fmt.allocPrint(arena, "{s}/out.png", .{tree_a}), .{}) == error.FileNotFound);
+    }
+
+    // 2. Upstream AbsolutePathBuf error is diagnosed as a reference error, never #352.
+    Inspector.mode = .abs_path_err;
+    var err_in = try std.json.parseFromSlice(Value, gpa, "{\"prompt\":\"Restyle missing/ghost.png\",\"out\":\"err.png\"}", .{});
+    defer err_in.deinit();
+    {
+        const r = try execImagegen(root_ctx, err_in.value);
+        defer gpa.free(r.text);
+        try std.testing.expect(r.is_error);
+        try std.testing.expect(std.mem.indexOf(u8, r.text, "referenced image path") != null);
+        try std.testing.expect(std.mem.indexOf(u8, r.text, "missing/ghost.png") != null);
+        try std.testing.expect(std.mem.indexOf(u8, r.text, "#352") == null);
+    }
+
+    // 3. Fallback `openai_api` engine switches to `edit --image=<abs>`.
+    Inspector.mode = .ok_openai;
+    Inspector.saw_abs_image_flag = false;
+    var api_in = try std.json.parseFromSlice(Value, gpa, "{\"prompt\":\"Add glow\",\"images\":[\"assets/ref.png\"],\"engine\":\"openai_api\",\"out\":\"api.png\"}", .{});
+    defer api_in.deinit();
+    {
+        const r = try execImagegen(root_ctx, api_in.value);
+        defer gpa.free(r.text);
+        try std.testing.expect(!r.is_error);
+        try std.testing.expect(Inspector.saw_abs_image_flag);
+    }
+}

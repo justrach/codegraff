@@ -37,8 +37,9 @@ pub const Info = struct {
     generated: bool,
 };
 
-/// Explicit null means "main checkout"; clients clear their worktree state on it.
-pub const Meta = struct { @"graff/worktree": ?Info };
+/// Explicit null on `graff/worktree` means "main checkout" (clients clear their
+/// worktree state on it); `graff/cwd` always carries the active absolute cwd (#1737).
+pub const Meta = struct { @"graff/worktree": ?Info, @"graff/cwd": []const u8 };
 
 pub const AdoptError = error{ RelativeCwd, MissingCwd, ChdirFailed } || Allocator.Error;
 
@@ -95,7 +96,10 @@ pub fn info(env: Env, arena: Allocator) ?Info {
 }
 
 pub fn meta(env: Env, arena: Allocator) Meta {
-    return .{ .@"graff/worktree" = info(env, arena) };
+    return .{
+        .@"graff/worktree" = info(env, arena),
+        .@"graff/cwd" = workspace_switch.currentAbs(env.io, arena),
+    };
 }
 
 fn cwdParam(params: ?Value) ?[]const u8 {
@@ -112,7 +116,11 @@ pub fn adopt(env: Env, arena: Allocator, params: ?Value) AdoptError!void {
     var dir = Io.Dir.cwd().openDir(env.io, want, .{}) catch return error.MissingCwd;
     dir.close(env.io);
     const active = workspace_switch.currentAbs(env.io, arena);
-    if (workspace_switch.samePath(env.io, want, active)) return;
+    if (workspace_switch.samePath(env.io, want, active)) {
+        if (!std.fs.path.isAbsolute(main_mod.g_cwd_display) and std.fs.path.isAbsolute(active))
+            @import("workspace_display.zig").adopt(env.gpa, active);
+        return;
+    }
     if (@import("acp_t3.zig").keepsIsolatedTree()) if (info(env, arena)) |tree| if (workspace_switch.samePath(env.io, want, tree.root)) return;
     _ = workspace_switch.enterPath(env.gpa, env.io, arena, want) catch |err|
         return if (err == error.OutOfMemory) error.OutOfMemory else error.ChdirFailed;
@@ -140,10 +148,10 @@ pub fn enterSavedTree(env: Env, arena: Allocator, session_id: []const u8) bool {
     return false;
 }
 
-/// `session_info_update` meta: the tree plus the session's absolute cwd, so a
-/// client can re-root cwd-relative work (image attachment, files panel) even
-/// when the new folder is a main checkout or a non-graff worktree (#1737).
-pub const ChangeMeta = struct { @"graff/worktree": ?Info, @"graff/cwd": []const u8 };
+/// `session_info_update` meta: same shape as handshake `Meta` (`graff/worktree`
+/// plus `graff/cwd`) so clients can re-root cwd-relative work (image attachment,
+/// files panel) even when switching to a main checkout or non-graff tree (#1737).
+pub const ChangeMeta = Meta;
 
 /// The live session's env and the cwd the client was last told about. The
 /// event stream reads them to report a mid-turn switch (`emitMoved`) without
@@ -223,12 +231,12 @@ test "fromRevParse: the main checkout and bare repos report no worktree" {
     try std.testing.expect(fromRevParse(a, "", "main") == null);
 }
 
-test "Meta serializes an explicit null for the main checkout" {
+test "Meta serializes an explicit null for the main checkout alongside graff/cwd" {
     var buf: [256]u8 = undefined;
     var w: Io.Writer = .fixed(&buf);
     var s: std.json.Stringify = .{ .writer = &w };
-    try s.write(Meta{ .@"graff/worktree" = null });
-    try std.testing.expectEqualStrings("{\"graff/worktree\":null}", w.buffered());
+    try s.write(Meta{ .@"graff/worktree" = null, .@"graff/cwd" = "/repo" });
+    try std.testing.expectEqualStrings("{\"graff/worktree\":null,\"graff/cwd\":\"/repo\"}", w.buffered());
 }
 
 test "#1737: a mid-turn workspace switch reaches the client with the tool result, once" {

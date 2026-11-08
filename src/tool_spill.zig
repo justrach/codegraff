@@ -155,9 +155,18 @@ pub fn capWithHandle(arena: Allocator, full: []const u8, cap: usize) []const u8 
 /// per-session budget is spent, or when any part of the write fails. Public
 /// for agent_clef_archive.zig, which archives pruned outputs the same way.
 pub fn spill(arena: Allocator, session: []const u8, full: []const u8) ?[]const u8 {
-    const sink = g_sink orelse return null;
+    const raw_sink = g_sink orelse return null;
     if (!safeName(session)) return null;
     if (!reserve(full.len)) return null;
+    // #721: when bound to process `.cwd()`, open `base_abs` explicitly so a
+    // mid-session `posix.chdir` (`/workspace use`) never spills through a stale
+    // Threaded-Io cwd handle. Test fixtures pass an explicit `tmp.dir` handle.
+    var opened_base: ?Io.Dir = if (raw_sink.dir.handle == Io.Dir.cwd().handle and raw_sink.base_abs.len > 0 and std.fs.path.isAbsolute(raw_sink.base_abs))
+        Io.Dir.cwd().openDir(raw_sink.io, raw_sink.base_abs, .{ .iterate = true }) catch null
+    else
+        null;
+    defer if (opened_base) |*d| d.close(raw_sink.io);
+    const sink: Sink = if (opened_base) |d| .{ .io = raw_sink.io, .dir = d, .base_abs = raw_sink.base_abs } else raw_sink;
     const dir = std.fmt.allocPrint(arena, "{s}/{s}/artifacts", .{ session_index.sessions_dir, session }) catch return refund(full.len);
     sweepOnce(sink, arena, session);
     sink.dir.createDirPath(sink.io, dir) catch return refund(full.len);
