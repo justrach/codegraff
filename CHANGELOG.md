@@ -10,6 +10,10 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.1
+
+- A provider or model switch expands opaque compaction state from its exact checkpoint instead of replaying it to a seat that did not mint it. Switches after compaction no longer fail against ciphertext the new backend cannot decrypt, and the conversation after the window is kept (#1829, ADR 0317). Sessions with no checkpoint still stop once with history unchanged.
+
 ## v0.302.74
 
 - Rejected encrypted compaction state can recover from a private pre-compaction checkpoint without losing later conversation. New server compactions retain exact input before replacing it; unavailable or invalid checkpoints leave history unchanged (#1822, ADR 0316).
