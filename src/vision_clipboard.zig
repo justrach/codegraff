@@ -278,7 +278,7 @@ pub fn grabClipboardImage(io: Io, gpa: Allocator) GrabAttempt {
 
 const RunStatus = enum { ok, failed, spawn };
 
-fn runQuiet(io: Io, argv: []const []const u8) bool {
+pub fn runQuiet(io: Io, argv: []const []const u8) bool {
     return runStatus(io, argv) == .ok;
 }
 

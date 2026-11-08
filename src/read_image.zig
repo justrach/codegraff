@@ -16,12 +16,13 @@ const ToolOutput = tools.ToolOutput;
 const vision = @import("vision.zig");
 const clip = @import("vision_clipboard.zig");
 const sniff = @import("image_sniff.zig");
+const orient = @import("image_orient.zig");
 
 /// Stage pixels after exec has confined the path. The tool-batch checkpoint
 /// delivers them to the next model request as a native image content block.
 /// Null lets an unreadable file fall back to the generic binary-file error.
 pub fn stage(gpa: Allocator, io: Io, ctx: ToolCtx, resolved: []const u8, path: []const u8, size: u64) !?ToolOutput {
-    return stageWith(gpa, io, ctx, resolved, path, size, clip.sipsResize);
+    return stageWith(gpa, io, ctx, resolved, path, size, clip.sipsResize, orient.sipsRotate);
 }
 
 /// Width and height from a PNG's IHDR, or null for anything else.
@@ -48,7 +49,7 @@ fn notRaster(gpa: Allocator, path: []const u8) !?ToolOutput {
     return .{ .text = try std.fmt.allocPrint(gpa, "Image could not be attached: {s} is not a {s} image (its bytes match none of them, whatever its extension says), so it was not sent. Convert it to one of those formats first.", .{ path, sniff.supported_names }), .is_error = true };
 }
 
-fn stageWith(gpa: Allocator, io: Io, ctx: ToolCtx, resolved: []const u8, path: []const u8, size: u64, resize: clip.Resizer) !?ToolOutput {
+fn stageWith(gpa: Allocator, io: Io, ctx: ToolCtx, resolved: []const u8, path: []const u8, size: u64, resize: clip.Resizer, rotate: orient.Rotator) !?ToolOutput {
     const reg = ctx.registry orelse return .{ .text = try gpa.dupe(u8, "Image could not be attached: the image queue is unavailable."), .is_error = true };
     if (size == 0) return .{ .text = try gpa.dupe(u8, "Image could not be attached: the file is empty."), .is_error = true };
     // #1762: the type comes from the bytes. The extension is only a label for
@@ -71,8 +72,16 @@ fn stageWith(gpa: Allocator, io: Io, ctx: ToolCtx, resolved: []const u8, path: [
         .fits => |f| f,
     };
     defer if (fit.temp) clip.discard(io, gpa, fit.path);
-    const data = Io.Dir.cwd().readFileAlloc(io, fit.path, gpa, .limited(@intCast(limit))) catch return null;
-    defer gpa.free(data);
+    const raw = Io.Dir.cwd().readFileAlloc(io, fit.path, gpa, .limited(@intCast(limit))) catch return null;
+    defer gpa.free(raw);
+    // A photo stored turned (EXIF orientation) is turned upright first; the
+    // model never sees the tag that says how to hold it.
+    const turn = orient.upright(io, gpa, fit.path, raw, rotate);
+    const data = switch (turn) {
+        .turned => |t| t,
+        .as_is, .stuck => raw,
+    };
+    defer if (turn == .turned) gpa.free(data);
     // The type of the bytes actually encoded: a downscale step re-encodes
     // (sipsResize forces PNG), so it is sniffed again rather than assumed.
     const sent_type = sniff.sniff(data) orelse return notRaster(gpa, path);
@@ -91,6 +100,15 @@ fn stageWith(gpa: Allocator, io: Io, ctx: ToolCtx, resolved: []const u8, path: [
         .b64 = try arena.dupe(u8, b64),
         .label = try arena.dupe(u8, path),
     };
+    switch (turn) {
+        .as_is => {},
+        .turned => if (!fit.temp) return .{
+            .text = try std.fmt.allocPrint(gpa, "[image: {s}, {d} bytes — turned upright from its EXIF orientation and attached to the next model request]", .{ media_type, size }),
+        },
+        .stuck => |v| return .{
+            .text = try std.fmt.allocPrint(gpa, "[image: {s}, {d} bytes — attached to the next model request. Its EXIF orientation says the stored pixels are {s}; they could not be turned here, so read them that way]", .{ media_type, size, orient.hint(v) }),
+        },
+    }
     if (!fit.temp) return .{
         .text = try std.fmt.allocPrint(gpa, "[image: {s}, {d} bytes — attached to the next model request]", .{ media_type, size }),
     };
@@ -242,14 +260,14 @@ test "#1272: an oversize image is downscaled or refused, never queued as-is" {
     ctx.provider = .{ .id = "test", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 100000 };
 
     // No way to downscale: refused with the reason, and nothing is queued.
-    const refused = (try stageWith(a, io, ctx, file_path, "big.png", big.len, noResizer)).?;
+    const refused = (try stageWith(a, io, ctx, file_path, "big.png", big.len, noResizer, noRotator)).?;
     defer a.free(refused.text);
     try std.testing.expect(refused.is_error);
     try std.testing.expect(std.mem.indexOf(u8, refused.text, "per-image limit") != null);
     try std.testing.expect(reg.pending_image == null);
 
     // Downscaled: the queued pixels are the small copy, and the model is told.
-    const scaled = (try stageWith(a, io, ctx, file_path, "big.png", big.len, fakeShrink)).?;
+    const scaled = (try stageWith(a, io, ctx, file_path, "big.png", big.len, fakeShrink, noRotator)).?;
     defer a.free(scaled.text);
     try std.testing.expect(!scaled.is_error);
     const pending = reg.pending_image orelse return error.TestUnexpectedResult;
@@ -272,7 +290,7 @@ test "#1762: read_image types a WebP named .png by its bytes, and refuses non-ra
     try tmp.dir.writeFile(io, .{ .sub_path = "shot.png", .data = webp });
     const webp_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/shot.png", .{tmp.sub_path});
     defer a.free(webp_path);
-    const out = (try stageWith(a, io, ctx, webp_path, "shot.png", webp.len, noResizer)).?;
+    const out = (try stageWith(a, io, ctx, webp_path, "shot.png", webp.len, noResizer, noRotator)).?;
     defer a.free(out.text);
     try std.testing.expect(!out.is_error);
     try std.testing.expect(std.mem.indexOf(u8, out.text, "image/webp") != null);
@@ -285,9 +303,53 @@ test "#1762: read_image types a WebP named .png by its bytes, and refuses non-ra
     try tmp.dir.writeFile(io, .{ .sub_path = "notes.png", .data = text });
     const text_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/notes.png", .{tmp.sub_path});
     defer a.free(text_path);
-    const refused = (try stageWith(a, io, ctx, text_path, "notes.png", text.len, noResizer)).?;
+    const refused = (try stageWith(a, io, ctx, text_path, "notes.png", text.len, noResizer, noRotator)).?;
     defer a.free(refused.text);
     try std.testing.expect(refused.is_error);
     try std.testing.expect(std.mem.indexOf(u8, refused.text, sniff.supported_names) != null);
     try std.testing.expect(reg.pending_image == null);
+}
+
+fn noRotator(io: Io, in: []const u8, value: u16, out: []const u8) bool {
+    _ = .{ io, in, value, out };
+    return false;
+}
+
+/// Stands in for `sips`: writes the photo back still tagged 6, as sips does.
+fn fakeRotator(io: Io, in: []const u8, value: u16, out: []const u8) bool {
+    _ = .{ in, value };
+    Io.Dir.cwd().writeFile(io, .{ .sub_path = out, .data = &orient.testJpeg(false, 6) }) catch return false;
+    return true;
+}
+
+test "read_image: a photo stored sideways is sent upright, or the model is told how to hold it" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest; // rotate temps live in /tmp
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var reg = @import("mcp.zig").Registry.empty(a, io);
+    defer reg.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var ctx: ToolCtx = undefined;
+    ctx.registry = &reg;
+    ctx.provider = .{ .id = "test", .kind = .anthropic, .auth = .bearer, .url = "", .api_key = "", .model = "claude-x", .context = 100000 };
+    const photo = orient.testJpeg(false, 6);
+    try tmp.dir.writeFile(io, .{ .sub_path = "photo.jpg", .data = &photo });
+    const p = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/photo.jpg", .{tmp.sub_path});
+    defer a.free(p);
+
+    const turned = (try stageWith(a, io, ctx, p, "photo.jpg", photo.len, noResizer, fakeRotator)).?;
+    defer a.free(turned.text);
+    try std.testing.expect(std.mem.indexOf(u8, turned.text, "turned upright") != null);
+    const pending = reg.pending_image orelse return error.TestUnexpectedResult;
+    var sent: [photo.len]u8 = undefined;
+    try std.base64.standard.Decoder.decode(&sent, pending.b64);
+    try std.testing.expectEqual(@as(u16, 1), orient.find(&sent).?.value);
+    reg.pending_image = null;
+
+    const stuck = (try stageWith(a, io, ctx, p, "photo.jpg", photo.len, noResizer, noRotator)).?;
+    defer a.free(stuck.text);
+    try std.testing.expect(!stuck.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, stuck.text, "rotate it 90° clockwise") != null);
+    try std.testing.expect(reg.pending_image != null);
 }
