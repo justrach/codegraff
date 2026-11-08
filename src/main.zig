@@ -271,7 +271,7 @@ pub fn main(init: std.process.Init) !void {
             std.process.fatal("GRAFF_MAX_MODEL_CALLS needs a non-negative integer, got '{s}'", .{raw});
     }
     // CLI flags: the Flags struct + parsing loop live in args.zig; downstream code reads flags.<name> in place of ~27 locals this block used to declare.
-    const flags = try args.parse(init);
+    var flags = try args.parse(init);
     learning_privacy.init(flags.learning_privacy_flag, init.environ_map.get("GRAFF_LEARNING_PRIVACY"));
     var invocation_budget: run_budget_mod.RunBudget = .{ .max_model_calls = max_model_calls, .max_tool_calls = run_budget_mod.cli_max_tool_calls };
     boot.mark(init.io, "args");
@@ -415,7 +415,7 @@ pub fn main(init: std.process.Init) !void {
     // Root Agent construction + post-construction config (session name, persisted thinking/goal/eval settings, session-start trace note) + the
     // backgrounded fleet-champion pull live in session_start.zig. `root`'s pointer fields (snapshots/client/tracer/approvals/registry) all reference
     // already-stable main()-owned storage passed in by address, so returning the constructed Agent by value here is safe.
-    var root = try session_run.buildRootAgent(gpa, arena, io, client, default_provider, subagent_provider, init.environ_map, out, in, registry, &approvals, &tracer, sys_normal, &snaps, flags, telem.endpoint);
+    var root = try session_run.buildRootAgent(gpa, arena, io, client, default_provider, subagent_provider, init.environ_map, out, in, registry, &approvals, &tracer, sys_normal, &snaps, &flags, telem.endpoint);
     root.run_budget = &invocation_budget;
     root.model_catalog = resolved_keys.model_catalog;
     root.stored_keys_loaded = resolved_keys.stored_keys_loaded;
@@ -590,7 +590,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = .{ @import("goal_todo.zig"), @import("todo_cancel.zig") };
     _ = @import("goal_pacing.zig");
     _ = .{ @import("presence_accord.zig"), @import("peer_idle.zig"), @import("acp_idle.zig"), @import("presence_chan.zig"), @import("presence_record.zig"), @import("daddy.zig"), @import("peer_inbox_content_test.zig"), @import("peer_inbox_failure_test.zig"), @import("peer_inbox_storage_test.zig"), @import("peer_inbox_sequence_test.zig"), @import("peer_inbox_snapshot_test.zig") };
-    _ = .{ @import("acp_agents.zig"), @import("repo_context_tests.zig") };
+    _ = .{ @import("acp_agents.zig"), @import("repo_context_tests.zig"), @import("session_select.zig") };
     _ = .{ @import("subagent_activity.zig"), @import("subagent_interactive.zig"), @import("subagent_recovery.zig"), @import("subagent_retained.zig"), @import("subagent_history.zig"), @import("subagent_history_copy.zig"), @import("subagent_history_tests.zig"), @import("subagent_run_tests.zig"), @import("workflow_synthesis.zig") };
     _ = .{ @import("acp_agent_activity.zig"), @import("acp_subagent_live.zig"), @import("acp_line_writer.zig") };
     _ = .{ @import("acp_replay.zig"), @import("python_version.zig"), @import("jev_auto.zig"), @import("background_wait.zig"), @import("gateway_compact_tests.zig") };

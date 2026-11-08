@@ -205,9 +205,11 @@ pub fn buildRootAgent(
     tracer: *trace.Tracer,
     sys_normal: []const u8,
     snaps: *tools_mod.Snapshots,
-    flags: args.Flags,
+    flags: *args.Flags,
     telem_endpoint: []const u8,
 ) !agent_mod.Agent {
+    // --session-id / --continue become --resume (or the fresh name) now that the cwd is final.
+    @import("session_select.zig").resolve(io, arena, flags);
     var root: agent_mod.Agent = .{
         .snapshots = snaps,
         .gpa = gpa,
@@ -236,7 +238,7 @@ pub fn buildRootAgent(
     // sharing a session name — which would also share one .session.json file
     // (#289 contention) and collide as presence peers (#469).
     const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}-{d}", .{ util.unixMs(io), proc_identity.selfPid() });
-    root.session_name = if (flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag) (flags.branch_flag orelse flags.resume_flag.?) else fresh_session_name;
+    root.session_name = if (flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag) (flags.branch_flag orelse flags.resume_flag.?) else (flags.session_id_flag orelse fresh_session_name);
     root.session_parent = if (flags.branch_flag != null) flags.resume_flag else null;
     try prompts.setRootSystemPrompts(&root, sys_normal, arena); // #381: same funnel + the live .graff/playbook.jsonl constraint block
     local_tools.load(io, arena);

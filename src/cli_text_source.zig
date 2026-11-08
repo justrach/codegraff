@@ -393,7 +393,9 @@ pub const usage_text =
     \\  --allow-cross-provider-subagents confirm prompts/code may go to the worker provider
     \\  --no-subagent-tier              opt out of the default worker tier ladder (inherit the root model)
     \\  --resume <name>  resume/autosave <name>.session.json
-    \\  --branch <name>  clone --resume into an independent autosave target
+    \\  --branch <name>  clone --resume (or --continue) into an independent autosave target
+    \\  -c, --continue   resume the most recently updated session in this workspace
+    \\  --session-id <id>                assign this session's id (resumes it if <id> exists here); letters, digits, . _ -
     \\  --new            start a fresh autosaved session (default)
     \\  --no-resume      ignore --resume and start fresh
     \\  --system-prompt <text>          replace the built-in system prompt
