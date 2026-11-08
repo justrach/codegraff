@@ -69,7 +69,7 @@ pub const takePersistError = helpers.takePersistError;
 pub const oauth_refresh_margin_s: i64 = 300;
 // Serializes concurrent token refreshes (parallel subagents share the on-disk
 // token) so they don't race the single-use refresh_token.
-var oauth_refresh_mutex: Io.Mutex = .init;
+pub var oauth_refresh_mutex: Io.Mutex = .init;
 
 // Codex / ChatGPT OAuth (PKCE) — same client + endpoints the Codex CLI uses
 // (verified from the live id_token: aud/client_id app_EMoamEEZ…, iss

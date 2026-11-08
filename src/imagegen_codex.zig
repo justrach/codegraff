@@ -125,10 +125,10 @@ pub const private_config =
 /// files, and therefore its own empty `generated_images`. Our scan cannot see
 /// anyone else's artifacts, and nobody else can see ours.
 ///
-/// Accepted caveat: if codex refreshes its token during the run and writes it
-/// by atomic replace, the replacement lands on the private copy and is
-/// discarded with it. The next real run refreshes again — a refresh is
-/// idempotent, and losing one is far cheaper than cross-attributing an image.
+/// Rotated single-use OAuth refresh tokens: if `codex exec` refreshes an
+/// expired token mid-run and atomically renames a new `auth.json` over the
+/// private link/copy, `imagegen_auth.syncRotatedAuth` persists it back to
+/// `real_home/auth.json` before `unlinkHome` tears down the scratch tree.
 pub fn prepareHome(io: Io, arena: Allocator, private_home: []const u8, real_home: []const u8) !void {
     try Io.Dir.cwd().createDirPath(io, private_home);
     const cfg = try std.fmt.allocPrint(arena, "{s}/config.toml", .{private_home});

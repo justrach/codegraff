@@ -53,6 +53,7 @@ const noSymlinkEscape = policy.noSymlinkEscape;
 const skills = @import("skills.zig");
 const edit_verify = @import("edit_verify.zig"); // same per-path lock stripe write_file/edit_file use
 const codedbpro_paths = @import("codedbpro_paths.zig");
+const auth_mod = @import("imagegen_auth.zig");
 const refs_mod = @import("imagegen_refs.zig");
 const skill = @import("imagegen_skill.zig");
 const verify = @import("imagegen_verify.zig");
@@ -352,7 +353,8 @@ const EngineResult = union(enum) { ok: verify.Format, fail: ToolOutput };
 
 /// The codex engine: spawn, then do every piece of artifact handling ourselves.
 fn runCodex(gpa: Allocator, arena: Allocator, io: Io, prompt: []const u8, refs: refs_mod.Resolved, resolved: []const u8, started_ns: i128) !EngineResult {
-    if (codex_home.len == 0) return .{ .fail = try errText(gpa, select.no_skill_text) };
+    const real_home = codex_home;
+    if (real_home.len == 0) return .{ .fail = try errText(gpa, select.no_skill_text) };
     // One scratch tree per run holding two things: a private empty cwd
     // (--sandbox workspace-write makes the working directory writable, and an
     // image generation has no business writing into the repo it was called
@@ -363,11 +365,12 @@ fn runCodex(gpa: Allocator, arena: Allocator, io: Io, prompt: []const u8, refs: 
     const private_home = try std.fmt.allocPrint(arena, "{s}/home", .{scratch});
     const child_cwd = try std.fmt.allocPrint(arena, "{s}/cwd", .{scratch});
     defer {
+        auth_mod.syncRotatedAuth(io, arena, private_home, real_home);
         codex.unlinkHome(io, arena, private_home); // before the tree walk, never through a symlink
         Io.Dir.cwd().deleteTree(io, scratch) catch {};
     }
     Io.Dir.cwd().createDirPath(io, child_cwd) catch {};
-    codex.prepareHome(io, arena, private_home, codex_home) catch |err| return .{ .fail = .{
+    codex.prepareHome(io, arena, private_home, real_home) catch |err| return .{ .fail = .{
         .text = try std.fmt.allocPrint(gpa, "could not set up a private CODEX_HOME for this run ({t}) — nothing was generated.", .{err}),
         .is_error = true,
     } };
@@ -510,6 +513,7 @@ pub fn defaultOutPath(io: Io, arena: Allocator, base: ?[]const u8, ext: []const 
 
 test {
     _ = @import("imagegen_tests.zig"); // an unreferenced module's tests never run
+    _ = auth_mod;
     _ = refs_mod;
     _ = skill;
     _ = verify;
