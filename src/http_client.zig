@@ -220,6 +220,10 @@ var g_ca_warm_failed: std.atomic.Value(bool) = .init(false);
 const no_test_failure = std.math.maxInt(u64);
 var g_test_fail_generation: std.atomic.Value(u64) = .init(no_test_failure);
 var g_test_fail_through_generation: std.atomic.Value(u64) = .init(no_test_failure);
+/// These hooks are process-global and `installForTest` clears them, so tests
+/// that inject an outage must not overlap: one test's init would otherwise
+/// erase another's injection mid-request and change its attempt ladder.
+var g_test_hooks_mutex: Io.Mutex = .init;
 var g_test_fail_ca_warm: std.atomic.Value(bool) = .init(false);
 var g_test_fail_generation_alloc: std.atomic.Value(bool) = .init(false);
 var g_test_tls_arrivals: ?*std.atomic.Value(usize) = null;
@@ -280,6 +284,18 @@ pub fn installConstructionTlsBarrierForTest(arrivals: *std.atomic.Value(usize), 
     g_test_tls_arrivals = arrivals;
     g_test_tls_all_arrived = all_arrived;
     g_test_tls_release = release;
+}
+
+/// Serialize a test that both injects these hooks and runs requests under them.
+/// Pair every lock with an unlock on the same thread, including error paths.
+pub fn lockTestHooksForTest() void {
+    if (comptime !builtin.is_test) return;
+    g_test_hooks_mutex.lockUncancelable(std.testing.io);
+}
+
+pub fn unlockTestHooksForTest() void {
+    if (comptime !builtin.is_test) return;
+    g_test_hooks_mutex.unlock(std.testing.io);
 }
 
 inline fn resetTestHooks() void {
