@@ -11,7 +11,7 @@ Flat-after-warmup = fine. A positive slope is the #124 leak (the root Agent's
 session arena never resets, so per-SSE-event parse garbage accumulates for the
 life of the process) — now with a number to confirm or refute a fix.
 
-Run:  CODEGRAFF_API_KEY=... python3 benchmarks/memory_session.py [N] [graff-path]
+Run:  CODEGRAFF_API_KEY=... python3 benchmarks/memory_session.py [N] [graff-path] [--acp] [--compact-recovery]
       N defaults to 16; graff-path defaults to `graff` on PATH.
       GRAFF_BENCH_MODEL selects the model (default: deepseek-v4-pro).
 """
@@ -19,8 +19,11 @@ import subprocess, json, os, sys
 
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-N = int(sys.argv[1]) if len(sys.argv) > 1 else 16
-GRAFF = sys.argv[2] if len(sys.argv) > 2 else "graff"
+ACP_MODE = "--acp" in sys.argv
+COMPACT_RECOVERY = "--compact-recovery" in sys.argv
+POS_ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
+N = int(POS_ARGS[0]) if len(POS_ARGS) > 0 else 16
+GRAFF = POS_ARGS[1] if len(POS_ARGS) > 1 else "graff"
 MODEL = os.environ.get("GRAFF_BENCH_MODEL", "deepseek-v4-pro")
 SLOPE_LIMIT_MB = 0.1
 
@@ -46,44 +49,118 @@ def rss_mb(pid):
         return 0.0
 
 
+def run_json_turns(p):
+    samples = []
+    arena_samples = []
+    for i in range(N):
+        p.stdin.write(json.dumps({"type": "user", "text": PROMPTS[i % len(PROMPTS)]}) + "\n")
+        p.stdin.flush()
+        arena = None
+        while True:
+            line = p.stdout.readline()
+            if not line:
+                raise RuntimeError("graff exited early after %d/%d turns (exit %s)" %
+                                   (i, N, p.poll()))
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            if ev.get("type") == "error":
+                raise RuntimeError("turn %d failed: %s" % (i + 1, ev.get("message")))
+            if ev.get("type") == "mem":
+                arena = (ev.get("session_arena_kb", 0), ev.get("scratch_arena_kb", 0))
+            if ev.get("type") == "turn" and ev.get("complete"):
+                r = rss_mb(p.pid)
+                if r <= 0:
+                    raise RuntimeError("could not sample RSS for live graff process %d" % p.pid)
+                samples.append((i + 1, r))
+                if arena:
+                    arena_samples.append(arena[0])
+                detail = ("  arenas: session=%d KB scratch=%d KB" % arena) if arena else ""
+                print("  turn %2d: RSS = %7.1f MB%s" % (i + 1, r, detail))
+                break
+    if COMPACT_RECOVERY and arena_samples:
+        pre_compact_kb = arena_samples[-1]
+        p.stdin.write(json.dumps({"type": "compact"}) + "\n")
+        p.stdin.flush()
+        while True:
+            line = p.stdout.readline()
+            if not line:
+                break
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            if ev.get("type") in ("compact", "error") or (ev.get("type") == "turn" and ev.get("complete")):
+                break
+        p.stdin.write(json.dumps({"type": "user", "text": PROMPTS[0]}) + "\n")
+        p.stdin.flush()
+        post_compact_kb = pre_compact_kb
+        while True:
+            line = p.stdout.readline()
+            if not line:
+                break
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            if ev.get("type") == "mem":
+                post_compact_kb = ev.get("session_arena_kb", 0)
+            if ev.get("type") == "turn" and ev.get("complete"):
+                break
+        print("  compact recovery: session_arena %d KB -> %d KB" % (pre_compact_kb, post_compact_kb))
+        if pre_compact_kb > 64 and post_compact_kb >= pre_compact_kb:
+            raise RuntimeError("session_arena_kb did not shrink after /compact (%d -> %d)" %
+                               (pre_compact_kb, post_compact_kb))
+    return samples
+
+
+def run_acp_turns(p):
+    def rpc(req_id, method, params):
+        p.stdin.write(json.dumps({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params}) + "\n")
+        p.stdin.flush()
+        while True:
+            line = p.stdout.readline()
+            if not line:
+                raise RuntimeError("graff acp exited early on %s (exit %s)" % (method, p.poll()))
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            if ev.get("id") == req_id:
+                if "error" in ev:
+                    raise RuntimeError("%s failed: %s" % (method, ev["error"]))
+                return ev.get("result", {})
+
+    rpc(1, "initialize", {"protocolVersion": 1, "clientCapabilities": {}})
+    new_res = rpc(2, "session/new", {"cwd": os.getcwd()})
+    sid = new_res.get("sessionId", "s1")
+    samples = []
+    for i in range(N):
+        rpc(10 + i, "session/prompt", {
+            "sessionId": sid,
+            "prompt": [{"type": "text", "text": PROMPTS[i % len(PROMPTS)]}],
+        })
+        r = rss_mb(p.pid)
+        if r <= 0:
+            raise RuntimeError("could not sample RSS for live graff acp process %d" % p.pid)
+        samples.append((i + 1, r))
+        print("  turn %2d (acp): RSS = %7.1f MB" % (i + 1, r))
+    return samples
+
+
 def main():
     if N < 2:
         raise SystemExit("N must be at least 2")
     env = {**os.environ, "GRAFF_NO_TELEMETRY": "1", "GRAFF_FLEET": "off",
            "GRAFF_MEM_DEBUG": "1"}
-    p = subprocess.Popen([GRAFF, "--model", MODEL, "--json"],
+    cmd = [GRAFF, "acp", "--model", MODEL] if ACP_MODE else [GRAFF, "--model", MODEL, "--json"]
+    p = subprocess.Popen(cmd,
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                          stderr=subprocess.DEVNULL, text=True, env=env, bufsize=1)
     samples = []
     try:
-        # Drive one turn at a time and keep stdin open through every sample.
-        # Closing it up front races the final sample against process exit, which
-        # can produce a bogus 0 MB reading and a wildly negative slope.
-        for i in range(N):
-            p.stdin.write(json.dumps({"type": "user", "text": PROMPTS[i % len(PROMPTS)]}) + "\n")
-            p.stdin.flush()
-            arena = None
-            while True:
-                line = p.stdout.readline()
-                if not line:
-                    raise RuntimeError("graff exited early after %d/%d turns (exit %s)" %
-                                       (i, N, p.poll()))
-                try:
-                    ev = json.loads(line)
-                except Exception:
-                    continue
-                if ev.get("type") == "error":
-                    raise RuntimeError("turn %d failed: %s" % (i + 1, ev.get("message")))
-                if ev.get("type") == "mem":
-                    arena = (ev.get("session_arena_kb", 0), ev.get("scratch_arena_kb", 0))
-                if ev.get("type") == "turn" and ev.get("complete"):
-                    r = rss_mb(p.pid)
-                    if r <= 0:
-                        raise RuntimeError("could not sample RSS for live graff process %d" % p.pid)
-                    samples.append((i + 1, r))
-                    detail = ("  arenas: session=%d KB scratch=%d KB" % arena) if arena else ""
-                    print("  turn %2d: RSS = %7.1f MB%s" % (i + 1, r, detail))
-                    break
+        samples = run_acp_turns(p) if ACP_MODE else run_json_turns(p)
     finally:
         if p.stdin and not p.stdin.closed:
             p.stdin.close()

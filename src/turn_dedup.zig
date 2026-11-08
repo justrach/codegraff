@@ -39,7 +39,7 @@ pub fn enqueue(root: *Agent, arena: Allocator, out: ?*Io.Writer, text: []const u
             w.print("{s}↻ {s} — continuing{s}\n", .{ style.dim, @import("background_wait.zig").resumeLine(&buf, text), style.reset }) catch {};
             w.flush() catch {};
         }
-        try root.messages.append(try @import("session_wake.zig").message(arena, text));
+        try root.messages.append(try @import("session_wake.zig").message(root.historyAlloc(), text));
         return .started;
     }
     try side_steer.deliverReports(root, arena, out);
@@ -70,7 +70,7 @@ pub fn enqueue(root: *Agent, arena: Allocator, out: ?*Io.Writer, text: []const u
     }
     hits = 0;
     vision.stageGuiImageAttachment(root, text);
-    try root.messages.append(try vision_queue.consumePromptImages(arena, root, text));
+    try root.messages.append(try vision_queue.consumePromptImages(root.historyAlloc(), root, text));
     return .started;
 }
 
@@ -87,14 +87,15 @@ pub fn enqueueOrSkip(root: *Agent, arena: Allocator, out: ?*Io.Writer, text: []c
 /// survives a checkpoint reload, and the model sees the request failed. A
 /// no-op when the turn already left a row after the prompt (a cancel or
 /// stream-end marker, a tool result), so those paths keep their own text.
-pub fn settleFailedTurn(root: *Agent, arena: Allocator, err: anyerror) !void {
+pub fn settleFailedTurn(root: *Agent, _: Allocator, err: anyerror) !void {
     const items = root.messages.items;
     if (items.len == 0 or messages.userPromptText(items[items.len - 1]) == null) return;
+    const msg_alloc = root.historyAlloc();
     const why = root.last_api_error orelse @errorName(err);
-    const marker = try std.fmt.allocPrint(arena, "[request failed: {s}; no reply was received]", .{why});
+    const marker = try std.fmt.allocPrint(msg_alloc, "[request failed: {s}; no reply was received]", .{why});
     const partial = std.mem.trim(u8, root.partial_text.items, " \t\r\n");
-    const text = if (partial.len == 0) marker else try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ partial, marker });
-    try root.messages.append(try messages.textMessage(arena, "assistant", text));
+    const text = if (partial.len == 0) marker else try std.fmt.allocPrint(msg_alloc, "{s}\n\n{s}", .{ partial, marker });
+    try root.messages.append(try messages.textMessage(msg_alloc, "assistant", text));
 }
 
 test "#714: the first copy of a prompt proceeds" {

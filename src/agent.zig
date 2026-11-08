@@ -459,13 +459,10 @@ pub const Agent = struct {
     // unchanged. esc_cancel/esc_watch_done above stay here (never alias a
     // `var`); ssePayload/sseIndex live there too since they're only
     // consumed alongside the interrupt-watch plumbing in postStream.
-    /// Allocator for per-turn transient scratch (#124): the reset-per-request
-    /// scratch arena when set (root), else the session arena (subagents/one-shot).
-    pub fn scratchAlloc(self: *Agent) Allocator {
-        return if (self.scratch_arena) |sa| sa.allocator() else self.arena;
-    }
-
+    pub const scratchAlloc = @import("agent_alloc.zig").scratchAlloc;
     pub const messageMutationAlloc = @import("agent_alloc.zig").messageMutationAlloc;
+    pub const historyAlloc = @import("agent_alloc.zig").historyAlloc;
+    pub const reclaimMessages = @import("agent_alloc.zig").reclaimMessages;
 
     pub const escWatchTask = @import("agent_interrupt.zig").escWatchTask;
     pub const escPressed = @import("agent_interrupt.zig").escPressed;

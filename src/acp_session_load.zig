@@ -78,12 +78,12 @@ pub fn load(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request
     session.saveSession(live.root, arena, live.root.session_name) catch |err| {
         return proto.writeError(w, req.id, engine.err_internal, @errorName(err));
     };
-    session.loadSession(live.root, live.keys, arena, sid) catch |err| {
+    session.loadSession(live.root, live.keys, live.root.arena, sid) catch |err| {
         return proto.writeError(w, req.id, invalid_params, loadErrorText(arena, err, provider));
     };
     // Same precedence as CLI resume: the host respawns with --model to switch.
-    if (live.model_override) |p| @import("session_branch.zig").applyModelOverride(live.root, arena, p);
-    live.root.session_name = try arena.dupe(u8, sid);
+    if (live.model_override) |p| @import("session_branch.zig").applyModelOverride(live.root, live.root.arena, p);
+    live.root.session_name = try live.root.arena.dupe(u8, sid);
     live.session_id = live.root.session_name;
     d.session_id = live.session_id;
     d.durable_session_id = live.session_id;

@@ -34,9 +34,13 @@ REPORTED_INPUT = 150_000  # what the server says the whole request cost (window:
 REPLY = "meter-honors-server-usage"
 
 
-def events(ordinal: int, with_blob: bool) -> list[dict]:
+def events(ordinal: int, with_blob: bool, is_compact: bool = False) -> list[dict]:
     out = []
-    if with_blob:
+    if is_compact:
+        out.append({"type": "response.output_item.done", "item": {
+            "type": "compaction", "id": f"cmp_mock_{ordinal}", "encrypted_content": "cmp_state_fixture",
+        }})
+    elif with_blob:
         out.append({"type": "response.output_item.done", "item": {
             "type": "reasoning", "encrypted_content": BLOB,
         }})
@@ -91,9 +95,13 @@ def meter_from_traces(root: Path) -> list[int]:
     return meters
 
 
-def run(binary: str) -> dict:
+def run(binary: str, ws_mode: str = "off") -> dict:
     def reply(request):
-        return events(request.ordinal, with_blob=request.ordinal == 1)
+        is_compact = any(
+            isinstance(item, dict) and item.get("type") == "compaction" and item.get("compact_threshold") == 1000
+            for item in (request.body.get("context_management") or [])
+        )
+        return events(request.ordinal, with_blob=request.ordinal == 1, is_compact=is_compact)
 
     with tempfile.TemporaryDirectory(prefix="graff-meter-loop-") as tmp:
         root = Path(tmp)
@@ -104,11 +112,16 @@ def run(binary: str) -> dict:
                if not k.endswith("_API_KEY") and not k.startswith(("GRAFF_", "CODEX_"))}
         env.update(HOME=tmp, CODEX_HOME=str(auth), CODEGRAFF_API_KEY="local-fixture",
                    GRAFF_CODEX_URL=f"http://127.0.0.1:{port}/backend-api/codex/responses",
-                   GRAFF_CODEX_WS="off", GRAFF_NO_TELEMETRY="1", GRAFF_FLEET="off",
+                   GRAFF_CODEX_WS=ws_mode, GRAFF_NO_TELEMETRY="1", GRAFF_FLEET="off",
+                   GRAFF_MEM_DEBUG="1",
                    GRAFF_MCP_CONFIG=str(root / "mcp.json"), GRAFF_NO_CODEDB_GUARD="1")
         try:
-            controls = "".join(json.dumps({"type": "user", "text": t}) + "\n"
-                               for t in ("first-turn-fixture", "second-turn-fixture"))
+            controls = "".join(json.dumps(m) + "\n" for m in (
+                {"type": "user", "text": "first-turn-fixture"},
+                {"type": "user", "text": "second-turn-fixture"},
+                {"type": "compact"},
+                {"type": "user", "text": "post-compact-turn"},
+            ))
             result = subprocess.run(
                 [binary, "--model", "codex", "--resume", "meterloop", "--json",
                  "--no-telemetry"],
@@ -117,6 +130,14 @@ def run(binary: str) -> dict:
         finally:
             mock.stop()
         requests = mock.recorded_requests()
+        mem_events = []
+        for line in result.stdout.splitlines():
+            try:
+                ev = json.loads(line)
+                if ev.get("type") == "mem":
+                    mem_events.append(ev.get("session_arena_kb", 0))
+            except Exception:
+                pass
         return {
             "returncode": result.returncode,
             "stdout": result.stdout,
@@ -124,20 +145,41 @@ def run(binary: str) -> dict:
             "n_requests": len(requests),
             "bodies": [r.body for r in requests],
             "meters": meter_from_traces(root),
+            "mem_events": mem_events,
         }
 
 
 if __name__ == "__main__":
     binary = str(Path(sys.argv[1] if len(sys.argv) > 1 else "zig-out/bin/graff").resolve())
-    out = run(binary)
-    assert out["returncode"] == 0, out["stderr"] + out["stdout"]
-    assert out["stdout"].count(REPLY) >= 2, out["stdout"]
-    # One request per turn: no compaction attempt may run while the server's
-    # own count sits inside the window.
-    assert out["n_requests"] == 2, f"expected 2 requests, got {out['n_requests']}"
-    # The meter must honor the provider's count; ciphertext bytes must not
-    # re-inflate it past the window (the pre-fix binary read ~607k here).
-    for m in out["meters"]:
-        assert m is not None and m <= REPORTED_INPUT + 10_000, f"meter inflated: {m}"
-    print("PASS #1686 compaction meter: server usage stands, ciphertext does not "
-          "re-inflate it, no compaction loop", flush=True)
+    for ws_mode in ("off", "on"):
+        out = run(binary, ws_mode=ws_mode)
+        assert out["returncode"] == 0, out["stderr"] + out["stdout"]
+        assert out["stdout"].count(REPLY) >= 3, out["stdout"]
+        # Two pre-compact turn requests, one explicit /compact, and one
+        # post-compact turn: no automatic compaction attempt may run between
+        # turns 1 and 2 while the server's own count sits inside the window,
+        # over HTTP or WebSocket delta chains.
+        assert out["n_requests"] == 4, f"ws={ws_mode}: expected 4 requests, got {out['n_requests']}"
+        turn_body, compact_body = out["bodies"][0], out["bodies"][2]
+        assert compact_body.get("context_management") == [{"type": "compaction", "compact_threshold": 1000}], (
+            f"ws={ws_mode}: expected in-stream compaction request, got {compact_body.get('context_management')}"
+        )
+        assert compact_body.get("tools") == turn_body.get("tools") and compact_body.get("tools"), (
+            f"ws={ws_mode}: in-stream server compaction must preserve session tools"
+        )
+        assert compact_body.get("reasoning") == turn_body.get("reasoning"), (
+            f"ws={ws_mode}: compaction reasoning mismatch: {compact_body.get('reasoning')} != {turn_body.get('reasoning')}"
+        )
+        assert compact_body.get("text") == turn_body.get("text"), (
+            f"ws={ws_mode}: compaction text config mismatch: {compact_body.get('text')} != {turn_body.get('text')}"
+        )
+        # #1838: session_arena_kb must reclaim the multi-MB pre-compaction
+        # history once /compact replaces it with a compact 2 KB blob.
+        assert len(out["mem_events"]) >= 3, f"ws={ws_mode}: expected >=3 mem events, got {out['mem_events']}"
+        assert out["mem_events"][1] >= 2000, f"ws={ws_mode}: expected pre-compact arena >= 2000 KB, got {out['mem_events']}"
+        assert out["mem_events"][-1] < 256, f"ws={ws_mode}: expected post-compact arena < 256 KB, got {out['mem_events']}"
+        # The meter must honor the provider's count; ciphertext bytes must not
+        # re-inflate it past the window (the pre-fix binary read ~607k here).
+        for m in out["meters"]:
+            assert m is not None and m <= REPORTED_INPUT + 10_000, f"ws={ws_mode}: meter inflated: {m}"
+    print("PASS #1686 compaction meter (HTTP + WebSocket) + prefix parity + #1838 arena reclamation", flush=True)

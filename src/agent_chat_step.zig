@@ -90,13 +90,14 @@ pub fn step(comptime Host: type, self: anytype, root: std.json.ObjectMap) !?[]co
             try calls.append(self.gpa, .{ .id = id, .name = name, .input = parsed.input, .args_ok = parsed.valid and why == .none and !cut, .cut = cut });
         }
     };
-    tool_call_args.repairMessage(self.gpa, self.arena, &self.messages.items[self.messages.items.len - 1]);
+    const msg_alloc = self.historyAlloc();
+    tool_call_args.repairMessage(self.gpa, msg_alloc, &self.messages.items[self.messages.items.len - 1]);
     self.pairContextMeterWithCurrentLocal();
 
     if (calls.items.len > 0) {
         const results = try self.runTools(calls.items);
         for (calls.items, results) |call, r| {
-            const tool_msg = try @import("chat_message.zig").toolResult(self.arena, call.id, r.text, r.is_error);
+            const tool_msg = try @import("chat_message.zig").toolResult(msg_alloc, call.id, r.text, r.is_error);
             try self.messages.append(tool_msg);
         }
         // Judged before the checkpoint, which may append queued images.

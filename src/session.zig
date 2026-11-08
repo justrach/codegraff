@@ -528,6 +528,7 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     @import("history_wire.zig").prepare(arena, root.provider.kind, &root.messages);
     // #752: truncated `function.arguments` strings 400 every later request.
     tool_call_args.repairHistory(root.gpa, arena, root.messages.items);
+    root.reclaimMessages();
     root.strict = strict;
     root.ultracode_mode = ultracode_mode;
     root.goal = goal;

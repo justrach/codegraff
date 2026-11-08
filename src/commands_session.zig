@@ -97,7 +97,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (try workspace_switch.slashCommand(root, arena, line, out)) return true;
     if (try plugins.slashCommand(root.io, arena, root.home, line, out)) return true;
     if (std.mem.eql(u8, line, "/clear")) {
-        root.messages = std.json.Array.init(arena);
+        root.messages.clearRetainingCapacity();
+        root.reclaimMessages();
         root.last_context_tokens = 0;
         root.context_local_tokens = 0;
         root.last_cache_read = 0;
@@ -122,7 +123,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     if (std.mem.eql(u8, line, "/new")) {
-        root.messages = std.json.Array.init(arena);
+        root.messages.clearRetainingCapacity();
+        root.reclaimMessages();
         root.last_context_tokens = 0;
         root.context_local_tokens = 0;
         root.last_cache_read = 0;

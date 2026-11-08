@@ -144,29 +144,32 @@ pub fn handleInstall(self: *Agent, call: ToolCall) !ExecResult {
     if (!entryOk(entry)) return .{ .text = "entry must be a filename in the tool dir", .is_error = true };
     if (source.len == 0) return .{ .text = "source is required", .is_error = true };
 
-    const dir_rel = try std.fmt.allocPrint(self.arena, "{s}/{s}", .{ store_rel, name });
+    var scratch_state = std.heap.ArenaAllocator.init(self.gpa);
+    defer scratch_state.deinit();
+    const scratch = scratch_state.allocator();
+    const dir_rel = try std.fmt.allocPrint(scratch, "{s}/{s}", .{ store_rel, name });
     Io.Dir.cwd().createDirPath(self.io, dir_rel) catch return .{ .text = "could not create .graff/tools dir", .is_error = true };
-    const entry_rel = try std.fmt.allocPrint(self.arena, "{s}/{s}", .{ dir_rel, entry });
+    const entry_rel = try std.fmt.allocPrint(scratch, "{s}/{s}", .{ dir_rel, entry });
     Io.Dir.cwd().writeFile(self.io, .{ .sub_path = entry_rel, .data = source }) catch return .{ .text = "could not write the script", .is_error = true };
-    const man = try std.fmt.allocPrint(self.arena,
+    const man = try std.fmt.allocPrint(scratch,
         \\{{"name":{s},"description":{s},"schema":{s},"runner":{s},"entry":{s}}}
     , .{
-        try jsonString(self.arena, name),
-        try jsonString(self.arena, description),
-        try jsonString(self.arena, schema_s),
-        try jsonString(self.arena, runner),
-        try jsonString(self.arena, entry),
+        try jsonString(scratch, name),
+        try jsonString(scratch, description),
+        try jsonString(scratch, schema_s),
+        try jsonString(scratch, runner),
+        try jsonString(scratch, entry),
     });
-    const man_rel = try std.fmt.allocPrint(self.arena, "{s}/manifest.json", .{dir_rel});
+    const man_rel = try std.fmt.allocPrint(scratch, "{s}/manifest.json", .{dir_rel});
     Io.Dir.cwd().writeFile(self.io, .{ .sub_path = man_rel, .data = man }) catch return .{ .text = "could not write the manifest", .is_error = true };
 
-    const entry_abs = absUnderCwd(self.io, self.arena, entry_rel) orelse entry_rel;
+    const entry_abs = absUnderCwd(self.io, scratch, entry_rel) orelse entry_rel;
     if (!dryRun(self.io, self.gpa, runner, entry_abs)) {
         return .{ .text = "dry-run failed — the script must exit 0 on --dry-run", .is_error = true };
     }
     load(self.io, self.arena);
     self.invalidateRootTools();
-    return .{ .text = try std.fmt.allocPrint(self.arena, "installed {s}{s} — registered for the next model call", .{ prefix, name }), .is_error = false };
+    return .{ .text = try std.fmt.allocPrint(self.historyAlloc(), "installed {s}{s} — registered for the next model call", .{ prefix, name }), .is_error = false };
 }
 
 fn absUnderCwd(io: Io, arena: Allocator, rel: []const u8) ?[]const u8 {

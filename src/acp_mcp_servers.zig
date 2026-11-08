@@ -84,13 +84,14 @@ pub const attach_budget_ms: u32 = 250;
 /// client named, merge whatever connects within `attach_budget_ms`, then
 /// re-render the root's tool catalog so the model sees the new tools on its
 /// next request, as `/mcp add` does.
-pub fn attach(ctx: *anyopaque, arena: Allocator, params: ?Value) anyerror!void {
+pub fn attach(ctx: *anyopaque, _: Allocator, params: ?Value) anyerror!void {
     const live: *@import("acp_live_turn.zig").LiveTurn = @ptrCast(@alignCast(ctx));
     const root = live.root;
     const reg = root.registry orelse return;
-    const specs = try parse(arena, params);
+    const durable_params = if (params) |p| try util.dupeJsonValue(root.arena, p) else null;
+    const specs = try parse(root.arena, durable_params);
     if (specs.len == 0) return;
-    if (!joinWithin(reg, arena, specs, attach_budget_ms)) return;
+    if (!joinWithin(reg, root.arena, specs, attach_budget_ms)) return;
     root.invalidateRootTools();
     @import("prompt_cache_hud.zig").noteBust(.mcp);
     try root.ensureRootTools(root.provider.kind);

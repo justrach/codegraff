@@ -221,7 +221,7 @@ pub fn buildRootAgent(
         .subagent_provider_explicit = flags.subagent_provider_flag != null or flags.subagent_model_flag != null or flags.no_subagent_tier_flag or environ_map.get("GRAFF_SUBAGENT_PROVIDER") != null or environ_map.get("GRAFF_SUBAGENT_MODEL") != null, // #371: only a USER-stated worker choice survives /model
         .subagent_cross_provider = flags.allow_cross_provider_subagents_flag,
         .home = keys_cli.homeEnv(environ_map) orelse "",
-        .messages = std.json.Array.init(arena),
+        .messages = std.json.Array.init(if (main_mod.g_session_arena) |sa| sa.allocator() else arena),
         .sub = false,
         .label = "main",
         .out = out,

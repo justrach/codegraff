@@ -57,7 +57,7 @@ pub fn grantRepairTurn(self: *Agent) !bool {
     // surface the hard stop instead, exactly the pre-grant contract.
     if (self.run_budget) |b| if (!b.canAfford(2)) return false;
     self.eval_repair_grants += 1;
-    try self.messages.append(try messages_mod.userNote(self.arena, self.provider.kind, eval_control.verifier_hard_stop));
+    try self.messages.append(try messages_mod.userNote(self.historyAlloc(), self.provider.kind, eval_control.verifier_hard_stop));
     return true;
 }
 
@@ -113,7 +113,7 @@ pub fn stepResponses(self: *Agent, response: std.json.ObjectMap) !?[]const u8 {
             try calls.append(self.gpa, .{ .id = call_id, .name = name, .input = parsed.input, .args_ok = parsed.valid and !cut, .cut = cut });
         }
     }
-    tool_call_args.repairHistory(self.gpa, self.arena, self.messages.items);
+    tool_call_args.repairHistory(self.gpa, self.historyAlloc(), self.messages.items);
     self.pairContextMeterWithCurrentLocal();
 
     // Codex WS delta: the server now holds up to here (the output items appended
@@ -144,8 +144,9 @@ pub fn stepResponses(self: *Agent, response: std.json.ObjectMap) !?[]const u8 {
 
     if (calls.items.len > 0) {
         const results = try self.runTools(calls.items);
+        const msg_alloc = self.historyAlloc();
         for (calls.items, results) |call, r| {
-            const fco = try toolResultMessage(self.arena, .responses, call.id, r.text, r.is_error);
+            const fco = try toolResultMessage(msg_alloc, .responses, call.id, r.text, r.is_error);
             try self.messages.append(fco);
         }
         try turn_checkpoint.afterToolBatch(self);
@@ -182,14 +183,15 @@ pub fn stepAnthropic(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
         return line;
     }
 
+    const msg_alloc = self.historyAlloc();
     const oauth = @import("anthropic_oauth_wire.zig");
     if (oauth.active(self.provider)) {
         const names = try oauth.ToolNames.init(self.scratchAlloc(), self.toolsJson());
-        try names.decodeContent(self.arena, content);
+        try names.decodeContent(msg_alloc, content);
     }
     var assistant: std.json.ObjectMap = .empty;
-    try assistant.put(self.arena, "role", .{ .string = "assistant" });
-    try assistant.put(self.arena, "content", content);
+    try assistant.put(msg_alloc, "role", .{ .string = "assistant" });
+    try assistant.put(msg_alloc, "content", content);
     try self.messages.append(.{ .object = assistant });
 
     var calls: std.ArrayList(ToolCall) = .empty;
@@ -210,7 +212,7 @@ pub fn stepAnthropic(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
             const why = tool_call_args.takeInvalidMark(&block.object);
             const input = block.object.get("input") orelse Value{ .object = .empty };
             const cut = why == .cut or (length.limited(.anthropic, root) and !block.object.contains("input"));
-            if (!block.object.contains("input") or input != .object) try block.object.put(self.arena, "input", .{ .object = .empty });
+            if (!block.object.contains("input") or input != .object) try block.object.put(msg_alloc, "input", .{ .object = .empty });
             try calls.append(self.gpa, .{ .id = id, .name = name, .input = input, .args_ok = why == .none and !cut and input == .object, .cut = cut });
         }
     }
@@ -218,14 +220,14 @@ pub fn stepAnthropic(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
 
     if (calls.items.len > 0) {
         const results = try self.runTools(calls.items);
-        var blocks = std.json.Array.init(self.arena);
+        var blocks = std.json.Array.init(msg_alloc);
         for (calls.items, results) |call, r| {
-            const tr = try toolResultMessage(self.arena, .anthropic, call.id, r.text, r.is_error);
+            const tr = try toolResultMessage(msg_alloc, .anthropic, call.id, r.text, r.is_error);
             try blocks.append(tr);
         }
         var user_msg: std.json.ObjectMap = .empty;
-        try user_msg.put(self.arena, "role", .{ .string = "user" });
-        try user_msg.put(self.arena, "content", .{ .array = blocks });
+        try user_msg.put(msg_alloc, "role", .{ .string = "user" });
+        try user_msg.put(msg_alloc, "content", .{ .array = blocks });
         try self.messages.append(.{ .object = user_msg });
         try turn_checkpoint.afterToolBatch(self);
 

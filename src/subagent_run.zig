@@ -269,6 +269,8 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     };
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
+    var scratch_state = std.heap.ArenaAllocator.init(gpa);
+    defer scratch_state.deinit();
     const arena = arena_state.allocator();
     // #292: a resolved per-spawn/per-persona pin replaces the session-level
     // worker choice for this child. Already provider-local (see
@@ -279,6 +281,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     var agent: Agent = .{
         .gpa = gpa,
         .arena = arena,
+        .scratch_arena = &scratch_state,
         .io = ctx.io,
         .client = ctx.client,
         .provider = child_provider,
