@@ -79,8 +79,9 @@ pub fn fromInput(ctx: tools.ToolCtx, input: Value, a: Allocator) !?Snapshot {
     const relative = try session.sessionPath(a, name);
     const path = if (ctx.agent_cwd) |cwd| try std.fs.path.join(a, &.{ cwd, relative }) else relative;
     const data = try std.Io.Dir.cwd().readFileAlloc(ctx.io, path, a, .limited(@import("session_index.zig").max_session_bytes));
-    const saved = try std.json.parseFromSliceLeaky(Value, a, data, .{ .allocate = .alloc_always });
+    var saved = try std.json.parseFromSliceLeaky(Value, a, data, .{ .allocate = .alloc_always });
     if (saved != .object) return error.BadSession;
+    try @import("session_version.zig").upgrade(a, &saved.object); // ADR 0319
     const history = saved.object.get("messages") orelse return error.BadSession;
     if (history != .array) return error.BadSession;
     if (history.array.items.len == 0) return error.NothingToFork;

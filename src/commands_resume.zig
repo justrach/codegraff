@@ -87,6 +87,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         error.InvalidSessionName => reject(out, "resume failed: invalid source or branch name\n", .{}),
         error.BranchMatchesSource => reject(out, "branch failed: destination must differ from source\n", .{}),
         error.BranchAlreadyExists => reject(out, "branch failed: destination already exists\n", .{}),
+        error.SessionFormatTooNew => reject(out, "resume failed: {s}\n", .{@import("session_version.zig").too_new_text}),
         else => reject(out, "resume failed: {t}\n", .{err}),
     };
     presence.noteLabelsFrom(root.io, root.gpa, arena, root.session_title, root.session_name);

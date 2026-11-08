@@ -343,6 +343,7 @@ record only when you need the evidence or the edge cases.
 | [0316](0316-rejected-compaction-restores-exact-input.md) | Server-compaction replacements retain private exact-input checkpoints; rejected state restores only a matching window plus its later tail, within a bounded recovery budget. |
 | [0317](0317-seat-change-expands-opaque-compaction.md) | A provider or model switch expands opaque compaction state from its checkpoint instead of replaying ciphertext the new seat cannot decrypt. |
 | [0318](0318-nanocua-keeps-text-and-opts-in-to-geometry.md) | nanocua retains text by default, omits unrequested geometry from replies and AX batches, and keeps frames and controls-only filtering as explicit options. |
+| [0319](0319-session-files-carry-a-format-version.md) | Session files carry `format_version`; a missing field reads as v1, older versions migrate in order on load, and a newer version is refused, never read as the current shape. |
 
 | [0302](0302-sse-idle-watchdogs-follow-body-byte-progress.md) | SSE idle watchdogs observe partial body-byte progress, while separate unfinished-event time and size bounds preserve recovery. |
 
