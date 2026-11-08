@@ -568,3 +568,30 @@ test "near-limit opaque recovery uses the standalone server and preserves failed
         }
     }
 }
+
+test "in-stream server compaction preserves session tools, effort, and verbosity for encrypted state parity" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent: Agent = .{
+        .gpa = a,
+        .arena = a,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-6.1-sol", .context = 500_000 },
+        .messages = std.json.Array.init(a),
+        .sub = false,
+        .label = "t",
+        .out = null,
+        .reasoning = .high,
+        .tools_responses = "[{\"type\":\"function\",\"name\":\"shell\",\"parameters\":{\"type\":\"object\"}}]",
+        .compaction_request = true,
+        .server_compaction_request = true,
+    };
+    const body = try agent.buildBody(agent.toolsJson(), false, true, true);
+    defer a.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"shell\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"effort\":\"high\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"verbosity\":\"low\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"compact_threshold\":1000") != null);
+}

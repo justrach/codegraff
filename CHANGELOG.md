@@ -10,6 +10,15 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.4
+
+- Chained Responses WebSocket turns (`GRAFF_CODEX_WS=on`) preserve the server-anchored context token estimate in `floorContextTokens` instead of snapping back up to the local `byte/4` estimate of multi-megabyte `reasoning.encrypted_content` and re-triggering compaction every turn; in-stream server compaction requests (`compactInStream`) retain session tools, reasoning effort, and text verbosity so the compaction call hits the prompt cache prefix.
+- Root session message history now lives in a dedicated `gpa`-backed session arena (`g_session_arena`) that reclaims dropped message and tool-output slabs across client, server, and Clef compaction, checkpoint restore, `/clear`, and session load/resume; ACP per-line and per-turn transient allocations use bounded scratch arenas (#1838).
+- `--session-id <id>` assigns the save name of a new session or resumes an existing local save, and `-c`/`--continue` resumes the most recently updated local session (#1840).
+- Session files carry `format_version` as their first key and refuse newer format versions on load (`SessionFormatTooNew`) before mutating live session state (#1843, ADR 0319).
+- Photos with EXIF orientation tags are rotated upright before being sent to vision models (#1839).
+- ACP startup and `session/load` skip redundant bench-prior reloads, filter trajectory archive rows by `kind` before JSON parsing, and resolve local workspace saves before scanning git worktrees (#1836, #1837, #1842).
+
 ## v0.302.74.3
 
 - Full-history Responses usage no longer gets floored back above the context limit by local byte estimates of opaque `compaction` and `reasoning` ciphertext, preventing repeated compactions when server usage is within the window while preserving the visible-input floor and conservative estimates when usage is missing or chained (#1686).

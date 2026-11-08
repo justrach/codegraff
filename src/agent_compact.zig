@@ -221,6 +221,7 @@ pub fn compact(self: *Agent) anyerror!usize {
     defer self.compaction_request = was_compaction_request;
     defer self.message_mutation_arena = was_message_mutation_arena;
     const root = try compact_mix.synthRequest(self, @import("cache_fork.zig").tools(self, fork));
+    self.message_mutation_arena = was_message_mutation_arena;
     progress.end(self);
     // Any complete transport response proves the previous opaque failure was
     // transient/non-wedging, even when its summary text is empty or truncated.
@@ -235,8 +236,9 @@ pub fn compact(self: *Agent) anyerror!usize {
         return error.EmptySummary;
     }
 
-    var fresh = std.json.Array.init(self.arena);
-    try fresh.append(try @import("messages.zig").userNote(self.arena, self.provider.kind, try handoffMessage(self, summary, live_messages.items[0..recent_start])));
+    const msg_alloc = self.messageMutationAlloc();
+    var fresh = std.json.Array.init(msg_alloc);
+    try fresh.append(try @import("messages.zig").userNote(msg_alloc, self.provider.kind, try handoffMessage(self, summary, live_messages.items[0..recent_start])));
     // Preserve a valid recent suffix verbatim (up to ~8k estimated tokens),
     // including its user boundary and paired tool calls/results.
     try peer_context.appendWorkingSet(&fresh, recent_messages, live_messages.items);
@@ -257,6 +259,7 @@ pub fn compact(self: *Agent) anyerror!usize {
     // and once per session — prompts.noteSessionCompacted owns both rules.
     prompts.noteSessionCompacted(self, self.arena);
     @import("hot_context.zig").afterCompact(self); // #1333: fold latest keys into the new prefix
+    self.reclaimMessages(); // #1838: release compacted message/tool-output slabs back to gpa
     // A/B control arm doing work (#compact-ab): a client-side summary on the
     // Responses wire. Manual /compact on codex lands here too — correctly
     // labeled, since it IS a client compaction.
@@ -286,12 +289,13 @@ pub fn handoffMessage(self: *Agent, summary: []const u8, discarded: []const Valu
         (if (self.task_prompt) |tp| try childHandoff(self, tp, summary) else try rootHandoff(self, summary))
     else
         try rootHandoff(self, summary);
-    const standing = try goal_flow.compactionSnapshot(self.arena, self);
-    return handoff_note.handoff(self.arena, self, base, standing, discarded);
+    const msg_alloc = self.historyAlloc();
+    const standing = try goal_flow.compactionSnapshot(msg_alloc, self);
+    return handoff_note.handoff(msg_alloc, self, base, standing, discarded);
 }
 
 pub fn rootHandoff(self: *Agent, summary: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(self.arena,
+    return std.fmt.allocPrint(self.historyAlloc(),
         \\Context: the earlier conversation was compacted to save space.
         \\Summary of the earlier work:
         \\
@@ -307,7 +311,7 @@ fn childHandoff(self: *Agent, task_prompt: []const u8, summary: []const u8) ![]c
         "\n[task prompt truncated for the handoff - the head above is the mandate]"
     else
         "";
-    return std.fmt.allocPrint(self.arena,
+    return std.fmt.allocPrint(self.historyAlloc(),
         \\Your assigned task, restated verbatim. The conversation that carried it was compacted; this is still your mandate and the only thing you have to deliver:
         \\
         \\{s}{s}
@@ -432,7 +436,9 @@ pub fn trimOldestToolOutputsAlloc(self: *Agent, arena: Allocator) usize {
 }
 
 pub fn trimOldestToolOutputs(self: *Agent) usize {
-    return trimOldestToolOutputsAlloc(self, self.arena);
+    const reclaimed = trimOldestToolOutputsAlloc(self, self.historyAlloc());
+    if (reclaimed > 0) self.reclaimMessages();
+    return reclaimed;
 }
 
 /// #193 follow-up: bound ANY single tool output to `cap` serialized bytes before
@@ -472,7 +478,10 @@ pub fn capOversizedToolOutputs(self: *Agent, cap: usize) usize {
     // so reclaimed bytes were never part of that authoritative server reading.
     // Never subtract them from it; only raise the floor to the now-capped full
     // request estimate.
-    if (reclaimed > 0) self.rebaseContextMeter();
+    if (reclaimed > 0) {
+        self.rebaseContextMeter();
+        if (self.message_mutation_arena == null) self.reclaimMessages();
+    }
     return reclaimed;
 }
 

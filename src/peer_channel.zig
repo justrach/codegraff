@@ -70,7 +70,7 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
     if (std.mem.eql(u8, action, "claim") or std.mem.eql(u8, action, "release") or std.mem.eql(u8, action, "handoff") or std.mem.eql(u8, action, "status")) {
         if (obj.get("repo")) |repo| if (repo != .string) return .{ .text = "claim repo must be a repository name", .is_error = true };
         return @import("artifact_claim.zig").handleToolIn(
-            self.arena,
+            self.historyAlloc(),
             self.io,
             action,
             tools_mod.json_args.str(obj, "kind") orelse "publication",
@@ -81,11 +81,11 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
         );
     }
     if (std.mem.eql(u8, action, "list")) {
-        const everyone = presence.liveAllPeers(self.io, self.arena);
-        return .{ .text = peer_inbox.formatList(self.arena, everyone, presence.ownIdentity()), .is_error = false };
+        const everyone = presence.liveAllPeers(self.io, self.historyAlloc());
+        return .{ .text = peer_inbox.formatList(self.historyAlloc(), everyone, presence.ownIdentity()), .is_error = false };
     }
     if (std.mem.eql(u8, action, "inbox")) {
-        const text = peer_inbox.takeAll(self.arena) catch return .{
+        const text = peer_inbox.takeAll(self.historyAlloc()) catch return .{
             .text = "peer_message: inbox read failed; messages and dropped count retained — retry action=inbox",
             .is_error = true,
         };

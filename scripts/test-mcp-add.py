@@ -85,7 +85,11 @@ def directory(server_py):
 
 
 def run(binary, cwd, env, *args, stdin=None):
-    r = subprocess.run([binary, 'mcp', *args], cwd=cwd, env=env, input=stdin, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=180)
+    # Never hand graff the caller's terminal: `mcp add` opens the OAuth flow
+    # when stdin is a TTY (mcp_cli.checkSaved), so a suite run by hand would
+    # attempt a real sign-in instead of printing the `graff mcp login` hint.
+    feed = {'input': stdin} if stdin is not None else {'stdin': subprocess.DEVNULL}
+    r = subprocess.run([binary, 'mcp', *args], cwd=cwd, env=env, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=180, **feed)
     return r.stdout + r.stderr
 
 
@@ -171,7 +175,7 @@ def main():
                     GRAFF_NO_SMOLIFY='1', GRAFF_NO_CODEDB_GUARD='1')
         try:
             subprocess.run([binary, '--model', 'vercel', '--old', '--no-lean', '--yolo', '-p', 'add the demo server and use it'],
-                           cwd=live, env=env2, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=180)
+                           cwd=live, env=env2, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=180)
         finally:
             model.stop()
         results = [m.get('content') for m in model.requests[-1].get('messages', []) if m.get('role') == 'tool']

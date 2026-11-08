@@ -72,7 +72,7 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             try self.ensureRootTools(self.provider.kind);
         }
     }
-    const results = try self.arena.alloc(ExecResult, calls.len);
+    const results = try self.historyAlloc().alloc(ExecResult, calls.len);
     if (try @import("turn_handoff.zig").rejectMixedBatch(self, calls, results)) return results;
     const eval_index = eval_control.evalCallIndex(calls);
     // ADR 0256: only a batch that completes needs the model family.
@@ -188,7 +188,7 @@ fn classifyRead(self: *Agent, batch: *read_miss.Batch, call: ToolCall) read_miss
 
 fn refuseRead(self: *Agent, call: ToolCall) !ExecResult {
     const path = read_miss.callPath(call.input) orelse ".";
-    const message = try read_miss.refusalText(self.arena, path);
+    const message = try read_miss.refusalText(self.historyAlloc(), path);
     self.emitToolRejected(call, "read_miss", message);
     return .{ .text = message, .is_error = true };
 }
@@ -210,21 +210,22 @@ pub fn rejectToolCall(self: *Agent, call: ToolCall) !?ExecResult {
         }
     }
     if (!self.sub and std.mem.eql(u8, call.name, "yield_turn")) return null;
+    const msg_alloc = self.historyAlloc();
     if (isMetaName(call.name) or local_tools.isInstall(call.name) or schedule.isName(call.name) or std.mem.eql(u8, call.name, "structured_output")) {
-        if (self.run_budget) |budget| if (budget.toolRefusal(self.arena, self.tracer)) |denied| {
+        if (self.run_budget) |budget| if (budget.toolRefusal(msg_alloc, self.tracer)) |denied| {
             self.emitToolRejected(call, "exhausted", denied.text);
             return .{ .text = denied.text, .is_error = true };
         };
     }
     if (self.sub) return null;
-    if (self.review_mode) if (try review.rejectTool(self.arena, call)) |denied| {
+    if (self.review_mode) if (try review.rejectTool(msg_alloc, call)) |denied| {
         self.emitToolRejected(call, "review_mode", denied.text);
         return denied;
     };
     if (std.mem.eql(u8, call.name, "attempt_completion")) return null;
     if (main_mod.max_tool_calls) |max| {
         if (self.tool_calls_this_turn >= max) {
-            const message = try std.fmt.allocPrint(self.arena, "tool call budget exhausted ({d}/{d}) — answer with what you have or ask for a higher --max-tool-calls", .{ self.tool_calls_this_turn, max });
+            const message = try std.fmt.allocPrint(msg_alloc, "tool call budget exhausted ({d}/{d}) — answer with what you have or ask for a higher --max-tool-calls", .{ self.tool_calls_this_turn, max });
             self.emitToolRejected(call, "budget", message);
             return .{ .text = message, .is_error = true };
         }
@@ -233,7 +234,7 @@ pub fn rejectToolCall(self: *Agent, call: ToolCall) !?ExecResult {
         const key = try self.toolDedupeKey(call);
         for (self.seen_tool_keys.items) |seen| {
             if (std.mem.eql(u8, seen, key)) {
-                const message = try std.fmt.allocPrint(self.arena, "duplicate tool call rejected: {s} with the same normalized input already ran this turn", .{call.name});
+                const message = try std.fmt.allocPrint(msg_alloc, "duplicate tool call rejected: {s} with the same normalized input already ran this turn", .{call.name});
                 self.emitToolRejected(call, "duplicate", message);
                 return .{ .text = message, .is_error = true };
             }

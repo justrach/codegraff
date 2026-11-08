@@ -277,6 +277,7 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
     defer aw.deinit();
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     try s.beginObject();
+    try @import("session_version.zig").write(&s); // ADR 0319: first, so a reader can refuse before the rest
     try @import("session_catalog.zig").write(root, &s);
     try @import("session_prompt.zig").write(root, &s);
     try s.objectField("provider");
@@ -482,7 +483,8 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
         return if (err == error.StreamTooLong) error.SessionTooLarge else error.FileNotFound;
     const parsed = try std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always });
     if (parsed != .object) return error.BadSession;
-    const obj = parsed.object;
+    var obj = parsed.object;
+    try @import("session_version.zig").upgrade(arena, &obj); // ADR 0319: a newer format is refused before any state changes
     const pid = if (obj.get("provider")) |v| v.string else return error.BadSession;
     const model = if (obj.get("model")) |v| v.string else return error.BadSession;
     var msgs = if (obj.get("messages")) |v| (if (v == .array) v.array else return error.BadSession) else return error.BadSession;
@@ -528,6 +530,7 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     @import("history_wire.zig").prepare(arena, root.provider.kind, &root.messages);
     // #752: truncated `function.arguments` strings 400 every later request.
     tool_call_args.repairHistory(root.gpa, arena, root.messages.items);
+    root.reclaimMessages();
     root.strict = strict;
     root.ultracode_mode = ultracode_mode;
     root.goal = goal;

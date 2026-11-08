@@ -49,7 +49,7 @@ pub fn handle(live: *LiveTurn, arena: Allocator, w: *Io.Writer, req: proto.Reque
     const root = live.root;
     const own = std.mem.eql(u8, sid, root.session_name) or (d.session_id != null and std.mem.eql(u8, sid, d.session_id.?));
     if (own) {
-        _ = session_fork.forkCurrent(root, live.keys, arena, null, null) catch |err| return reject(w, req, failText(err));
+        _ = session_fork.forkCurrent(root, live.keys, root.arena, null, null) catch |err| return reject(w, req, failText(err));
     } else {
         switch (load.savedHere(live, env, arena, sid)) {
             .provider => {},
@@ -60,8 +60,8 @@ pub fn handle(live: *LiveTurn, arena: Allocator, w: *Io.Writer, req: proto.Reque
             try proto.writeError(w, req.id, engine.err_internal, @errorName(err));
             return true;
         };
-        const target = try session_fork.autoName(root, arena, sid);
-        _ = @import("session_branch.zig").restore(root, live.keys, arena, sid, target, live.model_override) catch |err|
+        const target = try session_fork.autoName(root, root.arena, sid);
+        _ = @import("session_branch.zig").restore(root, live.keys, root.arena, sid, target, live.model_override) catch |err|
             return reject(w, req, failText(err));
     }
     live.session_id = root.session_name;

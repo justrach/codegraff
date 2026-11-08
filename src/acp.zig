@@ -68,7 +68,7 @@ fn liveSlash(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror!?[]co
     var aw: Io.Writer.Allocating = .init(arena);
     // /never is the playbook's own, and handleCommand does not know it.
     if (playbook_glue.isCommand(text)) {
-        _ = try playbook_glue.command(live.root, arena, text, &aw.writer);
+        _ = try playbook_glue.command(live.root, live.root.arena, text, &aw.writer);
         return try engine.stripSgr(arena, aw.writer.buffered());
     }
     if (command_catalog.match(text) == null and command_catalog.commandWord(text) == null) return null;
@@ -77,14 +77,14 @@ fn liveSlash(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror!?[]co
     var compaction: @import("acp_compaction.zig").Sink = .{ .out = live.out, .output_lock = &lock, .io = live.root.io, .session_id = live.session_id };
     @import("acp_compaction.zig").install(&compaction);
     defer @import("acp_compaction.zig").uninstall();
-    try main_mod.handleCommand(live.root, live.keys, arena, std.mem.trim(u8, text, " \t\r\n"), &aw.writer);
+    try main_mod.handleCommand(live.root, live.keys, live.root.arena, std.mem.trim(u8, text, " \t\r\n"), &aw.writer);
     return try engine.stripSgr(arena, aw.writer.buffered());
 }
 
-fn liveAfter(ctx: *anyopaque, arena: Allocator, text: []const u8, prompt: ?std.json.Value) void {
+fn liveAfter(ctx: *anyopaque, _: Allocator, text: []const u8, prompt: ?std.json.Value) void {
     const live: *LiveTurn = @ptrCast(@alignCast(ctx));
     if (if (live.dispatch) |d| d.commands else true)
-        _ = playbook_glue.applyUserOverride(live.root, arena, text);
+        _ = playbook_glue.applyUserOverride(live.root, live.root.arena, text);
     // ACP image blocks join the next model request (promptCapabilities.image).
     _ = @import("acp_images.zig").stage(live.root, prompt);
 }
@@ -251,17 +251,24 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     };
     @import("acp_subagent_live.zig").installBackground(io, &background_state);
     defer @import("acp_subagent_live.zig").uninstallBackground(io);
+    var line_arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer line_arena_state.deinit();
+    var handshake: @import("acp_handshake_log.zig").Log = .{ .process_started = @import("startup_timing.zig").g_started };
     while (true) {
-        const event = (inbox.wait(arena) catch break) orelse break;
+        defer @import("agent_request_scratch.zig").reset(&line_arena_state);
+        const line_arena = line_arena_state.allocator();
+        const event = (inbox.wait(line_arena) catch break) orelse break;
         switch (event) {
-            .tick => @import("acp_idle.zig").maybeWake(&d, arena, wire, io, root.session_name) catch |err| {
+            .tick => @import("acp_idle.zig").maybeWake(&d, line_arena, wire, io, root.session_name) catch |err| {
                 std.debug.print("acp: idle wake failed: {t}\n", .{err});
             },
             .line => |line| {
-                handleLine(&d, arena, wire, line) catch |err| {
+                const phase = handshake.before(io, line); // #1837
+                handleLine(&d, line_arena, wire, line) catch |err| {
                     std.debug.print("acp: dispatch failed: {t}\n", .{err});
                     break;
                 };
+                handshake.after(io, phase);
                 @import("acp_subagent_live.zig").configureBackground(io, d.session_id orelse "", d.background_subagents);
                 @import("acp_idle.zig").startupEffortNotice(&d, root, wire) catch break;
             },

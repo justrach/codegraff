@@ -429,6 +429,7 @@ pub fn applyDecisions(self: *Agent, decisions: []const Decision, head_chars: usi
         w += 1;
     }
     self.messages.shrinkRetainingCapacity(w);
+    if (applied.progressed() and self.message_mutation_arena == null) self.reclaimMessages();
     return applied;
 }
 

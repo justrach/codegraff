@@ -221,8 +221,9 @@ pub fn restore(self: *Agent) !bool {
     try staged.appendSlice(self.messages.items[saved.window.len..]);
     const encoded = try std.json.Stringify.valueAlloc(self.gpa, staged.items, .{});
     defer self.gpa.free(encoded);
-    const fresh = try std.json.parseFromSliceLeaky(Value, self.arena, encoded, .{ .allocate = .alloc_always });
+    const fresh = try std.json.parseFromSliceLeaky(Value, self.historyAlloc(), encoded, .{ .allocate = .alloc_always });
     self.messages = fresh.array;
+    self.reclaimMessages();
     self.compaction_window = .{};
     return true;
 }

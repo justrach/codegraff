@@ -59,10 +59,7 @@ pub fn locateIn(
     extra: []const []const u8,
 ) ?Located {
     if (!session_index.validSessionName(name)) return null;
-    const local_rel = session_index.sessionPath(arena, name) catch return null;
-    if (exists(io, local_rel)) return .{ .path = local_rel, .workspace = cwd, .local = true };
-    const legacy = std.fmt.allocPrint(arena, "{s}{s}", .{ name, session_index.session_ext }) catch return null;
-    if (exists(io, legacy)) return .{ .path = legacy, .workspace = cwd, .local = true };
+    if (localHit(io, arena, name, cwd)) |hit| return hit;
 
     var best: ?Located = null;
     var best_ms: i64 = -1;
@@ -84,6 +81,16 @@ pub fn locateIn(
         const home_path = session_index.homeSessionPath(arena, home, name) catch return null;
         if (exists(io, home_path)) return .{ .path = home_path, .workspace = home, .local = false };
     }
+    return null;
+}
+
+/// A save in this workspace (current layout, then legacy), checked before
+/// any other tree: a local hit always wins.
+fn localHit(io: Io, arena: Allocator, name: []const u8, cwd: []const u8) ?Located {
+    const local_rel = session_index.sessionPath(arena, name) catch return null;
+    if (exists(io, local_rel)) return .{ .path = local_rel, .workspace = cwd, .local = true };
+    const legacy = std.fmt.allocPrint(arena, "{s}{s}", .{ name, session_index.session_ext }) catch return null;
+    if (exists(io, legacy)) return .{ .path = legacy, .workspace = cwd, .local = true };
     return null;
 }
 
@@ -115,6 +122,9 @@ pub fn locate(root: *Agent, arena: Allocator, name: []const u8) ?Located {
         if (!exists(root.io, name)) return null;
         return .{ .path = name, .workspace = target.workspace, .local = session_index.sameWorkspace(target.workspace, cwdDisplay()) };
     }
+    // #1836: a local save answers before the worktree list, which costs a
+    // `git worktree list` subprocess and a peer scan on every session/load.
+    if (session_index.validSessionName(name)) if (localHit(root.io, arena, name, cwdDisplay())) |hit| return hit;
     return locateIn(root.io, arena, name, cwdDisplay(), root.home, extraWorktrees(root, arena));
 }
 

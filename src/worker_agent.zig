@@ -61,12 +61,13 @@ pub const Agent = struct {
         try self.messages.append(try @import("messages.zig").textMessage(self.arena, "user", text));
         for (0..self.max_steps) |_| {
             try self.checkCancelled();
-            const request = try std.json.Stringify.valueAlloc(self.arena, .{
+            const request = try std.json.Stringify.valueAlloc(self.gpa, .{
                 .model = self.model,
                 .messages = self.messages.items,
                 .tools = self.tools,
                 .stream = false,
             }, .{});
+            defer self.gpa.free(request);
             self.model_calls += 1;
             const raw = try self.host_call(1, request);
             try self.checkCancelled();
@@ -98,6 +99,14 @@ pub const Agent = struct {
     }
 
     pub fn scratchAlloc(self: *Agent) Allocator {
+        return self.arena;
+    }
+
+    pub fn messageMutationAlloc(self: *Agent) Allocator {
+        return self.arena;
+    }
+
+    pub fn historyAlloc(self: *Agent) Allocator {
         return self.arena;
     }
 
@@ -133,7 +142,8 @@ pub const Agent = struct {
                 result.* = .{ .text = "tool is not registered by this host", .is_error = true };
                 continue;
             }
-            const request = try std.json.Stringify.valueAlloc(self.arena, .{ .id = call.id, .name = call.name, .input = call.input }, .{});
+            const request = try std.json.Stringify.valueAlloc(self.gpa, .{ .id = call.id, .name = call.name, .input = call.input }, .{});
+            defer self.gpa.free(request);
             self.tool_calls += 1;
             const raw = try self.host_call(2, request);
             try self.checkCancelled();

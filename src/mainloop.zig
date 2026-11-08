@@ -418,7 +418,7 @@ pub fn run(ctx: *Ctx) !void {
         if (isolated_review) {
             ctx.root.review_mode = false;
             ctx.root.sys_override = parent_system_override;
-            try ctx.root.messages.append(try messages.textMessage(ctx.arena, "user", base_msg));
+            try ctx.root.messages.append(try messages.textMessage(ctx.root.messageMutationAlloc(), "user", base_msg));
             ctx.root.rebaseContextMeter();
         }
         const final_text = turn_result catch |err| switch (err) {
@@ -426,11 +426,12 @@ pub fn run(ctx: *Ctx) !void {
                 // Preserve streamed text and mark the saved assistant turn incomplete. #728: an unsourced cancel is the harness's, not the user's.
                 const src = cancel_source.take(ctx.root.tracer);
                 const partial = std.mem.trim(u8, ctx.root.partial_text.items, " \t\r\n");
+                const msg_alloc = ctx.root.messageMutationAlloc();
                 const marker: []const u8 = if (partial.len > 0)
-                    try std.fmt.allocPrint(ctx.arena, "{s}\n\n{s}", .{ partial, cancel_source.marker(src) })
+                    try std.fmt.allocPrint(msg_alloc, "{s}\n\n{s}", .{ partial, cancel_source.marker(src) })
                 else
                     cancel_source.marker(src);
-                try ctx.root.messages.append(try messages.textMessage(ctx.arena, "assistant", marker));
+                try ctx.root.messages.append(try messages.textMessage(msg_alloc, "assistant", marker));
                 main_mod.g_force_interrupt = false;
                 if (main_mod.json_mode) {
                     ctx.root.emit(.{ .type = "error", .message = cancel_source.jsonMessage(src) });
@@ -446,8 +447,9 @@ pub fn run(ctx: *Ctx) !void {
                 // harness gave up, NOT the user (#134) — keep the partial but
                 // tag it a stall, and emit the structured error for --json.
                 const partial = std.mem.trim(u8, ctx.root.partial_text.items, " \t\r\n");
-                const marker = try @import("stream_reconnect.zig").endedEarlyText(ctx.arena, partial, true);
-                try ctx.root.messages.append(try messages.textMessage(ctx.arena, "assistant", marker));
+                const msg_alloc = ctx.root.messageMutationAlloc();
+                const marker = try @import("stream_reconnect.zig").endedEarlyText(msg_alloc, partial, true);
+                try ctx.root.messages.append(try messages.textMessage(msg_alloc, "assistant", marker));
                 if (main_mod.json_mode) {
                     ctx.root.emit(.{ .type = "error", .message = ctx.root.last_api_error orelse "stream stalled — ending turn" });
                     if (partial.len > 0) {
@@ -465,8 +467,9 @@ pub fn run(ctx: *Ctx) !void {
                 // the user (#133). Keep the partial, tag it a drop (never
                 // "[response interrupted by user]"), and emit the --json error.
                 const partial = std.mem.trim(u8, ctx.root.partial_text.items, " \t\r\n");
-                const marker = try @import("stream_reconnect.zig").endedEarlyText(ctx.arena, partial, false);
-                try ctx.root.messages.append(try messages.textMessage(ctx.arena, "assistant", marker));
+                const msg_alloc = ctx.root.messageMutationAlloc();
+                const marker = try @import("stream_reconnect.zig").endedEarlyText(msg_alloc, partial, false);
+                try ctx.root.messages.append(try messages.textMessage(msg_alloc, "assistant", marker));
                 if (main_mod.json_mode) {
                     ctx.root.emit(.{ .type = "error", .message = ctx.root.last_api_error orelse "stream dropped — ending turn" });
                     if (partial.len > 0) {
@@ -515,7 +518,7 @@ pub fn run(ctx: *Ctx) !void {
             },
         };
         if (isolated_review)
-            try ctx.root.messages.append(try messages.textMessage(ctx.arena, "assistant", final_text));
+            try ctx.root.messages.append(try messages.textMessage(ctx.root.messageMutationAlloc(), "assistant", final_text));
         const session_context_tokens = if (isolated_review) ctx.root.effectiveContextTokens() else post_turn_context_tokens;
         // #419: heuristic session_recap precedes the terminal turn event; model recap scheduled here.
         mainloop_recap.onTurnEnd(ctx, &recap_jobs, final_text);

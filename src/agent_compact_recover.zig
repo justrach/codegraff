@@ -30,9 +30,10 @@ const emergencyCutIndex = compact_cut.emergencyCutIndex;
 pub fn emergencyTrim(self: *Agent) usize {
     if (emergencyCutIndex(self.messages.items)) |cut| {
         const before_tokens = self.fullInputEstimateTokens();
-        var fresh = std.json.Array.init(self.arena);
+        var fresh = std.json.Array.init(self.historyAlloc());
         for (self.messages.items[cut..]) |m| fresh.append(m) catch return 0;
         self.messages = fresh;
+        self.reclaimMessages();
         self.goal_note_fp = 0; // trimmed history may have carried the goal note (#318)
         self.history_rewrites +%= 1; // and the run's checklist gate's pasted copies (#318)
         // No synthetic message exists here to hang the standing state on (unlike

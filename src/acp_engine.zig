@@ -67,6 +67,7 @@ pub const Dispatch = struct {
     turn: TurnFn,
     ctx: *anyopaque,
     session_id: ?[]const u8 = null,
+    fallback_id_buf: [48]u8 = undefined,
     seed: u64 = 0,
     created: u32 = 0,
     slash: ?SlashFn = null,
@@ -316,7 +317,7 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
             return respondError(w, req, -32602, acp_workspace.errorText(err));
         if (d.mcp_servers) |attach| attach(d.ctx, arena, req.params) catch {};
         d.created += 1;
-        d.session_id = d.durable_session_id orelse try std.fmt.allocPrint(arena, "acp-{x}-{d}", .{ d.seed, d.created });
+        d.session_id = d.durable_session_id orelse (std.fmt.bufPrint(&d.fallback_id_buf, "acp-{x}-{d}", .{ d.seed, d.created }) catch "acp-0");
         if (d.config != null) {
             const options = configOptions(d, arena) catch |err| return respondError(w, req, err_internal, @errorName(err));
             if (d.workspace) |env|

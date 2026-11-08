@@ -179,11 +179,15 @@ test "archive mode keeps a dropped call and archives its output (GRAFF_CLEF_ARCH
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
+    // The output must outweigh the archive stub, which embeds the artifact's
+    // absolute path: a short fixture frees nothing in a deep checkout.
     const items = try std.json.parseFromSliceLeaky(Value, a,
         \\[{"role":"user","content":"go"},
         \\ {"role":"assistant","content":"","tool_calls":[
         \\   {"id":"c1","type":"function","function":{"name":"read","arguments":"{}"}}]},
-        \\ {"role":"tool","tool_call_id":"c1","content":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAZ"},
+        \\ {"role":"tool","tool_call_id":"c1","content":"
+    ++ &@import("util.zig").repeatBytes("A", std.fs.max_path_bytes + 1024) ++
+        \\Z"},
         \\ {"role":"assistant","content":"done"}]
     , .{});
     var agent: Agent = undefined;

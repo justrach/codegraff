@@ -155,7 +155,7 @@ pub fn run(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(init.gpa);
     defer arena.deinit();
     while (try input.interface.takeDelimiter('\n')) |line| {
-        defer _ = arena.reset(.retain_capacity);
+        defer @import("agent_request_scratch.zig").reset(&arena);
         const req = proto.parseRequest(arena.allocator(), line);
         if (req) |r| {
             if (!try handle(arena.allocator(), init.io, init.environ_map.get("HOME") orelse "", &output.interface, r))

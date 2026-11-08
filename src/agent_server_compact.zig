@@ -176,7 +176,7 @@ pub fn compactBody(self: *const Agent) ![]u8 {
 }
 
 fn installItems(self: *Agent, items: []const std.json.Value) !void {
-    var fresh = std.json.Array.init(self.arena);
+    var fresh = std.json.Array.init(self.historyAlloc());
     try fresh.appendSlice(items);
     try @import("compaction_checkpoint.zig").preserve(self, self.messages.items, fresh.items);
     self.messages = fresh;
@@ -187,6 +187,7 @@ fn installItems(self: *Agent, items: []const std.json.Value) !void {
     self.history_rewrites +%= 1;
     session_prunes +|= 1; // manual compaction is not an A/B treatment exposure
     @import("hot_context.zig").afterCompact(self); // #1333: the opaque item replaced history; fold latest keys
+    self.reclaimMessages();
 }
 
 pub fn installCompactedOutput(self: *Agent, response: std.json.Value) !usize {
@@ -228,12 +229,12 @@ fn compactStandalone(self: *Agent) !usize {
     const body = try compactBody(self);
     defer self.gpa.free(body);
     var compact_provider = self.provider;
-    compact_provider.url = try compactEndpoint(self.arena, self.provider.url);
+    compact_provider.url = try compactEndpoint(self.historyAlloc(), self.provider.url);
     var conv_buf: [96]u8 = undefined;
     const conv = @import("http_headers.zig").requestCacheKey(self.io, self.label, self, self.provider, &conv_buf);
     const response_body = try http.postWatched(self.gpa, self.io, self.client, compact_provider, body, conv);
     defer self.gpa.free(response_body);
-    const response = std.json.parseFromSliceLeaky(std.json.Value, self.arena, response_body, .{ .allocate = .alloc_always }) catch {
+    const response = std.json.parseFromSliceLeaky(std.json.Value, self.historyAlloc(), response_body, .{ .allocate = .alloc_always }) catch {
         if (self.tracer) |tr| tr.note("server_compact_error", response_body[0..@min(response_body.len, 400)]);
         return error.InvalidCompactionResponse;
     };
@@ -274,7 +275,9 @@ fn compactInStream(self: *Agent) !usize {
     defer self.stream_quiet = was_quiet;
     defer self.compaction_request = was_compaction_request;
     defer self.server_compaction_request = was_server_compaction;
-    const response = try self.request(null);
+    try self.ensureRootTools(self.provider.kind);
+    const tools = if (self.text_only and !self.synthesis.keepsCatalog(self)) null else self.toolsJson();
+    const response = try self.request(tools);
     const payload_len = try installInStreamCompaction(self, response);
     self.closeCodexWs();
     if (!main_mod.json_mode and @import("repl.zig").g_debug) try self.say("[OpenAI compacted context into server state]\n", .{});
@@ -401,10 +404,11 @@ pub fn pruneIf(self: *Agent, server_arm: bool) bool {
         } else return false; // orphaned output — not safe to prune
     }
     const dropped = k;
-    var fresh = std.json.Array.init(self.arena);
+    var fresh = std.json.Array.init(self.historyAlloc());
     fresh.appendSlice(items[k..]) catch return false;
     @import("compaction_checkpoint.zig").preserve(self, items[0..k], fresh.items[0..1]) catch return false;
     self.messages = fresh;
+    self.reclaimMessages();
     self.compaction_window = .{}; // a newer in-stream blob supersedes the canonical window
     // Mirror compact()'s post-install meter reset: both anchors recompute
     // lazily, and the goal note died with the pruned prefix (#318).
@@ -513,7 +517,8 @@ pub fn explicitCompact(self: *Agent) bool {
 /// Parse a compact-endpoint response and restart history from output[0].
 /// Split from explicitCompact so a fixture response drives it in tests.
 pub fn installCompactionItem(self: *Agent, resp: []const u8) bool {
-    const parsed = std.json.parseFromSliceLeaky(std.json.Value, self.arena, resp, .{ .allocate = .alloc_always }) catch return false;
+    const msg_alloc = self.historyAlloc();
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, msg_alloc, resp, .{ .allocate = .alloc_always }) catch return false;
     if (parsed != .object) return false;
     const output = parsed.object.get("output") orelse return false;
     if (output != .array or output.array.items.len == 0) return false;
@@ -523,10 +528,11 @@ pub fn installCompactionItem(self: *Agent, resp: []const u8) bool {
     if (t != .string or !std.mem.eql(u8, t.string, "compaction")) return false;
     if (blob.object.get("encrypted_content") == null) return false;
     const dropped = self.messages.items.len;
-    var fresh = std.json.Array.init(self.arena);
+    var fresh = std.json.Array.init(msg_alloc);
     fresh.append(blob) catch return false;
     @import("compaction_checkpoint.zig").preserve(self, self.messages.items, fresh.items) catch return false;
     self.messages = fresh;
+    self.reclaimMessages();
     // Mirror pruneIf's meter/goal reset: both anchors recompute lazily, the
     // goal note died with the folded history (#318), and pasted-state readers
     // re-carry off history_rewrites.

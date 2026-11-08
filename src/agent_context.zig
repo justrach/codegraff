@@ -164,7 +164,7 @@ pub fn recordUsage(self: *Agent, root: std.json.ObjectMap, req_body_len: usize) 
 /// usage, so auto-compaction still triggers. Never lowers an existing higher count.
 pub fn floorContextTokens(self: *Agent, est: u64) void {
     const estimate = self.contextEstimate();
-    self.last_context_tokens = @max(estimate.effective, @max(estimate.local, est));
+    self.last_context_tokens = @max(estimate.effective, est);
     self.context_local_tokens = estimate.local;
 }
 

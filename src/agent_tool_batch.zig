@@ -150,9 +150,10 @@ fn aborted() bool {
 
 pub fn takeOutput(self: *Agent, call: ToolCall, output: ToolOutput, handle_threshold: usize, handle_target: tool_handle.Target) !ExecResult {
     self.read_miss.noteOutput(call.name, call.input, output.text, output.is_error);
-    const handled = try tool_handle.forResult(self.gpa, self.arena, handle_target, output.text, handle_threshold);
+    const msg_alloc = self.historyAlloc();
+    const handled = try tool_handle.forResult(self.gpa, msg_alloc, handle_target, output.text, handle_threshold);
     @import("context_savings.zig").noteHandle(handled.bytes, handled.text.len);
-    const text = try tool_handle.withFirstNote(self.arena, handled, &self.handle_note_shown);
+    const text = try tool_handle.withFirstNote(msg_alloc, handled, &self.handle_note_shown);
     if (self.eval_cmd != null and eval_control.toolInvalidatesEval(call)) {
         self.eval_verified = false;
         self.eval_repair_pending = false;

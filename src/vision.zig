@@ -203,7 +203,7 @@ pub fn stageImagePath(root: *Agent, path: []const u8) StageResult {
     defer if (fit.temp) clip.discard(io, root.gpa, fit.path);
 
     const arena = root.arena;
-    const data = readStagedBytes(io, arena, fit.path) orelse return .read_error;
+    const data = @import("image_orient.zig").uprightIn(io, arena, fit.path, readStagedBytes(io, arena, fit.path) orelse return .read_error);
     // Media type from the bytes we actually encode, never the name (#1762): a
     // WebP saved as .png must go out as image/webp, and a downscale temp is
     // whatever `sips` wrote. Labelled with the path the USER named.

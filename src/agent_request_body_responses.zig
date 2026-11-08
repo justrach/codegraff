@@ -70,7 +70,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
             }
             break :blk next;
         };
-        const async_payload = try @import("async_tool_policy.zig").decorate(self.scratchAlloc(), self.provider, payload, self.async_tools_armed and !self.sub and !self.compaction_request and !self.server_compaction_request);
+        const async_payload = try @import("async_tool_policy.zig").decorate(self.scratchAlloc(), self.provider, payload, self.async_tools_armed and !self.sub and (!self.compaction_request or self.server_compaction_request));
         try s.objectField("tools");
         try serde.writeOpenAITools(s, self.scratchAlloc(), async_payload); // #261 follow-up
         try s.objectField("tool_choice");
@@ -90,7 +90,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     // #379: compaction summaries run at low — a high-effort reasoner can
     // complete with only reasoning items and zero output text. GRAFF_COMPACT_MIX's
     // synthesis pass runs at session effort (compact_mix.zig); the guards still apply.
-    const effort = if ((self.compaction_request or self.server_compaction_request) and !@import("compact_mix.zig").synthSessionEffort() and !@import("effort_route.zig").mimoRoute(self.provider.id, self.provider.model)) "low" else @import("effort_route.zig").wireEffort(self.provider.id, self.provider.model, @tagName(self.reasoning));
+    const effort = if (self.compaction_request and !self.server_compaction_request and !@import("compact_mix.zig").synthSessionEffort() and !@import("effort_route.zig").mimoRoute(self.provider.id, self.provider.model)) "low" else @import("effort_route.zig").wireEffort(self.provider.id, self.provider.model, @tagName(self.reasoning));
     try s.write(effort);
     // summary:auto streams reasoning_summary_text.delta (reasoningDelta already parses it); without it silent reasoning emits NO frames — the stall watchdog cannot tell thinking from a dead socket.
     // ADR 0231: nobody watches a -p or piped session's reasoning, and at low effort it stays short, so it goes without.
@@ -109,7 +109,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     try s.write(false);
     server_compact.noteExposure(self);
     try server_compact.writeContextManagement(self, s);
-    if (self.output_schema) |schema_json| try writeTextFormat(s, schema_json) else if (!self.compaction_request and !self.server_compaction_request) {
+    if (self.output_schema) |schema_json| try writeTextFormat(s, schema_json) else if (!self.compaction_request or self.server_compaction_request) {
         if (@import("effort_route.zig").catalogVerbosity(self.provider.id, self.provider.model)) |v| {
             try s.objectField("text");
             try s.beginObject();

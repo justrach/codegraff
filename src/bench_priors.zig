@@ -123,7 +123,24 @@ pub const builtin_entries = [_]Entry{
     .{ .model = "gemini-3.1-pro", .effort = "high", .score = 12, .cost = 9.5 },
 };
 
+/// #1836: the tree the startup load (`noteKeysAtStartup`) read. The agent
+/// registry load repeats `loadInto` moments later; from the same tree it
+/// would re-read and re-fold the same archive, so that one call is skipped.
+/// A `-w` worktree changes the tree, and every later load (auto-promote's
+/// hot reload) runs in full.
+var g_startup_tree: ?[]const u8 = null;
+
+fn treeId(io: Io, arena: Allocator) ?[]const u8 {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = Io.Dir.cwd().realPath(io, &buf) catch return null;
+    return arena.dupe(u8, buf[0..n]) catch null;
+}
+
 pub fn loadInto(io: Io, arena: Allocator, home: ?[]const u8) void {
+    if (g_startup_tree) |tree| {
+        g_startup_tree = null;
+        if (treeId(io, arena)) |now| if (std.mem.eql(u8, tree, now)) return;
+    }
     var sheet = readSheet(io, arena, bench_path);
     if (sheet == null) if (home) |h| {
         const p = std.fmt.allocPrint(arena, "{s}/{s}", .{ h, bench_path }) catch return;
@@ -186,6 +203,7 @@ pub fn noteKeys(keys: *provider_mod.Keys) *provider_mod.Keys {
 pub fn noteKeysAtStartup(keys: provider_mod.Keys, io: Io, arena: Allocator, home: ?[]const u8) provider_mod.Keys {
     const kept = noteAvailability(keys);
     loadInto(io, arena, home);
+    g_startup_tree = treeId(io, arena);
     return kept;
 }
 
@@ -218,6 +236,23 @@ pub const Obs = struct { model: []const u8, effort: []const u8, sum: f64 = 0, n:
 /// quality into model quality — #290's confound — so this feeds a DAMPED
 /// prior (blend's pseudo-counts), never a controlled comparison; matched-
 /// genome stratification is the refinement path when archives grow.
+/// Is `line` an archive row of kind `kind`? Reads the first `"kind"` key,
+/// which the trajectory writer puts in the row envelope ahead of any payload
+/// (`run_id`, `pid`, `session_id`, then `kind`), so it is found within the
+/// first hundred bytes instead of scanning a multi-kilobyte `prompt` row.
+/// Most of an archive is rows no fold reads, and every fold ran its JSON
+/// parse on every one of them at each ACP and REPL start (#1836). Inside a
+/// JSON string a quote is escaped, so prose cannot fake the key.
+pub fn kindIs(line: []const u8, kind: []const u8) bool {
+    const key = "\"kind\"";
+    const at = std.mem.indexOf(u8, line, key) orelse return false;
+    var i = at + key.len;
+    while (i < line.len and (line[i] == ' ' or line[i] == ':' or line[i] == '\t')) i += 1;
+    if (i >= line.len or line[i] != '"') return false;
+    const rest = line[i + 1 ..];
+    return rest.len > kind.len and rest[kind.len] == '"' and std.mem.startsWith(u8, rest, kind);
+}
+
 pub fn foldObservations(arena: Allocator, archive: []const u8) []Obs {
     const Recipe = struct { sha: []const u8, model: []const u8, effort: []const u8 };
     var recipes: std.ArrayList(Recipe) = .empty;
@@ -227,7 +262,7 @@ pub fn foldObservations(arena: Allocator, archive: []const u8) []Obs {
         var it = std.mem.splitScalar(u8, archive, '\n');
         while (it.next()) |ln| {
             const t = std.mem.trim(u8, ln, " \t\r");
-            if (t.len == 0) continue;
+            if (!kindIs(t, if (pass == 0) "recipe" else "score")) continue;
             const v = std.json.parseFromSliceLeaky(std.json.Value, arena, t, .{}) catch continue;
             if (v != .object) continue;
             const o = v.object;

@@ -205,9 +205,11 @@ pub fn buildRootAgent(
     tracer: *trace.Tracer,
     sys_normal: []const u8,
     snaps: *tools_mod.Snapshots,
-    flags: args.Flags,
+    flags: *args.Flags,
     telem_endpoint: []const u8,
 ) !agent_mod.Agent {
+    // --session-id / --continue become --resume (or the fresh name) now that the cwd is final.
+    @import("session_select.zig").resolve(io, arena, flags);
     var root: agent_mod.Agent = .{
         .snapshots = snaps,
         .gpa = gpa,
@@ -219,7 +221,7 @@ pub fn buildRootAgent(
         .subagent_provider_explicit = flags.subagent_provider_flag != null or flags.subagent_model_flag != null or flags.no_subagent_tier_flag or environ_map.get("GRAFF_SUBAGENT_PROVIDER") != null or environ_map.get("GRAFF_SUBAGENT_MODEL") != null, // #371: only a USER-stated worker choice survives /model
         .subagent_cross_provider = flags.allow_cross_provider_subagents_flag,
         .home = keys_cli.homeEnv(environ_map) orelse "",
-        .messages = std.json.Array.init(arena),
+        .messages = std.json.Array.init(if (main_mod.g_session_arena) |sa| sa.allocator() else arena),
         .sub = false,
         .label = "main",
         .out = out,
@@ -236,7 +238,7 @@ pub fn buildRootAgent(
     // sharing a session name — which would also share one .session.json file
     // (#289 contention) and collide as presence peers (#469).
     const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}-{d}", .{ util.unixMs(io), proc_identity.selfPid() });
-    root.session_name = if (flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag) (flags.branch_flag orelse flags.resume_flag.?) else fresh_session_name;
+    root.session_name = if (flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag) (flags.branch_flag orelse flags.resume_flag.?) else (flags.session_id_flag orelse fresh_session_name);
     root.session_parent = if (flags.branch_flag != null) flags.resume_flag else null;
     try prompts.setRootSystemPrompts(&root, sys_normal, arena); // #381: same funnel + the live .graff/playbook.jsonl constraint block
     local_tools.load(io, arena);
@@ -339,6 +341,8 @@ pub fn restoreResumedSession(arena: Allocator, out: *Io.Writer, root: *agent_mod
             }
         }
     } else |err| {
+        // ADR 0319: starting fresh under this name would autosave over the newer save.
+        if (err == error.SessionFormatTooNew) std.process.fatal("cannot resume '{s}': {s}", .{ source, @import("session_version.zig").too_new_text });
         if (flags.branch_flag != null) std.process.fatal("cannot branch from '{s}': {t}", .{ source, err });
     }
 }

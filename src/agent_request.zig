@@ -136,7 +136,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         if (tools) |t| if (t.len == 0) tr.note("tools", "empty catalog at request time (#695)");
     }
     if (self.run_budget) |b| if (budget_permit) |p| {
-        if (b.max_model_calls != 0 and p.call_number == b.max_model_calls and tools != null) {
+        if (!self.compaction_request and b.max_model_calls != 0 and p.call_number == b.max_model_calls and tools != null) {
             tools = null;
             b.model_landed.store(true, .release);
             try self.messages.append(try wire_messages.userNote(self.arena, self.provider.kind, landing_note));
@@ -146,7 +146,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     self.last_request_context_overflow = false;
     self.last_request_write_failed = false;
     self.last_usage_includes_output = false;
-    var force = !self.review_mode and (self.strict or self.eval_cmd != null or self.named_work_nudges > 0) and tools != null;
+    var force = !self.review_mode and !self.compaction_request and (self.strict or self.eval_cmd != null or self.named_work_nudges > 0) and tools != null;
     var stream_usage = true; // openai stream_options; dropped if rejected
     var auth_refreshed = false; // #148: at most one forced token refresh + retry
     // #124: reclaim last request's transient parse garbage FIRST, so everything
@@ -166,7 +166,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     const message_arena = self.messageMutationAlloc();
     @import("history_wire.zig").prepare(message_arena, self.provider.kind, &self.messages);
     // ADR 0221: on the ChatGPT plan route loaded tools ride additional_tools items, so `tools` never changes.
-    if (!self.compaction_request and !self.server_compaction_request) @import("additional_tools.zig").sync(self);
+    if (!self.compaction_request or self.server_compaction_request) @import("additional_tools.zig").sync(self);
     // #193/#440: window-proportional backstop for resumed legacy or externally
     // appended outputs; runTools already meets the durable handle contract.
     const spills_before = tool_spill.spillCount();

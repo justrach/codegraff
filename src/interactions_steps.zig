@@ -171,7 +171,8 @@ pub fn step(self: *@import("agent.zig").Agent, root: std.json.ObjectMap) !?[]con
     // and the endpoint validates it, so it must survive unedited.
     for (steps.array.items) |st| try self.messages.append(st);
 
-    const final_text = try assistantText(self.arena, root);
+    const msg_alloc = self.historyAlloc();
+    const final_text = try assistantText(msg_alloc, root);
     if (final_text.len > 0) try agent_steps.surfaceUnstreamedText(self, final_text);
 
     var calls: std.ArrayList(agent_steps.ToolCall) = .empty;
@@ -191,7 +192,7 @@ pub fn step(self: *@import("agent.zig").Agent, root: std.json.ObjectMap) !?[]con
     if (calls.items.len > 0) {
         const results = try self.runTools(calls.items);
         for (calls.items, results) |call, r| {
-            try self.messages.append(try functionResult(self.arena, call.id, call.name, r.text));
+            try self.messages.append(try functionResult(msg_alloc, call.id, call.name, r.text));
         }
         try @import("turn_checkpoint.zig").afterToolBatch(self);
         const eval_control = @import("agent_eval_control.zig");

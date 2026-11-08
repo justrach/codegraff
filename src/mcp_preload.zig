@@ -27,6 +27,7 @@ pub fn namedServers(self: *Agent) bool {
     const text = @import("messages.zig").latestUserText(self.messages.items);
     if (text.len == 0) return false;
     const reg_tools: []const mcp.Tool = if (self.registry) |reg| reg.tools else &.{};
+    const msg_alloc = self.historyAlloc();
     var loaded: std.ArrayList(u8) = .empty;
     for (reg_tools, 0..) |tool, i| {
         const server = tool.serverName();
@@ -34,11 +35,11 @@ pub fn namedServers(self: *Agent) bool {
         if (gate.serverCost(reg_tools, server) > budget_bytes) continue;
         for (reg_tools) |t| if (std.mem.eql(u8, t.serverName(), server) and gate.blocked(reg_tools, t.qualified_name)) {
             gate.autoLoad(self.arena, reg_tools, t.qualified_name);
-            loaded.print(self.arena, "{s}{s}", .{ if (loaded.items.len == 0) "" else ", ", t.qualified_name }) catch {};
+            loaded.print(msg_alloc, "{s}{s}", .{ if (loaded.items.len == 0) "" else ", ", t.qualified_name }) catch {};
         };
     }
     const mcp_loaded = loaded.items.len > 0;
-    namedNatives(self.arena, text, &loaded);
+    namedNatives(msg_alloc, text, &loaded);
     if (loaded.items.len == 0) return false;
     note(self, loaded.items, mcp_loaded);
     return true;
@@ -76,14 +77,15 @@ fn namedNatives(arena: std.mem.Allocator, text: []const u8, loaded: *std.ArrayLi
 /// model coded against full rows, met slimmed ones, and spent calls finding
 /// the real shape.
 fn note(self: *Agent, tools: []const u8, mcp_loaded: bool) void {
-    const head = std.fmt.allocPrint(self.arena, "Already loaded for this turn: {s}. Their schemas are attached and the tools are callable now; load_tool_schemas is not needed for them.", .{tools}) catch return;
-    const shaped = if (mcp_loaded) @import("mcp_shapes.zig").annotate(self.gpa, self.arena, self.io, self.agent_cwd, head) catch head else head;
+    const msg_alloc = self.historyAlloc();
+    const head = std.fmt.allocPrint(msg_alloc, "Already loaded for this turn: {s}. Their schemas are attached and the tools are callable now; load_tool_schemas is not needed for them.", .{tools}) catch return;
+    const shaped = if (mcp_loaded) @import("mcp_shapes.zig").annotate(self.gpa, msg_alloc, self.io, self.agent_cwd, head) catch head else head;
     // A fetch-then-write task is one rlm step: each() makes the calls, write_file
     // saves the binds, and bash() builds the file from them.
-    const text = if (mcp_loaded and @import("rlm.zig").available) std.fmt.allocPrint(self.arena, "{s}\n{s}", .{ shaped, rlm_hint }) catch shaped else shaped;
-    var msg = @import("named_work.zig").userNudge(self.arena, self.provider.kind, text) catch return;
+    const text = if (mcp_loaded and @import("rlm.zig").available) std.fmt.allocPrint(msg_alloc, "{s}\n{s}", .{ shaped, rlm_hint }) catch shaped else shaped;
+    var msg = @import("named_work.zig").userNudge(msg_alloc, self.provider.kind, text) catch return;
     if (msg != .object) return;
-    msg.object.put(self.arena, @import("session_wake.zig").origin_key, .{ .string = "notification" }) catch return;
+    msg.object.put(msg_alloc, @import("session_wake.zig").origin_key, .{ .string = "notification" }) catch return;
     self.messages.append(msg) catch {};
 }
 

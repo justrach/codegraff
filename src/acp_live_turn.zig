@@ -45,7 +45,9 @@ pub const LiveTurn = struct {
 
     pub fn bindSession(ctx: *anyopaque, session_id: []const u8) void {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
-        self.session_id = session_id;
+        if (!std.mem.eql(u8, self.session_id, session_id)) {
+            self.session_id = self.root.arena.dupe(u8, session_id) catch session_id;
+        }
         self.root.last_api_reauth = null;
     }
 
@@ -105,8 +107,8 @@ pub const LiveTurn = struct {
         defer clock.clear(self.root);
         if (auto) |invocation| {
             var aw: Io.Writer.Allocating = .init(arena);
-            try goal_pacing.armAndAnnounce(&clock, self.root, &aw.writer, arena, @import("util.zig").unixMs(self.root.io), invocation.budget());
-            try main_mod.handleCommand(self.root, self.keys, arena, invocation.goal_line.?, &aw.writer);
+            try goal_pacing.armAndAnnounce(&clock, self.root, &aw.writer, self.root.arena, @import("util.zig").unixMs(self.root.io), invocation.budget());
+            try main_mod.handleCommand(self.root, self.keys, self.root.arena, invocation.goal_line.?, &aw.writer);
             const notice = try @import("acp_engine.zig").stripSgr(arena, aw.writer.buffered());
             output_lock.lockUncancelable(self.root.io);
             defer output_lock.unlock(self.root.io);
@@ -154,8 +156,14 @@ pub const LiveTurn = struct {
         @import("acp_subagent_live.zig").install(self.root.io, &child_state);
         defer @import("acp_subagent_live.zig").uninstall(self.root.io);
         self.root.out = &sink.writer;
-        main_mod.g_out = &sink.writer;
+        {
+            main_mod.g_gui_mu.lockUncancelable(self.root.io);
+            defer main_mod.g_gui_mu.unlock(self.root.io);
+            main_mod.g_out = &sink.writer;
+        }
         defer {
+            main_mod.g_gui_mu.lockUncancelable(self.root.io);
+            defer main_mod.g_gui_mu.unlock(self.root.io);
             sink.writer.flush() catch {};
             self.root.out = null;
             main_mod.g_out = null;
@@ -185,17 +193,18 @@ pub const LiveTurn = struct {
         }
         turn_trace.record(self.root, self.root.io, arena, text, turn_id, started, result, self.root.effectiveContextTokens(), before, &self.prev_turn_id, &self.prev_prompt_fp);
         const isolated = context.restore(self.root);
+        const msg_alloc = self.root.messageMutationAlloc();
         if (isolated) {
             self.root.review_mode = parent_review_mode;
             self.root.sys_override = parent_override;
-            try self.root.messages.append(try messages.textMessage(arena, "user", text));
+            try self.root.messages.append(try messages.textMessage(msg_alloc, "user", text));
             self.root.rebaseContextMeter();
         }
         const final = result catch |err| {
             if (err == error.Interrupted or err == error.Canceled) {
                 self.cancelled_source = cancel_source.take(self.root.tracer);
                 if (!isolated) try self.root.messages.append(try messages.textMessage(
-                    arena,
+                    msg_alloc,
                     "assistant",
                     cancel_source.marker(self.cancelled_source.?),
                 ));
@@ -204,17 +213,17 @@ pub const LiveTurn = struct {
             // partial reply and says why, so the next prompt (and a resume)
             // sees where the answer stopped instead of no reply at all.
             if (!isolated and (err == error.StreamDropped or err == error.StreamStalled)) {
-                const ended = try @import("stream_reconnect.zig").endedEarlyText(arena, self.root.partial_text.items, err == error.StreamStalled);
-                try self.root.messages.append(try messages.textMessage(arena, "assistant", ended));
+                const ended = try @import("stream_reconnect.zig").endedEarlyText(msg_alloc, self.root.partial_text.items, err == error.StreamStalled);
+                try self.root.messages.append(try messages.textMessage(msg_alloc, "assistant", ended));
             }
             if (isolated) {
                 const marker = if (err == error.Interrupted or err == error.Canceled)
                     cancel_source.marker(self.cancelled_source.?)
                 else
-                    try std.fmt.allocPrint(arena, "[review ended early: {s}; findings are incomplete]", .{@errorName(err)});
+                    try std.fmt.allocPrint(msg_alloc, "[review ended early: {s}; findings are incomplete]", .{@errorName(err)});
                 const partial = std.mem.trim(u8, self.root.partial_text.items, " \t\r\n");
-                const report = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ partial, marker });
-                try self.root.messages.append(try messages.textMessage(arena, "assistant", report));
+                const report = try std.fmt.allocPrint(msg_alloc, "{s}\n\n{s}", .{ partial, marker });
+                try self.root.messages.append(try messages.textMessage(msg_alloc, "assistant", report));
                 try sink.writer.flush();
                 output_lock.lockUncancelable(self.root.io);
                 defer output_lock.unlock(self.root.io);
@@ -234,7 +243,7 @@ pub const LiveTurn = struct {
         // killed never did. The root arena, not this turn's: the queued write
         // outlives the turn.
         if (isolated)
-            try self.root.messages.append(try messages.textMessage(arena, "assistant", final));
+            try self.root.messages.append(try messages.textMessage(msg_alloc, "assistant", final));
         session.saveSessionAsync(self.root, self.root.arena, self.root.session_name) catch {};
         // saw_text is "the LAST streamed event was answer text" (tool events
         // reset it in the sink): a turn that ended mid-text already delivered
