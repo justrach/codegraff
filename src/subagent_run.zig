@@ -110,6 +110,7 @@ pub fn classifyFailure(err: anyerror, detail: ?[]const u8) FailKind {
     // ("quota"-adjacent, and it names a limit) would otherwise classify it as
     // a provider rate limit and earn it a retry that cannot possibly succeed.
     if (isBudgetExhausted(msg)) return .budget_exhausted;
+    if (containsAnyCI(msg, &.{ "model_unavailable", "model_not_found" })) return .model;
     // 5xx before everything: a server-side outage is the most common transient
     // failure there is, and "503 Service Unavailable" used to fall through to
     // the .model arm on the bare word "unavailable". That was harmless while

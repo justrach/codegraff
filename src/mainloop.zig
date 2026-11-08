@@ -505,6 +505,18 @@ pub fn run(ctx: *Ctx) !void {
                 session.saveSession(ctx.root, ctx.arena, ctx.root.session_name) catch {};
                 continue;
             },
+            error.ProviderQuotaExceeded, error.ProviderAuthenticationFailed, error.ProviderAccessDenied => |e| {
+                const detail = ctx.root.last_api_error orelse @errorName(e);
+                if (telemetry.g_telem) |t| t.errorEvent("api", detail);
+                if (main_mod.json_mode) {
+                    ctx.root.emit(.{ .type = "error", .message = detail });
+                } else {
+                    ctx.root.say("{s}\n", .{detail}) catch {};
+                }
+                try @import("turn_dedup.zig").settleFailedTurn(ctx.root, ctx.arena, e);
+                session.saveSession(ctx.root, ctx.arena, ctx.root.session_name) catch {};
+                continue;
+            },
             else => |e| {
                 if (telemetry.g_telem) |t| t.errorEvent("turn", @errorName(e));
                 if (main_mod.json_mode) {

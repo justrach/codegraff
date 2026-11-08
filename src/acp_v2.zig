@@ -115,21 +115,53 @@ pub fn writeFailed(w: *Io.Writer, sid: []const u8, message: []const u8) !void {
 }
 
 pub fn writeFailedRecovery(w: *Io.Writer, sid: []const u8, message: []const u8, recovery: ?@import("auth_recovery.zig").Recovery) !void {
-    const data = recovery orelse return writeFailed(w, sid, message);
+    return writeFailedDetail(w, sid, message, recovery, null);
+}
+
+pub fn writeFailedDetail(
+    w: *Io.Writer,
+    sid: []const u8,
+    message: []const u8,
+    recovery: ?@import("auth_recovery.zig").Recovery,
+    detail: ?@import("provider_error_copy.zig").Detail,
+) !void {
+    if (recovery == null and detail == null) return writeFailed(w, sid, message);
     breakMessage();
     // ADR 0310: only a sign-in action rides `graff/reauth`, which clients read
     // as "signed out"; a rejected API key rides `graff/recovery`.
-    if (data.login == null) return notify(w, sid, .{
-        .sessionUpdate = "state_update",
-        .state = "idle",
-        .stopReason = "_error",
-        ._meta = .{ .@"graff/error" = message, .@"graff/recovery" = data },
-    });
+    if (recovery) |data| {
+        if (data.login == null) {
+            if (detail) |det| return notify(w, sid, .{
+                .sessionUpdate = "state_update",
+                .state = "idle",
+                .stopReason = "_error",
+                ._meta = .{ .@"graff/error" = message, .@"graff/recovery" = data, .@"graff/errorDetail" = det },
+            });
+            return notify(w, sid, .{
+                .sessionUpdate = "state_update",
+                .state = "idle",
+                .stopReason = "_error",
+                ._meta = .{ .@"graff/error" = message, .@"graff/recovery" = data },
+            });
+        }
+        if (detail) |det| return notify(w, sid, .{
+            .sessionUpdate = "state_update",
+            .state = "idle",
+            .stopReason = "_error",
+            ._meta = .{ .@"graff/error" = message, .@"graff/reauth" = data, .@"graff/errorDetail" = det },
+        });
+        return notify(w, sid, .{
+            .sessionUpdate = "state_update",
+            .state = "idle",
+            .stopReason = "_error",
+            ._meta = .{ .@"graff/error" = message, .@"graff/reauth" = data },
+        });
+    }
     try notify(w, sid, .{
         .sessionUpdate = "state_update",
         .state = "idle",
         .stopReason = "_error",
-        ._meta = .{ .@"graff/error" = message, .@"graff/reauth" = data },
+        ._meta = .{ .@"graff/error" = message, .@"graff/errorDetail" = detail.? },
     });
 }
 
