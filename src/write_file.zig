@@ -70,6 +70,8 @@ pub fn exec(ctx: tools.ToolCtx, input: std.json.Value) !tools.ToolOutput {
     const path = tools.strField(input, "path") orelse return tools.missingArg(gpa, "path");
     const content = tools.strField(input, "content") orelse return tools.missingArg(gpa, "content");
     if (!approvals.confinedPath(path) or !approvals.noSymlinkEscape(io, path, ctx.agent_cwd)) return tools.outsideCwd(gpa, path);
+    if (approvals.protectsGitMetadata(path) or approvals.symlinkEntersGitMetadata(io, path, ctx.agent_cwd))
+        return .{ .text = try gpa.dupe(u8, approvals.git_metadata_refusal), .is_error = true };
     // #747: share sessionAbs with edit_file so a write cannot land in
     // posix cwd while the next edit looks at a stale display cwd.
     const resolved = try codedbpro_paths.sessionAbs(gpa, io, ctx.agent_cwd, path);
@@ -249,4 +251,57 @@ test "#1487: a read under one spelling of a path lets write_file replace it unde
     const landed = try tmp.dir.readFileAlloc(io, "real/g.txt", gpa, .limited(64));
     defer gpa.free(landed);
     try std.testing.expectEqualStrings("new", landed);
+}
+
+test "write_file and edit_file refuse .git metadata and symlinks into .git while allowing .github/.githooks" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, ".git/hooks");
+    try tmp.dir.writeFile(io, .{ .sub_path = ".git/config", .data = "[core]\n" });
+    try tmp.dir.symLink(io, ".git", "gitlink", .{ .is_directory = true });
+    const dir = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    var client: std.http.Client = undefined;
+    const ctx: tools.ToolCtx = .{ .gpa = gpa, .io = io, .client = &client, .provider = undefined, .registry = null, .from_sub = true, .approvals = null, .tracer = null, .agent_cwd = dir };
+
+    for ([_][]const u8{ ".git/hooks/post-checkout", "sub/.git/config", "gitlink/hooks/pre-commit" }) |blocked| {
+        var args: std.json.ObjectMap = .empty;
+        try args.put(a, "path", .{ .string = blocked });
+        try args.put(a, "content", .{ .string = "#!/bin/sh\n" });
+        const res = try exec(ctx, .{ .object = args });
+        defer gpa.free(res.text);
+        try std.testing.expect(res.is_error);
+        try std.testing.expect(std.mem.indexOf(u8, res.text, ".git metadata") != null);
+    }
+
+    var edit_args: std.json.ObjectMap = .empty;
+    try edit_args.put(a, "path", .{ .string = ".git/config" });
+    try edit_args.put(a, "old_string", .{ .string = "[core]" });
+    try edit_args.put(a, "new_string", .{ .string = "[core]\nfsmonitor = evil" });
+    const ed = try edit_verify.execEdit(ctx, .{ .object = edit_args });
+    defer gpa.free(ed.text);
+    try std.testing.expect(ed.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, ed.text, ".git metadata") != null);
+
+    const batch_in = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"path":".git/config","edits":[{"old_string":"[core]","new_string":"[user]"}]}
+    , .{});
+    const batch_ed = try @import("edit_batch.zig").execBatch(ctx, batch_in);
+    defer gpa.free(batch_ed.text);
+    try std.testing.expect(batch_ed.is_error);
+
+    for ([_][]const u8{ ".github/workflows/ci.yml", ".gitignore", ".githooks/pre-push" }) |ok_path| {
+        var args: std.json.ObjectMap = .empty;
+        try args.put(a, "path", .{ .string = ok_path });
+        try args.put(a, "content", .{ .string = "ok\n" });
+        const ok = try exec(ctx, .{ .object = args });
+        defer gpa.free(ok.text);
+        try std.testing.expect(!ok.is_error);
+    }
 }

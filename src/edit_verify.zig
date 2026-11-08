@@ -184,6 +184,7 @@ pub fn execEdit(ctx: ToolCtx, input: Value) !ToolOutput {
     const old = strField(input, "old_string") orelse return missingArg(gpa, "old_string");
     const new = strField(input, "new_string") orelse return missingArg(gpa, "new_string");
     if (!confinedPath(path) or !noSymlinkEscape(ctx.io, path, ctx.agent_cwd)) return outsideCwd(gpa, path);
+    if (approvals_mod.protectsGitMetadata(path) or approvals_mod.symlinkEntersGitMetadata(ctx.io, path, ctx.agent_cwd)) return .{ .text = try gpa.dupe(u8, approvals_mod.git_metadata_refusal), .is_error = true };
     const all = tools.json_args.flag(input, "replace_all");
     if (old.len == 0) return .{ .text = try gpa.dupe(u8, "old_string must not be empty"), .is_error = true };
 
