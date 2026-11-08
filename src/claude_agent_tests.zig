@@ -68,8 +68,12 @@ test "claude-agent classify: stream events, held tool calls, results; subagent e
     const a = arena.allocator();
     const ev = try wire.classify(a, "{\"type\":\"stream_event\",\"parent_tool_use_id\":null,\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"mcp__graff__read_file\",\"input\":{}}}}");
     var event = ev.event;
-    try std.testing.expect(wire.unprefixToolUse(&event));
+    try std.testing.expectEqual(wire.ToolUseKind.graff, wire.unprefixToolUse(&event));
     try std.testing.expectEqualStrings("read_file", event.object.get("content_block").?.object.get("name").?.string);
+    const bare_ev = try wire.classify(a, "{\"type\":\"stream_event\",\"parent_tool_use_id\":null,\"event\":{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_bare\",\"name\":\"shell\",\"input\":{}}}}");
+    var bare = bare_ev.event;
+    try std.testing.expectEqual(wire.ToolUseKind.foreign, wire.unprefixToolUse(&bare));
+    try std.testing.expectEqual(@as(?i64, 1), wire.blockIndex(bare));
     const nested = try wire.classify(a, "{\"type\":\"stream_event\",\"parent_tool_use_id\":\"toolu_0\",\"event\":{\"type\":\"message_start\"}}");
     try std.testing.expect(nested == .ignore);
     const call = try wire.classify(a, "{\"type\":\"control_request\",\"request_id\":\"r9\",\"request\":{\"subtype\":\"mcp_message\",\"server_name\":\"graff\",\"message\":{\"method\":\"tools/call\",\"params\":{\"name\":\"read_file\",\"arguments\":{},\"_meta\":{\"claudecode/toolUseId\":\"toolu_1\"}},\"jsonrpc\":\"2.0\",\"id\":2}}}");
@@ -303,4 +307,39 @@ test "claude-agent: a prompt after a call's result keeps its image, fresh or liv
     try std.testing.expectEqualStrings("image", items[2].object.get("type").?.string);
     try std.testing.expectEqualStrings("iVBORw0KGgo=", items[2].object.get("data").?.string);
     try std.testing.expectEqualStrings("image/png", items[2].object.get("mimeType").?.string);
+}
+
+test "claude-agent: earlier images survive an interrupted turn as real image blocks within budget (#1810)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const saved_budget = history.checkpoint_image_budget;
+    defer history.checkpoint_image_budget = saved_budget;
+
+    const msgs = try parse(a,
+        \\[{"role":"user","content":[{"type":"text","text":"here is the screenshot"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"EARLY_PNG"}}]},
+        \\ {"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"read_file","input":{"path":"a.zig"}}]},
+        \\ {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"captured"},{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"TOOL_JPG"}}]}]},
+        \\ {"role":"user","content":"wait, check the header instead"}]
+    );
+    const fresh = (try history.freshContent(a, msgs.array.items)).array.items;
+    try std.testing.expectEqual(@as(usize, 4), fresh.len);
+    const cp = fresh[0].object.get("text").?.string;
+    try std.testing.expect(std.mem.indexOf(u8, cp, "[image]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, cp, "[image #1 attached]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cp, "[image #2 attached]") != null);
+    try std.testing.expectEqualStrings("image", fresh[1].object.get("type").?.string);
+    try std.testing.expectEqualStrings("EARLY_PNG", fresh[1].object.get("source").?.object.get("data").?.string);
+    try std.testing.expectEqualStrings("image", fresh[2].object.get("type").?.string);
+    try std.testing.expectEqualStrings("TOOL_JPG", fresh[2].object.get("source").?.object.get("data").?.string);
+    try std.testing.expectEqualStrings("wait, check the header instead", fresh[3].object.get("text").?.string);
+
+    // Tight budget keeps the newest image and explains why the older one was omitted.
+    history.checkpoint_image_budget = "TOOL_JPG".len;
+    const bounded = (try history.freshContent(a, msgs.array.items)).array.items;
+    try std.testing.expectEqual(@as(usize, 3), bounded.len);
+    const cp_bounded = bounded[0].object.get("text").?.string;
+    try std.testing.expect(std.mem.indexOf(u8, cp_bounded, "[image omitted: exceeded checkpoint size budget]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cp_bounded, "[image #1 attached]") != null);
+    try std.testing.expectEqualStrings("TOOL_JPG", bounded[1].object.get("source").?.object.get("data").?.string);
 }

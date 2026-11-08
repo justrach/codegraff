@@ -82,20 +82,117 @@ fn sliceText(arena: std.mem.Allocator, text: []const u8, offset: usize, limit: u
     return std.fmt.allocPrint(arena, "{s}\n\n[{d}..{d} of {d} bytes]", .{ body, offset, end, text.len });
 }
 
+const max_tracked_handles: usize = 256;
+const TrackedEntry = struct {
+    id: u64 = 0,
+    len: usize = 0,
+    path: [std.fs.max_path_bytes]u8 = undefined,
+    used: bool = false,
+};
+var g_lock: std.atomic.Value(bool) = .init(false);
+var g_entries: [max_tracked_handles]TrackedEntry = @splat(.{});
+var g_next_slot: usize = 0;
+
+fn lockTable() void {
+    while (g_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
+}
+
+fn unlockTable() void {
+    g_lock.store(false, .release);
+}
+
+pub fn resetForTest() void {
+    lockTable();
+    defer unlockTable();
+    for (&g_entries) |*e| e.used = false;
+    g_next_slot = 0;
+}
+
+/// Bind a handle id to its originating absolute file path so a later
+/// `workspace use` cannot redirect `tr_N` to a same-numbered file in another
+/// worktree (#1820).
+pub fn rememberHandle(id: u64, path: []const u8) void {
+    if (!std.fs.path.isAbsolute(path) or path.len == 0 or path.len > std.fs.max_path_bytes) return;
+    lockTable();
+    defer unlockTable();
+    for (&g_entries) |*e| {
+        if (e.used and e.id == id) {
+            @memcpy(e.path[0..path.len], path);
+            e.len = path.len;
+            return;
+        }
+    }
+    const slot = g_next_slot % max_tracked_handles;
+    g_next_slot +%= 1;
+    g_entries[slot].id = id;
+    g_entries[slot].len = path.len;
+    @memcpy(g_entries[slot].path[0..path.len], path);
+    g_entries[slot].used = true;
+}
+
+pub fn lookupHandle(arena: std.mem.Allocator, id: u64) ?[]const u8 {
+    lockTable();
+    defer unlockTable();
+    for (&g_entries) |*e| {
+        if (e.used and e.id == id) return arena.dupe(u8, e.path[0..e.len]) catch null;
+    }
+    return null;
+}
+
+fn hasDotDot(path: []const u8) bool {
+    var it = std.mem.tokenizeAny(u8, path, "/\\");
+    while (it.next()) |comp| if (std.mem.eql(u8, comp, "..")) return true;
+    return false;
+}
+
+fn validTailId(rest: []const u8) ?u64 {
+    const prefix = tool_handle.handles_dir ++ "/";
+    if (!std.mem.startsWith(u8, rest, prefix)) return null;
+    const base = rest[prefix.len..];
+    if (std.mem.indexOfAny(u8, base, "/\\") != null) return null;
+    if (!std.mem.endsWith(u8, base, ".txt")) return null;
+    return parseId(base[0 .. base.len - 4]);
+}
+
 /// Resolve a handle token to a cwd-relative path under the handle dir.
 pub fn resolveRel(arena: std.mem.Allocator, handle: []const u8) ![]const u8 {
     const t = std.mem.trim(u8, handle, " \t");
     if (parseId(t)) |id| return relPath(arena, id);
-    // Accept the file's own relative or absolute path when it still names
-    // the handle dir (old markers printed the absolute path).
+    if (hasDotDot(t)) return error.BadHandle;
     const needle = tool_handle.handles_dir;
     if (std.mem.indexOf(u8, t, needle)) |at| {
+        if (at > 0 and t[at - 1] != '/' and t[at - 1] != '\\') return error.BadHandle;
         const rest = t[at..];
-        if (std.mem.indexOfScalar(u8, rest, '/') == null) return error.BadHandle;
-        if (std.mem.indexOf(u8, rest, "..") != null) return error.BadHandle;
+        if (validTailId(rest) == null) return error.BadHandle;
         return rest;
     }
     return error.BadHandle;
+}
+
+/// Resolve a handle id or explicit handle path to the file to read (#1820).
+/// Keeps an explicit worktree path intact instead of stripping the prefix and
+/// reading the new workspace's `.graff/tool-results/tr_N.txt`.
+pub fn resolvePath(arena: std.mem.Allocator, handle: []const u8, agent_cwd: ?[]const u8) ![]const u8 {
+    const t = std.mem.trim(u8, handle, " \t");
+    if (parseId(t)) |id| {
+        if (lookupHandle(arena, id)) |abs| return abs;
+        const rel = try relPath(arena, id);
+        if (agent_cwd) |cwd| return std.fs.path.join(arena, &.{ cwd, rel });
+        return rel;
+    }
+    if (hasDotDot(t)) return error.BadHandle;
+    const needle = tool_handle.handles_dir;
+    const at = std.mem.indexOf(u8, t, needle) orelse return error.BadHandle;
+    if (at > 0 and t[at - 1] != '/' and t[at - 1] != '\\') return error.BadHandle;
+    const rest = t[at..];
+    const id = validTailId(rest) orelse return error.BadHandle;
+    if (at > 0) {
+        if (std.fs.path.isAbsolute(t) or agent_cwd == null) return t;
+        return std.fs.path.join(arena, &.{ agent_cwd.?, t });
+    }
+    if (lookupHandle(arena, id)) |abs| return abs;
+    if (agent_cwd) |cwd| return std.fs.path.join(arena, &.{ cwd, rest });
+    return rest;
 }
 
 pub fn readStored(io: Io, arena: std.mem.Allocator, rel: []const u8) ![]const u8 {
@@ -108,7 +205,7 @@ pub fn exec(ctx: tools.ToolCtx, call: tools.ToolCall) !tools.ToolOutput {
     defer scratch.deinit();
     const arena = scratch.allocator();
     const handle = tools.strField(call.input, "handle") orelse return tools.missingArg(gpa, "handle");
-    const rel = resolveRel(arena, handle) catch
+    const rel = resolvePath(arena, handle, ctx.agent_cwd) catch
         return .{ .text = try std.fmt.allocPrint(gpa, "read_tool_result: '{s}' is not a handle (want tr_N)", .{handle}), .is_error = true };
     const stored = readStored(ctx.io, arena, rel) catch
         return .{ .text = try std.fmt.allocPrint(gpa, "read_tool_result: no stored result at {s}", .{rel}), .is_error = true };
@@ -165,4 +262,41 @@ test "query returns the whole matching line, including bytes before the needle" 
     const hits = try search(a, "ok\n" ++ line ++ "\nzz", "FAILED");
     try std.testing.expect(std.mem.indexOf(u8, hits, "req-8c41de07") != null);
     try std.testing.expect(std.mem.indexOf(u8, hits, "1 hit(s)") != null);
+}
+
+test "#1820: read_tool_result keeps the originating artifact across a workspace switch" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const io = std.testing.io;
+    tool_handle.resetForTest();
+    defer tool_handle.resetForTest();
+
+    var tree_a = std.testing.tmpDir(.{});
+    defer tree_a.cleanup();
+    var tree_b = std.testing.tmpDir(.{});
+    defer tree_b.cleanup();
+
+    const pad: [512]u8 = @splat('a');
+    const payload_a = "WORKTREE_A_ORIGIN_RESULT_" ++ &pad;
+    const handled = try tool_handle.forResult(std.testing.allocator, a, .{ .io = io, .dir = tree_a.dir }, payload_a, 128);
+    const path_a = handled.path orelse return error.TestUnexpectedResult;
+
+    // Colliding tr_0.txt in worktree B from an earlier session.
+    try tree_b.dir.createDirPath(io, tool_handle.handles_dir);
+    try tree_b.dir.writeFile(io, .{ .sub_path = ".graff/tool-results/tr_0.txt", .data = "WORKTREE_B_WRONG_RESULT" });
+    var buf_b: [std.fs.max_path_bytes]u8 = undefined;
+    const n_b = tree_b.dir.realPath(io, &buf_b) catch return error.SkipZigTest;
+    const cwd_b = buf_b[0..n_b];
+
+    // Even when the current workspace is B, both `tr_0` and the explicit path
+    // from A resolve to A's artifact rather than B's colliding tr_0.txt.
+    const by_id = try resolvePath(a, "tr_0", cwd_b);
+    const by_abs = try resolvePath(a, path_a, cwd_b);
+    try std.testing.expectEqualStrings(path_a, by_id);
+    try std.testing.expectEqualStrings(path_a, by_abs);
+    const read_id = try readStored(io, a, by_id);
+    const read_abs = try readStored(io, a, by_abs);
+    try std.testing.expectEqualStrings(payload_a, read_id);
+    try std.testing.expectEqualStrings(payload_a, read_abs);
 }

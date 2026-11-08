@@ -70,6 +70,7 @@ pub fn resetForTest() void {
     threshold_bytes = default_threshold_bytes;
     g_seq.store(0, .monotonic);
     g_used.store(0, .monotonic);
+    @import("result_read.zig").resetForTest();
 }
 
 /// `GRAFF_TOOL_HANDLE_BYTES=<bytes>`. Ignored when unparseable or 0 — a knob
@@ -223,7 +224,9 @@ fn persist(arena: Allocator, target: Target, text: []const u8) ?[]const u8 {
             if (err == error.PathAlreadyExists) continue;
             return refund(text.len);
         };
-        return absolute(target, arena, rel);
+        const abs = absolute(target, arena, rel);
+        @import("result_read.zig").rememberHandle(seq, abs);
+        return abs;
     }
     return refund(text.len);
 }

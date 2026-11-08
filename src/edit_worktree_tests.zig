@@ -141,3 +141,58 @@ test "#747: sessionAbs of a relative name follows the selected cwd, not a siblin
     defer gpa.free(via_posix);
     try std.testing.expect(std.mem.indexOf(u8, via_posix, "graff-747-tree-a") == null);
 }
+
+test "#1768: a background shared_cwd worker stays pinned to its spawn tree after a root workspace switch" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var here_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const here_n = std.process.currentPath(io, &here_buf) catch return error.SkipZigTest;
+    const here = try gpa.dupe(u8, here_buf[0..here_n]);
+    defer gpa.free(here);
+    defer chdirAbs(here) catch {};
+
+    var dir_a = std.testing.tmpDir(.{});
+    defer dir_a.cleanup();
+    var dir_b = std.testing.tmpDir(.{});
+    defer dir_b.cleanup();
+    try dir_a.dir.writeFile(io, .{ .sub_path = "note.txt", .data = "alpha\n" });
+    try dir_b.dir.writeFile(io, .{ .sub_path = "note.txt", .data = "beta\n" });
+    const path_a = try tmpAbs(io, &dir_a);
+    defer gpa.free(path_a);
+    const path_b = try tmpAbs(io, &dir_b);
+    defer gpa.free(path_b);
+
+    var client: std.http.Client = undefined;
+    var root_ctx = edit_verify.testCtx(&client);
+    root_ctx.provider = .{ .id = "test", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "test", .context = 1000 };
+    try std.testing.expect(root_ctx.agent_cwd == null);
+
+    // Spawn the background worker while the root session is in tree A.
+    try chdirAbs(path_a);
+    var owned = @import("subagent_owned.zig").Owned.init(gpa);
+    defer owned.deinit();
+    const worker_ctx = try owned.context(root_ctx);
+    try std.testing.expect(worker_ctx.agent_cwd != null);
+
+    // Root session switches to tree B while the worker is still running.
+    try chdirAbs(path_b);
+
+    var a_obj: std.json.ObjectMap = .empty;
+    defer a_obj.deinit(gpa);
+    try a_obj.put(gpa, "path", .{ .string = "note.txt" });
+    try a_obj.put(gpa, "old_string", .{ .string = "alpha\n" });
+    try a_obj.put(gpa, "new_string", .{ .string = "ALPHA\n" });
+    const out = try edit_verify.execEdit(worker_ctx, .{ .object = a_obj });
+    defer gpa.free(out.text);
+    try std.testing.expect(!out.is_error);
+
+    try chdirAbs(here);
+    const on_a = try dir_a.dir.readFileAlloc(io, "note.txt", gpa, .limited(64));
+    defer gpa.free(on_a);
+    const on_b = try dir_b.dir.readFileAlloc(io, "note.txt", gpa, .limited(64));
+    defer gpa.free(on_b);
+    try std.testing.expectEqualStrings("ALPHA\n", on_a);
+    try std.testing.expectEqualStrings("beta\n", on_b);
+}

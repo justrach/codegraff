@@ -350,16 +350,21 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     var wt: ?jobs.AgentWorktree = null;
     var isolation_note: []const u8 = "";
     var pool_seat = false;
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const inherited_cwd: ?[]const u8 = ctx.agent_cwd orelse if (std.process.currentPath(ctx.io, &cwd_buf)) |n|
+        arena.dupe(u8, cwd_buf[0..n]) catch null
+    else |_|
+        null;
     if (ctx.retained_worker != null and ctx.retained_worker.?.record.messages.len > 0) {
         agent.agent_cwd = ctx.retained_worker.?.record.cwd;
-    } else if (isolation == .shared_cwd and ctx.agent_cwd != null) {
-        agent.agent_cwd = ctx.agent_cwd;
+    } else if (isolation == .shared_cwd) {
+        agent.agent_cwd = inherited_cwd;
     } else if (@import("experiment_pool.zig").claimSeat()) |seat| {
         agent.agent_cwd = seat.path;
         wt = .{ .path = seat.path, .branch = seat.branch, .base = seat.base };
         pool_seat = true;
     } else if (isolation == .worktree) {
-        if (@import("agent_worktree.zig").agentWorktreeCreateAt(gpa, ctx.io, arena, sub_id, ctx.agent_cwd orelse ".")) |created| {
+        if (@import("agent_worktree.zig").agentWorktreeCreateAt(gpa, ctx.io, arena, sub_id, inherited_cwd orelse ".")) |created| {
             wt = created;
         } else |err| {
             if (!isolation_fallback) return .{
@@ -368,9 +373,9 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
             };
             isolation_note = "\n\n[note: isolation:\"worktree\" failed and fell back to the shared working tree — isolation_fallback:true allowed it]";
         }
-        agent.agent_cwd = if (wt) |w| w.path else null;
+        agent.agent_cwd = if (wt) |w| w.path else inherited_cwd;
     } else {
-        agent.agent_cwd = ctx.agent_cwd;
+        agent.agent_cwd = inherited_cwd;
     }
 
     // ACP v1's draft child-session scope is one foreground prompt. Detached
@@ -402,7 +407,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
 
     const wf_task = std.mem.eql(u8, kind, "workflow_task");
     if (wf_task) guiEmit(ctx.io, .{ .type = "tool_call", .name = "subagent", .input = .{ .description = label }, .id = sub_id });
-    const tasked = try @import("subagent_brief.zig").prepare(arena, ctx.io, kind, prompt, ctx.agent_cwd, main_mod.g_hooks.pre_tool);
+    const tasked = try @import("subagent_brief.zig").prepare(arena, ctx.io, kind, prompt, agent.agent_cwd, main_mod.g_hooks.pre_tool);
     const task_prompt = playbook.rideBrief(ctx.io, arena, try goal_pacing.childTaskPrompt(arena, tasked, ctx.loop_deadline_ms, util.unixMs(ctx.io)));
     try @import("subagent_retained.zig").restore(&agent, ctx);
     if (!std.mem.eql(u8, kind, "judge_task") and agent.messages.items.len == 0) {
