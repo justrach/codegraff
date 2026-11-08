@@ -25,7 +25,12 @@ var test_fetch: ?update_service.Fetch = null;
 var test_asset: ?[]const u8 = null;
 var test_cancel: ?*const std.atomic.Value(bool) = null;
 var test_auto_consent: bool = false;
+var test_expect_nanocua: ?bool = null;
 var suppress_picker: bool = false;
+
+pub fn setTestExpectNanocua(expect: ?bool) void {
+    test_expect_nanocua = expect;
+}
 
 pub fn resetPending() void {
     pending_tag_len = 0;
@@ -92,22 +97,37 @@ pub fn renderReport(out: *Io.Writer, report: update_service.Report) !void {
             try out.writeAll("That release is already installed for the next launch. This session is still running its original version.\n");
             try out.writeAll(no_activate_note);
             try out.writeByte('\n');
+            if (report.nanocua_missing) try out.writeAll("nanocua.app is missing from ~/Applications. Type /update install (or run `graff computer install`) to install it.\n");
         },
-        .current => try out.print("graff is up to date (v{s})\n", .{report.running()}),
+        .current => {
+            try out.print("graff is up to date (v{s})\n", .{report.running()});
+            if (report.nanocua_missing) try out.writeAll("nanocua.app is missing from ~/Applications. Type /update install (or run `graff computer install`) to install it.\n");
+        },
         .newer => try out.print("running v{s} is newer than latest v{s} — not downgrading\n", .{
             report.running(),
             report.latest() orelse "?",
         }),
         .installed => {
-            try out.writeAll(installed_for_next_launch);
-            try out.writeByte('\n');
-            try out.writeAll(no_activate_note);
-            try out.writeByte('\n');
+            if (report.nanocua_only) {
+                try out.writeAll(report.detail);
+                try out.writeByte('\n');
+            } else {
+                try out.writeAll(installed_for_next_launch);
+                try out.writeByte('\n');
+                try out.writeAll(no_activate_note);
+                try out.writeByte('\n');
+            }
         },
         .offline => try out.writeAll("update check failed — offline or the release feed did not respond\n"),
-        .malformed => try out.writeAll("update check failed — malformed release response (not guessing)\n"),
+        .malformed => if (std.mem.indexOf(u8, report.detail, "nanocua.app") != null)
+            try out.print("update failed — {s}\n", .{report.detail})
+        else
+            try out.writeAll("update check failed — malformed release response (not guessing)\n"),
         .verify_failed => try out.writeAll("update refused — the artifact did not match the release SHA256SUMS\n"),
-        .permission => try out.writeAll("update refused — the install target is not writable (not escalating privileges)\n"),
+        .permission => if (std.mem.indexOf(u8, report.detail, "nanocua.app") != null)
+            try out.print("update refused — {s}\n", .{report.detail})
+        else
+            try out.writeAll("update refused — the install target is not writable (not escalating privileges)\n"),
         .cancelled => try out.writeAll("update cancelled — the existing install is unchanged\n"),
         .busy => try out.writeAll("an update is already installing — this session is unchanged\n"),
         .unsupported, .package_managed, .development => {
@@ -135,6 +155,7 @@ fn makeOpts(root: *Agent, target: []const u8, fetch: update_service.Fetch, asset
         .fetch = fetch,
         .cancel = test_cancel,
         .home = root.home,
+        .expect_nanocua = test_expect_nanocua,
     };
 }
 
@@ -173,6 +194,16 @@ fn confirmInstall(root: *Agent, out: *Io.Writer) bool {
     _ = yolo; // yolo is not authorization
     const idx = pickers.listPicker(root, root.arena, out, "Update ›", offerChoices()) orelse return false;
     return idx == 0;
+}
+
+fn maybeConnectNanocua(root: *Agent) void {
+    const reg = root.registry orelse return;
+    if (@import("nanocua_default.zig").connectShipped(reg, root.arena)) {
+        root.invalidateRootTools();
+        @import("prompt_cache_hud.zig").noteBust(.mcp);
+        root.ensureRootTools(root.provider.kind) catch {};
+        root.rebaseContextMeter();
+    }
 }
 
 pub fn tryHandle(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
@@ -220,17 +251,19 @@ pub fn tryHandle(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writ
             return true;
         };
         const report = update_service.install(opts, consent);
+        if (report.kind == .installed) maybeConnectNanocua(root);
         try renderReport(out, report);
         try out.flush();
         return true;
     }
 
     const report = update_service.inspect(opts);
-    if (report.kind == .available) {
+    if (report.kind == .available or report.nanocua_missing) {
         if (report.latest_tag()) |tag| rememberOffer(tag, target.path);
         if (confirmInstall(root, out)) {
             _ = consumePending();
             const installed = update_service.install(opts, .human);
+            if (installed.kind == .installed) maybeConnectNanocua(root);
             try renderReport(out, installed);
             try out.flush();
             return true;

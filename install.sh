@@ -87,12 +87,22 @@ darwin_sign() {
 # tarball without it changes nothing. It runs nothing until an agent needs it.
 place_nanocua() {
   [ "$(uname -s)" = Darwin ] || return 0
-  local app
+  local app stage dest old
   app="$(find "$1" -maxdepth 2 -type d -name nanocua.app 2>/dev/null | head -1)"
   [ -n "$app" ] || return 0
-  mkdir -p "$HOME/Applications"
-  rm -rf "$HOME/Applications/nanocua.app"
-  cp -R "$app" "$HOME/Applications/nanocua.app" || return 0
+  mkdir -p "$HOME/Applications" || return 1
+  dest="$HOME/Applications/nanocua.app"
+  stage="$HOME/Applications/.nanocua.app.new"
+  old="$HOME/Applications/.nanocua.app.old"
+  rm -rf "$stage" "$old"
+  cp -R "$app" "$stage" || { rm -rf "$stage"; return 1; }
+  if [ -e "$dest" ]; then mv "$dest" "$old" || { rm -rf "$stage"; return 1; }; fi
+  if ! mv "$stage" "$dest"; then
+    [ -e "$old" ] && mv "$old" "$dest" 2>/dev/null || true
+    rm -rf "$stage"
+    return 1
+  fi
+  rm -rf "$old"
 }
 
 # Drop the binary onto a *fresh inode*: overwriting a running macOS binary in

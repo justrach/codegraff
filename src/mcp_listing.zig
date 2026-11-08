@@ -24,7 +24,8 @@ fn merged(reg: *mcp.Registry, arena: Allocator, config_path: []const u8) mcp_con
 
 /// After the connected servers: one line per configured server that is not.
 pub fn notConnected(reg: *mcp.Registry, arena: Allocator, out: *Io.Writer, config_path: []const u8) !void {
-    const rows = try mcp_status.live(reg, arena, merged(reg, arena, config_path), NoEnv{});
+    const m = merged(reg, arena, config_path);
+    const rows = try mcp_status.live(reg, arena, m, NoEnv{});
     var untrusted: usize = 0;
     var failed = false;
     for (rows) |row| switch (row.state) {
@@ -35,6 +36,9 @@ pub fn notConnected(reg: *mcp.Registry, arena: Allocator, out: *Io.Writer, confi
             try out.print("  {s}{s}  {s}{s}{s}{s}\n", .{ style.dim, row.name, mcp_status.label(row), if (row.@"error" != null) " — " else "", row.@"error" orelse "", style.reset });
         },
     };
+    if (@import("nanocua_default.zig").missingStatusNote(reg.io, arena, reg.home, m, reg.global_is_override, @import("builtin").os.tag == .macos)) |note| {
+        try out.print("{s}{s}{s}", .{ style.dim, note, style.reset });
+    }
     if (failed) try out.print("  {s}/mcp reconnect <name> tries a failed server again; graff mcp login <name> signs in{s}\n", .{ style.dim, style.reset });
     if (untrusted > 0) try out.print("  {s}{d} configured server(s) not started — /mcp trust to connect them{s}\n", .{ style.dim, untrusted, style.reset });
 }
@@ -47,7 +51,8 @@ pub fn reconnect(reg: *mcp.Registry, arena: Allocator, out: *Io.Writer, config_p
         try out.writeAll("usage: /mcp reconnect <name>\n");
         return false;
     }
-    switch (@import("mcp_reconnect.zig").live(reg, merged(reg, arena, config_path), name)) {
+    const m = merged(reg, arena, config_path);
+    switch (@import("mcp_reconnect.zig").live(reg, m, name)) {
         .reconnected => |n| try out.print("{s}✓{s} reconnected {s}{s}{s} — {d} tool(s)\n", .{ style.green, style.reset, style.accent, name, style.reset, n }),
         .connected => |n| try out.print("{s}✓{s} connected {s}{s}{s} — {d} tool(s)\n", .{ style.green, style.reset, style.accent, name, style.reset, n }),
         .still_connecting => {
@@ -59,6 +64,12 @@ pub fn reconnect(reg: *mcp.Registry, arena: Allocator, out: *Io.Writer, config_p
             return false;
         },
         .not_configured => {
+            if (std.mem.eql(u8, name, @import("nanocua_default.zig").server_name) and
+                @import("nanocua_default.zig").missingStatusNote(reg.io, arena, reg.home, m, reg.global_is_override, @import("builtin").os.tag == .macos) != null)
+            {
+                try out.writeAll("nanocua isn't installed — run `graff computer install` (or `graff update`) to install ~/Applications/nanocua.app, then `/mcp reconnect nanocua`.\n");
+                return false;
+            }
             try out.print("no MCP server named {s} — /mcp lists them.\n", .{name});
             return false;
         },

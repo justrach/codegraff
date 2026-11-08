@@ -213,6 +213,12 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.eql(u8, line, "/computer") or std.mem.startsWith(u8, line, "/computer ")) {
         try @import("computer_cli.zig").slash(root.io, root.gpa, arena, root.home, line, out);
+        if (root.registry) |reg| if (@import("nanocua_default.zig").connectShipped(reg, arena)) {
+            root.invalidateRootTools();
+            @import("prompt_cache_hud.zig").noteBust(.mcp);
+            try root.ensureRootTools(root.provider.kind);
+            root.rebaseContextMeter();
+        };
         return true;
     }
     if (std.mem.startsWith(u8, line, "/mcp")) {

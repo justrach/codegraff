@@ -62,10 +62,14 @@ pub fn updateCommand(
         const up_to_date = check.order == .eq;
         const cur_newer = check.order == .gt;
         const cur_is_release = check.clean_release;
+        const home = environ.get("HOME") orelse "";
+        const missing_nanocua = builtin.os.tag == .macos and home.len > 0 and
+            @import("nanocua_default.zig").find(io, arena, home) == null;
 
         if (check_only) {
             if (cur_is_release and up_to_date) {
                 try out.print("graff is up to date (v{s})\n", .{cur_raw});
+                if (missing_nanocua) try out.writeAll("nanocua.app is not installed in ~/Applications (run `graff computer install` or `graff update`)\n");
             } else if (cur_is_release and cur_newer) {
                 try out.print("graff v{s} is newer than latest release v{s} — not downgrading\n", .{ cur_raw, latest_raw.? });
             } else if (cur_is_release) {
@@ -85,6 +89,23 @@ pub fn updateCommand(
 
         // Install path.
         if (up_to_date and cur_is_release and !force) {
+            if (missing_nanocua) {
+                try out.print("graff is already up to date (v{s}); installing missing nanocua.app…\n", .{cur_raw});
+                try out.flush();
+                var http: update_service.HttpFetch = .{ .io = io, .gpa = gpa, .user_agent = "simple-harness/" ++ harness_version };
+                const res = @import("nanocua_install.zig").installRelease(.{
+                    .io = io,
+                    .gpa = gpa,
+                    .home = home,
+                    .running_version = harness_version,
+                    .fetch = http.fetch(),
+                    .pinned_tag = latest_tag,
+                });
+                if (res.kind != .installed) std.process.fatal("update: {s}", .{res.detail});
+                try out.print("✓ {s}\n", .{res.detail});
+                try out.flush();
+                return;
+            }
             try out.print("graff is already up to date (v{s})\n", .{cur_raw});
             try out.flush();
             return;
