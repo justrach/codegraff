@@ -5,6 +5,11 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.4
+    \\  • WebSocket Responses turns keep server token counts without re-compacting on ciphertext size
+    \\  • compaction and session switches reclaim dropped history memory; ACP startup and session/load are faster
+    \\  • --session-id and -c/--continue launch flags, versioned session files, and upright EXIF photo uploads
+    \\
     \\0.302.74.3
     \\  • Responses compaction uses server token counts instead of re-compacting on ciphertext size
     \\  • cross-format model switches expand compaction checkpoints first and drop tool-only preambles

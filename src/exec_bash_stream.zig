@@ -56,15 +56,16 @@ fn emitOne(ctx: ?*anyopaque, which: u8, chunk: []const u8) void {
         } });
         return;
     }
-    const w = main_mod.g_out orelse return;
     if (main_mod.json_mode) {
         main_mod.g_gui_mu.lockUncancelable(c.io);
         defer main_mod.g_gui_mu.unlock(c.io);
+        const w = main_mod.g_out orelse return;
         @import("protocol_seq.zig").writeEvent(w, .{ .type = "bash_output_chunk", .name = "bash", .stream = if (which == 0) "stdout" else "stderr", .text = chunk }) catch return;
         w.writeByte('\n') catch return;
         w.flush() catch {};
         return;
     }
+    const w = main_mod.g_out orelse return;
     // Line REPL: live bytes are inspectable via /debug, not conversational.
     // The hosted TUI sink (above) still streams into the fold.
     if (!@import("repl.zig").g_debug) return;

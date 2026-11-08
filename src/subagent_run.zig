@@ -31,9 +31,9 @@ const subagent_retry = @import("subagent_retry.zig"); // bounded in-worker re-as
 
 fn guiEmit(io: Io, ev: anytype) void {
     if (!main_mod.json_mode) return;
-    const w = main_mod.g_out orelse return;
     main_mod.g_gui_mu.lockUncancelable(io);
     defer main_mod.g_gui_mu.unlock(io);
+    const w = main_mod.g_out orelse return;
     // #330: one shared --json stream, one shared sequence — a pool-thread
     // subagent emit takes its id under the same lock as the root agent's.
     protocol_seq.writeEvent(w, ev) catch return;

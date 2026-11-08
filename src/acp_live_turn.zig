@@ -156,8 +156,14 @@ pub const LiveTurn = struct {
         @import("acp_subagent_live.zig").install(self.root.io, &child_state);
         defer @import("acp_subagent_live.zig").uninstall(self.root.io);
         self.root.out = &sink.writer;
-        main_mod.g_out = &sink.writer;
+        {
+            main_mod.g_gui_mu.lockUncancelable(self.root.io);
+            defer main_mod.g_gui_mu.unlock(self.root.io);
+            main_mod.g_out = &sink.writer;
+        }
         defer {
+            main_mod.g_gui_mu.lockUncancelable(self.root.io);
+            defer main_mod.g_gui_mu.unlock(self.root.io);
             sink.writer.flush() catch {};
             self.root.out = null;
             main_mod.g_out = null;

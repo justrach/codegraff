@@ -71,11 +71,11 @@ fn guiEmit(io: Io, ev: RouteEvent) void {
         return;
     }
     if (!main_mod.json_mode) return;
-    const w = main_mod.g_out orelse return;
     // The same lock guiEmit/printDelta take: workers emit from pool threads,
     // and a half-written line would corrupt the SDK's JSONL parse.
     main_mod.g_gui_mu.lockUncancelable(io);
     defer main_mod.g_gui_mu.unlock(io);
+    const w = main_mod.g_out orelse return;
     protocol_seq.writeEvent(w, ev) catch return;
     w.writeByte('\n') catch return;
     w.flush() catch return;
