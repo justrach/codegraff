@@ -10,6 +10,11 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.3
+
+- Full-history Responses usage no longer gets floored back above the context limit by local byte estimates of opaque `compaction` and `reasoning` ciphertext, preventing repeated compactions when server usage is within the window while preserving the visible-input floor and conservative estimates when usage is missing or chained (#1686).
+- Cross-format provider/model switches (`keep_context`) expand opaque compaction state from its checkpoint before translating history, drop intermediate tool-accompanying status preambles instead of leaving consecutive tool-less one-line assistant replies, and preserve `attempt_completion` answers (#1833).
+
 ## v0.302.74.2
 
 - The Windows installer falls back to GitHub's release asset API when browser downloads fail, fetching the archive and checksums from the same release and retaining SHA-256 verification.

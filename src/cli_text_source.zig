@@ -5,6 +5,10 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.3
+    \\  • Responses compaction uses server token counts instead of re-compacting on ciphertext size
+    \\  • cross-format model switches expand compaction checkpoints first and drop tool-only preambles
+    \\
     \\0.302.74.2
     \\  • Windows installs can recover through GitHub's asset API without skipping checksum verification
     \\  • nanocua keeps text and refs by default; coordinates are available with include_frames

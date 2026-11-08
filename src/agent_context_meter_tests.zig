@@ -109,6 +109,56 @@ test "pairing provider-covered output does not re-floor at the local estimate" {
     try std.testing.expectEqual(reported, agent.effectiveContextTokens());
 }
 
+test "#1686 full Responses usage prevents ciphertext estimates from forcing another compaction" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    for ([_][]const u8{ "reasoning", "compaction" }) |kind| {
+        var agent = anthropicAgent(a);
+        agent.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "fixture", .context = 500_000 };
+        agent.tools_responses = "[]";
+        agent.codex_prev_id = null;
+        const payload = try a.alloc(u8, if (std.mem.eql(u8, kind, "reasoning")) 2_400_000 else 9_600_123);
+        @memset(payload, 'A');
+        var state_item: std.json.ObjectMap = .empty;
+        try state_item.put(a, "type", .{ .string = kind });
+        try state_item.put(a, "encrypted_content", .{ .string = payload });
+        try agent.messages.append(.{ .object = state_item });
+        try std.testing.expect(agent.fullRequestEstimateTokens() > agent.provider.context);
+        const response = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"usage\":{\"input_tokens\":300000,\"output_tokens\":1000,\"total_tokens\":301000}}", .{});
+        agent_context.recordUsageResponses(&agent, response.object, @import("context_tokens.zig").serializedLen(std.json.Value{ .array = agent.messages }));
+        try std.testing.expectEqual(@as(u64, 301_000), agent.effectiveContextTokens());
+        try std.testing.expect(!agent.inputOverCompactThreshold());
+        // New visible tool output still consumes real room after the sample.
+        const output = try a.alloc(u8, 1_000_000);
+        @memset(output, 'x');
+        try agent.messages.append(try messages_mod.textMessage(a, "user", output));
+        try std.testing.expect(agent.inputOverCompactThreshold());
+    }
+}
+
+test "#1686 missing or chained usage retains conservative ciphertext protection" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = anthropicAgent(a);
+    agent.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "fixture", .context = 500_000 };
+    agent.tools_responses = "[]";
+    agent.codex_prev_id = null;
+    const payload = try a.alloc(u8, 2_400_000);
+    @memset(payload, 'A');
+    var state_item: std.json.ObjectMap = .empty;
+    try state_item.put(a, "type", .{ .string = "reasoning" });
+    try state_item.put(a, "encrypted_content", .{ .string = payload });
+    try agent.messages.append(.{ .object = state_item });
+    agent_context.recordUsageResponses(&agent, .empty, 100);
+    try std.testing.expect(agent.inputOverCompactThreshold());
+    agent.codex_prev_id = "fixture_previous";
+    const response = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"usage\":{\"input_tokens\":300000,\"output_tokens\":1000,\"total_tokens\":301000}}", .{});
+    agent_context.recordUsageResponses(&agent, response.object, 100);
+    try std.testing.expect(agent.inputOverCompactThreshold());
+}
+
 test "a cleared sample falls back to the local estimate even with a stale anchor" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();

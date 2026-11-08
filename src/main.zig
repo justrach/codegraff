@@ -567,7 +567,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = .{ @import("repo_map.zig"), @import("cli_text.zig") };
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests
     _ = @import("agent_gateway_retry.zig"); // #1019: flake vs overflow classification must stay reachable
-    _ = .{ @import("agent_responses.zig"), @import("compaction_checkpoint_tests.zig") }; // Responses failures and exact checkpoint recovery
+    _ = .{ @import("agent_responses.zig"), @import("compaction_checkpoint_tests.zig"), @import("agent_context_meter_tests.zig") }; // Responses failures, checkpoint recovery, and context accounting
     _ = @import("agent_server_compact.zig"); // server-side autocompact (codex Responses)
     _ = .{ @import("compact_status.zig"), @import("compact_mix.zig"), @import("compact_backoff.zig") }; // compact status + GRAFF_COMPACT_MIX mixture arm + #1686 backoff
     _ = .{ @import("agent_clef_compact.zig"), @import("agent_clef_compact_tests.zig"), @import("agent_clef_archive.zig") }; // gateway /v1/compact client (Clef pruning) + archive mode

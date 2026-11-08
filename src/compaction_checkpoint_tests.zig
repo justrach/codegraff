@@ -412,3 +412,38 @@ test "a seat switch without a checkpoint leaves history and window untouched" {
     try std.testing.expect(!@import("agent_encrypted_recovery.zig").expandForSeatChange(&agent));
     try expectJson(window_json, agent.messages.items);
 }
+
+test "#1833 cross-format applyProviderInner expands checkpoint before translating history" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    var agent = f.agent();
+    agent.codex_ws = null;
+    agent.codex_prev_id = null;
+    agent.tracer = null;
+    agent.history_rewrites = 0;
+    agent.jev_effort_pending = .{};
+    agent.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 270_000 };
+    agent.subagent_provider = null;
+    agent.subagent_provider_explicit = true;
+    agent.registry = null;
+    agent.strict = false;
+    agent.sys_normal = "";
+    agent.sys_strict = "";
+    agent.tools_anthropic = "";
+    agent.tools_openai = "";
+    agent.tools_responses = "";
+    agent.keep_context = true;
+    agent.reasoning = .medium;
+
+    const before = try f.values("[{\"role\":\"user\",\"content\":\"checkpointed prompt\"},{\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"checkpointed reply\"}]}]");
+    const window = try f.values(window_json);
+    try checkpoint.preserve(&agent, before, window);
+    try agent.messages.appendSlice(window);
+    try agent.messages.appendSlice(try f.values("[{\"role\":\"user\",\"content\":\"tail prompt\"}]"));
+
+    const target: @import("provider.zig").Provider = .{ .id = "codegraff", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "kimi-k3.1-pro", .context = 256_000 };
+    const note = try @import("providers.zig").applyProviderInner(&agent, agent.arena, target, false);
+    try std.testing.expectEqualStrings("context translated & kept; opaque state expanded from checkpoint", note);
+    try expectJson("[{\"role\":\"user\",\"content\":\"checkpointed prompt\"},{\"role\":\"assistant\",\"content\":\"checkpointed reply\"},{\"role\":\"user\",\"content\":\"tail prompt\"}]", agent.messages.items);
+}
+
