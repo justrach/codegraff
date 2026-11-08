@@ -48,8 +48,9 @@ fn toolName(tool: Value) []const u8 {
 
 fn shouldDefer(name: []const u8) bool {
     if (name.len == 0) return false;
-    if (native_fold.isFolded(name)) return true;
-    return std.mem.startsWith(u8, name, "mcp__") or std.mem.startsWith(u8, name, "mcp_");
+    if (std.mem.startsWith(u8, name, "mcp__")) return !@import("mcp_schema_gate.zig").isLoaded(name);
+    if (std.mem.startsWith(u8, name, "mcp_")) return true;
+    return native_fold.blocked(name);
 }
 
 fn hasType(tools: []const Value, typ: []const u8) bool {
@@ -151,6 +152,14 @@ test "modelSupports is gpt-5.4+ / gpt-6, not gpt-5.3" {
 }
 
 test "splice defers folded tools and appends tool_search once" {
+    const saved_enabled = native_fold.enabled;
+    const was_loaded = native_fold.isLoaded("webfetch");
+    defer {
+        native_fold.enabled = saved_enabled;
+        if (was_loaded) native_fold.markLoaded("webfetch") else native_fold.unloadForTest("webfetch");
+    }
+    native_fold.enabled = true;
+    native_fold.unloadForTest("webfetch");
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
@@ -166,6 +175,11 @@ test "splice defers folded tools and appends tool_search once" {
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"defer_loading\":true"));
     const again = try splice(a, out);
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, again, "\"type\":\"tool_search\""));
+    // Once unfolded (#492), a loaded native must stay eager instead of re-deferring.
+    native_fold.markLoaded("webfetch");
+    const loaded_out = try splice(a, tools);
+    try std.testing.expect(std.mem.indexOf(u8, loaded_out, "\"defer_loading\":true") == null);
+    try std.testing.expect(std.mem.indexOf(u8, loaded_out, "\"type\":\"tool_search\"") == null);
 }
 
 test "isServerSideItem covers hosted search items" {

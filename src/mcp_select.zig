@@ -88,6 +88,9 @@ fn selectInput(arena: Allocator, input: Value) Value {
     const one = tools_mod.strField(input, "name") orelse return input;
     var obj: std.json.ObjectMap = .empty;
     var argv = std.json.Array.init(arena);
+    if (input == .object) if (input.object.get("tools")) |list| if (list == .array) {
+        for (list.array.items) |it| argv.append(it) catch return input;
+    };
     argv.append(.{ .string = one }) catch return input;
     obj.put(arena, "tools", .{ .array = argv }) catch return input;
     if (tools_mod.strField(input, "server")) |sv| obj.put(arena, "server", .{ .string = sv }) catch {};
@@ -111,26 +114,135 @@ pub fn dispatch(agent: anytype, call: tools_mod.ToolCall) tools_mod.ExecResult {
     return withShapes(agent, mcp_schema_gate.handleLoad(agent, call.input));
 }
 
-/// The load arm: the folded-native half, then the MCP half of the same
-/// request. One call may name folded natives and an MCP server together;
-/// the native answer used to end it, so the server never loaded.
+fn isListingRequest(input: Value) bool {
+    if (input != .object) return true;
+    if (tools_mod.strField(input, "server") != null) return false;
+    if (tools_mod.strField(input, "query") != null) return false;
+    if (input.object.get("tools")) |list| {
+        if (list == .array and list.array.items.len > 0) return false;
+    }
+    return true;
+}
+
+fn unknownWithoutRegistry(arena: Allocator, rem: Value) tools_mod.ExecResult {
+    const native_fold = @import("native_fold.zig");
+    var aw: Io.Writer.Allocating = .init(arena);
+    if (rem == .object) if (rem.object.get("tools")) |list| if (list == .array) {
+        for (list.array.items) |item| {
+            if (item == .string) aw.writer.print("no deferred tool named '{s}' (no MCP servers are connected). ", .{item.string}) catch {};
+        }
+    };
+    if (native_fold.listDeferredNative(arena) catch null) |nl| {
+        aw.writer.writeAll(nl) catch {};
+    } else {
+        aw.writer.writeAll("No MCP servers are connected, and all active native tools already carry full schemas.") catch {};
+    }
+    return .{ .text = aw.writer.buffered(), .is_error = true };
+}
+
+/// The load arm: the native half (folded, already-active, and gated), then the
+/// MCP half of the same request. One call may name native tools and MCP tools
+/// together, or run with `agent.registry == null` (#492).
 pub fn loadBoth(agent: anytype, call: tools_mod.ToolCall) tools_mod.ExecResult {
     // #1425: search lists deferred MCP tools and loads nothing. The native
     // half's query arm LOADS matching natives, so it never sees a search.
     if (std.mem.eql(u8, call.name, search_name)) return dispatch(agent, call);
-    const native = (@import("native_fold.zig").handleLoadNative(agent, call.input) catch null) orelse return dispatch(agent, call);
-    const rest = mcpRemainder(agent.arena, call.input) orelse return native;
+    if (agent.sub) return dispatch(agent, call);
+    const native_fold = @import("native_fold.zig");
+    const norm_input = if (std.mem.eql(u8, call.name, select_name)) selectInput(agent.arena, call.input) else call.input;
+
+    if (isListingRequest(norm_input)) {
+        const nl = native_fold.listDeferredNative(agent.arena) catch null;
+        if (agent.registry == null) {
+            return .{
+                .text = nl orelse "No tool schemas are deferred (no MCP servers are connected, and all active native tools already carry full schemas).",
+                .is_error = false,
+            };
+        }
+        const mcp_res = dispatch(agent, call);
+        if (nl) |native_text| {
+            return .{
+                .text = std.fmt.allocPrint(agent.arena, "{s}\n{s}", .{ native_text, mcp_res.text }) catch mcp_res.text,
+                .is_error = mcp_res.is_error,
+            };
+        }
+        return mcp_res;
+    }
+
+    if (tools_mod.strField(norm_input, "query")) |q| {
+        const no_tools = norm_input.object.get("tools") == null and tools_mod.strField(norm_input, "server") == null;
+        if (no_tools) {
+            const native_q = native_fold.handleLoadNative(agent, norm_input) catch null;
+            if (agent.registry == null) {
+                if (native_q) |nq| return nq;
+                if (native_fold.fallbackNativeQuery(agent, q) catch null) |fb| return fb;
+                const rest_list = (native_fold.listDeferredNative(agent.arena) catch null) orelse "No native tool schemas are deferred, and no MCP servers are connected.";
+                return .{
+                    .text = std.fmt.allocPrint(agent.arena, "no deferred tool matched query '{s}'. {s}", .{ q, rest_list }) catch rest_list,
+                    .is_error = true,
+                };
+            }
+            const unavail = @import("mcp_call.zig").unavailableLoad(agent.registry.?, agent.arena, norm_input);
+            if (unavail) |u_text| {
+                if (native_q) |nq| {
+                    return .{
+                        .text = std.fmt.allocPrint(agent.arena, "{s}\n{s}", .{ nq.text, u_text }) catch nq.text,
+                        .is_error = false,
+                    };
+                }
+                return .{ .text = u_text, .is_error = true };
+            }
+            const mcp_q = dispatch(agent, call);
+            if (native_q) |nq| {
+                if (!mcp_q.is_error) {
+                    return .{
+                        .text = std.fmt.allocPrint(agent.arena, "{s}\n{s}", .{ nq.text, mcp_q.text }) catch nq.text,
+                        .is_error = false,
+                    };
+                }
+                return nq;
+            }
+            if (!mcp_q.is_error) return mcp_q;
+            if (native_fold.fallbackNativeQuery(agent, q) catch null) |fb| {
+                if (!fb.is_error) return fb;
+                return .{
+                    .text = std.fmt.allocPrint(agent.arena, "{s}\n{s}", .{ fb.text, mcp_q.text }) catch fb.text,
+                    .is_error = true,
+                };
+            }
+            return mcp_q;
+        }
+    }
+
+    const native = native_fold.handleLoadNative(agent, norm_input) catch null;
+    const rest = mcpRemainder(agent.arena, norm_input);
+    if (native == null) {
+        const rem = rest orelse return dispatch(agent, call);
+        if (agent.registry == null and tools_mod.strField(rem, "server") == null) return unknownWithoutRegistry(agent.arena, rem);
+        var mcp_call = call;
+        mcp_call.input = rem;
+        return dispatch(agent, mcp_call);
+    }
+    const nat = native.?;
+    const rem = rest orelse return nat;
+    if (agent.registry == null and tools_mod.strField(rem, "server") == null) {
+        const unk = unknownWithoutRegistry(agent.arena, rem);
+        return .{
+            .text = std.fmt.allocPrint(agent.arena, "{s}\n{s}", .{ nat.text, unk.text }) catch nat.text,
+            .is_error = nat.is_error and unk.is_error,
+        };
+    }
     var mcp_call = call;
-    mcp_call.input = rest;
+    mcp_call.input = rem;
     const more = dispatch(agent, mcp_call);
     return .{
-        .text = std.fmt.allocPrint(agent.arena, "{s}\n{s}", .{ native.text, more.text }) catch native.text,
-        .is_error = native.is_error and more.is_error,
+        .text = std.fmt.allocPrint(agent.arena, "{s}\n{s}", .{ nat.text, more.text }) catch nat.text,
+        .is_error = nat.is_error and more.is_error,
     };
 }
 
-/// What the MCP half still has to do once the folded natives answered:
-/// `server` and `query` as given, and `tools` without the folded names.
+/// What the MCP half still has to do once the native half answered:
+/// `server` and `query` as given, and `tools` without any known native names.
 /// Null when nothing is left.
 pub fn mcpRemainder(arena: Allocator, input: Value) ?Value {
     if (input != .object) return null;
@@ -140,7 +252,7 @@ pub fn mcpRemainder(arena: Allocator, input: Value) ?Value {
     if (input.object.get("tools")) |list| if (list == .array) {
         var keep = std.json.Array.init(arena);
         for (list.array.items) |item| {
-            if (item == .string and @import("native_fold.zig").isFolded(item.string)) continue;
+            if (item == .string and @import("native_fold.zig").isKnownNative(arena, item.string)) continue;
             keep.append(item) catch return null;
         }
         if (keep.items.len > 0) obj.put(arena, "tools", .{ .array = keep }) catch return null;
@@ -218,4 +330,8 @@ test "mcp_search_tools never loads or prints a matching native's schema (#1425)"
     try std.testing.expectEqual(@as(usize, 0), agent.rebuilds);
     try std.testing.expect(std.mem.indexOf(u8, r.text, "native tool schema") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.text, "no MCP servers are connected") != null);
+}
+
+test {
+    _ = @import("folded_native_load_tests.zig");
 }

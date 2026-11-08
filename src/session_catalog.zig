@@ -251,7 +251,7 @@ pub fn restore(root: *Agent, obj: std.json.ObjectMap) !void {
 fn restoreName(root: *Agent, name: std.json.Value) !void {
     if (name != .string) return;
     if (native.isFolded(name.string)) {
-        if (try native.findRootSpec(root.arena, name.string) != null) native.markLoaded(name.string);
+        if (try native.canLoadFoldedSpec(root.arena, name.string) != null) native.markLoaded(name.string);
         return;
     }
     if (root.registry) |reg| reg.mutex.lockUncancelable(reg.io);
