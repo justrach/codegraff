@@ -11,6 +11,7 @@ const replay = @import("acp_replay.zig");
 const transcript = @import("session_transcript.zig");
 const LiveTurn = @import("acp_live_turn.zig").LiveTurn;
 const util = @import("util.zig");
+const session_version = @import("session_version.zig");
 const v2 = @import("acp_v2.zig");
 const acp_workspace = @import("acp_workspace.zig");
 const workspace_switch = @import("workspace_switch.zig");
@@ -117,6 +118,7 @@ pub fn savedHere(live: *LiveTurn, env: acp_workspace.Env, arena: Allocator, sid:
     const unloadable: Saved = .{ .rejected = "Saved session could not be loaded" };
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, bytes, .{ .allocate = .alloc_always }) catch return unloadable;
     if (parsed != .object) return unloadable;
+    _ = session_version.of(parsed.object) catch |err| return .{ .rejected = loadErrorText(arena, err, "") }; // ADR 0319
     const provider = parsed.object.get("provider") orelse return unloadable;
     const model = parsed.object.get("model") orelse return unloadable;
     const messages = parsed.object.get("messages") orelse return unloadable;
@@ -135,6 +137,7 @@ pub fn savedHere(live: *LiveTurn, env: acp_workspace.Env, arena: Allocator, sid:
 fn loadErrorText(arena: Allocator, err: anyerror, provider_id: []const u8) []const u8 {
     if (err == error.FileNotFound) return "Unknown session ID in the selected workspace";
     if (err == error.SessionTooLarge) return "Saved session is larger than the session read limit and could not be loaded";
+    if (err == error.SessionFormatTooNew) return session_version.too_new_text;
     if (err == error.MissingKey and provider_id.len > 0)
         return std.fmt.allocPrint(arena, "Saved session is intact, but its provider \"{s}\" has no credential in this process; run `graff login {s}` or `graff key set {s} <key>`, then load it again", .{ provider_id, provider_id, provider_id }) catch "Saved session is intact, but its provider has no credential in this process";
     return std.fmt.allocPrint(arena, "Saved session could not be loaded ({s})", .{@errorName(err)}) catch "Saved session could not be loaded";
@@ -151,6 +154,7 @@ test "loadErrorText names a missing credential instead of blaming the save (#155
     try std.testing.expectEqualStrings("Unknown session ID in the selected workspace", loadErrorText(a, error.FileNotFound, "x"));
     try std.testing.expectEqualStrings("Saved session could not be loaded (BadSession)", loadErrorText(a, error.BadSession, "x"));
     try std.testing.expect(std.mem.indexOf(u8, loadErrorText(a, error.SessionTooLarge, "x"), "read limit") != null);
+    try std.testing.expectEqualStrings(session_version.too_new_text, loadErrorText(a, error.SessionFormatTooNew, "x"));
 }
 
 pub fn replayFromStart(params: std.json.Value) bool {

@@ -341,6 +341,8 @@ pub fn restoreResumedSession(arena: Allocator, out: *Io.Writer, root: *agent_mod
             }
         }
     } else |err| {
+        // ADR 0319: starting fresh under this name would autosave over the newer save.
+        if (err == error.SessionFormatTooNew) std.process.fatal("cannot resume '{s}': {s}", .{ source, @import("session_version.zig").too_new_text });
         if (flags.branch_flag != null) std.process.fatal("cannot branch from '{s}': {t}", .{ source, err });
     }
 }

@@ -106,6 +106,7 @@ fn importProject(io: Io, a: Allocator, projects: Io.Dir, name: []const u8, cwd: 
         var json: std.json.Stringify = .{ .writer = &out.writer };
         // List metadata must precede the potentially large messages array.
         try json.write(.{
+            .format_version = @import("session_version.zig").current, // ADR 0319
             .title = converted.title,
             .updated_ms = converted.updated_ms,
             .workspace = cwd,
