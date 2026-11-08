@@ -56,7 +56,7 @@ test "#427: a 426 latches SSE at once — no retry burned, and the turn is serve
     var dials: std.atomic.Value(u8) = .init(0);
     var sse: std.atomic.Value(u8) = .init(0);
     var done: std.atomic.Value(bool) = .init(false);
-    var fut = io.async(mock.refuseUpgrade, .{
+    var fut = try io.concurrent(mock.refuseUpgrade, .{
         io, &server, @as([]const u8, "426 Upgrade Required"), @as(u8, 1), &dials, &sse, &done,
     });
     defer fut.await(io);
@@ -135,7 +135,7 @@ test "#427: a non-426 handshake failure keeps the ladder's free retry, then latc
     var dials: std.atomic.Value(u8) = .init(0);
     var sse: std.atomic.Value(u8) = .init(0);
     var done: std.atomic.Value(bool) = .init(false);
-    var fut = io.async(mock.refuseUpgrade, .{
+    var fut = try io.concurrent(mock.refuseUpgrade, .{
         io, &server, @as([]const u8, "500 Internal Server Error"), @as(u8, 2), &dials, &sse, &done,
     });
     defer fut.await(io);

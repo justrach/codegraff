@@ -374,3 +374,41 @@ test "compaction checkpoint allocation failure never installs partial history" {
     try std.testing.expectEqual(ptr, agent.messages.items.ptr);
     try expectJson(window_json, agent.messages.items);
 }
+
+test "a seat switch expands opaque state instead of replaying foreign ciphertext" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    var agent = f.agent();
+    agent.codex_ws = null;
+    agent.codex_prev_id = null;
+    agent.tracer = null;
+    agent.history_rewrites = 0;
+    const recovery = @import("agent_encrypted_recovery.zig");
+
+    const before = try f.values("[{\"role\":\"user\",\"content\":\"exact input\"}]");
+    const window = try f.values(window_json);
+    try checkpoint.preserve(&agent, before, window);
+    try agent.messages.appendSlice(window);
+    try agent.messages.appendSlice(try f.values("[{\"role\":\"user\",\"content\":\"later\"}]"));
+
+    try std.testing.expect(recovery.expandForSeatChange(&agent));
+    try expectJson("[{\"role\":\"user\",\"content\":\"exact input\"},{\"role\":\"user\",\"content\":\"later\"}]", agent.messages.items);
+    // The window no longer describes the history, so it must not be replayed.
+    try std.testing.expect(agent.compaction_window.canonical_blob == null);
+    // Nothing opaque left: the guard is idempotent on the expanded history.
+    try std.testing.expect(!recovery.expandForSeatChange(&agent));
+}
+
+test "a seat switch without a checkpoint leaves history and window untouched" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    var agent = f.agent();
+    agent.codex_ws = null;
+    agent.codex_prev_id = null;
+    agent.tracer = null;
+    agent.history_rewrites = 0;
+    try agent.messages.appendSlice(try f.values(window_json));
+
+    try std.testing.expect(!@import("agent_encrypted_recovery.zig").expandForSeatChange(&agent));
+    try expectJson(window_json, agent.messages.items);
+}
