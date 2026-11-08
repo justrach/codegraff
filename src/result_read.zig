@@ -145,10 +145,18 @@ fn hasDotDot(path: []const u8) bool {
     return false;
 }
 
+const handles_dir_win = ".graff\\tool-results";
+
+fn findHandlesDir(t: []const u8) ?usize {
+    return std.mem.indexOf(u8, t, tool_handle.handles_dir) orelse std.mem.indexOf(u8, t, handles_dir_win);
+}
+
 fn validTailId(rest: []const u8) ?u64 {
-    const prefix = tool_handle.handles_dir ++ "/";
-    if (!std.mem.startsWith(u8, rest, prefix)) return null;
-    const base = rest[prefix.len..];
+    const dir_len = tool_handle.handles_dir.len;
+    if (rest.len <= dir_len + 1) return null;
+    if (!std.mem.startsWith(u8, rest, tool_handle.handles_dir) and !std.mem.startsWith(u8, rest, handles_dir_win)) return null;
+    if (rest[dir_len] != '/' and rest[dir_len] != '\\') return null;
+    const base = rest[dir_len + 1 ..];
     if (std.mem.indexOfAny(u8, base, "/\\") != null) return null;
     if (!std.mem.endsWith(u8, base, ".txt")) return null;
     return parseId(base[0 .. base.len - 4]);
@@ -159,12 +167,11 @@ pub fn resolveRel(arena: std.mem.Allocator, handle: []const u8) ![]const u8 {
     const t = std.mem.trim(u8, handle, " \t");
     if (parseId(t)) |id| return relPath(arena, id);
     if (hasDotDot(t)) return error.BadHandle;
-    const needle = tool_handle.handles_dir;
-    if (std.mem.indexOf(u8, t, needle)) |at| {
+    if (findHandlesDir(t)) |at| {
         if (at > 0 and t[at - 1] != '/' and t[at - 1] != '\\') return error.BadHandle;
         const rest = t[at..];
-        if (validTailId(rest) == null) return error.BadHandle;
-        return rest;
+        const id = validTailId(rest) orelse return error.BadHandle;
+        return relPath(arena, id);
     }
     return error.BadHandle;
 }
@@ -181,8 +188,7 @@ pub fn resolvePath(arena: std.mem.Allocator, handle: []const u8, agent_cwd: ?[]c
         return rel;
     }
     if (hasDotDot(t)) return error.BadHandle;
-    const needle = tool_handle.handles_dir;
-    const at = std.mem.indexOf(u8, t, needle) orelse return error.BadHandle;
+    const at = findHandlesDir(t) orelse return error.BadHandle;
     if (at > 0 and t[at - 1] != '/' and t[at - 1] != '\\') return error.BadHandle;
     const rest = t[at..];
     const id = validTailId(rest) orelse return error.BadHandle;
@@ -191,8 +197,9 @@ pub fn resolvePath(arena: std.mem.Allocator, handle: []const u8, agent_cwd: ?[]c
         return std.fs.path.join(arena, &.{ agent_cwd.?, t });
     }
     if (lookupHandle(arena, id)) |abs| return abs;
-    if (agent_cwd) |cwd| return std.fs.path.join(arena, &.{ cwd, rest });
-    return rest;
+    const rel = try relPath(arena, id);
+    if (agent_cwd) |cwd| return std.fs.path.join(arena, &.{ cwd, rel });
+    return rel;
 }
 
 pub fn readStored(io: Io, arena: std.mem.Allocator, rel: []const u8) ![]const u8 {
@@ -237,6 +244,8 @@ test "resolveRel maps tr_N and rejects escape" {
     const a = arena_state.allocator();
     try std.testing.expectEqualStrings(".graff/tool-results/tr_3.txt", try resolveRel(a, "tr_3"));
     try std.testing.expectEqualStrings(".graff/tool-results/tr_1.txt", try resolveRel(a, "/tmp/proj/.graff/tool-results/tr_1.txt"));
+    try std.testing.expectEqualStrings(".graff/tool-results/tr_1.txt", try resolveRel(a, "D:\\a\\proj\\.graff\\tool-results\\tr_1.txt"));
+    try std.testing.expectEqualStrings("D:\\a\\proj\\.graff\\tool-results\\tr_1.txt", try resolvePath(a, "D:\\a\\proj\\.graff\\tool-results\\tr_1.txt", null));
     try std.testing.expectError(error.BadHandle, resolveRel(a, "../secret"));
     try std.testing.expectError(error.BadHandle, resolveRel(a, "/etc/passwd"));
 }
