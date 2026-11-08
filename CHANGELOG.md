@@ -10,6 +10,11 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.2
+
+- nanocua keeps readable text, labels, values, state and refs in default observations while omitting coordinates. Use `include_frames: true` when geometry is needed; ref-based actions continue resolving current geometry themselves.
+- Frameless accessibility reads no longer request unused position and size attributes. Controls-only filtering remains opt-in, with a headless utility comparison guarding readable results and child labels (ADR 0318).
+
 ## v0.302.74.1
 
 - A provider or model switch expands opaque compaction state from its exact checkpoint instead of replaying it to a seat that did not mint it. Switches after compaction no longer fail against ciphertext the new backend cannot decrypt, and the conversation after the window is kept (#1829, ADR 0317). Sessions with no checkpoint still stop once with history unchanged.
