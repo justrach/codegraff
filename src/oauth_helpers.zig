@@ -10,6 +10,7 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const credential_store = @import("credential_store.zig");
+const oauth_lock = @import("oauth_lock.zig");
 const strFieldObj = @import("util.zig").strFieldObj;
 const unixMs = @import("util.zig").unixMs;
 
@@ -177,18 +178,9 @@ pub fn writeCodexAuthAt(io: Io, arena: Allocator, codex_home: []const u8, id_tok
 /// JSON object. HTTP 408/429/5xx are treated as transient transport errors so
 /// upstream blips can never be mistaken for a revoked refresh grant.
 pub fn oauthFormPost(io: Io, gpa: Allocator, arena: Allocator, url: []const u8, body: []const u8) !std.json.ObjectMap {
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    var aw: Io.Writer.Allocating = .init(arena);
-    const res = try client.fetch(.{
-        .location = .{ .url = url },
-        .method = .POST,
-        .payload = body,
-        .response_writer = &aw.writer,
-        .headers = .{ .content_type = .{ .override = "application/x-www-form-urlencoded" } },
-    });
+    const res = try oauth_lock.fetchPostBounded(io, gpa, arena, .{ .url = url, .payload = body });
     if (isTransientHttpStatus(res.status)) return error.TransientOAuthStatus;
-    const v = try std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always });
+    const v = try std.json.parseFromSliceLeaky(Value, arena, res.body, .{ .allocate = .alloc_always });
     if (v != .object) return error.BadOAuthResponse;
     return v.object;
 }
@@ -240,6 +232,7 @@ pub fn permanentRefreshFailure(code: []const u8) bool {
 
 var dead_refresh_token: u64 = 0;
 var codex_pending: PendingSlot = .{};
+var codex_refresh_mutex: Io.Mutex = .init;
 
 pub const FreshKey = struct { key: []const u8, account: []const u8 = "" };
 
@@ -337,29 +330,43 @@ pub fn loadCodexOAuthWithPost(io: Io, gpa: Allocator, arena: Allocator, codex_ho
     const on_disk: FreshKey = .{ .key = auth.access, .account = auth.account };
     if (supersededToken(force, auth.access, stale)) return on_disk;
     if (!force or auth.refresh.len == 0) return on_disk;
-    const refresh_id = std.hash.Wyhash.hash(0, auth.refresh);
-    if (refresh_id == dead_refresh_token) return on_disk; // known dead: no round trip
-    const body = std.fmt.allocPrint(arena, "grant_type=refresh_token&client_id={s}&refresh_token={s}&scope={s}", .{ codex_client_id, auth.refresh, codex_scope_enc }) catch return on_disk;
-    const resp = post_fn(io, gpa, arena, codex_token_url, body) catch return on_disk; // transient: retryable, do not cache
+
+    const cred_path = codexAuthPath(arena, codex_home) catch return on_disk;
+    const guard = oauth_lock.acquire(io, arena, &codex_refresh_mutex, cred_path) orelse return on_disk;
+    defer guard.release();
+
+    const locked = resolveCodexAuth(io, arena, codex_home) orelse return null;
+    const cur = locked.auth;
+    if (expect_account.len > 0 and cur.account.len > 0 and !std.mem.eql(u8, expect_account, cur.account)) return null;
+    const cur_key: FreshKey = .{ .key = cur.access, .account = cur.account };
+    if (!std.mem.eql(u8, cur.access, auth.access) or !std.mem.eql(u8, cur.refresh, auth.refresh) or supersededToken(force, cur.access, stale))
+        return cur_key;
+    if (cur.refresh.len == 0) return cur_key;
+    const refresh_id = std.hash.Wyhash.hash(0, cur.refresh);
+    if (refresh_id == dead_refresh_token) return cur_key; // known dead: no round trip
+    const body = std.fmt.allocPrint(arena, "grant_type=refresh_token&client_id={s}&refresh_token={s}&scope={s}", .{ codex_client_id, cur.refresh, codex_scope_enc }) catch return cur_key;
+    const shield = oauth_lock.CancelShield.enter(io);
+    defer shield.leave();
+    const resp = post_fn(io, gpa, arena, codex_token_url, body) catch return cur_key; // transient: retryable, do not cache
     if (resp.get("error")) |e| {
-        // A sibling `codex` CLI may have rotated auth.json while our POST was in flight.
+        // A sibling `codex` CLI without advisory locking may have rotated auth.json in flight.
         if (readCodexAuth(io, arena, codex_home)) |after| {
             const acct_ok = expect_account.len == 0 or after.account.len == 0 or std.mem.eql(u8, expect_account, after.account);
-            if (acct_ok and (!std.mem.eql(u8, after.access, auth.access) or !std.mem.eql(u8, after.refresh, auth.refresh))) {
+            if (acct_ok and (!std.mem.eql(u8, after.access, cur.access) or !std.mem.eql(u8, after.refresh, cur.refresh))) {
                 codex_pending.clear(io);
                 return .{ .key = after.access, .account = after.account };
             }
         }
         if (permanentRefreshFailure(if (e == .string) e.string else "")) dead_refresh_token = refresh_id;
-        return on_disk;
+        return cur_key;
     }
-    const access = strFieldObj(resp, "access_token") orelse return on_disk;
-    if (access.len == 0) return on_disk;
-    const id_token = strFieldObj(resp, "id_token") orelse auth.id_token;
-    const refresh = strFieldObj(resp, "refresh_token") orelse auth.refresh;
+    const access = strFieldObj(resp, "access_token") orelse return cur_key;
+    if (access.len == 0) return cur_key;
+    const id_token = strFieldObj(resp, "id_token") orelse cur.id_token;
+    const refresh = strFieldObj(resp, "refresh_token") orelse cur.refresh;
     var account = if (id_token.len > 0) accountFromIdToken(arena, id_token) else "";
-    if (account.len == 0) account = auth.account; // a rotated grant may omit id_token
-    persistRefreshedWithStale(io, arena, codex_home, resolved.disk_stale_refresh, id_token, access, refresh, account);
+    if (account.len == 0) account = cur.account; // a rotated grant may omit id_token
+    persistRefreshedWithStale(io, arena, codex_home, locked.disk_stale_refresh, id_token, access, refresh, account);
     return .{ .key = access, .account = account };
 }
 
@@ -424,5 +431,5 @@ pub fn browserArgv(os: std.Target.Os.Tag, chosen: ?[]const u8, url: []const u8, 
 }
 
 test {
-    _ = @import("oauth_helpers_tests.zig");
+    _ = .{ @import("oauth_helpers_tests.zig"), @import("oauth_lock.zig") };
 }

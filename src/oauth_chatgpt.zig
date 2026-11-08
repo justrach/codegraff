@@ -18,6 +18,7 @@ const Allocator = std.mem.Allocator;
 const util = @import("util.zig");
 const strFieldObj = util.strFieldObj;
 const helpers = @import("oauth_helpers.zig");
+const oauth_lock = @import("oauth_lock.zig");
 const credential_store = @import("credential_store.zig");
 const jwt = @import("oauth_chatgpt_jwt.zig");
 const page = @import("oauth_chatgpt_page.zig");
@@ -439,6 +440,7 @@ pub fn login(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !void {
 
 var dead_refresh: u64 = 0;
 var chatgpt_pending: helpers.PendingSlot = .{};
+var refresh_mutex: Io.Mutex = .init;
 
 pub fn clearStateForTest(io: Io) void {
     if (!builtin.is_test) return;
@@ -454,8 +456,7 @@ pub fn clearStateForTest(io: Io) void {
 /// working locks degrades to the unlocked refresh.
 pub fn lockRecord(io: Io, arena: Allocator, home: []const u8) ?Io.File {
     ensureDirs(io, arena, home);
-    const path = std.fmt.allocPrint(arena, "{s}.lock", .{recordPath(arena, home)}) catch return null;
-    return Io.Dir.cwd().createFile(io, path, .{ .truncate = false, .lock = .exclusive }) catch null;
+    return (oauth_lock.acquireFile(io, arena, recordPath(arena, home)) orelse return null).file;
 }
 
 /// Refresh under the lock, against the record as it is now: another graff
@@ -467,11 +468,12 @@ pub fn refreshLocked(io: Io, gpa: Allocator, arena: Allocator, home: []const u8,
 }
 
 pub fn refreshLockedWithPost(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, before: Record, post_fn: helpers.PostFn) ?[]const u8 {
-    const lock = lockRecord(io, arena, home);
-    defer if (lock) |f| f.close(io);
+    ensureDirs(io, arena, home);
+    const guard = oauth_lock.acquire(io, arena, &refresh_mutex, recordPath(arena, home)) orelse return before.access;
+    defer guard.release();
     const current = readRecord(io, arena, home) orelse return null;
     if (current.access.len == 0 or !current.planEnabled()) return null;
-    if (!std.mem.eql(u8, current.refresh, before.refresh)) return current.access;
+    if (!std.mem.eql(u8, current.refresh, before.refresh) or !std.mem.eql(u8, current.access, before.access)) return current.access;
     const next = refreshed(io, gpa, arena, home, current, post_fn) orelse return current.access;
     return next.access;
 }
@@ -495,6 +497,8 @@ fn refreshed(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, r: Reco
     const id = std.hash.Wyhash.hash(0, r.refresh);
     if (id == dead_refresh) return null; // known dead: no round trip
     const body = form(arena, &.{ .{ "grant_type", "refresh_token" }, .{ "client_id", r.client_id }, .{ "refresh_token", r.refresh }, .{ "resource", resource } }) catch return null;
+    const shield = oauth_lock.CancelShield.enter(io);
+    defer shield.leave();
     const tok = post_fn(io, gpa, arena, token_url, body) catch return null; // transient: keep everything
     if (tok.get("error")) |e| {
         if (readDiskRecord(io, arena, home)) |after| {

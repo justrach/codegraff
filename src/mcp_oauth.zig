@@ -6,6 +6,7 @@ const builtin = @import("builtin");
 const util = @import("util.zig");
 const discovery = @import("mcp_oauth_discovery.zig");
 const credential_store = @import("credential_store.zig");
+const oauth_lock = @import("oauth_lock.zig");
 const callback = @import("oauth_callback.zig");
 
 const Io = std.Io;
@@ -105,44 +106,27 @@ fn fetchJson(io: Io, gpa: Allocator, arena: Allocator, url: []const u8) !std.jso
     return jsonObject(writer.buffered(), arena);
 }
 
-fn postJson(io: Io, gpa: Allocator, arena: Allocator, url: []const u8, payload: []const u8) !std.json.ObjectMap {
+fn postWithType(io: Io, gpa: Allocator, arena: Allocator, url: []const u8, content_type: []const u8, payload: []const u8) !std.json.ObjectMap {
     try requireHttps(url);
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    const storage = try arena.alloc(u8, max_response);
-    var writer: Io.Writer = .fixed(storage);
     const headers = [_]std.http.Header{.{ .name = "Accept", .value = "application/json" }};
-    const res = try client.fetch(.{
-        .location = .{ .url = url },
-        .method = .POST,
+    const res = try oauth_lock.fetchPostBounded(io, gpa, arena, .{
+        .url = url,
         .payload = payload,
-        .response_writer = &writer,
-        .redirect_behavior = .not_allowed,
-        .headers = .{ .content_type = .{ .override = "application/json" } },
+        .content_type = content_type,
         .extra_headers = &headers,
+        .disallow_redirects = true,
+        .max_bytes = max_response,
     });
     if (@backingInt(res.status) < 200 or @backingInt(res.status) >= 300) return error.OAuthHttpFailure;
-    return jsonObject(writer.buffered(), arena);
+    return jsonObject(res.body, arena);
+}
+
+fn postJson(io: Io, gpa: Allocator, arena: Allocator, url: []const u8, payload: []const u8) !std.json.ObjectMap {
+    return postWithType(io, gpa, arena, url, "application/json", payload);
 }
 
 fn postForm(io: Io, gpa: Allocator, arena: Allocator, url: []const u8, payload: []const u8) !std.json.ObjectMap {
-    try requireHttps(url);
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    const storage = try arena.alloc(u8, max_response);
-    var writer: Io.Writer = .fixed(storage);
-    const headers = [_]std.http.Header{.{ .name = "Accept", .value = "application/json" }};
-    const res = try client.fetch(.{
-        .location = .{ .url = url },
-        .method = .POST,
-        .payload = payload,
-        .response_writer = &writer,
-        .redirect_behavior = .not_allowed,
-        .headers = .{ .content_type = .{ .override = "application/x-www-form-urlencoded" } },
-        .extra_headers = &headers,
-    });
-    if (@backingInt(res.status) < 200 or @backingInt(res.status) >= 300) return error.OAuthHttpFailure;
-    return jsonObject(writer.buffered(), arena);
+    return postWithType(io, gpa, arena, url, "application/x-www-form-urlencoded", payload);
 }
 
 fn authorizationEndpoints(io: Io, gpa: Allocator, arena: Allocator, issuer: []const u8, metadata_url: []const u8) !EndpointSet {
@@ -476,6 +460,35 @@ pub fn login(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, server_
     };
 }
 
+var refresh_mutex: Io.Mutex = .init;
+
+const Stored = struct { endpoints: EndpointSet, client: ClientInfo, tokens: TokenSet };
+
+fn readStored(io: Io, arena: Allocator, path: []const u8, resource_url: []const u8) ?Stored {
+    const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(max_response)) catch return null;
+    const obj = jsonObject(data, arena) catch return null;
+    const stored_resource = stringField(obj, "resource") orelse return null;
+    if (!std.mem.eql(u8, stored_resource, resource_url)) return null;
+    const access = stringField(obj, "access_token") orelse return null;
+    const expires_at = integerField(obj, "expires_at_ms") orelse return null;
+    const refresh = stringField(obj, "refresh_token") orelse "";
+    const token_ep = stringField(obj, "token_endpoint") orelse "";
+    return .{
+        .endpoints = .{
+            .issuer = stringField(obj, "issuer") orelse "",
+            .authorization = stringField(obj, "authorization_endpoint") orelse "",
+            .token = token_ep,
+            .registration = stringField(obj, "registration_endpoint") orelse "",
+            .scope = stringField(obj, "scope") orelse "",
+        },
+        .client = .{
+            .id = stringField(obj, "client_id") orelse "",
+            .secret = stringField(obj, "client_secret") orelse "",
+        },
+        .tokens = .{ .access = access, .refresh = refresh, .expires_at_ms = expires_at },
+    };
+}
+
 /// Load a resource's persisted access token.  Tokens within one minute of
 /// expiry are refreshed first; any malformed, insecure, or failed credential
 /// set is treated as unavailable.
@@ -487,42 +500,39 @@ pub fn loadAccessTokenWithPost(io: Io, gpa: Allocator, arena: Allocator, home: [
     if (home.len == 0) return null;
     requireHttps(resource_url) catch return null;
     const path = credentialPath(arena, home, resource_url) catch return null;
-    const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(max_response)) catch return null;
-    const obj = jsonObject(data, arena) catch return null;
-    const stored_resource = stringField(obj, "resource") orelse return null;
-    if (!std.mem.eql(u8, stored_resource, resource_url)) return null;
-    const access = stringField(obj, "access_token") orelse return null;
-    const expires_at = integerField(obj, "expires_at_ms") orelse return null;
-    if (expires_at > util.unixMs(io) + 60_000) return access;
+    const initial = readStored(io, arena, path, resource_url) orelse return null;
+    if (initial.tokens.expires_at_ms > util.unixMs(io) + 60_000) return initial.tokens.access;
+    if (initial.tokens.refresh.len == 0 or initial.client.id.len == 0) return null;
+    requireHttps(initial.endpoints.token) catch return null;
 
-    const refresh = stringField(obj, "refresh_token") orelse return null;
-    if (refresh.len == 0) return null;
-    const token_endpoint = stringField(obj, "token_endpoint") orelse return null;
-    requireHttps(token_endpoint) catch return null;
-    const client = ClientInfo{
-        .id = stringField(obj, "client_id") orelse return null,
-        .secret = stringField(obj, "client_secret") orelse "",
-    };
-    const endpoints = EndpointSet{
-        .issuer = stringField(obj, "issuer") orelse "",
-        .authorization = stringField(obj, "authorization_endpoint") orelse "",
-        .token = token_endpoint,
-        .registration = stringField(obj, "registration_endpoint") orelse "",
-        .scope = stringField(obj, "scope") orelse "",
-    };
+    const guard = oauth_lock.acquire(io, arena, &refresh_mutex, path) orelse
+        return if (initial.tokens.expires_at_ms > util.unixMs(io)) initial.tokens.access else null;
+    defer guard.release();
+
+    const cur = readStored(io, arena, path, resource_url) orelse return null;
+    const now_ms = util.unixMs(io);
+    if (cur.tokens.expires_at_ms > now_ms + 60_000) return cur.tokens.access;
+    if ((!std.mem.eql(u8, cur.tokens.access, initial.tokens.access) or !std.mem.eql(u8, cur.tokens.refresh, initial.tokens.refresh)) and cur.tokens.expires_at_ms > now_ms)
+        return cur.tokens.access;
+    if (cur.tokens.refresh.len == 0 or cur.client.id.len == 0) return null;
+    requireHttps(cur.endpoints.token) catch return null;
+
     const fields = [_]struct { []const u8, []const u8 }{
         .{ "grant_type", "refresh_token" },
-        .{ "client_id", client.id },
-        .{ "refresh_token", refresh },
+        .{ "client_id", cur.client.id },
+        .{ "refresh_token", cur.tokens.refresh },
         .{ "resource", resource_url },
-        .{ "client_secret", client.secret },
+        .{ "client_secret", cur.client.secret },
     };
-    const field_count: usize = if (client.secret.len == 0) fields.len - 1 else fields.len;
-    const response = post_fn(io, gpa, arena, token_endpoint, formEncode(arena, fields[0..field_count]) catch return null) catch return null;
+    const field_count: usize = if (cur.client.secret.len == 0) fields.len - 1 else fields.len;
+    const encoded = formEncode(arena, fields[0..field_count]) catch return null;
+    const shield = oauth_lock.CancelShield.enter(io);
+    defer shield.leave();
+    const response = post_fn(io, gpa, arena, cur.endpoints.token, encoded) catch return null;
     var tokens = tokenFromResponse(response, io) catch return null;
-    if (tokens.refresh.len == 0) tokens.refresh = refresh;
-    writeCredentials(io, arena, home, resource_url, endpoints, client, tokens) catch {
-        writeCredentials(io, arena, home, resource_url, endpoints, client, tokens) catch |err| {
+    if (tokens.refresh.len == 0) tokens.refresh = cur.tokens.refresh;
+    writeCredentials(io, arena, home, resource_url, cur.endpoints, cur.client, tokens) catch {
+        writeCredentials(io, arena, home, resource_url, cur.endpoints, cur.client, tokens) catch |err| {
             @import("oauth_helpers.zig").persist_error = @errorName(err);
         };
     };

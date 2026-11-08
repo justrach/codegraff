@@ -21,10 +21,12 @@ const credential_store = @import("credential_store.zig");
 const pricing = @import("pricing.zig");
 const signin_link = @import("signin_link.zig");
 const helpers = @import("oauth_helpers.zig");
+const oauth_lock = @import("oauth_lock.zig");
 const supersededToken = helpers.supersededToken;
 const oauth_refresh_margin_s = @import("oauth.zig").oauth_refresh_margin_s;
 
 const client_id = "17e5f671-d194-4dfb-9706-5516cb48c098";
+var refresh_mutex: Io.Mutex = .init;
 
 pub const Region = enum {
     global,
@@ -107,24 +109,16 @@ fn inMainland(tz: ?[]const u8, lang: ?[]const u8, localtime: []const u8) bool {
 
 /// POST a form body to a Kimi OAuth endpoint; return the parsed JSON object.
 fn post(io: Io, gpa: Allocator, arena: Allocator, url: []const u8, body: []const u8) !std.json.ObjectMap {
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    var aw: Io.Writer.Allocating = .init(arena);
     var identity_buf: [5]std.http.Header = undefined;
     const identity = kimi_catalog.identityHeaders(&identity_buf);
-    const res = try client.fetch(.{
-        .location = .{ .url = url },
-        .method = .POST,
+    const res = try oauth_lock.fetchPostBounded(io, gpa, arena, .{
+        .url = url,
         .payload = body,
-        .response_writer = &aw.writer,
-        .headers = .{
-            .content_type = .{ .override = "application/x-www-form-urlencoded" },
-            .user_agent = .{ .override = kimi_catalog.user_agent },
-        },
+        .user_agent = kimi_catalog.user_agent,
         .extra_headers = identity,
     });
     if (helpers.isTransientHttpStatus(res.status)) return error.TransientOAuthStatus;
-    const v = try std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always });
+    const v = try std.json.parseFromSliceLeaky(Value, arena, res.body, .{ .allocate = .alloc_always });
     if (v != .object) return error.BadOAuthResponse;
     return v.object;
 }
@@ -269,26 +263,45 @@ pub fn login(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, region:
 /// loadCodexAuth. `stale` is the token that just 401'd (null when not
 /// recovering from one) — see supersededToken.
 pub fn load(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, force: bool, stale: ?[]const u8) ?[]const u8 {
+    return loadWithPost(io, gpa, arena, home, force, stale, post);
+}
+
+pub fn loadWithPost(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, force: bool, stale: ?[]const u8, post_fn: helpers.PostFn) ?[]const u8 {
     const saved = readSaved(io, arena, home) orelse return null;
     const access = strFieldObj(saved, "access_token") orelse return null;
     const expires_at = intField(saved, "expires_at", 0);
     // #245: another concurrent refresher may already have replaced the token that
     // 401'd; re-minting would rotate-kill theirs. Adopt what is on disk instead.
     if (supersededToken(force, access, stale)) return access;
-    if (force or (expires_at != 0 and @divTrunc(unixMs(io), 1000) >= expires_at - oauth_refresh_margin_s)) {
-        if (strFieldObj(saved, "refresh_token")) |refresh| {
-            const host = savedHost(io, arena, home) orelse legacy_host;
-            const body = std.fmt.allocPrint(arena, "client_id={s}&grant_type=refresh_token&refresh_token={s}", .{ client_id, refresh }) catch return access;
-            const resp = post(io, gpa, arena, endpoint(arena, host, "/api/oauth/token"), body) catch return access;
-            if (resp.get("access_token")) |a| if (a == .string and a.string.len > 0) {
-                const new_refresh = strFieldObj(resp, "refresh_token") orelse refresh;
-                const expires_in = intField(resp, "expires_in", 900);
-                persistAuth(io, arena, home, a.string, new_refresh, @divTrunc(unixMs(io), 1000) + expires_in, host);
-                return a.string;
-            };
-        }
-    }
-    return access;
+    if (!force and (expires_at == 0 or @divTrunc(unixMs(io), 1000) < expires_at - oauth_refresh_margin_s)) return access;
+    const initial_refresh = strFieldObj(saved, "refresh_token") orelse return access;
+    if (initial_refresh.len == 0) return access;
+
+    const guard = oauth_lock.acquire(io, arena, &refresh_mutex, authPath(arena, home)) orelse return access;
+    defer guard.release();
+    const cur = readSaved(io, arena, home) orelse return access;
+    const cur_access = strFieldObj(cur, "access_token") orelse return access;
+    const cur_expires = intField(cur, "expires_at", 0);
+    const cur_refresh = strFieldObj(cur, "refresh_token") orelse return cur_access;
+    if (cur_refresh.len == 0) return cur_access;
+    const now_s = @divTrunc(unixMs(io), 1000);
+    if ((!std.mem.eql(u8, cur_access, access) or !std.mem.eql(u8, cur_refresh, initial_refresh)) and (cur_expires == 0 or cur_expires > now_s))
+        return cur_access;
+    if (!force and cur_expires != 0 and now_s < cur_expires - oauth_refresh_margin_s) return cur_access;
+    if (supersededToken(force, cur_access, stale)) return cur_access;
+
+    const host = savedHost(io, arena, home) orelse legacy_host;
+    const body = std.fmt.allocPrint(arena, "client_id={s}&grant_type=refresh_token&refresh_token={s}", .{ client_id, cur_refresh }) catch return cur_access;
+    const shield = oauth_lock.CancelShield.enter(io);
+    defer shield.leave();
+    const resp = post_fn(io, gpa, arena, endpoint(arena, host, "/api/oauth/token"), body) catch return cur_access;
+    if (resp.get("access_token")) |a| if (a == .string and a.string.len > 0) {
+        const new_refresh = strFieldObj(resp, "refresh_token") orelse cur_refresh;
+        const expires_in = intField(resp, "expires_in", 900);
+        persistAuth(io, arena, home, a.string, new_refresh, @divTrunc(unixMs(io), 1000) + expires_in, host);
+        return a.string;
+    };
+    return cur_access;
 }
 
 test "login names pick the Kimi site" {
