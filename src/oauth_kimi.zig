@@ -20,7 +20,8 @@ const kimi_catalog = @import("kimi_catalog.zig");
 const credential_store = @import("credential_store.zig");
 const pricing = @import("pricing.zig");
 const signin_link = @import("signin_link.zig");
-const supersededToken = @import("oauth_helpers.zig").supersededToken;
+const helpers = @import("oauth_helpers.zig");
+const supersededToken = helpers.supersededToken;
 const oauth_refresh_margin_s = @import("oauth.zig").oauth_refresh_margin_s;
 
 const client_id = "17e5f671-d194-4dfb-9706-5516cb48c098";
@@ -111,7 +112,7 @@ fn post(io: Io, gpa: Allocator, arena: Allocator, url: []const u8, body: []const
     var aw: Io.Writer.Allocating = .init(arena);
     var identity_buf: [5]std.http.Header = undefined;
     const identity = kimi_catalog.identityHeaders(&identity_buf);
-    _ = try client.fetch(.{
+    const res = try client.fetch(.{
         .location = .{ .url = url },
         .method = .POST,
         .payload = body,
@@ -122,6 +123,7 @@ fn post(io: Io, gpa: Allocator, arena: Allocator, url: []const u8, body: []const
         },
         .extra_headers = identity,
     });
+    if (helpers.isTransientHttpStatus(res.status)) return error.TransientOAuthStatus;
     const v = try std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always });
     if (v != .object) return error.BadOAuthResponse;
     return v.object;
@@ -137,6 +139,14 @@ pub fn authPath(arena: Allocator, home: []const u8) []const u8 {
 
 pub fn writeAuth(io: Io, arena: Allocator, home: []const u8, access: []const u8, refresh: []const u8, expires_at: i64, host: []const u8) !void {
     return credential_store.writeOAuthFrom(io, arena, home, ".kimi", access, refresh, expires_at, host);
+}
+
+pub fn persistAuth(io: Io, arena: Allocator, home: []const u8, access: []const u8, refresh: []const u8, expires_at: i64, host: []const u8) void {
+    writeAuth(io, arena, home, access, refresh, expires_at, host) catch {
+        writeAuth(io, arena, home, access, refresh, expires_at, host) catch |err| {
+            helpers.persist_error = @errorName(err);
+        };
+    };
 }
 
 fn readSaved(io: Io, arena: Allocator, home: []const u8) ?std.json.ObjectMap {
@@ -273,7 +283,7 @@ pub fn load(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, force: b
             if (resp.get("access_token")) |a| if (a == .string and a.string.len > 0) {
                 const new_refresh = strFieldObj(resp, "refresh_token") orelse refresh;
                 const expires_in = intField(resp, "expires_in", 900);
-                writeAuth(io, arena, home, a.string, new_refresh, @divTrunc(unixMs(io), 1000) + expires_in, host) catch {};
+                persistAuth(io, arena, home, a.string, new_refresh, @divTrunc(unixMs(io), 1000) + expires_in, host);
                 return a.string;
             };
         }

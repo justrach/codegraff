@@ -159,7 +159,7 @@ pub fn serializeRecord(arena: Allocator, r: Record, saved_at: []const u8) ![]con
     return aw.writer.buffered();
 }
 
-fn readRecord(io: Io, arena: Allocator, home: []const u8) ?Record {
+fn readDiskRecord(io: Io, arena: Allocator, home: []const u8) ?Record {
     const path = recordPath(arena, home);
     const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024)) catch |err| retry: {
         if (err != error.FileNotFound) return null;
@@ -167,6 +167,24 @@ fn readRecord(io: Io, arena: Allocator, home: []const u8) ?Record {
         break :retry Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024)) catch return null;
     };
     return parseRecord(arena, data);
+}
+
+fn readRecord(io: Io, arena: Allocator, home: []const u8) ?Record {
+    const disk = readDiskRecord(io, arena, home);
+    const path = recordPath(arena, home);
+    if (chatgpt_pending.peek(io, arena, path)) |pend| {
+        if (disk) |d| {
+            if (d.refresh.len > 0 and !std.mem.eql(u8, d.refresh, pend.stale_refresh)) {
+                chatgpt_pending.clear(io);
+                return d;
+            }
+        }
+        if (parseRecord(arena, pend.payload)) |p_rec| {
+            if (writeRecord(io, arena, home, p_rec)) |_| chatgpt_pending.clear(io) else |_| {}
+            return p_rec;
+        }
+    }
+    return disk;
 }
 
 /// <home>/.graff keeps whatever mode it has (it holds sessions too); the
@@ -420,6 +438,14 @@ pub fn login(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !void {
 }
 
 var dead_refresh: u64 = 0;
+var chatgpt_pending: helpers.PendingSlot = .{};
+
+pub fn clearStateForTest(io: Io) void {
+    if (!builtin.is_test) return;
+    chatgpt_pending.clear(io);
+    dead_refresh = 0;
+    helpers.persist_error = null;
+}
 
 /// OpenAI rotates the refresh token on every grant and asks apps to serialize
 /// refreshes for one session: a process that loses the race presents a
@@ -437,12 +463,16 @@ pub fn lockRecord(io: Io, arena: Allocator, home: []const u8) ?Io.File {
 /// only live refresh token. `before` is what the caller read before locking.
 /// Null when the sign-in is gone.
 pub fn refreshLocked(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, before: Record) ?[]const u8 {
+    return refreshLockedWithPost(io, gpa, arena, home, before, helpers.oauthFormPost);
+}
+
+pub fn refreshLockedWithPost(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, before: Record, post_fn: helpers.PostFn) ?[]const u8 {
     const lock = lockRecord(io, arena, home);
     defer if (lock) |f| f.close(io);
     const current = readRecord(io, arena, home) orelse return null;
     if (current.access.len == 0 or !current.planEnabled()) return null;
     if (!std.mem.eql(u8, current.refresh, before.refresh)) return current.access;
-    const next = refreshed(io, gpa, arena, home, current) orelse return current.access;
+    const next = refreshed(io, gpa, arena, home, current, post_fn) orelse return current.access;
     return next.access;
 }
 
@@ -461,12 +491,18 @@ pub fn recordRefreshFailure(io: Io, arena: Allocator, home: []const u8, r: Recor
     writeRecord(io, arena, home, next) catch {};
 }
 
-fn refreshed(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, r: Record) ?Record {
+fn refreshed(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, r: Record, post_fn: helpers.PostFn) ?Record {
     const id = std.hash.Wyhash.hash(0, r.refresh);
     if (id == dead_refresh) return null; // known dead: no round trip
     const body = form(arena, &.{ .{ "grant_type", "refresh_token" }, .{ "client_id", r.client_id }, .{ "refresh_token", r.refresh }, .{ "resource", resource } }) catch return null;
-    const tok = helpers.oauthFormPost(io, gpa, arena, token_url, body) catch return null; // transient: keep everything
+    const tok = post_fn(io, gpa, arena, token_url, body) catch return null; // transient: keep everything
     if (tok.get("error")) |e| {
+        if (readDiskRecord(io, arena, home)) |after| {
+            if (after.access.len > 0 and after.planEnabled() and (!std.mem.eql(u8, after.access, r.access) or !std.mem.eql(u8, after.refresh, r.refresh))) {
+                chatgpt_pending.clear(io);
+                return after;
+            }
+        }
         const code = if (e == .string) e.string else "";
         if (helpers.permanentRefreshFailure(code)) dead_refresh = id;
         recordRefreshFailure(io, arena, home, r, code, strFieldObj(tok, "error_description") orelse "");
@@ -492,9 +528,18 @@ fn refreshed(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, r: Reco
         } else |_| {}
     }
     // The grant rotated the refresh token: an unwritten record is a logout.
-    writeRecord(io, arena, home, next) catch writeRecord(io, arena, home, next) catch |err| {
+    if (writeRecord(io, arena, home, next)) |_| {
+        chatgpt_pending.clear(io);
+    } else |_| if (writeRecord(io, arena, home, next)) |_| {
+        chatgpt_pending.clear(io);
+    } else |err| {
         helpers.persist_error = @errorName(err);
-    };
+        var stamp: [24]u8 = undefined;
+        if (serializeRecord(arena, next, helpers.rfc3339Utc(&stamp, util.unixMs(io)))) |payload| {
+            const disk_stale = if (readDiskRecord(io, arena, home)) |d| d.refresh else r.refresh;
+            chatgpt_pending.save(io, recordPath(arena, home), disk_stale, payload);
+        } else |_| {}
+    }
     return next;
 }
 

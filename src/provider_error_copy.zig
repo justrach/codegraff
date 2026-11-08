@@ -558,12 +558,7 @@ pub fn reportTransportGiveUp(self: *@import("agent.zig").Agent, err: anyerror, m
         try self.arena.dupe(u8, "Start the local server, or switch models with /model.")
     else
         try std.fmt.allocPrint(self.arena, "{s}check your network connection and try again.", .{if (retry_prefix.len > 0) retry_prefix else "Please "});
-    const technical = try std.fmt.allocPrint(self.arena, "network error: {s}{s}{s} (gave up after {d} attempts)", .{
-        @errorName(err),
-        if (local_down_url.len > 0) " at " else "",
-        local_down_url,
-        max_attempts,
-    });
+    const technical = self.h2_reset.giveUpApiError(self.arena, "network error", err, local_down_url, max_attempts) orelse return error.OutOfMemory;
     const text = try std.fmt.allocPrint(self.arena, "{s} {s} Technical details — {s}", .{ headline, remedy, technical });
     self.last_api_error_detail = .{
         .kind = Kind.network_transport.asText(),

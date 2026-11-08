@@ -480,6 +480,10 @@ pub fn login(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, server_
 /// expiry are refreshed first; any malformed, insecure, or failed credential
 /// set is treated as unavailable.
 pub fn loadAccessToken(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, resource_url: []const u8) ?[]const u8 {
+    return loadAccessTokenWithPost(io, gpa, arena, home, resource_url, postForm);
+}
+
+pub fn loadAccessTokenWithPost(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, resource_url: []const u8, post_fn: @import("oauth_helpers.zig").PostFn) ?[]const u8 {
     if (home.len == 0) return null;
     requireHttps(resource_url) catch return null;
     const path = credentialPath(arena, home, resource_url) catch return null;
@@ -499,6 +503,13 @@ pub fn loadAccessToken(io: Io, gpa: Allocator, arena: Allocator, home: []const u
         .id = stringField(obj, "client_id") orelse return null,
         .secret = stringField(obj, "client_secret") orelse "",
     };
+    const endpoints = EndpointSet{
+        .issuer = stringField(obj, "issuer") orelse "",
+        .authorization = stringField(obj, "authorization_endpoint") orelse "",
+        .token = token_endpoint,
+        .registration = stringField(obj, "registration_endpoint") orelse "",
+        .scope = stringField(obj, "scope") orelse "",
+    };
     const fields = [_]struct { []const u8, []const u8 }{
         .{ "grant_type", "refresh_token" },
         .{ "client_id", client.id },
@@ -507,17 +518,14 @@ pub fn loadAccessToken(io: Io, gpa: Allocator, arena: Allocator, home: []const u
         .{ "client_secret", client.secret },
     };
     const field_count: usize = if (client.secret.len == 0) fields.len - 1 else fields.len;
-    const response = postForm(io, gpa, arena, token_endpoint, formEncode(arena, fields[0..field_count]) catch return null) catch return null;
+    const response = post_fn(io, gpa, arena, token_endpoint, formEncode(arena, fields[0..field_count]) catch return null) catch return null;
     var tokens = tokenFromResponse(response, io) catch return null;
     if (tokens.refresh.len == 0) tokens.refresh = refresh;
-    const endpoints = EndpointSet{
-        .issuer = stringField(obj, "issuer") orelse return null,
-        .authorization = stringField(obj, "authorization_endpoint") orelse return null,
-        .token = token_endpoint,
-        .registration = stringField(obj, "registration_endpoint") orelse return null,
-        .scope = stringField(obj, "scope") orelse "",
+    writeCredentials(io, arena, home, resource_url, endpoints, client, tokens) catch {
+        writeCredentials(io, arena, home, resource_url, endpoints, client, tokens) catch |err| {
+            @import("oauth_helpers.zig").persist_error = @errorName(err);
+        };
     };
-    writeCredentials(io, arena, home, resource_url, endpoints, client, tokens) catch return null;
     return tokens.access;
 }
 

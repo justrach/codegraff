@@ -19,6 +19,12 @@ fn authority(url: []const u8) []const u8 {
     return rest[0 .. std.mem.indexOfScalar(u8, rest, '/') orelse rest.len];
 }
 
+pub fn bufferedRedialFreshH2(reused: bool, is_get: bool, err: anyerror) bool {
+    if (!reused) return false;
+    if (err == error.StreamRefused or err == error.GoAway) return true;
+    return is_get and err == error.RstStream;
+}
+
 const Exchange = struct {
     gpa: Allocator,
     io: Io,
@@ -83,19 +89,10 @@ const Exchange = struct {
         }
     }
 
-    /// Returns false only before the request is sent. http-zig's H1NoStream
-    /// exits before Conn.startLines; every other startLines error is final.
+    /// Returns false only when the request provably was not processed: pre-send
+    /// TLS/ALPN fallback, GOAWAY above our stream id, REFUSED_STREAM, or
+    /// HTTP_1_1_REQUIRED. Ambiguous post-send failures are never replayed.
     fn tryH2(self: *Exchange, origin: pool.Origin) !bool {
-        const lease = pool.acquire(self.gpa, self.io, origin.host, origin.port) catch |err| {
-            if (h2.session.handshakeFallback(err)) return false; // pre-send TLS failure
-            return err;
-        };
-        var keep = false;
-        defer lease.release(keep);
-        if (lease.session.h1_only) {
-            pool.noteH1(self.io, origin.host, origin.port);
-            return false; // ALPN did not select h2
-        }
         const post_headers = [_]h2.Header{
             .{ .name = "content-type", .value = "application/json" },
             .{ .name = "accept", .value = "application/json" },
@@ -107,24 +104,66 @@ const Exchange = struct {
             if (i >= catalog_headers.len or header.name.len > names[i].len) return error.InvalidHeader;
             catalog_headers[i] = .{ .name = std.ascii.lowerString(&names[i], header.name), .value = header.value };
         }
-        var stream = lease.session.startLines(.{
-            .method = if (self.method == .post) "POST" else "GET",
-            .scheme = "https",
-            .authority = authority(self.url),
-            .path = origin.path,
-            .extra = if (self.method == .post) &post_headers else catalog_headers[0..self.headers.len],
-            .body = self.body,
-        }) catch |err| {
-            if (err == error.H1NoStream) {
-                pool.noteH1(self.io, origin.host, origin.port);
-                return false;
+        var fresh_only = false;
+        while (true) {
+            const lease = (if (fresh_only)
+                pool.acquireFresh(self.gpa, self.io, origin.host, origin.port)
+            else
+                pool.acquire(self.gpa, self.io, origin.host, origin.port)) catch |err| {
+                if (h2.session.handshakeFallback(err)) return false; // pre-send TLS failure
+                return err;
+            };
+            var keep = false;
+            var tap: @import("http2_reset.zig").FrameTap = .{};
+            defer {
+                tap.detach(&lease.session.conn, lease.session.h2_live);
+                lease.release(keep);
             }
-            return err;
-        };
-        defer stream.deinit();
-        try self.consume(&stream);
-        keep = stream.ended and lease.session.reusable();
-        return true;
+            if (lease.session.h1_only) {
+                pool.noteH1(self.io, origin.host, origin.port);
+                return false; // ALPN did not select h2
+            }
+            if (lease.session.reusable()) tap.attach(&lease.session.conn, lease.reused);
+            var stream = lease.session.startLines(.{
+                .method = if (self.method == .post) "POST" else "GET",
+                .scheme = "https",
+                .authority = authority(self.url),
+                .path = origin.path,
+                .extra = if (self.method == .post) &post_headers else catalog_headers[0..self.headers.len],
+                .body = self.body,
+            }) catch |raw_err| {
+                const err = tap.refineError(raw_err);
+                if (err == error.H1NoStream or err == error.Http11Required) {
+                    pool.noteH1(self.io, origin.host, origin.port);
+                    return false;
+                }
+                if (bufferedRedialFreshH2(lease.reused, self.method == .get, err)) {
+                    fresh_only = true;
+                    continue;
+                }
+                if (err == error.GoAway or err == error.StreamRefused) return false;
+                return err;
+            };
+            defer stream.deinit();
+            if (tap.inner == null and lease.session.h2_live) tap.attach(&lease.session.conn, false);
+            self.consume(&stream) catch |raw_err| {
+                const err = tap.refineError(raw_err);
+                if (self.status == 0) {
+                    if (err == error.Http11Required) {
+                        pool.noteH1(self.io, origin.host, origin.port);
+                        return false;
+                    }
+                    if (bufferedRedialFreshH2(lease.reused, self.method == .get, err)) {
+                        fresh_only = true;
+                        continue;
+                    }
+                    if (err == error.GoAway or err == error.StreamRefused) return false;
+                }
+                return err;
+            };
+            keep = stream.ended and lease.session.reusable();
+            return true;
+        }
     }
 
     fn consume(self: *Exchange, stream: *h2.LineStream) !void {

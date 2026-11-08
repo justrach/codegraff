@@ -264,7 +264,7 @@ fn xaiOAuthPost(io: Io, gpa: Allocator, arena: Allocator, url: []const u8, body:
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
     var aw: Io.Writer.Allocating = .init(arena);
-    _ = try client.fetch(.{
+    const res = try client.fetch(.{
         .location = .{ .url = url },
         .method = .POST,
         .payload = body,
@@ -274,6 +274,7 @@ fn xaiOAuthPost(io: Io, gpa: Allocator, arena: Allocator, url: []const u8, body:
             .user_agent = .{ .override = xai_user_agent },
         },
     });
+    if (helpers.isTransientHttpStatus(res.status)) return error.TransientOAuthStatus;
     const v = try std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always });
     if (v != .object) return error.BadOAuthResponse;
     return v.object;
@@ -285,6 +286,14 @@ fn xaiAuthPath(arena: Allocator, home: []const u8) []const u8 {
 
 fn writeXaiAuth(io: Io, arena: Allocator, home: []const u8, access: []const u8, refresh: []const u8, expires_at: i64) !void {
     return credential_store.writeOAuth(io, arena, home, ".xai", access, refresh, expires_at);
+}
+
+pub fn persistXaiAuth(io: Io, arena: Allocator, home: []const u8, access: []const u8, refresh: []const u8, expires_at: i64) void {
+    writeXaiAuth(io, arena, home, access, refresh, expires_at) catch {
+        writeXaiAuth(io, arena, home, access, refresh, expires_at) catch |err| {
+            helpers.persist_error = @errorName(err);
+        };
+    };
 }
 
 /// `graff login xai`: xAI/Grok device-code OAuth. Prints a verification URL +
@@ -367,7 +376,7 @@ pub fn loadXaiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, 
             if (resp.get("access_token")) |a| if (a == .string and a.string.len > 0) {
                 const new_refresh = strFieldObj(resp, "refresh_token") orelse refresh;
                 const expires_in: i64 = if (resp.get("expires_in")) |ei| (if (ei == .integer) ei.integer else 3600) else 3600;
-                writeXaiAuth(io, arena, home, a.string, new_refresh, @divTrunc(unixMs(io), 1000) + expires_in) catch {};
+                persistXaiAuth(io, arena, home, a.string, new_refresh, @divTrunc(unixMs(io), 1000) + expires_in);
                 return a.string;
             };
         }

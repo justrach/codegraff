@@ -234,6 +234,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                 var conv_buf: [96]u8 = undefined;
                 const conv = http_headers.requestCacheKey(self.io, self.label, self, self.provider, &conv_buf);
                 usage_attempts.begin();
+                self.h2_reset.clear();
                 const attempt_body = if (live)
                     self.postLive(body)
                 else
@@ -356,8 +357,9 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                         } else {
                             // Ordinary flakes keep six attempts; only construction TLS gets a longer outage window.
                             const delay_ms = jitter.ms(self.io, RetryPlan.delayMs(throttled, attempt));
+                            var h2_buf: [192]u8 = undefined;
                             if (scratch.showRecoveredTransportRetry(self.call_kind))
-                                @import("turn_chrome.zig").emitRetryNotice(self.io, @errorName(err), attempt + 1, max_attempts);
+                                @import("turn_chrome.zig").emitRetryNotice(self.io, self.h2_reset.errorLabel(err, &h2_buf), attempt + 1, max_attempts);
                             // Same trace breadcrumb the 429/5xx branch leaves: a
                             // transport-flake retry is otherwise invisible in the
                             // session trace, hiding how flaky a provider really is.
