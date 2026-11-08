@@ -26,6 +26,7 @@ const main_mod = @import("main.zig");
 const learning_privacy = @import("learning_privacy.zig");
 const no_local_tools = @import("no_local_tools.zig"); // #330: `--no-local-tools` arms the process-global gate (same set-only pattern as the main_mod globals)
 const context_limits = @import("context_limits.zig");
+const session_select = @import("session_select.zig");
 
 /// Every CLI-flag local main() used to declare, plus the resolved
 /// positionals/subcommand-detection/one-shot-prompt outputs computed right
@@ -71,6 +72,8 @@ pub const Flags = struct {
     name_flag: ?[]const u8 = null, // graff remote-control --name: how this machine is listed
     resume_flag: ?[]const u8 = null, // restore this named session
     branch_flag: ?[]const u8 = null, // clone --resume into this independent autosave target
+    session_id_flag: ?[]const u8 = null, // --session-id: caller-assigned save name (resumed if it exists)
+    continue_flag: bool = false, // -c/--continue: resume the newest save in this workspace
     goal_flag: ?[]const u8 = null, // --goal: standing objective (todos) every turn gets, incl. --json/-p
     eval_cmd_flag: ?[]const u8 = null, // --eval: scoring command for the eval-driven loop
     worktree_flag: ?[]const u8 = null, // --worktree/-w: isolate this session in a git worktree (parallel agents, no file collisions)
@@ -225,6 +228,12 @@ pub fn parse(init: std.process.Init) !Flags {
                 } else if (std.mem.eql(u8, arg, "--branch")) {
                     const bv = it.next() orelse std.process.fatal("--branch needs a destination session name — graff --help", .{});
                     flags.branch_flag = try arena.dupe(u8, bv);
+                } else if (std.mem.eql(u8, arg, "--session-id")) {
+                    const sv = it.next() orelse std.process.fatal("--session-id needs an id — graff --help", .{});
+                    session_select.validateId(sv) catch |err| std.process.fatal("invalid --session-id '{s}': it {s}", .{ sv, session_select.idErrorText(err) });
+                    flags.session_id_flag = try arena.dupe(u8, sv);
+                } else if (std.mem.eql(u8, arg, "--continue") or std.mem.eql(u8, arg, "-c")) {
+                    flags.continue_flag = true;
                 } else if (std.mem.eql(u8, arg, "--no-resume")) {
                     flags.no_resume_flag = true;
                 } else if (std.mem.eql(u8, arg, "--new")) {
@@ -300,7 +309,8 @@ pub fn parse(init: std.process.Init) !Flags {
         if (flags.oneshot_prompt == null) std.process.fatal("--output-format stream-json needs a one-shot prompt", .{});
         main_mod.json_mode = true;
     }
-    if (flags.branch_flag != null and flags.resume_flag == null) std.process.fatal("--branch needs --resume <source>", .{});
+    if (flags.branch_flag != null and flags.resume_flag == null and !flags.continue_flag) std.process.fatal("--branch needs --resume <source> or --continue", .{});
+    if (session_select.conflict(&flags)) |msg| std.process.fatal("{s}", .{msg});
     if (flags.branch_flag != null and (flags.new_session_flag or flags.no_resume_flag)) std.process.fatal("--branch cannot be combined with --new or --no-resume", .{});
 
     // The tool-surface half of lean, set AFTER the one-shot prompt is
