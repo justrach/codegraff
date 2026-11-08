@@ -179,4 +179,3 @@ test "#1833 translateHistory drops tool-accompanying preambles and keeps final o
     try std.testing.expectEqualStrings("assistant", msgs.items[1].object.get("role").?.string);
     try std.testing.expectEqualStrings("Fixed and verified.", msgs.items[1].object.get("content").?.string);
 }
-
