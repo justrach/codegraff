@@ -270,3 +270,25 @@ fn candidateNamed(models: []const Best, name: []const u8) Best {
     for (models) |m| if (std.mem.eql(u8, m.name, name)) return m;
     unreachable;
 }
+
+test "#1836: the archive prefilter skips rows no fold reads, and prose cannot fake a kind" {
+    try std.testing.expect(bench.kindIs("{\"run_id\":\"r\",\"kind\":\"score\",\"score\":1}", "score"));
+    try std.testing.expect(bench.kindIs("{\"kind\" : \"recipe\"}", "recipe"));
+    try std.testing.expect(!bench.kindIs("{\"kind\":\"scores\"}", "score"));
+    try std.testing.expect(!bench.kindIs("", "score"));
+    try std.testing.expect(!bench.kindIs("{\"kind\":\"prompt\",\"text\":\"rate the \\\"score\\\" here\"}", "score"));
+
+    // The folds see exactly what they saw before: real rows still count.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const archive =
+        \\{"kind":"prompt","prompt_sha":"p1","text":"a \"score\" and a \"recipe\" in prose"}
+        \\{"kind":"recipe","prompt_sha":"p1","model":"m-1","effort":"high"}
+        \\{"kind":"score","prompt_sha":"p1","score":0.75,"shape":"s","tier":"t","model":"m-1"}
+    ;
+    const obs = bench.foldObservations(a, archive);
+    try std.testing.expectEqual(@as(usize, 1), obs.len);
+    try std.testing.expectEqualStrings("m-1", obs[0].model);
+    try std.testing.expectEqual(@as(usize, 1), @import("route_policy.zig").foldCells(a, archive).len);
+}

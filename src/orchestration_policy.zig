@@ -256,7 +256,7 @@ pub fn foldArms(arena: Allocator, archive: []const u8) []ArmObs {
     var it = std.mem.splitScalar(u8, archive, '\n');
     while (it.next()) |ln| {
         const t = std.mem.trim(u8, ln, " \t\r");
-        if (t.len == 0) continue;
+        if (!@import("bench_priors.zig").kindIs(t, "orch_outcome")) continue;
         const v = std.json.parseFromSliceLeaky(std.json.Value, arena, t, .{}) catch continue;
         if (v != .object) continue;
         const o = v.object;

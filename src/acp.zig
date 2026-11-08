@@ -253,6 +253,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     defer @import("acp_subagent_live.zig").uninstallBackground(io);
     var line_arena_state = std.heap.ArenaAllocator.init(gpa);
     defer line_arena_state.deinit();
+    var handshake: @import("acp_handshake_log.zig").Log = .{ .process_started = @import("startup_timing.zig").g_started };
     while (true) {
         defer @import("agent_request_scratch.zig").reset(&line_arena_state);
         const line_arena = line_arena_state.allocator();
@@ -262,10 +263,12 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
                 std.debug.print("acp: idle wake failed: {t}\n", .{err});
             },
             .line => |line| {
+                const phase = handshake.before(io, line); // #1837
                 handleLine(&d, line_arena, wire, line) catch |err| {
                     std.debug.print("acp: dispatch failed: {t}\n", .{err});
                     break;
                 };
+                handshake.after(io, phase);
                 @import("acp_subagent_live.zig").configureBackground(io, d.session_id orelse "", d.background_subagents);
                 @import("acp_idle.zig").startupEffortNotice(&d, root, wire) catch break;
             },

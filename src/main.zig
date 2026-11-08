@@ -58,7 +58,7 @@ test {
     _ = models_cache;
     _ = .{ ansi, @import("agent_markdown_inline.zig"), @import("terminal_workers_tests.zig") };
     _ = serve;
-    _ = .{ @import("json_inbox.zig"), @import("acp_inbox.zig"), @import("cite_markup.zig"), @import("server_diagnostics.zig"), @import("server_discovery.zig"), @import("job_browser_guard.zig"), @import("preview_consumers.zig"), @import("plan_usage.zig"), @import("server_port.zig"), @import("job_registry_stop_tests.zig") };
+    _ = .{ @import("json_inbox.zig"), @import("acp_inbox.zig"), @import("cite_markup.zig"), @import("server_diagnostics.zig"), @import("server_discovery.zig"), @import("job_browser_guard.zig"), @import("preview_consumers.zig"), @import("plan_usage.zig"), @import("server_port.zig"), @import("job_registry_stop_tests.zig"), @import("acp_handshake_log.zig") };
     _ = util;
     _ = learn_store;
     _ = learn_eval;
