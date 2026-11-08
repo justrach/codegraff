@@ -446,4 +446,3 @@ test "#1833 cross-format applyProviderInner expands checkpoint before translatin
     try std.testing.expectEqualStrings("context translated & kept; opaque state expanded from checkpoint", note);
     try expectJson("[{\"role\":\"user\",\"content\":\"checkpointed prompt\"},{\"role\":\"assistant\",\"content\":\"checkpointed reply\"},{\"role\":\"user\",\"content\":\"tail prompt\"}]", agent.messages.items);
 }
-
