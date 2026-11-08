@@ -13,6 +13,10 @@ const trace = @import("trace.zig");
 /// return their `Io` for the same reason; see shutdown_trace.zig's header.
 pub const shutdown_trace = @import("shutdown_trace.zig");
 
+/// When main() started, for phases timed outside the tracker (#1837's ACP
+/// handshake log names process startup as one).
+pub var g_started: ?Io.Timestamp = null;
+
 pub const Tracker = struct {
     const max_phases = 16;
     const Phase = struct { label: []const u8, cumulative_ms: i64, phase_ms: i64 };
@@ -25,7 +29,9 @@ pub const Tracker = struct {
     tracer: ?*trace.Tracer = null,
 
     pub fn init(io: Io, debug: bool) Tracker {
-        return .{ .started = Io.Timestamp.now(io, .awake), .debug = debug };
+        const now = Io.Timestamp.now(io, .awake);
+        g_started = now;
+        return .{ .started = now, .debug = debug };
     }
 
     pub fn mark(self: *Tracker, io: Io, label: []const u8) void {
