@@ -7,8 +7,18 @@ const Agent = @import("agent.zig").Agent;
 const http = @import("http.zig");
 const agent_stream = @import("agent_stream.zig");
 
-const head_ms: u64 = 400; // not 30_000: the loopback head exception stays off
-const paced_len: usize = 2 * 1024 * 1024;
+// Every stage here is bounded by this one knob (connect, upload idle, head),
+// and progress is only recorded when the *peer* thread runs — so the budget has
+// to absorb a peer that a busy runner deschedules for seconds. The body is sized
+// so the upload still clearly outlasts it: 12 MiB at 32 KiB/20 ms is ~7.7 s
+// against 5 s.
+const head_ms: u64 = 5000; // not 30_000: the loopback head exception stays off
+const paced_len: usize = 12 * 1024 * 1024;
+
+// The budgets below are process-wide, and the two tests in this file run
+// concurrently in one binary: without this, each one's pacing overwrites the
+// other's budget mid-request and the watchdog fires at a value neither set.
+var budget_lock: Io.Mutex = .init;
 
 const Peer = struct {
     const Mode = enum { paced, stopped };
@@ -30,8 +40,8 @@ const Peer = struct {
             if (line.len > name.len and std.ascii.eqlIgnoreCase(line[0..name.len], name))
                 len = std.fmt.parseInt(usize, std.mem.trim(u8, line[name.len..], " \r"), 10) catch return;
         }
-        // 32 KiB per 25 ms: the whole body spans several head budgets, and each
-        // pause stays far under one so a descheduled peer cannot trip it.
+        // 32 KiB per 20 ms (~1.6 MiB/s): 12 MiB spans ~6 s, several budgets,
+        // while any single pause stays a tiny fraction of one.
         var since_pause: usize = 0;
         while (got.load(.monotonic) < len) {
             const n = @min(len - got.load(.monotonic), 8192);
@@ -40,7 +50,7 @@ const Peer = struct {
             since_pause += n;
             if (since_pause >= 32 * 1024) {
                 since_pause = 0;
-                io.sleep(.fromMilliseconds(25), .awake) catch return;
+                io.sleep(.fromMilliseconds(20), .awake) catch return;
             }
         }
         var output_buf: [1024]u8 = undefined;
@@ -58,6 +68,8 @@ fn nowMs(io: Io) i64 {
 
 fn exercise(mode: Peer.Mode, body_len: usize) !void {
     if (builtin.os.tag == .windows) return error.SkipZigTest; // loopback buffer sizing is not deterministic there
+    budget_lock.lockUncancelable(std.testing.io);
+    defer budget_lock.unlock(std.testing.io);
     const gpa = std.testing.allocator;
     const io = std.testing.io;
     var addr = try Io.net.IpAddress.parseLiteral("127.0.0.1:0");
@@ -75,7 +87,11 @@ fn exercise(mode: Peer.Mode, body_len: usize) !void {
     const saved_head = http.head_stall_ms;
     const saved_stream = http.stream_stall_ms;
     http.head_stall_ms = head_ms;
-    http.stream_stall_ms = 1000;
+    // The head budget is clamped by the read budget, and it starts once the last
+    // body byte leaves the client — so the residual in socket buffers drains
+    // inside it. Keep it at least as wide as the other stages for a paced run;
+    // the stopped case below still needs the tight one to bound itself.
+    http.stream_stall_ms = if (mode == .paced) head_ms else 1000;
     defer http.head_stall_ms = saved_head;
     defer http.stream_stall_ms = saved_stream;
 
@@ -111,13 +127,13 @@ fn exercise(mode: Peer.Mode, body_len: usize) !void {
             defer gpa.free(reply);
             try std.testing.expect(std.mem.indexOf(u8, reply, "data: [DONE]") != null);
             try std.testing.expectEqual(body_len, got.load(.monotonic));
-            try std.testing.expect(ms > 2 * head_ms); // the old flat head deadline would have fired
+            try std.testing.expect(ms > head_ms); // the old flat head deadline would have fired
         },
         .stopped => {
             if (response) |reply| gpa.free(reply) else |_| {}
             try std.testing.expectError(error.HungRequest, response);
             try std.testing.expect(ms >= head_ms);
-            try std.testing.expect(ms < 3000);
+            try std.testing.expect(ms < 2 * head_ms);
         },
     }
 }
