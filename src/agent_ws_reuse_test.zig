@@ -44,7 +44,7 @@ test "#401: silence after streamed tool-argument prose trips the tightened budge
     var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
     defer server.deinit(io);
     var done: std.atomic.Value(bool) = .init(false);
-    var fut = io.async(Mock.run, .{ io, &server, Mock.Mode.arg_prose_then_silence, &done });
+    var fut = try io.concurrent(Mock.run, .{ io, &server, Mock.Mode.arg_prose_then_silence, &done });
     defer fut.await(io);
     defer done.store(true, .release);
 
@@ -110,7 +110,7 @@ test "#401: a reused socket that answers nothing fails on the head budget as a t
     var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
     defer server.deinit(io);
     var done: std.atomic.Value(bool) = .init(false);
-    var fut = io.async(Mock.run, .{ io, &server, Mock.Mode.read_then_silence, &done });
+    var fut = try io.concurrent(Mock.run, .{ io, &server, Mock.Mode.read_then_silence, &done });
     defer fut.await(io);
     defer done.store(true, .release);
 
@@ -185,7 +185,7 @@ test "#401: a fresh connect keeps the full pre-first-token budget for a slow fir
     var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
     defer server.deinit(io);
     var done: std.atomic.Value(bool) = .init(false);
-    var fut = io.async(Mock.run, .{ io, &server, Mock.Mode.slow_first_frame, &done });
+    var fut = try io.concurrent(Mock.run, .{ io, &server, Mock.Mode.slow_first_frame, &done });
     defer fut.await(io);
     defer done.store(true, .release);
 

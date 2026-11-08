@@ -114,7 +114,7 @@ test "#682: a subagent-shaped agent streams — completes on the terminal event,
     defer server.deinit(io);
     var done: std.atomic.Value(bool) = .init(false);
     // Connection 1 finishes its stream; connection 2 goes quiet after the prose.
-    var fut = io.async(Srv.runTwo, .{ io, &server, &done });
+    var fut = try io.concurrent(Srv.runTwo, .{ io, &server, &done });
     defer fut.await(io);
     defer done.store(true, .release);
 
@@ -170,7 +170,7 @@ test "#680: each stall reconnect widens the between-lines wait the SSE reader ar
     var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
     defer server.deinit(io); // registered first → torn down LAST, after the task is joined
     var done: std.atomic.Value(bool) = .init(false);
-    var fut = io.async(Srv.run, .{ io, &server, @as(usize, 3), &done });
+    var fut = try io.concurrent(Srv.run, .{ io, &server, @as(usize, 3), &done });
     defer fut.await(io);
     defer done.store(true, .release); // …so the LIFO order is: signal, join, close
 
@@ -269,7 +269,7 @@ test "Chat terminal marker keeps delayed usage and completes silent trailer; non
         var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
         defer server.deinit(io);
         var done: std.atomic.Value(bool) = .init(false);
-        var fut = io.async(TrailerSrv.run, .{ io, &server, mode, &done });
+        var fut = try io.concurrent(TrailerSrv.run, .{ io, &server, mode, &done });
         defer fut.await(io);
         defer done.store(true, .release);
         var arena_state = std.heap.ArenaAllocator.init(gpa);
@@ -346,7 +346,7 @@ fn thinkPastTightenedBudget(head: []const u8, tail: []const u8) !void {
     var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
     defer server.deinit(io);
     var done: std.atomic.Value(bool) = .init(false);
-    var fut = io.async(ResponsesSrv.run, .{ io, &server, &done });
+    var fut = try io.concurrent(ResponsesSrv.run, .{ io, &server, &done });
     defer fut.await(io);
     defer done.store(true, .release);
 

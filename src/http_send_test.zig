@@ -67,7 +67,7 @@ fn exercise(mode: Peer.Mode, body_len: usize) !void {
     if (builtin.os.tag != .windows) std.posix.setsockopt(listener.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVBUF, std.mem.asBytes(&rcvbuf)) catch {};
     var got: std.atomic.Value(usize) = .init(0);
     var done: std.atomic.Value(bool) = .init(false);
-    var peer = io.async(Peer.run, .{ io, &listener, mode, &got, &done });
+    var peer = try io.concurrent(Peer.run, .{ io, &listener, mode, &got, &done });
     defer peer.await(io);
     defer done.store(true, .release);
 

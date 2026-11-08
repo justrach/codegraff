@@ -48,7 +48,7 @@ test "#401: silence after frames trips the tightened read budget, not the full p
     var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
     defer server.deinit(io); // registered first → torn down LAST, after the task is joined
     var done: std.atomic.Value(bool) = .init(false);
-    var fut = io.async(Mock.run, .{ io, &server, Mock.Mode.frame_then_silence, &done });
+    var fut = try io.concurrent(Mock.run, .{ io, &server, Mock.Mode.frame_then_silence, &done });
     defer fut.await(io);
     defer done.store(true, .release); // …so the LIFO order is: signal, join, close
 
@@ -130,7 +130,7 @@ test "ADR 0241: a closed prose item gets the full budget back for a silent think
     var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
     defer server.deinit(io);
     var done: std.atomic.Value(bool) = .init(false);
-    var fut = io.async(Mock.run, .{ io, &server, Mock.Mode.prose_close_then_think, &done });
+    var fut = try io.concurrent(Mock.run, .{ io, &server, Mock.Mode.prose_close_then_think, &done });
     defer fut.await(io);
     defer done.store(true, .release);
 
@@ -184,7 +184,7 @@ test "ADR 0248: a commentary heads-up held open keeps the full budget" {
     var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
     defer server.deinit(io);
     var done: std.atomic.Value(bool) = .init(false);
-    var fut = io.async(Mock.run, .{ io, &server, Mock.Mode.commentary_then_think, &done });
+    var fut = try io.concurrent(Mock.run, .{ io, &server, Mock.Mode.commentary_then_think, &done });
     defer fut.await(io);
     defer done.store(true, .release);
 
@@ -237,7 +237,7 @@ test "#401 control: a mock that completes the response still finishes the turn c
     var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
     defer server.deinit(io);
     var done: std.atomic.Value(bool) = .init(false);
-    var fut = io.async(Mock.run, .{ io, &server, Mock.Mode.frame_then_complete, &done });
+    var fut = try io.concurrent(Mock.run, .{ io, &server, Mock.Mode.frame_then_complete, &done });
     defer fut.await(io);
     defer done.store(true, .release);
 
@@ -301,7 +301,7 @@ test "#401: protocol and reasoning frames do NOT tighten the read budget (SSE pa
     var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
     defer server.deinit(io);
     var done: std.atomic.Value(bool) = .init(false);
-    var fut = io.async(Mock.run, .{ io, &server, Mock.Mode.protocol_then_silence, &done });
+    var fut = try io.concurrent(Mock.run, .{ io, &server, Mock.Mode.protocol_then_silence, &done });
     defer fut.await(io);
     defer done.store(true, .release);
 
@@ -367,7 +367,7 @@ test "#401: a peer that stops draining fails the send fast, tears down, and does
     var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
     defer server.deinit(io);
     var done: std.atomic.Value(bool) = .init(false);
-    var fut = io.async(Mock.run, .{ io, &server, Mock.Mode.never_drain, &done });
+    var fut = try io.concurrent(Mock.run, .{ io, &server, Mock.Mode.never_drain, &done });
     defer fut.await(io);
     defer done.store(true, .release);
 
@@ -438,7 +438,7 @@ test "#401: a stalled dial fails the turn fast and traces `connect stall` (produ
     var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
     defer server.deinit(io);
     var done: std.atomic.Value(bool) = .init(false);
-    var fut = io.async(Mock.run, .{ io, &server, Mock.Mode.no_upgrade, &done });
+    var fut = try io.concurrent(Mock.run, .{ io, &server, Mock.Mode.no_upgrade, &done });
     defer fut.await(io);
     defer done.store(true, .release);
 
@@ -499,7 +499,7 @@ test "#401: the idle-expiry teardown FINs a suspect socket instead of writing a 
     defer server.deinit(io);
     var done: std.atomic.Value(bool) = .init(false);
     var seen: std.atomic.Value(u8) = .init(mock.saw_nothing);
-    var fut = io.async(mock.closeObserver, .{ io, &server, &seen, &done });
+    var fut = try io.concurrent(mock.closeObserver, .{ io, &server, &seen, &done });
     defer fut.await(io);
     defer done.store(true, .release);
 
