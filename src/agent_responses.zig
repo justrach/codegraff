@@ -103,7 +103,7 @@ pub fn parseResponses(self: *Agent, body: []const u8) !ResponsesResult {
         } else if (std.mem.eql(u8, tname, @import("agent_ws_steer.zig").applied_type)) {
             // A steer the server applied here: the user's words where the model read them.
             if (v.object.get("text")) |txt| if (txt == .string)
-                try items.append(try @import("session_wake.zig").message(result_arena, txt.string));
+                try items.append(try @import("session_wake.zig").steerMessage(result_arena, txt.string));
         }
     }
     // A terminal failure wins even if the stream produced partial completed

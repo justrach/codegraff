@@ -68,36 +68,173 @@ fn sentenceEnd(c: u8) bool {
     return c == '.' or c == '!' or c == '?';
 }
 
-/// Accept a whole trimmed line or sentence, never an arbitrary substring that
-/// can drop a leading task qualifier or trailing exception. Multiple exact
-/// occurrences are checked because one may be embedded while another is a
-/// complete sentence.
-fn exactUserSegment(user: []const u8, text: []const u8) bool {
-    var search: usize = 0;
-    while (search <= user.len) {
-        const rel = std.mem.indexOf(u8, user[search..], text) orelse return false;
-        const start = search + rel;
-        const end = start + text.len;
+fn closePunct(c: u8) bool {
+    return c == '"' or c == '\'' or c == ')' or c == ']';
+}
 
-        var left = start;
-        while (left > 0 and (user[left - 1] == ' ' or user[left - 1] == '\t')) left -= 1;
-        const starts_segment = left == 0 or user[left - 1] == '\n' or user[left - 1] == '\r' or sentenceEnd(user[left - 1]);
+fn endsWithSentencePunct(s: []const u8) bool {
+    if (s.len == 0) return false;
+    if (sentenceEnd(s[s.len - 1])) return true;
+    return s.len >= 2 and closePunct(s[s.len - 1]) and sentenceEnd(s[s.len - 2]);
+}
 
-        var right = end;
-        while (right < user.len and (user[right] == ' ' or user[right] == '\t')) right += 1;
-        const at_line_end = right == user.len or user[right] == '\n' or user[right] == '\r';
-        const ends_sentence = right > end and sentenceEnd(text[text.len - 1]);
-        if (starts_segment and (at_line_end or ends_sentence)) return true;
+/// Match `text` inside `user` at `start`, treating CRLF in `user` as matching
+/// LF in `text` so multi-line verbatim quotes survive Windows/wire line endings.
+fn matchAt(user: []const u8, start: usize, text: []const u8) ?usize {
+    var u = start;
+    var t: usize = 0;
+    while (t < text.len) {
+        if (u < user.len and user[u] == text[t]) {
+            u += 1;
+            t += 1;
+        } else if (text[t] == '\n' and u + 1 < user.len and user[u] == '\r' and user[u + 1] == '\n') {
+            u += 2;
+            t += 1;
+        } else return null;
+    }
+    return u;
+}
 
-        search = start + 1;
+/// True when `line_prefix` (everything before `start` on the current line) is
+/// purely Markdown blockquote / list-item punctuation (`- `, `* `, `+ `, `> `,
+/// `1. `, `1) `) and never words, flags (`--foo`), or task qualifiers.
+fn linePrefixOnly(line_prefix: []const u8) bool {
+    var s = std.mem.trimStart(u8, line_prefix, " \t");
+    while (std.mem.startsWith(u8, s, ">")) {
+        s = s[1..];
+        if (s.len == 0) return false;
+        if (s[0] == ' ' or s[0] == '\t') {
+            s = std.mem.trimStart(u8, s, " \t");
+            if (s.len == 0) return true;
+        } else if (s[0] != '>') return false;
+    }
+    if (s.len < 2 or (s[s.len - 1] != ' ' and s[s.len - 1] != '\t')) return false;
+    const marker = std.mem.trimEnd(u8, s, " \t");
+    if (std.mem.eql(u8, marker, "-") or std.mem.eql(u8, marker, "*") or std.mem.eql(u8, marker, "+") or std.mem.eql(u8, marker, "•"))
+        return true;
+    if (marker.len >= 2 and marker.len <= 5 and (marker[marker.len - 1] == '.' or marker[marker.len - 1] == ')')) {
+        for (marker[0 .. marker.len - 1]) |c| if (!std.ascii.isDigit(c)) return false;
+        return true;
     }
     return false;
 }
 
-/// The user text this turn's constraints must quote: a named work task, else
-/// the latest user message. ask_user answers are keyed to it (#1342).
+fn atLineEndAfterSpaces(user: []const u8, pos: usize) bool {
+    var r = pos;
+    while (r < user.len and (user[r] == ' ' or user[r] == '\t')) r += 1;
+    return r == user.len or user[r] == '\n' or user[r] == '\r';
+}
+
+/// Accept a whole trimmed line or sentence, never an arbitrary substring that
+/// can drop a leading task qualifier or trailing exception. Multiple exact
+/// occurrences are checked because one may be embedded while another is a
+/// complete sentence.
+pub fn exactUserSegment(user: []const u8, text: []const u8) bool {
+    if (text.len == 0 or user.len == 0) return false;
+    var search: usize = 0;
+    while (search < user.len) {
+        const rel = std.mem.indexOfScalar(u8, user[search..], text[0]) orelse return false;
+        const start = search + rel;
+        search = start + 1;
+        const end = matchAt(user, start, text) orelse continue;
+
+        const line_start = if (std.mem.lastIndexOfAny(u8, user[0..start], "\r\n")) |nl| nl + 1 else 0;
+        if (start > line_start and end < user.len) {
+            const q = user[start - 1];
+            if ((q == '"' or q == '\'' or q == '`') and user[end] == q) {
+                const before_q = user[line_start .. start - 1];
+                const clean_left = std.mem.trim(u8, before_q, " \t").len == 0 or linePrefixOnly(before_q);
+                if (clean_left and atLineEndAfterSpaces(user, end + 1)) return true;
+            }
+        }
+
+        var left = start;
+        while (left > 0 and (user[left - 1] == ' ' or user[left - 1] == '\t')) left -= 1;
+        const after_prev_sentence = endsWithSentencePunct(user[0..left]);
+        const starts_segment = left == 0 or user[left - 1] == '\n' or user[left - 1] == '\r' or
+            after_prev_sentence or linePrefixOnly(user[line_start..start]);
+
+        var right = end;
+        while (right < user.len and (user[right] == ' ' or user[right] == '\t')) right += 1;
+        const at_line_end = right == user.len or user[right] == '\n' or user[right] == '\r';
+        const ends_sentence = right > end and endsWithSentencePunct(text);
+        const omitted_end = end < user.len and sentenceEnd(user[end]) and blk: {
+            var p = end + 1;
+            if (p < user.len and closePunct(user[p])) p += 1;
+            break :blk p == user.len or user[p] == '\n' or user[p] == '\r' or user[p] == ' ' or user[p] == '\t';
+        };
+        if (starts_segment and (at_line_end or ends_sentence or omitted_end)) return true;
+    }
+    return false;
+}
+
+fn latestUserIndex(items: []const std.json.Value) ?usize {
+    var i = items.len;
+    while (i > 0) {
+        i -= 1;
+        if (messages.userPromptText(items[i]) != null) return i;
+    }
+    return null;
+}
+
+fn hasUserPrompt(items: []const std.json.Value, target: []const u8) bool {
+    for (items) |m| {
+        if (messages.userPromptText(m)) |t| if (std.mem.eql(u8, t, target)) return true;
+    }
+    return false;
+}
+
+fn namedWorkStale(agent: *const Agent, items: []const std.json.Value, latest_idx: usize, latest: []const u8) bool {
+    if (std.mem.eql(u8, agent.named_work_task, latest)) return false;
+    if (hasUserPrompt(items[0..latest_idx], agent.named_work_task)) return true;
+    return agent.history_rewrites == 0 and std.mem.indexOf(u8, latest, agent.named_work_task) == null;
+}
+
+/// The user text this turn's constraints must quote: the active user prompt in
+/// history when `named_work_task` is empty or stale from an earlier turn, else
+/// `named_work_task` (preserving prompts across mid-turn compaction and `-p`).
 pub fn currentUserText(agent: *const Agent) []const u8 {
-    return if (agent.named_work_task.len > 0) agent.named_work_task else messages.latestUserText(agent.messages.items);
+    const items = agent.messages.items;
+    const idx = latestUserIndex(items) orelse return agent.named_work_task;
+    const latest = messages.userPromptText(items[idx]) orelse return agent.named_work_task;
+    if (agent.named_work_task.len == 0 or namedWorkStale(agent, items, idx, latest)) return latest;
+    return agent.named_work_task;
+}
+
+fn messageBlocksMatch(msg: std.json.Value, text: []const u8) bool {
+    if (msg != .object) return false;
+    const content = msg.object.get("content") orelse return false;
+    if (content == .string) return content.string.len > 0 and exactUserSegment(content.string, text);
+    if (content != .array) return false;
+    for (content.array.items) |block| {
+        if (block != .object) continue;
+        const typ = block.object.get("type") orelse continue;
+        if (typ != .string) continue;
+        if (std.mem.eql(u8, typ.string, "tool_result")) return false;
+    }
+    for (content.array.items) |block| {
+        if (block != .object) continue;
+        const typ = block.object.get("type") orelse continue;
+        if (typ != .string) continue;
+        if (!std.mem.eql(u8, typ.string, "input_text") and !std.mem.eql(u8, typ.string, "text")) continue;
+        const tx = block.object.get("text") orelse continue;
+        if (tx == .string and tx.string.len > 0 and exactUserSegment(tx.string, text)) return true;
+    }
+    return false;
+}
+
+fn matchesCurrentTurnUser(agent: *const Agent, current_user: []const u8, text: []const u8) bool {
+    if (current_user.len > 0 and exactUserSegment(current_user, text)) return true;
+    const items = agent.messages.items;
+    const idx = latestUserIndex(items);
+    if (idx) |i| {
+        if (messageBlocksMatch(items[i], text)) return true;
+    }
+    const steer_from = if (idx) |i| i + 1 else 0;
+    for (items[steer_from..]) |m| {
+        if (@import("session_wake.zig").isSteer(m) and messageBlocksMatch(m, text)) return true;
+    }
+    return false;
 }
 
 /// The `note_constraint` meta-tool handler (root-only; the spec lives in
@@ -115,9 +252,12 @@ pub fn noteConstraint(agent: *Agent, input: std.json.Value) ExecResult {
     if (text.len == 0) return .{ .text = "note_constraint needs non-empty exact text from the current user message", .is_error = true };
     if (text.len > playbook.max_text) return .{ .text = std.fmt.comptimePrint("constraint NOT recorded: exact text exceeds the {d}-byte project-constraint limit; ask the user for a shorter standing rule", .{playbook.max_text}), .is_error = true };
     const current_user = currentUserText(agent);
+    const latest_user = messages.latestUserText(agent.messages.items);
     const answers = @import("ask_user_answers.zig");
-    const from_user = current_user.len > 0 and exactUserSegment(current_user, text);
-    if (!from_user and !answers.any(answers.turnKey(current_user), text, exactUserSegment)) return .{
+    const from_user = matchesCurrentTurnUser(agent, current_user, text);
+    const from_answer = !from_user and (answers.any(answers.turnKey(current_user), text, exactUserSegment) or
+        (latest_user.len > 0 and !std.mem.eql(u8, latest_user, current_user) and answers.any(answers.turnKey(latest_user), text, exactUserSegment)));
+    if (!from_user and !from_answer) return .{
         .text = "constraint NOT recorded: `text` must be a complete verbatim sentence or line from the current user message or the user's ask_user answer this turn; do not drop task qualifiers, exceptions, or other limiting language",
         .is_error = true,
     };

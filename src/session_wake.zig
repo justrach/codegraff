@@ -14,18 +14,36 @@ pub fn inject(root: *Agent, text: []const u8) void {
     engine_sink.forAgent(root).emit(root.io, .{ .session_notice = .{ .text = owned, .tone = .dim } });
 }
 
+pub fn injectSteer(root: *Agent, text: []const u8) void {
+    if (root.sub or text.len == 0) return;
+    const owned = root.arena.dupe(u8, text) catch return;
+    root.messages.append(steerMessage(root.arena, owned) catch return) catch return;
+    engine_sink.forAgent(root).emit(root.io, .{ .session_notice = .{ .text = owned, .tone = .dim } });
+}
+
 /// Persisted provenance, never a provider API field. Text is not an identity.
 pub const origin_key = "_graff_origin";
+pub const steer_origin = "steer";
+pub fn isSteer(m: std.json.Value) bool {
+    if (m != .object) return false;
+    const v = m.object.get(origin_key) orelse return false;
+    return v == .string and std.mem.eql(u8, v.string, steer_origin);
+}
 pub fn isNotice(m: std.json.Value) bool {
     if (m != .object) return false;
     const v = m.object.get(origin_key) orelse return false;
     // #1333: hot-context updates are notices too, with their own origin. So are
     // loaded-tool announcements, which DeepSeek gets user-role (ADR 0221).
-    return v == .string and (std.mem.eql(u8, v.string, "notification") or std.mem.eql(u8, v.string, "hot_context") or
-        std.mem.eql(u8, v.string, @import("additional_tools.zig").item_type));
+    return v == .string and (std.mem.eql(u8, v.string, "notification") or std.mem.eql(u8, v.string, steer_origin) or
+        std.mem.eql(u8, v.string, "hot_context") or std.mem.eql(u8, v.string, @import("additional_tools.zig").item_type));
 }
 pub fn message(a: std.mem.Allocator, text: []const u8) !std.json.Value {
     return mark(a, try @import("messages.zig").textMessage(a, "user", text));
+}
+pub fn steerMessage(a: std.mem.Allocator, text: []const u8) !std.json.Value {
+    var m = try @import("messages.zig").textMessage(a, "user", text);
+    try m.object.put(a, origin_key, .{ .string = steer_origin });
+    return m;
 }
 pub fn typedMessage(a: std.mem.Allocator, kind: @import("provider.zig").Provider.Kind, text: []const u8) !std.json.Value {
     return mark(a, if (kind == .interactions)
@@ -40,7 +58,10 @@ pub fn mark(a: std.mem.Allocator, source: std.json.Value) !std.json.Value {
 }
 pub fn copyOrigin(a: std.mem.Allocator, source: std.json.Value, dest: std.json.Value) !std.json.Value {
     var m = dest;
-    if (isNotice(source) and m == .object) try m.object.put(a, origin_key, .{ .string = "notification" });
+    if (isSteer(source) and m == .object)
+        try m.object.put(a, origin_key, .{ .string = steer_origin })
+    else if (isNotice(source) and m == .object)
+        try m.object.put(a, origin_key, .{ .string = "notification" });
     return m;
 }
 /// Preserve provider-native fields and ordering, excluding only our provenance.

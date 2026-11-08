@@ -120,7 +120,7 @@ pub fn flushPending(root: *Agent) !void {
     collectRegistry(root);
     const imgs = take(root);
     if (imgs.len == 0) return;
-    try root.messages.append(try vision.imageMessages(root.arena, root.provider.kind, attached_note, imgs));
+    try root.messages.append(try @import("session_wake.zig").mark(root.arena, try vision.imageMessages(root.arena, root.provider.kind, attached_note, imgs)));
 }
 
 pub fn withUnsupportedNote(arena: Allocator, answer: []const u8) ![]const u8 {

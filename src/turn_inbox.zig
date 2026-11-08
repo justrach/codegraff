@@ -36,7 +36,7 @@ fn deliverSteer(self: *Agent) void {
     if (self.sub) return;
     const entry = popSteerSoft() orelse return;
     defer std.heap.page_allocator.free(entry.text);
-    session_wake.inject(self, entry.text);
+    session_wake.injectSteer(self, entry.text);
 }
 
 test "deliverSteer injects one non-force line and leaves force queued" {
