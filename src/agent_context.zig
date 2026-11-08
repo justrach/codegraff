@@ -168,12 +168,13 @@ pub fn floorContextTokens(self: *Agent, est: u64) void {
     self.context_local_tokens = estimate.local;
 }
 
-/// A full-history request's provider usage replaces the local estimate, whose 8k
-/// pre-usage baseline read ~3k high on Anthropic. Plain bytes/4 under-counts code
-/// on every provider measured, so a report below it is not credible and floors there.
+/// A full-history request's usage replaces the provisional estimate. Keep the
+/// visible-input floor, but never let ciphertext byte estimates overrule the
+/// provider's count of that same full Responses request (#1686).
 pub fn replaceContextTokens(self: *Agent, reported: u64) void {
     const input_bytes = context_tokens.serializedLen(Value{ .array = self.messages });
-    self.last_context_tokens = @max(reported, measuredRequestTokens(self, input_bytes));
+    const opaque_tokens = if (self.provider.kind == .responses) context_tokens.opaqueEstimatedTokens(.{ .array = self.messages }) else 0;
+    self.last_context_tokens = @max(reported, measuredRequestTokens(self, input_bytes) -| opaque_tokens);
     self.context_local_tokens = requestEstimateFromInputBytes(self, input_bytes);
 }
 

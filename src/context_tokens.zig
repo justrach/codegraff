@@ -115,11 +115,13 @@ const MediaStats = struct {
     payload_bytes: usize = 0,
     images: u64 = 0,
     compaction_state_bytes: usize = 0,
+    reasoning_state_bytes: usize = 0,
 
     fn add(self: *MediaStats, other: MediaStats) void {
         self.payload_bytes +|= other.payload_bytes;
         self.images +|= other.images;
         self.compaction_state_bytes +|= other.compaction_state_bytes;
+        self.reasoning_state_bytes +|= other.reasoning_state_bytes;
     }
 };
 
@@ -174,6 +176,9 @@ fn mediaStats(value: Value) MediaStats {
                 stats.images +|= 1;
             }
             if (compactionStateLen(obj)) |state_bytes| stats.compaction_state_bytes +|= state_bytes;
+            if (std.mem.eql(u8, stringValue(obj.get("type")) orelse "", "reasoning")) {
+                if (stringValue(obj.get("encrypted_content"))) |state| stats.reasoning_state_bytes +|= state.len;
+            }
             var it = obj.iterator();
             while (it.next()) |entry| stats.add(mediaStats(entry.value_ptr.*));
         },
@@ -279,6 +284,14 @@ pub fn estimatedTokensFromLen(value: Value, total_bytes: usize) u64 {
 
 pub fn estimatedTokens(value: Value) u64 {
     return estimatedTokensFromLen(value, serializedLen(value));
+}
+
+/// Ciphertext's contribution to the provisional estimate, not a tokenizer
+/// floor that can contradict usage from a full Responses request (#1686).
+/// Keep the ordinary text, schemas, and vision floor when excluding it.
+pub fn opaqueEstimatedTokens(value: Value) u64 {
+    const media = mediaStats(value);
+    return stateTokens(media.compaction_state_bytes) +| @as(u64, @intCast(media.reasoning_state_bytes / 4));
 }
 
 test "inline image payload size does not masquerade as text context" {

@@ -61,6 +61,13 @@ pub fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: 
         std.mem.eql(u8, root.provider.id, p.id) and
         std.mem.eql(u8, root.provider.model, p.model) and
         std.mem.eql(u8, root.provider.url, p.url);
+    const seat_moved = !same_format or
+        !std.mem.eql(u8, root.provider.id, p.id) or
+        !std.mem.eql(u8, root.provider.model, p.model);
+    // Expand opaque compaction state from its checkpoint before translating or
+    // keeping history so cross-wire switches carry the restored dialogue (#1833).
+    const expanded = (same_format or root.keep_context) and seat_moved and
+        @import("agent_encrypted_recovery.zig").expandForSeatChange(root);
     var note: []const u8 = "context kept";
     if (!same_format) {
         if (root.keep_context) {
@@ -73,14 +80,7 @@ pub fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: 
             note = "history cleared — /keepcontext on to carry it across formats";
         }
     }
-    // A compaction blob decrypts only on the seat that minted it, so a switch
-    // must not hand it to a different provider or model. Expand it back into
-    // real items from the exact checkpoint first; without one the request is
-    // rejected and the bounded recovery path reports the blocked state.
-    const seat_moved = !same_format or
-        !std.mem.eql(u8, root.provider.id, p.id) or
-        !std.mem.eql(u8, root.provider.model, p.model);
-    if (seat_moved and @import("agent_encrypted_recovery.zig").expandForSeatChange(root))
+    if (expanded)
         note = try std.fmt.allocPrint(arena, "{s}; opaque state expanded from checkpoint", .{note});
     // ADR 0256: attempt_completion's description follows the model family.
     const gemini = @import("gemini_turns.zig");
