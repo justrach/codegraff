@@ -12,6 +12,8 @@ current is part of cutting a release.
 
 ## v0.302.74.2
 
+- The Windows installer falls back to GitHub's release asset API when browser downloads fail, fetching the archive and checksums from the same release and retaining SHA-256 verification.
+
 - nanocua keeps readable text, labels, values, state and refs in default observations while omitting coordinates. Use `include_frames: true` when geometry is needed; ref-based actions continue resolving current geometry themselves.
 - Frameless accessibility reads no longer request unused position and size attributes. Controls-only filtering remains opt-in, with a headless utility comparison guarding readable results and child labels (ADR 0318).
 

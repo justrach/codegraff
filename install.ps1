@@ -43,8 +43,26 @@ $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("graff-install-" + [guid]::N
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
     Write-Host "  download  $asset"
-    Invoke-WebRequest -UseBasicParsing -Uri "$base/$asset" -OutFile (Join-Path $tmp $asset)
-    Invoke-WebRequest -UseBasicParsing -Uri "$base/SHA256SUMS" -OutFile (Join-Path $tmp 'SHA256SUMS')
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri "$base/$asset" -OutFile (Join-Path $tmp $asset)
+        Invoke-WebRequest -UseBasicParsing -Uri "$base/SHA256SUMS" -OutFile (Join-Path $tmp 'SHA256SUMS')
+    } catch {
+        # GitHub's browser download route can fail while its asset API works.
+        # Fetch BOTH files again from one release, never mix releases if latest
+        # changes between requests. Verification below is never bypassed.
+        Write-Host '  retry     GitHub release asset API'
+        $api = 'https://api.github.com/repos/justrach/codegraff/releases'
+        $releaseUrl = if ($env:GRAFF_VERSION) {
+            "$api/tags/$([uri]::EscapeDataString($env:GRAFF_VERSION))"
+        } else { "$api/latest" }
+        $release = Invoke-RestMethod -Uri $releaseUrl -Headers @{ Accept = 'application/vnd.github+json' }
+        foreach ($name in @($asset, 'SHA256SUMS')) {
+            $entry = $release.assets | Where-Object { $_.name -eq $name } | Select-Object -First 1
+            if (-not $entry) { Fail "release $($release.tag_name) has no asset $name" }
+            Invoke-WebRequest -UseBasicParsing -Uri $entry.url `
+                -Headers @{ Accept = 'application/octet-stream' } -OutFile (Join-Path $tmp $name)
+        }
+    }
 
     # Verify against the release's SHA256SUMS before anything runs.
     $line = Get-Content (Join-Path $tmp 'SHA256SUMS') | Where-Object { $_ -match "\s\*?$([regex]::Escape($asset))$" } | Select-Object -First 1
