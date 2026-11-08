@@ -28,6 +28,7 @@ const Agent = agent_mod.Agent;
 const ToolCall = tools_mod.ToolCall;
 const ExecResult = tools_mod.ExecResult;
 const task_workspace = @import("task_workspace.zig");
+const workspace_paths = @import("workspace_paths.zig");
 
 pub const tool_name = "workspace";
 pub const tool_desc = "List this repo's git worktrees, switch into one, create a task workspace, or gc unused trees when the user asks to free space. action=list (default), use, create, or gc. gc drops dead session trees and clean trees whose GitHub PR is MERGED; dirty trees stay. Root session only. Do not bash-cd to switch. Do not gc because a turn finished.";
@@ -35,11 +36,9 @@ pub const tool_schema =
     \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "use", "create", "gc"], "description": "list (default): the repo's git worktrees. use: chdir this session into one. create: mint a fresh branch and worktree from the remote base, then enter it. gc: free disk — dead session trees and clean merged-PR trees. Only when the user asked to clear space."}, "path": {"type": "string", "description": "worktree path, last folder, or unique fragment (required for use)"}, "name": {"type": "string", "description": "task workspace name (required for create)"}, "base": {"type": "string", "description": "base branch or commit for create (default origin/main after fetch)"}}}
 ;
 
-pub const Entry = struct {
-    path: []const u8,
-    head: []const u8 = "",
-    branch: []const u8 = "",
-};
+pub const Entry = workspace_paths.Entry;
+pub const parsePorcelain = workspace_paths.parsePorcelain;
+pub const samePath = workspace_paths.samePath;
 
 pub const Resolve = union(enum) {
     one: Entry,
@@ -49,85 +48,18 @@ pub const Resolve = union(enum) {
 };
 
 test {
-    _ = .{ @import("workspace_display.zig"), @import("session_finalize_tests.zig") }; // #1193
+    _ = .{ @import("workspace_display.zig"), @import("session_finalize_tests.zig"), workspace_paths }; // #1193
 }
 
 // #1193: a replaced display is retired, not freed — see workspace_display.zig.
 pub const deinitDisplay = @import("workspace_display.zig").deinit;
 const adoptDisplay = @import("workspace_display.zig").adopt;
+const adoptBranch = @import("workspace_display.zig").adoptBranch;
 
 fn basename(path: []const u8) []const u8 {
     const trimmed = std.mem.trimEnd(u8, path, "/");
     if (std.mem.lastIndexOfScalar(u8, trimmed, '/')) |i| return trimmed[i + 1 ..];
     return trimmed;
-}
-
-fn branchShort(ref: []const u8) []const u8 {
-    const prefix = "refs/heads/";
-    if (std.mem.startsWith(u8, ref, prefix)) return ref[prefix.len..];
-    return ref;
-}
-
-/// Copy `s` into the arena so a row does not alias the caller's buffer. An
-/// empty result on OOM drops the row rather than smuggling a dangling slice out.
-fn own(arena: Allocator, s: []const u8) []const u8 {
-    return arena.dupe(u8, s) catch "";
-}
-
-/// Parse `git worktree list --porcelain`. Ignores bare/detached/locked extras.
-///
-/// Every row OWNS its bytes. `listWorktrees` frees git's stdout as soon as it
-/// returns, so borrowing out of `text` left each path and branch pointing at
-/// released memory (#715): reused pages read back as NUL, which printed blank
-/// rows for `action=list` and made `action=use` match neither the name nor the
-/// exact path of a worktree git itself listed fine.
-pub fn parsePorcelain(arena: Allocator, text: []const u8) []Entry {
-    var list: std.ArrayList(Entry) = .empty;
-    var cur: Entry = .{ .path = "" };
-    var lines = std.mem.splitScalar(u8, text, '\n');
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len == 0) {
-            if (cur.path.len > 0) list.append(arena, cur) catch {};
-            cur = .{ .path = "" };
-            continue;
-        }
-        if (std.mem.startsWith(u8, line, "worktree ")) {
-            if (cur.path.len > 0) list.append(arena, cur) catch {};
-            cur = .{ .path = own(arena, std.mem.trim(u8, line["worktree ".len..], " \t")) };
-        } else if (std.mem.startsWith(u8, line, "HEAD ")) {
-            cur.head = own(arena, std.mem.trim(u8, line["HEAD ".len..], " \t"));
-        } else if (std.mem.startsWith(u8, line, "branch ")) {
-            cur.branch = own(arena, branchShort(std.mem.trim(u8, line["branch ".len..], " \t")));
-        }
-    }
-    if (cur.path.len > 0) list.append(arena, cur) catch {};
-    return list.items;
-}
-
-/// Resolve `path` via a freshly opened Dir — not libc `realpath`, which
-/// `graff` does not link, and not `Dir.cwd().realPath`, which Threaded Io
-/// can keep stale across posix.chdir (#721).
-fn realpathOs(io: Io, path: []const u8, out: []u8) ?[]const u8 {
-    var dir = Io.Dir.cwd().openDir(io, path, .{}) catch return null;
-    defer dir.close(io);
-    const n = dir.realPath(io, out) catch return null;
-    return out[0..n];
-}
-
-pub fn samePath(io: Io, a: []const u8, b: []const u8) bool {
-    const left = std.mem.trimEnd(u8, a, "/");
-    const right = std.mem.trimEnd(u8, b, "/");
-    if (std.mem.eql(u8, left, right)) return true;
-    if (left.len == 0 or right.len == 0) return false;
-    // Porcelain paths and getcwd disagree on macOS (/tmp vs /private/tmp) and
-    // on any worktree added through a symlink. Star / already / enter must
-    // compare the resolved directories, not the strings git printed (#721).
-    var ab: [std.fs.max_path_bytes]u8 = undefined;
-    var bb: [std.fs.max_path_bytes]u8 = undefined;
-    const ar = realpathOs(io, left, &ab) orelse return false;
-    const br = realpathOs(io, right, &bb) orelse return false;
-    return std.mem.eql(u8, std.mem.trimEnd(u8, ar, "/"), std.mem.trimEnd(u8, br, "/"));
 }
 
 const Rank = enum(u8) { substring = 1, exact_branch, exact_base, exact_path };
@@ -158,7 +90,9 @@ pub fn resolve(arena: Allocator, entries: []const Entry, want: []const u8, curre
     }
     if (hits.items.len == 0) return .none;
     if (hits.items.len == 1) {
-        if (current.len > 0 and samePath(io, hits.items[0].path, current)) return .{ .already = hits.items[0] };
+        if (workspace_paths.enclosingEntry(entries, current, io)) |enc| {
+            if (samePath(io, hits.items[0].path, enc.path)) return .{ .already = hits.items[0] };
+        }
         return .{ .one = hits.items[0] };
     }
     return .{ .ambiguous = hits.items };
@@ -168,10 +102,17 @@ pub fn formatList(arena: Allocator, entries: []const Entry, current: []const u8,
     if (entries.len == 0) return "no git worktrees here — this cwd is not a repository, or git worktree list failed";
     var buf: std.ArrayList(u8) = .empty;
     buf.appendSlice(arena, "git worktrees (star = this session). workspace action=use path=<folder or fragment> to switch.\n") catch {};
-    for (entries) |e| {
-        const star: []const u8 = if (current.len > 0 and samePath(io, e.path, current)) "* " else "  ";
+    const active_idx = workspace_paths.enclosingIndex(entries, current, io);
+    for (entries, 0..) |e, idx| {
+        const is_active = active_idx != null and active_idx.? == idx;
+        const star: []const u8 = if (is_active) "* " else "  ";
         const br = if (e.branch.len > 0) e.branch else "(detached)";
-        const line = std.fmt.allocPrint(arena, "{s}{s}  {s}\n", .{ star, e.path, br }) catch continue;
+        const sub_note: []const u8 = if (is_active) blk: {
+            const rel = workspace_paths.relativeSubdir(io, arena, e.path, current) orelse break :blk "";
+            break :blk std.fmt.allocPrint(arena, "  (cwd: {s})", .{rel}) catch "";
+        } else "";
+        const missing_note: []const u8 = if (workspace_paths.isEntryMissing(io, arena, e)) "  [missing]" else "";
+        const line = std.fmt.allocPrint(arena, "{s}{s}  {s}{s}{s}\n", .{ star, e.path, br, sub_note, missing_note }) catch continue;
         buf.appendSlice(arena, line) catch {};
     }
     return buf.items;
@@ -199,6 +140,11 @@ pub fn listWorktrees(gpa: Allocator, io: Io, arena: Allocator) []Entry {
 
 pub fn enterPath(gpa: Allocator, io: Io, arena: Allocator, path: []const u8) ![]const u8 {
     if (builtin.os.tag == .windows) return error.Unsupported;
+    switch (workspace_paths.checkGitBacklink(io, arena, path)) {
+        .healthy, .not_git_dir => {},
+        .missing_checkout => return error.MissingWorktree,
+        .broken_gitdir => return error.BrokenGitBacklink,
+    }
     const z = try arena.dupeSentinel(u8, path, 0);
     if (std.posix.system.chdir(z.ptr) != 0) return error.ChdirFailed;
     const abs = currentAbs(io, arena);
@@ -210,27 +156,41 @@ pub fn enterPath(gpa: Allocator, io: Io, arena: Allocator, path: []const u8) ![]
     return abs;
 }
 
-fn createAndEnter(gpa: Allocator, io: Io, arena: Allocator, name: []const u8, base: []const u8) ExecResult {
+fn enterErrorText(arena: Allocator, path: []const u8, err: anyerror) []const u8 {
+    return switch (err) {
+        error.MissingWorktree => tryText(arena, "could not enter {s}: worktree directory is missing — run workspace action=gc to prune stale registrations", .{path}),
+        error.BrokenGitBacklink => tryText(arena, "could not enter {s}: worktree .git backlink target is missing — run workspace action=gc to clean up broken worktrees", .{path}),
+        else => tryText(arena, "could not enter {s}: {t}", .{ path, err }),
+    };
+}
+
+fn createAndEnter(gpa: Allocator, io: Io, arena: Allocator, current: []const u8, name: []const u8, base: []const u8) ExecResult {
     if (name.len == 0) return .{
         .text = "workspace create needs name — a short slug for the branch and checkout",
         .is_error = true,
     };
-    const wt = task_workspace.create(gpa, io, arena, .{ .slug = name, .base = base }) catch |err| return .{
+    const entries = listWorktrees(gpa, io, arena);
+    const enc = workspace_paths.enclosingEntry(entries, current, io);
+    const rel_subdir = if (enc) |e| workspace_paths.relativeSubdir(io, arena, e.path, current) else null;
+    const project = task_workspace.autoIsolationRoot(gpa, io, arena, if (current.len > 0) current else ".") orelse
+        if (enc) |e| e.path else ".";
+    const wt = task_workspace.create(gpa, io, arena, .{ .slug = name, .base = base, .cwd = project }) catch |err| return .{
         .text = task_workspace.createFailureText(err),
         .is_error = true,
     };
-    const abs = enterPath(gpa, io, arena, wt.path) catch |err| return .{
+    const target = workspace_paths.resolveTargetDir(io, arena, wt.path, rel_subdir);
+    const abs = enterPath(gpa, io, arena, target) catch |err| return .{
         .text = tryText(arena, "created {s} at {s} but could not enter it: {t}", .{ wt.branch, wt.path, err }),
         .is_error = true,
     };
-    main_mod.g_worktree_branch = gpa.dupe(u8, wt.branch) catch wt.branch;
+    adoptBranch(gpa, wt.branch);
     return .{
         .text = tryText(arena, "created workspace {s} at {s} (branch {s}) — read_file, edit_file, and bash use this tree", .{ wt.name, abs, wt.branch }),
         .is_error = false,
     };
 }
 
-fn run(gpa: Allocator, io: Io, arena: Allocator, from_sub: bool, action: []const u8, path: []const u8, base: []const u8) ExecResult {
+pub fn run(gpa: Allocator, io: Io, arena: Allocator, from_sub: bool, action: []const u8, path: []const u8, base: []const u8) ExecResult {
     if (from_sub) return .{
         .text = "workspace switch is root-session only — a subagent stays in its assigned tree",
         .is_error = true,
@@ -240,7 +200,7 @@ fn run(gpa: Allocator, io: Io, arena: Allocator, from_sub: bool, action: []const
         return .{ .text = formatList(arena, listWorktrees(gpa, io, arena), current, io), .is_error = false };
     }
     if (std.mem.eql(u8, action, "create")) {
-        return createAndEnter(gpa, io, arena, path, base);
+        return createAndEnter(gpa, io, arena, current, path, base);
     }
     if (std.mem.eql(u8, action, "gc")) {
         const n = @import("worktree_reap.zig").orphans(gpa, io, arena, ".");
@@ -273,8 +233,22 @@ fn run(gpa: Allocator, io: Io, arena: Allocator, from_sub: bool, action: []const
             .is_error = false,
         },
         .one => |e| blk: {
-            const abs = enterPath(gpa, io, arena, e.path) catch |err| break :blk .{
-                .text = tryText(arena, "could not enter {s}: {t}", .{ e.path, err }),
+            if (e.prunable) break :blk .{
+                .text = enterErrorText(arena, e.path, error.MissingWorktree),
+                .is_error = true,
+            };
+            switch (workspace_paths.checkGitBacklink(io, arena, e.path)) {
+                .missing_checkout => break :blk .{ .text = enterErrorText(arena, e.path, error.MissingWorktree), .is_error = true },
+                .broken_gitdir => break :blk .{ .text = enterErrorText(arena, e.path, error.BrokenGitBacklink), .is_error = true },
+                .healthy, .not_git_dir => {},
+            }
+            const rel_subdir = if (workspace_paths.enclosingEntry(entries, current, io)) |enc|
+                workspace_paths.relativeSubdir(io, arena, enc.path, current)
+            else
+                null;
+            const target = workspace_paths.resolveTargetDir(io, arena, e.path, rel_subdir);
+            const abs = enterPath(gpa, io, arena, target) catch |err| break :blk .{
+                .text = enterErrorText(arena, e.path, err),
                 .is_error = true,
             };
             break :blk .{
