@@ -246,6 +246,10 @@ pub var head_stall_ms: u64 = 30 * 1000;
 /// dead pooled connection could fail all 6 tries). 429/5xx throttles keep their longer
 /// server-directed waits.
 pub const RetryPlan = struct {
+    /// #1826: only rotated request-construction TLS failures: 15 waits, 47.75s base
+    /// (at most ~60s with jitter), still interruptible. Never shared with 429/auth/read failures.
+    pub const tls_construction_attempts: usize = 16;
+
     /// Total attempts before the turn gives up.
     pub fn maxAttempts(throttled: bool) usize {
         return if (throttled) 5 else 6;

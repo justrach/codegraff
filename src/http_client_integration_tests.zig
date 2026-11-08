@@ -18,6 +18,7 @@ pub const Reply = struct {
     status: []const u8 = "200 OK",
     content_type: []const u8 = "application/json",
     body: []const u8,
+    fail_tls_through_generation: ?u64 = null,
 };
 
 pub const chat_body =
@@ -72,6 +73,7 @@ pub fn serveReplies(io: Io, server: *std.Io.net.Server, replies: []const Reply, 
         _ = accepted.fetchAdd(1, .acq_rel);
         const reply = replies[served];
         served += 1;
+        if (reply.fail_tls_through_generation) |last| http_client.injectConstructionTlsThroughGenerationForTest(last);
         var head_buf: [256]u8 = undefined;
         const head = std.fmt.bufPrint(
             &head_buf,
@@ -309,6 +311,9 @@ test "child retry ladder recovers within the same request" {
 }
 
 test "later root and child recover after the retry ladder exhausts TLS generations" {
+    // Shares the process-global TLS hooks with agent_tls_retry_tests.zig's tests.
+    http_client.lockTestHooksForTest();
+    defer http_client.unlockTestHooksForTest();
     const gpa = std.testing.allocator;
     const io = std.testing.io;
     var runtime: http_client.Runtime = undefined;
@@ -345,12 +350,13 @@ test "later root and child recover after the retry ladder exhausts TLS generatio
     root.label = "test-root";
     root.out = &output.writer;
     root.tracer = &tracer;
-    http_client.injectConstructionTlsThroughGenerationForTest(5);
+    const limit = http.RetryPlan.tls_construction_attempts;
+    http_client.injectConstructionTlsThroughGenerationForTest(limit - 1);
     try std.testing.expectError(error.ApiError, root.request(null));
     try std.testing.expectEqual(@as(usize, 0), accepted.load(.acquire));
-    try std.testing.expectEqual(@as(u64, 6), runtime.recovery.stats().active_id);
-    try std.testing.expectEqual(@as(usize, 6), std.mem.count(u8, trace_output.written(), "\"ev\":\"tls_request_construction\""));
-    try std.testing.expect(std.mem.indexOf(u8, root.last_api_error.?, "gave up after 6 attempts") != null);
+    try std.testing.expectEqual(@as(u64, limit), runtime.recovery.stats().active_id);
+    try std.testing.expectEqual(limit, std.mem.count(u8, trace_output.written(), "\"ev\":\"tls_request_construction\""));
+    try std.testing.expect(std.mem.indexOf(u8, root.last_api_error.?, "gave up after 16 attempts") != null);
 
     _ = try root.request(null);
     try std.testing.expect(std.mem.indexOf(u8, output.written(), "root-ok") != null);

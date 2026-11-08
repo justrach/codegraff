@@ -94,7 +94,9 @@ pub fn renameSession(root: *Agent, arena: Allocator, slug: []const u8) void {
         } else |_| break; // free
     }
     const old_name = root.session_name;
-    root.session_name = arena.dupe(u8, name) catch return;
+    const next_name = arena.dupe(u8, name) catch return;
+    @import("compaction_checkpoint.zig").rename(root, old_name, next_name) catch return;
+    root.session_name = next_name;
     @import("subagent_interactive.zig").rename(root.io, old_name, root.session_name);
     saveSession(root, arena, root.session_name) catch {};
     if (sessionPath(arena, old_name)) |op| (Io.Dir.cwd().deleteFile(root.io, op) catch {}) else |_| {}
