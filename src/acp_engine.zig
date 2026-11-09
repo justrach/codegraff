@@ -92,6 +92,7 @@ pub const Dispatch = struct {
     error_message: ?*const fn (ctx: *anyopaque, err: anyerror) []const u8 = null,
     cancel_info: ?*const fn (ctx: *anyopaque) ?Cancellation = null,
     error_recovery: ?*const fn (ctx: *anyopaque, err: anyerror) ?@import("auth_recovery.zig").Recovery = null,
+    error_detail: ?*const fn (ctx: *anyopaque, err: anyerror) ?@import("provider_error_copy.zig").Detail = null,
     /// Live CLI: adopt the client's cwd, report `_meta["graff/worktree"]` (acp_workspace.zig).
     workspace: ?acp_workspace.Env = null,
     /// ACP v1 draft subagent updates are opt-in at initialize.

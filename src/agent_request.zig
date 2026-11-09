@@ -70,18 +70,13 @@ pub const landing_note =
     "completed and what was verified, then name what remains unchecked. Honestly-labeled partial " ++
     "results beat dying mid-tool-call.";
 
-fn sayTypedApiError(self: *Agent, etype: []const u8, ecode: ?[]const u8, emsg: []const u8, request_id: ?[]const u8) !void {
-    const rid = request_id orelse "";
-    if (ecode) |c| {
-        if (rid.len != 0) return self.sayApiError("api error ({s} {s}): {s} [{s}]", .{ etype, c, emsg, rid });
-        return self.sayApiError("api error ({s} {s}): {s}", .{ etype, c, emsg });
-    }
-    if (rid.len != 0) return self.sayApiError("api error ({s}): {s} [{s}]", .{ etype, emsg, rid });
-    return self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
+fn sayTypedApiError(self: *Agent, etype: []const u8, ecode: ?[]const u8, emsg: []const u8, request_id: ?[]const u8, attempts: usize) !void {
+    return @import("provider_error_copy.zig").reportEnvelope(self, etype, ecode, emsg, request_id, attempts);
 }
 
 pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     self.last_api_reauth = null;
+    self.last_api_error_detail = null;
     // Pool-thread Jev results become session state only on this owner thread.
     if (Agent.esc_cancel.load(.acquire) or @import("acp_engine.zig").cancel_flag.load(.acquire))
         self.jev_effort_pending.invalidate(self.io)
@@ -373,10 +368,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     }
                     // A refused loopback connection means the local server (oMLX, LM Studio, mlx-lm) is not running: name it.
                     const down: []const u8 = if (err == error.ConnectionRefused and @import("keys_cli.zig").isLocalUrl(self.provider.url)) self.provider.url else "";
-                    try self.say("[request failed: {t}{s}{s} — giving up this turn]\n", .{ err, if (down.len > 0) " at " else "", down });
-                    // Preserve whether this was provider throttling or a transport failure in the failed turn's JSON/trajectory (#86).
-                    const failure_kind = if (err == error.RateLimited) "rate limited (429)" else if (err == error.ServerError) "server error (5xx)" else "network error";
-                    self.last_api_error = std.fmt.allocPrint(self.arena, "{s}: {s}{s}{s} (gave up after {d} attempts)", .{ failure_kind, @errorName(err), if (down.len > 0) " at " else "", down, max_attempts }) catch null;
+                    try @import("provider_error_copy.zig").reportTransportGiveUp(self, err, max_attempts, main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len], down);
                     self.last_request_write_failed = std.mem.eql(u8, @errorName(err), "WriteFailed");
                     try scratch.preserveFailedRequest(self);
                     if (telemetry.g_telem) |t| t.errorEvent("net", @errorName(err));
@@ -470,7 +462,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     if (try policy.afterServerErrorOrParseReject(self, failure.etype, failure.code, msg, &server_retries, &gw_retry)) continue :rebuild; // #748: the class keeps invalid requests off the flake ladder
                     self.last_api_reauth = @import("auth_recovery.zig").forFailure(self.provider, failure.code, msg);
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
-                    try self.sayApiError("{s}", .{diagnostic});
+                    try @import("provider_error_copy.zig").reportResponses(self, failure, diagnostic, 1 + server_retries + gw_retry.parse_retries);
                     return error.ApiError;
                 },
             }
@@ -493,7 +485,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     if (policy.retryWithout(self, emsg, &force, &stream_usage)) continue; // ADR 0219: Anthropic errors take the ladder too
                     if (try policy.afterServerErrorOrParseReject(self, etype, ecode, emsg, &server_retries, &gw_retry)) continue;
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
-                    try sayTypedApiError(self, etype, ecode, emsg, errorRequestId(root));
+                    try sayTypedApiError(self, etype, ecode, emsg, errorRequestId(root), 1 + server_retries + gw_retry.parse_retries);
                     return error.ApiError;
                 };
                 if (self.provider.kind == .openai) {
@@ -545,11 +537,13 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             if (policy.retryWithout(self, emsg, &force, &stream_usage)) continue; // ADR 0219: Anthropic errors take the ladder too
             if (try policy.afterServerErrorOrParseReject(self, etype, ecode, emsg, &server_retries, &gw_retry)) continue;
             if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
-            try sayTypedApiError(self, etype, ecode, emsg, errorRequestId(root));
+            try sayTypedApiError(self, etype, ecode, emsg, errorRequestId(root), 1 + server_retries + gw_retry.parse_retries);
             return error.ApiError;
         };
         if (apiErrorMessage(root)) |msg| {
-            if (try quota.handle(self, "", errorCode(root), msg, &auth_refreshed)) continue;
+            const etype = @import("provider_error_copy.zig").errorType(root);
+            const ecode = errorCode(root);
+            if (try quota.handle(self, etype, ecode, msg, &auth_refreshed)) continue;
             if (@import("interactions_chain.zig").dropRejected(self, body)) continue; // stored Interaction gone → full replay
             if (policy.retryWithout(self, msg, &force, &stream_usage)) continue;
             // #148: a stale login token 401s here with the provider's "API Key
@@ -564,13 +558,10 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             // #203: openai-compatible errors arrive here (no top-level "type":"error"),
             // so pull the structured code from root.error.code for isContextOverflow — a
             // local provider whose message text we don't match on still recovers.
-            if (recoverContextOverflow(self, msg, errorCode(root), &context_retried)) continue;
-            if (try policy.afterServerErrorOrParseReject(self, "", errorCode(root), msg, &server_retries, &gw_retry)) continue;
+            if (recoverContextOverflow(self, msg, ecode, &context_retried)) continue;
+            if (try policy.afterServerErrorOrParseReject(self, etype, ecode, msg, &server_retries, &gw_retry)) continue;
             if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
-            if (errorRequestId(root)) |rid|
-                try self.sayApiError("api error: {s} [{s}]", .{ msg, rid })
-            else
-                try self.sayApiError("api error: {s}", .{msg});
+            try sayTypedApiError(self, etype, ecode, msg, errorRequestId(root), 1 + server_retries + gw_retry.parse_retries);
             return error.ApiError;
         }
 

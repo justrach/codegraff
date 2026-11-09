@@ -190,6 +190,7 @@ pub fn failoverEligible(provider_id: []const u8, detail: []const u8) bool {
         "model_not_found",
         "model not found",
         "model is not available",
+        "model_unavailable",
         "model unavailable",
         "model does not exist",
         "does not exist or you do not have access",
@@ -228,6 +229,7 @@ pub fn runTurnWithFallback(root: *Agent, keys: *Keys, arena: Allocator, out: ?*I
     while (true) {
         root.last_api_error = null;
         root.last_api_reauth = null;
+        root.last_api_error_detail = null;
         const result = root.runTurn();
         if (result) |text| {
             // #255: no clean per-segment choke point exists across the

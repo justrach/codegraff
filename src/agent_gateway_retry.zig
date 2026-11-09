@@ -113,7 +113,8 @@ fn isStructuredOverflow(code: ?[]const u8) bool {
 }
 
 fn isModelUnavailable(code: ?[]const u8) bool {
-    return if (code) |c| std.mem.eql(u8, c, "model_unavailable") else false;
+    const c = code orelse return false;
+    return std.mem.eql(u8, c, "model_unavailable") or std.mem.eql(u8, c, "model_not_found");
 }
 
 /// Tiny / generic envelopes that are not a real client bug. The DeepSeek
@@ -194,11 +195,21 @@ pub const max_server_retries: usize = 3; // #opencode-parity: bounded retries fo
 /// surfaced mid-stream and should be retried, not hard-failed. Billing / quota /
 /// invalid-input errors are NOT transient and fall through to a hard fail.
 pub fn isTransientServerError(etype: []const u8, code: ?[]const u8, msg: []const u8) bool {
-    if (quota.classify(etype, code, msg) != null or isModelUnavailable(code) or quota.isPlanStop(code)) return false;
+    if (quota.classify(etype, code, msg) != null or isModelUnavailable(code) or isStructuredOverflow(code) or quota.isPlanStop(code) or
+        @import("compaction_window.zig").rejectedByProvider(msg, code)) return false;
     // ChatGPT plan usage or user data temporarily unavailable (503, possibly
     // mid-stream): keep the credentials and back off like an overload.
     if (quota.isPlanTransient(code)) return true;
-    const needles = [_][]const u8{ "overloaded", "server_error", "server_is_overloaded", "token parsing", "gateway_timeout" };
+    const needles = [_][]const u8{
+        "overloaded",               "server_error",            "server_is_overloaded",
+        "model_capacity_exhausted", "engine_overloaded",       "no capacity available",
+        "temporarily at capacity",  "retry shortly",           "rate_limit_error",
+        "rate_limit_exceeded",      "throttling_error",        "throttlingexception",
+        "too many requests",        "rate limit",              "rate-limit",
+        "service_unavailable",      "temporarily unavailable", "bad_gateway",
+        "bad gateway",              "token parsing",           "gateway_timeout",
+        "upstream_timeout",
+    };
     for (needles) |n| {
         if (util.indexOfIgnoreCase(etype, n) != null) return true;
         if (util.indexOfIgnoreCase(msg, n) != null) return true;
@@ -209,9 +220,17 @@ pub fn isTransientServerError(etype: []const u8, code: ?[]const u8, msg: []const
 
 /// The user-facing name for the wait. xAI's token-parse 500 arrives after
 /// output began and is not an overload; calling it one misled #1019.
-fn transientServerLabel(etype: []const u8, msg: []const u8) []const u8 {
-    if (util.indexOfIgnoreCase(etype, "gateway_timeout") != null) return "gateway timed out";
-    return if (util.indexOfIgnoreCase(msg, "token parsing") != null) "provider error mid-response" else "server overloaded";
+fn transientServerLabel(etype: []const u8, code: ?[]const u8, msg: []const u8) []const u8 {
+    if (util.indexOfIgnoreCase(etype, "gateway_timeout") != null or util.indexOfIgnoreCase(etype, "upstream_timeout") != null) return "gateway timed out";
+    if (code) |c| if (util.indexOfIgnoreCase(c, "gateway_timeout") != null or util.indexOfIgnoreCase(c, "upstream_timeout") != null) return "gateway timed out";
+    if (util.indexOfIgnoreCase(msg, "token parsing") != null) return "provider error mid-response";
+    if (util.indexOfIgnoreCase(msg, "temporarily at capacity") != null or
+        util.indexOfIgnoreCase(etype, "rate_limit") != null or
+        util.indexOfIgnoreCase(etype, "throttl") != null or
+        util.indexOfIgnoreCase(msg, "too many requests") != null or
+        (code != null and util.indexOfIgnoreCase(code.?, "rate_limit") != null))
+        return "provider at capacity";
+    return "server overloaded";
 }
 
 /// A streamed error frame has no Retry-After header. Honor "try again in N" /
@@ -264,7 +283,7 @@ pub fn retryTransientServerError(self: *Agent, etype: []const u8, code: ?[]const
     retries.* += 1;
     self.partial_text.clearRetainingCapacity(); // fresh re-stream after the retry, no concat
     const delay_ms = jitter.ms(self.io, serverRetryDelayMs(msg) orelse RetryPlan.delayMs(true, retries.* - 1)); // 1·2·4s, or the provider's wait; +jitter (#1274)
-    const label = if (quota.isPlanTransient(code)) "ChatGPT plan temporarily unavailable" else transientServerLabel(etype, msg);
+    const label = if (quota.isPlanTransient(code)) "ChatGPT plan temporarily unavailable" else transientServerLabel(etype, code, msg);
     try announceTransientRetry(self, label, delay_ms, retries.*);
     if (self.tracer) |tr| tr.note("retry", label);
     if (telemetry.g_telem) |t| t.errorEvent("server_overloaded", if (msg.len > 0) msg else etype);
@@ -362,7 +381,7 @@ test "isTransientServerError (#opencode-parity): overload/server_error retry; qu
     try std.testing.expect(isTransientServerError("overloaded_error", null, ""));
     // The gateway's stall guard: an in-stream 504 that says to retry.
     try std.testing.expect(isTransientServerError("gateway_timeout", "gateway_timeout", "Codegraff timed out while generating this response. Retry the request."));
-    try std.testing.expectEqualStrings("gateway timed out", transientServerLabel("gateway_timeout", ""));
+    try std.testing.expectEqualStrings("gateway timed out", transientServerLabel("gateway_timeout", null, ""));
     try std.testing.expect(isTransientServerError("api_error", "server_error", ""));
     try std.testing.expect(isTransientServerError("", "server_is_overloaded", ""));
     try std.testing.expect(isTransientServerError("", null, "The server is Overloaded, please try again")); // case-insensitive, in message
@@ -392,8 +411,8 @@ test "ADR 0148 (reverses #1019): token-parse 500 rides the transient server ladd
     try std.testing.expect(!isBodyParseRejection(msg));
     try std.testing.expect(isShortGatewayFlake("", null, msg));
     // Wording: the retry line names a mid-response provider error, not an overload.
-    try std.testing.expectEqualStrings("provider error mid-response", transientServerLabel("", msg));
-    try std.testing.expectEqualStrings("server overloaded", transientServerLabel("", "The server is overloaded"));
+    try std.testing.expectEqualStrings("provider error mid-response", transientServerLabel("", null, msg));
+    try std.testing.expectEqualStrings("server overloaded", transientServerLabel("", null, "The server is overloaded"));
 }
 
 test "serverRetryDelayMs honors try-again/retry-after seconds, ignores 0 and >60s" {
@@ -428,4 +447,24 @@ test "#748: error-only SSE is not a truncated gateway body" {
     try std.testing.expect(sseLooksLikeError("data: {\"error\":{\"message\":\"only auto\"}}\n"));
     try std.testing.expect(!sseLooksLikeError(": OPENROUTER PROCESSING\n"));
     try std.testing.expect(!sseLooksLikeError("data: {\"choices\":[{\"delta\":{}}]}\n"));
+}
+
+test "#1756: transient capacity and rate-limit envelopes retry; exhausted plan windows and model_unavailable do not" {
+    try std.testing.expect(isTransientServerError("rate_limit_error", "rate_limit_exceeded", "Codegraff is temporarily at capacity. Retry shortly."));
+    try std.testing.expectEqualStrings("provider at capacity", transientServerLabel("rate_limit_error", "rate_limit_exceeded", "Codegraff is temporarily at capacity. Retry shortly."));
+    try std.testing.expect(isTransientServerError("rate_limit_error", null, "Too many requests; retry shortly"));
+    try std.testing.expect(isTransientServerError("service_unavailable", "model_capacity_exhausted", "No capacity available for model kimi-k3.1-pro-highspeed"));
+    try std.testing.expect(isTransientServerError("api_error", "engine_overloaded", "Model is currently overloaded"));
+    try std.testing.expect(isTransientServerError("throttling_error", null, "ThrottlingException: Too many tokens, please wait before trying again."));
+
+    // Genuine plan windows, hard quotas, and unavailable-model codes never retry.
+    try std.testing.expect(!isTransientServerError("exceeded_current_quota_error", null, "You've reached your 5-hour usage limit."));
+    try std.testing.expect(!isTransientServerError("rate_limit_error", "usage_limit_reached", "Usage limit reached for this billing window; retry shortly."));
+    try std.testing.expect(!isTransientServerError("rate_limit_error", "insufficient_quota", "You exceeded your current quota."));
+    try std.testing.expect(!isTransientServerError("service_unavailable", "model_unavailable", "Codegraff is temporarily at capacity."));
+    try std.testing.expect(!isTransientServerError("invalid_request_error", "model_not_found", "Model does not exist."));
+}
+
+test {
+    _ = @import("provider_error_copy_tests.zig");
 }

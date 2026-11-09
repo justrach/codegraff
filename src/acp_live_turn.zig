@@ -49,12 +49,21 @@ pub const LiveTurn = struct {
             self.session_id = self.root.arena.dupe(u8, session_id) catch session_id;
         }
         self.root.last_api_reauth = null;
+        self.root.last_api_error_detail = null;
     }
 
     pub fn errorRecovery(ctx: *anyopaque, err: anyerror) ?@import("auth_recovery.zig").Recovery {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
         return switch (err) {
             error.ApiError, error.ProviderAuthenticationFailed => self.root.last_api_reauth,
+            else => null,
+        };
+    }
+
+    pub fn errorDetail(ctx: *anyopaque, err: anyerror) ?@import("provider_error_copy.zig").Detail {
+        const self: *LiveTurn = @ptrCast(@alignCast(ctx));
+        return switch (err) {
+            error.ApiError, error.ProviderQuotaExceeded, error.ProviderAuthenticationFailed, error.ProviderAccessDenied => self.root.last_api_error_detail,
             else => null,
         };
     }
@@ -184,9 +193,9 @@ pub const LiveTurn = struct {
         // trace/session persistence if the client disconnects. Emit on exit,
         // after the durable work below, while retaining whole-message locking.
         defer {
-            sink.writer.flush() catch {};
             main_mod.g_gui_mu.lockUncancelable(self.root.io);
             defer main_mod.g_gui_mu.unlock(self.root.io);
+            sink.writer.flush() catch {};
             output_lock.lockUncancelable(self.root.io);
             defer output_lock.unlock(self.root.io);
             @import("acp_usage.zig").writeBestEffort(self.out, self.session_id, &@import("pricing.zig").g_cost, self.root.io);
@@ -262,7 +271,7 @@ pub const LiveTurn = struct {
 /// carries its own explanation (#1802); a bare error name told the user nothing.
 pub fn describeError(err: anyerror, last_api_error: ?[]const u8) []const u8 {
     return switch (err) {
-        error.ApiError, error.ProviderAuthenticationFailed => last_api_error orelse "Provider request failed",
+        error.ApiError, error.ProviderQuotaExceeded, error.ProviderAuthenticationFailed, error.ProviderAccessDenied => last_api_error orelse "Provider request failed",
         error.EmptyCompletion => last_api_error orelse @import("agent_empty_completion.zig").exhausted_text,
         else => @errorName(err),
     };

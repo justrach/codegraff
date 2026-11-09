@@ -40,13 +40,17 @@ pub fn promptTurn(d: *engine.Dispatch, arena: Allocator, w: *Io.Writer, req: pro
     try engine.emitMeter(d, w, sid);
     switch (outcome) {
         .stop => |stop| try v2.writeIdle(w, sid, stop),
-        .failed => |failed| try v2.writeFailedRecovery(w, sid, failed.message, failed.recovery),
+        .failed => |failed| try v2.writeFailedDetail(w, sid, failed.message, failed.recovery, failed.detail),
     }
 }
 
 const Outcome = union(enum) {
     stop: []const u8,
-    failed: struct { message: []const u8, recovery: ?@import("auth_recovery.zig").Recovery },
+    failed: struct {
+        message: []const u8,
+        recovery: ?@import("auth_recovery.zig").Recovery,
+        detail: ?@import("provider_error_copy.zig").Detail = null,
+    },
 };
 
 fn run(d: *engine.Dispatch, arena: Allocator, w: *Io.Writer, sid: []const u8, text: []const u8, prompt: ?std.json.Value) Outcome {
@@ -71,6 +75,7 @@ fn failure(d: *engine.Dispatch, err: anyerror) Outcome {
     return .{ .failed = .{
         .message = if (d.error_message) |message| message(d.ctx, err) else @errorName(err),
         .recovery = if (d.error_recovery) |recover| recover(d.ctx, err) else null,
+        .detail = if (d.error_detail) |det| det(d.ctx, err) else null,
     } };
 }
 

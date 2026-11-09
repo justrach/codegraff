@@ -233,6 +233,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
         .error_message = LiveTurn.errorMessage,
         .cancel_info = LiveTurn.cancelInfo,
         .error_recovery = LiveTurn.errorRecovery,
+        .error_detail = LiveTurn.errorDetail,
         .ctx = &live,
         .seed = @bitCast(util.unixMs(io)),
         .slash = liveSlash,

@@ -32,10 +32,13 @@ pub fn isQuotaExceeded(body: []const u8) bool {
         "http 402",                                     "exhausted_credit",             "credit_balance_too_low",
         "subscription_sharing_v2_usage_limit_exceeded",
         // Kimi Code's plan window: "You've reached your 5-hour usage limit".
-        "exceeded_current_quota_error",
+        "exceeded_current_quota_error", "5-hour usage limit",
+        "usage_limit_reached",                          "usage_limit_exceeded",         "credit_balance_exhausted",
+        "plan_limit_exceeded",                          "monthly_limit_exceeded",       "weekly_limit_exceeded",
+        "daily_limit_exceeded",
         // A Claude subscription past its extra usage answers 400
         // invalid_request_error with only this phrase to go on.
-        "out of extra usage",
+                                "out of extra usage",
     };
     for (needles) |needle| if (util.indexOfIgnoreCase(body, needle) != null) return true;
     return false;
@@ -105,6 +108,7 @@ pub fn transportCode(err: anyerror) ?[]const u8 {
 pub fn handle(self: *@import("agent.zig").Agent, etype: []const u8, code: ?[]const u8, msg: []const u8, refreshed: *bool) !bool {
     // A retry, handoff or unrelated rejection must not retain a prior action.
     self.last_api_reauth = null;
+    self.last_api_error_detail = null;
     const fault = classify(etype, code, msg) orelse return false;
     const policy = @import("agent_request_policy.zig");
     if (fault == .quota and policy.handOffExhaustedPlan(self)) {
@@ -122,16 +126,46 @@ pub fn handle(self: *@import("agent.zig").Agent, etype: []const u8, code: ?[]con
     // ADR 0310: the text and metadata name the seat that failed: a sign-in,
     // or a metered key (perhaps the one a spent plan handed over to).
     const auth = @import("auth_recovery.zig");
-    if (fault == .authentication) self.last_api_reauth = auth.forAuthFault(self.provider, code orelse "authentication_error");
+    const copy = @import("provider_error_copy.zig");
+    const parsed_env = if (etype.len == 0 and code == null and std.mem.startsWith(u8, std.mem.trimStart(u8, msg, " \t\r\n"), "{"))
+        copy.parseCapturedHttpBody(self.arena, msg)
+    else
+        null;
+    const eff_etype = if (parsed_env) |e| e.etype else etype;
+    const eff_code = if (parsed_env) |e| e.code else code;
+    const eff_msg = if (parsed_env) |e| e.message else if (std.mem.startsWith(u8, std.mem.trimStart(u8, msg, " \t\r\n"), "{")) "" else msg;
+    const eff_rid = if (parsed_env) |e| e.request_id else null;
+    if (fault == .authentication) self.last_api_reauth = auth.forAuthFault(self.provider, eff_code orelse "authentication_error");
     self.last_api_error = switch (fault) {
         // The Console sign-in that would have taken over was skipped at startup
         // because it expired beyond renewal (anthropic_profile.load).
         .quota => if (std.mem.eql(u8, self.provider.id, "anthropic") and self.provider.source == .login and @import("anthropic_profile.zig").expired())
             "Anthropic plan is out of quota, and the Console sign-in that would take over has expired: run `graff login console` again, or wait for the plan to reset"
-        else
-            "provider quota/billing cap: credit or allowance exhausted; retry requires account action",
+        else blk: {
+            const f = copy.format(self.arena, .{
+                .provider = self.provider,
+                .etype = if (eff_etype.len > 0) eff_etype else "insufficient_quota",
+                .code = eff_code,
+                .message = eff_msg,
+                .request_id = eff_rid,
+                .redact_urls = true,
+            }) catch break :blk "provider quota/billing cap: credit or allowance exhausted; retry requires account action";
+            self.last_api_error_detail = f.detail;
+            break :blk f.text;
+        },
         .authentication => auth.failureText(self.arena, self.provider, @import("credential_failover.zig").promoted(self.provider.id)),
-        .access_denied => "provider access denied: check account permissions or route eligibility",
+        .access_denied => blk: {
+            const f = copy.format(self.arena, .{
+                .provider = self.provider,
+                .etype = if (eff_etype.len > 0) eff_etype else "permission_error",
+                .code = eff_code orelse "403",
+                .message = eff_msg,
+                .request_id = eff_rid,
+                .redact_urls = true,
+            }) catch break :blk "provider access denied: check account permissions or route eligibility";
+            self.last_api_error_detail = f.detail;
+            break :blk f.text;
+        },
     };
     if (self.tracer) |tr| tr.note("provider_terminal", self.last_api_error.?);
     return switch (fault) {

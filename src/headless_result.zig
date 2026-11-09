@@ -25,6 +25,9 @@ pub fn classify(err: anyerror, detail: []const u8) Failure {
         err == error.StreamInterrupted or err == error.StreamReadFailed or err == error.UnknownHostName or err == error.ConnectionResetByPeer or err == error.ConnectionRefused or
         util.indexOfIgnoreCase(detail, "timeout") != null or util.indexOfIgnoreCase(detail, "timed out") != null or
         util.indexOfIgnoreCase(detail, "network error:") != null or util.indexOfIgnoreCase(detail, "rate limited (429)") != null or
+        util.indexOfIgnoreCase(detail, "rate_limit_error") != null or util.indexOfIgnoreCase(detail, "rate_limit_exceeded") != null or
+        util.indexOfIgnoreCase(detail, "overloaded_error") != null or util.indexOfIgnoreCase(detail, "temporarily overloaded") != null or
+        util.indexOfIgnoreCase(detail, "temporarily unavailable") != null or util.indexOfIgnoreCase(detail, "status=429") != null or
         util.indexOfIgnoreCase(detail, "server error (5xx)") != null or util.indexOfIgnoreCase(detail, "HTTP 429") != null or
         util.indexOfIgnoreCase(detail, "HTTP 500") != null or util.indexOfIgnoreCase(detail, "HTTP 502") != null or
         util.indexOfIgnoreCase(detail, "HTTP 503") != null or util.indexOfIgnoreCase(detail, "HTTP 504") != null)
