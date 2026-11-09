@@ -5,10 +5,15 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.53
+    \\  • workspace-invariant skill catalog prefix ordering and deepseekChat repo_context split for cross-directory prompt caching
+    \\  • Kimi global (kimi.ai) vs Mainland China (kimi.com) OAuth region resolution and k3.1-pro catalog + plan routing across CLI and ACP
+    \\
     \\0.302.74.52
     \\  • Megaharness fused execution engine: RLM wave DAGs, SRAM register folding, in-kernel assertions, and /megaharness telemetry
     \\  • read-only trajectory inspection and verified user-facing chat title + chat ID reporting
     \\  • background workers preserve independent tool-result sequence counters; synthetic compaction skips mcp_preload scans
+    \\  • workspace-invariant skill catalog prefix ordering, deepseekChat repo_context split, and Kimi global (kimi.ai) + k3.1-pro catalog routing
     \\
     \\0.302.74.51
     \\  • graff sessions reads 64 KiB header prefixes in a reusable scratch arena; session load/resume frees parse trees after load

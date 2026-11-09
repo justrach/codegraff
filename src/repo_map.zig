@@ -54,6 +54,10 @@ pub fn cachedSegment() ?[]const u8 {
     return if (value.len == 0) null else value;
 }
 
+pub fn resetCacheForTest() void {
+    cached = null;
+}
+
 fn skipped(name: []const u8) bool {
     if (name.len == 0 or name[0] == '.') return true;
     for (skip_dirs) |d| if (std.mem.eql(u8, name, d)) return true;

@@ -10,6 +10,12 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.53
+
+- `startup.buildSystemPrompt` places machine-wide skill catalogs (`# Skills` with global skills sorted ahead of `.project` skills) before workspace-varying segments (`AGENTS.md`, `--append-system-prompt`, `repo_map`), and `repo_context.split` moves workspace instructions and repository layout out of `messages[0]` into the leading user turn on `deepseekChat` routes so both `system` and `tools` remain prefix-cache aligned across workspaces.
+- `oauth_kimi.chooseRegion` resolves global OAuth (`https://auth.kimi.ai`) vs Mainland China (`https://auth.kimi.com`) from environment overrides, `~/.kimi-code/region` / `~/.kimi/region`, and local timezone without pinning new logins to a stale saved region, while token refresh continues to use the token's recorded `oauth_host`.
+- `kimi_catalog` parses unified model metadata (`limit.context`, `reasoning.type`, `reasoning.effort`) and persists `~/.codegraff/kimi-models.json` on refresh; `router_catalog`, `credential_failover`, `graff route`, and the built-in catalog include `k3.1-pro`, `k3.1-pro-highspeed`, and `k3-256k` across CLI and ACP model listings.
+
 ## v0.302.74.52
 
 - Added the Megaharness fused execution engine (`src/megaharness.zig`, ADR 0322) with topological wave scheduling for `rlm` DAGs, in-kernel SRAM register ALU folding (`uppercase`, `lowercase`, `trim`, `lines`, `first_line`, `json_field:<key>`) and assertion gates (`assert_contains`, `assert_eq`), native tool-batch and session-snapshot chunk reuse telemetry, `/megaharness [--json]`, and `ServerlessHarness.getMegaharnessStats()`.
@@ -17,6 +23,7 @@ current is part of cutting a release.
 - Background workers retain their own tool-result handle sequence counter across turns instead of resetting `tool_results_seq` to zero (#1759).
 - Inspecting or locating another chat or session's trajectory remains strictly read-only unless explicitly asked to message or wake that chat, and reports the verified user-facing title and chat ID rather than internal engine-session IDs (#1752, #1807).
 - Synthetic compaction requests (`manualCompact`, `autoCompact`, `compactInStream`) skip scanning the final message for `mcp_preload` tool calls (#1862).
+- `startup.buildSystemPrompt` places machine-wide skill catalogs before workspace-varying segments and splits `repo_context` onto the leading user turn on `deepseekChat` routes; `oauth_kimi` resolves global `kimi.ai` vs `kimi.com` region selection and `kimi_catalog` / `router_catalog` surface `k3.1-pro` across CLI and ACP.
 
 ## v0.302.74.51
 
