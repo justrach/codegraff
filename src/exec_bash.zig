@@ -471,7 +471,15 @@ fn execUnchecked(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
     const run = try jobs.runCappedWithOptions(gpa, io, argv, bash_stdout_cap, bash_stderr_cap, subagent_deadline_ms, opts);
     defer gpa.free(run.stdout);
     defer gpa.free(run.stderr);
-    return formatCapped(gpa, cmd, run);
+    var out = try formatCapped(gpa, cmd, run);
+    if (ctx.read_only_shell) if (switch (run.term) {
+        .exited => |code| ro.annotateSandboxDenial(gpa, out.text, code),
+        else => null,
+    }) |tagged| {
+        gpa.free(out.text);
+        out.text = @constCast(tagged);
+    };
+    return out;
 }
 
 test "#1619 a shell handle failure names its cause and blames storage only for storage faults" {

@@ -8,6 +8,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 const git_roots = @import("git_sandbox_roots.zig");
+pub const linux_landlock = @import("linux_landlock.zig");
+pub const annotateSandboxDenial = linux_landlock.annotateSandboxDenial;
 
 /// Part of every macOS install; a missing binary fails the spawn, it never
 /// runs the command unsandboxed.
@@ -39,7 +41,7 @@ fn resolveBwrapBinary(io: Io, buf: *[4096]u8) ?[]const u8 {
 fn runBwrapSelfCheck(io: Io, bwrap_exe: []const u8) bool {
     const has_bin_true = if (Io.Dir.cwd().access(io, "/bin/true", .{})) |_| true else |_| false;
     const has_usr_true = !has_bin_true and if (Io.Dir.cwd().access(io, "/usr/bin/true", .{})) |_| true else |_| false;
-    var argv_buf: [18][]const u8 = undefined;
+    var argv_buf: [20][]const u8 = undefined;
     const head = [_][]const u8{
         bwrap_exe,
         "--ro-bind",
@@ -49,6 +51,7 @@ fn runBwrapSelfCheck(io: Io, bwrap_exe: []const u8) bool {
         "/dev",
         "--proc",
         "/proc",
+        "--unshare-pid",
         "--tmpfs",
         "/tmp",
         "--tmpfs",
@@ -205,6 +208,7 @@ pub fn buildLinuxArgv(
         "/dev",
         "--proc",
         "/proc",
+        "--unshare-pid",
         "--tmpfs",
         "/tmp",
         "--tmpfs",
@@ -295,12 +299,15 @@ test "read-only sandbox: linux bwrap argv orders tmpfs before /tmp and /var/tmp 
     // Checkout outside /tmp needs no extra --ro-bind after --tmpfs.
     const home_argv = buildLinuxArgv("/usr/bin/bwrap", "/home/dev/repo/sub", &.{ "/home/dev/repo/sub", "/home/dev/repo" }, "python3 -V", &argv_buf).?;
     try std.testing.expectEqualStrings("/usr/bin/bwrap", home_argv[0]);
-    try std.testing.expectEqualStrings("--chdir", home_argv[12]);
-    try std.testing.expectEqualStrings("/home/dev/repo/sub", home_argv[13]);
-    try std.testing.expectEqualStrings("--unshare-net", home_argv[14]);
-    try std.testing.expectEqualStrings("--die-with-parent", home_argv[15]);
-    try std.testing.expectEqualStrings("GIT_OPTIONAL_LOCKS=0", home_argv[17]);
-    try std.testing.expectEqualStrings("python3 -V", home_argv[20]);
+    try std.testing.expectEqualStrings("--proc", home_argv[6]);
+    try std.testing.expectEqualStrings("/proc", home_argv[7]);
+    try std.testing.expectEqualStrings("--unshare-pid", home_argv[8]);
+    try std.testing.expectEqualStrings("--chdir", home_argv[13]);
+    try std.testing.expectEqualStrings("/home/dev/repo/sub", home_argv[14]);
+    try std.testing.expectEqualStrings("--unshare-net", home_argv[15]);
+    try std.testing.expectEqualStrings("--die-with-parent", home_argv[16]);
+    try std.testing.expectEqualStrings("GIT_OPTIONAL_LOCKS=0", home_argv[18]);
+    try std.testing.expectEqualStrings("python3 -V", home_argv[21]);
 
     // Linked worktree + main repo under /tmp and /var/tmp mount read-only AFTER --tmpfs.
     const tmp_roots = [_][]const u8{
@@ -458,4 +465,13 @@ test "read-only sandbox: subdir and linked worktree under /tmp block writes to p
     try std.testing.expect(std.mem.indexOf(u8, wt_run.stdout, "WT_BLOCKED") != null);
     try std.testing.expect(std.mem.indexOf(u8, wt_run.stdout, "REPO_BLOCKED") != null);
     try std.testing.expect(std.mem.indexOf(u8, wt_run.stdout, "WT_GIT_BLOCKED") != null);
+}
+
+test "read-only sandbox: annotateSandboxDenial marks write denials and ignores normal failures" {
+    const gpa = std.testing.allocator;
+    const tagged = annotateSandboxDenial(gpa, "touch: out.txt: Read-only file system", 1).?;
+    defer gpa.free(tagged);
+    try std.testing.expect(std.mem.indexOf(u8, tagged, "do not retry writing to this path") != null);
+    try std.testing.expect(annotateSandboxDenial(gpa, "touch: out.txt: Read-only file system", 0) == null);
+    try std.testing.expect(annotateSandboxDenial(gpa, "AssertionError: expected 1 == 2", 1) == null);
 }
