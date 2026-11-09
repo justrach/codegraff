@@ -106,29 +106,6 @@ pub fn buildSystemPrompt(
     const base_prompt: []const u8 = system_prompt_flag orelse
         if (learned) |policy| policy.prompt else try prompts.baseForSession(arena); // #421: built-in base minus the segments whose capability this process lacks
     var sys_normal: []const u8 = base_prompt;
-    for ([_][]const u8{ "AGENTS.md", "HARNESS.md", "CLAUDE.md" }) |fname| {
-        const body = Io.Dir.cwd().readFileAlloc(io, fname, arena, .limited(64 * 1024)) catch continue;
-        const trimmed = std.mem.trim(u8, body, " \t\r\n");
-        if (trimmed.len == 0) continue;
-        const capped = @import("context_limits.zig").applyAlloc(arena, trimmed, @import("context_limits.zig").agents_md_bytes);
-        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n# Project instructions (from {s})\n{s}", .{ base_prompt, fname, capped });
-        @import("hot_context.zig").noteBaked(fname, capped); // #1333: later edits arrive as keyed updates
-        if (!quiet) {
-            try out.print("loaded project instructions from {s} ({d} bytes)\n", .{ fname, trimmed.len });
-            try out.flush();
-        }
-        break;
-    }
-    if (append_system_flag) |extra| {
-        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, extra });
-    }
-    // Repo map (repo_map.zig): the top of the working tree, so the model reads
-    // the files it needs instead of spending opening turns on ls/find.
-    // Lean one-shots name their files; the map is an interactive opener
-    // and was prefix bytes on every -p turn (ADR 0024).
-    if (environ.get("GRAFF_NO_REPO_MAP") == null and !@import("no_local_tools.zig").lean) {
-        if (@import("repo_map.zig").segment(io, arena)) |map| sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, map });
-    }
     if (unattended) sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, prompts.unattended_note });
     // ADR 0030 / 0011: do not splice rlm_spec.system_note onto the always-on
     // prefix. Small turns must not advertise rlm/sPTC; discovery is the
@@ -162,9 +139,8 @@ pub fn buildSystemPrompt(
         try out.flush();
     }
     // Markdown skills (skill_docs.zig): names + trigger descriptions only.
-    // Pinned once into the system-prompt prefix so later turns hit the
-    // prompt cache (Codex: old prompt is an exact prefix of the new one).
-    // The `skill` tool rescans without rewriting this prefix.
+    // Pinned ahead of per-workspace instructions/repo_map so the machine-wide
+    // skill catalog shares one cached prefix across every working directory.
     if (!lean) {
         skill_docs.g_skills = skill_docs.load(io, arena, fleet.g_home);
         const skill_catalog = skill_docs.promptCatalog(arena, skill_docs.g_skills);
@@ -183,6 +159,28 @@ pub fn buildSystemPrompt(
             skill_docs.g_workspace_skills = true;
             sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, skill_docs.promptCatalog(arena, local) });
         }
+    }
+    // Workspace-varying segments (AGENTS.md, repo_map, --append-system-prompt)
+    // ride after the static base + global skill catalog so Call 1 in a new
+    // directory hits the full ~7.3k-token system prefix in cache.
+    for ([_][]const u8{ "AGENTS.md", "HARNESS.md", "CLAUDE.md" }) |fname| {
+        const body = Io.Dir.cwd().readFileAlloc(io, fname, arena, .limited(64 * 1024)) catch continue;
+        const trimmed = std.mem.trim(u8, body, " \t\r\n");
+        if (trimmed.len == 0) continue;
+        const capped = @import("context_limits.zig").applyAlloc(arena, trimmed, @import("context_limits.zig").agents_md_bytes);
+        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n# Project instructions (from {s})\n{s}", .{ sys_normal, fname, capped });
+        @import("hot_context.zig").noteBaked(fname, capped); // #1333: later edits arrive as keyed updates
+        if (!quiet) {
+            try out.print("loaded project instructions from {s} ({d} bytes)\n", .{ fname, trimmed.len });
+            try out.flush();
+        }
+        break;
+    }
+    if (append_system_flag) |extra| {
+        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, extra });
+    }
+    if (environ.get("GRAFF_NO_REPO_MAP") == null and !lean) {
+        if (@import("repo_map.zig").segment(io, arena)) |map| sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, map });
     }
     // #326: this returns the composed BASE only. prompts.setSystemPrompts()
     // (called once by buildRootAgent, the sole consumer) derives

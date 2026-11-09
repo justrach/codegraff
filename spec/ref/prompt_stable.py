@@ -259,4 +259,21 @@ def check_properties() -> int:
         for calls in (0, 1, 2):
             if (not sub) and (not True) and (calls <= 1):
                 raise ValueError("compaction_never_preloads_tools violated")
+    invariant = {"base", "unattended", "companions", "global_skills"}
+    canonical = [
+        "base",
+        "unattended",
+        "companions",
+        "global_skills",
+        "project_skills",
+        "project_instructions",
+        "append_flag",
+        "repo_map",
+    ]
+    seen_varying = False
+    for seg in canonical:
+        if seg in invariant and seen_varying:
+            raise ValueError(f"invariant segment {seg} placed after workspace-varying segment")
+        if seg not in invariant:
+            seen_varying = True
     return n + fork_total

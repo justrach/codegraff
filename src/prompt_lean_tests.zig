@@ -66,3 +66,39 @@ test "lean prefix hash is stable and does not name a sandbox path" {
     try std.testing.expect(std.mem.indexOf(u8, first, ".sandboxes") == null);
     try std.testing.expect(std.mem.indexOf(u8, first, "/tmp/") == null);
 }
+
+test "buildSystemPrompt places static skill catalog ahead of workspace instructions and repo_map" {
+    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a_state.deinit();
+    const a = a_state.allocator();
+    const startup = @import("startup.zig");
+    const skill_docs = @import("skill_docs.zig");
+    const saved_img = imagegen.available;
+    defer imagegen.available = saved_img;
+    const saved_lean = no_local_tools.lean;
+    defer no_local_tools.lean = saved_lean;
+    no_local_tools.lean = false;
+
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    var aw: std.Io.Writer.Allocating = .init(a);
+    const sys = try startup.buildSystemPrompt(std.testing.io, a, &aw.writer, null, "APPEND-MARKER", true, true, &.{}, false, null, env);
+    const skills_at = std.mem.indexOf(u8, sys, "# Skills\n") orelse return error.TestUnexpectedResult;
+    const unattended_at = std.mem.indexOf(u8, sys, "AUTO-DENIED") orelse return error.TestUnexpectedResult;
+    const append_at = std.mem.indexOf(u8, sys, "APPEND-MARKER") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(unattended_at < skills_at);
+    try std.testing.expect(skills_at < append_at);
+    if (std.mem.indexOf(u8, sys, "# Project instructions")) |agents_at| try std.testing.expect(skills_at < agents_at);
+    if (std.mem.indexOf(u8, sys, "# Project layout")) |map_at| try std.testing.expect(skills_at < map_at);
+
+    // Non-project skills sort ahead of project skills so a workspace skill
+    // only touches the tail of # Skills.
+    const mixed = [_]skill_docs.Skill{
+        .{ .name = "aaa-local", .desc = "project skill", .body = "", .source = .project },
+        .{ .name = "zzz-global", .desc = "personal skill", .body = "", .source = .personal },
+    };
+    const cat = skill_docs.promptCatalog(a, &mixed);
+    const global_at = std.mem.indexOf(u8, cat, "zzz-global (personal)") orelse return error.TestUnexpectedResult;
+    const local_at = std.mem.indexOf(u8, cat, "aaa-local (project)") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(global_at < local_at);
+}

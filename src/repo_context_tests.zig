@@ -129,8 +129,19 @@ test "ADR 0258: other chat routes and sub-agents keep the per-repo context in th
     const a = arena_state.allocator();
     hot_context.noteBaked("AGENTS.md", "Use tabs.");
     defer hot_context.resetForTest();
+    // DeepSeek chat splits per-repo context into messages[1] (without Gemini's
+    // synthetic opening exchange) so `system + tools` stay cached across repos.
+    var ds = try chatRoot(a, "codegraff", "deepseek-v4-flash", layout_a);
+    const ds_body = try ds.buildBody("[]", false, true, true);
+    defer std.testing.allocator.free(ds_body);
+    const ds_parsed = try std.json.parseFromSlice(std.json.Value, a, ds_body, .{});
+    const ds_msgs = ds_parsed.value.object.get("messages").?.array.items;
+    try std.testing.expectEqual(@as(usize, 3), ds_msgs.len);
+    try std.testing.expect(std.mem.indexOf(u8, ds_msgs[0].object.get("content").?.string, "# Project") == null);
+    try std.testing.expect(std.mem.startsWith(u8, ds_msgs[1].object.get("content").?.string, repo_context.chat_frame));
+    try std.testing.expectEqualStrings("hello", ds_msgs[2].object.get("content").?.string);
+
     const routes = [_]struct { id: []const u8, model: []const u8 }{
-        .{ .id = "codegraff", .model = "deepseek-v4-flash" },
         .{ .id = "codegraff", .model = "mimo-v2.6-pro" },
         .{ .id = "openrouter", .model = "google/gemini-3.8-flash" },
     };

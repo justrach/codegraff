@@ -358,4 +358,83 @@ theorem total_buf_bounded_by_two_cap (bufLen cursor cap : Nat)
   · simp [capStep, h1, h2]
     omega
 
+/-!
+  Section 5: Cross-workspace system prompt prefix ordering (`src/startup.zig`, `src/skill_docs.zig`).
+  Proves that placing all workspace-invariant segments (`base`, `unattended`, `companions`,
+  `globalSkills`) strictly ahead of workspace-varying segments (`projectSkills`,
+  `projectInstructions`, `appendFlag`, `repoMap`) caches the entire invariant prefix on Call 1
+  in any workspace, rather than busting right after `base`.
+-/
+
+inductive PromptSegment where
+  | base
+  | unattended
+  | companions
+  | globalSkills
+  | projectSkills
+  | projectInstructions
+  | appendFlag
+  | repoMap
+deriving DecidableEq, Repr, BEq
+
+def isWorkspaceInvariant : PromptSegment → Bool
+  | .base | .unattended | .companions | .globalSkills => true
+  | .projectSkills | .projectInstructions | .appendFlag | .repoMap => false
+
+def canonicalPromptOrder : List PromptSegment :=
+  [.base, .unattended, .companions, .globalSkills,
+   .projectSkills, .projectInstructions, .appendFlag, .repoMap]
+
+def legacyPromptOrder : List PromptSegment :=
+  [.base, .projectInstructions, .appendFlag, .repoMap,
+   .unattended, .companions, .globalSkills, .projectSkills]
+
+def sharedPrefixTokens (w : PromptSegment → Nat) : List PromptSegment → Nat
+  | [] => 0
+  | s :: rest =>
+      if isWorkspaceInvariant s then w s + sharedPrefixTokens w rest
+      else 0
+
+def allInvariantBeforeVarying : List PromptSegment → Bool
+  | [] => true
+  | [_] => true
+  | a :: b :: rest =>
+      (!(!isWorkspaceInvariant a && isWorkspaceInvariant b)) &&
+        allInvariantBeforeVarying (b :: rest)
+
+theorem canonical_order_partitioned :
+    allInvariantBeforeVarying canonicalPromptOrder = true := by
+  native_decide
+
+theorem legacy_order_not_partitioned :
+    allInvariantBeforeVarying legacyPromptOrder = false := by
+  native_decide
+
+theorem canonical_caches_full_invariant_prefix (w : PromptSegment → Nat) :
+    sharedPrefixTokens w canonicalPromptOrder =
+      w .base + (w .unattended + (w .companions + (w .globalSkills + 0))) := by
+  rfl
+
+theorem legacy_caches_only_base (w : PromptSegment → Nat) :
+    sharedPrefixTokens w legacyPromptOrder = w .base := by
+  rfl
+
+theorem canonical_strictly_dominates_legacy (w : PromptSegment → Nat)
+    (h : w .globalSkills > 0) :
+    sharedPrefixTokens w canonicalPromptOrder > sharedPrefixTokens w legacyPromptOrder := by
+  simp [canonical_caches_full_invariant_prefix, legacy_caches_only_base]
+  omega
+
+/-- On chat templates that render `tools` after `messages[0]` (system), keeping
+    workspace-varying segments in `messages[0]` forfeits `wTools` on Call 1,
+    whereas splitting workspace segments into `messages[1]` (`repo_context.split`)
+    caches both the invariant system prompt AND `wTools`. -/
+def callOneCachedTokens (splitToMessage : Bool) (wSystemInvariant wTools : Nat) : Nat :=
+  if splitToMessage then wSystemInvariant + wTools else wSystemInvariant
+
+theorem split_repo_context_caches_tools (wSys wTools : Nat) (h : wTools > 0) :
+    callOneCachedTokens true wSys wTools > callOneCachedTokens false wSys wTools := by
+  simp [callOneCachedTokens]
+  omega
+
 end Graff.PromptStable

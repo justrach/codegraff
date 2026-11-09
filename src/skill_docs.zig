@@ -314,6 +314,9 @@ pub fn promptCatalog(arena: Allocator, list: []const Skill) []const u8 {
     for (order, 0..) |*o, i| o.* = i;
     @import("stable_sort.zig").sort(usize, order, list, struct {
         fn lessThan(ctx: []const Skill, a: usize, b: usize) bool {
+            const a_proj = ctx[a].source == .project;
+            const b_proj = ctx[b].source == .project;
+            if (a_proj != b_proj) return !a_proj;
             return std.mem.order(u8, ctx[a].name, ctx[b].name) == .lt;
         }
     }.lessThan);

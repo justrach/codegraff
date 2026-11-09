@@ -18,12 +18,26 @@ pub const Split = struct { instructions: []const u8, context: []const u8 = "" };
 /// Root turns on the ChatGPT plan and the OpenAI platform. Their backend
 /// renders the tools and then the instructions, and caches the instructions
 /// as one unit: a per-repo byte inside them forfeits all of it in a new repo.
+/// DeepSeek's chat template renders `messages[0]` (system) before `tools`, so
+/// any per-repo byte inside `messages[0]` forfeits all ~4.6k tool tokens on
+/// Call 1 in a new workspace; moving the repo blocks to `messages[1]` keeps
+/// `system + tools` (~8.8k tokens) byte-identical across workspaces.
 pub fn eligible(self: *const Agent) bool {
     if (self.sub and !@import("cache_fork.zig").shares()) return false;
-    if (statefulChat(self)) return true;
+    if (statefulChat(self) or deepseekChat(self)) return true;
     if (self.provider.kind != .responses) return false;
     for ([_][]const u8{ "codex", "chatgpt-new", "openai" }) |id| if (std.mem.eql(u8, self.provider.id, id)) return true;
     return false;
+}
+
+/// DeepSeek models on the Chat Completions wire (`codegraff` or `deepseek`),
+/// whose template renders `tools` right after `messages[0]` (system).
+pub fn deepseekChat(self: *const Agent) bool {
+    if (self.provider.kind != .openai) return false;
+    if (!std.mem.eql(u8, self.provider.id, "codegraff") and !std.mem.eql(u8, self.provider.id, "deepseek")) return false;
+    const model = self.provider.model;
+    const bare = model[if (std.mem.lastIndexOfScalar(u8, model, '/')) |i| i + 1 else 0..];
+    return std.ascii.startsWithIgnoreCase(bare, "deepseek-");
 }
 
 /// ADR 0258: the Codegraff chat wire's Gemini models, which the gateway
