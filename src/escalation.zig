@@ -401,6 +401,7 @@ pub fn decide(o: Observables, phases: []const Value, explicit: bool, arms: []con
 /// prior — the same two-layer lookup `orch.learnedRung` performs, exposed as
 /// a slice so `decide` stays pure.
 fn armsFor(key: orch.Key) []const orch.ArmObs {
+    @import("bench_priors.zig").ensureArchiveLoaded();
     for (orch.g_arms) |a| if (a.key.eql(key)) return orch.g_arms;
     return &.{};
 }

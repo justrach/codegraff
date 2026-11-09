@@ -56,7 +56,6 @@ const Allocator = std.mem.Allocator;
 const tier_ladder = @import("subagent_tier_ladder.zig");
 const selection = @import("subagent_selection.zig");
 const provider_mod = @import("provider.zig");
-const trace = @import("trace.zig");
 
 pub const bench_path = ".harness/bench.json";
 
@@ -130,6 +129,8 @@ pub const builtin_entries = [_]Entry{
 /// hot reload) runs in full.
 var g_startup_tree: ?[]const u8 = null;
 var g_priors_arena: ?std.heap.ArenaAllocator = null;
+var g_deferred_io: ?Io = null;
+var g_sheet_entries: []const Entry = &builtin_entries;
 
 fn treeId(io: Io, arena: Allocator) ?[]const u8 {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -137,42 +138,66 @@ fn treeId(io: Io, arena: Allocator) ?[]const u8 {
     return arena.dupe(u8, buf[0..n]) catch null;
 }
 
+fn loadBaseSheet(io: Io, pa: Allocator, home: ?[]const u8) []const Entry {
+    var sheet = readSheet(io, pa, bench_path);
+    if (sheet == null) if (home) |h| {
+        var pbuf: [std.fs.max_path_bytes]u8 = undefined;
+        if (std.fmt.bufPrint(&pbuf, "{s}/{s}", .{ h, bench_path })) |p| {
+            sheet = readSheet(io, pa, p);
+        } else |_| {}
+    };
+    return if (sheet) |s| s.entries else &builtin_entries;
+}
+
+fn applyFoldResult(pa: Allocator, base: []const Entry, res: @import("archive_fold.zig").FoldResult) void {
+    g_entries = blendObs(pa, base, res.obs);
+    g_ladders = derive(pa, g_entries);
+    @import("route_policy.zig").g_cells = res.cells;
+    @import("orchestration_policy.zig").g_arms = res.arms;
+}
+
+/// Complete a deferred startup archive fold on the first routing decision
+/// (#1864). A one-shot (`graff -p`) that never routes never scans
+/// `.graff/trajectories/`.
+pub fn ensureArchiveLoaded() void {
+    const io = g_deferred_io orelse return;
+    g_deferred_io = null;
+    if (g_priors_arena) |*priors| {
+        const pa = priors.allocator();
+        const res = @import("archive_fold.zig").loadOrFold(io, pa);
+        applyFoldResult(pa, g_sheet_entries, res);
+    }
+}
+
+pub fn loadStartup(io: Io, arena: Allocator, home: ?[]const u8) void {
+    var fresh_priors = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const pa = fresh_priors.allocator();
+    g_sheet_entries = loadBaseSheet(io, pa, home);
+    if (@import("archive_fold.zig").loadPersistedOnly(io, pa)) |cached| {
+        applyFoldResult(pa, g_sheet_entries, cached);
+    } else {
+        g_entries = g_sheet_entries;
+        g_ladders = derive(pa, g_entries);
+        @import("route_policy.zig").g_cells = &.{};
+        @import("orchestration_policy.zig").g_arms = &.{};
+    }
+    g_deferred_io = io;
+    if (g_priors_arena) |*old| old.deinit();
+    g_priors_arena = fresh_priors;
+    g_startup_tree = treeId(io, arena);
+}
+
 pub fn loadInto(io: Io, arena: Allocator, home: ?[]const u8) void {
     if (g_startup_tree) |tree| {
         g_startup_tree = null;
         if (treeId(io, arena)) |now| if (std.mem.eql(u8, tree, now)) return;
     }
+    g_deferred_io = null;
     var fresh_priors = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const pa = fresh_priors.allocator();
-    var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer scratch.deinit();
-    const sa = scratch.allocator();
-
-    var sheet = readSheet(io, pa, bench_path);
-    if (sheet == null) if (home) |h| {
-        const p = std.fmt.allocPrint(sa, "{s}/{s}", .{ h, bench_path }) catch return;
-        sheet = readSheet(io, pa, p);
-    };
-    g_entries = if (sheet) |s| s.entries else &builtin_entries;
-    // DGM feedback (#374 follow-on): lived, niche-scored runs from THIS
-    // workspace's archive re-weight the sheet before Pareto seating, so the
-    // front routes on what these models actually did here, not only on a
-    // leaderboard snapshot. Auto-promote's hot-reload re-runs this, so the
-    // front tightens as the session scores work.
-    // #1845: read the raw archive into `sa` (freed at `defer`) and keep
-    // surviving priors/cells/arms in `g_priors_arena`, replacing the old
-    // generation on hot reload.
-    const archive = trace.readTrajectoryArchive(io, sa, 8 << 20);
-    g_entries = blend(pa, g_entries, archive);
-    g_ladders = derive(pa, g_entries);
-    // #372: the SAME archive read also folds the (shape, role, tier, model)
-    // policy cells, so the session-wide ladders and the per-cell learned
-    // policy can never disagree about which runs they have seen.
-    @import("route_policy.zig").loadCells(pa, archive);
-    // …and the (task_class, budget_band, stratum) orchestration arms, hung on
-    // this same pass for the same reason and at no extra I/O: one archive
-    // read, three consumers, one consistent view of history.
-    @import("orchestration_policy.zig").loadArms(pa, archive);
+    g_sheet_entries = loadBaseSheet(io, pa, home);
+    const res = @import("archive_fold.zig").loadOrFold(io, pa);
+    applyFoldResult(pa, g_sheet_entries, res);
     if (g_priors_arena) |*old| old.deinit();
     g_priors_arena = fresh_priors;
 }
@@ -207,15 +232,11 @@ pub fn noteKeys(keys: *provider_mod.Keys) *provider_mod.Keys {
 }
 
 /// Startup composition, riding resolveKeys' return: snapshot availability,
-/// then load/derive the sheet — so the #291 worker default (resolved moments
-/// later in main) sees the SAME bench ladders as every later /model
-/// re-derivation (#371). Without this, startup derived workers from the
-/// compiled table while a switch re-derived from the bench one, and the two
-/// disagreed (terra vs the data-blessed gpt-5.5 on codex).
+/// then load the sheet and warm any persisted fold without scanning raw
+/// `.graff/trajectories/*.jsonl` until a routing decision asks for it (#1864).
 pub fn noteKeysAtStartup(keys: provider_mod.Keys, io: Io, arena: Allocator, home: ?[]const u8) provider_mod.Keys {
     const kept = noteAvailability(keys);
-    loadInto(io, arena, home);
-    g_startup_tree = treeId(io, arena);
+    loadStartup(io, arena, home);
     return kept;
 }
 
@@ -232,29 +253,15 @@ pub fn scoreFor(provider_id: []const u8, model: []const u8) ?f64 {
     return best;
 }
 
-fn strField(o: std.json.ObjectMap, key: []const u8) ?[]const u8 {
-    const v = o.get(key) orelse return null;
-    return if (v == .string) v.string else null;
-}
-
 /// One lived observation from the local trajectory archive: the pooled [0,1]
 /// score seen for a (model, effort) config, joined score→config through
 /// prompt_sha against the archive's recipe rows.
 pub const Obs = struct { model: []const u8, effort: []const u8, sum: f64 = 0, n: u32 = 0 };
 
-/// The DGM→Pareto feedback fold (#374 follow-on): pass 1 maps prompt_sha →
-/// (model, effort) from kind:"recipe" rows, pass 2 joins kind:"score" rows
-/// through that map. HONESTY NOTE: pooled per-config means still mix genome
-/// quality into model quality — #290's confound — so this feeds a DAMPED
-/// prior (blend's pseudo-counts), never a controlled comparison; matched-
-/// genome stratification is the refinement path when archives grow.
 /// Is `line` an archive row of kind `kind`? Reads the first `"kind"` key,
 /// which the trajectory writer puts in the row envelope ahead of any payload
 /// (`run_id`, `pid`, `session_id`, then `kind`), so it is found within the
 /// first hundred bytes instead of scanning a multi-kilobyte `prompt` row.
-/// Most of an archive is rows no fold reads, and every fold ran its JSON
-/// parse on every one of them at each ACP and REPL start (#1836). Inside a
-/// JSON string a quote is escaped, so prose cannot fake the key.
 pub fn kindIs(line: []const u8, kind: []const u8) bool {
     const key = "\"kind\"";
     const at = std.mem.indexOf(u8, line, key) orelse return false;
@@ -266,52 +273,7 @@ pub fn kindIs(line: []const u8, kind: []const u8) bool {
 }
 
 pub fn foldObservations(arena: Allocator, archive: []const u8) []Obs {
-    const Recipe = struct { sha: []const u8, model: []const u8, effort: []const u8 };
-    var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer scratch.deinit();
-    const sa = scratch.allocator();
-    var recipes: std.ArrayList(Recipe) = .empty;
-    var obs: std.ArrayList(Obs) = .empty;
-    var pass: usize = 0;
-    while (pass < 2) : (pass += 1) {
-        var it = std.mem.splitScalar(u8, archive, '\n');
-        while (it.next()) |ln| {
-            const t = std.mem.trim(u8, ln, " \t\r");
-            if (!kindIs(t, if (pass == 0) "recipe" else "score")) continue;
-            const v = std.json.parseFromSliceLeaky(std.json.Value, sa, t, .{}) catch continue;
-            if (v != .object) continue;
-            const o = v.object;
-            const kind = strField(o, "kind") orelse continue;
-            const sha = strField(o, "prompt_sha") orelse continue;
-            if (pass == 0 and std.mem.eql(u8, kind, "recipe")) {
-                const model = strField(o, "model") orelse continue;
-                recipes.append(sa, .{ .sha = sha, .model = model, .effort = strField(o, "effort") orelse "" }) catch return obs.items;
-            } else if (pass == 1 and std.mem.eql(u8, kind, "score")) {
-                const sv = o.get("score") orelse continue;
-                const s: f64 = switch (sv) {
-                    .float => |f| f,
-                    .integer => |x| @floatFromInt(x),
-                    else => continue,
-                };
-                if (!(s >= 0 and s <= 1)) continue; // archive scores are s01 by contract (#168)
-                const joined: ?Recipe = for (recipes.items) |rc| {
-                    if (std.mem.eql(u8, rc.sha, sha)) break rc;
-                } else null;
-                const r = joined orelse continue;
-                const slot: *Obs = for (obs.items) |*x| {
-                    if (std.mem.eql(u8, x.model, r.model) and std.mem.eql(u8, x.effort, r.effort)) break x;
-                } else blk: {
-                    const m_copy = arena.dupe(u8, r.model) catch return obs.items;
-                    const e_copy = if (r.effort.len == 0) "" else (arena.dupe(u8, r.effort) catch return obs.items);
-                    obs.append(arena, .{ .model = m_copy, .effort = e_copy }) catch return obs.items;
-                    break :blk &obs.items[obs.items.len - 1];
-                };
-                slot.sum += s;
-                slot.n += 1;
-            }
-        }
-    }
-    return obs.items;
+    return @import("archive_fold.zig").foldSlice(arena, archive, true, false, false).obs;
 }
 
 /// The sheet speaks with the weight of this many lived runs: a couple of
@@ -320,14 +282,7 @@ pub fn foldObservations(arena: Allocator, archive: []const u8) []Obs {
 /// discipline rather than inventing a second one.
 pub const sheet_weight: f64 = 3;
 
-/// Merge lived observations into the sheet before Pareto seating. A matching
-/// (model[, effort]) entry gets a pseudo-count-blended score and KEEPS its
-/// cost — units stay $/task; blending token prices in would poison the
-/// domination comparisons. An unmatched config joins score-only with cost 0
-/// (+inf effective cost): it may lead the front on capability but never
-/// claims the efficiency rung until someone benches its price.
-pub fn blend(arena: Allocator, sheet: []const Entry, archive: []const u8) []const Entry {
-    const obs = foldObservations(arena, archive);
+pub fn blendObs(arena: Allocator, sheet: []const Entry, obs: []const Obs) []const Entry {
     if (obs.len == 0) return sheet;
     var out: std.ArrayList(Entry) = .empty;
     out.appendSlice(arena, sheet) catch return sheet;
@@ -345,6 +300,10 @@ pub fn blend(arena: Allocator, sheet: []const Entry, archive: []const u8) []cons
         } else out.append(arena, .{ .model = ob.model, .effort = if (ob.effort.len == 0) null else ob.effort, .score = mean, .cost = 0 }) catch return out.items;
     }
     return out.items;
+}
+
+pub fn blend(arena: Allocator, sheet: []const Entry, archive: []const u8) []const Entry {
+    return blendObs(arena, sheet, foldObservations(arena, archive));
 }
 
 pub const Best = struct { name: []const u8, score: f64 = -1, spd: f64 = -1 };

@@ -241,6 +241,7 @@ pub fn resolve(base: Provider, pin: Pin) Resolved {
 /// learned preference; the cost ceiling is re-cleared for the swapped model,
 /// so learning can never escalate spend either.
 pub fn resolveIn(base: Provider, pin: Pin, cell: Cell) Resolved {
+    bench_priors.ensureArchiveLoaded();
     const pin_src: Source = if (pin.from_persona) .persona else .explicit_pin;
     if (pin.model) |query| {
         if (qualified(base, query, pin_src)) |r| return r;

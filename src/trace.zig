@@ -353,9 +353,9 @@ pub const Trajectory = struct {
 /// Set by main(); runSub and the REPL loop record nodes through this.
 pub var g_traj: ?*Trajectory = null;
 
-fn appendArchiveFile(io: Io, out: *Io.Writer, path: []const u8, remaining: *usize) bool {
+fn appendArchiveFile(io: Io, dir: Io.Dir, out: *Io.Writer, path: []const u8, remaining: *usize) bool {
     if (remaining.* == 0) return false;
-    const file = Io.Dir.cwd().openFile(io, path, .{}) catch return false;
+    const file = dir.openFile(io, path, .{}) catch return false;
     defer file.close(io);
     const stat = file.stat(io) catch return false;
     const size = std.math.cast(usize, stat.size) orelse return false;
@@ -379,7 +379,7 @@ pub fn readTrajectoryArchive(io: Io, arena: Allocator, max_bytes: usize) []const
     var remaining = max_bytes;
 
     var dir = Io.Dir.cwd().openDir(io, trajectories_dir, .{ .iterate = true }) catch
-        return if (appendArchiveFile(io, &aw.writer, legacy_trajectory_path, &remaining)) aw.toOwnedSlice() catch "" else "";
+        return if (appendArchiveFile(io, Io.Dir.cwd(), &aw.writer, legacy_trajectory_path, &remaining)) aw.toOwnedSlice() catch "" else "";
     {
         defer dir.close(io);
         var it = dir.iterate();
@@ -387,12 +387,11 @@ pub fn readTrajectoryArchive(io: Io, arena: Allocator, max_bytes: usize) []const
             const entry = it.next(io) catch break;
             if (entry == null) break;
             if (entry.?.kind != .file or !std.mem.endsWith(u8, entry.?.name, ".jsonl")) continue;
-            const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ trajectories_dir, entry.?.name }) catch continue;
-            _ = appendArchiveFile(io, &aw.writer, path, &remaining);
+            _ = appendArchiveFile(io, dir, &aw.writer, entry.?.name, &remaining);
         }
     }
     // Legacy rows remain readable, but current run files receive the cap first.
-    _ = appendArchiveFile(io, &aw.writer, legacy_trajectory_path, &remaining);
+    _ = appendArchiveFile(io, Io.Dir.cwd(), &aw.writer, legacy_trajectory_path, &remaining);
     return aw.toOwnedSlice() catch "";
 }
 

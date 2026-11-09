@@ -292,57 +292,13 @@ pub const min_model_obs: u32 = 2;
 /// needing an allocator on the hot resolution path.
 pub const max_candidates = 8;
 
-fn strField(o: std.json.ObjectMap, key: []const u8) ?[]const u8 {
-    const v = o.get(key) orelse return null;
-    return if (v == .string) v.string else null;
-}
-
 /// Pool the archive's self-describing `kind:"score"` rows into cells. A score
 /// row only counts when it carries ALL the coordinates — the rows written
 /// before #372 (and mainloop /score's) simply have no shape, so they are
 /// skipped rather than pooled into a cell they were never observed in.
 /// Scores are [0,1] by the #168 contract; anything else is junk.
 pub fn foldCells(arena: Allocator, archive: []const u8) []CellObs {
-    var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer scratch.deinit();
-    const sa = scratch.allocator();
-    var out: std.ArrayList(CellObs) = .empty;
-    var it = std.mem.splitScalar(u8, archive, '\n');
-    while (it.next()) |ln| {
-        const t = std.mem.trim(u8, ln, " \t\r");
-        if (!@import("bench_priors.zig").kindIs(t, "score")) continue;
-        const v = std.json.parseFromSliceLeaky(std.json.Value, sa, t, .{}) catch continue;
-        if (v != .object) continue;
-        const o = v.object;
-        const kind = strField(o, "kind") orelse continue;
-        if (!std.mem.eql(u8, kind, "score")) continue;
-        const shape = strField(o, "shape") orelse continue;
-        const tier = strField(o, "tier") orelse continue;
-        const model = strField(o, "model") orelse continue;
-        if (shape.len == 0 or tier.len == 0 or model.len == 0) continue;
-        const role = strField(o, "role") orelse "";
-        const sv = o.get("score") orelse continue;
-        const s: f64 = switch (sv) {
-            .float => |f| f,
-            .integer => |x| @floatFromInt(x),
-            else => continue,
-        };
-        if (!(s >= 0 and s <= 1)) continue;
-        const slot: *CellObs = for (out.items) |*c| {
-            if (std.mem.eql(u8, c.shape, shape) and std.mem.eql(u8, c.role, role) and
-                std.mem.eql(u8, c.tier, tier) and std.mem.eql(u8, c.model, model)) break c;
-        } else blk: {
-            const shape_copy = arena.dupe(u8, shape) catch return out.items;
-            const role_copy = if (role.len == 0) "" else (arena.dupe(u8, role) catch return out.items);
-            const tier_copy = arena.dupe(u8, tier) catch return out.items;
-            const model_copy = arena.dupe(u8, model) catch return out.items;
-            out.append(arena, .{ .shape = shape_copy, .role = role_copy, .tier = tier_copy, .model = model_copy }) catch return out.items;
-            break :blk &out.items[out.items.len - 1];
-        };
-        slot.sum += s;
-        slot.n += 1;
-    }
-    return out.items;
+    return @import("archive_fold.zig").foldSlice(arena, archive, false, true, false).cells;
 }
 
 /// Refresh the policy from one archive read. Called by bench_priors.loadInto
@@ -472,6 +428,7 @@ pub fn learnedRungIn(
 /// provider ladder seats at the tier being resolved, so the tier is carried
 /// implicitly and correctly.
 pub fn learnedRung(provider_id: []const u8, cell: Cell, ladder_answer: []const u8) ?[]const u8 {
+    bench.ensureArchiveLoaded();
     return learnedRungIn(g_cells, bench.g_entries, provider_id, cell, ladder_answer);
 }
 
