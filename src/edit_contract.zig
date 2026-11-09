@@ -27,6 +27,7 @@ const Allocator = std.mem.Allocator;
 const pb = @import("phase_budget.zig");
 const orch_rows = @import("orchestration_rows.zig");
 const process_runner = @import("process_runner.zig");
+pub const workspace_tree_snap = @import("workspace_tree_snap.zig");
 
 /// The failure text a contracted phase gets when nothing changed on disk.
 /// Carries no retry_unsafe_note, so failureAllowsRetry says yes and the
@@ -66,52 +67,11 @@ pub fn mutatingTask(role: []const u8, prompt: []const u8) bool {
 /// Anything else (new lines, changed lines) is a real diff and passes.
 pub fn contractUnmet(contracted: bool, before: []const u8, after: []const u8) bool {
     if (!contracted) return false;
-    const a = std.mem.trim(u8, after, " \t\r\n");
-    if (a.len == 0) return true;
-    return std.mem.eql(u8, std.mem.trim(u8, before, " \t\r\n"), a);
-}
-
-fn dirtyContentDigest(gpa: Allocator, io: Io, cwd: ?[]const u8, status_out: []const u8) u64 {
-    var hasher = std.hash.Wyhash.init(0);
-    var lines = std.mem.splitScalar(u8, status_out, '\n');
-    while (lines.next()) |raw_line| {
-        const line = std.mem.trimEnd(u8, raw_line, "\r");
-        if (line.len <= 3) continue;
-        const after_xy = line[3..];
-        const rel_raw = if (std.mem.indexOf(u8, after_xy, " -> ")) |arrow| after_xy[arrow + 4 ..] else after_xy;
-        const rel = std.mem.trim(u8, rel_raw, "\"");
-        if (rel.len == 0) continue;
-        hasher.update(rel);
-        const full = if (cwd) |p| (std.fs.path.join(gpa, &.{ p, rel }) catch continue) else rel;
-        defer if (cwd != null) gpa.free(full);
-        if (Io.Dir.cwd().readFileAlloc(io, full, gpa, .limited(256 * 1024))) |bytes| {
-            defer gpa.free(bytes);
-            hasher.update(bytes);
-        } else |_| {
-            if (Io.Dir.cwd().statFile(io, full, .{})) |st| {
-                hasher.update(std.mem.asBytes(&st.size));
-                hasher.update(std.mem.asBytes(&st.mtime.nanoseconds));
-            } else |_| {}
-        }
-    }
-    return hasher.final();
+    return !workspace_tree_snap.changed(before, after);
 }
 
 fn porcelain(gpa: Allocator, io: Io, cwd: ?[]const u8) ?[]u8 {
-    const r = if (cwd) |p|
-        process_runner.runCapped(gpa, io, &.{ "git", "-C", p, "-c", "core.fsmonitor=false", "status", "--porcelain" }, 1 << 16, 8192, 15_000) catch return null
-    else
-        process_runner.runCapped(gpa, io, &.{ "git", "-c", "core.fsmonitor=false", "status", "--porcelain" }, 1 << 16, 8192, 15_000) catch return null;
-    defer gpa.free(r.stderr);
-    if (!process_runner.ranOk(r)) {
-        gpa.free(r.stdout);
-        return null;
-    }
-    if (std.mem.trim(u8, r.stdout, " \t\r\n").len == 0) return r.stdout;
-    const digest = dirtyContentDigest(gpa, io, cwd, r.stdout);
-    const with_digest = std.fmt.allocPrint(gpa, "{s}\n#dirty-digest:{x:0>16}\n", .{ std.mem.trimEnd(u8, r.stdout, "\r\n"), digest }) catch return r.stdout;
-    gpa.free(r.stdout);
-    return with_digest;
+    return workspace_tree_snap.porcelainSnapshot(gpa, io, cwd);
 }
 
 /// Snapshot the working tree, arena-owned. Returns "" for an uncontracted

@@ -13,6 +13,38 @@ pub const AgentWorktreeOutcome = struct { kept: bool, reason: KeepReason = .remo
 
 pub const KeepReason = enum { removed, dirty, committed, unverifiable };
 
+/// Hardened git `-c` flags for isolated subagent worktree operations:
+/// - `core.hooksPath=/dev/null`: never run untrusted repository hooks (`post-checkout`, etc.).
+/// - `core.fsmonitor=false`: never spawn background `fsmonitor` daemons inside `.graff/worktrees/`.
+/// - `filter.lfs.smudge=`, `filter.lfs.process=`, `filter.lfs.required=false`: never hang on Git LFS smudge filters.
+pub const safe_git_config_args = [_][]const u8{
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "core.fsmonitor=false",
+    "-c", "filter.lfs.smudge=",
+    "-c", "filter.lfs.process=",
+    "-c", "filter.lfs.required=false",
+};
+
+pub fn safeGitArgv(buf: *[24][]const u8, cwd: ?[]const u8, tail: []const []const u8) []const []const u8 {
+    var i: usize = 0;
+    buf[i] = "git";
+    i += 1;
+    if (cwd) |dir| {
+        buf[i] = "-C";
+        buf[i + 1] = dir;
+        i += 2;
+    }
+    for (safe_git_config_args) |arg| {
+        buf[i] = arg;
+        i += 1;
+    }
+    for (tail) |arg| {
+        buf[i] = arg;
+        i += 1;
+    }
+    return buf[0..i];
+}
+
 /// Pure removal decision. `status_ok`/`porcelain` are the `git status --porcelain`
 /// result in the worktree; `head` is `git rev-parse HEAD` there (empty when it
 /// could not be read); `base` is the commit the worktree was created at (empty
@@ -56,7 +88,8 @@ pub fn agentWorktreeCreate(gpa: Allocator, io: Io, arena: Allocator, sub_id: []c
 }
 
 pub fn agentWorktreeCreateAt(gpa: Allocator, io: Io, arena: Allocator, sub_id: []const u8, cwd: []const u8) (AgentWorktreeError || Allocator.Error)!AgentWorktree {
-    const probe = runCapped(gpa, io, &.{ "git", "-C", cwd, "rev-parse", "--is-inside-work-tree" }, 4096, 4096, 15_000) catch return error.NotAGitRepo;
+    var argv_buf: [24][]const u8 = undefined;
+    const probe = runCapped(gpa, io, safeGitArgv(&argv_buf, cwd, &.{ "rev-parse", "--is-inside-work-tree" }), 4096, 4096, 15_000) catch return error.NotAGitRepo;
     defer {
         gpa.free(probe.stdout);
         gpa.free(probe.stderr);
@@ -71,7 +104,7 @@ pub fn agentWorktreeCreateAt(gpa: Allocator, io: Io, arena: Allocator, sub_id: [
     var absolute: [std.fs.max_path_bytes]u8 = undefined;
     const cwd_abs = absolute[0 .. Io.Dir.cwd().realPathFile(io, cwd, &absolute) catch return error.NotAGitRepo];
     names.path = try std.fs.path.resolve(arena, &.{ cwd_abs, ".graff/worktrees", std.fs.path.basename(names.path) });
-    const add = runCapped(gpa, io, &.{ "git", "-C", cwd, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "worktree", "add", names.path, "-b", names.branch }, 8192, 8192, 60_000) catch return error.CreateFailed;
+    const add = runCapped(gpa, io, safeGitArgv(&argv_buf, cwd, &.{ "worktree", "add", names.path, "-b", names.branch }), 8192, 8192, 60_000) catch return error.CreateFailed;
     defer {
         gpa.free(add.stdout);
         gpa.free(add.stderr);
@@ -80,7 +113,7 @@ pub fn agentWorktreeCreateAt(gpa: Allocator, io: Io, arena: Allocator, sub_id: [
     @import("graff_dir.zig").ensureIgnoreAt(io, cwd); // #1273: hide .graff/worktrees
 
     var base: []const u8 = "";
-    if (runCapped(gpa, io, &.{ "git", "-C", names.path, "rev-parse", "HEAD" }, 4096, 4096, 15_000)) |r| {
+    if (runCapped(gpa, io, safeGitArgv(&argv_buf, names.path, &.{ "rev-parse", "HEAD" }), 4096, 4096, 15_000)) |r| {
         defer {
             gpa.free(r.stdout);
             gpa.free(r.stderr);
@@ -98,7 +131,8 @@ pub fn isWorktreeStatusDirty(porcelain: []const u8) bool {
 }
 
 pub fn agentWorktreeFinish(gpa: Allocator, io: Io, wt: AgentWorktree) AgentWorktreeOutcome {
-    const st = runCapped(gpa, io, &.{ "git", "-C", wt.path, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "status", "--porcelain" }, 1 << 16, 8192, 30_000) catch return .{ .kept = true, .reason = .unverifiable };
+    var argv_buf: [24][]const u8 = undefined;
+    const st = runCapped(gpa, io, safeGitArgv(&argv_buf, wt.path, &.{ "status", "--porcelain" }), 1 << 16, 8192, 30_000) catch return .{ .kept = true, .reason = .unverifiable };
     defer {
         gpa.free(st.stdout);
         gpa.free(st.stderr);
@@ -107,7 +141,7 @@ pub fn agentWorktreeFinish(gpa: Allocator, io: Io, wt: AgentWorktree) AgentWorkt
     var head: []const u8 = "";
     var head_buf: [4096]u8 = undefined;
     var head_len: usize = 0;
-    if (runCapped(gpa, io, &.{ "git", "-C", wt.path, "rev-parse", "HEAD" }, 4096, 4096, 15_000)) |r| {
+    if (runCapped(gpa, io, safeGitArgv(&argv_buf, wt.path, &.{ "rev-parse", "HEAD" }), 4096, 4096, 15_000)) |r| {
         defer {
             gpa.free(r.stdout);
             gpa.free(r.stderr);
@@ -123,7 +157,7 @@ pub fn agentWorktreeFinish(gpa: Allocator, io: Io, wt: AgentWorktree) AgentWorkt
     const reason = worktreeKeepReason(ranOk(st), st.stdout, wt.base, head);
     if (reason != .removed) return .{ .kept = true, .reason = reason };
 
-    if (runCapped(gpa, io, &.{ "git", "worktree", "remove", wt.path }, 8192, 8192, 30_000)) |r| {
+    if (runCapped(gpa, io, safeGitArgv(&argv_buf, null, &.{ "worktree", "remove", wt.path }), 8192, 8192, 30_000)) |r| {
         defer {
             gpa.free(r.stdout);
             gpa.free(r.stderr);
@@ -131,7 +165,7 @@ pub fn agentWorktreeFinish(gpa: Allocator, io: Io, wt: AgentWorktree) AgentWorkt
         if (!ranOk(r)) return .{ .kept = true, .reason = .unverifiable };
     } else |_| return .{ .kept = true, .reason = .unverifiable };
 
-    if (runCapped(gpa, io, &.{ "git", "branch", "-D", wt.branch }, 8192, 8192, 30_000)) |r| {
+    if (runCapped(gpa, io, safeGitArgv(&argv_buf, null, &.{ "branch", "-D", wt.branch }), 8192, 8192, 30_000)) |r| {
         gpa.free(r.stdout);
         gpa.free(r.stderr);
     } else |_| {}
@@ -189,4 +223,20 @@ test "keepReasonText: each kept reason names its cause, and .dirty keeps its his
     try std.testing.expect(!std.mem.eql(u8, keepReasonText(.committed), keepReasonText(.unverifiable)));
     try std.testing.expect(!std.mem.eql(u8, keepReasonText(.unverifiable), keepReasonText(.dirty)));
     try std.testing.expect(!std.mem.eql(u8, keepReasonText(.committed), keepReasonText(.dirty)));
+}
+
+test "safeGitArgv: prefixes git commands with hooksPath=/dev/null, fsmonitor=false, and disabled LFS smudge filters" {
+    var buf: [24][]const u8 = undefined;
+    const argv = safeGitArgv(&buf, "/tmp/repo", &.{ "worktree", "add", "/tmp/wt", "-b", "graff/agents/x" });
+    try std.testing.expectEqualStrings("git", argv[0]);
+    try std.testing.expectEqualStrings("-C", argv[1]);
+    try std.testing.expectEqualStrings("/tmp/repo", argv[2]);
+    const joined = try std.mem.join(std.testing.allocator, " ", argv);
+    defer std.testing.allocator.free(joined);
+    try std.testing.expect(std.mem.indexOf(u8, joined, "-c core.hooksPath=/dev/null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, joined, "-c core.fsmonitor=false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, joined, "-c filter.lfs.smudge=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, joined, "-c filter.lfs.process=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, joined, "-c filter.lfs.required=false") != null);
+    try std.testing.expect(std.mem.endsWith(u8, joined, "worktree add /tmp/wt -b graff/agents/x"));
 }
