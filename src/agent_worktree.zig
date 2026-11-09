@@ -326,10 +326,20 @@ test "cloneCowTree: clones existing cache directory into worktree via CoW/reflin
     const probe_src = try std.fs.path.join(arena, &.{ src_cache, "stamp.txt" });
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = probe_src, .data = "warm-cache" });
 
-    try std.testing.expect(cloneCowTree(gpa, io, src_cache, dst_cache));
-    const probe_dst = try std.fs.path.join(arena, &.{ dst_cache, "stamp.txt" });
-    const read_back = try Io.Dir.cwd().readFileAlloc(io, probe_dst, arena, .limited(64));
-    try std.testing.expectEqualStrings("warm-cache", read_back);
+    const cloned = cloneCowTree(gpa, io, src_cache, dst_cache);
+    if (comptime builtin.os.tag == .macos) {
+        try std.testing.expect(cloned);
+    }
+    if (cloned) {
+        const probe_dst = try std.fs.path.join(arena, &.{ dst_cache, "stamp.txt" });
+        const read_back = try Io.Dir.cwd().readFileAlloc(io, probe_dst, arena, .limited(64));
+        try std.testing.expectEqualStrings("warm-cache", read_back);
+    } else {
+        // Non-CoW filesystems (e.g. Linux ext4, Windows NTFS) must return false
+        // without falling back to a slow deep copy.
+        try std.testing.expectError(error.FileNotFound, Io.Dir.cwd().statFile(io, dst_cache, .{}));
+        try Io.Dir.cwd().createDirPath(io, dst_cache);
+    }
 
     cleanWarmCaches(io, dst_wt);
     try std.testing.expectError(error.FileNotFound, Io.Dir.cwd().statFile(io, dst_cache, .{}));
