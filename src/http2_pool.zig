@@ -60,6 +60,7 @@ pub fn parseOrigin(url: []const u8) !Origin {
 
 pub const Lease = struct {
     session: *http_zig.Session,
+    reused: bool = false,
 
     pub fn release(self: Lease, keep: bool) void {
         if (!keep) {
@@ -90,7 +91,12 @@ fn takeIdle(io: Io, host: []const u8, p: u16) ?*http_zig.Session {
 pub fn acquire(gpa: std.mem.Allocator, io: Io, host: []const u8, p: u16) !Lease {
     // Dial outside the mutex: concurrent root/child requests need separate
     // transports, and cancellation of one must not invalidate another.
-    return .{ .session = takeIdle(io, host, p) orelse try http_zig.Session.open(gpa, io, host, p) };
+    if (takeIdle(io, host, p)) |idle| return .{ .session = idle, .reused = true };
+    return acquireFresh(gpa, io, host, p);
+}
+
+pub fn acquireFresh(gpa: std.mem.Allocator, io: Io, host: []const u8, p: u16) !Lease {
+    return .{ .session = try http_zig.Session.open(gpa, io, host, p), .reused = false };
 }
 
 /// Close the idle session. Called when the HTTP runtime shuts down so the
@@ -197,6 +203,7 @@ test "HTTP2 leases exclusively own same-origin and different-origin sessions" {
     (Lease{ .session = root }).release(true);
     const active = try acquire(std.testing.allocator, std.testing.io, "localhost", 443);
     try std.testing.expectEqual(root, active.session);
+    try std.testing.expect(active.reused);
     try std.testing.expect(takeIdle(std.testing.io, "localhost", 443) == null);
     try std.testing.expect(takeIdle(std.testing.io, "other.localhost", 443) == null);
     // Neither another checkout nor clearing the idle pool can close root.

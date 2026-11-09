@@ -264,3 +264,92 @@ test "ChatGPT sign-in: a refused renewal is recorded; an unusable refresh token 
     try std.testing.expect(@import("oauth_helpers.zig").permanentRefreshFailure("invalid_refresh_token"));
     try std.testing.expect(!@import("oauth_helpers.zig").permanentRefreshFailure("server_error"));
 }
+
+test "ChatGPT sign-in: rotated record survives unwritable credentials dir and sibling rotation prevents refresh wipe" {
+    if (@import("builtin").os.tag == .windows) return;
+    const io = std.testing.io;
+    const helpers = @import("oauth_helpers.zig");
+    defer chatgpt.clearStateForTest(io);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home = try tmpHome(&tmp, &buf);
+
+    var setup_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer setup_arena.deinit();
+    var rec = chatgpt.parseRecord(setup_arena.allocator(), probe_record).?;
+    rec.expires_at = 1;
+    rec.earliest_refresh_at = 0;
+    // Symlink chatgpt-new.json to a separate directory we can toggle read-only
+    // (ensureDirs repairs .graff/credentials to 0700, not an external referent dir).
+    try tmp.dir.createDir(io, "ro_vault", credential_store.private_dir);
+    try credential_store.replaceFile(io, tmp.dir, "ro_vault/real.json", try chatgpt.serializeRecord(setup_arena.allocator(), rec, "now"), credential_store.private_file);
+    try tmp.dir.symLink(io, "../../ro_vault/real.json", ".graff/credentials/chatgpt-new.json", .{});
+
+    const ro_dir_path = try std.fmt.allocPrint(setup_arena.allocator(), "{s}/ro_vault", .{home});
+    const d_ro = try std.Io.Dir.cwd().openDir(io, ro_dir_path, .{ .iterate = true });
+    try d_ro.setPermissions(io, @fromBackingInt(@intCast(0o500)));
+    d_ro.close(io);
+    errdefer {
+        if (std.Io.Dir.cwd().openDir(io, ro_dir_path, .{ .iterate = true })) |d| {
+            d.setPermissions(io, @fromBackingInt(@intCast(0o700))) catch {};
+            d.close(io);
+        } else |_| {}
+    }
+
+    const RotateMock = struct {
+        fn post(_: std.Io, _: std.mem.Allocator, a: std.mem.Allocator, _: []const u8, _: []const u8) !std.json.ObjectMap {
+            const v = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"access_token\":\"tok-rot\",\"refresh_token\":\"ref-rot\",\"expires_in\":7200}", .{ .allocate = .alloc_always });
+            return v.object;
+        }
+    };
+    {
+        var a1 = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer a1.deinit();
+        const got = chatgpt.refreshLockedWithPost(io, std.testing.allocator, a1.allocator(), home, rec, RotateMock.post).?;
+        try std.testing.expectEqualStrings("tok-rot", got);
+        try std.testing.expect(helpers.takePersistError() != null);
+    }
+    // Separate turn arena: loadChatgptOAuth still sees tok-rot from PendingSlot without network.
+    {
+        var a2 = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer a2.deinit();
+        try std.testing.expectEqualStrings("tok-rot", chatgpt.loadChatgptOAuth(io, std.testing.allocator, a2.allocator(), home, false, null).?);
+    }
+    // Restore write permission: loadChatgptOAuth flushes ref-rot to disk.
+    const d_rw = try std.Io.Dir.cwd().openDir(io, ro_dir_path, .{ .iterate = true });
+    try d_rw.setPermissions(io, @fromBackingInt(@intCast(0o700)));
+    d_rw.close(io);
+    {
+        var a3 = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer a3.deinit();
+        try std.testing.expectEqualStrings("tok-rot", chatgpt.loadChatgptOAuth(io, std.testing.allocator, a3.allocator(), home, false, null).?);
+        const on_disk = chatgpt.parseRecord(a3.allocator(), try std.Io.Dir.cwd().readFileAlloc(io, chatgpt.recordPath(a3.allocator(), home), a3.allocator(), .limited(64 * 1024))).?;
+        try std.testing.expectEqualStrings("ref-rot", on_disk.refresh);
+    }
+
+    // Sibling rotation while our unlocked POST gets refresh_token_reused adopts disk instead of wiping refresh.
+    const RaceMock = struct {
+        var dir: std.Io.Dir = undefined;
+        var base: chatgpt.Record = undefined;
+        fn post(_: std.Io, _: std.mem.Allocator, a: std.mem.Allocator, _: []const u8, _: []const u8) !std.json.ObjectMap {
+            var sib = base;
+            sib.access = "tok-sib";
+            sib.refresh = "ref-sib";
+            sib.expires_at = 4102444800;
+            try saveIn(dir, a, sib);
+            const v = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"error\":\"refresh_token_reused\"}", .{ .allocate = .alloc_always });
+            return v.object;
+        }
+    };
+    var stale_rec = rec;
+    stale_rec.access = "tok-old";
+    stale_rec.refresh = "ref-old";
+    try saveIn(tmp.dir, setup_arena.allocator(), stale_rec);
+    RaceMock.dir = tmp.dir;
+    RaceMock.base = stale_rec;
+    const adopted = chatgpt.refreshLockedWithPost(io, std.testing.allocator, setup_arena.allocator(), home, stale_rec, RaceMock.post).?;
+    try std.testing.expectEqualStrings("tok-sib", adopted);
+    const after_race = chatgpt.parseRecord(setup_arena.allocator(), try std.Io.Dir.cwd().readFileAlloc(io, chatgpt.recordPath(setup_arena.allocator(), home), setup_arena.allocator(), .limited(64 * 1024))).?;
+    try std.testing.expectEqualStrings("ref-sib", after_race.refresh);
+}

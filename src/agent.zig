@@ -213,6 +213,7 @@ pub const Agent = struct {
     last_api_error: ?[]const u8 = null,
     last_api_reauth: ?@import("auth_recovery.zig").Recovery = null,
     last_api_error_detail: ?@import("provider_error_copy.zig").Detail = null,
+    h2_reset: @import("http2_reset.zig").Diag = .{},
     /// Text streamed so far in the current request — on Esc-interrupt this is
     /// what survives into history (with an "[interrupted]" marker appended).
     partial_text: std.ArrayList(u8) = .empty,

@@ -8,6 +8,7 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const helpers = @import("oauth_helpers.zig");
+const oauth_lock = @import("oauth_lock.zig");
 const b64url = helpers.b64url;
 const accountFromIdToken = helpers.accountFromIdToken;
 const writeCodexAuth = helpers.writeCodexAuth;
@@ -257,24 +258,18 @@ const xai_client_id = "b1a00492-073a-47ea-816f-4c329264a828";
 const xai_scope_form = "openid+profile+email+offline_access+grok-cli:access+api:access+conversations:read+conversations:write+workspaces:read+workspaces:write";
 const xai_user_agent = "grok-cli/1.0";
 const xai_referrer = "grok-build";
+var xai_refresh_mutex: Io.Mutex = .init;
 
 /// POST a form body to an xAI OAuth endpoint (with a CLI User-Agent); return the
 /// parsed JSON object.
 fn xaiOAuthPost(io: Io, gpa: Allocator, arena: Allocator, url: []const u8, body: []const u8) !std.json.ObjectMap {
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    var aw: Io.Writer.Allocating = .init(arena);
-    _ = try client.fetch(.{
-        .location = .{ .url = url },
-        .method = .POST,
+    const res = try oauth_lock.fetchPostBounded(io, gpa, arena, .{
+        .url = url,
         .payload = body,
-        .response_writer = &aw.writer,
-        .headers = .{
-            .content_type = .{ .override = "application/x-www-form-urlencoded" },
-            .user_agent = .{ .override = xai_user_agent },
-        },
+        .user_agent = xai_user_agent,
     });
-    const v = try std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always });
+    if (helpers.isTransientHttpStatus(res.status)) return error.TransientOAuthStatus;
+    const v = try std.json.parseFromSliceLeaky(Value, arena, res.body, .{ .allocate = .alloc_always });
     if (v != .object) return error.BadOAuthResponse;
     return v.object;
 }
@@ -285,6 +280,14 @@ fn xaiAuthPath(arena: Allocator, home: []const u8) []const u8 {
 
 fn writeXaiAuth(io: Io, arena: Allocator, home: []const u8, access: []const u8, refresh: []const u8, expires_at: i64) !void {
     return credential_store.writeOAuth(io, arena, home, ".xai", access, refresh, expires_at);
+}
+
+pub fn persistXaiAuth(io: Io, arena: Allocator, home: []const u8, access: []const u8, refresh: []const u8, expires_at: i64) void {
+    writeXaiAuth(io, arena, home, access, refresh, expires_at) catch {
+        writeXaiAuth(io, arena, home, access, refresh, expires_at) catch |err| {
+            helpers.persist_error = @errorName(err);
+        };
+    };
 }
 
 /// `graff login xai`: xAI/Grok device-code OAuth. Prints a verification URL +
@@ -349,30 +352,50 @@ pub fn xaiLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !voi
     try out.flush();
 }
 
+fn readXaiSaved(io: Io, arena: Allocator, path: []const u8) ?std.json.ObjectMap {
+    const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024)) catch return null;
+    const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return null;
+    return if (v == .object) v.object else null;
+}
+
 /// Reads the stored xAI OAuth access token, refreshing in place near expiry.
 /// Returns null if not logged in. Mirrors loadKimiOAuth.
 pub fn loadXaiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, force: bool, stale: ?[]const u8) ?[]const u8 {
-    const data = Io.Dir.cwd().readFileAlloc(io, xaiAuthPath(arena, home), arena, .limited(64 * 1024)) catch return null;
-    const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return null;
-    if (v != .object) return null;
-    const access = strFieldObj(v.object, "access_token") orelse return null;
-    const expires_at: i64 = if (v.object.get("expires_at")) |e| (if (e == .integer) e.integer else 0) else 0;
+    const path = xaiAuthPath(arena, home);
+    const obj = readXaiSaved(io, arena, path) orelse return null;
+    const access = strFieldObj(obj, "access_token") orelse return null;
+    const expires_at: i64 = if (obj.get("expires_at")) |e| (if (e == .integer) e.integer else 0) else 0;
     // #245: another concurrent refresher may already have replaced the token that
     // 401'd; re-minting would rotate-kill theirs. Adopt what is on disk instead.
     if (supersededToken(force, access, stale)) return access;
-    if (force or (expires_at != 0 and @divTrunc(unixMs(io), 1000) >= expires_at - oauth_refresh_margin_s)) {
-        if (strFieldObj(v.object, "refresh_token")) |refresh| {
-            const body = std.fmt.allocPrint(arena, "client_id={s}&grant_type=refresh_token&refresh_token={s}", .{ xai_client_id, refresh }) catch return access;
-            const resp = xaiOAuthPost(io, gpa, arena, xai_token_url, body) catch return access;
-            if (resp.get("access_token")) |a| if (a == .string and a.string.len > 0) {
-                const new_refresh = strFieldObj(resp, "refresh_token") orelse refresh;
-                const expires_in: i64 = if (resp.get("expires_in")) |ei| (if (ei == .integer) ei.integer else 3600) else 3600;
-                writeXaiAuth(io, arena, home, a.string, new_refresh, @divTrunc(unixMs(io), 1000) + expires_in) catch {};
-                return a.string;
-            };
-        }
-    }
-    return access;
+    if (!force and (expires_at == 0 or @divTrunc(unixMs(io), 1000) < expires_at - oauth_refresh_margin_s)) return access;
+    const initial_refresh = strFieldObj(obj, "refresh_token") orelse return access;
+    if (initial_refresh.len == 0) return access;
+
+    const guard = oauth_lock.acquire(io, arena, &xai_refresh_mutex, path) orelse return access;
+    defer guard.release();
+    const cur = readXaiSaved(io, arena, path) orelse return access;
+    const cur_access = strFieldObj(cur, "access_token") orelse return access;
+    const cur_expires: i64 = if (cur.get("expires_at")) |e| (if (e == .integer) e.integer else 0) else 0;
+    const cur_refresh = strFieldObj(cur, "refresh_token") orelse return cur_access;
+    if (cur_refresh.len == 0) return cur_access;
+    const now_s = @divTrunc(unixMs(io), 1000);
+    if ((!std.mem.eql(u8, cur_access, access) or !std.mem.eql(u8, cur_refresh, initial_refresh)) and (cur_expires == 0 or cur_expires > now_s))
+        return cur_access;
+    if (!force and cur_expires != 0 and now_s < cur_expires - oauth_refresh_margin_s) return cur_access;
+    if (supersededToken(force, cur_access, stale)) return cur_access;
+
+    const body = std.fmt.allocPrint(arena, "client_id={s}&grant_type=refresh_token&refresh_token={s}", .{ xai_client_id, cur_refresh }) catch return cur_access;
+    const shield = oauth_lock.CancelShield.enter(io);
+    defer shield.leave();
+    const resp = xaiOAuthPost(io, gpa, arena, xai_token_url, body) catch return cur_access;
+    if (resp.get("access_token")) |a| if (a == .string and a.string.len > 0) {
+        const new_refresh = strFieldObj(resp, "refresh_token") orelse cur_refresh;
+        const expires_in: i64 = if (resp.get("expires_in")) |ei| (if (ei == .integer) ei.integer else 3600) else 3600;
+        persistXaiAuth(io, arena, home, a.string, new_refresh, @divTrunc(unixMs(io), 1000) + expires_in);
+        return a.string;
+    };
+    return cur_access;
 }
 
 pub const codegraffLogin = codegraff.login;

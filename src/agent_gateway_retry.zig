@@ -82,7 +82,8 @@ pub fn noteRetry(self: *Agent, what: []const u8) void {
 /// Transport-flake branch: attribute the note AND remember Timeout hits so the
 /// gateway-artifact gate can recognize a blip pattern later in this request.
 pub fn noteFlake(self: *Agent, state: *GatewayRetryState, err: anyerror) void {
-    noteRetry(self, @errorName(err));
+    var buf: [192]u8 = undefined;
+    noteRetry(self, self.h2_reset.errorLabel(err, &buf));
     if (err == error.Timeout) state.transport_timeouts += 1;
 }
 

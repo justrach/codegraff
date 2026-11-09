@@ -21,11 +21,22 @@ pub const Live = struct {
     slot: []const u8,
     file: []const u8,
     base: u64,
+    before_bytes: []const u8 = "",
 
-    /// After a refresh under the lease: publish the new login. Failures are
-    /// logged; the local refresh already succeeded.
+    /// After a refresh under the lease: publish the new login only when the
+    /// local credential file actually changed. A transient offline/5xx failure
+    /// leaves the local file untouched and releases the lease without advancing
+    /// the vault version.
     pub fn commit(l: *Live) void {
         if (l.step != .refresh) return;
+        const after = Io.Dir.cwd().readFileAlloc(l.s.io, l.file, l.s.arena, .limited(1 << 20)) catch {
+            l.s.c.release("graff", l.slot) catch {};
+            return;
+        };
+        if (std.mem.eql(u8, after, l.before_bytes)) {
+            l.s.c.release("graff", l.slot) catch {};
+            return;
+        }
         _ = refresh.commit(l.s, l.versions, l.slot, l.file, l.base) catch |err| {
             std.log.scoped(.vault).warn("vault: could not publish the refreshed {s} login: {t}", .{ l.slot, err });
         };
@@ -73,7 +84,10 @@ pub fn before(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, provid
     switch (p) {
         .adopted => live.step = .adopted,
         .wait => live.step = .wait,
-        .refresh => |base| live.base = base,
+        .refresh => |base| {
+            live.base = base;
+            live.before_bytes = Io.Dir.cwd().readFileAlloc(io, file, arena, .limited(1 << 20)) catch "";
+        },
     }
     return live;
 }
@@ -96,4 +110,46 @@ test "due reads expires_at against the margin and ignores files without one" {
     try std.testing.expect(!due(io, arena, try std.fmt.allocPrint(arena, "{s}/later.json", .{base}), 300));
     try std.testing.expect(!due(io, arena, try std.fmt.allocPrint(arena, "{s}/codex.json", .{base}), 300));
     try std.testing.expect(!due(io, arena, try std.fmt.allocPrint(arena, "{s}/missing.json", .{base}), 300));
+}
+
+test "Live.commit releases the vault lease without bumping version when local refresh failed transiently" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try std.fmt.allocPrint(arena, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    const file = try std.fmt.allocPrint(arena, "{s}/kimi.json", .{home});
+
+    var edge = @import("vault_mock_edge.zig").MockEdge.init(std.testing.allocator);
+    defer edge.deinit();
+    var c: client.Client = .{
+        .io = io,
+        .arena = arena,
+        .transport = edge.transport(),
+        .bearer = "user-1",
+        .device_id = "dev-a",
+        .keys = @import("vault_crypto.zig").DeviceKeys.generate(io),
+        .now_ms = 1,
+    };
+    var s = try sync.Session.open(io, arena, &c);
+    _ = try s.enable("laptop");
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = file, .data = "token-v1" });
+    const v1 = try s.push("graff", "kimi", "rotating", "token-v1");
+    const versions = try refresh.Versions.at(io, arena, home);
+    try versions.set("kimi", v1);
+
+    // Take lease via plan, simulate transient provider error (file stays "token-v1").
+    const p1 = try refresh.plan(&s, versions, "kimi", file);
+    var live1: Live = .{ .step = .refresh, .s = &s, .versions = versions, .slot = "kimi", .file = file, .base = p1.refresh, .before_bytes = "token-v1" };
+    live1.commit();
+    try std.testing.expectEqual(v1, (try c.getItem("graff", "kimi")).?.version);
+    // Lease was released, so a subsequent attempt can immediately acquire it.
+    const p2 = try refresh.plan(&s, versions, "kimi", file);
+    try std.testing.expect(p2 == .refresh);
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = file, .data = "token-v2" });
+    var live2: Live = .{ .step = .refresh, .s = &s, .versions = versions, .slot = "kimi", .file = file, .base = p2.refresh, .before_bytes = "token-v1" };
+    live2.commit();
+    try std.testing.expectEqual(v1 + 1, (try c.getItem("graff", "kimi")).?.version);
 }

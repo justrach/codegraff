@@ -13,6 +13,7 @@ const http = @import("http.zig");
 const http_headers = @import("http_headers.zig");
 const http_stall = @import("http_stall.zig");
 const http2_pool = @import("http2_pool.zig");
+const http2_reset = @import("http2_reset.zig");
 const engine_sink = @import("engine_sink.zig");
 const http_zig = @import("http_zig");
 const WatchdogFired = http.WatchdogFired;
@@ -90,7 +91,10 @@ pub fn postStream(self: *Agent, body: []const u8, poll_stdin: bool) !?[]u8 {
     // HTTP/1.1 (#54, #1785): a half-open socket or a server that accepts the
     // stream and goes silent must not hang the turn. http-zig reports no DATA
     // progress, so the upload gets only its size-scaled total.
-    switch (try raceHead(self.io, &head, poll_stdin, http_send.Budget.forRequest(body.len, provider.url, provider.model).blind())) {
+    switch (raceHead(self.io, &head, poll_stdin, http_send.Budget.forRequest(body.len, provider.url, provider.model).blind()) catch |err| {
+        if (head.phase != .dial) self.h2_reset = head.tap.diag(if (head.phase == .send) .send else .wait);
+        return err;
+    }) {
         .ok => {},
         .fallback => return null,
     }
@@ -132,7 +136,12 @@ pub fn postStream(self: *Agent, body: []const u8, poll_stdin: bool) !?[]u8 {
                 const more = r catch |e| {
                     if (e == error.Canceled or e == error.StreamTooLong or e == error.StreamEventDeadline) return e;
                     if (saw_done) break;
+                    self.h2_reset = head.tap.diag(.body);
                     if (got_body) {
+                        if (self.tracer) |tr| {
+                            var buf: [192]u8 = undefined;
+                            tr.note("h2_body_reset", self.h2_reset.errorLabel(e, &buf));
+                        }
                         sink.emit(self.io, .{ .stream_aborted = .dropped });
                         return error.StreamDropped;
                     }
@@ -200,11 +209,17 @@ const Head = struct {
     phase: Phase = .dial,
     lease: ?http2_pool.Lease = null,
     lines: ?http_zig.LineStream = null,
+    tap: http2_reset.FrameTap = .{},
     status: u16 = 0,
 
     fn deinit(self: *Head, keep: bool) void {
         if (self.lines) |*l| l.deinit();
-        if (self.lease) |l| l.release(keep);
+        self.lines = null;
+        if (self.lease) |l| {
+            self.tap.detach(&l.session.conn, l.session.h2_live);
+            l.release(keep);
+            self.lease = null;
+        }
     }
 };
 
@@ -229,7 +244,8 @@ fn raceHead(io: Io, head: *Head, poll_stdin: bool, budget: http_send.Budget) !He
         .done => |r| {
             r catch |e| {
                 if (e == error.Canceled) return e;
-                if (head.lease) |l| if (l.session.h1_only) http2_pool.noteH1(io, head.origin.host, head.origin.port);
+                if (e == error.Http11Required or (head.lease != null and head.lease.?.session.h1_only))
+                    http2_pool.noteH1(io, head.origin.host, head.origin.port);
                 if (mayResendOnH1(head.phase, e)) return .fallback;
                 return e;
             };
@@ -240,47 +256,92 @@ fn raceHead(io: Io, head: *Head, poll_stdin: bool, budget: http_send.Budget) !He
 
 /// Falling back to HTTP/1.1 re-sends the POST, so it is allowed only when
 /// the server cannot have acted on it: dial failed, ALPN selected H1, or the
-/// peer said so -- GOAWAY above our stream id, REFUSED_STREAM. A send-phase
-/// error can occur after the complete POST reached the peer.
-fn mayResendOnH1(phase: Phase, err: anyerror) bool {
+/// peer said so -- GOAWAY above our stream id, REFUSED_STREAM, or
+/// HTTP_1_1_REQUIRED (RFC 9113 §7, §8.7). A send-phase error can occur after
+/// the complete POST reached the peer.
+pub fn mayResendOnH1(phase: Phase, err: anyerror) bool {
     if (err == error.Canceled) return false;
     if (phase == .dial) return true;
-    if (err == error.H1NoStream) return true;
+    if (err == error.H1NoStream or err == error.Http11Required) return true;
     return err == error.GoAway or err == error.StreamRefused;
+}
+
+/// A pooled idle keepalive session that resets or drains before sending any
+/// response headers is evicted and redialed once on a fresh H2 connection so
+/// stale keepalives do not burn user-visible retry attempts or force H1.
+pub fn mayRedialFreshH2(reused: bool, err: anyerror) bool {
+    if (!reused) return false;
+    return err == error.StreamRefused or err == error.GoAway or err == error.RstStream;
 }
 
 test "HTTP/1.1 fallback only when the request provably never reached the server" {
     try std.testing.expect(mayResendOnH1(.dial, error.ConnectionRefused));
     try std.testing.expect(mayResendOnH1(.dial, error.H1NoStream));
     try std.testing.expect(mayResendOnH1(.send, error.H1NoStream));
+    try std.testing.expect(mayResendOnH1(.send, error.Http11Required));
     try std.testing.expect(mayResendOnH1(.send, error.GoAway));
     try std.testing.expect(mayResendOnH1(.send, error.StreamRefused));
     try std.testing.expect(!mayResendOnH1(.send, error.WriteFailed));
     try std.testing.expect(!mayResendOnH1(.send, error.EndOfStream));
     try std.testing.expect(!mayResendOnH1(.send, error.InvalidGoAway));
+    try std.testing.expect(mayResendOnH1(.wait, error.Http11Required));
     try std.testing.expect(mayResendOnH1(.wait, error.GoAway));
     try std.testing.expect(mayResendOnH1(.wait, error.StreamRefused));
     // Sent and possibly generating: retry via request(), never a silent re-POST.
     try std.testing.expect(!mayResendOnH1(.wait, error.EndOfStream));
     try std.testing.expect(!mayResendOnH1(.wait, error.RstStream));
     try std.testing.expect(!mayResendOnH1(.wait, error.ReadFailed));
+    // Reused pooled keepalives redial fresh H2 once on pre-header reset; fresh ones do not.
+    try std.testing.expect(mayRedialFreshH2(true, error.RstStream));
+    try std.testing.expect(mayRedialFreshH2(true, error.StreamRefused));
+    try std.testing.expect(mayRedialFreshH2(true, error.GoAway));
+    try std.testing.expect(!mayRedialFreshH2(true, error.Http11Required));
+    try std.testing.expect(!mayRedialFreshH2(true, error.EndOfStream));
+    try std.testing.expect(!mayRedialFreshH2(false, error.RstStream));
     // A cancel is never turned into a replacement request.
     try std.testing.expect(!mayResendOnH1(.dial, error.Canceled));
     try std.testing.expect(!mayResendOnH1(.send, error.Canceled));
 }
 
 fn headTask(head: *Head, watch: *http_send.Watch) anyerror!void {
-    head.phase = .dial;
-    head.lease = try http2_pool.acquire(head.gpa, head.io, head.origin.host, head.origin.port);
-    const sess = head.lease.?.session;
-    if (sess.h1_only) return error.H1NoStream;
-    head.phase = .send;
-    watch.enter(.upload);
-    head.lines = try sess.startLines(head.req);
-    head.phase = .wait;
-    watch.enter(.head);
+    var fresh_only = false;
+    while (true) {
+        head.phase = .dial;
+        head.lease = if (fresh_only)
+            try http2_pool.acquireFresh(head.gpa, head.io, head.origin.host, head.origin.port)
+        else
+            try http2_pool.acquire(head.gpa, head.io, head.origin.host, head.origin.port);
+        const lease = head.lease.?;
+        const sess = lease.session;
+        if (sess.h1_only) return error.H1NoStream;
+        if (sess.reusable()) head.tap.attach(&sess.conn, lease.reused);
+        head.phase = .send;
+        watch.enter(.upload);
+        head.lines = sess.startLines(head.req) catch |raw_err| {
+            const err = head.tap.refineError(raw_err);
+            if (mayRedialFreshH2(lease.reused, err)) {
+                head.deinit(false);
+                fresh_only = true;
+                continue;
+            }
+            return err;
+        };
+        if (head.tap.inner == null and sess.h2_live) head.tap.attach(&sess.conn, false);
+        head.phase = .wait;
+        watch.enter(.head);
+        const lines = &head.lines.?;
+        head.status = lines.waitStatus() catch |raw_err| {
+            const err = head.tap.refineError(raw_err);
+            if (mayRedialFreshH2(lease.reused, err)) {
+                head.deinit(false);
+                fresh_only = true;
+                continue;
+            }
+            return err;
+        };
+        break;
+    }
     const lines = &head.lines.?;
-    head.status = try lines.waitStatus();
     // Error bodies are read here, still under the head watchdog: request()
     // classifies quota/overflow from the snippet and honours Retry-After.
     const throttled = head.status == 429 or head.status >= 500;
@@ -335,4 +396,8 @@ fn settleAfterEnd(io: Io, reader: *stream_progress.H2Lines, gpa: std.mem.Allocat
             .stall => return false,
         }
     }
+}
+
+test {
+    _ = @import("http2_reset.zig");
 }
