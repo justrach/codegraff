@@ -13,7 +13,7 @@ fn fixture(allocator: std.mem.Allocator, writer: *std.Io.Writer, kind: Kind) Age
     return .{
         .gpa = std.testing.allocator,
         .arena = allocator,
-        .io = undefined,
+        .io = std.testing.io,
         .client = undefined,
         .provider = .{ .id = "test", .kind = kind, .auth = .bearer, .url = "", .api_key = "", .model = "test", .context = 100_000 },
         .messages = .init(allocator),

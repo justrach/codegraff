@@ -41,22 +41,28 @@ fn reject(w: *Io.Writer, req: proto.Request, message: []const u8) !void {
 }
 
 pub fn replayHistory(arena: Allocator, root: *@import("agent.zig").Agent, w: *Io.Writer, sid: []const u8) !void {
+    _ = arena;
     // The provider context can be compacted. The append-only transcript keeps
     // earlier visible turns; a legacy save without one uses current history.
+    // #1858: parse both transcript generations in a scoped scratch arena so
+    // neither the raw JSONL bytes nor the parsed Value trees stay in `arena`.
+    var replay_scratch = std.heap.ArenaAllocator.init(root.gpa);
+    defer replay_scratch.deinit();
+    const scratch = replay_scratch.allocator();
     var retained: std.ArrayList(std.json.Value) = .empty;
     for ([_][]const u8{
-        try transcript.rotatedPath(arena, sid),
-        try transcript.transcriptPath(arena, sid),
+        try transcript.rotatedPath(scratch, sid),
+        try transcript.transcriptPath(scratch, sid),
     }) |path| {
-        const bytes = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(transcript.cap_bytes + 1024)) catch continue;
+        const bytes = Io.Dir.cwd().readFileAlloc(root.io, path, scratch, .limited(transcript.cap_bytes + 1024)) catch continue;
         var lines = std.mem.splitScalar(u8, bytes, '\n');
         while (lines.next()) |line| {
             if (line.len == 0) continue;
-            const value = std.json.parseFromSliceLeaky(std.json.Value, arena, line, .{ .allocate = .alloc_always }) catch continue;
-            try retained.append(arena, value);
+            const value = std.json.parseFromSliceLeaky(std.json.Value, scratch, line, .{ .allocate = .alloc_always }) catch continue;
+            try retained.append(scratch, value);
         }
     }
-    try replay.replay(arena, w, sid, if (retained.items.len > 0) retained.items else root.messages.items);
+    try replay.replay(scratch, w, sid, if (retained.items.len > 0) retained.items else root.messages.items);
 }
 
 pub fn load(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request) anyerror!void {
@@ -101,22 +107,27 @@ pub const Saved = union(enum) { provider: []const u8, rejected: []const u8 };
 
 /// A save `sid` in the selected workspace that session/load (and session/fork)
 /// may restore, or why not. Names its provider for a credential error.
+/// #1858: reads and parses the session file in a scoped scratch arena so the
+/// pre-flight check leaves no duplicate copy in `arena`.
 pub fn savedHere(live: *LiveTurn, env: acp_workspace.Env, arena: Allocator, sid: []const u8) Saved {
+    var check_scratch = std.heap.ArenaAllocator.init(live.root.gpa);
+    defer check_scratch.deinit();
+    const scratch = check_scratch.allocator();
     // No discovery fallback to the user's home or a sibling checkout. A save
     // with this basename in another workspace is a different conversation.
     // The one exception is this checkout's own `.graff/worktrees/*` (ADR 0202).
-    const path = session.sessionPath(arena, sid) catch return .{ .rejected = "Invalid session ID" };
+    const path = session.sessionPath(scratch, sid) catch return .{ .rejected = "Invalid session ID" };
     const stat = Io.Dir.cwd().statFile(live.root.io, path, .{}) catch blk: {
         if (!acp_workspace.enterSavedTree(env, arena, sid)) return .{ .rejected = "Unknown session ID in the selected workspace" };
         break :blk Io.Dir.cwd().statFile(live.root.io, path, .{}) catch
             return .{ .rejected = "Unknown session ID in the selected workspace" };
     };
-    const canonical_active = workspace_switch.currentAbs(live.root.io, arena);
+    const canonical_active = workspace_switch.currentAbs(live.root.io, scratch);
     if (stat.kind != .file) return .{ .rejected = "Unknown session ID in the selected workspace" };
-    const bytes = Io.Dir.cwd().readFileAlloc(live.root.io, path, arena, .limited(session_index.max_session_bytes)) catch |err|
+    const bytes = Io.Dir.cwd().readFileAlloc(live.root.io, path, scratch, .limited(session_index.max_session_bytes)) catch |err|
         return .{ .rejected = loadErrorText(arena, if (err == error.StreamTooLong) error.SessionTooLarge else err, "") };
     const unloadable: Saved = .{ .rejected = "Saved session could not be loaded" };
-    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, bytes, .{ .allocate = .alloc_always }) catch return unloadable;
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, scratch, bytes, .{ .allocate = .alloc_always }) catch return unloadable;
     if (parsed != .object) return unloadable;
     _ = session_version.of(parsed.object) catch |err| return .{ .rejected = loadErrorText(arena, err, "") }; // ADR 0319
     const provider = parsed.object.get("provider") orelse return unloadable;
@@ -124,11 +135,11 @@ pub fn savedHere(live: *LiveTurn, env: acp_workspace.Env, arena: Allocator, sid:
     const messages = parsed.object.get("messages") orelse return unloadable;
     if (provider != .string or model != .string or messages != .array) return unloadable;
     if (util.strFieldObj(parsed.object, "workspace")) |saved_workspace| {
-        const canonical_saved = Io.Dir.cwd().realPathFileAlloc(live.root.io, saved_workspace, arena) catch saved_workspace;
+        const canonical_saved = Io.Dir.cwd().realPathFileAlloc(live.root.io, saved_workspace, scratch) catch saved_workspace;
         if (!session_index.sameWorkspace(canonical_saved, canonical_active))
             return .{ .rejected = "Saved session belongs to another workspace" };
     }
-    return .{ .provider = provider.string };
+    return .{ .provider = arena.dupe(u8, provider.string) catch return unloadable };
 }
 
 /// #1557: the save parsed and its fields are present, so a failure here is

@@ -303,12 +303,15 @@ fn strField(o: std.json.ObjectMap, key: []const u8) ?[]const u8 {
 /// skipped rather than pooled into a cell they were never observed in.
 /// Scores are [0,1] by the #168 contract; anything else is junk.
 pub fn foldCells(arena: Allocator, archive: []const u8) []CellObs {
+    var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer scratch.deinit();
+    const sa = scratch.allocator();
     var out: std.ArrayList(CellObs) = .empty;
     var it = std.mem.splitScalar(u8, archive, '\n');
     while (it.next()) |ln| {
         const t = std.mem.trim(u8, ln, " \t\r");
         if (!@import("bench_priors.zig").kindIs(t, "score")) continue;
-        const v = std.json.parseFromSliceLeaky(std.json.Value, arena, t, .{}) catch continue;
+        const v = std.json.parseFromSliceLeaky(std.json.Value, sa, t, .{}) catch continue;
         if (v != .object) continue;
         const o = v.object;
         const kind = strField(o, "kind") orelse continue;
@@ -329,7 +332,11 @@ pub fn foldCells(arena: Allocator, archive: []const u8) []CellObs {
             if (std.mem.eql(u8, c.shape, shape) and std.mem.eql(u8, c.role, role) and
                 std.mem.eql(u8, c.tier, tier) and std.mem.eql(u8, c.model, model)) break c;
         } else blk: {
-            out.append(arena, .{ .shape = shape, .role = role, .tier = tier, .model = model }) catch return out.items;
+            const shape_copy = arena.dupe(u8, shape) catch return out.items;
+            const role_copy = if (role.len == 0) "" else (arena.dupe(u8, role) catch return out.items);
+            const tier_copy = arena.dupe(u8, tier) catch return out.items;
+            const model_copy = arena.dupe(u8, model) catch return out.items;
+            out.append(arena, .{ .shape = shape_copy, .role = role_copy, .tier = tier_copy, .model = model_copy }) catch return out.items;
             break :blk &out.items[out.items.len - 1];
         };
         slot.sum += s;

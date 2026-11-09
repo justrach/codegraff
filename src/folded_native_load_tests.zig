@@ -58,6 +58,7 @@ const SavedGlobals = struct {
         native_fold.resetRlmDiscovery();
         native_fold.clearLoadedSession();
         mcp_schema_gate.reset();
+        @import("mcp_shapes.zig").shutdown(testing.io);
         return s;
     }
 
@@ -65,6 +66,7 @@ const SavedGlobals = struct {
         native_fold.resetRlmDiscovery();
         native_fold.clearLoadedSession();
         mcp_schema_gate.reset();
+        @import("mcp_shapes.zig").shutdown(testing.io);
         native_fold.enabled = self.fold_enabled;
         mcp_schema_gate.g_stable_catalog = self.stable;
         mcp_schema_gate.g_policy = self.policy;

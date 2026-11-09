@@ -31,10 +31,10 @@ pub fn historyAlloc(self: *Agent) std.mem.Allocator {
     return self.arena;
 }
 
-/// #1838: Rebuild `g_session_arena` on the root agent by deep-copying only the
-/// surviving `self.messages` items into a fresh `gpa`-backed arena and freeing
-/// the old slabs back to `gpa` / the OS. Called after compaction, tool-output
-/// trimming, session load/restore, and `/clear` or `/new`.
+/// #1838, #1859: Rebuild `g_session_arena` on the root agent by deep-copying
+/// only the surviving `self.messages` items once into a fresh `gpa`-backed
+/// arena and freeing the old slabs back to `gpa` / the OS. Called after
+/// compaction, tool-output trimming, session load/restore, and `/clear` or `/new`.
 pub fn reclaimMessages(self: *Agent) void {
     if (self.sub) return;
     const ma = main_mod.g_session_arena orelse return;
@@ -43,20 +43,23 @@ pub fn reclaimMessages(self: *Agent) void {
         self.messages = std.json.Array.init(ma.allocator());
         return;
     }
-    var staging = std.heap.ArenaAllocator.init(ma.child_allocator);
-    defer staging.deinit();
-    const stage_alloc = staging.allocator();
-    const staged = stage_alloc.alloc(std.json.Value, self.messages.items.len) catch return;
-    for (self.messages.items, 0..) |item, i| {
-        staged[i] = util.dupeJsonValue(stage_alloc, item) catch return;
-    }
-    _ = ma.reset(.free_all);
+    var old_arena = ma.*;
+    ma.* = std.heap.ArenaAllocator.init(old_arena.child_allocator);
     const dst = ma.allocator();
-    var fresh = std.json.Array.initCapacity(dst, staged.len) catch return;
-    for (staged) |item| {
-        const duped = util.dupeJsonValue(dst, item) catch return;
+    var fresh = std.json.Array.initCapacity(dst, self.messages.items.len) catch {
+        ma.deinit();
+        ma.* = old_arena;
+        return;
+    };
+    for (self.messages.items) |item| {
+        const duped = util.dupeJsonValue(dst, item) catch {
+            ma.deinit();
+            ma.* = old_arena;
+            return;
+        };
         fresh.appendAssumeCapacity(duped);
     }
+    old_arena.deinit();
     self.messages = fresh;
 }
 
@@ -106,4 +109,11 @@ test "#1838 reclaimMessages frees dropped message and tool-output slabs from g_s
     try std.testing.expect(after_cap < 64 * 1024);
     try std.testing.expectEqual(@as(usize, 1), agent.messages.items.len);
     try std.testing.expectEqualStrings("short summary", agent.messages.items[0].object.get("content").?.string);
+
+    // Subsequent appends must use the live `g_session_arena` pointer, not a dangling stack ArenaAllocator.
+    var follow_obj: std.json.ObjectMap = .empty;
+    try follow_obj.put(agent.messageMutationAlloc(), "role", .{ .string = "user" });
+    try follow_obj.put(agent.messageMutationAlloc(), "content", .{ .string = "next turn" });
+    try agent.messages.append(.{ .object = follow_obj });
+    try std.testing.expectEqual(@as(usize, 2), agent.messages.items.len);
 }

@@ -686,3 +686,1262 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<Event> {
 
 export const MODELS: ModelName[] = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "accounts/fireworks/models/deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/kimi-k2p6", "accounts/fireworks/models/kimi-k2p7-code", "accounts/fireworks/models/minimax-m3", "accounts/fireworks/models/qwen3p7-plus", "alibaba/qwen3.8-27b", "anthropic/claude-sonnet-4.6", "claude-fable-5", "claude-fable-5-1", "claude-haiku-5-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-opus-5", "claude-opus-5-5", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "claude-sonnet-5", "claude-sonnet-5-5", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "flint", "fugu", "fugu-ultra", "fugu-ultra-20260615", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon", "gemma-4-26b-a4b-it", "gemma-4-31b", "gemma-4-31b-it", "glm-4.5", "glm-4.7", "glm-5", "glm-5-turbo", "glm-5.2", "glm-5.3", "glm-5.3-flash", "glm-5v-turbo", "gpt-5-codex", "gpt-5.2", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5", "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-oss-120b", "grok-4.3", "grok-4.6", "grok-4.7", "grok-build", "k3", "kilo-auto/small", "kimi-for-coding", "kimi-for-coding-highspeed", "kimi-k2.6", "kimi-k2.7-code", "kimi-k3", "kimi-latest", "lmstudio", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed", "minimax-m3", "mistral-medium-latest", "mlx-community/Qwen3.6-27B-OptiQ-4bit", "muse-spark-1.2", "muse-spark-1.2-contributor", "omlx", "openai/gpt-oss-120b"];
 export const TOOLS: ToolName[] = ["shell", "read_file", "edit_file", "write_file", "webfetch", "skill", "codedb", "read_tool_result", "render_html", "todo_write", "todo_read", "eval", "note_constraint", "ask_user", "attempt_completion", "load_tool_schemas", "mcp_search_tools", "mcp_select_tool", "clock_sleep", "subagent", "workflow", "agent_output", "agent_message", "subagent_resume", "learn_candidate", "peer_message", "workspace", "yield_turn", "imagegen", "rlm"];
+
+// ── Serverless / In-Memory Agent Runtime (Edge & Worker safe) ─────────────
+
+export interface WorkspaceOperations {
+  readFile(path: string): Promise<string> | string;
+  writeFile(path: string, content: string): Promise<void> | void;
+  deleteFile?(path: string): Promise<void> | void;
+  listFiles?(prefix?: string): Promise<string[]> | string[];
+  exec?(
+    command: string,
+    opts?: { cwd?: string; timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<{ exitCode: number; output: string }> | { exitCode: number; output: string };
+}
+
+function normVirtualPath(p: string): string {
+  return p.replace(/\\/g, "/").replace(/^(\.\/|\/)+/, "").replace(/\/+$/, "");
+}
+
+/** In-memory virtual workspace for serverless / edge / browser agent runs.
+ *  Implements `WorkspaceOperations` with snapshot, restore, and diff helpers. */
+export class InMemoryWorkspace implements WorkspaceOperations {
+  private files = new Map<string, string>();
+  exec?: WorkspaceOperations["exec"];
+
+  constructor(
+    initialFiles: Record<string, string> = {},
+    opts?: { exec?: WorkspaceOperations["exec"] },
+  ) {
+    for (const [k, v] of Object.entries(initialFiles)) {
+      this.files.set(normVirtualPath(k), v);
+    }
+    this.exec = opts?.exec;
+  }
+
+  readFile(path: string): string {
+    const key = normVirtualPath(path);
+    const val = this.files.get(key);
+    if (val === undefined) throw new Error(`ENOENT: file not found: ${path}`);
+    return val;
+  }
+
+  writeFile(path: string, content: string): void {
+    this.files.set(normVirtualPath(path), content);
+  }
+
+  deleteFile(path: string): void {
+    const key = normVirtualPath(path);
+    if (!this.files.delete(key)) throw new Error(`ENOENT: file not found: ${path}`);
+  }
+
+  exists(path: string): boolean {
+    return this.files.has(normVirtualPath(path));
+  }
+
+  listFiles(prefix = ""): string[] {
+    const p = normVirtualPath(prefix);
+    const out: string[] = [];
+    for (const k of this.files.keys()) {
+      if (!p || k === p || k.startsWith(p + "/")) out.push(k);
+    }
+    return out.sort();
+  }
+
+  snapshot(): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const k of [...this.files.keys()].sort()) out[k] = this.files.get(k)!;
+    return out;
+  }
+
+  restore(files: Record<string, string>): void {
+    this.files.clear();
+    for (const [k, v] of Object.entries(files)) this.files.set(normVirtualPath(k), v);
+  }
+
+  diff(baseline: Record<string, string> = {}): Array<{ path: string; status: "added" | "modified" | "deleted" }> {
+    const base = new Map<string, string>();
+    for (const [k, v] of Object.entries(baseline)) base.set(normVirtualPath(k), v);
+    const keys = new Set<string>([...base.keys(), ...this.files.keys()]);
+    const changes: Array<{ path: string; status: "added" | "modified" | "deleted" }> = [];
+    for (const k of [...keys].sort()) {
+      const b = base.get(k);
+      const a = this.files.get(k);
+      if (b === undefined && a !== undefined) changes.push({ path: k, status: "added" });
+      else if (b !== undefined && a === undefined) changes.push({ path: k, status: "deleted" });
+      else if (b !== a) changes.push({ path: k, status: "modified" });
+    }
+    return changes;
+  }
+}
+
+export interface ServerlessToolContext {
+  callId: string;
+  signal?: AbortSignal;
+  workspace: WorkspaceOperations;
+}
+
+export type ServerlessToolOutput = string | { output: string; isError?: boolean };
+
+export interface ServerlessTool<TInput = Record<string, unknown>> {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  execute: (
+    input: TInput,
+    ctx: ServerlessToolContext,
+  ) => Promise<ServerlessToolOutput> | ServerlessToolOutput;
+}
+
+/** Type-safe helper for defining a custom tool in `ServerlessHarness`. */
+export function defineTool<TInput = Record<string, unknown>>(
+  tool: ServerlessTool<TInput>,
+): ServerlessTool<TInput> {
+  return tool;
+}
+
+/** Create read-only coding tools (`read_file`, `list_dir`, `grep`) backed by
+ *  any `WorkspaceOperations` (such as `InMemoryWorkspace`). */
+export function createReadOnlyTools(workspace: WorkspaceOperations): ServerlessTool[] {
+  return [
+    defineTool({
+      name: "read_file",
+      description: "Read the contents of a file in the workspace with optional 1-based line bounds.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "File path to read." },
+          start_line: { type: "integer", description: "1-based start line (inclusive)." },
+          end_line: { type: "integer", description: "1-based end line (inclusive)." },
+        },
+        required: ["path"],
+      },
+      async execute(input) {
+        const path = String(input.path ?? "");
+        const content = await workspace.readFile(path);
+        const lines = content.split("\n");
+        const start = Math.max(1, Number(input.start_line ?? 1));
+        const end = Math.min(lines.length, Number(input.end_line ?? lines.length));
+        const slice = lines.slice(start - 1, end);
+        return slice.map((l, idx) => `${start + idx}: ${l}`).join("\n");
+      },
+    }),
+    defineTool({
+      name: "list_dir",
+      description: "List files in the workspace under an optional directory prefix.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Optional directory prefix." },
+        },
+      },
+      async execute(input) {
+        if (!workspace.listFiles) return { output: "list_dir is not supported by this workspace", isError: true };
+        const files = await workspace.listFiles(String(input.path ?? ""));
+        return files.length ? files.join("\n") : "(empty)";
+      },
+    }),
+    defineTool({
+      name: "grep",
+      description: "Search files in the workspace for a regex or substring pattern.",
+      parameters: {
+        type: "object",
+        properties: {
+          pattern: { type: "string", description: "Regex or substring to search for." },
+          path: { type: "string", description: "Optional directory or file prefix." },
+        },
+        required: ["pattern"],
+      },
+      async execute(input) {
+        if (!workspace.listFiles) return { output: "grep requires workspace.listFiles", isError: true };
+        const pattern = String(input.pattern ?? "");
+        let rx: RegExp;
+        try { rx = new RegExp(pattern); } catch { rx = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")); }
+        const files = await workspace.listFiles(String(input.path ?? ""));
+        const matches: string[] = [];
+        for (const f of files) {
+          const text = await workspace.readFile(f);
+          const lines = text.split("\n");
+          for (let i = 0; i < lines.length; i++) {
+            if (rx.test(lines[i])) {
+              matches.push(`${f}:${i + 1}:${lines[i]}`);
+              if (matches.length >= 200) return matches.join("\n") + "\n... (truncated at 200 matches)";
+            }
+          }
+        }
+        return matches.length ? matches.join("\n") : "No matches found.";
+      },
+    }),
+  ];
+}
+
+/** Create full coding tools (`read_file`, `write_file`, `edit_file`, `list_dir`,
+ *  `grep`, and `bash` when `workspace.exec` is present) backed by any
+ *  `WorkspaceOperations`. */
+export function createCodingTools(
+  workspace: WorkspaceOperations,
+  opts?: { includeBash?: boolean },
+): ServerlessTool[] {
+  const tools: ServerlessTool[] = [
+    ...createReadOnlyTools(workspace),
+    defineTool({
+      name: "write_file",
+      description: "Create or overwrite a file in the workspace.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "File path to write." },
+          content: { type: "string", description: "Full file content." },
+        },
+        required: ["path", "content"],
+      },
+      async execute(input) {
+        const path = String(input.path ?? "");
+        const content = String(input.content ?? "");
+        await workspace.writeFile(path, content);
+        return `Wrote ${content.length} bytes to ${path}`;
+      },
+    }),
+    defineTool({
+      name: "edit_file",
+      description: "Replace an exact string in a file with a new string.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "File path to edit." },
+          old_str: { type: "string", description: "Exact existing text to replace." },
+          new_str: { type: "string", description: "Replacement text." },
+          replace_all: { type: "boolean", description: "Replace all occurrences instead of requiring a unique match." },
+        },
+        required: ["path", "old_str", "new_str"],
+      },
+      async execute(input) {
+        const path = String(input.path ?? "");
+        const oldStr = String(input.old_str ?? "");
+        const newStr = String(input.new_str ?? "");
+        const replaceAll = Boolean(input.replace_all);
+        if (!oldStr) return { output: "old_str must not be empty", isError: true };
+        const content = await workspace.readFile(path);
+        const parts = content.split(oldStr);
+        const count = parts.length - 1;
+        if (count === 0) return { output: `old_str not found in ${path}`, isError: true };
+        if (count > 1 && !replaceAll) {
+          return { output: `old_str appears ${count} times in ${path}; pass replace_all: true or provide more context`, isError: true };
+        }
+        const updated = replaceAll ? parts.join(newStr) : content.replace(oldStr, () => newStr);
+        await workspace.writeFile(path, updated);
+        return `Updated ${path} (${replaceAll ? count : 1} replacement${replaceAll && count > 1 ? "s" : ""})`;
+      },
+    }),
+  ];
+  if (opts?.includeBash ?? Boolean(workspace.exec)) {
+    tools.push(
+      defineTool({
+        name: "bash",
+        description: "Execute a shell command in the workspace.",
+        parameters: {
+          type: "object",
+          properties: {
+            command: { type: "string", description: "Command to run." },
+            cwd: { type: "string", description: "Optional working directory." },
+            timeout_ms: { type: "integer", description: "Optional timeout in milliseconds." },
+          },
+          required: ["command"],
+        },
+        async execute(input, ctx) {
+          if (!workspace.exec) return { output: "bash execution is not configured on this workspace", isError: true };
+          const res = await workspace.exec(String(input.command ?? ""), {
+            cwd: typeof input.cwd === "string" ? input.cwd : undefined,
+            timeoutMs: typeof input.timeout_ms === "number" ? input.timeout_ms : undefined,
+            signal: ctx.signal,
+          });
+          return { output: res.output, isError: res.exitCode !== 0 };
+        },
+      }),
+    );
+  }
+  return tools;
+}
+
+export interface ServerlessToolCall {
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+export interface ServerlessMessage {
+  role: "user" | "assistant" | "tool";
+  content: string;
+  images?: ImageInput[];
+  reasoning?: string;
+  toolCalls?: ServerlessToolCall[];
+  toolCallId?: string;
+  toolName?: string;
+  isError?: boolean;
+}
+
+export interface ServerlessModelTurn {
+  text?: string;
+  reasoning?: string;
+  toolCalls?: ServerlessToolCall[];
+  inputTokens?: number;
+  uncachedInputTokens?: number;
+  cacheReadTokens?: number;
+  outputTokens?: number;
+  costUsd?: number;
+  onTextDelta?: (delta: string) => void;
+}
+
+export interface ServerlessStreamRequest {
+  provider: string;
+  model: string;
+  effort: EffortLevel;
+  systemPrompt: string;
+  messages: ServerlessMessage[];
+  tools: Array<{ name: string; description: string; parameters: Record<string, unknown> }>;
+  signal?: AbortSignal;
+  onTextDelta?: (delta: string) => void;
+  onReasoningDelta?: (delta: string) => void;
+}
+
+export type ServerlessStreamFn = (req: ServerlessStreamRequest) => Promise<ServerlessModelTurn>;
+
+export interface BeforeToolCallContext {
+  callId: string;
+  name: string;
+  input: Record<string, unknown>;
+  step: number;
+  messages: readonly ServerlessMessage[];
+}
+
+export interface BeforeToolCallResult {
+  block?: boolean;
+  reason?: string;
+  input?: Record<string, unknown>;
+}
+
+export interface AfterToolCallContext {
+  callId: string;
+  name: string;
+  input: Record<string, unknown>;
+  output: string;
+  isError: boolean;
+  step: number;
+}
+
+export interface AfterToolCallResult {
+  output?: string;
+  isError?: boolean;
+}
+
+export interface ServerlessSessionSnapshot {
+  version: 1;
+  sessionId: string;
+  provider: string;
+  model: string;
+  effort: EffortLevel;
+  systemPrompt: string;
+  seq: number;
+  messages: ServerlessMessage[];
+  files?: Record<string, string>;
+}
+
+export interface ServerlessOptions {
+  /** Provider id ("codegraff", "openai", "anthropic", "deepseek", "xai", "openrouter", ...). */
+  provider?: ProviderId | string;
+  /** Model name (default "gpt-5.5"). */
+  model?: ModelName | string;
+  /** API key or bearer token for direct provider calls. */
+  apiKey?: string;
+  /** Alias for apiKey. */
+  token?: string;
+  /** Custom provider endpoint URL (auto-selected from `provider` when omitted). */
+  endpoint?: string;
+  /** Custom fetch implementation. */
+  fetch?: typeof fetch;
+  /** Pluggable model stream/completion function (for custom transports or tests). */
+  streamFn?: ServerlessStreamFn;
+  /** Initial reasoning effort (default "medium"). */
+  effort?: EffortLevel;
+  /** System prompt (default built-in coding assistant prompt). */
+  systemPrompt?: string;
+  /** Extra instructions appended to the system prompt. */
+  appendSystemPrompt?: string;
+  /** Virtual file map or custom `WorkspaceOperations`. Defaults to an empty `InMemoryWorkspace`. */
+  workspace?: WorkspaceOperations | Record<string, string>;
+  /** Attach built-in coding tools (`true` | `"readonly"` | `false`). Default `true`. */
+  codingTools?: boolean | "readonly";
+  /** Additional custom tools (created via `defineTool`). */
+  tools?: ServerlessTool[];
+  /** Execute multiple tool calls from a single assistant response sequentially or in parallel. */
+  toolExecution?: "sequential" | "parallel";
+  /** Per-turn tool-call ceiling (default 32). */
+  maxToolCalls?: number;
+  /** Session-wide model-call ceiling (default 64). */
+  maxModelCalls?: number;
+  /** Reject duplicate tool name + normalized JSON input within the same turn. */
+  dedupeToolCalls?: boolean;
+  /** Guardrail/inspection hook before each tool execution. */
+  beforeToolCall?: (
+    ctx: BeforeToolCallContext,
+  ) => Promise<BeforeToolCallResult | void> | BeforeToolCallResult | void;
+  /** Post-processing/redaction hook after each tool execution. */
+  afterToolCall?: (
+    ctx: AfterToolCallContext,
+  ) => Promise<AfterToolCallResult | void> | AfterToolCallResult | void;
+  /** Transform or prune message history before each model request. */
+  transformContext?: (
+    messages: ServerlessMessage[],
+  ) => Promise<ServerlessMessage[]> | ServerlessMessage[];
+  /** Restore from a previously exported `ServerlessSessionSnapshot`. */
+  session?: ServerlessSessionSnapshot;
+}
+
+const DEFAULT_SERVERLESS_SYSTEM =
+  "You are Graff, an autonomous coding agent. Use the provided tools to inspect, edit, and verify files before answering.";
+
+const PROVIDER_ENDPOINTS: Readonly<Record<string, string>> = {
+  codegraff: "https://codegraff.com/api/v1/chat/completions",
+  openai: "https://api.openai.com/v1/chat/completions",
+  codex: "https://api.openai.com/v1/chat/completions",
+  anthropic: "https://api.anthropic.com/v1/messages",
+  deepseek: "https://api.deepseek.com/v1/chat/completions",
+  xai: "https://api.x.ai/v1/chat/completions",
+  moonshot: "https://api.moonshot.ai/v1/chat/completions",
+  kimi: "https://api.kimi.com/coding/v1/chat/completions",
+  zai: "https://api.z.ai/api/paas/v4/chat/completions",
+  minimax: "https://api.minimax.io/v1/chat/completions",
+  openrouter: "https://openrouter.ai/api/v1/chat/completions",
+};
+
+function isWorkspaceOps(v: unknown): v is WorkspaceOperations {
+  return Boolean(v && typeof v === "object" && typeof (v as WorkspaceOperations).readFile === "function");
+}
+
+function stableJson(v: unknown): string {
+  if (v === null || typeof v !== "object") return JSON.stringify(v);
+  if (Array.isArray(v)) return "[" + v.map(stableJson).join(",") + "]";
+  const entries = Object.entries(v as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+  return "{" + entries.map(([k, val]) => `${JSON.stringify(k)}:${stableJson(val)}`).join(",") + "}";
+}
+
+/** Zero-binary, edge-safe agent session that runs in-memory on Cloudflare
+ *  Workers, Vercel Edge, Deno, Bun, browsers, and Node >= 18.
+ *  Implements the same `chat()` / `ask()` / `askResult()` / `review()` /
+ *  `setModel()` / `setEffort()` / `setSystemPrompt()` / `compact()` surface and
+ *  streams the same `Event` union as `Harness` and `RemoteHarness`. */
+export class ServerlessHarness {
+  readonly workspace: WorkspaceOperations;
+  readonly memoryWorkspace?: InMemoryWorkspace;
+  private providerId: string;
+  private modelName: string;
+  private effortLevel: EffortLevel;
+  private baseSystemPrompt: string;
+  private appendedSystemPrompt = "";
+  private apiKey?: string;
+  private endpoint?: string;
+  private fetcher: typeof fetch;
+  private streamFn?: ServerlessStreamFn;
+  private toolMap = new Map<string, ServerlessTool>();
+  private toolExecMode: "sequential" | "parallel";
+  private maxToolCalls: number;
+  private maxModelCalls: number;
+  private totalModelCalls = 0;
+  private dedupeToolCalls: boolean;
+  private beforeToolCall?: ServerlessOptions["beforeToolCall"];
+  private afterToolCall?: ServerlessOptions["afterToolCall"];
+  private transformContext?: ServerlessOptions["transformContext"];
+  private messages: ServerlessMessage[] = [];
+  private steerQueue: string[] = [];
+  private followUpQueue: string[] = [];
+  private listeners = new Set<(ev: Event) => void>();
+  private opTail: Promise<void> = Promise.resolve();
+  private activeAbort?: AbortController;
+  private closed = false;
+  readonly sessionId: string;
+  lastSeq = 0;
+
+  constructor(opts: ServerlessOptions = {}) {
+    if (opts.workspace === undefined) {
+      this.memoryWorkspace = new InMemoryWorkspace();
+      this.workspace = this.memoryWorkspace;
+    } else if (isWorkspaceOps(opts.workspace)) {
+      this.workspace = opts.workspace;
+      if (opts.workspace instanceof InMemoryWorkspace) this.memoryWorkspace = opts.workspace;
+    } else {
+      this.memoryWorkspace = new InMemoryWorkspace(opts.workspace);
+      this.workspace = this.memoryWorkspace;
+    }
+
+    const snap = opts.session;
+    if (snap?.files && this.memoryWorkspace) this.memoryWorkspace.restore(snap.files);
+    this.sessionId = snap?.sessionId ?? "serverless-" + Math.random().toString(36).slice(2, 10);
+    const rawModel = snap?.model ?? opts.model ?? "gpt-5.5";
+    const slash = rawModel.indexOf("/");
+    this.providerId = snap?.provider ?? opts.provider ?? (slash > 0 ? rawModel.slice(0, slash) : "codegraff");
+    this.modelName = slash > 0 && !opts.provider && !snap?.provider ? rawModel.slice(slash + 1) : rawModel;
+    this.effortLevel = snap?.effort ?? opts.effort ?? "medium";
+    this.baseSystemPrompt = snap?.systemPrompt ?? opts.systemPrompt ?? DEFAULT_SERVERLESS_SYSTEM;
+    this.appendedSystemPrompt = opts.appendSystemPrompt ?? "";
+    this.lastSeq = snap?.seq ?? 0;
+    if (snap?.messages) this.messages = JSON.parse(JSON.stringify(snap.messages)) as ServerlessMessage[];
+
+    this.apiKey = opts.apiKey ?? opts.token;
+    this.endpoint = opts.endpoint;
+    this.fetcher = opts.fetch ?? globalThis.fetch.bind(globalThis);
+    this.streamFn = opts.streamFn;
+    this.toolExecMode = opts.toolExecution ?? "sequential";
+    this.maxToolCalls = opts.maxToolCalls ?? 32;
+    this.maxModelCalls = opts.maxModelCalls ?? 64;
+    this.dedupeToolCalls = opts.dedupeToolCalls ?? false;
+    this.beforeToolCall = opts.beforeToolCall;
+    this.afterToolCall = opts.afterToolCall;
+    this.transformContext = opts.transformContext;
+
+    const codingMode = opts.codingTools ?? true;
+    if (codingMode === "readonly") {
+      for (const t of createReadOnlyTools(this.workspace)) this.toolMap.set(t.name, t);
+    } else if (codingMode) {
+      for (const t of createCodingTools(this.workspace)) this.toolMap.set(t.name, t);
+    }
+    for (const t of opts.tools ?? []) this.toolMap.set(t.name, t);
+  }
+
+  static init(opts: ServerlessOptions = {}): ServerlessHarness {
+    return new ServerlessHarness(opts);
+  }
+
+  static fromState(snapshot: ServerlessSessionSnapshot, opts: Omit<ServerlessOptions, "session"> = {}): ServerlessHarness {
+    return new ServerlessHarness({ ...opts, session: snapshot });
+  }
+
+  /** Subscribe to every emitted `Event` across turns and controls. */
+  subscribe(listener: (ev: Event) => void): () => void {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
+
+  /** Inject a user steering message before the next model step in an active turn. */
+  steer(text: string): void {
+    if (text.trim()) this.steerQueue.push(text);
+  }
+
+  /** Queue a follow-up user message to run automatically if the current turn would otherwise stop. */
+  followUp(text: string): void {
+    if (text.trim()) this.followUpQueue.push(text);
+  }
+
+  /** Return a read-only view of the current in-memory message history. */
+  getMessages(): readonly ServerlessMessage[] {
+    return this.messages;
+  }
+
+  /** Export a serializable snapshot of conversation state and `InMemoryWorkspace` files. */
+  exportState(): ServerlessSessionSnapshot {
+    return {
+      version: 1,
+      sessionId: this.sessionId,
+      provider: this.providerId,
+      model: this.modelName,
+      effort: this.effortLevel,
+      systemPrompt: this.effectiveSystemPrompt(),
+      seq: this.lastSeq,
+      messages: JSON.parse(JSON.stringify(this.messages)) as ServerlessMessage[],
+      ...(this.memoryWorkspace ? { files: this.memoryWorkspace.snapshot() } : {}),
+    };
+  }
+
+  /** Restore conversation state (and `InMemoryWorkspace` files if present) from a snapshot. */
+  importState(snapshot: ServerlessSessionSnapshot): void {
+    this.providerId = snapshot.provider;
+    this.modelName = snapshot.model;
+    this.effortLevel = snapshot.effort;
+    this.baseSystemPrompt = snapshot.systemPrompt;
+    this.appendedSystemPrompt = "";
+    this.lastSeq = snapshot.seq;
+    this.messages = JSON.parse(JSON.stringify(snapshot.messages)) as ServerlessMessage[];
+    if (snapshot.files && this.memoryWorkspace) this.memoryWorkspace.restore(snapshot.files);
+  }
+
+  private effectiveSystemPrompt(): string {
+    return this.appendedSystemPrompt
+      ? `${this.baseSystemPrompt}\n\n${this.appendedSystemPrompt}`
+      : this.baseSystemPrompt;
+  }
+
+  private emit<T extends Record<string, unknown>>(ev: T): Event {
+    const stamped = { seq: ++this.lastSeq, ...ev } as unknown as Event;
+    for (const fn of this.listeners) {
+      try { fn(stamped); } catch { /* listener errors do not break the stream */ }
+    }
+    return stamped;
+  }
+
+  private acquireOp(): Promise<() => void> {
+    if (this.closed) return Promise.reject(new Error("harness is closed"));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const acquired = this.opTail.then(() => release);
+    this.opTail = this.opTail.then(() => gate);
+    return acquired;
+  }
+
+  private async runOp<T>(op: () => Promise<T>): Promise<T> {
+    const release = await this.acquireOp();
+    try { return await op(); } finally { release(); }
+  }
+
+  private async callProvider(
+    req: ServerlessStreamRequest,
+  ): Promise<ServerlessModelTurn> {
+    if (this.streamFn) return await this.streamFn(req);
+    const url = this.endpoint ?? PROVIDER_ENDPOINTS[req.provider] ?? PROVIDER_ENDPOINTS.codegraff;
+    if (req.provider === "anthropic") {
+      const headers: Record<string, string> = {
+        "content-type": "application/json",
+        "anthropic-version": "2023-06-01",
+      };
+      if (this.apiKey) headers["x-api-key"] = this.apiKey;
+      const anthMessages: Array<Record<string, unknown>> = [];
+      for (const m of req.messages) {
+        if (m.role === "user") {
+          const content: Array<Record<string, unknown>> = [{ type: "text", text: m.content }];
+          for (const img of m.images ?? []) {
+            if (img.type === "image_base64") {
+              content.push({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } });
+            } else {
+              content.push({ type: "image", source: { type: "url", url: img.url } });
+            }
+          }
+          anthMessages.push({ role: "user", content });
+        } else if (m.role === "assistant") {
+          const content: Array<Record<string, unknown>> = [];
+          if (m.content) content.push({ type: "text", text: m.content });
+          for (const tc of m.toolCalls ?? []) {
+            content.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
+          }
+          anthMessages.push({ role: "assistant", content });
+        } else if (m.role === "tool") {
+          anthMessages.push({
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: m.toolCallId ?? "call", content: m.content, is_error: Boolean(m.isError) }],
+          });
+        }
+      }
+      const res = await this.fetcher(url, {
+        method: "POST",
+        headers,
+        signal: req.signal,
+        body: JSON.stringify({
+          model: req.model,
+          max_tokens: 8192,
+          system: req.systemPrompt,
+          messages: anthMessages,
+          ...(req.tools.length
+            ? { tools: req.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })) }
+            : {}),
+        }),
+      });
+      if (!res.ok) throw new Error(`Anthropic HTTP ${res.status}: ${(await res.text().catch(() => "")).slice(0, 256)}`);
+      const data = (await res.json()) as Record<string, unknown>;
+      const blocks = Array.isArray(data.content) ? (data.content as Array<Record<string, unknown>>) : [];
+      let text = "";
+      const toolCalls: ServerlessToolCall[] = [];
+      for (const b of blocks) {
+        if (b.type === "text" && typeof b.text === "string") {
+          text += b.text;
+          req.onTextDelta?.(b.text);
+        } else if (b.type === "tool_use" && typeof b.name === "string") {
+          toolCalls.push({
+            id: typeof b.id === "string" ? b.id : `call_${toolCalls.length + 1}`,
+            name: b.name,
+            input: (b.input && typeof b.input === "object" ? b.input : {}) as Record<string, unknown>,
+          });
+        }
+      }
+      const usage = (data.usage ?? {}) as Record<string, number>;
+      return {
+        text,
+        toolCalls,
+        inputTokens: usage.input_tokens ?? 0,
+        uncachedInputTokens: usage.input_tokens ?? 0,
+        cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+        outputTokens: usage.output_tokens ?? 0,
+      };
+    }
+
+    // OpenAI / Codegraff Gateway compatible chat completions
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`;
+    const oaiMessages: Array<Record<string, unknown>> = [
+      { role: "system", content: req.systemPrompt },
+    ];
+    for (const m of req.messages) {
+      if (m.role === "user") {
+        if (m.images?.length) {
+          const parts: Array<Record<string, unknown>> = [{ type: "text", text: m.content }];
+          for (const img of m.images) {
+            parts.push({
+              type: "image_url",
+              image_url: { url: img.type === "image_url" ? img.url : `data:${img.mediaType};base64,${img.data}` },
+            });
+          }
+          oaiMessages.push({ role: "user", content: parts });
+        } else {
+          oaiMessages.push({ role: "user", content: m.content });
+        }
+      } else if (m.role === "assistant") {
+        const msg: Record<string, unknown> = { role: "assistant", content: m.content || null };
+        if (m.toolCalls?.length) {
+          msg.tool_calls = m.toolCalls.map((tc) => ({
+            id: tc.id,
+            type: "function",
+            function: { name: tc.name, arguments: JSON.stringify(tc.input) },
+          }));
+        }
+        oaiMessages.push(msg);
+      } else if (m.role === "tool") {
+        oaiMessages.push({
+          role: "tool",
+          tool_call_id: m.toolCallId ?? "call",
+          content: m.content,
+        });
+      }
+    }
+    const res = await this.fetcher(url, {
+      method: "POST",
+      headers,
+      signal: req.signal,
+      body: JSON.stringify({
+        model: req.model,
+        messages: oaiMessages,
+        ...(req.tools.length
+          ? {
+              tools: req.tools.map((t) => ({
+                type: "function",
+                function: { name: t.name, description: t.description, parameters: t.parameters },
+              })),
+            }
+          : {}),
+      }),
+    });
+    if (!res.ok) throw new Error(`Provider HTTP ${res.status}: ${(await res.text().catch(() => "")).slice(0, 256)}`);
+    const data = (await res.json()) as Record<string, unknown>;
+    const choices = Array.isArray(data.choices) ? (data.choices as Array<Record<string, unknown>>) : [];
+    const msg = ((choices[0]?.message ?? {}) as Record<string, unknown>);
+    const text = typeof msg.content === "string" ? msg.content : "";
+    const reasoning = typeof msg.reasoning_content === "string" ? msg.reasoning_content : undefined;
+    if (reasoning) req.onReasoningDelta?.(reasoning);
+    if (text) req.onTextDelta?.(text);
+    const rawCalls = Array.isArray(msg.tool_calls) ? (msg.tool_calls as Array<Record<string, unknown>>) : [];
+    const toolCalls: ServerlessToolCall[] = rawCalls.map((rc, idx) => {
+      const fn = (rc.function ?? {}) as Record<string, unknown>;
+      let parsed: Record<string, unknown> = {};
+      if (typeof fn.arguments === "string" && fn.arguments.trim()) {
+        try { parsed = JSON.parse(fn.arguments) as Record<string, unknown>; } catch { parsed = {}; }
+      } else if (fn.arguments && typeof fn.arguments === "object") {
+        parsed = fn.arguments as Record<string, unknown>;
+      }
+      return {
+        id: typeof rc.id === "string" ? rc.id : `call_${idx + 1}`,
+        name: String(fn.name ?? ""),
+        input: parsed,
+      };
+    });
+    const usage = (data.usage ?? {}) as Record<string, unknown>;
+    const promptDetails = (usage.prompt_tokens_details ?? {}) as Record<string, number>;
+    const inputTokens = Number(usage.prompt_tokens ?? usage.input_tokens ?? 0);
+    const cacheReadTokens = Number(promptDetails.cached_tokens ?? usage.cache_read_input_tokens ?? 0);
+    return {
+      text,
+      reasoning,
+      toolCalls,
+      inputTokens,
+      uncachedInputTokens: Math.max(0, inputTokens - cacheReadTokens),
+      cacheReadTokens,
+      outputTokens: Number(usage.completion_tokens ?? usage.output_tokens ?? 0),
+    };
+  }
+
+  async *chat(input: string | ChatOptions): AsyncGenerator<Event> {
+    const prompt = typeof input === "string" ? input : input.prompt;
+    const isReview = typeof input !== "string" && Boolean(input.review);
+    const images = typeof input === "string" ? undefined : input.images;
+    const callerSignal = typeof input === "string" ? undefined : input.signal;
+    callerSignal?.throwIfAborted();
+
+    const release = await this.acquireOp();
+    const savedReviewMessages = isReview
+      ? (JSON.parse(JSON.stringify(this.messages)) as ServerlessMessage[])
+      : undefined;
+    const turnController = new AbortController();
+    this.activeAbort = turnController;
+    const onCallerAbort = () => turnController.abort();
+    callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
+
+    try {
+      yield this.emit({ type: "started", provider: this.providerId, model: this.modelName });
+      this.messages.push({ role: "user", content: prompt, ...(images?.length ? { images } : {}) });
+
+      let toolCallsThisTurn = 0;
+      let apiCallsThisTurn = 0;
+      let inputTokens = 0;
+      let uncachedInputTokens = 0;
+      let cacheReadTokens = 0;
+      let outputTokens = 0;
+      let costUsd = 0;
+      let finalText = "";
+      const seenToolKeys = new Set<string>();
+
+      const activeTools = isReview
+        ? createReadOnlyTools(this.workspace)
+        : [...this.toolMap.values()];
+      const activeToolMap = new Map(activeTools.map((t) => [t.name, t]));
+      const toolSchemas = activeTools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters,
+      }));
+
+      while (true) {
+        if (turnController.signal.aborted) {
+          yield this.emit({ type: "error", message: "turn cancelled" });
+          return;
+        }
+        // Drain any soft steering messages injected mid-turn.
+        while (this.steerQueue.length > 0) {
+          const steerText = this.steerQueue.shift()!;
+          this.messages.push({ role: "user", content: steerText });
+        }
+        if (this.totalModelCalls >= this.maxModelCalls) {
+          yield this.emit({ type: "error", message: `max_model_calls (${this.maxModelCalls}) exceeded` });
+          return;
+        }
+
+        const contextMessages = this.transformContext
+          ? await this.transformContext([...this.messages])
+          : [...this.messages];
+
+        const deltas: string[] = [];
+        const reasoningDeltas: string[] = [];
+        const startedMs = Date.now();
+        yield this.emit({ type: "model_call_started", provider: this.providerId, model: this.modelName });
+
+        let turnResp: ServerlessModelTurn;
+        try {
+          this.totalModelCalls += 1;
+          apiCallsThisTurn += 1;
+          turnResp = await this.callProvider({
+            provider: this.providerId,
+            model: this.modelName,
+            effort: this.effortLevel,
+            systemPrompt: isReview
+              ? `${this.effectiveSystemPrompt()}\n\n[review mode: read-only inspection]`
+              : this.effectiveSystemPrompt(),
+            messages: contextMessages,
+            tools: toolSchemas,
+            signal: turnController.signal,
+            onTextDelta: (d) => { if (d) deltas.push(d); },
+            onReasoningDelta: (d) => { if (d) reasoningDeltas.push(d); },
+          });
+        } catch (err) {
+          yield this.emit({
+            type: "model_call_finished",
+            provider: this.providerId,
+            model: this.modelName,
+            ok: false,
+            ms: Math.max(0, Date.now() - startedMs),
+          });
+          const msg = turnController.signal.aborted
+            ? "turn cancelled"
+            : err instanceof Error ? err.message : String(err);
+          yield this.emit({ type: "error", message: msg });
+          return;
+        }
+
+        yield this.emit({
+          type: "model_call_finished",
+          provider: this.providerId,
+          model: this.modelName,
+          ok: true,
+          ms: Math.max(0, Date.now() - startedMs),
+        });
+
+        inputTokens += turnResp.inputTokens ?? 0;
+        uncachedInputTokens += turnResp.uncachedInputTokens ?? turnResp.inputTokens ?? 0;
+        cacheReadTokens += turnResp.cacheReadTokens ?? 0;
+        outputTokens += turnResp.outputTokens ?? 0;
+        costUsd += turnResp.costUsd ?? 0;
+
+        if (reasoningDeltas.length > 0) {
+          for (const rd of reasoningDeltas) yield this.emit({ type: "reasoning", text: rd });
+        } else if (turnResp.reasoning) {
+          yield this.emit({ type: "reasoning", text: turnResp.reasoning });
+        }
+
+        const stepText = turnResp.text ?? deltas.join("");
+        if (deltas.length > 0) {
+          for (const td of deltas) yield this.emit({ type: "text", text: td });
+        } else if (stepText) {
+          yield this.emit({ type: "text", text: stepText });
+        }
+        if (stepText) finalText = stepText;
+
+        const calls = turnResp.toolCalls ?? [];
+        this.messages.push({
+          role: "assistant",
+          content: stepText,
+          ...(turnResp.reasoning ? { reasoning: turnResp.reasoning } : {}),
+          ...(calls.length ? { toolCalls: calls } : {}),
+        });
+
+        if (calls.length === 0) {
+          // If a follow-up message is queued, continue into it before finishing the turn.
+          if (this.followUpQueue.length > 0) {
+            const nextPrompt = this.followUpQueue.shift()!;
+            this.messages.push({ role: "user", content: nextPrompt });
+            continue;
+          }
+          break;
+        }
+
+        const prepared: Array<{
+          call: ServerlessToolCall;
+          tool?: ServerlessTool;
+          rejected?: { reason: string; message: string };
+        }> = [];
+
+        for (const call of calls) {
+          if (toolCallsThisTurn >= this.maxToolCalls) {
+            prepared.push({
+              call,
+              rejected: {
+                reason: "budget",
+                message: `max_tool_calls (${this.maxToolCalls}) exceeded`,
+              },
+            });
+            continue;
+          }
+          const key = `${call.name}:${stableJson(call.input)}`;
+          if (this.dedupeToolCalls && seenToolKeys.has(key)) {
+            prepared.push({
+              call,
+              rejected: {
+                reason: "duplicate",
+                message: `duplicate tool call rejected: ${call.name}`,
+              },
+            });
+            continue;
+          }
+          seenToolKeys.add(key);
+
+          let effectiveInput = call.input;
+          if (this.beforeToolCall) {
+            const gate = await this.beforeToolCall({
+              callId: call.id,
+              name: call.name,
+              input: call.input,
+              step: apiCallsThisTurn,
+              messages: this.messages,
+            });
+            if (gate?.block) {
+              prepared.push({
+                call,
+                rejected: {
+                  reason: "policy",
+                  message: gate.reason ?? `tool call blocked by beforeToolCall: ${call.name}`,
+                },
+              });
+              continue;
+            }
+            if (gate?.input) effectiveInput = gate.input;
+          }
+
+          const resolvedCall = { ...call, input: effectiveInput };
+          const tool = activeToolMap.get(call.name);
+          if (!tool) {
+            prepared.push({
+              call: resolvedCall,
+              rejected: {
+                reason: "unknown_tool",
+                message: `unknown tool: ${call.name}`,
+              },
+            });
+            continue;
+          }
+          toolCallsThisTurn += 1;
+          prepared.push({ call: resolvedCall, tool });
+        }
+
+        const runOne = async (item: (typeof prepared)[number]) => {
+          if (item.rejected) {
+            return {
+              call: item.call,
+              rejected: item.rejected,
+              output: item.rejected.message,
+              isError: true,
+              ms: 0,
+            };
+          }
+          const t0 = Date.now();
+          let output = "";
+          let isError = false;
+          try {
+            const raw = await item.tool!.execute(item.call.input, {
+              callId: item.call.id,
+              signal: turnController.signal,
+              workspace: this.workspace,
+            });
+            if (typeof raw === "string") {
+              output = raw;
+            } else {
+              output = raw.output;
+              isError = Boolean(raw.isError);
+            }
+          } catch (err) {
+            output = err instanceof Error ? err.message : String(err);
+            isError = true;
+          }
+          if (this.afterToolCall) {
+            const post = await this.afterToolCall({
+              callId: item.call.id,
+              name: item.call.name,
+              input: item.call.input,
+              output,
+              isError,
+              step: apiCallsThisTurn,
+            });
+            if (post?.output !== undefined) output = post.output;
+            if (post?.isError !== undefined) isError = post.isError;
+          }
+          return {
+            call: item.call,
+            output,
+            isError,
+            ms: Math.max(0, Date.now() - t0),
+          };
+        };
+
+        for (const item of prepared) {
+          if (!item.rejected) {
+            yield this.emit({ type: "tool_call", name: item.call.name, input: item.call.input });
+            yield this.emit({ type: "tool_call_started", name: item.call.name, input: item.call.input });
+          }
+        }
+
+        const executed = this.toolExecMode === "parallel"
+          ? await Promise.all(prepared.map(runOne))
+          : await (async () => {
+              const list = [];
+              for (const item of prepared) list.push(await runOne(item));
+              return list;
+            })();
+
+        for (const res of executed) {
+          if (res.rejected) {
+            yield this.emit({
+              type: "tool_rejected",
+              name: res.call.name,
+              reason: res.rejected.reason,
+              input: res.call.input,
+              message: res.rejected.message,
+            });
+          }
+          yield this.emit({
+            type: "tool_result",
+            name: res.call.name,
+            is_error: res.isError,
+            text: res.output,
+          });
+          if (!res.rejected) {
+            yield this.emit({
+              type: "tool_call_finished",
+              name: res.call.name,
+              is_error: res.isError,
+              ms: res.ms,
+            });
+          }
+          this.messages.push({
+            role: "tool",
+            toolCallId: res.call.id,
+            toolName: res.call.name,
+            content: res.output,
+            isError: res.isError,
+          });
+        }
+      }
+
+      const contextChars = this.messages.reduce((acc, m) => acc + (m.content?.length ?? 0), 0);
+      const contextTokens = inputTokens > 0 ? inputTokens + outputTokens : Math.ceil(contextChars / 4);
+      yield this.emit({ type: "finalizing" });
+      yield this.emit({
+        type: "turn",
+        text: finalText,
+        context_tokens: contextTokens,
+        cost_usd: costUsd,
+        input_tokens: inputTokens,
+        uncached_input_tokens: uncachedInputTokens,
+        cache_read_tokens: cacheReadTokens,
+        output_tokens: outputTokens,
+        api_calls: apiCallsThisTurn,
+        subscription_calls: 0,
+        unpriced_calls: costUsd === 0 && apiCallsThisTurn > 0 ? apiCallsThisTurn : 0,
+        complete: true,
+        metadata_complete: true,
+        usage_complete: true,
+        missing_usage_calls: 0,
+        unreported_failed_attempts: 0,
+      });
+    } finally {
+      if (savedReviewMessages) this.messages = savedReviewMessages;
+      callerSignal?.removeEventListener("abort", onCallerAbort);
+      this.activeAbort = undefined;
+      release();
+    }
+  }
+
+  async askResult(input: string | ChatOptions): Promise<AskResult> {
+    let result: AskResult | null = null;
+    for await (const ev of this.chat(input)) {
+      if (ev.type === "turn") {
+        result = {
+          text: ev.text,
+          contextTokens: ev.context_tokens,
+          costUsd: ev.cost_usd,
+          inputTokens: ev.input_tokens,
+          uncachedInputTokens: ev.uncached_input_tokens,
+          cacheReadTokens: ev.cache_read_tokens,
+          outputTokens: ev.output_tokens,
+          apiCalls: ev.api_calls,
+          subscriptionCalls: ev.subscription_calls,
+          unpricedCalls: ev.unpriced_calls,
+          complete: ev.complete,
+          metadataComplete: ev.metadata_complete,
+          usageComplete: ev.usage_complete,
+          missingUsageCalls: ev.missing_usage_calls,
+          unreportedFailedAttempts: ev.unreported_failed_attempts,
+        };
+      }
+      if (ev.type === "error") throw new Error(ev.message);
+    }
+    if (!result) throw new Error("turn ended without a terminal event");
+    return result;
+  }
+
+  async ask(input: string | ChatOptions): Promise<string> {
+    return (await this.askResult(input)).text;
+  }
+
+  review(input: string | ChatOptions): Promise<string> {
+    const options = typeof input === "string" ? { prompt: input } : input;
+    return this.ask({ ...options, review: true });
+  }
+
+  setModel(provider: ProviderId | string, model: ModelName | string): Promise<void> {
+    return this.runOp(async () => {
+      if (!provider || !model) throw new Error("provider and model are required");
+      this.providerId = provider;
+      this.modelName = model;
+      this.emit({ type: "model", ok: true, provider, model, context: 200000, note: "" });
+    });
+  }
+
+  setEffort(level: EffortLevel): Promise<void> {
+    return this.runOp(async () => {
+      this.effortLevel = level;
+      this.emit({ type: "effort", ok: true, level, applies: true });
+    });
+  }
+
+  setSystemPrompt(text: string, append = false): Promise<void> {
+    return this.runOp(async () => {
+      if (append) {
+        this.appendedSystemPrompt = this.appendedSystemPrompt
+          ? `${this.appendedSystemPrompt}\n\n${text}`
+          : text;
+      } else {
+        this.baseSystemPrompt = text;
+        this.appendedSystemPrompt = "";
+      }
+      this.emit({
+        type: "system_prompt",
+        ok: true,
+        append,
+        chars: this.effectiveSystemPrompt().length,
+      });
+    });
+  }
+
+  appendSystemPrompt(text: string): Promise<void> {
+    return this.setSystemPrompt(text, true);
+  }
+
+  /** Compact in-memory conversation history by summarizing earlier turns into
+   *  a compact handoff note while preserving the most recent turn verbatim. */
+  compact(): Promise<void> {
+    return this.runOp(async () => {
+      if (this.messages.length <= 2) {
+        const chars = this.messages.reduce((a, m) => a + m.content.length, 0);
+        this.emit({ type: "compact", ok: true, chars });
+        return;
+      }
+      const keepFrom = Math.max(1, this.messages.length - 2);
+      const older = this.messages.slice(0, keepFrom);
+      const recent = this.messages.slice(keepFrom);
+      const summaryLines = older.map((m) => {
+        const snippet = m.content.slice(0, 200).replace(/\s+/g, " ");
+        return `- [${m.role}${m.toolName ? `:${m.toolName}` : ""}] ${snippet}`;
+      });
+      const handoff: ServerlessMessage = {
+        role: "user",
+        content: `[compacted session summary (${older.length} earlier messages)]\n${summaryLines.join("\n")}`,
+      };
+      this.messages = [handoff, ...recent];
+      const chars = this.messages.reduce((a, m) => a + m.content.length, 0);
+      this.emit({ type: "compact", ok: true, chars });
+    });
+  }
+
+  cancel(): void {
+    this.activeAbort?.abort();
+  }
+
+  version(): string {
+    return HARNESS_VERSION;
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+    this.cancel();
+  }
+
+  dispose(): Promise<void> {
+    return this.close();
+  }
+}
+
+export interface RunAgentServerlessOptions extends ServerlessOptions {
+  prompt: string;
+  images?: ImageInput[];
+}
+
+/** Run a single serverless turn, streaming `Event`s, and close. */
+export async function* runAgentServerless(opts: RunAgentServerlessOptions): AsyncGenerator<Event> {
+  const h = new ServerlessHarness(opts);
+  try {
+    yield* h.chat({ prompt: opts.prompt, images: opts.images });
+  } finally {
+    await h.close();
+  }
+}
+
+/** Create a serverless agent session with an in-memory or custom workspace
+ *  (pi-coding-agent `createAgentSession` parity). */
+export function createAgentSession(opts: ServerlessOptions = {}): {
+  harness: ServerlessHarness;
+  workspace: WorkspaceOperations;
+} {
+  const harness = new ServerlessHarness(opts);
+  return { harness, workspace: harness.workspace };
+}

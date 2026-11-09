@@ -5,6 +5,12 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.51
+    \\  • graff sessions reads 64 KiB header prefixes in a reusable scratch arena; session load/resume frees parse trees after load
+    \\  • single-copy message arena reclaim, scoped trajectory archive folds, and faster remembered-model startup
+    \\  • -Dminimal and per-subsystem build flags (-Dlearn, -Dserve, -Dacp, -Dextras), codedb symbol ranking, and --eval contrastive reflection
+    \\  • zero-binary ServerlessHarness SDK runtime with InMemoryWorkspace, pluggable tools, lifecycle hooks, steer/followUp, and state snapshots
+    \\
     \\0.302.74.5
     \\  • Claude Agent ignores unprefixed tool calls rejected by Claude Code and keeps earlier images across checkpoints
     \\  • read_tool_result keeps originating workspace handles across workspace switches

@@ -193,6 +193,8 @@ pub fn run(ctx: *Ctx) !void {
                     ctx.root.emit(.{ .type = "error", .message = message });
                     continue;
                 };
+                ctx.root.reclaimMessages();
+                session.saveSessionAsync(ctx.root, ctx.arena, ctx.root.session_name) catch {};
                 ctx.root.emit(.{ .type = "compact", .ok = true, .chars = chars });
                 continue;
             }

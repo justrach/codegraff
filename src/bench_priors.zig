@@ -129,6 +129,7 @@ pub const builtin_entries = [_]Entry{
 /// A `-w` worktree changes the tree, and every later load (auto-promote's
 /// hot reload) runs in full.
 var g_startup_tree: ?[]const u8 = null;
+var g_priors_arena: ?std.heap.ArenaAllocator = null;
 
 fn treeId(io: Io, arena: Allocator) ?[]const u8 {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -141,10 +142,16 @@ pub fn loadInto(io: Io, arena: Allocator, home: ?[]const u8) void {
         g_startup_tree = null;
         if (treeId(io, arena)) |now| if (std.mem.eql(u8, tree, now)) return;
     }
-    var sheet = readSheet(io, arena, bench_path);
+    var fresh_priors = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const pa = fresh_priors.allocator();
+    var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer scratch.deinit();
+    const sa = scratch.allocator();
+
+    var sheet = readSheet(io, pa, bench_path);
     if (sheet == null) if (home) |h| {
-        const p = std.fmt.allocPrint(arena, "{s}/{s}", .{ h, bench_path }) catch return;
-        sheet = readSheet(io, arena, p);
+        const p = std.fmt.allocPrint(sa, "{s}/{s}", .{ h, bench_path }) catch return;
+        sheet = readSheet(io, pa, p);
     };
     g_entries = if (sheet) |s| s.entries else &builtin_entries;
     // DGM feedback (#374 follow-on): lived, niche-scored runs from THIS
@@ -152,17 +159,22 @@ pub fn loadInto(io: Io, arena: Allocator, home: ?[]const u8) void {
     // front routes on what these models actually did here, not only on a
     // leaderboard snapshot. Auto-promote's hot-reload re-runs this, so the
     // front tightens as the session scores work.
-    const archive = trace.readTrajectoryArchive(io, arena, 8 << 20);
-    g_entries = blend(arena, g_entries, archive);
-    g_ladders = derive(arena, g_entries);
+    // #1845: read the raw archive into `sa` (freed at `defer`) and keep
+    // surviving priors/cells/arms in `g_priors_arena`, replacing the old
+    // generation on hot reload.
+    const archive = trace.readTrajectoryArchive(io, sa, 8 << 20);
+    g_entries = blend(pa, g_entries, archive);
+    g_ladders = derive(pa, g_entries);
     // #372: the SAME archive read also folds the (shape, role, tier, model)
     // policy cells, so the session-wide ladders and the per-cell learned
     // policy can never disagree about which runs they have seen.
-    @import("route_policy.zig").loadCells(arena, archive);
+    @import("route_policy.zig").loadCells(pa, archive);
     // …and the (task_class, budget_band, stratum) orchestration arms, hung on
     // this same pass for the same reason and at no extra I/O: one archive
     // read, three consumers, one consistent view of history.
-    @import("orchestration_policy.zig").loadArms(arena, archive);
+    @import("orchestration_policy.zig").loadArms(pa, archive);
+    if (g_priors_arena) |*old| old.deinit();
+    g_priors_arena = fresh_priors;
 }
 
 fn readSheet(io: Io, arena: Allocator, path: []const u8) ?Sheet {
@@ -255,6 +267,9 @@ pub fn kindIs(line: []const u8, kind: []const u8) bool {
 
 pub fn foldObservations(arena: Allocator, archive: []const u8) []Obs {
     const Recipe = struct { sha: []const u8, model: []const u8, effort: []const u8 };
+    var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer scratch.deinit();
+    const sa = scratch.allocator();
     var recipes: std.ArrayList(Recipe) = .empty;
     var obs: std.ArrayList(Obs) = .empty;
     var pass: usize = 0;
@@ -263,14 +278,14 @@ pub fn foldObservations(arena: Allocator, archive: []const u8) []Obs {
         while (it.next()) |ln| {
             const t = std.mem.trim(u8, ln, " \t\r");
             if (!kindIs(t, if (pass == 0) "recipe" else "score")) continue;
-            const v = std.json.parseFromSliceLeaky(std.json.Value, arena, t, .{}) catch continue;
+            const v = std.json.parseFromSliceLeaky(std.json.Value, sa, t, .{}) catch continue;
             if (v != .object) continue;
             const o = v.object;
             const kind = strField(o, "kind") orelse continue;
             const sha = strField(o, "prompt_sha") orelse continue;
             if (pass == 0 and std.mem.eql(u8, kind, "recipe")) {
                 const model = strField(o, "model") orelse continue;
-                recipes.append(arena, .{ .sha = sha, .model = model, .effort = strField(o, "effort") orelse "" }) catch return obs.items;
+                recipes.append(sa, .{ .sha = sha, .model = model, .effort = strField(o, "effort") orelse "" }) catch return obs.items;
             } else if (pass == 1 and std.mem.eql(u8, kind, "score")) {
                 const sv = o.get("score") orelse continue;
                 const s: f64 = switch (sv) {
@@ -286,7 +301,9 @@ pub fn foldObservations(arena: Allocator, archive: []const u8) []Obs {
                 const slot: *Obs = for (obs.items) |*x| {
                     if (std.mem.eql(u8, x.model, r.model) and std.mem.eql(u8, x.effort, r.effort)) break x;
                 } else blk: {
-                    obs.append(arena, .{ .model = r.model, .effort = r.effort }) catch return obs.items;
+                    const m_copy = arena.dupe(u8, r.model) catch return obs.items;
+                    const e_copy = if (r.effort.len == 0) "" else (arena.dupe(u8, r.effort) catch return obs.items);
+                    obs.append(arena, .{ .model = m_copy, .effort = e_copy }) catch return obs.items;
                     break :blk &obs.items[obs.items.len - 1];
                 };
                 slot.sum += s;

@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 from event_templates import STDIO_EVENTS, REMOTE_EVENTS
+from serverless_templates import SERVERLESS_TS, SERVERLESS_PY
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -723,7 +724,7 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<Event> {{
 
 export const MODELS: ModelName[] = [{", ".join(f'"{m}"' for m in models)}];
 export const TOOLS: ToolName[] = [{", ".join(f'"{t}"' for t in tools)}];
-'''
+''' + SERVERLESS_TS
 
 
 def gen_ts_remote(schema):
@@ -1252,7 +1253,7 @@ export async function* runAgentRemote(opts: RunAgentRemoteOptions): AsyncGenerat
 
 export const MODELS: ModelName[] = [{", ".join(f'"{m}"' for m in models)}];
 export const TOOLS: ToolName[] = [{", ".join(f'"{t}"' for t in tools)}];
-'''
+''' + SERVERLESS_TS
 
 
 def gen_py(schema):
@@ -1945,7 +1946,7 @@ class RemoteHarness:
 
     def __exit__(self, *exc):
         self.close()
-'''
+''' + SERVERLESS_PY
 
 
 def main():

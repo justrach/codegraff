@@ -415,13 +415,13 @@ pub fn appendTodosFromValue(arena: Allocator, todos: *std.ArrayList(agent_mod.To
     if (v != .array) return;
     for (v.array.items) |item| {
         if (item != .object) continue;
-        const content = if (item.object.get("content")) |c| (if (c == .string) c.string else continue) else continue;
-        const status = if (item.object.get("status")) |s| (if (s == .string) s.string else "pending") else "pending";
+        const content = if (item.object.get("content")) |c| (if (c == .string) try arena.dupe(u8, c.string) else continue) else continue;
+        const status = if (item.object.get("status")) |s| (if (s == .string) try arena.dupe(u8, s.string) else "pending") else "pending";
         const epoch: u64 = if (item.object.get("epoch")) |e| (if (e == .integer and e.integer >= 0) @intCast(e.integer) else 0) else 0;
         // Absent in sessions written before #394: those items are live, and the
         // first new ask retires them if they turn out to be a finished list.
         const retired = if (item.object.get("retired")) |r| (r == .bool and r.bool) else false;
-        const reason = if (item.object.get("reason")) |r| (if (r == .string) r.string else "") else "";
+        const reason = if (item.object.get("reason")) |r| (if (r == .string and r.string.len > 0) try arena.dupe(u8, r.string) else "") else "";
         try todos.append(arena, .{ .content = content, .status = status, .epoch = epoch, .retired = retired, .reason = reason });
     }
 }
@@ -473,28 +473,32 @@ pub fn restoreContextMeter(root: *Agent, saved_context_tokens: u64, saved_local_
     root.last_cache_read = 0;
 }
 
-/// Restore a saved session: parse the file (arena-owned), rebuild the
-/// provider, and replace the live history. The wire format must still match
-/// the restored provider's kind — same provider id guarantees it.
+/// Restore a saved session: parse the file in a scoped scratch arena (#1858),
+/// rebuild the provider, and replace the live history without retaining the raw
+/// file bytes or JSON parse tree in `arena`.
 pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8) !void {
     flushSaves(); // #273: a session switch never leaves the outgoing one queued
-    const found = @import("session_discovery.zig").locate(root, arena, name) orelse return error.FileNotFound;
-    const data = Io.Dir.cwd().readFileAlloc(root.io, found.path, arena, .limited(session_index.max_session_bytes)) catch |err|
+    var load_scratch = std.heap.ArenaAllocator.init(root.gpa);
+    defer load_scratch.deinit();
+    const scratch = load_scratch.allocator();
+    const found = @import("session_discovery.zig").locate(root, scratch, name) orelse return error.FileNotFound;
+    const data = Io.Dir.cwd().readFileAlloc(root.io, found.path, scratch, .limited(session_index.max_session_bytes)) catch |err|
         return if (err == error.StreamTooLong) error.SessionTooLarge else error.FileNotFound;
-    const parsed = try std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always });
+    const parsed = try std.json.parseFromSliceLeaky(Value, scratch, data, .{ .allocate = .alloc_always });
     if (parsed != .object) return error.BadSession;
     var obj = parsed.object;
-    try @import("session_version.zig").upgrade(arena, &obj); // ADR 0319: a newer format is refused before any state changes
-    const pid = if (obj.get("provider")) |v| v.string else return error.BadSession;
-    const model = if (obj.get("model")) |v| v.string else return error.BadSession;
+    try @import("session_version.zig").upgrade(scratch, &obj); // ADR 0319: a newer format is refused before any state changes
+    const pid = if (obj.get("provider")) |v| (if (v == .string) try arena.dupe(u8, v.string) else return error.BadSession) else return error.BadSession;
+    const model = if (obj.get("model")) |v| (if (v == .string) try arena.dupe(u8, v.string) else return error.BadSession) else return error.BadSession;
     var msgs = if (obj.get("messages")) |v| (if (v == .array) v.array else return error.BadSession) else return error.BadSession;
     const claude_import = if (obj.get("imported_from")) |v| v == .string and std.mem.eql(u8, v.string, "claude") else false;
     const strict = if (obj.get("strict")) |v| (v == .bool and v.bool) else false;
     const ultracode_mode = if (obj.get("ultracode_mode")) |v| (v == .bool and v.bool) else false;
-    const goal: ?agent_mod.Goal = if (obj.get("goal")) |v| goalFromValue(v, unixMs(root.io)) else null;
-    const parent = if (obj.get("parent")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null;
+    var goal: ?agent_mod.Goal = if (obj.get("goal")) |v| goalFromValue(v, unixMs(root.io)) else null;
+    if (goal) |*g| g.objective = try arena.dupe(u8, g.objective);
+    const parent = if (obj.get("parent")) |v| (if (v == .string and v.string.len > 0) try arena.dupe(u8, v.string) else null) else null;
     // Older builds missed Responses input_text and persisted the placeholder.
-    const title = if (obj.get("title")) |v| (if (v == .string and v.string.len > 0 and !std.mem.eql(u8, v.string, "Untitled session")) v.string else null) else null;
+    const title = if (obj.get("title")) |v| (if (v == .string and v.string.len > 0 and !std.mem.eql(u8, v.string, "Untitled session")) try arena.dupe(u8, v.string) else null) else null;
     // Optional for backward compatibility with sessions written before context
     // metering was persisted. JSON integers are signed; ignore negative/wrong-type
     // values instead of turning a corrupt session into an enormous unsigned count.
@@ -509,14 +513,14 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
 
     // #1556: an explicit cross-provider --model launch skipped this plan login.
     if (!claude_import) @import("credential_failover.zig").preferPlanFor(root.io, root.gpa, root.arena, root.home, keys, pid);
-    root.ensureStoredKeys(keys);
+    if (keys.get(pid) == null) root.ensureStoredKeys(keys);
     if (!claude_import) {
         if (std.mem.eql(u8, pid, "codex")) root.ensureModelCatalog(keys.*);
         root.provider = try keys.providerById(pid, model);
     } else {
         // The source route is metadata. Import history into the configured
         // graff provider without resolving any credentials for Claude Code.
-        msgs = try @import("adopt_conversation.zig").forProvider(arena, msgs, root.provider.kind);
+        msgs = try @import("adopt_conversation.zig").forProvider(scratch, msgs, root.provider.kind);
     }
     // A resumed session may use a different wire format than the startup
     // default. Materialize that catalog before rebasing its saved context
@@ -524,13 +528,19 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     try @import("session_prompt.zig").restore(root, obj);
     try @import("session_catalog.zig").restore(root, obj);
     try root.ensureRootTools(root.provider.kind);
-    const compaction_window = try @import("compaction_window.zig").State.restore(arena, obj, msgs.items);
+    const compaction_window = try @import("compaction_window.zig").State.restore(scratch, obj, msgs.items);
     root.messages = msgs;
     root.compaction_window = compaction_window;
-    @import("history_wire.zig").prepare(arena, root.provider.kind, &root.messages);
+    @import("history_wire.zig").prepare(scratch, root.provider.kind, &root.messages);
     // #752: truncated `function.arguments` strings 400 every later request.
-    tool_call_args.repairHistory(root.gpa, arena, root.messages.items);
-    root.reclaimMessages();
+    tool_call_args.repairHistory(root.gpa, scratch, root.messages.items);
+    if (@import("main.zig").g_session_arena != null and !root.sub) {
+        root.reclaimMessages();
+    } else {
+        var cloned = try std.json.Array.initCapacity(arena, root.messages.items.len);
+        for (root.messages.items) |m| cloned.appendAssumeCapacity(try util.dupeJsonValue(arena, m));
+        root.messages = cloned;
+    }
     root.strict = strict;
     root.ultracode_mode = ultracode_mode;
     root.goal = goal;

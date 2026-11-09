@@ -252,12 +252,15 @@ fn boolField(o: std.json.ObjectMap, key: []const u8, dflt: bool) bool {
 /// than filed under a default — an uncelled observation is honest, a
 /// mis-celled one silently steers every future run in that cell.
 pub fn foldArms(arena: Allocator, archive: []const u8) []ArmObs {
+    var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer scratch.deinit();
+    const sa = scratch.allocator();
     var out: std.ArrayList(ArmObs) = .empty;
     var it = std.mem.splitScalar(u8, archive, '\n');
     while (it.next()) |ln| {
         const t = std.mem.trim(u8, ln, " \t\r");
         if (!@import("bench_priors.zig").kindIs(t, "orch_outcome")) continue;
-        const v = std.json.parseFromSliceLeaky(std.json.Value, arena, t, .{}) catch continue;
+        const v = std.json.parseFromSliceLeaky(std.json.Value, sa, t, .{}) catch continue;
         if (v != .object) continue;
         const o = v.object;
         const kind = strField(o, "kind") orelse continue;
@@ -282,14 +285,20 @@ pub fn foldArms(arena: Allocator, archive: []const u8) []ArmObs {
             const c = numField(o, "calls_used") orelse break :blk 0;
             break :blk if (c < 0) 0 else @intFromFloat(c);
         };
-        const key: Key = .{
+        const probe_key: Key = .{
             .task_class = TaskClass.parse(tc),
             .budget_band = BudgetBand.parse(bb),
             .stratum = stratum,
         };
         const slot: *ArmObs = for (out.items) |*c| {
-            if (c.arm == arm and c.key.eql(key)) break c;
+            if (c.arm == arm and c.key.eql(probe_key)) break c;
         } else blk: {
+            const stratum_copy = arena.dupe(u8, stratum) catch return out.items;
+            const key: Key = .{
+                .task_class = probe_key.task_class,
+                .budget_band = probe_key.budget_band,
+                .stratum = stratum_copy,
+            };
             out.append(arena, .{ .key = key, .arm = arm }) catch return out.items;
             break :blk &out.items[out.items.len - 1];
         };

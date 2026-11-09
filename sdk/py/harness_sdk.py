@@ -684,3 +684,558 @@ class RemoteHarness:
 
     def __exit__(self, *exc):
         self.close()
+
+
+# ── Serverless / In-Memory Agent Runtime (Stdlib-only, Lambda/Edge ready) ──
+
+class InMemoryWorkspace:
+    """In-memory virtual workspace for serverless / stateless Python agent runs.
+    Supports `read_file`, `write_file`, `delete_file`, `list_files`, `snapshot`,
+    `restore`, and `diff` without touching the host filesystem."""
+
+    def __init__(self, initial_files: Optional[dict] = None, exec_fn=None):
+        self._files: dict = {}
+        for k, v in (initial_files or {}).items():
+            self._files[self._norm(k)] = str(v)
+        self.exec_fn = exec_fn
+
+    @staticmethod
+    def _norm(path: str) -> str:
+        p = path.replace("\\", "/").lstrip("./")
+        while p.startswith("/"):
+            p = p[1:]
+        return p.rstrip("/")
+
+    def read_file(self, path: str) -> str:
+        key = self._norm(path)
+        if key not in self._files:
+            raise FileNotFoundError(f"ENOENT: file not found: {path}")
+        return self._files[key]
+
+    def write_file(self, path: str, content: str) -> None:
+        self._files[self._norm(path)] = str(content)
+
+    def delete_file(self, path: str) -> None:
+        key = self._norm(path)
+        if key not in self._files:
+            raise FileNotFoundError(f"ENOENT: file not found: {path}")
+        del self._files[key]
+
+    def list_files(self, prefix: str = "") -> List[str]:
+        p = self._norm(prefix)
+        return sorted(
+            k for k in self._files.keys()
+            if not p or k == p or k.startswith(p + "/")
+        )
+
+    def snapshot(self) -> dict:
+        return {k: self._files[k] for k in sorted(self._files.keys())}
+
+    def restore(self, files: dict) -> None:
+        self._files.clear()
+        for k, v in files.items():
+            self._files[self._norm(k)] = str(v)
+
+    def diff(self, baseline: Optional[dict] = None) -> List[dict]:
+        base = {self._norm(k): str(v) for k, v in (baseline or {}).items()}
+        keys = sorted(set(base.keys()) | set(self._files.keys()))
+        out: List[dict] = []
+        for k in keys:
+            b = base.get(k)
+            a = self._files.get(k)
+            if b is None and a is not None:
+                out.append({"path": k, "status": "added"})
+            elif b is not None and a is None:
+                out.append({"path": k, "status": "deleted"})
+            elif b != a:
+                out.append({"path": k, "status": "modified"})
+        return out
+
+
+def define_tool(name: str, description: str, parameters: dict, execute) -> dict:
+    """Define a tool for `ServerlessHarness`."""
+    return {
+        "name": name,
+        "description": description,
+        "parameters": parameters,
+        "execute": execute,
+    }
+
+
+def create_read_only_tools(workspace: InMemoryWorkspace) -> List[dict]:
+    """Create read-only coding tools (`read_file`, `list_dir`, `grep`) backed by `workspace`."""
+    def _read(inp: dict, _ctx: dict):
+        content = workspace.read_file(str(inp.get("path", "")))
+        lines = content.split("\n")
+        start = max(1, int(inp.get("start_line") or 1))
+        end = min(len(lines), int(inp.get("end_line") or len(lines)))
+        return "\n".join(f"{start + i}: {line}" for i, line in enumerate(lines[start - 1:end]))
+
+    def _list(inp: dict, _ctx: dict):
+        files = workspace.list_files(str(inp.get("path", "")))
+        return "\n".join(files) if files else "(empty)"
+
+    def _grep(inp: dict, _ctx: dict):
+        pattern = str(inp.get("pattern", ""))
+        rx = re.compile(pattern)
+        matches = []
+        for f in workspace.list_files(str(inp.get("path", ""))):
+            for idx, line in enumerate(workspace.read_file(f).split("\n"), 1):
+                if rx.search(line):
+                    matches.append(f"{f}:{idx}:{line}")
+        return "\n".join(matches) if matches else "No matches found."
+
+    return [
+        define_tool(
+            "read_file",
+            "Read the contents of a file in the workspace.",
+            {"type": "object", "properties": {"path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}}, "required": ["path"]},
+            _read,
+        ),
+        define_tool(
+            "list_dir",
+            "List files in the workspace under an optional prefix.",
+            {"type": "object", "properties": {"path": {"type": "string"}}},
+            _list,
+        ),
+        define_tool(
+            "grep",
+            "Search files in the workspace for a regex pattern.",
+            {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]},
+            _grep,
+        ),
+    ]
+
+
+def create_coding_tools(workspace: InMemoryWorkspace) -> List[dict]:
+    """Create coding tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `grep`, and optional `bash`) backed by `workspace`."""
+    tools = list(create_read_only_tools(workspace))
+
+    def _write(inp: dict, _ctx: dict):
+        path = str(inp.get("path", ""))
+        content = str(inp.get("content", ""))
+        workspace.write_file(path, content)
+        return f"Wrote {len(content)} bytes to {path}"
+
+    def _edit(inp: dict, _ctx: dict):
+        path = str(inp.get("path", ""))
+        old_s = str(inp.get("old_str", ""))
+        new_s = str(inp.get("new_str", ""))
+        replace_all = bool(inp.get("replace_all", False))
+        if not old_s:
+            return {"output": "old_str must not be empty", "is_error": True}
+        content = workspace.read_file(path)
+        count = content.count(old_s)
+        if count == 0:
+            return {"output": f"old_str not found in {path}", "is_error": True}
+        if count > 1 and not replace_all:
+            return {"output": f"old_str appears {count} times in {path}", "is_error": True}
+        updated = content.replace(old_s, new_s) if replace_all else content.replace(old_s, new_s, 1)
+        workspace.write_file(path, updated)
+        return f"Updated {path}"
+
+    tools.append(define_tool(
+        "write_file",
+        "Create or overwrite a file in the workspace.",
+        {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
+        _write,
+    ))
+    tools.append(define_tool(
+        "edit_file",
+        "Replace an exact string in a file with a new string.",
+        {"type": "object", "properties": {"path": {"type": "string"}, "old_str": {"type": "string"}, "new_str": {"type": "string"}, "replace_all": {"type": "boolean"}}, "required": ["path", "old_str", "new_str"]},
+        _edit,
+    ))
+    if workspace.exec_fn is not None:
+        def _bash(inp: dict, _ctx: dict):
+            res = workspace.exec_fn(str(inp.get("command", "")))
+            return {"output": res.get("output", ""), "is_error": res.get("exit_code", 0) != 0}
+        tools.append(define_tool(
+            "bash",
+            "Execute a shell command in the workspace.",
+            {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
+            _bash,
+        ))
+    return tools
+
+
+class ServerlessHarness:
+    """Zero-binary, stdlib-only Python agent session for AWS Lambda, Cloud
+    Functions, and in-memory testing. Emits the same event dicts as `Harness`
+    and `RemoteHarness`."""
+
+    def __init__(self, provider: str = "codegraff", model: str = "gpt-5.5",
+                 api_key: Optional[str] = None, endpoint: Optional[str] = None,
+                 system_prompt: Optional[str] = None,
+                 append_system_prompt: Optional[str] = None,
+                 workspace: Optional[Union[InMemoryWorkspace, dict]] = None,
+                 coding_tools: Union[bool, str] = True,
+                 tools: Optional[List[dict]] = None,
+                 stream_fn=None, before_tool_call=None, after_tool_call=None,
+                 transform_context=None, max_tool_calls: int = 32,
+                 max_model_calls: int = 64, dedupe_tool_calls: bool = False,
+                 session: Optional[dict] = None):
+        if isinstance(workspace, InMemoryWorkspace):
+            self.workspace = workspace
+        else:
+            self.workspace = InMemoryWorkspace(workspace if isinstance(workspace, dict) else {})
+        if session and isinstance(session.get("files"), dict):
+            self.workspace.restore(session["files"])
+        self.session_id = (session or {}).get("session_id") or ("serverless-" + secrets.token_hex(4))
+        self.provider = (session or {}).get("provider") or provider
+        self.model = (session or {}).get("model") or model
+        self.effort = (session or {}).get("effort") or "medium"
+        self.base_system_prompt = (session or {}).get("system_prompt") or system_prompt or (
+            "You are Graff, an autonomous coding agent. Use the provided tools to inspect, edit, and verify files before answering."
+        )
+        self.appended_system_prompt = append_system_prompt or ""
+        self.last_seq = int((session or {}).get("seq") or 0)
+        self.messages: List[dict] = list((session or {}).get("messages") or [])
+        self.api_key = api_key
+        self.endpoint = endpoint
+        self.stream_fn = stream_fn
+        self.before_tool_call = before_tool_call
+        self.after_tool_call = after_tool_call
+        self.transform_context = transform_context
+        self.max_tool_calls = max_tool_calls
+        self.max_model_calls = max_model_calls
+        self.total_model_calls = 0
+        self.dedupe_tool_calls = dedupe_tool_calls
+        self._steer_queue: List[str] = []
+        self._followup_queue: List[str] = []
+        self._tool_map: dict = {}
+        if coding_tools == "readonly":
+            for t in create_read_only_tools(self.workspace):
+                self._tool_map[t["name"]] = t
+        elif coding_tools:
+            for t in create_coding_tools(self.workspace):
+                self._tool_map[t["name"]] = t
+        for t in (tools or []):
+            self._tool_map[t["name"]] = t
+
+    def steer(self, text: str) -> None:
+        if text.strip():
+            self._steer_queue.append(text)
+
+    def follow_up(self, text: str) -> None:
+        if text.strip():
+            self._followup_queue.append(text)
+
+    def export_state(self) -> dict:
+        return {
+            "version": 1,
+            "session_id": self.session_id,
+            "provider": self.provider,
+            "model": self.model,
+            "effort": self.effort,
+            "system_prompt": self._effective_system_prompt(),
+            "seq": self.last_seq,
+            "messages": json.loads(json.dumps(self.messages)),
+            "files": self.workspace.snapshot(),
+        }
+
+    def import_state(self, snapshot: dict) -> None:
+        self.provider = snapshot["provider"]
+        self.model = snapshot["model"]
+        self.effort = snapshot.get("effort", "medium")
+        self.base_system_prompt = snapshot["system_prompt"]
+        self.appended_system_prompt = ""
+        self.last_seq = int(snapshot.get("seq", 0))
+        self.messages = json.loads(json.dumps(snapshot.get("messages", [])))
+        if isinstance(snapshot.get("files"), dict):
+            self.workspace.restore(snapshot["files"])
+
+    def _effective_system_prompt(self) -> str:
+        if self.appended_system_prompt:
+            return f"{self.base_system_prompt}\n\n{self.appended_system_prompt}"
+        return self.base_system_prompt
+
+    def _emit(self, payload: dict) -> dict:
+        self.last_seq += 1
+        return {"seq": self.last_seq, **payload}
+
+    def chat(self, text: str, review: bool = False,
+             images: Optional[List[ImageInput]] = None) -> Iterator[dict]:
+        saved = json.loads(json.dumps(self.messages)) if review else None
+        try:
+            yield self._emit({"type": "started", "provider": self.provider, "model": self.model})
+            user_msg: dict = {"role": "user", "content": text}
+            if images:
+                user_msg["images"] = images
+            self.messages.append(user_msg)
+            active_tools = create_read_only_tools(self.workspace) if review else list(self._tool_map.values())
+            active_map = {t["name"]: t for t in active_tools}
+            tool_calls_turn = 0
+            api_calls_turn = 0
+            in_tok = 0
+            out_tok = 0
+            final_text = ""
+            seen_keys = set()
+
+            while True:
+                while self._steer_queue:
+                    self.messages.append({"role": "user", "content": self._steer_queue.pop(0)})
+                if self.total_model_calls >= self.max_model_calls:
+                    yield self._emit({"type": "error", "message": f"max_model_calls ({self.max_model_calls}) exceeded"})
+                    return
+                ctx_msgs = self.transform_context(list(self.messages)) if self.transform_context else list(self.messages)
+                self.total_model_calls += 1
+                api_calls_turn += 1
+                req_payload = {
+                    "provider": self.provider,
+                    "model": self.model,
+                    "effort": self.effort,
+                    "system_prompt": (
+                        f"{self._effective_system_prompt()}\n\n[review mode: read-only inspection]"
+                        if review else self._effective_system_prompt()
+                    ),
+                    "messages": ctx_msgs,
+                    "tools": [{"name": t["name"], "description": t["description"], "parameters": t["parameters"]} for t in active_tools],
+                }
+                try:
+                    resp = self.stream_fn(req_payload) if self.stream_fn is not None else self._call_http_provider(req_payload)
+                except Exception as err:
+                    yield self._emit({"type": "error", "message": str(err)})
+                    return
+                step_text = resp.get("text", "")
+                in_tok += int(resp.get("input_tokens", 0))
+                out_tok += int(resp.get("output_tokens", 0))
+                if step_text:
+                    final_text = step_text
+                    yield self._emit({"type": "text", "text": step_text})
+                calls = resp.get("tool_calls") or []
+                self.messages.append({"role": "assistant", "content": step_text, "tool_calls": calls})
+                if not calls:
+                    if self._followup_queue:
+                        self.messages.append({"role": "user", "content": self._followup_queue.pop(0)})
+                        continue
+                    break
+                for call in calls:
+                    name = call.get("name", "")
+                    inp = call.get("input") or {}
+                    cid = call.get("id", "call_1")
+                    if tool_calls_turn >= self.max_tool_calls:
+                        msg = f"max_tool_calls ({self.max_tool_calls}) exceeded"
+                        yield self._emit({"type": "tool_rejected", "name": name, "reason": "budget", "input": inp, "message": msg})
+                        yield self._emit({"type": "tool_result", "name": name, "is_error": True, "text": msg})
+                        self.messages.append({"role": "tool", "tool_call_id": cid, "tool_name": name, "content": msg, "is_error": True})
+                        continue
+                    k = f"{name}:{json.dumps(inp, sort_keys=True)}"
+                    if self.dedupe_tool_calls and k in seen_keys:
+                        msg = f"duplicate tool call rejected: {name}"
+                        yield self._emit({"type": "tool_rejected", "name": name, "reason": "duplicate", "input": inp, "message": msg})
+                        yield self._emit({"type": "tool_result", "name": name, "is_error": True, "text": msg})
+                        self.messages.append({"role": "tool", "tool_call_id": cid, "tool_name": name, "content": msg, "is_error": True})
+                        continue
+                    seen_keys.add(k)
+                    if self.before_tool_call:
+                        gate = self.before_tool_call({"call_id": cid, "name": name, "input": inp, "step": api_calls_turn})
+                        if isinstance(gate, dict) and gate.get("block"):
+                            msg = gate.get("reason") or f"blocked: {name}"
+                            yield self._emit({"type": "tool_rejected", "name": name, "reason": "policy", "input": inp, "message": msg})
+                            yield self._emit({"type": "tool_result", "name": name, "is_error": True, "text": msg})
+                            self.messages.append({"role": "tool", "tool_call_id": cid, "tool_name": name, "content": msg, "is_error": True})
+                            continue
+                    tool = active_map.get(name)
+                    if tool is None:
+                        msg = f"unknown tool: {name}"
+                        yield self._emit({"type": "tool_result", "name": name, "is_error": True, "text": msg})
+                        self.messages.append({"role": "tool", "tool_call_id": cid, "tool_name": name, "content": msg, "is_error": True})
+                        continue
+                    tool_calls_turn += 1
+                    yield self._emit({"type": "tool_call", "name": name, "input": inp})
+                    try:
+                        raw = tool["execute"](inp, {"call_id": cid, "workspace": self.workspace})
+                        if isinstance(raw, dict):
+                            out_s = str(raw.get("output", ""))
+                            is_err = bool(raw.get("is_error", False))
+                        else:
+                            out_s = str(raw)
+                            is_err = False
+                    except Exception as e:
+                        out_s = str(e)
+                        is_err = True
+                    if self.after_tool_call:
+                        post = self.after_tool_call({"call_id": cid, "name": name, "input": inp, "output": out_s, "is_error": is_err})
+                        if isinstance(post, dict):
+                            out_s = str(post.get("output", out_s))
+                            is_err = bool(post.get("is_error", is_err))
+                    yield self._emit({"type": "tool_result", "name": name, "is_error": is_err, "text": out_s})
+                    self.messages.append({"role": "tool", "tool_call_id": cid, "tool_name": name, "content": out_s, "is_error": is_err})
+            yield self._emit({
+                "type": "turn",
+                "text": final_text,
+                "context_tokens": in_tok + out_tok,
+                "cost_usd": 0.0,
+                "input_tokens": in_tok,
+                "uncached_input_tokens": in_tok,
+                "cache_read_tokens": 0,
+                "output_tokens": out_tok,
+                "api_calls": api_calls_turn,
+                "subscription_calls": 0,
+                "unpriced_calls": api_calls_turn,
+                "complete": True,
+                "metadata_complete": True,
+            })
+        finally:
+            if saved is not None:
+                self.messages = saved
+
+    def ask(self, text: str, images: Optional[List[ImageInput]] = None) -> str:
+        final = ""
+        for ev in self.chat(text, images=images):
+            if ev.get("type") == "turn":
+                final = ev["text"]
+            elif ev.get("type") == "error":
+                raise RuntimeError(ev["message"])
+        return final
+
+    def review(self, text: str, images: Optional[List[ImageInput]] = None) -> str:
+        final = ""
+        for ev in self.chat(text, review=True, images=images):
+            if ev.get("type") == "turn":
+                final = ev["text"]
+            elif ev.get("type") == "error":
+                raise RuntimeError(ev["message"])
+        return final
+
+    def set_model(self, provider: str, model: str) -> None:
+        if not provider or not model:
+            raise ValueError("provider and model are required")
+        self.provider = provider
+        self.model = model
+
+    def set_effort(self, level: str) -> None:
+        self.effort = level
+
+    def set_system_prompt(self, text: str, append: bool = False) -> None:
+        if append:
+            self.appended_system_prompt = (
+                f"{self.appended_system_prompt}\n\n{text}" if self.appended_system_prompt else text
+            )
+        else:
+            self.base_system_prompt = text
+            self.appended_system_prompt = ""
+
+    def append_system_prompt(self, text: str) -> None:
+        self.set_system_prompt(text, append=True)
+
+    def compact(self) -> None:
+        if len(self.messages) <= 2:
+            return
+        keep_from = max(1, len(self.messages) - 2)
+        older = self.messages[:keep_from]
+        recent = self.messages[keep_from:]
+        lines = [f"- [{m.get('role')}]: {str(m.get('content', ''))[:200]}" for m in older]
+        handoff = {
+            "role": "user",
+            "content": f"[compacted session summary ({len(older)} earlier messages)]\n" + "\n".join(lines),
+        }
+        self.messages = [handoff, *recent]
+
+    def _call_http_provider(self, req: dict) -> dict:
+        if not self.api_key and not self.endpoint:
+            raise RuntimeError("ServerlessHarness requires stream_fn, api_key, or endpoint")
+        if self.provider == "anthropic":
+            url = (self.endpoint or "https://api.anthropic.com/v1").rstrip("/")
+            if not url.endswith("/messages"):
+                url += "/messages"
+            headers = {
+                "Content-Type": "application/json",
+                "anthropic-version": "2023-06-01",
+            }
+            if self.api_key:
+                headers["x-api-key"] = self.api_key
+            body = json.dumps({
+                "model": req["model"],
+                "max_tokens": 8192,
+                "system": req["system_prompt"],
+                "messages": [{"role": "user" if m["role"] == "tool" else m["role"], "content": m.get("content", "")} for m in req["messages"]],
+                "tools": [{"name": t["name"], "description": t["description"], "input_schema": t["parameters"]} for t in req["tools"]],
+            }).encode()
+            http_req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+            data = json.loads(urllib.request.urlopen(http_req).read())
+            text_parts = []
+            tool_calls = []
+            for b in data.get("content", []):
+                if b.get("type") == "text":
+                    text_parts.append(b.get("text", ""))
+                elif b.get("type") == "tool_use":
+                    tool_calls.append({"id": b.get("id", "call_1"), "name": b.get("name", ""), "input": b.get("input") or {}})
+            usage = data.get("usage") or {}
+            return {
+                "text": "".join(text_parts),
+                "tool_calls": tool_calls,
+                "input_tokens": int(usage.get("input_tokens", 0)),
+                "output_tokens": int(usage.get("output_tokens", 0)),
+            }
+        url = (self.endpoint or "https://api.openai.com/v1").rstrip("/")
+        if not url.endswith("/chat/completions"):
+            url += "/chat/completions"
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        oai_msgs = [{"role": "system", "content": req["system_prompt"]}]
+        for m in req["messages"]:
+            if m["role"] == "assistant" and m.get("tool_calls"):
+                oai_msgs.append({
+                    "role": "assistant",
+                    "content": m.get("content") or None,
+                    "tool_calls": [
+                        {"id": tc.get("id", "call_1"), "type": "function", "function": {"name": tc.get("name", ""), "arguments": json.dumps(tc.get("input") or {})}}
+                        for tc in m["tool_calls"]
+                    ],
+                })
+            elif m["role"] == "tool":
+                oai_msgs.append({
+                    "role": "tool",
+                    "tool_call_id": m.get("tool_call_id", "call_1"),
+                    "content": m.get("content", ""),
+                })
+            else:
+                oai_msgs.append({"role": m["role"], "content": m.get("content", "")})
+        body = json.dumps({
+            "model": req["model"],
+            "messages": oai_msgs,
+            "tools": [{"type": "function", "function": t} for t in req["tools"]] if req["tools"] else None,
+        }).encode()
+        http_req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        data = json.loads(urllib.request.urlopen(http_req).read())
+        choice = (data.get("choices") or [{}])[0].get("message") or {}
+        tool_calls = []
+        for idx, tc in enumerate(choice.get("tool_calls") or []):
+            fn = tc.get("function") or {}
+            raw_args = fn.get("arguments") or "{}"
+            try:
+                parsed = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            except Exception:
+                parsed = {}
+            tool_calls.append({"id": tc.get("id", f"call_{idx+1}"), "name": fn.get("name", ""), "input": parsed})
+        usage = data.get("usage") or {}
+        return {
+            "text": choice.get("content") or "",
+            "tool_calls": tool_calls,
+            "input_tokens": int(usage.get("prompt_tokens", 0)),
+            "output_tokens": int(usage.get("completion_tokens", 0)),
+        }
+
+    def close(self) -> None:
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+def create_agent_session(**kwargs) -> dict:
+    """Create a serverless Python agent session (`{"harness": h, "workspace": h.workspace}`)."""
+    h = ServerlessHarness(**kwargs)
+    return {"harness": h, "workspace": h.workspace}
+
+
+def run_agent_serverless(prompt: str, **kwargs) -> Iterator[dict]:
+    """Run a single serverless turn, yielding event dicts."""
+    with ServerlessHarness(**kwargs) as h:
+        yield from h.chat(prompt)

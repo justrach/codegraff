@@ -22,13 +22,16 @@ pub fn deliver(self: *Agent) !void {
 }
 
 /// Soft steer only: `force` stays at the head of `g_steer_queue` so the
-/// REPL interrupt path still sees it after this turn unwinds.
+/// REPL interrupt path still sees it after this turn unwinds. Slash commands
+/// (`/compact`, `/model`, etc.) also stay queued for `mainloop.zig` so they
+/// execute as commands rather than being injected as model prompts (#1859).
 pub fn popSteerSoft() ?repl_glue.SteerEntry {
     repl_glue.steerLock();
     defer repl_glue.steerUnlock();
     const q = &main_mod.g_steer_queue;
     if (q.items.len == 0) return null;
     if (q.items[0].force) return null;
+    if (repl_glue.isSlashCommandLine(std.mem.trim(u8, q.items[0].text, " \t\r\n"))) return null;
     return q.orderedRemove(0);
 }
 
@@ -93,5 +96,22 @@ test "popSteerSoft leaves an empty queue alone" {
     for (main_mod.g_steer_queue.items) |e| std.heap.page_allocator.free(e.text);
     main_mod.g_steer_queue.clearRetainingCapacity();
     repl_glue.steerUnlock();
+    try std.testing.expect(popSteerSoft() == null);
+}
+
+test "#1859 popSteerSoft leaves slash commands queued for mainloop" {
+    const page = std.heap.page_allocator;
+    const cmd = try page.dupe(u8, "/compact");
+    repl_glue.steerLock();
+    for (main_mod.g_steer_queue.items) |e| page.free(e.text);
+    main_mod.g_steer_queue.clearRetainingCapacity();
+    try main_mod.g_steer_queue.append(page, .{ .text = cmd, .force = false });
+    repl_glue.steerUnlock();
+    defer {
+        repl_glue.steerLock();
+        for (main_mod.g_steer_queue.items) |e| page.free(e.text);
+        main_mod.g_steer_queue.clearRetainingCapacity();
+        repl_glue.steerUnlock();
+    }
     try std.testing.expect(popSteerSoft() == null);
 }

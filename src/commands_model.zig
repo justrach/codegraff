@@ -221,13 +221,16 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         // loop, and the exit save then printed "session saved" over a history
         // compaction never touched.
         const was_degraded = root.compact_pin_degraded;
-        _ = root.manualCompact() catch |err| {
+        if (root.manualCompact()) |_| {
+            root.reclaimMessages();
+            @import("session.zig").saveSessionAsync(root, arena, root.session_name) catch {};
+        } else |err| {
             const announced = err == error.ActivePromptPinned and !was_degraded and root.compact_pin_degraded;
             if (compactFailureText(err, announced)) |text| {
                 try out.print("{s}[{s}]{s}\n", .{ style.dim, text, style.reset });
                 try out.flush();
             }
-        };
+        }
         return true;
     }
     if (try @import("commands_edit.zig").tryHandle(root, line, out)) return true;
