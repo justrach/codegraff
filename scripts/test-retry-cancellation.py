@@ -206,8 +206,15 @@ class Client:
         return value
 
     def saved(self):
-        return [message for path in (self.root/'.graff/sessions').glob('*.session.json')
-                for message in json.loads(path.read_text()).get('messages', [])]
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                return [message for path in (self.root/'.graff/sessions').glob('*.session.json')
+                        for message in json.loads(path.read_text()).get('messages', [])]
+            except (PermissionError, json.JSONDecodeError):
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(.02)
 
     def close(self):
         if self.proc.poll() is None:

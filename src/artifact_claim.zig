@@ -172,7 +172,7 @@ pub fn gateCommandIn(arena: Allocator, io: Io, cmd: []const u8, key: []const u8,
     const resolved = if (builtin.is_test or kind != .pull_request) null else @import("artifact_claim_target.zig").resolve(arena, io, cmd, kind, cwd);
     // The remote read does not hold the ledger lock. A handoff/release during
     // that read must be observed before deciding whether this action may run.
-    const tx = begin(io, scratch.allocator(), cwd, null) catch return "artifact claim ledger unavailable or busy: action NOT performed";
+    const tx = begin(io, scratch.allocator(), cwd) catch return "artifact claim ledger unavailable or busy: action NOT performed";
     defer if (tx) |transaction| transaction.end();
     local = .{};
     if (tx) |transaction| {
@@ -250,7 +250,7 @@ pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []cons
     defer scratch.deinit();
     const repo = resolveRepo(arena, io, cwd, requested_repo);
     if (requested_repo != null and repo == null) return .{ .text = "claim repository could not be resolved; no claim changed", .is_error = true };
-    const tx = begin(io, scratch.allocator(), cwd, repo) catch return .{ .text = "claim ledger unavailable or busy", .is_error = true };
+    const tx = begin(io, scratch.allocator(), cwd) catch return .{ .text = "claim ledger unavailable or busy", .is_error = true };
     defer if (tx) |transaction| transaction.end();
     var local: Ledger = .{};
     const ledger = if (tx != null) &local else &g_ledger;
@@ -324,22 +324,21 @@ pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []cons
     return .{ .text = "action must be claim, release, handoff, or status", .is_error = true };
 }
 
-fn persistPath(io: Io, arena: Allocator, cwd: []const u8, repo: ?[]const u8) ?[]const u8 {
+fn persistPath(io: Io, arena: Allocator, cwd: []const u8) ?[]const u8 {
     if (g_persist_path) |p| return p;
     if (builtin.is_test and !g_test_resolve_cwd) return null;
-    if ((cwd.len == 0 or std.mem.eql(u8, cwd, ".")) and repo == null) return persist_rel;
-    if (claim_path.canonicalFileForRepo(arena, io, cwd, repo)) |p| return p;
+    if (claim_path.canonicalFile(arena, io, cwd)) |p| return p;
     if (builtin.is_test) return null;
     return persist_rel;
 }
 
-fn begin(io: Io, arena: Allocator, cwd: []const u8, repo: ?[]const u8) !?@import("repo_transaction.zig").Transaction {
-    const path = persistPath(io, arena, cwd, repo) orelse return null;
+fn begin(io: Io, arena: Allocator, cwd: []const u8) !?@import("repo_transaction.zig").Transaction {
+    const path = persistPath(io, arena, cwd) orelse return null;
     return try @import("repo_transaction.zig").Transaction.begin(io, arena, path);
 }
 
 fn readSnapshot(io: Io, arena: Allocator, cwd: []const u8) !Ledger {
-    const tx = try begin(io, arena, cwd, null);
+    const tx = try begin(io, arena, cwd);
     defer if (tx) |transaction| transaction.end();
     var ledger: Ledger = .{};
     if (tx) |transaction| try loadTransaction(io, transaction, &ledger, cwd) else return g_ledger;
@@ -367,7 +366,7 @@ fn loadTransaction(io: Io, tx: @import("repo_transaction.zig").Transaction, ledg
 }
 
 pub fn reloadForTest(io: Io) !void {
-    const path = persistPath(io, storeAlloc(), ".", null) orelse return;
+    const path = persistPath(io, storeAlloc(), ".") orelse return;
     g_ledger.len = 0;
     if (g_store) |*st| st.deinit();
     g_store = null;

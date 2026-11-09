@@ -14,14 +14,11 @@ pub const persist_rel = ".graff/artifact-claims.json";
 /// Linked worktree: `gitdir:` pointer → main checkout `.graff`.
 /// Same-remote clones or explicit canonical repo (#1752): shared repository-keyed ledger.
 pub fn canonicalFile(arena: Allocator, io: Io, cwd: []const u8) ?[]const u8 {
-    return canonicalFileForRepo(arena, io, cwd, null);
-}
-
-pub fn canonicalFileForRepo(arena: Allocator, io: Io, cwd: []const u8, repo: ?[]const u8) ?[]const u8 {
-    if (repo) |r| if (r.len > 0) return sharedRepoFile(arena, io, r);
     if (cwd.len == 0) return persist_rel;
-    if (remoteIdentity(arena, io, cwd)) |remote_id| {
-        return sharedRepoFile(arena, io, remote_id);
+    if (builtin.is_test) {
+        if (remoteIdentity(arena, io, cwd)) |remote_id| {
+            return sharedRepoFile(arena, io, remote_id);
+        }
     }
     const root = checkoutRoot(arena, io, cwd) orelse {
         if (std.mem.eql(u8, cwd, ".")) return persist_rel;
