@@ -53,6 +53,7 @@ const trace = @import("trace.zig");
 
 pub const dir = ".graff";
 pub const path = ".graff/playbook.jsonl";
+pub const corrupt_backup_path = ".graff/playbook.jsonl.corrupt";
 
 /// Whole-ledger read cap. A playbook is bullets, not a corpus; past this the
 /// file is something else and injecting it would be the bug, not the fix.
@@ -185,18 +186,36 @@ fn strOf(o: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     return if (v == .string) v.string else null;
 }
 
+pub const ParseReport = struct {
+    items: []const Item = &.{},
+    corrupt_lines: usize = 0,
+    first_corrupt_line: usize = 0,
+    unreadable_reason: []const u8 = "",
+};
+
 /// Replay the append-only log into the live item set, oldest first. Malformed
-/// lines are skipped rather than fatal — a half-written tail from a killed
-/// process must cost at most its own record.
-pub fn parse(arena: Allocator, data: []const u8) []const Item {
+/// lines are counted and skipped rather than fatal.
+pub fn parseDetailed(arena: Allocator, data: []const u8) ParseReport {
     var list: std.ArrayList(Item) = .empty;
+    var corrupt_lines: usize = 0;
+    var first_corrupt_line: usize = 0;
+    var line_no: usize = 0;
     var lines = std.mem.splitScalar(u8, data, '\n');
     while (lines.next()) |raw| {
+        line_no += 1;
         const line = std.mem.trim(u8, raw, " \t\r");
         if (line.len == 0) continue;
-        const v = std.json.parseFromSliceLeaky(std.json.Value, arena, line, .{}) catch continue;
-        if (v != .object) continue;
-        const id = strOf(v.object, "id") orelse continue;
+        const v = std.json.parseFromSliceLeaky(std.json.Value, arena, line, .{}) catch {
+            corrupt_lines += 1;
+            if (first_corrupt_line == 0) first_corrupt_line = line_no;
+            continue;
+        };
+        if (v != .object or strOf(v.object, "id") == null) {
+            corrupt_lines += 1;
+            if (first_corrupt_line == 0) first_corrupt_line = line_no;
+            continue;
+        }
+        const id = strOf(v.object, "id").?;
         var at: ?usize = null;
         for (list.items, 0..) |item, i| if (std.mem.eql(u8, item.id, id)) {
             at = i;
@@ -214,7 +233,11 @@ pub fn parse(arena: Allocator, data: []const u8) []const Item {
             };
             continue;
         }
-        const text = strOf(v.object, "text") orelse continue;
+        const text = strOf(v.object, "text") orelse {
+            corrupt_lines += 1;
+            if (first_corrupt_line == 0) first_corrupt_line = line_no;
+            continue;
+        };
         const created = v.object.get("created_at");
         const source = Source.parse(strOf(v.object, "source") orelse "user");
         const item: Item = .{
@@ -227,15 +250,32 @@ pub fn parse(arena: Allocator, data: []const u8) []const Item {
         };
         if (at) |i| list.items[i] = item else list.append(arena, item) catch break;
     }
-    return list.items;
+    return .{
+        .items = list.items,
+        .corrupt_lines = corrupt_lines,
+        .first_corrupt_line = first_corrupt_line,
+    };
+}
+
+pub fn parse(arena: Allocator, data: []const u8) []const Item {
+    return parseDetailed(arena, data).items;
+}
+
+/// Read the ledger on disk and distinguish a clean missing file from an
+/// unreadable/oversized file or corrupt JSONL rows.
+pub fn loadDetailed(io: Io, arena: Allocator) ParseReport {
+    const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(max_file_bytes)) catch |err| switch (err) {
+        error.FileNotFound => return .{},
+        else => return .{ .unreadable_reason = @errorName(err) },
+    };
+    return parseDetailed(arena, data);
 }
 
 /// The live ledger for the current working directory. An absent or unreadable
 /// file is an empty playbook, never an error: every caller is on a path that
 /// must keep working without one.
 pub fn load(io: Io, arena: Allocator) []const Item {
-    const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(max_file_bytes)) catch return &.{};
-    return parse(arena, data);
+    return loadDetailed(io, arena).items;
 }
 
 pub fn countOf(items: []const Item, source: Source) usize {
@@ -268,17 +308,40 @@ pub fn findByUniqueText(items: []const Item, query: []const u8) ?Item {
     return found;
 }
 
+/// Best-effort backup of the existing ledger to `.graff/playbook.jsonl.corrupt`
+/// when a torn tail is detected before appending a new record.
+fn backupTornFile(io: Io) void {
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const raw = Io.Dir.cwd().readFileAlloc(io, path, a, .limited(max_file_bytes)) catch return;
+    Io.Dir.cwd().writeFile(io, .{ .sub_path = corrupt_backup_path, .data = raw }) catch {};
+}
+
 /// Append one already-serialized record. Positional write at the current end
 /// of file so a whole line lands at once (serve_events.EventLog's shape).
 /// `.read = true` is required on Windows: a write-only handle lacks
 /// FILE_READ_ATTRIBUTES, so `f.stat(io)` fails with AccessDenied after creating
 /// a 0-byte `.graff/playbook.jsonl` (#1821).
+/// If a prior process crashed mid-line leaving a file without a trailing `\n`,
+/// we back up the raw file to `.graff/playbook.jsonl.corrupt` and insert a
+/// newline separator so the new record cannot fuse onto the torn tail.
 fn appendLine(io: Io, line: []const u8) !void {
     const cwd = Io.Dir.cwd();
     cwd.createDirPath(io, dir) catch {};
     const f = try cwd.createFile(io, path, .{ .truncate = false, .read = true });
     defer f.close(io);
-    const end: u64 = if (f.stat(io)) |st| st.size else |_| (try cwd.statFile(io, path, .{})).size;
+    var end: u64 = if (f.stat(io)) |st| st.size else |_| (try cwd.statFile(io, path, .{})).size;
+    if (end > 0) {
+        var tail_byte: [1]u8 = undefined;
+        if (f.readPositionalAll(io, &tail_byte, end - 1)) |n| {
+            if (n == 1 and tail_byte[0] != '\n') {
+                backupTornFile(io);
+                try f.writePositionalAll(io, "\n", end);
+                end += 1;
+            }
+        } else |_| {}
+    }
     try f.writePositionalAll(io, line, end);
 }
 
@@ -441,16 +504,34 @@ pub var g_root_inject: bool = false;
 /// Include the empty set too: absence is evidence, not permission for a recap
 /// to invent a recording. Learned advice never enters this authoritative set.
 pub fn recordedState(arena: Allocator, items: []const Item) ![]const u8 {
+    return recordedStateWithHealth(arena, .{ .items = items });
+}
+
+pub fn recordedStateWithHealth(arena: Allocator, report: ParseReport) ![]const u8 {
     var aw: Io.Writer.Allocating = .init(arena);
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     try s.beginObject();
     try s.objectField("recorded_user_constraints");
     try s.beginArray();
-    for (items) |item| {
+    for (report.items) |item| {
         if (item.source != .user) continue;
         try s.write(.{ .id = item.id, .text = item.text, .scope = @tagName(item.scope), .provenance = item.provenance, .created_at = item.created_at });
     }
     try s.endArray();
+    if (report.unreadable_reason.len > 0) {
+        try s.objectField("storage_warning");
+        const msg = try std.fmt.allocPrint(arena, "{s} could not be read ({s}); durable constraints may be missing", .{ path, report.unreadable_reason });
+        try s.write(msg);
+    } else if (report.corrupt_lines > 0) {
+        try s.objectField("storage_warning");
+        const msg = try std.fmt.allocPrint(arena, "{s} had {d} malformed JSONL row(s) (first at line {d}); valid rows were loaded and torn tail backups use {s}", .{
+            path,
+            report.corrupt_lines,
+            report.first_corrupt_line,
+            corrupt_backup_path,
+        });
+        try s.write(msg);
+    }
     try s.endObject();
     return aw.writer.buffered();
 }
@@ -468,10 +549,10 @@ pub const authority_note =
 /// lesson), while the system prompt is re-sent verbatim on every request and
 /// is exactly what a compacted conversation cannot lose.
 pub fn composeRoot(io: Io, arena: Allocator, base: []const u8) []const u8 {
-    const items = load(io, arena);
-    traceActive(arena, items);
-    const b = blockFrom(arena, items);
-    const state = recordedState(arena, items) catch return base;
+    const report = loadDetailed(io, arena);
+    traceActive(arena, report.items);
+    const b = blockFrom(arena, report.items);
+    const state = recordedStateWithHealth(arena, report) catch return base;
     return std.fmt.allocPrint(arena, "{s}\n\n{s}\n{s}\n\n{s}", .{ base, authority_note, state, b }) catch base;
 }
 

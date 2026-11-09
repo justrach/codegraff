@@ -556,7 +556,7 @@ pub fn jobsReap(gpa: Allocator, io: Io) void {
 test { // split-out modules: unreferenced, their tests silently never run
     _ = worktree_cmd;
     _ = @import("worktree_lease.zig");
-    _ = .{ job_wait, job_notify, job_idle, job_registry, browser_guard, job_capture, job_ring };
+    _ = .{ job_wait, job_notify, job_idle, job_registry, browser_guard, job_capture, job_ring, job_foreground };
     _ = @import("job_durable.zig");
     _ = job_parked;
     _ = @import("job_recover.zig");

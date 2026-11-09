@@ -27,15 +27,16 @@ pub fn rewindTo(root: *Agent, n: usize) !usize {
     if (turns.len == 0) return error.NoPrompts;
     if (n < 1 or n > turns.len) return error.InvalidN;
     const cut = turns[n - 1];
+    if (root.snapshots) |snaps| {
+        const reason = messages.userPromptText(root.messages.items[cut]) orelse "";
+        _ = snaps.restoreWithReason(@intCast(n), reason);
+        snaps.turn = @intCast(n - 1);
+    }
     root.messages.items.len = cut;
     root.last_context_tokens = 0;
     root.context_local_tokens = 0;
     root.compact_transport_failures = 0;
     root.goal_note_fp = 0;
-    if (root.snapshots) |snaps| {
-        _ = snaps.restore(@intCast(n));
-        snaps.turn = @intCast(n - 1);
-    }
     return cut;
 }
 

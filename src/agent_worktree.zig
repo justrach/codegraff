@@ -1,11 +1,70 @@
 //! Per-agent git-worktree isolation for fanned-out subagents.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const process_runner = @import("process_runner.zig");
 const runCapped = process_runner.runCapped;
 const ranOk = process_runner.ranOk;
+
+pub const warm_cache_dirs = [_][]const u8{ ".zig-cache", "zig-cache", "node_modules" };
+
+const darwin_clone = if (builtin.os.tag == .macos) struct {
+    extern "c" fn clonefile(src: [*:0]const u8, dst: [*:0]const u8, flags: u32) c_int;
+} else struct {};
+
+/// Zero-copy CoW directory clone (`clonefile` on macOS APFS, `cp --reflink=always`
+/// on Linux Btrfs/XFS). Returns false without falling back to a slow deep copy
+/// when the filesystem does not support reflinks/CoW.
+pub fn cloneCowTree(gpa: Allocator, io: Io, src_path: []const u8, dst_path: []const u8) bool {
+    if (comptime builtin.os.tag == .macos) {
+        const src_z = std.posix.toPosixPath(src_path) catch return false;
+        const dst_z = std.posix.toPosixPath(dst_path) catch return false;
+        return darwin_clone.clonefile(&src_z, &dst_z, 0) == 0;
+    }
+    if (comptime builtin.os.tag == .linux) {
+        const r = runCapped(gpa, io, &.{ "cp", "--reflink=always", "-R", src_path, dst_path }, 1024, 1024, 10_000) catch return false;
+        defer {
+            gpa.free(r.stdout);
+            gpa.free(r.stderr);
+        }
+        return ranOk(r);
+    }
+    return false;
+}
+
+/// Seed a newly created git worktree with CoW clones of gitignored build/dep
+/// caches from the parent workspace (`src_cwd`), returning how many caches were
+/// seeded. Only directories confirmed gitignored by `git check-ignore -q` are
+/// seeded so `git status --porcelain` in the worktree stays clean.
+pub fn seedWarmCaches(gpa: Allocator, io: Io, arena: Allocator, src_cwd: []const u8, dst_wt: []const u8) usize {
+    var seeded: usize = 0;
+    var argv_buf: [24][]const u8 = undefined;
+    for (warm_cache_dirs) |name| {
+        const src_dir = std.fs.path.join(arena, &.{ src_cwd, name }) catch continue;
+        const st = Io.Dir.cwd().statFile(io, src_dir, .{}) catch continue;
+        if (st.kind != .directory) continue;
+        const dst_dir = std.fs.path.join(arena, &.{ dst_wt, name }) catch continue;
+        if (Io.Dir.cwd().statFile(io, dst_dir, .{})) |_| continue else |_| {}
+        const ign = runCapped(gpa, io, safeGitArgv(&argv_buf, dst_wt, &.{ "check-ignore", "-q", name }), 1024, 1024, 5_000) catch continue;
+        defer {
+            gpa.free(ign.stdout);
+            gpa.free(ign.stderr);
+        }
+        if (!ranOk(ign)) continue;
+        if (cloneCowTree(gpa, io, src_dir, dst_dir)) seeded += 1;
+    }
+    return seeded;
+}
+
+fn cleanWarmCaches(io: Io, wt_path: []const u8) void {
+    var dir = Io.Dir.cwd().openDir(io, wt_path, .{}) catch return;
+    defer dir.close(io);
+    for (warm_cache_dirs) |name| {
+        dir.deleteTree(io, name) catch {};
+    }
+}
 
 pub const AgentWorktree = struct { path: []const u8, branch: []const u8, base: []const u8 = "" };
 pub const AgentWorktreeError = error{ NotAGitRepo, CreateFailed };
@@ -18,6 +77,7 @@ pub const KeepReason = enum { removed, dirty, committed, unverifiable };
 /// - `core.fsmonitor=false`: never spawn background `fsmonitor` daemons inside `.graff/worktrees/`.
 /// - `filter.lfs.smudge=`, `filter.lfs.process=`, `filter.lfs.required=false`: never hang on Git LFS smudge filters.
 pub const safe_git_config_args = [_][]const u8{
+    "-c", "safe.directory=*",
     "-c", "core.hooksPath=/dev/null",
     "-c", "core.fsmonitor=false",
     "-c", "filter.lfs.smudge=",
@@ -111,6 +171,7 @@ pub fn agentWorktreeCreateAt(gpa: Allocator, io: Io, arena: Allocator, sub_id: [
     }
     if (!ranOk(add)) return error.CreateFailed;
     @import("graff_dir.zig").ensureIgnoreAt(io, cwd); // #1273: hide .graff/worktrees
+    _ = seedWarmCaches(gpa, io, arena, cwd_abs, names.path);
 
     var base: []const u8 = "";
     if (runCapped(gpa, io, safeGitArgv(&argv_buf, names.path, &.{ "rev-parse", "HEAD" }), 4096, 4096, 15_000)) |r| {
@@ -156,6 +217,10 @@ pub fn agentWorktreeFinish(gpa: Allocator, io: Io, wt: AgentWorktree) AgentWorkt
 
     const reason = worktreeKeepReason(ranOk(st), st.stdout, wt.base, head);
     if (reason != .removed) return .{ .kept = true, .reason = reason };
+
+    // Remove untracked CoW-seeded cache directories before `git worktree remove`
+    // so clean worktrees aren't rejected by git for containing untracked cache trees.
+    cleanWarmCaches(io, wt.path);
 
     if (runCapped(gpa, io, safeGitArgv(&argv_buf, null, &.{ "worktree", "remove", wt.path }), 8192, 8192, 30_000)) |r| {
         defer {
@@ -239,4 +304,33 @@ test "safeGitArgv: prefixes git commands with hooksPath=/dev/null, fsmonitor=fal
     try std.testing.expect(std.mem.indexOf(u8, joined, "-c filter.lfs.process=") != null);
     try std.testing.expect(std.mem.indexOf(u8, joined, "-c filter.lfs.required=false") != null);
     try std.testing.expect(std.mem.endsWith(u8, joined, "worktree add /tmp/wt -b graff/agents/x"));
+}
+
+test "cloneCowTree: clones existing cache directory into worktree via CoW/reflink" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = abs_buf[0..try tmp.dir.realPathFile(io, ".", &abs_buf)];
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const src_cache = try std.fs.path.join(arena, &.{ root, ".zig-cache" });
+    const dst_wt = try std.fs.path.join(arena, &.{ root, "wt" });
+    const dst_cache = try std.fs.path.join(arena, &.{ dst_wt, ".zig-cache" });
+    try Io.Dir.cwd().createDirPath(io, src_cache);
+    try Io.Dir.cwd().createDirPath(io, dst_wt);
+    const probe_src = try std.fs.path.join(arena, &.{ src_cache, "stamp.txt" });
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = probe_src, .data = "warm-cache" });
+
+    try std.testing.expect(cloneCowTree(gpa, io, src_cache, dst_cache));
+    const probe_dst = try std.fs.path.join(arena, &.{ dst_cache, "stamp.txt" });
+    const read_back = try Io.Dir.cwd().readFileAlloc(io, probe_dst, arena, .limited(64));
+    try std.testing.expectEqualStrings("warm-cache", read_back);
+
+    cleanWarmCaches(io, dst_wt);
+    try std.testing.expectError(error.FileNotFound, Io.Dir.cwd().statFile(io, dst_cache, .{}));
 }

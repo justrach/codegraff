@@ -10,6 +10,14 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.56
+
+- `snapshots` maintains a monotonic rewind-proof attempt ledger (`Snapshots.rewinds`, `restoreWithReason`, `rewindDigest`) across `/undo` and `/rewind` that is injected into `compact_handoff_note.durableState` so compacted or rewound sessions do not repeat reverted edits.
+- `schedule` aligns recurring tasks to wall-clock grid boundaries (`nextGridSlot`) and adds explicit missed-fire policies (`MissedPolicy.once | .skip`, `--missed=once|skip`, and `@every <delay>` in `/schedule` and `schedule_task`).
+- `agent_worktree` seeds gitignored build/dependency caches (`.zig-cache`, `zig-cache`, `node_modules`) into subagent worktrees via zero-copy Copy-on-Write (`clonefile(2)` on macOS APFS, `cp --reflink=always` on Linux) and cleans them before worktree removal, while `safe_git_config_args` adds `-c safe.directory=*`.
+- `playbook` adds corrupt-safe JSONL parsing (`parseDetailed`, `loadDetailed`), automatic `.graff/playbook.jsonl.corrupt` backup + newline self-healing when appending after a torn tail (`appendLine`), and `"storage_warning"` diagnostics in `recordedStateWithHealth` on malformed or unreadable ledgers.
+- `agent_file.validateMarkdown` reports 1-based `line:col` and source-line diagnostics (`Diagnostic`, `formatDiagnostic`) for malformed markdown agent frontmatter, `tool_env.scrubChildEnv` strips OAuth/alias credentials (`ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `GOOGLE_API_KEY`, `KIMI_CODE_API_KEY`, `OPENAI_AUTH_TOKEN`) from child processes, and `job_foreground.pollStepMs` uses an adaptive `5ms -> 10ms -> 20ms -> 65ms -> 100ms` polling ramp for fast foreground commands.
+
 ## v0.302.74.55
 
 - `mcp_cache.lookupWith`, `mcp_cache.store`, and `mcp_cache.forget` parse `mcp-list-cache.json` inside a scoped temporary arena and clone only the single matched server's `protocol_version` and `tools` entry into the caller's arena instead of retaining the full multi-server cache parse tree per server.

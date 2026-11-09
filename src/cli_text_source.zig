@@ -5,6 +5,12 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.56
+    \\  • monotonic rewind-proof attempt ledger across /undo and /rewind preserved in compact_handoff_note.durableState
+    \\  • wall-clock grid-aligned recurring schedules (nextGridSlot) with @every <delay> and --missed=once|skip policies
+    \\  • APFS clonefile / Linux reflink Copy-on-Write cache seeding in subagent worktrees and adaptive sub-100ms foreground bash polling
+    \\  • corrupt-safe playbook JSONL self-healing + storage_warning diagnostics, markdown agent line:col validation, and OAuth child-env scrubbing
+    \\
     \\0.302.74.55
     \\  • scoped temporary arena parsing in mcp_cache.lookupWith/store/forget and single-server tool entry cloning
     \\  • per-request scratch allocation in agent_ws.postResponsesWs and scoped arena cleanup in session_workspaces.remember
