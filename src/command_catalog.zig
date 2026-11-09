@@ -87,6 +87,7 @@ pub const commands = [_]Item{
     .{ .name = "/compact-at", .usage = "/compact-at [10-95|default]", .desc = "where automatic compaction starts, as % of the context window (default 80; persists)" },
     .{ .name = "/fast", .desc = "codex only: priority service tier for lower latency (toggle, persists)" },
     .{ .name = "/thinking", .desc = "stream reasoning live vs spinner only (toggle, persists)" },
+    .{ .name = "/followups", .usage = "/followups [queue|immediate]", .desc = "send OpenAI-model follow-ups into the live turn now (default) or queue them for the next turn; persists" },
     .{ .name = "/title", .desc = "name the tab from your first prompt (AI session title; toggle, persists)" },
     .{ .name = "/strict", .desc = "toggle \"every message is a tool\" mode" },
     .{ .name = "/yolo", .desc = "toggle bash auto-approval (skip permission prompts)" },

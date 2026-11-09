@@ -178,9 +178,9 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if ((comptime bo.extras) and try @import("update_cmd.zig").tryHandle(root, arena, line, out)) return true; // #773 /update
     // #321: doctor.zig shipped with a catalog entry but no dispatch, so /doctor
     // was advertised in /help and the `/` menu while answering "unknown command".
-    if ((comptime bo.extras) and std.mem.eql(u8, line, "/doctor")) {
+    if ((comptime bo.extras) and (std.mem.eql(u8, line, "/doctor") or std.mem.eql(u8, line, "/doctor json") or std.mem.eql(u8, line, "/doctor --json"))) {
         const checks = try doctor.run(arena, try doctor.snapshotWithLive(arena, root, util.unixMs(root.io)));
-        try out.writeAll(try doctor.render(arena, checks));
+        if (std.mem.eql(u8, line, "/doctor")) try out.writeAll(try doctor.render(arena, checks)) else try out.print("{s}\n", .{try doctor.toJson(arena, checks)});
         try out.flush();
         return true;
     }

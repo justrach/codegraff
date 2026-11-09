@@ -93,6 +93,7 @@ pub fn sessionMetaFromBytes(arena: Allocator, data: []const u8) SessionMeta {
 }
 
 pub fn readSessionMeta(io: Io, arena: Allocator, dir: Io.Dir, sub_path: []const u8) ?SessionMeta {
+    @import("session_store.zig").recover(io, std.heap.page_allocator, dir, sub_path) catch return null;
     const f = dir.openFile(io, sub_path, .{}) catch return null;
     defer f.close(io);
     var hdr_buf: [max_header_bytes]u8 = undefined;

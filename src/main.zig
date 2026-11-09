@@ -250,6 +250,7 @@ pub fn main(init: std.process.Init) !void {
     var boot = startup_timing.Tracker.init(startup_timing.shutdown_trace.arm(init.io, init.environ_map), init.environ_map.get("GRAFF_BOOT_DEBUG") != null); // #364: arm() passes io through, so the teardown below stamps phases without a line of its own
     const gpa = init.gpa;
     const io = init.io;
+    defer @import("session_writer.zig").stop();
     const arena = init.arena.allocator();
     // #122: raise the open-file soft limit to the OS hard cap (Darwin defaults to 256) to avoid ProcessFdQuotaExceeded during parallel tools.
     std.process.raiseFileDescriptorLimit();
@@ -559,13 +560,13 @@ const workflow = @import("workflow_test.zig"); // the engine's tests live here (
 const exec = @import("exec.zig");
 test { // ── Unit tests (`zig build test`): pull in tests from imported modules (mcp.zig)
     _ = .{ @import("beta_feed.zig"), @import("jev_tool.zig"), @import("jev_model_scope.zig"), @import("jev_provider_switch_tests.zig"), @import("jev_effort_state.zig"), @import("gemini_turns.zig"), @import("gemini_turns_tests.zig") };
-    _ = .{ @import("mcp_apps.zig"), @import("html_view.zig"), @import("usage_trace.zig"), @import("providers_confirmation_tests.zig"), @import("repl_model_confirmation_tests.zig"), @import("repl_model_pick_tests.zig"), @import("engine_sink_citation_tests.zig"), @import("cite_markup_stream_tests.zig"), @import("oneshot_citation_tests.zig"), @import("acp_permission.zig"), @import("acp_usage.zig"), @import("context_savings.zig") };
+    _ = .{ @import("mcp_apps.zig"), @import("html_view.zig"), @import("usage_trace.zig"), @import("providers_confirmation_tests.zig"), @import("repl_model_confirmation_tests.zig"), @import("repl_model_pick_tests.zig"), @import("engine_sink_citation_tests.zig"), @import("cite_markup_stream_tests.zig"), @import("oneshot_citation_tests.zig"), @import("acp_permission.zig"), @import("acp_usage.zig"), @import("context_savings.zig"), @import("session_snapshot.zig"), @import("session_store.zig"), @import("session_delta_tests.zig") };
     _ = .{ @import("mcp_server_tests.zig"), @import("main_test.zig"), @import("artifact_claim_command.zig"), @import("cli_path_hint.zig"), @import("run_budget.zig") };
     _ = .{ @import("session_catalog.zig"), @import("session_size_tests.zig"), @import("session_version.zig"), @import("session_version_tests.zig"), @import("session_prompt.zig"), @import("session_discovery.zig"), @import("session_workspaces.zig"), @import("commands_resume.zig"), @import("peer_live.zig"), @import("presence_tests.zig"), @import("presence_ack.zig"), @import("mcp_rpc_tests.zig") };
     _ = .{ @import("prompt_astra.zig"), @import("prompt_guidance.zig"), @import("oauth_chatgpt.zig"), @import("chatgpt_reauth.zig"), @import("oauth_anthropic.zig"), @import("anthropic_oauth_wire.zig"), @import("anthropic_login_tests.zig") };
     _ = .{ @import("agent_empty_completion.zig"), @import("agent_length_cutoff.zig"), @import("agent_model_loop.zig"), @import("publication_policy_tests.zig"), @import("jobs_completion_tests.zig"), @import("headless_result.zig"), @import("oneshot.zig"), @import("agent_length.zig"), @import("agent_length_tests.zig") };
     _ = .{ @import("provider_routing_tests.zig"), @import("codegraff_messages_tests.zig"), @import("tool_result_empty_tests.zig"), @import("history_wire.zig"), @import("path_lookup.zig"), @import("agents_prepare.zig"), @import("catalog_price.zig"), @import("readline_paste_number_tests.zig"), @import("test_hooks.zig"), @import("peer_wake_loop.zig") };
-    _ = .{ @import("list_dir_nearmiss.zig"), @import("tool_preview_tests.zig"), @import("stream_reconnect.zig"), @import("oauth_kimi.zig"), @import("signin_link.zig") };
+    _ = .{ @import("list_dir_nearmiss.zig"), @import("tool_preview_tests.zig"), @import("stream_reconnect.zig"), @import("oauth_kimi.zig"), @import("signin_link.zig"), @import("followups.zig") };
     _ = .{ @import("repo_map.zig"), @import("cli_text.zig") };
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests
     _ = @import("agent_gateway_retry.zig"); // #1019: flake vs overflow classification must stay reachable

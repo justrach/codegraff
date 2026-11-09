@@ -98,6 +98,23 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if ((comptime bo.learn) and try @import("commands_experiment.zig").tryHandle(root, arena, line, out)) return true;
     if ((comptime bo.extras) and try workspace_switch.slashCommand(root, arena, line, out)) return true;
     if ((comptime bo.extras) and try plugins.slashCommand(root.io, arena, root.home, line, out)) return true;
+    if (std.mem.eql(u8, line, "/followups") or std.mem.startsWith(u8, line, "/followups ")) {
+        const followups = @import("followups.zig");
+        const arg = std.mem.trim(u8, line["/followups".len..], " \t");
+        if (arg.len > 0 and !std.mem.eql(u8, arg, "queue") and !std.mem.eql(u8, arg, "immediate")) {
+            try out.writeAll("usage: /followups [queue|immediate]\n");
+        } else if (arg.len > 0) {
+            followups.save(root.io, arena, std.mem.eql(u8, arg, "queue")) catch |err| {
+                try out.print("could not save follow-up mode: {t}\n", .{err});
+                try out.flush();
+                return true;
+            };
+        }
+        const mode = if (followups.queue) "queue for the next turn" else "steer into the live turn";
+        try out.print("OpenAI-model follow-ups: {s}{s}\n", .{ mode, if (followups.steersNow(root.provider)) " (active now)" else if (followups.queue) "" else " (this provider is unaffected)" });
+        try out.flush();
+        return true;
+    }
     if (std.mem.eql(u8, line, "/clear")) {
         root.messages.clearRetainingCapacity();
         root.reclaimMessages();

@@ -87,8 +87,11 @@ pub fn dynamic(spec: provider.ProviderSpec) bool {
 
 pub fn modelsUrl(spec: provider.ProviderSpec) []const u8 {
     if (!dynamic(spec)) return "";
-    // GRAFF_CHATGPT_URL keeps discovery on the mock's origin, never the live API.
+    // Endpoint overrides keep discovery on the mock's origin, never the live API (#1795).
     if (std.mem.eql(u8, spec.id, "chatgpt-new")) if (provider.g_chatgpt_url_override) |url| return overrideModelsUrl(url);
+    if (std.mem.eql(u8, spec.id, "vercel")) if (provider.g_vercel_url_override) |url| return overrideModelsUrl(url);
+    if (std.mem.eql(u8, spec.id, "xai")) if (provider.g_xai_url_override) |url| return overrideModelsUrl(url);
+    if (std.mem.eql(u8, spec.id, "zai")) if (provider.g_zai_url_override) |url| return overrideModelsUrl(url);
     return spec.models_url;
 }
 

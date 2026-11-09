@@ -446,6 +446,10 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         try @import("servers_cmd.zig").command(gpa, io, arena, flags.positionals.items[1..]);
         return true;
     }
+    if ((comptime build_options.extras) and flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "doctor")) {
+        try @import("doctor_live.zig").cliCommand(gpa, io, arena, init.environ_map.get("HOME") orelse "", flags.positionals.items[1..]);
+        return true;
+    }
 
     // `graff peer <list|send|inbox>`: the device's agent rooms for any agent
     // with a shell (Claude Code, Codex, scripts), not only graff sessions.

@@ -11,8 +11,28 @@ test {
     _ = stdin_line;
 }
 
+pub const SteerFn = *const fn (ctx: *anyopaque, arena: std.mem.Allocator, out: *Io.Writer, output_lock: *Io.Mutex, req: proto.Request, text: []const u8) bool;
+
+/// Steering carries text only: images and embedded resources must remain in
+/// the ordinary queued prompt so their payload is not silently dropped.
+fn plainPrompt(prompt: ?std.json.Value) bool {
+    const p = prompt orelse return false;
+    if (p == .string) return p.string.len > 0;
+    if (p != .array or p.array.items.len == 0) return false;
+    for (p.array.items) |block| {
+        if (block != .object) return false;
+        const t = block.object.get("type") orelse return false;
+        if (t != .string or !std.mem.eql(u8, t.string, "text")) return false;
+    }
+    return true;
+}
+
 pub const Inbox = struct {
     permission: ?*@import("acp_permission.zig").Bridge = null,
+    steer_fn: ?SteerFn = null,
+    steer_ctx: ?*anyopaque = null,
+    out: ?*Io.Writer = null,
+    output_lock: ?*Io.Mutex = null,
     gpa: std.mem.Allocator,
     io: Io,
     reader: *Io.Reader,
@@ -33,6 +53,19 @@ pub const Inbox = struct {
         line: []const u8,
         tick,
     };
+
+    pub fn setSteer(self: *Inbox, func: ?SteerFn, ctx: ?*anyopaque, out: ?*Io.Writer, output_lock: ?*Io.Mutex) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        self.steer_fn = func;
+        self.steer_ctx = ctx;
+        self.out = out;
+        self.output_lock = output_lock;
+    }
+
+    pub fn clearSteer(self: *Inbox) void {
+        self.setSteer(null, null, null, null);
+    }
 
     pub fn start(self: *Inbox) !void {
         // async may run the endless reader inline when its worker quota is
@@ -106,6 +139,33 @@ pub const Inbox = struct {
         self.session_id = null;
     }
 
+    /// A plain-text prompt arriving during a live OpenAI-model turn goes
+    /// straight into that turn's steer queue. The callback answers the ACP
+    /// request; a false result falls back to the ordinary next-turn queue.
+    fn trySteer(self: *Inbox, arena: std.mem.Allocator, req: proto.Request) bool {
+        self.mutex.lockUncancelable(self.io);
+        const active = self.active;
+        const func = self.steer_fn;
+        const ctx = self.steer_ctx;
+        const out = self.out;
+        const output_lock = self.output_lock;
+        self.mutex.unlock(self.io);
+        if (!active or func == null or ctx == null or out == null or output_lock == null) return false;
+        const params = req.params orelse return false;
+        if (params != .object) return false;
+        const prompt = params.object.get("prompt");
+        if (!plainPrompt(prompt)) return false;
+        const text = proto.flattenPrompt(arena, prompt) catch return false;
+        const line = std.mem.trimStart(u8, text, " \t\r\n");
+        if (line.len == 0) return false;
+        if (line[0] == '/' and @import("acp_command_intent.zig").selected(req.params)) return false;
+        // Room posts need the dispatcher's agent framing, never raw human steering.
+        if (params.object.get("_meta")) |meta| {
+            if (meta == .object and meta.object.contains("harness/room")) return false;
+        }
+        return func.?(ctx.?, arena, out.?, output_lock.?, req, text);
+    }
+
     fn accept(self: *Inbox, line: []const u8) !void {
         var arena = std.heap.ArenaAllocator.init(self.gpa);
         defer arena.deinit();
@@ -115,6 +175,7 @@ pub const Inbox = struct {
             if (self.permission) |bridge| if (bridge.accept(value)) return;
         }
         const req = proto.parseRequest(arena.allocator(), line);
+        if (req) |r| if ((std.mem.eql(u8, r.method, "session/prompt") or std.mem.eql(u8, r.method, "_session/steering")) and self.trySteer(arena.allocator(), r)) return;
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         if (req) |r| {
@@ -304,6 +365,75 @@ test "session config selection during a turn queues an ordinary request without 
     const second = (try inbox.wait(arena.allocator())) orelse return error.ExpectedLine;
     try std.testing.expect(std.mem.indexOf(u8, second.line, "session/set_config_option") != null);
     try std.testing.expect(std.mem.indexOf(u8, second.line, "session/prompt") == null);
+}
+
+test "plainPrompt admits text only, leaving image/resource payloads queued" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const parse = std.json.parseFromSliceLeaky;
+    try std.testing.expect(plainPrompt(try parse(std.json.Value, a, "\"hello\"", .{})));
+    try std.testing.expect(plainPrompt(try parse(std.json.Value, a, "[{\"type\":\"text\",\"text\":\"hi\"}]", .{})));
+    try std.testing.expect(!plainPrompt(try parse(std.json.Value, a, "[{\"type\":\"text\",\"text\":\"hi\"},{\"type\":\"image\"}]", .{})));
+    try std.testing.expect(!plainPrompt(try parse(std.json.Value, a, "[{\"type\":\"resource\",\"resource\":{}}]", .{})));
+    try std.testing.expect(!plainPrompt(null));
+}
+
+test "an active plain prompt steers now instead of queueing" {
+    const Capture = struct {
+        text: ?[]u8 = null,
+        fn steer(ctx: *anyopaque, _: std.mem.Allocator, _: *Io.Writer, _: *Io.Mutex, _: proto.Request, text: []const u8) bool {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (self.text) |old| std.testing.allocator.free(old);
+            self.text = std.testing.allocator.dupe(u8, text) catch return false;
+            return true;
+        }
+    };
+    var cap: Capture = .{};
+    defer if (cap.text) |text| std.testing.allocator.free(text);
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var lock: Io.Mutex = .init;
+    var reader: Io.Reader = .fixed("");
+    var inbox: Inbox = .{ .gpa = std.testing.allocator, .io = std.testing.io, .reader = &reader };
+    defer inbox.deinit();
+    inbox.steer_fn = Capture.steer;
+    inbox.steer_ctx = &cap;
+    inbox.out = &aw.writer;
+    inbox.output_lock = &lock;
+    inbox.begin();
+    try inbox.accept("{\"id\":2,\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"s\",\"prompt\":[{\"type\":\"text\",\"text\":\"also run tests\"}]}}");
+    try std.testing.expectEqualStrings("also run tests", cap.text.?);
+    try std.testing.expectEqual(@as(usize, 0), inbox.lines.items.len);
+
+    // Harness's explicit steering extension reaches the same live path.
+    try inbox.accept("{\"id\":4,\"method\":\"_session/steering\",\"params\":{\"sessionId\":\"s\",\"prompt\":\"change direction\"}}");
+    try std.testing.expectEqualStrings("change direction", cap.text.?);
+    try std.testing.expectEqual(@as(usize, 0), inbox.lines.items.len);
+    // Literal slash prose can steer, but selected/legacy commands, attachments
+    // and room posts need ordinary dispatch and must never become raw steering.
+    try inbox.accept("{\"id\":5,\"method\":\"session/prompt\",\"params\":{\"prompt\":\"/this is prose\",\"_meta\":{\"harness/command\":false}}}");
+    try std.testing.expectEqualStrings("/this is prose", cap.text.?);
+    for ([_][]const u8{
+        "{\"prompt\":\"  /compact\",\"_meta\":{\"harness/command\":true}}",
+        "{\"prompt\":\"/compact\"}",
+        "{\"prompt\":[{\"type\":\"image\",\"data\":\"x\"}]}",
+        "{\"prompt\":\"agent post\",\"_meta\":{\"harness/room\":{}}}",
+    }) |params| {
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const request = try std.fmt.allocPrint(arena_state.allocator(), "{{\"method\":\"session/prompt\",\"params\":{s}}}", .{params});
+        const req = proto.parseRequest(arena_state.allocator(), request).?;
+        try std.testing.expect(!inbox.trySteer(arena_state.allocator(), req));
+    }
+    try std.testing.expectEqualStrings("/this is prose", cap.text.?);
+
+    // Undelivered fallback still honors the ordinary queue when the callback declines.
+    if (cap.text) |text| std.testing.allocator.free(text);
+    cap.text = null;
+    inbox.steer_fn = null;
+    try inbox.accept("{\"id\":3,\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"s\",\"prompt\":[{\"type\":\"text\",\"text\":\"queued\"}]}}");
+    try std.testing.expectEqual(@as(usize, 1), inbox.lines.items.len);
 }
 
 test "#1522 a prompt queued behind a live turn is a follow-up; the turn's own prompt is not" {

@@ -29,7 +29,7 @@ const peers_blurb =
 
 pub const sections = [_]Section{
     .{ .title = "getting around", .names = &.{ "/new", "/clear", "/resume", "/fork", "/save", "/sessions", "/workspace", "/experiment", "/rename", "/rewind", "/edit", "/snapshot", "/teleport" } },
-    .{ .title = "the model", .names = &.{ "/model", "/models", "/effort", "/reasoning", "/fast", "/thinking", "/keepcontext", "/fallback", "/routes" } },
+    .{ .title = "the model", .names = &.{ "/model", "/models", "/effort", "/reasoning", "/fast", "/thinking", "/followups", "/keepcontext", "/fallback", "/routes" } },
     .{ .title = "working autonomously", .names = &.{ "/goal", "/goals", "/schedule", "/review", "/issue", "/plan", "/todo", "/jobs", "/workers", "/ultracode", "/strict", "/yolo", "/never" } },
     .{ .title = "talking to other graffs", .names = &.{ "/tell", "/daddy", "/peek", "/adapter" }, .blurb = peers_blurb },
     .{ .title = "your setup", .names = &.{ "/login", "/key", "/cost", "/usage", "/version", "/update", "/privacy", "/mcp", "/computer", "/import-claude", "/skills", "/plugins", "/agents", "/hooks", "/tools", "/fleet" } },

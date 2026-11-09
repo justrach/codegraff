@@ -280,6 +280,7 @@ fn respondInitialize(w: *Io.Writer, req: proto.Request, can_load: bool) !void {
         .agentInfo = proto.AgentImplementation{ .version = implementation_version },
         .agentImplementation = proto.AgentImplementation{ .version = implementation_version },
         .authMethods = acp_auth.advertised,
+        ._meta = .{ .steering = .{ .supported = can_load } },
     });
 }
 
@@ -332,7 +333,7 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
         try proto.writeAvailableCommands(w, d.session_id.?, try @import("acp_t3.zig").commands(arena, proto.slashCommands()));
         return;
     }
-    if ((d.load_session != null and (std.mem.eql(u8, req.method, "session/prompt") or std.mem.eql(u8, req.method, "session/cancel") or std.mem.eql(u8, req.method, "session/close"))) or
+    if ((d.load_session != null and (std.mem.eql(u8, req.method, "session/prompt") or std.mem.eql(u8, req.method, "session/cancel") or std.mem.eql(u8, req.method, "session/close") or std.mem.eql(u8, req.method, "_session/steering"))) or
         (d.set_config != null and std.mem.eql(u8, req.method, "session/set_config_option")))
     {
         const params = req.params orelse return respondError(w, req, -32602, "Invalid session ID");
@@ -365,6 +366,9 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
         const options = configOptions(d, arena) catch |err| return respondError(w, req, err_internal, @errorName(err));
         return respond(w, req, .{ .configOptions = options });
     }
+    // Live steering is consumed by acp_inbox; an idle, queued-mode or
+    // attachment-bearing request returns ownership to the client for a prompt.
+    if (std.mem.eql(u8, req.method, "_session/steering")) return respond(w, req, .{ .outcome = "promptRequired" });
     if (std.mem.eql(u8, req.method, "session/prompt")) return promptTurn(d, arena, w, req);
     if (d.extra) |extra| if (try extra(d.ctx, arena, w, req)) return;
     if (req.id == null) return;

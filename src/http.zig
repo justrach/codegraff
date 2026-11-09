@@ -249,6 +249,7 @@ pub const RetryPlan = struct {
     /// #1826: only rotated request-construction TLS failures: 15 waits, 47.75s base
     /// (at most ~60s with jitter), still interruptible. Never shared with 429/auth/read failures.
     pub const tls_construction_attempts: usize = 16;
+    pub var flake_base_ms: u64 = 250; // GRAFF_FLAKE_RETRY_MS override for loaded cancellation tests (#1795)
 
     /// Total attempts before the turn gives up.
     pub fn maxAttempts(throttled: bool) usize {
@@ -260,7 +261,7 @@ pub const RetryPlan = struct {
         return if (throttled)
             @min(@as(u64, 1000) << @intCast(@min(attempt, 3)), 8000)
         else
-            @min(@as(u64, 250) << @intCast(@min(attempt, 4)), 4000);
+            @min(flake_base_ms << @intCast(@min(attempt, 4)), @max(flake_base_ms, 4000));
     }
 };
 

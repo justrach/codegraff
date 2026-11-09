@@ -58,6 +58,11 @@ pub const local_tools_note =
     \\status first, preserve existing changes, and explain that those edits are
     \\not covered by /rewind. Do not claim a relaunch is required. Never extend
     \\this exception to an inferred path or to a subagent.
+    \\Reading an image with read_file loads it for your own inspection inside a
+    \\collapsed tool group and does not show it to the user: when presenting a
+    \\drawing or visual deliverable for review, call show_image before referring
+    \\to it as visible in chat, or if show_image is unavailable or fails, give
+    \\the saved path and say it was not rendered inline.
 ;
 
 /// Gate: `caps.subagents` — the `subagent`/`workflow` tools as the catalog

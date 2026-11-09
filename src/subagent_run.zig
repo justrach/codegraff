@@ -277,7 +277,8 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     // worker choice for this child. Already provider-local (see
     // subagent_pin), so the cross-provider consent check childProvider
     // enforces has nothing left to decide.
-    const child_provider = pin orelse childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider);
+    const base_provider = childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider);
+    const child_provider = pin orelse base_provider;
 
     var agent: Agent = .{
         .gpa = gpa,
@@ -436,6 +437,12 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
             const r = agent.runTurn();
             const err = if (r) |_| break :ask r else |e| e;
             const fail_kind = classifyFailure(err, agent.last_api_error);
+            if (agent.tools_used.count() == 0 and subagent_retry.shouldFallbackPinnedSeat(err, fail_kind, attempts, pin != null, agent.provider.id, agent.provider.model, base_provider.id, base_provider.model)) {
+                subagent_retry.traceSeatFallback(ctx.tracer, sub_id, agent.provider.model, base_provider.model, fail_kind, agent.last_api_error);
+                agent.provider = base_provider;
+                if (activity) |*recorder| recorder.setModel(agent.provider.id, agent.provider.model);
+                continue;
+            }
             if (!subagent_retry.shouldRetry(err, fail_kind, agent.last_api_error, attempts)) break :ask r;
             // A run deadline already past makes waiting pointless.
             if (subagent_retry.pastDeadline(util.unixMs(ctx.io), ctx.loop_deadline_ms)) break :ask r;

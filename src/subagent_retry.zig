@@ -183,6 +183,37 @@ pub fn traceAttempt(tracer: ?*Tracer, sub_id: []const u8, attempts_done: u8, kin
     tr.note("subagent_retry", detail);
 }
 
+/// #393: a spawn that fails on its first ask due to an explicit model/persona
+/// pin (`.model` or `.invalid`, never `.cancelled` or `.budget_exhausted`)
+/// falls back once to the parent's default worker seat (`base`).
+pub fn shouldFallbackPinnedSeat(
+    err: anyerror,
+    kind: FailKind,
+    attempts_done: u8,
+    has_pin: bool,
+    current_id: []const u8,
+    current_model: []const u8,
+    base_id: []const u8,
+    base_model: []const u8,
+) bool {
+    if (!eligibleError(err) or !has_pin or attempts_done != 1) return false;
+    if (kind != .model and kind != .invalid) return false;
+    return !std.mem.eql(u8, current_id, base_id) or !std.mem.eql(u8, current_model, base_model);
+}
+
+pub fn traceSeatFallback(tracer: ?*Tracer, sub_id: []const u8, pinned_model: []const u8, base_model: []const u8, kind: FailKind, cause: ?[]const u8) void {
+    const tr = tracer orelse return;
+    var buf: [320]u8 = undefined;
+    const detail = std.fmt.bufPrint(&buf, "{s} pinned seat {s} failed ({s}); falling back once to default seat {s}: {s}", .{
+        sub_id,
+        pinned_model,
+        kind.label(),
+        base_model,
+        util.utf8Prefix(cause orelse "no cause recorded", 160),
+    }) catch "worker seat fallback";
+    tr.note("subagent_seat_fallback", detail);
+}
+
 /// The ceiling the module is CLAIMING, written as a literal so the assertions
 /// below cannot be satisfied by moving the constant they are meant to police.
 const asserted_ceiling: u8 = 3;

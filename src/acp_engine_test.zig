@@ -11,6 +11,34 @@ const Dispatch = engine.Dispatch;
 const Meter = engine.Meter;
 const handleLine = engine.handleLine;
 
+test "ACP steering extension advertises in both versions and idle calls require a prompt" {
+    const v2 = @import("acp_v2.zig");
+    defer v2.resetForTest();
+    const Fixture = struct {
+        fn load(_: *anyopaque, _: Allocator, _: *Io.Writer, _: @import("acp_protocol.zig").Request) anyerror!void {}
+        fn turn(_: *anyopaque, _: Allocator, _: []const u8) anyerror![]const u8 {
+            return error.SteeringMustNotStartATurn;
+        }
+    };
+    for ([_]bool{ false, true }) |draft| {
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const a = arena_state.allocator();
+        var out: Io.Writer.Allocating = .init(a);
+        var d: Dispatch = .{ .turn = Fixture.turn, .ctx = undefined, .load_session = Fixture.load };
+        try intentInit(&d, a, &out.writer, draft);
+        try std.testing.expect(std.mem.indexOf(u8, out.writer.buffered(), "\"_meta\":{\"steering\":{\"supported\":true}}") != null);
+        d.session_id = "s";
+        out.clearRetainingCapacity();
+        try handleLine(&d, a, &out.writer, "{\"id\":3,\"method\":\"_session/steering\",\"params\":{\"sessionId\":\"s\",\"prompt\":\"follow-up\"}}");
+        try std.testing.expect(std.mem.indexOf(u8, out.writer.buffered(), "\"outcome\":\"promptRequired\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, out.writer.buffered(), "session/update") == null);
+        out.clearRetainingCapacity();
+        try handleLine(&d, a, &out.writer, "{\"id\":4,\"method\":\"_session/steering\",\"params\":{\"sessionId\":\"other\",\"prompt\":\"wrong session\"}}");
+        try std.testing.expect(std.mem.indexOf(u8, out.writer.buffered(), "Unknown session ID") != null);
+    }
+}
+
 fn echoTurn(_: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const u8 {
     return std.fmt.allocPrint(arena, "echo:{s}", .{text});
 }

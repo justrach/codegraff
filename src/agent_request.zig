@@ -235,6 +235,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                 const conv = http_headers.requestCacheKey(self.io, self.label, self, self.provider, &conv_buf);
                 usage_attempts.begin();
                 self.h2_reset.clear();
+                main_mod.g_retry_after_ms = 0; // #1795: clear per attempt so a prior Retry-After cannot leak
                 const attempt_body = if (live)
                     self.postLive(body)
                 else

@@ -107,6 +107,11 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
             if (secs > 0) http.post_deadline_ms = @min(secs, 86_400) * 1000;
         } else |_| {}
     }
+    if (environ_map.get("GRAFF_FLAKE_RETRY_MS")) |v| {
+        if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |ms| {
+            if (ms > 0) http.RetryPlan.flake_base_ms = @min(ms, http.retry_after_cap_ms);
+        } else |_| {}
+    }
     // #codex-ws: GRAFF_CODEX_WS=off|0|false|no (case-insensitive, the
     // GRAFF_FLEET predicate) forces the SSE transport for codex;
     // GRAFF_WS_DEBUG=1 dumps the ws handshake + frames to stderr. This is the
@@ -311,6 +316,7 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
     skills.loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     anim.loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
     anim.loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme
+    @import("followups.zig").load(io, arena); // {"followups": "queue"|"immediate"} → Codex/ChatGPT delivery
     const theme_on = anim.g_theme != null and use_color and !json_mode;
     if (theme_on) {
         out.writeAll(anim.themes[anim.g_theme.?].seq) catch {};

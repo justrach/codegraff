@@ -124,6 +124,8 @@ pub fn savedHere(live: *LiveTurn, env: acp_workspace.Env, arena: Allocator, sid:
     };
     const canonical_active = workspace_switch.currentAbs(live.root.io, scratch);
     if (stat.kind != .file) return .{ .rejected = "Unknown session ID in the selected workspace" };
+    @import("session_store.zig").recover(live.root.io, live.root.gpa, .cwd(), path) catch |err|
+        return .{ .rejected = loadErrorText(arena, err, "") };
     const bytes = Io.Dir.cwd().readFileAlloc(live.root.io, path, scratch, .limited(session_index.max_session_bytes)) catch |err|
         return .{ .rejected = loadErrorText(arena, if (err == error.StreamTooLong) error.SessionTooLarge else err, "") };
     const unloadable: Saved = .{ .rejected = "Saved session could not be loaded" };

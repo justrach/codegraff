@@ -256,6 +256,8 @@ const InitializeResult = struct {
         try s.endObject();
         try s.objectField("info");
         try s.write(self.info);
+        try s.objectField("_meta");
+        try s.write(.{ .steering = .{ .supported = self.can_load } });
         try s.objectField("authMethods");
         try s.write(if (self.terminal_auth) terminal_login[0..] else terminal_login[0..0]);
         try s.endObject();

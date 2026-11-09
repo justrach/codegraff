@@ -65,11 +65,26 @@ fn releaseOwner(io: Io, dir: Io.Dir, path: []const u8) void {
 /// file by the time we discovered the contention. We open at the existing
 /// length, and only once the lock is ours overwrite from byte 0 and cut the
 /// file back to the new length.
-pub fn writeSession(io: Io, dir: Io.Dir, path: []const u8, data: []const u8) !void {
+pub const LockedFile = struct {
+    file: Io.File,
+    dir: Io.Dir,
+    path: []const u8,
+    owner: bool = false,
+
+    pub fn close(self: LockedFile, io: Io) void {
+        self.file.close(io);
+        if (self.owner) releaseOwner(io, self.dir, self.path);
+    }
+};
+
+/// Opens read/write without truncation; the lock (or fallback owner) lives
+/// until close. The caller must keep path alive for that duration.
+pub fn open(io: Io, dir: Io.Dir, path: []const u8) !LockedFile {
     if (std.fs.path.dirname(path)) |parent| dir.createDirPath(io, parent) catch {};
     @import("graff_dir.zig").ensureFor(io, dir, path); // #1273
     const file = dir.createFile(io, path, .{
         .truncate = false,
+        .read = true,
         .lock = .exclusive,
         .lock_nonblocking = true,
     }) catch |err| switch (err) {
@@ -82,14 +97,20 @@ pub fn writeSession(io: Io, dir: Io.Dir, path: []const u8, data: []const u8) !vo
         // thing keeping two writers apart, so it brackets the write.
         error.FileLocksUnsupported, error.SystemResources => {
             try claimOwner(io, dir, path);
-            defer releaseOwner(io, dir, path);
-            return dir.writeFile(io, .{ .sub_path = path, .data = data });
+            errdefer releaseOwner(io, dir, path);
+            const fallback = try dir.createFile(io, path, .{ .truncate = false, .read = true });
+            return .{ .file = fallback, .dir = dir, .path = path, .owner = true };
         },
         else => return err,
     };
-    defer file.close(io);
-    try file.writePositionalAll(io, data, 0);
-    try file.setLength(io, data.len);
+    return .{ .file = file, .dir = dir, .path = path };
+}
+
+pub fn writeSession(io: Io, dir: Io.Dir, path: []const u8, data: []const u8) !void {
+    const held = try open(io, dir, path);
+    defer held.close(io);
+    try held.file.writePositionalAll(io, data, 0);
+    try held.file.setLength(io, data.len);
 }
 
 test "a second graff reports contention instead of clobbering the session (#289)" {

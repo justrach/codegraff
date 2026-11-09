@@ -481,6 +481,62 @@ pub fn cellId(buf: []u8, cell: Cell, tier: Tier) []const u8 {
     return std.fmt.bufPrint(buf, "{s}/{s}@{s}", .{ cell.shape.label(), dash(cell.role), tier.label() }) catch buf[0..0];
 }
 
+/// #393 — role-class failure policy for workflow phases and subagents.
+/// Load-bearing mutation/planning roles (`implement`, `build`, `transform`,
+/// `scope`, `implementer`, `planner`) are `.fail_closed`: their output IS the
+/// requested work. Advisory roles (`find`, `verify`, `sweep`, `synthesize`,
+/// `review`, `variants`, `reviewer`, `researcher`, `skeptic`, `judge`,
+/// `summarizer`) are `.fail_open`.
+pub const RoleFailurePolicy = enum {
+    fail_open,
+    fail_closed,
+
+    pub fn label(self: RoleFailurePolicy) []const u8 {
+        return switch (self) {
+            .fail_open => "fail-open",
+            .fail_closed => "fail-closed",
+        };
+    }
+};
+
+pub fn failurePolicyForRole(label_or_slot: []const u8, niche: []const u8) RoleFailurePolicy {
+    const slot = roleOf(label_or_slot, niche);
+    if (std.mem.eql(u8, slot, "implement") or
+        std.mem.eql(u8, slot, "build") or
+        std.mem.eql(u8, slot, "transform") or
+        std.mem.eql(u8, slot, "scope")) return .fail_closed;
+    if (slot.len > 0) return .fail_open;
+    for ([_][]const u8{ label_or_slot, niche }) |raw| {
+        if (util.indexOfIgnoreCase(raw, "implement") != null or
+            util.indexOfIgnoreCase(raw, "planner") != null or
+            util.indexOfIgnoreCase(raw, "builder") != null or
+            util.indexOfIgnoreCase(raw, "transform") != null) return .fail_closed;
+        if (util.indexOfIgnoreCase(raw, "review") != null or
+            util.indexOfIgnoreCase(raw, "research") != null or
+            util.indexOfIgnoreCase(raw, "skeptic") != null or
+            util.indexOfIgnoreCase(raw, "judge") != null or
+            util.indexOfIgnoreCase(raw, "summariz") != null or
+            util.indexOfIgnoreCase(raw, "synthesize") != null or
+            util.indexOfIgnoreCase(raw, "verify") != null or
+            util.indexOfIgnoreCase(raw, "find") != null or
+            util.indexOfIgnoreCase(raw, "sweep") != null) return .fail_open;
+    }
+    return .fail_closed;
+}
+
+/// #393: whether a workflow phase task in `slot`/`niche` warrants a phase-level
+/// retry pass. Advisory synthesis/judge/summarizer roles are fail-open and do
+/// not burn extra phase retries when they fail.
+pub fn phaseAllowsRetry(title: []const u8, niche: []const u8) bool {
+    const slot = roleOf(title, niche);
+    if (std.mem.eql(u8, slot, "synthesize")) return false;
+    for ([_][]const u8{ title, niche }) |raw| {
+        if (util.indexOfIgnoreCase(raw, "judge") != null or
+            util.indexOfIgnoreCase(raw, "summariz") != null) return false;
+    }
+    return true;
+}
+
 test {
     _ = @import("route_policy_tests.zig");
 }
