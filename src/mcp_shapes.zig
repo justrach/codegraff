@@ -559,7 +559,7 @@ pub fn annotate(gpa: Allocator, arena: Allocator, io: Io, cwd: ?[]const u8, text
     }
     if (store.map.count() >= 2) {
         try aw.writer.writeAll(
-            "# muscle: fat MCP print() auto-slims (id/title; comments → n+latest_author). issues=list_issues(); comments=each(issues,\"list_comments\",\"id\"); print(len(issues), project(issues,\"id\"), project(comments,\"latest_author\"))\n",
+            "# muscle: fat MCP print() auto-slims rows (id/identifier/title/name; use row.id for \"id\" fields) and comment lists ({issue, n, latest_author}): issues=list_issues(); comments=each(issues,\"list_comments\",\"id\"); print(issues, comments)\n",
         );
     }
     return aw.toOwnedSlice();
