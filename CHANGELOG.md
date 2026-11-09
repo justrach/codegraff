@@ -10,6 +10,13 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.54
+
+- `compact_prune.pruneOldToolResults` runs a deterministic Phase-1 pruning pass at the `compactAt` boundary before `autoCompact` invokes an LLM summary, replacing oversized older inline tool outputs (`>= 4 KiB` outside the recent tail) with `tool_handle.shapeHint` + head/tail previews and skipping the LLM summary call when the pruned transcript drops below threshold.
+- `workspace_tree_snap.fingerprint` enriches `git status --porcelain` snapshots with a content-addressed digest of dirty files (`#dirty-hash`) so `edit_contract` accurately detects worker edits to files that were already modified before the phase started, and `agent_worktree` passes `-c core.hooksPath=/dev/null -c core.fsmonitor=false -c filter.lfs.smudge= -c filter.lfs.process= -c filter.lfs.required=false` on worktree git commands.
+- `readonly_sandbox` adds `--unshare-pid` to Linux `bwrap` invocations alongside `--proc /proc`, `linux_landlock` provides zero-dependency Linux Landlock ABI v1–v3 probing and OS write-denial tagging (`annotateSandboxDenial`), and `exec_bash` annotates read-only sandbox permission denials (`EROFS`, `EACCES`, `EPERM`) as explicit policy boundaries.
+- `history_wire` distinguishes interrupted in-flight tool calls (`TOOL_OUTCOME_UNKNOWN`) from unstarted sibling calls (`TOOL_NOT_STARTED`) when repairing dangling tool-call batches, `tool_repeat` hashes JSON object arguments in canonical sorted key order, and `mcp_shapes.annotate` prints full slimmed rows (`print(issues, comments)`) with explicit `row.id` guidance.
+
 ## v0.302.74.53
 
 - `startup.buildSystemPrompt` places machine-wide skill catalogs (`# Skills` with global skills sorted ahead of `.project` skills) before workspace-varying segments (`AGENTS.md`, `--append-system-prompt`, `repo_map`), and `repo_context.split` moves workspace instructions and repository layout out of `messages[0]` into the leading user turn on `deepseekChat` routes so both `system` and `tools` remain prefix-cache aligned across workspaces.

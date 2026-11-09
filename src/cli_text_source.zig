@@ -5,6 +5,11 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.54
+    \\  • Phase-1 deterministic pre-compaction tool-result pruning (compact_prune), crash-tail TOOL_OUTCOME_UNKNOWN vs TOOL_NOT_STARTED repair, and key-sorted repeat hashing
+    \\  • content-addressed dirty workspace snapshots (workspace_tree_snap) for edit_contract and hook/fsmonitor/LFS-safe subagent worktrees
+    \\  • Linux bwrap --unshare-pid isolation, Landlock ABI probing, and read-only sandbox denial boundary tagging
+    \\
     \\0.302.74.53
     \\  • workspace-invariant skill catalog prefix ordering and deepseekChat repo_context split for cross-directory prompt caching
     \\  • Kimi global (kimi.ai) vs Mainland China (kimi.com) OAuth region resolution and k3.1-pro catalog + plan routing across CLI and ACP
