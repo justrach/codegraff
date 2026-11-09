@@ -431,6 +431,7 @@ test "load_tool_schemas surfaces missing nanocua.app on macOS and hot-connects i
     if (builtin.os.tag != .macos) return error.SkipZigTest;
     const mcp = @import("mcp.zig");
     const mcp_select = @import("mcp_select.zig");
+    const shapes = @import("mcp_shapes.zig");
     const gate = @import("mcp_schema_gate.zig");
     const Kind = @import("provider.zig").Provider.Kind;
     gate.reset();
@@ -441,12 +442,19 @@ test "load_tool_schemas surfaces missing nanocua.app on macOS and hot-connects i
 
     const gpa = testing.allocator;
     const io = testing.io;
+    shapes.shutdown(io);
+    defer shapes.shutdown(io);
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     var state = std.heap.ArenaAllocator.init(gpa);
     defer state.deinit();
     const a = state.allocator();
     const home = try tmpHome(io, a, &tmp, false);
+    try tmp.dir.createDirPath(io, ".graff");
+    try tmp.dir.writeFile(io, .{
+        .sub_path = shapes.rel_path,
+        .data = "{\"mcp__nanocua__get_ui_tree\":{\"type\":\"object\"}}",
+    });
 
     var reg = mcp.Registry.empty(gpa, io);
     defer reg.deinit();
@@ -469,7 +477,7 @@ test "load_tool_schemas surfaces missing nanocua.app on macOS and hot-connects i
             self.rebuilds += 1;
         }
     };
-    var agent: FakeAgent = .{ .arena = a, .gpa = gpa, .io = io, .registry = &reg };
+    var agent: FakeAgent = .{ .arena = a, .gpa = gpa, .io = io, .agent_cwd = home, .registry = &reg };
 
     // Before install: `load_tool_schemas` with `query: "computer use"` names `graff computer install`.
     const before_in = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"query\":\"computer use\"}", .{});
@@ -499,5 +507,6 @@ test "load_tool_schemas surfaces missing nanocua.app on macOS and hot-connects i
     try testing.expect(!after.is_error);
     try testing.expect(std.mem.indexOf(u8, after.text, "mcp__nanocua__get_ui_tree") != null);
     try testing.expect(gate.isLoaded("mcp__nanocua__get_ui_tree"));
+    try testing.expect(shapes.lookup(io, "mcp__nanocua__get_ui_tree") != null);
     try testing.expect(agent.rebuilds >= 1);
 }
