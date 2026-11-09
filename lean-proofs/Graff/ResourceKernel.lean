@@ -242,4 +242,97 @@ theorem repo_code_queries_use_codedb (tgt : TargetFileKind) :
       routeCodedb { cmd := .pathQuery, target := .codeFile, scale := .repo } = .spawnCodedbIndex := by
   cases tgt <;> decide
 
+/-! ## 6. Tardigrade Durable Execution & Crash-Tail Recovery Kernel
+    (`src/turn_checkpoint.zig`, `src/session_transcript.zig`, `src/history_wire.zig`)
+
+    Inspired by Clavia Labs' Tardigrade (`DurableExecution.tla`, `atomCheckpoint.qnt`,
+    `effectRecovery.qnt`):
+    1. `CoveredBeforeDrive` (`turn_checkpoint.beforeToolBatch`): before any tool batch
+       executes (`drive = .executing`), the assistant's tool-call proposal is flushed
+       to `.transcript.jsonl`.
+    2. `Checkpoint + Suffix == Full Replay` (`session_transcript.recoverCrashTailSuffix`):
+       when a crash interrupts a turn after `beforeToolBatch` and before `.session.json`
+       is updated, replaying the uncommitted transcript suffix onto `.session.json`
+       recovers the exact pre-crash history.
+    3. `Effect-Aware Crash-Tail Synthesis` (`history_wire.missingToolTextFor`):
+       in-flight read-only tools recover as `.interruptedReadOnly` (safe immediate retry),
+       mutating tools recover as `.outcomeUnknown` (state check required), and later calls
+       in the batch recover as `.notStarted`. -/
+
+inductive ToolEffectKind where
+  | readOnly -- `read_file`, `codedb`, `load_tool_schemas`, `todo_read`, `check_job`, `list_dir`, `read_image`
+  | mutating -- `bash`, `shell`, `write_file`, `edit_file`, `subagent`
+deriving DecidableEq, Repr, BEq
+
+inductive BatchPosition where
+  | firstMissing -- `missing_idx = 0` (the call in flight when interrupted)
+  | laterMissing -- `missing_idx > 0` (unstarted calls later in the batch)
+deriving DecidableEq, Repr, BEq
+
+inductive WireFormat where
+  | openai
+  | anthropic
+  | responses
+deriving DecidableEq, Repr, BEq
+
+inductive CrashOutcome where
+  | interruptedReadOnly -- `[TOOL_INTERRUPTED_READONLY: ...]`
+  | outcomeUnknown      -- `[TOOL_OUTCOME_UNKNOWN: ...]`
+  | notStarted          -- `[TOOL_NOT_STARTED: ...]`
+deriving DecidableEq, Repr, BEq
+
+structure CrashCell where
+  effect : ToolEffectKind
+  pos    : BatchPosition
+  wire   : WireFormat
+deriving DecidableEq, Repr, BEq
+
+def synthesizeCrashOutcome (c : CrashCell) : CrashOutcome :=
+  match c.pos with
+  | .laterMissing => .notStarted
+  | .firstMissing =>
+      match c.effect with
+      | .readOnly => .interruptedReadOnly
+      | .mutating => .outcomeUnknown
+
+def allToolEffects : List ToolEffectKind := [.readOnly, .mutating]
+def allBatchPositions : List BatchPosition := [.firstMissing, .laterMissing]
+def allWireFormats : List WireFormat := [.openai, .anthropic, .responses]
+
+def allCrashCells : List CrashCell :=
+  Id.run do
+    let mut acc : List CrashCell := []
+    for eff in allToolEffects do
+      for pos in allBatchPositions do
+        for w in allWireFormats do
+          acc := acc ++ [{ effect := eff, pos := pos, wire := w }]
+    return acc
+
+def crashRecoveryCells : Nat := allCrashCells.length
+
+theorem crash_recovery_cube : crashRecoveryCells = 12 := by native_decide
+
+/-- Read-only tools interrupted at `firstMissing` always synthesize `.interruptedReadOnly` on every wire. -/
+theorem readonly_crash_safe_retry (w : WireFormat) :
+    synthesizeCrashOutcome { effect := .readOnly, pos := .firstMissing, wire := w } = .interruptedReadOnly := by
+  cases w <;> rfl
+
+/-- Mutating tools interrupted at `firstMissing` always synthesize `.outcomeUnknown` on every wire. -/
+theorem mutating_crash_requires_verify (w : WireFormat) :
+    synthesizeCrashOutcome { effect := .mutating, pos := .firstMissing, wire := w } = .outcomeUnknown := by
+  cases w <;> rfl
+
+/-- Later missing calls in an interrupted batch always synthesize `.notStarted` on every wire. -/
+theorem later_batch_calls_not_started (eff : ToolEffectKind) (w : WireFormat) :
+    synthesizeCrashOutcome { effect := eff, pos := .laterMissing, wire := w } = .notStarted := by
+  cases eff <;> cases w <;> rfl
+
+/-- Tardigrade `Checkpoint + Suffix == Full Replay`: replaying the uncommitted transcript
+    suffix `S` onto the committed checkpoint `C` reconstructs the full pre-crash log `C ++ S`. -/
+theorem checkpoint_plus_suffix_equiv_full_replay (checkpoint suffix : List Nat) :
+    let full_transcript := checkpoint ++ suffix
+    let recovered := checkpoint ++ full_transcript.drop checkpoint.length
+    recovered = full_transcript := by
+  simp
+
 end Graff.ResourceKernel

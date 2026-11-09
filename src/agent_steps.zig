@@ -143,6 +143,7 @@ pub fn stepResponses(self: *Agent, response: std.json.ObjectMap) !?[]const u8 {
     }
 
     if (calls.items.len > 0) {
+        turn_checkpoint.beforeToolBatch(self);
         const results = try self.runTools(calls.items);
         const msg_alloc = self.historyAlloc();
         for (calls.items, results) |call, r| {
@@ -219,6 +220,7 @@ pub fn stepAnthropic(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
     self.pairContextMeterWithCurrentLocal();
 
     if (calls.items.len > 0) {
+        turn_checkpoint.beforeToolBatch(self);
         const results = try self.runTools(calls.items);
         var blocks = std.json.Array.init(msg_alloc);
         for (calls.items, results) |call, r| {

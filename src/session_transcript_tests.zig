@@ -302,3 +302,49 @@ test "the size cap rotates the generation instead of rewriting it (#441)" {
     // exactly once — no rotation re-appended anything.
     try testing.expectEqual(@as(usize, 41), lineCount());
 }
+
+test "recoverCrashTailSuffix: replays uncommitted beforeToolBatch suffix onto stale checkpoint and synthesizes crash results" {
+    const io = testing.io;
+    const gpa = testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    resetForTest();
+    tool_spill.resetForTest();
+    defer resetForTest();
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    // Turn 1 completed and saved in .session.json + .transcript.jsonl.
+    var root = agentFor(gpa, a, io, "tardigrade");
+    try root.messages.append(try msg(a, "user", "turn 1 prompt"));
+    try root.messages.append(try msg(a, "assistant", "turn 1 answer"));
+    record(&root, tmp.dir, "tardigrade");
+
+    // Snapshot what .session.json holds before Turn 2 crashes during runTools.
+    var saved_checkpoint = std.json.Array.init(a);
+    for (root.messages.items) |m| try saved_checkpoint.append(m);
+
+    // Turn 2 starts: user prompt + assistant tool-call proposal flushed by beforeToolBatch.
+    try root.messages.append(try msg(a, "user", "read api.py and run tests"));
+    const tool_call_msg = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"role":"assistant","content":null,"tool_calls":[
+        \\  {"id":"call_ro","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"api.py\"}"}},
+        \\  {"id":"call_sh","type":"function","function":{"name":"bash","arguments":"{\"command\":\"pytest\"}"}}
+        \\]}
+    , .{});
+    try root.messages.append(tool_call_msg);
+    record(&root, tmp.dir, "tardigrade");
+
+    // Process crashes before afterToolBatch updates .session.json!
+    // On resume, recoverCrashTailSuffix replays the uncommitted suffix onto saved_checkpoint.
+    transcript.recoverCrashTailSuffix(io, tmp.dir, a, "tardigrade", &saved_checkpoint);
+    try testing.expectEqual(@as(usize, 4), saved_checkpoint.items.len);
+
+    // And history_wire.prepare synthesizes TOOL_INTERRUPTED_READONLY for read_file and TOOL_NOT_STARTED for bash.
+    const history_wire = @import("history_wire.zig");
+    history_wire.prepare(a, .openai, &saved_checkpoint);
+    try testing.expectEqual(@as(usize, 6), saved_checkpoint.items.len);
+    try testing.expectEqualStrings(history_wire.tool_interrupted_readonly, saved_checkpoint.items[4].object.get("content").?.string);
+    try testing.expectEqualStrings(history_wire.tool_not_started, saved_checkpoint.items[5].object.get("content").?.string);
+}

@@ -29,5 +29,5 @@ def main : IO Unit := do
   IO.println s!"prompt_cache {PromptCache.cacheCells}  spawn_ok={PromptCache.spawnOkCells}  key={PromptCache.keyCells}"
   IO.println s!"prompt_prefix {PromptPrefix.prefixCells}  hit={PromptPrefix.hitCells}"
   IO.println s!"prompt_stable {PromptStable.stableCells}  keep={PromptStable.keepCells}"
-  IO.println s!"resource      {ResourceKernel.resourceCells}  seed={ResourceKernel.seedCells}"
-  IO.println s!"cells_total  {ToolCatalog.catalogCells + Transport.transportCells + Provider.providerRows + GoalLoop.goalCells + PathConfine.leaseCells + Shape.shapeCells + Score.scoreCells + BashPolicy.bashCells + PromptCache.cacheCells + PromptPrefix.prefixCells + PromptStable.stableCells + ResourceKernel.resourceCells}"
+  IO.println s!"resource      {ResourceKernel.resourceCells}  seed={ResourceKernel.seedCells}  codedb_route={ResourceKernel.codedbRouteCells}  crash_recovery={ResourceKernel.crashRecoveryCells}"
+  IO.println s!"cells_total  {ToolCatalog.catalogCells + Transport.transportCells + Provider.providerRows + GoalLoop.goalCells + PathConfine.leaseCells + Shape.shapeCells + Score.scoreCells + BashPolicy.bashCells + PromptCache.cacheCells + PromptPrefix.prefixCells + PromptStable.stableCells + ResourceKernel.resourceCells + ResourceKernel.codedbRouteCells + ResourceKernel.crashRecoveryCells}"

@@ -435,6 +435,12 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     try @import("session_catalog.zig").restore(root, obj);
     try root.ensureRootTools(root.provider.kind);
     const compaction_window = try @import("compaction_window.zig").State.restore(scratch, obj, msgs.items);
+    if (!claude_import and std.mem.endsWith(u8, found.path, session_ext)) {
+        const stem = found.path[0 .. found.path.len - session_ext.len];
+        if (std.fmt.allocPrint(scratch, "{s}{s}", .{ stem, session_index.transcript_ext })) |tpath| {
+            session_transcript.recoverCrashTailFromPath(root.io, .cwd(), scratch, tpath, &msgs);
+        } else |_| {}
+    }
     root.messages = msgs;
     root.compaction_window = compaction_window;
     @import("history_wire.zig").prepare(scratch, root.provider.kind, &root.messages);

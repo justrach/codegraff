@@ -4,6 +4,7 @@ const messages = @import("messages.zig");
 const Kind = @import("provider.zig").Provider.Kind;
 
 pub const tool_outcome_unknown = "[TOOL_OUTCOME_UNKNOWN: session interrupted while this tool call was in flight; verify state before re-running non-idempotent commands]";
+pub const tool_interrupted_readonly = "[TOOL_INTERRUPTED_READONLY: session interrupted while this read-only tool call was in flight; no state was modified, safe to re-run directly]";
 pub const tool_not_started = "[TOOL_NOT_STARTED: skipped because an earlier tool call in the batch was interrupted]";
 
 pub fn prepare(a: std.mem.Allocator, kind: Kind, history: *std.json.Array) void {
@@ -51,8 +52,25 @@ fn callIdField(obj: std.json.ObjectMap) []const u8 {
     return if (cid.len > 0) cid else strField(obj, "id");
 }
 
-fn missingToolText(missing_idx: usize) []const u8 {
-    return if (missing_idx == 0) tool_outcome_unknown else tool_not_started;
+pub fn isReadOnlyTool(name: []const u8) bool {
+    for ([_][]const u8{
+        "read_file",
+        "codedb",
+        "load_tool_schemas",
+        "todo_read",
+        "check_job",
+        "list_dir",
+        "read_image",
+    }) |ro| {
+        if (std.mem.eql(u8, name, ro)) return true;
+    }
+    return false;
+}
+
+pub fn missingToolTextFor(name: []const u8, missing_idx: usize) []const u8 {
+    if (missing_idx > 0) return tool_not_started;
+    if (isReadOnlyTool(name)) return tool_interrupted_readonly;
+    return tool_outcome_unknown;
 }
 
 fn repairOpenAIDanglingBatch(a: std.mem.Allocator, history: *std.json.Array) void {
@@ -81,6 +99,8 @@ fn repairOpenAIDanglingBatch(a: std.mem.Allocator, history: *std.json.Array) voi
             if (tc != .object) continue;
             const id = strField(tc.object, "id");
             if (id.len == 0) continue;
+            const func = tc.object.get("function");
+            const name = if (func) |f| (if (f == .object) strField(f.object, "name") else "") else "";
             var found = false;
             for (history.items[i + 1 .. j]) |res| {
                 if (res == .object and std.mem.eql(u8, strField(res.object, "tool_call_id"), id)) {
@@ -92,7 +112,7 @@ fn repairOpenAIDanglingBatch(a: std.mem.Allocator, history: *std.json.Array) voi
                 var msg: std.json.ObjectMap = .empty;
                 msg.put(a, "role", .{ .string = "tool" }) catch break;
                 msg.put(a, "tool_call_id", .{ .string = id }) catch break;
-                msg.put(a, "content", .{ .string = missingToolText(missing_idx) }) catch break;
+                msg.put(a, "content", .{ .string = missingToolTextFor(name, missing_idx) }) catch break;
                 history.insert(j, .{ .object = msg }) catch break;
                 j += 1;
                 missing_idx += 1;
@@ -156,6 +176,7 @@ fn repairAnthropicDanglingBatch(a: std.mem.Allocator, history: *std.json.Array) 
                 if (blk != .object or !std.mem.eql(u8, strField(blk.object, "type"), "tool_use")) continue;
                 const id = strField(blk.object, "id");
                 if (id.len == 0) continue;
+                const name = strField(blk.object, "name");
                 var found = false;
                 for (ucontent.array.items) |rblk| {
                     if (rblk == .object and std.mem.eql(u8, strField(rblk.object, "type"), "tool_result") and std.mem.eql(u8, strField(rblk.object, "tool_use_id"), id)) {
@@ -164,7 +185,7 @@ fn repairAnthropicDanglingBatch(a: std.mem.Allocator, history: *std.json.Array) 
                     }
                 }
                 if (!found) {
-                    const synth = makeAnthropicToolResultBlock(a, id, missingToolText(missing_idx)) catch break;
+                    const synth = makeAnthropicToolResultBlock(a, id, missingToolTextFor(name, missing_idx)) catch break;
                     ucontent.array.append(synth) catch break;
                     missing_idx += 1;
                 }
@@ -176,7 +197,8 @@ fn repairAnthropicDanglingBatch(a: std.mem.Allocator, history: *std.json.Array) 
                 if (blk != .object or !std.mem.eql(u8, strField(blk.object, "type"), "tool_use")) continue;
                 const id = strField(blk.object, "id");
                 if (id.len == 0) continue;
-                const synth = makeAnthropicToolResultBlock(a, id, missingToolText(missing_idx)) catch break;
+                const name = strField(blk.object, "name");
+                const synth = makeAnthropicToolResultBlock(a, id, missingToolTextFor(name, missing_idx)) catch break;
                 blocks.append(synth) catch break;
                 missing_idx += 1;
             }
@@ -219,6 +241,7 @@ fn repairResponsesDanglingBatch(a: std.mem.Allocator, history: *std.json.Array) 
             if (fc != .object or !std.mem.eql(u8, strField(fc.object, "type"), "function_call")) continue;
             const cid = callIdField(fc.object);
             if (cid.len == 0) continue;
+            const name = strField(fc.object, "name");
             var found = false;
             for (history.items[i..j]) |out| {
                 if (out == .object and std.mem.eql(u8, strField(out.object, "type"), "function_call_output") and std.mem.eql(u8, callIdField(out.object), cid)) {
@@ -230,7 +253,7 @@ fn repairResponsesDanglingBatch(a: std.mem.Allocator, history: *std.json.Array) 
                 var msg: std.json.ObjectMap = .empty;
                 msg.put(a, "type", .{ .string = "function_call_output" }) catch break;
                 msg.put(a, "call_id", .{ .string = cid }) catch break;
-                msg.put(a, "output", .{ .string = missingToolText(missing_idx) }) catch break;
+                msg.put(a, "output", .{ .string = missingToolTextFor(name, missing_idx) }) catch break;
                 history.insert(j, .{ .object = msg }) catch break;
                 j += 1;
                 missing_idx += 1;
@@ -406,5 +429,50 @@ test "crash-tail synthesis marks first missing call TOOL_OUTCOME_UNKNOWN and sub
     try std.testing.expectEqualStrings("r1", resp_hist.items[2].object.get("call_id").?.string);
     try std.testing.expectEqualStrings(tool_outcome_unknown, resp_hist.items[2].object.get("output").?.string);
     try std.testing.expectEqualStrings("r2", resp_hist.items[3].object.get("call_id").?.string);
+    try std.testing.expectEqualStrings(tool_not_started, resp_hist.items[3].object.get("output").?.string);
+}
+
+test "crash-tail synthesis marks interrupted read-only calls TOOL_INTERRUPTED_READONLY and later calls TOOL_NOT_STARTED" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const openai_raw =
+        \\[
+        \\  {"role":"assistant","content":null,"tool_calls":[
+        \\    {"id":"ro1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a.py\"}"}},
+        \\    {"id":"ro2","type":"function","function":{"name":"codedb","arguments":"{\"command\":\"list_dir .\"}"}}
+        \\  ]}
+        \\]
+    ;
+    var openai_hist = (try std.json.parseFromSliceLeaky(std.json.Value, a, openai_raw, .{})).array;
+    prepare(a, .openai, &openai_hist);
+    try std.testing.expectEqual(@as(usize, 3), openai_hist.items.len);
+    try std.testing.expectEqualStrings(tool_interrupted_readonly, openai_hist.items[1].object.get("content").?.string);
+    try std.testing.expectEqualStrings(tool_not_started, openai_hist.items[2].object.get("content").?.string);
+
+    const anth_raw =
+        \\[
+        \\  {"role":"assistant","content":[
+        \\    {"type":"tool_use","id":"au1","name":"codedb","input":{"command":"context auth"}},
+        \\    {"type":"tool_use","id":"au2","name":"shell","input":{}}
+        \\  ]}
+        \\]
+    ;
+    var anth_hist = (try std.json.parseFromSliceLeaky(std.json.Value, a, anth_raw, .{})).array;
+    prepare(a, .anthropic, &anth_hist);
+    const anth_blocks = anth_hist.items[1].object.get("content").?.array.items;
+    try std.testing.expectEqualStrings(tool_interrupted_readonly, anth_blocks[0].object.get("content").?.string);
+    try std.testing.expectEqualStrings(tool_not_started, anth_blocks[1].object.get("content").?.string);
+
+    const resp_raw =
+        \\[
+        \\  {"type":"function_call","call_id":"rr1","name":"read_file","arguments":"{}"},
+        \\  {"type":"function_call","call_id":"rr2","name":"shell","arguments":"{}"}
+        \\]
+    ;
+    var resp_hist = (try std.json.parseFromSliceLeaky(std.json.Value, a, resp_raw, .{})).array;
+    prepare(a, .responses, &resp_hist);
+    try std.testing.expectEqualStrings(tool_interrupted_readonly, resp_hist.items[2].object.get("output").?.string);
     try std.testing.expectEqualStrings(tool_not_started, resp_hist.items[3].object.get("output").?.string);
 }
