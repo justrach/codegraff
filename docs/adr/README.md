@@ -346,8 +346,8 @@ record only when you need the evidence or the edge cases.
 | [0319](0319-session-files-carry-a-format-version.md) | Session files carry `format_version`; a missing field reads as v1, older versions migrate in order on load, and a newer version is refused, never read as the current shape. |
 | [0320](0320-session-saves-reuse-immutable-message-chunks.md) | Session saves reuse immutable serialized message chunks and transactionally replace changed JSON ranges; checksummed journals recover interrupted writes while canonical snapshots and reader contracts remain unchanged. |
 | [0321](0321-codex-followups-steer-immediately.md) | Plain-text OpenAI-model prompts steer live turns across direct, subscription and Codegraff routes; ACP advertises live injection to clients, and `/followups queue` restores next-turn queueing in `.harness/settings.json`. |
-
 | [0302](0302-sse-idle-watchdogs-follow-body-byte-progress.md) | SSE idle watchdogs observe partial body-byte progress, while separate unfinished-event time and size bounds preserve recovery. |
+| [0323](0323-planning-stays-folded-and-optional.md) | `todo_write` stays folded and optional with no mandatory turn-1 plan gate: on parallel-batching frontier models (`gpt-6.1-sol`, `grok-4.7`), forcing turn-1 planning (`arXiv:2609.20804`) added +81% to +135% wall time (4 -> 5–9 turns) with zero change in workspace calls or accuracy. |
 
 ## When to write one
 
