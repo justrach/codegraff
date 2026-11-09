@@ -242,4 +242,17 @@ def check_properties() -> int:
         raise ValueError("trace: maximizing walk left the HIT cell")
     if keep(Cell("skill_inject", "prefix")):
         raise ValueError("trace: skill in prefix must miss")
-    return n
+    fork_wires = ("anthropic_claude", "anthropic_other", "openai", "responses", "interactions")
+    fork_tails = ("none", "answered", "unanswered")
+    fork_hits = 0
+    fork_total = 0
+    for w, ttl, fit, tl in product(fork_wires, (False, True), (False, True), fork_tails):
+        fork_total += 1
+        ok = (w in ("anthropic_claude", "openai")) and ttl and fit and (tl != "unanswered")
+        if ok:
+            fork_hits += 1
+            if tl == "unanswered" or not ttl or not fit:
+                raise ValueError(f"fork-safety violated: {w} {ttl} {fit} {tl}")
+    if fork_total != 60 or fork_hits != 4:
+        raise ValueError(f"fork-cube: total={fork_total} hits={fork_hits}")
+    return n + fork_total

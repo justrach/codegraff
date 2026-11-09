@@ -47,6 +47,9 @@ pub const LiveTurn = struct {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
         if (!std.mem.eql(u8, self.session_id, session_id)) {
             self.session_id = self.root.arena.dupe(u8, session_id) catch session_id;
+            if (self.session_id.len > 0) {
+                @import("presence.zig").noteLabelsFrom(self.root.io, self.root.gpa, self.root.arena, self.root.session_title, self.session_id);
+            }
         }
         self.root.last_api_reauth = null;
         self.root.last_api_error_detail = null;

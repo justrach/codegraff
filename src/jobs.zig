@@ -88,6 +88,7 @@ pub const Job = struct { // session-global; pump drains pipes or capture files; 
 };
 
 pub const job_unread_cap = 256 * 1024;
+const job_ring = @import("job_ring.zig");
 const job_wait = @import("job_wait.zig");
 const job_notify = @import("job_notify.zig");
 const browser_guard = @import("job_browser_guard.zig");
@@ -145,10 +146,8 @@ pub fn appendOutput(job: *Job, gpa: Allocator, which: u8, bytes: []const u8, now
 
 /// Drop the oldest unread output past the cap. Caller holds the mutex.
 pub fn capUnread(job: *Job, gpa: Allocator) void {
-    if (job.buf.items.len - job.cursor <= job_unread_cap) return;
-    const drop = job.buf.items.len - job.cursor - job_unread_cap;
-    job.buf.replaceRange(gpa, job.cursor, drop, &.{}) catch return;
-    job.dropped = true;
+    _ = gpa;
+    job_ring.capUnread(&job.buf, &job.cursor, &job.dropped, job_unread_cap);
 }
 
 /// Drain MultiReader bytes into the job buffer; drop oldest unread past the cap.
@@ -243,7 +242,9 @@ pub fn finish(job: *Job, io: Io, code: ?u8, killed: bool, detached: bool, pid: i
     const id = job.id;
     const quiet = job.quiet;
     const idle = job.stopped_idle;
-    if (!quiet and !detached) job_notify.queue(io, id, code, killed, job.cmd, idle, job.buf.items[job.cursor..]);
+    const unread_tail = job.buf.items[job.cursor..];
+    if (!quiet and !detached) job_notify.queue(io, id, code, killed, job.cmd, idle, unread_tail);
+    if (job.parked and !detached) job_parked.finish(io, id, job.cmd, .{ .exit_code = code, .done = true, .killed = job.killed, .session_end = job.exit_cleanup, .unread = unread_tail });
     g_jobs.mutex.unlock(io);
     if (detached) return;
     if (builtin.is_test) if (completion_test_hook) |hook| hook(io, id);
@@ -433,7 +434,7 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u64, wait_ms: u64) !ToolOutput {
                 try w.writeAll("\n(no new output)");
             }
             const text = try aw.toOwnedSlice();
-            job.cursor = job.buf.items.len;
+            job_ring.consumeUnread(gpa, &job.buf, &job.cursor);
             if (job.done) consumed(io, job); // the exit was just read here
             const result: ToolOutput = .{ .text = text, .pending = !job.done, .is_error = job.done and (job.stopped_idle or job.killed or (job.exit_code orelse 1) != 0), .cancelled = job.killed };
             g_jobs.mutex.unlock(io);
@@ -555,7 +556,7 @@ pub fn jobsReap(gpa: Allocator, io: Io) void {
 test { // split-out modules: unreferenced, their tests silently never run
     _ = worktree_cmd;
     _ = @import("worktree_lease.zig");
-    _ = .{ job_wait, job_notify, job_idle, job_registry, browser_guard, job_capture };
+    _ = .{ job_wait, job_notify, job_idle, job_registry, browser_guard, job_capture, job_ring };
     _ = @import("job_durable.zig");
     _ = job_parked;
     _ = @import("job_recover.zig");

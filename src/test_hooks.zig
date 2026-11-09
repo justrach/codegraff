@@ -426,4 +426,6 @@ test {
     _ = @import("codedb_guard_scope.zig"); // ADR 0234: in-place edits and small whole reads pass the codedb guard
     _ = @import("workspace_paths.zig");
     _ = @import("read_path_norm.zig");
+    _ = @import("edit_match.zig");
+    _ = @import("job_ring.zig");
 }

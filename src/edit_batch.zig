@@ -62,7 +62,9 @@ pub fn execBatch(ctx: ToolCtx, input: Value) !ToolOutput {
             const new = tools.strField(item, "new_string") orelse return spanErr(gpa, i, list.items.len, "missing new_string");
             if (old.len == 0) return spanErr(gpa, i, list.items.len, "old_string must not be empty");
 
-            const count = std.mem.count(u8, draft, old);
+            const span = try @import("edit_match.zig").resolveSpan(gpa, draft, old, new);
+            defer span.deinit(gpa);
+            const count = span.count;
             if (count == 0) {
                 const why = try std.fmt.allocPrint(gpa, "old_string not found in {s} — read_file it and match the existing text exactly", .{path});
                 defer gpa.free(why);
@@ -73,8 +75,8 @@ pub fn execBatch(ctx: ToolCtx, input: Value) !ToolOutput {
                 defer gpa.free(why);
                 return spanErr(gpa, i, list.items.len, why);
             }
-            const replaced = try gpa.alloc(u8, std.mem.replacementSize(u8, draft, old, new));
-            _ = std.mem.replace(u8, draft, old, new, replaced);
+            const replaced = try gpa.alloc(u8, std.mem.replacementSize(u8, draft, span.old, span.new));
+            _ = std.mem.replace(u8, draft, span.old, span.new, replaced);
             if (owned_draft) |bytes| gpa.free(bytes);
             owned_draft = replaced;
             draft = replaced;

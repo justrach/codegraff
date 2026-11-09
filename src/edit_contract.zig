@@ -71,17 +71,47 @@ pub fn contractUnmet(contracted: bool, before: []const u8, after: []const u8) bo
     return std.mem.eql(u8, std.mem.trim(u8, before, " \t\r\n"), a);
 }
 
+fn dirtyContentDigest(gpa: Allocator, io: Io, cwd: ?[]const u8, status_out: []const u8) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    var lines = std.mem.splitScalar(u8, status_out, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trimEnd(u8, raw_line, "\r");
+        if (line.len <= 3) continue;
+        const after_xy = line[3..];
+        const rel_raw = if (std.mem.indexOf(u8, after_xy, " -> ")) |arrow| after_xy[arrow + 4 ..] else after_xy;
+        const rel = std.mem.trim(u8, rel_raw, "\"");
+        if (rel.len == 0) continue;
+        hasher.update(rel);
+        const full = if (cwd) |p| (std.fs.path.join(gpa, &.{ p, rel }) catch continue) else rel;
+        defer if (cwd != null) gpa.free(full);
+        if (Io.Dir.cwd().readFileAlloc(io, full, gpa, .limited(256 * 1024))) |bytes| {
+            defer gpa.free(bytes);
+            hasher.update(bytes);
+        } else |_| {
+            if (Io.Dir.cwd().statFile(io, full, .{})) |st| {
+                hasher.update(std.mem.asBytes(&st.size));
+                hasher.update(std.mem.asBytes(&st.mtime.nanoseconds));
+            } else |_| {}
+        }
+    }
+    return hasher.final();
+}
+
 fn porcelain(gpa: Allocator, io: Io, cwd: ?[]const u8) ?[]u8 {
     const r = if (cwd) |p|
-        process_runner.runCapped(gpa, io, &.{ "git", "-C", p, "status", "--porcelain" }, 1 << 16, 8192, 15_000) catch return null
+        process_runner.runCapped(gpa, io, &.{ "git", "-C", p, "-c", "core.fsmonitor=false", "status", "--porcelain" }, 1 << 16, 8192, 15_000) catch return null
     else
-        process_runner.runCapped(gpa, io, &.{ "git", "status", "--porcelain" }, 1 << 16, 8192, 15_000) catch return null;
+        process_runner.runCapped(gpa, io, &.{ "git", "-c", "core.fsmonitor=false", "status", "--porcelain" }, 1 << 16, 8192, 15_000) catch return null;
     defer gpa.free(r.stderr);
     if (!process_runner.ranOk(r)) {
         gpa.free(r.stdout);
         return null;
     }
-    return r.stdout;
+    if (std.mem.trim(u8, r.stdout, " \t\r\n").len == 0) return r.stdout;
+    const digest = dirtyContentDigest(gpa, io, cwd, r.stdout);
+    const with_digest = std.fmt.allocPrint(gpa, "{s}\n#dirty-digest:{x:0>16}\n", .{ std.mem.trimEnd(u8, r.stdout, "\r\n"), digest }) catch return r.stdout;
+    gpa.free(r.stdout);
+    return with_digest;
 }
 
 /// Snapshot the working tree, arena-owned. Returns "" for an uncontracted
@@ -121,4 +151,48 @@ test "read-only analysis keeps a non-mutating scope in a contracted slot" {
     try std.testing.expect(!mutatingTask("implement", "Summarize the architecture"));
     try std.testing.expect(mutatingTask("implement", "Fix src/parser.zig"));
     try std.testing.expect(mutatingTask("implement", "Explain then implement the parser"));
+}
+
+test "treeSnapshot distinguishes untouched dirty worktree from further edits to a dirty file" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const repo = path_buf[0..try tmp.dir.realPath(io, &path_buf)];
+
+    const init = try process_runner.runCapped(gpa, io, &.{ "git", "-C", repo, "init", "-q" }, 4096, 4096, 15_000);
+    defer {
+        gpa.free(init.stdout);
+        gpa.free(init.stderr);
+    }
+    try tmp.dir.writeFile(io, .{ .sub_path = "dirty.txt", .data = "v1\n" });
+    const add = try process_runner.runCapped(gpa, io, &.{ "git", "-C", repo, "add", "dirty.txt" }, 4096, 4096, 15_000);
+    defer {
+        gpa.free(add.stdout);
+        gpa.free(add.stderr);
+    }
+    const commit = try process_runner.runCapped(gpa, io, &.{ "git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init" }, 4096, 4096, 15_000);
+    defer {
+        gpa.free(commit.stdout);
+        gpa.free(commit.stderr);
+    }
+
+    // Dirty the file BEFORE the phase starts.
+    try tmp.dir.writeFile(io, .{ .sub_path = "dirty.txt", .data = "v2-dirty-before-phase\n" });
+    const before = treeSnapshot(a, gpa, io, repo, true);
+    try std.testing.expect(before.len > 0);
+
+    // An untouched dirty worktree still fails the edit contract.
+    const untouched = treeSnapshot(a, gpa, io, repo, true);
+    try std.testing.expect(contractUnmet(true, before, untouched));
+
+    // Editing the already-dirty file changes the digest and satisfies the contract.
+    try tmp.dir.writeFile(io, .{ .sub_path = "dirty.txt", .data = "v3-edited-by-worker\n" });
+    const after = treeSnapshot(a, gpa, io, repo, true);
+    try std.testing.expect(!contractUnmet(true, before, after));
 }

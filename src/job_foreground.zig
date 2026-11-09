@@ -26,7 +26,7 @@ fn takeUnread(gpa: Allocator, job: *Job) error{OutOfMemory}!struct { []u8, bool 
     job.stream = null;
     job.stream_ctx = null;
     const out = try gpa.dupe(u8, job.buf.items[job.cursor..]);
-    job.cursor = job.buf.items.len;
+    @import("job_ring.zig").consumeUnread(gpa, &job.buf, &job.cursor);
     const dropped = job.dropped;
     job.dropped = false;
     return .{ out, dropped };

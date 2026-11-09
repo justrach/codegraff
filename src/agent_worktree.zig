@@ -71,7 +71,7 @@ pub fn agentWorktreeCreateAt(gpa: Allocator, io: Io, arena: Allocator, sub_id: [
     var absolute: [std.fs.max_path_bytes]u8 = undefined;
     const cwd_abs = absolute[0 .. Io.Dir.cwd().realPathFile(io, cwd, &absolute) catch return error.NotAGitRepo];
     names.path = try std.fs.path.resolve(arena, &.{ cwd_abs, ".graff/worktrees", std.fs.path.basename(names.path) });
-    const add = runCapped(gpa, io, &.{ "git", "-C", cwd, "worktree", "add", names.path, "-b", names.branch }, 8192, 8192, 60_000) catch return error.CreateFailed;
+    const add = runCapped(gpa, io, &.{ "git", "-C", cwd, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "worktree", "add", names.path, "-b", names.branch }, 8192, 8192, 60_000) catch return error.CreateFailed;
     defer {
         gpa.free(add.stdout);
         gpa.free(add.stderr);
@@ -98,7 +98,7 @@ pub fn isWorktreeStatusDirty(porcelain: []const u8) bool {
 }
 
 pub fn agentWorktreeFinish(gpa: Allocator, io: Io, wt: AgentWorktree) AgentWorktreeOutcome {
-    const st = runCapped(gpa, io, &.{ "git", "-C", wt.path, "status", "--porcelain" }, 1 << 16, 8192, 30_000) catch return .{ .kept = true, .reason = .unverifiable };
+    const st = runCapped(gpa, io, &.{ "git", "-C", wt.path, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "status", "--porcelain" }, 1 << 16, 8192, 30_000) catch return .{ .kept = true, .reason = .unverifiable };
     defer {
         gpa.free(st.stdout);
         gpa.free(st.stderr);

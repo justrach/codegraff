@@ -215,7 +215,9 @@ pub fn applyEdit(ctx: ToolCtx, path: []const u8, resolved: []const u8, old: []co
         // drift baseline.
         const prev_stat = Io.Dir.cwd().statFile(io, resolved, .{}) catch null;
 
-        const count = std.mem.count(u8, data, old);
+        const span = try @import("edit_match.zig").resolveSpan(gpa, data, old, new);
+        defer span.deinit(gpa);
+        const count = span.count;
         if (count == 0) return .{
             .text = try std.fmt.allocPrint(gpa, "old_string not found in {s} — read_file it and match the existing text exactly", .{path}),
             .is_error = true,
@@ -225,41 +227,19 @@ pub fn applyEdit(ctx: ToolCtx, path: []const u8, resolved: []const u8, old: []co
             .is_error = true,
         };
 
-        const replaced = try gpa.alloc(u8, std.mem.replacementSize(u8, data, old, new));
+        const replaced = try gpa.alloc(u8, std.mem.replacementSize(u8, data, span.old, span.new));
         defer gpa.free(replaced);
-        _ = std.mem.replace(u8, data, old, new, replaced);
-
-        // #337: the splice source is read live here — there is no cached copy
-        // of the file anywhere in this path — but an out-of-band writer (a
-        // `sed -i`, a formatter, an indexing daemon) landing between that read
-        // and this write would be clobbered by bytes computed off the older
-        // file. Re-stat and recompute once against what is there now; a second
-        // drift falls through to the write, where verification is the backstop.
+        _ = std.mem.replace(u8, data, span.old, span.new, replaced);
         if (attempt == 0 and drifted(io, resolved, prev_stat)) continue;
-
-        if (ctx.snapshots) |snaps| if (!ctx.from_sub) snaps.record(path, .{ .content = data }); // pre-edit content for /rewind
-
-        // Fastest splice first: the persistent codedb-pro daemon skips
-        // zigpatch's ~2.4ms fork/exec floor (~0.3ms over the pipe, measured).
-        // The /rewind snapshot above already ran and verifyOnDisk still backs
-        // the result — only the byte-splice is delegated. null falls through
-        // to the zigpatch spawn, then the native write.
-        if (codedbpro_report.spliceViaDaemon(gpa, ctx, resolved, path, old, new, count, data.len)) |msg| {
-            preserveMode(io, resolved, prev_stat); // daemon renames a fresh inode into place, same as zigpatch
-            const verdict = verifyOnDisk(gpa, io, resolved, data, replaced, old, new, true);
+        if (ctx.snapshots) |snaps| if (!ctx.from_sub) snaps.record(path, .{ .content = data });
+        if (codedbpro_report.spliceViaDaemon(gpa, ctx, resolved, path, span.old, span.new, count, data.len)) |msg| {
+            preserveMode(io, resolved, prev_stat);
+            const verdict = verifyOnDisk(gpa, io, resolved, data, replaced, span.old, span.new, true);
             if (verdict != .ok) return .{ .text = try verdictText(gpa, path, verdict, "codedb-pro"), .is_error = true };
             return .{ .text = msg };
         }
-
-        // Premium splice: when the zigrep suite is installed, zigpatch does the
-        // write — an atomic tmp+rename byte-level --all splice (our count
-        // checks above already enforce the uniqueness semantics). Any failure,
-        // including the tool simply not being on PATH, falls back to the native
-        // in-place write below. zigpatch is a separate process (`.inherit`
-        // cwd, #276) so it's handed `resolved` — an absolute path when isolated
-        // — directly, rather than relying on its own cwd.
         zp: {
-            const run = runCapped(gpa, io, &.{ companion_bin, resolved, "-p", old, "--all", "--content", new }, 4096, 4096, 0) catch break :zp;
+            const run = runCapped(gpa, io, &.{ companion_bin, resolved, "-p", span.old, "--all", "--content", span.new }, 4096, 4096, 0) catch break :zp;
             defer {
                 gpa.free(run.stdout);
                 gpa.free(run.stderr);
@@ -269,10 +249,8 @@ pub fn applyEdit(ctx: ToolCtx, path: []const u8, resolved: []const u8, old: []co
                 else => false,
             };
             if (ok and std.mem.indexOf(u8, run.stdout, "\"ok\":true") != null) {
-                preserveMode(io, resolved, prev_stat); // #179: zigpatch renamed a fresh inode into place
-                // #337: zigpatch claiming success is not evidence that it
-                // wrote anything. Ask the filesystem.
-                const verdict = verifyOnDisk(gpa, io, resolved, data, replaced, old, new, true);
+                preserveMode(io, resolved, prev_stat);
+                const verdict = verifyOnDisk(gpa, io, resolved, data, replaced, span.old, span.new, true);
                 if (verdict != .ok) return .{ .text = try verdictText(gpa, path, verdict, "zigpatch"), .is_error = true };
                 return .{ .text = try std.fmt.allocPrint(gpa, "replaced {d} occurrence(s) in {s} (zigpatch, verified)", .{ count, path }) };
             }

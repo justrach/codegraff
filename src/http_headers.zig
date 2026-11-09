@@ -124,11 +124,13 @@ pub fn projectRootId(io: Io) []const u8 {
     return project_id_buf[0..project_id_len];
 }
 
-/// Side-calls that replay the parent history (`/btw`) share the root
-/// partition. Workers use a role lane, not the root id. grok-build's recap
-/// does the same as `/btw`: same `prompt_cache_key` as the parent.
+/// Side-calls that replay the parent history (`/btw`, or a forked `#391`
+/// pre-compaction note) share the root partition. Workers use a role lane, not
+/// the root id. grok-build's recap does the same as `/btw`: same
+/// `prompt_cache_key` as the parent.
 pub fn sharesParentCache(label: []const u8) bool {
-    return std.mem.eql(u8, label, "btw");
+    return std.mem.eql(u8, label, "btw") or
+        (std.mem.eql(u8, label, "note") and @import("cache_fork.zig").shares());
 }
 
 pub fn projectCacheKey(io: Io, label: []const u8, agent: *const anyopaque, buf: []u8) []const u8 {

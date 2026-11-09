@@ -19,7 +19,7 @@ pub const Split = struct { instructions: []const u8, context: []const u8 = "" };
 /// renders the tools and then the instructions, and caches the instructions
 /// as one unit: a per-repo byte inside them forfeits all of it in a new repo.
 pub fn eligible(self: *const Agent) bool {
-    if (self.sub) return false;
+    if (self.sub and !@import("cache_fork.zig").shares()) return false;
     if (statefulChat(self)) return true;
     if (self.provider.kind != .responses) return false;
     for ([_][]const u8{ "codex", "chatgpt-new", "openai" }) |id| if (std.mem.eql(u8, self.provider.id, id)) return true;

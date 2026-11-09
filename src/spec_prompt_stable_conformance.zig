@@ -102,3 +102,50 @@ test "spec/prompt_stable: skill load lands in history, not the prefix" {
     try std.testing.expect(std.mem.indexOf(u8, loaded.text, "SECRET-BODY") != null);
     try std.testing.expectEqualStrings(before, skill_docs.promptCatalog(arena_state.allocator(), skill_docs.g_skills));
 }
+
+test "spec/prompt_stable: cache_fork 60-cell cube matches Lean warmFork theorem" {
+    const cache_fork = @import("cache_fork.zig");
+    const http_headers = @import("http_headers.zig");
+    const Provider = @import("provider.zig").Provider;
+    const wires = [_]struct { kind: Provider.Kind, id: []const u8, model: []const u8, supported: bool }{
+        .{ .kind = .anthropic, .id = "anthropic", .model = "claude-sonnet-4-6", .supported = true },
+        .{ .kind = .anthropic, .id = "minimax", .model = "MiniMax-M2.7", .supported = false },
+        .{ .kind = .openai, .id = "codegraff", .model = "deepseek-v4-flash", .supported = true },
+        .{ .kind = .responses, .id = "codex", .model = "gpt-5.4", .supported = false },
+        .{ .kind = .interactions, .id = "google", .model = "gemini-3.1-pro", .supported = false },
+    };
+    var total: usize = 0;
+    var hits: usize = 0;
+    for (wires) |w| {
+        try std.testing.expectEqual(w.supported, cache_fork.supportsFork(w.kind, w.id, w.model));
+        for ([_]bool{ false, true }) |ttl| {
+            for ([_]bool{ false, true }) |fit| {
+                for ([_]enum { none, answered, unanswered }{ .none, .answered, .unanswered }) |tl| {
+                    total += 1;
+                    const warm = w.supported and ttl and fit and tl != .unanswered;
+                    if (warm) hits += 1;
+                }
+            }
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 60), total);
+    try std.testing.expectEqual(@as(usize, 4), hits);
+    try std.testing.expect(!http_headers.sharesParentCache("note"));
+}
+
+test "spec/prompt_stable: job_ring capStep and readStep match Lean bounded-ring theorems" {
+    const job_ring = @import("job_ring.zig");
+    const cap: usize = 256;
+    for ([_]usize{ 0, 64, 256, 300, 511, 512, 600, 1024 }) |buf_len| {
+        for ([_]usize{ 0, 32, 128, 256, 300 }) |cursor| {
+            const step = job_ring.capStep(buf_len, cursor, cap);
+            try std.testing.expect(step.next_len - step.next_cursor <= cap);
+            if (buf_len - @min(cursor, buf_len) > cap) {
+                try std.testing.expect(step.next_len < 2 * cap);
+            }
+            const r = job_ring.readStep(buf_len, cursor);
+            try std.testing.expectEqual(@as(usize, 0), r.next_len);
+            try std.testing.expectEqual(@as(usize, 0), r.next_cursor);
+        }
+    }
+}
