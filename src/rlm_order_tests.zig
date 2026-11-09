@@ -372,3 +372,34 @@ test "rlm projection assignments take comments, keywords and sparse fields, then
     try std.testing.expect(std.mem.indexOf(u8, bad.text, "unsupported statement") == null);
     try std.testing.expect(std.mem.indexOf(u8, bad.text, "not a JSON array") != null);
 }
+
+test "megaharness multi-wave DAG overlaps post-barrier bound calls and records SRAM locality (ADR 0322)" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    try f.tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "alpha-payload" });
+    try f.tmp.dir.writeFile(io, .{ .sub_path = "b.txt", .data = "beta-payload" });
+    const mh = @import("megaharness.zig");
+    mh.reset();
+    defer mh.reset();
+
+    // Wave 1 reads target.txt; then literal bindings `pa` and `pb` act as a
+    // barrier; then Wave 2 reads `pa` and `pb` concurrently using bound registers!
+    const out = try f.run(
+        "w1 = read_file(\"target.txt\")\n" ++
+            "pa = \"a.txt\"\n" ++
+            "pb = \"b.txt\"\n" ++
+            "ra = read_file(pa)\n" ++
+            "rb = read_file(pb)\n" ++
+            "print(w1, ra, rb)",
+    );
+    defer gpa.free(out.text);
+    try std.testing.expect(!out.is_error);
+    try std.testing.expectEqualStrings("old\nalpha-payload\nbeta-payload", out.text);
+
+    const s = mh.snapshot();
+    try std.testing.expectEqual(@as(u64, 1), s.scripts_fused);
+    try std.testing.expect(s.waves_launched >= 2);
+    try std.testing.expect(s.parallel_ops_fused >= 2);
+    try std.testing.expect(s.llm_round_trips_saved >= 5);
+    try std.testing.expect(s.sram_register_bytes > 0);
+}

@@ -165,6 +165,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if ((comptime bo.learn) and try commands_privacy.tryHandle(root, line, out)) return true;
     if ((comptime bo.extras) and try @import("terminal_workers.zig").tryHandle(root, line, out)) return true;
     if (try playbook_glue.command(root, arena, line, out)) return true; // #381 /never | /constraint
+    if (try @import("megaharness.zig").trySlash(arena, line, out)) return true; // ADR 0322 /megaharness | /kernel
     if ((comptime bo.extras) and std.mem.startsWith(u8, line, "/schedule") and (line.len == 9 or line[9] == ' ' or line[9] == '\t')) return @import("schedule.zig").slashCommand(root, arena, line, out);
     if ((comptime bo.extras) and std.mem.startsWith(u8, line, "/adapter") and (line.len == 8 or line[8] == ' ' or line[8] == '\t')) return @import("channel_worker.zig").slashCommand(root, arena, line, out);
     if ((comptime bo.extras) and try side_question.command(root, arena, line, out)) return true; // #415 /btw
