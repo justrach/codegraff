@@ -194,7 +194,7 @@ pub fn setupWorktreeAndBanner(
     // model an ABSOLUTE path. Left unwired in tests, where the cap stays the
     // pre-#409 plain truncation.
     tool_spill.enable(.{ .io = io, .dir = .cwd(), .base_abs = main_mod.g_cwd_display });
-    if (flags.experiment_n > 0) {
+    if ((comptime @import("build_options").learn) and flags.experiment_n > 0) {
         const exp_id = flags.resume_flag orelse "live";
         const n = @import("experiment_pool.zig").arm(gpa, io, arena, exp_id, flags.experiment_n) catch |err|
             std.process.fatal("--experiment: {t}", .{err});
@@ -231,7 +231,7 @@ pub fn setupWorktreeAndBanner(
             }),
             .tone = .dim,
         } });
-        if (cli.updateAvailableLine(io, gpa, arena, environ_map.get("GRAFF_NO_UPDATE_CHECK") != null)) |line| sink.emit(io, .{ .session_notice = .{
+        if (if (comptime @import("build_options").extras) cli.updateAvailableLine(io, gpa, arena, environ_map.get("GRAFF_NO_UPDATE_CHECK") != null) else null) |line| sink.emit(io, .{ .session_notice = .{
             .text = line,
             .tone = .dim,
         } });

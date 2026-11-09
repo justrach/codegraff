@@ -39,11 +39,19 @@ pub fn build(b: *std.Build) void {
     ) orelse "https://harness-telemetry.rachpradhan.workers.dev";
     // `graff learn` (local policy learning) and its embedded Python kit. Dev
     // builds keep it so CI exercises it; release builds leave it out.
-    const learn = b.option(bool, "learn", "include `graff learn` local policy learning (default true)") orelse true;
+    const minimal = b.option(bool, "minimal", "omit optional cold subsystems (learn, serve, acp, extras) for a lean ReleaseSafe CLI (#1849)") orelse false;
+    const learn = b.option(bool, "learn", "include `graff learn` local policy learning (default true unless -Dminimal)") orelse !minimal;
+    const serve = b.option(bool, "serve", "include `graff serve`, `remote-control`, `remote`, `sandboxes`, and `cube` (default true unless -Dminimal)") orelse !minimal;
+    const acp = b.option(bool, "acp", "include `graff acp` Agent Client Protocol server (default true unless -Dminimal)") orelse !minimal;
+    const extras = b.option(bool, "extras", "include optional CLI/REPL extras (adopt, doctor, computer, schedule, update, peer, vault, plugins, html_view, imagegen; default true unless -Dminimal)") orelse !minimal;
     const opts = b.addOptions();
     opts.addOption([]const u8, "version", version);
     opts.addOption([]const u8, "telemetry_endpoint", telemetry_endpoint);
+    opts.addOption(bool, "minimal", minimal);
     opts.addOption(bool, "learn", learn);
+    opts.addOption(bool, "serve", serve);
+    opts.addOption(bool, "acp", acp);
+    opts.addOption(bool, "extras", extras);
 
     // Release binaries ship without unwind tables or frame pointers: they are
     // stripped, so a panic can't print a useful trace anyway. On Windows only

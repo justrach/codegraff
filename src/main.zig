@@ -245,7 +245,7 @@ const startup_timing = @import("startup_timing.zig"); // .shutdown_trace re-expo
 const session_start = @import("session_start.zig");
 const session_run = @import("session_run.zig");
 pub fn main(init: std.process.Init) !void {
-    if (init.environ_map.get("GRAFF_AGENT_OBSERVER") != null) return @import("acp_agents.zig").run(init);
+    if ((comptime @import("build_options").acp) and init.environ_map.get("GRAFF_AGENT_OBSERVER") != null) return @import("acp_agents.zig").run(init);
     if (try @import("external_tui.zig").maybeRun(init)) return;
     var boot = startup_timing.Tracker.init(startup_timing.shutdown_trace.arm(init.io, init.environ_map), init.environ_map.get("GRAFF_BOOT_DEBUG") != null); // #364: arm() passes io through, so the teardown below stamps phases without a line of its own
     const gpa = init.gpa;

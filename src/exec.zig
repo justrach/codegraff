@@ -202,7 +202,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
 
     const input = call.input;
     if (std.mem.eql(u8, call.name, jev_tool.name)) return jev_tool.execute(ctx, input);
-    if (std.mem.eql(u8, call.name, "learn_candidate")) {
+    if ((comptime @import("build_options").learn) and std.mem.eql(u8, call.name, "learn_candidate")) {
         if (ctx.from_sub) return .{
             .text = try gpa.dupe(u8, "learning is root-only — subagents cannot run mutators, evaluators, or publish grades"),
             .is_error = true,
@@ -345,18 +345,18 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     if (std.mem.eql(u8, call.name, "write_file")) return write_file.exec(ctx, input); // ADR 0231
     // Loads one SKILL.md body (or lists them). Rescans on every call, so a
     // skill written this session is loadable without a restart.
-    if (std.mem.eql(u8, call.name, html_view.tool_name)) return html_view.exec(ctx, input);
+    if ((comptime @import("build_options").extras) and std.mem.eql(u8, call.name, html_view.tool_name)) return html_view.exec(ctx, input);
     if (std.mem.eql(u8, call.name, "skill")) return skill_docs.execSkill(gpa, io, input);
     // #352: codex-gated. execImagegen answers a call that was never advertised
     // (an unavailable session) with the same honest error it gives the model.
-    if (std.mem.eql(u8, call.name, imagegen.tool_name)) return imagegen.execImagegen(ctx, input);
+    if ((comptime @import("build_options").extras) and std.mem.eql(u8, call.name, imagegen.tool_name)) return imagegen.execImagegen(ctx, input);
     if (std.mem.eql(u8, call.name, "subagent")) {
         var child_ctx = ctx;
         child_ctx.parent_tool_call_id = call.id;
         return execSubagent(child_ctx, input);
     }
-    if (std.mem.eql(u8, call.name, "workflow")) return execWorkflow(ctx, input);
-    if (std.mem.eql(u8, call.name, @import("rlm.zig").tool_name)) {
+    if ((comptime @import("build_options").extras) and std.mem.eql(u8, call.name, "workflow")) return execWorkflow(ctx, input);
+    if ((comptime @import("build_options").extras) and std.mem.eql(u8, call.name, @import("rlm.zig").tool_name)) {
         var rlm_ctx = ctx;
         if (rlm_ctx.host_gate) |*gate| gate.call_id = call.id; // consent prompts name this rlm call
         return @import("rlm.zig").exec(rlm_ctx, input);

@@ -74,3 +74,35 @@ test "#1654 a session save larger than 8 MiB still lists and loads" {
     session_index.max_session_bytes = 1024 * 1024;
     try std.testing.expectError(error.SessionTooLarge, session.loadSession(&root, &keys, arena, "large-1654"));
 }
+
+test "#1848 listFromDir and locateIn inspect bounded headers without retaining session bodies in the listing arena" {
+    const discovery = @import("session_discovery.zig");
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "wt/.graff/sessions");
+    try writeLargeSave(gpa, tmp.dir, "wt/.graff/sessions/one-9mb.session.json");
+    try writeLargeSave(gpa, tmp.dir, "wt/.graff/sessions/two-9mb.session.json");
+
+    var sessions = try tmp.dir.openDir(io, "wt/.graff/sessions", .{ .iterate = true });
+    defer sessions.close(io);
+
+    // An 8 KiB FixedBufferAllocator cannot hold even 0.1% of one 9 MiB save,
+    // proving neither listFromDir nor locateIn reads or retains message bodies
+    // in the caller's arena.
+    var backing: [8 * 1024]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&backing);
+    const tiny_arena = fba.allocator();
+
+    const wt = try tmp.dir.realPathFileAlloc(io, "wt", tiny_arena);
+    const listed = session_index.listFromDir(io, tiny_arena, sessions, wt, true);
+    try std.testing.expectEqual(@as(usize, 2), listed.items.len);
+    try std.testing.expectEqualStrings("Long chat", listed.items[0].title.?);
+    try std.testing.expectEqualStrings("Long chat", listed.items[1].title.?);
+
+    const located = discovery.locateIn(io, tiny_arena, "one-9mb", "/nonexistent-cwd", "", &.{wt}).?;
+    try std.testing.expectEqualStrings(wt, located.workspace);
+    try std.testing.expect(fba.end_index < 2048);
+}
