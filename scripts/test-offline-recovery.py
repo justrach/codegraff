@@ -23,7 +23,7 @@ class Client(fixture.Client):
 
 def exercise(binary, mode, reload_saved=False):
     with tempfile.TemporaryDirectory(prefix='graff-offline-recovery-') as temp:
-        model = fixture.Model('transport')
+        model = fixture.Model('transport', delay_ms=50)
         client = None
         try:
             root = Path(temp)

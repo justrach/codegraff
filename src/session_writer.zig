@@ -229,7 +229,7 @@ fn persist(gpa: Allocator, job: *Job) !Mark {
         }
         const st = try session_store.write(job.io, gpa, job.dir, job.path, try snapshot.parts(a, capacity), delta);
         clearCommitted();
-        if (gpa.dupe(u8, job.path)) |path| {
+        if (snapshot.gpa.dupe(u8, job.path)) |path| {
             committed = .{ .snapshot = snapshot.*, .path = path, .capacity = capacity, .mark = st };
             job.snapshot = null;
         } else |_| {}

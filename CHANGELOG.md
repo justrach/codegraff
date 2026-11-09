@@ -10,6 +10,14 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.52
+
+- Added the Megaharness fused execution engine (`src/megaharness.zig`, ADR 0322) with topological wave scheduling for `rlm` DAGs, in-kernel SRAM register ALU folding (`uppercase`, `lowercase`, `trim`, `lines`, `first_line`, `json_field:<key>`) and assertion gates (`assert_contains`, `assert_eq`), native tool-batch and session-snapshot chunk reuse telemetry, `/megaharness [--json]`, and `ServerlessHarness.getMegaharnessStats()`.
+- `rlm` and `session_snapshot` now feed live execution, wave-fusion, register-hit, and chunk-reuse counters into the Megaharness telemetry surface.
+- Background workers retain their own tool-result handle sequence counter across turns instead of resetting `tool_results_seq` to zero (#1759).
+- Inspecting or locating another chat or session's trajectory remains strictly read-only unless explicitly asked to message or wake that chat, and reports the verified user-facing title and chat ID rather than internal engine-session IDs (#1752, #1807).
+- Synthetic compaction requests (`manualCompact`, `autoCompact`, `compactInStream`) skip scanning the final message for `mcp_preload` tool calls (#1862).
+
 ## v0.302.74.51
 
 - Session autosaves reuse immutable message chunks and update only changed JSON ranges under a recoverable write-ahead transaction; interrupted saves recover before loading or listing, and independent destinations cannot supersede each other (#1859).

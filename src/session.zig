@@ -281,9 +281,9 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
     // file this function's in-place rewrite of `messages` can never reach.
     session_transcript.record(root, dir, name);
     const saved_msgs = try session_peer.messagesForSave(scratch, root.messages.items);
-    var snapshot = try @import("session_snapshot.zig").prepare(root.gpa, saved_msgs.items);
+    var snapshot = try @import("session_snapshot.zig").prepare(std.heap.page_allocator, saved_msgs.items);
     errdefer snapshot.deinit();
-    const metadata = try @import("session_serialize.zig").metadata(root, scratch, saved_msgs, snapshot.message_bytes, sessionTitle(root));
+    const metadata = try @import("session_serialize.zig").metadata(root, std.heap.page_allocator, scratch, saved_msgs, snapshot.message_bytes, sessionTitle(root));
     const marker = std.mem.indexOf(u8, metadata, "\"messages\":[]") orelse unreachable;
     snapshot.setMetadata(metadata, marker + "\"messages\":".len);
     return session_writer.submitSnapshot(root.gpa, root.io, dir, path, snapshot, fp, root.home);

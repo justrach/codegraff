@@ -5,6 +5,11 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.52
+    \\  • Megaharness fused execution engine: RLM wave DAGs, SRAM register folding, in-kernel assertions, and /megaharness telemetry
+    \\  • read-only trajectory inspection and verified user-facing chat title + chat ID reporting
+    \\  • background workers preserve independent tool-result sequence counters; synthetic compaction skips mcp_preload scans
+    \\
     \\0.302.74.51
     \\  • graff sessions reads 64 KiB header prefixes in a reusable scratch arena; session load/resume frees parse trees after load
     \\  • single-copy message arena reclaim, scoped trajectory archive folds, and faster remembered-model startup

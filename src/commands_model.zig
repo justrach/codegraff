@@ -223,7 +223,6 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const was_degraded = root.compact_pin_degraded;
         if (root.manualCompact()) |_| {
             root.reclaimMessages();
-            @import("session.zig").saveSessionAsync(root, arena, root.session_name) catch {};
         } else |err| {
             const announced = err == error.ActivePromptPinned and !was_degraded and root.compact_pin_degraded;
             if (compactFailureText(err, announced)) |text| {

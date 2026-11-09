@@ -32,6 +32,14 @@ pub const full_prompt =
     \\For mixed requests, preserve every requested change and verification step.
     \\For changes, retain read-before-edit, root-cause fixes, and verification
     \\in the project's own environment. A summary alone does not finish a fix.
+    \\When inspecting or analyzing another chat or session's trajectory, keep the
+    \\investigation read-only in this session: never message, wake, steer, or
+    \\recruit the inspected chat as a worker unless the user explicitly asks to.
+    \\When asked to locate a prior chat or session, report its verified user-facing
+    \\title and chat ID (including archived status when applicable) after opening
+    \\candidate transcripts as needed; never present an internal engine-session ID
+    \\alone as a chat locator or claim a title is unrecoverable when listing
+    \\metadata merely had a generic title or unrelated preview.
     \\read_file before editing; prefer
     \\edit_file for changes to existing files and write_file for new
     \\files or full rewrites. write_file will not replace a file you have not

@@ -33,7 +33,7 @@ pub const sections = [_]Section{
     .{ .title = "working autonomously", .names = &.{ "/goal", "/goals", "/schedule", "/review", "/issue", "/plan", "/todo", "/jobs", "/workers", "/ultracode", "/strict", "/yolo", "/never" } },
     .{ .title = "talking to other graffs", .names = &.{ "/tell", "/daddy", "/peek", "/adapter" }, .blurb = peers_blurb },
     .{ .title = "your setup", .names = &.{ "/login", "/key", "/cost", "/usage", "/version", "/update", "/privacy", "/mcp", "/computer", "/import-claude", "/skills", "/plugins", "/agents", "/hooks", "/tools", "/fleet" } },
-    .{ .title = "context & history", .names = &.{ "/compact", "/compact-at", "/btw", "/doctor", "/debug", "/cache", "/trace", "/trajectory" } },
+    .{ .title = "context & history", .names = &.{ "/compact", "/compact-at", "/btw", "/doctor", "/debug", "/cache", "/trace", "/trajectory", "/megaharness" } },
     .{ .title = "shell & images", .names = &.{ "/bash", "/image", "/images", "/paste" } },
     .{ .title = "look & feel", .names = &.{ "/theme", "/animation", "/title" } },
     .{ .title = "this list", .names = &.{"/help"} },

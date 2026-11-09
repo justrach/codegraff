@@ -11,8 +11,8 @@ const protocol_seq = @import("protocol_seq.zig");
 const http_headers = @import("http_headers.zig");
 const unixMs = @import("util.zig").unixMs;
 
-pub fn metadata(root: *Agent, arena: Allocator, saved_msgs: std.json.Array, message_bytes: usize, title: []const u8) ![]u8 {
-    var aw: Io.Writer.Allocating = .init(root.gpa);
+pub fn metadata(root: *Agent, gpa: Allocator, arena: Allocator, saved_msgs: std.json.Array, message_bytes: usize, title: []const u8) ![]u8 {
+    var aw: Io.Writer.Allocating = .init(gpa);
     defer aw.deinit();
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     try s.beginObject();
