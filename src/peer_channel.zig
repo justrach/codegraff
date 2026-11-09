@@ -36,7 +36,7 @@ const ExecResult = tools_mod.ExecResult;
 const Owner = worktree_lease.Owner;
 
 pub const tool_name = "peer_message";
-pub const tool_desc = "Ping a co-resident session, list who is live, read parked inbound, direct one as supervisor, or transfer an artifact claim. action=list | inbox | send (default) | direct | claim | release | handoff | status. session is a DM (visible title, saved-session base, id/pid/name/goal); omit for this folder's room (send only). Presence is device-local. Not \"all\".";
+pub const tool_desc = "Ping a co-resident session, list who is live, read parked inbound, direct one as supervisor, or transfer an artifact claim. action=list | inbox | send (default) | direct | claim | release | handoff | status. session is a DM (visible title, saved-session base, id/pid/name/goal); omit for this folder's room (send only). Presence is device-local. Not \"all\". Read-only trajectory/session inspection never authorizes waking or recruiting an existing chat as a worker.";
 pub const tool_schema =
     \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["send", "list", "inbox", "direct", "claim", "release", "handoff", "status"], "description": "send (default): ping a peer. list: who is live. inbox: read+clear parked inbound. direct: supervisor control of one named session. claim/release/handoff/status: repository-scoped artifact ownership (kind+key)."}, "session": {"type": "string", "description": "who to ping, direct, or hand a claim to: exact visible title, exact saved-session base, unique normalized title/slug, id, pid, unique name fragment, or unique goal fragment (omit = this folder's room for send). Named targets are DMs. Presence is device-local. Not \"all\"."}, "text": {"type": "string", "description": "one or two sentences of coordination intent (required for send and direct)"}, "fyi": {"type": "boolean", "description": "send: true for a status or scope update that needs no action or reply. Recipients read it on their next turn; it does not start one."}, "kind": {"type": "string", "enum": ["branch", "issue", "commit", "pull_request", "publication"], "description": "artifact kind for claim/release/handoff/status"}, "key": {"type": "string", "description": "artifact key: branch name, issue number, commit SHA, or PR number"}, "repo": {"type": "string", "description": "GitHub repository for claim/release/handoff/status, as owner/name or host/owner/name; defaults to the workspace CLI repository. Use the same repository for release or handoff."}}}
 ;
@@ -93,6 +93,8 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
         return .{ .text = text, .is_error = false };
     }
     if (std.mem.eql(u8, action, "direct")) {
+        const ask = @import("messages.zig").latestUserText(self.messages.items);
+        if (@import("peer_scope.zig").checkPeerSend(ask, false)) |refusal| return .{ .text = refusal, .is_error = true };
         return @import("daddy.zig").send(self, tools_mod.json_args.str(obj, "session") orelse "", tools_mod.json_args.str(obj, "text") orelse "");
     }
     if (!std.mem.eql(u8, action, "send")) return .{
@@ -103,6 +105,10 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
     if (said.len == 0) return .{ .text = "peer_message: empty text — say what you want the peer to know", .is_error = true };
     // #1137: an update that needs nothing from the peer must not wake it.
     const fyi = tools_mod.json_args.flag(call.input, "fyi");
+    {
+        const ask = @import("messages.zig").latestUserText(self.messages.items);
+        if (@import("peer_scope.zig").checkPeerSend(ask, fyi)) |refusal| return .{ .text = refusal, .is_error = true };
+    }
     const text = if (fyi and !peer_inbox.isFyi(said)) try std.fmt.allocPrint(self.arena, "{s}{s}", .{ peer_inbox.fyi_marker, said }) else said;
     const want = tools_mod.json_args.str(obj, "session") orelse "";
     const local = presence.liveTreePeers(self.io, self.arena);

@@ -109,6 +109,10 @@ pub fn setTestOwnerLive(live: bool) void {
     g_test_live = live;
 }
 
+pub fn setTestPeers(peers: []const @import("worktree_lease.zig").Owner) void {
+    g_test_peers = peers;
+}
+
 pub fn testLedger() *Ledger {
     return &g_ledger;
 }
@@ -168,7 +172,7 @@ pub fn gateCommandIn(arena: Allocator, io: Io, cmd: []const u8, key: []const u8,
     const resolved = if (builtin.is_test or kind != .pull_request) null else @import("artifact_claim_target.zig").resolve(arena, io, cmd, kind, cwd);
     // The remote read does not hold the ledger lock. A handoff/release during
     // that read must be observed before deciding whether this action may run.
-    const tx = begin(io, scratch.allocator(), cwd) catch return "artifact claim ledger unavailable or busy: action NOT performed";
+    const tx = begin(io, scratch.allocator(), cwd, null) catch return "artifact claim ledger unavailable or busy: action NOT performed";
     defer if (tx) |transaction| transaction.end();
     local = .{};
     if (tx) |transaction| {
@@ -230,12 +234,23 @@ pub fn handleTool(arena: Allocator, io: Io, action: []const u8, kind_s: []const 
     return handleToolIn(arena, io, action, kind_s, key, to_session, ".", null);
 }
 
+fn resolveRepo(arena: Allocator, io: Io, cwd: []const u8, requested_repo: ?[]const u8) ?[]const u8 {
+    if (builtin.is_test and g_test_resolve_cwd) {
+        if (requested_repo) |r| {
+            if (@import("artifact_repository.zig").valid(r)) return std.ascii.allocLowerString(arena, r) catch null;
+        }
+        return claim_path.remoteIdentity(arena, io, cwd);
+    }
+    if (builtin.is_test and requested_repo == null) return null;
+    return @import("artifact_repository.zig").resolve(arena, io, cwd, requested_repo) orelse claim_path.remoteIdentity(arena, io, cwd);
+}
+
 pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []const u8, key: []const u8, to_session: []const u8, cwd: []const u8, requested_repo: ?[]const u8) !ExecResult {
     var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer scratch.deinit();
-    const repo = if (builtin.is_test and requested_repo == null) null else @import("artifact_repository.zig").resolve(arena, io, cwd, requested_repo);
+    const repo = resolveRepo(arena, io, cwd, requested_repo);
     if (requested_repo != null and repo == null) return .{ .text = "claim repository could not be resolved; no claim changed", .is_error = true };
-    const tx = begin(io, scratch.allocator(), cwd) catch return .{ .text = "claim ledger unavailable or busy", .is_error = true };
+    const tx = begin(io, scratch.allocator(), cwd, repo) catch return .{ .text = "claim ledger unavailable or busy", .is_error = true };
     defer if (tx) |transaction| transaction.end();
     var local: Ledger = .{};
     const ledger = if (tx != null) &local else &g_ledger;
@@ -279,7 +294,9 @@ pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []cons
             .none => return .{ .text = "handoff receiver is not a live peer", .is_error = true },
             .ambiguous => return .{ .text = "handoff receiver is ambiguous", .is_error = true },
         };
-        if (!builtin.is_test and (!std.mem.eql(u8, receiver.identity, presence.ownIdentity()) or receiver.start_id == 0))
+        const same_workspace = std.mem.eql(u8, receiver.identity, presence.ownIdentity());
+        const same_repo = claim_path.sameRepositoryPeer(arena, io, cwd, receiver.identity, repo);
+        if (!builtin.is_test and ((!same_workspace and !same_repo) or receiver.start_id == 0))
             return .{ .text = "handoff receiver must have verified identity in this workspace", .is_error = true };
         const probe = proc_identity.probe(io, receiver.pid);
         if (receiver.pid <= 0 or receiver.session_id.len == 0 or proc_identity.ownerState(receiver.start_id, probe) != .held)
@@ -307,22 +324,22 @@ pub fn handleToolIn(arena: Allocator, io: Io, action: []const u8, kind_s: []cons
     return .{ .text = "action must be claim, release, handoff, or status", .is_error = true };
 }
 
-fn persistPath(io: Io, arena: Allocator, cwd: []const u8) ?[]const u8 {
+fn persistPath(io: Io, arena: Allocator, cwd: []const u8, repo: ?[]const u8) ?[]const u8 {
     if (g_persist_path) |p| return p;
     if (builtin.is_test and !g_test_resolve_cwd) return null;
-    if (cwd.len == 0 or std.mem.eql(u8, cwd, ".")) return persist_rel;
-    if (claim_path.canonicalFile(arena, io, cwd)) |p| return p;
+    if ((cwd.len == 0 or std.mem.eql(u8, cwd, ".")) and repo == null) return persist_rel;
+    if (claim_path.canonicalFileForRepo(arena, io, cwd, repo)) |p| return p;
     if (builtin.is_test) return null;
     return persist_rel;
 }
 
-fn begin(io: Io, arena: Allocator, cwd: []const u8) !?@import("repo_transaction.zig").Transaction {
-    const path = persistPath(io, arena, cwd) orelse return null;
+fn begin(io: Io, arena: Allocator, cwd: []const u8, repo: ?[]const u8) !?@import("repo_transaction.zig").Transaction {
+    const path = persistPath(io, arena, cwd, repo) orelse return null;
     return try @import("repo_transaction.zig").Transaction.begin(io, arena, path);
 }
 
 fn readSnapshot(io: Io, arena: Allocator, cwd: []const u8) !Ledger {
-    const tx = try begin(io, arena, cwd);
+    const tx = try begin(io, arena, cwd, null);
     defer if (tx) |transaction| transaction.end();
     var ledger: Ledger = .{};
     if (tx) |transaction| try loadTransaction(io, transaction, &ledger, cwd) else return g_ledger;
@@ -349,10 +366,8 @@ fn loadTransaction(io: Io, tx: @import("repo_transaction.zig").Transaction, ledg
     if (!claim_path.samePath(legacy, tx.path)) mergeLegacyFile(io, tx.arena, ledger, legacy);
 }
 
-fn reload(io: Io) !void {
-    const path = persistPath(io, storeAlloc(), ".") orelse return;
-    // Every transaction reads again under the lock. A previously cached owner
-    // must never survive a peer's acknowledged handoff.
+pub fn reloadForTest(io: Io) !void {
+    const path = persistPath(io, storeAlloc(), ".", null) orelse return;
     g_ledger.len = 0;
     if (g_store) |*st| st.deinit();
     g_store = null;
@@ -369,232 +384,5 @@ pub const loadJson = @import("artifact_claim_store.zig").loadJson;
 test {
     _ = @import("artifact_claim_path.zig");
     _ = @import("artifact_claim_stale.zig");
-}
-
-test "acquire / handoff / release are atomic and session-scoped" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const ar = arena_state.allocator();
-    var ledger: Ledger = .{};
-    const a = Owner{ .session = "s-a", .pid = 1, .start_id = 10 };
-    const b = Owner{ .session = "s-b", .pid = 2, .start_id = 20 };
-    _ = try acquire(&ledger, ar, .publication, "feat/x", a, 1, false);
-    try std.testing.expectEqual(Verdict.mine, verdict(ledger.slice(), .publication, "feat/x", a, true));
-    try std.testing.expectEqual(Verdict.foreign_live, verdict(ledger.slice(), .publication, "feat/x", b, true));
-    try std.testing.expectError(error.ClaimHeld, acquire(&ledger, ar, .publication, "feat/x", b, 2, true));
-    _ = try handoff(&ledger, ar, .publication, "feat/x", a, b, 3, true);
-    try std.testing.expectEqual(Verdict.mine, verdict(ledger.slice(), .publication, "feat/x", b, true));
-    try std.testing.expectEqual(Verdict.foreign_live, verdict(ledger.slice(), .publication, "feat/x", a, true));
-    _ = try release(&ledger, .publication, "feat/x", b, true);
-    try std.testing.expectEqual(Verdict.free, verdict(ledger.slice(), .publication, "feat/x", a, true));
-}
-
-test "stale-owner recovery is only a gone process, never a missing PR" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const ar = arena_state.allocator();
-    var ledger: Ledger = .{};
-    const dead = Owner{ .session = "s-dead", .pid = 9, .start_id = 1 };
-    const live = Owner{ .session = "s-live", .pid = 8, .start_id = 2 };
-    _ = try acquire(&ledger, ar, .pull_request, "none-yet", dead, 1, false);
-    try std.testing.expectEqual(Verdict.stale, verdict(ledger.slice(), .pull_request, "none-yet", live, false));
-    try std.testing.expectEqual(Verdict.foreign_live, verdict(ledger.slice(), .pull_request, "none-yet", live, true));
-    const msg = try acquire(&ledger, ar, .pull_request, "none-yet", live, 2, false);
-    try std.testing.expect(std.mem.indexOf(u8, msg, "stale") != null);
-    try std.testing.expectEqual(Verdict.mine, verdict(ledger.slice(), .pull_request, "none-yet", live, true));
-}
-
-test "a different branch or issue stays independently writable" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const ar = arena_state.allocator();
-    var ledger: Ledger = .{};
-    const a = Owner{ .session = "s-a" };
-    const b = Owner{ .session = "s-b" };
-    _ = try acquire(&ledger, ar, .branch, "feat/a", a, 1, false);
-    _ = try acquire(&ledger, ar, .issue, "840", b, 1, false);
-    try std.testing.expectEqual(Verdict.free, verdict(ledger.slice(), .branch, "feat/b", b, true));
-    try std.testing.expectEqual(Verdict.free, verdict(ledger.slice(), .issue, "841", a, true));
-}
-
-test "persist round-trip survives a resume-shaped reload" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const ar = arena_state.allocator();
-    var ledger: Ledger = .{};
-    _ = try acquire(&ledger, ar, .publication, "feat/x", .{ .session = "s-a", .pid = 3, .start_id = 7 }, 1, false);
-    const json = try persistJson(ar, &ledger);
-    var restored: Ledger = .{};
-    try loadJson(ar, &restored, json);
-    try std.testing.expectEqual(@as(usize, 1), restored.len);
-    try std.testing.expectEqualStrings("feat/x", restored.items[0].key);
-    try std.testing.expectEqualStrings("s-a", restored.items[0].owner.session);
-    try std.testing.expectEqual(@as(i32, 3), restored.items[0].owner.pid);
-}
-
-test "claimed mutations include push and gh pr create, not status or checks --watch" {
-    try std.testing.expect(!isClaimedMutation("git add -A"));
-    try std.testing.expect(isClaimedMutation("git commit -m wip"));
-    try std.testing.expect(isClaimedMutation("git push origin HEAD"));
-    try std.testing.expect(isClaimedMutation("gh pr create --title x --body y"));
-    try std.testing.expect(isClaimedMutation("gh pr edit 1 --body z"));
-    try std.testing.expect(!isClaimedMutation("git status"));
-    try std.testing.expect(!isClaimedMutation("gh pr checks --watch"));
-    try std.testing.expect(!isClaimedMutation("gh pr list"));
-}
-
-test "#840 acknowledged handoff does not let the other session create the PR" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const ar = arena_state.allocator();
-    resetForTest();
-    defer resetForTest();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    setPersistPath(try std.fmt.allocPrint(ar, ".zig-cache/tmp/{s}/claims.json", .{tmp.sub_path}));
-    setTestOwner(.{ .session = "s-owner", .pid = 11, .start_id = 1 });
-    const got = try handleTool(ar, std.testing.io, "claim", "publication", "feat/x", "");
-    try std.testing.expect(!got.is_error);
-    // Session B acknowledges in prose (peer_message send) — that is not a handoff.
-    setTestOwner(.{ .session = "s-other", .pid = 12, .start_id = 2 });
-    setTestOwnerLive(true);
-    const blocked = gateCommand(ar, std.testing.io, "gh pr create --title x --body y", "feat/x").?;
-    try std.testing.expect(std.mem.indexOf(u8, blocked, "NOT performed") != null);
-    try std.testing.expect(std.mem.indexOf(u8, blocked, "handoff") != null);
-    // Explicit handoff atomically enables the receiver.
-    setTestOwner(.{ .session = "s-owner", .pid = 11, .start_id = 1 });
-    const rec = proc_identity.selfRecord(std.testing.io);
-    const peers = [_]@import("worktree_lease.zig").Owner{.{ .session_id = "s-other", .title = "Receiver title", .pid = rec.pid, .start_id = rec.start_id }};
-    g_test_peers = &peers;
-    const ho = try handleTool(ar, std.testing.io, "handoff", "publication", "feat/x", "Receiver title");
-    try std.testing.expect(!ho.is_error);
-    setTestOwner(.{ .session = "s-other", .pid = rec.pid, .start_id = rec.start_id });
-    try std.testing.expect(gateCommand(ar, std.testing.io, "gh pr create --title x --body y", "feat/x") == null);
-    setTestOwner(.{ .session = "s-owner", .pid = 11, .start_id = 1 });
-    try std.testing.expect(gateCommand(ar, std.testing.io, "gh pr create --title x --body y", "feat/x") != null);
-}
-
-test "empty bash key still blocks a named publication claim" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const ar = arena_state.allocator();
-    resetForTest();
-    defer resetForTest();
-    setTestOwner(.{ .session = "s-owner" });
-    _ = try handleTool(ar, std.testing.io, "claim", "publication", "feat/x", "");
-    setTestOwner(.{ .session = "s-other" });
-    setTestOwnerLive(true);
-    try std.testing.expect(gateCommand(ar, std.testing.io, "gh pr create --title x --body y", "") != null);
-    try std.testing.expect(gateCommand(ar, std.testing.io, "git commit -m wip", "") == null);
-}
-
-test "file persist reloads after a resume-shaped reset" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const ar = arena_state.allocator();
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const file = try std.fmt.allocPrint(ar, ".zig-cache/tmp/{s}/claims.json", .{tmp.sub_path});
-    Io.Dir.cwd().deleteFile(io, file) catch {};
-    defer Io.Dir.cwd().deleteFile(io, file) catch {};
-    resetForTest();
-    defer resetForTest();
-    setPersistPath(file);
-    setTestOwner(.{ .session = "s-persist", .pid = 4, .start_id = 9 });
-    _ = try handleTool(ar, io, "claim", "publication", "feat/x", "");
-    g_ledger.len = 0;
-    try reload(io);
-    try std.testing.expectEqual(@as(usize, 1), g_ledger.len);
-    try std.testing.expectEqualStrings("feat/x", g_ledger.items[0].key);
-    try std.testing.expectEqualStrings("s-persist", g_ledger.items[0].owner.session);
-}
-
-test "#840 malformed ledger and recycled identity never authorize ownership" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const ar = arena_state.allocator();
-    var ledger: Ledger = .{};
-    const invalid = [_][]const u8{
-        "{}",                                                                         "[{}]",                                                                    "[1]",
-        "[{\"kind\":\"branch\",\"key\":\"x\",\"session\":\"s\",\"pid\":2147483648}]", "[{\"kind\":\"branch\",\"key\":\"x\",\"session\":\"s\",\"start_id\":-1}]", "[{\"kind\":\"branch\",\"key\":\"x\",\"session\":\"s\"},{\"kind\":\"branch\",\"key\":\"x\",\"session\":\"t\"}]",
-    };
-    for (invalid) |text| try std.testing.expectError(error.InvalidClaimLedger, loadJson(ar, &ledger, text));
-    resetForTest();
-    defer resetForTest();
-    const me = selfOwner(std.testing.io);
-    var reused = me;
-    reused.start_id +%= 1;
-    try std.testing.expect(!sameOwner(me, reused));
-    if (me.start_id != 0) try std.testing.expect(!ownerLive(std.testing.io, reused));
-    reused = me;
-    reused.pid += 1;
-    try std.testing.expect(!sameOwner(me, reused));
-    setTestOwner(.{ .session = "owner" });
-    _ = try handleTool(ar, std.testing.io, "claim", "issue", "840", "");
-    try std.testing.expect((try handleTool(ar, std.testing.io, "handoff", "issue", "840", "unresolved")).is_error);
-    try std.testing.expectEqualStrings("owner", testLedger().items[0].owner.session);
-}
-
-test "shared-tree ACK is not a claim release" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const ar = arena_state.allocator();
-    resetForTest();
-    defer resetForTest();
-    setTestOwner(.{ .session = "s-owner" });
-    _ = try handleTool(ar, std.testing.io, "claim", "publication", "feat/x", "");
-    setTestOwner(.{ .session = "s-other" });
-    setTestOwnerLive(true);
-    // Re-issuing after presence.gateCheck ACKs the peer — claim still holds.
-    try std.testing.expect(gateCommand(ar, std.testing.io, "git commit -m wip", "feat/x") != null);
-    try std.testing.expect(gateCommand(ar, std.testing.io, "git push origin HEAD", "feat/x") != null);
-}
-
-test "publication claims do not block unrelated issue creation" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const ar = arena_state.allocator();
-    resetForTest();
-    defer resetForTest();
-    setTestOwner(.{ .session = "s-pub", .pid = 21, .start_id = 3 });
-    _ = try handleTool(ar, std.testing.io, "claim", "publication", "feat/x", "");
-    setTestOwner(.{ .session = "s-other", .pid = 22, .start_id = 4 });
-    setTestOwnerLive(true);
-    try std.testing.expect(gateCommand(ar, std.testing.io, "gh issue create --title x --body y", "12") == null);
-    try std.testing.expect(gateCommand(ar, std.testing.io, "gh pr create --title x --body y", "feat/x") != null);
-}
-
-test "#1088 issue create is not the latest claimed issue; push is not an unrelated PR" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const ar = arena_state.allocator();
-    resetForTest();
-    defer resetForTest();
-    setTestOwner(.{ .session = "s-owner", .pid = 41, .start_id = 7 });
-    _ = try handleTool(ar, std.testing.io, "claim", "issue", "1087", "");
-    _ = try handleTool(ar, std.testing.io, "claim", "pull_request", "1079", "");
-    setTestOwner(.{ .session = "s-other", .pid = 42, .start_id = 8 });
-    setTestOwnerLive(true);
-    try std.testing.expect(gateCommand(ar, std.testing.io, "gh issue create --title x --body y", "") == null);
-    try std.testing.expect(gateCommand(ar, std.testing.io, "gh issue create --title 'x' --body y", "") == null);
-    try std.testing.expect(gateCommand(ar, std.testing.io, "gh issue edit 1087 --title x", "") != null);
-    try std.testing.expect(gateCommand(ar, std.testing.io, "git push origin HEAD", "release/v0.0.302") == null);
-    try std.testing.expect(gateCommand(ar, std.testing.io, "git push origin HEAD", "") == null);
-    try std.testing.expect(gateCommand(ar, std.testing.io, "git add src/artifact_claim.zig", "release/v0.0.301") == null);
-    try std.testing.expect(gateCommand(ar, std.testing.io, "git -C other commit -m wip", "") == null);
-}
-
-test "legacy pid-zero handoff can be released by the labeled session" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const ar = arena_state.allocator();
-    resetForTest();
-    defer resetForTest();
-    setTestOwner(.{ .session = "s-legacy", .pid = 0, .start_id = 0 });
-    _ = try handleTool(ar, std.testing.io, "claim", "publication", "feat/legacy", "");
-    setTestOwner(.{ .session = "s-legacy", .pid = 44, .start_id = 8 });
-    setTestOwnerLive(true);
-    const released = try handleTool(ar, std.testing.io, "release", "publication", "feat/legacy", "");
-    try std.testing.expect(!released.is_error);
+    _ = @import("artifact_claim_tests.zig");
 }
