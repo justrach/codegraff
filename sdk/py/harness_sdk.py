@@ -903,12 +903,6 @@ class ServerlessHarness:
         self.dedupe_tool_calls = dedupe_tool_calls
         self._steer_queue: List[str] = []
         self._followup_queue: List[str] = []
-        self._mh_stats: dict = {
-            "waves_launched": 0,
-            "ops_executed": 0,
-            "parallel_ops_fused": 0,
-            "llm_round_trips_saved": 0,
-        }
         self._tool_map: dict = {}
         if coding_tools == "readonly":
             for t in create_read_only_tools(self.workspace):
@@ -926,9 +920,6 @@ class ServerlessHarness:
     def follow_up(self, text: str) -> None:
         if text.strip():
             self._followup_queue.append(text)
-
-    def get_megaharness_stats(self) -> dict:
-        return dict(self._mh_stats)
 
     def export_state(self) -> dict:
         return {
@@ -1019,11 +1010,6 @@ class ServerlessHarness:
                         self.messages.append({"role": "user", "content": self._followup_queue.pop(0)})
                         continue
                     break
-                self._mh_stats["waves_launched"] += 1
-                self._mh_stats["ops_executed"] += len(calls)
-                if len(calls) > 1:
-                    self._mh_stats["parallel_ops_fused"] += len(calls)
-                    self._mh_stats["llm_round_trips_saved"] += len(calls) - 1
                 for call in calls:
                     name = call.get("name", "")
                     inp = call.get("input") or {}

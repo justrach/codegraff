@@ -152,16 +152,12 @@ pub fn prepare(gpa: Allocator, items: []const Value) !Snapshot {
     errdefer cache_allocator.free(next_cache);
 
     var message_bytes: usize = 2;
-    var reused_chunks: usize = 0;
-    var reused_bytes: usize = 0;
     for (items, 0..) |item, i| {
         var fp = Fingerprint.init();
         fp.json(item);
         const hash = fp.final();
         const chunk = if (i < cached.len and cached[i].hash == hash) reuse: {
             cached[i].retain();
-            reused_chunks += 1;
-            reused_bytes += cached[i].data.len;
             break :reuse cached[i];
         } else create: {
             const chunk = try cache_allocator.create(Chunk);
@@ -183,7 +179,6 @@ pub fn prepare(gpa: Allocator, items: []const Value) !Snapshot {
     for (next_cache) |chunk| chunk.retain();
     clearCache();
     cached = next_cache;
-    @import("megaharness.zig").recordSnapshotReuse(reused_chunks, reused_bytes);
     return .{
         .metadata = &.{},
         .header_end = 0,

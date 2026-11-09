@@ -204,7 +204,6 @@ fn runParallel(self: *Agent, ctx: ToolCtx, calls: []const ToolCall, ext_idx: []c
         try spawn_at.append(self.gpa, i);
     }
     if (spawn_at.items.len == 0) return;
-    if (spawn_at.items.len > 1) @import("megaharness.zig").recordNativeBatch(spawn_at.items.len);
 
     const futures = try self.gpa.alloc(Io.Future(ToolOutput), spawn_at.items.len);
     defer self.gpa.free(futures);

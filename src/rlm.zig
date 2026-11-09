@@ -101,49 +101,34 @@ pub fn runScript(ctx: ToolCtx, code: []const u8) !ToolOutput {
         claimed.deinit();
     }
     rlm_spec.takeLive(ctx, &claimed, arena);
-    const spec_hits: u64 = claimed.count();
 
     const stmts = try spec_ptc.splitStatements(arena, code);
+
+    var leading: std.ArrayList(spec_ptc.Call) = .empty;
+    for (stmts) |stmt| {
+        const safe_calls = try order.leading(arena, stmt) orelse break;
+        try leading.appendSlice(arena, safe_calls);
+    }
+    const calls = leading.items;
+    try speculate(ctx, arena, calls, &claimed);
     var binds: std.ArrayList(Binding) = .empty;
     try rlm_spec.seedBinds(ctx.gpa, ctx.io, arena, &binds);
     defer rlm_spec.commitBinds(ctx.gpa, ctx.io, binds.items) catch {};
-    const initial_binds = binds.items.len;
     var printed: std.ArrayList(u8) = .empty;
     defer printed.deinit(ctx.gpa);
 
-    const mh = @import("megaharness.zig");
-    var waves: u64 = 0;
-    var parallel_ops: u64 = 0;
-    var alu_folded: u64 = 0;
-    var next_wave_start: usize = 0;
-    for (stmts, 0..) |stmt, idx| {
-        if (idx >= next_wave_start) {
-            if (idx > 0) {
-                var old = claimed.valueIterator();
-                while (old.next()) |out| ctx.gpa.free(out.text);
-                claimed.clearRetainingCapacity();
-            }
-            const wave = try mh.collectWave(arena, stmts[idx..], binds.items);
-            if (wave.stmt_count > 0) {
-                if (wave.calls.len > 0) waves += 1;
-                if (wave.calls.len > 1) parallel_ops += wave.calls.len;
-                alu_folded += wave.alu_ops_folded;
-                try speculate(ctx, arena, wave.calls, &claimed);
-                next_wave_start = idx + wave.stmt_count;
-            } else {
-                var old = claimed.valueIterator();
-                while (old.next()) |out| ctx.gpa.free(out.text);
-                claimed.clearRetainingCapacity();
-                next_wave_start = idx + 1;
-            }
+    var barrier = false;
+    for (stmts) |stmt| {
+        if (!barrier and try order.leading(arena, stmt) == null) {
+            barrier = true;
+            var old = claimed.valueIterator();
+            while (old.next()) |out| ctx.gpa.free(out.text);
+            claimed.clearRetainingCapacity();
         }
         if (try evalStmt(ctx, arena, stmt, binds.items, &claimed, &printed, &binds)) |err| {
             return err;
         }
     }
-    var sram_bytes: u64 = 0;
-    for (binds.items[initial_binds..]) |b| sram_bytes += b.text.len;
-    mh.recordScript(stmts.len, waves, parallel_ops, alu_folded, spec_hits, sram_bytes, printed.items.len);
     if (printed.items.len == 0) return .{ .text = try ctx.gpa.dupe(u8, "(rlm: script produced no print())") };
     return .{ .text = try printed.toOwnedSlice(ctx.gpa) };
 }
@@ -326,11 +311,6 @@ fn evalStmt(
         .fail => |e| return e,
     }
     switch (try rlm_reduce.evalStmt(arena, ctx.gpa, stmt, binds, bind_out)) {
-        .miss => {},
-        .ok => return null,
-        .fail => |e| return .{ .text = e, .is_error = true },
-    }
-    switch (try @import("megaharness.zig").evalAssert(arena, ctx.gpa, stmt, binds, bind_out)) {
         .miss => {},
         .ok => return null,
         .fail => |e| return .{ .text = e, .is_error = true },

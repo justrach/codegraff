@@ -37,7 +37,6 @@ pub const aliases = [_][]const u8{
     "/constraint", // /never
     "/ws", // /workspace
     "/adopt", // /import-claude
-    "/kernel", // /megaharness
 };
 
 /// The first word of `line` when it is command-shaped: `/` then letters,
@@ -126,7 +125,6 @@ pub const commands = [_]Item{
     .{ .name = "/update", .usage = "/update [install]", .desc = "check for a release and install it for the next launch (this session keeps running)" },
     .{ .name = "/debug", .desc = "live content-free observability HUD (turns, tokens, tools, last events)" },
     .{ .name = "/cache", .desc = "prompt-cache posture: prefix hash, hit rate, last bust, remaining max levers" },
-    .{ .name = "/megaharness", .usage = "/megaharness [json|reset]", .desc = "megakernel-fused execution HUD: dependency waves, LLM round-trips saved, SSE speculation hits, SRAM register locality (alias /kernel)" },
     .{ .name = "/tools", .desc = "session tool balance: codedb-pro vs zigrep vs native usage, gate refusals, skew" },
     .{ .name = "/animation", .desc = "pick the thinking animation; persists to settings" },
     .{ .name = "/theme", .usage = "/theme [name]", .desc = "pick a color theme; /theme off resets to your terminal default; persists" },

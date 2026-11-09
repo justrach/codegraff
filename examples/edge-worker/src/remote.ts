@@ -879,13 +879,6 @@ export interface AfterToolCallResult {
   isError?: boolean;
 }
 
-export interface MegaharnessStats {
-  wavesLaunched: number;
-  opsExecuted: number;
-  parallelOpsFused: number;
-  llmRoundTripsSaved: number;
-}
-
 export interface ServerlessSessionSnapshot {
   version: 1;
   sessionId: string;
@@ -925,8 +918,8 @@ export interface ServerlessOptions {
   codingTools?: boolean | "readonly";
   /** Additional custom tools (created via `defineTool`). */
   tools?: ServerlessTool[];
-  /** Execute multiple tool calls sequentially, all in parallel, or in Megaharness dependency waves. */
-  toolExecution?: "sequential" | "parallel" | "wave";
+  /** Execute multiple tool calls from a single assistant response sequentially or in parallel. */
+  toolExecution?: "sequential" | "parallel";
   /** Per-turn tool-call ceiling (default 32). */
   maxToolCalls?: number;
   /** Session-wide model-call ceiling (default 64). */
@@ -995,13 +988,7 @@ export class ServerlessHarness {
   private fetcher: typeof fetch;
   private streamFn?: ServerlessStreamFn;
   private toolMap = new Map<string, ServerlessTool>();
-  private toolExecMode: "sequential" | "parallel" | "wave";
-  private mhStats: MegaharnessStats = {
-    wavesLaunched: 0,
-    opsExecuted: 0,
-    parallelOpsFused: 0,
-    llmRoundTripsSaved: 0,
-  };
+  private toolExecMode: "sequential" | "parallel";
   private maxToolCalls: number;
   private maxModelCalls: number;
   private totalModelCalls = 0;
@@ -1092,11 +1079,6 @@ export class ServerlessHarness {
   /** Return a read-only view of the current in-memory message history. */
   getMessages(): readonly ServerlessMessage[] {
     return this.messages;
-  }
-
-  /** Return Megaharness fused execution telemetry for this session (ADR 0322). */
-  getMegaharnessStats(): MegaharnessStats {
-    return { ...this.mhStats };
   }
 
   /** Export a serializable snapshot of conversation state and `InMemoryWorkspace` files. */
@@ -1592,48 +1574,13 @@ export class ServerlessHarness {
           }
         }
 
-        const isMutating = (name: string) =>
-          name === "write_file" || name === "edit_file" || name === "bash";
-
-        this.mhStats.opsExecuted += prepared.length;
-        if (prepared.length > 1) {
-          this.mhStats.llmRoundTripsSaved += prepared.length - 1;
-        }
-
-        const executed = await (async () => {
-          if (this.toolExecMode === "parallel") {
-            if (prepared.length > 0) this.mhStats.wavesLaunched += 1;
-            if (prepared.length > 1) this.mhStats.parallelOpsFused += prepared.length;
-            return Promise.all(prepared.map(runOne));
-          }
-          if (this.toolExecMode === "wave") {
-            const out = [];
-            let i = 0;
-            while (i < prepared.length) {
-              if (isMutating(prepared[i].call.name)) {
-                this.mhStats.wavesLaunched += 1;
-                out.push(await runOne(prepared[i]));
-                i += 1;
-              } else {
-                const wave = [];
-                while (i < prepared.length && !isMutating(prepared[i].call.name)) {
-                  wave.push(prepared[i]);
-                  i += 1;
-                }
-                this.mhStats.wavesLaunched += 1;
-                if (wave.length > 1) this.mhStats.parallelOpsFused += wave.length;
-                out.push(...(await Promise.all(wave.map(runOne))));
-              }
-            }
-            return out;
-          }
-          const list = [];
-          for (const item of prepared) {
-            this.mhStats.wavesLaunched += 1;
-            list.push(await runOne(item));
-          }
-          return list;
-        })();
+        const executed = this.toolExecMode === "parallel"
+          ? await Promise.all(prepared.map(runOne))
+          : await (async () => {
+              const list = [];
+              for (const item of prepared) list.push(await runOne(item));
+              return list;
+            })();
 
         for (const res of executed) {
           if (res.rejected) {

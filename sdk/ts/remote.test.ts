@@ -287,9 +287,6 @@ describe("ServerlessHarness & InMemoryWorkspace", () => {
     expect(res.apiCalls).toBe(2);
     expect(res.inputTokens).toBe(50);
     expect(await workspace.readFile("src/calc.ts")).toContain("return x + 1;");
-    const mh = harness.getMegaharnessStats();
-    expect(mh.opsExecuted).toBe(3);
-    expect(mh.llmRoundTripsSaved).toBe(2);
   });
 
   test("supports beforeToolCall gating/rewriting, afterToolCall, steer, and followUp", async () => {
