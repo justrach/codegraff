@@ -9,6 +9,10 @@ pub const changelog_text =
     \\  • unified subagent steering (@agent-N, @sa-..., /workers send, ACP graff/agents action: "steer") for foreground and background workers
     \\  • named background subagents/tasks in REPL standing bar and ACP session_info_update (_meta["graff/waiting"])
     \\  • cross-turn ACP tool_call_update progress streaming for detached subagents and immediate user follow-up wakeup in agent_output
+    \\  • monotonic rewind-proof attempt ledger across /undo and /rewind preserved in compact_handoff_note.durableState
+    \\  • wall-clock grid-aligned recurring schedules (nextGridSlot) with @every <delay> and --missed=once|skip policies
+    \\  • APFS clonefile / Linux reflink Copy-on-Write cache seeding in subagent worktrees and adaptive sub-100ms foreground bash polling
+    \\  • corrupt-safe playbook JSONL self-healing + storage_warning diagnostics, markdown agent line:col validation, and OAuth child-env scrubbing
     \\
     \\0.302.74.55
     \\  • scoped temporary arena parsing in mcp_cache.lookupWith/store/forget and single-server tool entry cloning

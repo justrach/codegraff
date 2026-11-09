@@ -461,3 +461,22 @@ test "Harness^2 contrastive reflector: noteFailure and reflectPromptWithContext 
     try std.testing.expect(std.mem.indexOf(u8, prompt, "Workspace diff that made the check pass:") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "[invariant]") != null);
 }
+
+test "corrupt-safe playbook: parseDetailed counts malformed rows and recordedStateWithHealth emits storage_warning" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const raw =
+        "{\"v\":2,\"op\":\"add\",\"id\":\"pb-11111111\",\"text\":\"never use eval\",\"source\":\"user\",\"scope\":\"project\"}\n" ++
+        "{torn-json-from-crash\n" ++
+        "{\"v\":2,\"op\":\"add\",\"id\":\"pb-22222222\",\"text\":\"keep files under 600 lines\",\"source\":\"user\",\"scope\":\"project\"}\n";
+    const report = playbook.parseDetailed(a, raw);
+    try std.testing.expectEqual(@as(usize, 2), report.items.len);
+    try std.testing.expectEqual(@as(usize, 1), report.corrupt_lines);
+    try std.testing.expectEqual(@as(usize, 2), report.first_corrupt_line);
+
+    const state = try playbook.recordedStateWithHealth(a, report);
+    try std.testing.expect(std.mem.indexOf(u8, state, "\"storage_warning\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, state, "1 malformed JSONL row(s) (first at line 2)") != null);
+}

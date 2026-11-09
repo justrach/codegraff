@@ -123,6 +123,7 @@ pub fn durableState(arena: Allocator, root: *Agent, discarded: []const Value) !?
     if (root.sub or root.review_mode) return null;
     var lines: std.ArrayList([]const u8) = .empty;
     if (try fileLine(arena, root)) |line| try lines.append(arena, line);
+    if (rewindLine(arena, root)) |line| try lines.append(arena, line);
     if (try handleLine(arena, discarded)) |line| try lines.append(arena, line);
     if (try transcriptLine(arena, root)) |line| try lines.append(arena, line);
     if (try peer_context.durableRosterLine(arena, root.io)) |line| try lines.append(arena, line);
@@ -160,6 +161,12 @@ fn fileLine(arena: Allocator, root: *Agent) !?[]const u8 {
     // ledger as the session's whole diff would be a lie whenever a `sed`, a
     // `git apply` or a companion CLI did the writing.
     return try std.fmt.allocPrint(arena, "- files this session modified ({d}; write_file/edit_file/imagegen only - edits made through bash are not tracked): {s}{s}", .{ paths.len, joined, more });
+}
+
+fn rewindLine(arena: Allocator, root: *Agent) ?[]const u8 {
+    const snaps = root.snapshots orelse return null;
+    const digest = snaps.rewindDigest(arena);
+    return if (digest.len == 0) null else digest;
 }
 
 /// Only the handles THIS compaction is discarding, deliberately. Re-harvesting
