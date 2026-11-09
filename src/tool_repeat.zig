@@ -155,12 +155,33 @@ fn writeInput(w: *std.Io.Writer, v: std.json.Value, top: bool) !void {
         },
         .object => |o| {
             try w.writeByte('{');
-            var it = o.iterator();
-            entries: while (it.next()) |kv| {
-                if (top) for (knobs) |k| if (std.mem.eql(u8, kv.key_ptr.*, k)) continue :entries;
-                try w.print("{s}:", .{kv.key_ptr.*});
-                try writeInput(w, kv.value_ptr.*, false);
-                try w.writeByte(',');
+            if (o.count() <= 64) {
+                var keys_buf: [64][]const u8 = undefined;
+                var n: usize = 0;
+                var it = o.iterator();
+                entries: while (it.next()) |kv| {
+                    if (top) for (knobs) |k| if (std.mem.eql(u8, kv.key_ptr.*, k)) continue :entries;
+                    keys_buf[n] = kv.key_ptr.*;
+                    n += 1;
+                }
+                std.mem.sort([]const u8, keys_buf[0..n], {}, struct {
+                    fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+                        return std.mem.lessThan(u8, lhs, rhs);
+                    }
+                }.lessThan);
+                for (keys_buf[0..n]) |k| {
+                    try w.print("{s}:", .{k});
+                    try writeInput(w, o.get(k).?, false);
+                    try w.writeByte(',');
+                }
+            } else {
+                var it = o.iterator();
+                entries: while (it.next()) |kv| {
+                    if (top) for (knobs) |k| if (std.mem.eql(u8, kv.key_ptr.*, k)) continue :entries;
+                    try w.print("{s}:", .{kv.key_ptr.*});
+                    try writeInput(w, kv.value_ptr.*, false);
+                    try w.writeByte(',');
+                }
             }
             try w.writeByte('}');
         },
@@ -443,4 +464,22 @@ test "the key ignores knobs and spacing, not what the call does" {
     }
     const read = try std.json.parseFromSliceLeaky(std.json.Value, arena, inputs[0], .{});
     try std.testing.expect(!std.mem.eql(u8, keys[0], try callKey(arena, .{ .id = "c", .name = "read_file", .input = read })));
+}
+
+test "reordered JSON object keys produce identical repeat hash" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const v1 = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"a\":1,\"b\":2}", .{});
+    const v2 = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"b\":2,\"a\":1}", .{});
+    const k1 = try callKey(arena, .{ .id = "c1", .name = "test_tool", .input = v1 });
+    const k2 = try callKey(arena, .{ .id = "c2", .name = "test_tool", .input = v2 });
+    try std.testing.expectEqualStrings(k1, k2);
+
+    const res = [_]tools.ExecResult{.{ .text = "ok", .is_error = false }};
+    const fp1 = fingerprint(&.{k1}, &res);
+    const fp2 = fingerprint(&.{k2}, &res);
+    try std.testing.expect(fp1 != null);
+    try std.testing.expectEqual(fp1, fp2);
 }

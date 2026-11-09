@@ -485,6 +485,26 @@ pub fn capOversizedToolOutputs(self: *Agent, cap: usize) usize {
     return reclaimed;
 }
 
+/// Phase-1 deterministic prune before LLM compaction: when context exceeds
+/// `compactAt()`, prune oversized old tool results first. If that brings
+/// `approxTokens()` comfortably below `compactAt()` (`< threshold * 9 / 10`),
+/// skip the LLM summarization call entirely (0ms, 0 LLM calls).
+pub fn autoCompact(self: *Agent, _: std.Io) bool {
+    const threshold = self.provider.compactAt();
+    if (threshold == 0) return false;
+    const before = self.approxTokens();
+    if (before < threshold) return false;
+    const reclaimed = @import("compact_prune.zig").pruneOldToolResults(self, 6, 4096);
+    if (reclaimed > 0) {
+        if (self.approxTokens() < threshold * 9 / 10) {
+            if (self.tracer) |tr| tr.note("compact", "deterministic tool-result prune stayed under compactAt");
+            return true;
+        }
+    }
+    self.compactOrRecover(self.provider.nearContextLimit(self.approxTokens()));
+    return true;
+}
+
 /// Re-exported recovery entry points (agent_compact_recover.zig owns them).
 pub const emergencyTrim = @import("agent_compact_recover.zig").emergencyTrim;
 pub const repeatedOpaqueCompactionFailure = @import("agent_compact_recover.zig").repeatedOpaqueCompactionFailure;

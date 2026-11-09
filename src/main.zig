@@ -574,7 +574,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("agent_server_compact.zig"); // server-side autocompact (codex Responses)
     _ = .{ @import("compact_status.zig"), @import("compact_mix.zig"), @import("compact_backoff.zig") }; // compact status + GRAFF_COMPACT_MIX mixture arm + #1686 backoff
     _ = .{ @import("agent_clef_compact.zig"), @import("agent_clef_compact_tests.zig"), @import("agent_clef_archive.zig") }; // gateway /v1/compact client (Clef pruning) + archive mode
-    _ = @import("agent_compact_recover.zig"); // compaction last-resort recovery (split for the ceiling)
+    _ = .{ @import("agent_compact_recover.zig"), @import("compact_prune.zig") }; // compaction last-resort recovery + deterministic tool-result prune
     _ = .{ @import("agent_request_search_tests.zig"), @import("model_call.zig") }; // #1665: model-call event pairing
     _ = @import("agent_ws_steer.zig");
     _ = @import("agent_ws_signal.zig");

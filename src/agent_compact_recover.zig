@@ -103,6 +103,16 @@ pub fn compactOrRecover(self: *Agent, trim_on_fail: bool) void {
     }
     if (self.compact_pin_degraded and !trim_on_fail) return;
     const has_opaque = @import("compaction_window.zig").latestBlob(self.messages.items) != null;
+    if (!has_opaque and !server_compact.serverOnly(self.provider)) {
+        const threshold = self.provider.compactAt();
+        if (threshold > 0 and self.approxTokens() >= threshold) {
+            const reclaimed = @import("compact_prune.zig").pruneOldToolResults(self, 6, 4096);
+            if (reclaimed > 0 and self.approxTokens() < threshold * 9 / 10) {
+                if (self.tracer) |tr| tr.note("compact", "deterministic tool-result prune stayed under compactAt");
+                return;
+            }
+        }
+    }
     // ADR 0259: first-party Responses routes compact only server-side, so they
     // never reach compact() (the client summary, or Clef's hook at its top).
     const result = if (has_opaque or server_compact.serverOnly(self.provider)) server_compact.manualCompact(self) else self.compact();

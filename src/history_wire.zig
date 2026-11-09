@@ -3,10 +3,16 @@ const std = @import("std");
 const messages = @import("messages.zig");
 const Kind = @import("provider.zig").Provider.Kind;
 
+pub const tool_outcome_unknown = "[TOOL_OUTCOME_UNKNOWN: session interrupted while this tool call was in flight; verify state before re-running non-idempotent commands]";
+pub const tool_not_started = "[TOOL_NOT_STARTED: skipped because an earlier tool call in the batch was interrupted]";
+
 pub fn prepare(a: std.mem.Allocator, kind: Kind, history: *std.json.Array) void {
     messages.sanitizeMessagesUtf8(a, history);
     switch (kind) {
-        .openai => messages.normalizeOpenAIHistory(a, history),
+        .openai => {
+            messages.normalizeOpenAIHistory(a, history);
+            repairOpenAIDanglingBatch(a, history);
+        },
         .responses => {
             for (history.items) |*item| {
                 if (item.* != .object) continue;
@@ -15,19 +21,222 @@ pub fn prepare(a: std.mem.Allocator, kind: Kind, history: *std.json.Array) void 
                 repair(a, &item.object, "output", false);
             }
             messages.normalizeResponsesHistory(a, history);
+            repairResponsesDanglingBatch(a, history);
         },
-        .anthropic => for (history.items) |*item| {
-            if (item.* != .object) continue;
-            const content = item.object.getPtr("content") orelse continue;
-            if (content.* != .array) continue;
-            for (content.array.items) |*block| {
-                if (block.* != .object) continue;
-                const typ = block.object.get("type") orelse continue;
-                if (typ != .string or !std.mem.eql(u8, typ.string, "tool_result")) continue;
-                repair(a, &block.object, "content", true);
+        .anthropic => {
+            for (history.items) |*item| {
+                if (item.* != .object) continue;
+                const content = item.object.getPtr("content") orelse continue;
+                if (content.* != .array) continue;
+                for (content.array.items) |*block| {
+                    if (block.* != .object) continue;
+                    const typ = block.object.get("type") orelse continue;
+                    if (typ != .string or !std.mem.eql(u8, typ.string, "tool_result")) continue;
+                    repair(a, &block.object, "content", true);
+                }
             }
+            repairAnthropicDanglingBatch(a, history);
         },
         .interactions => @import("interactions_steps.zig").normalizeHistory(a, history),
+    }
+}
+
+fn strField(obj: std.json.ObjectMap, key: []const u8) []const u8 {
+    const v = obj.get(key) orelse return "";
+    return if (v == .string) v.string else "";
+}
+
+fn callIdField(obj: std.json.ObjectMap) []const u8 {
+    const cid = strField(obj, "call_id");
+    return if (cid.len > 0) cid else strField(obj, "id");
+}
+
+fn missingToolText(missing_idx: usize) []const u8 {
+    return if (missing_idx == 0) tool_outcome_unknown else tool_not_started;
+}
+
+fn repairOpenAIDanglingBatch(a: std.mem.Allocator, history: *std.json.Array) void {
+    var i: usize = 0;
+    while (i < history.items.len) {
+        const item = history.items[i];
+        if (item != .object or !std.mem.eql(u8, strField(item.object, "role"), "assistant")) {
+            i += 1;
+            continue;
+        }
+        const tcs = item.object.get("tool_calls") orelse {
+            i += 1;
+            continue;
+        };
+        if (tcs != .array or tcs.array.items.len == 0) {
+            i += 1;
+            continue;
+        }
+        var j = i + 1;
+        while (j < history.items.len) : (j += 1) {
+            const next = history.items[j];
+            if (next != .object or !std.mem.eql(u8, strField(next.object, "role"), "tool")) break;
+        }
+        var missing_idx: usize = 0;
+        for (tcs.array.items) |tc| {
+            if (tc != .object) continue;
+            const id = strField(tc.object, "id");
+            if (id.len == 0) continue;
+            var found = false;
+            for (history.items[i + 1 .. j]) |res| {
+                if (res == .object and std.mem.eql(u8, strField(res.object, "tool_call_id"), id)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                var msg: std.json.ObjectMap = .empty;
+                msg.put(a, "role", .{ .string = "tool" }) catch break;
+                msg.put(a, "tool_call_id", .{ .string = id }) catch break;
+                msg.put(a, "content", .{ .string = missingToolText(missing_idx) }) catch break;
+                history.insert(j, .{ .object = msg }) catch break;
+                j += 1;
+                missing_idx += 1;
+            }
+        }
+        i = j;
+    }
+}
+
+fn isAnthropicToolResultMsg(item: std.json.Value) bool {
+    if (item != .object or !std.mem.eql(u8, strField(item.object, "role"), "user")) return false;
+    const content = item.object.get("content") orelse return false;
+    if (content != .array) return false;
+    for (content.array.items) |blk| {
+        if (blk == .object and std.mem.eql(u8, strField(blk.object, "type"), "tool_result")) return true;
+    }
+    return false;
+}
+
+fn makeAnthropicToolResultBlock(a: std.mem.Allocator, id: []const u8, text: []const u8) !std.json.Value {
+    var blk: std.json.ObjectMap = .empty;
+    try blk.put(a, "type", .{ .string = "tool_result" });
+    try blk.put(a, "tool_use_id", .{ .string = id });
+    try blk.put(a, "content", .{ .string = text });
+    try blk.put(a, "is_error", .{ .bool = true });
+    return .{ .object = blk };
+}
+
+fn repairAnthropicDanglingBatch(a: std.mem.Allocator, history: *std.json.Array) void {
+    var i: usize = 0;
+    while (i < history.items.len) {
+        const item = history.items[i];
+        if (item != .object or !std.mem.eql(u8, strField(item.object, "role"), "assistant")) {
+            i += 1;
+            continue;
+        }
+        const content = item.object.get("content") orelse {
+            i += 1;
+            continue;
+        };
+        if (content != .array) {
+            i += 1;
+            continue;
+        }
+        var has_tool_use = false;
+        for (content.array.items) |blk| {
+            if (blk == .object and std.mem.eql(u8, strField(blk.object, "type"), "tool_use") and strField(blk.object, "id").len > 0) {
+                has_tool_use = true;
+                break;
+            }
+        }
+        if (!has_tool_use) {
+            i += 1;
+            continue;
+        }
+        const has_result_msg = (i + 1 < history.items.len) and isAnthropicToolResultMsg(history.items[i + 1]);
+        var missing_idx: usize = 0;
+        if (has_result_msg) {
+            const ucontent = history.items[i + 1].object.getPtr("content").?;
+            for (content.array.items) |blk| {
+                if (blk != .object or !std.mem.eql(u8, strField(blk.object, "type"), "tool_use")) continue;
+                const id = strField(blk.object, "id");
+                if (id.len == 0) continue;
+                var found = false;
+                for (ucontent.array.items) |rblk| {
+                    if (rblk == .object and std.mem.eql(u8, strField(rblk.object, "type"), "tool_result") and std.mem.eql(u8, strField(rblk.object, "tool_use_id"), id)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    const synth = makeAnthropicToolResultBlock(a, id, missingToolText(missing_idx)) catch break;
+                    ucontent.array.append(synth) catch break;
+                    missing_idx += 1;
+                }
+            }
+            i += 2;
+        } else {
+            var blocks = std.json.Array.init(a);
+            for (content.array.items) |blk| {
+                if (blk != .object or !std.mem.eql(u8, strField(blk.object, "type"), "tool_use")) continue;
+                const id = strField(blk.object, "id");
+                if (id.len == 0) continue;
+                const synth = makeAnthropicToolResultBlock(a, id, missingToolText(missing_idx)) catch break;
+                blocks.append(synth) catch break;
+                missing_idx += 1;
+            }
+            if (blocks.items.len > 0) {
+                var umsg: std.json.ObjectMap = .empty;
+                umsg.put(a, "role", .{ .string = "user" }) catch break;
+                umsg.put(a, "content", .{ .array = blocks }) catch break;
+                history.insert(i + 1, .{ .object = umsg }) catch break;
+                i += 2;
+            } else {
+                i += 1;
+            }
+        }
+    }
+}
+
+fn isResponsesBatchItem(item: std.json.Value) bool {
+    if (item != .object) return false;
+    const t = strField(item.object, "type");
+    if (std.mem.eql(u8, t, "function_call") or std.mem.eql(u8, t, "function_call_output") or std.mem.eql(u8, t, "reasoning")) return true;
+    if (std.mem.eql(u8, t, "message") and std.mem.eql(u8, strField(item.object, "role"), "assistant")) return true;
+    return false;
+}
+
+fn repairResponsesDanglingBatch(a: std.mem.Allocator, history: *std.json.Array) void {
+    var i: usize = 0;
+    while (i < history.items.len) {
+        const item = history.items[i];
+        if (item != .object or !std.mem.eql(u8, strField(item.object, "type"), "function_call")) {
+            i += 1;
+            continue;
+        }
+        var j = i + 1;
+        while (j < history.items.len and isResponsesBatchItem(history.items[j])) : (j += 1) {}
+        var missing_idx: usize = 0;
+        var k = i;
+        const orig_end = j;
+        while (k < orig_end) : (k += 1) {
+            const fc = history.items[k];
+            if (fc != .object or !std.mem.eql(u8, strField(fc.object, "type"), "function_call")) continue;
+            const cid = callIdField(fc.object);
+            if (cid.len == 0) continue;
+            var found = false;
+            for (history.items[i..j]) |out| {
+                if (out == .object and std.mem.eql(u8, strField(out.object, "type"), "function_call_output") and std.mem.eql(u8, callIdField(out.object), cid)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                var msg: std.json.ObjectMap = .empty;
+                msg.put(a, "type", .{ .string = "function_call_output" }) catch break;
+                msg.put(a, "call_id", .{ .string = cid }) catch break;
+                msg.put(a, "output", .{ .string = missingToolText(missing_idx) }) catch break;
+                history.insert(j, .{ .object = msg }) catch break;
+                j += 1;
+                missing_idx += 1;
+            }
+        }
+        i = j;
     }
 }
 
@@ -138,4 +347,64 @@ test "legacy repair preserves typed image blocks in tool results" {
     var history = (try std.json.parseFromSliceLeaky(std.json.Value, a, raw, .{})).array;
     prepare(a, .anthropic, &history);
     try std.testing.expect(history.items[0].object.get("content").?.array.items[0].object.get("content").? == .array);
+}
+
+test "crash-tail synthesis marks first missing call TOOL_OUTCOME_UNKNOWN and subsequent missing calls TOOL_NOT_STARTED" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // OpenAI: 3 tool calls in batch; c1 has a result, c2 and c3 are missing at crash tail.
+    const openai_raw =
+        \\[
+        \\  {"role":"assistant","content":null,"tool_calls":[
+        \\    {"id":"c1","type":"function","function":{"name":"shell","arguments":"{}"}},
+        \\    {"id":"c2","type":"function","function":{"name":"shell","arguments":"{}"}},
+        \\    {"id":"c3","type":"function","function":{"name":"shell","arguments":"{}"}}
+        \\  ]},
+        \\  {"role":"tool","tool_call_id":"c1","content":"done-1"}
+        \\]
+    ;
+    var openai_hist = (try std.json.parseFromSliceLeaky(std.json.Value, a, openai_raw, .{})).array;
+    prepare(a, .openai, &openai_hist);
+    try std.testing.expectEqual(@as(usize, 4), openai_hist.items.len);
+    try std.testing.expectEqualStrings("done-1", openai_hist.items[1].object.get("content").?.string);
+    try std.testing.expectEqualStrings("c2", openai_hist.items[2].object.get("tool_call_id").?.string);
+    try std.testing.expectEqualStrings(tool_outcome_unknown, openai_hist.items[2].object.get("content").?.string);
+    try std.testing.expectEqualStrings("c3", openai_hist.items[3].object.get("tool_call_id").?.string);
+    try std.testing.expectEqualStrings(tool_not_started, openai_hist.items[3].object.get("content").?.string);
+
+    // Anthropic: 2 tool_use blocks with no tool_result message at crash tail.
+    const anth_raw =
+        \\[
+        \\  {"role":"assistant","content":[
+        \\    {"type":"tool_use","id":"u1","name":"shell","input":{}},
+        \\    {"type":"tool_use","id":"u2","name":"shell","input":{}}
+        \\  ]}
+        \\]
+    ;
+    var anth_hist = (try std.json.parseFromSliceLeaky(std.json.Value, a, anth_raw, .{})).array;
+    prepare(a, .anthropic, &anth_hist);
+    try std.testing.expectEqual(@as(usize, 2), anth_hist.items.len);
+    const anth_blocks = anth_hist.items[1].object.get("content").?.array.items;
+    try std.testing.expectEqual(@as(usize, 2), anth_blocks.len);
+    try std.testing.expectEqualStrings("u1", anth_blocks[0].object.get("tool_use_id").?.string);
+    try std.testing.expectEqualStrings(tool_outcome_unknown, anth_blocks[0].object.get("content").?.string);
+    try std.testing.expectEqualStrings("u2", anth_blocks[1].object.get("tool_use_id").?.string);
+    try std.testing.expectEqualStrings(tool_not_started, anth_blocks[1].object.get("content").?.string);
+
+    // Responses: 2 function_call items at crash tail with no outputs.
+    const resp_raw =
+        \\[
+        \\  {"type":"function_call","call_id":"r1","name":"shell","arguments":"{}"},
+        \\  {"type":"function_call","call_id":"r2","name":"shell","arguments":"{}"}
+        \\]
+    ;
+    var resp_hist = (try std.json.parseFromSliceLeaky(std.json.Value, a, resp_raw, .{})).array;
+    prepare(a, .responses, &resp_hist);
+    try std.testing.expectEqual(@as(usize, 4), resp_hist.items.len);
+    try std.testing.expectEqualStrings("r1", resp_hist.items[2].object.get("call_id").?.string);
+    try std.testing.expectEqualStrings(tool_outcome_unknown, resp_hist.items[2].object.get("output").?.string);
+    try std.testing.expectEqualStrings("r2", resp_hist.items[3].object.get("call_id").?.string);
+    try std.testing.expectEqualStrings(tool_not_started, resp_hist.items[3].object.get("output").?.string);
 }

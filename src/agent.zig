@@ -351,6 +351,7 @@ pub const Agent = struct {
     pub const contextEstimate = @import("agent_request.zig").contextEstimate;
     pub const contextEstimateFromInputBytes = @import("agent_request.zig").contextEstimateFromInputBytes;
     pub const effectiveContextTokens = @import("agent_request.zig").effectiveContextTokens;
+    pub const approxTokens = @import("agent_request.zig").effectiveContextTokens;
     pub const pairContextMeterWithCurrentLocal = @import("agent_request.zig").pairContextMeterWithCurrentLocal;
     pub const rebaseContextMeter = @import("agent_request.zig").rebaseContextMeter;
     pub const recordUsage = @import("agent_request.zig").recordUsage;
@@ -389,13 +390,12 @@ pub const Agent = struct {
     pub const renderTodos = goal_state.renderTodos; // body in goal_state.zig (600-line cap)
 
     // Context management (compaction/emergency-trim) and the --eval/--until
-    // eval-driven loop (+ optional LLM-as-judge) live in agent_compact.zig
-    // (#123, 600-line goal). Member-aliased so self.compact(...)/etc.
-    // resolve unchanged.
+    // loop (+ optional LLM-as-judge) live in agent_compact.zig (#123).
     pub const runEval = @import("agent_compact.zig").runEval;
     pub const appendEvalLog = @import("agent_compact.zig").appendEvalLog;
     pub const runJudge = @import("agent_compact.zig").runJudge;
     pub const compact = @import("agent_compact.zig").compact;
+    pub const autoCompact = @import("agent_compact.zig").autoCompact;
     pub const recentContextStart = @import("agent_compact.zig").recentContextStart;
     pub const cleanUserTurn = @import("agent_compact.zig").cleanUserTurn;
     pub const emergencyCutIndex = @import("agent_compact.zig").emergencyCutIndex;
