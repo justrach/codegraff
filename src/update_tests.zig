@@ -418,3 +418,119 @@ test "/new and /resume copy never claims to activate an update" {
     try std.testing.expect(std.mem.indexOf(u8, resume_msg, "activate") == null);
     try std.testing.expect(std.mem.indexOf(u8, update_target.no_activate_note, "do not activate") != null);
 }
+
+test "current macOS graff with missing nanocua.app installs the app without replacing graff (#1819)" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    const nanocua_install = @import("nanocua_install.zig");
+    update_service.resetBusyForTest();
+    update_cmd.resetPending();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var home_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home = home_buf[0..try tmp.dir.realPath(io, &home_buf)];
+    try tmp.dir.writeFile(io, .{ .sub_path = "graff", .data = "MANAGED-GRAFF" });
+    const target = try fixturePath(&tmp, io, gpa, "graff");
+    defer gpa.free(target);
+    update_service.writeInstalledVersion(io, target, "0.0.292");
+
+    const macos_asset = "graff-aarch64-macos.tar.gz";
+    const gz = try nanocua_install.fixtureMacosArchive(gpa, true, "NEW-GRAFF", "SIGNED-NANOCUA");
+    defer gpa.free(gz);
+    const sums = try archive.sumsLine(gpa, macos_asset, gz);
+    defer gpa.free(sums);
+
+    var fx: Fixture = .{ .archive = gz, .sums = sums };
+    var o = opts(io, gpa, target, fx.fetch(), null);
+    o.running_version = "0.0.292";
+    o.asset_name = macos_asset;
+    o.home = home;
+    o.expect_nanocua = true;
+
+    const checked = update_service.inspect(o);
+    try std.testing.expectEqual(update_service.Kind.already_installed, checked.kind);
+    try std.testing.expect(checked.nanocua_missing);
+
+    const installed = update_service.install(o, .human);
+    try std.testing.expectEqual(update_service.Kind.installed, installed.kind);
+    try std.testing.expect(installed.nanocua_only);
+    try std.testing.expectEqualStrings(nanocua_install.installed_note, installed.detail);
+
+    const stayed = try Io.Dir.cwd().readFileAlloc(io, target, gpa, .limited(64));
+    defer gpa.free(stayed);
+    try std.testing.expectEqualStrings("MANAGED-GRAFF", stayed);
+
+    const app_exe = try fixturePath(&tmp, io, gpa, "Applications/nanocua.app/Contents/MacOS/nanocua");
+    defer gpa.free(app_exe);
+    const app_bytes = try Io.Dir.cwd().readFileAlloc(io, app_exe, gpa, .limited(64));
+    defer gpa.free(app_bytes);
+    try std.testing.expectEqualStrings("SIGNED-NANOCUA", app_bytes);
+
+    // Once installed, a repeat check/install sees nanocua present and skips downloading the archive.
+    var fx2: Fixture = .{ .archive = gz, .sums = sums };
+    o.fetch = fx2.fetch();
+    const after_check = update_service.install(o, .human);
+    try std.testing.expectEqual(update_service.Kind.already_installed, after_check.kind);
+    try std.testing.expect(!after_check.nanocua_missing);
+    try std.testing.expectEqual(@as(usize, 1), fx2.fetches.load(.monotonic));
+}
+
+test "nanocua.app write errors surface on both normal updates and current-version repair (#1819)" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    const nanocua_install = @import("nanocua_install.zig");
+    update_service.resetBusyForTest();
+    update_cmd.resetPending();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var home_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home = home_buf[0..try tmp.dir.realPath(io, &home_buf)];
+    try tmp.dir.writeFile(io, .{ .sub_path = "graff", .data = "OLD-GRAFF" });
+    // Block ~/Applications with a regular file so placing nanocua.app fails.
+    try tmp.dir.writeFile(io, .{ .sub_path = "Applications", .data = "not-a-dir" });
+    const target = try fixturePath(&tmp, io, gpa, "graff");
+    defer gpa.free(target);
+
+    const macos_asset = "graff-aarch64-macos.tar.gz";
+    const gz = try nanocua_install.fixtureMacosArchive(gpa, true, "NEW-GRAFF", "SIGNED-NANOCUA");
+    defer gpa.free(gz);
+    const sums = try archive.sumsLine(gpa, macos_asset, gz);
+    defer gpa.free(sums);
+    var fx: Fixture = .{ .archive = gz, .sums = sums };
+
+    // 1. Normal update (.available) surfaces .permission instead of swallowing with catch {}.
+    var avail = opts(io, gpa, target, fx.fetch(), null);
+    avail.asset_name = macos_asset;
+    avail.home = home;
+    avail.expect_nanocua = true;
+    const r_avail = update_service.install(avail, .human);
+    try std.testing.expectEqual(update_service.Kind.permission, r_avail.kind);
+    try std.testing.expect(std.mem.indexOf(u8, r_avail.detail, "nanocua.app") != null);
+    const untouched = try Io.Dir.cwd().readFileAlloc(io, target, gpa, .limited(64));
+    defer gpa.free(untouched);
+    try std.testing.expectEqualStrings("OLD-GRAFF", untouched);
+
+    // 2. Current-version repair also surfaces .permission, and /update -> /update install works once unblocked.
+    avail.running_version = "0.0.292";
+    const r_cur = update_service.install(avail, .human);
+    try std.testing.expectEqual(update_service.Kind.permission, r_cur.kind);
+
+    try tmp.dir.deleteFile(io, "Applications");
+    update_cmd.setTestHooks("0.0.292", target, fx.fetch(), macos_asset, null, false);
+    update_cmd.setTestExpectNanocua(true);
+    defer {
+        update_cmd.setTestHooks(null, null, null, null, null, false);
+        update_cmd.setTestExpectNanocua(null);
+    }
+    var approvals: Approvals = .{};
+    var aw: Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    var root = stub(&aw.writer, false, &approvals);
+    root.home = home;
+    try std.testing.expect(try update_cmd.tryHandle(&root, gpa, "/update", &aw.writer));
+    try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "graff computer install") != null);
+    try std.testing.expect(update_cmd.hasPending());
+    aw.clearRetainingCapacity();
+    try std.testing.expect(try update_cmd.tryHandle(&root, gpa, "/update install", &aw.writer));
+    try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), nanocua_install.installed_note) != null);
+}

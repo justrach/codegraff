@@ -78,6 +78,7 @@ pub fn searchInto(arena: Allocator, all: []const mcp.Tool, input: Value) !mcp_sc
 pub fn handleSearch(agent: anytype, input: Value) tools_mod.ExecResult {
     if (agent.sub) return .{ .text = "mcp_search_tools is root-only; a subagent has no MCP registry of its own", .is_error = true };
     const reg = agent.registry orelse return .{ .text = "no MCP servers are connected, so there are no tools to search", .is_error = true };
+    if (@import("mcp_call.zig").unavailableLoad(reg, agent.arena, input)) |text| return .{ .text = text, .is_error = true };
     const catalog = reg.snapshotTools(agent.arena) catch return .{ .text = "mcp_search_tools failed", .is_error = true };
     const r = searchInto(agent.arena, catalog, input) catch
         return .{ .text = "mcp_search_tools failed", .is_error = true };
