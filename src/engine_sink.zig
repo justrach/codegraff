@@ -65,9 +65,9 @@ pub const EngineSink = struct {
     vt: *const VTable,
 
     /// The emission boundary: stamp, then hand off. `io` backs the stdout
-    /// lock, taken only when a durable sink reserves AND json_mode is on —
-    /// a global, so `io` may be passed undefined only where json_mode is
-    /// known false (TUI dispatch; the tests here pin it). A durable sink must
+    /// lock, taken for every durable sink callback when json_mode is on —
+    /// even a presentation pulse can flush the shared writer. Pass undefined
+    /// only where json_mode is known false. A durable sink must
     /// never be handed an event it will drop: the reserved id would burn with
     /// no wire line, opening a seq gap (#330). jsonSink enforces that at
     /// construction — an agent with no writer gets a non-durable vtable — so
@@ -75,12 +75,12 @@ pub const EngineSink = struct {
     pub fn emit(self: EngineSink, io: Io, ev: EngineEvent) void {
         obs.note(ev);
         const reserve = self.vt.durable and engine_events.durable(ev);
-        if (reserve and main_mod.json_mode) {
-            // Reserving outside the lock could put a smaller seq on the wire
-            // AFTER a pool-thread guiEmit line took a larger one.
+        if (self.vt.durable and main_mod.json_mode) {
+            // Serialize sequence reservation AND non-durable writes/flushes
+            // with worker output; both touch the same buffered writer.
             main_mod.g_gui_mu.lockUncancelable(io);
             defer main_mod.g_gui_mu.unlock(io);
-            self.vt.emit(self.ctx, .{ .cursor = engine_events.stamp(true), .event = ev });
+            self.vt.emit(self.ctx, .{ .cursor = engine_events.stamp(reserve), .event = ev });
             return;
         }
         self.vt.emit(self.ctx, .{ .cursor = engine_events.stamp(reserve), .event = ev });
@@ -501,6 +501,38 @@ pub fn firstLineCap(text: []const u8, cap: usize) []const u8 {
     if (std.mem.indexOfScalar(u8, s, '\n')) |i| s = std.mem.trim(u8, s[0..i], " \t\r");
     if (s.len > cap) return s[0..cap];
     return s;
+}
+
+test "JSON stream-tail pulses hold the worker output lock without reserving sequence IDs" {
+    const was_json = main_mod.json_mode;
+    main_mod.json_mode = true;
+    defer main_mod.json_mode = was_json;
+    protocol_seq.resetForTest();
+    defer protocol_seq.resetForTest();
+    const Probe = struct {
+        locked: bool = true,
+        calls: usize = 0,
+        fn emit(ctx: *anyopaque, _: Stamped) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.calls += 1;
+            if (main_mod.g_gui_mu.tryLock()) {
+                self.locked = false;
+                main_mod.g_gui_mu.unlock(std.testing.io);
+            }
+        }
+    };
+    var probe: Probe = .{};
+    const vt: VTable = .{ .emit = Probe.emit, .durable = true };
+    const sink: EngineSink = .{ .ctx = &probe, .vt = &vt };
+    sink.emit(std.testing.io, .stream_begin);
+    sink.emit(std.testing.io, .{ .stream_complete = .{ .streamed_text = true } });
+    sink.emit(std.testing.io, .{ .stream_aborted = .interrupted });
+    try std.testing.expect(probe.locked);
+    try std.testing.expectEqual(@as(usize, 3), probe.calls);
+    try std.testing.expectEqual(@as(u64, 0), protocol_seq.current());
+    sink.emit(std.testing.io, .{ .text_delta = .{ .text = "answer" } });
+    try std.testing.expect(probe.locked);
+    try std.testing.expectEqual(@as(u64, 1), protocol_seq.current());
 }
 
 test {
