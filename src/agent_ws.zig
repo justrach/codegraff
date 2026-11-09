@@ -338,7 +338,7 @@ pub fn connectWatched(gpa: std.mem.Allocator, io: Io, url: []const u8, headers: 
 pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     self.partial_text.clearRetainingCapacity(); // fresh capture even if connect/send is interrupted
     const gpa = self.gpa;
-    const arena = self.arena;
+    const arena = self.scratchAlloc();
     const provider = self.provider;
 
     const frame_full = try std.fmt.allocPrint(gpa, "{{\"type\":\"response.create\",{s}", .{body[1..]});

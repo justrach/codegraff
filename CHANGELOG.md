@@ -10,6 +10,12 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.55
+
+- `mcp_cache.lookupWith`, `mcp_cache.store`, and `mcp_cache.forget` parse `mcp-list-cache.json` inside a scoped temporary arena and clone only the single matched server's `protocol_version` and `tools` entry into the caller's arena instead of retaining the full multi-server cache parse tree per server.
+- `agent_ws.postResponsesWs` uses the per-request scratch allocator instead of the process-lifetime session arena, and `session_workspaces.remember` runs in a scoped temporary arena during checkpoint and live-turn autosaves.
+- `providers.runTurnWithFallback` adds automatic same-plan subscription credential failover (`sameChatgptPlanFallback`) when the primary subscription token fails authentication while a sibling subscription credential on the same plan is configured.
+
 ## v0.302.74.54
 
 - `compact_prune.pruneOldToolResults` runs a deterministic Phase-1 pruning pass at the `compactAt` boundary before `autoCompact` invokes an LLM summary, replacing oversized older inline tool outputs (`>= 4 KiB` outside the recent tail) with `tool_handle.shapeHint` + head/tail previews and skipping the LLM summary call when the pruned transcript drops below threshold.

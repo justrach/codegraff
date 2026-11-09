@@ -90,7 +90,7 @@ pub fn wantsLazy(cfg: ObjectMap) bool {
     return true;
 }
 
-fn cloneValue(a: Allocator, v: Value) Allocator.Error!Value {
+pub fn cloneValue(a: Allocator, v: Value) Allocator.Error!Value {
     return switch (v) {
         .string => |s| .{ .string = try a.dupe(u8, s) },
         .number_string => |s| .{ .number_string = try a.dupe(u8, s) },

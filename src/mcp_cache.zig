@@ -73,21 +73,24 @@ fn envHash(arena: Allocator, env: std.json.ObjectMap) u64 {
 
 /// Drop one server's cached catalog so its next start lists tools afresh
 /// (`graff mcp reconnect`). Best-effort, under the same lock as `store`.
-pub fn forget(io: Io, arena: Allocator, home: []const u8, key: []const u8) void {
+pub fn forget(io: Io, _: Allocator, home: []const u8, key: []const u8) void {
     if (key.len == 0 or home.len == 0) return;
-    const path = cachePath(arena, home);
+    var tmp = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer tmp.deinit();
+    const a = tmp.allocator();
+    const path = cachePath(a, home);
     if (path.len == 0) return;
-    const lock_path = std.fmt.allocPrint(arena, "{s}.lock", .{path}) catch return;
+    const lock_path = std.fmt.allocPrint(a, "{s}.lock", .{path}) catch return;
     const lock = Io.Dir.cwd().createFile(io, lock_path, .{ .truncate = false, .lock = .exclusive }) catch return;
     defer lock.close(io);
-    const data = readFile(io, arena, home) orelse return;
-    var root_map = parseRoot(arena, data) orelse return;
+    const data = readFile(io, a, home) orelse return;
+    var root_map = parseRoot(a, data) orelse return;
     const servers = root_map.get("servers") orelse return;
     if (servers != .object) return;
     var servers_map = servers.object;
     if (!servers_map.swapRemove(key)) return;
-    root_map.put(arena, "servers", .{ .object = servers_map }) catch return;
-    var aw: Io.Writer.Allocating = .init(arena);
+    root_map.put(a, "servers", .{ .object = servers_map }) catch return;
+    var aw: Io.Writer.Allocating = .init(a);
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     s.write(Value{ .object = root_map }) catch return;
     credential_store.replaceFile(io, Io.Dir.cwd(), path, aw.writer.buffered(), .default_file) catch {};
@@ -144,8 +147,12 @@ pub fn lookupAnyAge(io: Io, arena: Allocator, home: []const u8, key: []const u8)
 fn lookupWith(io: Io, arena: Allocator, home: []const u8, key: []const u8, now_ms: i64, any_age: bool) Lookup {
     var out: Lookup = .{};
     if (key.len == 0) return out;
-    const data = readFile(io, arena, home) orelse return out;
-    const root = parseRoot(arena, data) orelse return out;
+    var tmp = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer tmp.deinit();
+    const a = tmp.allocator();
+    const data = readFile(io, a, home) orelse return out;
+    if (std.mem.indexOfAny(u8, key, "\\\"") == null and std.mem.indexOf(u8, data, key) == null) return out;
+    const root = parseRoot(a, data) orelse return out;
     const servers = root.get("servers") orelse return out;
     if (servers != .object) return out;
     const entry = servers.object.get(key) orelse return out;
@@ -165,9 +172,11 @@ fn lookupWith(io: Io, arena: Allocator, home: []const u8, key: []const u8, now_m
         if (@as(u64, @intCast(now_ms - fetched)) > ttl) return out;
     }
     if (out.era == .unknown) return out;
-    const ver = if (entry.object.get("protocol_version")) |v| (if (v == .string) v.string else "?") else "?";
-    const tools = entry.object.get("tools") orelse return out;
-    if (tools != .array) return out;
+    const ver_raw = if (entry.object.get("protocol_version")) |v| (if (v == .string) v.string else "?") else "?";
+    const tools_raw = entry.object.get("tools") orelse return out;
+    if (tools_raw != .array) return out;
+    const ver = arena.dupe(u8, ver_raw) catch return out;
+    const tools = @import("mcp_lazy.zig").cloneValue(arena, tools_raw) catch return out;
     out.hit = .{ .era = out.era, .protocol_version = ver, .tools = tools };
     return out;
 }
@@ -202,7 +211,7 @@ pub fn ttlFromResult(result: Value) u64 {
 
 pub fn store(
     io: Io,
-    arena: Allocator,
+    _: Allocator,
     home: []const u8,
     key: []const u8,
     era: mcp_rpc.Era,
@@ -214,19 +223,22 @@ pub fn store(
     const tools = if (result == .object) result.object.get("tools") else null;
     if (tools == null or tools.? != .array) return;
     const ttl = ttlFromResult(result);
-    const path = cachePath(arena, home);
+    var tmp = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer tmp.deinit();
+    const a = tmp.allocator();
+    const path = cachePath(a, home);
     if (path.len == 0) return;
     if (std.fs.path.dirname(path)) |dir| Io.Dir.cwd().createDirPath(io, dir) catch {};
     // Servers connect concurrently (and sessions run side by side): without a
     // lock two read-modify-writes race and the later one drops the other's
     // entry, so that server looks uncached and starts eagerly next time.
-    const lock_path = std.fmt.allocPrint(arena, "{s}.lock", .{path}) catch return;
+    const lock_path = std.fmt.allocPrint(a, "{s}.lock", .{path}) catch return;
     const lock = Io.Dir.cwd().createFile(io, lock_path, .{ .truncate = false, .lock = .exclusive }) catch return;
     defer lock.close(io);
 
     var root_map: std.json.ObjectMap = .empty;
-    if (readFile(io, arena, home)) |data| {
-        if (parseRoot(arena, data)) |existing| root_map = existing;
+    if (readFile(io, a, home)) |data| {
+        if (parseRoot(a, data)) |existing| root_map = existing;
     }
     var servers_map: std.json.ObjectMap = .empty;
     if (root_map.get("servers")) |s| if (s == .object) {
@@ -234,15 +246,15 @@ pub fn store(
     };
 
     var entry: std.json.ObjectMap = .empty;
-    entry.put(arena, "era", .{ .string = eraName(era) }) catch return;
-    entry.put(arena, "protocol_version", .{ .string = protocol_version }) catch return;
-    entry.put(arena, "fetched_unix_ms", .{ .integer = now_ms }) catch return;
-    entry.put(arena, "ttl_ms", .{ .integer = @intCast(ttl) }) catch return;
-    entry.put(arena, "tools", tools.?) catch return;
-    servers_map.put(arena, key, .{ .object = entry }) catch return;
-    root_map.put(arena, "servers", .{ .object = servers_map }) catch return;
+    entry.put(a, "era", .{ .string = eraName(era) }) catch return;
+    entry.put(a, "protocol_version", .{ .string = protocol_version }) catch return;
+    entry.put(a, "fetched_unix_ms", .{ .integer = now_ms }) catch return;
+    entry.put(a, "ttl_ms", .{ .integer = @intCast(ttl) }) catch return;
+    entry.put(a, "tools", tools.?) catch return;
+    servers_map.put(a, key, .{ .object = entry }) catch return;
+    root_map.put(a, "servers", .{ .object = servers_map }) catch return;
 
-    var aw: Io.Writer.Allocating = .init(arena);
+    var aw: Io.Writer.Allocating = .init(a);
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     s.write(Value{ .object = root_map }) catch return;
     credential_store.replaceFile(io, Io.Dir.cwd(), path, aw.writer.buffered(), .default_file) catch {};

@@ -5,6 +5,11 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.55
+    \\  • scoped temporary arena parsing in mcp_cache.lookupWith/store/forget and single-server tool entry cloning
+    \\  • per-request scratch allocation in agent_ws.postResponsesWs and scoped arena cleanup in session_workspaces.remember
+    \\  • automatic same-plan subscription credential failover in providers.runTurnWithFallback
+    \\
     \\0.302.74.54
     \\  • Phase-1 deterministic pre-compaction tool-result pruning (compact_prune), crash-tail TOOL_OUTCOME_UNKNOWN vs TOOL_NOT_STARTED repair, and key-sorted repeat hashing
     \\  • content-addressed dirty workspace snapshots (workspace_tree_snap) for edit_contract and hook/fsmonitor/LFS-safe subagent worktrees
