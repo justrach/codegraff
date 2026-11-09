@@ -102,9 +102,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     if (self.registry) |reg| if (!self.sub) @import("mcp_connect_notice.zig").drain(reg, @import("engine_sink.zig").forAgent(self), self.io); // ADR 0230
     const preloaded = @import("mcp_preload.zig").namedServers(self); // ADR 0231: a named server's schemas ride this request
     const withdrawn = @import("agent_catalog.zig").refreshMcp(self);
-    if (joined or preloaded or withdrawn or @import("additional_tools.zig").staleCatalog(self)) {
-        self.invalidateRootTools();
-        try self.ensureRootTools(self.provider.kind);
+    if (try @import("agent_catalog.zig").syncLoadedTools(self, joined or preloaded or withdrawn)) {
         // The caller's snapshot is the catalog that just went stale. Send the
         // rebuilt one, or servers that joined miss this request and change
         // `tools` on the next, throwing away the prompt cache (ADR 0221).

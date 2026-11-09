@@ -20,10 +20,12 @@ const Agent = @import("agent.zig").Agent;
 /// is rebuilt through the same path, so it also picks up later loads.
 pub fn inherit(agent: *Agent) void {
     const registry = agent.registry orelse return;
+    agent.worker_tools = "";
     const base = agent.toolsJson();
     const tools = registry.snapshotTools(agent.arena) catch return;
     const built = withLoaded(agent.arena, agent.provider.kind, base, tools, agent.read_only);
     if (built.ptr != base.ptr) agent.worker_tools = built;
+    agent.tools_epoch = @import("native_fold.zig").catalogEpoch();
 }
 
 /// `base` (a JSON array of tool entries) plus an entry for each loaded MCP

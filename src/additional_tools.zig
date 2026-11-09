@@ -135,11 +135,12 @@ fn announced(arena: Allocator, messages: []const Value, name: []const u8) bool {
 }
 
 /// A direct call to a deferred tool loads it without a catalog rebuild
-/// (native_fold.gateExec, mcp_schema_gate.autoLoad). The announcement renders
-/// the tail itself, but retypeArgs reads the catalog, so the root rebuilds it
-/// when a loaded tool is missing. `tools` on the wire stays the same.
+/// (native_fold.gateExec, mcp_schema_gate.autoLoad). On announcement routes
+/// retypeArgs reads the catalog; on every other route the wire `tools` tail
+/// itself carries the loaded entry (#492), so rebuild whenever any loaded
+/// tool is missing from the root's cached catalog.
 pub fn staleCatalog(self: *Agent) bool {
-    if (self.sub or !active(self.provider)) return false;
+    if (self.sub) return false;
     const arena = self.scratchAlloc();
     const catalog = self.toolsJson();
     for (tailEntries(self, arena) catch return false) |t| {

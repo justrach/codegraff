@@ -189,6 +189,7 @@ pub const Agent = struct {
     tools_responses: []const u8 = schema.tools_responses_sub,
     tools_interactions: []const u8 = @import("schema_interactions.zig").tools_interactions_sub,
     worker_tools: []const u8 = "", // ADR 0227: a spawned child's catalog plus the MCP tools its root loaded (worker_mcp.inherit); empty = the static child catalog
+    tools_epoch: u64 = 0, // native_fold.catalogEpoch() when tools_* / worker_tools was last built (#492)
     todos: std.ArrayList(TodoItem) = .empty,
     pending_nudged_fp: ?u64 = null, // #1545: fingerprint of the open set the reconciliation guard last nudged; a repeat plain final on an unchanged checklist stops instead of re-reminding
     eval_cmd: ?[]const u8 = null, // --eval: shell command that scores the current output (eval-driven loop)

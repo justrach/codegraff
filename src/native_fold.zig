@@ -217,6 +217,7 @@ fn unmark(name: []const u8) void {
                 g_loaded_seq[i] = g_loaded_seq[g_loaded_len - 1];
             }
             g_loaded_len -= 1;
+            bumpCatalogEpoch();
             return;
         }
     }
@@ -237,6 +238,15 @@ pub fn anyFolded() bool {
 var g_loaded: [folded.len][]const u8 = undefined;
 var g_loaded_len: usize = 0;
 var g_loaded_seq: [folded.len]usize = undefined;
+var g_catalog_epoch: std.atomic.Value(u64) = .init(1);
+
+pub fn catalogEpoch() u64 {
+    return g_catalog_epoch.load(.acquire);
+}
+
+pub fn bumpCatalogEpoch() void {
+    _ = g_catalog_epoch.fetchAdd(1, .acq_rel);
+}
 
 pub fn isLoaded(name: []const u8) bool {
     for (g_loaded[0..g_loaded_len]) |n| {
@@ -256,6 +266,7 @@ pub fn markLoaded(name: []const u8) void {
             g_loaded[g_loaded_len] = tool;
             g_loaded_seq[g_loaded_len] = mcp_schema_gate.nextSeq();
             g_loaded_len += 1;
+            bumpCatalogEpoch();
             return;
         }
     }
@@ -271,6 +282,7 @@ pub fn blocked(name: []const u8) bool {
 pub fn clearLoadedSession() void {
     g_loaded_len = 0;
     g_showcased = g_cli_forced;
+    bumpCatalogEpoch();
     if (g_cli_forced) markLoaded("rlm");
 }
 
@@ -384,85 +396,15 @@ pub fn loadResultText(arena: Allocator, name: []const u8, real_schema: []const u
     );
 }
 
-/// The session's effective spec for one native tool, or null — the native
-/// half of load_tool_schemas needs the REAL schema to hand back on load.
-/// Lives here (not schema.zig, at the 600 cap); the mutual import with
-/// schema.zig is lazy and legal.
-pub fn findRootSpec(arena: Allocator, name: []const u8) !?@import("schema.zig").ToolSpec {
-    for (try @import("schema.zig").effectiveRootSpecs(arena)) |spec| {
-        if (std.mem.eql(u8, spec.name, name)) return spec;
-    }
-    return null;
-}
-
-/// Loading a folded native changes the provider-visible tool surface. Root
-/// catalogs are cached on Agent, so mutating g_loaded alone leaves the model
-/// with the stale pre-load array (#492). Mirror mcp_schema_gate.handleLoad:
-/// invalidate every provider encoding and eagerly rebuild the active one.
-fn refreshAgentCatalog(agent: anytype) void {
-    agent.invalidateRootTools();
-    agent.ensureRootTools(agent.provider.kind) catch {};
-}
-
-/// The native half of load_tool_schemas, called from agent_tools before the
-/// MCP handler: an input naming folded native tools loads them (real schema
-/// in the result, enabled for the session). Returns null when the input
-/// names NO folded native tool, so MCP-only requests reach the MCP handler
-/// unchanged; a named-but-unknown tool falls to the MCP handler's listing.
-pub fn handleLoadNative(agent: anytype, input: @import("std").json.Value) !?@import("tools.zig").ExecResult {
-    if (!enabled) return null;
-    if (input != .object) return null;
-    // query arm: token-match over the folded set's names + descriptions, so
-    // keyword discovery covers both deferred halves, not just MCP.
-    if (input.object.get("query")) |q| {
-        if (q != .string) return null;
-        var aw: Io.Writer.Allocating = .init(agent.arena);
-        var matched: usize = 0;
-        for (folded) |name| {
-            if (!isFolded(name) or isLoaded(name)) continue;
-            const spec = (try findRootSpec(agent.arena, name)) orelse continue;
-            var tok = std.mem.tokenizeAny(u8, q.string, " \t,;:/_-");
-            var hits: usize = 0;
-            while (tok.next()) |w| {
-                if (w.len < 2) continue;
-                if (mcp_schema_gate.containsIgnoreCase(name, w) or mcp_schema_gate.containsIgnoreCase(spec.desc, w)) hits += 1;
-            }
-            if (hits == 0) continue;
-            markLoaded(name);
-            matched += 1;
-            aw.writer.print("{s}: {s}\n", .{ name, spec.schema }) catch return null;
-        }
-        if (matched == 0) return null; // no native match: the MCP half answers the query
-        refreshAgentCatalog(agent);
-        const head = try std.fmt.allocPrint(agent.arena, "{d} native tool schema(s) below are now loaded and callable for the rest of this session. Call them with arguments matching input_schema.\n", .{matched});
-        return .{ .text = try std.fmt.allocPrint(agent.arena, "{s}{s}", .{ head, aw.writer.buffered() }), .is_error = false };
-    }
-    const list = input.object.get("tools") orelse return null;
-    if (list != .array) return null;
-    var aw: Io.Writer.Allocating = .init(agent.arena);
-    var fresh: usize = 0;
-    var total: usize = 0;
-    for (list.array.items) |item| {
-        if (item != .string or !isFolded(item.string)) continue;
-        total += 1;
-        if (isLoaded(item.string)) {
-            aw.writer.print("{s}: already loaded.\n", .{item.string}) catch return null;
-            continue;
-        }
-        const spec = (try findRootSpec(agent.arena, item.string)) orelse {
-            aw.writer.print("{s}: folded but not in this session's catalog (disabled or gated).\n", .{item.string}) catch return null;
-            continue;
-        };
-        markLoaded(item.string);
-        fresh += 1;
-        aw.writer.print("{s}: {s}\n", .{ item.string, spec.schema }) catch return null;
-    }
-    if (total == 0) return null;
-    if (fresh > 0) refreshAgentCatalog(agent);
-    var head: Io.Writer.Allocating = .init(agent.arena);
-    head.writer.print("{d} native tool schema(s) below are now loaded and callable for the rest of this session ({d} newly enabled). Call them with arguments matching input_schema.\n", .{ total, fresh }) catch return null;
-    return .{ .text = try agent.arena.dupe(u8, try std.fmt.allocPrint(agent.arena, "{s}{s}", .{ head.writer.buffered(), aw.writer.buffered() })), .is_error = false };
-}
+const native_fold_load = @import("native_fold_load.zig");
+pub const findRootSpec = native_fold_load.findRootSpec;
+pub const canLoadFoldedSpec = native_fold_load.canLoadFoldedSpec;
+pub const advertisedFolded = native_fold_load.advertisedFolded;
+pub const canonicalNativeName = native_fold_load.canonicalNativeName;
+pub const isKnownNative = native_fold_load.isKnownNative;
+pub const listDeferredNative = native_fold_load.listDeferredNative;
+pub const fallbackNativeQuery = native_fold_load.fallbackNativeQuery;
+pub const handleLoadNative = native_fold_load.handleLoadNative;
 
 test "fold: the listed tools are blocked until loaded, everything else flows" {
     const saved = enabled;
@@ -522,11 +464,11 @@ test "explicit native loads rebuild the active provider catalog (#492)" {
         invalidations: usize = 0,
         rebuilds: usize = 0,
 
-        fn invalidateRootTools(self: *@This()) void {
+        pub fn invalidateRootTools(self: *@This()) void {
             self.invalidations += 1;
         }
 
-        fn ensureRootTools(self: *@This(), kind: provider_mod.Provider.Kind) !void {
+        pub fn ensureRootTools(self: *@This(), kind: provider_mod.Provider.Kind) !void {
             try std.testing.expectEqual(provider_mod.Provider.Kind.anthropic, kind);
             self.rebuilds += 1;
         }

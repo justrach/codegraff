@@ -65,7 +65,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
                 next = xai_hosted.splice(self.scratchAlloc(), next, login) catch next;
             }
             if (codex_tool_search.active(self.provider.id, self.provider.kind, self.provider.model)) {
-                next = codex_tool_search.splice(self.scratchAlloc(), next) catch next;
+                if (!self.sub) next = codex_tool_search.splice(self.scratchAlloc(), next) catch next;
                 next = codex_tool_search.spliceWebSearch(self.scratchAlloc(), next) catch next;
             }
             break :blk next;
