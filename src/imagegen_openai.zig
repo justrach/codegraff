@@ -20,6 +20,7 @@ pub const deadline_ms: u64 = 240 * 1000;
 pub const Args = struct {
     prompt: []const u8,
     out: []const u8,
+    images: []const []const u8 = &.{},
     model: []const u8 = default_model,
     size: ?[]const u8 = null,
     quality: ?[]const u8 = null,
@@ -27,7 +28,7 @@ pub const Args = struct {
     output_format: ?[]const u8 = null,
 };
 
-/// `python3 <script> generate --prompt <p> --out <path> --force --model <m> …`
+/// `python3 <script> generate|edit [--image=<p> …] --prompt=<p> --out=<path> --force --model <m> …`
 ///
 /// `--force` because the caller may have named a path that exists and the CLI
 /// would otherwise refuse; whether the rewrite actually happened is not the
@@ -35,16 +36,21 @@ pub const Args = struct {
 ///
 /// `--dry-run` is deliberately never assembled: it prints a plan and writes no
 /// file, so it could only ever produce an unverifiable "success".
-/// `--prompt=<v>` / `--out=<v>` rather than two argv slots: those two values are
-/// free-form (a prompt is model-supplied, a path is caller-supplied), and a
-/// leading '-' in the separate form is eaten by argparse as a flag. The `=`
-/// form binds the value to its option no matter what it starts with.
+/// `--prompt=<v>` / `--out=<v>` / `--image=<v>` rather than two argv slots:
+/// those values are free-form (a prompt is model-supplied, paths are caller-
+/// supplied), and a leading '-' in the separate form is eaten by argparse as a
+/// flag. The `=` form binds the value to its option no matter what it starts with.
 pub fn buildArgv(arena: Allocator, script: []const u8, a: Args) ![]const []const u8 {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(arena, &.{
         "python3",
         script,
-        "generate",
+        if (a.images.len > 0) "edit" else "generate",
+    });
+    for (a.images) |img| {
+        try argv.append(arena, try std.fmt.allocPrint(arena, "--image={s}", .{img}));
+    }
+    try argv.appendSlice(arena, &.{
         try std.fmt.allocPrint(arena, "--prompt={s}", .{a.prompt}),
         try std.fmt.allocPrint(arena, "--out={s}", .{a.out}),
         "--force",
@@ -122,4 +128,22 @@ test "#352: optional values cannot impersonate a flag or smuggle an argument" {
         try testing.expect(!okFlagValue(bad));
     var long: [65]u8 = @splat('a');
     try testing.expect(!okFlagValue(&long));
+}
+
+test "#1775: reference images switch openai_api argv from generate to edit with bound --image flags" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const imgs = [_][]const u8{ "/work/assets/ref.png", "/work/-dash.webp" };
+    const argv = try buildArgv(arena, "/s/image_gen.py", .{
+        .prompt = "restyle",
+        .out = "/work/out.png",
+        .images = &imgs,
+    });
+    try testing.expectEqualStrings("edit", argv[2]);
+    try testing.expectEqualStrings("--image=/work/assets/ref.png", argv[3]);
+    try testing.expectEqualStrings("--image=/work/-dash.webp", argv[4]);
+    try testing.expectEqualStrings("--prompt=restyle", argv[5]);
+    try testing.expectEqualStrings("--out=/work/out.png", argv[6]);
 }

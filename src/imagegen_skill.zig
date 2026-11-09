@@ -139,8 +139,9 @@ pub const addendum =
     \\>     `scripts/image_gen.py`. It needs `OPENAI_API_KEY`, and it is the only
     \\>     engine that applies `model`, `quality`, `background` and
     \\>     `output_format`. Setting any of those selects it automatically.
-    \\>   `size` works on either engine — on the codex engine graff resizes the
-    \\>   generated file itself afterwards.
+    \\>   `size` and `images` (up to 5 workspace-relative reference/edit-source
+    \\>   images) work on either engine — graff resolves and stages workspace
+    \\>   references before invoking the generator, and resizes codex outputs itself.
     \\> - **graff verifies every result; the generator's word is never taken.** A
     \\>   success is only returned after graff has confirmed the file exists, is
     \\>   newer than the call, changed if it already existed, clears a size floor,
