@@ -78,7 +78,7 @@ fn pairs(arena: Allocator, value: ?Value) !?std.json.ObjectMap {
 /// so the first request's catalog already has it; never long enough to hold
 /// the session for a real handshake, which keeps connecting in the background
 /// and joins on a later model request.
-pub const attach_budget_ms: u32 = 250;
+pub const attach_budget_ms: u32 = if (@import("builtin").os.tag == .windows) 1500 else 250;
 
 /// The live ACP session's hook (engine.Dispatch.mcp_servers): start what the
 /// client named, merge whatever connects within `attach_budget_ms`, then
