@@ -259,6 +259,16 @@ theorem note_shares_root_key (forking : Bool) :
     sharesRootKey "note" forking = forking := by
   cases forking <;> native_decide
 
+/-- `mcp_preload.namedServers` must never run on a synthetic compaction request:
+    `persists_note` names `peer_message` in prose, which would otherwise preload
+    `peer_message` into `tools` on the summary call and invalidate the forked prefix. -/
+def preloadEligible (sub compactionRequest : Bool) (callsThisTurn : Nat) : Bool :=
+  !sub && !compactionRequest && decide (callsThisTurn ≤ 1)
+
+theorem compaction_never_preloads_tools (sub : Bool) (calls : Nat) :
+    preloadEligible sub true calls = false := by
+  simp [preloadEligible]
+
 /-!
   Section 3: Dirty-worktree-safe edit contract (`src/edit_contract.zig`).
   A snapshot combines `hasPorcelain`, the status line hash, and the content digest

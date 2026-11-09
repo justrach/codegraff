@@ -131,6 +131,9 @@ test "spec/prompt_stable: cache_fork 60-cell cube matches Lean warmFork theorem"
     try std.testing.expectEqual(@as(usize, 60), total);
     try std.testing.expectEqual(@as(usize, 4), hits);
     try std.testing.expect(!http_headers.sharesParentCache("note"));
+    // And Kimi K3.1 Pro on both codegraff and kimi native chat wire supports fork:
+    try std.testing.expect(cache_fork.supportsFork(.openai, "codegraff", "kimi-k3.1-pro"));
+    try std.testing.expect(cache_fork.supportsFork(.openai, "kimi", "k3.1-pro"));
 }
 
 test "spec/prompt_stable: job_ring capStep and readStep match Lean bounded-ring theorems" {

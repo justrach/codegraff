@@ -255,4 +255,8 @@ def check_properties() -> int:
                 raise ValueError(f"fork-safety violated: {w} {ttl} {fit} {tl}")
     if fork_total != 60 or fork_hits != 4:
         raise ValueError(f"fork-cube: total={fork_total} hits={fork_hits}")
+    for sub in (False, True):
+        for calls in (0, 1, 2):
+            if (not sub) and (not True) and (calls <= 1):
+                raise ValueError("compaction_never_preloads_tools violated")
     return n + fork_total
