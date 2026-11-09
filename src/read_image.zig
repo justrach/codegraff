@@ -31,13 +31,29 @@ pub fn pngDims(bytes: []const u8) ?[2]u32 {
     return .{ std.mem.readInt(u32, bytes[16..20], .big), std.mem.readInt(u32, bytes[20..24], .big) };
 }
 
+const HeadRead = union(enum) {
+    bytes: []const u8,
+    not_found,
+    unreadable,
+};
+
+fn openHead(io: Io, path: []const u8, buf: *[24]u8) HeadRead {
+    const file = Io.Dir.cwd().openFile(io, path, .{}) catch |err| return switch (err) {
+        error.FileNotFound => .not_found,
+        else => .unreadable,
+    };
+    defer file.close(io);
+    const got = file.readPositionalAll(io, buf, 0) catch return .unreadable;
+    return .{ .bytes = buf[0..got] };
+}
+
 /// The first bytes of `path`: enough for a PNG's dimensions and any
 /// `image_sniff` signature. Null when the file cannot be read.
 fn fileHead(io: Io, path: []const u8, buf: *[24]u8) ?[]const u8 {
-    const file = Io.Dir.cwd().openFile(io, path, .{}) catch return null;
-    defer file.close(io);
-    const got = file.readPositionalAll(io, buf, 0) catch return null;
-    return buf[0..got];
+    return switch (openHead(io, path, buf)) {
+        .bytes => |b| b,
+        else => null,
+    };
 }
 
 fn fileDims(io: Io, path: []const u8) ?[2]u32 {
@@ -54,20 +70,38 @@ fn stageWith(gpa: Allocator, io: Io, ctx: ToolCtx, resolved: []const u8, path: [
     if (size == 0) return .{ .text = try gpa.dupe(u8, "Image could not be attached: the file is empty."), .is_error = true };
     // #1762: the type comes from the bytes. The extension is only a label for
     // a model that will not see the pixels anyway.
+    var norm_arena: std.heap.ArenaAllocator = .init(gpa);
+    defer norm_arena.deinit();
+    var actual_resolved = resolved;
+    var actual_path = path;
     var head_buf: [24]u8 = undefined;
-    const sniffed = sniff.sniff(fileHead(io, resolved, &head_buf) orelse return null);
-    if (!vision.visionCapable(ctx.provider)) return .{
-        .text = try std.fmt.allocPrint(gpa, "[image: {s}, {d} bytes — the active model does not accept images, so it was not attached]", .{ sniffed orelse vision.imageMediaType(path), size }),
+    const head_bytes = switch (openHead(io, actual_resolved, &head_buf)) {
+        .bytes => |b| b,
+        .unreadable => return null,
+        .not_found => blk: {
+            const raw = if (@import("harness_policy.zig").confinedPath(resolved)) resolved else path;
+            const hit = @import("read_path_norm.zig").resolveFallback(io, norm_arena.allocator(), ctx.agent_cwd, raw) orelse return null;
+            actual_resolved = hit.resolved;
+            actual_path = hit.display_path;
+            break :blk switch (openHead(io, actual_resolved, &head_buf)) {
+                .bytes => |b| b,
+                else => return null,
+            };
+        },
     };
-    const media_type = sniffed orelse return notRaster(gpa, path);
+    const sniffed = sniff.sniff(head_bytes);
+    if (!vision.visionCapable(ctx.provider)) return .{
+        .text = try std.fmt.allocPrint(gpa, "[image: {s}, {d} bytes — the active model does not accept images, so it was not attached]", .{ sniffed orelse vision.imageMediaType(actual_path), size }),
+    };
+    const media_type = sniffed orelse return notRaster(gpa, actual_path);
     const limit = clip.max_staged_image_bytes;
-    const fit = switch (clip.planStage(io, gpa, resolved, limit, resize)) {
+    const fit = switch (clip.planStage(io, gpa, actual_resolved, limit, resize)) {
         .not_found => return null,
         .too_large => |bytes| {
             var got: [16]u8 = undefined;
             var cap: [16]u8 = undefined;
             const why = if (builtin.os.tag == .macos) "sips could not shrink it enough" else "downscaling is not available on this platform";
-            return .{ .text = try std.fmt.allocPrint(gpa, "Image could not be attached: {s} is {s}, over the {s} per-image limit providers accept, and {s}. Read a smaller crop or a downscaled copy.", .{ path, clip.fmtMb(&got, bytes), clip.fmtMb(&cap, limit), why }), .is_error = true };
+            return .{ .text = try std.fmt.allocPrint(gpa, "Image could not be attached: {s} is {s}, over the {s} per-image limit providers accept, and {s}. Read a smaller crop or a downscaled copy.", .{ actual_path, clip.fmtMb(&got, bytes), clip.fmtMb(&cap, limit), why }), .is_error = true };
         },
         .fits => |f| f,
     };
@@ -84,7 +118,7 @@ fn stageWith(gpa: Allocator, io: Io, ctx: ToolCtx, resolved: []const u8, path: [
     defer if (turn == .turned) gpa.free(data);
     // The type of the bytes actually encoded: a downscale step re-encodes
     // (sipsResize forces PNG), so it is sniffed again rather than assumed.
-    const sent_type = sniff.sniff(data) orelse return notRaster(gpa, path);
+    const sent_type = sniff.sniff(data) orelse return notRaster(gpa, actual_path);
     const enc = std.base64.standard.Encoder;
     const b64 = try gpa.alloc(u8, enc.calcSize(data.len));
     defer gpa.free(b64);
@@ -98,7 +132,7 @@ fn stageWith(gpa: Allocator, io: Io, ctx: ToolCtx, resolved: []const u8, path: [
     reg.pending_image = .{
         .media_type = try arena.dupe(u8, sent_type),
         .b64 = try arena.dupe(u8, b64),
-        .label = try arena.dupe(u8, path),
+        .label = try arena.dupe(u8, actual_path),
     };
     switch (turn) {
         .as_is => {},
@@ -118,7 +152,7 @@ fn stageWith(gpa: Allocator, io: Io, ctx: ToolCtx, resolved: []const u8, path: [
     errdefer aw.deinit();
     const w = &aw.writer;
     try w.print("[image: {s}, {d} bytes — over the per-image limit, so it was downscaled", .{ media_type, size });
-    if (fileDims(io, resolved)) |d| try w.print(" from {d}x{d}", .{ d[0], d[1] });
+    if (fileDims(io, actual_resolved)) |d| try w.print(" from {d}x{d}", .{ d[0], d[1] });
     if (pngDims(data)) |d| try w.print(" to {d}x{d}", .{ d[0], d[1] });
     try w.print(" ({s}, {d} bytes) and attached to the next model request]", .{ sent_type, data.len });
     return .{ .text = try aw.toOwnedSlice() };
@@ -151,6 +185,7 @@ test "native image read stages pixels and tool checkpoint sends them without a u
     };
     var ctx: ToolCtx = undefined;
     ctx.registry = &reg;
+    ctx.agent_cwd = null;
     ctx.provider = root.provider;
     const out = (try stage(a, io, ctx, file_path, "image.PNG", bytes.len)).?;
     defer a.free(out.text);
@@ -210,6 +245,7 @@ test "#1737: after workspace use, an image in the new tree attaches; one outside
     defer reg.deinit();
     var ctx: ToolCtx = undefined;
     ctx.registry = &reg;
+    ctx.agent_cwd = null;
     ctx.provider = .{ .id = "test", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 100000 };
     const out = (try stage(a, io, ctx, resolved, "shot.png", tiny_png.len)).?;
     defer a.free(out.text);
@@ -257,6 +293,7 @@ test "#1272: an oversize image is downscaled or refused, never queued as-is" {
     defer a.free(file_path);
     var ctx: ToolCtx = undefined;
     ctx.registry = &reg;
+    ctx.agent_cwd = null;
     ctx.provider = .{ .id = "test", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 100000 };
 
     // No way to downscale: refused with the reason, and nothing is queued.
@@ -285,6 +322,7 @@ test "#1762: read_image types a WebP named .png by its bytes, and refuses non-ra
     defer tmp.cleanup();
     var ctx: ToolCtx = undefined;
     ctx.registry = &reg;
+    ctx.agent_cwd = null;
     ctx.provider = .{ .id = "test", .kind = .anthropic, .auth = .bearer, .url = "", .api_key = "", .model = "claude-x", .context = 100000 };
     const webp = "RIFF\x24\x00\x00\x00WEBPVP8 \x18\x00\x00\x00";
     try tmp.dir.writeFile(io, .{ .sub_path = "shot.png", .data = webp });
@@ -332,6 +370,7 @@ test "read_image: a photo stored sideways is sent upright, or the model is told 
     defer tmp.cleanup();
     var ctx: ToolCtx = undefined;
     ctx.registry = &reg;
+    ctx.agent_cwd = null;
     ctx.provider = .{ .id = "test", .kind = .anthropic, .auth = .bearer, .url = "", .api_key = "", .model = "claude-x", .context = 100000 };
     const photo = orient.testJpeg(false, 6);
     try tmp.dir.writeFile(io, .{ .sub_path = "photo.jpg", .data = &photo });

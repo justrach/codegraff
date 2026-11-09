@@ -21,11 +21,21 @@ pub fn adopt(gpa: Allocator, path: []const u8) void {
     main_mod.g_cwd_display = owned;
 }
 
+pub fn adoptBranch(gpa: Allocator, branch: []const u8) void {
+    g_adopted.ensureUnusedCapacity(gpa, 1) catch return;
+    const owned = gpa.dupe(u8, branch) catch return;
+    g_adopted.appendAssumeCapacity(owned);
+    main_mod.g_worktree_branch = owned;
+}
+
 /// Free every display this process adopted. Teardown only: after this, no
 /// reader may run, and the global no longer aliases any of the freed copies.
 pub fn deinit(gpa: Allocator) void {
     for (g_adopted.items) |owned| {
         if (main_mod.g_cwd_display.ptr == owned.ptr) main_mod.g_cwd_display = ".";
+        if (main_mod.g_worktree_branch) |b| if (b.ptr == owned.ptr) {
+            main_mod.g_worktree_branch = null;
+        };
         gpa.free(owned);
     }
     g_adopted.deinit(gpa);
