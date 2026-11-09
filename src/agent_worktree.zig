@@ -29,7 +29,11 @@ pub fn cloneCowTree(gpa: Allocator, io: Io, src_path: []const u8, dst_path: []co
             gpa.free(r.stdout);
             gpa.free(r.stderr);
         }
-        return ranOk(r);
+        if (!ranOk(r)) {
+            Io.Dir.cwd().deleteTree(io, dst_path) catch {};
+            return false;
+        }
+        return true;
     }
     return false;
 }
