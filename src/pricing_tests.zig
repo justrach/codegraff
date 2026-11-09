@@ -45,8 +45,13 @@ test "resolveModelName exact aliases and miss" {
 test "resolveModelName (#377): family-prefixed spelling resolves to the provider's native row" {
     const keys = provider_mod.Keys{ .values = @splat(null) };
     try std.testing.expectEqualStrings("k3", pricing.resolveModelName(keys, "kimi-k3").?);
+    try std.testing.expectEqualStrings("k3", pricing.resolveModelName(keys, "kimi 3").?);
+    try std.testing.expectEqualStrings("k3.1-pro", pricing.resolveModelName(keys, "kimi-k3.1-pro").?);
+    try std.testing.expectEqualStrings("k3.1-pro", pricing.resolveModelName(keys, "kimi 3.1 pro").?);
     try std.testing.expect(pricing.familyAliasEquals("kimi", "k3", "kimi-k3"));
     try std.testing.expect(pricing.familyAliasEquals("kimi", "k3", "kimi_k3"));
+    try std.testing.expect(pricing.familyAliasEquals("kimi", "k3.1-pro", "kimi-k3.1-pro"));
+    try std.testing.expect(pricing.familyAliasEquals("kimi", "k3.1-pro", "kimi 3.1 pro"));
     try std.testing.expect(!pricing.familyAliasEquals("kimi", "k3", "kimi-k30"));
     try std.testing.expect(!pricing.familyAliasEquals("codex", "k3", "kimi-k3"));
     var moon_values: [provider_mod.provider_specs.len]?[]const u8 = @splat(null);
@@ -55,6 +60,7 @@ test "resolveModelName (#377): family-prefixed spelling resolves to the provider
     }
     const moonshot_only = provider_mod.Keys{ .values = moon_values };
     try std.testing.expectEqualStrings("kimi-k3", pricing.resolveModelName(moonshot_only, "kimi-k3").?);
+    try std.testing.expectEqualStrings("kimi-k3.1-pro", pricing.resolveModelName(moonshot_only, "kimi-k3.1-pro").?);
 }
 
 test "resolveModelName: 5.6 sol prefers Codex gpt-5.6-sol over a gateway slug" {
@@ -211,9 +217,19 @@ test "Kimi discovery preserves Codex and chooses the newest pure generation" {
     try std.testing.expectEqualStrings("max", pricing.kimiThinkingEffort("k3", "medium").?);
     try std.testing.expect(pricing.providerModelInTable("codex", "gpt-5.6-sol"));
     try std.testing.expect(!pricing.providerModelInTable("kimi", "kimi-for-coding-highspeed"));
+    const with_31 = [_]pricing.ModelInfo{
+        .{ .provider = "kimi", .name = "kimi-for-coding", .context = 262_144 },
+        .{ .provider = "kimi", .name = "k3", .context = 1_048_576 },
+        .{ .provider = "kimi", .name = "k3-256k", .context = 262_144 },
+        .{ .provider = "kimi", .name = "k3.1-pro", .context = 262_144 },
+        .{ .provider = "kimi", .name = "k3.1-pro-highspeed", .context = 262_144 },
+    };
+    try std.testing.expect(pricing.activateKimiModels(arena_state.allocator(), &with_31));
+    try std.testing.expectEqualStrings("k3.1-pro", pricing.providerDefaultModel("kimi", "fallback"));
     const codex = [_]pricing.ModelInfo{.{ .provider = "codex", .name = "future-sol", .context = 270_000 }};
     try std.testing.expect(pricing.activateCodexModels(arena_state.allocator(), &codex));
     try std.testing.expect(pricing.providerModelInTable("kimi", "k3"));
+    try std.testing.expect(pricing.providerModelInTable("kimi", "k3.1-pro"));
 }
 
 test "Codex discovery replaces only the baked Codex fallback" {

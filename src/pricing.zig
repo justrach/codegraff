@@ -239,15 +239,33 @@ pub fn kimiThinkingEffort(model: []const u8, requested: []const u8) ?[]const u8 
     return info.support_efforts[info.support_efforts.len / 2];
 }
 
-fn pureKimiGeneration(name: []const u8) ?u32 {
+fn kimiGenerationRank(name: []const u8) ?u32 {
     if (name.len < 2 or name[0] != 'k') return null;
-    for (name[1..]) |c| if (!std.ascii.isDigit(c)) return null;
-    return std.fmt.parseInt(u32, name[1..], 10) catch null;
+    if (std.mem.endsWith(u8, name, "-highspeed")) return null;
+    var rest = name[1..];
+    var pro: u32 = 0;
+    if (std.mem.endsWith(u8, rest, "-pro")) {
+        pro = 1;
+        rest = rest[0 .. rest.len - "-pro".len];
+    }
+    var major_str = rest;
+    var minor: u32 = 0;
+    if (std.mem.indexOfScalar(u8, rest, '.')) |dot| {
+        major_str = rest[0..dot];
+        const min_str = rest[dot + 1 ..];
+        if (min_str.len == 0) return null;
+        for (min_str) |c| if (!std.ascii.isDigit(c)) return null;
+        minor = std.fmt.parseInt(u32, min_str, 10) catch return null;
+    }
+    if (major_str.len == 0) return null;
+    for (major_str) |c| if (!std.ascii.isDigit(c)) return null;
+    const major = std.fmt.parseInt(u32, major_str, 10) catch return null;
+    return (major << 16) | (minor << 8) | pro;
 }
 
 /// Codex's first visible account model is its dynamic default, and so is the
-/// first model oMLX lists. Kimi prefers the newest explicit pure generation
-/// (`k3`, then future `k4`, etc.) over compatibility aliases and K2 point-release ids.
+/// first model oMLX lists. Kimi prefers the newest explicit flagship release
+/// (`k3.1-pro` > `k3`, excluding `-highspeed` and window variants like `k3-256k`).
 pub fn providerDefaultModel(provider_id: []const u8, fallback: []const u8) []const u8 {
     for (models()) |model| if (std.mem.eql(u8, model.provider, provider_id) and
         std.mem.eql(u8, model.name, "mimo-v2.6-pro")) return model.name;
@@ -262,7 +280,7 @@ pub fn providerDefaultModel(provider_id: []const u8, fallback: []const u8) []con
     for (models()) |model| {
         if (!std.mem.eql(u8, model.provider, "kimi")) continue;
         if (std.mem.eql(u8, model.name, "kimi-for-coding")) alias = model.name;
-        const generation = pureKimiGeneration(model.name) orelse continue;
+        const generation = kimiGenerationRank(model.name) orelse continue;
         if (best == null or generation > best_generation) {
             best = model.name;
             best_generation = generation;
@@ -374,7 +392,7 @@ pub fn modelAliasEquals(name: []const u8, query: []const u8) bool {
 
 /// #377: `<provider><sep><name>` is the same model as the provider's own
 /// `<name>` row under a family-prefixed spelling (gateway catalogs do this).
-/// Alias-normalized so `kimi-k3` == kimi + `k3` regardless of separators.
+/// Alias-normalized so `kimi-k3` == kimi + `k3` and `kimi 3.1 pro` == kimi + `k3.1-pro`.
 pub fn familyAliasEquals(provider_id: []const u8, name: []const u8, query: []const u8) bool {
     var qb: [128]u8 = undefined;
     var pb: [128]u8 = undefined;
@@ -382,7 +400,15 @@ pub fn familyAliasEquals(provider_id: []const u8, name: []const u8, query: []con
     const q = normalizeModelAlias(&qb, query);
     const p = normalizeModelAlias(&pb, provider_id);
     const n = normalizeModelAlias(&nb, name);
-    return q.len == p.len + n.len and std.mem.startsWith(u8, q, p) and std.mem.endsWith(u8, q, n);
+    if (!std.mem.startsWith(u8, q, p)) return false;
+    const tail = q[p.len..];
+    if (std.mem.eql(u8, tail, n)) return true;
+    return std.mem.eql(u8, p, "kimi") and n.len >= 2 and n[0] == 'k' and std.ascii.isDigit(n[1]) and std.mem.eql(u8, tail, n[1..]);
+}
+
+pub fn kimiFamilyModel(query: []const u8) ?[]const u8 {
+    for (models()) |m| if (std.mem.eql(u8, m.provider, "kimi") and familyAliasEquals("kimi", m.name, query)) return m.name;
+    return null;
 }
 
 /// `keys` is main.zig's Keys (anytype to keep provider wiring out of this
@@ -396,13 +422,13 @@ pub fn resolveModelName(keys: anytype, query: []const u8) ?[]const u8 {
         const rest = query[slash + 1 ..];
         if (rest.len > 0 and providerModelInTable(query[0..slash], rest)) return rest;
     }
-    // #377: `kimi-k3` is Kimi Code's family spelling of `k3`. Moonshot's
-    // platform id is also `kimi-k3`. A keyed kimi login keeps the rewrite; a
-    // moonshot-only key keeps the Moonshot row (exact match below).
+    // #377: `kimi-k3` and `kimi-k3.1-pro` are Kimi Code's family spellings of
+    // `k3` and `k3.1-pro`. Moonshot's platform also uses `kimi-k3*`. A keyed
+    // kimi login keeps the rewrite; a moonshot-only key keeps the Moonshot row.
     const kimi_keyed = keys.get("kimi") != null;
     const moonshot_keyed = keys.get("moonshot") != null;
     if (kimi_keyed or !moonshot_keyed) {
-        if (familyAliasEquals("kimi", "k3", query)) return "k3";
+        if (kimiFamilyModel(query)) |native| return native;
     }
     for (models()) |m| if (std.mem.eql(u8, m.name, query)) return m.name;
     for (models()) |m| if (modelAliasEquals(m.name, query)) return m.name;

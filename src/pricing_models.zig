@@ -141,6 +141,8 @@ pub const rows = [_]ModelInfo{
     .{ .provider = "codegraff", .name = "gpt-6-sol", .context = 1_050_000 },
     .{ .provider = "codegraff", .name = "gpt-6.1-sol", .context = 1_050_000 },
     .{ .provider = "codegraff", .name = "gpt-6-luna", .context = 1_050_000 },
+    .{ .provider = "codegraff", .name = "kimi-k3.1-pro", .context = 262_144, .supports_reasoning = true },
+    .{ .provider = "codegraff", .name = "kimi-k3.1-pro-highspeed", .context = 262_144, .supports_reasoning = true },
     .{ .provider = "codegraff", .name = "kimi-k2.6", .context = 262_144 },
     .{ .provider = "codegraff", .name = "grok-4.7", .context = 500_000 },
     .{ .provider = "codegraff", .name = "grok-4.6", .context = 500_000 },
@@ -152,11 +154,14 @@ pub const rows = [_]ModelInfo{
     .{ .provider = "codegraff", .name = "mimo-v2.5", .context = 128_000 },
     .{ .provider = "codegraff", .name = "mimo-v2.5-pro", .context = 128_000 },
     // Kimi Code offline fallback. Authenticated startup replaces this slice
-    // from /coding/v1/models; K3 is the current explicit generation while the
-    // two compatibility aliases keep their smaller advertised window.
-    .{ .provider = "kimi", .name = "k3", .context = 1_048_576, .protocol = .kimi, .supports_reasoning = true, .support_efforts = &.{ "low", "high", "max" }, .default_effort = "high" },
-    .{ .provider = "kimi", .name = "kimi-for-coding", .context = 262_144, .protocol = .kimi, .supports_reasoning = true },
-    .{ .provider = "kimi", .name = "kimi-for-coding-highspeed", .context = 262_144, .protocol = .kimi, .supports_reasoning = true },
+    // from /coding/v1/models; K3.1 Pro and K3 are the current generations while
+    // the compatibility aliases keep their advertised window.
+    .{ .provider = "kimi", .name = "k3.1-pro", .context = 262_144, .protocol = .kimi, .supports_reasoning = true, .thinking_support = .both, .support_efforts = &.{ "low", "medium", "high" }, .default_effort = "high" },
+    .{ .provider = "kimi", .name = "k3.1-pro-highspeed", .context = 262_144, .protocol = .kimi, .supports_reasoning = true, .thinking_support = .both, .support_efforts = &.{ "low", "medium", "high" }, .default_effort = "high" },
+    .{ .provider = "kimi", .name = "k3", .context = 1_048_576, .protocol = .kimi, .supports_reasoning = true, .thinking_support = .both, .support_efforts = &.{ "low", "high", "max" }, .default_effort = "high" },
+    .{ .provider = "kimi", .name = "k3-256k", .context = 262_144, .protocol = .kimi, .supports_reasoning = true, .thinking_support = .both, .support_efforts = &.{ "low", "high", "max" }, .default_effort = "high" },
+    .{ .provider = "kimi", .name = "kimi-for-coding", .context = 262_144, .protocol = .kimi, .supports_reasoning = true, .thinking_support = .both, .support_efforts = &.{ "low", "medium", "high" }, .default_effort = "high" },
+    .{ .provider = "kimi", .name = "kimi-for-coding-highspeed", .context = 262_144, .protocol = .kimi, .supports_reasoning = true, .thinking_support = .both, .support_efforts = &.{ "low", "medium", "high" }, .default_effort = "high" },
     .{ .provider = "moonshot", .name = "kimi-latest", .context = 131_072 },
 
     .{ .provider = "moonshot", .name = "kimi-k2.7-code", .context = 262_144, .supports_reasoning = true },
@@ -164,6 +169,7 @@ pub const rows = [_]ModelInfo{
     // Moonshot platform K3 (api.moonshot.ai, model id `kimi-k3`). Distinct from
     // Kimi Code's native `k3` row: `--model kimi-k3` with only MOONSHOT_API_KEY
     // must not rewrite onto the coding-plan login.
+    .{ .provider = "moonshot", .name = "kimi-k3.1-pro", .context = 262_144, .supports_reasoning = true, .support_efforts = &.{ "low", "medium", "high" }, .default_effort = "high" },
     .{ .provider = "moonshot", .name = "kimi-k3", .context = 1_048_576, .supports_reasoning = true, .support_efforts = &.{ "low", "high", "max" }, .default_effort = "max" },
     .{ .provider = "xai", .name = "grok-4.7", .context = 500_000, .supports_reasoning = true },
     .{ .provider = "xai", .name = "grok-4.6", .context = 500_000, .supports_reasoning = true },

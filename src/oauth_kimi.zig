@@ -72,15 +72,28 @@ fn regionOfHost(h: []const u8) ?Region {
     return null;
 }
 
-/// Same order as kimi-code: the env override, then the server the saved
-/// login recorded, then a mainland-China clock or locale; everyone else is
-/// global. A login from before graff recorded the server doesn't choose.
+/// Same order as kimi-code: the env override, then an explicit region marker
+/// (`~/.kimi-code/region` or `~/.kimi/region`), then a mainland-China clock or
+/// locale; everyone else is global (`kimi.ai`). A previous login's `oauth_host`
+/// is kept for refreshing that token (`savedHost`), never to trap a new login.
 fn chooseRegion(io: Io, arena: Allocator, home: []const u8) Region {
     if (envHostRegion()) |r| return r;
-    if (recordedRegion(io, arena, home)) |r| return r;
+    if (regionMarker(io, arena, home)) |r| return r;
     var buf: [256]u8 = undefined;
     const n = Io.Dir.readLinkAbsolute(io, "/etc/localtime", &buf) catch 0;
     return if (inMainland(getenv("TZ"), getenv("LANG"), buf[0..n])) .cn else .global;
+}
+
+fn regionMarker(io: Io, arena: Allocator, home: []const u8) ?Region {
+    if (home.len == 0) return null;
+    for ([_][]const u8{ ".kimi-code/region", ".kimi/region" }) |rel| {
+        const p = std.fmt.allocPrint(arena, "{s}/{s}", .{ home, rel }) catch continue;
+        const raw = Io.Dir.cwd().readFileAlloc(io, p, arena, .limited(256)) catch continue;
+        const s = std.mem.trim(u8, raw, " \t\r\n\"");
+        if (std.ascii.eqlIgnoreCase(s, "global") or std.ascii.eqlIgnoreCase(s, "kimi.ai")) return .global;
+        if (std.ascii.eqlIgnoreCase(s, "mainland-cn") or std.ascii.eqlIgnoreCase(s, "cn") or std.ascii.eqlIgnoreCase(s, "kimi.com")) return .cn;
+    }
+    return null;
 }
 
 fn envHostRegion() ?Region {
@@ -340,4 +353,13 @@ test "a login keeps the server that issued it; old logins and unknown hosts mean
     try writeAuth(io, arena, home, "a", "r", far_future, "https://evil.example");
     try std.testing.expectEqualStrings(legacy_host, savedHost(io, arena, home).?);
     try std.testing.expectEqualStrings("a", load(io, std.testing.allocator, arena, home, false, null).?);
+
+    // A stale kimi.com login on disk does not trap a fresh login on kimi.com;
+    // ~/.kimi-code/region ("global" / "mainland-cn") overrides local detection.
+    try writeAuth(io, arena, home, "a", "r", far_future, Region.cn.host());
+    try tmp.dir.createDirPath(io, ".kimi-code");
+    try tmp.dir.writeFile(io, .{ .sub_path = ".kimi-code/region", .data = "global\n" });
+    try std.testing.expectEqual(Region.global, chooseRegion(io, arena, home));
+    try tmp.dir.writeFile(io, .{ .sub_path = ".kimi-code/region", .data = "mainland-cn\n" });
+    try std.testing.expectEqual(Region.cn, chooseRegion(io, arena, home));
 }

@@ -317,7 +317,7 @@ pub const Agent = struct {
 
     pub noinline fn ensureStoredKeys(self: *Agent, keys: *provider_mod.Keys) void {
         if (self.stored_keys_loaded) return;
-        if (self.home.len != 0) keys_cli.loadMissingStoredKeys(self.io, self.gpa, self.arena, self.home, keys, .all);
+        if (self.home.len != 0) @import("credential_failover.zig").loadMissingAndPlans(self.io, self.gpa, self.arena, self.home, keys);
         self.stored_keys_loaded = true;
     }
 

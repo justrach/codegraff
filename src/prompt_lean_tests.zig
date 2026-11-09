@@ -75,6 +75,12 @@ test "buildSystemPrompt places static skill catalog ahead of workspace instructi
     const skill_docs = @import("skill_docs.zig");
     const saved_img = imagegen.available;
     defer imagegen.available = saved_img;
+    const saved_img_dir = imagegen.skill_dir;
+    defer imagegen.skill_dir = saved_img_dir;
+    const saved_skills = skill_docs.g_skills;
+    defer skill_docs.g_skills = saved_skills;
+    const saved_ws = skill_docs.g_workspace_skills;
+    defer skill_docs.g_workspace_skills = saved_ws;
     const saved_lean = no_local_tools.lean;
     defer no_local_tools.lean = saved_lean;
     no_local_tools.lean = false;

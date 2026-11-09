@@ -550,6 +550,10 @@ pub fn refreshForListing(io: Io, gpa: Allocator, arena: Allocator, home: []const
         const outcome = if (maybe.*) |*fut| fut.await(io) else continue;
         finishFetch(io, arena, home, outcome);
     }
+    if (keys.get("kimi")) |k| if (k.len != 0) {
+        _ = kimi_catalog.load(io, gpa, arena, k);
+        pinged += 1;
+    };
     return pinged;
 }
 
@@ -581,15 +585,11 @@ pub fn loadAll(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys:
 /// Activate previous-run caches without credentials or network. `--schema`
 /// uses this so GUI model metadata follows router rollouts.
 pub fn loadCachedAll(io: Io, arena: Allocator, home: []const u8) void {
-    for (provider.provider_specs) |spec| {
-        if (!dynamic(spec)) continue;
-        const snapshot = cachedSnapshot(io, arena, home, spec) orelse continue;
-        _ = activate(arena, spec, snapshot.models);
-    }
-    if (provider.additional_router) |spec| {
-        const snapshot = cachedSnapshot(io, arena, home, spec) orelse return;
-        _ = activate(arena, spec, snapshot.models);
-    }
+    if (kimi_catalog.cached(io, arena, home)) |cache| kimi_catalog.commit(arena, cache.rows, "cached account catalog");
+    for (provider.provider_specs) |spec| if (dynamic(spec)) {
+        _ = activateCached(io, arena, home, spec);
+    };
+    if (provider.additional_router) |spec| _ = activateCached(io, arena, home, spec);
 }
 
 test {

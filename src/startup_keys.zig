@@ -167,6 +167,7 @@ pub fn storedKeyMayAffectSelection(provider_id: []const u8, model_flag: ?[]const
     const query = model_flag orelse return true;
     if (worker_hint) |h| if (std.mem.eql(u8, provider_id, h)) return true;
     if (explicitProvider(query)) |id| return std.mem.eql(u8, provider_id, id);
+    if (std.mem.eql(u8, provider_id, "kimi") and pricing.kimiFamilyModel(query) != null) return true;
     if (pricing.modelInTable(query)) return pricing.providerModelInTable(provider_id, query);
     return true;
 }
@@ -230,6 +231,8 @@ test "Kimi catalog loads at startup only when selection can observe it" {
     for (provider_mod.provider_specs, &keys.values) |spec, *value| {
         if (std.mem.eql(u8, spec.id, "kimi") or std.mem.eql(u8, spec.id, "codegraff")) value.* = "token";
     }
+    try std.testing.expect(storedKeyMayAffectSelection("kimi", "kimi-k3", null));
+    try std.testing.expect(storedKeyMayAffectSelection("kimi", "kimi-k3.1-pro", null));
     try std.testing.expect(!catalog_selection.startupMayUse(keys, "kimi", "codegraff", null));
     try std.testing.expect(catalog_selection.startupMayUse(keys, "kimi", "kimi", null));
     try std.testing.expect(catalog_selection.startupMayUse(keys, "kimi", "k3", null));

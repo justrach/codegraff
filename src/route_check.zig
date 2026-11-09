@@ -99,14 +99,15 @@ pub fn command(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytype, s
     var obuf: [8 * 1024]u8 = undefined;
     var ow = Io.File.stdout().writer(io, &obuf);
     const out = &ow.interface;
-    const rk = try @import("startup.zig").resolveKeys(io, gpa, arena, environ_map, null, null);
+    var rk = try @import("startup.zig").resolveKeys(io, gpa, arena, environ_map, null, null);
+    const home = @import("keys_cli.zig").homeEnv(environ_map) orelse "";
+    @import("credential_failover.zig").loadMissingAndPlans(io, gpa, arena, home, &rk.keys);
     if (sub_args.len == 0) {
         const d = rk.default_provider;
         try out.print("session default: {s}/{s} · auth: {s} · billing: {s}\n\n", .{ d.id, d.model, d.source.label(), billingLabel(billing.forProvider(d)) });
         // #471: which providers are actually reachable, what each bills, and
         // the worker tiers it offers — the question that decides where every
         // unpinned subagent lands.
-        const home = @import("keys_cli.zig").homeEnv(environ_map) orelse "";
         try report.write(out, report.rows(io, arena, rk.keys, home));
         try out.flush();
         return;

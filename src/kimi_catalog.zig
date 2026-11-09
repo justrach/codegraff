@@ -40,18 +40,21 @@ fn boolField(obj: std.json.ObjectMap, name: []const u8) bool {
 }
 
 fn thinkingSupport(obj: std.json.ObjectMap) pricing.ThinkingSupport {
-    const raw = util.strFieldObj(obj, "supports_thinking_type") orelse return .unknown;
-    if (std.mem.eql(u8, raw, "no")) return .no;
+    const raw = util.strFieldObj(obj, "supports_thinking_type") orelse blk: {
+        const r = obj.get("reasoning") orelse break :blk null;
+        break :blk if (r == .object) util.strFieldObj(r.object, "type") else null;
+    } orelse return .unknown;
+    if (std.mem.eql(u8, raw, "no") or std.mem.eql(u8, raw, "none")) return .no;
     if (std.mem.eql(u8, raw, "both")) return .both;
     if (std.mem.eql(u8, raw, "only")) return .only;
     return .unknown;
 }
 
-fn parseEfforts(arena: Allocator, obj: std.json.ObjectMap) struct { values: []const []const u8, default: ?[]const u8 } {
-    const raw = obj.get("think_efforts") orelse return .{ .values = &.{}, .default = null };
-    if (raw != .object or !boolField(raw.object, "support")) return .{ .values = &.{}, .default = null };
+const EffortList = struct { values: []const []const u8, default: ?[]const u8 };
+
+fn parseEffortList(arena: Allocator, obj: std.json.ObjectMap, list_key: []const u8, default_key: []const u8) EffortList {
     var values: std.ArrayList([]const u8) = .empty;
-    if (raw.object.get("valid_efforts")) |list| if (list == .array) {
+    if (obj.get(list_key)) |list| if (list == .array) {
         for (list.array.items) |value| {
             if (value != .string or value.string.len == 0 or value.string.len > 32) continue;
             values.append(arena, arena.dupe(u8, value.string) catch continue) catch continue;
@@ -59,8 +62,20 @@ fn parseEfforts(arena: Allocator, obj: std.json.ObjectMap) struct { values: []co
     };
     return .{
         .values = values.toOwnedSlice(arena) catch &.{},
-        .default = if (util.strFieldObj(raw.object, "default_effort")) |value| arena.dupe(u8, value) catch null else null,
+        .default = if (util.strFieldObj(obj, default_key)) |value| arena.dupe(u8, value) catch null else null,
     };
+}
+
+fn parseEfforts(arena: Allocator, obj: std.json.ObjectMap) EffortList {
+    if (obj.get("think_efforts")) |raw| if (raw == .object and boolField(raw.object, "support")) {
+        return parseEffortList(arena, raw.object, "valid_efforts", "default_effort");
+    };
+    if (obj.get("reasoning")) |r| if (r == .object) {
+        if (r.object.get("effort")) |e| if (e == .object) {
+            return parseEffortList(arena, e.object, "valid", "default");
+        };
+    };
+    return .{ .values = &.{}, .default = null };
 }
 
 /// Parse the OpenAI-style model list Kimi exposes. Preserve server ordering for
@@ -83,8 +98,12 @@ pub fn parseModels(arena: Allocator, data: []const u8) ?[]const pricing.ModelInf
         if (duplicate) continue;
         var context = positiveInt(item.object, "context_length");
         if (context == 0) context = positiveInt(item.object, "context_window");
+        if (context == 0) if (item.object.get("limit")) |lim| if (lim == .object) {
+            context = positiveInt(lim.object, "context");
+        };
         if (context == 0) context = pricing.default_context;
         const effort = parseEfforts(arena, item.object);
+        const t_support = thinkingSupport(item.object);
         const protocol: pricing.ModelProtocol = if (util.strFieldObj(item.object, "protocol")) |protocol_name|
             (if (std.mem.eql(u8, protocol_name, "anthropic")) .anthropic else .kimi)
         else
@@ -94,8 +113,8 @@ pub fn parseModels(arena: Allocator, data: []const u8) ?[]const pricing.ModelInf
             .name = arena.dupe(u8, id) catch continue,
             .context = context,
             .protocol = protocol,
-            .supports_reasoning = boolField(item.object, "supports_reasoning"),
-            .thinking_support = thinkingSupport(item.object),
+            .supports_reasoning = boolField(item.object, "supports_reasoning") or t_support == .both or t_support == .only,
+            .thinking_support = t_support,
             .support_efforts = effort.values,
             .default_effort = effort.default,
         }) catch continue;
@@ -117,6 +136,7 @@ pub fn fetch(io: Io, gpa: Allocator, arena: Allocator, access: []const u8) Fetch
     const body = fetchBody(io, gpa, arena, access) orelse return .{};
     const rows = parseModels(arena, body) orelse
         return .{ .source = "baked fallback — invalid live catalog" };
+    _ = writeCacheBody(io, arena, @import("credential_store.zig").g_home, body);
     return .{ .rows = rows, .source = "live account catalog" };
 }
 
@@ -152,6 +172,15 @@ fn cachePaths(arena: Allocator, home: []const u8) [2][]const u8 {
     };
 }
 
+fn writeCacheBody(io: Io, arena: Allocator, home: []const u8, body: []const u8) bool {
+    for (cachePaths(arena, home)) |path| {
+        if (path.len == 0) continue;
+        @import("credential_store.zig").replaceFile(io, Io.Dir.cwd(), path, body, .default_file) catch continue;
+        return true;
+    }
+    return false;
+}
+
 /// Fetch the catalog and store the raw body; true when a valid catalog was
 /// written. Runs on a `catalog_bounded` worker with its own Io and allocator.
 pub fn fetchToCache(io: Io, gpa: Allocator, home: []const u8, access: []const u8) bool {
@@ -160,12 +189,7 @@ pub fn fetchToCache(io: Io, gpa: Allocator, home: []const u8, access: []const u8
     const a = arena_state.allocator();
     const body = fetchBody(io, gpa, a, access) orelse return false;
     if (parseModels(a, body) == null) return false;
-    for (cachePaths(a, home)) |path| {
-        if (path.len == 0) continue;
-        @import("credential_store.zig").replaceFile(io, Io.Dir.cwd(), path, body, .default_file) catch continue;
-        return true;
-    }
-    return false;
+    return writeCacheBody(io, a, home, body);
 }
 
 pub const Cached = struct { rows: []const pricing.ModelInfo, fresh: bool };
@@ -254,10 +278,11 @@ test "parseModels accepts Kimi aliases and K3 context windows" {
         \\{"object":"list","data":[
         \\ {"id":"kimi-for-coding","context_length":262144,"supports_reasoning":true},
         \\ {"id":"k3","context_length":1048576,"protocol":"anthropic","supports_reasoning":true,"supports_thinking_type":"only","think_efforts":{"support":true,"valid_efforts":["max"],"default_effort":"max"}},
+        \\ {"id":"k3.1-pro","limit":{"context":262144},"reasoning":{"type":"both","effort":{"valid":["low","medium","high"],"default":"high"}}},
         \\ {"id":"k3","context_length":1},
         \\ {"id":"bad id","context_length":42}]}
     ).?;
-    try std.testing.expectEqual(@as(usize, 2), rows.len);
+    try std.testing.expectEqual(@as(usize, 3), rows.len);
     try std.testing.expectEqualStrings("kimi-for-coding", rows[0].name);
     try std.testing.expectEqualStrings("k3", rows[1].name);
     try std.testing.expectEqual(@as(u64, 1_048_576), rows[1].context);
@@ -265,6 +290,11 @@ test "parseModels accepts Kimi aliases and K3 context windows" {
     try std.testing.expectEqual(pricing.ThinkingSupport.only, rows[1].thinking_support);
     try std.testing.expectEqualStrings("max", rows[1].support_efforts[0]);
     try std.testing.expectEqualStrings("max", rows[1].default_effort.?);
+    try std.testing.expectEqualStrings("k3.1-pro", rows[2].name);
+    try std.testing.expectEqual(@as(u64, 262_144), rows[2].context);
+    try std.testing.expect(rows[2].supports_reasoning);
+    try std.testing.expectEqual(pricing.ThinkingSupport.both, rows[2].thinking_support);
+    try std.testing.expectEqualStrings("high", rows[2].default_effort.?);
 }
 
 test "commit installs fetched Kimi rows into the active table" {
