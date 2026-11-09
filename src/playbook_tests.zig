@@ -300,7 +300,7 @@ fn stubRoot(gpa: std.mem.Allocator, arena: std.mem.Allocator, out: *Io.Writer) A
         .io = std.testing.io,
         .client = undefined,
         .provider = undefined,
-        .messages = undefined,
+        .messages = .init(arena),
         .sub = false,
         .label = "test",
         .out = out,

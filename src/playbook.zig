@@ -258,13 +258,16 @@ pub fn findByUniqueText(items: []const Item, query: []const u8) ?Item {
 
 /// Append one already-serialized record. Positional write at the current end
 /// of file so a whole line lands at once (serve_events.EventLog's shape).
-fn appendLine(io: Io, line: []const u8) bool {
-    Io.Dir.cwd().createDirPath(io, dir) catch {};
-    const f = Io.Dir.cwd().createFile(io, path, .{ .truncate = false }) catch return false;
+/// `.read = true` is required on Windows: a write-only handle lacks
+/// FILE_READ_ATTRIBUTES, so `f.stat(io)` fails with AccessDenied after creating
+/// a 0-byte `.graff/playbook.jsonl` (#1821).
+fn appendLine(io: Io, line: []const u8) !void {
+    const cwd = Io.Dir.cwd();
+    cwd.createDirPath(io, dir) catch {};
+    const f = try cwd.createFile(io, path, .{ .truncate = false, .read = true });
     defer f.close(io);
-    const st = f.stat(io) catch return false;
-    f.writePositionalAll(io, line, st.size) catch return false;
-    return true;
+    const end: u64 = if (f.stat(io)) |st| st.size else |_| (try cwd.statFile(io, path, .{})).size;
+    try f.writePositionalAll(io, line, end);
 }
 
 fn appendAdd(io: Io, arena: Allocator, id: []const u8, text: []const u8, source: Source, provenance: []const u8) Add {
@@ -279,9 +282,11 @@ fn appendAdd(io: Io, arena: Allocator, id: []const u8, text: []const u8, source:
         .scope = @tagName(Scope.project),
         .provenance = provenance,
         .created_at = util.unixMs(io),
-    }) catch return .{ .id = id, .reason = "could not serialize the record" };
-    aw.writer.writeByte('\n') catch return .{ .id = id, .reason = "could not serialize the record" };
-    if (!appendLine(io, aw.writer.buffered())) return .{ .id = id, .reason = "could not write " ++ path };
+    }) catch return .{ .reason = "could not serialize the record" };
+    aw.writer.writeByte('\n') catch return .{ .reason = "could not serialize the record" };
+    appendLine(io, aw.writer.buffered()) catch |err| return .{
+        .reason = std.fmt.allocPrint(arena, "could not write {s}: {s}", .{ path, @errorName(err) }) catch "could not write " ++ path,
+    };
     return .{ .ok = true, .id = id };
 }
 
@@ -308,7 +313,7 @@ pub fn add(io: Io, arena: Allocator, text_in: []const u8, source: Source, proven
         return .{ .id = id, .reason = "already recorded as a user project constraint" };
     }
     if (source == .learned and countOf(items, .learned) >= max_learned)
-        return .{ .id = id, .reason = "learned playbook is at its 100-item cap; retire some with /never rm <id> first" };
+        return .{ .reason = "learned playbook is at its 100-item cap; retire some with /never rm <id> first" };
     return appendAdd(io, arena, id, text, source, provenance);
 }
 
@@ -325,7 +330,8 @@ pub fn retire(io: Io, arena: Allocator, id: []const u8) Retire {
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     s.write(.{ .v = @as(u8, 1), .op = "retire", .id = id, .t = util.unixMs(io) }) catch return .write_failed;
     aw.writer.writeByte('\n') catch return .write_failed;
-    return if (appendLine(io, aw.writer.buffered())) .ok else .write_failed;
+    appendLine(io, aw.writer.buffered()) catch return .write_failed;
+    return .ok;
 }
 
 fn writeSection(w: *Io.Writer, items: []const Item, source: Source, scope: ?Scope, header: []const u8, cap_items: usize, cap_bytes: usize) !bool {

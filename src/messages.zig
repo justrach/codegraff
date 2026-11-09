@@ -39,18 +39,7 @@ pub fn trailingUserIs(messages: []const Value, text: []const u8) bool {
     return std.mem.eql(u8, t, text);
 }
 
-pub fn userPromptText(msg: Value) ?[]const u8 {
-    if (@import("session_wake.zig").isNotice(msg)) return null;
-    if (msg != .object) return null;
-    if (msg.object.get("type")) |kind| {
-        if (kind == .string and std.mem.eql(u8, kind.string, "user_input")) {
-            const content = msg.object.get("content") orelse return null;
-            if (content == .string and content.string.len > 0) return content.string;
-        }
-    }
-    const role = msg.object.get("role") orelse return null;
-    if (role != .string or !std.mem.eql(u8, role.string, "user")) return null;
-    const content = msg.object.get("content") orelse return null;
+fn contentPromptText(content: Value) ?[]const u8 {
     if (content == .string) return if (content.string.len > 0) content.string else null;
     if (content != .array) return null;
     for (content.array.items) |block| {
@@ -63,6 +52,19 @@ pub fn userPromptText(msg: Value) ?[]const u8 {
         if (tx == .string and tx.string.len > 0) return tx.string;
     }
     return null;
+}
+
+pub fn userPromptText(msg: Value) ?[]const u8 {
+    if (@import("session_wake.zig").isNotice(msg)) return null;
+    if (msg != .object) return null;
+    if (msg.object.get("type")) |kind| {
+        if (kind == .string and std.mem.eql(u8, kind.string, "user_input")) {
+            return contentPromptText(msg.object.get("content") orelse return null);
+        }
+    }
+    const role = msg.object.get("role") orelse return null;
+    if (role != .string or !std.mem.eql(u8, role.string, "user")) return null;
+    return contentPromptText(msg.object.get("content") orelse return null);
 }
 
 /// Build the message appended to the conversation after a tool runs, shaped
