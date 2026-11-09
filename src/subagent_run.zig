@@ -334,9 +334,21 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         else if (ctx.tracer) |tr| tr.note("fleet", "propose skipped: genome > 64KB");
     };
 
-    const ordinal = cards.g_subagent_seq.fetchAdd(1, .monotonic);
+    const preset = if (ctx.subagent_feedback) |fb| (if (fb.subId().len > 0) fb else null) else null;
+    const ordinal = if (preset) |fb| fb.ordinal else cards.g_subagent_seq.fetchAdd(1, .monotonic);
     var id_buf: [40]u8 = undefined;
-    const sub_id = cards.subagentId(&id_buf, ordinal, label, prompt);
+    const sub_id = if (preset) |fb| fb.subId() else cards.subagentId(&id_buf, ordinal, label, prompt);
+    var local_feedback: @import("subagent_feedback.zig").Inbox = .{};
+    defer if (ctx.subagent_feedback == null) local_feedback.deinit(gpa);
+    if (ctx.subagent_feedback == null) {
+        local_feedback.setSubId(ordinal, sub_id);
+        agent.feedback = &local_feedback;
+    }
+    @import("subagent_steer.zig").registerLive(ctx.io, gpa, ordinal, sub_id, label, agent.feedback.?);
+    defer {
+        @import("subagent_steer.zig").unregisterLive(ctx.io, agent.feedback.?);
+        if (ctx.subagent_feedback == null) _ = local_feedback.close(ctx.io);
+    }
     const sprite = cards.subagentSprite(ordinal);
     cards.subagentLaunchCard(arena, sub_id, sprite, label, kind, prompt);
     var activity = @import("subagent_activity.zig").start(gpa, ctx.io, sub_id, label, prompt);

@@ -17,15 +17,36 @@ const proto = @import("acp_protocol.zig");
 const followups = @import("followups.zig");
 const steer_now = @import("steer_now.zig");
 
-fn steerAcpPrompt(ctx: *anyopaque, _: Allocator, out: *Io.Writer, output_lock: *Io.Mutex, req: proto.Request, text: []const u8) bool {
+fn steerAcpPrompt(ctx: *anyopaque, arena: Allocator, out: *Io.Writer, output_lock: *Io.Mutex, req: proto.Request, text: []const u8) bool {
     const self: *LiveTurn = @ptrCast(@alignCast(ctx));
-    const explicit = std.mem.eql(u8, req.method, "_session/steering");
-    if (!followups.applies(self.root.provider) or (!explicit and followups.queue)) return false;
     const params = req.params orelse return false;
     if (params != .object) return false;
     const sid = @import("util.zig").strFieldObj(params.object, "sessionId") orelse return false;
     if (!std.mem.eql(u8, sid, self.session_id)) return false;
+    if (@import("subagent_steer.zig").isSubagentSteer(text)) {
+        const reply = @import("subagent_steer.zig").handleSteerLine(self.root, arena, null, text) catch return false;
+        output_lock.lockUncancelable(self.root.io);
+        defer output_lock.unlock(self.root.io);
+        if (std.mem.eql(u8, req.method, "_session/steering")) {
+            proto.writeResult(out, req.id, .{ .outcome = "injected" }) catch return false;
+        } else if (@import("acp_v2.zig").on()) {
+            var id_buf: [48]u8 = undefined;
+            const message_id = @import("acp_v2.zig").mint(&id_buf, "user");
+            const prompt = params.object.get("prompt");
+            proto.writeResult(out, req.id, .{ .messageId = message_id }) catch return false;
+            @import("acp_v2.zig").writeUserMessage(out, self.session_id, message_id, prompt, text) catch return false;
+        } else {
+            proto.writeResult(out, req.id, .{ .stopReason = "end_turn" }) catch return false;
+        }
+        proto.writeSessionUpdate(out, self.session_id, reply) catch return false;
+        out.flush() catch return false;
+        if (self.root.tracer) |tr| tr.note("steer", "an ACP prompt steered a live subagent");
+        return true;
+    }
+    const explicit = std.mem.eql(u8, req.method, "_session/steering");
+    if (!followups.applies(self.root.provider) or (!explicit and followups.queue)) return false;
     if (!steer_now.send(text)) return false;
+    @import("job_wait.zig").noteFollowup();
     output_lock.lockUncancelable(self.root.io);
     defer output_lock.unlock(self.root.io);
     if (std.mem.eql(u8, req.method, "_session/steering")) {
@@ -177,6 +198,8 @@ pub const LiveTurn = struct {
         defer if (context.restore(self.root)) self.root.rebaseContextMeter();
         if (commands and @import("side_steer.zig").isSideRequest(text))
             return @import("side_steer.zig").spawnSide(self.root, arena, null, text);
+        if (commands and @import("subagent_steer.zig").isSubagentSteer(text))
+            return @import("subagent_steer.zig").handleSteerLine(self.root, arena, null, text);
         // Match REPL expansion order: review, issue brief, then goal pacing.
         const base_prompt = review_prompt orelse if (issue_report) |report| try @import("issue_cmd.zig").userText(arena, report) else if (auto) |invocation| invocation.prompt else text;
         const prompt = try @import("goal_state.zig").applyGoalSteering(arena, self.root, base_prompt);

@@ -51,6 +51,10 @@ pub fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, s
     subagent.g_agent_jobs.mutex.lockUncancelable(ctx.io);
     job.id = subagent.g_agent_jobs.next_id;
     subagent.g_agent_jobs.next_id += 1;
+    const cards = @import("cards.zig");
+    const ordinal = cards.g_subagent_seq.fetchAdd(1, .monotonic);
+    var id_buf: [40]u8 = undefined;
+    job.feedback.setSubId(ordinal, cards.subagentId(&id_buf, ordinal, label_c, prompt_c));
     var hint_buf: [256]u8 = undefined;
     const hint = waitHint(&hint_buf, job.id, owner);
     const receipt = (if (state) |saved| std.fmt.allocPrint(

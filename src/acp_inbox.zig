@@ -166,6 +166,21 @@ pub const Inbox = struct {
         return func.?(ctx.?, arena, out.?, output_lock.?, req, text);
     }
 
+    fn tryLiveAgents(self: *Inbox, arena: std.mem.Allocator, req: proto.Request) bool {
+        self.mutex.lockUncancelable(self.io);
+        const active = self.active;
+        const out = self.out;
+        const output_lock = self.output_lock;
+        self.mutex.unlock(self.io);
+        if (!active or out == null or output_lock == null) return false;
+        output_lock.?.lockUncancelable(self.io);
+        defer output_lock.?.unlock(self.io);
+        const handled = @import("acp_agents.zig").handle(arena, self.io, "", out.?, req) catch return false;
+        if (!handled) return false;
+        out.?.flush() catch return false;
+        return true;
+    }
+
     fn accept(self: *Inbox, line: []const u8) !void {
         var arena = std.heap.ArenaAllocator.init(self.gpa);
         defer arena.deinit();
@@ -175,7 +190,10 @@ pub const Inbox = struct {
             if (self.permission) |bridge| if (bridge.accept(value)) return;
         }
         const req = proto.parseRequest(arena.allocator(), line);
-        if (req) |r| if ((std.mem.eql(u8, r.method, "session/prompt") or std.mem.eql(u8, r.method, "_session/steering")) and self.trySteer(arena.allocator(), r)) return;
+        if (req) |r| {
+            if ((std.mem.eql(u8, r.method, "session/prompt") or std.mem.eql(u8, r.method, "_session/steering")) and self.trySteer(arena.allocator(), r)) return;
+            if (std.mem.eql(u8, r.method, "graff/agents") and self.tryLiveAgents(arena.allocator(), r)) return;
+        }
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         if (req) |r| {

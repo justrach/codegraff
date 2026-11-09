@@ -274,6 +274,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
                 handshake.after(io, phase);
                 @import("acp_subagent_live.zig").configureBackground(io, d.session_id orelse "", d.background_subagents);
                 @import("acp_idle.zig").startupEffortNotice(&d, root, wire) catch break;
+                @import("background_wait.zig").writeAcpWaiting(io, wire, d.session_id orelse "");
             },
         }
         wire.flush() catch break;

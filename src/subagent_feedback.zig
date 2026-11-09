@@ -21,6 +21,20 @@ pub const Inbox = struct {
     bytes: usize = 0,
     delivered: usize = 0,
     closed: bool = false,
+    ordinal: u32 = 0,
+    sub_id_buf: [40]u8 = undefined,
+    sub_id_len: u8 = 0,
+
+    pub fn subId(self: *const Inbox) []const u8 {
+        return self.sub_id_buf[0..self.sub_id_len];
+    }
+
+    pub fn setSubId(self: *Inbox, ordinal: u32, id: []const u8) void {
+        self.ordinal = ordinal;
+        const n = @min(id.len, self.sub_id_buf.len);
+        @memcpy(self.sub_id_buf[0..n], id[0..n]);
+        self.sub_id_len = @intCast(n);
+    }
 
     pub fn enqueue(self: *Inbox, gpa: Allocator, io: Io, text: []const u8) !void {
         if (std.mem.trim(u8, text, " \t\r\n").len == 0) return error.EmptyMessage;

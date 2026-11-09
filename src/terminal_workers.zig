@@ -334,9 +334,24 @@ fn browse(root: *Agent, out: *Io.Writer, dir: Io.Dir, initial: []const u8) !void
 
 pub fn tryHandle(root: *Agent, line: []const u8, out: *Io.Writer) !bool {
     if (!std.mem.eql(u8, line, "/workers") and !std.mem.startsWith(u8, line, "/workers ")) return false;
-    const id = std.mem.trim(u8, line["/workers".len..], " \t");
+    const rest = std.mem.trim(u8, line["/workers".len..], " \t");
+    if (std.mem.startsWith(u8, rest, "send ") or std.mem.startsWith(u8, rest, "steer ")) {
+        const after_verb = std.mem.trimStart(u8, rest[std.mem.indexOfScalar(u8, rest, ' ').? + 1 ..], " \t");
+        if (std.mem.indexOfAny(u8, after_verb, " \t")) |sp| {
+            const target = after_verb[0..sp];
+            const msg = std.mem.trim(u8, after_verb[sp + 1 ..], " \t");
+            if (target.len > 0 and msg.len > 0) {
+                _ = try @import("subagent_steer.zig").steerAndFormat(root, root.scratchAlloc(), out, target, msg);
+                return true;
+            }
+        }
+        try out.writeAll("usage: /workers send <id|sa-id|label> <message>\n");
+        try out.flush();
+        return true;
+    }
+    const id = rest;
     if (id.len > 0 and !activity.validId(id)) {
-        try out.writeAll("usage: /workers [child-id]\n");
+        try out.writeAll("usage: /workers [child-id | send <id> <message>]\n");
         return true;
     }
     const self = @import("proc_identity.zig").selfRecord(root.io);

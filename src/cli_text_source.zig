@@ -5,6 +5,11 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.56
+    \\  • unified subagent steering (@agent-N, @sa-..., /workers send, ACP graff/agents action: "steer") for foreground and background workers
+    \\  • named background subagents/tasks in REPL standing bar and ACP session_info_update (_meta["graff/waiting"])
+    \\  • cross-turn ACP tool_call_update progress streaming for detached subagents and immediate user follow-up wakeup in agent_output
+    \\
     \\0.302.74.55
     \\  • scoped temporary arena parsing in mcp_cache.lookupWith/store/forget and single-server tool entry cloning
     \\  • per-request scratch allocation in agent_ws.postResponsesWs and scoped arena cleanup in session_workspaces.remember

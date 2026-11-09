@@ -590,7 +590,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("goal_pacing.zig");
     _ = .{ @import("presence_accord.zig"), @import("peer_idle.zig"), @import("acp_idle.zig"), @import("presence_chan.zig"), @import("presence_record.zig"), @import("daddy.zig"), @import("peer_inbox_content_test.zig"), @import("peer_inbox_failure_test.zig"), @import("peer_inbox_storage_test.zig"), @import("peer_inbox_sequence_test.zig"), @import("peer_inbox_snapshot_test.zig") };
     _ = .{ @import("acp_agents.zig"), @import("repo_context_tests.zig"), @import("session_select.zig") };
-    _ = .{ @import("subagent_activity.zig"), @import("subagent_interactive.zig"), @import("subagent_recovery.zig"), @import("subagent_retained.zig"), @import("subagent_history.zig"), @import("subagent_history_copy.zig"), @import("subagent_history_tests.zig"), @import("subagent_run_tests.zig"), @import("workflow_synthesis.zig") };
+    _ = .{ @import("subagent_activity.zig"), @import("subagent_steer.zig"), @import("subagent_interactive.zig"), @import("subagent_recovery.zig"), @import("subagent_retained.zig"), @import("subagent_history.zig"), @import("subagent_history_copy.zig"), @import("subagent_history_tests.zig"), @import("subagent_run_tests.zig"), @import("workflow_synthesis.zig") };
     _ = .{ @import("acp_agent_activity.zig"), @import("acp_subagent_live.zig"), @import("acp_line_writer.zig") };
     _ = .{ @import("acp_replay.zig"), @import("python_version.zig"), @import("jev_auto.zig"), @import("background_wait.zig"), @import("gateway_compact_tests.zig") };
     _ = @import("read_image.zig");

@@ -39,6 +39,11 @@ fn deliverSteer(self: *Agent) void {
     if (self.sub) return;
     const entry = popSteerSoft() orelse return;
     defer std.heap.page_allocator.free(entry.text);
+    @import("job_wait.zig").followup_pending.store(false, .release);
+    if (@import("subagent_steer.zig").isSubagentSteer(entry.text)) {
+        _ = @import("subagent_steer.zig").handleSteerLine(self, self.arena, main_mod.g_out, entry.text) catch "";
+        return;
+    }
     session_wake.injectSteer(self, entry.text);
 }
 

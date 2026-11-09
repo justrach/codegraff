@@ -20,6 +20,7 @@ pub const Waiting = struct {
 };
 
 pub const Shell = struct { id: u64, cmd: []const u8, persistent: bool = false };
+pub const AgentItem = struct { id: u32, sub_id: []const u8 = "", label: []const u8 = "" };
 
 const cmd_clip: usize = 48;
 
@@ -68,11 +69,46 @@ pub fn label(buf: []u8, shells: []const Shell, agents: []const u32) Waiting {
     return .{ .text = w.buffered(), .wakes = true };
 }
 
+pub fn labelNamed(buf: []u8, shells: []const Shell, agents: []const AgentItem) Waiting {
+    var finite: usize = 0;
+    var first: ?Shell = null;
+    var server: ?Shell = null;
+    for (shells) |s| {
+        if (s.persistent) {
+            if (server == null) server = s;
+            continue;
+        }
+        if (first == null) first = s;
+        finite += 1;
+    }
+    var w: Io.Writer = .fixed(buf);
+    const total = finite + agents.len;
+    if (total == 0) {
+        const s = server orelse return .{};
+        w.print("{s}{s}", .{ shortCmd(s.cmd), if (clipped(s.cmd)) "…" else "" }) catch return .{ .text = "a background server" };
+        return .{ .text = w.buffered() };
+    }
+    if (first) |s| {
+        w.print("{s}{s}", .{ shortCmd(s.cmd), if (clipped(s.cmd)) "…" else "" }) catch return .{ .text = "background work", .wakes = true };
+    } else {
+        const a = agents[0];
+        const clean_lbl = std.mem.trim(u8, a.label, " \t\r\n");
+        if (clean_lbl.len > 0 and !std.ascii.eqlIgnoreCase(clean_lbl, "subagent")) {
+            w.print("agent {d} ({s})", .{ a.id, util.utf8Prefix(clean_lbl, 28) }) catch return .{ .text = "a background agent", .wakes = true };
+        } else {
+            w.print("agent {d}", .{a.id}) catch return .{ .text = "a background agent", .wakes = true };
+        }
+    }
+    if (total > 1) w.print(" and {d} more", .{total - 1}) catch {};
+    return .{ .text = w.buffered(), .wakes = true };
+}
+
 /// The live registries, read under their own locks one at a time: shell jobs
 /// that will post an exit notice (not the foreground wait, not a job a
 /// finished session detached) and this session's unfinished agents.
 pub fn describe(io: Io, buf: []u8) Waiting {
-    var agent_ids: [8]u32 = undefined;
+    var agent_items: [8]AgentItem = undefined;
+    var label_bufs: [8][32]u8 = undefined;
     var n_agents: usize = 0;
     {
         const agents = &@import("subagent.zig").g_agent_jobs;
@@ -80,8 +116,10 @@ pub fn describe(io: Io, buf: []u8) Waiting {
         defer agents.mutex.unlock(io);
         for (agents.list.items) |job| {
             if (job.done or job.owner == null) continue;
-            if (n_agents < agent_ids.len) {
-                agent_ids[n_agents] = job.id;
+            if (n_agents < agent_items.len) {
+                const ln = @min(job.label.len, label_bufs[n_agents].len);
+                @memcpy(label_bufs[n_agents][0..ln], job.label[0..ln]);
+                agent_items[n_agents] = .{ .id = job.id, .label = label_bufs[n_agents][0..ln] };
                 n_agents += 1;
             }
         }
@@ -99,7 +137,78 @@ pub fn describe(io: Io, buf: []u8) Waiting {
         }
     }
     // Formatted under the jobs lock: the command bytes belong to the job.
-    return label(buf, shells[0..n_shells], agent_ids[0..n_agents]);
+    return labelNamed(buf, shells[0..n_shells], agent_items[0..n_agents]);
+}
+
+/// Emit `_meta["graff/waiting"]` on ACP when background jobs or subagents are
+/// still running at turn end so clients can display and steer them (`@agent-1`).
+pub fn writeAcpWaiting(io: Io, out: *Io.Writer, session_id: []const u8) void {
+    if (session_id.len == 0) return;
+    const AcpJob = struct { id: u64, command: []const u8, persistent: bool };
+    const AcpAgent = struct { id: u32, subagentId: []const u8, label: []const u8 };
+    var agent_rows: [8]AcpAgent = undefined;
+    var agent_items: [8]AgentItem = undefined;
+    var sub_bufs: [8][40]u8 = undefined;
+    var lbl_bufs: [8][48]u8 = undefined;
+    var n_agents: usize = 0;
+    {
+        const agents = &@import("subagent.zig").g_agent_jobs;
+        agents.mutex.lockUncancelable(io);
+        defer agents.mutex.unlock(io);
+        for (agents.list.items) |job| {
+            if (job.done) continue;
+            if (n_agents < agent_rows.len) {
+                const sid = job.feedback.subId();
+                const sn = @min(sid.len, sub_bufs[n_agents].len);
+                @memcpy(sub_bufs[n_agents][0..sn], sid[0..sn]);
+                const ln = @min(job.label.len, lbl_bufs[n_agents].len);
+                @memcpy(lbl_bufs[n_agents][0..ln], job.label[0..ln]);
+                const s_slice = sub_bufs[n_agents][0..sn];
+                const l_slice = lbl_bufs[n_agents][0..ln];
+                agent_rows[n_agents] = .{ .id = job.id, .subagentId = s_slice, .label = l_slice };
+                agent_items[n_agents] = .{ .id = job.id, .sub_id = s_slice, .label = l_slice };
+                n_agents += 1;
+            }
+        }
+    }
+    var job_rows: [8]AcpJob = undefined;
+    var shells: [8]Shell = undefined;
+    var cmd_bufs: [8][64]u8 = undefined;
+    var n_shells: usize = 0;
+    {
+        const jobs = &@import("jobs.zig").g_jobs;
+        jobs.mutex.lockUncancelable(io);
+        defer jobs.mutex.unlock(io);
+        for (jobs.list.items) |job| {
+            if (job.done or job.quiet or job.detach) continue;
+            if (n_shells < shells.len) {
+                const sc = shortCmd(job.cmd);
+                const cn = @min(sc.len, cmd_bufs[n_shells].len);
+                @memcpy(cmd_bufs[n_shells][0..cn], sc[0..cn]);
+                const c_slice = cmd_bufs[n_shells][0..cn];
+                job_rows[n_shells] = .{ .id = job.id, .command = c_slice, .persistent = job.persistent };
+                shells[n_shells] = .{ .id = job.id, .cmd = c_slice, .persistent = job.persistent };
+                n_shells += 1;
+            }
+        }
+    }
+    if (n_agents == 0 and n_shells == 0) return;
+    var text_buf: [160]u8 = undefined;
+    const w = labelNamed(&text_buf, shells[0..n_shells], agent_items[0..n_agents]);
+    @import("acp_protocol.zig").writeNotification(out, "session/update", .{
+        .sessionId = session_id,
+        .update = .{
+            .sessionUpdate = "session_info_update",
+            ._meta = .{
+                .@"graff/waiting" = .{
+                    .text = w.text,
+                    .wakes = w.wakes,
+                    .jobs = job_rows[0..n_shells],
+                    .agents = agent_rows[0..n_agents],
+                },
+            },
+        },
+    }) catch {};
 }
 
 /// The line that ends a parked turn (ADR 0154), plain text: it is also the

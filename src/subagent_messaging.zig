@@ -19,14 +19,16 @@ pub fn send(ctx: tools.ToolCtx, input: std.json.Value) !tools.ToolOutput {
     defer if (locked) registry.mutex.unlock(ctx.io);
     for (registry.list.items) |job| {
         if (task_id) |target| {
-            const state = job.ctx.retained_worker orelse continue;
-            if (!std.mem.eql(u8, state.record.id, target) or job.done) continue;
+            const matched_retained = if (job.ctx.retained_worker) |state| std.mem.eql(u8, state.record.id, target) else false;
+            const matched_sub = job.feedback.subId().len > 0 and std.mem.eql(u8, job.feedback.subId(), target);
+            const matched_label = job.label.len > 0 and std.ascii.eqlIgnoreCase(job.label, target);
+            if ((!matched_retained and !matched_sub and !matched_label) or job.done) continue;
         } else if (job.id != id) continue;
         if (!std.mem.eql(u8, @import("subagent_retained.zig").family(ctx), @import("subagent_retained.zig").family(job.ctx))) return refused(ctx.gpa, "worker belongs to another parent session");
         if (job.done) return refused(ctx.gpa, "agent has already finished; start a new subagent for follow-up work");
         // Allocate the acknowledgement before enqueue so OOM cannot accept a
         // message and then fail to return its receipt.
-        const ack = try std.fmt.allocPrint(ctx.gpa, "[agent {d}: feedback queued]\nThe current tool continues. Feedback is applied at a model-step boundary; use agent_output for the final report.", .{id});
+        const ack = try std.fmt.allocPrint(ctx.gpa, "[agent {d}: feedback queued]\nThe current tool continues. Feedback is applied at a model-step boundary; use agent_output for the final report.", .{job.id});
         job.feedback.enqueue(job.ctx.gpa, ctx.io, message) catch |err| {
             ctx.gpa.free(ack);
             return refused(ctx.gpa, switch (err) {

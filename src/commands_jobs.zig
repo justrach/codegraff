@@ -137,10 +137,12 @@ fn list(root: *Agent, out: *Io.Writer) !void {
             "failed"
         else
             "done";
-        try out.print("  {s}{d:>3}{s}  {s}{s:<8}{s} {d:>7}ms  {s}\n", .{
+        const sid = job.feedback.subId();
+        try out.print("  {s}{d:>3}{s}  {s}{s:<8}{s} {d:>7}ms  {s}{s}{s}  {s}\n", .{
             style.accent,                             job.id,                    style.reset,
             if (job.done) style.dim else style.green, status,                    style.reset,
-            job.usage.duration_ms,                    utf8Prefix(job.label, 60),
+            job.usage.duration_ms,                    style.muted,               if (sid.len > 0) sid else "-",
+            style.reset,                              utf8Prefix(job.label, 48),
         });
     }
 }

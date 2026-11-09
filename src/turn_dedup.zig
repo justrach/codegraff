@@ -50,6 +50,10 @@ pub fn enqueue(root: *Agent, arena: Allocator, out: ?*Io.Writer, text: []const u
         _ = try side_steer.spawnSide(root, arena, out, text);
         return .skipped;
     }
+    if (@import("subagent_steer.zig").isSubagentSteer(text)) {
+        _ = try @import("subagent_steer.zig").handleSteerLine(root, arena, out, text);
+        return .skipped;
+    }
     if (messages.trailingUserIs(root.messages.items, text)) {
         hits +|= 1;
         if (hits >= max_replays) {

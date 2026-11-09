@@ -10,6 +10,12 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.56
+
+- Unified subagent and task addressing across `agent_message`, `@agent-<id>`, `@sa-...`, `/workers send`, and ACP `graff/agents` (`action: "steer"`), pre-minting `sub_id` (`sa-000-...`) at background spawn time and registering foreground subagents for live mid-turn steering.
+- `background_wait` surfaces named running subagents and background jobs in the REPL standing bar (`agent 1 (Scout)`) and emits ACP `session_info_update` notifications with `_meta["graff/waiting"] = { text, wakes, jobs, agents }`.
+- `acp_subagent_live` routes detached background subagent progress through `BackgroundState`'s persistent session writer when no parent turn is active so `tool_call_update` progress with `_meta["graff/subagent"]` continues streaming across turns, and `subagent.agentOutput` yields blocking waits immediately when a user follow-up prompt arrives.
+
 ## v0.302.74.55
 
 - `mcp_cache.lookupWith`, `mcp_cache.store`, and `mcp_cache.forget` parse `mcp-list-cache.json` inside a scoped temporary arena and clone only the single matched server's `protocol_version` and `tools` entry into the caller's arena instead of retaining the full multi-server cache parse tree per server.
