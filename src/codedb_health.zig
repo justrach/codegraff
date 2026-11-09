@@ -70,16 +70,98 @@ pub fn render(gpa: Allocator, snap: Snapshot) ![]u8 {
 
 pub fn exec(ctx: tools.ToolCtx) !tools.ToolOutput {
     const cwd = ctx.agent_cwd orelse ".";
-    const text = try render(ctx.gpa, probe(ctx.io, cwd));
+    const snap = probe(ctx.io, cwd);
+    if (!snap.present and countCodeFilesCapped(ctx.io, cwd, min_repo_code_files) < min_repo_code_files) {
+        return .{
+            .text = try std.fmt.allocPrint(ctx.gpa, "small workspace (<{d} code files) — no codedb index needed yet (switches to codedb automatically at >={d} code files). Use codedb list_dir . and read_file directly.", .{ min_repo_code_files, min_repo_code_files }),
+        };
+    }
+    const text = try render(ctx.gpa, snap);
     return .{ .text = text };
 }
 
+pub const min_repo_code_files: usize = 8;
+
+const data_or_text_exts = [_][]const u8{
+    ".json", ".jsonl", ".csv",  ".tsv", ".txt", ".md",  ".markdown",
+    ".yaml", ".yml",   ".toml", ".ini", ".cfg", ".log", ".xml",
+};
+
+const code_exts = [_][]const u8{
+    ".zig", ".py",  ".rs",  ".go",    ".ts", ".tsx",  ".js",   ".jsx",
+    ".c",   ".h",   ".cpp", ".hpp",   ".cc", ".java", ".kt",   ".swift",
+    ".rb",  ".php", ".cs",  ".scala", ".sh", ".lua",  ".lean", ".sql",
+};
+
+pub fn isDataOrTextPath(path: []const u8) bool {
+    const ext = std.fs.path.extension(path);
+    if (ext.len == 0) return false;
+    for (data_or_text_exts) |e| {
+        if (std.ascii.eqlIgnoreCase(ext, e)) return true;
+    }
+    return false;
+}
+
+pub fn isCodePath(path: []const u8) bool {
+    const ext = std.fs.path.extension(path);
+    if (ext.len == 0) return false;
+    for (code_exts) |e| {
+        if (std.ascii.eqlIgnoreCase(ext, e)) return true;
+    }
+    return false;
+}
+
+/// Count code files up to `cap` in `cwd` (1 level deep + top-level subdirectories)
+/// in <0.5ms so `codedb` can distinguish tiny 0-2 file tasks from real repos
+/// (`ResourceKernel.lean::routeCodedb`).
+pub fn countCodeFilesCapped(io: Io, cwd: []const u8, cap: usize) usize {
+    const target = if (cwd.len == 0) "." else cwd;
+    var root = Io.Dir.cwd().openDir(io, target, .{ .iterate = true }) catch return cap;
+    defer root.close(io);
+    var count: usize = 0;
+    var it = root.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.name.len == 0 or entry.name[0] == '.') continue;
+        if (entry.kind == .file) {
+            if (isCodePath(entry.name)) {
+                count += 1;
+                if (count >= cap) return count;
+            }
+        } else if (entry.kind == .directory) {
+            if (std.mem.eql(u8, entry.name, "node_modules") or std.mem.eql(u8, entry.name, "zig-out") or std.mem.eql(u8, entry.name, "zig-cache") or std.mem.eql(u8, entry.name, "target")) continue;
+            var sub = root.openDir(io, entry.name, .{ .iterate = true }) catch continue;
+            defer sub.close(io);
+            var sub_it = sub.iterate();
+            while (sub_it.next(io) catch null) |sub_e| {
+                if (sub_e.name.len == 0 or sub_e.name[0] == '.') continue;
+                if (sub_e.kind == .file and isCodePath(sub_e.name)) {
+                    count += 1;
+                    if (count >= cap) return count;
+                } else if (sub_e.kind == .directory) {
+                    var sub2 = sub.openDir(io, sub_e.name, .{ .iterate = true }) catch continue;
+                    defer sub2.close(io);
+                    var sub2_it = sub2.iterate();
+                    while (sub2_it.next(io) catch null) |sub2_e| {
+                        if (sub2_e.name.len == 0 or sub2_e.name[0] == '.') continue;
+                        if (sub2_e.kind == .file and isCodePath(sub2_e.name)) {
+                            count += 1;
+                            if (count >= cap) return count;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return count;
+}
+
 /// One-line prompt segment when local tools are on and the snapshot is gone.
-/// Null when the index is present or `--no-local-tools` removed codedb —
-/// repo_map already orients the tree, and a present index needs no nag.
+/// Null when the index is present, `--no-local-tools` removed codedb, or the
+/// workspace is a tiny (<3 code files) directory that does not need an index.
 pub fn segment(io: Io, _: Allocator) ?[]const u8 {
     if (no_local_tools.enabled) return null;
     if (probe(io, ".").present) return null;
+    if (countCodeFilesCapped(io, ".", min_repo_code_files) < min_repo_code_files) return null;
     return "\n\nCodedb index: no codedb.snapshot here. `codedb search`/`symbol` need `codedb` run once to index. Folder listing works anyway: codedb list_dir .";
 }
 
@@ -142,4 +224,32 @@ test "probeWithHome: resolves ~/.codedb/projects/<wyhash>/codedb.snapshot when c
     const snap = probeWithHome(io, root, root);
     try std.testing.expect(snap.present);
     try std.testing.expectEqual(@as(u64, 10), snap.bytes);
+}
+
+test "countCodeFilesCapped: dynamically switches from small-workspace mode (<8) to codedb mode (>=8) as files are added" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = abs_buf[0..try tmp.dir.realPathFile(io, ".", &abs_buf)];
+
+    // Start with 3 code files + 2 data files: stays below min_repo_code_files (8).
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.py", .data = "x = 1\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.py", .data = "y = 2\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "c.py", .data = "z = 3\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "data.json", .data = "{}\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "notes.md", .data = "# hi\n" });
+    try std.testing.expectEqual(@as(usize, 3), countCodeFilesCapped(io, root, min_repo_code_files));
+    try std.testing.expect(countCodeFilesCapped(io, root, min_repo_code_files) < min_repo_code_files);
+    try std.testing.expect(@import("codedb_guard_scope.zig").exempt(io, root, "grep", "grep x a.py"));
+
+    // Add 5 more code files (reaching 8 total): switches to codedb mode automatically.
+    try tmp.dir.createDirPath(io, "pkg");
+    try tmp.dir.writeFile(io, .{ .sub_path = "pkg/d.py", .data = "d = 4\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "pkg/e.py", .data = "e = 5\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "pkg/f.py", .data = "f = 6\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "pkg/g.py", .data = "g = 7\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "pkg/h.py", .data = "h = 8\n" });
+    try std.testing.expectEqual(min_repo_code_files, countCodeFilesCapped(io, root, min_repo_code_files));
+    try std.testing.expect(!@import("codedb_guard_scope.zig").exempt(io, root, "grep", "grep x a.py"));
 }

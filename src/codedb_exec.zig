@@ -84,20 +84,57 @@ pub fn exec(ctx: ToolCtx, input: std.json.Value) !ToolOutput {
     };
     if (std.mem.eql(u8, sub, "list_dir")) return list_dir.exec(ctx, it.rest());
     if (std.mem.eql(u8, sub, "status")) return codedb_health.exec(ctx);
-    if (std.mem.eql(u8, sub, "around") or std.mem.eql(u8, sub, "explain")) return codedb_around.execAround(ctx, it.rest());
+    const cwd = ctx.agent_cwd orelse ".";
+    const is_tiny_workspace = codedb_health.countCodeFilesCapped(io, cwd, codedb_health.min_repo_code_files) < codedb_health.min_repo_code_files;
+    if (std.mem.eql(u8, sub, "around") or std.mem.eql(u8, sub, "explain")) {
+        if (is_tiny_workspace and std.mem.trim(u8, it.rest(), " \t").len > 0) {
+            const listing = try list_dir.exec(ctx, "");
+            defer gpa.free(listing.text);
+            return .{ .text = try std.fmt.allocPrint(gpa, "[small workspace (<{d} code files) — full file list below; use read_file directly instead of codedb {s}]\n{s}", .{ codedb_health.min_repo_code_files, sub, listing.text }) };
+        }
+        return codedb_around.execAround(ctx, it.rest());
+    }
     if (std.mem.eql(u8, sub, "path")) return codedb_around.execPath(ctx, it.rest());
     if (!allowed(sub)) return .{
         .text = try std.fmt.allocPrint(gpa, "codedb command '{s}' is not allowed here — advertised: context <task> · around <name> · callpath A B · list_dir <path> · status", .{sub}),
         .is_error = true,
     };
 
-    if (std.mem.eql(u8, sub, "context")) return execContext(ctx, it.rest(), input);
+    if (std.mem.eql(u8, sub, "context")) {
+        if (is_tiny_workspace) {
+            const listing = try list_dir.exec(ctx, "");
+            defer gpa.free(listing.text);
+            return .{
+                .text = try std.fmt.allocPrint(gpa, "[small workspace (<{d} code files) — full file list below; use read_file directly instead of codedb context]\n{s}", .{ codedb_health.min_repo_code_files, listing.text }),
+            };
+        }
+        return execContext(ctx, it.rest(), input);
+    }
 
     if (isPathSub(sub)) {
         if (firstPathArg(it.rest())) |path| {
             if (!harness_policy.confinedPath(path) or !harness_policy.noSymlinkEscape(io, path, ctx.agent_cwd))
                 return tools.outsideCwd(gpa, path);
+            if ((std.mem.eql(u8, sub, "outline") or std.mem.eql(u8, sub, "deps")) and codedb_health.isDataOrTextPath(path)) {
+                return .{
+                    .text = try std.fmt.allocPrint(gpa, "{s} is a data/text file (not an AST-indexed source file) — use read_file on {s} directly.", .{ path, path }),
+                };
+            }
+            if (is_tiny_workspace and (std.mem.eql(u8, sub, "outline") or std.mem.eql(u8, sub, "deps"))) {
+                const listing = try list_dir.exec(ctx, "");
+                defer gpa.free(listing.text);
+                return .{
+                    .text = try std.fmt.allocPrint(gpa, "[small workspace (<{d} code files) — full file list below; use read_file on {s} directly instead of codedb {s}]\n{s}", .{ codedb_health.min_repo_code_files, path, sub, listing.text }),
+                };
+            }
         }
+    }
+    if (!isPathSub(sub) and is_tiny_workspace) {
+        const listing = try list_dir.exec(ctx, "");
+        defer gpa.free(listing.text);
+        return .{
+            .text = try std.fmt.allocPrint(gpa, "[small workspace (<{d} code files) — full file list below; use read_file directly instead of codedb index queries]\n{s}", .{ codedb_health.min_repo_code_files, listing.text }),
+        };
     }
     if (std.mem.eql(u8, sub, "glob")) {
         if (firstPathArg(it.rest())) |pat| {

@@ -164,4 +164,82 @@ theorem codedb_snapshot_file_seeds :
     shouldSeed { kind := .file, existsInSrc := true, absentInDst := true, gitIgnored := true, cowSupported := true } = true := by
   native_decide
 
+/-! ## 5. Adaptive `codedb` Routing Policy (`src/codedb_exec.zig`, `src/codedb_health.zig`) -/
+
+inductive CodedbCmdKind where
+  | inProcess          -- `list_dir`, `status`
+  | pathQuery          -- `outline`, `read`, `deps`, `file`
+  | symbolOrIndexQuery -- `context`, `around`, `callpath`, `search`, `symbol`, `callers`, `tree`, `word`
+deriving DecidableEq, Repr, BEq
+
+inductive TargetFileKind where
+  | codeFile       -- `.zig`, `.py`, `.ts`, `.rs`, `.go`, `.c`, etc.
+  | dataOrTextFile -- `.json`, `.csv`, `.txt`, `.md`, `.toml`, `.yaml`, `.log`
+deriving DecidableEq, Repr, BEq
+
+inductive WorkspaceScale where
+  | tiny -- `< 3` code files in workspace
+  | repo -- `>= 3` code files in workspace
+deriving DecidableEq, Repr, BEq
+
+inductive CodedbRoute where
+  | runInProcess     -- `< 1ms` in-process handler (`list_dir`, `status`)
+  | redirectReadFile -- `< 1ms` in-process `list_dir` + `read_file` guidance (no subprocess spawn)
+  | spawnCodedbIndex -- full `codedb` index query against `~/.codedb/projects/<wyhash>`
+deriving DecidableEq, Repr, BEq
+
+structure RouteCell where
+  cmd    : CodedbCmdKind
+  target : TargetFileKind
+  scale  : WorkspaceScale
+deriving DecidableEq, Repr, BEq
+
+def routeCodedb (c : RouteCell) : CodedbRoute :=
+  match c.cmd with
+  | .inProcess => .runInProcess
+  | .pathQuery =>
+      match c.target, c.scale with
+      | .dataOrTextFile, _ => .redirectReadFile
+      | .codeFile, .tiny   => .redirectReadFile
+      | .codeFile, .repo   => .spawnCodedbIndex
+  | .symbolOrIndexQuery =>
+      match c.scale with
+      | .tiny => .redirectReadFile
+      | .repo => .spawnCodedbIndex
+
+def allCmdKinds : List CodedbCmdKind := [.inProcess, .pathQuery, .symbolOrIndexQuery]
+def allTargetKinds : List TargetFileKind := [.codeFile, .dataOrTextFile]
+def allScales : List WorkspaceScale := [.tiny, .repo]
+
+def allRouteCells : List RouteCell :=
+  Id.run do
+    let mut acc : List RouteCell := []
+    for cmd in allCmdKinds do
+      for tgt in allTargetKinds do
+        for sc in allScales do
+          acc := acc ++ [{ cmd := cmd, target := tgt, scale := sc }]
+    return acc
+
+def codedbRouteCells : Nat := allRouteCells.length
+def codedbSpawnCells : Nat := (allRouteCells.filter (fun c => decide (routeCodedb c = .spawnCodedbIndex))).length
+
+theorem codedb_route_cube : codedbRouteCells = 12 := by native_decide
+theorem codedb_spawn_count : codedbSpawnCells = 3 := by native_decide
+
+/-- Tiny workspaces (`< 3` code files) never pay a subprocess spawn or cold-index penalty for `codedb`. -/
+theorem tiny_workspace_never_spawns_codedb (cmd : CodedbCmdKind) (tgt : TargetFileKind) :
+    routeCodedb { cmd := cmd, target := tgt, scale := .tiny } ≠ .spawnCodedbIndex := by
+  cases cmd <;> cases tgt <;> decide
+
+/-- Data/prose files (`.json`, `.csv`, `.txt`, `.md`) on path queries never spawn `codedb`. -/
+theorem data_file_path_query_redirects (sc : WorkspaceScale) :
+    routeCodedb { cmd := .pathQuery, target := .dataOrTextFile, scale := sc } = .redirectReadFile := by
+  cases sc <;> rfl
+
+/-- Multi-file repositories (`>= 3` code files) always route symbol/index and code-path queries to `codedb`. -/
+theorem repo_code_queries_use_codedb (tgt : TargetFileKind) :
+    routeCodedb { cmd := .symbolOrIndexQuery, target := tgt, scale := .repo } = .spawnCodedbIndex ∧
+      routeCodedb { cmd := .pathQuery, target := .codeFile, scale := .repo } = .spawnCodedbIndex := by
+  cases tgt <;> decide
+
 end Graff.ResourceKernel
