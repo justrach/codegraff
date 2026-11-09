@@ -23,6 +23,8 @@ pub const Kind = enum {
     context_overflow,
     auth_failed,
     access_denied,
+    cyber_policy,
+    content_policy,
     invalid_request,
     network_transport,
     provider_error,
@@ -31,6 +33,8 @@ pub const Kind = enum {
         return @tagName(self);
     }
 };
+
+pub var g_session_cyber_policy: bool = false;
 
 pub const Attribution = enum {
     upstream_model,
@@ -165,6 +169,19 @@ fn fieldContainsAnyCI(etype: []const u8, code: ?[]const u8, msg: []const u8, nee
     return false;
 }
 
+pub fn isCyberPolicy(etype: []const u8, code: ?[]const u8, msg: []const u8) bool {
+    return fieldContainsAnyCI(etype, code, msg, &.{ "cyber_policy", "cybersecurity risk", "extra care with some cybersecurity requests", "daybreak access", "organization/status-and-access" });
+}
+
+pub fn isContentPolicy(etype: []const u8, code: ?[]const u8, msg: []const u8) bool {
+    return fieldContainsAnyCI(etype, code, msg, &.{ "content_policy_violation", "policy_violation", "content_filter", "safety_system", "violating our usage policy", "flagged as potentially violating" });
+}
+
+pub fn isGenericRequestRejected(code: ?[]const u8, msg: []const u8) bool {
+    if (code) |c| if (std.ascii.eqlIgnoreCase(c, "request_rejected")) return true;
+    return util.indexOfIgnoreCase(msg, "could not process this request") != null and util.indexOfIgnoreCase(msg, "check the request fields") != null;
+}
+
 const Subkind = enum {
     terminal_unavailable,
     model_not_found,
@@ -179,16 +196,15 @@ const Subkind = enum {
     context_overflow,
     auth_failed,
     access_denied,
+    cyber_policy,
+    content_policy,
+    request_rejected,
     invalid_request,
     gateway_internal,
     provider_error,
 };
 
-const Classification = struct {
-    kind: Kind,
-    sub: Subkind,
-    attribution: Attribution,
-};
+const Classification = struct { kind: Kind, sub: Subkind, attribution: Attribution };
 
 pub fn classify(in: Input) Classification {
     const code = in.code;
@@ -198,6 +214,12 @@ pub fn classify(in: Input) Classification {
 
     if (@import("compaction_window.zig").rejectedByProvider(in.message, code)) {
         return .{ .kind = .invalid_request, .sub = .compaction_rejected, .attribution = base_attr };
+    }
+    if (isCyberPolicy(in.etype, code, in.message)) {
+        return .{ .kind = .cyber_policy, .sub = .cyber_policy, .attribution = base_attr };
+    }
+    if (isContentPolicy(in.etype, code, in.message)) {
+        return .{ .kind = .content_policy, .sub = .content_policy, .attribution = base_attr };
     }
     if (quota.classify(in.etype, code, in.message)) |fault| return switch (fault) {
         .quota => blk: {
@@ -210,48 +232,35 @@ pub fn classify(in: Input) Classification {
         .authentication => .{ .kind = .auth_failed, .sub = .auth_failed, .attribution = if (is_gw) .gateway else .provider },
         .access_denied => .{ .kind = .access_denied, .sub = .access_denied, .attribution = base_attr },
     };
-    if (quota.isPlanUsageLimit(code)) {
-        return .{ .kind = .quota_exhausted, .sub = .plan_quota, .attribution = base_attr };
-    }
+    if (quota.isPlanUsageLimit(code)) return .{ .kind = .quota_exhausted, .sub = .plan_quota, .attribution = base_attr };
     if (std.mem.eql(u8, c, "model_not_found") or in.http_status == 404 or
         fieldContainsAnyCI(in.etype, code, in.message, &.{ "model_not_found", "model not found", "does not exist", "no such model", "decommissioned" }))
-    {
         return .{ .kind = .model_unavailable, .sub = .model_not_found, .attribution = base_attr };
-    }
-    if (std.mem.eql(u8, c, "model_unavailable")) {
-        return .{ .kind = .model_unavailable, .sub = .terminal_unavailable, .attribution = base_attr };
-    }
-    if (overflow.isContextOverflow(in.message, code)) {
-        return .{ .kind = .context_overflow, .sub = .context_overflow, .attribution = base_attr };
-    }
-    if (fieldContainsAnyCI(in.etype, code, in.message, &.{ "gateway_timeout", "upstream_timeout", "timed out", "deadline_exceeded" }) or in.http_status == 504 or in.http_status == 524) {
+    if (std.mem.eql(u8, c, "model_unavailable")) return .{ .kind = .model_unavailable, .sub = .terminal_unavailable, .attribution = base_attr };
+    if (overflow.isContextOverflow(in.message, code)) return .{ .kind = .context_overflow, .sub = .context_overflow, .attribution = base_attr };
+    if (fieldContainsAnyCI(in.etype, code, in.message, &.{ "gateway_timeout", "upstream_timeout", "timed out", "deadline_exceeded" }) or in.http_status == 504 or in.http_status == 524)
         return .{ .kind = .model_unavailable, .sub = .upstream_timeout, .attribution = base_attr };
-    }
-    if (fieldContainsAnyCI(in.etype, code, in.message, &.{ "overloaded", "server_is_overloaded", "model_capacity_exhausted", "engine_overloaded", "no capacity available" }) or in.http_status == 529) {
+    if (fieldContainsAnyCI(in.etype, code, in.message, &.{ "overloaded", "server_is_overloaded", "model_capacity_exhausted", "engine_overloaded", "no capacity available" }) or in.http_status == 529)
         return .{ .kind = .model_unavailable, .sub = .upstream_overload, .attribution = base_attr };
-    }
     if (fieldContainsAnyCI(in.etype, code, in.message, &.{ "rate_limit", "throttl", "too many requests", "temporarily at capacity", "at capacity", "retry shortly" }) or in.http_status == 429) {
         const mentions_cg = is_gw and util.indexOfIgnoreCase(in.message, "codegraff") != null;
-        return .{
-            .kind = .capacity_throttle,
-            .sub = if (mentions_cg) .gateway_capacity else .provider_throttle,
-            .attribution = if (mentions_cg) .gateway else base_attr,
-        };
+        return .{ .kind = .capacity_throttle, .sub = if (mentions_cg) .gateway_capacity else .provider_throttle, .attribution = if (mentions_cg) .gateway else base_attr };
     }
     if (fieldContainsAnyCI(in.etype, code, in.message, &.{ "service_unavailable", "bad_gateway", "bad gateway", "temporarily unavailable", "upstream_error", "upstream unavailable", "server_error", "internal server error", "token parsing" }) or
         (in.http_status != null and in.http_status.? >= 500))
     {
-        if (is_gw and util.indexOfIgnoreCase(in.message, "codegraff") != null and !containsAnyCI(in.message, &.{ "model", "upstream", "timed out" })) {
+        if (is_gw and util.indexOfIgnoreCase(in.message, "codegraff") != null and !containsAnyCI(in.message, &.{ "model", "upstream", "timed out" }))
             return .{ .kind = .provider_error, .sub = .gateway_internal, .attribution = .gateway };
-        }
         return .{ .kind = .model_unavailable, .sub = .upstream_unavailable, .attribution = base_attr };
     }
-    if (in.http_status == 400 or fieldContainsAnyCI(in.etype, code, in.message, &.{ "invalid_request", "bad_request", "unsupported_parameter", "unknown_parameter", "malformed" })) {
+    if (isGenericRequestRejected(code, in.message)) {
+        if (g_session_cyber_policy) return .{ .kind = .cyber_policy, .sub = .cyber_policy, .attribution = base_attr };
+        return .{ .kind = .invalid_request, .sub = .request_rejected, .attribution = if (is_gw) .gateway else base_attr };
+    }
+    if (in.http_status == 400 or fieldContainsAnyCI(in.etype, code, in.message, &.{ "invalid_request", "bad_request", "unsupported_parameter", "unknown_parameter", "malformed" }))
         return .{ .kind = .invalid_request, .sub = .invalid_request, .attribution = base_attr };
-    }
-    if (is_gw and (util.indexOfIgnoreCase(in.etype, "gateway") != null or util.indexOfIgnoreCase(in.message, "codegraff") != null)) {
+    if (is_gw and (util.indexOfIgnoreCase(in.etype, "gateway") != null or util.indexOfIgnoreCase(in.message, "codegraff") != null))
         return .{ .kind = .provider_error, .sub = .gateway_internal, .attribution = .gateway };
-    }
     return .{ .kind = .provider_error, .sub = .provider_error, .attribution = base_attr };
 }
 
@@ -384,6 +393,25 @@ pub fn format(arena: Allocator, in: Input) !Formatted {
             base_remedy = "Check your account permissions for this model, or switch models with /model.";
             allow_retry_prefix = false;
         },
+        .cyber_policy => {
+            if (isGenericRequestRejected(in.code, in.message)) {
+                try hw.print("CYBER_POLICY: The API rejected this continuation (request_rejected) after an earlier OpenAI cybersecurity policy flag (cyber_policy).", .{});
+            } else {
+                try hw.print("CYBER_POLICY: {s} blocked this request under OpenAI's cybersecurity policy (cyber_policy).", .{subject});
+            }
+            base_remedy = "Verify Daybreak access at https://platform.openai.com/settings/organization/status-and-access, start a new session with /new, or switch to a non-OpenAI model with /model.";
+            allow_retry_prefix = false;
+        },
+        .content_policy => {
+            try hw.print("CONTENT_POLICY: {s} blocked this request under its usage or content policy.", .{subject});
+            base_remedy = "Start a new session with /new or switch models with /model; continuing in a flagged session usually repeats the block.";
+            allow_retry_prefix = false;
+        },
+        .request_rejected => {
+            try hw.print("The API rejected this request without specifying which field or policy failed (request_rejected).", .{});
+            base_remedy = "If this session was previously flagged by a provider policy (such as cyber_policy) or carries incompatible saved state, start a new session with /new or switch models with /model.";
+            allow_retry_prefix = false;
+        },
         .invalid_request => {
             try hw.print("{s} rejected the request parameters.", .{subject});
             base_remedy = "Try rephrasing your prompt, or switch models with /model.";
@@ -393,16 +421,16 @@ pub fn format(arena: Allocator, in: Input) !Formatted {
         .provider_error => try hw.print("{s} returned an unexpected error.", .{subject}),
     }
 
-    var rem_low_buf: [160]u8 = undefined;
+    var rem_low_buf: [200]u8 = undefined;
     const use_prefix = allow_retry_prefix and retry_prefix.len > 0;
     const tail_remedy = lowerAfterRetryPrefix(base_remedy, use_prefix, &rem_low_buf);
-    var rem_buf: [224]u8 = undefined;
+    var rem_buf: [256]u8 = undefined;
     var rw: std.Io.Writer = .fixed(&rem_buf);
     if (use_prefix) try rw.writeAll(retry_prefix);
     try rw.writeAll(tail_remedy);
 
     var safe_buf: [400]u8 = undefined;
-    const safe_msg = sanitizeMessage(&safe_buf, in.message, in.redact_urls);
+    const safe_msg = sanitizeMessage(&safe_buf, in.message, in.redact_urls and cls.sub != .cyber_policy);
     var tech_buf: [640]u8 = undefined;
     var tw: std.Io.Writer = .fixed(&tech_buf);
     if (cls.kind == .quota_exhausted) {
@@ -492,14 +520,8 @@ pub fn parseCapturedHttpBody(arena: Allocator, raw: []const u8) ?CapturedEnvelop
 }
 
 pub fn reportEnvelope(self: *@import("agent.zig").Agent, etype: []const u8, code: ?[]const u8, msg: []const u8, request_id: ?[]const u8, attempts: usize) !void {
-    const formatted = try format(self.arena, .{
-        .provider = self.provider,
-        .etype = etype,
-        .code = code,
-        .message = msg,
-        .request_id = request_id,
-        .attempts = @max(attempts, 1),
-    });
+    if (isCyberPolicy(etype, code, msg)) g_session_cyber_policy = true;
+    const formatted = try format(self.arena, .{ .provider = self.provider, .etype = etype, .code = code, .message = msg, .request_id = request_id, .attempts = @max(attempts, 1) });
     self.last_api_error_detail = formatted.detail;
     try self.sayApiError("{s}", .{formatted.text});
 }
@@ -509,18 +531,9 @@ pub fn reportResponses(self: *@import("agent.zig").Agent, failure: @import("agen
     if (@import("compaction_window.zig").rejectedByProvider(failure.message, failure.code) or
         policy.isPlanUsageLimit(failure.code) or
         (std.mem.eql(u8, self.provider.id, "chatgpt-new") and policy.isAuthError(failure.authText())))
-    {
         return self.sayApiError("{s}", .{diagnostic});
-    }
-    const formatted = try format(self.arena, .{
-        .provider = self.provider,
-        .etype = failure.etype,
-        .code = failure.code,
-        .message = failure.message,
-        .request_id = failure.request_id,
-        .attempts = @max(attempts, 1),
-        .technical_override = diagnostic,
-    });
+    if (isCyberPolicy(failure.etype, failure.code, failure.message)) g_session_cyber_policy = true;
+    const formatted = try format(self.arena, .{ .provider = self.provider, .etype = failure.etype, .code = failure.code, .message = failure.message, .request_id = failure.request_id, .attempts = @max(attempts, 1), .technical_override = diagnostic });
     self.last_api_error_detail = formatted.detail;
     try self.sayApiError("{s}", .{formatted.text});
 }

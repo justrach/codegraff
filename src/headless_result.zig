@@ -32,7 +32,9 @@ pub fn classify(err: anyerror, detail: []const u8) Failure {
         util.indexOfIgnoreCase(detail, "HTTP 500") != null or util.indexOfIgnoreCase(detail, "HTTP 502") != null or
         util.indexOfIgnoreCase(detail, "HTTP 503") != null or util.indexOfIgnoreCase(detail, "HTTP 504") != null)
         return .{ .reason = "transient_failure", .exit_code = 75, .retryable = true };
-    if (util.indexOfIgnoreCase(detail, "HTTP 400") != null or util.indexOfIgnoreCase(detail, "invalid_request") != null)
+    if (util.indexOfIgnoreCase(detail, "HTTP 400") != null or util.indexOfIgnoreCase(detail, "invalid_request") != null or
+        util.indexOfIgnoreCase(detail, "cyber_policy") != null or util.indexOfIgnoreCase(detail, "content_policy") != null or
+        util.indexOfIgnoreCase(detail, "request_rejected") != null)
         return .{ .reason = "invalid_request", .exit_code = 78 };
     return .{ .reason = "failed", .exit_code = 1 };
 }

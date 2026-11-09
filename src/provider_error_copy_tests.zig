@@ -298,3 +298,59 @@ test "#1756: ACP v1 keeps error.data clean while ACP v2 emits structured graff/e
     }
     try testing.expect(found_detail);
 }
+
+test "#1756: OpenAI cyber_policy, content_policy, and request_rejected scream on ACP and never retry" {
+    defer copy.g_session_cyber_policy = false;
+    copy.g_session_cyber_policy = false;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // 1. Standalone generic request_rejected does not blame user prompt wording or claim upstream model fault.
+    const rej = try copy.format(a, .{
+        .provider = makeProvider("codegraff", "gpt-5.4"),
+        .code = "request_rejected",
+        .message = "We could not process this request. Check the request fields and try again.",
+        .request_id = "cg_req_rej_1",
+    });
+    try testing.expectEqualStrings("invalid_request", rej.detail.kind);
+    try testing.expectEqualStrings("gateway", rej.detail.attribution);
+    try testing.expect(std.mem.startsWith(u8, rej.detail.headline, "The API rejected this request without specifying which field or policy failed (request_rejected)."));
+    try testing.expect(std.mem.indexOf(u8, rej.detail.remedy, "cyber_policy") != null);
+    try testing.expect(!@import("agent_gateway_retry.zig").isShortGatewayFlake("", "request_rejected", "We could not process this request. Check the request fields and try again."));
+    try testing.expectEqual(subagent_run.FailKind.invalid, subagent_run.classifyFailure(error.ApiError, rej.text));
+
+    // 2. OpenAI / Codex cyber_policy screams CYBER_POLICY in headline and preserves Daybreak remediation URL.
+    var agent = makeTestAgent(a, null, "chatgpt-new", "gpt-5.4");
+    const failure: @import("agent_responses.zig").ResponsesFailure = .{
+        .code = "cyber_policy",
+        .message = "This content was flagged for possible cybersecurity risk. Apply for Daybreak access via https://platform.openai.com/settings/organization/status-and-access",
+    };
+    const diag = try @import("agent_responses.zig").failureDiagnostic(a, "chatgpt-new", failure);
+    try copy.reportResponses(&agent, failure, diag, 1);
+    try testing.expect(copy.g_session_cyber_policy);
+    try testing.expectEqualStrings("cyber_policy", agent.last_api_error_detail.?.kind);
+    try testing.expect(std.mem.startsWith(u8, agent.last_api_error.?, "CYBER_POLICY: OpenAI (gpt-5.4) blocked this request under OpenAI's cybersecurity policy (cyber_policy)."));
+    try testing.expect(std.mem.indexOf(u8, agent.last_api_error.?, "https://platform.openai.com/settings/organization/status-and-access") != null);
+    try testing.expectEqual(subagent_run.FailKind.invalid, subagent_run.classifyFailure(error.ApiError, agent.last_api_error));
+    try testing.expectEqual(@as(u8, 78), headless_result.classify(error.ApiError, agent.last_api_error.?).exit_code);
+
+    // 3. Subsequent continuation on codegraff that collapses to request_rejected retains the CYBER_POLICY banner.
+    const cont = try copy.format(a, .{
+        .provider = makeProvider("codegraff", "gpt-5.4"),
+        .code = "request_rejected",
+        .message = "We could not process this request. Check the request fields and try again.",
+    });
+    try testing.expectEqualStrings("cyber_policy", cont.detail.kind);
+    try testing.expect(std.mem.startsWith(u8, cont.detail.headline, "CYBER_POLICY: The API rejected this continuation (request_rejected) after an earlier OpenAI cybersecurity policy flag (cyber_policy)."));
+
+    // 4. General usage/content policy block (invalid_prompt with usage policy wording).
+    const pol = try copy.format(a, .{
+        .provider = makeProvider("openai", "gpt-5.4"),
+        .etype = "invalid_request_error",
+        .code = "invalid_prompt",
+        .message = "Invalid prompt: your prompt was flagged as potentially violating our usage policy.",
+    });
+    try testing.expectEqualStrings("content_policy", pol.detail.kind);
+    try testing.expect(std.mem.startsWith(u8, pol.detail.headline, "CONTENT_POLICY: OpenAI (gpt-5.4) blocked this request under its usage or content policy."));
+}

@@ -96,7 +96,9 @@ pub fn afterServerErrorOrParseReject(self: *Agent, etype: []const u8, code: ?[]c
     // its diagnostic also mentions capacity or a request-body parse error,
     // or a ChatGPT plan code OpenAI says to stop on, such as a spent allowance
     // whose message says "try again later" (ADR 0221).
+    const err_copy = @import("provider_error_copy.zig");
     if (quota.classify(etype, code, msg) != null or isModelUnavailable(code) or isStructuredOverflow(code) or quota.isPlanStop(code) or
+        err_copy.isCyberPolicy(etype, code, msg) or err_copy.isContentPolicy(etype, code, msg) or err_copy.isGenericRequestRejected(code, msg) or
         @import("compaction_window.zig").rejectedByProvider(msg, code)) return false;
     if (try retryTransientServerError(self, etype, code, msg, server_retries)) return true;
     if (try retryShortGatewayFlake(self, etype, code, msg, server_retries)) return true;
@@ -126,9 +128,11 @@ pub fn isShortGatewayFlake(etype: []const u8, code: ?[]const u8, msg: []const u8
     // Gateway 110-byte follow-up. etype is often invalid_request_error, which
     // would otherwise hard-fail on the "invalid" needle. Auth/quota still die,
     // and so does every ChatGPT plan code: its 503s have the transient ladder.
-    if (quota.classify(etype, code, msg) != null or isModelUnavailable(code) or isStructuredOverflow(code) or quota.isPlanCode(code)) return false;
+    const err_copy = @import("provider_error_copy.zig");
+    if (quota.classify(etype, code, msg) != null or isModelUnavailable(code) or isStructuredOverflow(code) or quota.isPlanCode(code) or
+        err_copy.isCyberPolicy(etype, code, msg) or err_copy.isContentPolicy(etype, code, msg) or err_copy.isGenericRequestRejected(code, msg)) return false;
     if (isBodyParseRejection(msg)) return true;
-    const hard = [_][]const u8{ "invalid", "authentication", "unauthorized", "insufficient", "quota", "permission", "tool_choice", "not found" };
+    const hard = [_][]const u8{ "invalid", "authentication", "unauthorized", "insufficient", "quota", "permission", "tool_choice", "not found", "cyber_policy", "policy_violation", "request_rejected" };
     for (hard) |n| {
         if (util.indexOfIgnoreCase(etype, n) != null) return false;
         if (util.indexOfIgnoreCase(msg, n) != null) return false;
@@ -196,7 +200,9 @@ pub const max_server_retries: usize = 3; // #opencode-parity: bounded retries fo
 /// surfaced mid-stream and should be retried, not hard-failed. Billing / quota /
 /// invalid-input errors are NOT transient and fall through to a hard fail.
 pub fn isTransientServerError(etype: []const u8, code: ?[]const u8, msg: []const u8) bool {
+    const err_copy = @import("provider_error_copy.zig");
     if (quota.classify(etype, code, msg) != null or isModelUnavailable(code) or isStructuredOverflow(code) or quota.isPlanStop(code) or
+        err_copy.isCyberPolicy(etype, code, msg) or err_copy.isContentPolicy(etype, code, msg) or err_copy.isGenericRequestRejected(code, msg) or
         @import("compaction_window.zig").rejectedByProvider(msg, code)) return false;
     // ChatGPT plan usage or user data temporarily unavailable (503, possibly
     // mid-stream): keep the credentials and back off like an overload.

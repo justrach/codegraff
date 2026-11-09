@@ -122,7 +122,7 @@ pub fn classifyFailure(err: anyerror, detail: ?[]const u8) FailKind {
     if (containsAnyCI(msg, &.{ "api key", "unauthorized", "expired", "authentication", "invalid_api_key", "401", "sign-in was rejected" })) return .auth;
     // "unavailable" must stay qualified: bare, it swallows every 5xx above.
     if (containsAnyCI(msg, &.{ "does not exist", "not found", "no such model", "decommission", "no longer", "model_not_found", "model unavailable", "model is unavailable", "404" })) return .model;
-    if (containsAnyCI(msg, &.{ "context length", "context window", "invalid", "unsupported", "not supported", "must be", "too long", "400", "parameter", "max_tokens", "bad request" })) return .invalid;
+    if (containsAnyCI(msg, &.{ "context length", "context window", "invalid", "unsupported", "not supported", "must be", "too long", "400", "parameter", "max_tokens", "bad request", "cyber_policy", "cybersecurity", "policy_violation", "content_policy", "request_rejected", "compaction state was rejected" })) return .invalid;
     return .unknown;
 }
 

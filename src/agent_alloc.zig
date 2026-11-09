@@ -39,6 +39,7 @@ pub fn reclaimMessages(self: *Agent) void {
     if (self.sub) return;
     const ma = main_mod.g_session_arena orelse return;
     if (self.messages.items.len == 0) {
+        @import("provider_error_copy.zig").g_session_cyber_policy = false;
         _ = ma.reset(.free_all);
         self.messages = std.json.Array.init(ma.allocator());
         return;
