@@ -22,6 +22,8 @@ const Io = std.Io;
 /// theme/animation choice. One spelling, so every reader and writer agrees.
 pub const settings_dir = ".harness";
 pub const settings_path = ".harness/settings.json";
+pub const settings_write_refusal = "refused: " ++ settings_path ++ " is the harness's own policy file (approvals, hooks, pre-approvals) — a model never widens its own permissions. Ask the USER to change config, or proceed without this tool.";
+pub const git_metadata_refusal = "refused: .git metadata (config, hooks, refs) is read-only to file tools — run git commands in shell instead";
 
 /// Read-only basics plus the build, so subagents are useful out of the box.
 /// Deliberately excludes `find` (its -exec/-delete make it an exec tool, not
@@ -191,6 +193,34 @@ fn beneath(path: []const u8, root: []const u8) bool {
     return std.fs.path.isSep(root[root.len - 1]) or std.fs.path.isSep(path[root.len]);
 }
 
+/// True when any path component names `.git` (including case-folded `.GIT` on
+/// APFS/NTFS and Windows trailing dots/spaces), blocking writes to `.git/config`,
+/// `.git/hooks/*`, and submodule `.git` files while allowing `.github/`,
+/// `.gitignore`, `.gitattributes`, `.gitmodules`, and `.githooks/`.
+pub fn protectsGitMetadata(path: []const u8) bool {
+    const trimmed = std.mem.trim(u8, path, " \t");
+    var it = std.mem.tokenizeAny(u8, trimmed, "/\\");
+    while (it.next()) |comp| {
+        const clean = std.mem.trimEnd(u8, comp, ". ");
+        if (std.ascii.eqlIgnoreCase(clean, ".git")) return true;
+    }
+    return false;
+}
+
+/// Refusal message when `write_file` or `edit_file` targets `.harness/settings.json`
+/// or `.git` internals, or null when the target is an ordinary file path.
+pub fn protectedWriteRefusal(path: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, path, " \t");
+    if (std.mem.eql(u8, trimmed, settings_path) or
+        std.mem.endsWith(u8, trimmed, "/" ++ settings_path) or
+        std.mem.endsWith(u8, trimmed, "\\" ++ settings_path))
+    {
+        return settings_write_refusal;
+    }
+    if (protectsGitMetadata(trimmed)) return git_metadata_refusal;
+    return null;
+}
+
 /// Defense-in-depth on top of lexical confinement. Permit symlinks only when
 /// every linked prefix resolves beneath the canonical tool root. Check the
 /// final component too, including for write targets. Dangling/looping links
@@ -200,6 +230,15 @@ fn beneath(path: []const u8, root: []const u8) bool {
 /// Root ancestors may themselves be symlinked (e.g. a platform's temp dir).
 /// This is a preflight check, not an atomic sandbox against concurrent renames.
 pub fn noSymlinkEscape(io: Io, path: []const u8, base: ?[]const u8) bool {
+    return scanPathSymlinks(io, path, base, false);
+}
+
+/// True when an in-root symlink along `path` resolves into `.git` metadata.
+pub fn symlinkEntersGitMetadata(io: Io, path: []const u8, base: ?[]const u8) bool {
+    return scanPathSymlinks(io, path, base, false) and !scanPathSymlinks(io, path, base, true);
+}
+
+fn scanPathSymlinks(io: Io, path: []const u8, base: ?[]const u8, forbid_git_meta: bool) bool {
     if (!confinedPath(path)) return false;
     var root = base orelse ".";
     var relative = path;
@@ -225,6 +264,7 @@ pub fn noSymlinkEscape(io: Io, path: []const u8, base: ?[]const u8) bool {
             if (Io.Dir.cwd().readLink(io, check_path, &buf)) |_| {
                 const n = Io.Dir.cwd().realPathFile(io, check_path, &buf) catch return false;
                 if (!beneath(buf[0..n], canonical_root)) return false;
+                if (forbid_git_meta and n > canonical_root.len and protectsGitMetadata(buf[canonical_root.len..n])) return false;
             } else |err| switch (err) {
                 error.NotLink, error.FileNotFound, error.NotDir => {},
                 else => return false,
@@ -381,6 +421,37 @@ test "the settings file has one spelling, and it lives in the settings dir" {
     // these two constants; a drift between them would split the file in two.
     try std.testing.expect(std.mem.startsWith(u8, settings_path, settings_dir ++ "/"));
     try std.testing.expect(confinedPath(settings_path)); // never escapes the project
+}
+
+test "protectsGitMetadata: blocks .git internals across separators while allowing .github/.gitignore/.githooks" {
+    for ([_][]const u8{
+        ".git",
+        ".git/",
+        ".git/config",
+        ".git/hooks/post-checkout",
+        "a/.git/config",
+        "sub/pkg/.git/hooks/pre-commit",
+        ".git\\config",
+        "a\\.git\\hooks\\pre-commit",
+        ".GIT/hooks/pre-commit",
+        "  .git/HEAD  ",
+    }) |blocked| {
+        try std.testing.expect(protectsGitMetadata(blocked));
+        try std.testing.expect(protectedWriteRefusal(blocked) != null);
+    }
+    for ([_][]const u8{
+        ".github/workflows/ci.yml",
+        ".gitignore",
+        "sub/.gitignore",
+        ".gitattributes",
+        ".gitmodules",
+        ".githooks/pre-push",
+        "src/git.zig",
+        "docs/.gitkeep",
+    }) |allowed| {
+        try std.testing.expect(!protectsGitMetadata(allowed));
+        try std.testing.expect(protectedWriteRefusal(allowed) == null);
+    }
 }
 
 // Regression fixtures for in-checkout dependency links (#1748).

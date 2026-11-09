@@ -213,12 +213,19 @@ pub const Approvals = struct {
     pub const isInterpreter = policy.isInterpreter;
     pub const isDestructiveGit = policy.isDestructiveGit;
     pub const destructiveGitAllowed = policy.destructiveGitAllowed;
+    pub const protectsGitMetadata = policy.protectsGitMetadata;
+    pub const protectedWriteRefusal = policy.protectedWriteRefusal;
+    pub const git_metadata_refusal = policy.git_metadata_refusal;
 };
 
 // The path-confinement pair is re-exported at file level too: exec.zig,
 // edit_verify.zig and imagegen.zig alias them straight off this module.
 pub const confinedPath = policy.confinedPath;
 pub const noSymlinkEscape = policy.noSymlinkEscape;
+pub const protectsGitMetadata = policy.protectsGitMetadata;
+pub const protectedWriteRefusal = policy.protectedWriteRefusal;
+pub const symlinkEntersGitMetadata = policy.symlinkEntersGitMetadata;
+pub const git_metadata_refusal = policy.git_metadata_refusal;
 
 test "the re-exports really are harness_policy's, not a second implementation" {
     // The classifiers and path rules moved to harness_policy.zig (#429) so

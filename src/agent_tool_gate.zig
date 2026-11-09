@@ -140,12 +140,8 @@ fn gateHarnessPolicyWrite(self: *Agent, call: ToolCall) !?ExecResult {
     const obj = json_args.object(call.input) orelse return null;
     const pv = obj.get("path") orelse return null;
     if (pv != .string) return null;
-    const path = std.mem.trim(u8, pv.string, " \t");
-    if (!(std.mem.eql(u8, path, Approvals.settings_path) or std.mem.endsWith(u8, path, "/" ++ Approvals.settings_path))) return null;
-    return .{
-        .text = try self.arena.dupe(u8, "refused: " ++ Approvals.settings_path ++ " is the harness's own policy file (approvals, hooks, pre-approvals) — a model never widens its own permissions. Ask the USER to change config, or proceed without this tool."),
-        .is_error = true,
-    };
+    const msg = Approvals.protectedWriteRefusal(pv.string) orelse return null;
+    return .{ .text = try self.arena.dupe(u8, msg), .is_error = true };
 }
 
 /// An informational child keeps its read, search and read-only shell tools
@@ -183,7 +179,7 @@ test "a read-only child keeps reads and read-only shell, not writes (#1360)" {
     try std.testing.expect(!readOnlyChildAllows(null, call(a, "edit_file", "{}")));
     // ADR 0232: on macOS a foreground command runs under the sandbox, which refuses the
     // write; in the background, or with no sandbox, only the allowlist runs.
-    try std.testing.expectEqual(@import("readonly_sandbox.zig").available, readOnlyChildAllows(null, call(a, "bash", "{\"command\":\"rm -rf build\"}")));
+    try std.testing.expectEqual(@import("readonly_sandbox.zig").isAvailable(), readOnlyChildAllows(null, call(a, "bash", "{\"command\":\"rm -rf build\"}")));
     try std.testing.expect(!readOnlyChildAllows(null, call(a, "bash", "{\"command\":\"rm -rf build\",\"run_in_background\":true}")));
     // ADR 0228: an MCP tool is a read when its server declares it read-only.
     var registry = mcp.Registry.empty(std.testing.allocator, std.testing.io);
@@ -455,13 +451,17 @@ test "gateHarnessPolicyWrite: the model never edits the harness's own policy fil
     const settings = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"path\":\".harness/settings.json\",\"content\":\"{}\"}", .{});
     const nested = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"path\":\"../other/.harness/settings.json\",\"content\":\"{}\"}", .{});
     const normal = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"path\":\"src/main.zig\",\"content\":\"x\"}", .{});
-    // Both write tools are refused on the policy file, any spelling of it…
+    const git_hook = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"path\":\".git/hooks/pre-commit\",\"content\":\"x\"}", .{});
+    const gitignore = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"path\":\".gitignore\",\"content\":\"x\"}", .{});
+    // Both write tools are refused on the policy file and .git metadata…
     const direct = (try gateHarnessPolicyWrite(&agent, .{ .id = "1", .name = "write_file", .input = settings })).?;
     try std.testing.expect(direct.is_error);
     try std.testing.expect(std.mem.indexOf(u8, direct.text, "policy file") != null);
     try std.testing.expect((try gateHarnessPolicyWrite(&agent, .{ .id = "2", .name = "edit_file", .input = nested })) != null);
-    // …while ordinary paths and other tools pass through untouched.
+    try std.testing.expect((try gateHarnessPolicyWrite(&agent, .{ .id = "5", .name = "write_file", .input = git_hook })) != null);
+    // …while ordinary paths, .gitignore, and other tools pass through untouched.
     try std.testing.expect((try gateHarnessPolicyWrite(&agent, .{ .id = "3", .name = "write_file", .input = normal })) == null);
+    try std.testing.expect((try gateHarnessPolicyWrite(&agent, .{ .id = "6", .name = "write_file", .input = gitignore })) == null);
     try std.testing.expect((try gateHarnessPolicyWrite(&agent, .{ .id = "4", .name = "bash", .input = settings })) == null);
 }
 
