@@ -373,7 +373,7 @@ test "rlm projection assignments take comments, keywords and sparse fields, then
     try std.testing.expect(std.mem.indexOf(u8, bad.text, "not a JSON array") != null);
 }
 
-test "megaharness multi-wave DAG overlaps post-barrier bound calls and records SRAM locality (ADR 0322)" {
+test "megaharness multi-wave DAG folds ALU registers, guards assertions, and records SRAM locality (ADR 0322)" {
     var f = try Fixture.init();
     defer f.deinit();
     try f.tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "alpha-payload" });
@@ -382,14 +382,18 @@ test "megaharness multi-wave DAG overlaps post-barrier bound calls and records S
     mh.reset();
     defer mh.reset();
 
-    // Wave 1 reads target.txt; then literal bindings `pa` and `pb` act as a
-    // barrier; then Wave 2 reads `pa` and `pb` concurrently using bound registers!
+    // Wave 1 folds `pa = "a.txt"` and `pb = "b.txt"` into `wave_binds` and launches
+    // `w1`, `ra`, and `rb` concurrently; then `assert_contains` verifies `ra` in-kernel;
+    // then Wave 2 launches `rc` and `rd` concurrently after the predicate barrier!
     const out = try f.run(
         "w1 = read_file(\"target.txt\")\n" ++
             "pa = \"a.txt\"\n" ++
-            "pb = \"b.txt\"\n" ++
             "ra = read_file(pa)\n" ++
+            "pb = \"b.txt\"\n" ++
             "rb = read_file(pb)\n" ++
+            "assert_contains(ra, \"alpha-payload\")\n" ++
+            "rc = read_file(pa)\n" ++
+            "rd = read_file(pb)\n" ++
             "print(w1, ra, rb)",
     );
     defer gpa.free(out.text);
@@ -398,8 +402,22 @@ test "megaharness multi-wave DAG overlaps post-barrier bound calls and records S
 
     const s = mh.snapshot();
     try std.testing.expectEqual(@as(u64, 1), s.scripts_fused);
-    try std.testing.expect(s.waves_launched >= 2);
-    try std.testing.expect(s.parallel_ops_fused >= 2);
-    try std.testing.expect(s.llm_round_trips_saved >= 5);
+    try std.testing.expectEqual(@as(u64, 2), s.waves_launched);
+    try std.testing.expectEqual(@as(u64, 2), s.alu_ops_folded);
+    try std.testing.expectEqual(@as(u64, 1), s.assertions_passed);
+    try std.testing.expect(s.parallel_ops_fused >= 5);
+    try std.testing.expect(s.llm_round_trips_saved >= 7);
     try std.testing.expect(s.sram_register_bytes > 0);
+
+    // Failing in-kernel assertion halts before downstream write_file mutation.
+    const halted = try f.run(
+        "ra = read_file(\"a.txt\")\n" ++
+            "assert_contains(ra, \"missing-sentinel\")\n" ++
+            "w = write_file(path=\"should_not_exist.txt\", content=\"bad\")\n" ++
+            "print(w)",
+    );
+    defer gpa.free(halted.text);
+    try std.testing.expect(halted.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, halted.text, "assert_contains failed") != null);
+    try std.testing.expectError(error.FileNotFound, f.tmp.dir.openFile(io, "should_not_exist.txt", .{}));
 }

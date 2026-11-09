@@ -359,6 +359,13 @@ export interface AfterToolCallResult {
   isError?: boolean;
 }
 
+export interface MegaharnessStats {
+  wavesLaunched: number;
+  opsExecuted: number;
+  parallelOpsFused: number;
+  llmRoundTripsSaved: number;
+}
+
 export interface ServerlessSessionSnapshot {
   version: 1;
   sessionId: string;
@@ -398,8 +405,8 @@ export interface ServerlessOptions {
   codingTools?: boolean | "readonly";
   /** Additional custom tools (created via `defineTool`). */
   tools?: ServerlessTool[];
-  /** Execute multiple tool calls from a single assistant response sequentially or in parallel. */
-  toolExecution?: "sequential" | "parallel";
+  /** Execute multiple tool calls sequentially, all in parallel, or in Megaharness dependency waves. */
+  toolExecution?: "sequential" | "parallel" | "wave";
   /** Per-turn tool-call ceiling (default 32). */
   maxToolCalls?: number;
   /** Session-wide model-call ceiling (default 64). */
@@ -468,7 +475,13 @@ export class ServerlessHarness {
   private fetcher: typeof fetch;
   private streamFn?: ServerlessStreamFn;
   private toolMap = new Map<string, ServerlessTool>();
-  private toolExecMode: "sequential" | "parallel";
+  private toolExecMode: "sequential" | "parallel" | "wave";
+  private mhStats: MegaharnessStats = {
+    wavesLaunched: 0,
+    opsExecuted: 0,
+    parallelOpsFused: 0,
+    llmRoundTripsSaved: 0,
+  };
   private maxToolCalls: number;
   private maxModelCalls: number;
   private totalModelCalls = 0;
@@ -559,6 +572,11 @@ export class ServerlessHarness {
   /** Return a read-only view of the current in-memory message history. */
   getMessages(): readonly ServerlessMessage[] {
     return this.messages;
+  }
+
+  /** Return Megaharness fused execution telemetry for this session (ADR 0322). */
+  getMegaharnessStats(): MegaharnessStats {
+    return { ...this.mhStats };
   }
 
   /** Export a serializable snapshot of conversation state and `InMemoryWorkspace` files. */
@@ -1054,13 +1072,48 @@ export class ServerlessHarness {
           }
         }
 
-        const executed = this.toolExecMode === "parallel"
-          ? await Promise.all(prepared.map(runOne))
-          : await (async () => {
-              const list = [];
-              for (const item of prepared) list.push(await runOne(item));
-              return list;
-            })();
+        const isMutating = (name: string) =>
+          name === "write_file" || name === "edit_file" || name === "bash";
+
+        this.mhStats.opsExecuted += prepared.length;
+        if (prepared.length > 1) {
+          this.mhStats.llmRoundTripsSaved += prepared.length - 1;
+        }
+
+        const executed = await (async () => {
+          if (this.toolExecMode === "parallel") {
+            if (prepared.length > 0) this.mhStats.wavesLaunched += 1;
+            if (prepared.length > 1) this.mhStats.parallelOpsFused += prepared.length;
+            return Promise.all(prepared.map(runOne));
+          }
+          if (this.toolExecMode === "wave") {
+            const out = [];
+            let i = 0;
+            while (i < prepared.length) {
+              if (isMutating(prepared[i].call.name)) {
+                this.mhStats.wavesLaunched += 1;
+                out.push(await runOne(prepared[i]));
+                i += 1;
+              } else {
+                const wave = [];
+                while (i < prepared.length && !isMutating(prepared[i].call.name)) {
+                  wave.push(prepared[i]);
+                  i += 1;
+                }
+                this.mhStats.wavesLaunched += 1;
+                if (wave.length > 1) this.mhStats.parallelOpsFused += wave.length;
+                out.push(...(await Promise.all(wave.map(runOne))));
+              }
+            }
+            return out;
+          }
+          const list = [];
+          for (const item of prepared) {
+            this.mhStats.wavesLaunched += 1;
+            list.push(await runOne(item));
+          }
+          return list;
+        })();
 
         for (const res of executed) {
           if (res.rejected) {
@@ -1490,6 +1543,12 @@ class ServerlessHarness:
         self.dedupe_tool_calls = dedupe_tool_calls
         self._steer_queue: List[str] = []
         self._followup_queue: List[str] = []
+        self._mh_stats: dict = {
+            "waves_launched": 0,
+            "ops_executed": 0,
+            "parallel_ops_fused": 0,
+            "llm_round_trips_saved": 0,
+        }
         self._tool_map: dict = {}
         if coding_tools == "readonly":
             for t in create_read_only_tools(self.workspace):
@@ -1507,6 +1566,9 @@ class ServerlessHarness:
     def follow_up(self, text: str) -> None:
         if text.strip():
             self._followup_queue.append(text)
+
+    def get_megaharness_stats(self) -> dict:
+        return dict(self._mh_stats)
 
     def export_state(self) -> dict:
         return {
@@ -1597,6 +1659,11 @@ class ServerlessHarness:
                         self.messages.append({"role": "user", "content": self._followup_queue.pop(0)})
                         continue
                     break
+                self._mh_stats["waves_launched"] += 1
+                self._mh_stats["ops_executed"] += len(calls)
+                if len(calls) > 1:
+                    self._mh_stats["parallel_ops_fused"] += len(calls)
+                    self._mh_stats["llm_round_trips_saved"] += len(calls) - 1
                 for call in calls:
                     name = call.get("name", "")
                     inp = call.get("input") or {}

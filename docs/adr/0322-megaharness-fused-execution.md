@@ -17,13 +17,16 @@ Prior to this ADR, `src/rlm.zig` overlapped only the *leading* literal statement
 
 ## Decision
 
-1. **Multi-Wave Dependency DAG Scheduling (`src/megaharness.zig`, `src/rlm.zig`)**:
-   - `megaharness.collectWave(arena, stmts, binds)` inspects the remaining statements at any wavefront boundary against the currently resolved `binds` register file.
-   - Consecutive safe calls (`read_file`, `codedb`, `llm_query`, `sleep_ms`, or `print(...)` of safe calls) whose argument identifiers are already bound in `binds` — and that have no intra-wave Read-After-Write (RAW) hazard — are grouped into a concurrent wavefront and launched together via `speculate` / `launchHost`.
+1. **Multi-Wave Dependency DAG Scheduling & SRAM Register ALU Folding (`src/megaharness.zig`, `src/rlm.zig`)**:
+   - `megaharness.collectWave(arena, stmts, binds)` inspects the remaining statements at any wavefront boundary against a shadow register file (`wave_binds`) seeded from `binds`.
+   - Pure local register ALU operations (`name = "literal"`, `name = [...]`, `name = {...}`, `len(x)`, `project(x, field)`) whose inputs are already resolved fold directly into `wave_binds` without breaking the concurrent wavefront (`alu_ops_folded`).
+   - Safe host calls (`read_file`, `codedb`, `llm_query`, `sleep_ms`, or `print(...)` of safe calls) whose argument identifiers are resolved in `wave_binds` — and that have no intra-wave Read-After-Write (RAW) or Write-After-Write (WAW) hazard on a pending host call — are grouped into a single concurrent wavefront and launched together via `speculate` / `launchHost`.
    - Pre-wave `claimed` cache entries are cleared at wave boundaries so post-mutation waves always observe fresh filesystem state while still overlapping within their own wave.
-2. **SRAM Register Locality & Fusion Telemetry (`/megaharness`, `/kernel`)**:
-   - `megaharness.Stats` records `scripts_fused`, `ops_executed`, `waves_launched`, `parallel_ops_fused`, `speculative_stream_hits`, `llm_round_trips_saved`, `sram_register_bytes` (bytes bound in local `rlm` registers), and `hbm_context_bytes_emitted` (bytes emitted by `print()` to the model context window).
-   - `/megaharness [json|reset]` (alias `/kernel`) surfaces these metrics in the line REPL and ACP.
+2. **In-Kernel Predicate Guards (`assert_contains`, `assert_eq`)**:
+   - `megaharness.evalAssert` evaluates `assert_contains(x, "needle")` and `assert_eq(x, "expected")` directly against `rlm` registers, acting as a wave barrier that halts execution before downstream mutations (`write_file`, `edit_file`, `bash`) when a precondition fails, without requiring an LLM round-trip.
+3. **Cross-Engine & Serverless Fusion Telemetry (`/megaharness`, `/kernel`, `ServerlessHarness`)**:
+   - `megaharness.Stats` records `scripts_fused`, `ops_executed`, `waves_launched`, `parallel_ops_fused`, `alu_ops_folded`, `speculative_stream_hits`, `native_batches_fused`, `native_batch_calls` (from `src/agent_tool_batch.zig`), `snapshot_chunks_reused` / `snapshot_bytes_reused` (from `src/session_snapshot.zig`), `assertions_passed` / `assertions_failed`, `llm_round_trips_saved`, `sram_register_bytes`, and `hbm_context_bytes_emitted`.
+   - `/megaharness [json|reset]` (alias `/kernel`) surfaces these metrics in the line REPL and ACP, and `ServerlessHarness.getMegaharnessStats()` / `get_megaharness_stats()` exposes wavefront fusion telemetry in the TypeScript and Python SDKs.
 
 ## Consequences
 
