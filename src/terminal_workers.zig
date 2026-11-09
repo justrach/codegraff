@@ -351,7 +351,7 @@ pub fn tryHandle(root: *Agent, line: []const u8, out: *Io.Writer) !bool {
     }
     const id = rest;
     if (id.len > 0 and !activity.validId(id)) {
-        try out.writeAll("usage: /workers [child-id | send <id> <message>]\n");
+        try out.writeAll("usage: /workers [child-id] (or /workers send <id> <message>)\n");
         return true;
     }
     const self = @import("proc_identity.zig").selfRecord(root.io);

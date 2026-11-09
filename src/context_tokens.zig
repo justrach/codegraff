@@ -232,14 +232,41 @@ fn valueLen(value: Value) usize {
 }
 
 fn stringLen(text: []const u8) usize {
-    if (!std.unicode.utf8ValidateSlice(text)) return stringifyLen(text);
-    return encodedStringLen(text);
+    var count: usize = text.len +| 2;
+    var i: usize = 0;
+    const width = 16;
+    const Bytes = @Vector(width, u8);
+    while (text.len - i >= width) : (i += width) {
+        const bytes: Bytes = text[i..][0..width].*;
+        if (@reduce(.Or, bytes >= @as(Bytes, @splat(0x80)))) {
+            if (!std.unicode.utf8ValidateSlice(text[i..])) return stringifyLen(text);
+            return count +| encodedStringTailExtra(text[i..]);
+        }
+        const controls = bytes < @as(Bytes, @splat(0x20));
+        const quotes = bytes == @as(Bytes, @splat('"'));
+        const slashes = bytes == @as(Bytes, @splat('\\'));
+        if (@reduce(.Or, controls) or @reduce(.Or, quotes) or @reduce(.Or, slashes)) {
+            for (text[i..][0..width]) |byte| count +|= escapeExtra(byte);
+        }
+    }
+    while (i < text.len) : (i += 1) {
+        if (text[i] >= 0x80) {
+            if (!std.unicode.utf8ValidateSlice(text[i..])) return stringifyLen(text);
+            return count +| encodedStringTailExtra(text[i..]);
+        }
+        count +|= escapeExtra(text[i]);
+    }
+    return count;
 }
 
 /// Default Stringify leaves Unicode and '/' alone, escapes quotes/backslashes,
 /// and uses either a two-byte short escape or six-byte \u00XX for controls.
 fn encodedStringLen(text: []const u8) usize {
-    var count: usize = text.len +| 2;
+    return text.len +| 2 +| encodedStringTailExtra(text);
+}
+
+fn encodedStringTailExtra(text: []const u8) usize {
+    var count: usize = 0;
     var i: usize = 0;
     const width = 16;
     const Bytes = @Vector(width, u8);
@@ -445,4 +472,11 @@ test "#1686 a counted request recalibrates compaction state, and other sizes kee
     try blob.put(arena, "type", .{ .string = "compaction" });
     try blob.put(arena, "encrypted_content", .{ .string = state });
     try std.testing.expect(estimatedTokens(.{ .object = blob }) < 80_000);
+}
+
+test "single-pass SIMD stringLen matches std.json.Stringify for ASCII, multi-byte UTF-8, and invalid UTF-8" {
+    try expectSerializedLen(Value{ .string = "0123456789abcdef0123456789abcdef\n\"\\\t\x01" });
+    try expectSerializedLen(Value{ .string = "0123456789abcdef0123456789abcdef—λ🔥\n\"" });
+    try expectSerializedLen(Value{ .string = "0123456789abcdef0123456789abcdef\xff\xfe" });
+    try expectSerializedLen(Value{ .string = "short\xff" });
 }

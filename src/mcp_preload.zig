@@ -31,7 +31,7 @@ pub fn namedServers(self: *Agent) bool {
     var loaded: std.ArrayList(u8) = .empty;
     for (reg_tools, 0..) |tool, i| {
         const server = tool.serverName();
-        if (!firstOfServer(reg_tools[0..i], server) or !names(text, server)) continue;
+        if (!firstOfServer(reg_tools[0..i], server) or !namesServerOrTool(text, reg_tools, server)) continue;
         if (gate.serverCost(reg_tools, server) > budget_bytes) continue;
         for (reg_tools) |t| if (std.mem.eql(u8, t.serverName(), server) and gate.blocked(reg_tools, t.qualified_name)) {
             gate.autoLoad(self.arena, reg_tools, t.qualified_name);
@@ -94,6 +94,20 @@ const rlm_hint = "To fetch from these tools and write a file from the results, o
 fn firstOfServer(before: []const mcp.Tool, server: []const u8) bool {
     for (before) |t| if (std.mem.eql(u8, t.serverName(), server)) return false;
     return true;
+}
+
+/// True when `text` names `server`, one of its `mcp__<server>__<tool>` names,
+/// or a compound (`_` / `-`, >= 5 chars) `original_name` belonging to `server`.
+pub fn namesServerOrTool(text: []const u8, reg_tools: []const mcp.Tool, server: []const u8) bool {
+    if (names(text, server)) return true;
+    for (reg_tools) |t| {
+        if (!std.mem.eql(u8, t.serverName(), server)) continue;
+        if (names(text, t.qualified_name)) return true;
+        if (t.original_name.len >= 5 and
+            (std.mem.indexOfScalar(u8, t.original_name, '_') != null or std.mem.indexOfScalar(u8, t.original_name, '-') != null) and
+            names(text, t.original_name)) return true;
+    }
+    return false;
 }
 
 /// Whether `text` names `server` as a whole word, ignoring case. Words are
@@ -179,4 +193,16 @@ test "a server is named only as a whole word, in any case" {
     try std.testing.expect(!names("the linearity of the fit", "linear"));
     try std.testing.expect(!names("codedb-pro-extra", "codedb-pro"));
     try std.testing.expect(!names("", "linear"));
+
+    const tools = [_]mcp.Tool{.{
+        .server_name = "linear",
+        .server_index = 0,
+        .original_name = "list_issues",
+        .qualified_name = "mcp__linear__list_issues",
+        .description = "List issues",
+        .input_schema = .null,
+    }};
+    try std.testing.expect(namesServerOrTool("Call list_issues to fetch the open tickets", &tools, "linear"));
+    try std.testing.expect(namesServerOrTool("Run mcp__linear__list_issues now", &tools, "linear"));
+    try std.testing.expect(!namesServerOrTool("List the local files", &tools, "linear"));
 }

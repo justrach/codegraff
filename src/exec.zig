@@ -305,7 +305,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             .text => |text| .{ .text = text },
             .truncated => |value| blk: {
                 defer gpa.free(value.head);
-                break :blk .{ .text = try std.fmt.allocPrint(gpa, "{s}\n\n[read_file preview: {d}-byte file exceeds the {d} KiB whole-file limit; use start_line/end_line for byte-exact windows]", .{ util.utf8Prefix(value.head, value.head.len), value.total_bytes, read_file.max_bytes / 1024 }) };
+                break :blk .{ .text = try std.fmt.allocPrint(gpa, "{s}\n\n[read_file preview: {d}-byte file exceeds the {d} KiB whole-file limit; use start_line/end_line for byte-exact windows, or codedb outline/around for symbol structure]", .{ util.utf8Prefix(value.head, value.head.len), value.total_bytes, read_file.max_bytes / 1024 }) };
             },
             .binary => |size| blk: {
                 // An image is only "binary" to a text-only model: stage the

@@ -19,13 +19,44 @@ pub const Snapshot = struct {
     bytes: u64 = 0,
 };
 
+/// 16-hex-character Wyhash(0, canonical_cwd) directory key used by `codedb`
+/// under `~/.codedb/projects/<hash>/`.
+pub fn projectHashHex(canonical_cwd: []const u8, out: *[16]u8) []const u8 {
+    const h = std.hash.Wyhash.hash(0, canonical_cwd);
+    return std.fmt.bufPrint(out, "{x:0>16}", .{h}) catch "";
+}
+
+fn posixHome() ?[]const u8 {
+    if (comptime @import("builtin").os.tag == .windows or @import("builtin").os.tag == .wasi) return null;
+    const raw = std.c.getenv("HOME") orelse return null;
+    const s = std.mem.span(raw);
+    return if (s.len > 0) s else null;
+}
+
 pub fn probe(io: Io, cwd: []const u8) Snapshot {
+    return probeWithHome(io, cwd, posixHome());
+}
+
+pub fn probeWithHome(io: Io, cwd: []const u8, home: ?[]const u8) Snapshot {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = if (cwd.len == 0 or std.mem.eql(u8, cwd, "."))
+    const target = if (cwd.len == 0) "." else cwd;
+    const local_path = if (std.mem.eql(u8, target, "."))
         snapshot_name
     else
-        std.fmt.bufPrint(&buf, "{s}/{s}", .{ cwd, snapshot_name }) catch return .{ .present = false };
-    const st = Io.Dir.cwd().statFile(io, path, .{}) catch return .{ .present = false };
+        std.fmt.bufPrint(&buf, "{s}/{s}", .{ target, snapshot_name }) catch return .{ .present = false };
+    if (Io.Dir.cwd().statFile(io, local_path, .{})) |st| {
+        if (st.kind == .file) return .{ .present = true, .bytes = st.size };
+    } else |_| {}
+
+    const h_dir = home orelse return .{ .present = false };
+    var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs_len = Io.Dir.cwd().realPathFile(io, target, &abs_buf) catch return .{ .present = false };
+    var hex_buf: [16]u8 = undefined;
+    const hex = projectHashHex(abs_buf[0..abs_len], &hex_buf);
+    if (hex.len != 16) return .{ .present = false };
+    var proj_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const proj_snap = std.fmt.bufPrint(&proj_buf, "{s}/.codedb/projects/{s}/{s}", .{ h_dir, hex, snapshot_name }) catch return .{ .present = false };
+    const st = Io.Dir.cwd().statFile(io, proj_snap, .{}) catch return .{ .present = false };
     if (st.kind != .file) return .{ .present = false };
     return .{ .present = true, .bytes = st.size };
 }
@@ -89,4 +120,26 @@ test "segment is silent when no-local-tools is on" {
     defer no_local_tools.enabled = saved;
     no_local_tools.enabled = true;
     try std.testing.expect(segment(std.testing.io, std.testing.allocator) == null);
+}
+
+test "probeWithHome: resolves ~/.codedb/projects/<wyhash>/codedb.snapshot when cwd has no local snapshot" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = abs_buf[0..try tmp.dir.realPathFile(io, ".", &abs_buf)];
+    var hex_buf: [16]u8 = undefined;
+    const hex = projectHashHex(root, &hex_buf);
+    try std.testing.expectEqual(@as(usize, 16), hex.len);
+
+    var rel_buf: [256]u8 = undefined;
+    const proj_dir = try std.fmt.bufPrint(&rel_buf, ".codedb/projects/{s}", .{hex});
+    try tmp.dir.createDirPath(io, proj_dir);
+    var snap_buf: [256]u8 = undefined;
+    const snap_rel = try std.fmt.bufPrint(&snap_buf, "{s}/{s}", .{ proj_dir, snapshot_name });
+    try tmp.dir.writeFile(io, .{ .sub_path = snap_rel, .data = "0123456789" });
+
+    const snap = probeWithHome(io, root, root);
+    try std.testing.expect(snap.present);
+    try std.testing.expectEqual(@as(u64, 10), snap.bytes);
 }

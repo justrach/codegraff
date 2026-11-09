@@ -8,7 +8,7 @@ const process_runner = @import("process_runner.zig");
 const runCapped = process_runner.runCapped;
 const ranOk = process_runner.ranOk;
 
-pub const warm_cache_dirs = [_][]const u8{ ".zig-cache", "zig-cache", "node_modules" };
+pub const warm_cache_dirs = [_][]const u8{ ".zig-cache", "zig-cache", "node_modules", ".codedb", "codedb.snapshot" };
 
 const darwin_clone = if (builtin.os.tag == .macos) struct {
     extern "c" fn clonefile(src: [*:0]const u8, dst: [*:0]const u8, flags: u32) c_int;
@@ -38,17 +38,18 @@ pub fn cloneCowTree(gpa: Allocator, io: Io, src_path: []const u8, dst_path: []co
     return false;
 }
 
-/// Seed a newly created git worktree with CoW clones of gitignored build/dep
+/// Seed a newly created git worktree with CoW clones of gitignored build/dep/index
 /// caches from the parent workspace (`src_cwd`), returning how many caches were
-/// seeded. Only directories confirmed gitignored by `git check-ignore -q` are
-/// seeded so `git status --porcelain` in the worktree stays clean.
+/// seeded. Only directories and snapshot files (`codedb.snapshot`) confirmed
+/// gitignored by `git check-ignore -q` are seeded so `git status --porcelain`
+/// in the worktree stays clean (`ResourceKernel.lean::seed_preserves_clean_porcelain`).
 pub fn seedWarmCaches(gpa: Allocator, io: Io, arena: Allocator, src_cwd: []const u8, dst_wt: []const u8) usize {
     var seeded: usize = 0;
     var argv_buf: [24][]const u8 = undefined;
     for (warm_cache_dirs) |name| {
         const src_dir = std.fs.path.join(arena, &.{ src_cwd, name }) catch continue;
         const st = Io.Dir.cwd().statFile(io, src_dir, .{}) catch continue;
-        if (st.kind != .directory) continue;
+        if (st.kind != .directory and st.kind != .file) continue;
         const dst_dir = std.fs.path.join(arena, &.{ dst_wt, name }) catch continue;
         if (Io.Dir.cwd().statFile(io, dst_dir, .{})) |_| continue else |_| {}
         const ign = runCapped(gpa, io, safeGitArgv(&argv_buf, dst_wt, &.{ "check-ignore", "-q", name }), 1024, 1024, 5_000) catch continue;
@@ -59,10 +60,68 @@ pub fn seedWarmCaches(gpa: Allocator, io: Io, arena: Allocator, src_cwd: []const
         if (!ranOk(ign)) continue;
         if (cloneCowTree(gpa, io, src_dir, dst_dir)) seeded += 1;
     }
+    if (seedCodedbProjectDir(gpa, io, arena, src_cwd, dst_wt, posixHome())) seeded += 1;
     return seeded;
 }
 
+fn posixHome() ?[]const u8 {
+    if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi) return null;
+    const raw = std.c.getenv("HOME") orelse return null;
+    const s = std.mem.span(raw);
+    return if (s.len > 0) s else null;
+}
+
+/// CoW-clone `~/.codedb/projects/<wyhash(src_cwd)>` to `~/.codedb/projects/<wyhash(dst_wt)>`
+/// so isolated worktree subagents inherit the parent's warm `codedb` index
+/// (`codedb.snapshot`, `trigram.*`, `word.index`) in <1ms without re-indexing.
+pub fn seedCodedbProjectDir(gpa: Allocator, io: Io, arena: Allocator, src_cwd: []const u8, dst_wt: []const u8, home: ?[]const u8) bool {
+    const h_dir = home orelse return false;
+    var src_abs_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const src_abs = src_abs_buf[0 .. Io.Dir.cwd().realPathFile(io, src_cwd, &src_abs_buf) catch return false];
+    var dst_abs_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dst_abs = dst_abs_buf[0 .. Io.Dir.cwd().realPathFile(io, dst_wt, &dst_abs_buf) catch return false];
+    if (std.mem.eql(u8, src_abs, dst_abs)) return false;
+
+    const codedb_health = @import("codedb_health.zig");
+    var src_hex_buf: [16]u8 = undefined;
+    const src_hex = codedb_health.projectHashHex(src_abs, &src_hex_buf);
+    var dst_hex_buf: [16]u8 = undefined;
+    const dst_hex = codedb_health.projectHashHex(dst_abs, &dst_hex_buf);
+    if (src_hex.len != 16 or dst_hex.len != 16) return false;
+
+    const src_proj = std.fmt.allocPrint(arena, "{s}/.codedb/projects/{s}", .{ h_dir, src_hex }) catch return false;
+    const src_snap = std.fmt.allocPrint(arena, "{s}/codedb.snapshot", .{src_proj}) catch return false;
+    if (Io.Dir.cwd().statFile(io, src_snap, .{})) |st| {
+        if (st.kind != .file) return false;
+    } else |_| return false;
+
+    const dst_proj = std.fmt.allocPrint(arena, "{s}/.codedb/projects/{s}", .{ h_dir, dst_hex }) catch return false;
+    if (Io.Dir.cwd().statFile(io, dst_proj, .{})) |_| return false else |_| {}
+    if (!cloneCowTree(gpa, io, src_proj, dst_proj)) return false;
+
+    if (std.fmt.allocPrint(arena, "{s}/cli-daemon.lock", .{dst_proj})) |lock_p| {
+        Io.Dir.cwd().deleteFile(io, lock_p) catch {};
+    } else |_| {}
+    if (std.fmt.allocPrint(arena, "{s}/project.txt", .{dst_proj})) |proj_txt| {
+        Io.Dir.cwd().writeFile(io, .{ .sub_path = proj_txt, .data = dst_abs }) catch {};
+    } else |_| {}
+    return true;
+}
+
+pub fn cleanCodedbProjectDir(io: Io, wt_path: []const u8, home: ?[]const u8) void {
+    const h_dir = home orelse return;
+    var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const wt_abs = if (Io.Dir.cwd().realPathFile(io, wt_path, &abs_buf)) |n| abs_buf[0..n] else |_| wt_path;
+    var hex_buf: [16]u8 = undefined;
+    const hex = @import("codedb_health.zig").projectHashHex(wt_abs, &hex_buf);
+    if (hex.len != 16) return;
+    var proj_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const proj_dir = std.fmt.bufPrint(&proj_buf, "{s}/.codedb/projects/{s}", .{ h_dir, hex }) catch return;
+    Io.Dir.cwd().deleteTree(io, proj_dir) catch {};
+}
+
 fn cleanWarmCaches(io: Io, wt_path: []const u8) void {
+    cleanCodedbProjectDir(io, wt_path, posixHome());
     var dir = Io.Dir.cwd().openDir(io, wt_path, .{}) catch return;
     defer dir.close(io);
     for (warm_cache_dirs) |name| {
@@ -345,6 +404,17 @@ test "cloneCowTree: clones existing cache directory into worktree via CoW/reflin
         try Io.Dir.cwd().createDirPath(io, dst_cache);
     }
 
+    const src_snap = try std.fs.path.join(arena, &.{ root, "codedb.snapshot" });
+    const dst_snap = try std.fs.path.join(arena, &.{ dst_wt, "codedb.snapshot" });
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = src_snap, .data = "codedb-index-v1" });
+    const snap_cloned = cloneCowTree(gpa, io, src_snap, dst_snap);
+    if (comptime builtin.os.tag == .macos) {
+        try std.testing.expect(snap_cloned);
+        const snap_back = try Io.Dir.cwd().readFileAlloc(io, dst_snap, arena, .limited(64));
+        try std.testing.expectEqualStrings("codedb-index-v1", snap_back);
+    }
+
     cleanWarmCaches(io, dst_wt);
     try std.testing.expectError(error.FileNotFound, Io.Dir.cwd().statFile(io, dst_cache, .{}));
+    try std.testing.expectError(error.FileNotFound, Io.Dir.cwd().statFile(io, dst_snap, .{}));
 }

@@ -39,9 +39,18 @@ pub fn isAlreadySpilled(body: []const u8) bool {
 /// Returns `null` if `body` is below `min_inline_bytes`, already spilled, or
 /// if the digest would not shrink `body`.
 pub fn formatPrunedDigest(arena: Allocator, body: []const u8, min_inline_bytes: usize) ?[]const u8 {
+    return formatPrunedDigestWithGpa(arena, arena, body, min_inline_bytes);
+}
+
+/// 3-arena variant (`ResourceKernel.lean::prune_reclaim_zero_root_leak`):
+/// `gpa` owns `tool_handle.shapeHint` JSON scanner scratch (freed immediately),
+/// while `arena` (`agent.historyAlloc()`) owns the surviving digest slice.
+pub fn formatPrunedDigestWithGpa(gpa: Allocator, arena: Allocator, body: []const u8, min_inline_bytes: usize) ?[]const u8 {
     if (body.len < min_inline_bytes) return null;
     if (isAlreadySpilled(body)) return null;
-    const hint = tool_handle.shapeHint(arena, arena, body);
+    var hint_arena = std.heap.ArenaAllocator.init(gpa);
+    defer hint_arena.deinit();
+    const hint = tool_handle.shapeHint(gpa, hint_arena.allocator(), body);
     const head = util.utf8Prefix(body, head_preview_bytes);
     const tail = output_elide.utf8Suffix(body, tail_preview_bytes);
     const digest = if (hint.len > 0)
@@ -60,16 +69,16 @@ pub fn formatPrunedDigest(arena: Allocator, body: []const u8, min_inline_bytes: 
     return digest;
 }
 
-fn pruneBodyInPlace(arena: Allocator, slot: *Value, min_inline_bytes: usize) usize {
+fn pruneBodyInPlace(gpa: Allocator, arena: Allocator, slot: *Value, min_inline_bytes: usize) usize {
     if (slot.* != .string) return 0;
     const orig = slot.string;
-    const digest = formatPrunedDigest(arena, orig, min_inline_bytes) orelse return 0;
+    const digest = formatPrunedDigestWithGpa(gpa, arena, orig, min_inline_bytes) orelse return 0;
     const saved = orig.len - digest.len;
     slot.* = .{ .string = digest };
     return saved;
 }
 
-fn pruneMessage(arena: Allocator, msg: *Value, min_inline_bytes: usize) usize {
+fn pruneMessage(gpa: Allocator, arena: Allocator, msg: *Value, min_inline_bytes: usize) usize {
     if (msg.* != .object) return 0;
     var reclaimed: usize = 0;
 
@@ -77,7 +86,7 @@ fn pruneMessage(arena: Allocator, msg: *Value, min_inline_bytes: usize) usize {
     if (msg.object.get("type")) |t| {
         if (t == .string and std.mem.eql(u8, t.string, "function_call_output")) {
             if (msg.object.getPtr("output")) |out_ptr| {
-                reclaimed += pruneBodyInPlace(arena, out_ptr, min_inline_bytes);
+                reclaimed += pruneBodyInPlace(gpa, arena, out_ptr, min_inline_bytes);
             }
             return reclaimed;
         }
@@ -89,7 +98,7 @@ fn pruneMessage(arena: Allocator, msg: *Value, min_inline_bytes: usize) usize {
     // OpenAI chat wire: {"role": "tool", "content": "..."}
     if (std.mem.eql(u8, role_val.string, "tool")) {
         if (msg.object.getPtr("content")) |content_ptr| {
-            reclaimed += pruneBodyInPlace(arena, content_ptr, min_inline_bytes);
+            reclaimed += pruneBodyInPlace(gpa, arena, content_ptr, min_inline_bytes);
         }
         return reclaimed;
     }
@@ -104,14 +113,14 @@ fn pruneMessage(arena: Allocator, msg: *Value, min_inline_bytes: usize) usize {
             if (btype != .string or !std.mem.eql(u8, btype.string, "tool_result")) continue;
             const bcontent = block.object.getPtr("content") orelse continue;
             if (bcontent.* == .string) {
-                reclaimed += pruneBodyInPlace(arena, bcontent, min_inline_bytes);
+                reclaimed += pruneBodyInPlace(gpa, arena, bcontent, min_inline_bytes);
             } else if (bcontent.* == .array) {
                 for (bcontent.array.items) |*sub| {
                     if (sub.* != .object) continue;
                     const stype = sub.object.get("type") orelse continue;
                     if (stype != .string or !std.mem.eql(u8, stype.string, "text")) continue;
                     if (sub.object.getPtr("text")) |tptr| {
-                        reclaimed += pruneBodyInPlace(arena, tptr, min_inline_bytes);
+                        reclaimed += pruneBodyInPlace(gpa, arena, tptr, min_inline_bytes);
                     }
                 }
             }
@@ -130,10 +139,11 @@ pub fn pruneOldToolResults(agent: *Agent, keep_recent_messages: usize, min_inlin
     const cutoff = items.len - keep_recent_messages;
     const threshold = if (min_inline_bytes == 0) default_min_inline_bytes else min_inline_bytes;
     const before_local = agent.fullInputEstimateTokens();
+    const hist_alloc = agent.historyAlloc();
 
     var reclaimed: usize = 0;
     for (items[0..cutoff]) |*msg| {
-        reclaimed += pruneMessage(agent.arena, msg, threshold);
+        reclaimed += pruneMessage(agent.gpa, hist_alloc, msg, threshold);
     }
     if (reclaimed > 0) {
         const after_local = agent.fullInputEstimateTokens();
