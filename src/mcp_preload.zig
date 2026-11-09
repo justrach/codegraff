@@ -23,7 +23,7 @@ pub const budget_bytes: usize = 16 * 1024;
 /// server the latest user message names. True when anything loaded, so the
 /// caller rebuilds the catalog as it does when a server joins.
 pub fn namedServers(self: *Agent) bool {
-    if (self.sub or self.model_calls_this_turn > 1) return false;
+    if (self.sub or self.compaction_request or self.model_calls_this_turn > 1) return false;
     const text = @import("messages.zig").latestUserText(self.messages.items);
     if (text.len == 0) return false;
     const reg_tools: []const mcp.Tool = if (self.registry) |reg| reg.tools else &.{};
@@ -144,6 +144,32 @@ test "a peer wake loads peer_message with the turn it starts (ADR 0311)" {
         try std.testing.expectEqualStrings("peer_message", loaded.items);
         try std.testing.expect(fold.isLoaded("peer_message"));
     }
+}
+
+test "compaction_request mentioning peer_message in persists_note does not preload tools or bust cache_fork" {
+    const fold = @import("native_fold.zig");
+    fold.clearLoadedSession();
+    defer fold.clearLoadedSession();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var msgs = std.json.Array.init(a);
+    try msgs.append(try @import("messages.zig").textMessage(a, "user", "Who is live and what they said are pull: peer_message action=list / action=inbox"));
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = a,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = .{ .id = "codegraff", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "kimi-k3.1-pro", .context = 1_048_576 },
+        .messages = msgs,
+        .sub = false,
+        .label = "main",
+        .out = null,
+        .compaction_request = true,
+    };
+    try std.testing.expect(!namedServers(&agent));
+    try std.testing.expect(!fold.isLoaded("peer_message"));
+    try std.testing.expectEqual(@as(usize, 1), agent.messages.items.len);
 }
 
 test "a server is named only as a whole word, in any case" {
