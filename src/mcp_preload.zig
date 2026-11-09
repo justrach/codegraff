@@ -31,7 +31,7 @@ pub fn namedServers(self: *Agent) bool {
     var loaded: std.ArrayList(u8) = .empty;
     for (reg_tools, 0..) |tool, i| {
         const server = tool.serverName();
-        if (!firstOfServer(reg_tools[0..i], server) or !namesServerOrTool(text, reg_tools, server)) continue;
+        if (!firstOfServer(reg_tools[0..i], server) or !names(text, server)) continue;
         if (gate.serverCost(reg_tools, server) > budget_bytes) continue;
         for (reg_tools) |t| if (std.mem.eql(u8, t.serverName(), server) and gate.blocked(reg_tools, t.qualified_name)) {
             gate.autoLoad(self.arena, reg_tools, t.qualified_name);
