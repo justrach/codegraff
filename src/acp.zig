@@ -69,6 +69,7 @@ fn liveSlash(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror!?[]co
     // /never is the playbook's own, and handleCommand does not know it.
     if (playbook_glue.isCommand(text)) {
         _ = try playbook_glue.command(live.root, live.root.arena, text, &aw.writer);
+        session.saveSession(live.root, live.root.arena, live.root.session_name) catch {};
         return try engine.stripSgr(arena, aw.writer.buffered());
     }
     if (command_catalog.match(text) == null and command_catalog.commandWord(text) == null) return null;
@@ -78,6 +79,7 @@ fn liveSlash(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror!?[]co
     @import("acp_compaction.zig").install(&compaction);
     defer @import("acp_compaction.zig").uninstall();
     try main_mod.handleCommand(live.root, live.keys, live.root.arena, std.mem.trim(u8, text, " \t\r\n"), &aw.writer);
+    session.saveSession(live.root, live.root.arena, live.root.session_name) catch {};
     return try engine.stripSgr(arena, aw.writer.buffered());
 }
 
@@ -114,7 +116,7 @@ fn userMessage(arena: Allocator, root: *agent_mod.Agent, text: []const u8) !Valu
 /// the same catalog + credential view the REPL `/models` table prints, so an
 /// ACP client can offer only the models this install can actually reach.
 /// Rows come back in election order (plan, then local, credits, api).
-fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request) anyerror!bool {
+pub fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request) anyerror!bool {
     const live: *LiveTurn = @ptrCast(@alignCast(ctx));
     if (try @import("acp_agents.zig").handle(arena, live.root.io, live.root.home, w, req)) return true;
     if (try @import("acp_changes.zig").handle(arena, live.root.io, w, req)) return true;
@@ -555,45 +557,5 @@ test "ACP advertises the complete REPL command catalog including compact" {
     try std.testing.expectEqual(catalog.len, advertised.len);
     for (catalog, advertised) |command, exposed| {
         try std.testing.expectEqualStrings(command.name[1..], exposed.name);
-    }
-}
-
-test "OpenAI effort menu omits Max and keeps Ultra on the Responses wire" {
-    var state = std.heap.ArenaAllocator.init(testing.allocator);
-    defer state.deinit();
-    const a = state.allocator();
-    var root = try @import("agent_request_body_responses.zig").testAgentFor(a, "openai", .responses, "gpt-6-astra");
-    var keys: provider_mod.Keys = .{ .values = @splat(null) };
-    var aw: Io.Writer.Allocating = .init(a);
-    var live: LiveTurn = .{ .root = &root, .keys = &keys, .out = &aw.writer };
-    var d: Dispatch = .{ .turn = echoTurn, .ctx = &live, .extra = liveModels };
-    const expected = [_][]const u8{ "low", "medium", "high", "xhigh", "ultra" };
-    for ([_][]const u8{ "openai", "codex", "codegraff" }) |pid| {
-        root.provider.id = pid;
-        root.reasoning = .max; // saved Max remains a valid, visible selection
-        aw.clearRetainingCapacity();
-        try handleLine(&d, a, &aw.writer, "{\"id\":1,\"method\":\"graff/models\"}");
-        const result = try std.json.parseFromSliceLeaky(Value, a, aw.writer.buffered(), .{});
-        for (result.object.get("result").?.object.get("models").?.array.items) |row| {
-            const fields = row.object;
-            try testing.expect(fields.get("effortLevels").? == .array);
-            try testing.expect(fields.get("fastSupported").? == .bool);
-        }
-        const current = result.object.get("result").?.object.get("current").?.object;
-        try testing.expectEqualStrings("ultra", current.get("effort").?.string);
-        const levels = current.get("effortLevels").?.array.items;
-        try testing.expectEqual(expected.len, levels.len);
-        for (expected, levels) |tag, level| try testing.expectEqualStrings(tag, level.string);
-        // The last advertised choice must serialize as API max, never ultra.
-        root.reasoning = std.meta.stringToEnum(main_mod.ReasoningEffort, levels[levels.len - 1].string).?;
-        const body = try root.buildBody(null, false, true, true);
-        defer testing.allocator.free(body);
-        const request = try std.json.parseFromSliceLeaky(Value, a, body, .{});
-        try testing.expectEqualStrings("max", request.object.get("reasoning").?.object.get("effort").?.string);
-        root.reasoning = .xhigh;
-        const extra = try root.buildBody(null, false, true, true);
-        defer testing.allocator.free(extra);
-        const extra_request = try std.json.parseFromSliceLeaky(Value, a, extra, .{});
-        try testing.expectEqualStrings("xhigh", extra_request.object.get("reasoning").?.object.get("effort").?.string);
     }
 }

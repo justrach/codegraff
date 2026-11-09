@@ -59,10 +59,28 @@ pub fn classify(text: []const u8) Intent {
     return if (informational) .informational else .general;
 }
 
-const action_words = [_][]const u8{ "fix", "edit", "implement", "add", "remove", "delete", "rename", "refactor", "write", "create", "update", "patch", "build", "test", "lint", "run", "merge", "push", "deploy", "commit", "change", "modify", "make", "resolve", "apply", "replace", "rewrite" };
+const action_words = [_][]const u8{
+    "fix",        "fixing",       "fixes",      "edit",      "editing",    "edited",    "edits",
+    "implement",  "implementing", "add",        "adding",    "remove",     "removing",  "delete",
+    "deleting",   "rename",       "refactor",   "write",     "writing",    "create",    "creating",
+    "created",    "update",       "updating",   "updated",   "updates",    "patch",     "patching",
+    "build",      "test",         "lint",       "run",       "merge",      "push",      "deploy",
+    "commit",     "change",       "changing",   "changes",   "modify",     "modifying", "modified",
+    "make",       "resolve",      "apply",      "applying",  "replace",    "replacing", "rewrite",
+    "rewriting",  "generate",     "generating", "generated", "generation", "produce",   "producing",
+    "render",     "rendering",    "save",       "saving",    "draft",      "document",  "documenting",
+    "append",     "insert",       "install",    "upgrade",   "revert",     "restore",   "format",
+    "regenerate", "write_file",   "edit_file",  "imagegen",
+};
 
 fn actionWord(word: []const u8) bool {
-    return oneOf(word, &action_words);
+    if (std.ascii.eqlIgnoreCase(word, "read-only")) return false;
+    if (oneOf(word, &action_words)) return true;
+    if (std.mem.indexOfScalar(u8, word, '-') != null and std.mem.indexOfScalar(u8, word, '/') == null) {
+        var parts = std.mem.tokenizeScalar(u8, word, '-');
+        while (parts.next()) |part| if (oneOf(part, &action_words)) return true;
+    }
+    return false;
 }
 
 /// True when the request names something to change or execute. A text-only
@@ -225,4 +243,14 @@ test "#1581 only a summary request gets the repository checkpoint" {
     try std.testing.expect(std.mem.indexOf(u8, sent, "every deliverable it named") != null);
     try std.testing.expect(std.mem.indexOf(u8, sent, "repository's purpose") == null);
     try std.testing.expectEqualStrings("Investigate why login fails", messages.latestUserText(agent.messages.items));
+}
+
+test "#1813 image-generation and documentation-update tasks classify as general, not informational" {
+    for ([_][]const u8{
+        "Investigate the assets and generate a replacement banner with imagegen",
+        "Research the API changes and perform a documentation-update in docs/guide.md",
+        "Summarize the release and save the notes using write_file",
+        "Explain the layout while updating README.md",
+        "Image-generation worker: render the icon and describe the output",
+    }) |text| try std.testing.expectEqual(Intent.general, classify(text));
 }

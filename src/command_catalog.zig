@@ -47,6 +47,7 @@ pub fn commandWord(line: []const u8) ?[]const u8 {
     const t = std.mem.trim(u8, line, " \t\r\n");
     if (t.len < 2 or t[0] != '/') return null;
     const word = t[0 .. std.mem.indexOfAny(u8, t, " \t\r\n") orelse t.len];
+    if (word.len < 2) return null; // #1814: "/ text" starts with a bare slash, not a command word
     for (word[1..]) |c| if (!(std.ascii.isAlphanumeric(c) or c == '-' or c == '_')) return null;
     return word;
 }

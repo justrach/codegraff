@@ -150,6 +150,16 @@ fn aborted() bool {
 
 pub fn takeOutput(self: *Agent, call: ToolCall, output: ToolOutput, handle_threshold: usize, handle_target: tool_handle.Target) !ExecResult {
     self.read_miss.noteOutput(call.name, call.input, output.text, output.is_error);
+    const reflect = @import("playbook_reflect.zig");
+    if (isShellName(call.name)) {
+        if (output.is_error) {
+            reflect.noteFailure(output.text);
+        } else if (reflect.editedAfterFailure()) {
+            reflect.afterShellRecovery(self, "shell verification passed after edit", output.text);
+        }
+    } else if (!output.is_error and (std.mem.eql(u8, call.name, "edit_file") or std.mem.eql(u8, call.name, "write_file"))) {
+        reflect.noteEditAfterFailure();
+    }
     const msg_alloc = self.historyAlloc();
     const handled = try tool_handle.forResult(self.gpa, msg_alloc, handle_target, output.text, handle_threshold);
     @import("context_savings.zig").noteHandle(handled.bytes, handled.text.len);

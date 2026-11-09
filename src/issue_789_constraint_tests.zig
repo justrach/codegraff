@@ -411,3 +411,53 @@ test "#1342 markdown list/quote lines and sentence punctuation work without weak
     try std.testing.expect(!glue.exactUserSegment("In staging: never run migrations automatically.", "never run migrations automatically."));
     try std.testing.expect(!glue.exactUserSegment("Never modify v1.2.3 snapshots.", "Never modify v1"));
 }
+
+test "Harness^2 recordOutcome: retires negative-fitness learned items while preserving user constraints" {
+    try inScratch(struct {
+        fn body(io: Io, arena: std.mem.Allocator) !void {
+            const u = playbook.add(io, arena, "Never import external packages in billing.py", .user, "user:1");
+            const bad = playbook.add(io, arena, "[domain] Return strings instead of ints from compute_total", .learned, "run:1");
+            try std.testing.expect(u.ok and bad.ok);
+
+            try std.testing.expectEqual(@as(usize, 0), playbook.recordOutcome(io, arena, false));
+            const after1 = playbook.load(io, arena);
+            try std.testing.expectEqual(@as(usize, 2), after1.len);
+            try std.testing.expectEqual(@as(u32, 1), playbook.find(after1, bad.id).?.fails);
+
+            try std.testing.expectEqual(@as(usize, 1), playbook.recordOutcome(io, arena, false));
+            const after2 = playbook.load(io, arena);
+            try std.testing.expectEqual(@as(usize, 1), after2.len);
+            try std.testing.expectEqualStrings(u.id, after2[0].id);
+        }
+    }.body);
+}
+
+test "Harness^2 contrastive reflector: noteFailure and reflectPromptWithContext carry fail->fix->pass evidence" {
+    const reflect = @import("playbook_reflect.zig");
+    reflect.resetForTest();
+    defer reflect.resetForTest();
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    reflect.noteFailure("ContractError: every serializer dict MUST include '_wire_envelope': 'v2-strict'");
+    try std.testing.expect(std.mem.indexOf(u8, reflect.failEvidence(), "_wire_envelope") != null);
+    try std.testing.expect(!reflect.editedAfterFailure());
+    reflect.noteEditAfterFailure();
+    try std.testing.expect(reflect.editedAfterFailure());
+
+    const prompt = reflect.reflectPromptWithContext(
+        arena,
+        "verify",
+        100,
+        100,
+        "ALL CHECKS PASSED\nscore: 100",
+        reflect.failEvidence(),
+        "+    '_wire_envelope': 'v2-strict'",
+    ).?;
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "Prior failed check output (before the fix):") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "_wire_envelope") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "Workspace diff that made the check pass:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "[invariant]") != null);
+}

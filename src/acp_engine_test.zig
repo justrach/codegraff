@@ -3,6 +3,10 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const engine = @import("acp_engine.zig");
+const acp = @import("acp.zig");
+const main_mod = @import("main.zig");
+const provider_mod = @import("provider.zig");
+const LiveTurn = @import("acp_live_turn.zig").LiveTurn;
 const Dispatch = engine.Dispatch;
 const Meter = engine.Meter;
 const handleLine = engine.handleLine;
@@ -297,4 +301,61 @@ test "failed slash command returns an ACP error instead of killing the worker lo
     try handleLine(&dispatch, arena.allocator(), &writer, "{\"id\":1,\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"/compact\"}]}}");
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "ApiError") != null);
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "end_turn") == null);
+}
+
+test "OpenAI effort menu omits Max and keeps Ultra on the Responses wire" {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    const a = state.allocator();
+    var root = try @import("agent_request_body_responses.zig").testAgentFor(a, "openai", .responses, "gpt-6-astra");
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    var aw: Io.Writer.Allocating = .init(a);
+    var live: LiveTurn = .{ .root = &root, .keys = &keys, .out = &aw.writer };
+    var d: Dispatch = .{ .turn = echoTurn, .ctx = &live, .extra = acp.liveModels };
+    const expected = [_][]const u8{ "low", "medium", "high", "xhigh", "ultra" };
+    for ([_][]const u8{ "openai", "codex", "codegraff" }) |pid| {
+        root.provider.id = pid;
+        root.reasoning = .max; // saved Max remains a valid, visible selection
+        aw.clearRetainingCapacity();
+        try handleLine(&d, a, &aw.writer, "{\"id\":1,\"method\":\"graff/models\"}");
+        const result = try std.json.parseFromSliceLeaky(std.json.Value, a, aw.writer.buffered(), .{});
+        for (result.object.get("result").?.object.get("models").?.array.items) |row| {
+            const fields = row.object;
+            try std.testing.expect(fields.get("effortLevels").? == .array);
+            try std.testing.expect(fields.get("fastSupported").? == .bool);
+        }
+        const current = result.object.get("result").?.object.get("current").?.object;
+        try std.testing.expectEqualStrings("ultra", current.get("effort").?.string);
+        const levels = current.get("effortLevels").?.array.items;
+        try std.testing.expectEqual(expected.len, levels.len);
+        for (expected, levels) |tag, level| try std.testing.expectEqualStrings(tag, level.string);
+        // The last advertised choice must serialize as API max, never ultra.
+        root.reasoning = std.meta.stringToEnum(main_mod.ReasoningEffort, levels[levels.len - 1].string).?;
+        const body = try root.buildBody(null, false, true, true);
+        defer std.testing.allocator.free(body);
+        const request = try std.json.parseFromSliceLeaky(std.json.Value, a, body, .{});
+        try std.testing.expectEqualStrings("max", request.object.get("reasoning").?.object.get("effort").?.string);
+        root.reasoning = .xhigh;
+        const extra = try root.buildBody(null, false, true, true);
+        defer std.testing.allocator.free(extra);
+        const extra_request = try std.json.parseFromSliceLeaky(std.json.Value, a, extra, .{});
+        try std.testing.expectEqualStrings("xhigh", extra_request.object.get("reasoning").?.object.get("effort").?.string);
+    }
+}
+
+test "#1814 literal leading slash followed by space is treated as ordinary prompt text" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [2048]u8 = undefined;
+    var writer: Io.Writer = .fixed(&buf);
+    const slash = struct {
+        fn run(_: *anyopaque, _: Allocator, text: []const u8) anyerror!?[]const u8 {
+            if (@import("command_catalog.zig").match(text) == null and @import("command_catalog.zig").commandWord(text) == null) return null;
+            return "unknown command";
+        }
+    }.run;
+    var dispatch: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .slash = slash };
+    try handleLine(&dispatch, arena.allocator(), &writer, "{\"id\":1,\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"/ widgets are ordinary text\"}]}}");
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "echo:/ widgets are ordinary text") != null);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "unknown command") == null);
 }

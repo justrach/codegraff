@@ -312,8 +312,9 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         .text_only = std.mem.eql(u8, kind, "judge_task"),
         .synthesis = .{ .enabled = ctx.synthesis and !std.mem.eql(u8, kind, "judge_task") },
         // #1360: an informational child still needs its read tools; it is
-        // read-only, not tool-less.
-        .read_only = @import("task_intent.zig").classify(prompt) == .informational,
+        // read-only, not tool-less. #1813: a child isolated in a worktree is
+        // seated there specifically to produce changes, never read-only.
+        .read_only = isolation != .worktree and @import("task_intent.zig").classify(prompt) == .informational,
         .reasoning = effort orelse .medium, // #292 follow-up: effort pin; unpinned workers keep the default depth, not the root's /effort
     };
     const sub_start = Io.Timestamp.now(ctx.io, .awake);

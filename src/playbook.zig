@@ -109,6 +109,10 @@ pub const Item = struct {
     /// `run:<trajectory run id>` for a distilled one.
     provenance: []const u8 = "",
     created_at: i64 = 0,
+    /// Per-item eval fitness attribution (#383 follow-up / Harness^2):
+    /// passes and fails accrued while this learned item was active.
+    passes: u32 = 0,
+    fails: u32 = 0,
 };
 
 /// Why an `add` did or did not land. A refusal is reported, never silent:
@@ -198,8 +202,16 @@ pub fn parse(arena: Allocator, data: []const u8) []const Item {
             at = i;
             break;
         };
-        if (std.mem.eql(u8, strOf(v.object, "op") orelse "add", "retire")) {
+        const op = strOf(v.object, "op") orelse "add";
+        if (std.mem.eql(u8, op, "retire")) {
             if (at) |i| _ = list.orderedRemove(i);
+            continue;
+        }
+        if (std.mem.eql(u8, op, "outcome")) {
+            if (at) |i| if (list.items[i].source == .learned) {
+                const pass = if (v.object.get("pass")) |p| (if (p == .bool) p.bool else false) else false;
+                if (pass) list.items[i].passes +|= 1 else list.items[i].fails +|= 1;
+            };
             continue;
         }
         const text = strOf(v.object, "text") orelse continue;
@@ -332,6 +344,32 @@ pub fn retire(io: Io, arena: Allocator, id: []const u8) Retire {
     aw.writer.writeByte('\n') catch return .write_failed;
     appendLine(io, aw.writer.buffered()) catch return .write_failed;
     return .ok;
+}
+
+/// Attribute an eval outcome (`pass`) to all currently live `.learned` items
+/// and deterministically retire any `.learned` item whose attributed fitness
+/// goes negative (`fails >= 2 and passes == 0`, or `fails >= passes + 3`).
+/// User constraints (`.user`) are never attributed or retired here.
+pub fn recordOutcome(io: Io, arena: Allocator, pass: bool) usize {
+    const items = load(io, arena);
+    if (items.len == 0) return 0;
+    const now = util.unixMs(io);
+    var retired: usize = 0;
+    for (items) |item| {
+        if (item.source != .learned) continue;
+        var aw: Io.Writer.Allocating = .init(arena);
+        var s: std.json.Stringify = .{ .writer = &aw.writer };
+        s.write(.{ .v = @as(u8, 2), .op = "outcome", .id = item.id, .pass = pass, .t = now }) catch continue;
+        aw.writer.writeByte('\n') catch continue;
+        appendLine(io, aw.writer.buffered()) catch continue;
+        if (!pass) {
+            const next_fails = item.fails +| 1;
+            if ((next_fails >= 2 and item.passes == 0) or next_fails >= item.passes +| 3) {
+                if (retire(io, arena, item.id) == .ok) retired += 1;
+            }
+        }
+    }
+    return retired;
 }
 
 fn writeSection(w: *Io.Writer, items: []const Item, source: Source, scope: ?Scope, header: []const u8, cap_items: usize, cap_bytes: usize) !bool {
