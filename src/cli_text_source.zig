@@ -5,6 +5,12 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.57
+    \\  • adaptive codedb workspace threshold (<8 code files in-process list_dir+read_file; >=8 code files codedb) + ~/.codedb/projects CoW seeding
+    \\  • pre-tool transcript checkpointing (beforeToolBatch), crash-tail suffix replay, and effect-aware TOOL_INTERRUPTED_READONLY recovery
+    \\  • deferred, single-pass streaming, cached (.graff/folded_priors.json), and ring-capped trajectory archive folding (#1864)
+    \\  • Lean 4 resource/durability kernel (3,742 verified cells) + scoped arena and O(1) incremental hashing optimizations
+    \\
     \\0.302.74.56
     \\  • unified subagent steering (@agent-N, @sa-..., /workers send, ACP graff/agents action: "steer") for foreground and background workers
     \\  • named background subagents/tasks in REPL standing bar and ACP session_info_update (_meta["graff/waiting"])

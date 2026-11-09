@@ -10,6 +10,13 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.57
+
+- `codedb_health`, `codedb_exec`, and `codedb_guard_scope` enforce an adaptive workspace threshold (`min_repo_code_files = 8`): workspaces with `< 8` code files redirect `codedb outline` and `codedb deps` in-process to `list_dir` + `read_file` without spawning `codedb` and allow unpiped small-file (`<= 64 KiB`) scans, automatically switching to `codedb` once the workspace reaches `>= 8` code files, while `agent_worktree` seeds `.codedb` from `~/.codedb/projects/<sha256(repo_root)>/` via Copy-on-Write (`clonefile(2)` / `cp --reflink=always`).
+- `turn_checkpoint.beforeToolBatch` flushes the accepted user turn and assistant tool-call batch to `.graff/sessions/<name>.transcript.jsonl` before any tool executes across all 4 provider step engines (`agent_steps`, `agent_chat_step`, `agent_chat_native`, `interactions_steps`), `session_transcript.recoverCrashTailFromPath` replays uncommitted `.transcript.jsonl` suffixes onto `.session.json` on resume, and `history_wire` distinguishes interrupted read-only tools (`TOOL_INTERRUPTED_READONLY`) from mutating tools (`TOOL_OUTCOME_UNKNOWN`) and unstarted batch siblings (`TOOL_NOT_STARTED`).
+- `archive_fold`, `bench_priors`, `route_policy`, `orchestration_policy`, and `trace` defer `.graff/trajectories/*.jsonl` scanning until the first routing decision (`ensureArchiveLoaded`), stream cold folds in a single pass through a fixed stack buffer and a per-line reset `FixedBufferAllocator`, persist `.graff/folded_priors.json` with a delta-file precheck, and enforce a shared ring-buffered retention cap (`max_obs_per_cell = 32`, `max_buckets = 128`) (#1864).
+- `lean-proofs/Graff/ResourceKernel.lean` formalizes and machine-checks `3,742` finite specification cells covering memory arena lifetimes, CPU Complexity / O(1) incremental hashing, adaptive `codedb` routing, and crash-recovery equivalence, paired with scoped scratch arena and streaming I/O optimizations across `session`, `session_store`, `session_transcript`, `agent_steps`, `tool_repeat`, `compact_prune`, `workspace_tree_snap`, `session_catalog`, `mcp_preload`, and `commands_workers`.
+
 ## v0.302.74.56
 
 - Unified subagent and task addressing across `agent_message`, `@agent-<id>`, `@sa-...`, `/workers send`, and ACP `graff/agents` (`action: "steer"`), pre-minting `sub_id` (`sa-000-...`) at background spawn time and registering foreground subagents for live mid-turn steering.
