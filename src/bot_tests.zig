@@ -270,6 +270,21 @@ test "the log line is the reply's first line, cut on a character" {
     try testing.expectEqualStrings("2027-01-15 08:00Z", store.stamp(&buf, 1_800_000_000_000));
 }
 
+test "after -- every word is text, not a flag" {
+    var b = Bench.init();
+    defer b.deinit();
+    // Without the terminator a job that starts with dashes is a usage error
+    // or, worse, switches approvals off.
+    try testing.expectError(error.Usage, b.bot(&.{ "create", "notes", "--draft", "the", "notes" }));
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "create", "notes", "--", "--yolo", "is", "not", "a", "flag", "here" }));
+    const made = store.load(testing.io, b.tmp.dir, b.arena_state.allocator(), "notes").?;
+    try testing.expectEqualStrings("--yolo is not a flag here", made.job);
+    try testing.expect(!made.yolo);
+    // Flags before the terminator still count.
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "list", "--json", "--" }));
+    try testing.expect(std.mem.startsWith(u8, b.printed(), "[{"));
+}
+
 test "only the last lines of a reply change memory" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();

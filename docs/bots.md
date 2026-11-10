@@ -59,3 +59,7 @@ change the bot's memory.
 it and moves it to its next slot, for a client that runs bots in its own
 chats. `graff bot prompt NAME` prints a bot's standing text. `list`, `show`
 and `routine list` take `--json`.
+
+A client that passes text a person typed puts `--` before it:
+`graff bot create notes -- --draft the notes`. After `--` every word is text,
+so a job or an instruction that starts with dashes is never read as a flag.

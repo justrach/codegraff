@@ -31,6 +31,7 @@ pub const usage =
     \\  due [--claim] [--json]                 routines that are due; --claim moves them on
     \\  tick [--json]                          run every due routine once, then exit
     \\  --timeout SECONDS                      limit for one run (default 1800)
+    \\  --                                     the rest is text, even if it starts with --
     \\
 ;
 
@@ -55,7 +56,12 @@ pub fn parseOpts(arena: Allocator, args: []const []const u8) error{ Usage, OutOf
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const a = args[i];
-        if (std.mem.eql(u8, a, "--json")) {
+        if (std.mem.eql(u8, a, "--")) {
+            // Everything after `--` is text, so a client can pass a job or
+            // an instruction that starts with dashes.
+            try words.appendSlice(arena, args[i + 1 ..]);
+            break;
+        } else if (std.mem.eql(u8, a, "--json")) {
             o.json = true;
         } else if (std.mem.eql(u8, a, "--yolo")) {
             o.yolo = true;
