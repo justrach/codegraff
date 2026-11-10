@@ -22,6 +22,7 @@ const provider = @import("provider.zig");
 const serde = @import("serde.zig");
 const util = @import("util.zig");
 const buffered_http = @import("http2_buffered.zig");
+const failures = @import("catalog_failures.zig");
 
 /// Router catalogs change on the order of weeks; favour instant startup.
 const cache_ttl_ms: i64 = 6 * 60 * 60 * 1000;
@@ -264,8 +265,9 @@ fn fetchPage(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSp
     const headers = catalogHeaders(arena, spec, key, source, &headers_buf) orelse return null;
     // Each page is independently bounded; a later failure leaves any valid
     // earlier pages in fetch()'s prefix, and cached rows remain offline fallback.
+    failures.clear(spec.id);
     const res = buffered_http.get(gpa, arena, io, &client, url, headers, catalog_page_limit, 15_000) catch return null;
-    if (res.status != 200) return null;
+    if (res.status != 200) return failures.none(Snapshot, spec.id, res.status);
     return parseModels(arena, spec.id, res.body);
 }
 
