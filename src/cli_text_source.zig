@@ -5,6 +5,10 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.58
+    \\  • prompt-cache stability (#1320): jev_auto off by default (opt-in via /effort auto or GRAFF_JEV_AUTO=1), BustCause.effort HUD tracking, deterministic per-turn prompt_cache_key fallback, and in-session HTTP MCP schema retention
+    \\  • ACP low-latency path + Lean 4 AcpLatency kernel (3,768 verified cells): 0-subprocess in-process .git worktree resolution, single-parse ACP inbox routing, batch-flushed LineWriter/EventSink with reusable scratch arena, and single-pass startup MCP config load
+    \\
     \\0.302.74.57
     \\  • adaptive codedb workspace threshold (<8 code files in-process list_dir+read_file; >=8 code files codedb) + ~/.codedb/projects CoW seeding
     \\  • pre-tool transcript checkpointing (beforeToolBatch), crash-tail suffix replay, and effect-aware TOOL_INTERRUPTED_READONLY recovery

@@ -10,6 +10,11 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.58
+
+- Fixed mid-run prompt-cache drops (#1320): `jev_auto.enabled()` now defaults to `false` (opt-in via `GRAFF_JEV_AUTO=1` or explicit `/effort auto`) so background effort reclassification no longer mutates `reasoning.effort` after the first request, `prompt_cache_hud` records `BustCause.effort` whenever `jev_effort_state.set` changes effort mid-session, `agent_request.computeTurnKey` mints a deterministic per-turn `prompt_cache_key` fallback when `session.turn_id` is empty, and `mcp_cache.lookupHttp` retains already-loaded HTTP MCP schemas after `session_started_ms` so mid-session TTL expiry never swaps a live server from full schema to deferred stub.
+- Cut ACP handshake, inbox, stream, and worktree latencies (`src/acp_workspace.zig`, `src/acp_inbox.zig`, `src/acp_protocol.zig`, `src/acp_line_writer.zig`, `src/acp_stream.zig`, `src/acp_mcp_servers.zig`, `src/mcp_boot.zig`, `src/session_start.zig`), backed by machine-checked Lean 4 proofs in `lean-proofs/Graff/AcpLatency.lean` (`3,768` total verified cells): in-process `.git` inspection (`resolveWorktreeInProcess`) resolves main checkouts and linked worktrees with `0` `git` subprocess spawns (plus `cachedMergeBase` for repeated worktree queries), `Inbox.accept` fast-queues handshake/config/query methods in `O(1)` and reuses parsed JSON via `proto.requestFromValue`, `LineWriter.feed` and `EventSink` batch-flush complete JSONL frames without `copyForwards` shifts or per-delta arena churn, and `mcp_boot.initWithMerged` eliminates the duplicate startup MCP config/plugin scan while polling cached `mcpServers` at `2ms`.
+
 ## v0.302.74.57
 
 - `codedb_health`, `codedb_exec`, and `codedb_guard_scope` enforce an adaptive workspace threshold (`min_repo_code_files = 8`): workspaces with `< 8` code files redirect `codedb outline` and `codedb deps` in-process to `list_dir` + `read_file` without spawning `codedb` and allow unpiped small-file (`<= 64 KiB`) scans, automatically switching to `codedb` once the workspace reaches `>= 8` code files, while `agent_worktree` seeds `.codedb` from `~/.codedb/projects/<sha256(repo_root)>/` via Copy-on-Write (`clonefile(2)` / `cp --reflink=always`).
