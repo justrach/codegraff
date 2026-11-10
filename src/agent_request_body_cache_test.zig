@@ -197,3 +197,27 @@ test "ADR 0312: the default sends no 12h ttl (opt-in until a live probe)" {
     try std.testing.expect(std.mem.indexOf(u8, b, "\"prompt_cache_breakpoint\":{\"mode\":\"explicit\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, b, "\"ttl\":\"12h\"") == null);
 }
+
+test "#1882: root final budget-landing call keeps tools prefix and sets tool_choice none" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const catalog = "[{\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"description\":\"fixture\",\"parameters\":{\"type\":\"object\"}}}]";
+    for ([_]@import("provider.zig").Provider.Kind{ .openai, .responses }) |kind| {
+        var agent = try bodies.testAgentFor(a, "openai", kind, "gpt-5.6");
+        var budget: @import("run_budget.zig").RunBudget = .{ .max_model_calls = 2 };
+        agent.run_budget = &budget;
+        const before = try agent.buildBody(catalog, true, true, true);
+        defer std.testing.allocator.free(before);
+        budget.model_landed.store(true, .release);
+        const after = try agent.buildBody(catalog, false, true, true);
+        defer std.testing.allocator.free(after);
+        const first = try std.json.parseFromSliceLeaky(std.json.Value, a, before, .{});
+        const landed = try std.json.parseFromSliceLeaky(std.json.Value, a, after, .{});
+        try std.testing.expectEqualStrings(
+            try std.json.Stringify.valueAlloc(a, first.object.get("tools").?, .{}),
+            try std.json.Stringify.valueAlloc(a, landed.object.get("tools").?, .{}),
+        );
+        try std.testing.expectEqualStrings("none", landed.object.get("tool_choice").?.string);
+    }
+}

@@ -112,6 +112,8 @@ fn rewind(self: *Agent, hist_len: usize, line: []const u8) !bool {
     return true;
 }
 
+pub const raw_reasoning_runaway_bytes: usize = 32 * 1024;
+
 /// One streamed reply's text and reasoning bytes until its first tool call.
 pub const ReplySize = struct {
     text: usize = 0,
@@ -129,7 +131,9 @@ pub const ReplySize = struct {
         self.text += text_len;
         self.reasoning += reasoningDelta(kind, event).len;
         if (!midTask(agent)) return false;
-        return self.text > runaway_bytes or (summaryReasoning(agent.provider.model) and self.reasoning > runaway_bytes);
+        if (self.text > runaway_bytes) return true;
+        if (summaryReasoning(agent.provider.model)) return self.reasoning > runaway_bytes;
+        return self.text == 0 and self.reasoning > raw_reasoning_runaway_bytes;
     }
 };
 
@@ -168,7 +172,7 @@ fn startsTool(kind: Kind, v: Value) bool {
     }
 }
 
-fn reasoningDelta(kind: Kind, v: Value) []const u8 {
+pub fn reasoningDelta(kind: Kind, v: Value) []const u8 {
     switch (kind) {
         .openai => {
             const d = chatDelta(v) orelse return "";
@@ -284,6 +288,17 @@ test "ReplySize: text past the limit stops a mid-task reply; a tool call, an una
     agent.provider.model = "codegraff/deepseek-flash";
     var raw: ReplySize = .{};
     try std.testing.expect(!raw.feed(&agent, reason_ev, 0));
+
+    // #1878 / #1881: pure raw reasoning (both `reasoning_content` and `reasoning`)
+    // past `raw_reasoning_runaway_bytes` with zero visible text stops mid-task.
+    var huge: std.ArrayList(u8) = .empty;
+    try huge.appendNTimes(a, 'y', raw_reasoning_runaway_bytes + 1);
+    for ([_][]const u8{ "reasoning_content", "reasoning" }) |field| {
+        const alt_raw = try std.fmt.allocPrint(a, "{{\"choices\":[{{\"index\":0,\"delta\":{{\"{s}\":\"{s}\"}}}}]}}", .{ field, huge.items });
+        const alt_ev = try parse(a, alt_raw);
+        var runaway_raw: ReplySize = .{};
+        try std.testing.expect(runaway_raw.feed(&agent, alt_ev, 0));
+    }
 }
 
 test "empty length reply cleanup keeps recovery notes and valid prior tool reasoning on both chat routes" {

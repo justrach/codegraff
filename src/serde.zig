@@ -392,9 +392,14 @@ pub fn writeOpenAITools(s: *std.json.Stringify, arena: Allocator, raw: []const u
 pub fn writeOpenAIMessageNormalized(s: *std.json.Stringify, m: Value) !void {
     if (m != .object) return @import("session_wake.zig").writeWire(s, m);
     const role = if (m.object.get("role")) |v| (if (v == .string) v.string else "") else "";
-    const is_assistant_tool_call = std.mem.eql(u8, role, "assistant") and m.object.get("tool_calls") != null;
+    const is_assistant = std.mem.eql(u8, role, "assistant");
+    const is_assistant_tool_call = is_assistant and m.object.get("tool_calls") != null;
     const null_content = if (m.object.get("content")) |v| v == .null else false;
-    if (!is_assistant_tool_call or !null_content) return @import("session_wake.zig").writeWire(s, m);
+    const missing_rc = if (is_assistant and m.object.get("reasoning_content") == null)
+        if (m.object.get("reasoning")) |rv| (if (rv == .string and rv.string.len > 0) rv.string else null) else null
+    else
+        null;
+    if (!(is_assistant_tool_call and null_content) and missing_rc == null) return @import("session_wake.zig").writeWire(s, m);
 
     try s.beginObject();
     var it = m.object.iterator();
@@ -402,16 +407,20 @@ pub fn writeOpenAIMessageNormalized(s: *std.json.Stringify, m: Value) !void {
     while (it.next()) |kv| {
         if (std.mem.eql(u8, kv.key_ptr.*, @import("session_wake.zig").origin_key)) continue;
         try s.objectField(kv.key_ptr.*);
-        if (std.mem.eql(u8, kv.key_ptr.*, "content")) {
+        if (is_assistant_tool_call and null_content and std.mem.eql(u8, kv.key_ptr.*, "content")) {
             try s.write("");
             wrote_content = true;
         } else {
             try s.write(kv.value_ptr.*);
         }
     }
-    if (!wrote_content) {
+    if (is_assistant_tool_call and null_content and !wrote_content) {
         try s.objectField("content");
         try s.write("");
+    }
+    if (missing_rc) |rc| {
+        try s.objectField("reasoning_content");
+        try s.write(rc);
     }
     try s.endObject();
 }

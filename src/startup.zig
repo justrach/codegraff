@@ -167,7 +167,7 @@ pub fn buildSystemPrompt(
         const body = Io.Dir.cwd().readFileAlloc(io, fname, arena, .limited(64 * 1024)) catch continue;
         const trimmed = std.mem.trim(u8, body, " \t\r\n");
         if (trimmed.len == 0) continue;
-        const capped = @import("context_limits.zig").applyAlloc(arena, trimmed, @import("context_limits.zig").agents_md_bytes);
+        const capped = @import("context_limits.zig").applyFileAlloc(arena, fname, trimmed, @import("context_limits.zig").agents_md_bytes);
         sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n# Project instructions (from {s})\n{s}", .{ sys_normal, fname, capped });
         @import("hot_context.zig").noteBaked(fname, capped); // #1333: later edits arrive as keyed updates
         if (!quiet) {

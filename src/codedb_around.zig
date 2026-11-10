@@ -32,6 +32,38 @@ pub fn pathEnds(rest: []const u8) ?struct { from: []const u8, to: []const u8 } {
     return .{ .from = from, .to = to };
 }
 
+fn interpretRun(gpa: Allocator, subcmd: []const u8, run: anytype) !ToolOutput {
+    defer gpa.free(run.stderr);
+    const text = run.stdout;
+    if (run.timed_out) {
+        defer gpa.free(text);
+        return .{
+            .text = try std.fmt.allocPrint(gpa, "codedb {s} timed out after {d}s and was killed — narrow the query", .{ subcmd, deadline_ms / 1000 }),
+            .is_error = true,
+        };
+    }
+    const ok = switch (run.term) {
+        .exited => |c| c == 0,
+        else => false,
+    };
+    if (!ok) {
+        defer gpa.free(text);
+        const detail = std.mem.trim(u8, if (run.stderr.len > 0) run.stderr else text, " \t\r\n");
+        return .{
+            .text = if (detail.len > 0)
+                try gpa.dupe(u8, detail)
+            else
+                try std.fmt.allocPrint(gpa, "codedb {s} exited non-zero — check `codedb status` in this workspace", .{subcmd}),
+            .is_error = true,
+        };
+    }
+    if (text.len == 0 and run.stderr.len > 0) {
+        defer gpa.free(text);
+        return .{ .text = try gpa.dupe(u8, run.stderr) };
+    }
+    return .{ .text = text };
+}
+
 fn spawn(ctx: ToolCtx, argv_tail: []const []const u8) !ToolOutput {
     const gpa = ctx.gpa;
     var argv: std.ArrayList([]const u8) = .empty;
@@ -45,20 +77,7 @@ fn spawn(ctx: ToolCtx, argv_tail: []const []const u8) !ToolOutput {
         },
         else => return tools.failure(gpa, e),
     };
-    defer gpa.free(run.stderr);
-    const text = run.stdout;
-    if (run.timed_out) {
-        defer gpa.free(text);
-        return .{
-            .text = try std.fmt.allocPrint(gpa, "codedb {s} timed out after {d}s and was killed — narrow the query", .{ argv_tail[0], deadline_ms / 1000 }),
-            .is_error = true,
-        };
-    }
-    if (text.len == 0 and run.stderr.len > 0) {
-        defer gpa.free(text);
-        return .{ .text = try gpa.dupe(u8, run.stderr) };
-    }
-    return .{ .text = text };
+    return interpretRun(gpa, argv_tail[0], run);
 }
 
 fn take(gpa: Allocator, out: ToolOutput, cap: usize) ![]u8 {
@@ -73,6 +92,12 @@ pub fn execAround(ctx: ToolCtx, rest: []const u8) !ToolOutput {
         .text = try gpa.dupe(u8, "usage: codedb around <name> — definition body + callers in one call (graphify explain). Alias: explain <name>."),
         .is_error = true,
     };
+    if (!@import("codedb_health.zig").probe(ctx.io, ctx.agent_cwd orelse ".").present) {
+        return .{
+            .text = try gpa.dupe(u8, "codedb index missing — no codedb.snapshot in this cwd; use read_file or bash grep/rg directly, or run `codedb` outside the agent to index this worktree"),
+            .is_error = true,
+        };
+    }
 
     const def = try spawn(ctx, &.{ "symbol", name, "--body" });
     if (def.is_error) return def;
@@ -95,6 +120,12 @@ pub fn execPath(ctx: ToolCtx, rest: []const u8) !ToolOutput {
         .text = try ctx.gpa.dupe(u8, "usage: codedb callpath <from> <to> — shortest resolved call chain (graphify path). Alias: path <from> <to>."),
         .is_error = true,
     };
+    if (!@import("codedb_health.zig").probe(ctx.io, ctx.agent_cwd orelse ".").present) {
+        return .{
+            .text = try ctx.gpa.dupe(u8, "codedb index missing — no codedb.snapshot in this cwd; use read_file or bash grep/rg directly, or run `codedb` outside the agent to index this worktree"),
+            .is_error = true,
+        };
+    }
     return spawn(ctx, &.{ "callpath", ends.from, ends.to });
 }
 
@@ -111,4 +142,36 @@ test "pathEnds needs two identifiers" {
     try std.testing.expectEqualStrings("handleCallpath", got.to);
     try std.testing.expect(pathEnds("onlyOne") == null);
     try std.testing.expect(pathEnds("") == null);
+}
+
+test "#54: interpretRun marks non-zero codedb subprocess exits as errors" {
+    const gpa = std.testing.allocator;
+    const MockRun = struct {
+        stdout: []u8,
+        stderr: []u8,
+        term: std.process.Child.Term,
+        timed_out: bool,
+        cancelled: bool,
+    };
+    const err_out = try interpretRun(gpa, "symbol", MockRun{
+        .stdout = try gpa.dupe(u8, ""),
+        .stderr = try gpa.dupe(u8, "refusing to index temporary root\n"),
+        .term = .{ .exited = 1 },
+        .timed_out = false,
+        .cancelled = false,
+    });
+    defer gpa.free(err_out.text);
+    try std.testing.expect(err_out.is_error);
+    try std.testing.expectEqualStrings("refusing to index temporary root", err_out.text);
+
+    const ok_out = try interpretRun(gpa, "symbol", MockRun{
+        .stdout = try gpa.dupe(u8, "fn foo() void {}"),
+        .stderr = try gpa.dupe(u8, ""),
+        .term = .{ .exited = 0 },
+        .timed_out = false,
+        .cancelled = false,
+    });
+    defer gpa.free(ok_out.text);
+    try std.testing.expect(!ok_out.is_error);
+    try std.testing.expectEqualStrings("fn foo() void {}", ok_out.text);
 }

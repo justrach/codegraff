@@ -49,8 +49,15 @@ authentication documentation.
 
 ## Separate Claude CLI transport
 
-`joaomj/pi-claude-directsdk` takes a different approach: it uses an installed,
-authenticated, unmodified Claude CLI rather than implementing OAuth itself.
-That transport is not enabled by these commands. A future explicit CLI mode
-must preserve Graff's tool ownership, enforce request admission and clean up
-children on cancellation. There is no silent CLI fallback.
+`graff login claude-agent` (ADR 0309) uses the user's installed, signed-in
+`claude` binary over its Agent SDK stream-json control protocol rather than
+reading Claude Code's credentials. Graff replaces the system prompt by default,
+turns off Claude Code's built-in tools, settings files, hooks, memory and
+`CLAUDE.md` discovery, strips inherited session variables (including
+`CLAUDE_CODE_USER_EMAIL`), and keeps tool execution in Graff. Because
+subscription sign-in cannot run under `claude --bare` (`CLAUDE_CODE_SIMPLE=1`),
+`claude` itself still prepends its first-turn `<system-reminder>` attachment
+containing the signed-in account's `# userEmail`, `# Today's date`, and an
+`# Environment` block (working directory, git-repo/worktree status, OS/kernel
+version, and shell) before the user prompt. There is no silent CLI fallback
+from the direct `anthropic` route.

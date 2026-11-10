@@ -343,3 +343,9 @@ test "claude-agent: earlier images survive an interrupted turn as real image blo
     try std.testing.expect(std.mem.indexOf(u8, cp_bounded, "[image #1 attached]") != null);
     try std.testing.expectEqualStrings("TOOL_JPG", bounded[1].object.get("source").?.object.get("data").?.string);
 }
+
+test "#1870: claude-agent drops inherited CLAUDE_CODE_USER_EMAIL alongside enclosing session vars" {
+    try std.testing.expect(wire.dropsEnv("CLAUDE_CODE_USER_EMAIL"));
+    try std.testing.expect(wire.dropsEnv("CLAUDECODE"));
+    try std.testing.expect(!wire.dropsEnv("CLAUDE_CONFIG_DIR"));
+}

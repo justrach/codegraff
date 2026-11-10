@@ -5,6 +5,14 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.60
+    \\  • runaway raw reasoning streams stop at a byte bound, run loop detection (`ReplyRunaway` -> `ModelLoop`), and skip the 270s empty-reply backoff (#1878)
+    \\  • `delta.reasoning` normalizes into `reasoning_content` on replay and `ReplySize` (#1881)
+    \\  • `#390` final budget-landing calls keep `tools` with `tool_choice: "none"`, settle reasoning-only `length` stops cleanly, and exit `0` when tool work completed (#1882)
+    \\  • `edit_file` resolves multi-line `old_string` blocks with stripped line-1 indentation and restores the matched prefix (#1880)
+    \\  • unattended `-p` action turns nudge long read-only streaks and bounce once on zero-mutation unfinished prose (#1879)
+    \\  • explicit truncation markers on capped instruction/skill/MCP sections (#1871), `CLAUDE_CODE_USER_EMAIL` stripped in `claude-agent` (#1870), and worktree-scoped `codedb` guards + exit-code checks (#54)
+    \\
     \\0.302.74.59
     \\  • Claude Fable 5.2 in the baked catalog: `--model claude-fable-5-2` resolves by its bare name and is priced
     \\  • image reads in one tool batch all reach the model, in call order (#1866): a bounded queue (16 images, 24 MB) replaces the single slot, with a tool error past the limit
