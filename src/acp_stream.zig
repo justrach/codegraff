@@ -256,6 +256,7 @@ pub const EventSink = struct {
     streamed_any: bool = false,
     pending: std.ArrayList(u8),
     gpa: Allocator,
+    scratch: std.heap.ArenaAllocator = undefined,
     next_tool: u32 = 0,
     /// Called after each tool event, under the output lock: the live
     /// context meter (acp_context_meter.zig).
@@ -268,42 +269,42 @@ pub const EventSink = struct {
     const vtable: Io.Writer.VTable = .{ .drain = drain };
 
     pub fn init(self: *EventSink, gpa: Allocator, out: *Io.Writer, session_id: *[]const u8, saw_text: *bool) void {
-        self.* = .{
-            .out = out,
-            .session_id = session_id,
-            .saw_text = saw_text,
-            .pending = .empty,
-            .gpa = gpa,
-            .writer = .{ .vtable = &vtable, .buffer = &self.buf, .end = 0 },
-        };
+        self.* = .{ .out = out, .session_id = session_id, .saw_text = saw_text, .pending = .empty, .gpa = gpa, .scratch = .init(gpa), .writer = .{ .vtable = &vtable, .buffer = &self.buf, .end = 0 } };
     }
 
     pub fn deinit(self: *EventSink) void {
         self.writer.flush() catch {};
         if (self.pending.items.len > 0) self.translateLine(self.pending.items);
         self.pending.deinit(self.gpa);
+        self.scratch.deinit();
     }
 
     fn feed(self: *EventSink, bytes: []const u8) void {
-        self.pending.appendSlice(self.gpa, bytes) catch return;
-        while (std.mem.indexOfScalar(u8, self.pending.items, '\n')) |nl| {
-            const line = self.pending.items[0..nl];
-            self.translateLine(line);
-            std.mem.copyForwards(u8, self.pending.items, self.pending.items[nl + 1 ..]);
-            self.pending.shrinkRetainingCapacity(self.pending.items.len - (nl + 1));
+        var rest = bytes;
+        if (self.pending.items.len > 0) {
+            const nl = std.mem.indexOfScalar(u8, rest, '\n') orelse {
+                self.pending.appendSlice(self.gpa, rest) catch {};
+                return;
+            };
+            self.pending.appendSlice(self.gpa, rest[0..nl]) catch return;
+            self.translateLine(self.pending.items);
+            self.pending.clearRetainingCapacity();
+            rest = rest[nl + 1 ..];
         }
+        while (std.mem.indexOfScalar(u8, rest, '\n')) |nl| : (rest = rest[nl + 1 ..]) self.translateLine(rest[0..nl]);
+        if (rest.len > 0) self.pending.appendSlice(self.gpa, rest) catch {};
     }
 
     fn translateLine(self: *EventSink, line: []const u8) void {
         const trimmed = std.mem.trim(u8, line, " \t\r");
         if (trimmed.len == 0) return;
-        var parsed = std.json.parseFromSlice(Value, self.gpa, trimmed, .{}) catch return;
-        defer parsed.deinit();
+        defer _ = self.scratch.reset(.retain_capacity);
+        const value = std.json.parseFromSliceLeaky(Value, self.scratch.allocator(), trimmed, .{}) catch return;
         // Child-session notifications and ordinary root events share the
         // transport writer. Both acquire this per-turn lock before output.
         if (self.output_lock) |lock| lock.lockUncancelable(self.output_io.?);
         defer if (self.output_lock) |lock| lock.unlock(self.output_io.?);
-        const kind = translateTracked(self.out, self.session_id.*, parsed.value, &self.last_id, &self.next_tool, &self.resolved) catch return;
+        const kind = translateTracked(self.out, self.session_id.*, value, &self.last_id, &self.next_tool, &self.resolved) catch return;
         // saw_text means "the last thing streamed was answer text". A tool
         // event resets it: a completion-tool turn streams its preamble, THEN
         // runs tools, and the real answer only exists in the turn's final
@@ -321,8 +322,6 @@ pub const EventSink = struct {
                 self.saw_text.* = false;
                 if (self.step) |step| step.run(step.ctx, self.out);
             },
-            // A call ending is no new work: text it streamed (a yield_turn
-            // handoff) is still the answer, or it would be delivered twice.
             .tool_end => if (self.step) |step| step.run(step.ctx, self.out),
             else => {},
         }

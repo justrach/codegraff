@@ -82,15 +82,99 @@ pub fn fromRevParse(arena: Allocator, rev_parse: []const u8, branch: []const u8)
     };
 }
 
+var base_cache_key: [512]u8 = undefined;
+var base_cache_key_len: usize = 0;
+var base_cache_sha: [64]u8 = undefined;
+var base_cache_sha_len: usize = 0;
+
+fn resolveWorktreeInProcess(env: Env, arena: Allocator) union(enum) { not_linked, linked: Info, fallback } {
+    const cwd = workspace_switch.currentAbs(env.io, arena);
+    if (!std.fs.path.isAbsolute(cwd)) return .fallback;
+    var cur: []const u8 = if (cwd.len > 1) std.mem.trimEnd(u8, cwd, "/") else cwd;
+    while (true) {
+        const dot_git = std.fs.path.join(arena, &.{ cur, ".git" }) catch return .fallback;
+        if (Io.Dir.cwd().statFile(env.io, dot_git, .{}) catch null) |st| {
+            if (st.kind == .directory) return .not_linked;
+            if (st.kind != .file) return .fallback;
+            const dot_bytes = Io.Dir.cwd().readFileAlloc(env.io, dot_git, arena, .limited(4096)) catch return .fallback;
+            const trimmed = std.mem.trim(u8, dot_bytes, " \t\r\n");
+            if (!std.mem.startsWith(u8, trimmed, "gitdir:")) return .fallback;
+            const raw_gitdir = std.mem.trim(u8, trimmed["gitdir:".len..], " \t\r\n");
+            const git_dir = (if (std.fs.path.isAbsolute(raw_gitdir))
+                arena.dupe(u8, raw_gitdir)
+            else
+                std.fs.path.resolve(arena, &.{ cur, raw_gitdir })) catch return .fallback;
+            const commondir_path = std.fs.path.join(arena, &.{ git_dir, "commondir" }) catch return .fallback;
+            const common_bytes = Io.Dir.cwd().readFileAlloc(env.io, commondir_path, arena, .limited(4096)) catch return .fallback;
+            const raw_common = std.mem.trim(u8, common_bytes, " \t\r\n");
+            const common_dir = (if (std.fs.path.isAbsolute(raw_common))
+                arena.dupe(u8, raw_common)
+            else
+                std.fs.path.resolve(arena, &.{ git_dir, raw_common })) catch return .fallback;
+            const head_path = std.fs.path.join(arena, &.{ git_dir, "HEAD" }) catch return .fallback;
+            const head_bytes = Io.Dir.cwd().readFileAlloc(env.io, head_path, arena, .limited(4096)) catch return .fallback;
+            const head_trimmed = std.mem.trim(u8, head_bytes, " \t\r\n");
+            const branch: []const u8 = if (std.mem.startsWith(u8, head_trimmed, "ref: refs/heads/"))
+                head_trimmed["ref: refs/heads/".len..]
+            else if (std.mem.startsWith(u8, head_trimmed, "ref:"))
+                return .fallback
+            else
+                "";
+            const rev = std.fmt.allocPrint(arena, "{s}\n{s}\n{s}\n", .{ cur, git_dir, common_dir }) catch return .fallback;
+            return if (fromRevParse(arena, rev, branch)) |out| .{ .linked = out } else .not_linked;
+        }
+        const parent = std.fs.path.dirname(cur) orelse return .not_linked;
+        if (std.mem.eql(u8, parent, cur)) return .not_linked;
+        cur = parent;
+    }
+}
+
+fn cachedMergeBase(env: Env, arena: Allocator, top: []const u8, root: []const u8, branch: []const u8, base: []const u8) ?[]const u8 {
+    const head_ref_path = if (branch.len > 0)
+        std.fs.path.join(arena, &.{ root, ".git", "refs", "heads", branch }) catch null
+    else
+        null;
+    const head_oid = if (head_ref_path) |p|
+        std.mem.trim(u8, Io.Dir.cwd().readFileAlloc(env.io, p, arena, .limited(128)) catch "", " \t\r\n")
+    else
+        "";
+    const key = if (head_oid.len > 0)
+        std.fmt.allocPrint(arena, "{s}\x00{s}\x00{s}\x00{s}", .{ top, branch, base, head_oid }) catch null
+    else
+        null;
+    if (key) |k| {
+        if (k.len <= base_cache_key.len and std.mem.eql(u8, base_cache_key[0..base_cache_key_len], k) and base_cache_sha_len > 0) {
+            return arena.dupe(u8, base_cache_sha[0..base_cache_sha_len]) catch null;
+        }
+    }
+    const sha = git(env, arena, &.{ "git", "merge-base", "HEAD", base }) orelse return null;
+    if (key) |k| {
+        if (k.len <= base_cache_key.len and sha.len <= base_cache_sha.len) {
+            @memcpy(base_cache_key[0..k.len], k);
+            base_cache_key_len = k.len;
+            @memcpy(base_cache_sha[0..sha.len], sha);
+            base_cache_sha_len = sha.len;
+        }
+    }
+    return sha;
+}
+
 /// The linked worktree the process runs in, or null in a main checkout or outside Git.
 pub fn info(env: Env, arena: Allocator) ?Info {
-    const rev = git(env, arena, &.{ "git", "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir" }) orelse return null;
-    const branch = git(env, arena, &.{ "git", "symbolic-ref", "--short", "HEAD" }) orelse "";
-    var out = fromRevParse(arena, rev, branch) orelse return null;
-    const base = worktree_base.read(env.gpa, env.io, arena, out.root, branch);
+    var out: Info = switch (resolveWorktreeInProcess(env, arena)) {
+        .not_linked => return null,
+        .linked => |resolved| resolved,
+        .fallback => blk: {
+            const rev = git(env, arena, &.{ "git", "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir" }) orelse return null;
+            if (fromRevParse(arena, rev, "") == null) return null;
+            const branch = git(env, arena, &.{ "git", "symbolic-ref", "--short", "HEAD" }) orelse "";
+            break :blk fromRevParse(arena, rev, branch) orelse return null;
+        },
+    };
+    const base = worktree_base.read(env.gpa, env.io, arena, out.root, out.branch);
     if (base.len > 0) {
         out.base = base;
-        out.baseSha = git(env, arena, &.{ "git", "merge-base", "HEAD", base });
+        out.baseSha = cachedMergeBase(env, arena, out.path, out.root, out.branch, base);
     }
     return out;
 }
@@ -205,6 +289,8 @@ pub fn emitMoved(w: *Io.Writer, session_id: []const u8) !void {
 pub fn resetForTest() void {
     live_env = null;
     reported_len = 0;
+    base_cache_key_len = 0;
+    base_cache_sha_len = 0;
 }
 
 test "fromRevParse: a linked tree reports its name, branch, and owning checkout" {
@@ -287,4 +373,42 @@ test "#1737: a mid-turn workspace switch reaches the client with the tool result
 test "errorText names the cwd problem" {
     try std.testing.expectEqualStrings("Session cwd must be an absolute path", errorText(error.RelativeCwd));
     try std.testing.expectEqualStrings("Session cwd does not exist or is not a directory", errorText(error.MissingCwd));
+}
+
+test "resolveWorktreeInProcess resolves main checkouts and linked worktrees without spawning git" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "repo/.git/worktrees/wt-fast");
+    try tmp.dir.createDirPath(io, "repo/.graff/worktrees/wt-fast");
+    try tmp.dir.writeFile(io, .{ .sub_path = "repo/.git/worktrees/wt-fast/commondir", .data = "../..\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "repo/.git/worktrees/wt-fast/HEAD", .data = "ref: refs/heads/worktree-wt-fast\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "repo/.graff/worktrees/wt-fast/.git", .data = "gitdir: ../../../.git/worktrees/wt-fast\n" });
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const saved_cwd = workspace_switch.currentAbs(io, a);
+    const saved_display = main_mod.g_cwd_display;
+    defer {
+        _ = workspace_switch.enterPath(a, io, a, saved_cwd) catch {};
+        main_mod.g_cwd_display = saved_display;
+    }
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &buf);
+    const root_abs = try std.fs.path.join(a, &.{ buf[0..n], "repo" });
+    const wt_abs = try std.fs.path.join(a, &.{ root_abs, ".graff/worktrees/wt-fast" });
+    const env: Env = .{ .gpa = std.testing.allocator, .io = io };
+
+    _ = try workspace_switch.enterPath(a, io, a, root_abs);
+    try std.testing.expect(resolveWorktreeInProcess(env, a) == .not_linked);
+    try std.testing.expect(info(env, a) == null);
+
+    _ = try workspace_switch.enterPath(a, io, a, wt_abs);
+    const resolved = resolveWorktreeInProcess(env, a);
+    try std.testing.expect(resolved == .linked);
+    try std.testing.expectEqualStrings("wt-fast", resolved.linked.name);
+    try std.testing.expectEqualStrings("worktree-wt-fast", resolved.linked.branch);
+    try std.testing.expectEqualStrings(root_abs, resolved.linked.root);
 }

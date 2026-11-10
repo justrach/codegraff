@@ -85,10 +85,14 @@ pub const attach_budget_ms: u32 = if (@import("builtin").os.tag == .windows) 150
 /// re-render the root's tool catalog so the model sees the new tools on its
 /// next request, as `/mcp add` does.
 pub fn attach(ctx: *anyopaque, _: Allocator, params: ?Value) anyerror!void {
+    const p = params orelse return;
+    if (p != .object) return;
+    const raw_list = p.object.get("mcpServers") orelse return;
+    if (raw_list != .array or raw_list.array.items.len == 0) return;
     const live: *@import("acp_live_turn.zig").LiveTurn = @ptrCast(@alignCast(ctx));
     const root = live.root;
     const reg = root.registry orelse return;
-    const durable_params = if (params) |p| try util.dupeJsonValue(root.arena, p) else null;
+    const durable_params = try util.dupeJsonValue(root.arena, p);
     const specs = try parse(root.arena, durable_params);
     if (specs.len == 0) return;
     if (!joinWithin(reg, root.arena, specs, attach_budget_ms)) return;

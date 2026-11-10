@@ -10,6 +10,7 @@ import Graff.PromptCache
 import Graff.PromptPrefix
 import Graff.PromptStable
 import Graff.ResourceKernel
+import Graff.AcpLatency
 
 open Graff
 
@@ -30,4 +31,5 @@ def main : IO Unit := do
   IO.println s!"prompt_prefix {PromptPrefix.prefixCells}  hit={PromptPrefix.hitCells}"
   IO.println s!"prompt_stable {PromptStable.stableCells}  keep={PromptStable.keepCells}"
   IO.println s!"resource      {ResourceKernel.resourceCells}  seed={ResourceKernel.seedCells}  codedb_route={ResourceKernel.codedbRouteCells}  crash_recovery={ResourceKernel.crashRecoveryCells}"
-  IO.println s!"cells_total  {ToolCatalog.catalogCells + Transport.transportCells + Provider.providerRows + GoalLoop.goalCells + PathConfine.leaseCells + Shape.shapeCells + Score.scoreCells + BashPolicy.bashCells + PromptCache.cacheCells + PromptPrefix.prefixCells + PromptStable.stableCells + ResourceKernel.resourceCells + ResourceKernel.codedbRouteCells + ResourceKernel.crashRecoveryCells}"
+  IO.println s!"acp_latency   {AcpLatency.acpWorkspaceCells}  zero_spawn={AcpLatency.acpZeroSpawnCells}  inbox={AcpLatency.acpInboxCells}"
+  IO.println s!"cells_total  {ToolCatalog.catalogCells + Transport.transportCells + Provider.providerRows + GoalLoop.goalCells + PathConfine.leaseCells + Shape.shapeCells + Score.scoreCells + BashPolicy.bashCells + PromptCache.cacheCells + PromptPrefix.prefixCells + PromptStable.stableCells + ResourceKernel.resourceCells + ResourceKernel.codedbRouteCells + ResourceKernel.crashRecoveryCells + AcpLatency.acpWorkspaceCells + AcpLatency.acpInboxCells}"

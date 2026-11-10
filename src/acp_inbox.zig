@@ -181,15 +181,42 @@ pub const Inbox = struct {
         return true;
     }
 
+    fn isDirectQueueMethod(method: []const u8) bool {
+        return std.mem.eql(u8, method, "initialize") or
+            std.mem.eql(u8, method, "session/new") or
+            std.mem.eql(u8, method, "session/load") or
+            std.mem.eql(u8, method, "session/resume") or
+            std.mem.eql(u8, method, "session/set_config_option") or
+            std.mem.eql(u8, method, "graff/models") or
+            std.mem.eql(u8, method, "graff/changes") or
+            std.mem.eql(u8, method, "session/fork");
+    }
+
     fn accept(self: *Inbox, line: []const u8) !void {
+        const fast_method = @import("acp_handshake_log.zig").methodOf(line);
+        if (fast_method) |m| {
+            if (isDirectQueueMethod(m)) {
+                self.mutex.lockUncancelable(self.io);
+                defer self.mutex.unlock(self.io);
+                const copy = try self.gpa.dupe(u8, line);
+                errdefer self.gpa.free(copy);
+                try self.lines.append(self.gpa, copy);
+                self.ready.broadcast(self.io);
+                return;
+            }
+        }
         var arena = std.heap.ArenaAllocator.init(self.gpa);
         defer arena.deinit();
-        {
-            const value = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), line, .{}) catch .null;
-            if (@import("acp_elicit.zig").accept(value)) return;
-            if (self.permission) |bridge| if (bridge.accept(value)) return;
+        const trimmed = std.mem.trim(u8, line, " \t\r\n");
+        const parsed_val: std.json.Value = if (trimmed.len == 0)
+            .null
+        else
+            std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), trimmed, .{ .allocate = .alloc_always }) catch .null;
+        if (fast_method == null) {
+            if (@import("acp_elicit.zig").accept(parsed_val)) return;
+            if (self.permission) |bridge| if (bridge.accept(parsed_val)) return;
         }
-        const req = proto.parseRequest(arena.allocator(), line);
+        const req = proto.requestFromValue(parsed_val);
         if (req) |r| {
             if ((std.mem.eql(u8, r.method, "session/prompt") or std.mem.eql(u8, r.method, "_session/steering")) and self.trySteer(arena.allocator(), r)) return;
             if (std.mem.eql(u8, r.method, "graff/agents") and self.tryLiveAgents(arena.allocator(), r)) return;

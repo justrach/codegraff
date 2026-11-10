@@ -523,7 +523,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
         sink.emit(io, dimNotice(mcp_line));
     }
     const mcp_t0 = Io.Timestamp.now(io, .awake);
-    var registry: mcp.Registry = if (connect_mcp and !skip_imported) ((mcp.Registry.init(gpa, io, mcp_config_path, global_path, home, environ_map.get("GRAFF_REPL_DEBUG") != null, environ_map, defer_join) catch |err| inner: {
+    var registry: mcp.Registry = if (connect_mcp and !skip_imported) ((mcp_boot.initWithMerged(gpa, io, mcp_config_path, global_path, home, environ_map.get("GRAFF_REPL_DEBUG") != null, environ_map, defer_join, merged) catch |err| inner: {
         sink.emit(io, .{ .session_notice = .{ .text = try std.fmt.allocPrint(arena, "[mcp] init failed: {t} — continuing without MCP", .{err}) } });
         if (telemetry.g_telem) |t| t.errorEvent("mcp", @errorName(err));
         break :inner null;

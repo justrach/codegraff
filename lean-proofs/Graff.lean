@@ -11,3 +11,4 @@ import Graff.PromptCache
 import Graff.PromptPrefix
 import Graff.PromptStable
 import Graff.ResourceKernel
+import Graff.AcpLatency
