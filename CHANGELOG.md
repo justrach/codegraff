@@ -13,10 +13,10 @@ current is part of cutting a release.
 ## Unreleased
 
 - Claude Fable 5.2 is in the baked catalog: `--model claude-fable-5-2` resolves by its bare name on the Anthropic and Claude Agent routes before any live catalog loads, and the cost meter and subagent tier ladder price it.
-- Fixed two image reads in one tool batch delivering only one image (#1866). The registry's single pending image is now a bounded queue (16 images, 24 MB of base64 per batch) shared by native image reads and MCP image blocks. Every queued image reaches the next model request, named in order; one past a limit is a tool error that says to read it again.
+- Fixed two image reads in one tool batch delivering only one image (#1866). The registry's single pending image is now a bounded queue (16 images, 24 MB of base64 per batch) shared by native image reads and MCP image blocks. Every queued image reaches the next model request in the order the calls were made, whichever read finished first, with a caption naming them; one past a limit is a tool error that says to read it again.
 - Fixed uploads an ACP client could not inline sending the model to a path its file tools cannot open (#1865). The prompt path now stages the `Attached images` trailer's refs as native image blocks, as it does `@[path]` markers, and drops their lines from the text. The file tools stay confined to the working directory.
 - `graff refresh`, `graff models`, `graff route` and `/models` now say when a provider refused the live model-list request (for example a rejected key, HTTP 401) instead of silently showing the list cached on disk. A provider that could not be reached stays quiet: that is the case the cache is for.
-- Added the `Graff.ImageDelivery` Lean kernel (102 admit cells, corpus total 3,870): every staged image is delivered once or refused, the queue never exceeds its limits, and every trailer ref ends as an image block or as its line.
+- Added the `Graff.ImageDelivery` Lean kernel (102 admit cells, corpus total 3,870): every staged image is delivered once or refused, the queue never exceeds its limits, every request is in call order, and every trailer ref ends as an image block or as its line.
 
 ## v0.302.74.58
 

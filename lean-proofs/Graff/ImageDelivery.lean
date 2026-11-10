@@ -8,7 +8,8 @@
   stages images; the batch checkpoint flushes them into the next request.
   The old machine was this one with a single slot: the second image of a
   batch got a successful result that said "not attached". Here every staged
-  image is delivered once, in order, or refused out loud. Nothing else.
+  image is delivered once or refused out loud, and a request's images are in
+  the order the model made the calls, whichever read finished first.
 
   `Attach` is the prompt's attachment trailer (src/attachment_refs.zig). A
   ref the prompt names is staged as an image block, or keeps its line in the
@@ -23,10 +24,12 @@
 
 namespace Graff.ImageDelivery
 
-/-! The inbox. An image is its id and its size. -/
+/-! The inbox. An image is its id, the position of the call that staged it
+    in the tool batch, and its size. -/
 
 structure Image where
   id   : Nat
+  call : Nat
   size : Nat
 deriving DecidableEq, Repr, BEq
 
@@ -51,19 +54,26 @@ def bytes (q : List Image) : Nat := (q.map (·.size)).sum
 def admits (l : Limits) (q : List Image) (img : Image) : Bool :=
   decide (q.length < l.slots) && decide (bytes q + img.size ≤ l.budget)
 
+/-- `a`'s call is not after `b`'s. -/
+def byCall (a b : Image) : Bool := decide (a.call ≤ b.call)
+
+/-- The queue as a request carries it: by call position, and stable, so
+    images of one call keep the order they arrived in. -/
+def inCallOrder (q : List Image) : List Image := q.mergeSort byCall
+
 def step (l : Limits) (s : Inbox) : Event → Inbox
   | .stage img =>
       if admits l s.queue img then { s with queue := s.queue ++ [img] }
       else { s with refused := s.refused ++ [img] }
   | .flush =>
       if s.queue.isEmpty then s
-      else { s with queue := [], delivered := s.delivered ++ [s.queue] }
+      else { s with queue := [], delivered := s.delivered ++ [inCallOrder s.queue] }
 
 def run (l : Limits) (s : Inbox) : List Event → Inbox
   | []      => s
   | e :: es => run l (step l s e) es
 
-/-- Every image the inbox took, delivered or still waiting, oldest first. -/
+/-- Every image the inbox took, delivered or still waiting. -/
 def accepted (s : Inbox) : List Image := s.delivered.flatten ++ s.queue
 
 def staged : List Event → List Image
@@ -71,11 +81,30 @@ def staged : List Event → List Image
   | .stage img :: es => img :: staged es
   | .flush :: es => staged es
 
+theorem byCall_trans (a b c : Image) (hab : byCall a b = true) (hbc : byCall b c = true) :
+    byCall a c = true := by
+  simp [byCall] at *; omega
+
+theorem byCall_total (a b : Image) : (byCall a b || byCall b a) = true := by
+  simp [byCall]; omega
+
+theorem inCallOrder_perm (q : List Image) : (inCallOrder q).Perm q :=
+  List.mergeSort_perm q byCall
+
+theorem inCallOrder_sorted (q : List Image) :
+    (inCallOrder q).Pairwise (fun a b => byCall a b = true) :=
+  List.pairwise_mergeSort byCall_trans byCall_total q
+
 /-! Edges. -/
 
+/-- A flush moves images; it neither loses nor invents one. -/
 theorem flush_keeps_accepted (l : Limits) (s : Inbox) :
-    accepted (step l s .flush) = accepted s := by
-  by_cases h : s.queue = [] <;> simp [step, accepted, h]
+    (accepted (step l s .flush)).Perm (accepted s) := by
+  by_cases h : s.queue = []
+  · simp [step, accepted, h]
+  · simp only [step, accepted, List.isEmpty_iff, h, if_false, List.flatten_append,
+      List.flatten_cons, List.flatten_nil, List.append_nil]
+    exact List.Perm.append (List.Perm.refl _) (inCallOrder_perm s.queue)
 
 theorem flush_empties (l : Limits) (s : Inbox) :
     (step l s .flush).queue = [] := by
@@ -119,7 +148,7 @@ theorem every_image_accounted (l : Limits) (es : List Event) (s : Inbox) :
     rw [run, ih]
     cases e with
     | flush =>
-      rw [flush_keeps_accepted, flush_refuses_nothing]
+      rw [(flush_keeps_accepted l s).length_eq, flush_refuses_nothing]
       simp [staged]
     | stage img =>
       rcases stage_accepts_or_refuses l s img with ⟨ha, hr⟩ | ⟨ha, hr⟩ <;>
@@ -159,16 +188,48 @@ theorem queue_within_budget (l : Limits) (es : List Event) (s : Inbox)
         rw [hs]; simp [bytes] at *; omega
       · simpa [step, ha] using h
 
+/-- Every request is in call order: an image from a later call never comes
+    before one from an earlier call, whatever order the reads finished in. -/
+theorem requests_in_call_order (l : Limits) (es : List Event) (s : Inbox)
+    (h : ∀ r ∈ s.delivered, r.Pairwise (fun a b => byCall a b = true)) :
+    ∀ r ∈ (run l s es).delivered, r.Pairwise (fun a b => byCall a b = true) := by
+  induction es generalizing s with
+  | nil => simpa [run] using h
+  | cons e es ih =>
+    rw [run]
+    apply ih
+    cases e with
+    | stage img =>
+      by_cases ha : admits l s.queue img = true <;> simpa [step, ha] using h
+    | flush =>
+      by_cases hq : s.queue = []
+      · simpa [step, hq] using h
+      · intro r hr
+        simp only [step, List.isEmpty_iff, hq, if_false, List.mem_append,
+          List.mem_singleton] at hr
+        rcases hr with hr | hr
+        · exact h r hr
+        · rw [hr]; exact inCallOrder_sorted s.queue
+
+/-- Images that arrived in one order and belong to calls in that same order
+    stay in it: the sort is stable, so one call's images are not shuffled. -/
+theorem arrival_order_kept_within_call_order (q : List Image) (a b : Image)
+    (hcall : byCall a b = true) (harrived : [a, b].Sublist q) :
+    [a, b].Sublist (inCallOrder q) :=
+  List.pair_sublist_mergeSort byCall_trans byCall_total hcall harrived
+
+theorem run_append_flush (l : Limits) (es : List Event) (s : Inbox) :
+    run l s (es ++ [.flush]) = step l (run l s es) .flush := by
+  induction es generalizing s with
+  | nil => simp [run]
+  | cons e es ih => simp [run, ih]
+
 /-- A flush that ends a run delivers everything that was accepted: the
-    queue is empty and `accepted` is exactly what the requests received. -/
+    queue is empty and the requests hold exactly the accepted images. -/
 theorem flush_delivers_all (l : Limits) (es : List Event) (s : Inbox) :
     (run l s (es ++ [.flush])).queue = [] ∧
-    (run l s (es ++ [.flush])).delivered.flatten = accepted (run l s es) := by
-  have hrun : run l s (es ++ [.flush]) = step l (run l s es) .flush := by
-    induction es generalizing s with
-    | nil => simp [run]
-    | cons e es ih => simp [run, ih]
-  rw [hrun]
+    (run l s (es ++ [.flush])).delivered.flatten.Perm (accepted (run l s es)) := by
+  rw [run_append_flush]
   refine ⟨flush_empties l _, ?_⟩
   have h := flush_keeps_accepted l (run l s es)
   unfold accepted at h
@@ -176,12 +237,12 @@ theorem flush_delivers_all (l : Limits) (es : List Event) (s : Inbox) :
   simpa [accepted] using h
 
 /-- The batch the issue reports: images staged into an empty inbox that has
-    room for all of them arrive together, in the order staged, in one request. -/
+    room for all of them arrive together in one request, in call order. -/
 theorem batch_in_one_request (l : Limits) (imgs : List Image)
     (hslots : imgs.length ≤ l.slots) (hbytes : bytes imgs ≤ l.budget)
     (hne : imgs ≠ []) :
     run l {} (imgs.map .stage ++ [.flush]) =
-      { queue := [], delivered := [imgs], refused := [] } := by
+      { queue := [], delivered := [inCallOrder imgs], refused := [] } := by
   have key : ∀ (rest pre : List Image),
       (pre ++ rest).length ≤ l.slots → bytes (pre ++ rest) ≤ l.budget →
       run l { queue := pre } (rest.map .stage) = { queue := pre ++ rest } := by
@@ -202,38 +263,46 @@ theorem batch_in_one_request (l : Limits) (imgs : List Image)
       have := ih (pre ++ [img]) (by simpa using hs) (by simpa using hb)
       simpa using this
   have hq := key imgs [] (by simpa using hslots) (by simpa using hbytes)
-  have hrun : run l {} (imgs.map .stage ++ [.flush]) =
-      step l (run l {} (imgs.map .stage)) .flush := by
-    generalize imgs.map Event.stage = es
-    generalize ({} : Inbox) = s
-    induction es generalizing s with
-    | nil => simp [run]
-    | cons e es ih => simp [run, ih]
-  rw [hrun, hq]
+  rw [run_append_flush, hq]
   cases imgs with
   | nil => exact absurd rfl hne
   | cons a as => simp [step]
 
+/-- Staged in the order the calls were made, a batch arrives exactly as staged. -/
+theorem batch_staged_in_call_order (l : Limits) (imgs : List Image)
+    (hslots : imgs.length ≤ l.slots) (hbytes : bytes imgs ≤ l.budget)
+    (hne : imgs ≠ []) (hsorted : imgs.Pairwise (fun a b => byCall a b = true)) :
+    (run l {} (imgs.map .stage ++ [.flush])).delivered = [imgs] := by
+  rw [batch_in_one_request l imgs hslots hbytes hne]
+  simp [inCallOrder, List.mergeSort_of_pairwise hsorted]
+
 /-! The defect, as a cell. One slot is the machine graff shipped. -/
 
-def before : Image := { id := 1, size := 1 }
-def after  : Image := { id := 2, size := 1 }
-def comparison : List Event := [.stage before, .stage after, .flush]
+def before : Image := { id := 1, call := 0, size := 1 }
+def after  : Image := { id := 2, call := 1, size := 1 }
+
+/-- The second call's read finishes first. -/
+def comparison : List Event := [.stage after, .stage before, .flush]
 
 def oneSlot : Limits := { slots := 1 }
 
 theorem one_slot_drops_the_second :
     run oneSlot {} comparison =
-      { queue := [], delivered := [[before]], refused := [after] } := by native_decide
+      { queue := [], delivered := [[after]], refused := [before] } := by native_decide
 
-theorem queue_delivers_both :
+theorem queue_delivers_both_in_call_order :
     run {} {} comparison =
       { queue := [], delivered := [[before, after]], refused := [] } := by native_decide
 
+/-- Which read finishes first does not change what the model receives. -/
+theorem finish_order_does_not_matter :
+    run {} {} [.stage before, .stage after, .flush] = run {} {} comparison := by
+  native_decide
+
 /-- A refused image is not gone: staged again after the flush, it is taken. -/
 theorem refused_then_retried :
-    (run oneSlot {} (comparison ++ [.stage after, .flush])).delivered =
-      [[before], [after]] := by native_decide
+    (run oneSlot {} (comparison ++ [.stage before, .flush])).delivered =
+      [[after], [before]] := by native_decide
 
 /-! Snapshot: fill level × bytes already queued × size of the next image. -/
 

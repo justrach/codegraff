@@ -9,8 +9,10 @@
 //!
 //! The contract now: a batch may queue up to `cap` images and `byte_budget`
 //! of base64 between them. Each one admitted is delivered once, in the order
-//! it was admitted. One that does not fit is refused as a tool error naming
-//! the limit, never dropped under a successful result. The transition table
+//! the model made the calls: parallel reads finish in any order, so each
+//! image carries its call's position in the batch and the drain sorts by it.
+//! One that does not fit is refused as a tool error naming the limit, never
+//! dropped under a successful result. The transition table
 //! is `Graff.ImageDelivery` in lean-proofs.
 
 const std = @import("std");
@@ -28,9 +30,15 @@ pub const byte_budget: usize = 24 * 1024 * 1024;
 
 pub const Verdict = enum { queued, full, over_budget };
 
+/// The position of an image staged outside a tool batch. It sorts after
+/// every batch call and keeps its arrival order among its own kind.
+pub const unsequenced: u32 = std.math.maxInt(u32);
+
 pub fn Queue(comptime slots: usize, comptime budget: usize) type {
     return struct {
         items: [slots]PendingImage = undefined,
+        /// Each image's call position in the batch that staged it.
+        seqs: [slots]u32 = undefined,
         len: usize = 0,
         bytes: usize = 0,
 
@@ -44,17 +52,36 @@ pub fn Queue(comptime slots: usize, comptime budget: usize) type {
         }
 
         pub fn push(self: *Self, img: PendingImage) Verdict {
+            return self.pushAt(img, unsequenced);
+        }
+
+        /// Queue `img`, staged by the batch call at position `seq`.
+        pub fn pushAt(self: *Self, img: PendingImage, seq: u32) Verdict {
             const verdict = self.admit(img.b64.len);
             if (verdict != .queued) return verdict;
             self.items[self.len] = img;
+            self.seqs[self.len] = seq;
             self.len += 1;
             self.bytes += img.b64.len;
             return .queued;
         }
 
-        /// Move every queued image into `out`, oldest first, and empty the queue.
+        /// Move every queued image into `out` in call order, and empty the
+        /// queue. The sort is stable: images of one call, and unsequenced
+        /// ones, keep the order they arrived in.
         pub fn drain(self: *Self, out: *[slots]PendingImage) []const PendingImage {
             const n = self.len;
+            for (1..@max(n, 1)) |i| {
+                const img = self.items[i];
+                const seq = self.seqs[i];
+                var j = i;
+                while (j > 0 and self.seqs[j - 1] > seq) : (j -= 1) {
+                    self.items[j] = self.items[j - 1];
+                    self.seqs[j] = self.seqs[j - 1];
+                }
+                self.items[j] = img;
+                self.seqs[j] = seq;
+            }
             @memcpy(out[0..n], self.items[0..n]);
             self.len = 0;
             self.bytes = 0;
@@ -119,6 +146,20 @@ test "#1866: a batch of image reads is queued whole and drained in order" {
     try std.testing.expectEqual(@as(usize, 0), inbox.drain(&out).len); // delivered once
 }
 
+test "#1866: images drain in call order whatever order the reads finished in" {
+    var inbox: Inbox = .{};
+    _ = inbox.pushAt(image("third"), 2);
+    _ = inbox.push(image("from outside a batch"));
+    _ = inbox.pushAt(image("first"), 0);
+    _ = inbox.pushAt(image("second"), 1);
+    _ = inbox.pushAt(image("second again"), 1);
+    var out: [cap]PendingImage = undefined;
+    const got = inbox.drain(&out);
+    const want = [_][]const u8{ "first", "second", "second again", "third", "from outside a batch" };
+    try std.testing.expectEqual(want.len, got.len);
+    for (got, want) |img, b64| try std.testing.expectEqualStrings(b64, img.b64);
+}
+
 test "#1866: an image past the count or byte limit is refused, and a drain makes room" {
     var inbox: Inbox = .{};
     for (0..cap) |_| try std.testing.expectEqual(Verdict.queued, inbox.push(image("x")));
@@ -144,17 +185,18 @@ test "#1866: an image past the count or byte limit is refused, and a drain makes
 }
 
 /// The `Graff.ImageDelivery` transition function, written again without the
-/// queue's bookkeeping: lists of sizes, a refusal count, and what each
-/// request received.
+/// queue's bookkeeping: lists of sizes and call positions, a refusal count,
+/// and what each request received.
 const Model = struct {
     const slots = 2;
     const budget = 3;
     queue: [slots]usize = undefined,
+    calls: [slots]u32 = undefined,
     len: usize = 0,
     refused: usize = 0,
     delivered: usize = 0,
 
-    fn stage(m: *Model, size: usize) bool {
+    fn stage(m: *Model, size: usize, call: u32) bool {
         var bytes: usize = 0;
         for (m.queue[0..m.len]) |s| bytes += s;
         if (m.len == slots or bytes + size > budget) {
@@ -162,19 +204,27 @@ const Model = struct {
             return false;
         }
         m.queue[m.len] = size;
+        m.calls[m.len] = call;
         m.len += 1;
         return true;
     }
 
-    fn flush(m: *Model) void {
-        m.delivered += m.len;
+    /// The request's images: the queue in call order, ties in arrival order.
+    /// Two slots, so one comparison is the whole sort.
+    fn flush(m: *Model, out: *[slots]usize) []const usize {
+        const n = m.len;
+        @memcpy(out[0..n], m.queue[0..n]);
+        if (n == 2 and m.calls[0] > m.calls[1]) std.mem.swap(usize, &out[0], &out[1]);
+        m.delivered += n;
         m.len = 0;
+        return out[0..n];
     }
 };
 
 test "#1866: the queue agrees with the ImageDelivery machine on every run of six events" {
     // Events: stage a 1-, 2- or 3-byte image, or flush. 4^6 runs cover every
-    // reachable fill level and byte total of a 2-slot, 3-byte queue.
+    // reachable fill level and byte total of a 2-slot, 3-byte queue. A bigger
+    // image comes from an earlier call, so arrival order and call order differ.
     const sizes = [_][]const u8{ "1", "22", "333" };
     var run: usize = 0;
     while (run < 4096) : (run += 1) {
@@ -188,15 +238,17 @@ test "#1866: the queue agrees with the ImageDelivery machine on every run of six
             code /= 4;
             if (event == 3) {
                 var out: [Model.slots]PendingImage = undefined;
+                var want_buf: [Model.slots]usize = undefined;
                 const got = q.drain(&out);
-                for (got, m.queue[0..m.len]) |img, want| try std.testing.expectEqual(want, img.b64.len);
-                try std.testing.expectEqual(m.len, got.len);
+                const want = m.flush(&want_buf);
+                try std.testing.expectEqual(want.len, got.len);
+                for (got, want) |img, size| try std.testing.expectEqual(size, img.b64.len);
                 delivered += got.len;
-                m.flush();
             } else {
                 staged += 1;
-                const admitted = m.stage(sizes[event].len);
-                try std.testing.expectEqual(admitted, q.push(image(sizes[event])) == .queued);
+                const call: u32 = @intCast(2 - event);
+                const admitted = m.stage(sizes[event].len, call);
+                try std.testing.expectEqual(admitted, q.pushAt(image(sizes[event]), call) == .queued);
             }
             try std.testing.expectEqual(m.len, q.len);
             // Nothing is lost: every staged image is delivered, waiting, or refused.

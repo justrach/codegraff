@@ -15,6 +15,8 @@ const vision = @import("vision.zig");
 pub const Stage = struct {
     arena: Allocator,
     inbox: *@import("image_inbox.zig").Inbox,
+    /// The staging call's position in its tool batch.
+    seq: u32 = @import("image_inbox.zig").unsequenced,
     label: []const u8,
     supports_vision: bool,
 };
@@ -63,7 +65,7 @@ pub fn renderContent(w: *Io.Writer, content: Value, stage: Stage) !void {
             else if (stage.inbox.admit(img.b64.len) != .queued) .queue_full else .staged;
             if (fate == .staged) {
                 if (img.stage(stage.arena, stage.label)) |staged| {
-                    _ = stage.inbox.push(staged);
+                    _ = stage.inbox.pushAt(staged, stage.seq);
                 } else |_| fate = .queue_full;
             }
             if (w.buffered().len > 0) try w.writeByte('\n');

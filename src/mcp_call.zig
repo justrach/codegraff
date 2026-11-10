@@ -245,6 +245,7 @@ fn invoke(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Va
     const structured_range = try renderResult(&ow.writer, result, .{
         .arena = reg.arena(),
         .inbox = &reg.pending_images,
+        .seq = reg.staging_seq,
         .label = qualified,
         .supports_vision = reg.vision_capable,
     }, response_alloc);

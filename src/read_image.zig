@@ -131,11 +131,11 @@ fn stageWith(gpa: Allocator, io: Io, ctx: ToolCtx, resolved: []const u8, path: [
     const verdict = reg.pending_images.admit(b64.len);
     if (verdict != .queued) return .{ .text = try inbox.refusal(gpa, actual_path, verdict), .is_error = true };
     const arena = reg.arena();
-    _ = reg.pending_images.push(.{
+    _ = reg.pending_images.pushAt(.{
         .media_type = try arena.dupe(u8, sent_type),
         .b64 = try arena.dupe(u8, b64),
         .label = try arena.dupe(u8, actual_path),
-    });
+    }, ctx.call_seq);
     switch (turn) {
         .as_is => {},
         .turned => if (!fit.temp) return .{
@@ -188,6 +188,7 @@ test "native image read stages pixels and tool checkpoint sends them without a u
     var ctx: ToolCtx = undefined;
     ctx.registry = &reg;
     ctx.agent_cwd = null;
+    ctx.call_seq = 0;
     ctx.provider = root.provider;
     const out = (try stage(a, io, ctx, file_path, "image.PNG", bytes.len)).?;
     defer a.free(out.text);
@@ -232,10 +233,14 @@ test "#1866: two image reads in one tool batch both reach the next model request
     var ctx: ToolCtx = undefined;
     ctx.registry = &reg;
     ctx.agent_cwd = null;
+    ctx.call_seq = 0;
     ctx.provider = root.provider;
-    for ([_][]const u8{ "before.png", "after.png" }) |name| {
+    // The second call's read finishes first: the model still gets them in
+    // the order it asked.
+    for ([_][]const u8{ "after.png", "before.png" }, [_]u32{ 1, 0 }) |name, call| {
         const path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/{s}", .{ tmp.sub_path, name });
         defer a.free(path);
+        ctx.call_seq = call;
         const out = (try stage(a, io, ctx, path, name, tiny_png.len)).?;
         defer a.free(out.text);
         try std.testing.expect(!out.is_error);
@@ -306,6 +311,7 @@ test "#1737: after workspace use, an image in the new tree attaches; one outside
     var ctx: ToolCtx = undefined;
     ctx.registry = &reg;
     ctx.agent_cwd = null;
+    ctx.call_seq = 0;
     ctx.provider = .{ .id = "test", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 100000 };
     const out = (try stage(a, io, ctx, resolved, "shot.png", tiny_png.len)).?;
     defer a.free(out.text);
@@ -354,6 +360,7 @@ test "#1272: an oversize image is downscaled or refused, never queued as-is" {
     var ctx: ToolCtx = undefined;
     ctx.registry = &reg;
     ctx.agent_cwd = null;
+    ctx.call_seq = 0;
     ctx.provider = .{ .id = "test", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 100000 };
 
     // No way to downscale: refused with the reason, and nothing is queued.
@@ -383,6 +390,7 @@ test "#1762: read_image types a WebP named .png by its bytes, and refuses non-ra
     var ctx: ToolCtx = undefined;
     ctx.registry = &reg;
     ctx.agent_cwd = null;
+    ctx.call_seq = 0;
     ctx.provider = .{ .id = "test", .kind = .anthropic, .auth = .bearer, .url = "", .api_key = "", .model = "claude-x", .context = 100000 };
     const webp = "RIFF\x24\x00\x00\x00WEBPVP8 \x18\x00\x00\x00";
     try tmp.dir.writeFile(io, .{ .sub_path = "shot.png", .data = webp });
@@ -431,6 +439,7 @@ test "read_image: a photo stored sideways is sent upright, or the model is told 
     var ctx: ToolCtx = undefined;
     ctx.registry = &reg;
     ctx.agent_cwd = null;
+    ctx.call_seq = 0;
     ctx.provider = .{ .id = "test", .kind = .anthropic, .auth = .bearer, .url = "", .api_key = "", .model = "claude-x", .context = 100000 };
     const photo = orient.testJpeg(false, 6);
     try tmp.dir.writeFile(io, .{ .sub_path = "photo.jpg", .data = &photo });
