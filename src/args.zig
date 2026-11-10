@@ -126,7 +126,7 @@ pub fn parse(init: std.process.Init) !Flags {
         _ = it.next(); // argv[0]
         while (it.next()) |arg| {
             if (flags.positionals.items.len > 0 and
-                (std.mem.eql(u8, flags.positionals.items[0], "mcp") or std.mem.eql(u8, flags.positionals.items[0], "computer") or std.mem.eql(u8, flags.positionals.items[0], "learn") or std.mem.eql(u8, flags.positionals.items[0], "peer") or std.mem.eql(u8, flags.positionals.items[0], "keys") or std.mem.eql(u8, flags.positionals.items[0], "harness-tree")))
+                (std.mem.eql(u8, flags.positionals.items[0], "mcp") or std.mem.eql(u8, flags.positionals.items[0], "computer") or std.mem.eql(u8, flags.positionals.items[0], "learn") or std.mem.eql(u8, flags.positionals.items[0], "peer") or std.mem.eql(u8, flags.positionals.items[0], "bot") or std.mem.eql(u8, flags.positionals.items[0], "keys") or std.mem.eql(u8, flags.positionals.items[0], "harness-tree")))
             {
                 try flags.positionals.append(arena, try arena.dupe(u8, arg));
             } else if (std.mem.startsWith(u8, arg, "-")) {

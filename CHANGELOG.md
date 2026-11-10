@@ -10,6 +10,12 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.61
+
+- Added Bots, experimental and off until `graff bot enable`. A Bot is a standing role with one job that keeps its own memory, work log and scheduled routines in `.graff/bots/<name>/` (ADR 0333). `graff bot run NAME MESSAGE` is one headless turn with those in its system prompt, `graff bot routine add NAME "@every 2h" TEXT` schedules work, and `graff bot tick` runs every due routine once, for cron, launchd or a client's timer. There is no daemon: nothing runs unless something ticks. See `docs/bots.md`.
+- `graff bot --user` keeps the same store in `~/.graff/bots`, for bots you message from any project; one can be `--primary` (ADR 0334). With `--stale-after SECONDS` a check that comes late records the slots it missed (`graff bot missed`) and does not run them late. `graff bot state --json` returns every bot, its routines and the last check in one call, for a client that draws them.
+- While bots are off, every `graff bot` command except `enable` and `disable` exits 2 before it opens a store. The switch is the file `~/.graff/bots/enabled`; `GRAFF_BOTS=1` or `=0` decides for one process. `graff bot disable` keeps every bot and what it remembers.
+
 ## v0.302.74.60
 
 - Fixed runaway raw reasoning streams bypassing `ReplySize` and `Stream` loop detection and sleeping up to 270s in empty-completion backoff before failing (#1878). Pure mid-task reasoning streams now stop at `raw_reasoning_runaway_bytes`, `Stream.event` runs `Detector` over reasoning deltas (`ReplyRunaway` rewind while rewinds remain, then `ModelLoop`), and `handleWithWait` skips transport sleep when `reasonedWithoutAnswer` is true.
