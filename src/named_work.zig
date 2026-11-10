@@ -23,7 +23,11 @@ pub const nudge_text =
 /// arena cannot leave a dangling pointer for the parent's handle (#714).
 var remembered_task: []const u8 = "";
 
-const source_needles = [_][]const u8{ ".py", ".zig", ".jsx", ".js", ".tsx", ".ts", "SPEC.md" };
+const source_needles = [_][]const u8{
+    ".py",  ".zig", ".jsx", ".js",    ".tsx",   ".ts",     ".go", ".rs",
+    ".cpp", ".cc",  ".c",   ".hpp",   ".h",     ".java",   ".rb", ".kt",
+    ".cs",  ".php", ".lua", ".scala", ".swift", "SPEC.md",
+};
 
 fn copyOnto(self: *Agent, text: []const u8) []const u8 {
     return self.arena.dupe(u8, text) catch "";
@@ -388,4 +392,18 @@ test "#714: handle reads the Agent copy, not a process-global leftover" {
     var agent = testAgent(a, msgs);
     rememberOn(&agent, "thanks");
     try std.testing.expect(!try handle(&agent, "you're welcome"));
+}
+
+test "#1879: hasNamedSource recognizes Go, Rust, C/C++, Java and Ruby source files without matching config/data suffixes" {
+    for ([_][]const u8{
+        "Fix the race in server/handler.go",
+        "Update src/lib.rs to handle empty slices",
+        "Patch parser.c and parser.h",
+        "Fix NullPointerException in OrderService.java",
+        "Check worker.rb",
+    }) |task| try std.testing.expect(hasNamedSource(task));
+    for ([_][]const u8{
+        "Summarize data.csv and config.json",
+        "Check events.jsonl and README.rst",
+    }) |non_src| try std.testing.expect(!hasNamedSource(non_src));
 }

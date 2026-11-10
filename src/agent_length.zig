@@ -84,6 +84,15 @@ pub const State = struct {
         if (Agent.esc_cancel.load(.acquire) or @import("acp_engine.zig").cancel_flag.load(.acquire)) return error.Interrupted;
         if (self.run_budget) |budget| {
             if (budget.tool_exhausted.load(.acquire)) return error.ToolBudgetExhausted;
+            // #1882: if the root's `#390` final landing call hit max_tokens, settle
+            // with whatever summary/reasoning arrived instead of aborting the run.
+            if (!self.sub and budget.model_landed.load(.acquire) and !budget.canAfford(1)) {
+                if (done) |text| {
+                    if (std.mem.trim(u8, text, " \t\r\n").len > 0) return text;
+                    const ub = @import("agent_unfinished_bounce.zig");
+                    if (try ub.settleEmptyLanding(self, self.messages.items.len, ub.extractRootReasoningTail(self.provider.kind, root))) |fb| return fb;
+                }
+            }
             // A child must retain the root's landing reservation too.
             if (!budget.canAfford(if (self.depth > 0) 2 else 1)) return error.RunBudgetExhausted;
         }

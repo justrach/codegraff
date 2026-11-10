@@ -81,18 +81,34 @@ pub fn shouldBounce(unattended: bool, lean: bool, text_only: bool, review: bool,
 /// A later turn or a quoted retry note must not revive an earlier answer.
 pub const BounceAnswer = struct {
     first: ?[]const u8 = null,
+    landing_fallback: ?[]const u8 = null,
+    unfinished_bounced: bool = false,
 
     pub fn remember(state: *BounceAnswer, text: []const u8) void {
         if (state.first == null and std.mem.trim(u8, text, " \t\r\n").len > 0) state.first = text;
     }
 
     pub fn retry(state: *BounceAnswer, self: *Agent, text: []const u8, hist_len: usize) !bool {
-        if (!try handle(self, text, hist_len)) return false;
-        state.remember(text);
-        return true;
+        const ub = @import("agent_unfinished_bounce.zig");
+        if (std.mem.trim(u8, text, " \t\r\n").len == 0) {
+            if (try ub.settleEmptyLanding(self, hist_len, "")) |fb| {
+                state.landing_fallback = fb;
+                return false;
+            }
+        }
+        if (try handle(self, text, hist_len)) {
+            state.remember(text);
+            return true;
+        }
+        if (try ub.maybeBounceUnfinishedStop(self, text, &state.unfinished_bounced)) {
+            state.remember(text);
+            return true;
+        }
+        return false;
     }
 
     pub fn finish(state: BounceAnswer, self: *const Agent, follow_up: []const u8) []const u8 {
+        if (state.landing_fallback) |fb| if (std.mem.trim(u8, follow_up, " \t\r\n").len == 0) return fb;
         return if (self.tool_calls_this_turn == 0) state.first orelse follow_up else follow_up;
     }
 };
@@ -153,18 +169,18 @@ fn handleWithWait(self: *Agent, final_text: []const u8, hist_len: usize, comptim
             return error.EmptyCompletion;
         }
         try checkBudget(self);
-        const delay_ms = @import("retry_jitter.zig").ms(self.io, retryDelayMs(self.empty_completion_retries));
         const keep = @min(hist_len, self.messages.items.len);
         const reasoned = reasonedWithoutAnswer(self.messages.items[keep..]);
+        const delay_ms: u64 = if (reasoned) 0 else @import("retry_jitter.zig").ms(self.io, retryDelayMs(self.empty_completion_retries));
         self.empty_completion_retries += 1;
         self.closeCodexWs();
         self.messages.shrinkRetainingCapacity(keep);
         if (reasoned) {
             try self.messages.append(try messages.userNote(self.arena, self.provider.kind, reasoning_budget_note));
-            try self.say("[model reasoned without answering — retrying with a brief-answer note in {d}s ({d}/{d})]\n", .{ delay_ms / 1000, self.empty_completion_retries, max_consecutive });
+            try self.say("[model reasoned without answering — retrying immediately with a brief-answer note ({d}/{d})]\n", .{ self.empty_completion_retries, max_consecutive });
         } else try self.say("[model returned an empty completion — retrying in {d}s ({d}/{d})]\n", .{ delay_ms / 1000, self.empty_completion_retries, max_consecutive });
-        if (self.tracer) |tr| tr.note("retry", "empty completion; bounded jittered backoff");
-        try sleep(self, delay_ms);
+        if (self.tracer) |tr| tr.note("retry", if (reasoned) "reasoned without answer; immediate retry" else "empty completion; bounded jittered backoff");
+        if (!reasoned) try sleep(self, delay_ms);
         try checkBudget(self); // a sibling may have spent the shared budget while waiting
         return true;
     }
@@ -527,6 +543,10 @@ fn testWait(_: *Agent, ms: u64) !void {
     try std.testing.expect(ms >= 10_000 and ms <= 150_000);
 }
 
+fn noWait(_: *Agent, _: u64) !void {
+    return error.UnexpectedSleepOnReasonedTurn;
+}
+
 test "empty completion recovery backs off, keeps reasoning note, fails explicitly and obeys budgets and cancellation" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -538,8 +558,10 @@ test "empty completion recovery backs off, keeps reasoning note, fails explicitl
     self.empty_completion_retries = 0;
     const reasoning = try std.json.parseFromSliceLeaky(std.json.Value, self.arena, "[{\"type\":\"reasoning\",\"summary\":[]}]", .{});
     try self.messages.append(reasoning.array.items[0]);
-    try std.testing.expect(try handleWithWait(&self, "", 0, testWait));
+    try std.testing.expect(try handleWithWait(&self, "", 0, noWait));
     try std.testing.expectEqualStrings(reasoning_budget_note, self.messages.items[0].object.get("content").?.string);
+    self.messages.clearRetainingCapacity();
+    try std.testing.expect(try handleWithWait(&self, "", 0, testWait));
     var total: u64 = 0;
     for (0..max_consecutive) |i| total += retryDelayMs(@intCast(i));
     try std.testing.expectEqual(@as(u64, 270_000), total);

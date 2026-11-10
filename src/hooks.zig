@@ -266,10 +266,10 @@ test "denialText: stderr, stock phrase, suggest suffix" {
 const jobs = @import("jobs.zig");
 
 /// Per-file cache for the codedb guard: `codedb outline <path>` is run once
-/// per source file to check whether codedb actually indexed it (large files
-/// are silently skipped — e.g. a 13K-line main.zig). A mutex guards concurrent
-/// tool-thread access; a miss is benign (duplicate probe).
-pub const CodedbFileCheck = struct { path: []const u8, indexed: bool };
+/// per `(cwd, path)` pair to check whether codedb actually indexed it (large
+/// files or unindexed worktrees must pass through — #54). A mutex guards
+/// concurrent tool-thread access; a miss is benign (duplicate probe).
+pub const CodedbFileCheck = struct { key: []const u8, indexed: bool };
 var g_codedb_file_checks: std.ArrayList(CodedbFileCheck) = .empty;
 var g_codedb_file_mu: Io.Mutex = .init;
 
@@ -280,27 +280,40 @@ pub fn deinitCodedbCache(gpa: Allocator, io: Io) void {
         return;
     };
     g_codedb_file_mu.unlock(io);
-    for (entries) |entry| gpa.free(entry.path);
+    for (entries) |entry| gpa.free(entry.key);
     gpa.free(entries);
 }
 
-/// True when `path` is in codedb's symbol index. Runs `codedb outline <path>`
-/// (cached): returns "not indexed: <path>" when the file is too large or
-/// otherwise skipped, so the guard knows to let bash through instead of
-/// trapping the agent between a blocked grep and an empty codedb result.
-pub fn codedbFileIndexed(io: Io, gpa: Allocator, path: []const u8) error{Canceled}!bool {
-    g_codedb_file_mu.lockUncancelable(io);
-    for (g_codedb_file_checks.items) |e| {
-        if (std.mem.eql(u8, e.path, path)) {
-            g_codedb_file_mu.unlock(io);
-            return e.indexed;
+fn codedbCacheKey(io: Io, gpa: Allocator, agent_cwd: ?[]const u8, path: []const u8) ?[]u8 {
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const eff_cwd = if (agent_cwd) |c| c else blk: {
+        const n = std.process.currentPath(io, &cwd_buf) catch break :blk ".";
+        break :blk cwd_buf[0..n];
+    };
+    return std.fmt.allocPrint(gpa, "{s}\x00{s}", .{ eff_cwd, path }) catch null;
+}
+
+/// True when `path` is in codedb's symbol index for `agent_cwd` (or process cwd).
+/// Skips unindexed linked git worktrees immediately without spawning `codedb` (#54).
+pub fn codedbFileIndexed(io: Io, gpa: Allocator, agent_cwd: ?[]const u8, path: []const u8) error{Canceled}!bool {
+    if (@import("codedb_health.zig").isUnindexedLinkedWorktree(io, agent_cwd orelse ".")) return false;
+    const lookup_key = codedbCacheKey(io, gpa, agent_cwd, path);
+    defer if (lookup_key) |k| gpa.free(k);
+    if (lookup_key) |k| {
+        g_codedb_file_mu.lockUncancelable(io);
+        for (g_codedb_file_checks.items) |e| {
+            if (std.mem.eql(u8, e.key, k)) {
+                g_codedb_file_mu.unlock(io);
+                return e.indexed;
+            }
         }
+        g_codedb_file_mu.unlock(io);
     }
-    g_codedb_file_mu.unlock(io);
     // This pre-dispatch probe is outside bash's own timeout. Bound its whole
-    // process tree and let the read proceed when index status is unavailable.
-    // Incomplete probes must not poison the cache for later calls.
-    const run = jobs.runCappedWithOptions(gpa, io, &.{ "codedb", "outline", path }, 512, 256, 2000, .{ .kill_process_tree = true }) catch |err| {
+    // process tree inside `agent_cwd` and let the read proceed when unavailable.
+    var opts = jobs.toolRunOptions(agent_cwd);
+    opts.kill_process_tree = true;
+    const run = jobs.runCappedWithOptions(gpa, io, &.{ "codedb", "outline", path }, 512, 256, 2000, opts) catch |err| {
         if (err == error.Canceled) return error.Canceled;
         return false;
     };
@@ -311,9 +324,23 @@ pub fn codedbFileIndexed(io: Io, gpa: Allocator, path: []const u8) error{Cancele
     const not_indexed = std.mem.indexOf(u8, run.stdout, "not indexed") != null or
         std.mem.indexOf(u8, run.stderr, "not indexed") != null;
     const result: bool = !not_indexed;
-    g_codedb_file_mu.lockUncancelable(io);
-    defer g_codedb_file_mu.unlock(io);
-    const dup = gpa.dupe(u8, path) catch return result;
-    g_codedb_file_checks.append(gpa, .{ .path = dup, .indexed = result }) catch gpa.free(dup);
+    if (lookup_key) |k| {
+        g_codedb_file_mu.lockUncancelable(io);
+        defer g_codedb_file_mu.unlock(io);
+        const dup = gpa.dupe(u8, k) catch return result;
+        g_codedb_file_checks.append(gpa, .{ .key = dup, .indexed = result }) catch gpa.free(dup);
+    }
     return result;
+}
+
+test "#54: codedbFileIndexed returns false immediately in an unindexed worktree directory" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    try tmp.dir.writeFile(io, .{ .sub_path = ".git", .data = "gitdir: /tmp/main/.git/worktrees/wt\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "sample.zig", .data = "pub fn f() void {}\n" });
+    const wt_abs = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(wt_abs);
+    try std.testing.expect(!try codedbFileIndexed(io, gpa, wt_abs, "sample.zig"));
 }

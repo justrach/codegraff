@@ -130,8 +130,8 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     }
     if (self.run_budget) |b| if (budget_permit) |p| {
         if (!self.compaction_request and b.max_model_calls != 0 and p.call_number == b.max_model_calls and tools != null) {
-            tools = null;
             b.model_landed.store(true, .release);
+            if (!@import("workflow_synthesis.zig").wireSupportsToolChoiceNone(self)) tools = null;
             try self.messages.append(try wire_messages.userNote(self.arena, self.provider.kind, landing_note));
             if (self.tracer) |tr| tr.note("budget", "final call: tools withheld so the run lands its answer (#390)");
         }
@@ -139,7 +139,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     self.last_request_context_overflow = false;
     self.last_request_write_failed = false;
     self.last_usage_includes_output = false;
-    var force = !self.review_mode and !self.compaction_request and (self.strict or self.eval_cmd != null or self.named_work_nudges > 0) and tools != null;
+    var force = !self.review_mode and !self.compaction_request and !self.synthesis.keepsCatalogOrLanded(self) and (self.strict or self.eval_cmd != null or self.named_work_nudges > 0) and tools != null;
     var stream_usage = true; // openai stream_options; dropped if rejected
     var auth_refreshed = false; // #148: at most one forced token refresh + retry
     // #124: reclaim last request's transient parse garbage FIRST, so everything

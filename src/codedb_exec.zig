@@ -156,12 +156,24 @@ pub fn exec(ctx: ToolCtx, input: std.json.Value) !ToolOutput {
         },
         else => return tools.failure(gpa, e),
     };
-    gpa.free(run.stderr);
+    defer gpa.free(run.stderr);
     const text = run.stdout;
     if (run.timed_out) {
         defer gpa.free(text);
         return .{
             .text = try std.fmt.allocPrint(gpa, "codedb {s} timed out after {d}s and was killed — narrow the query, or run it through bash if it really needs that long", .{ sub, deadline_ms / 1000 }),
+            .is_error = true,
+        };
+    }
+    const ok = switch (run.term) {
+        .exited => |c| c == 0,
+        else => false,
+    };
+    if (!ok) {
+        defer gpa.free(text);
+        const detail = std.mem.trim(u8, if (run.stderr.len > 0) run.stderr else text, " \t\r\n");
+        return .{
+            .text = if (detail.len > 0) try gpa.dupe(u8, detail) else try std.fmt.allocPrint(gpa, "codedb {s} failed (check `codedb status` in this workspace)", .{sub}),
             .is_error = true,
         };
     }
@@ -203,12 +215,24 @@ fn execContext(ctx: ToolCtx, rest: []const u8, input: std.json.Value) !ToolOutpu
         },
         else => return tools.failure(gpa, e),
     };
-    gpa.free(run.stderr);
+    defer gpa.free(run.stderr);
     const text = run.stdout;
     if (run.timed_out) {
         defer gpa.free(text);
         return .{
             .text = try std.fmt.allocPrint(gpa, "codedb context timed out after {d}s and was killed — narrow the query, or run it through bash if it really needs that long", .{deadline_ms / 1000}),
+            .is_error = true,
+        };
+    }
+    const ok = switch (run.term) {
+        .exited => |c| c == 0,
+        else => false,
+    };
+    if (!ok) {
+        defer gpa.free(text);
+        const detail = std.mem.trim(u8, if (run.stderr.len > 0) run.stderr else text, " \t\r\n");
+        return .{
+            .text = if (detail.len > 0) try gpa.dupe(u8, detail) else try gpa.dupe(u8, "codedb context failed (check `codedb status` in this workspace)"),
             .is_error = true,
         };
     }
@@ -222,7 +246,7 @@ fn execContext(ctx: ToolCtx, rest: []const u8, input: std.json.Value) !ToolOutpu
 /// Opt-in exploratory read via `codedb read <path> [-L a-b] --compact`. Lossy
 /// view for reasoning only; returns null on any codedb failure so the caller
 /// falls back to the native byte-exact read (#66).
-pub fn compactRead(gpa: Allocator, io: Io, path: []const u8, start: ?i64, end: ?i64) !?ToolOutput {
+pub fn compactRead(gpa: Allocator, io: Io, agent_cwd: ?[]const u8, path: []const u8, start: ?i64, end: ?i64) !?ToolOutput {
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(gpa);
     var lbuf: [48]u8 = undefined;
@@ -234,7 +258,7 @@ pub fn compactRead(gpa: Allocator, io: Io, path: []const u8, start: ?i64, end: ?
         try argv.append(gpa, std.fmt.bufPrint(&lbuf, "{d}-{d}", .{ start.?, end.? }) catch return null);
     }
     try argv.append(gpa, "--compact");
-    const run = jobs.runCapped(gpa, io, argv.items, tools.codedb_result_cap, 4096, 0) catch return null;
+    const run = jobs.runCappedWithOptions(gpa, io, argv.items, tools.codedb_result_cap, 4096, 0, jobs.toolRunOptions(agent_cwd)) catch return null;
     defer gpa.free(run.stdout);
     defer gpa.free(run.stderr);
     const ok = switch (run.term) {
@@ -246,11 +270,10 @@ pub fn compactRead(gpa: Allocator, io: Io, path: []const u8, start: ?i64, end: ?
 }
 
 pub fn maybeCompactRead(ctx: ToolCtx, path: []const u8, start: ?i64, end: ?i64) !?ToolOutput {
-    if (ctx.agent_cwd != null) return null;
     if (main_mod.g_codedb_present == null) main_mod.g_codedb_present = @import("skills.zig").binOnPath(ctx.io, "codedb");
     if (main_mod.g_codedb_present != true) return null;
-    if (!try hooks.codedbFileIndexed(ctx.io, ctx.gpa, path)) return null;
-    return compactRead(ctx.gpa, ctx.io, path, start, end);
+    if (!try hooks.codedbFileIndexed(ctx.io, ctx.gpa, ctx.agent_cwd, path)) return null;
+    return compactRead(ctx.gpa, ctx.io, ctx.agent_cwd, path, start, end);
 }
 
 test "firstPathArg skips flags" {

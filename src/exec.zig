@@ -113,14 +113,17 @@ pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
         tr.toolFinished(call.name, call_id, out.ms, out.is_error, out.text.len);
     }
     if (ctx.tools_used) |ts| ts.add(ctx.io, ctx.gpa, call.name, out.is_error);
-    // Session-wide class tally (/tools) — and when suite usage NEWLY skews,
-    // the nudge rides this tool result so the model hears it, not just the
-    // user's /tools view. Edge-triggered: a few per session at most. The
-    // superseded out.text is deliberately NOT freed (it can be a static
-    // empty slice; freeing it would corrupt) — a rare small abandonment.
-    if (tool_balance.record(ctx.gpa, call, out.is_error)) |nudge| {
+    // Session-wide class tally (/tools) — and when suite usage or consecutive
+    // read-only streaks skew, append the edge-triggered nudge cleanly while
+    // freeing the superseded gpa-owned slice (`ToolOutput.text` is `[]u8`,
+    // `&.{}` when empty).
+    const allow_write_nudge = ctx.tools_used != null and !main_mod.plan_mode and !ctx.read_only_shell and !ctx.synthesis and !no_local_tools.enabled;
+    if (tool_balance.recordWithMode(ctx.gpa, call, out.is_error, allow_write_nudge)) |nudge| {
         defer ctx.gpa.free(nudge);
-        out.text = std.fmt.allocPrint(ctx.gpa, "{s}\n\n[{s}]", .{ out.text, nudge }) catch out.text;
+        if (std.fmt.allocPrint(ctx.gpa, "{s}\n\n[{s}]", .{ out.text, nudge })) |combined| {
+            if (out.text.len > 0) ctx.gpa.free(out.text);
+            out.text = combined;
+        } else |_| {}
     }
     runPostToolHooks(ctx, call, out);
     return out;

@@ -393,7 +393,14 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
     // stack blew). Deep-copy it into the message arena like every other field.
     if (extra_content) |ec| try message.put(result_arena, "extra_content", try util.dupeJsonValue(result_arena, ec));
     try message.put(result_arena, "content", if (content.items.len > 0) Value{ .string = content.items } else .null);
-    if (reasoning_content.items.len > 0) try message.put(result_arena, "reasoning_content", .{ .string = reasoning_content.items });
+    if (reasoning_content.items.len > 0) {
+        try message.put(result_arena, "reasoning_content", .{ .string = reasoning_content.items });
+    } else if (reasoning.items.len > 0) {
+        // #1881: OpenAI-compatible servers whose chat templates inspect
+        // `message.reasoning_content` drop `<think>...</think>` on replay and
+        // invalidate the KV prefix cache if only `reasoning` was stored.
+        try message.put(result_arena, "reasoning_content", .{ .string = reasoning.items });
+    }
     if (reasoning.items.len > 0) try message.put(result_arena, "reasoning", .{ .string = reasoning.items });
     if (calls.items.items.len > 0) {
         var tcs = std.json.Array.init(result_arena);

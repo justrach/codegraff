@@ -100,6 +100,16 @@ is why graff's prompt is the default. A plan's limits count these tokens.
   breakpoints, effort routing beyond `--effort`, retries and the stall
   ladder, request headers) does not apply; Claude Code retries by itself and
   a failure it reports ends the turn as a readable reply.
+- Even with `--setting-sources ""`, `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`, and a
+  replaced `systemPrompt`, `claude` attaches its own first-turn
+  `<system-reminder>` session context when running on a subscription login:
+  `# userEmail` from the signed-in `claude` OAuth account, `# Today's date`,
+  and an `# Environment` block naming the working directory, git-repo/worktree
+  flags, OS/kernel version, and shell (`--bare` / `CLAUDE_CODE_SIMPLE=1` is the
+  only upstream switch that omits them, and `--bare` disables subscription
+  login). `graff` strips an inherited `CLAUDE_CODE_USER_EMAIL` from the child
+  environment so shell overrides are never forwarded, while the signed-in
+  `claude` account's own session attachment remains upstream `claude` behavior.
 - It works only where `claude` is installed and signed in on the same
   machine. Hosted or remote sessions cannot use it.
 - An imported conversation still continues on graff's configured provider;
