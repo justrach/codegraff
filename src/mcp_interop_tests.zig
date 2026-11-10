@@ -11,12 +11,12 @@ fn render(json: []const u8) !CallResult {
     defer scratch.deinit();
     const a = scratch.allocator();
     const result = try std.json.parseFromSliceLeaky(Value, a, json, .{});
-    var pending: ?@import("vision.zig").PendingImage = null;
+    var pending: @import("image_inbox.zig").Inbox = .{};
     var out: Io.Writer.Allocating = .init(testing.allocator);
     errdefer out.deinit();
     const range = try content.renderResult(&out.writer, result.object, .{
         .arena = a,
-        .slot = &pending,
+        .inbox = &pending,
         .label = "mcp__fixture__data",
         .supports_vision = false,
     }, a);

@@ -17,6 +17,7 @@ const vision = @import("vision.zig");
 const clip = @import("vision_clipboard.zig");
 const sniff = @import("image_sniff.zig");
 const orient = @import("image_orient.zig");
+const inbox = @import("image_inbox.zig");
 
 /// Stage pixels after exec has confined the path. The tool-batch checkpoint
 /// delivers them to the next model request as a native image content block.
@@ -125,15 +126,16 @@ fn stageWith(gpa: Allocator, io: Io, ctx: ToolCtx, resolved: []const u8, path: [
     _ = enc.encode(b64, data);
     reg.mutex.lockUncancelable(reg.io);
     defer reg.mutex.unlock(reg.io);
-    if (reg.pending_image != null) return .{
-        .text = try std.fmt.allocPrint(gpa, "[image: {s}, {d} bytes — not attached: another image is already queued for the next turn]", .{ media_type, size }),
-    };
+    // #1866: every read in a batch is queued, up to the inbox's limits. One
+    // that does not fit is an error the model can act on, not a quiet note.
+    const verdict = reg.pending_images.admit(b64.len);
+    if (verdict != .queued) return .{ .text = try inbox.refusal(gpa, actual_path, verdict), .is_error = true };
     const arena = reg.arena();
-    reg.pending_image = .{
+    _ = reg.pending_images.push(.{
         .media_type = try arena.dupe(u8, sent_type),
         .b64 = try arena.dupe(u8, b64),
         .label = try arena.dupe(u8, actual_path),
-    };
+    });
     switch (turn) {
         .as_is => {},
         .turned => if (!fit.temp) return .{
@@ -190,9 +192,9 @@ test "native image read stages pixels and tool checkpoint sends them without a u
     const out = (try stage(a, io, ctx, file_path, "image.PNG", bytes.len)).?;
     defer a.free(out.text);
     try std.testing.expect(!out.is_error);
-    try std.testing.expect(reg.pending_image != null);
+    try std.testing.expect(!reg.pending_images.isEmpty());
     try @import("turn_checkpoint.zig").afterToolBatch(&root);
-    try std.testing.expect(reg.pending_image == null);
+    try std.testing.expect(reg.pending_images.isEmpty());
     try std.testing.expectEqual(@as(usize, 1), root.messages.items.len);
     const content = root.messages.items[0].object.get("content").?.array.items;
     try std.testing.expectEqualStrings("input_image", content[1].object.get("type").?.string);
@@ -200,7 +202,65 @@ test "native image read stages pixels and tool checkpoint sends them without a u
     const empty = (try stage(a, io, ctx, file_path, "image.PNG", 0)).?;
     defer a.free(empty.text);
     try std.testing.expect(empty.is_error);
-    try std.testing.expect(reg.pending_image == null);
+    try std.testing.expect(reg.pending_images.isEmpty());
+}
+
+test "#1866: two image reads in one tool batch both reach the next model request, named in order" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    var reg = @import("mcp.zig").Registry.empty(a, io);
+    defer reg.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // Different bytes after the PNG header, so the two payloads are distinct.
+    try tmp.dir.writeFile(io, .{ .sub_path = "before.png", .data = tiny_png });
+    try tmp.dir.writeFile(io, .{ .sub_path = "after.png", .data = tiny_png ++ "\x00" });
+    var root: @import("agent.zig").Agent = .{
+        .gpa = a,
+        .arena = arena.allocator(),
+        .io = io,
+        .client = undefined,
+        .provider = .{ .id = "test", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 100000 },
+        .messages = std.json.Array.init(arena.allocator()),
+        .sub = true,
+        .label = "test",
+        .out = null,
+        .registry = &reg,
+    };
+    var ctx: ToolCtx = undefined;
+    ctx.registry = &reg;
+    ctx.agent_cwd = null;
+    ctx.provider = root.provider;
+    for ([_][]const u8{ "before.png", "after.png" }) |name| {
+        const path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/{s}", .{ tmp.sub_path, name });
+        defer a.free(path);
+        const out = (try stage(a, io, ctx, path, name, tiny_png.len)).?;
+        defer a.free(out.text);
+        try std.testing.expect(!out.is_error);
+        try std.testing.expect(std.mem.indexOf(u8, out.text, "attached to the next model request") != null);
+    }
+    try std.testing.expectEqual(@as(usize, 2), reg.pending_images.len);
+    try @import("turn_checkpoint.zig").afterToolBatch(&root);
+    try std.testing.expect(reg.pending_images.isEmpty());
+    try std.testing.expectEqual(@as(usize, 1), root.messages.items.len);
+    const content = root.messages.items[0].object.get("content").?.array.items;
+    try std.testing.expectEqual(@as(usize, 3), content.len); // the caption, then both images
+    try std.testing.expectEqualStrings("Attached 2 images, in this order:\n1. before.png\n2. after.png", content[0].object.get("text").?.string);
+    try std.testing.expectEqualStrings("input_image", content[1].object.get("type").?.string);
+    try std.testing.expectEqualStrings("input_image", content[2].object.get("type").?.string);
+    try std.testing.expect(!std.mem.eql(u8, content[1].object.get("image_url").?.string, content[2].object.get("image_url").?.string));
+
+    // A full inbox refuses the next read as an error that names the way out.
+    for (0..inbox.cap) |_| _ = reg.pending_images.push(.{ .media_type = "image/png", .b64 = "x", .label = "x" });
+    const path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/before.png", .{tmp.sub_path});
+    defer a.free(path);
+    const refused = (try stage(a, io, ctx, path, "before.png", tiny_png.len)).?;
+    defer a.free(refused.text);
+    try std.testing.expect(refused.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, refused.text, "Read it again in a later tool call") != null);
+    try std.testing.expectEqual(@as(usize, inbox.cap), reg.pending_images.len);
 }
 
 test "#1737: after workspace use, an image in the new tree attaches; one outside both trees is refused" {
@@ -250,7 +310,7 @@ test "#1737: after workspace use, an image in the new tree attaches; one outside
     const out = (try stage(a, io, ctx, resolved, "shot.png", tiny_png.len)).?;
     defer a.free(out.text);
     try std.testing.expect(!out.is_error);
-    try std.testing.expect(reg.pending_image != null);
+    try std.testing.expect(!reg.pending_images.isEmpty());
 
     // Outside both the launch tree and the switched tree: still refused.
     const escaped = try std.fmt.allocPrint(arena.allocator(), "{s}/shot.png", .{outside_abs});
@@ -301,13 +361,13 @@ test "#1272: an oversize image is downscaled or refused, never queued as-is" {
     defer a.free(refused.text);
     try std.testing.expect(refused.is_error);
     try std.testing.expect(std.mem.indexOf(u8, refused.text, "per-image limit") != null);
-    try std.testing.expect(reg.pending_image == null);
+    try std.testing.expect(reg.pending_images.isEmpty());
 
     // Downscaled: the queued pixels are the small copy, and the model is told.
     const scaled = (try stageWith(a, io, ctx, file_path, "big.png", big.len, fakeShrink, noRotator)).?;
     defer a.free(scaled.text);
     try std.testing.expect(!scaled.is_error);
-    const pending = reg.pending_image orelse return error.TestUnexpectedResult;
+    const pending = reg.pending_images.first() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(std.base64.standard.Encoder.calcSize(tiny_png.len), pending.b64.len);
     try std.testing.expectEqualStrings("image/png", pending.media_type);
     try std.testing.expect(std.mem.indexOf(u8, scaled.text, "downscaled from 4000x3000 to 1x1") != null);
@@ -332,9 +392,9 @@ test "#1762: read_image types a WebP named .png by its bytes, and refuses non-ra
     defer a.free(out.text);
     try std.testing.expect(!out.is_error);
     try std.testing.expect(std.mem.indexOf(u8, out.text, "image/webp") != null);
-    const pending = reg.pending_image orelse return error.TestUnexpectedResult;
+    const pending = reg.pending_images.first() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("image/webp", pending.media_type);
-    reg.pending_image = null;
+    reg.pending_images.clear();
 
     // Text saved as .png: a tool error, and no block that would wedge the chat.
     const text = "not an image at all";
@@ -345,7 +405,7 @@ test "#1762: read_image types a WebP named .png by its bytes, and refuses non-ra
     defer a.free(refused.text);
     try std.testing.expect(refused.is_error);
     try std.testing.expect(std.mem.indexOf(u8, refused.text, sniff.supported_names) != null);
-    try std.testing.expect(reg.pending_image == null);
+    try std.testing.expect(reg.pending_images.isEmpty());
 }
 
 fn noRotator(io: Io, in: []const u8, value: u16, out: []const u8) bool {
@@ -380,15 +440,15 @@ test "read_image: a photo stored sideways is sent upright, or the model is told 
     const turned = (try stageWith(a, io, ctx, p, "photo.jpg", photo.len, noResizer, fakeRotator)).?;
     defer a.free(turned.text);
     try std.testing.expect(std.mem.indexOf(u8, turned.text, "turned upright") != null);
-    const pending = reg.pending_image orelse return error.TestUnexpectedResult;
+    const pending = reg.pending_images.first() orelse return error.TestUnexpectedResult;
     var sent: [photo.len]u8 = undefined;
     try std.base64.standard.Decoder.decode(&sent, pending.b64);
     try std.testing.expectEqual(@as(u16, 1), orient.find(&sent).?.value);
-    reg.pending_image = null;
+    reg.pending_images.clear();
 
     const stuck = (try stageWith(a, io, ctx, p, "photo.jpg", photo.len, noResizer, noRotator)).?;
     defer a.free(stuck.text);
     try std.testing.expect(!stuck.is_error);
     try std.testing.expect(std.mem.indexOf(u8, stuck.text, "rotate it 90° clockwise") != null);
-    try std.testing.expect(reg.pending_image != null);
+    try std.testing.expect(!reg.pending_images.isEmpty());
 }

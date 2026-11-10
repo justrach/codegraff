@@ -323,6 +323,18 @@ test "userMessage sends a Codex GPT-6 Sol GUI attachment as a native vision bloc
     try testing.expectEqual(@as(usize, 2), content.len);
     try testing.expectEqualStrings("input_image", content[1].object.get("type").?.string);
     try testing.expect(std.mem.indexOf(u8, content[1].object.get("image_url").?.string, "data:image/") != null);
+
+    // #1865: an upload the client left as a trailer ref is staged the same
+    // way, and its line leaves the text the model reads.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const png = "\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x04\x00\x00\x00\xb5\x1c\x0c\x02\x00\x00\x00\x0b\x49\x44\x41\x54\x78\xda\x63\xfc\xff\x1f\x00\x03\x03\x02\x00\xef\x9a\x0f\x5b\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82";
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "ab12-shot.png", .data = png });
+    const prompt = try std.fmt.allocPrint(a, "what is this?\n\nAttached images (local files — open them to view):\n- .zig-cache/tmp/{s}/ab12-shot.png", .{tmp.sub_path});
+    const upload = (try userMessage(a, &root, prompt)).object.get("content").?.array.items;
+    try testing.expectEqual(@as(usize, 2), upload.len);
+    try testing.expectEqualStrings("what is this?", upload[0].object.get("text").?.string);
+    try testing.expectEqualStrings("input_image", upload[1].object.get("type").?.string);
 }
 
 fn budgetTurn(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const u8 {

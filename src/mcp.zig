@@ -81,10 +81,10 @@ pub const Registry = struct {
     /// Cached stdio servers start on first use (mcp_lazy.zig). Only
     /// `Registry.init` reads `GRAFF_MCP_EAGER`; verification paths set false.
     lazy_stdio: bool = true,
-    /// An image an MCP tool returned, waiting for the next turn to collect it
-    /// (#249). Written under `mutex` by `call`, drained by
-    /// `vision.mcpImageHandoff` — the registry cannot reach the agent itself.
-    pending_image: ?vision.PendingImage = null,
+    /// Images tools staged, waiting for the batch checkpoint to collect them
+    /// (#249, #1866). Written under `mutex` by `call` and native image reads,
+    /// drained by `image_inbox.handoff` — the registry cannot reach the agent itself.
+    pending_images: @import("image_inbox.zig").Inbox = .{},
     /// Whether the active model accepts image blocks. The registry cannot see
     /// the provider, so the same per-turn handoff refreshes it; false until it
     /// does, so a result explains the drop rather than promising an attachment.
