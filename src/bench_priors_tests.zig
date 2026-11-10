@@ -292,3 +292,37 @@ test "#1836: the archive prefilter skips rows no fold reads, and prose cannot fa
     try std.testing.expectEqualStrings("m-1", obs[0].model);
     try std.testing.expectEqual(@as(usize, 1), @import("route_policy.zig").foldCells(a, archive).len);
 }
+
+test "#1864: shared retention cap keeps the most recent N runs per cell and reports truncation" {
+    const fold_mod = @import("archive_fold.zig");
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    var aw: std.Io.Writer.Allocating = .init(a);
+    defer aw.deinit();
+    try aw.writer.writeAll("{\"kind\":\"recipe\",\"prompt_sha\":\"cap1\",\"model\":\"gpt-6-luna\",\"effort\":\"max\"}\n");
+    // 10 old runs with score 0.0 followed by max_obs_per_cell (32) runs with score 1.0:
+    // the ring buffer must evict the 10 old runs, keep n = 32 with mean = 1.0, and report 10 truncations.
+    var i: usize = 0;
+    while (i < 10) : (i += 1) {
+        try aw.writer.writeAll("{\"kind\":\"score\",\"prompt_sha\":\"cap1\",\"score\":0.0,\"shape\":\"research\",\"role\":\"sweep\",\"tier\":\"small\",\"model\":\"gpt-6-luna\"}\n");
+    }
+    i = 0;
+    while (i < fold_mod.max_obs_per_cell) : (i += 1) {
+        try aw.writer.writeAll("{\"kind\":\"score\",\"prompt_sha\":\"cap1\",\"score\":1.0,\"shape\":\"research\",\"role\":\"sweep\",\"tier\":\"small\",\"model\":\"gpt-6-luna\"}\n");
+    }
+    const text = aw.writer.buffered();
+
+    const obs = bench.foldObservations(a, text);
+    try std.testing.expectEqual(@as(usize, 1), obs.len);
+    try std.testing.expectEqual(fold_mod.max_obs_per_cell, obs[0].n);
+    try std.testing.expectApproxEqAbs(@as(f64, @floatFromInt(fold_mod.max_obs_per_cell)), obs[0].sum, 1e-9);
+    try std.testing.expectEqual(@as(u32, 10), fold_mod.truncatedCount());
+
+    const cells = @import("route_policy.zig").foldCells(a, text);
+    try std.testing.expectEqual(@as(usize, 1), cells.len);
+    try std.testing.expectEqual(fold_mod.max_obs_per_cell, cells[0].n);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), cells[0].mean(), 1e-9);
+    try std.testing.expectEqual(@as(u32, 10), fold_mod.truncatedCount());
+}

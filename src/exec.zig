@@ -48,6 +48,7 @@ const skill_docs = @import("skill_docs.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: refuse an MCP tool whose schema was never loaded
 const read_file = @import("read_file.zig");
 const read_miss = @import("read_miss.zig");
+const read_path_norm = @import("read_path_norm.zig");
 const result_read = @import("result_read.zig");
 const codedb_exec = @import("codedb_exec.zig"); // native codedb dispatch (list_dir / status / one-shots)
 // #337: edit_file's verified write path, plus the file-tool helpers that moved
@@ -87,7 +88,7 @@ pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
     // #255: reserved before any gate/dispatch runs so tool_started/
     // tool_finished bracket the whole call, including a gate denial below.
     const call_id: u64 = if (ctx.tracer) |tr| tr.toolStarted(call.name, call.input) else 0;
-    if (noLocalToolsGate(ctx, call) orelse codedbGuard(ctx, call) orelse companionRoute(ctx, call) orelse hookGate(ctx, call) orelse codedbpro_report.licensedGate(ctx, call) orelse tool_surface.gate(ctx, call) orelse native_fold.gateExec(ctx.gpa, call.name, ctx.from_sub)) |blocked| {
+    if (noLocalToolsGate(ctx, call) orelse @import("peer_scope.zig").gateExec(ctx, call) orelse codedbGuard(ctx, call) orelse companionRoute(ctx, call) orelse hookGate(ctx, call) orelse codedbpro_report.licensedGate(ctx, call) orelse tool_surface.gate(ctx, call) orelse native_fold.gateExec(ctx.gpa, call.name, ctx.from_sub)) |blocked| {
         var out = blocked;
         out.ms = t0.untilNow(ctx.io, .awake).toMilliseconds();
         if (ctx.tracer) |tr| {
@@ -183,7 +184,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             return failure(gpa, err);
         };
         defer prepared.deinit(gpa);
-        const r = reg.call(gpa, call.name, prepared.value) catch |err| {
+        const r = reg.callAt(gpa, call.name, prepared.value, ctx.call_seq) catch |err| {
             codedbpro_report.onFailure(ctx, call.name, @errorName(err));
             return failure(gpa, err);
         };
@@ -201,7 +202,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
 
     const input = call.input;
     if (std.mem.eql(u8, call.name, jev_tool.name)) return jev_tool.execute(ctx, input);
-    if (std.mem.eql(u8, call.name, "learn_candidate")) {
+    if ((comptime @import("build_options").learn) and std.mem.eql(u8, call.name, "learn_candidate")) {
         if (ctx.from_sub) return .{
             .text = try gpa.dupe(u8, "learning is root-only — subagents cannot run mutators, evaluators, or publish grades"),
             .is_error = true,
@@ -276,9 +277,23 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             if (try codedb_exec.maybeCompactRead(ctx, path, start_line, end_line)) |out| return out;
         }
         // #747: same selected-tree absolute path as edit_file (sessionAbs).
-        const resolved = try codedbpro_paths.sessionAbs(gpa, io, ctx.agent_cwd, path);
+        var norm_arena: std.heap.ArenaAllocator = .init(gpa);
+        defer norm_arena.deinit();
+        var effective_path: []const u8 = path;
+        var resolved = try codedbpro_paths.sessionAbs(gpa, io, ctx.agent_cwd, path);
         defer gpa.free(resolved);
-        const outcome = read_file.read(io, gpa, .cwd(), resolved, start_line, end_line, contains) catch |err| {
+        const outcome = read_file.read(io, gpa, .cwd(), resolved, start_line, end_line, contains) catch |err| blk_read: {
+            if (err == error.FileNotFound) {
+                if (read_path_norm.resolveFallback(io, norm_arena.allocator(), ctx.agent_cwd, path)) |hit| {
+                    gpa.free(resolved);
+                    resolved = try gpa.dupe(u8, hit.resolved);
+                    effective_path = hit.display_path;
+                    break :blk_read read_file.read(io, gpa, .cwd(), resolved, start_line, end_line, contains) catch |err2| {
+                        if (fsErrorText(gpa, .read, path, err2)) |t| return .{ .text = t, .is_error = true };
+                        return err2;
+                    };
+                }
+            }
             if (fsErrorText(gpa, .read, path, err)) |t| return .{ .text = t, .is_error = true };
             return err;
         };
@@ -290,18 +305,18 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             .text => |text| .{ .text = text },
             .truncated => |value| blk: {
                 defer gpa.free(value.head);
-                break :blk .{ .text = try std.fmt.allocPrint(gpa, "{s}\n\n[read_file preview: {d}-byte file exceeds the {d} KiB whole-file limit; use start_line/end_line for byte-exact windows]", .{ util.utf8Prefix(value.head, value.head.len), value.total_bytes, read_file.max_bytes / 1024 }) };
+                break :blk .{ .text = try std.fmt.allocPrint(gpa, "{s}\n\n[read_file preview: {d}-byte file exceeds the {d} KiB whole-file limit; use start_line/end_line for byte-exact windows, or codedb outline/around for symbol structure]", .{ util.utf8Prefix(value.head, value.head.len), value.total_bytes, read_file.max_bytes / 1024 }) };
             },
             .binary => |size| blk: {
                 // An image is only "binary" to a text-only model: stage the
                 // pixels exactly like an MCP image result (#249) so read_file
                 // on a PNG/JPG/GIF/WebP attaches it to the next turn instead
                 // of erroring out. Non-images keep the classic guidance.
-                if (input_util.isImagePath(path)) {
-                    if (try stageReadFileImage(gpa, io, ctx, resolved, path, size)) |out| break :blk out;
+                if (input_util.isImagePath(effective_path)) {
+                    if (try stageReadFileImage(gpa, io, ctx, resolved, effective_path, size)) |out| break :blk out;
                 }
                 break :blk .{
-                    .text = try std.fmt.allocPrint(gpa, "{s} is a binary file ({d} bytes) — read_file only handles text. Use bash instead (e.g. `file`, `strings`, `pdftotext`, `sips`, `unzip -l`).", .{ path, size }),
+                    .text = try std.fmt.allocPrint(gpa, "{s} is a binary file ({d} bytes) — read_file only handles text. Use bash instead (e.g. `file`, `strings`, `pdftotext`, `sips`, `unzip -l`).", .{ effective_path, size }),
                     .is_error = true,
                 };
             },
@@ -330,18 +345,18 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     if (std.mem.eql(u8, call.name, "write_file")) return write_file.exec(ctx, input); // ADR 0231
     // Loads one SKILL.md body (or lists them). Rescans on every call, so a
     // skill written this session is loadable without a restart.
-    if (std.mem.eql(u8, call.name, html_view.tool_name)) return html_view.exec(ctx, input);
+    if ((comptime @import("build_options").extras) and std.mem.eql(u8, call.name, html_view.tool_name)) return html_view.exec(ctx, input);
     if (std.mem.eql(u8, call.name, "skill")) return skill_docs.execSkill(gpa, io, input);
     // #352: codex-gated. execImagegen answers a call that was never advertised
     // (an unavailable session) with the same honest error it gives the model.
-    if (std.mem.eql(u8, call.name, imagegen.tool_name)) return imagegen.execImagegen(ctx, input);
+    if ((comptime @import("build_options").extras) and std.mem.eql(u8, call.name, imagegen.tool_name)) return imagegen.execImagegen(ctx, input);
     if (std.mem.eql(u8, call.name, "subagent")) {
         var child_ctx = ctx;
         child_ctx.parent_tool_call_id = call.id;
         return execSubagent(child_ctx, input);
     }
-    if (std.mem.eql(u8, call.name, "workflow")) return execWorkflow(ctx, input);
-    if (std.mem.eql(u8, call.name, @import("rlm.zig").tool_name)) {
+    if ((comptime @import("build_options").extras) and std.mem.eql(u8, call.name, "workflow")) return execWorkflow(ctx, input);
+    if ((comptime @import("build_options").extras) and std.mem.eql(u8, call.name, @import("rlm.zig").tool_name)) {
         var rlm_ctx = ctx;
         if (rlm_ctx.host_gate) |*gate| gate.call_id = call.id; // consent prompts name this rlm call
         return @import("rlm.zig").exec(rlm_ctx, input);
@@ -465,4 +480,5 @@ test { // main.zig is at the 600-line cap; exec.zig is these modules' importer, 
     _ = @import("read_file_schema_tests.zig"); // #761: optional read_file fields
     _ = @import("read_miss.zig"); // #1116: consecutive read_file miss storm
     _ = @import("read_miss_tests.zig");
+    _ = read_path_norm;
 }

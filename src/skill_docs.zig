@@ -131,7 +131,7 @@ pub const builtins = blk: {
 /// This session's skills, in precedence order — loaded once into the
 /// system-prompt prefix at session start (prompt-cache stability). `/skills`
 /// and a named `skill` miss rescan without rewriting that prefix.
-pub var g_skills: []const Skill = &builtins;
+pub var g_skills: []const Skill = if (@import("build_options").extras) &builtins else &.{};
 /// Resolved HOME for the personal tier, so execSkill's rescan finds the same
 /// set the startup scan did.
 pub var g_home: ?[]const u8 = null; // pub: split-out tests save/restore it
@@ -190,12 +190,12 @@ fn scan(io: Io, arena: Allocator, home: ?[]const u8) []const Skill {
 /// fills both plugin tiers so startup does not walk Cursor/Claude trees four times.
 fn collect(io: Io, arena: Allocator, home: ?[]const u8) std.ArrayList(Skill) {
     var list: std.ArrayList(Skill) = .empty;
-    list.appendSlice(arena, &builtins) catch {};
+    if (comptime @import("build_options").extras) list.appendSlice(arena, &builtins) catch {};
     if (home) |h| for ([_][]const u8{ compat_dir, ".codegraff/skills", project_dir, ".grok/skills", ".codex/skills", ".agents/skills", ".cursor/skills-cursor", ".cursor/skills" }) |dir| {
         const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ h, dir }) catch continue;
         loadDir(io, arena, &list, path, .personal);
     };
-    const plugs = plugins.discover(io, arena, home, Io.Dir.cwd());
+    const plugs = if (comptime @import("build_options").extras) plugins.discover(io, arena, home, Io.Dir.cwd()) else &.{};
     for (plugs) |p| {
         if (!p.personal) continue;
         for (p.skill_dirs) |d| loadDir(io, arena, &list, d, .plugin);
@@ -314,6 +314,9 @@ pub fn promptCatalog(arena: Allocator, list: []const Skill) []const u8 {
     for (order, 0..) |*o, i| o.* = i;
     @import("stable_sort.zig").sort(usize, order, list, struct {
         fn lessThan(ctx: []const Skill, a: usize, b: usize) bool {
+            const a_proj = ctx[a].source == .project;
+            const b_proj = ctx[b].source == .project;
+            if (a_proj != b_proj) return !a_proj;
             return std.mem.order(u8, ctx[a].name, ctx[b].name) == .lt;
         }
     }.lessThan);

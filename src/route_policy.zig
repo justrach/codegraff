@@ -292,50 +292,13 @@ pub const min_model_obs: u32 = 2;
 /// needing an allocator on the hot resolution path.
 pub const max_candidates = 8;
 
-fn strField(o: std.json.ObjectMap, key: []const u8) ?[]const u8 {
-    const v = o.get(key) orelse return null;
-    return if (v == .string) v.string else null;
-}
-
 /// Pool the archive's self-describing `kind:"score"` rows into cells. A score
 /// row only counts when it carries ALL the coordinates — the rows written
 /// before #372 (and mainloop /score's) simply have no shape, so they are
 /// skipped rather than pooled into a cell they were never observed in.
 /// Scores are [0,1] by the #168 contract; anything else is junk.
 pub fn foldCells(arena: Allocator, archive: []const u8) []CellObs {
-    var out: std.ArrayList(CellObs) = .empty;
-    var it = std.mem.splitScalar(u8, archive, '\n');
-    while (it.next()) |ln| {
-        const t = std.mem.trim(u8, ln, " \t\r");
-        if (!@import("bench_priors.zig").kindIs(t, "score")) continue;
-        const v = std.json.parseFromSliceLeaky(std.json.Value, arena, t, .{}) catch continue;
-        if (v != .object) continue;
-        const o = v.object;
-        const kind = strField(o, "kind") orelse continue;
-        if (!std.mem.eql(u8, kind, "score")) continue;
-        const shape = strField(o, "shape") orelse continue;
-        const tier = strField(o, "tier") orelse continue;
-        const model = strField(o, "model") orelse continue;
-        if (shape.len == 0 or tier.len == 0 or model.len == 0) continue;
-        const role = strField(o, "role") orelse "";
-        const sv = o.get("score") orelse continue;
-        const s: f64 = switch (sv) {
-            .float => |f| f,
-            .integer => |x| @floatFromInt(x),
-            else => continue,
-        };
-        if (!(s >= 0 and s <= 1)) continue;
-        const slot: *CellObs = for (out.items) |*c| {
-            if (std.mem.eql(u8, c.shape, shape) and std.mem.eql(u8, c.role, role) and
-                std.mem.eql(u8, c.tier, tier) and std.mem.eql(u8, c.model, model)) break c;
-        } else blk: {
-            out.append(arena, .{ .shape = shape, .role = role, .tier = tier, .model = model }) catch return out.items;
-            break :blk &out.items[out.items.len - 1];
-        };
-        slot.sum += s;
-        slot.n += 1;
-    }
-    return out.items;
+    return @import("archive_fold.zig").foldSlice(arena, archive, false, true, false).cells;
 }
 
 /// Refresh the policy from one archive read. Called by bench_priors.loadInto
@@ -465,6 +428,7 @@ pub fn learnedRungIn(
 /// provider ladder seats at the tier being resolved, so the tier is carried
 /// implicitly and correctly.
 pub fn learnedRung(provider_id: []const u8, cell: Cell, ladder_answer: []const u8) ?[]const u8 {
+    bench.ensureArchiveLoaded();
     return learnedRungIn(g_cells, bench.g_entries, provider_id, cell, ladder_answer);
 }
 
@@ -472,6 +436,62 @@ pub fn learnedRung(provider_id: []const u8, cell: Cell, ladder_answer: []const u
 /// user can find the exact cell that moved their worker.
 pub fn cellId(buf: []u8, cell: Cell, tier: Tier) []const u8 {
     return std.fmt.bufPrint(buf, "{s}/{s}@{s}", .{ cell.shape.label(), dash(cell.role), tier.label() }) catch buf[0..0];
+}
+
+/// #393 — role-class failure policy for workflow phases and subagents.
+/// Load-bearing mutation/planning roles (`implement`, `build`, `transform`,
+/// `scope`, `implementer`, `planner`) are `.fail_closed`: their output IS the
+/// requested work. Advisory roles (`find`, `verify`, `sweep`, `synthesize`,
+/// `review`, `variants`, `reviewer`, `researcher`, `skeptic`, `judge`,
+/// `summarizer`) are `.fail_open`.
+pub const RoleFailurePolicy = enum {
+    fail_open,
+    fail_closed,
+
+    pub fn label(self: RoleFailurePolicy) []const u8 {
+        return switch (self) {
+            .fail_open => "fail-open",
+            .fail_closed => "fail-closed",
+        };
+    }
+};
+
+pub fn failurePolicyForRole(label_or_slot: []const u8, niche: []const u8) RoleFailurePolicy {
+    const slot = roleOf(label_or_slot, niche);
+    if (std.mem.eql(u8, slot, "implement") or
+        std.mem.eql(u8, slot, "build") or
+        std.mem.eql(u8, slot, "transform") or
+        std.mem.eql(u8, slot, "scope")) return .fail_closed;
+    if (slot.len > 0) return .fail_open;
+    for ([_][]const u8{ label_or_slot, niche }) |raw| {
+        if (util.indexOfIgnoreCase(raw, "implement") != null or
+            util.indexOfIgnoreCase(raw, "planner") != null or
+            util.indexOfIgnoreCase(raw, "builder") != null or
+            util.indexOfIgnoreCase(raw, "transform") != null) return .fail_closed;
+        if (util.indexOfIgnoreCase(raw, "review") != null or
+            util.indexOfIgnoreCase(raw, "research") != null or
+            util.indexOfIgnoreCase(raw, "skeptic") != null or
+            util.indexOfIgnoreCase(raw, "judge") != null or
+            util.indexOfIgnoreCase(raw, "summariz") != null or
+            util.indexOfIgnoreCase(raw, "synthesize") != null or
+            util.indexOfIgnoreCase(raw, "verify") != null or
+            util.indexOfIgnoreCase(raw, "find") != null or
+            util.indexOfIgnoreCase(raw, "sweep") != null) return .fail_open;
+    }
+    return .fail_closed;
+}
+
+/// #393: whether a workflow phase task in `slot`/`niche` warrants a phase-level
+/// retry pass. Advisory synthesis/judge/summarizer roles are fail-open and do
+/// not burn extra phase retries when they fail.
+pub fn phaseAllowsRetry(title: []const u8, niche: []const u8) bool {
+    const slot = roleOf(title, niche);
+    if (std.mem.eql(u8, slot, "synthesize")) return false;
+    for ([_][]const u8{ title, niche }) |raw| {
+        if (util.indexOfIgnoreCase(raw, "judge") != null or
+            util.indexOfIgnoreCase(raw, "summariz") != null) return false;
+    }
+    return true;
 }
 
 test {

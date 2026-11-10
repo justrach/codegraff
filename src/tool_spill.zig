@@ -155,9 +155,18 @@ pub fn capWithHandle(arena: Allocator, full: []const u8, cap: usize) []const u8 
 /// per-session budget is spent, or when any part of the write fails. Public
 /// for agent_clef_archive.zig, which archives pruned outputs the same way.
 pub fn spill(arena: Allocator, session: []const u8, full: []const u8) ?[]const u8 {
-    const sink = g_sink orelse return null;
+    const raw_sink = g_sink orelse return null;
     if (!safeName(session)) return null;
     if (!reserve(full.len)) return null;
+    // #721: when bound to process `.cwd()`, open `base_abs` explicitly so a
+    // mid-session `posix.chdir` (`/workspace use`) never spills through a stale
+    // Threaded-Io cwd handle. Test fixtures pass an explicit `tmp.dir` handle.
+    var opened_base: ?Io.Dir = if (raw_sink.dir.handle == Io.Dir.cwd().handle and raw_sink.base_abs.len > 0 and std.fs.path.isAbsolute(raw_sink.base_abs))
+        Io.Dir.cwd().openDir(raw_sink.io, raw_sink.base_abs, .{ .iterate = true }) catch null
+    else
+        null;
+    defer if (opened_base) |*d| d.close(raw_sink.io);
+    const sink: Sink = if (opened_base) |d| .{ .io = raw_sink.io, .dir = d, .base_abs = raw_sink.base_abs } else raw_sink;
     const dir = std.fmt.allocPrint(arena, "{s}/{s}/artifacts", .{ session_index.sessions_dir, session }) catch return refund(full.len);
     sweepOnce(sink, arena, session);
     sink.dir.createDirPath(sink.io, dir) catch return refund(full.len);
@@ -195,13 +204,13 @@ fn refund(len: usize) ?[]const u8 {
 }
 
 /// Everything a session leaves BESIDE its `<name>.session.json`: this file's
-/// artifacts directory, and #441's transcript generations. Returns the session
+/// artifacts, recall transcripts, and recovery journals. Returns the session
 /// base name that owns `entry`, or null when the entry is not leftovers (the
 /// session files themselves, anything unrecognized). One rule, one sweep — a
 /// transcript must not outlive its session any more than an artifact does.
 pub fn leftoverOwner(entry: []const u8, is_dir: bool) ?[]const u8 {
     if (is_dir) return if (entry.len == 0) null else entry;
-    inline for (.{ session_index.transcript_ext, session_index.transcript_rotated_ext }) |ext| {
+    inline for (.{ session_index.transcript_ext, session_index.transcript_rotated_ext, session_index.session_ext ++ ".journal", session_index.session_ext ++ ".journal.tmp" }) |ext| {
         if (std.mem.endsWith(u8, entry, ext) and entry.len > ext.len) return entry[0 .. entry.len - ext.len];
     }
     return null;
@@ -486,6 +495,8 @@ test "the same sweep reclaims #441's transcripts: one lifecycle, not two" {
     try std.testing.expectEqualStrings("s1", leftoverOwner("s1", true).?);
     try std.testing.expectEqualStrings("s1", leftoverOwner("s1.transcript.jsonl", false).?);
     try std.testing.expectEqualStrings("s1", leftoverOwner("s1.transcript.1.jsonl", false).?);
+    try std.testing.expectEqualStrings("s1", leftoverOwner("s1.session.json.journal", false).?);
+    try std.testing.expectEqualStrings("s1", leftoverOwner("s1.session.json.journal.tmp", false).?);
     try std.testing.expect(leftoverOwner("s1.session.json", false) == null);
     try std.testing.expect(leftoverOwner(".transcript.jsonl", false) == null); // no session owns it
 
@@ -509,6 +520,12 @@ test "the same sweep reclaims #441's transcripts: one lifecycle, not two" {
     try tmp.dir.writeFile(io, .{ .sub_path = ".graff/sessions/kept.transcript.jsonl", .data = "{}\n" });
     try tmp.dir.writeFile(io, .{ .sub_path = ".graff/sessions/kept.session.json", .data = "{}" });
     try tmp.dir.writeFile(io, .{ .sub_path = ".graff/sessions/now.transcript.jsonl", .data = "{}\n" });
+    for ([_][]const u8{ "gone", "kept", "now" }) |name| {
+        for ([_][]const u8{ ".journal", ".journal.tmp" }) |ext| {
+            const path = try std.fmt.allocPrint(a, ".graff/sessions/{s}.session.json{s}", .{ name, ext });
+            try tmp.dir.writeFile(io, .{ .sub_path = path, .data = "synthetic journal" });
+        }
+    }
 
     sweepSessionsOnce(io, tmp.dir, a, "now"); // "now" is the live session
 
@@ -517,4 +534,12 @@ test "the same sweep reclaims #441's transcripts: one lifecycle, not two" {
     _ = try tmp.dir.statFile(io, ".graff/sessions/kept.transcript.jsonl", .{}); // its session is still saved
     _ = try tmp.dir.statFile(io, ".graff/sessions/now.transcript.jsonl", .{}); // and the live one is never touched
     _ = try tmp.dir.statFile(io, ".graff/sessions/kept.session.json", .{}); // the sweep deletes leftovers, not sessions
+    for ([_][]const u8{ ".journal", ".journal.tmp" }) |ext| {
+        const gone = try std.fmt.allocPrint(a, ".graff/sessions/gone.session.json{s}", .{ext});
+        try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, gone, .{}));
+        for ([_][]const u8{ "kept", "now" }) |name| {
+            const path = try std.fmt.allocPrint(a, ".graff/sessions/{s}.session.json{s}", .{ name, ext });
+            _ = try tmp.dir.statFile(io, path, .{});
+        }
+    }
 }

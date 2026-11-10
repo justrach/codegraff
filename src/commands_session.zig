@@ -81,6 +81,7 @@ pub fn resetConversationSteering(root: *Agent) void {
     if (root.goal_flag) |g| root.goal = goal_flow.standingGoalFromFlag(g, null, root.todos.items, 0);
     @import("rlm_spec.zig").resetBindsSession(root.io);
     @import("native_fold.zig").resetSession();
+    root.invalidateRootTools();
     @import("subagent_ledger.zig").reset(root.gpa); // #753: handles belong to the conversation
 }
 
@@ -89,13 +90,31 @@ pub fn resetConversationSteering(root: *Agent) void {
 /// (handleCommand in main.zig) then tries the next peer module.
 pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
     _ = keys; // unused in this file's command set; kept for a uniform tryHandle signature
+    const bo = @import("build_options");
     // #554: claims /snapshot, and /rewind ONLY when its argument is a snapshot
     // id — a numeric /rewind falls through to the conversation rewind below.
-    if (try commands_sandbox.tryHandle(root, arena, line, out)) return true;
-    if (try commands_trajectory.tryHandle(root, arena, line, out)) return true;
-    if (try @import("commands_experiment.zig").tryHandle(root, arena, line, out)) return true;
-    if (try workspace_switch.slashCommand(root, arena, line, out)) return true;
-    if (try plugins.slashCommand(root.io, arena, root.home, line, out)) return true;
+    if ((comptime bo.extras) and try commands_sandbox.tryHandle(root, arena, line, out)) return true;
+    if ((comptime bo.learn) and try commands_trajectory.tryHandle(root, arena, line, out)) return true;
+    if ((comptime bo.learn) and try @import("commands_experiment.zig").tryHandle(root, arena, line, out)) return true;
+    if ((comptime bo.extras) and try workspace_switch.slashCommand(root, arena, line, out)) return true;
+    if ((comptime bo.extras) and try plugins.slashCommand(root.io, arena, root.home, line, out)) return true;
+    if (std.mem.eql(u8, line, "/followups") or std.mem.startsWith(u8, line, "/followups ")) {
+        const followups = @import("followups.zig");
+        const arg = std.mem.trim(u8, line["/followups".len..], " \t");
+        if (arg.len > 0 and !std.mem.eql(u8, arg, "queue") and !std.mem.eql(u8, arg, "immediate")) {
+            try out.writeAll("usage: /followups [queue|immediate]\n");
+        } else if (arg.len > 0) {
+            followups.save(root.io, arena, std.mem.eql(u8, arg, "queue")) catch |err| {
+                try out.print("could not save follow-up mode: {t}\n", .{err});
+                try out.flush();
+                return true;
+            };
+        }
+        const mode = if (followups.queue) "queue for the next turn" else "steer into the live turn";
+        try out.print("OpenAI-model follow-ups: {s}{s}\n", .{ mode, if (followups.steersNow(root.provider)) " (active now)" else if (followups.queue) "" else " (this provider is unaffected)" });
+        try out.flush();
+        return true;
+    }
     if (std.mem.eql(u8, line, "/clear")) {
         root.messages.clearRetainingCapacity();
         root.reclaimMessages();
@@ -287,7 +306,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
-    if (std.mem.startsWith(u8, line, "/agents promote")) {
+    if ((comptime bo.learn) and std.mem.startsWith(u8, line, "/agents promote")) {
         const personal = std.mem.indexOf(u8, line, "--personal") != null or std.mem.indexOf(u8, line, "--global") != null;
         try out.print("{s}promoting local champions{s} → {s} tier (from {s})\n", .{ style.bold, style.reset, if (personal) "personal ~/.harness/agents" else "private ./.harness/agents", trace.trajectories_dir });
         const n = promoteAgents(root.io, root.gpa, out, fleet.g_home, personal, false);

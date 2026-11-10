@@ -78,17 +78,21 @@ fn pairs(arena: Allocator, value: ?Value) !?std.json.ObjectMap {
 /// so the first request's catalog already has it; never long enough to hold
 /// the session for a real handshake, which keeps connecting in the background
 /// and joins on a later model request.
-pub const attach_budget_ms: u32 = 250;
+pub const attach_budget_ms: u32 = if (@import("builtin").os.tag == .windows) 1500 else 250;
 
 /// The live ACP session's hook (engine.Dispatch.mcp_servers): start what the
 /// client named, merge whatever connects within `attach_budget_ms`, then
 /// re-render the root's tool catalog so the model sees the new tools on its
 /// next request, as `/mcp add` does.
 pub fn attach(ctx: *anyopaque, _: Allocator, params: ?Value) anyerror!void {
+    const p = params orelse return;
+    if (p != .object) return;
+    const raw_list = p.object.get("mcpServers") orelse return;
+    if (raw_list != .array or raw_list.array.items.len == 0) return;
     const live: *@import("acp_live_turn.zig").LiveTurn = @ptrCast(@alignCast(ctx));
     const root = live.root;
     const reg = root.registry orelse return;
-    const durable_params = if (params) |p| try util.dupeJsonValue(root.arena, p) else null;
+    const durable_params = try util.dupeJsonValue(root.arena, p);
     const specs = try parse(root.arena, durable_params);
     if (specs.len == 0) return;
     if (!joinWithin(reg, root.arena, specs, attach_budget_ms)) return;

@@ -79,6 +79,21 @@ pub fn handle(a: A, io: Io, registry: Io.Dir, out: *Io.Writer, req: proto.Reques
         try proto.writeResult(out, req.id, .{ .status = "interrupted" });
         return;
     }
+    if (std.mem.eql(u8, action, "steer")) {
+        const text = blk: {
+            const p = req.params orelse break :blk "";
+            if (p != .object) break :blk "";
+            if (p.object.get("text")) |v| if (v == .string and v.string.len > 0) break :blk v.string;
+            if (p.object.get("message")) |v| if (v == .string) break :blk v.string;
+            break :blk "";
+        };
+        activity.requestSteer(io, dir, child, text) catch {
+            try proto.writeError(out, req.id, -32001, "Sub-agent feedback could not be queued");
+            return;
+        };
+        try proto.writeResult(out, req.id, .{ .status = "queued", .delivery = "queued" });
+        return;
+    }
     const name = try std.fmt.allocPrint(a, "{s}.json", .{child});
     const bytes = dir.readFileAlloc(io, name, a, .limited(activity.file_limit)) catch {
         try proto.writeError(out, req.id, -32001, "Sub-agent activity is no longer available");

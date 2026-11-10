@@ -135,6 +135,15 @@ fn triedProvider(ids: []const []const u8, id: []const u8) bool {
     return false;
 }
 
+fn sameChatgptPlanFallback(keys: Keys, failed_id: []const u8, failed_model: []const u8, tried: []const []const u8) ?Provider {
+    const peer = if (std.mem.eql(u8, failed_id, "chatgpt-new")) "codex" else if (std.mem.eql(u8, failed_id, "codex")) "chatgpt-new" else return null;
+    if (triedProvider(tried, peer)) return null;
+    const spec = provider_mod.specFor(peer) orelse return null;
+    const key = keys.get(peer) orelse return null;
+    const model = if (pricing.providerModelInTable(peer, failed_model)) failed_model else pricing.providerDefaultModel(spec.id, spec.default_model);
+    return keys.build(spec, key, model);
+}
+
 /// Walk configured providers in stable priority order, beginning after the
 /// failed provider and wrapping once. Providers without credentials and ids
 /// already attempted during this turn are skipped.
@@ -190,6 +199,7 @@ pub fn failoverEligible(provider_id: []const u8, detail: []const u8) bool {
         "model_not_found",
         "model not found",
         "model is not available",
+        "model_unavailable",
         "model unavailable",
         "model does not exist",
         "does not exist or you do not have access",
@@ -228,6 +238,7 @@ pub fn runTurnWithFallback(root: *Agent, keys: *Keys, arena: Allocator, out: ?*I
     while (true) {
         root.last_api_error = null;
         root.last_api_reauth = null;
+        root.last_api_error_detail = null;
         const result = root.runTurn();
         if (result) |text| {
             // #255: no clean per-segment choke point exists across the
@@ -256,7 +267,8 @@ pub fn runTurnWithFallback(root: *Agent, keys: *Keys, arena: Allocator, out: ?*I
             // The failure path is already paying for exhaustive credentials;
             // hydrate deferred account catalogs before choosing a fallback.
             ensureModelQueryCatalogs(root, keys.*, "");
-            const fallback = nextFallbackProvider(keys.*, failed_id, attempted[0..attempted_len], root.fallback_allow) orelse return err;
+            const fallback = sameChatgptPlanFallback(keys.*, failed_id, failed_model, attempted[0..attempted_len]) orelse
+                nextFallbackProvider(keys.*, failed_id, attempted[0..attempted_len], root.fallback_allow) orelse return err;
             attempted[attempted_len] = fallback.id;
             attempted_len += 1;
             const note = try applyFallbackProvider(root, arena, fallback);
@@ -466,6 +478,8 @@ test "nextFallbackProvider: rotates after the failed provider and skips missing 
     try std.testing.expect(nextFallbackProvider(sparse, "openai", &exhausted, &allow_all) == null);
     const allow_codegraff = [_][]const u8{"codegraff"};
     try std.testing.expectEqualStrings("codegraff", nextFallbackProvider(sparse, "codex", &tried_codex, &allow_codegraff).?.id);
+    const tried_chatgpt = [_][]const u8{"chatgpt-new"};
+    try std.testing.expectEqualStrings("codex", sameChatgptPlanFallback(all, "chatgpt-new", "gpt-6.1-sol", &tried_chatgpt).?.id);
 }
 
 test "applyProviderInner preserves the server meter on an exact model re-selection" {

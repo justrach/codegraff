@@ -239,6 +239,21 @@ test "rootWaitMs: interactive REPL parks at 15s (ADR 0154)" {
     try std.testing.expectEqual(lean_oneshot_wait_ms, rootWaitMsFor(huge.value, true));
 }
 
+pub fn firstFailureLine(text: []const u8) ?[]const u8 {
+    const needles = [_][]const u8{ "error:", "Error:", "FAILED", "FAIL:", "panic:", "Traceback (most recent call last)" };
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0) continue;
+        for (needles) |needle| {
+            if (std.mem.indexOf(u8, line, needle) != null) {
+                return @import("util.zig").utf8Prefix(line, 200);
+            }
+        }
+    }
+    return null;
+}
+
 fn formatJobDone(gpa: Allocator, cmd: []const u8, wait: jobs.FgDone) !ToolOutput {
     defer gpa.free(wait.output);
     var aw: Io.Writer.Allocating = .init(gpa);
@@ -254,7 +269,12 @@ fn formatJobDone(gpa: Allocator, cmd: []const u8, wait: jobs.FgDone) !ToolOutput
         return .{ .text = try aw.toOwnedSlice(), .is_error = true, .cancelled = true };
     }
     if (wait.exit_code) |code| {
-        if (code != 0) try w.print("\n[exit code {d}]", .{code});
+        if (code != 0) {
+            if (wait.dropped) {
+                if (firstFailureLine(wait.output)) |fl| try w.print("\n[first failure: {s}]", .{fl});
+            }
+            try w.print("\n[exit code {d}]", .{code});
+        }
     } else try w.writeAll("\n[terminated abnormally]");
     if (wait.output.len == 0 and (wait.exit_code orelse 1) == 0) try w.writeAll("(no output)");
     const code = wait.exit_code;
@@ -339,7 +359,14 @@ fn formatCapped(gpa: Allocator, cmd: []const u8, run: jobs.CappedRun) !ToolOutpu
     } else if (run.timed_out) {
         try w.print("\n[timed out after {d}s and was killed — too long for a subagent. Don't retry as-is: scope it to specific paths or globs instead of scanning the whole directory, or report back what you need run.]", .{subagent_deadline_ms / 1000});
     } else if (exit_code) |code| {
-        if (code != 0) try w.print("\n[exit code {d}]", .{code});
+        if (code != 0) {
+            if (run.stdout_truncated or run.stderr_truncated) {
+                if (firstFailureLine(run.stderr) orelse firstFailureLine(run.stdout)) |fl| {
+                    try w.print("\n[first failure: {s}]", .{fl});
+                }
+            }
+            try w.print("\n[exit code {d}]", .{code});
+        }
     } else try w.writeAll("\n[terminated abnormally]");
     if ((run.cancelled or run.timed_out) and isSshCommand(cmd)) {
         try w.writeAll("\n[ssh note: the local SSH client was killed, but a detached or disconnect-resistant remote process may survive; verify it on the remote host]");
@@ -471,7 +498,15 @@ fn execUnchecked(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
     const run = try jobs.runCappedWithOptions(gpa, io, argv, bash_stdout_cap, bash_stderr_cap, subagent_deadline_ms, opts);
     defer gpa.free(run.stdout);
     defer gpa.free(run.stderr);
-    return formatCapped(gpa, cmd, run);
+    var out = try formatCapped(gpa, cmd, run);
+    if (ctx.read_only_shell) if (switch (run.term) {
+        .exited => |code| ro.annotateSandboxDenial(gpa, out.text, code),
+        else => null,
+    }) |tagged| {
+        gpa.free(out.text);
+        out.text = @constCast(tagged);
+    };
+    return out;
 }
 
 test "#1619 a shell handle failure names its cause and blames storage only for storage faults" {

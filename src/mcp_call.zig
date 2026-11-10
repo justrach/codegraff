@@ -89,28 +89,65 @@ fn isLive(reg: *const Registry, qualified: []const u8) bool {
     return false;
 }
 
-/// #1523: `load_tool_schemas` for a tool or server whose connection closed
-/// this session answers with the unavailable service, not an enabled schema
-/// or an unknown name. Null when nothing requested was withdrawn.
-pub fn unavailableLoad(reg: *Registry, a: Allocator, input: Value) ?[]const u8 {
-    reg.mutex.lockUncancelable(reg.io);
-    defer reg.mutex.unlock(reg.io);
-    const hit: Withdrawn = found: {
-        if (@import("tools.zig").strField(input, "server")) |want| {
-            const live = for (reg.tools) |t| {
-                if (std.mem.eql(u8, t.serverName(), want)) break true;
-            } else false;
-            if (!live) for (reg.withdrawn) |w| if (std.mem.eql(u8, w.server, want)) break :found w;
+fn hasLiveServer(reg: *const Registry, server: []const u8) bool {
+    for (reg.tools) |t| if (std.mem.eql(u8, t.serverName(), server)) return true;
+    return false;
+}
+
+fn hasLiveQueryMatch(all: []const @import("mcp.zig").Tool, input: Value) bool {
+    const query = @import("tools.zig").strField(input, "query") orelse return false;
+    const gate = @import("mcp_schema_gate.zig");
+    for (all) |t| {
+        if (!gate.isDeferred(all, t)) continue;
+        var tok = std.mem.tokenizeAny(u8, query, " \t,;:/_-");
+        while (tok.next()) |w| {
+            if (w.len < 2) continue;
+            if (gate.containsIgnoreCase(t.qualified_name, w) or gate.containsIgnoreCase(t.description, w)) return true;
         }
-        if (input == .object) if (input.object.get("tools")) |list| if (list == .array) {
-            for (list.array.items) |item| {
-                if (item != .string or isLive(reg, item.string)) continue;
-                if (withdrawnTool(reg, item.string)) |w| break :found w;
-            }
-        };
-        return null;
+    }
+    return false;
+}
+
+fn findWithdrawn(reg: *const Registry, input: Value) ?Withdrawn {
+    if (@import("tools.zig").strField(input, "server")) |want| {
+        if (!hasLiveServer(reg, want)) {
+            for (reg.withdrawn) |w| if (std.mem.eql(u8, w.server, want)) return w;
+        }
+    }
+    if (input == .object) if (input.object.get("tools")) |list| if (list == .array) {
+        for (list.array.items) |item| {
+            if (item != .string or isLive(reg, item.string)) continue;
+            if (withdrawnTool(reg, item.string)) |w| return w;
+        }
     };
-    return std.fmt.allocPrint(a, "MCP service {s} is unavailable: its connection closed or failed earlier in this session ({s}) and its tools were withdrawn, so nothing was loaded and {s} cannot be called. " ++ restart_hint, .{ hit.server, hit.reason, hit.qualified_name }) catch null;
+    return null;
+}
+
+pub fn unavailableLoadForPlatform(reg: *Registry, a: Allocator, input: Value, is_macos: bool) ?[]const u8 {
+    var check_nanocua = false;
+    {
+        reg.mutex.lockUncancelable(reg.io);
+        defer reg.mutex.unlock(reg.io);
+        if (findWithdrawn(reg, input)) |hit| {
+            return std.fmt.allocPrint(a, "MCP service {s} is unavailable: its connection closed or failed earlier in this session ({s}) and its tools were withdrawn, so nothing was loaded and {s} cannot be called. " ++ restart_hint, .{ hit.server, hit.reason, hit.qualified_name }) catch null;
+        }
+        if (!hasLiveServer(reg, @import("nanocua_default.zig").server_name)) {
+            check_nanocua = @import("nanocua_default.zig").requestsNanocua(input, hasLiveQueryMatch(reg.tools, input));
+        }
+    }
+    if (check_nanocua) {
+        if (@import("nanocua_default.zig").resolveUnavailable(reg, a, is_macos)) |msg| {
+            return a.dupe(u8, msg) catch msg;
+        }
+    }
+    return null;
+}
+
+/// #1523 / #1819: `load_tool_schemas` (and `mcp_search_tools`) for a service
+/// whose connection closed or macOS `nanocua` before `nanocua.app` is installed
+/// answers with the real reason instead of claiming the tool does not exist.
+pub fn unavailableLoad(reg: *Registry, a: Allocator, input: Value) ?[]const u8 {
+    return unavailableLoadForPlatform(reg, a, input, @import("builtin").os.tag == .macos);
 }
 
 fn invoke(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value) !CallResult {
@@ -120,6 +157,11 @@ fn invoke(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Va
         // #1523: a sibling call in the same batch can close the connection
         // first; this call then reports the same closed service.
         if (withdrawnTool(reg, qualified)) |w| return .{ .text = try std.fmt.allocPrint(out_alloc, "MCP service connection closed or failed earlier in this session ({s}). Its tools have been withdrawn from the catalog; this call was not sent. " ++ restart_hint, .{w.reason}), .is_error = true };
+        if (@import("nanocua_default.zig").isComputerToolName(qualified)) {
+            if (@import("nanocua_default.zig").unavailableMessage(reg.io, reg.arena(), reg.home, reg.global_config_path, reg.global_is_override, @import("builtin").os.tag == .macos)) |msg| {
+                return .{ .text = try out_alloc.dupe(u8, msg), .is_error = true };
+            }
+        }
         reg.catalog_dirty.store(true, .release);
         return .{ .text = try out_alloc.dupe(u8, "MCP tool is not registered in the current connection. Its loaded schema may be stale. The next catalog will reflect the current registration. Inspect /mcp; `/mcp reconnect <server>` starts the configured service again, then reload its schema before retrying."), .is_error = true };
     };
@@ -202,7 +244,8 @@ fn invoke(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Va
     }
     const structured_range = try renderResult(&ow.writer, result, .{
         .arena = reg.arena(),
-        .slot = &reg.pending_image,
+        .inbox = &reg.pending_images,
+        .seq = reg.staging_seq,
         .label = qualified,
         .supports_vision = reg.vision_capable,
     }, response_alloc);

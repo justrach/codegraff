@@ -55,8 +55,8 @@ pub const EventLog = struct {
 
     pub fn open(io: Io, dir: Io.Dir, path: []const u8) EventLog {
         if (std.fs.path.dirname(path)) |parent| dir.createDirPath(io, parent) catch {};
-        const file = dir.createFile(io, path, .{ .truncate = false }) catch return .{ .io = io };
-        const size: u64 = if (file.stat(io)) |st| st.size else |_| 0;
+        const file = dir.createFile(io, path, .{ .truncate = false, .read = true }) catch return .{ .io = io };
+        const size: u64 = if (file.stat(io)) |st| st.size else |_| if (dir.statFile(io, path, .{})) |st| st.size else |_| 0;
         return .{ .io = io, .file = file, .offset = size };
     }
 

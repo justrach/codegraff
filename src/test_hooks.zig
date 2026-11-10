@@ -335,6 +335,7 @@ test {
     _ = @import("subagent_spawn_job.zig"); // ADR 0232: the spawn receipt's wait hint
     _ = @import("ask_user.zig"); // ADR 0232: no todo nudges when nobody watches
     _ = @import("readonly_sandbox.zig"); // ADR 0232: a read-only child computes under seatbelt
+    _ = @import("git_sandbox_roots.zig"); // enclosing git & linked-worktree roots for read-only sandboxes
     _ = @import("worker_jev.zig"); // ADR 0232: a child asks Jev for its own effort mid-run
     _ = @import("piped_paste.zig"); // ADR 0231
     _ = @import("mcp_connect_notice.zig"); // ADR 0230
@@ -370,6 +371,9 @@ test {
     _ = @import("acp_mcp_servers.zig");
     _ = @import("acp_workspace.zig");
     _ = @import("acp_images.zig");
+    _ = @import("image_inbox.zig");
+    _ = @import("attachment_refs.zig");
+    _ = @import("catalog_failures.zig");
     _ = @import("libgraff.zig");
     _ = @import("acp_auth.zig");
     _ = @import("local_tools.zig");
@@ -423,4 +427,8 @@ test {
     _ = @import("rlm_literal_tests.zig"); // ADR 0236: each() over plain items, literal binds and args
     _ = @import("todo_reply.zig"); // ADR 0233: todo_write replies with counts, not the list
     _ = @import("codedb_guard_scope.zig"); // ADR 0234: in-place edits and small whole reads pass the codedb guard
+    _ = @import("workspace_paths.zig");
+    _ = @import("read_path_norm.zig");
+    _ = @import("edit_match.zig");
+    _ = @import("job_ring.zig");
 }

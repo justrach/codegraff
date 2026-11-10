@@ -64,8 +64,11 @@ fn importProject(io: Io, a: Allocator, projects: Io.Dir, name: []const u8, cwd: 
         return err;
     };
     defer project.close(io);
-    const index_data = project.readFileAlloc(io, "sessions-index.json", a, .limited(8 << 20)) catch "";
-    const index = std.json.parseFromSliceLeaky(std.json.Value, a, index_data, .{}) catch .null;
+    var idx_scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer idx_scratch.deinit();
+    const idx_alloc = idx_scratch.allocator();
+    const index_data = project.readFileAlloc(io, "sessions-index.json", idx_alloc, .limited(8 << 20)) catch "";
+    const index = std.json.parseFromSliceLeaky(std.json.Value, idx_alloc, index_data, .{}) catch .null;
     var workspace = try Io.Dir.cwd().openDir(io, cwd, .{});
     defer workspace.close(io);
     var it = project.iterate();

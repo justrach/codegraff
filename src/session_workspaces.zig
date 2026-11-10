@@ -6,8 +6,11 @@ const index = @import("session_index.zig");
 
 const subdir = ".graff/session-workspaces";
 
-pub fn remember(io: Io, arena: Allocator, home: []const u8, workspace: []const u8) void {
+pub fn remember(io: Io, _: Allocator, home: []const u8, workspace: []const u8) void {
     if (home.len == 0 or !std.fs.path.isAbsolute(workspace)) return;
+    var tmp = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer tmp.deinit();
+    const arena = tmp.allocator();
     const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ home, subdir }) catch return;
     Io.Dir.cwd().createDirPath(io, path) catch return;
     var dir = Io.Dir.cwd().openDir(io, path, .{}) catch return;

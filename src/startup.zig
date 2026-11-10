@@ -106,29 +106,6 @@ pub fn buildSystemPrompt(
     const base_prompt: []const u8 = system_prompt_flag orelse
         if (learned) |policy| policy.prompt else try prompts.baseForSession(arena); // #421: built-in base minus the segments whose capability this process lacks
     var sys_normal: []const u8 = base_prompt;
-    for ([_][]const u8{ "AGENTS.md", "HARNESS.md", "CLAUDE.md" }) |fname| {
-        const body = Io.Dir.cwd().readFileAlloc(io, fname, arena, .limited(64 * 1024)) catch continue;
-        const trimmed = std.mem.trim(u8, body, " \t\r\n");
-        if (trimmed.len == 0) continue;
-        const capped = @import("context_limits.zig").applyAlloc(arena, trimmed, @import("context_limits.zig").agents_md_bytes);
-        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n# Project instructions (from {s})\n{s}", .{ base_prompt, fname, capped });
-        @import("hot_context.zig").noteBaked(fname, capped); // #1333: later edits arrive as keyed updates
-        if (!quiet) {
-            try out.print("loaded project instructions from {s} ({d} bytes)\n", .{ fname, trimmed.len });
-            try out.flush();
-        }
-        break;
-    }
-    if (append_system_flag) |extra| {
-        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, extra });
-    }
-    // Repo map (repo_map.zig): the top of the working tree, so the model reads
-    // the files it needs instead of spending opening turns on ls/find.
-    // Lean one-shots name their files; the map is an interactive opener
-    // and was prefix bytes on every -p turn (ADR 0024).
-    if (environ.get("GRAFF_NO_REPO_MAP") == null and !@import("no_local_tools.zig").lean) {
-        if (@import("repo_map.zig").segment(io, arena)) |map| sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, map });
-    }
     if (unattended) sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, prompts.unattended_note });
     // ADR 0030 / 0011: do not splice rlm_spec.system_note onto the always-on
     // prefix. Small turns must not advertise rlm/sPTC; discovery is the
@@ -156,15 +133,14 @@ pub fn buildSystemPrompt(
     // scan below, so the copied playbook is in this session's catalog. The same
     // call decides whether `imagegen` is advertised (tool_gates.zig) and which
     // of its two engines this machine can actually run.
-    imagegen.detect(io, arena, .{ .codex_home = environ.get("CODEX_HOME"), .home = fleet.g_home, .openai_api_key = environ.get("OPENAI_API_KEY"), .tmp_dir = environ.get("TMPDIR") });
-    if (imagegen.available and !quiet) {
+    if (comptime build_options.extras) imagegen.detect(io, arena, .{ .codex_home = environ.get("CODEX_HOME"), .home = fleet.g_home, .openai_api_key = environ.get("OPENAI_API_KEY"), .tmp_dir = environ.get("TMPDIR") });
+    if ((comptime build_options.extras) and imagegen.available and !quiet) {
         try out.print("imagegen: Codex skill found — tool enabled ({s}), playbook at {s}\n", .{ imagegen.engineSummary(), imagegen.skill_dir });
         try out.flush();
     }
     // Markdown skills (skill_docs.zig): names + trigger descriptions only.
-    // Pinned once into the system-prompt prefix so later turns hit the
-    // prompt cache (Codex: old prompt is an exact prefix of the new one).
-    // The `skill` tool rescans without rewriting this prefix.
+    // Pinned ahead of per-workspace instructions/repo_map so the machine-wide
+    // skill catalog shares one cached prefix across every working directory.
     if (!lean) {
         skill_docs.g_skills = skill_docs.load(io, arena, fleet.g_home);
         const skill_catalog = skill_docs.promptCatalog(arena, skill_docs.g_skills);
@@ -184,6 +160,28 @@ pub fn buildSystemPrompt(
             sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, skill_docs.promptCatalog(arena, local) });
         }
     }
+    // Workspace-varying segments (AGENTS.md, repo_map, --append-system-prompt)
+    // ride after the static base + global skill catalog so Call 1 in a new
+    // directory hits the full ~7.3k-token system prefix in cache.
+    for ([_][]const u8{ "AGENTS.md", "HARNESS.md", "CLAUDE.md" }) |fname| {
+        const body = Io.Dir.cwd().readFileAlloc(io, fname, arena, .limited(64 * 1024)) catch continue;
+        const trimmed = std.mem.trim(u8, body, " \t\r\n");
+        if (trimmed.len == 0) continue;
+        const capped = @import("context_limits.zig").applyAlloc(arena, trimmed, @import("context_limits.zig").agents_md_bytes);
+        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n# Project instructions (from {s})\n{s}", .{ sys_normal, fname, capped });
+        @import("hot_context.zig").noteBaked(fname, capped); // #1333: later edits arrive as keyed updates
+        if (!quiet) {
+            try out.print("loaded project instructions from {s} ({d} bytes)\n", .{ fname, trimmed.len });
+            try out.flush();
+        }
+        break;
+    }
+    if (append_system_flag) |extra| {
+        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, extra });
+    }
+    if (environ.get("GRAFF_NO_REPO_MAP") == null and !lean) {
+        if (@import("repo_map.zig").segment(io, arena)) |map| sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, map });
+    }
     // #326: this returns the composed BASE only. prompts.setSystemPrompts()
     // (called once by buildRootAgent, the sole consumer) derives
     // sys_normal/sys_strict/sys_ultra/sys_ultra_strict from it — the single
@@ -191,7 +189,7 @@ pub fn buildSystemPrompt(
     // also go through, so none of the four ever go stale independently.
     // #629: --experiment is armed before this runs; the spawn mandate rides
     // sys_base so a later playbook refresh cannot drop it.
-    if (@import("experiment_pool.zig").directive()) |d|
+    if (if (comptime build_options.learn) @import("experiment_pool.zig").directive() else null) |d|
         sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, d });
     return sys_normal;
 }
@@ -238,7 +236,7 @@ pub fn resolveKeysOrRunAcpPreAuth(io: Io, gpa: Allocator, arena: Allocator, init
     const worker_hint = flags.subagent_provider_flag orelse init.environ_map.get("GRAFF_SUBAGENT_PROVIDER");
     // Before key resolution: the startup catalog load reads it (catalog_selection.startupLoads).
     if (flags.allow_cross_provider_subagents_flag) @import("subagent_selection.zig").g_cross_provider_consent = true;
-    const is_acp = flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "acp");
+    const is_acp = (comptime build_options.acp) and flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "acp");
     if (!is_acp) return try resolveKeys(io, gpa, arena, init.environ_map, flags.model_flag, worker_hint);
     if (try startup_keys.resolveKeysOptional(io, gpa, arena, init.environ_map, flags.model_flag, worker_hint)) |resolved| return resolved;
     try acp_preauth.run(io, gpa, main_mod.harness_version);
@@ -309,7 +307,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // MCP list/login read the workspace config merged with the user-level
     // ~/.codegraff/mcp.json (hence environ_map, for the GRAFF_MCP_CONFIG
     // override); add still writes workspace-only. OAuth login validates HOME itself.
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "mcp")) {
+    if ((comptime build_options.extras) and flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "mcp")) {
         const home = keys_cli.homeEnv(init.environ_map) orelse "";
         // CLI never reaches session_settings.applyEnvKnobs; honor the same
         // GRAFF_NO_PLUGINS gate the REPL / --json session uses.
@@ -318,13 +316,13 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         return true;
     }
 
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "computer")) {
+    if ((comptime build_options.extras) and flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "computer")) {
         const home = keys_cli.homeEnv(init.environ_map) orelse "";
         try @import("computer_cli.zig").command(io, gpa, arena, home, flags.positionals.items[1..]);
         return true;
     }
 
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "plugins")) {
+    if ((comptime build_options.extras) and flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "plugins")) {
         const home = keys_cli.homeEnv(init.environ_map) orelse "";
         plugins.applyEnv(init.environ_map);
         try plugins.command(io, arena, home, flags.positionals.items[1..]);
@@ -349,7 +347,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // args.loginTarget owns the names.
     if (flags.login_flag) {
         const home = keys_cli.homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
-        if (flags.claude_agent_login) @import("claude_agent_login.zig").login(io, arena, init.environ_map, home) catch std.process.exit(1) else if (flags.anthropic_console_login) try @import("anthropic_profile.zig").login(io, arena, init.environ_map, home) else if (flags.anthropic_login) try @import("oauth_anthropic.zig").login(io, gpa, arena, home, flags.refresh_flag) else if (flags.chatgpt_login) try @import("oauth_chatgpt.zig").login(io, gpa, arena, home) else if (flags.xai_login) try oauth.xaiLogin(io, gpa, arena, home) else if (flags.kimi_login) try oauth.kimiLogin(io, gpa, arena, home, flags.kimi_region) else if (flags.zai_login) try oauth.zaiLogin(io, gpa, arena, home) else if (flags.codex_login or flags.refresh_flag) try oauth.codexLogin(io, gpa, arena, home, flags.refresh_flag) else try oauth.codegraffLogin(io, gpa, arena, home);
+        if ((comptime build_options.extras) and flags.claude_agent_login) @import("claude_agent_login.zig").login(io, arena, init.environ_map, home) catch std.process.exit(1) else if (flags.anthropic_console_login) try @import("anthropic_profile.zig").login(io, arena, init.environ_map, home) else if (flags.anthropic_login) try @import("oauth_anthropic.zig").login(io, gpa, arena, home, flags.refresh_flag) else if (flags.chatgpt_login) try @import("oauth_chatgpt.zig").login(io, gpa, arena, home) else if (flags.xai_login) try oauth.xaiLogin(io, gpa, arena, home) else if (flags.kimi_login) try oauth.kimiLogin(io, gpa, arena, home, flags.kimi_region) else if (flags.zai_login) try oauth.zaiLogin(io, gpa, arena, home) else if (flags.codex_login or flags.refresh_flag) try oauth.codexLogin(io, gpa, arena, home, flags.refresh_flag) else try oauth.codegraffLogin(io, gpa, arena, home);
         return true;
     }
 
@@ -357,7 +355,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "logout")) {
         const home = keys_cli.homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
         const target = if (flags.positionals.items.len > 1) flags.positionals.items[1] else "";
-        if (std.mem.eql(u8, @import("args.zig").loginTarget(target) orelse "", "claude-agent")) {
+        if ((comptime build_options.extras) and std.mem.eql(u8, @import("args.zig").loginTarget(target) orelse "", "claude-agent")) {
             try @import("claude_agent_login.zig").logout(io, arena, home);
             return true;
         }
@@ -370,7 +368,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // `harness serve`: HTTP/NDJSON bridge over the --json protocol — each
     // session is a `harness --json` child of this same binary. Keys are
     // loaded by the children, not here.
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "serve")) {
+    if ((comptime build_options.serve) and flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "serve")) {
         const exe = std.process.executablePathAlloc(io, arena) catch
             std.process.fatal("serve: cannot resolve own executable path", .{});
         try serve.serveMain(gpa, io, serveConfig(flags, init.environ_map), exe);
@@ -380,7 +378,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // `graff remote-control [--name <n>]`: the serve supervisor with no
     // listener — dials OUT to the gateway with the `graff login` key and takes
     // commands from the account's relay (#722). Same session children as serve.
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "remote-control")) {
+    if ((comptime build_options.serve) and flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "remote-control")) {
         const home = keys_cli.homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
         const cg_key = init.environ_map.get("CODEGRAFF_API_KEY") orelse oauth.loadCodegraffKey(io, arena, home) orelse
             std.process.fatal("remote-control: no codegraff key — run `graff login` first", .{});
@@ -399,7 +397,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
 
     // `graff remote [sessions|agents|new|send|answer|tail|cancel|close]`: drive
     // the sessions of any machine running `graff remote-control` on this login.
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "remote")) {
+    if ((comptime build_options.serve) and flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "remote")) {
         const cg_key = init.environ_map.get("CODEGRAFF_API_KEY") orelse
             (if (keys_cli.homeEnv(init.environ_map)) |home| oauth.loadCodegraffKey(io, arena, home) else null) orelse
             std.process.fatal("remote: no codegraff key — run `graff login` first", .{});
@@ -411,7 +409,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // `harness update [--force|--check]`: self-update to the latest GitHub
     // release. Version-checked (skips if already current), reuses install.sh
     // for the actual download/codesign/atomic swap. Exits after.
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "update")) {
+    if ((comptime build_options.extras) and flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "update")) {
         // --check never installs, so --force has no effect on it — reject the
         // contradictory combination up front rather than silently ignoring one.
         if (flags.update_force and flags.update_check)
@@ -435,27 +433,31 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
 
     // `graff harness-tree …`: the harness (instructions, skills, subagents,
     // scripts, hooks) as one value: show, digest, check, apply, diff.
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "harness-tree")) {
+    if ((comptime build_options.extras) and flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "harness-tree")) {
         try @import("harness_tree_cli.zig").command(io, arena, flags.positionals.items[1..]);
         return true;
     }
 
     // `graff servers [stop <pid>|prune]`: background servers graff started —
     // this session's or an earlier one's (#199).
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "servers")) {
+    if ((comptime build_options.extras) and flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "servers")) {
         try @import("servers_cmd.zig").command(gpa, io, arena, flags.positionals.items[1..]);
+        return true;
+    }
+    if ((comptime build_options.extras) and flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "doctor")) {
+        try @import("doctor_live.zig").cliCommand(gpa, io, arena, init.environ_map.get("HOME") orelse "", flags.positionals.items[1..]);
         return true;
     }
 
     // `graff peer <list|send|inbox>`: the device's agent rooms for any agent
     // with a shell (Claude Code, Codex, scripts), not only graff sessions.
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "peer")) {
+    if ((comptime build_options.extras) and flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "peer")) {
         try @import("peer_cli.zig").command(gpa, io, arena, init.environ_map.get("HOME") orelse "", init.environ_map.get("GRAFF_PEER_NAME"), flags.positionals.items[1..]);
         return true;
     }
 
     // `graff keys …`: the end-to-end encrypted login vault (harness ADR 0005).
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "keys")) {
+    if ((comptime build_options.extras) and flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "keys")) {
         try @import("keys_vault_cli.zig").command(gpa, io, arena, init.environ_map.get("HOME") orelse "", init.environ_map, flags.positionals.items[1..]);
         return true;
     }
@@ -463,7 +465,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // `graff sandboxes [stop <id>]`: list the account's gateway sandboxes or
     // spin one down. Key resolution mirrors a normal run: CODEGRAFF_API_KEY
     // env first, else the `graff login` file via loadCodegraffKey.
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "sandboxes")) {
+    if ((comptime build_options.serve) and flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "sandboxes")) {
         const cg_key = init.environ_map.get("CODEGRAFF_API_KEY") orelse
             (if (keys_cli.homeEnv(init.environ_map)) |home| oauth.loadCodegraffKey(io, arena, home) else null) orelse
             std.process.fatal("sandboxes: no codegraff key — run `graff login` first", .{});
@@ -475,7 +477,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // sandbox running `graff serve` behind a Daytona preview URL. This is the
     // broker the iOS app mirrors; any serve client can attach with the
     // printed base + token.
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "cube")) {
+    if ((comptime build_options.serve) and flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "cube")) {
         const cg_key = init.environ_map.get("CODEGRAFF_API_KEY") orelse
             (if (keys_cli.homeEnv(init.environ_map)) |home| oauth.loadCodegraffKey(io, arena, home) else null) orelse
             std.process.fatal("cube: no codegraff key — run `graff login` first", .{});
@@ -560,11 +562,12 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         router_catalog.loadAll(io, gpa, arena, home, router_keys, refreshing);
         const refresh_args = [_][]const u8{"refresh"};
         switch (catalog) {
-            .route => try @import("route_check.zig").command(io, gpa, arena, init.environ_map, flags.positionals.items[1..]),
+            .route => if (comptime build_options.extras) try @import("route_check.zig").command(io, gpa, arena, init.environ_map, flags.positionals.items[1..]),
             .refresh => try models_cache.command(io, gpa, arena, home, &refresh_args),
             .list => try models_cache.command(io, gpa, arena, home, flags.positionals.items[1..]),
             .none => unreachable,
         }
+        @import("catalog_failures.zig").reportStdout(io); // a rejected key is why a list is stale
         return true;
     }
 
@@ -582,7 +585,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         return true;
     }
 
-    if (!main_mod.json_mode and flags.oneshot_prompt == null and init.environ_map.get("GRAFF_REPL_DEBUG") != null)
+    if ((comptime build_options.extras) and !main_mod.json_mode and flags.oneshot_prompt == null and init.environ_map.get("GRAFF_REPL_DEBUG") != null)
         @import("server_diagnostics.zig").warnStartup(arena, io);
 
     return false;

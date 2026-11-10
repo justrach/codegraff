@@ -95,6 +95,7 @@ pub fn step(comptime Host: type, self: anytype, root: std.json.ObjectMap) !?[]co
     self.pairContextMeterWithCurrentLocal();
 
     if (calls.items.len > 0) {
+        if (@hasDecl(Host, "beforeTools")) Host.beforeTools(self);
         const results = try self.runTools(calls.items);
         for (calls.items, results) |call, r| {
             const tool_msg = try @import("chat_message.zig").toolResult(msg_alloc, call.id, r.text, r.is_error);

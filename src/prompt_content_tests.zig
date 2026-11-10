@@ -61,3 +61,9 @@ test "root prompt permits explicit external targets without weakening confinemen
     try std.testing.expect(std.mem.indexOf(u8, prompts.main_system_prompt, "Do not claim a relaunch is required") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompts.main_system_prompt, "Never extend") != null);
 }
+
+test "#1812: root prompt and read_file schema distinguish image inspection from show_image presentation" {
+    try std.testing.expect(std.mem.indexOf(u8, prompts.main_system_prompt, "collapsed tool group") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompts.main_system_prompt, "call show_image before referring") != null);
+    try std.testing.expect(std.mem.indexOf(u8, @import("schema.zig").base_specs[1].desc, "show_image") != null);
+}

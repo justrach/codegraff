@@ -65,7 +65,8 @@ theorem names_once_hits :
 /-- Maximize iff the measured cell. The other five cells are the busts. -/
 theorem maximize_iff (c : Cell) :
     cacheable c = true ↔ (c.catalog = .namesOnly ∧ c.pin = .once) := by
-  cases c.catalog <;> cases c.pin <;> native_decide
+  cases c with
+  | mk cat p => cases cat <;> cases p <;> native_decide
 
 theorem bodies_never_hit (p : Pin) :
     cacheable { catalog := .withBodies, pin := p } = false := by
@@ -132,7 +133,7 @@ theorem turn_id (s : State) : step s .turn = s := rfl
 theorem skill_events_keep_prefix (c : Catalog) :
     let s := step {} (.start c)
     run s [.skillLoad, .skillList, .rescan, .turn] = s := by
-  native_decide
+  cases c <;> native_decide
 
 /-- The live session: pin names-only, then skill/list/rescan/turn still HIT. -/
 theorem maximizing_walk :

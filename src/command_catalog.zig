@@ -47,6 +47,7 @@ pub fn commandWord(line: []const u8) ?[]const u8 {
     const t = std.mem.trim(u8, line, " \t\r\n");
     if (t.len < 2 or t[0] != '/') return null;
     const word = t[0 .. std.mem.indexOfAny(u8, t, " \t\r\n") orelse t.len];
+    if (word.len < 2) return null; // #1814: "/ text" starts with a bare slash, not a command word
     for (word[1..]) |c| if (!(std.ascii.isAlphanumeric(c) or c == '-' or c == '_')) return null;
     return word;
 }
@@ -86,6 +87,7 @@ pub const commands = [_]Item{
     .{ .name = "/compact-at", .usage = "/compact-at [10-95|default]", .desc = "where automatic compaction starts, as % of the context window (default 80; persists)" },
     .{ .name = "/fast", .desc = "codex only: priority service tier for lower latency (toggle, persists)" },
     .{ .name = "/thinking", .desc = "stream reasoning live vs spinner only (toggle, persists)" },
+    .{ .name = "/followups", .usage = "/followups [queue|immediate]", .desc = "send OpenAI-model follow-ups into the live turn now (default) or queue them for the next turn; persists" },
     .{ .name = "/title", .desc = "name the tab from your first prompt (AI session title; toggle, persists)" },
     .{ .name = "/strict", .desc = "toggle \"every message is a tool\" mode" },
     .{ .name = "/yolo", .desc = "toggle bash auto-approval (skip permission prompts)" },
@@ -128,7 +130,7 @@ pub const commands = [_]Item{
     .{ .name = "/theme", .usage = "/theme [name]", .desc = "pick a color theme; /theme off resets to your terminal default; persists" },
     .{ .name = "/fleet", .usage = "/fleet [on|off]", .desc = "federated DGM contribution (propose/submit/elite_pull)" },
     .{ .name = "/mcp", .usage = "/mcp [add … | reconnect <name>]", .desc = "list MCP servers/tools; /mcp add <name> <cmd> [args...] connects one live; /mcp reconnect <name> starts one again" },
-    .{ .name = "/computer", .usage = "/computer [status | stop | off … | allow … | grant … | open]", .desc = "nanocua's switches: what's on, stop it, ask to turn things on (macOS)" },
+    .{ .name = "/computer", .usage = "/computer [status | install | stop | off … | allow … | grant … | open]", .desc = "nanocua's switches: install, what's on, stop it, ask to turn things on (macOS)" },
     .{ .name = "/import-claude", .desc = "copy Claude/Cursor setup and import this project's Claude conversations for /resume" },
     .{ .name = "/help", .desc = "list every command" },
 };

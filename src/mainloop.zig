@@ -193,6 +193,8 @@ pub fn run(ctx: *Ctx) !void {
                     ctx.root.emit(.{ .type = "error", .message = message });
                     continue;
                 };
+                ctx.root.reclaimMessages();
+                session.saveSessionAsync(ctx.root, ctx.arena, ctx.root.session_name) catch {};
                 ctx.root.emit(.{ .type = "compact", .ok = true, .chars = chars });
                 continue;
             }
@@ -236,7 +238,7 @@ pub fn run(ctx: *Ctx) !void {
                     ctx.root.emit(.{ .type = "error", .message = "set_effort needs a level supported by the current model" });
                     continue;
                 };
-                ctx.root.jev_effort_pending.invalidate(ctx.root.io);
+                ctx.root.jev_effort_pending.pinUserEffort(ctx.root.io);
                 _ = repl_glue.saveThinkingSettings(ctx.root.io, ctx.root.gpa, ctx.root.reasoning, ctx.root.fast, ctx.root.ultracode_mode, ctx.root.show_thinking, ctx.root.ai_title);
                 ctx.root.emit(.{ .type = "effort", .ok = true, .level = @tagName(ctx.root.reasoning), .applies = ctx.root.effortApplies() });
                 continue;
@@ -502,6 +504,18 @@ pub fn run(ctx: *Ctx) !void {
                     ctx.root.autocompact(recovery_meter);
                 }
                 try @import("turn_dedup.zig").settleFailedTurn(ctx.root, ctx.arena, err); // #1729: a retry of this prompt is a new ask
+                session.saveSession(ctx.root, ctx.arena, ctx.root.session_name) catch {};
+                continue;
+            },
+            error.ProviderQuotaExceeded, error.ProviderAuthenticationFailed, error.ProviderAccessDenied => |e| {
+                const detail = ctx.root.last_api_error orelse @errorName(e);
+                if (telemetry.g_telem) |t| t.errorEvent("api", detail);
+                if (main_mod.json_mode) {
+                    ctx.root.emit(.{ .type = "error", .message = detail });
+                } else {
+                    ctx.root.say("{s}\n", .{detail}) catch {};
+                }
+                try @import("turn_dedup.zig").settleFailedTurn(ctx.root, ctx.arena, e);
                 session.saveSession(ctx.root, ctx.arena, ctx.root.session_name) catch {};
                 continue;
             },

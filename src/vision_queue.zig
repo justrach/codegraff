@@ -20,6 +20,7 @@ const vision = @import("vision.zig");
 const PendingImage = vision.PendingImage;
 const messages = @import("messages.zig");
 const compact_cut = @import("compact_cut.zig");
+const image_inbox = @import("image_inbox.zig");
 
 pub const cap = 16;
 
@@ -92,14 +93,16 @@ pub fn nextChipNumber(root: *const Agent) u8 {
 
 pub fn consumePromptImages(arena: Allocator, root: *Agent, text: []const u8) !Value {
     _ = retainReferenced(root, text);
+    // #1865: a trailer ref that is now a staged image leaves the text.
+    const shown = @import("attachment_refs.zig").withoutStaged(arena, text, root.pending_images[0..root.pending_image_len]);
     const imgs = take(root);
     for (imgs) |img| {
         if (!img.from_composer or img.media_type.len == 0) continue;
         const bytes: u64 = if (img.b64.len == 0) 0 else std.base64.standard.Decoder.calcSizeForSlice(img.b64) catch img.b64.len;
         vision.tracePaste(root, "sent", "submit", bytes, img.media_type);
     }
-    if (imgs.len == 0) return messages.textMessage(arena, "user", text);
-    return vision.imageMessages(arena, root.provider.kind, if (std.mem.trim(u8, text, " \t\r\n").len == 0) attached_note else text, imgs);
+    if (imgs.len == 0) return messages.textMessage(arena, "user", shown);
+    return vision.imageMessages(arena, root.provider.kind, if (std.mem.trim(u8, shown, " \t\r\n").len == 0) attached_note else shown, imgs);
 }
 
 /// After an ask_user (or any tool that staged pixels) tool result, attach the
@@ -112,15 +115,26 @@ pub const attached_note = "Attached image.";
 
 pub fn collectRegistry(root: *Agent) void {
     const reg = root.registry orelse return;
-    var image: ?PendingImage = null;
-    if (vision.mcpImageHandoff(reg, vision.visionCapable(root.provider), &image)) stage(root, image.?);
+    var buf: [image_inbox.cap]PendingImage = undefined;
+    for (image_inbox.handoff(reg, vision.visionCapable(root.provider), &buf)) |img| stage(root, img);
 }
 
 pub fn flushPending(root: *Agent) !void {
     collectRegistry(root);
     const imgs = take(root);
     if (imgs.len == 0) return;
-    try root.messages.append(try vision.imageMessages(root.arena, root.provider.kind, attached_note, imgs));
+    try root.messages.append(try @import("session_wake.zig").mark(root.arena, try vision.imageMessages(root.arena, root.provider.kind, try batchCaption(root.arena, imgs), imgs)));
+}
+
+/// The text beside a batch's images. Image blocks carry no names and parallel
+/// reads finish in any order, so several are listed in the order their blocks
+/// follow: the model can tell `before.png` from `after.png` (#1866).
+pub fn batchCaption(arena: Allocator, imgs: []const PendingImage) ![]const u8 {
+    if (imgs.len < 2) return attached_note;
+    var aw: std.Io.Writer.Allocating = .init(arena);
+    try aw.writer.print("Attached {d} images, in this order:", .{imgs.len});
+    for (imgs, 1..) |img, n| try aw.writer.print("\n{d}. {s}", .{ n, if (img.label.len > 0) img.label else "image" });
+    return aw.written();
 }
 
 pub fn withUnsupportedNote(arena: Allocator, answer: []const u8) ![]const u8 {

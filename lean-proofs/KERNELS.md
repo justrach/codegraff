@@ -20,8 +20,12 @@ reload in the prefix; compact re-pins — showcase with
 `python3 spec/conformance.py --showcase`), `PathConfine` (component walk: Escaped and
 Absolute absorb), `Transport` (a sub never takes WS; only one live root
 Responses cell does), and `Score` (`attempt` never files; `capture`
-after the join files one stage row). They are not Turing machines: no
-tape, no halt state.
+after the join files one stage row), and `ImageDelivery` (a staged image
+is delivered once or refused, never dropped; a request is in call order
+whichever read finished first; a trailer ref is an image
+block or its line; the port is the `Model` in `src/image_inbox.zig`, run
+against the queue over every sequence of six events). They are not Turing
+machines: no tape, no halt state.
 
 The shape of a subagent fleet is not a cube. `Shape` is the observation
 ladder of one turn and stays a cube. How many children spawn, which
@@ -60,6 +64,7 @@ not a skip: TUI, prompts, and SSE bytes stay out of Lean on purpose.
 | Kernel | Cells | What it is *not* |
 |---|---|---|
 | `BashPolicy` | finite command cube: `isSimple`, `escapesCwd`, `readOnlyAllowed`, `readOnlyExternal` | live argv quoting, Windows cmd.exe |
+| `ImageDelivery` | 102 admit cells + `Event`/`step` (inbox) + the trailer promotion fold | base64 bytes, provider wire shape, which read finishes first |
 
 ### Never (accounted for; eval / tier 2)
 

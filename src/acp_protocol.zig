@@ -59,10 +59,7 @@ pub const Request = struct {
     params: ?Value = null,
 };
 
-pub fn parseRequest(arena: Allocator, line: []const u8) ?Request {
-    const trimmed = std.mem.trim(u8, line, " \t\r\n");
-    if (trimmed.len == 0) return null;
-    const v = std.json.parseFromSliceLeaky(Value, arena, trimmed, .{ .allocate = .alloc_always }) catch return null;
+pub fn requestFromValue(v: Value) ?Request {
     if (v != .object) return null;
     const method = util.strFieldObj(v.object, "method") orelse return null;
     const raw_id = v.object.get("id");
@@ -71,6 +68,13 @@ pub fn parseRequest(arena: Allocator, line: []const u8) ?Request {
         .method = method,
         .params = v.object.get("params"),
     };
+}
+
+pub fn parseRequest(arena: Allocator, line: []const u8) ?Request {
+    const trimmed = std.mem.trim(u8, line, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    const v = std.json.parseFromSliceLeaky(Value, arena, trimmed, .{ .allocate = .alloc_always }) catch return null;
+    return requestFromValue(v);
 }
 
 pub fn negotiateVersion(params: ?Value) i64 {

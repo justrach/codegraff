@@ -1,66 +1,24 @@
-//! #273: the autosave's *disk write*, moved off the turn's critical path, plus
-//! the content fingerprint that lets an unchanged conversation skip the save
-//! entirely.
+//! Session saves own immutable snapshots, never live Agent messages. New or
+//! changed messages are serialized on the caller; the worker publishes ordinary
+//! JSON with transactional range writes. A newer job may supersede a pending
+//! save only for the same destination because every job is independently complete.
 //!
-//! Every finished turn rewrote the whole retained history synchronously before
-//! the loop could accept the next prompt, so next-prompt readiness scaled with
-//! the total session size instead of with the new turn. Two conservative fixes,
-//! no format change and no journal:
+//! The last committed snapshot supplies unchanged bytes only while the file's
+//! identity, size and mtime still match under its write lock. External changes
+//! force a full transaction. A checksummed write-ahead record makes interrupted
+//! updates recoverable without treating the recall transcript as storage.
 //!
-//!   1. `Fingerprint` hashes exactly the state saveSession serializes (minus
-//!      `updated_ms`, which is a clock reading, not conversation state). When it
-//!      matches the last SUCCESSFUL write *and the file still holds that write*
-//!      (`Mark`), the save is skipped whole — no serialize, no lock, no write.
-//!      Hashing the live JSON tree is a pointer walk plus a memcpy-speed digest;
-//!      std.json.Stringify allocates, escapes, and formats every byte, so the
-//!      skip is far cheaper than the save it replaces. The disk check is what
-//!      keeps the skip from becoming a silent data loss when something else
-//!      rewrites the session file between our saves.
-//!   2. The serialized bytes are handed to ONE background writer thread that
-//!      performs the identical `session_lock.writeSession` (parent dirs +
-//!      exclusive advisory lock + positional overwrite + truncate, #289). Only
-//!      one job is ever queued: a newer save supersedes an older queued one, so
-//!      a burst of saves costs one write, always of the newest state.
-//!
-//! Serialization stays on the CALLER thread on purpose. `root.messages` is live
-//! agent state with no lock of its own; serializing it on the writer thread
-//! would race the next turn's appends for a real correctness bug, and the
-//! alternative (deep-cloning a multi-MB history per turn) costs more than the
-//! serialization it moves. Only the file write — the part that touches the disk
-//! and cannot touch agent state — runs in the background.
-//!
-//! Measured (ReleaseFast, macOS/APFS, warm cache; std.json.Stringify vs the
-//! locked write vs this fingerprint, per save):
-//!
-//!     100 KiB history   serialize 0.14 ms   write 0.08 ms   fingerprint 0.01 ms
-//!       1 MiB history   serialize 0.94 ms   write 0.24 ms   fingerprint 0.07 ms
-//!      10 MiB history   serialize 7.04 ms   write 1.10 ms   fingerprint 0.59 ms
-//!
-//! So be honest about what moved: the serialize is 62-87% of a save's cost and
-//! is STILL on the turn's path when the conversation changed; backgrounding the
-//! write buys the remaining 13-38%. The large win is the skip — an unchanged
-//! session now costs the fingerprint alone, ~7% of one save at 10 MiB. Taking
-//! the serialize off the path too needs either a lock around the history or an
-//! incremental/journal format, both out of scope here (#273 asks for the
-//! conservative step).
-//!
-//! Durability is bounded by `drain()`: the interactive loop drains before
-//! returning, and every non-turn saver (session.saveSession) drains as part of
-//! the save. So the only window in which a queued write can be lost is inside a
-//! single turn's tail, and nothing exits the process through it.
-//!
-//! Failures are reported per save, not per process: `submit` returns a ticket
-//! and `errorFor(ticket)` answers for that save alone. A background autosave's
-//! failure belongs to the turn that queued it — charging it to whatever save
-//! happened to ask next made `/save` report a failure for a file it had just
-//! written correctly.
+//! drain() bounds asynchronous durability; stop() also frees the committed
+//! snapshot and serialization cache before their allocators expire. Failures
+//! remain ticket-scoped, and unchanged-state skips still require disk evidence.
 
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
 
-const session_lock = @import("session_lock.zig");
+const session_store = @import("session_store.zig");
+const snapshots = @import("session_snapshot.zig");
 
 pub const Fingerprint = @import("session_fingerprint.zig").Fingerprint;
 
@@ -68,7 +26,8 @@ const Job = struct {
     io: Io,
     dir: Io.Dir,
     path: []u8,
-    data: []u8,
+    data: []u8 = &.{},
+    snapshot: ?snapshots.Snapshot = null,
     fp: u64,
     home: ?[]u8 = null,
     /// The `submit` that queued this job — see `errorFor`.
@@ -77,6 +36,10 @@ const Job = struct {
     fn deinit(job: Job, gpa: Allocator) void {
         gpa.free(job.path);
         gpa.free(job.data);
+        if (job.snapshot) |value| {
+            var snapshot = value;
+            snapshot.deinit();
+        }
         if (job.home) |home| gpa.free(home);
     }
 };
@@ -99,7 +62,13 @@ const Mark = struct {
 
 /// Counters for the tests: how many background writes completed, and how many
 /// queued jobs a newer save superseded before they ever reached the disk.
-pub const Stats = struct { writes: usize, superseded: usize };
+pub const Stats = struct {
+    writes: usize,
+    superseded: usize,
+    bytes_written: u64 = 0,
+    journal_bytes: u64 = 0,
+    delta_writes: u64 = 0,
+};
 
 // std.Io owns the synchronization primitives (there is no std.Thread.Mutex),
 // so every lock/wait needs an Io. The first submit records the session's, and
@@ -126,10 +95,34 @@ var last_error: ?anyerror = null; // the NEWEST write's failure, if it failed
 var error_ticket: u64 = 0; // and whose failure that is
 var writes: usize = 0;
 var superseded: usize = 0;
+var bytes_written: std.atomic.Value(u64) = .init(0);
+var journal_bytes: std.atomic.Value(u64) = .init(0);
+var delta_writes: std.atomic.Value(u64) = .init(0);
 /// Test seam: hold the worker before it claims a job, so a test can prove a
 /// save really was queued (and really was superseded) rather than racing it.
 /// `stop()` clears it — shutdown always wins over a test pause.
 var paused = false;
+
+// Independent of the queue mutex: inline fallbacks and the worker share the
+// last committed immutable snapshot, never live Agent messages.
+var storage_mutex: Io.Mutex = .init;
+const Committed = struct {
+    snapshot: snapshots.Snapshot,
+    path: []u8,
+    capacity: usize,
+    mark: session_store.Mark,
+    fn deinit(self: Committed) void {
+        self.snapshot.gpa.free(self.path);
+        var snapshot = self.snapshot;
+        snapshot.deinit();
+    }
+};
+var committed: ?Committed = null;
+
+fn clearCommitted() void {
+    if (committed) |old| old.deinit();
+    committed = null;
+}
 
 /// True when `dir`/`path` still holds exactly the bytes we last wrote for `fp`,
 /// so the caller can skip serializing entirely.
@@ -143,8 +136,16 @@ pub fn alreadySaved(io: Io, dir: Io.Dir, path: []const u8, fp: u64) bool {
     const wio = writer_io orelse return false; // nothing has ever been saved
     mutex.lockUncancelable(wio);
     defer mutex.unlock(wio);
+    // Disk evidence is not the future state: a different queued or active
+    // snapshot could overwrite it after this caller returns.
+    if (pending != null or busy) return false;
     const m = mark orelse return false;
     if (m.fp != fp or !std.mem.eql(u8, m.path, path)) return false;
+    var journal_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const journal = std.fmt.bufPrint(&journal_buf, "{s}.journal", .{path}) catch return false;
+    if (dir.statFile(io, journal, .{})) |_| return false else |err| {
+        if (err != error.FileNotFound) return false;
+    }
     const st = dir.statFile(io, path, .{}) catch {
         clearMark(); // gone or unreadable: never skip over a file we cannot see
         return false;
@@ -170,58 +171,91 @@ pub fn submit(gpa: Allocator, io: Io, dir: Io.Dir, path: []u8, data: []u8, fp: u
 
 /// Discovery metadata is optional; session persistence remains authoritative.
 pub fn submitInHome(gpa: Allocator, io: Io, dir: Io.Dir, path: []u8, data: []u8, fp: u64, home: []const u8) u64 {
-    const saved_home = if (home.len > 0) gpa.dupe(u8, home) catch null else null;
+    return enqueue(gpa, .{ .io = io, .dir = dir, .path = path, .data = data, .fp = fp, .ticket = 0, .home = if (home.len > 0) gpa.dupe(u8, home) catch null else null });
+}
+
+/// Own a complete immutable snapshot; queued replacements need no prior job.
+pub fn submitSnapshot(gpa: Allocator, io: Io, dir: Io.Dir, path: []u8, snapshot: snapshots.Snapshot, fp: u64, home: []const u8) u64 {
+    return enqueue(gpa, .{ .io = io, .dir = dir, .path = path, .snapshot = snapshot, .fp = fp, .ticket = 0, .home = if (home.len > 0) gpa.dupe(u8, home) catch null else null });
+}
+
+fn enqueue(gpa: Allocator, incoming: Job) u64 {
+    var job = incoming;
+    const io = job.io;
     writer_io = io; // set before anything can be queued; see writer_io
     mutex.lockUncancelable(io);
     if (thread == null and !stopping) thread = std.Thread.spawn(.{}, worker, .{io}) catch null;
     tickets += 1;
     const ticket = tickets;
+    job.ticket = ticket;
     if (thread == null) {
         // No worker — threads are unavailable, or one is being retired. Write
         // inline rather than queue behind nobody.
         mutex.unlock(io);
-        defer gpa.free(path);
-        defer gpa.free(data);
-        defer if (saved_home) |h| gpa.free(h);
-        writeNow(io, dir, path, data, fp, ticket, saved_home);
+        defer job.deinit(gpa);
+        writeNow(gpa, &job);
         return ticket;
     }
     defer mutex.unlock(io);
     if (pending) |old| {
-        old.deinit(gpa_of_pending);
-        superseded += 1;
+        if (old.dir.handle != job.dir.handle or !std.mem.eql(u8, old.path, job.path)) {
+            while (pending != null or busy) idle.waitUncancelable(io, &mutex);
+        } else {
+            old.deinit(gpa_of_pending);
+            superseded += 1;
+        }
     }
     gpa_of_pending = gpa;
-    pending = .{ .io = io, .dir = dir, .path = path, .data = data, .fp = fp, .ticket = ticket, .home = saved_home };
+    pending = job;
     work.broadcast(io);
     return ticket;
 }
 
-/// The pre-#273 write, used when threads are unavailable.
-fn writeNow(io: Io, dir: Io.Dir, path: []const u8, data: []const u8, fp: u64, ticket: u64, home: ?[]const u8) void {
-    var failed: ?anyerror = null;
-    session_lock.writeSession(io, dir, path, data) catch |err| {
-        failed = err;
+fn persist(gpa: Allocator, job: *Job) !Mark {
+    storage_mutex.lockUncancelable(job.io);
+    defer storage_mutex.unlock(job.io);
+    const before = session_store.stats;
+    const st = if (job.snapshot) |*snapshot| blk: {
+        var scratch = std.heap.ArenaAllocator.init(gpa);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        var capacity = std.mem.alignForward(usize, snapshot.header_end, 4096);
+        var delta: ?session_store.Delta = null;
+        if (committed) |old| {
+            if (std.mem.eql(u8, old.path, job.path) and snapshot.header_end <= old.capacity) {
+                capacity = old.capacity;
+                delta = .{ .old_parts = try old.snapshot.parts(a, capacity), .old_mark = old.mark, .prefix = capacity, .tail = snapshot.tailOffset(snapshot.commonPrefix(old.snapshot), capacity) };
+            }
+        }
+        const st = try session_store.write(job.io, gpa, job.dir, job.path, try snapshot.parts(a, capacity), delta);
+        clearCommitted();
+        if (snapshot.gpa.dupe(u8, job.path)) |path| {
+            committed = .{ .snapshot = snapshot.*, .path = path, .capacity = capacity, .mark = st };
+            job.snapshot = null;
+        } else |_| {}
+        break :blk st;
+    } else blk: {
+        const st = try session_store.write(job.io, gpa, job.dir, job.path, &.{job.data}, null);
+        clearCommitted();
+        break :blk st;
     };
-    if (failed == null) if (home) |h| @import("workspace_history.zig").record(io, dir, h) catch {};
-    const evidence: ?Mark = if (failed == null) observe(io, dir, path, fp) else null;
-    mutex.lockUncancelable(io);
-    defer mutex.unlock(io);
-    finish(failed, ticket, evidence);
+    _ = bytes_written.fetchAdd(session_store.stats.bytes_written - before.bytes_written, .monotonic);
+    _ = journal_bytes.fetchAdd(session_store.stats.journal_bytes - before.journal_bytes, .monotonic);
+    _ = delta_writes.fetchAdd(session_store.stats.delta_writes - before.delta_writes, .monotonic);
+    return .{ .fp = job.fp, .path = job.path, .inode = st.inode, .size = st.size, .mtime_ns = st.mtime_ns };
 }
 
-/// What the file looks like immediately after a successful write. Null when
-/// that cannot be observed (the stat fails, or the path cannot be kept): no
-/// evidence means no skip, which costs a redundant write and never a lost one.
-fn observe(io: Io, dir: Io.Dir, path: []const u8, fp: u64) ?Mark {
-    const st = dir.statFile(io, path, .{}) catch return null;
-    return .{
-        .fp = fp,
-        .path = path, // borrowed — setMark copies it under the mutex
-        .inode = st.inode,
-        .size = st.size,
-        .mtime_ns = st.mtime.nanoseconds,
+/// The same transaction path is used when a worker cannot be started.
+fn writeNow(gpa: Allocator, job: *Job) void {
+    var failed: ?anyerror = null;
+    const evidence = persist(gpa, job) catch |err| blk: {
+        failed = err;
+        break :blk null;
     };
+    if (failed == null) if (job.home) |h| @import("workspace_history.zig").record(job.io, job.dir, h) catch {};
+    mutex.lockUncancelable(job.io);
+    defer mutex.unlock(job.io);
+    finish(failed, job.ticket, evidence);
 }
 
 fn clearMark() void {
@@ -261,7 +295,7 @@ fn worker(io: Io) void {
     while (true) {
         mutex.lockUncancelable(io);
         while (!stopping and (pending == null or paused)) work.waitUncancelable(io, &mutex);
-        const job = pending orelse {
+        var job = pending orelse {
             mutex.unlock(io); // stopping with an empty queue: nothing was lost
             return;
         };
@@ -271,11 +305,11 @@ fn worker(io: Io) void {
         mutex.unlock(io);
 
         var failed: ?anyerror = null;
-        session_lock.writeSession(job.io, job.dir, job.path, job.data) catch |err| {
+        const evidence = persist(gpa, &job) catch |err| blk: {
             failed = err;
+            break :blk null;
         };
         if (failed == null) if (job.home) |h| @import("workspace_history.zig").record(job.io, job.dir, h) catch {};
-        const evidence: ?Mark = if (failed == null) observe(job.io, job.dir, job.path, job.fp) else null;
 
         mutex.lockUncancelable(io);
         busy = false;
@@ -323,11 +357,11 @@ pub fn stats() Stats {
     const io = writer_io orelse return .{ .writes = 0, .superseded = 0 };
     mutex.lockUncancelable(io);
     defer mutex.unlock(io);
-    return .{ .writes = writes, .superseded = superseded };
+    return .{ .writes = writes, .superseded = superseded, .bytes_written = bytes_written.load(.monotonic), .journal_bytes = journal_bytes.load(.monotonic), .delta_writes = delta_writes.load(.monotonic) };
 }
 
-/// Drain, then retire the worker thread. Tests use it; production relies on
-/// `drain()` (the parked worker owns nothing once the queue is empty).
+/// Drain, retire the worker, and release retained immutable snapshot state.
+/// Main calls this before its allocator expires; tests use it between cases.
 pub fn stop() void {
     const io = writer_io orelse return;
     mutex.lockUncancelable(io);
@@ -345,6 +379,10 @@ pub fn stop() void {
     defer mutex.unlock(io);
     thread = null;
     stopping = false;
+    storage_mutex.lockUncancelable(io);
+    clearCommitted();
+    storage_mutex.unlock(io);
+    snapshots.reset();
 }
 
 /// Test seam (see `paused`).
@@ -371,178 +409,12 @@ pub fn resetForTest() void {
     error_ticket = 0;
     writes = 0;
     superseded = 0;
+    bytes_written.store(0, .monotonic);
+    journal_bytes.store(0, .monotonic);
+    delta_writes.store(0, .monotonic);
     paused = false;
 }
 
-test "fingerprint tracks every mutation the session file records (#273)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-
-    var msgs = std.json.Array.init(a);
-    var user: std.json.ObjectMap = .empty;
-    try user.put(a, "role", .{ .string = "user" });
-    try user.put(a, "content", .{ .string = "ship #273" });
-    try msgs.append(.{ .object = user });
-
-    const of = struct {
-        fn fp(m: std.json.Array, title: []const u8) u64 {
-            var f: Fingerprint = .init();
-            f.text(title);
-            f.json(.{ .array = m });
-            return f.final();
-        }
-    }.fp;
-
-    const base = of(msgs, "t");
-    // Unchanged state hashes identically — this is what makes the skip safe.
-    try std.testing.expectEqual(base, of(msgs, "t"));
-    // A field OUTSIDE the history still counts (title, goal, todos, flags).
-    try std.testing.expect(base != of(msgs, "t2"));
-
-    // An appended turn.
-    var reply: std.json.ObjectMap = .empty;
-    try reply.put(a, "role", .{ .string = "assistant" });
-    try reply.put(a, "content", .{ .string = "done" });
-    try msgs.append(.{ .object = reply });
-    const appended = of(msgs, "t");
-    try std.testing.expect(base != appended);
-
-    // An IN-PLACE edit of an existing message (compaction/truncation shape):
-    // same message count, different content. A length-only or count-only dirty
-    // check would miss exactly this and lose the rewrite.
-    try msgs.items[0].object.put(a, "content", .{ .string = "ship #273 now" });
-    try std.testing.expect(appended != of(msgs, "t"));
-}
-
-fn expectFile(dir: Io.Dir, path: []const u8, want: []const u8) !void {
-    const got = try dir.readFileAlloc(std.testing.io, path, std.testing.allocator, .limited(4096));
-    defer std.testing.allocator.free(got);
-    try std.testing.expectEqualStrings(want, got);
-}
-
-test "a queued save reaches disk and drain waits for it (#273)" {
-    const io = std.testing.io;
-    const gpa = std.testing.allocator;
-    resetForTest();
-    defer resetForTest();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    _ = submit(gpa, io, tmp.dir, try gpa.dupe(u8, "s/a.json"), try gpa.dupe(u8, "{\"m\":1}"), 1);
-    drain();
-    try expectFile(tmp.dir, "s/a.json", "{\"m\":1}");
-    try std.testing.expectEqual(@as(usize, 1), stats().writes);
-    // The write landed, so an identical save is now skippable.
-    try std.testing.expect(alreadySaved(io, tmp.dir, "s/a.json", 1));
-    try std.testing.expect(!alreadySaved(io, tmp.dir, "s/a.json", 2)); // other state
-    try std.testing.expect(!alreadySaved(io, tmp.dir, "s/other.json", 1)); // other file
-}
-
-test "the skip needs the bytes to still be on disk, not just to have been written (#273)" {
-    const io = std.testing.io;
-    const gpa = std.testing.allocator;
-    resetForTest();
-    defer resetForTest();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    _ = submit(gpa, io, tmp.dir, try gpa.dupe(u8, "s/e.json"), try gpa.dupe(u8, "ten turns"), 3);
-    drain();
-    try std.testing.expect(alreadySaved(io, tmp.dir, "s/e.json", 3));
-
-    // A second graff in the same workspace writes its own snapshot over ours
-    // (#289: the lock is only held during the write). The state we would skip
-    // on is no longer what the file holds, so the skip must not happen — the
-    // exit save has to rewrite and win, as it did before #273.
-    try tmp.dir.writeFile(io, .{ .sub_path = "s/e.json", .data = "another graff" });
-    try std.testing.expect(!alreadySaved(io, tmp.dir, "s/e.json", 3));
-    // Invalidated for good: not a one-shot that re-trusts itself next call.
-    try std.testing.expect(!alreadySaved(io, tmp.dir, "s/e.json", 3));
-
-    // Same for a session file that is deleted out from under us.
-    _ = submit(gpa, io, tmp.dir, try gpa.dupe(u8, "s/e.json"), try gpa.dupe(u8, "ten turns"), 3);
-    drain();
-    try std.testing.expect(alreadySaved(io, tmp.dir, "s/e.json", 3));
-    try tmp.dir.deleteFile(io, "s/e.json");
-    try std.testing.expect(!alreadySaved(io, tmp.dir, "s/e.json", 3));
-}
-
-test "a newer save supersedes an older queued one (#273)" {
-    const io = std.testing.io;
-    const gpa = std.testing.allocator;
-    resetForTest();
-    defer resetForTest();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    setPausedForTest(io, true);
-    _ = submit(gpa, io, tmp.dir, try gpa.dupe(u8, "s/b.json"), try gpa.dupe(u8, "old"), 1);
-    _ = submit(gpa, io, tmp.dir, try gpa.dupe(u8, "s/b.json"), try gpa.dupe(u8, "newest"), 2);
-    try std.testing.expectEqual(@as(usize, 1), stats().superseded);
-    setPausedForTest(io, false);
-    drain();
-    // One write, of the newest state: a burst never costs a write per save.
-    try std.testing.expectEqual(@as(usize, 1), stats().writes);
-    try expectFile(tmp.dir, "s/b.json", "newest");
-}
-
-test "no queued save is lost at shutdown (#273)" {
-    const io = std.testing.io;
-    const gpa = std.testing.allocator;
-    resetForTest();
-    defer resetForTest();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    setPausedForTest(io, true);
-    _ = submit(gpa, io, tmp.dir, try gpa.dupe(u8, "s/c.json"), try gpa.dupe(u8, "last turn"), 7);
-    // Provably still queued: nothing is on disk yet.
-    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "s/c.json", .{}));
-    stop(); // the exit path: drain, then retire the worker
-    try expectFile(tmp.dir, "s/c.json", "last turn");
-}
-
-test "a failed write clears the skip mark so the next save retries (#273)" {
-    const io = std.testing.io;
-    const gpa = std.testing.allocator;
-    resetForTest();
-    defer resetForTest();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    // A regular file where the session directory would go: createDirPath and
-    // the create both fail, so the write cannot land.
-    try tmp.dir.writeFile(io, .{ .sub_path = "blocked", .data = "" });
-    const ticket = submit(gpa, io, tmp.dir, try gpa.dupe(u8, "blocked/d.json"), try gpa.dupe(u8, "x"), 5);
-    drain();
-    try std.testing.expectEqual(@as(usize, 0), stats().writes);
-    try std.testing.expect(!alreadySaved(io, tmp.dir, "blocked/d.json", 5)); // never skip on a write that failed
-    try std.testing.expect(errorFor(ticket) != null);
-    try std.testing.expect(errorFor(ticket) == null); // reported once
-}
-
-test "a background failure is never charged to a later save (#273)" {
-    const io = std.testing.io;
-    const gpa = std.testing.allocator;
-    resetForTest();
-    defer resetForTest();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    // Turn 5's autosave loses the race and fails in the background.
-    try tmp.dir.writeFile(io, .{ .sub_path = "blocked", .data = "" });
-    const autosave = submit(gpa, io, tmp.dir, try gpa.dupe(u8, "blocked/f.json"), try gpa.dupe(u8, "turn 5"), 8);
-    drain();
-
-    // `/save release-notes` writes its own file, successfully. It must report
-    // ITS outcome — reporting the autosave's error made /save print "save
-    // failed" and skip the rename for a file it had just written correctly.
-    const named = submit(gpa, io, tmp.dir, try gpa.dupe(u8, "s/release-notes.json"), try gpa.dupe(u8, "everything"), 9);
-    drain();
-    try std.testing.expect(errorFor(named) == null);
-    try expectFile(tmp.dir, "s/release-notes.json", "everything");
-    // And the older ticket cannot resurrect it either: the newer write means
-    // the failure no longer describes the disk.
-    try std.testing.expect(errorFor(autosave) == null);
+test {
+    _ = @import("session_writer_tests.zig");
 }

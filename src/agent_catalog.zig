@@ -62,6 +62,7 @@ pub fn invalidateRootTools(self: *Agent) void {
     self.tools_openai = "";
     self.tools_responses = "";
     self.tools_interactions = "";
+    self.tools_epoch = 0;
 }
 
 pub fn refreshMcp(self: *Agent) bool {
@@ -92,6 +93,23 @@ pub fn ensureRootTools(self: *Agent, kind: Provider.Kind) !void {
     } else &.{};
     const rendered = try @import("shell_tool.zig").withPython(self.arena, try schema.renderRootTools(self.arena, kind, specs, connected)); // ADR 0242
     dest.* = try @import("gemini_turns.zig").withCompletionBatch(self.arena, rendered, self.provider.model); // ADR 0256
+    if (!self.sub) self.tools_epoch = @import("native_fold.zig").catalogEpoch();
+}
+
+/// Rebuild cached catalogs when deferred tools auto-loaded (`gateExec`,
+/// `markIfFolded`, `autoLoad`) or session load state changed (#492).
+pub fn syncLoadedTools(self: *Agent, force: bool) !bool {
+    const epoch = @import("native_fold.zig").catalogEpoch();
+    if (self.sub) {
+        if (!force and (self.registry == null or self.tools_epoch == epoch)) return false;
+        @import("worker_mcp.zig").inherit(self);
+        return true;
+    }
+    const epoch_stale = self.tools_epoch != 0 and self.tools_epoch != epoch;
+    if (!force and !epoch_stale and !@import("additional_tools.zig").staleCatalog(self)) return false;
+    invalidateRootTools(self);
+    try ensureRootTools(self, self.provider.kind);
+    return true;
 }
 
 test "invalidate without ensure leaves toolsJson empty; rebuild is a JSON array" {

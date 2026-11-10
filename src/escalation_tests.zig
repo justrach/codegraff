@@ -484,3 +484,36 @@ test "shapes.rawAsk: captured by value, so a freed per-turn arena cannot dangle"
     try std.testing.expectEqualStrings("ultracode fix stats.py", shapes.rawAsk());
     try std.testing.expectEqual(shapes.TaskClass.bugfix, shapes.classOf(shapes.rawAsk()));
 }
+
+test "#1759 multi-PR / diff-ref reviews count scope and R0 reports disambiguated admission counters" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const pr_phases = phasesFrom(a,
+        \\[{"title":"find issues","tasks":[
+        \\   {"prompt":"review PR #101 and pull/102 correctness"},
+        \\   {"prompt":"review #103 and main...feature-branch regressions"}]},
+        \\ {"title":"synthesize","tasks":[{"prompt":"combine findings"}]}]
+    );
+    const pr_obs = escalation.observe(pr_phases, "review PRs #101, #102, and #103", .review, 40, 40);
+    try std.testing.expect(pr_obs.files >= escalation.fleet_scope_min);
+    try std.testing.expectEqual(Rung.R2, escalation.ladderRung(pr_obs));
+
+    try std.testing.expect(escalation.countDistinctFiles("review change spanning more than 80 files") >= escalation.fleet_scope_min);
+
+    var narrow = base();
+    narrow.files = 1;
+    narrow.remaining = 40;
+    narrow.cap = 40;
+    const narrow_msg = escalation.soloAdvice(a, narrow);
+    try std.testing.expect(std.mem.indexOf(u8, narrow_msg, "reason=narrow_scope") != null);
+    try std.testing.expect(std.mem.indexOf(u8, narrow_msg, "scope_units=1/3") != null);
+
+    var dry = base();
+    dry.files = 6;
+    dry.remaining = 12;
+    dry.cap = 30;
+    const dry_msg = escalation.soloAdvice(a, dry);
+    try std.testing.expect(std.mem.indexOf(u8, dry_msg, "reason=insufficient_budget") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dry_msg, "scope_units=6/3") != null);
+}

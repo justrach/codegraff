@@ -66,8 +66,10 @@ pub const State = struct {
     /// age-dependent rules then report rather than suppress, since an unknown
     /// age is not evidence of freshness.
     now_ms: i64 = 0,
-    /// Live job/budget snapshot (#321). Empty/unlimited is a valid reading.
+    /// Live job/budget/lease snapshot (#321). Empty/unlimited is a valid reading.
     jobs: []const live.JobView = &.{},
+    leases: []const live.LeaseView = &.{},
+    owned_jobs: []const live.OwnedJobView = &.{},
     budget_max: u64 = 0,
     budget_used: u64 = 0,
     listener_findings: []const Check = &.{},
@@ -94,7 +96,11 @@ pub fn snapshot(root: *const Agent, now_ms: i64) State {
 /// Goal/todo, live jobs, budget, and read-only legacy listener discovery.
 pub fn snapshotWithLive(arena: Allocator, root: *const Agent, now_ms: i64) Allocator.Error!State {
     var st = snapshot(root, now_ms);
+    const home = @import("job_registry.zig").home;
+    const id = @import("worktree_lease.zig").currentIdentity(root.gpa, root.io, arena).id;
     st.jobs = try live.captureJobs(arena, root.io);
+    st.leases = try live.captureLeases(arena, root.io, home, id, live.selfPid());
+    st.owned_jobs = try live.captureOwnedJobs(arena, root.io, home);
     st.listener_findings = try @import("server_diagnostics.zig").capture(arena, root.io);
     if (root.run_budget) |b| {
         st.budget_max = b.max_model_calls;
@@ -115,6 +121,8 @@ pub fn run(arena: Allocator, st: State) Allocator.Error![]const Check {
     try out.appendSlice(arena, st.listener_findings);
     try live.append(arena, &out, .{
         .jobs = st.jobs,
+        .leases = st.leases,
+        .owned_jobs = st.owned_jobs,
         .budget_max = st.budget_max,
         .budget_used = st.budget_used,
     });

@@ -43,12 +43,17 @@ const extra_secrets = [_][]const u8{
     "GRAFF_MCP_TOKEN",
     "GRAFF_SERVE_TOKEN",
     "HARNESS_SERVE_TOKEN",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "GOOGLE_API_KEY",
+    "KIMI_CODE_API_KEY",
+    "OPENAI_AUTH_TOKEN",
 };
 
 /// Never scrubbed, whatever a provider spec names as its `env_key`: codex's
 /// no-key sentinel is a control flag, and a project router naming one of
 /// the rest would otherwise leave every tool child unable to run.
-const never_secret = [_][]const u8{ "CODEX_DISABLED", "PATH", "HOME", "USER", "SHELL", "TMPDIR", "LANG" };
+const never_secret = [_][]const u8{ "CODEX_DISABLED", "CHATGPT_NEW_DISABLED", "GRAFF_CLAUDE_AGENT", "PATH", "HOME", "USER", "SHELL", "TMPDIR", "LANG" };
 
 /// Non-interactive defaults every tool child gets (#1268), over whatever the
 /// user has set: a tool call can never answer an editor or a prompt.
@@ -413,4 +418,31 @@ test "#832: a tool child's PATH finds the background-launch `open` first on macO
     var fg = try build(gpa, &parent);
     defer fg.deinit();
     try std.testing.expectEqualStrings("/usr/bin:/bin", fg.get("PATH").?);
+}
+
+test "#1267: OAuth and alias credentials are scrubbed while provider control flags survive" {
+    const gpa = std.testing.allocator;
+    var parent = try fakeParent(gpa);
+    defer parent.deinit();
+    try parent.put("ANTHROPIC_AUTH_TOKEN", "ant-oauth-fake");
+    try parent.put("CLAUDE_CODE_OAUTH_TOKEN", "cc-oauth-fake");
+    try parent.put("GOOGLE_API_KEY", "goog-fake");
+    try parent.put("KIMI_CODE_API_KEY", "sk-kimi-fake");
+    try parent.put("OPENAI_AUTH_TOKEN", "oa-oauth-fake");
+    try parent.put("CHATGPT_NEW_DISABLED", "1");
+    try parent.put("GRAFF_CLAUDE_AGENT", "1");
+
+    var m = try build(gpa, &parent);
+    defer m.deinit();
+    for ([_][]const u8{
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "GOOGLE_API_KEY",
+        "KIMI_CODE_API_KEY",
+        "OPENAI_AUTH_TOKEN",
+    }) |secret| {
+        try std.testing.expect(m.get(secret) == null);
+    }
+    try std.testing.expectEqualStrings("1", m.get("CHATGPT_NEW_DISABLED").?);
+    try std.testing.expectEqualStrings("1", m.get("GRAFF_CLAUDE_AGENT").?);
 }

@@ -124,6 +124,19 @@ pub fn preferPlanFor(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocato
     preferPlan(io, gpa, arena, home, provider_mod.provider_specs[i], &keys.values[i], &keys.sources[i]);
 }
 
+/// Seat every subscription plan that a scoped startup skipped, then fill any
+/// remaining empty slots from the key store. Called by Agent.ensureStoredKeys
+/// when `/model`, `/models`, `/login`, or `graff/models` (ACP) needs all
+/// available credentials.
+pub fn loadMissingAndPlans(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, home: []const u8, keys: *Keys) void {
+    if (home.len == 0) return;
+    for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
+        if (source.* == .login) continue;
+        preferPlan(io, gpa, arena, home, spec, value, source);
+    }
+    @import("keys_cli.zig").loadMissingStoredKeys(io, gpa, arena, home, keys, .all);
+}
+
 test {
     _ = @import("session_load_plan_tests.zig"); // #1556
 }

@@ -423,12 +423,9 @@ pub const Keys = struct {
         // seats the moonshot row instead of falling through to the gateway.
         // Claude Agent is the Claude plan once chosen (ADR 0309): its models, and its old aliases, route there first.
         if (keys.get("claude-agent")) |exe| if (@import("claude_agent_wire.zig").routes(model)) return keys.build(specFor("claude-agent").?, exe, model);
-        if (keys.get("kimi")) |kimi_key| {
-            if (pricing.familyAliasEquals("kimi", "k3", model)) {
-                const spec = specFor("kimi") orelse return error.MissingKey;
-                return keys.build(spec, kimi_key, "k3");
-            }
-        }
+        if (keys.get("kimi")) |kimi_key| if (pricing.kimiFamilyModel(model)) |native| {
+            return keys.build(specFor("kimi") orelse return error.MissingKey, kimi_key, native);
+        };
         for ([_]u8{ 0, 1, 2 }) |phase| {
             for (0..specCount()) |i| {
                 const spec = specAt(i).?;

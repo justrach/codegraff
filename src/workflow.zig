@@ -444,7 +444,7 @@ fn execWorkflowShared(ctx: ToolCtx, input: Value) !ToolOutput {
         if (budget_dry) truncated = true;
         var fidx: [max_workflow_tasks]usize = undefined;
         var nf: usize = 0;
-        for (outputs, 0..) |out, i| if (!budget_dry and out.is_error and failureAllowsRetry(out.text)) {
+        for (outputs, 0..) |out, i| if (!budget_dry and out.is_error and failureAllowsRetry(out.text) and route_policy.phaseAllowsRetry(title, niches[i])) {
             fidx[nf] = i;
             nf += 1;
         };

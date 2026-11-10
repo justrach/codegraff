@@ -52,6 +52,9 @@ const confinedPath = policy.confinedPath;
 const noSymlinkEscape = policy.noSymlinkEscape;
 const skills = @import("skills.zig");
 const edit_verify = @import("edit_verify.zig"); // same per-path lock stripe write_file/edit_file use
+const codedbpro_paths = @import("codedbpro_paths.zig");
+const auth_mod = @import("imagegen_auth.zig");
+const refs_mod = @import("imagegen_refs.zig");
 const skill = @import("imagegen_skill.zig");
 const verify = @import("imagegen_verify.zig");
 const run_mod = @import("imagegen_run.zig");
@@ -62,9 +65,9 @@ const select = @import("imagegen_select.zig");
 pub const Engine = select.Engine;
 
 pub const tool_name = "imagegen";
-pub const tool_desc = "Generate an image from a text prompt and write it to one file under the working directory. Two engines: by default (engine auto) it drives the hosted image_gen tool through your logged-in codex CLI, which needs NO API key; the fallback engine openai_api runs the Codex imagegen skill's bundled scripts/image_gen.py (model gpt-image-2) and does need OPENAI_API_KEY, but it is the only engine that applies the model, quality, background and output_format options. graff copied that skill into ~/.harness/skills/imagegen - load it with the skill tool for prompting guidance; it refers to this tool as $imagegen (a provider tool name cannot contain a dollar sign, so it is plain imagegen here). Every result is freshness-verified by graff itself and never by the generator: the call only succeeds once the file is proven to exist, to be newer than the call, to clear a size floor and to carry a real image signature, so never report an image this tool did not hand you a verified path for. One call makes one image; for multiple images spawn one subagent per image (each calls imagegen once and reports its verified path back) so the generations run concurrently.";
+pub const tool_desc = "Generate or edit an image from a text prompt (and optional workspace-relative reference images via `images`) and write it to one file under the working directory. Two engines: by default (engine auto) it drives the hosted image_gen tool through your logged-in codex CLI, which needs NO API key; the fallback engine openai_api runs the Codex imagegen skill's bundled scripts/image_gen.py (model gpt-image-2) and does need OPENAI_API_KEY, but it is the only engine that applies the model, quality, background and output_format options. graff copied that skill into ~/.harness/skills/imagegen - load it with the skill tool for prompting guidance; it refers to this tool as $imagegen (a provider tool name cannot contain a dollar sign, so it is plain imagegen here). Every result is freshness-verified by graff itself and never by the generator: the call only succeeds once the file is proven to exist, to be newer than the call, to clear a size floor and to carry a real image signature, so never report an image this tool did not hand you a verified path for. One call makes one image; for multiple images spawn one subagent per image (each calls imagegen once and reports its verified path back) so the generations run concurrently.";
 pub const tool_schema =
-    \\{"type": "object", "properties": {"prompt": {"type": "string", "description": "What to draw. Be specific about subject, style, composition and background; the imagegen skill's references/prompting.md is worth loading first."}, "out": {"type": "string", "description": "Output file path, relative to the working directory. Default: a fresh, collision-proof imagegen-<nonce>.png in the working directory."}, "engine": {"type": "string", "enum": ["auto", "codex", "openai_api"], "description": "Which generator to use. auto (default) prefers codex - the hosted image_gen tool via your logged-in codex CLI, no API key needed - and falls back to the OPENAI_API_KEY CLI. The options below marked openai_api-only select that engine."}, "size": {"type": "string", "description": "Pixel size, e.g. 1024x1024 or 1024x1536. Both engines support it (the codex engine generates at native size and graff resizes the result itself)."}, "model": {"type": "string", "description": "openai_api-only. Image model; default gpt-image-2, or gpt-image-1.5 for true model-native transparency."}, "quality": {"type": "string", "description": "openai_api-only. low, medium (default) or high."}, "background": {"type": "string", "description": "openai_api-only. transparent or opaque."}, "output_format": {"type": "string", "description": "openai_api-only. png, jpeg or webp. The codex engine always produces png."}}, "required": ["prompt"]}
+    \\{"type": "object", "properties": {"prompt": {"type": "string", "description": "What to draw. Be specific about subject, style, composition and background; the imagegen skill's references/prompting.md is worth loading first."}, "out": {"type": "string", "description": "Output file path, relative to the working directory. Default: a fresh, collision-proof imagegen-<nonce>.png in the working directory."}, "images": {"type": "array", "items": {"type": "string"}, "description": "Optional reference or edit-source image paths (up to 5 PNG, JPEG or WebP files), relative to the working directory. Supported on both codex and openai_api engines."}, "engine": {"type": "string", "enum": ["auto", "codex", "openai_api"], "description": "Which generator to use. auto (default) prefers codex - the hosted image_gen tool via your logged-in codex CLI, no API key needed - and falls back to the OPENAI_API_KEY CLI. The options below marked openai_api-only select that engine."}, "size": {"type": "string", "description": "Pixel size, e.g. 1024x1024 or 1024x1536. Both engines support it (the codex engine generates at native size and graff resizes the result itself)."}, "model": {"type": "string", "description": "openai_api-only. Image model; default gpt-image-2, or gpt-image-1.5 for true model-native transparency."}, "quality": {"type": "string", "description": "openai_api-only. low, medium (default) or high."}, "background": {"type": "string", "description": "openai_api-only. transparent or opaque."}, "output_format": {"type": "string", "description": "openai_api-only. png, jpeg or webp. The codex engine always produces png."}}, "required": ["prompt"]}
 ;
 
 /// Set once at startup by `detect`, then read by every catalog assembly and by
@@ -110,16 +113,19 @@ pub fn detect(io: Io, arena: Allocator, env: Env) void {
     codex_ready = false;
     api_key_present = if (env.openai_api_key) |value| value.len > 0 else false;
     if (env.tmp_dir) |t| if (t.len > 0) {
-        scratch_root = std.mem.trimEnd(u8, t, "/");
+        const trimmed = std.mem.trimEnd(u8, t, "/");
+        scratch_root = codedbpro_paths.sessionAbs(arena, io, null, trimmed) catch trimmed;
     };
 
-    const src = skill.codexSkillDir(arena, env.codex_home, env.home) orelse return;
+    const raw_src = skill.codexSkillDir(arena, env.codex_home, env.home) orelse return;
+    const src = codedbpro_paths.sessionAbs(arena, io, null, raw_src) catch raw_src;
     if (!skill.present(io, arena, src)) return; // no Codex skill -> no tool
 
     // Prefer the mirrored copy: it is the one `skill imagegen` loads, so tool
     // and playbook stay the same version. A failed mirror (read-only HOME, a
     // half-copied tree) must not cost us the tool — fall back to Codex's own.
-    if (skill.installDir(arena, env.home)) |dest| {
+    if (skill.installDir(arena, env.home)) |raw_dest| {
+        const dest = codedbpro_paths.sessionAbs(arena, io, null, raw_dest) catch raw_dest;
         if (skill.needsSync(io, arena, src, dest)) skill.sync(io, arena, src, dest) catch {};
         if (engineScript(io, arena, dest)) |path| {
             script_path = path;
@@ -143,7 +149,8 @@ pub fn detect(io: Io, arena: Allocator, env: Env) void {
 /// auth.json only ever produces an interactive login prompt, which in a tool
 /// call is an unkillable hang rather than an error.
 fn detectCodex(io: Io, arena: Allocator, env: Env) void {
-    const home = skill.codexHomeDir(arena, env.codex_home, env.home) orelse return;
+    const raw_home = skill.codexHomeDir(arena, env.codex_home, env.home) orelse return;
+    const home = codedbpro_paths.sessionAbs(arena, io, null, raw_home) catch raw_home;
     const auth = std.fmt.allocPrint(arena, "{s}/auth.json", .{home}) catch return;
     _ = Io.Dir.cwd().statFile(io, auth, .{}) catch return;
     if (!skills.binOnPath(io, "codex")) return;
@@ -231,18 +238,25 @@ pub fn execImagegen(ctx: ToolCtx, input: Value) !ToolOutput {
         };
     } else null;
 
+    // #276 P0-1 + #747 + #1775: resolve output and reference paths against the
+    // active workspace (`agent_cwd` for an isolated subagent, else POSIX cwd
+    // after `/workspace use`), never a stale Threaded-Io `Dir.cwd()`.
+    const base_cwd = try refs_mod.activeBase(arena, io, ctx.agent_cwd);
     const out_rel = if (strField(input, "out")) |p|
         p
     else
-        defaultOutPath(io, arena, ctx.agent_cwd, if (explicit_format) |f| f.label() else "png") catch
+        defaultOutPath(io, arena, base_cwd, if (explicit_format) |f| f.label() else "png") catch
             return errText(gpa, "could not pick an unused default output path — pass out explicitly");
-    if (!confinedPath(out_rel) or !noSymlinkEscape(io, out_rel, ctx.agent_cwd)) return outsideCwd(gpa, out_rel);
-    // #276 P0-1: a worktree-isolated agent writes inside its own worktree.
-    const resolved: []const u8 = if (ctx.agent_cwd) |base|
-        try std.fmt.allocPrint(arena, "{s}/{s}", .{ base, out_rel })
-    else
-        out_rel;
+    if (!confinedPath(out_rel) or !noSymlinkEscape(io, out_rel, base_cwd)) return outsideCwd(gpa, out_rel);
+    const resolved = try codedbpro_paths.sessionAbs(arena, io, base_cwd, out_rel);
     args.out = resolved;
+
+    const resolved_refs = switch (try refs_mod.resolve(gpa, arena, io, base_cwd, input, prompt)) {
+        .ok => |r| r,
+        .fail => |out| return out,
+    };
+    args.images = resolved_refs.paths;
+    args.prompt = try resolved_refs.rewritePrompt(arena, prompt, resolved_refs.paths);
 
     const before = verify.snapshot(io, resolved);
     // /rewind parity with write_file: capture what we are about to overwrite
@@ -263,11 +277,11 @@ pub fn execImagegen(ctx: ToolCtx, input: Value) !ToolOutput {
     const started_ns = Io.Timestamp.now(io, .real).nanoseconds;
 
     const produced: verify.Format = switch (engine) {
-        .codex => switch (try runCodex(gpa, arena, io, prompt, resolved, started_ns)) {
+        .codex => switch (try runCodex(gpa, arena, io, prompt, resolved_refs, resolved, started_ns)) {
             .ok => |f| f,
             .fail => |out| return out,
         },
-        .openai_api => switch (try runOpenai(gpa, arena, io, ctx.agent_cwd, args)) {
+        .openai_api => switch (try runOpenai(gpa, arena, io, base_cwd, args)) {
             .ok => explicit_format orelse verify.Format.fromPath(out_rel),
             .fail => |out| return out,
         },
@@ -338,8 +352,9 @@ pub fn execImagegen(ctx: ToolCtx, input: Value) !ToolOutput {
 const EngineResult = union(enum) { ok: verify.Format, fail: ToolOutput };
 
 /// The codex engine: spawn, then do every piece of artifact handling ourselves.
-fn runCodex(gpa: Allocator, arena: Allocator, io: Io, prompt: []const u8, resolved: []const u8, started_ns: i128) !EngineResult {
-    if (codex_home.len == 0) return .{ .fail = try errText(gpa, select.no_skill_text) };
+fn runCodex(gpa: Allocator, arena: Allocator, io: Io, prompt: []const u8, refs: refs_mod.Resolved, resolved: []const u8, started_ns: i128) !EngineResult {
+    const real_home = codex_home;
+    if (real_home.len == 0) return .{ .fail = try errText(gpa, select.no_skill_text) };
     // One scratch tree per run holding two things: a private empty cwd
     // (--sandbox workspace-write makes the working directory writable, and an
     // image generation has no business writing into the repo it was called
@@ -350,17 +365,23 @@ fn runCodex(gpa: Allocator, arena: Allocator, io: Io, prompt: []const u8, resolv
     const private_home = try std.fmt.allocPrint(arena, "{s}/home", .{scratch});
     const child_cwd = try std.fmt.allocPrint(arena, "{s}/cwd", .{scratch});
     defer {
+        auth_mod.syncRotatedAuth(io, arena, private_home, real_home);
         codex.unlinkHome(io, arena, private_home); // before the tree walk, never through a symlink
         Io.Dir.cwd().deleteTree(io, scratch) catch {};
     }
     Io.Dir.cwd().createDirPath(io, child_cwd) catch {};
-    codex.prepareHome(io, arena, private_home, codex_home) catch |err| return .{ .fail = .{
+    codex.prepareHome(io, arena, private_home, real_home) catch |err| return .{ .fail = .{
         .text = try std.fmt.allocPrint(gpa, "could not set up a private CODEX_HOME for this run ({t}) — nothing was generated.", .{err}),
         .is_error = true,
     } };
+    const staged_refs = refs_mod.stageForCodex(io, arena, scratch, refs.paths) catch |err| return .{ .fail = .{
+        .text = try std.fmt.allocPrint(gpa, "could not stage workspace reference images into scratch ({t}) — nothing was generated.", .{err}),
+        .is_error = true,
+    } };
+    const effective_prompt = try refs.rewritePrompt(arena, prompt, staged_refs);
     const save_root = try codex.saveRoot(arena, private_home);
 
-    const argv = try codex.buildArgv(arena, private_home, try codex.buildPrompt(arena, prompt));
+    const argv = try codex.buildArgvWithRefs(arena, private_home, staged_refs, try codex.buildPromptWithRefs(arena, effective_prompt, staged_refs));
     const out = run_mod.run(arena, io, argv, codex.deadline_ms, child_cwd) catch |err| switch (err) {
         error.FileNotFound => return .{ .fail = try errText(gpa, "the codex CLI is no longer on PATH, so the preferred imagegen engine cannot run. Reinstall it (bun install -g @openai/codex) or pass engine \"openai_api\". Nothing was generated.") },
         else => return .{ .fail = tools.failure(gpa, err) },
@@ -375,6 +396,14 @@ fn runCodex(gpa: Allocator, arena: Allocator, io: Io, prompt: []const u8, resolv
     if (codex.tooOld(out.stdout) or codex.tooOld(out.stderr)) return .{ .fail = try errText(gpa, codex.too_old_text) };
     if (codex.badJsonInput(out.stdout) or codex.badJsonInput(out.stderr)) return .{ .fail = try errText(gpa, codex.bad_json_text) };
     if (codex.saidUnavailable(out.stdout)) return .{ .fail = try errText(gpa, codex.unavailable_text) };
+    if (codex.badReferenceInput(out.stdout) or codex.badReferenceInput(out.stderr)) return .{ .fail = .{
+        .text = try std.fmt.allocPrint(gpa, "{s}{s}\ntranscript tail:\n{s}", .{
+            codex.bad_reference_text,
+            if (refs.missing_prompt_ref) |m| try std.fmt.allocPrint(arena, " (missing in active workspace: '{s}')", .{m}) else "",
+            tails,
+        }),
+        .is_error = true,
+    } };
     if (!out.ranClean()) return .{ .fail = .{
         .text = try std.fmt.allocPrint(gpa, "codex exec failed (exit {?d}) — nothing was generated.\ntranscript tail:\n{s}", .{ out.exit_code, tails }),
         .is_error = true,
@@ -384,7 +413,10 @@ fn runCodex(gpa: Allocator, arena: Allocator, io: Io, prompt: []const u8, resolv
     // The artifact on disk is the only evidence that counts.
     const floor = codex.freshnessFloor(started_ns);
     const art = codex.newestFresh(io, arena, save_root, floor) orelse return .{ .fail = .{
-        .text = try std.fmt.allocPrint(gpa, "{s}\ntranscript tail:\n{s}", .{ codex.no_artifact_text, tails }),
+        .text = if (refs.missing_prompt_ref) |m|
+            try std.fmt.allocPrint(gpa, "codex exited without generating an image, and prompt-referenced path '{s}' does not exist in the active workspace. Verify the relative path or pass existing workspace images via `images`. Nothing was generated.\ntranscript tail:\n{s}", .{ m, tails })
+        else
+            try std.fmt.allocPrint(gpa, "{s}\ntranscript tail:\n{s}", .{ codex.no_artifact_text, tails }),
         .is_error = true,
     } };
 
@@ -431,7 +463,9 @@ fn makeScratch(io: Io, arena: Allocator) ?[]const u8 {
     var buf: [nonce_len]u8 = undefined;
     const path = std.fmt.allocPrint(arena, "{s}/graff-imagegen-{s}", .{ scratch_root, makeNonce(io, &buf) }) catch return null;
     Io.Dir.cwd().createDirPath(io, path) catch return null;
-    return path;
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = Io.Dir.cwd().realPathFile(io, path, &real_buf) catch return path;
+    return arena.dupe(u8, real_buf[0..n]) catch path;
 }
 
 fn headBytes(io: Io, path: []const u8, buf: []u8) []const u8 {
@@ -479,6 +513,8 @@ pub fn defaultOutPath(io: Io, arena: Allocator, base: ?[]const u8, ext: []const 
 
 test {
     _ = @import("imagegen_tests.zig"); // an unreferenced module's tests never run
+    _ = auth_mod;
+    _ = refs_mod;
     _ = skill;
     _ = verify;
     _ = select;

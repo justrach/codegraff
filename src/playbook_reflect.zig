@@ -50,9 +50,45 @@ const min_candidate_len = 12;
 /// distils once.
 var g_reflected: bool = false;
 
+/// Contrastive `FAIL -> PASS` evidence buffer (Harness^2, arXiv:2610.14224):
+/// stores the tail of the most recent failed verification (eval or shell)
+/// before a target-met eval, so the reflector sees what failed and how the
+/// repair fixed it even when the passing check prints only `OK / score: 100`.
+var g_fail_buf: [1200]u8 = undefined;
+var g_fail_len: usize = 0;
+var g_edited_after_fail: bool = false;
+
+/// Record the output of a failed eval or shell check for later contrastive
+/// distillation when the run subsequently reaches green.
+pub fn noteFailure(output: []const u8) void {
+    const trimmed = std.mem.trim(u8, output, " \t\r\n");
+    if (trimmed.len == 0) return;
+    const tail = if (trimmed.len > g_fail_buf.len) trimmed[trimmed.len - g_fail_buf.len ..] else trimmed;
+    const capped = util.utf8Prefix(tail, g_fail_buf.len);
+    @memcpy(g_fail_buf[0..capped.len], capped);
+    g_fail_len = capped.len;
+    g_edited_after_fail = false;
+}
+
+/// Record that a workspace edit landed after a failed check, arming real-time
+/// FAIL -> EDIT -> PASS reflection on the next passing shell verification.
+pub fn noteEditAfterFailure() void {
+    if (g_fail_len > 0) g_edited_after_fail = true;
+}
+
+pub fn editedAfterFailure() bool {
+    return g_fail_len > 0 and g_edited_after_fail;
+}
+
+pub fn failEvidence() []const u8 {
+    return g_fail_buf[0..g_fail_len];
+}
+
 /// Reset seam for the tests — production never calls it.
 pub fn resetForTest() void {
     g_reflected = false;
+    g_fail_len = 0;
+    g_edited_after_fail = false;
 }
 
 fn stripBullet(line_in: []const u8) []const u8 {
@@ -93,22 +129,61 @@ pub fn parseCandidates(out: *[max_candidates][]const u8, reply: []const u8) [][]
     return out[0..n];
 }
 
-fn reflectPrompt(arena: Allocator, note: []const u8, score: f64, target: u8, output: []const u8) ?[]const u8 {
+pub fn reflectPromptWithContext(
+    arena: Allocator,
+    note: []const u8,
+    score: f64,
+    target: u8,
+    output: []const u8,
+    prior_fail: []const u8,
+    repair_diff: []const u8,
+) ?[]const u8 {
     const evidence = util.utf8Prefix(if (output.len > 1200) output[output.len - 1200 ..] else output, 1200);
+    const fail_block = if (prior_fail.len > 0)
+        std.fmt.allocPrint(arena, "\nPrior failed check output (before the fix):\n---\n{s}\n---\n", .{prior_fail}) catch ""
+    else
+        "";
+    const diff_block = if (repair_diff.len > 0)
+        std.fmt.allocPrint(arena, "\nWorkspace diff that made the check pass:\n---\n{s}\n---\n", .{repair_diff}) catch ""
+    else
+        "";
     return std.fmt.allocPrint(arena,
         \\A coding run in this repository just finished and its automated check scored {d:.0}/100 against a target of {d}.
         \\
         \\What the author said they changed: {s}
-        \\
-        \\Tail of the check's output:
+        \\{s}{s}
+        \\Tail of the passing check's output:
         \\---
         \\{s}
         \\---
         \\
-        \\Write at most {d} bullets of DURABLE, REPO-SPECIFIC knowledge worth keeping for future work here — the kind of thing a fresh agent with no memory of this run would waste time rediscovering ("this repo's tests need X before Y", "module Z is generated, edit the template instead", "the build fails unless W is regenerated").
+        \\Contrast any prior failure and the workspace diff against the passing state, then write at most {d} bullets of DURABLE, REPO-WIDE knowledge worth keeping for future work in this repository — the kind of contract or rule a fresh agent editing a DIFFERENT module or function here would waste an edit-fail-repair cycle rediscovering.
         \\
-        \\Rules: one short imperative line per bullet, starting with "- ". No preamble, no summary of what happened, nothing that is only true of this one change, nothing already obvious from the repository's own README. If there is no durable lesson here, reply with exactly: none
-    , .{ score, target, if (note.len > 0) note else "(no note given)", evidence, max_candidates }) catch null;
+        \\Prefix each bullet with `[invariant] ` (a cross-module output/data/code contract enforced across functions in this repo) or `[domain] ` (a build, test, or architecture rule specific to this repo). State the general repository rule so it transfers to sibling modules and functions — do not overfit the wording to the single function name edited in this run if the check enforces a repo-wide convention.
+        \\
+        \\Rules: one short imperative line per bullet, starting with "- [invariant] " or "- [domain] ". No preamble, no summary of what happened, nothing already obvious from a standard README. If there is no durable lesson here, reply with exactly: none
+    , .{ score, target, if (note.len > 0) note else "(no note given)", fail_block, diff_block, evidence, max_candidates }) catch null;
+}
+
+fn reflectPrompt(arena: Allocator, note: []const u8, score: f64, target: u8, output: []const u8) ?[]const u8 {
+    return reflectPromptWithContext(arena, note, score, target, output, failEvidence(), "");
+}
+
+fn captureRepairDiff(self: *Agent) []const u8 {
+    const run = @import("jobs.zig").runCappedWithOptions(
+        self.gpa,
+        self.io,
+        &.{ "git", "diff", "--no-color", "--unified=1", "HEAD" },
+        8 * 1024,
+        1024,
+        0,
+        .{},
+    ) catch return "";
+    defer self.gpa.free(run.stdout);
+    defer self.gpa.free(run.stderr);
+    const trimmed = std.mem.trim(u8, run.stdout, " \t\r\n");
+    if (trimmed.len == 0) return "";
+    return self.arena.dupe(u8, util.utf8Prefix(trimmed, 900)) catch "";
 }
 
 /// The distillation call itself: a throwaway one-message agent with NO tools,
@@ -152,7 +227,8 @@ pub fn afterEval(self: *Agent, note: []const u8, score: f64, output: []const u8)
     const tj = trace.g_traj orelse return;
     if (g_reflected or self.sub) return;
     g_reflected = true;
-    const prompt = reflectPrompt(self.arena, note, score, self.eval_target, output) orelse return;
+    const diff = captureRepairDiff(self);
+    const prompt = reflectPromptWithContext(self.arena, note, score, self.eval_target, output, failEvidence(), diff) orelse return;
     const reply = askModel(self, prompt) orelse return;
     var buf: [max_candidates][]const u8 = undefined;
     const candidates = parseCandidates(&buf, reply);
@@ -172,4 +248,18 @@ pub fn afterEval(self: *Agent, note: []const u8, score: f64, output: []const u8)
     if (kept == 0) return;
     playbook_glue.refreshRoot(self, self.arena);
     self.say("  📗 playbook: kept {d} learned insight(s) from this run\n", .{kept}) catch {};
+}
+
+/// Real-time in-turn distillation for ordinary (non-`--eval`) sessions: when a
+/// `shell` check fails, the agent edits workspace files (`edit_file` /
+/// `write_file`), and a subsequent `shell` verification succeeds, distil the
+/// `FAIL -> DIFF -> PASS` contrast on the spot and hot-reload the root prompt.
+/// Gated on `main_mod.g_fleet` (so offline scripted tier-2 mocks with
+/// `GRAFF_FLEET=off` never see an extra model call) and `run_budget` headroom.
+pub fn afterShellRecovery(self: *Agent, cmd_note: []const u8, output: []const u8) void {
+    if (self.eval_cmd != null or !editedAfterFailure()) return;
+    if (!@import("main.zig").g_fleet) return;
+    if (self.run_budget) |b| if (!b.canAfford(2)) return;
+    g_edited_after_fail = false;
+    afterEval(self, cmd_note, 100, output);
 }

@@ -65,6 +65,10 @@ const startServerTask = @import("mcp_start.zig").task;
 /// outlive the registry, which re-reads it on `/mcp trust`.
 /// `defer_join` starts the handshakes but returns before they finish.
 pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]const u8, home: []const u8, show_diagnostics: bool, environ_map: anytype, defer_join: bool) !?Registry {
+    return initWithMerged(gpa, io, config_path, global_path, home, show_diagnostics, environ_map, defer_join, null);
+}
+
+pub fn initWithMerged(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]const u8, home: []const u8, show_diagnostics: bool, environ_map: anytype, defer_join: bool, preloaded: ?mcp_config.Merged) !?Registry {
     var reg: Registry = .{
         .gpa = gpa,
         .io = io,
@@ -82,7 +86,7 @@ pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]con
     errdefer reg.deinit();
     const a = reg.arena();
 
-    const merged = mcp_config.load(io, a, Io.Dir.cwd(), config_path, global_path, home, reg.global_is_override);
+    const merged = preloaded orelse mcp_config.load(io, a, Io.Dir.cwd(), config_path, global_path, home, reg.global_is_override);
     if (!merged.found) {
         reg.arena_state.deinit(); // nothing was started; no transports to tear down
         return null;
@@ -97,7 +101,8 @@ pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]con
     while (it.next()) |entry| {
         if (@import("mcp_state.zig").skipReason(state, entry.key_ptr.*, if (entry.value_ptr.* == .object) entry.value_ptr.*.object else null, environ_map, merged.isGlobalOnly(entry.key_ptr.*)) != .none) continue;
         if (entry.value_ptr.* != .object) continue;
-        try entries.append(a, .{ .name = try a.dupe(u8, entry.key_ptr.*), .cfg = entry.value_ptr.*.object });
+        const cfg_obj = if (preloaded != null) (try cloneValue(a, entry.value_ptr.*)).object else entry.value_ptr.*.object;
+        try entries.append(a, .{ .name = try a.dupe(u8, entry.key_ptr.*), .cfg = cfg_obj });
     }
 
     const futures = try gpa.alloc(PendingStart, entries.items.len);
@@ -232,8 +237,11 @@ fn queueLocked(reg: *Registry, name: []const u8, cfg: std.json.ObjectMap) bool {
 /// joins on a later request, like the rest of a deferred boot.
 pub fn joinNamedWithin(reg: *Registry, names: []const []const u8, budget_ms: u32) bool {
     var waited: u32 = 0;
-    while (waited < budget_ms and anyNamedPending(reg, names)) : (waited += 20)
-        reg.io.sleep(.fromMilliseconds(20), .awake) catch break;
+    while (waited < budget_ms and anyNamedPending(reg, names)) {
+        const step: u32 = if (waited < 10) 2 else 10;
+        reg.io.sleep(.fromMilliseconds(step), .awake) catch break;
+        waited += step;
+    }
     return joinReady(reg);
 }
 

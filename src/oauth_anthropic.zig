@@ -4,6 +4,7 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const helpers = @import("oauth_helpers.zig");
+const oauth_lock = @import("oauth_lock.zig");
 const store = @import("credential_store.zig");
 const util = @import("util.zig");
 const callback = @import("oauth_callback.zig");
@@ -241,8 +242,8 @@ pub fn loadAt(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, force:
     const due = before.expires_at <= now + refresh_margin_s;
     if (helpers.supersededToken(force, before.access, stale) and !due) return valid(before, now);
     if (!force and !due) return valid(before, now);
-    const lock = lockRecord(io, arena, home) catch return valid(before, now);
-    defer lock.close(io);
+    const lock = oauth_lock.acquireFile(io, arena, recordPath(arena, home)) orelse return valid(before, now);
+    defer lock.release();
     const current = readRecord(io, arena, home) orelse return null;
     const now_locked = @divTrunc(util.unixMs(io), 1000);
     if ((!std.mem.eql(u8, current.access, before.access) or !std.mem.eql(u8, current.refresh, before.refresh)) and current.expires_at > now_locked)
@@ -250,6 +251,8 @@ pub fn loadAt(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, force:
     if (helpers.supersededToken(force, current.access, stale) and current.expires_at > now_locked) return current.access;
     if (current.refresh.len == 0) return valid(current, now_locked);
     const body = json(arena, .{ .grant_type = "refresh_token", .refresh_token = current.refresh, .client_id = client_id }) catch return valid(current, now_locked);
+    const shield = oauth_lock.CancelShield.enter(io);
+    defer shield.leave();
     const next = post(io, gpa, arena, endpoint, body, current.refresh) catch return valid(current, @divTrunc(util.unixMs(io), 1000));
     persistRefreshed(io, arena, home, next);
     return valid(next, @divTrunc(util.unixMs(io), 1000));

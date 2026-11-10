@@ -138,7 +138,8 @@ test "an uncounted compaction state writes no record (#1686)" {
 
 test "session save and load both carry the compaction-state count (#1686)" {
     const src = @embedFile("session.zig");
-    try std.testing.expect(std.mem.indexOf(u8, src, "opaque_state_persist.zig\").write(&s, root.provider, Value{ .array = saved_msgs })") != null);
+    const ser_src = @embedFile("session_serialize.zig");
+    try std.testing.expect(std.mem.indexOf(u8, ser_src, "opaque_state_persist.zig\").write(&s, root.provider, Value{ .array = saved_msgs })") != null);
     // Restore runs before the meter is rebased, or the rebase reads bytes/16.
     const restore_at = std.mem.indexOf(u8, src, "opaque_state_persist.zig\").restore(root.provider") orelse return error.TestUnexpectedResult;
     const rebase_at = std.mem.indexOf(u8, src, "    restoreContextMeter(root, saved_context_tokens, saved_local_tokens);") orelse return error.TestUnexpectedResult;

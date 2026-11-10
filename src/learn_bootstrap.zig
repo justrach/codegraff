@@ -187,7 +187,7 @@ const ArmsFile = struct {
     schema: []const u8 = "codegraff.learn.graff-arms.v1",
     template_egress: bool = true,
     maximum_changed_bytes: usize = 512,
-    maximum_total_bytes: usize = 16384,
+    maximum_total_bytes: usize = 20480,
     protected_substrings: []const []const u8,
     targets: struct { root_workflow: []const u8 },
     arms: []const Arm,

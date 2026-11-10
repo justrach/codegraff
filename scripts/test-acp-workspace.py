@@ -32,6 +32,10 @@ def worktree(result):
     return (result.get("_meta") or {}).get("graff/worktree", "MISSING")
 
 
+def meta_cwd(result):
+    return (result.get("_meta") or {}).get("graff/cwd")
+
+
 def run(binary):
     if os.name == "nt":
         print("ACP workspace contract: skipped (worktrees need POSIX chdir)")
@@ -52,6 +56,7 @@ def run(binary):
             created = a.request("session/new", {"cwd": str(client), "mcpServers": []})["result"]
             assert "cwd" not in created, created
             assert worktree(created) is None, created
+            assert Path(meta_cwd(created)).resolve() == client, created
             turn = a.request("session/prompt", {"sessionId": created["sessionId"],
                                                 "prompt": [{"type": "text", "text": "where am I"}]}, 35)
             assert turn["result"]["stopReason"] == "end_turn", turn
@@ -116,6 +121,7 @@ def run(binary):
             assert isinstance(info, dict), created
             assert info["name"] == "harness-x" and info["branch"] == "worktree-harness-x", info
             assert Path(info["path"]).resolve() == tree.resolve() and Path(info["root"]).resolve() == launch, info
+            assert Path(meta_cwd(created)).resolve() == tree.resolve(), created
             assert info["generated"] is False and info["base"] == "main" and info["baseSha"], info
             sid = created["sessionId"]
             turn = a.request("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text": "remember PLUM"}]}, 35)
@@ -136,6 +142,7 @@ def run(binary):
             loaded = a.request("session/load", {"sessionId": sid, "cwd": str(launch), "mcpServers": []})
             assert "error" not in loaded, loaded
             assert worktree(loaded["result"])["name"] == "harness-x", loaded
+            assert Path(meta_cwd(loaded["result"])).resolve() == tree.resolve(), loaded
         finally:
             a.close()
             model.stop()
@@ -149,6 +156,7 @@ def run(binary):
             loaded = a.request("session/load", {"sessionId": sid, "cwd": str(launch), "mcpServers": []})
             assert "error" not in loaded, loaded
             assert worktree(loaded["result"])["name"] == "harness-x", loaded
+            assert Path(meta_cwd(loaded["result"])).resolve() == tree.resolve(), loaded
             turn = a.request("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text": "which word?"}]}, 35)
             assert turn["result"]["stopReason"] == "end_turn", turn
             assert "remember PLUM" in str(model.requests[0]), "the reopened session kept its history"
@@ -156,10 +164,16 @@ def run(binary):
             a.close()
             model.stop()
 
-        # Switching workspace mid-session notifies the client before the reply.
+        # Switching workspace mid-session notifies the client before the reply,
+        # and a mid-turn `workspace` tool switch notifies BEFORE the next tool call (#1737).
         created_tree = subprocess.run([str(binary), "worktree", "create", "other"], cwd=launch, capture_output=True, text=True)
         assert created_tree.returncode == 0, created_tree.stdout + created_tree.stderr
-        model = ScriptedModel([])
+        other_tree = (launch / ".graff" / "worktrees" / "other").resolve()
+        model = ScriptedModel([
+            {"tool": "workspace", "arguments": {"action": "use", "path": str(launch)}},
+            {"tool": "shell", "arguments": {"action": "run", "command": "pwd"}},
+            {"text": "back on main"},
+        ])
         port = model.start(0)
         a = Acp(binary, launch, home, port, isolation_off)
         try:
@@ -171,6 +185,20 @@ def run(binary):
             updates = [e["params"]["update"] for e in a.events[before:]
                        if e.get("method") == "session/update" and e["params"]["update"].get("sessionUpdate") == "session_info_update"]
             assert updates and updates[-1]["_meta"]["graff/worktree"]["name"] == "other", a.events[before:]
+            assert Path(updates[-1]["_meta"]["graff/cwd"]).resolve() == other_tree, updates[-1]
+
+            # Mid-turn switch back to main checkout: `graff/worktree` is None and
+            # `graff/cwd` names `launch` BEFORE the follow-up `shell` tool call starts.
+            mid_before = len(a.events)
+            back = a.request("session/prompt", {"sessionId": sid2, "prompt": [{"type": "text", "text": "return to main"}]}, 35)
+            assert back["result"]["stopReason"] == "end_turn", back
+            mid_updates = [e["params"]["update"] for e in a.events[mid_before:] if e.get("method") == "session/update"]
+            info_idx = next((i for i, u in enumerate(mid_updates) if u.get("sessionUpdate") == "session_info_update"), None)
+            shell_idx = next((i for i, u in enumerate(mid_updates)
+                              if u.get("sessionUpdate") == "tool_call" and "pwd" in json.dumps(u)), None)
+            assert info_idx is not None and shell_idx is not None and info_idx < shell_idx, mid_updates
+            assert mid_updates[info_idx]["_meta"]["graff/worktree"] is None, mid_updates[info_idx]
+            assert Path(mid_updates[info_idx]["_meta"]["graff/cwd"]).resolve() == launch, mid_updates[info_idx]
         finally:
             a.close()
             model.stop()

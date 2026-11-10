@@ -173,9 +173,11 @@ pub fn floorContextTokens(self: *Agent, est: u64) void {
 /// provider's count of that same full Responses request (#1686).
 pub fn replaceContextTokens(self: *Agent, reported: u64) void {
     const input_bytes = context_tokens.serializedLen(Value{ .array = self.messages });
+    const input_tokens = context_tokens.estimatedTokensFromLen(Value{ .array = self.messages }, input_bytes);
+    const fixed_tokens = @as(u64, @intCast((context_tokens.serializedLen(self.systemPrompt()) +| self.toolsJson().len) / 4));
     const opaque_tokens = if (self.provider.kind == .responses) context_tokens.opaqueEstimatedTokens(.{ .array = self.messages }) else 0;
-    self.last_context_tokens = @max(reported, measuredRequestTokens(self, input_bytes) -| opaque_tokens);
-    self.context_local_tokens = requestEstimateFromInputBytes(self, input_bytes);
+    self.last_context_tokens = @max(reported, (input_tokens +| fixed_tokens) -| opaque_tokens);
+    self.context_local_tokens = input_tokens +| @max(fixed_tokens, @min(@as(u64, 8000), self.provider.context / 8));
 }
 
 /// An integer usage field, or 0 if absent / wrong type.
@@ -210,8 +212,9 @@ pub fn fullInputEstimateTokens(self: *Agent) u64 {
 /// baseline when those serialize smaller, never hiding a large set_system_prompt.
 fn requestEstimateFromInputBytes(self: *Agent, input_bytes: usize) u64 {
     const input_tokens = context_tokens.estimatedTokensFromLen(Value{ .array = self.messages }, input_bytes);
+    const fixed_tokens = @as(u64, @intCast((context_tokens.serializedLen(self.systemPrompt()) +| self.toolsJson().len) / 4));
     const baseline = @min(@as(u64, 8000), self.provider.context / 8);
-    return @max(measuredRequestTokens(self, input_bytes), input_tokens +| baseline);
+    return input_tokens +| @max(fixed_tokens, baseline);
 }
 
 /// bytes/4 of history + system prompt + tool schema, with no baseline.

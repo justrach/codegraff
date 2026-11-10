@@ -111,8 +111,15 @@ fn loadAt(self: anytype, base: Io.Dir) []const u8 {
 }
 
 /// Return bounded local notes, creating the fixed template on first use.
+/// When `.graff/playbook.jsonl` holds live items in the workspace, appends
+/// them so the predict→verify→repair loop sees confirmed repository rules
+/// alongside its run-scoped verifier history.
 pub fn load(self: anytype) []const u8 {
-    return loadAt(self, Io.Dir.cwd());
+    const notes = loadAt(self, Io.Dir.cwd());
+    if (notes.len == 0) return "";
+    const pb = @import("playbook.zig").blockNow(self.io, self.arena);
+    if (pb.len == 0) return notes;
+    return std.fmt.allocPrint(self.arena, "{s}\n## ACTIVE REPO PLAYBOOK (apply before first edit/eval)\n{s}\n", .{ notes, pb }) catch notes;
 }
 
 fn recordAt(self: anytype, base: Io.Dir, note: []const u8, score: ?f64, exit_code: i32, met: bool) void {

@@ -131,13 +131,27 @@ fn plainReader(tool: []const u8) bool {
     return false;
 }
 
+fn smallWorkspaceScanner(tool: []const u8) bool {
+    for ([_][]const u8{ "grep", "egrep", "fgrep", "rg", "ripgrep", "sed", "awk" }) |scanner|
+        if (std.mem.eql(u8, scanner, tool)) return true;
+    return false;
+}
+
 /// `smallRead` in the directory the command runs in: the agent's own
-/// worktree when it has one, else the process cwd.
+/// worktree when it has one, else the process cwd. In small workspaces
+/// (< `min_repo_code_files` code files), unpiped single-file scans on small
+/// files also pass so the guard only switches on once the repo reaches
+/// `min_repo_code_files`.
 pub fn smallReadIn(io: Io, agent_cwd: ?[]const u8, tool: []const u8, cmd: []const u8) bool {
-    const path = agent_cwd orelse return smallRead(io, Io.Dir.cwd(), tool, cmd);
+    const codedb_health = @import("codedb_health.zig");
+    const cwd_str = agent_cwd orelse ".";
+    const allow_scanner = smallWorkspaceScanner(tool) and
+        codedb_health.countCodeFilesCapped(io, cwd_str, codedb_health.min_repo_code_files) < codedb_health.min_repo_code_files;
+    if (!plainReader(tool) and !allow_scanner) return false;
+    const path = agent_cwd orelse return smallReadFiles(io, Io.Dir.cwd(), cmd);
     var dir = Io.Dir.cwd().openDir(io, path, .{}) catch return false;
     defer dir.close(io);
-    return smallRead(io, dir, tool, cmd);
+    return smallReadFiles(io, dir, cmd);
 }
 
 /// A plain reader (cat/head/tail/nl/wc/bat) with no pipe (`cat x | grep` is a
@@ -146,6 +160,10 @@ pub fn smallReadIn(io: Io, agent_cwd: ?[]const u8, tool: []const u8, cmd: []cons
 /// counted. Paths resolve against `cwd`, where the command runs.
 pub fn smallRead(io: Io, cwd: Io.Dir, tool: []const u8, cmd: []const u8) bool {
     if (!plainReader(tool)) return false;
+    return smallReadFiles(io, cwd, cmd);
+}
+
+fn smallReadFiles(io: Io, cwd: Io.Dir, cmd: []const u8) bool {
     if (std.mem.indexOfScalar(u8, cmd, '|') != null) return false;
     var it = std.mem.tokenizeAny(u8, cmd, " \t\n;&");
     var files: usize = 0;

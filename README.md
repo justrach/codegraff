@@ -296,6 +296,36 @@ and **~14×** the disk for a dead-heat turn. Method:
 </details>
 
 <details>
+<summary>Context & prefix-cache architecture (Lean 4 verified)</summary>
+
+Machine-checked invariants in [`lean-proofs/Graff/`](lean-proofs/Graff/) and [`spec/conformance.py`](spec/conformance.py) enforce three structural properties across turns, directories, and compactions:
+
+1. **Workspace-invariant prefix ordering & `repo_context` split** (`src/startup.zig`, `src/repo_context.zig`, `lean-proofs/Graff/PromptStable.lean`):
+   Machine-wide segments (base prompt, companion notes, global `# Skills`) precede workspace-varying segments (`AGENTS.md`, `repo_map`), and `repo_context.split` moves workspace instructions and layout out of `messages[0]` into the leading user turn so both `system` and `tools` remain prefix-cache aligned across working directories.
+2. **Cache-forked compaction & Phase-1 deterministic pruning** (`src/cache_fork.zig`, `src/compact_prune.zig`, `lean-proofs/Graff/CacheFork.lean`):
+   At the `compactAt` boundary, oversized older inline tool outputs are first deterministically pruned to head+tail+shape previews (`compact_prune.zig`). When an LLM summary is still needed, `cache_fork.zig` keeps the live `tools`, `system`, and message prefix byte-identical so the compaction turn reuses the existing KV cache.
+3. **Deferred MCP schemas & `rlm` reduction** (`src/mcp_preload.zig`, `src/mcp_shapes.zig`, `src/rlm.zig`):
+   MCP tool schemas load on demand and large list/comment payloads auto-slim to identity/summary rows while keeping the full payload addressable as a `.graff/tool-results/` handle.
+
+```mermaid
+flowchart LR
+    subgraph Prefix["1. Cross-Workspace Prefix Lock"]
+        S1["System Prompt (Invariant)<br/>base + companion notes + global # Skills"]
+        T1["Tool Schemas (Invariant)<br/>core tools[] byte-stable"]
+        U1["Leading User Turn<br/>workspace AGENTS.md + repo_map + prompt"]
+        S1 --> T1 --> U1
+    end
+
+    subgraph Compact["2. Two-Phase Compaction"]
+        C1["Phase 1: compact_prune.zig<br/>Deterministic old tool-result digest"]
+        C2["Phase 2: cache_fork.zig<br/>Append-only summary fork on live KV prefix"]
+        C1 --> C2
+    end
+```
+
+</details>
+
+<details>
 <summary>How we measure it: methodology, limitations, and reproduction</summary>
 
 <a id="how-we-measure-it"></a>

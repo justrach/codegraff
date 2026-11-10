@@ -22,6 +22,7 @@ const provider = @import("provider.zig");
 const serde = @import("serde.zig");
 const util = @import("util.zig");
 const buffered_http = @import("http2_buffered.zig");
+const failures = @import("catalog_failures.zig");
 
 /// Router catalogs change on the order of weeks; favour instant startup.
 const cache_ttl_ms: i64 = 6 * 60 * 60 * 1000;
@@ -87,8 +88,11 @@ pub fn dynamic(spec: provider.ProviderSpec) bool {
 
 pub fn modelsUrl(spec: provider.ProviderSpec) []const u8 {
     if (!dynamic(spec)) return "";
-    // GRAFF_CHATGPT_URL keeps discovery on the mock's origin, never the live API.
+    // Endpoint overrides keep discovery on the mock's origin, never the live API (#1795).
     if (std.mem.eql(u8, spec.id, "chatgpt-new")) if (provider.g_chatgpt_url_override) |url| return overrideModelsUrl(url);
+    if (std.mem.eql(u8, spec.id, "vercel")) if (provider.g_vercel_url_override) |url| return overrideModelsUrl(url);
+    if (std.mem.eql(u8, spec.id, "xai")) if (provider.g_xai_url_override) |url| return overrideModelsUrl(url);
+    if (std.mem.eql(u8, spec.id, "zai")) if (provider.g_zai_url_override) |url| return overrideModelsUrl(url);
     return spec.models_url;
 }
 
@@ -261,8 +265,9 @@ fn fetchPage(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSp
     const headers = catalogHeaders(arena, spec, key, source, &headers_buf) orelse return null;
     // Each page is independently bounded; a later failure leaves any valid
     // earlier pages in fetch()'s prefix, and cached rows remain offline fallback.
+    failures.clear(spec.id);
     const res = buffered_http.get(gpa, arena, io, &client, url, headers, catalog_page_limit, 15_000) catch return null;
-    if (res.status != 200) return null;
+    if (res.status != 200) return failures.none(Snapshot, spec.id, res.status);
     return parseModels(arena, spec.id, res.body);
 }
 
@@ -547,6 +552,10 @@ pub fn refreshForListing(io: Io, gpa: Allocator, arena: Allocator, home: []const
         const outcome = if (maybe.*) |*fut| fut.await(io) else continue;
         finishFetch(io, arena, home, outcome);
     }
+    if (keys.get("kimi")) |k| if (k.len != 0) {
+        _ = kimi_catalog.load(io, gpa, arena, k);
+        pinged += 1;
+    };
     return pinged;
 }
 
@@ -578,15 +587,11 @@ pub fn loadAll(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys:
 /// Activate previous-run caches without credentials or network. `--schema`
 /// uses this so GUI model metadata follows router rollouts.
 pub fn loadCachedAll(io: Io, arena: Allocator, home: []const u8) void {
-    for (provider.provider_specs) |spec| {
-        if (!dynamic(spec)) continue;
-        const snapshot = cachedSnapshot(io, arena, home, spec) orelse continue;
-        _ = activate(arena, spec, snapshot.models);
-    }
-    if (provider.additional_router) |spec| {
-        const snapshot = cachedSnapshot(io, arena, home, spec) orelse return;
-        _ = activate(arena, spec, snapshot.models);
-    }
+    if (kimi_catalog.cached(io, arena, home)) |cache| kimi_catalog.commit(arena, cache.rows, "cached account catalog");
+    for (provider.provider_specs) |spec| if (dynamic(spec)) {
+        _ = activateCached(io, arena, home, spec);
+    };
+    if (provider.additional_router) |spec| _ = activateCached(io, arena, home, spec);
 }
 
 test {

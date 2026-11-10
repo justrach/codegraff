@@ -26,7 +26,7 @@ fn takeUnread(gpa: Allocator, job: *Job) error{OutOfMemory}!struct { []u8, bool 
     job.stream = null;
     job.stream_ctx = null;
     const out = try gpa.dupe(u8, job.buf.items[job.cursor..]);
-    job.cursor = job.buf.items.len;
+    @import("job_ring.zig").consumeUnread(gpa, &job.buf, &job.cursor);
     const dropped = job.dropped;
     job.dropped = false;
     return .{ out, dropped };
@@ -78,14 +78,45 @@ pub fn waitForeground(gpa: Allocator, io: Io, id: u64, wait_ms: u64) !FgWait {
             g_jobs.mutex.unlock(io);
             return .{ .cancelled = .{ .id = id, .output = try gpa.dupe(u8, ""), .dropped = false } };
         }
-        io.sleep(.fromMilliseconds(100), .awake) catch {
+        const step = pollStepMs(waited, deadline);
+        io.sleep(.fromMilliseconds(@intCast(step)), .awake) catch {
             waited = deadline;
             continue;
         };
-        waited += 100;
+        waited += step;
         if (still.due(waited)) {
             var ebuf: [16]u8 = undefined;
             tool_pulse.emitNotice(io, "· bash still running · {s}", .{tool_pulse.formatElapsed(&ebuf, waited)});
         }
     }
+}
+
+/// Adaptive foreground poll ramp: 5ms + 10ms + 20ms + 65ms = 100ms, then 100ms
+/// ticks so fast commands (<35ms) return without a 100ms floor while 100ms
+/// deadlines and pulse boundaries stay aligned.
+pub fn pollStepMs(waited: u64, deadline: u64) u64 {
+    const base: u64 = if (waited < 5)
+        5
+    else if (waited < 15)
+        10
+    else if (waited < 35)
+        20
+    else if (waited < 100)
+        100 - waited
+    else
+        100;
+    const rem = deadline -| waited;
+    return if (rem > 0 and rem < base) rem else base;
+}
+
+test "pollStepMs ramps 5 -> 10 -> 20 -> 65 to 100ms and respects shorter deadlines" {
+    var w: u64 = 0;
+    const steps = [_]u64{ 5, 10, 20, 65, 100, 100 };
+    for (steps) |expected| {
+        const s = pollStepMs(w, 1_000);
+        try std.testing.expectEqual(expected, s);
+        w += s;
+    }
+    try std.testing.expectEqual(@as(u64, 300), w);
+    try std.testing.expectEqual(@as(u64, 12), pollStepMs(200, 212));
 }

@@ -25,11 +25,16 @@ pub fn classify(err: anyerror, detail: []const u8) Failure {
         err == error.StreamInterrupted or err == error.StreamReadFailed or err == error.UnknownHostName or err == error.ConnectionResetByPeer or err == error.ConnectionRefused or
         util.indexOfIgnoreCase(detail, "timeout") != null or util.indexOfIgnoreCase(detail, "timed out") != null or
         util.indexOfIgnoreCase(detail, "network error:") != null or util.indexOfIgnoreCase(detail, "rate limited (429)") != null or
+        util.indexOfIgnoreCase(detail, "rate_limit_error") != null or util.indexOfIgnoreCase(detail, "rate_limit_exceeded") != null or
+        util.indexOfIgnoreCase(detail, "overloaded_error") != null or util.indexOfIgnoreCase(detail, "temporarily overloaded") != null or
+        util.indexOfIgnoreCase(detail, "temporarily unavailable") != null or util.indexOfIgnoreCase(detail, "status=429") != null or
         util.indexOfIgnoreCase(detail, "server error (5xx)") != null or util.indexOfIgnoreCase(detail, "HTTP 429") != null or
         util.indexOfIgnoreCase(detail, "HTTP 500") != null or util.indexOfIgnoreCase(detail, "HTTP 502") != null or
         util.indexOfIgnoreCase(detail, "HTTP 503") != null or util.indexOfIgnoreCase(detail, "HTTP 504") != null)
         return .{ .reason = "transient_failure", .exit_code = 75, .retryable = true };
-    if (util.indexOfIgnoreCase(detail, "HTTP 400") != null or util.indexOfIgnoreCase(detail, "invalid_request") != null)
+    if (util.indexOfIgnoreCase(detail, "HTTP 400") != null or util.indexOfIgnoreCase(detail, "invalid_request") != null or
+        util.indexOfIgnoreCase(detail, "cyber_policy") != null or util.indexOfIgnoreCase(detail, "content_policy") != null or
+        util.indexOfIgnoreCase(detail, "request_rejected") != null)
         return .{ .reason = "invalid_request", .exit_code = 78 };
     return .{ .reason = "failed", .exit_code = 1 };
 }

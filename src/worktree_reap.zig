@@ -58,6 +58,14 @@ pub fn userAskedToFreeTrees(text: []const u8) bool {
 /// auto-isolate trees whose pid is dead. Returns how many directories went.
 pub fn orphans(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8) usize {
     const dir = if (cwd.len > 0) cwd else ".";
+    // #1859: session worktrees live under `<dir>/.graff/worktrees`. Skip the
+    // two git subprocesses (`worktree prune` + `worktree list`, ~80 ms) when
+    // the repo has never created a `.graff/worktrees` directory.
+    const wt_dir = if (std.mem.eql(u8, dir, "."))
+        ".graff/worktrees"
+    else
+        (std.fs.path.join(arena, &.{ dir, ".graff", "worktrees" }) catch return 0);
+    if ((Io.Dir.cwd().statFile(io, wt_dir, .{}) catch null) == null) return 0;
     if (runCapped(gpa, io, &.{ "git", "-C", dir, "worktree", "prune" }, 4096, 4096, 15_000)) |r| {
         gpa.free(r.stdout);
         gpa.free(r.stderr);

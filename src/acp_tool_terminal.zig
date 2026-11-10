@@ -53,6 +53,7 @@ pub fn finish(w: *Io.Writer, session_id: []const u8, ev: std.json.ObjectMap, res
         else => false,
     };
     try @import("acp_stream.zig").writeToolStatus(w, session_id, id, if (is_error) "failed" else "completed");
+    try @import("acp_workspace.zig").emitMoved(w, session_id); // #1737: `workspace` is a meta tool; `tool_call_finished` is its only end
     r.add(id);
     return true;
 }
@@ -201,4 +202,29 @@ test "EventSink: a yield_turn handoff stays delivered past its tool's end (#1615
     }
     try sink.writer.flush();
     try testing.expect(!saw);
+}
+
+test "#1737: workspace meta-tool finish emits session_info_update before the next tool starts" {
+    const main_mod = @import("main.zig");
+    const acp_workspace = @import("acp_workspace.zig");
+    const saved = main_mod.g_cwd_display;
+    defer main_mod.g_cwd_display = saved;
+    defer acp_workspace.resetForTest();
+
+    main_mod.g_cwd_display = "/trees/before";
+    acp_workspace.snapshot(.{ .gpa = testing.allocator, .io = testing.io });
+    main_mod.g_cwd_display = "/trees/after";
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var buf: [4096]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    var resolved: Resolved = .{};
+    const ev = try object(arena.allocator(), "{\"type\":\"tool_call_finished\",\"id\":\"ws1\",\"name\":\"workspace\",\"is_error\":false,\"ms\":2}");
+    try testing.expect(try finish(&w, "s1", ev, &resolved));
+    const out = w.buffered();
+    const done = std.mem.indexOf(u8, out, "\"toolCallId\":\"ws1\"") orelse return error.TestExpectedToolUpdate;
+    const info = std.mem.indexOf(u8, out, "\"session_info_update\"") orelse return error.TestExpectedInfoUpdate;
+    try testing.expect(done < info);
+    try testing.expect(std.mem.indexOf(u8, out, "\"graff/cwd\":\"/trees/after\"") != null);
 }

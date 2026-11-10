@@ -67,8 +67,7 @@ pub fn locateIn(
         if (session_index.sameWorkspace(workspace, cwd)) continue;
         const path = absSession(arena, workspace, name) catch continue;
         if (!exists(io, path)) continue;
-        const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(session_index.max_session_bytes)) catch continue;
-        const meta = session_index.sessionMetaFromBytes(arena, data);
+        const meta = session_index.readSessionMeta(io, arena, Io.Dir.cwd(), path) orelse continue;
         const ms = meta.updated_ms;
         if (best == null or ms > best_ms) {
             best = .{ .path = path, .workspace = meta.workspace orelse workspace, .local = false };

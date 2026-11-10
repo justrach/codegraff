@@ -223,11 +223,12 @@ pub fn pathFor(arena: Allocator, session: []const u8) ?[]const u8 {
 /// whole line lands at once (playbook.appendLine's shape, and serve_events'
 /// before it).
 fn appendLine(io: Io, path: []const u8, line: []const u8) bool {
-    Io.Dir.cwd().createDirPath(io, dir) catch {};
-    const f = Io.Dir.cwd().createFile(io, path, .{ .truncate = false }) catch return false;
+    const cwd = Io.Dir.cwd();
+    cwd.createDirPath(io, dir) catch {};
+    const f = cwd.createFile(io, path, .{ .truncate = false, .read = true }) catch return false;
     defer f.close(io);
-    const st = f.stat(io) catch return false;
-    f.writePositionalAll(io, line, st.size) catch return false;
+    const end: u64 = if (f.stat(io)) |st| st.size else |_| (cwd.statFile(io, path, .{}) catch return false).size;
+    f.writePositionalAll(io, line, end) catch return false;
     return true;
 }
 

@@ -318,7 +318,7 @@ pub fn agentOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
             return .{ .text = text, .is_error = is_err };
         }
         g_agent_jobs.mutex.unlock(io);
-        if (Agent.esc_cancel.load(.acquire)) {
+        if (Agent.esc_cancel.load(.acquire) or @import("job_wait.zig").followup_pending.load(.acquire)) {
             waited = deadline; // render current state on the next pass
             continue;
         }

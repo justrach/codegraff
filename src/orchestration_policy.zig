@@ -228,74 +228,12 @@ pub const ArmObs = struct {
     }
 };
 
-fn strField(o: std.json.ObjectMap, key: []const u8) ?[]const u8 {
-    const v = o.get(key) orelse return null;
-    return if (v == .string) v.string else null;
-}
-
-fn numField(o: std.json.ObjectMap, key: []const u8) ?f64 {
-    const v = o.get(key) orelse return null;
-    return switch (v) {
-        .float => |f| f,
-        .integer => |x| @floatFromInt(x),
-        else => null,
-    };
-}
-
-fn boolField(o: std.json.ObjectMap, key: []const u8, dflt: bool) bool {
-    const v = o.get(key) orelse return dflt;
-    return if (v == .bool) v.bool else dflt;
-}
-
 /// Pool the archive's `kind:"orch_outcome"` rows into (key, arm) cells,
 /// applying the #290 firewall. A row missing any coordinate is SKIPPED rather
 /// than filed under a default — an uncelled observation is honest, a
 /// mis-celled one silently steers every future run in that cell.
 pub fn foldArms(arena: Allocator, archive: []const u8) []ArmObs {
-    var out: std.ArrayList(ArmObs) = .empty;
-    var it = std.mem.splitScalar(u8, archive, '\n');
-    while (it.next()) |ln| {
-        const t = std.mem.trim(u8, ln, " \t\r");
-        if (!@import("bench_priors.zig").kindIs(t, "orch_outcome")) continue;
-        const v = std.json.parseFromSliceLeaky(std.json.Value, arena, t, .{}) catch continue;
-        if (v != .object) continue;
-        const o = v.object;
-        const kind = strField(o, "kind") orelse continue;
-        if (!std.mem.eql(u8, kind, "orch_outcome")) continue;
-
-        // FIREWALL 1 — user intent never votes on policy.
-        const source = Source.parse(strField(o, "source") orelse "") orelse continue;
-        if (source == .explicit) continue;
-        // FIREWALL 2 — only champion-genome runs attribute to the arm.
-        if (!boolField(o, "variant_free", true)) continue;
-
-        const arm = Rung.parse(strField(o, "arm") orelse "") orelse continue;
-        // FIREWALL 3 — the stratum is part of the key, so a row without one
-        // cannot be pooled with rows that have one.
-        const stratum = strField(o, "stratum") orelse continue;
-        if (stratum.len == 0) continue;
-        const tc = strField(o, "task_class") orelse continue;
-        const bb = strField(o, "budget_band") orelse continue;
-        const score = numField(o, "score") orelse continue;
-        if (!(score >= 0 and score <= 1)) continue; // the #168 [0,1] contract
-        const calls: u64 = blk: {
-            const c = numField(o, "calls_used") orelse break :blk 0;
-            break :blk if (c < 0) 0 else @intFromFloat(c);
-        };
-        const key: Key = .{
-            .task_class = TaskClass.parse(tc),
-            .budget_band = BudgetBand.parse(bb),
-            .stratum = stratum,
-        };
-        const slot: *ArmObs = for (out.items) |*c| {
-            if (c.arm == arm and c.key.eql(key)) break c;
-        } else blk: {
-            out.append(arena, .{ .key = key, .arm = arm }) catch return out.items;
-            break :blk &out.items[out.items.len - 1];
-        };
-        slot.note(score, calls, boolField(o, "exhausted", false), boolField(o, "landed", false));
-    }
-    return out.items;
+    return @import("archive_fold.zig").foldSlice(arena, archive, false, false, true).arms;
 }
 
 /// Session-arena cells, folded once by bench_priors.loadInto off the same
@@ -424,6 +362,7 @@ pub const learned_solo_advice =
     "earns a fleet.";
 
 pub fn learnedRung(key: Key, ladder: Rung, remaining: u64, landing_reserve: u64) ?Rung {
+    @import("bench_priors.zig").ensureArchiveLoaded();
     if (override(g_arms, key, ladder, remaining, landing_reserve)) |r| return r;
     var buf: [8]ArmObs = undefined;
     return override(priorFor(&buf, key), key, ladder, remaining, landing_reserve);

@@ -198,6 +198,7 @@ pub const BehaviorTrace = struct {
     }
 
     pub fn startWithMetadata(self: *BehaviorTrace, version: []const u8, unix_ms: i64, metadata: BehaviorRunMetadata) void {
+        if (comptime !@import("build_options").learn) return;
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         if (self.started or self.closed) return;
@@ -491,6 +492,7 @@ pub const BehaviorTrace = struct {
     /// Mark a normal process/session close. This is deliberately not a task
     /// success verdict. A missing run_finished record means the run is incomplete.
     pub fn finish(self: *BehaviorTrace, status: BehaviorRunStatus) void {
+        if (comptime !@import("build_options").learn) return;
         const status_name: []const u8 = switch (status) {
             .closed => "closed",
             .failed => "error",
@@ -523,6 +525,7 @@ pub const Boot = struct {
     /// the shared tracer. All root/subagent callbacks already share that
     /// stable tracer, so this single assignment covers every producer.
     pub fn link(self: *Boot, tracer: ?*trace.Tracer) void {
+        if (comptime !@import("build_options").learn) return;
         self.behavior.out = if (self.open.file != null) &self.open.writer.interface else null;
         self.behavior.upload = if (self.uploader.active()) &self.uploader else null;
         if (tracer) |tr| tr.behavior = &self.behavior;
@@ -532,6 +535,7 @@ pub const Boot = struct {
     /// clean return is not a task success verdict; finish() is idempotent and
     /// keeps an earlier error-unwind status terminal.
     pub fn finishAndClose(self: *Boot, tracer: ?*trace.Tracer, status: BehaviorRunStatus) void {
+        if (comptime !@import("build_options").learn) return;
         shutdown_trace.mark("behavior-finish + upload"); // #364: this phase can make a network call
         self.behavior.finish(status);
         if (tracer) |tr| tr.behavior = null;
@@ -546,6 +550,12 @@ pub const Boot = struct {
 /// privacy-projected upload are independent sinks. `buf` storage is owned by
 /// the caller (a stack array in main()) and must outlive the Boot.
 pub fn boot(io: Io, gpa: Allocator, client: ?*std.http.Client, environ_map: anytype, endpoint: []const u8, auth_key: ?[]const u8, install_id: [32]u8, client_name: []const u8, service_version: []const u8, buf: []u8) Boot {
+    if (comptime !@import("build_options").learn) return .{
+        .io = io,
+        .uploader = .{ .io = io, .gpa = gpa, .client = null, .endpoint = "", .auth_key = null, .install_id = @splat('0'), .client_name = "", .service_version = "", .run_id = "", .mode = .off },
+        .open = .{ .file = null, .writer = undefined },
+        .behavior = .{ .io = io, .gpa = gpa, .out = null, .run_id = "" },
+    };
     const uploader: behavior_upload.Upload = .{
         .io = io,
         .gpa = gpa,

@@ -160,13 +160,14 @@ fn ownedSessionName(arena: Allocator, arg: []const u8, fallback: []const u8) All
 /// `line` doesn't match any command in this file — the caller falls through
 /// to handleRest() for the unknown-command/help terminal stage.
 pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
-    if (try @import("adopt.zig").trySlash(root.io, arena, root.home, line, out)) return true;
-    if (try commands_privacy.tryHandle(root, line, out)) return true;
-    if (try @import("terminal_workers.zig").tryHandle(root, line, out)) return true;
+    const bo = @import("build_options");
+    if ((comptime bo.extras) and try @import("adopt.zig").trySlash(root.io, arena, root.home, line, out)) return true;
+    if ((comptime bo.learn) and try commands_privacy.tryHandle(root, line, out)) return true;
+    if ((comptime bo.extras) and try @import("terminal_workers.zig").tryHandle(root, line, out)) return true;
     if (try playbook_glue.command(root, arena, line, out)) return true; // #381 /never | /constraint
-    if (std.mem.startsWith(u8, line, "/schedule") and (line.len == 9 or line[9] == ' ' or line[9] == '\t')) return @import("schedule.zig").slashCommand(root, arena, line, out);
-    if (std.mem.startsWith(u8, line, "/adapter") and (line.len == 8 or line[8] == ' ' or line[8] == '\t')) return @import("channel_worker.zig").slashCommand(root, arena, line, out);
-    if (try side_question.command(root, arena, line, out)) return true; // #415 /btw
+    if ((comptime bo.extras) and std.mem.startsWith(u8, line, "/schedule") and (line.len == 9 or line[9] == ' ' or line[9] == '\t')) return @import("schedule.zig").slashCommand(root, arena, line, out);
+    if ((comptime bo.extras) and std.mem.startsWith(u8, line, "/adapter") and (line.len == 8 or line[8] == ' ' or line[8] == '\t')) return @import("channel_worker.zig").slashCommand(root, arena, line, out);
+    if ((comptime bo.extras) and try side_question.command(root, arena, line, out)) return true; // #415 /btw
     if (std.mem.eql(u8, line, "/version")) {
         const text = try version_status.commandText(root.io, root.gpa, harness_version);
         defer root.gpa.free(text);
@@ -174,12 +175,12 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
-    if (try @import("update_cmd.zig").tryHandle(root, arena, line, out)) return true; // #773 /update
+    if ((comptime bo.extras) and try @import("update_cmd.zig").tryHandle(root, arena, line, out)) return true; // #773 /update
     // #321: doctor.zig shipped with a catalog entry but no dispatch, so /doctor
     // was advertised in /help and the `/` menu while answering "unknown command".
-    if (std.mem.eql(u8, line, "/doctor")) {
+    if ((comptime bo.extras) and (std.mem.eql(u8, line, "/doctor") or std.mem.eql(u8, line, "/doctor json") or std.mem.eql(u8, line, "/doctor --json"))) {
         const checks = try doctor.run(arena, try doctor.snapshotWithLive(arena, root, util.unixMs(root.io)));
-        try out.writeAll(try doctor.render(arena, checks));
+        if (std.mem.eql(u8, line, "/doctor")) try out.writeAll(try doctor.render(arena, checks)) else try out.print("{s}\n", .{try doctor.toJson(arena, checks)});
         try out.flush();
         return true;
     }
@@ -191,7 +192,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
-    if (try commands_jobs.tryHandle(root, line, out)) return true; // /jobs [keep|unkeep|stop|restart] (#199)
+    if ((comptime bo.extras) and try commands_jobs.tryHandle(root, line, out)) return true; // /jobs [keep|unkeep|stop|restart] (#199)
     if (std.mem.eql(u8, line, "/debug") or std.mem.eql(u8, line, "/cache")) {
         if (std.mem.eql(u8, line, "/debug")) try obs.renderHud(out) else try cache_hud.render(out);
         try out.flush();
@@ -200,7 +201,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.eql(u8, line, "/cost") or std.mem.eql(u8, line, "/usage")) {
         const c = g_cost.snap(root.io);
         try renderSessionUsage(c, out);
-        @import("plan_usage.zig").appendTo(root.io, root.gpa, arena, root.home, keys.get("xai"), out);
+        if (comptime bo.extras) @import("plan_usage.zig").appendTo(root.io, root.gpa, arena, root.home, keys.get("xai"), out);
         try out.flush();
         return true;
     }
@@ -211,8 +212,14 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
-    if (std.mem.eql(u8, line, "/computer") or std.mem.startsWith(u8, line, "/computer ")) {
+    if ((comptime bo.extras) and (std.mem.eql(u8, line, "/computer") or std.mem.startsWith(u8, line, "/computer "))) {
         try @import("computer_cli.zig").slash(root.io, root.gpa, arena, root.home, line, out);
+        if (root.registry) |reg| if (@import("nanocua_default.zig").connectShipped(reg, arena)) {
+            root.invalidateRootTools();
+            @import("prompt_cache_hud.zig").noteBust(.mcp);
+            try root.ensureRootTools(root.provider.kind);
+            root.rebaseContextMeter();
+        };
         return true;
     }
     if (std.mem.startsWith(u8, line, "/mcp")) {
@@ -339,7 +346,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
-    if (std.mem.eql(u8, line, "/models health")) {
+    if ((comptime bo.extras) and std.mem.eql(u8, line, "/models health")) {
         try showModelsHealth(root, keys, arena, out);
         return true;
     }
@@ -351,6 +358,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         // TTL that made /models show a boot-time snapshot until restart.
         const pinged = providers.refreshModelListing(root, keys.*);
         if (pinged > 0) try out.print("{s}(pinged {d} provider catalog(s) live){s}\n", .{ style.dim, pinged, style.reset });
+        try @import("catalog_failures.zig").report(out);
         // `cost` answers what a model name cannot: the same model through codex
         // (plan), codegraff (credits) and openai (api) is three different
         // bills. Same wording as the TUI picker; the surfaces must agree.
@@ -433,7 +441,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
-    if (std.mem.eql(u8, line, "/fleet") or std.mem.startsWith(u8, line, "/fleet ")) {
+    if ((comptime bo.learn) and (std.mem.eql(u8, line, "/fleet") or std.mem.startsWith(u8, line, "/fleet "))) {
         const arg = std.mem.trim(u8, line["/fleet".len..], " \t");
         if (arg.len == 0) {
             try out.print("fleet master switch: {s} · learning privacy: {s}. /fleet off kills contribution; /privacy controls what may leave.\n", .{ if (main_mod.g_fleet) "ON" else "off", learning_privacy.current().label() });
@@ -471,10 +479,10 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     if (try @import("commands_resume.zig").tryHandle(root, keys, arena, line, out)) return true;
-    if (std.mem.startsWith(u8, line, "/tell") and (line.len == 5 or line[5] == ' ' or line[5] == '\t')) return peer_channel.tellCommand(root, arena, line, out); // #469
-    if (try @import("daddy.zig").slashCommand(root, arena, line, out)) return true;
-    if (std.mem.startsWith(u8, line, "/peek") and (line.len == 5 or line[5] == ' ' or line[5] == '\t')) return peer_channel.peekCommand(root, arena, line, out); // #469
-    if (std.mem.startsWith(u8, line, "/routes") and (line.len == 7 or line[7] == ' ' or line[7] == '\t')) return route_set.command(root, keys, arena, line, out); // user-defined priced lanes
+    if ((comptime bo.extras) and std.mem.startsWith(u8, line, "/tell") and (line.len == 5 or line[5] == ' ' or line[5] == '\t')) return peer_channel.tellCommand(root, arena, line, out); // #469
+    if ((comptime bo.extras) and try @import("daddy.zig").slashCommand(root, arena, line, out)) return true;
+    if ((comptime bo.extras) and std.mem.startsWith(u8, line, "/peek") and (line.len == 5 or line[5] == ' ' or line[5] == '\t')) return peer_channel.peekCommand(root, arena, line, out); // #469
+    if ((comptime bo.extras) and std.mem.startsWith(u8, line, "/routes") and (line.len == 7 or line[7] == ' ' or line[7] == '\t')) return route_set.command(root, keys, arena, line, out); // user-defined priced lanes
     if (std.mem.eql(u8, line, "/sessions")) {
         try session_list.writeSaved(root, arena, out);
         try peer_channel.writeLiveSection(root, arena, out); // #469: co-resident live sessions, with goals

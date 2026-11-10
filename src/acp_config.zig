@@ -35,7 +35,7 @@ pub fn set(ctx: *anyopaque, value: []const u8) anyerror!bool {
     const canonical = er.normalize(root.provider.id, root.provider.model, value);
     if (!root.effortApplies() or !er.allows(root.provider.id, root.provider.model, canonical)) return false;
     root.reasoning = std.meta.stringToEnum(ReasoningEffort, canonical) orelse return false;
-    root.jev_effort_pending.invalidate(root.io);
+    root.jev_effort_pending.pinUserEffort(root.io);
     _ = @import("repl_glue.zig").saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
     return true;
 }
@@ -72,7 +72,7 @@ test "Claude thought-level discovery matches native effort support" {
     var keys: @import("provider.zig").Keys = .{ .values = @splat(null) };
     var live: LiveTurn = .{ .root = &root, .keys = &keys, .out = undefined };
     root.reasoning = .medium;
-    for ([_][]const u8{ "claude-opus-5-5", "claude-opus-4-5", "claude-sonnet-4-6", "claude-fable-5-1", "claude-mythos-5-1" }) |model| {
+    for ([_][]const u8{ "claude-opus-5-5", "claude-opus-4-5", "claude-sonnet-4-6", "claude-fable-5-1", "claude-fable-5-2", "claude-mythos-5-1" }) |model| {
         root.provider.model = model;
         try std.testing.expect(root.effortApplies());
         const offered = (try option(&live, arena)).?;

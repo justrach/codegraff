@@ -25,6 +25,10 @@ pub fn surfaceText(self: *Agent, text: []const u8) !void {
     try steps.surfaceUnstreamedText(self, text);
 }
 
+pub fn beforeTools(self: *Agent) void {
+    @import("turn_checkpoint.zig").beforeToolBatch(self);
+}
+
 pub fn afterTools(self: *Agent, calls: []const ToolCall, stuck: bool) !?[]const u8 {
     try @import("turn_checkpoint.zig").afterToolBatch(self);
     if (stuck) {

@@ -66,27 +66,50 @@ pub fn validSessionName(name: []const u8) bool {
 /// can't be read — callers fall back to the raw session name (#109).
 pub const SessionMeta = struct { title: ?[]const u8 = null, parent: ?[]const u8 = null, updated_ms: i64 = 0, workspace: ?[]const u8 = null };
 
+/// Bounded header window for metadata-only inspection (`graff sessions`,
+/// `/resume` picker, `locateIn`). A session header sits before `"messages":`
+/// and is a few hundred bytes; 64 KiB covers long titles/goals without reading
+/// the multi-MB messages array into the listing arena (#1848).
+pub const max_header_bytes: usize = 64 * 1024;
+
 pub fn sessionMetaFromBytes(arena: Allocator, data: []const u8) SessionMeta {
     // Embedded quotes inside string values are escaped in the file, so the
     // raw needle can only match the real top-level "messages" key.
     const idx = std.mem.indexOf(u8, data, "\"messages\":") orelse return .{};
     const header = std.mem.trimEnd(u8, data[0..idx], " \t\r\n");
     if (header.len < 2 or header[header.len - 1] != ',') return .{};
-    const hjson = std.fmt.allocPrint(arena, "{s}}}", .{header[0 .. header.len - 1]}) catch return .{};
-    const parsed = std.json.parseFromSliceLeaky(Value, arena, hjson, .{ .allocate = .alloc_always }) catch return .{};
+    var scratch_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer scratch_state.deinit();
+    const scratch = scratch_state.allocator();
+    const hjson = std.fmt.allocPrint(scratch, "{s}}}", .{header[0 .. header.len - 1]}) catch return .{};
+    const parsed = std.json.parseFromSliceLeaky(Value, scratch, hjson, .{ .allocate = .alloc_always }) catch return .{};
     if (parsed != .object) return .{};
     return .{
-        .title = if (parsed.object.get("title")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null,
-        .parent = if (parsed.object.get("parent")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null,
+        .title = if (parsed.object.get("title")) |v| (if (v == .string and v.string.len > 0) (arena.dupe(u8, v.string) catch null) else null) else null,
+        .parent = if (parsed.object.get("parent")) |v| (if (v == .string and v.string.len > 0) (arena.dupe(u8, v.string) catch null) else null) else null,
         .updated_ms = if (parsed.object.get("updated_ms")) |v| (if (v == .integer) v.integer else 0) else 0,
-        .workspace = if (parsed.object.get("workspace")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null,
+        .workspace = if (parsed.object.get("workspace")) |v| (if (v == .string and v.string.len > 0) (arena.dupe(u8, v.string) catch null) else null) else null,
     };
+}
+
+pub fn readSessionMeta(io: Io, arena: Allocator, dir: Io.Dir, sub_path: []const u8) ?SessionMeta {
+    @import("session_store.zig").recover(io, std.heap.page_allocator, dir, sub_path) catch return null;
+    const f = dir.openFile(io, sub_path, .{}) catch return null;
+    defer f.close(io);
+    var hdr_buf: [max_header_bytes]u8 = undefined;
+    const n = f.readPositionalAll(io, &hdr_buf, 0) catch return null;
+    if (std.mem.indexOf(u8, hdr_buf[0..n], "\"messages\":") != null or n < max_header_bytes) {
+        return sessionMetaFromBytes(arena, hdr_buf[0..n]);
+    }
+    var scratch_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer scratch_state.deinit();
+    const data = dir.readFileAlloc(io, sub_path, scratch_state.allocator(), .limited(max_session_bytes)) catch return null;
+    return sessionMetaFromBytes(arena, data);
 }
 
 pub fn sessionMeta(root: *Agent, arena: Allocator, base: []const u8) SessionMeta {
     const path = sessionPath(arena, base) catch return .{};
-    const data = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(max_session_bytes)) catch return .{};
-    return sessionMetaFromBytes(arena, data);
+    return readSessionMeta(root.io, arena, Io.Dir.cwd(), path) orelse .{};
 }
 
 pub fn sessionExists(root: *Agent, arena: Allocator, base: []const u8) bool {
@@ -127,9 +150,8 @@ pub fn listFromDir(io: Io, arena: Allocator, dir: Io.Dir, workspace: []const u8,
     while (it.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, session_ext)) continue;
+        const meta = readSessionMeta(io, arena, dir, entry.name) orelse continue;
         const base = arena.dupe(u8, entry.name[0 .. entry.name.len - session_ext.len]) catch continue;
-        const data = dir.readFileAlloc(io, entry.name, arena, .limited(max_session_bytes)) catch continue;
-        const meta = sessionMetaFromBytes(arena, data);
         entries.append(arena, .{
             .base = base,
             .title = meta.title,

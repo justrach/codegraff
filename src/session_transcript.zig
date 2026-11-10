@@ -336,5 +336,84 @@ pub fn resetForTest() void {
     detach();
 }
 
+/// True when `item` is an assistant message or step that proposes tool calls
+/// (`tool_calls` on OpenAI, `tool_use` on Anthropic, `function_call` on
+/// Responses/Interactions). Completed turns always append tool results after
+/// this item, so a transcript whose final line matches `isAssistantToolCallItem`
+/// is an uncommitted mid-turn tool batch (`beforeToolBatch` ran before crash).
+pub fn isAssistantToolCallItem(item: Value) bool {
+    if (item != .object) return false;
+    const obj = item.object;
+    if (obj.get("type")) |t| {
+        if (t == .string and std.mem.eql(u8, t.string, "function_call")) return true;
+    }
+    const role = if (obj.get("role")) |r| (if (r == .string) r.string else "") else "";
+    if (!std.mem.eql(u8, role, "assistant")) return false;
+    if (obj.get("tool_calls")) |tcs| {
+        if (tcs == .array and tcs.array.items.len > 0) return true;
+    }
+    if (obj.get("content")) |content| {
+        if (content == .array) {
+            for (content.array.items) |blk| {
+                if (blk == .object) {
+                    const btype = if (blk.object.get("type")) |bt| (if (bt == .string) bt.string else "") else "";
+                    if (std.mem.eql(u8, btype, "tool_use")) return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+/// Tardigrade `Checkpoint + Suffix == Full Replay` recovery (`atomCheckpoint.qnt`):
+/// when `beforeToolBatch` flushed the user prompt + assistant tool-call proposal
+/// to `.transcript.jsonl` and the process crashed before `.session.json` was
+/// updated, replay the uncommitted suffix onto `msgs` so `history_wire.prepare`
+/// can synthesize crash-tail tool results.
+pub fn recoverCrashTailFromPath(io: Io, dir: Io.Dir, arena: Allocator, transcript_path: []const u8, msgs: *std.json.Array) void {
+    const data = dir.readFileAlloc(io, transcript_path, arena, .limited(cap_bytes)) catch return;
+    var lines: std.ArrayList([]const u8) = .empty;
+    var it = std.mem.splitScalar(u8, data, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trimEnd(u8, raw, "\r");
+        if (line.len == 0) continue;
+        lines.append(arena, line) catch return;
+    }
+    if (lines.items.len == 0) return;
+
+    const last_line = lines.items[lines.items.len - 1];
+    const last_val = std.json.parseFromSliceLeaky(Value, arena, last_line, .{ .allocate = .alloc_always }) catch return;
+    if (!isAssistantToolCallItem(last_val)) return;
+
+    var suffix_start: usize = 0;
+    if (msgs.items.len > 0) {
+        const last_saved_text = serialize(arena, msgs.items[msgs.items.len - 1]) orelse return;
+        const anchor_hash = digest(last_saved_text);
+        if (digest(last_line) == anchor_hash) return; // already in .session.json
+        var found: ?usize = null;
+        var idx: usize = lines.items.len - 1;
+        while (idx > 0) {
+            idx -= 1;
+            if (digest(lines.items[idx]) == anchor_hash) {
+                found = idx + 1;
+                break;
+            }
+        }
+        suffix_start = found orelse return;
+    }
+    const suffix = lines.items[suffix_start..];
+    if (suffix.len == 0 or suffix.len > 32) return;
+    for (suffix) |line| {
+        const val = std.json.parseFromSliceLeaky(Value, arena, line, .{ .allocate = .alloc_always }) catch return;
+        msgs.append(val) catch return;
+    }
+}
+
+pub fn recoverCrashTailSuffix(io: Io, dir: Io.Dir, arena: Allocator, name: []const u8, msgs: *std.json.Array) void {
+    if (!tool_spill.safeName(name)) return;
+    const path = transcriptPath(arena, name) catch return;
+    recoverCrashTailFromPath(io, dir, arena, path, msgs);
+}
+
 // The tests live in session_transcript_tests.zig — the 600-line cap — and are
 // reached through test_hooks.zig.

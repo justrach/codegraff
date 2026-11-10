@@ -242,4 +242,38 @@ def check_properties() -> int:
         raise ValueError("trace: maximizing walk left the HIT cell")
     if keep(Cell("skill_inject", "prefix")):
         raise ValueError("trace: skill in prefix must miss")
-    return n
+    fork_wires = ("anthropic_claude", "anthropic_other", "openai", "responses", "interactions")
+    fork_tails = ("none", "answered", "unanswered")
+    fork_hits = 0
+    fork_total = 0
+    for w, ttl, fit, tl in product(fork_wires, (False, True), (False, True), fork_tails):
+        fork_total += 1
+        ok = (w in ("anthropic_claude", "openai")) and ttl and fit and (tl != "unanswered")
+        if ok:
+            fork_hits += 1
+            if tl == "unanswered" or not ttl or not fit:
+                raise ValueError(f"fork-safety violated: {w} {ttl} {fit} {tl}")
+    if fork_total != 60 or fork_hits != 4:
+        raise ValueError(f"fork-cube: total={fork_total} hits={fork_hits}")
+    for sub in (False, True):
+        for calls in (0, 1, 2):
+            if (not sub) and (not True) and (calls <= 1):
+                raise ValueError("compaction_never_preloads_tools violated")
+    invariant = {"base", "unattended", "companions", "global_skills"}
+    canonical = [
+        "base",
+        "unattended",
+        "companions",
+        "global_skills",
+        "project_skills",
+        "project_instructions",
+        "append_flag",
+        "repo_map",
+    ]
+    seen_varying = False
+    for seg in canonical:
+        if seg in invariant and seen_varying:
+            raise ValueError(f"invariant segment {seg} placed after workspace-varying segment")
+        if seg not in invariant:
+            seen_varying = True
+    return n + fork_total

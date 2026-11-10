@@ -167,6 +167,7 @@ pub fn storedKeyMayAffectSelection(provider_id: []const u8, model_flag: ?[]const
     const query = model_flag orelse return true;
     if (worker_hint) |h| if (std.mem.eql(u8, provider_id, h)) return true;
     if (explicitProvider(query)) |id| return std.mem.eql(u8, provider_id, id);
+    if (std.mem.eql(u8, provider_id, "kimi") and pricing.kimiFamilyModel(query) != null) return true;
     if (pricing.modelInTable(query)) return pricing.providerModelInTable(provider_id, query);
     return true;
 }
@@ -230,6 +231,8 @@ test "Kimi catalog loads at startup only when selection can observe it" {
     for (provider_mod.provider_specs, &keys.values) |spec, *value| {
         if (std.mem.eql(u8, spec.id, "kimi") or std.mem.eql(u8, spec.id, "codegraff")) value.* = "token";
     }
+    try std.testing.expect(storedKeyMayAffectSelection("kimi", "kimi-k3", null));
+    try std.testing.expect(storedKeyMayAffectSelection("kimi", "kimi-k3.1-pro", null));
     try std.testing.expect(!catalog_selection.startupMayUse(keys, "kimi", "codegraff", null));
     try std.testing.expect(catalog_selection.startupMayUse(keys, "kimi", "kimi", null));
     try std.testing.expect(catalog_selection.startupMayUse(keys, "kimi", "k3", null));
@@ -319,51 +322,57 @@ pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map
             source.* = if (exe != null) .login else .none;
         }
     }
+    const home = keys_cli.homeEnv(environ_map) orelse "";
+    const saved_model: ?serde.SavedModel = if (model_flag == null and home.len != 0) serde.loadModel(io, arena, home) else null;
+    const selection_query: ?[]const u8 = model_flag orelse if (saved_model) |s| s.pid else null;
     // #471: the kimi/xAI device logins outrank their env keys, and the metered
     // key is parked rather than dropped — credential_failover.preferPlan owns
     // that policy. #274: the gate stays here because only startup knows what
     // this invocation selected; a login refresh is a synchronous network call
     // no provider outside the selection should pay for.
-    if (keys_cli.homeEnv(environ_map)) |home| {
+    if (home.len != 0) {
         for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
-            if (!storedKeyMayAffectSelection(spec.id, model_flag, worker_provider_hint)) continue;
+            if (!storedKeyMayAffectSelection(spec.id, selection_query, worker_provider_hint)) continue;
             credential_failover.preferPlan(io, gpa, arena, home, spec, value, source);
         }
     }
-    // An explicit provider or exact catalog model can observe only its
-    // candidate providers. Load those stored keys now; model/fallback/resume
-    // surfaces fill the rest on demand. Aliases/default startup still need all
-    // keys because availability participates in their routing tie-break.
+    // An explicit provider, exact catalog model, or remembered saved_model
+    // (#1859) can observe only its candidate providers. Load those stored keys
+    // now; model/fallback/resume surfaces fill the rest on demand.
     // Anthropic Console sign-in (anthropic_profile.zig): a profile named by
     // ANTHROPIC_PROFILE outranks a stored key; the active one fills in after.
     const ap = @import("anthropic_profile.zig");
-    if (keys.get("anthropic") == null) if (ap.load(io, arena, environ_map, keys_cli.homeEnv(environ_map) orelse "", true)) |t| {
+    if (keys.get("anthropic") == null) if (ap.load(io, arena, environ_map, home, true)) |t| {
         _ = keys.set("anthropic", t, .profile);
     };
-    const selective_stored_keys = hasSelectiveStoredKeyScope(model_flag);
+    const selective_stored_keys = hasSelectiveStoredKeyScope(selection_query);
     var stored_keys_loaded = !selective_stored_keys;
-    if (keys_cli.homeEnv(environ_map)) |home| {
+    if (home.len != 0) {
         if (selective_stored_keys) {
-            keys_cli.loadMissingStoredKeys(io, gpa, arena, home, &keys, startupStoredKeyScope(model_flag, true, worker_provider_hint));
+            keys_cli.loadMissingStoredKeys(io, gpa, arena, home, &keys, startupStoredKeyScope(selection_query, true, worker_provider_hint));
             // Preserve the old diagnostics/fallback behavior when none of the
-            // selective candidates has any credential: only failed launches
-            // pay for the exhaustive scan.
-            if (keys.defaultProvider()) |_| {} else |_| {
+            // selective candidates (or the saved provider) has any credential:
+            // only failed or stale-saved-model launches pay for the full scan.
+            const saved_missing = if (saved_model) |s| keys.get(s.pid) == null else false;
+            if (saved_missing or (keys.defaultProvider() catch null) == null) {
+                for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
+                    credential_failover.preferPlan(io, gpa, arena, home, spec, value, source);
+                }
                 keys_cli.loadMissingStoredKeys(io, gpa, arena, home, &keys, .all);
                 stored_keys_loaded = true;
             }
         } else keys_cli.loadMissingStoredKeys(io, gpa, arena, home, &keys, .all);
     }
-    const home = keys_cli.homeEnv(environ_map) orelse "";
-    if (keys.get("anthropic") == null) {
-        if (ap.load(io, arena, environ_map, home, false)) |t| _ = keys.set("anthropic", t, .profile);
-    } else if (keys.source("anthropic") == .login and !credential_failover.standingBy("anthropic")) {
-        // The Claude plan took the slot first; keep the Console sign-in in
-        // reserve so a spent plan hands over instead of failing every turn.
-        if (ap.load(io, arena, environ_map, home, false)) |t| credential_failover.parkBehindPlan("anthropic", .login, t, .profile);
+    if (stored_keys_loaded or storedKeyMayAffectSelection("anthropic", selection_query, worker_provider_hint)) {
+        if (keys.get("anthropic") == null) {
+            if (ap.load(io, arena, environ_map, home, false)) |t| _ = keys.set("anthropic", t, .profile);
+        } else if (keys.source("anthropic") == .login and !credential_failover.standingBy("anthropic")) {
+            // The Claude plan took the slot first; keep the Console sign-in in
+            // reserve so a spent plan hands over instead of failing every turn.
+            if (ap.load(io, arena, environ_map, home, false)) |t| credential_failover.parkBehindPlan("anthropic", .login, t, .profile);
+        }
     }
     var model_catalog: models_cache.LazyCodexCatalog = .{ .codex_home = oauth.codexHomeDir(arena, home) orelse "" };
-    const saved_model: ?serde.SavedModel = if (model_flag == null) serde.loadModel(io, arena, home) else null;
     // Dynamic Codex discovery is observable only when startup may select
     // Codex. Explicit/saved non-Codex launches defer the version subprocess,
     // native-cache parse, and possible refresh until a model surface needs it.

@@ -351,3 +351,34 @@ test "#372/#376 firewall: a phase task takes the PHASE's seat, and still no per-
     try std.testing.expect(std.mem.indexOf(u8, src[wf .. wf + wf_end], "isolation_fallback: bool, seat: ?Provider)") != null);
     try std.testing.expect(std.mem.indexOf(u8, src[rt .. rt + rt_end], "isolation_fallback: bool, seat: ?Provider)") != null);
 }
+
+test "#393: role failure policy and pinned-seat fallback" {
+    const retry = @import("subagent_retry.zig");
+    try std.testing.expectEqual(policy.RoleFailurePolicy.fail_closed, policy.failurePolicyForRole("implement the fix", ""));
+    try std.testing.expectEqual(policy.RoleFailurePolicy.fail_closed, policy.failurePolicyForRole("build the result", ""));
+    try std.testing.expectEqual(policy.RoleFailurePolicy.fail_closed, policy.failurePolicyForRole("transform", ""));
+    try std.testing.expectEqual(policy.RoleFailurePolicy.fail_closed, policy.failurePolicyForRole("scope", ""));
+    try std.testing.expectEqual(policy.RoleFailurePolicy.fail_closed, policy.failurePolicyForRole("fix bug", "implementer"));
+    try std.testing.expectEqual(policy.RoleFailurePolicy.fail_open, policy.failurePolicyForRole("find issues", ""));
+    try std.testing.expectEqual(policy.RoleFailurePolicy.fail_open, policy.failurePolicyForRole("verify", "skeptic"));
+    try std.testing.expectEqual(policy.RoleFailurePolicy.fail_open, policy.failurePolicyForRole("sweep", "researcher"));
+    try std.testing.expectEqual(policy.RoleFailurePolicy.fail_open, policy.failurePolicyForRole("synthesize", ""));
+    try std.testing.expectEqual(policy.RoleFailurePolicy.fail_open, policy.failurePolicyForRole("rank variants", "judge"));
+
+    try std.testing.expect(policy.phaseAllowsRetry("implement the fix", "implementer"));
+    try std.testing.expect(policy.phaseAllowsRetry("sweep the codebase", "researcher"));
+    try std.testing.expect(!policy.phaseAllowsRetry("synthesize the findings", ""));
+    try std.testing.expect(!policy.phaseAllowsRetry("rank candidates", "judge"));
+    try std.testing.expect(!policy.phaseAllowsRetry("summarize output", "summarizer"));
+
+    // Explicit pin failing on ask 1 with model/invalid falls back once to base;
+    // never on cancellation, budget_exhausted, ask 2+, or when already on base.
+    try std.testing.expect(retry.shouldFallbackPinnedSeat(error.ApiError, .model, 1, true, "codex", "gpt-6-pinned", "codex", "gpt-6-base"));
+    try std.testing.expect(retry.shouldFallbackPinnedSeat(error.ApiError, .invalid, 1, true, "codex", "gpt-6-pinned", "codex", "gpt-6-base"));
+    try std.testing.expect(!retry.shouldFallbackPinnedSeat(error.Interrupted, .model, 1, true, "codex", "gpt-6-pinned", "codex", "gpt-6-base"));
+    try std.testing.expect(!retry.shouldFallbackPinnedSeat(error.ApiError, .cancelled, 1, true, "codex", "gpt-6-pinned", "codex", "gpt-6-base"));
+    try std.testing.expect(!retry.shouldFallbackPinnedSeat(error.ApiError, .budget_exhausted, 1, true, "codex", "gpt-6-pinned", "codex", "gpt-6-base"));
+    try std.testing.expect(!retry.shouldFallbackPinnedSeat(error.ApiError, .model, 2, true, "codex", "gpt-6-pinned", "codex", "gpt-6-base"));
+    try std.testing.expect(!retry.shouldFallbackPinnedSeat(error.ApiError, .model, 1, false, "codex", "gpt-6-pinned", "codex", "gpt-6-base"));
+    try std.testing.expect(!retry.shouldFallbackPinnedSeat(error.ApiError, .model, 1, true, "codex", "gpt-6-base", "codex", "gpt-6-base"));
+}

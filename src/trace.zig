@@ -120,7 +120,7 @@ pub const Tracer = struct {
     pub fn api(self: *Tracer, label: []const u8, from_subagent: bool, model: []const u8, ms: i64, req_bytes: usize, resp_bytes: usize, context_tokens: u64, cache_read: u64, is_error: bool) void {
         if (telemetry.g_telem) |t| t.countApi(model, is_error);
         obs.api(model, ms, context_tokens, cache_read, is_error);
-        const behavior_turn = if (self.behavior) |behavior|
+        const behavior_turn = if (if (comptime @import("build_options").learn) self.behavior else null) |behavior|
             behavior.recordApiMetric(from_subagent, ms, req_bytes, resp_bytes, context_tokens, cache_read, is_error)
         else
             0;
@@ -159,7 +159,7 @@ pub const Tracer = struct {
 
     pub fn tool(self: *Tracer, name: []const u8, call_id: u64, ms: i64, is_error: bool, result_bytes: usize, from_sub: bool) void {
         if (telemetry.g_telem) |t| t.countTool(is_error);
-        const behavior_turn = if (self.behavior) |behavior|
+        const behavior_turn = if (if (comptime @import("build_options").learn) self.behavior else null) |behavior|
             behavior.recordToolMetric(name, from_sub, ms, result_bytes, is_error)
         else
             0;
@@ -185,7 +185,7 @@ pub const Tracer = struct {
     /// this just keeps an oversized adapter payload off the stack.
     pub fn toolStarted(self: *Tracer, name: []const u8, args: Value) u64 {
         const call_id = self.next_call_id.fetchAdd(1, .monotonic);
-        const behavior = self.behavior orelse return call_id;
+        const behavior = (if (comptime @import("build_options").learn) self.behavior else null) orelse return call_id;
         var buf: [8192]u8 = undefined;
         var w: Io.Writer = .fixed(&buf);
         var s: std.json.Stringify = .{ .writer = &w };
@@ -197,7 +197,7 @@ pub const Tracer = struct {
     /// First semantic model output for one API request. Content-free and
     /// default-on: `ms` is time-to-first-token from request send (#602).
     pub fn firstToken(self: *Tracer, label: []const u8, from_subagent: bool, model: []const u8, ms: i64) void {
-        const behavior_turn = if (self.behavior) |behavior| behavior.currentTurn() else 0;
+        const behavior_turn = if (if (comptime @import("build_options").learn) self.behavior else null) |behavior| behavior.currentTurn() else 0;
         self.write(.{
             .t = self.elapsedMs(),
             .ev = "first_token",
@@ -214,7 +214,7 @@ pub const Tracer = struct {
     /// no behavioral sink) or rich capture is off.
     pub fn toolFinished(self: *Tracer, name: []const u8, call_id: u64, ms: i64, is_error: bool, result_bytes: usize) void {
         if (call_id == 0) return;
-        const behavior = self.behavior orelse return;
+        const behavior = (if (comptime @import("build_options").learn) self.behavior else null) orelse return;
         const turn = behavior.currentTurn();
         behavior.toolFinished(turn, call_id, name, ms, is_error, result_bytes);
         behavior.actionTaken(turn, call_id, name, is_error);
@@ -223,7 +223,7 @@ pub const Tracer = struct {
     /// Emit `text_delta` for one completed assistant text segment (#255,
     /// opt-in rich capture only).
     pub fn textDelta(self: *Tracer, text: []const u8) void {
-        const behavior = self.behavior orelse return;
+        const behavior = (if (comptime @import("build_options").learn) self.behavior else null) orelse return;
         behavior.textDelta(behavior.currentTurn(), text);
     }
 
@@ -353,9 +353,9 @@ pub const Trajectory = struct {
 /// Set by main(); runSub and the REPL loop record nodes through this.
 pub var g_traj: ?*Trajectory = null;
 
-fn appendArchiveFile(io: Io, out: *Io.Writer, path: []const u8, remaining: *usize) bool {
+fn appendArchiveFile(io: Io, dir: Io.Dir, out: *Io.Writer, path: []const u8, remaining: *usize) bool {
     if (remaining.* == 0) return false;
-    const file = Io.Dir.cwd().openFile(io, path, .{}) catch return false;
+    const file = dir.openFile(io, path, .{}) catch return false;
     defer file.close(io);
     const stat = file.stat(io) catch return false;
     const size = std.math.cast(usize, stat.size) orelse return false;
@@ -379,7 +379,7 @@ pub fn readTrajectoryArchive(io: Io, arena: Allocator, max_bytes: usize) []const
     var remaining = max_bytes;
 
     var dir = Io.Dir.cwd().openDir(io, trajectories_dir, .{ .iterate = true }) catch
-        return if (appendArchiveFile(io, &aw.writer, legacy_trajectory_path, &remaining)) aw.toOwnedSlice() catch "" else "";
+        return if (appendArchiveFile(io, Io.Dir.cwd(), &aw.writer, legacy_trajectory_path, &remaining)) aw.toOwnedSlice() catch "" else "";
     {
         defer dir.close(io);
         var it = dir.iterate();
@@ -387,12 +387,11 @@ pub fn readTrajectoryArchive(io: Io, arena: Allocator, max_bytes: usize) []const
             const entry = it.next(io) catch break;
             if (entry == null) break;
             if (entry.?.kind != .file or !std.mem.endsWith(u8, entry.?.name, ".jsonl")) continue;
-            const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ trajectories_dir, entry.?.name }) catch continue;
-            _ = appendArchiveFile(io, &aw.writer, path, &remaining);
+            _ = appendArchiveFile(io, dir, &aw.writer, entry.?.name, &remaining);
         }
     }
     // Legacy rows remain readable, but current run files receive the cap first.
-    _ = appendArchiveFile(io, &aw.writer, legacy_trajectory_path, &remaining);
+    _ = appendArchiveFile(io, Io.Dir.cwd(), &aw.writer, legacy_trajectory_path, &remaining);
     return aw.toOwnedSlice() catch "";
 }
 
@@ -401,14 +400,14 @@ pub fn readTrajectoryArchive(io: Io, arena: Allocator, max_bytes: usize) []const
 /// node; one-shot and scripted REPL modes deliberately leave that ledger unchanged.
 pub fn beginRootTurn(tracer: ?*Tracer) u64 {
     const trajectory_node = if (g_traj) |tj| tj.currentTurn() else 0;
-    const behavior = if (tracer) |tr| tr.behavior else null;
+    const behavior = if (if (comptime @import("build_options").learn) tracer else null) |tr| tr.behavior else null;
     return if (behavior) |bt| bt.beginTurn(trajectory_node) else 0;
 }
 
 /// End only the matching root-turn scope. Keeping this at the same provider
 /// boundary prevents later administrative requests from inheriting its ID.
 pub fn endRootTurn(tracer: ?*Tracer, turn: u64) void {
-    const behavior = if (tracer) |tr| tr.behavior else null;
+    const behavior = if (if (comptime @import("build_options").learn) tracer else null) |tr| tr.behavior else null;
     if (behavior) |bt| bt.endTurn(turn);
 }
 

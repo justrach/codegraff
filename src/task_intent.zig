@@ -26,6 +26,14 @@ pub const guidance =
     \\For mixed requests, preserve every requested change and verification step.
     \\For changes, retain read-before-edit, root-cause fixes, and verification
     \\in the project's own environment. A summary alone does not finish a fix.
+    \\When inspecting or analyzing another chat or session's trajectory, keep the
+    \\investigation read-only in this session: never message, wake, steer, or
+    \\recruit the inspected chat as a worker unless the user explicitly asks to.
+    \\When asked to locate a prior chat or session, report its verified user-facing
+    \\title and chat ID (including archived status when applicable) after opening
+    \\candidate transcripts as needed; never present an internal engine-session ID
+    \\alone as a chat locator or claim a title is unrecoverable when listing
+    \\metadata merely had a generic title or unrelated preview.
 ;
 
 fn oneOf(word: []const u8, choices: []const []const u8) bool {
@@ -42,6 +50,7 @@ pub fn classify(text: []const u8) Intent {
     // to do, so an explanation that also asks for one stays general (#1581).
     var publish_window: u8 = 0;
     var after_report = false;
+    var previous: []const u8 = "";
     var words = std.mem.tokenizeAny(u8, text, " \t\r\n,;:!?()[]{}\"`");
     while (words.next()) |raw| {
         const word = std.mem.trim(u8, raw, ".");
@@ -52,25 +61,53 @@ pub fn classify(text: []const u8) Intent {
         }
         after_report = std.ascii.eqlIgnoreCase(word, "report");
         if (oneOf(word, &.{ "file", "open", "raise", "post", "submit", "publish", "report" })) publish_window = 3;
-        if (actionWord(word)) return .general;
+        if (actionWord(word, previous)) return .general;
         if (oneOf(word, &.{ "summarize", "summarise", "summary", "explain", "describe", "overview", "map", "research", "investigate", "lookup" })) informational = true;
         if (std.ascii.eqlIgnoreCase(word, "read-only")) informational = true;
+        previous = word;
     }
     return if (informational) .informational else .general;
 }
 
-const action_words = [_][]const u8{ "fix", "edit", "implement", "add", "remove", "delete", "rename", "refactor", "write", "create", "update", "patch", "build", "test", "lint", "run", "merge", "push", "deploy", "commit", "change", "modify", "make", "resolve", "apply", "replace", "rewrite" };
+const action_words = [_][]const u8{
+    "fix",        "fixing",       "fixes",      "edit",      "editing",    "edited",    "edits",
+    "implement",  "implementing", "add",        "adding",    "remove",     "removing",  "delete",
+    "deleting",   "rename",       "refactor",   "write",     "writing",    "create",    "creating",
+    "created",    "update",       "updating",   "updated",   "updates",    "patch",     "patching",
+    "build",      "test",         "lint",       "run",       "merge",      "push",      "deploy",
+    "commit",     "change",       "changing",   "changes",   "modify",     "modifying", "modified",
+    "make",       "resolve",      "apply",      "applying",  "replace",    "replacing", "rewrite",
+    "rewriting",  "generate",     "generating", "generated", "generation", "produce",   "producing",
+    "render",     "rendering",    "save",       "saving",    "draft",      "document",  "documenting",
+    "append",     "insert",       "install",    "upgrade",   "revert",     "restore",   "regenerate",
+    "write_file", "edit_file",    "imagegen",
+};
 
-fn actionWord(word: []const u8) bool {
-    return oneOf(word, &action_words);
+fn actionWord(word: []const u8, previous: []const u8) bool {
+    if (std.ascii.eqlIgnoreCase(word, "read-only")) return false;
+    // "report format" names a noun, not a requested mutation. Keep formatting
+    // actionable at imperative, request, and coordinated-verb boundaries.
+    if (std.ascii.eqlIgnoreCase(word, "format"))
+        return oneOf(previous, &.{ "", "please", "and", "then", "also", "to", "you", "we" });
+    if (oneOf(word, &action_words)) return true;
+    if (std.mem.indexOfScalar(u8, word, '-') != null and std.mem.indexOfScalar(u8, word, '/') == null) {
+        var parts = std.mem.tokenizeScalar(u8, word, '-');
+        while (parts.next()) |part| if (oneOf(part, &action_words)) return true;
+    }
+    return false;
 }
 
 /// True when the request names something to change or execute. A text-only
 /// first answer is unfinished only for such a request (#1518); a question
 /// with no action verb is answered by its text.
 pub fn requestsAction(text: []const u8) bool {
+    var previous: []const u8 = "";
     var words = std.mem.tokenizeAny(u8, text, " \t\r\n,;:!?()[]{}\"`");
-    while (words.next()) |raw| if (actionWord(std.mem.trim(u8, raw, "."))) return true;
+    while (words.next()) |raw| {
+        const word = std.mem.trim(u8, raw, ".");
+        if (actionWord(word, previous)) return true;
+        previous = word;
+    }
     return false;
 }
 
@@ -133,10 +170,11 @@ test "informational intent recognizes summaries and keeps mixed execution reques
         "Investigate how this application uses citations",
     }) |text| try std.testing.expectEqual(Intent.informational, classify(text));
     for ([_][]const u8{
-        "Fix src/parser.zig and summarize the change", "Explain and then refactor the parser",
-        "Run tests and describe the results",          "Implement the plan",
-        "go on",                                       "hello",
-        "Summarize the codebase; then add logging",    "Map the project and build it",
+        "Fix src/parser.zig and summarize the change",  "Explain and then refactor the parser",
+        "Run tests and describe the results",           "Implement the plan",
+        "go on",                                        "hello",
+        "Summarize the codebase; then add logging",     "Map the project and build it",
+        "Explain the parser and format src/parser.zig", "Describe the output, then format README.md",
     }) |text| try std.testing.expectEqual(Intent.general, classify(text));
 }
 
@@ -186,9 +224,9 @@ test "summary checkpoint is once, preserves the human request, and respects a ne
 }
 
 test "only a request naming an action counts as one (#1518)" {
-    for ([_][]const u8{ "Fix src/parser.zig", "Make `python3 test.py` print OK. Do not edit the tests.", "Reply with exactly: pong; then create target.txt" }) |text|
+    for ([_][]const u8{ "Fix src/parser.zig", "Make `python3 test.py` print OK. Do not edit the tests.", "Reply with exactly: pong; then create target.txt", "Format README.md", "Please format src/parser.zig", "Explain the parser and format src/parser.zig" }) |text|
         try std.testing.expect(requestsAction(text));
-    for ([_][]const u8{ "What does parse() return for an empty string?", "Which module owns retries?", "what is 2+2" }) |text|
+    for ([_][]const u8{ "What does parse() return for an empty string?", "Which module owns retries?", "what is 2+2", "Explain the bug report format", "Describe the file format" }) |text|
         try std.testing.expect(!requestsAction(text));
 }
 
@@ -201,6 +239,8 @@ test "#1581 an explanation that also asks to publish stays actionable" {
     }) |text| try std.testing.expectEqual(Intent.general, classify(text));
     try std.testing.expectEqual(Intent.informational, classify("Explain the bug report format"));
     try std.testing.expectEqual(Intent.informational, classify("Describe the file layout"));
+    try std.testing.expectEqual(Intent.informational, classify("Describe the file format"));
+    try std.testing.expectEqual(Intent.informational, classify("Explain the output format before proceeding"));
 }
 
 test "#1581 only a summary request gets the repository checkpoint" {
@@ -225,4 +265,14 @@ test "#1581 only a summary request gets the repository checkpoint" {
     try std.testing.expect(std.mem.indexOf(u8, sent, "every deliverable it named") != null);
     try std.testing.expect(std.mem.indexOf(u8, sent, "repository's purpose") == null);
     try std.testing.expectEqualStrings("Investigate why login fails", messages.latestUserText(agent.messages.items));
+}
+
+test "#1813 image-generation and documentation-update tasks classify as general, not informational" {
+    for ([_][]const u8{
+        "Investigate the assets and generate a replacement banner with imagegen",
+        "Research the API changes and perform a documentation-update in docs/guide.md",
+        "Summarize the release and save the notes using write_file",
+        "Explain the layout while updating README.md",
+        "Image-generation worker: render the icon and describe the output",
+    }) |text| try std.testing.expectEqual(Intent.general, classify(text));
 }

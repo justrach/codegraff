@@ -59,6 +59,29 @@ pub fn interruptRequested(io: Io, dir: Io.Dir, id: []const u8) bool {
     _ = dir.statFile(io, name, .{}) catch return false;
     return true;
 }
+
+pub fn requestSteer(io: Io, dir: Io.Dir, id: []const u8, text: []const u8) !void {
+    if (!validId(id)) return error.InvalidChildId;
+    const trimmed = std.mem.trim(u8, text, " \t\r\n");
+    if (trimmed.len == 0 or trimmed.len > @import("subagent_feedback.zig").max_message_bytes or !std.unicode.utf8ValidateSlice(trimmed)) return error.InvalidMessage;
+    // If this process owns the live subagent, enqueue directly into its Inbox too.
+    _ = @import("subagent_steer.zig").enqueueBySubId(io, id, trimmed);
+    var buf: [80]u8 = undefined;
+    const name = try std.fmt.bufPrint(&buf, "{s}.steer", .{id});
+    var f = try dir.createFileAtomic(io, name, .{ .permissions = private_file, .replace = true });
+    defer f.deinit(io);
+    try f.file.writeStreamingAll(io, trimmed);
+    try f.replace(io);
+}
+
+pub fn takeSteer(a: A, io: Io, dir: Io.Dir, id: []const u8) ?[]u8 {
+    if (!validId(id)) return null;
+    var buf: [80]u8 = undefined;
+    const name = std.fmt.bufPrint(&buf, "{s}.steer", .{id}) catch return null;
+    const bytes = dir.readFileAlloc(io, name, a, .limited(@import("subagent_feedback.zig").max_message_bytes)) catch return null;
+    dir.deleteFile(io, name) catch {};
+    return bytes;
+}
 pub fn cleanup(io: Io, registry: Io.Dir, pid: i32, start_id: u64) void {
     var buf: [80]u8 = undefined;
     registry.deleteTree(io, directory(&buf, pid, start_id) catch return) catch {};
@@ -127,6 +150,10 @@ pub const Recorder = struct {
             self.response = "Interrupted.";
             self.publish(true);
             return;
+        }
+        if (takeSteer(self.a, self.io, self.dir, self.meta.id)) |steered| {
+            defer self.a.free(steered);
+            _ = @import("subagent_steer.zig").enqueueBySubId(self.io, self.meta.id, steered);
         }
         const ev: Event = switch (stamped.event) {
             .reasoning_delta => |v| .{ .type = "reasoning", .text = v.text },

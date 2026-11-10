@@ -5,6 +5,57 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.59
+    \\  • Claude Fable 5.2 in the baked catalog: `--model claude-fable-5-2` resolves by its bare name and is priced
+    \\  • image reads in one tool batch all reach the model, in call order (#1866): a bounded queue (16 images, 24 MB) replaces the single slot, with a tool error past the limit
+    \\  • uploads a client leaves as an `Attached images` trailer are staged as native images instead of paths the file tools refuse, also when sent mid-turn (#1865)
+    \\  • `graff refresh` / `graff models` / `/models` say when a provider rejects the live model-list request instead of silently showing the cached list
+    \\  • Lean 4 ImageDelivery kernel (3,870 verified cells): every staged image is delivered once or refused, in call order
+    \\
+    \\0.302.74.58
+    \\  • prompt-cache stability (#1320): jev_auto off by default (opt-in via /effort auto or GRAFF_JEV_AUTO=1), BustCause.effort HUD tracking, deterministic per-turn prompt_cache_key fallback, and in-session HTTP MCP schema retention
+    \\  • ACP low-latency path + Lean 4 AcpLatency kernel (3,768 verified cells): 0-subprocess in-process .git worktree resolution, single-parse ACP inbox routing, batch-flushed LineWriter/EventSink with reusable scratch arena, and single-pass startup MCP config load
+    \\
+    \\0.302.74.57
+    \\  • adaptive codedb workspace threshold (<8 code files in-process list_dir+read_file; >=8 code files codedb) + ~/.codedb/projects CoW seeding
+    \\  • pre-tool transcript checkpointing (beforeToolBatch), crash-tail suffix replay, and effect-aware TOOL_INTERRUPTED_READONLY recovery
+    \\  • deferred, single-pass streaming, cached (.graff/folded_priors.json), and ring-capped trajectory archive folding (#1864)
+    \\  • Lean 4 resource/durability kernel (3,742 verified cells) + scoped arena and O(1) incremental hashing optimizations
+    \\
+    \\0.302.74.56
+    \\  • unified subagent steering (@agent-N, @sa-..., /workers send, ACP graff/agents action: "steer") for foreground and background workers
+    \\  • named background subagents/tasks in REPL standing bar and ACP session_info_update (_meta["graff/waiting"])
+    \\  • cross-turn ACP tool_call_update progress streaming for detached subagents and immediate user follow-up wakeup in agent_output
+    \\  • monotonic rewind-proof attempt ledger across /undo and /rewind preserved in compact_handoff_note.durableState
+    \\  • wall-clock grid-aligned recurring schedules (nextGridSlot) with @every <delay> and --missed=once|skip policies
+    \\  • APFS clonefile / Linux reflink Copy-on-Write cache seeding in subagent worktrees and adaptive sub-100ms foreground bash polling
+    \\  • corrupt-safe playbook JSONL self-healing + storage_warning diagnostics, markdown agent line:col validation, and OAuth child-env scrubbing
+    \\
+    \\0.302.74.55
+    \\  • scoped temporary arena parsing in mcp_cache.lookupWith/store/forget and single-server tool entry cloning
+    \\  • per-request scratch allocation in agent_ws.postResponsesWs and scoped arena cleanup in session_workspaces.remember
+    \\  • automatic same-plan subscription credential failover in providers.runTurnWithFallback
+    \\
+    \\0.302.74.54
+    \\  • Phase-1 deterministic pre-compaction tool-result pruning (compact_prune), crash-tail TOOL_OUTCOME_UNKNOWN vs TOOL_NOT_STARTED repair, and key-sorted repeat hashing
+    \\  • content-addressed dirty workspace snapshots (workspace_tree_snap) for edit_contract and hook/fsmonitor/LFS-safe subagent worktrees
+    \\  • Linux bwrap --unshare-pid isolation, Landlock ABI probing, and read-only sandbox denial boundary tagging
+    \\
+    \\0.302.74.53
+    \\  • workspace-invariant skill catalog prefix ordering and deepseekChat repo_context split for cross-directory prompt caching
+    \\  • Kimi global (kimi.ai) vs Mainland China (kimi.com) OAuth region resolution and k3.1-pro catalog + plan routing across CLI and ACP
+    \\
+    \\0.302.74.52
+    \\  • read-only trajectory inspection and verified user-facing chat title + chat ID reporting
+    \\  • background workers preserve independent tool-result sequence counters; synthetic compaction skips mcp_preload scans
+    \\  • workspace-invariant skill catalog prefix ordering, deepseekChat repo_context split, and Kimi global (kimi.ai) + k3.1-pro catalog routing
+    \\
+    \\0.302.74.51
+    \\  • graff sessions reads 64 KiB header prefixes in a reusable scratch arena; session load/resume frees parse trees after load
+    \\  • single-copy message arena reclaim, scoped trajectory archive folds, and faster remembered-model startup
+    \\  • -Dminimal and per-subsystem build flags (-Dlearn, -Dserve, -Dacp, -Dextras), codedb symbol ranking, and --eval contrastive reflection
+    \\  • zero-binary ServerlessHarness SDK runtime with InMemoryWorkspace, pluggable tools, lifecycle hooks, steer/followUp, and state snapshots
+    \\
     \\0.302.74.5
     \\  • Claude Agent ignores unprefixed tool calls rejected by Claude Code and keeps earlier images across checkpoints
     \\  • read_tool_result keeps originating workspace handles across workspace switches
@@ -365,7 +416,7 @@ pub const usage_text =
     \\  graff mcp install                configure local HTTP service and MCP clients
     \\  graff mcp serve [--http] [--port N] expose run_task to MCP clients
     \\  graff plugins [load <name>]       list Claude/Cursor/Grok/Codex plugin trees (in place)
-    \\  graff computer [status|stop|off|allow|grant|open]  nanocua's switches (macOS)
+    \\  graff computer [status|install|stop|off|allow|grant|open]  nanocua's switches (macOS)
     \\
 ++ learn_usage ++
     \\  graff worktree list              list -w tabs and experiment-pool trees (tagged)

@@ -47,8 +47,10 @@ pub fn restore(root: *Agent, obj: std.json.ObjectMap) !void {
         });
         // Recompose all variants while keeping today's instructions on both sides.
         try prompts.setSystemPrompts(root, base, root.arena);
+        root.repo_map_snapshot = base[at .. at + desired.len];
+    } else {
+        root.repo_map_snapshot = current;
     }
-    root.repo_map_snapshot = desired;
 }
 
 test "#867 production save load preserves layout after tree changes without restoring old rules" {

@@ -129,6 +129,12 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
     // same tree is skipped; a green forgets it, because the next RED must be
     // measured against its own tree and never against a stale one.
     self.eval_fp = if (self.eval_repair_pending) tree_fp else null;
+    const eval_out: []const u8 = if (run.stderr.len == 0)
+        run.stdout
+    else if (run.stdout.len == 0)
+        run.stderr
+    else
+        (std.fmt.allocPrint(self.arena, "{s}\n{s}", .{ run.stderr, run.stdout }) catch run.stdout);
     // A RED verdict is harness ground truth about a FAILED attempt: park a
     // capped excerpt so the next escalation decision carries the evidence
     // (the R0d revision advisory, or an R3 fleet's briefs).
@@ -136,6 +142,9 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
         var ev_buf: [256]u8 = undefined;
         const ev = std.fmt.bufPrint(&ev_buf, "eval RED: score {d:.1}/100 (target {d}, exit {d}) — {s}", .{ combined orelse -1.0, self.eval_target, exit_code, utf8Prefix(note, 128) }) catch "eval RED: scoring command failed";
         failure_evidence.note(shapes.classOf(shapes.rawAsk()), ev);
+        playbook_reflect.noteFailure(eval_out);
+        if (@import("playbook.zig").recordOutcome(self.io, self.arena, false) > 0)
+            @import("playbook_glue.zig").refreshRoot(self, self.arena);
     }
     // A green eval refunds the RED-continuation budget (see grantRepairTurn):
     // red→repair→green→red progress cycles keep running; only sustained
@@ -157,7 +166,10 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
     // uses, which is what keeps agent_eval_tests' stub Agent (undefined
     // provider/client, and a second eval that DOES meet its target) out of a
     // live model call.
-    if (met) playbook_reflect.afterEval(self, note, combined orelse 0, run.stdout);
+    if (met) {
+        _ = @import("playbook.zig").recordOutcome(self.io, self.arena, true);
+        playbook_reflect.afterEval(self, note, combined orelse 0, eval_out);
+    }
 
     // The orchestration outcome (§5). This is the same funnel the DGM score
     // rows use, and for the same reason: an eval verdict is the one place the
@@ -307,7 +319,7 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
     } else {
         try w.print("eval #{d}: command ran but no score parsed - print a bare number, or JSON with a score field (0-100 or 0-1), on the last line. ", .{self.eval_iter});
     }
-    const tail = if (run.stdout.len > 1500) run.stdout[run.stdout.len - 1500 ..] else run.stdout;
+    const tail = if (eval_out.len > 1500) eval_out[eval_out.len - 1500 ..] else eval_out;
     try w.print("\n[exit {d}] eval output (tail):\n{s}", .{ exit_code, tail });
     return .{ .text = try self.arena.dupe(u8, aw.writer.buffered()), .is_error = false };
 }

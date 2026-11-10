@@ -27,6 +27,7 @@ const Allocator = std.mem.Allocator;
 const pb = @import("phase_budget.zig");
 const orch_rows = @import("orchestration_rows.zig");
 const process_runner = @import("process_runner.zig");
+pub const workspace_tree_snap = @import("workspace_tree_snap.zig");
 
 /// The failure text a contracted phase gets when nothing changed on disk.
 /// Carries no retry_unsafe_note, so failureAllowsRetry says yes and the
@@ -66,22 +67,11 @@ pub fn mutatingTask(role: []const u8, prompt: []const u8) bool {
 /// Anything else (new lines, changed lines) is a real diff and passes.
 pub fn contractUnmet(contracted: bool, before: []const u8, after: []const u8) bool {
     if (!contracted) return false;
-    const a = std.mem.trim(u8, after, " \t\r\n");
-    if (a.len == 0) return true;
-    return std.mem.eql(u8, std.mem.trim(u8, before, " \t\r\n"), a);
+    return !workspace_tree_snap.changed(before, after);
 }
 
 fn porcelain(gpa: Allocator, io: Io, cwd: ?[]const u8) ?[]u8 {
-    const r = if (cwd) |p|
-        process_runner.runCapped(gpa, io, &.{ "git", "-C", p, "status", "--porcelain" }, 1 << 16, 8192, 15_000) catch return null
-    else
-        process_runner.runCapped(gpa, io, &.{ "git", "status", "--porcelain" }, 1 << 16, 8192, 15_000) catch return null;
-    defer gpa.free(r.stderr);
-    if (!process_runner.ranOk(r)) {
-        gpa.free(r.stdout);
-        return null;
-    }
-    return r.stdout;
+    return workspace_tree_snap.porcelainSnapshot(gpa, io, cwd);
 }
 
 /// Snapshot the working tree, arena-owned. Returns "" for an uncontracted
@@ -121,4 +111,48 @@ test "read-only analysis keeps a non-mutating scope in a contracted slot" {
     try std.testing.expect(!mutatingTask("implement", "Summarize the architecture"));
     try std.testing.expect(mutatingTask("implement", "Fix src/parser.zig"));
     try std.testing.expect(mutatingTask("implement", "Explain then implement the parser"));
+}
+
+test "treeSnapshot distinguishes untouched dirty worktree from further edits to a dirty file" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const repo = path_buf[0..try tmp.dir.realPath(io, &path_buf)];
+
+    const init = try process_runner.runCapped(gpa, io, &.{ "git", "-C", repo, "init", "-q" }, 4096, 4096, 15_000);
+    defer {
+        gpa.free(init.stdout);
+        gpa.free(init.stderr);
+    }
+    try tmp.dir.writeFile(io, .{ .sub_path = "dirty.txt", .data = "v1\n" });
+    const add = try process_runner.runCapped(gpa, io, &.{ "git", "-C", repo, "add", "dirty.txt" }, 4096, 4096, 15_000);
+    defer {
+        gpa.free(add.stdout);
+        gpa.free(add.stderr);
+    }
+    const commit = try process_runner.runCapped(gpa, io, &.{ "git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init" }, 4096, 4096, 15_000);
+    defer {
+        gpa.free(commit.stdout);
+        gpa.free(commit.stderr);
+    }
+
+    // Dirty the file BEFORE the phase starts.
+    try tmp.dir.writeFile(io, .{ .sub_path = "dirty.txt", .data = "v2-dirty-before-phase\n" });
+    const before = treeSnapshot(a, gpa, io, repo, true);
+    try std.testing.expect(before.len > 0);
+
+    // An untouched dirty worktree still fails the edit contract.
+    const untouched = treeSnapshot(a, gpa, io, repo, true);
+    try std.testing.expect(contractUnmet(true, before, untouched));
+
+    // Editing the already-dirty file changes the digest and satisfies the contract.
+    try tmp.dir.writeFile(io, .{ .sub_path = "dirty.txt", .data = "v3-edited-by-worker\n" });
+    const after = treeSnapshot(a, gpa, io, repo, true);
+    try std.testing.expect(!contractUnmet(true, before, after));
 }

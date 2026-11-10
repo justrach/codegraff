@@ -163,3 +163,35 @@ test "/rewind: a file already gone when the rewind runs still counts as restored
     try std.testing.expectEqual(@as(usize, 1), rw.restored);
     try std.testing.expectEqual(@as(usize, 0), rw.skipped);
 }
+
+test "/rewind: append-only rewind ledger survives snapshot drop and records reverted paths + reason" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{&tmp.sub_path});
+
+    var snaps: snapshots.Snapshots = .{ .gpa = gpa, .io = io };
+    defer snaps.deinit();
+    try std.testing.expectEqualStrings("", snaps.rewindDigest(a));
+
+    snaps.turn = 2;
+    const path = try std.fmt.allocPrint(a, "{s}/dead_end.txt", .{dir});
+    try writeFile(&snaps, a, path, "failed approach\n");
+
+    const rw = snaps.restoreWithReason(2, "rewrite parser with regex\nextra line");
+    try std.testing.expectEqual(@as(usize, 1), rw.restored);
+    try std.testing.expectEqual(@as(usize, 0), snaps.modifiedPaths(a).len);
+
+    const digest = snaps.rewindDigest(a);
+    try std.testing.expect(std.mem.indexOf(u8, digest, "prior rolled-back attempts in this session (1 rewind(s)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, digest, "turn >=2 rewound") != null);
+    try std.testing.expect(std.mem.indexOf(u8, digest, "dead_end.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, digest, "rewrite parser with regex") != null);
+    try std.testing.expect(std.mem.indexOf(u8, digest, "extra line") == null);
+}

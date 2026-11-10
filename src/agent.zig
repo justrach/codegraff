@@ -189,6 +189,7 @@ pub const Agent = struct {
     tools_responses: []const u8 = schema.tools_responses_sub,
     tools_interactions: []const u8 = @import("schema_interactions.zig").tools_interactions_sub,
     worker_tools: []const u8 = "", // ADR 0227: a spawned child's catalog plus the MCP tools its root loaded (worker_mcp.inherit); empty = the static child catalog
+    tools_epoch: u64 = 0, // native_fold.catalogEpoch() when tools_* / worker_tools was last built (#492)
     todos: std.ArrayList(TodoItem) = .empty,
     pending_nudged_fp: ?u64 = null, // #1545: fingerprint of the open set the reconciliation guard last nudged; a repeat plain final on an unchanged checklist stops instead of re-reminding
     eval_cmd: ?[]const u8 = null, // --eval: shell command that scores the current output (eval-driven loop)
@@ -211,6 +212,8 @@ pub const Agent = struct {
     /// event, which otherwise only knows "api error".
     last_api_error: ?[]const u8 = null,
     last_api_reauth: ?@import("auth_recovery.zig").Recovery = null,
+    last_api_error_detail: ?@import("provider_error_copy.zig").Detail = null,
+    h2_reset: @import("http2_reset.zig").Diag = .{},
     /// Text streamed so far in the current request — on Esc-interrupt this is
     /// what survives into history (with an "[interrupted]" marker appended).
     partial_text: std.ArrayList(u8) = .empty,
@@ -314,7 +317,7 @@ pub const Agent = struct {
 
     pub noinline fn ensureStoredKeys(self: *Agent, keys: *provider_mod.Keys) void {
         if (self.stored_keys_loaded) return;
-        if (self.home.len != 0) keys_cli.loadMissingStoredKeys(self.io, self.gpa, self.arena, self.home, keys, .all);
+        if (self.home.len != 0) @import("credential_failover.zig").loadMissingAndPlans(self.io, self.gpa, self.arena, self.home, keys);
         self.stored_keys_loaded = true;
     }
 
@@ -348,6 +351,7 @@ pub const Agent = struct {
     pub const contextEstimate = @import("agent_request.zig").contextEstimate;
     pub const contextEstimateFromInputBytes = @import("agent_request.zig").contextEstimateFromInputBytes;
     pub const effectiveContextTokens = @import("agent_request.zig").effectiveContextTokens;
+    pub const approxTokens = @import("agent_request.zig").effectiveContextTokens;
     pub const pairContextMeterWithCurrentLocal = @import("agent_request.zig").pairContextMeterWithCurrentLocal;
     pub const rebaseContextMeter = @import("agent_request.zig").rebaseContextMeter;
     pub const recordUsage = @import("agent_request.zig").recordUsage;
@@ -386,13 +390,12 @@ pub const Agent = struct {
     pub const renderTodos = goal_state.renderTodos; // body in goal_state.zig (600-line cap)
 
     // Context management (compaction/emergency-trim) and the --eval/--until
-    // eval-driven loop (+ optional LLM-as-judge) live in agent_compact.zig
-    // (#123, 600-line goal). Member-aliased so self.compact(...)/etc.
-    // resolve unchanged.
+    // loop (+ optional LLM-as-judge) live in agent_compact.zig (#123).
     pub const runEval = @import("agent_compact.zig").runEval;
     pub const appendEvalLog = @import("agent_compact.zig").appendEvalLog;
     pub const runJudge = @import("agent_compact.zig").runJudge;
     pub const compact = @import("agent_compact.zig").compact;
+    pub const autoCompact = @import("agent_compact.zig").autoCompact;
     pub const recentContextStart = @import("agent_compact.zig").recentContextStart;
     pub const cleanUserTurn = @import("agent_compact.zig").cleanUserTurn;
     pub const emergencyCutIndex = @import("agent_compact.zig").emergencyCutIndex;

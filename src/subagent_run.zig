@@ -110,6 +110,7 @@ pub fn classifyFailure(err: anyerror, detail: ?[]const u8) FailKind {
     // ("quota"-adjacent, and it names a limit) would otherwise classify it as
     // a provider rate limit and earn it a retry that cannot possibly succeed.
     if (isBudgetExhausted(msg)) return .budget_exhausted;
+    if (containsAnyCI(msg, &.{ "model_unavailable", "model_not_found" })) return .model;
     // 5xx before everything: a server-side outage is the most common transient
     // failure there is, and "503 Service Unavailable" used to fall through to
     // the .model arm on the bare word "unavailable". That was harmless while
@@ -121,7 +122,7 @@ pub fn classifyFailure(err: anyerror, detail: ?[]const u8) FailKind {
     if (containsAnyCI(msg, &.{ "api key", "unauthorized", "expired", "authentication", "invalid_api_key", "401", "sign-in was rejected" })) return .auth;
     // "unavailable" must stay qualified: bare, it swallows every 5xx above.
     if (containsAnyCI(msg, &.{ "does not exist", "not found", "no such model", "decommission", "no longer", "model_not_found", "model unavailable", "model is unavailable", "404" })) return .model;
-    if (containsAnyCI(msg, &.{ "context length", "context window", "invalid", "unsupported", "not supported", "must be", "too long", "400", "parameter", "max_tokens", "bad request" })) return .invalid;
+    if (containsAnyCI(msg, &.{ "context length", "context window", "invalid", "unsupported", "not supported", "must be", "too long", "400", "parameter", "max_tokens", "bad request", "cyber_policy", "cybersecurity", "policy_violation", "content_policy", "request_rejected", "compaction state was rejected" })) return .invalid;
     return .unknown;
 }
 
@@ -276,7 +277,8 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     // worker choice for this child. Already provider-local (see
     // subagent_pin), so the cross-provider consent check childProvider
     // enforces has nothing left to decide.
-    const child_provider = pin orelse childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider);
+    const base_provider = childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider);
+    const child_provider = pin orelse base_provider;
 
     var agent: Agent = .{
         .gpa = gpa,
@@ -311,8 +313,9 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         .text_only = std.mem.eql(u8, kind, "judge_task"),
         .synthesis = .{ .enabled = ctx.synthesis and !std.mem.eql(u8, kind, "judge_task") },
         // #1360: an informational child still needs its read tools; it is
-        // read-only, not tool-less.
-        .read_only = @import("task_intent.zig").classify(prompt) == .informational,
+        // read-only, not tool-less. #1813: a child isolated in a worktree is
+        // seated there specifically to produce changes, never read-only.
+        .read_only = isolation != .worktree and @import("task_intent.zig").classify(prompt) == .informational,
         .reasoning = effort orelse .medium, // #292 follow-up: effort pin; unpinned workers keep the default depth, not the root's /effort
     };
     const sub_start = Io.Timestamp.now(ctx.io, .awake);
@@ -331,9 +334,21 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         else if (ctx.tracer) |tr| tr.note("fleet", "propose skipped: genome > 64KB");
     };
 
-    const ordinal = cards.g_subagent_seq.fetchAdd(1, .monotonic);
+    const preset = if (ctx.subagent_feedback) |fb| (if (fb.subId().len > 0) fb else null) else null;
+    const ordinal = if (preset) |fb| fb.ordinal else cards.g_subagent_seq.fetchAdd(1, .monotonic);
     var id_buf: [40]u8 = undefined;
-    const sub_id = cards.subagentId(&id_buf, ordinal, label, prompt);
+    const sub_id = if (preset) |fb| fb.subId() else cards.subagentId(&id_buf, ordinal, label, prompt);
+    var local_feedback: @import("subagent_feedback.zig").Inbox = .{};
+    defer if (ctx.subagent_feedback == null) local_feedback.deinit(gpa);
+    if (ctx.subagent_feedback == null) {
+        local_feedback.setSubId(ordinal, sub_id);
+        agent.feedback = &local_feedback;
+    }
+    @import("subagent_steer.zig").registerLive(ctx.io, gpa, ordinal, sub_id, label, agent.feedback.?);
+    defer {
+        @import("subagent_steer.zig").unregisterLive(ctx.io, agent.feedback.?);
+        if (ctx.subagent_feedback == null) _ = local_feedback.close(ctx.io);
+    }
     const sprite = cards.subagentSprite(ordinal);
     cards.subagentLaunchCard(arena, sub_id, sprite, label, kind, prompt);
     var activity = @import("subagent_activity.zig").start(gpa, ctx.io, sub_id, label, prompt);
@@ -434,6 +449,12 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
             const r = agent.runTurn();
             const err = if (r) |_| break :ask r else |e| e;
             const fail_kind = classifyFailure(err, agent.last_api_error);
+            if (agent.tools_used.count() == 0 and subagent_retry.shouldFallbackPinnedSeat(err, fail_kind, attempts, pin != null, agent.provider.id, agent.provider.model, base_provider.id, base_provider.model)) {
+                subagent_retry.traceSeatFallback(ctx.tracer, sub_id, agent.provider.model, base_provider.model, fail_kind, agent.last_api_error);
+                agent.provider = base_provider;
+                if (activity) |*recorder| recorder.setModel(agent.provider.id, agent.provider.model);
+                continue;
+            }
             if (!subagent_retry.shouldRetry(err, fail_kind, agent.last_api_error, attempts)) break :ask r;
             // A run deadline already past makes waiting pointless.
             if (subagent_retry.pastDeadline(util.unixMs(ctx.io), ctx.loop_deadline_ms)) break :ask r;

@@ -78,6 +78,7 @@ pub fn fromInput(ctx: tools.ToolCtx, input: Value, a: Allocator) !?Snapshot {
     session.flushSaves();
     const relative = try session.sessionPath(a, name);
     const path = if (ctx.agent_cwd) |cwd| try std.fs.path.join(a, &.{ cwd, relative }) else relative;
+    try @import("session_store.zig").recover(ctx.io, ctx.gpa, .cwd(), path);
     const data = try std.Io.Dir.cwd().readFileAlloc(ctx.io, path, a, .limited(@import("session_index.zig").max_session_bytes));
     var saved = try std.json.parseFromSliceLeaky(Value, a, data, .{ .allocate = .alloc_always });
     if (saved != .object) return error.BadSession;

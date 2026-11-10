@@ -150,6 +150,16 @@ fn aborted() bool {
 
 pub fn takeOutput(self: *Agent, call: ToolCall, output: ToolOutput, handle_threshold: usize, handle_target: tool_handle.Target) !ExecResult {
     self.read_miss.noteOutput(call.name, call.input, output.text, output.is_error);
+    const reflect = @import("playbook_reflect.zig");
+    if (isShellName(call.name)) {
+        if (output.is_error) {
+            reflect.noteFailure(output.text);
+        } else if (reflect.editedAfterFailure()) {
+            reflect.afterShellRecovery(self, "shell verification passed after edit", output.text);
+        }
+    } else if (!output.is_error and (std.mem.eql(u8, call.name, "edit_file") or std.mem.eql(u8, call.name, "write_file"))) {
+        reflect.noteEditAfterFailure();
+    }
     const msg_alloc = self.historyAlloc();
     const handled = try tool_handle.forResult(self.gpa, msg_alloc, handle_target, output.text, handle_threshold);
     @import("context_savings.zig").noteHandle(handled.bytes, handled.text.len);
@@ -177,10 +187,17 @@ fn runSerial(self: *Agent, ctx: ToolCtx, calls: []const ToolCall, ext_idx: []con
             results[i] = skipResult(self, calls[i]);
             continue;
         }
-        const output = execTool(ctx, calls[i]);
+        const output = execTool(at(ctx, i), calls[i]);
         defer self.gpa.free(output.text);
         results[i] = try takeOutput(self, calls[i], output, handle_threshold, handle_tgt);
     }
+}
+
+/// `ctx` for the call at position `i` of the batch (#1866).
+fn at(ctx: ToolCtx, i: usize) ToolCtx {
+    var positioned = ctx;
+    positioned.call_seq = @intCast(i);
+    return positioned;
 }
 
 fn runParallel(self: *Agent, ctx: ToolCtx, calls: []const ToolCall, ext_idx: []const usize, results: []ExecResult) !void {
@@ -204,9 +221,9 @@ fn runParallel(self: *Agent, ctx: ToolCtx, calls: []const ToolCall, ext_idx: []c
         // Async may fall back to inline execution under saturation; it does
         // not guarantee execution on the caller thread (Threaded Io).
         fut.* = if (cooperative)
-            self.io.async(execTool, .{ ctx, calls[i] })
+            self.io.async(execTool, .{ at(ctx, i), calls[i] })
         else
-            self.io.concurrent(execTool, .{ ctx, calls[i] }) catch self.io.async(execTool, .{ ctx, calls[i] });
+            self.io.concurrent(execTool, .{ at(ctx, i), calls[i] }) catch self.io.async(execTool, .{ at(ctx, i), calls[i] });
     }
     for (futures, outputs) |*fut, *output| output.* = fut.await(self.io);
     defer for (outputs) |output| self.gpa.free(output.text);

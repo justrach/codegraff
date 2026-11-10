@@ -69,6 +69,7 @@ fn liveSlash(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror!?[]co
     // /never is the playbook's own, and handleCommand does not know it.
     if (playbook_glue.isCommand(text)) {
         _ = try playbook_glue.command(live.root, live.root.arena, text, &aw.writer);
+        session.saveSession(live.root, live.root.arena, live.root.session_name) catch {};
         return try engine.stripSgr(arena, aw.writer.buffered());
     }
     if (command_catalog.match(text) == null and command_catalog.commandWord(text) == null) return null;
@@ -78,6 +79,7 @@ fn liveSlash(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror!?[]co
     @import("acp_compaction.zig").install(&compaction);
     defer @import("acp_compaction.zig").uninstall();
     try main_mod.handleCommand(live.root, live.keys, live.root.arena, std.mem.trim(u8, text, " \t\r\n"), &aw.writer);
+    session.saveSession(live.root, live.root.arena, live.root.session_name) catch {};
     return try engine.stripSgr(arena, aw.writer.buffered());
 }
 
@@ -114,7 +116,7 @@ fn userMessage(arena: Allocator, root: *agent_mod.Agent, text: []const u8) !Valu
 /// the same catalog + credential view the REPL `/models` table prints, so an
 /// ACP client can offer only the models this install can actually reach.
 /// Rows come back in election order (plan, then local, credits, api).
-fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request) anyerror!bool {
+pub fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request) anyerror!bool {
     const live: *LiveTurn = @ptrCast(@alignCast(ctx));
     if (try @import("acp_agents.zig").handle(arena, live.root.io, live.root.home, w, req)) return true;
     if (try @import("acp_changes.zig").handle(arena, live.root.io, w, req)) return true;
@@ -233,6 +235,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
         .error_message = LiveTurn.errorMessage,
         .cancel_info = LiveTurn.cancelInfo,
         .error_recovery = LiveTurn.errorRecovery,
+        .error_detail = LiveTurn.errorDetail,
         .ctx = &live,
         .seed = @bitCast(util.unixMs(io)),
         .slash = liveSlash,
@@ -271,6 +274,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
                 handshake.after(io, phase);
                 @import("acp_subagent_live.zig").configureBackground(io, d.session_id orelse "", d.background_subagents);
                 @import("acp_idle.zig").startupEffortNotice(&d, root, wire) catch break;
+                @import("background_wait.zig").writeAcpWaiting(io, wire, d.session_id orelse "");
             },
         }
         wire.flush() catch break;
@@ -319,6 +323,18 @@ test "userMessage sends a Codex GPT-6 Sol GUI attachment as a native vision bloc
     try testing.expectEqual(@as(usize, 2), content.len);
     try testing.expectEqualStrings("input_image", content[1].object.get("type").?.string);
     try testing.expect(std.mem.indexOf(u8, content[1].object.get("image_url").?.string, "data:image/") != null);
+
+    // #1865: an upload the client left as a trailer ref is staged the same
+    // way, and its line leaves the text the model reads.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const png = "\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x04\x00\x00\x00\xb5\x1c\x0c\x02\x00\x00\x00\x0b\x49\x44\x41\x54\x78\xda\x63\xfc\xff\x1f\x00\x03\x03\x02\x00\xef\x9a\x0f\x5b\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82";
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "ab12-shot.png", .data = png });
+    const prompt = try std.fmt.allocPrint(a, "what is this?\n\nAttached images (local files — open them to view):\n- .zig-cache/tmp/{s}/ab12-shot.png", .{tmp.sub_path});
+    const upload = (try userMessage(a, &root, prompt)).object.get("content").?.array.items;
+    try testing.expectEqual(@as(usize, 2), upload.len);
+    try testing.expectEqualStrings("what is this?", upload[0].object.get("text").?.string);
+    try testing.expectEqualStrings("input_image", upload[1].object.get("type").?.string);
 }
 
 fn budgetTurn(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const u8 {
@@ -554,45 +570,5 @@ test "ACP advertises the complete REPL command catalog including compact" {
     try std.testing.expectEqual(catalog.len, advertised.len);
     for (catalog, advertised) |command, exposed| {
         try std.testing.expectEqualStrings(command.name[1..], exposed.name);
-    }
-}
-
-test "OpenAI effort menu omits Max and keeps Ultra on the Responses wire" {
-    var state = std.heap.ArenaAllocator.init(testing.allocator);
-    defer state.deinit();
-    const a = state.allocator();
-    var root = try @import("agent_request_body_responses.zig").testAgentFor(a, "openai", .responses, "gpt-6-astra");
-    var keys: provider_mod.Keys = .{ .values = @splat(null) };
-    var aw: Io.Writer.Allocating = .init(a);
-    var live: LiveTurn = .{ .root = &root, .keys = &keys, .out = &aw.writer };
-    var d: Dispatch = .{ .turn = echoTurn, .ctx = &live, .extra = liveModels };
-    const expected = [_][]const u8{ "low", "medium", "high", "xhigh", "ultra" };
-    for ([_][]const u8{ "openai", "codex", "codegraff" }) |pid| {
-        root.provider.id = pid;
-        root.reasoning = .max; // saved Max remains a valid, visible selection
-        aw.clearRetainingCapacity();
-        try handleLine(&d, a, &aw.writer, "{\"id\":1,\"method\":\"graff/models\"}");
-        const result = try std.json.parseFromSliceLeaky(Value, a, aw.writer.buffered(), .{});
-        for (result.object.get("result").?.object.get("models").?.array.items) |row| {
-            const fields = row.object;
-            try testing.expect(fields.get("effortLevels").? == .array);
-            try testing.expect(fields.get("fastSupported").? == .bool);
-        }
-        const current = result.object.get("result").?.object.get("current").?.object;
-        try testing.expectEqualStrings("ultra", current.get("effort").?.string);
-        const levels = current.get("effortLevels").?.array.items;
-        try testing.expectEqual(expected.len, levels.len);
-        for (expected, levels) |tag, level| try testing.expectEqualStrings(tag, level.string);
-        // The last advertised choice must serialize as API max, never ultra.
-        root.reasoning = std.meta.stringToEnum(main_mod.ReasoningEffort, levels[levels.len - 1].string).?;
-        const body = try root.buildBody(null, false, true, true);
-        defer testing.allocator.free(body);
-        const request = try std.json.parseFromSliceLeaky(Value, a, body, .{});
-        try testing.expectEqualStrings("max", request.object.get("reasoning").?.object.get("effort").?.string);
-        root.reasoning = .xhigh;
-        const extra = try root.buildBody(null, false, true, true);
-        defer testing.allocator.free(extra);
-        const extra_request = try std.json.parseFromSliceLeaky(Value, a, extra, .{});
-        try testing.expectEqualStrings("xhigh", extra_request.object.get("reasoning").?.object.get("effort").?.string);
     }
 }

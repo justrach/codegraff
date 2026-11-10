@@ -32,6 +32,7 @@ pub fn queryMayUse(provider_id: []const u8, query: []const u8) bool {
     const trimmed = std.mem.trim(u8, query, " \t");
     if (trimmed.len == 0) return true;
     if (explicitProvider(trimmed)) |id| return std.mem.eql(u8, id, provider_id);
+    if (std.mem.eql(u8, provider_id, "kimi") and pricing.kimiFamilyModel(trimmed) != null) return true;
     if (pricing.modelInTable(trimmed)) return pricing.providerModelInTable(provider_id, trimmed);
     return true;
 }
@@ -73,6 +74,8 @@ test "catalog selection is provider-driven rather than catalog-specific" {
     try std.testing.expect(queryMayUse("codegraff", "codegraff"));
     try std.testing.expect(!queryMayUse("codegraff", "kimi"));
     try std.testing.expect(queryMayUse("kimi", "k3"));
+    try std.testing.expect(queryMayUse("kimi", "kimi-k3.1-pro"));
+    try std.testing.expect(queryMayUse("kimi", "kimi 3.1 pro"));
     try std.testing.expect(!queryMayUse("codegraff", "k3"));
     try std.testing.expect(queryMayUse("codegraff", "future-router-rollout"));
 

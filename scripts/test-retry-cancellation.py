@@ -101,6 +101,7 @@ class Client:
                    PATH=str(shim)+os.pathsep+os.defpath, TERM='dumb',
                    AI_GATEWAY_API_KEY='fixture', GRAFF_NO_TELEMETRY='1',
                    GRAFF_VERCEL_URL=f'http://127.0.0.1:{model.server.server_port}/v1/chat/completions',
+                   GRAFF_FLAKE_RETRY_MS=str(model.delay_ms),
                    GRAFF_MCP_CONFIG=str(root/'mcp.json'), GRAFF_FLEET='off',
                    GRAFF_NO_ADOPT='1', GRAFF_NO_SMOLIFY='1', GRAFF_NO_CODEDB_GUARD='1')
         if 'SystemRoot' in os.environ:
@@ -205,8 +206,15 @@ class Client:
         return value
 
     def saved(self):
-        return [message for path in (self.root/'.graff/sessions').glob('*.session.json')
-                for message in json.loads(path.read_text()).get('messages', [])]
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                return [message for path in (self.root/'.graff/sessions').glob('*.session.json')
+                        for message in json.loads(path.read_text()).get('messages', [])]
+            except (PermissionError, json.JSONDecodeError):
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(.02)
 
     def close(self):
         if self.proc.poll() is None:
@@ -238,7 +246,7 @@ def exercise(binary, mode, kind, scenario):
                 client.cancel()
             else:
                 client.wait_retry()
-                assert len(model.requests()) == 1, 'unexpected retry before cancellation'
+                assert len(model.requests()) == 1, f'{mode}/{kind}/{scenario}: unexpected retry before cancellation'
                 client.cancel(wrong=scenario == 'wrong', client=scenario == 'client')
                 client.cancel(wrong=scenario == 'wrong', client=scenario == 'client')
             started = time.monotonic()
@@ -246,9 +254,8 @@ def exercise(binary, mode, kind, scenario):
             elapsed = time.monotonic() - started
             if scenario == 'wrong':
                 posts = model.requests()
-                assert len(posts) == 2 and posts[0][0] == posts[1][0], posts
-                if kind != 'transport':
-                    assert posts[1][1] - posts[0][1] >= .45, 'Retry-After bypassed'
+                assert len(posts) == 2 and posts[0][0] == posts[1][0], (mode, kind, scenario, posts)
+                assert posts[1][1] - posts[0][1] >= .45, f'{mode}/{kind}/{scenario}: Retry-After / flake backoff bypassed'
             else:
                 assert elapsed < 2, ('cancel waited out backoff', elapsed)
                 assert len(model.requests()) <= 1, model.requests()

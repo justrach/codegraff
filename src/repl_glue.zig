@@ -595,5 +595,5 @@ pub fn versionCb(ctx: ?*anyopaque, gpa: Allocator) ?[]const u8 {
 
 pub fn updateCb(ctx: ?*anyopaque, gpa: Allocator, action: []const u8) ?[]const u8 {
     const c: *ReplCtx = @ptrCast(@alignCast(ctx orelse return null));
-    return update_cmd.hostAction(c.io, gpa, c.home, action);
+    return if (comptime @import("build_options").extras) update_cmd.hostAction(c.io, gpa, c.home, action) else null;
 }

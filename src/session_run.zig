@@ -129,11 +129,11 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
 }
 
 pub fn runFrontendCommands(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_mod.Agent, keys: *provider_mod.Keys, client: *std.http.Client, in: *Io.Reader, out: *Io.Writer, arena: Allocator, flags: args.Flags, json_mode: bool, _: []const u8, final_io: Io) !bool {
-    if (try runReplCommand(gpa, io, environ_map, root, keys, client, in, out, arena, flags)) {
+    if ((comptime @import("build_options").extras) and try runReplCommand(gpa, io, environ_map, root, keys, client, in, out, arena, flags)) {
         try finalizeSession(gpa, final_io, arena, out, root, json_mode);
         return true;
     }
-    if (try @import("acp.zig").runAcpCommand(gpa, io, environ_map, root, keys, client, in, out, arena, flags)) {
+    if ((comptime @import("build_options").acp) and try @import("acp.zig").runAcpCommand(gpa, io, environ_map, root, keys, client, in, out, arena, flags)) {
         try finalizeSession(gpa, final_io, arena, out, root, json_mode);
         return true;
     }
@@ -296,7 +296,7 @@ pub fn buildRootAgent(
     // `concurrent`, not `async`: async runs inline when the pool is busy, as it
     // is at boot, and then boot waited up to the pull's 3s deadline.
     const pull_args = .{ io, arena, client, telemetry.g_telem, telem_endpoint, scoring.providerClass(root.provider.model), arena.dupe(u8, pull_esh) catch pull_esh, fleet.g_agent_types };
-    fleet.g_elites_future = io.concurrent(fleet.pullElites, pull_args) catch io.async(fleet.pullElites, pull_args);
+    if (comptime @import("build_options").learn) fleet.g_elites_future = io.concurrent(fleet.pullElites, pull_args) catch io.async(fleet.pullElites, pull_args);
     return root;
 }
 
@@ -405,7 +405,7 @@ pub const setupSkillsAndTheme = session_settings.setupSkillsAndTheme;
 /// Contribution is on by default, so say it once per machine before anything
 /// can be sent. Quiet in --json/-p, where stdout is protocol output.
 pub fn learningNotice(io: Io, arena: Allocator, environ_map: anytype, out: *Io.Writer, quiet: bool) void {
-    if (quiet or !main_mod.g_fleet) return;
+    if ((comptime !@import("build_options").learn) or quiet or !main_mod.g_fleet) return;
     commands_privacy.firstRunNotice(io, arena, keys_cli.homeEnv(environ_map) orelse "", out);
 }
 

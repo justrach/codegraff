@@ -43,6 +43,7 @@ const knobs = [_]Knob{
     .{ .name = "GRAFF_STREAM_STALL_SECS", .value = "7" },
     .{ .name = "GRAFF_STREAM_HEAD_STALL_SECS", .value = "9" },
     .{ .name = "GRAFF_POST_DEADLINE_SECS", .value = "90" },
+    .{ .name = "GRAFF_FLAKE_RETRY_MS", .value = "750" },
     .{ .name = "GRAFF_CODEX_WS", .value = "off" },
     .{ .name = "GRAFF_CLOCK_SLEEP", .value = "1" },
     .{ .name = "GRAFF_RLM", .value = "1" },
@@ -109,6 +110,7 @@ const Saved = struct {
     rlm_context_tokens: ?u64,
     stream_stall_ms: u64,
     post_deadline_ms: u64,
+    flake_base_ms: u64,
     codex_ws_idle_ms: i64,
     context_override: ?u64,
     compact_pct_override: ?u8,
@@ -144,6 +146,7 @@ const Saved = struct {
             .rlm_context_tokens = @import("native_fold.zig").g_context_tokens,
             .stream_stall_ms = http.stream_stall_ms,
             .post_deadline_ms = http.post_deadline_ms,
+            .flake_base_ms = http.RetryPlan.flake_base_ms,
             .codex_ws_idle_ms = agent_ws.codex_ws_idle_ms,
             .context_override = provider_mod.g_context_override,
             .compact_pct_override = provider_mod.g_compact_pct_override,
@@ -181,6 +184,7 @@ const Saved = struct {
         @import("native_fold.zig").g_context_tokens = s.rlm_context_tokens;
         http.stream_stall_ms = s.stream_stall_ms;
         http.post_deadline_ms = s.post_deadline_ms;
+        http.RetryPlan.flake_base_ms = s.flake_base_ms;
         agent_ws.codex_ws_idle_ms = s.codex_ws_idle_ms;
         provider_mod.g_context_override = s.context_override;
         provider_mod.g_compact_pct_override = s.compact_pct_override;

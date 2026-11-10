@@ -123,6 +123,9 @@ pub fn install(io: Io, state: *State) void {
     main.g_gui_mu.lockUncancelable(io);
     defer main.g_gui_mu.unlock(io);
     active = state;
+    if (background) |bg| {
+        if (bg.parent.len == 0) bg.parent = state.parent;
+    }
 }
 
 pub fn uninstall(io: Io) void {
@@ -158,8 +161,9 @@ pub fn progressFor(io: Io, kind: []const u8, depth: u8, parent_call_id: []const 
     if (!progress.enabled()) return false;
     main.g_gui_mu.lockUncancelable(io);
     defer main.g_gui_mu.unlock(io);
-    const state = active orelse return false;
-    return state.mode == .progress;
+    if (active) |state| return state.mode == .progress;
+    if (background) |bg| return bg.parent.len > 0;
+    return false;
 }
 
 pub fn finish(io: Io, id: []const u8, outcome: []const u8, parent_call_id: []const u8) void {
@@ -259,11 +263,20 @@ pub const ChildSink = struct {
         const p = &(self.progress orelse return);
         main.g_gui_mu.lockUncancelable(self.io);
         defer main.g_gui_mu.unlock(self.io);
-        const state = active orelse return;
-        state.output_lock.lockUncancelable(self.io);
-        defer state.output_lock.unlock(self.io);
-        progress.write(state.out, state.parent, p, state_label) catch return;
-        state.out.flush() catch {};
+        if (active) |state| {
+            state.output_lock.lockUncancelable(self.io);
+            defer state.output_lock.unlock(self.io);
+            progress.write(state.out, state.parent, p, state_label) catch return;
+            state.out.flush() catch {};
+            return;
+        }
+        if (background) |bg| {
+            if (bg.parent.len == 0) return;
+            bg.output_lock.lockUncancelable(self.io);
+            defer bg.output_lock.unlock(self.io);
+            progress.write(bg.out, bg.parent, p, state_label) catch return;
+            bg.out.flush() catch {};
+        }
     }
 
     /// Publish identity before the first text/tool event (reasoning can take time).
@@ -380,4 +393,24 @@ test "default progress mode streams the child's work onto the parent tool call" 
     // No child session, no draft updates, and no status flip on the parent call.
     try std.testing.expect(std.mem.indexOf(u8, wire, "subagent_update") == null);
     try std.testing.expect(std.mem.indexOf(u8, wire, "\"status\"") == null);
+}
+
+test "detached child continues streaming progress across turn boundaries via BackgroundState" {
+    var buffer: [16384]u8 = undefined;
+    var out: Io.Writer = .fixed(&buffer);
+    const io = std.testing.io;
+    var output_lock: Io.Mutex = .init;
+    var bg: BackgroundState = .{ .out = &out, .output_lock = &output_lock, .parent = "parent-sess" };
+    installBackground(io, &bg);
+    defer uninstallBackground(io);
+
+    // Parent prompt is not active (already returned end_turn), yet progressFor stays enabled.
+    try std.testing.expect(progressFor(io, "subagent", 0, "bg-call-1"));
+    var child: ChildSink = .{ .id = "sa-001-bg", .io = io, .progress = .{ .parent_call_id = "bg-call-1", .child_id = "sa-001-bg", .name = "Worker", .provider = "fixture", .model = "reader-model" } };
+    child.startProgress();
+    child.finishProgress("completed");
+    const wire = out.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, wire, "\"sessionId\":\"parent-sess\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wire, "\"toolCallId\":\"bg-call-1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wire, "\"state\":\"completed\"") != null);
 }

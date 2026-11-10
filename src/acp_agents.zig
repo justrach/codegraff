@@ -45,10 +45,32 @@ pub fn tail(a: A, io: Io, dir: Io.Dir, name: []const u8) ![]const chan.Message {
 pub fn handle(a: A, io: Io, home: []const u8, out: *Io.Writer, req: proto.Request) !bool {
     if (!std.mem.eql(u8, req.method, "graff/agents")) return false;
     if (req.id == null) return true;
+    const action = field(req.params, "action");
+    if (std.mem.eql(u8, action, "steer") and field(req.params, "target").len == 0) {
+        const child = blk: {
+            const c = field(req.params, "child");
+            if (c.len > 0) break :blk c;
+            const id_field = field(req.params, "id");
+            if (id_field.len > 0) break :blk id_field;
+            break :blk field(req.params, "subagentId");
+        };
+        const text = blk: {
+            const t = field(req.params, "text");
+            break :blk if (t.len > 0) t else field(req.params, "message");
+        };
+        const res = @import("subagent_steer.zig").steerRegistry(&@import("subagent.zig").g_agent_jobs, io, child, text);
+        switch (res.outcome) {
+            .queued => try proto.writeResult(out, req.id, .{ .status = "queued", .delivery = "queued", .id = res.id, .subagentId = res.subId(), .label = res.label() }),
+            .finished => try proto.writeError(out, req.id, -32001, "Sub-agent has already finished"),
+            .not_found => try proto.writeError(out, req.id, -32602, "No matching live sub-agent"),
+            .invalid, .resumed => try proto.writeError(out, req.id, -32602, res.detail),
+        }
+        return true;
+    }
     const root = lease.currentIdentity(a, io, a).id;
     const dir_path = try std.fmt.allocPrint(a, "{s}/{s}", .{ home, presence.registry_subdir });
     var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch {
-        if (field(req.params, "action").len != 0 and !std.mem.eql(u8, field(req.params, "action"), "list"))
+        if (action.len != 0 and !std.mem.eql(u8, action, "list"))
             try proto.writeError(out, req.id, -32001, "Peer registry unavailable; start a Graff session first")
         else
             try proto.writeResult(out, req.id, .{ .agents = &.{}, .messages = &.{}, .delivery = "No connected Graffs" });
@@ -56,16 +78,16 @@ pub fn handle(a: A, io: Io, home: []const u8, out: *Io.Writer, req: proto.Reques
     };
     defer dir.close(io);
     const all = presence.listPeersBounded(io, a, dir, 128);
-    const action = field(req.params, "action");
-    if (std.mem.eql(u8, action, "children") or std.mem.eql(u8, action, "activity") or std.mem.eql(u8, action, "cancel")) {
+    if (std.mem.eql(u8, action, "children") or std.mem.eql(u8, action, "activity") or std.mem.eql(u8, action, "cancel") or std.mem.eql(u8, action, "steer")) {
         const target = field(req.params, "target");
         const start = std.fmt.parseInt(u64, field(req.params, "startId"), 10) catch 0;
         const device = std.mem.eql(u8, field(req.params, "scope"), "device");
         for (all.records, all.probes) |owner, probe| {
             if (!verified(owner, probe) or owner.start_id != start or !std.mem.eql(u8, target, owner.session_id)) continue;
             if (!device and !std.mem.eql(u8, root, owner.identity)) continue;
-            const child = if (std.mem.eql(u8, action, "activity") or std.mem.eql(u8, action, "cancel")) field(req.params, "child") else "";
-            if ((std.mem.eql(u8, action, "activity") or std.mem.eql(u8, action, "cancel")) and child.len == 0) break;
+            const needs_child = std.mem.eql(u8, action, "activity") or std.mem.eql(u8, action, "cancel") or std.mem.eql(u8, action, "steer");
+            const child = if (needs_child) field(req.params, "child") else "";
+            if (needs_child and child.len == 0) break;
             try @import("acp_agent_activity.zig").handle(a, io, dir, out, req, owner.pid, owner.start_id, child);
             return true;
         }

@@ -22,20 +22,23 @@ pub const LineWriter = struct {
         self.pending.deinit(std.heap.page_allocator);
     }
 
-    fn writeLine(self: *LineWriter, line: []const u8) Io.Writer.Error!void {
-        self.lock.lockUncancelable(self.io);
-        defer self.lock.unlock(self.io);
-        try self.out.writeAll(line);
-        try self.out.flush();
-    }
-
     fn feed(self: *LineWriter, bytes: []const u8) Io.Writer.Error!void {
-        self.pending.appendSlice(std.heap.page_allocator, bytes) catch return error.WriteFailed;
-        while (std.mem.indexOfScalar(u8, self.pending.items, '\n')) |end| {
-            try self.writeLine(self.pending.items[0 .. end + 1]);
-            std.mem.copyForwards(u8, self.pending.items, self.pending.items[end + 1 ..]);
-            self.pending.shrinkRetainingCapacity(self.pending.items.len - end - 1);
+        if (bytes.len == 0) return;
+        const end = std.mem.lastIndexOfScalar(u8, bytes, '\n') orelse {
+            self.pending.appendSlice(std.heap.page_allocator, bytes) catch return error.WriteFailed;
+            return;
+        };
+        const complete = bytes[0 .. end + 1];
+        const tail = bytes[end + 1 ..];
+        {
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
+            if (self.pending.items.len > 0) try self.out.writeAll(self.pending.items);
+            try self.out.writeAll(complete);
+            try self.out.flush();
         }
+        self.pending.clearRetainingCapacity();
+        if (tail.len > 0) self.pending.appendSlice(std.heap.page_allocator, tail) catch return error.WriteFailed;
     }
 
     fn drain(w: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {

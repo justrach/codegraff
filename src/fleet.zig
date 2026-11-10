@@ -130,7 +130,7 @@ pub fn loadAgentTypes(io: Io, arena: Allocator, home: ?[]const u8) []const Agent
         const personal = std.fmt.allocPrint(arena, "{s}/{s}", .{ h, agents_dir }) catch "";
         if (personal.len > 0) loadAgentDir(io, arena, &list, personal);
     }
-    const plugs = plugins.discover(io, arena, home, Io.Dir.cwd());
+    const plugs = if (comptime @import("build_options").extras) plugins.discover(io, arena, home, Io.Dir.cwd()) else &.{};
     for (plugs) |p| {
         if (!p.personal) continue;
         for (p.agent_dirs) |d| loadAgentDir(io, arena, &list, d);
@@ -144,7 +144,7 @@ pub fn loadAgentTypes(io: Io, arena: Allocator, home: ?[]const u8) []const Agent
     // A verified learning ref is the highest-precedence project policy. The
     // loader fails closed: incomplete/corrupt learning state contributes no
     // agent and can be diagnosed with `graff learn verify`.
-    if (learn_store.loadActiveAgent(io, arena)) |learned| {
+    if (if (comptime @import("build_options").learn) learn_store.loadActiveAgent(io, arena) else null) |learned| {
         upsertAgent(&list, arena, .{
             .name = learned.name,
             .desc = learned.description,
@@ -209,6 +209,7 @@ fn upsertAgent(list: *std.ArrayList(AgentType), arena: Allocator, at: AgentType)
 /// routing stratum (fitness_strata.zig), so a genome measured on a cheaper
 /// rung is never scored against one measured on a dearer one.
 pub fn promoteAgents(io: Io, gpa: Allocator, out: *Io.Writer, home: ?[]const u8, personal: bool, auto: bool) usize {
+    if (comptime !@import("build_options").learn) return 0;
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -300,7 +301,7 @@ fn applyRemoteElite(arena: Allocator, types: []AgentType, name: []const u8, prom
 /// returns `types` unchanged. `endpoint` is the OTLP base (…/v1/logs); the elites
 /// live beside it at /v1/elites.
 pub fn pullElites(io: Io, arena: Allocator, client: *std.http.Client, telem: ?*Telemetry, endpoint: []const u8, provider_class: []const u8, eval_set_hash: []const u8, types: []const AgentType) []const AgentType {
-    if (endpoint.len == 0 or !root.g_fleet or !learning_privacy.allowsAggregate()) return types;
+    if ((comptime !@import("build_options").learn) or endpoint.len == 0 or !root.g_fleet or !learning_privacy.allowsAggregate()) return types;
     http.waitForClientReady(io);
     var base = std.mem.trimEnd(u8, endpoint, "/");
     if (std.mem.endsWith(u8, base, "/v1/logs")) base = base[0 .. base.len - "/v1/logs".len];

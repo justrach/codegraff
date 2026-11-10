@@ -252,6 +252,145 @@ fn unescape(arena: Allocator, raw: []const u8) []const u8 {
     return out[0..n];
 }
 
+pub const Diagnostic = struct {
+    line: usize,
+    col: usize,
+    field: []const u8,
+    message: []const u8,
+    source_line: []const u8,
+};
+
+const known_keys = [_][]const u8{
+    "name",
+    "description",
+    "desc",
+    "developer_instructions",
+    "instructions",
+    "prompt",
+    "model",
+    "tier",
+    "effort",
+    "model_reasoning_effort",
+    "isolation",
+    "score",
+    "sandbox_mode",
+};
+
+fn isKnownKey(key: []const u8) bool {
+    for (known_keys) |k| if (std.mem.eql(u8, k, key)) return true;
+    return false;
+}
+
+fn validValue(key: []const u8, val: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, key, "isolation")) {
+        if (!std.mem.eql(u8, val, "worktree") and !std.mem.eql(u8, val, "shared_cwd"))
+            return "expected 'worktree' or 'shared_cwd'";
+    } else if (std.mem.eql(u8, key, "tier")) {
+        if (!std.mem.eql(u8, val, "fast") and !std.mem.eql(u8, val, "mid") and !std.mem.eql(u8, val, "strong"))
+            return "expected 'fast', 'mid', or 'strong'";
+    } else if (std.mem.eql(u8, key, "effort") or std.mem.eql(u8, key, "model_reasoning_effort")) {
+        for ([_][]const u8{ "none", "low", "medium", "high", "xhigh", "max" }) |ok| {
+            if (std.mem.eql(u8, val, ok)) return null;
+        }
+        return "expected 'none', 'low', 'medium', 'high', 'xhigh', or 'max'";
+    } else if (std.mem.eql(u8, key, "score")) {
+        _ = std.fmt.parseFloat(f64, val) catch return "expected a numeric score";
+    }
+    return null;
+}
+
+/// Validate a Markdown agent file's YAML frontmatter and body, returning
+/// 1-based line/column diagnostics with the offending source line.
+pub fn validateMarkdown(arena: Allocator, data: []const u8) ![]const Diagnostic {
+    var out: std.ArrayList(Diagnostic) = .empty;
+    if (std.mem.startsWith(u8, data, "---\n") or std.mem.startsWith(u8, data, "---\r\n")) {
+        const fm_end = std.mem.indexOfPos(u8, data, 4, "\n---") orelse {
+            const first = data[0 .. std.mem.indexOfScalar(u8, data, '\n') orelse data.len];
+            try out.append(arena, .{
+                .line = 1,
+                .col = 1,
+                .field = "frontmatter",
+                .message = "unclosed YAML frontmatter fence '---'",
+                .source_line = std.mem.trimEnd(u8, first, "\r"),
+            });
+            return out.items;
+        };
+        var line_no: usize = 1;
+        var lines = std.mem.splitScalar(u8, data[4..fm_end], '\n');
+        while (lines.next()) |raw| {
+            line_no += 1;
+            const ln = std.mem.trimEnd(u8, raw, "\r");
+            const trimmed = std.mem.trim(u8, ln, " \t");
+            if (trimmed.len == 0 or trimmed[0] == '#') continue;
+            const sep = std.mem.indexOfScalar(u8, ln, ':') orelse {
+                try out.append(arena, .{
+                    .line = line_no,
+                    .col = (std.mem.indexOfNone(u8, ln, " \t") orelse 0) + 1,
+                    .field = trimmed,
+                    .message = "expected 'key: value' entry in frontmatter",
+                    .source_line = ln,
+                });
+                continue;
+            };
+            const key = std.mem.trim(u8, ln[0..sep], " \t");
+            const val = std.mem.trim(u8, ln[sep + 1 ..], " \t\"'");
+            if (!isKnownKey(key)) {
+                try out.append(arena, .{
+                    .line = line_no,
+                    .col = (std.mem.indexOf(u8, ln, key) orelse 0) + 1,
+                    .field = key,
+                    .message = "unknown frontmatter field",
+                    .source_line = ln,
+                });
+                continue;
+            }
+            if (validValue(key, val)) |msg| {
+                const val_col = if (val.len > 0) (std.mem.indexOfPos(u8, ln, sep + 1, val) orelse (sep + 1)) + 1 else sep + 2;
+                try out.append(arena, .{
+                    .line = line_no,
+                    .col = val_col,
+                    .field = key,
+                    .message = msg,
+                    .source_line = ln,
+                });
+            }
+        }
+        const body_start = fm_end + "\n---".len;
+        const body = std.mem.trim(u8, data[@min(body_start + 1, data.len)..], " \t\r\n");
+        if (body.len == 0) {
+            try out.append(arena, .{
+                .line = line_no + 1,
+                .col = 1,
+                .field = "prompt",
+                .message = "agent markdown body is empty",
+                .source_line = "---",
+            });
+        }
+        return out.items;
+    }
+    if (std.mem.trim(u8, data, " \t\r\n").len == 0) {
+        try out.append(arena, .{
+            .line = 1,
+            .col = 1,
+            .field = "prompt",
+            .message = "agent markdown body is empty",
+            .source_line = "",
+        });
+    }
+    return out.items;
+}
+
+pub fn formatDiagnostic(arena: Allocator, filename: []const u8, d: Diagnostic) ![]const u8 {
+    return std.fmt.allocPrint(arena, "{s}:{d}:{d}: {s} ({s})\n  | {s}", .{
+        filename,
+        d.line,
+        d.col,
+        d.message,
+        d.field,
+        d.source_line,
+    });
+}
+
 test "markdown frontmatter fills name, pins, and body" {
     const d = parseMarkdown(
         \\---
@@ -368,4 +507,43 @@ test "shipped pr_explorer.toml example parses" {
     try std.testing.expectEqualStrings("pr_explorer", d.name);
     try std.testing.expectEqualStrings("medium", d.effort.?);
     try std.testing.expect(std.mem.indexOf(u8, d.prompt, "Stay in exploration mode.") != null);
+}
+
+test "validateMarkdown reports exact 1-based line, column, and source line on bad frontmatter" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const clean = try validateMarkdown(a,
+        \\---
+        \\name: reviewer
+        \\isolation: worktree
+        \\effort: high
+        \\---
+        \\Check every edge case.
+    );
+    try std.testing.expectEqual(@as(usize, 0), clean.len);
+
+    const broken = try validateMarkdown(a,
+        \\---
+        \\name: reviewer
+        \\isolaton: worktree
+        \\effort: turbo
+        \\---
+    );
+    try std.testing.expectEqual(@as(usize, 3), broken.len);
+    try std.testing.expectEqual(@as(usize, 3), broken[0].line);
+    try std.testing.expectEqual(@as(usize, 1), broken[0].col);
+    try std.testing.expectEqualStrings("isolaton", broken[0].field);
+    try std.testing.expectEqualStrings("isolaton: worktree", broken[0].source_line);
+
+    try std.testing.expectEqual(@as(usize, 4), broken[1].line);
+    try std.testing.expectEqual(@as(usize, 9), broken[1].col);
+    try std.testing.expectEqualStrings("effort", broken[1].field);
+
+    try std.testing.expectEqualStrings("prompt", broken[2].field);
+
+    const rendered = try formatDiagnostic(a, "reviewer.md", broken[1]);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "reviewer.md:4:9:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "| effort: turbo") != null);
 }

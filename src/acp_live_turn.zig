@@ -14,6 +14,56 @@ const cancel_source = @import("cancel_source.zig");
 const trace = @import("trace.zig");
 const turn_trace = @import("mainloop_trace.zig");
 const proto = @import("acp_protocol.zig");
+const followups = @import("followups.zig");
+const steer_now = @import("steer_now.zig");
+
+fn steerAcpPrompt(ctx: *anyopaque, arena: Allocator, out: *Io.Writer, output_lock: *Io.Mutex, req: proto.Request, text: []const u8) bool {
+    const self: *LiveTurn = @ptrCast(@alignCast(ctx));
+    const params = req.params orelse return false;
+    if (params != .object) return false;
+    const sid = @import("util.zig").strFieldObj(params.object, "sessionId") orelse return false;
+    if (!std.mem.eql(u8, sid, self.session_id)) return false;
+    if (@import("subagent_steer.zig").isSubagentSteer(text)) {
+        const reply = @import("subagent_steer.zig").handleSteerLine(self.root, arena, null, text) catch return false;
+        output_lock.lockUncancelable(self.root.io);
+        defer output_lock.unlock(self.root.io);
+        if (std.mem.eql(u8, req.method, "_session/steering")) {
+            proto.writeResult(out, req.id, .{ .outcome = "injected" }) catch return false;
+        } else if (@import("acp_v2.zig").on()) {
+            var id_buf: [48]u8 = undefined;
+            const message_id = @import("acp_v2.zig").mint(&id_buf, "user");
+            const prompt = params.object.get("prompt");
+            proto.writeResult(out, req.id, .{ .messageId = message_id }) catch return false;
+            @import("acp_v2.zig").writeUserMessage(out, self.session_id, message_id, prompt, text) catch return false;
+        } else {
+            proto.writeResult(out, req.id, .{ .stopReason = "end_turn" }) catch return false;
+        }
+        proto.writeSessionUpdate(out, self.session_id, reply) catch return false;
+        out.flush() catch return false;
+        if (self.root.tracer) |tr| tr.note("steer", "an ACP prompt steered a live subagent");
+        return true;
+    }
+    const explicit = std.mem.eql(u8, req.method, "_session/steering");
+    if (!followups.applies(self.root.provider) or (!explicit and followups.queue)) return false;
+    if (!steer_now.send(text)) return false;
+    @import("job_wait.zig").noteFollowup();
+    output_lock.lockUncancelable(self.root.io);
+    defer output_lock.unlock(self.root.io);
+    if (std.mem.eql(u8, req.method, "_session/steering")) {
+        proto.writeResult(out, req.id, .{ .outcome = "injected" }) catch return false;
+    } else if (@import("acp_v2.zig").on()) {
+        var id_buf: [48]u8 = undefined;
+        const message_id = @import("acp_v2.zig").mint(&id_buf, "user");
+        const prompt = params.object.get("prompt");
+        proto.writeResult(out, req.id, .{ .messageId = message_id }) catch return false;
+        @import("acp_v2.zig").writeUserMessage(out, self.session_id, message_id, prompt, text) catch return false;
+    } else {
+        proto.writeResult(out, req.id, .{ .stopReason = "end_turn" }) catch return false;
+    }
+    out.flush() catch return false;
+    if (self.root.tracer) |tr| tr.note("steer", "an ACP follow-up joined the live turn");
+    return true;
+}
 
 pub const LiveTurn = struct {
     root: *agent_mod.Agent,
@@ -47,14 +97,26 @@ pub const LiveTurn = struct {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
         if (!std.mem.eql(u8, self.session_id, session_id)) {
             self.session_id = self.root.arena.dupe(u8, session_id) catch session_id;
+            if (self.session_id.len > 0) {
+                @import("presence.zig").noteLabelsFrom(self.root.io, self.root.gpa, self.root.arena, self.root.session_title, self.session_id);
+            }
         }
         self.root.last_api_reauth = null;
+        self.root.last_api_error_detail = null;
     }
 
     pub fn errorRecovery(ctx: *anyopaque, err: anyerror) ?@import("auth_recovery.zig").Recovery {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
         return switch (err) {
             error.ApiError, error.ProviderAuthenticationFailed => self.root.last_api_reauth,
+            else => null,
+        };
+    }
+
+    pub fn errorDetail(ctx: *anyopaque, err: anyerror) ?@import("provider_error_copy.zig").Detail {
+        const self: *LiveTurn = @ptrCast(@alignCast(ctx));
+        return switch (err) {
+            error.ApiError, error.ProviderQuotaExceeded, error.ProviderAuthenticationFailed, error.ProviderAccessDenied => self.root.last_api_error_detail,
             else => null,
         };
     }
@@ -82,8 +144,14 @@ pub const LiveTurn = struct {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
         self.cancelled_source = null;
         var output_lock: Io.Mutex = .init;
-        if (self.inbox) |inbox| if (inbox.permission) |bridge| bridge.setOutputLock(&output_lock);
-        defer if (self.inbox) |inbox| if (inbox.permission) |bridge| bridge.setOutputLock(null);
+        if (self.inbox) |inbox| {
+            inbox.setSteer(steerAcpPrompt, self, self.out, &output_lock);
+            if (inbox.permission) |bridge| bridge.setOutputLock(&output_lock);
+        }
+        defer if (self.inbox) |inbox| {
+            inbox.clearSteer();
+            if (inbox.permission) |bridge| bridge.setOutputLock(null);
+        };
         // Receipt marker before any dedup/turn work: a worker that logged its
         // recipe but never this line never received its prompt — the stall is
         // upstream (client dispatch / bootstrap / transport), not in the turn.
@@ -130,6 +198,8 @@ pub const LiveTurn = struct {
         defer if (context.restore(self.root)) self.root.rebaseContextMeter();
         if (commands and @import("side_steer.zig").isSideRequest(text))
             return @import("side_steer.zig").spawnSide(self.root, arena, null, text);
+        if (commands and @import("subagent_steer.zig").isSubagentSteer(text))
+            return @import("subagent_steer.zig").handleSteerLine(self.root, arena, null, text);
         // Match REPL expansion order: review, issue brief, then goal pacing.
         const base_prompt = review_prompt orelse if (issue_report) |report| try @import("issue_cmd.zig").userText(arena, report) else if (auto) |invocation| invocation.prompt else text;
         const prompt = try @import("goal_state.zig").applyGoalSteering(arena, self.root, base_prompt);
@@ -184,9 +254,9 @@ pub const LiveTurn = struct {
         // trace/session persistence if the client disconnects. Emit on exit,
         // after the durable work below, while retaining whole-message locking.
         defer {
-            sink.writer.flush() catch {};
             main_mod.g_gui_mu.lockUncancelable(self.root.io);
             defer main_mod.g_gui_mu.unlock(self.root.io);
+            sink.writer.flush() catch {};
             output_lock.lockUncancelable(self.root.io);
             defer output_lock.unlock(self.root.io);
             @import("acp_usage.zig").writeBestEffort(self.out, self.session_id, &@import("pricing.zig").g_cost, self.root.io);
@@ -262,10 +332,52 @@ pub const LiveTurn = struct {
 /// carries its own explanation (#1802); a bare error name told the user nothing.
 pub fn describeError(err: anyerror, last_api_error: ?[]const u8) []const u8 {
     return switch (err) {
-        error.ApiError, error.ProviderAuthenticationFailed => last_api_error orelse "Provider request failed",
+        error.ApiError, error.ProviderQuotaExceeded, error.ProviderAuthenticationFailed, error.ProviderAccessDenied => last_api_error orelse "Provider request failed",
         error.EmptyCompletion => last_api_error orelse @import("agent_empty_completion.zig").exhausted_text,
         else => @errorName(err),
     };
+}
+
+test "ACP explicit steering acknowledges injection and respects session and queue mode" {
+    const saved_queue = followups.queue;
+    defer followups.queue = saved_queue;
+    followups.queue = false;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var out: Io.Writer.Allocating = .init(a);
+    var lock: Io.Mutex = .init;
+    var root: agent_mod.Agent = undefined;
+    root.io = std.testing.io;
+    root.tracer = null;
+    root.provider = .{ .id = "openai", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-6", .context = 100_000 };
+    var live: LiveTurn = .{ .root = &root, .keys = undefined, .out = &out.writer, .session_id = "s" };
+    var received = std.array_list.Managed([]const u8).init(std.testing.allocator);
+    defer {
+        steer_now.reclaim(std.testing.allocator, &received);
+        for (received.items) |text| std.testing.allocator.free(text);
+        received.deinit();
+    }
+    const req = proto.parseRequest(a, "{\"id\":7,\"method\":\"_session/steering\",\"params\":{\"sessionId\":\"s\",\"prompt\":\"change direction\"}}").?;
+    try std.testing.expect(steerAcpPrompt(&live, a, &out.writer, &lock, req, "change direction"));
+    try std.testing.expect(std.mem.indexOf(u8, out.writer.buffered(), "\"outcome\":\"injected\"") != null);
+    steer_now.reclaim(std.testing.allocator, &received);
+    try std.testing.expectEqual(@as(usize, 1), received.items.len);
+    try std.testing.expectEqualStrings("change direction", received.items[0]);
+    out.clearRetainingCapacity();
+    live.session_id = "other";
+    try std.testing.expect(!steerAcpPrompt(&live, a, &out.writer, &lock, req, "wrong session"));
+    live.session_id = "s";
+    followups.queue = true;
+    var ordinary = req;
+    ordinary.method = "session/prompt";
+    try std.testing.expect(!steerAcpPrompt(&live, a, &out.writer, &lock, ordinary, "queued"));
+    try std.testing.expectEqual(@as(usize, 0), out.writer.buffered().len);
+    try std.testing.expect(!steer_now.queued());
+    // An explicit user Steer action overrides the automatic delivery preference.
+    try std.testing.expect(steerAcpPrompt(&live, a, &out.writer, &lock, req, "manual steer"));
+    steer_now.reclaim(std.testing.allocator, &received);
+    try std.testing.expectEqualStrings("manual steer", received.items[1]);
 }
 
 test "#1802: an exhausted empty-reply retry is explained, not named" {

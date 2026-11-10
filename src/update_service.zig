@@ -48,6 +48,8 @@ pub const Report = struct {
     kind: Kind,
     target: []const u8 = "",
     detail: []const u8 = "",
+    nanocua_missing: bool = false,
+    nanocua_only: bool = false,
     running_buf: [64]u8 = undefined,
     running_len: usize = 0,
     installed_buf: [64]u8 = undefined,
@@ -88,7 +90,21 @@ pub const Opts = struct {
     cancel: ?*const std.atomic.Value(bool) = null,
     /// Where nanocua.app goes on macOS (empty: it isn't installed).
     home: []const u8 = "",
+    /// Override macOS nanocua.app expectation in cross-platform unit tests.
+    expect_nanocua: ?bool = null,
 };
+
+fn wantsNanocua(opts: Opts) bool {
+    if (opts.channel != .stable or opts.home.len == 0) return false;
+    return opts.expect_nanocua orelse (builtin.os.tag == .macos and std.mem.indexOf(u8, opts.asset_name, "macos") != null);
+}
+
+fn nanocuaAbsent(opts: Opts) bool {
+    if (!wantsNanocua(opts)) return false;
+    var state = std.heap.ArenaAllocator.init(opts.gpa);
+    defer state.deinit();
+    return @import("nanocua_default.zig").find(opts.io, state.allocator(), opts.home) == null;
+}
 
 var install_busy = std.atomic.Value(bool).init(false);
 
@@ -211,16 +227,35 @@ pub fn inspect(opts: Opts) Report {
     }
 
     if (installed) |inst| {
-        if (version_status.alreadyHasRelease(inst, tag))
-            return snapshot(opts, .already_installed, tag, inst, "the install target is already at this release");
+        if (version_status.alreadyHasRelease(inst, tag)) {
+            var r = snapshot(opts, .already_installed, tag, inst, "the install target is already at this release");
+            r.nanocua_missing = nanocuaAbsent(opts);
+            return r;
+        }
     }
 
-    return snapshot(opts, switch (run.state) {
+    var r = snapshot(opts, switch (run.state) {
         .current => .current,
         .older, .dev => if (run.order == .gt) .newer else .available,
         .newer => .newer,
         .unable => .malformed,
     }, tag, installed, "");
+    if (r.kind == .current) r.nanocua_missing = nanocuaAbsent(opts);
+    return r;
+}
+
+const AppPlace = union(enum) { placed: bool, failed: Report };
+
+fn placeNanocua(opts: Opts, tarball: []const u8, tag: []const u8, installed: ?[]const u8) AppPlace {
+    const home = @import("nanocua_default.zig").userHome(opts.home);
+    const placed = @import("nanocua_install.zig").fromArchive(opts.io, opts.gpa, home, tarball) catch |err| return .{
+        .failed = switch (err) {
+            error.Malformed => snapshot(opts, .malformed, tag, installed, "nanocua.app archive is malformed"),
+            error.OutOfMemory => snapshot(opts, .offline, tag, installed, "out of memory installing nanocua.app"),
+            else => snapshot(opts, .permission, tag, installed, "could not write ~/Applications/nanocua.app"),
+        },
+    };
+    return .{ .placed = placed };
 }
 
 fn pinnedUrls(opts: Opts, tag: []const u8, asset_buf: *[512]u8, sums_buf: *[512]u8) error{Malformed}!struct { asset: []const u8, sums: []const u8 } {
@@ -262,9 +297,10 @@ pub fn install(opts: Opts, consent: Consent) Report {
     if (cancelled(opts)) return snapshot(opts, .cancelled, null, null, "update cancelled");
 
     const viewed = inspect(opts);
+    const app_repair = (viewed.kind == .already_installed or viewed.kind == .current) and viewed.nanocua_missing;
     switch (viewed.kind) {
         .available => {},
-        .already_installed, .current, .newer, .offline, .malformed, .permission => return viewed,
+        .already_installed, .current => if (!app_repair) return viewed,
         else => return viewed,
     }
     const tag = viewed.latest_tag() orelse return snapshot(opts, .malformed, null, viewed.installed(), "release tag missing");
@@ -298,6 +334,23 @@ pub fn install(opts: Opts, consent: Consent) Report {
     defer opts.gpa.free(tarball);
     if (cancelled(opts)) return snapshot(opts, .cancelled, tag_copy, viewed.installed(), "update cancelled");
 
+    if (app_repair) {
+        archive.verifyAsset(sums, opts.asset_name, tarball) catch |err| return snapshot(opts, switch (err) {
+            error.VerifyFailed => .verify_failed,
+            error.Malformed => .malformed,
+            error.OutOfMemory => .offline,
+        }, tag_copy, viewed.installed(), "artifact verification failed");
+        if (cancelled(opts)) return snapshot(opts, .cancelled, tag_copy, viewed.installed(), "update cancelled");
+        const placed = switch (placeNanocua(opts, tarball, tag_copy, viewed.installed())) {
+            .placed => |p| p,
+            .failed => |rep| return rep,
+        };
+        if (!placed) return snapshot(opts, .malformed, tag_copy, viewed.installed(), "release archive did not contain nanocua.app");
+        var done = snapshot(opts, .installed, tag_copy, viewed.installed(), @import("nanocua_install.zig").installed_note);
+        done.nanocua_only = true;
+        return done;
+    }
+
     const bin = archive.extractVerified(opts.gpa, sums, opts.asset_name, tarball) catch |err| return snapshot(opts, switch (err) {
         error.VerifyFailed => .verify_failed,
         error.Malformed => .malformed,
@@ -306,12 +359,18 @@ pub fn install(opts: Opts, consent: Consent) Report {
     defer opts.gpa.free(bin);
     if (cancelled(opts)) return snapshot(opts, .cancelled, tag_copy, viewed.installed(), "update cancelled");
 
-    // The app that ships with graff (ADR 0314). It has its own uses, so failing
-    // to place it doesn't stop graff updating.
-    if (builtin.os.tag == .macos) _ = @import("nanocua_install.zig").fromArchive(opts.io, opts.gpa, @import("nanocua_default.zig").userHome(opts.home), tarball) catch {};
+    const app_placed = if (wantsNanocua(opts)) switch (placeNanocua(opts, tarball, tag_copy, viewed.installed())) {
+        .placed => |p| p,
+        .failed => |rep| return rep,
+    } else false;
 
     if (existingMatches(opts.io, opts.gpa, opts.target_path, bin)) {
         writeInstalledVersion(opts.io, opts.target_path, version_status.stripV(tag_copy));
+        if (app_placed) {
+            var done = snapshot(opts, .installed, tag_copy, version_status.stripV(tag_copy), @import("nanocua_install.zig").installed_note);
+            done.nanocua_only = true;
+            return done;
+        }
         return snapshot(opts, .already_installed, tag_copy, version_status.stripV(tag_copy), "the install target already has these bytes");
     }
 

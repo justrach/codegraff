@@ -267,18 +267,19 @@ const Outcome = struct { freed: usize, line: []const u8 };
 fn install(self: *Agent, a: Allocator, msgs: []const wire.Msg, reply: *const wire.Reply) !Outcome {
     const items = self.messages.items;
     const p = try wire.plan(a, msgs, reply, compact_cut.pinOpening(items));
+    const hist_alloc = self.historyAlloc();
     var note: ?Value = null;
     if (reply.summarized) {
         const base = try @import("agent_compact.zig").rootHandoff(self, reply.summary);
         const standing = try @import("goal_flow.zig").compactionSnapshot(self.arena, self);
         const discarded = try wire.replaced(a, items, msgs, p);
         const text = try @import("compact_handoff_note.zig").handoff(self.arena, self, base, standing, discarded);
-        note = try @import("messages.zig").userNote(self.arena, self.provider.kind, text);
+        note = try @import("messages.zig").userNote(hist_alloc, self.provider.kind, text);
     }
     const stubber: Stubber = .{ .note = .{ .fallback = stub_fallback, .session = tool_spill.sessionFor(self.sub, self.session_name) } };
     // Earlier turns lose dropped calls outright; the live turn keeps them.
     const removable = compact_cut.turnOpeningUserIndex(items) orelse 0;
-    const fresh = try wire.apply(self.arena, items, msgs, p, &reply.decisions, removable, note, &stubber);
+    const fresh = try wire.apply(hist_alloc, items, msgs, p, &reply.decisions, removable, note, &stubber);
     try wire.checkPairs(a, items, fresh.items);
     const before = estimate(items);
     const after = estimate(fresh.items);
@@ -286,6 +287,7 @@ fn install(self: *Agent, a: Allocator, msgs: []const wire.Msg, reply: *const wir
     const line = try outcomeLine(self.arena, reply, p);
 
     self.messages = fresh;
+    self.reclaimMessages();
     self.compact_summary_failures = 0;
     self.last_context_tokens = 0;
     self.context_local_tokens = 0;

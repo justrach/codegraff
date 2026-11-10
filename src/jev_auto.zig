@@ -1,21 +1,25 @@
-//! ADR 0246: Jev in the flow. When a root turn starts on an eligible model,
-//! graff asks Jev for the turn's reasoning effort itself; the model was offered
-//! the jev_effort tool and never called it. The request runs alongside the
-//! turn's first model call, so it adds no wait: its pick applies from the
-//! turn's next request (agent_request.zig applies pending picks there). Jev
-//! sees a summary built here: the request's words with code, paths, file
-//! names, URLs, emails, identifiers and number-heavy or long tokens dropped.
-//! The pick holds for that turn only and is never saved, an effort the user
-//! chose (anything but the session default) is never overridden, and a pick
-//! still in flight when the turn ends is canceled and dropped.
+//! ADR 0246: Jev in the flow (opt-in via GRAFF_JEV_AUTO=1). When a root turn
+//! starts on an eligible model with a cold cache, graff asks Jev for the turn's
+//! reasoning effort itself; the model was offered the jev_effort tool and never
+//! called it. The request runs alongside the turn's first model call, so it adds
+//! no wait: its pick applies from the turn's next request (agent_request.zig
+//! applies pending picks there). Jev sees a summary built here: the request's
+//! words with code, paths, file names, URLs, emails, identifiers and
+//! number-heavy or long tokens dropped. The pick holds for that turn only and is
+//! never saved, an effort the user chose (including an explicit medium) or a
+//! warm prompt cache (#1320) is never overridden, and a pick still in flight
+//! when the turn ends is canceled and dropped.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const ReasoningEffort = @import("main.zig").ReasoningEffort;
 const jev_tool = @import("jev_tool.zig");
 
-/// GRAFF_JEV_AUTO=0 (or off/false/no) turns the per-turn selection off.
-pub var enabled: bool = true;
+/// GRAFF_JEV_AUTO=1 (or on/true/yes) turns the per-turn selection on. Default
+/// is off (#1320): flipping reasoning.effort between request 1 and request 2 on
+/// Responses rewrites token 0 of the Harmony system message and invalidates the
+/// prompt cache mid-turn.
+pub var enabled: bool = false;
 /// How long a turn waits for Jev before it goes ahead at the default effort.
 pub const timeout_ms: u32 = 4_000;
 pub const max_summary = 280;
@@ -23,8 +27,8 @@ pub const max_summary = 280;
 /// jev_tool.configure passes GRAFF_JEV_AUTO's value.
 pub fn setEnabled(value: ?[]const u8) void {
     const v = value orelse "";
-    enabled = !(std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "off") or
-        std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "no"));
+    enabled = std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "on") or
+        std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "yes");
 }
 
 /// The words Jev may see: no code, paths, file names, URLs, emails,
@@ -88,11 +92,12 @@ fn lastUserText(agent: anytype) ?[]const u8 {
 }
 
 /// Start this turn's pick alongside its first request. Root turns at the
-/// session default only; never blocks.
+/// untouched session default with a cold prompt cache only; never blocks.
 pub fn beginTurn(agent: anytype) void {
     const pending = &agent.jev_effort_pending;
     pending.auto = .{};
-    if (!enabled or agent.sub or agent.reasoning != .medium) return;
+    if (!enabled or agent.sub or pending.user_pinned or agent.reasoning != .medium) return;
+    if (@hasField(@TypeOf(agent.*), "last_cache_read") and agent.last_cache_read > 0) return;
     if (!jev_tool.available(agent.provider)) return;
     const prompt = lastUserText(agent) orelse return;
     var scratch = std.heap.ArenaAllocator.init(agent.gpa);
@@ -137,7 +142,10 @@ pub fn endTurn(agent: anytype) void {
     if (pending.auto.future) |*f| f.cancel(agent.io);
     pending.dropTurn(agent.io);
     if (pending.auto.applied) |a| if (agent.reasoning == a) {
-        if (pending.auto.saved) |s| agent.reasoning = s;
+        if (pending.auto.saved) |s| {
+            if (!agent.sub and agent.reasoning != s) @import("prompt_cache_hud.zig").noteBust(.effort);
+            agent.reasoning = s;
+        }
     };
     if (agent.tracer) |tr| {
         var buf: [96]u8 = undefined;
@@ -175,6 +183,7 @@ const TestAgent = struct {
     client: *std.http.Client,
     provider: @import("provider.zig").Provider,
     reasoning: ReasoningEffort = .medium,
+    last_cache_read: i64 = 0,
     sub: bool = false,
     fast: bool = false,
     ultracode_mode: bool = false,
@@ -201,11 +210,17 @@ fn waitPick(agent: *TestAgent) void {
 test "ADR 0246: the pick runs alongside the turn, applies at the next request, and the turn's end puts the default back" {
     const Env = struct {
         mode: []const u8,
+        auto: ?[]const u8 = null,
         pub fn get(self: @This(), key: []const u8) ?[]const u8 {
-            return if (std.mem.eql(u8, key, "JEV_BACKEND")) self.mode else null;
+            if (std.mem.eql(u8, key, "JEV_BACKEND")) return self.mode;
+            if (std.mem.eql(u8, key, "GRAFF_JEV_AUTO")) return self.auto;
+            return null;
         }
     };
+    // Default is off (#1320): without GRAFF_JEV_AUTO=1, configure leaves enabled false.
     jev_tool.configure(Env{ .mode = "mock" });
+    try std.testing.expect(!enabled);
+    jev_tool.configure(Env{ .mode = "mock", .auto = "1" });
     defer jev_tool.configure(Env{ .mode = "" });
     _ = jev_tool.setCodegraffLoginKey(std.testing.io, "synthetic-login");
     defer _ = jev_tool.setCodegraffLoginKey(std.testing.io, null);
@@ -242,16 +257,23 @@ test "ADR 0246: the pick runs alongside the turn, applies at the next request, a
     endTurn(&changed);
     try std.testing.expectEqual(ReasoningEffort.xhigh, changed.reasoning);
 
-    // A user-chosen effort, a subagent, and the off switch start no pick.
+    // A user-chosen effort (including explicit medium), a warm cache, a subagent, and the off switch start no pick.
     var pinned = try testAgent(arena_state.allocator(), &client, "Refactor the session store");
     pinned.reasoning = .low;
     beginTurn(&pinned);
     try std.testing.expect(pinned.jev_effort_pending.auto.future == null);
+    var pinned_medium = try testAgent(arena_state.allocator(), &client, "Refactor the session store");
+    pinned_medium.jev_effort_pending.pinUserEffort(std.testing.io);
+    beginTurn(&pinned_medium);
+    try std.testing.expect(pinned_medium.jev_effort_pending.auto.future == null);
+    var warm = try testAgent(arena_state.allocator(), &client, "Refactor the session store");
+    warm.last_cache_read = 12_544;
+    beginTurn(&warm);
+    try std.testing.expect(warm.jev_effort_pending.auto.future == null);
     var child = try testAgent(arena_state.allocator(), &client, "Refactor the session store");
     child.sub = true;
     beginTurn(&child);
     try std.testing.expect(child.jev_effort_pending.auto.future == null);
-    defer enabled = true;
     setEnabled("0");
     var off = try testAgent(arena_state.allocator(), &client, "Refactor the session store");
     beginTurn(&off);

@@ -45,7 +45,7 @@ fn spawn(ctx: ToolCtx, argv_tail: []const []const u8) !ToolOutput {
         },
         else => return tools.failure(gpa, e),
     };
-    gpa.free(run.stderr);
+    defer gpa.free(run.stderr);
     const text = run.stdout;
     if (run.timed_out) {
         defer gpa.free(text);
@@ -53,6 +53,10 @@ fn spawn(ctx: ToolCtx, argv_tail: []const []const u8) !ToolOutput {
             .text = try std.fmt.allocPrint(gpa, "codedb {s} timed out after {d}s and was killed — narrow the query", .{ argv_tail[0], deadline_ms / 1000 }),
             .is_error = true,
         };
+    }
+    if (text.len == 0 and run.stderr.len > 0) {
+        defer gpa.free(text);
+        return .{ .text = try gpa.dupe(u8, run.stderr) };
     }
     return .{ .text = text };
 }

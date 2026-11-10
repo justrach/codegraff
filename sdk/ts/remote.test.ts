@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { RemoteHarness, runAgentRemote, type Event } from "./remote.ts";
+import {
+  RemoteHarness,
+  runAgentRemote,
+  ServerlessHarness,
+  InMemoryWorkspace,
+  defineTool,
+  createAgentSession,
+  runAgentServerless,
+  type Event,
+} from "./remote.ts";
 
 const originalFetch = globalThis.fetch;
 const live: RemoteHarness[] = [];
@@ -215,5 +224,154 @@ describe("RemoteHarness transport", () => {
     (process as NodeJS.EventEmitter).removeListener("unhandledRejection", listener);
     expect(unhandled).toBe(0);
     await expect(h.sessionId).rejects.toThrow("create failed");
+  });
+});
+
+describe("ServerlessHarness & InMemoryWorkspace", () => {
+  test("InMemoryWorkspace supports read, write, edit, grep, diff, and snapshot", async () => {
+    const ws = new InMemoryWorkspace({
+      "src/math.ts": "export const add = (a: number, b: number) => a - b;\n",
+      "README.md": "# Math\n",
+    });
+    const base = ws.snapshot();
+    expect(await ws.listFiles("src")).toEqual(["src/math.ts"]);
+    ws.writeFile("src/mul.ts", "export const mul = (a: number, b: number) => a * b;\n");
+    ws.deleteFile("README.md");
+    expect(ws.diff(base)).toEqual([
+      { path: "README.md", status: "deleted" },
+      { path: "src/mul.ts", status: "added" },
+    ]);
+  });
+
+  test("executes coding tools and custom defineTool across multi-step turns", async () => {
+    const { harness, workspace } = createAgentSession({
+      workspace: {
+        "src/calc.ts": "export function calc(x: number) {\n  return x - 1;\n}\n",
+      },
+      tools: [
+        defineTool({
+          name: "check_math",
+          description: "Verify arithmetic",
+          parameters: { type: "object", properties: { expr: { type: "string" } }, required: ["expr"] },
+          execute: (input) => `verified:${String(input.expr)}`,
+        }),
+      ],
+      streamFn: async (req) => {
+        const last = req.messages.at(-1);
+        if (last?.role === "user") {
+          return {
+            text: "Inspecting and fixing calc.ts",
+            toolCalls: [
+              { id: "c1", name: "read_file", input: { path: "src/calc.ts" } },
+              {
+                id: "c2",
+                name: "edit_file",
+                input: { path: "src/calc.ts", old_str: "return x - 1;", new_str: "return x + 1;" },
+              },
+              { id: "c3", name: "check_math", input: { expr: "1+1=2" } },
+            ],
+            inputTokens: 20,
+            outputTokens: 10,
+          };
+        }
+        return {
+          text: "Fixed calc.ts and verified math.",
+          inputTokens: 30,
+          outputTokens: 12,
+        };
+      },
+    });
+
+    const res = await harness.askResult("Fix the bug in src/calc.ts");
+    expect(res.text).toBe("Fixed calc.ts and verified math.");
+    expect(res.apiCalls).toBe(2);
+    expect(res.inputTokens).toBe(50);
+    expect(await workspace.readFile("src/calc.ts")).toContain("return x + 1;");
+  });
+
+  test("supports beforeToolCall gating/rewriting, afterToolCall, steer, and followUp", async () => {
+    const h = new ServerlessHarness({
+      workspace: { "notes.txt": "hello\n" },
+      beforeToolCall: ({ name, input }) => {
+        if (name === "write_file" && String(input.path) === "secret.txt") {
+          return { block: true, reason: "cannot write secret.txt" };
+        }
+        return undefined;
+      },
+      afterToolCall: ({ name, output }) => {
+        if (name === "read_file") return { output: `${output}\n[audited]` };
+        return undefined;
+      },
+      streamFn: async (req) => {
+        const userContents = req.messages.filter((m) => m.role === "user").map((m) => m.content);
+        if (req.messages.length === 1) {
+          h.steer("also remember steer-note");
+          h.followUp("now summarize");
+          return {
+            text: "",
+            toolCalls: [
+              { id: "t1", name: "write_file", input: { path: "secret.txt", content: "nope" } },
+              { id: "t2", name: "read_file", input: { path: "notes.txt" } },
+            ],
+          };
+        }
+        if (!userContents.includes("now summarize")) {
+          return { text: `step2 saw steer=${userContents.includes("also remember steer-note")}` };
+        }
+        return { text: "final summary complete" };
+      },
+    });
+
+    const events: Event[] = [];
+    for await (const ev of h.chat("start")) events.push(ev);
+    expect(events.some((e) => e.type === "tool_rejected" && e.reason === "policy")).toBe(true);
+    expect(events.some((e) => e.type === "tool_result" && e.text.includes("[audited]"))).toBe(true);
+    const turn = events.find((e) => e.type === "turn");
+    expect(turn && turn.type === "turn" ? turn.text : "").toBe("final summary complete");
+  });
+
+  test("review runs in read-only isolation and exportState/fromState round-trips", async () => {
+    const h1 = new ServerlessHarness({
+      workspace: { "a.txt": "alpha" },
+      streamFn: async (req) => {
+        const toolNames = req.tools.map((t) => t.name);
+        return { text: `tools:${toolNames.join(",")}` };
+      },
+    });
+    await h1.ask("turn 1");
+    const reviewReport = await h1.review("audit");
+    expect(reviewReport).toBe("tools:read_file,list_dir,grep");
+    // Review turn must not pollute conversation history.
+    expect(h1.getMessages().length).toBe(2);
+
+    const snap = h1.exportState();
+    const h2 = ServerlessHarness.fromState(snap, {
+      streamFn: async (req) => ({ text: `resumed with ${req.messages.length} msgs` }),
+    });
+    expect(await h2.ask("turn 2")).toBe("resumed with 3 msgs");
+    await h2.compact();
+    expect(h2.getMessages().length).toBeLessThanOrEqual(3);
+  });
+
+  test("runAgentServerless works with OpenAI-compatible HTTP endpoints over fetch", async () => {
+    globalThis.fetch = (async () =>
+      Response.json({
+        choices: [{ message: { content: "edge ok", tool_calls: [] } }],
+        usage: { prompt_tokens: 11, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 3 } },
+      })) as unknown as typeof fetch;
+
+    const events: Event[] = [];
+    for await (const ev of runAgentServerless({
+      provider: "openai",
+      model: "gpt-5.4",
+      endpoint: "https://api.example.test/v1",
+      apiKey: "sk-test",
+      prompt: "ping",
+    })) {
+      events.push(ev);
+    }
+    const turn = events.find((e) => e.type === "turn");
+    expect(turn && turn.type === "turn" ? turn.text : "").toBe("edge ok");
+    expect(turn && turn.type === "turn" ? turn.cache_read_tokens : 0).toBe(3);
   });
 });

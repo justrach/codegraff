@@ -64,17 +64,20 @@ const util = @import("util.zig");
 pub const Rung = orch.Rung;
 pub const Source = orch.Source;
 
-/// A fleet is for INDEPENDENT workstreams, and the cheapest honest proxy for
-/// "independent" the harness can compute without a model call is "the ask
-/// names this many distinct files". Two files is a pair; three is a fan-out.
-pub const fleet_scope_min: usize = 3;
+const scope_mod = @import("escalation_scope.zig");
+pub const fleet_scope_min = scope_mod.fleet_scope_min;
+pub const max_files_counted = scope_mod.max_files_counted;
+const FileSet = scope_mod.FileSet;
+pub const countDistinctFiles = scope_mod.countDistinctFiles;
+const taskPrompts = scope_mod.taskPrompts;
+pub const soloAdvice = scope_mod.soloAdvice;
 
 // ── observables ────────────────────────────────────────────────────────────
 
 pub const Observables = struct {
     shape: route_policy.Shape = .adhoc,
     task_class: shapes.TaskClass = .other,
-    /// Distinct file paths named across every task brief in the plan.
+    /// Distinct file paths and diff/PR refs named across every task brief in the plan.
     files: usize = 0,
     /// Widest phase, i.e. how far this plan actually fans out.
     widest: usize = 0,
@@ -89,79 +92,6 @@ pub const Observables = struct {
     remaining: u64 = 0,
     cap: u64 = 0,
 };
-
-/// Bytes that can appear inside a path token. Excludes ':' and ',' so
-/// `stats.py:24` and `a.py, b.py` still resolve to one file each.
-fn isPathByte(c: u8) bool {
-    return std.ascii.isAlphanumeric(c) or c == '_' or c == '-' or c == '.' or c == '/' or c == '\\';
-}
-
-/// Does this token look like a file path? It needs an extension: a dot with
-/// 1-5 letters after it and an alphanumeric before it. That refuses version
-/// numbers ("3.11"), ellipses and sentence-ending periods, and accepts
-/// `stats.py`, `src/main.zig` and `settings.json`.
-fn looksLikeFile(tok: []const u8) bool {
-    const dot = std.mem.lastIndexOfScalar(u8, tok, '.') orelse return false;
-    if (dot == 0 or dot + 1 >= tok.len) return false;
-    if (!std.ascii.isAlphanumeric(tok[dot - 1])) return false;
-    const ext = tok[dot + 1 ..];
-    if (ext.len > 5) return false;
-    for (ext) |c| if (!std.ascii.isAlphabetic(c)) return false;
-    return true;
-}
-
-/// Bound on the file set, so a pathological brief cannot make this loop
-/// expensive or the scratch large. Well above `fleet_scope_min`, which is the
-/// only threshold that reads the count.
-pub const max_files_counted = 32;
-
-const FileSet = struct {
-    hashes: [max_files_counted]u64 = @splat(0),
-    n: usize = 0,
-
-    fn add(self: *FileSet, tok: []const u8) void {
-        if (self.n == self.hashes.len) return;
-        var buf: [64]u8 = undefined;
-        const m = @min(tok.len, buf.len);
-        for (buf[0..m], tok[0..m]) |*d, s| d.* = std.ascii.toLower(s);
-        const h = std.hash.Wyhash.hash(0, buf[0..m]);
-        for (self.hashes[0..self.n]) |x| if (x == h) return;
-        self.hashes[self.n] = h;
-        self.n += 1;
-    }
-
-    fn scan(self: *FileSet, text: []const u8) void {
-        var i: usize = 0;
-        while (i < text.len) {
-            while (i < text.len and !isPathByte(text[i])) : (i += 1) {}
-            const start = i;
-            while (i < text.len and isPathByte(text[i])) : (i += 1) {}
-            if (i == start) continue;
-            const tok = std.mem.trim(u8, text[start..i], ".");
-            if (tok.len > 0 and looksLikeFile(tok)) self.add(tok);
-        }
-    }
-};
-
-/// Distinct file paths named in `text`. Pure, allocation-free, and bounded.
-pub fn countDistinctFiles(text: []const u8) usize {
-    var set: FileSet = .{};
-    set.scan(text);
-    return set.n;
-}
-
-fn taskPrompts(pv: Value, set: *FileSet, tasks: *usize, widest: *usize) void {
-    if (pv != .object) return;
-    const tv = pv.object.get("tasks") orelse return;
-    if (tv != .array) return;
-    widest.* = @max(widest.*, tv.array.items.len);
-    for (tv.array.items) |task_val| {
-        tasks.* += 1;
-        if (task_val != .object) continue;
-        const p = task_val.object.get("prompt") orelse continue;
-        if (p == .string) set.scan(p.string);
-    }
-}
 
 /// Everything the ladder needs, read off the authored plan plus the raw ask.
 /// Pure: `raw` is what the user typed (shapes.rawAsk()), `remaining`/`cap`
@@ -209,11 +139,7 @@ pub const Decision = struct {
 /// declined fleet is not a failed tool call, and returning `is_error` here
 /// would burn the retry the edit contract wants to keep, and would read to the
 /// model as "the harness is broken" rather than "do this yourself".
-pub const solo_advice =
-    "workflow declined (escalation R0): budget and scope fit solo work. This ask names 1-2 files, " ++
-    "or the pool cannot cover a fleet plus the calls needed to land the work. Do it yourself — read " ++
-    "the files, make the edits, verify — and re-invoke the workflow tool only if verification fails, " ++
-    "which is the signal that earns a fleet.";
+pub const solo_advice = scope_mod.solo_advice;
 
 /// The R0d advisory. Same non-error contract as solo_advice; the difference
 /// is the prescription — a REVISION, not a redo: re-derive from the observed
@@ -475,6 +401,7 @@ pub fn decide(o: Observables, phases: []const Value, explicit: bool, arms: []con
 /// prior — the same two-layer lookup `orch.learnedRung` performs, exposed as
 /// a slice so `decide` stays pure.
 fn armsFor(key: orch.Key) []const orch.ArmObs {
+    @import("bench_priors.zig").ensureArchiveLoaded();
     for (orch.g_arms) |a| if (a.key.eql(key)) return orch.g_arms;
     return &.{};
 }
@@ -501,6 +428,7 @@ pub fn admit(c: Ctx, phases: []const Value, shape: route_policy.Shape) Decision 
     // R0d's advisory carries the observed failure evidence, composed here
     // because verdictFor is pure and the evidence needs the arena.
     if (d.rung == .R0d) d.verdict = .{ .solo = deepRetryAdvice(c.arena, o.task_class) };
+    if (d.rung == .R0 and d.source != .learned) d.verdict = .{ .solo = soloAdvice(c.arena, o) };
     const collapse = predictedCollapse(c.arena, phases);
     orch_rows.emitDecision(.{
         .key = key,

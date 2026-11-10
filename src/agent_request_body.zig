@@ -160,7 +160,7 @@ pub fn buildBody(self: *Agent, tools_in: ?[]const u8, force_tool: bool, stream: 
                 const at = @import("additional_tools.zig");
                 try s.objectField("tools");
                 // #261 follow-up: the rest need the root-schema repair too.
-                try @import("tool_call_repair.zig").writeChatTools(&s, self.scratchAlloc(), if (at.active(self.provider) and !self.sub) at.stripTail(self, self.scratchAlloc(), t) else t, self.provider.id, self.provider.model);
+                try @import("tool_call_repair.zig").writeChatTools(&s, self.scratchAlloc(), if (at.active(self.provider) and (!self.sub or @import("cache_fork.zig").shares())) at.stripTail(self, self.scratchAlloc(), t) else t, self.provider.id, self.provider.model);
                 if (self.synthesis.keepsCatalog(self)) {
                     try s.objectField("tool_choice");
                     try s.write("none");

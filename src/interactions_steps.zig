@@ -190,6 +190,7 @@ pub fn step(self: *@import("agent.zig").Agent, root: std.json.ObjectMap) !?[]con
     self.pairContextMeterWithCurrentLocal();
 
     if (calls.items.len > 0) {
+        @import("turn_checkpoint.zig").beforeToolBatch(self);
         const results = try self.runTools(calls.items);
         for (calls.items, results) |call, r| {
             try self.messages.append(try functionResult(msg_alloc, call.id, call.name, r.text));
