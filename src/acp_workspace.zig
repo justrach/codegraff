@@ -376,6 +376,7 @@ test "errorText names the cwd problem" {
 }
 
 test "resolveWorktreeInProcess resolves main checkouts and linked worktrees without spawning git" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest; // enterPath is POSIX-only
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -392,6 +393,9 @@ test "resolveWorktreeInProcess resolves main checkouts and linked worktrees with
     const saved_display = main_mod.g_cwd_display;
     defer {
         _ = workspace_switch.enterPath(a, io, a, saved_cwd) catch {};
+        // Each switch adopted a display out of this arena. Release them before
+        // it dies, or the next adopt in the process appends into freed memory.
+        workspace_switch.deinitDisplay(a);
         main_mod.g_cwd_display = saved_display;
     }
 

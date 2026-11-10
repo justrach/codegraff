@@ -11,10 +11,12 @@ const Allocator = std.mem.Allocator;
 const vision = @import("vision.zig");
 
 /// Where a staged image goes and what the active model can do with it. The
-/// registry owns the slot; only the per-turn handoff can reach the agent.
+/// registry owns the inbox; only the batch handoff can reach the agent.
 pub const Stage = struct {
     arena: Allocator,
-    slot: *?vision.PendingImage,
+    inbox: *@import("image_inbox.zig").Inbox,
+    /// The staging call's position in its tool batch.
+    seq: u32 = @import("image_inbox.zig").unsequenced,
     label: []const u8,
     supports_vision: bool,
 };
@@ -23,9 +25,9 @@ pub const Stage = struct {
 ///
 /// Image blocks used to fall straight through this walk — it only looked for a
 /// `text` field — so an image-only result reached the model as the empty string
-/// with no hint that pixels had ever come back (#249). Now the first one is
-/// staged as a real vision attachment and every one of them is named in the
-/// text. Living outside `Registry.call` also makes the mixed text+image walk
+/// with no hint that pixels had ever come back (#249). Now each one is
+/// queued as a real vision attachment, up to the inbox's limits (#1866), and
+/// every one of them is named in the text. Living outside `Registry.call` also makes the mixed text+image walk
 /// testable without a live server.
 pub fn renderContent(w: *Io.Writer, content: Value, stage: Stage) !void {
     if (content != .array) return;
@@ -58,10 +60,14 @@ pub fn renderContent(w: *Io.Writer, content: Value, stage: Stage) !void {
             }
         };
         if (vision.mcpImageBlock(block)) |img| {
-            const fate: vision.McpImageFate = if (!stage.supports_vision)
+            var fate: vision.McpImageFate = if (!stage.supports_vision)
                 .no_vision
-            else if (stage.slot.* != null) .already_staged else .staged;
-            if (fate == .staged) stage.slot.* = img.stage(stage.arena, stage.label) catch null;
+            else if (stage.inbox.admit(img.b64.len) != .queued) .queue_full else .staged;
+            if (fate == .staged) {
+                if (img.stage(stage.arena, stage.label)) |staged| {
+                    _ = stage.inbox.pushAt(staged, stage.seq);
+                } else |_| fate = .queue_full;
+            }
             if (w.buffered().len > 0) try w.writeByte('\n');
             try vision.mcpImageNote(w, img, fate);
         }

@@ -22,6 +22,7 @@ const isImagePath = input_util.isImagePath;
 /// readline/commands_model keep importing only `vision`.
 const clip = @import("vision_clipboard.zig");
 const paste = @import("vision_paste.zig");
+const Inbox = @import("image_inbox.zig").Inbox;
 pub const Flavor = clip.Flavor;
 pub const Grab = clip.Grab;
 pub const FailKind = clip.FailKind;
@@ -264,7 +265,9 @@ pub fn tracePasteResult(root: *Agent, flavor: Flavor, r: StageResult) void {
 }
 
 /// GUI image attachments arrive inline as `@[path]` markers in the prompt text
-/// (see the desktop AttachmentTray / appendAttachmentsToPrompt). Stage the first
+/// (see the desktop AttachmentTray / appendAttachmentsToPrompt), or as the
+/// `Attached images` trailer an ACP client leaves when it could not send an
+/// `image` block (attachment_refs.zig). Stage each
 /// image one as a real vision block so a vision model sees it natively instead
 /// of receiving only a path to OCR. The marker is left in the text — harmless
 /// once the image is visible — so non-image `@[path]` entries the agent should
@@ -285,6 +288,15 @@ pub fn stageGuiImageAttachment(root: *Agent, msg: []const u8) void {
         if (isImagePath(path) and !@import("vision_queue.zig").hasLabel(root, path))
             _ = stageImagePath(root, path);
         search = open + 2 + close + 1;
+    }
+    // #1865: a client that could not inline an upload leaves its path in a
+    // trailer. Uploads sit outside the cwd the file tools are confined to, so
+    // the pixels are staged here, where the user's own prompt names the file.
+    const refs = @import("attachment_refs.zig");
+    var it = (refs.find(msg) orelse return).refs();
+    while (it.next()) |path| {
+        if (!@import("vision_queue.zig").hasLabel(root, path) and refs.isImageFile(root.io, path))
+            _ = stageImagePath(root, path);
     }
 }
 
@@ -337,32 +349,14 @@ pub fn mcpImageBlock(block: Value) ?McpImageBlock {
 
 /// What became of an image block, so the tool result says it out loud instead
 /// of dropping the pixels in silence the way it used to (#249).
-pub const McpImageFate = enum { staged, no_vision, already_staged };
+pub const McpImageFate = enum { staged, no_vision, queue_full };
 
 pub fn mcpImageNote(w: *Io.Writer, blk: McpImageBlock, fate: McpImageFate) !void {
     try w.print("[image: {s}, {d} bytes — {s}]", .{ blk.media_type, blk.bytes, switch (fate) {
         .staged => "attached to your next turn",
         .no_vision => no_vision_message,
-        .already_staged => "not attached: another image is already queued for the next turn",
+        .queue_full => "not attached: the image queue for the next model request is full; ask for it again in a later call",
     } });
-}
-
-/// Move an image an MCP tool staged on the registry into the agent's slot, and
-/// tell the registry whether this model takes images at all — the registry sees
-/// the pixels but has no route to the provider (#249). `reg` is a
-/// `*mcp.Registry`, taken as anytype so vision.zig need not import back into the
-/// MCP client. Returns true when an image was promoted.
-pub fn mcpImageHandoff(reg: anytype, supports_vision: bool, slot: *?PendingImage) bool {
-    reg.mutex.lockUncancelable(reg.io); // `call` stages from agent pool threads
-    defer reg.mutex.unlock(reg.io);
-    reg.vision_capable = supports_vision;
-    const img = reg.pending_image orelse return false;
-    reg.pending_image = null;
-    // A text-only model, or /image already won this turn: drop it rather than
-    // let it surface several turns later, stripped of its context.
-    if (!supports_vision or slot.* != null) return false;
-    slot.* = img;
-    return true;
 }
 
 test {
@@ -527,14 +521,14 @@ test "renderContent: a text+image MCP result keeps both and stages the image (#2
         \\[{"type":"text","text":"here is the screenshot"},
         \\ {"type":"image","data":"aGVsbG8=","mimeType":"image/jpeg"}]
     );
-    var slot: ?PendingImage = null;
+    var inbox: Inbox = .{};
     var w: Io.Writer.Allocating = .init(a);
-    try mcp_content.renderContent(&w.writer, content, .{ .arena = a, .slot = &slot, .label = "mcp__shots__grab", .supports_vision = true });
+    try mcp_content.renderContent(&w.writer, content, .{ .arena = a, .inbox = &inbox, .label = "mcp__shots__grab", .supports_vision = true });
 
     const text = w.writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, text, "here is the screenshot") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "image/jpeg") != null);
-    const img = slot orelse return error.ImageNotStaged;
+    const img = inbox.first() orelse return error.ImageNotStaged;
     try std.testing.expectEqualStrings("image/jpeg", img.media_type);
     try std.testing.expectEqualStrings("aGVsbG8=", img.b64);
     try std.testing.expectEqualStrings("mcp__shots__grab", img.label);
@@ -548,49 +542,18 @@ test "renderContent: an image-only result is never silently empty (#249)" {
     const content = try parseBlock(a, "[{\"type\":\"image\",\"data\":\"aGVsbG8=\",\"mimeType\":\"image/png\"}]");
 
     // Vision model: staged, and the text says so.
-    var slot: ?PendingImage = null;
+    var inbox: Inbox = .{};
     var w: Io.Writer.Allocating = .init(a);
-    try mcp_content.renderContent(&w.writer, content, .{ .arena = a, .slot = &slot, .label = "t", .supports_vision = true });
-    try std.testing.expect(slot != null);
+    try mcp_content.renderContent(&w.writer, content, .{ .arena = a, .inbox = &inbox, .label = "t", .supports_vision = true });
+    try std.testing.expect(!inbox.isEmpty());
     try std.testing.expect(std.mem.indexOf(u8, w.writer.buffered(), "image/png") != null);
 
     // Text-only model: nothing staged, but the model is TOLD, rather than
     // receiving "" and inferring the tool did nothing.
-    var slot2: ?PendingImage = null;
+    var inbox2: Inbox = .{};
     var w2: Io.Writer.Allocating = .init(a);
-    try mcp_content.renderContent(&w2.writer, content, .{ .arena = a, .slot = &slot2, .label = "t", .supports_vision = false });
-    try std.testing.expect(slot2 == null);
+    try mcp_content.renderContent(&w2.writer, content, .{ .arena = a, .inbox = &inbox2, .label = "t", .supports_vision = false });
+    try std.testing.expect(inbox2.isEmpty());
     try std.testing.expect(std.mem.indexOf(u8, w2.writer.buffered(), no_vision_message) != null);
     try std.testing.expect(w2.writer.buffered().len > 0);
-}
-
-test "mcpImageHandoff: registry image reaches the agent slot, vision models only (#249)" {
-    const mcp = @import("mcp.zig");
-    const io = std.testing.io;
-    var reg = mcp.Registry.empty(std.testing.allocator, io);
-    defer reg.deinit();
-    const img: PendingImage = .{ .media_type = "image/png", .b64 = "aGVsbG8=", .label = "mcp__shots__grab" };
-
-    // Text-only model: the fact is pushed to the registry and the image is
-    // dropped rather than surfacing turns later out of context.
-    reg.pending_image = img;
-    var slot: ?PendingImage = null;
-    try std.testing.expect(!mcpImageHandoff(&reg, false, &slot));
-    try std.testing.expect(slot == null);
-    try std.testing.expect(!reg.vision_capable);
-    try std.testing.expect(reg.pending_image == null);
-
-    // Vision model: promoted, and the registry slot is cleared so one image is
-    // never attached to two turns.
-    reg.pending_image = img;
-    try std.testing.expect(mcpImageHandoff(&reg, true, &slot));
-    try std.testing.expect(reg.vision_capable);
-    try std.testing.expect(reg.pending_image == null);
-    try std.testing.expectEqualStrings("aGVsbG8=", slot.?.b64);
-
-    // /image already won this turn: keep the user's pick, drop the tool's.
-    reg.pending_image = .{ .media_type = "image/gif", .b64 = "R0lG", .label = "later" };
-    try std.testing.expect(!mcpImageHandoff(&reg, true, &slot));
-    try std.testing.expectEqualStrings("aGVsbG8=", slot.?.b64);
-    try std.testing.expect(reg.pending_image == null);
 }

@@ -567,6 +567,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
             .list => try models_cache.command(io, gpa, arena, home, flags.positionals.items[1..]),
             .none => unreachable,
         }
+        @import("catalog_failures.zig").reportStdout(io); // a rejected key is why a list is stale
         return true;
     }
 

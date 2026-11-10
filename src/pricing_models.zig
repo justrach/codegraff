@@ -21,6 +21,7 @@ pub const rows = [_]ModelInfo{
     // (the default, ladder and vision picks) resolve before that fetch.
     .{ .provider = "anthropic", .name = "claude-opus-5-5", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-sonnet-5-5", .context = 1_000_000 },
+    .{ .provider = "anthropic", .name = "claude-fable-5-2", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-fable-5-1", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-opus-5", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-sonnet-5", .context = 1_000_000 },
@@ -38,6 +39,7 @@ pub const rows = [_]ModelInfo{
     // Code runs each of these at 1M natively (its result reports contextWindow
     // 1000000 with or without a `[1m]` suffix), so the window matches Anthropic's.
     .{ .provider = "claude-agent", .name = "claude-opus-5-5", .context = 1_000_000 },
+    .{ .provider = "claude-agent", .name = "claude-fable-5-2", .context = 1_000_000 },
     .{ .provider = "claude-agent", .name = "claude-fable-5-1", .context = 1_000_000 },
     .{ .provider = "claude-agent", .name = "claude-sonnet-5-5", .context = 1_000_000 },
     .{ .provider = "claude-agent", .name = "claude-haiku-5-5", .context = 1_000_000 },

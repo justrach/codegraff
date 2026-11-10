@@ -195,6 +195,13 @@ test "contextFor known model and default fallback" {
 
 test "contextFor gives Claude Agent the 1M window Claude Code runs" {
     try std.testing.expectEqual(@as(u64, 1_000_000), pricing.contextFor("claude-agent", "claude-opus-5-5"));
+    // Fable 5.2 resolves by bare name on both Claude routes and is priced.
+    try std.testing.expectEqual(@as(u64, 1_000_000), pricing.contextFor("claude-agent", "claude-fable-5-2"));
+    try std.testing.expectEqual(@as(u64, 1_000_000), pricing.contextFor("anthropic", "claude-fable-5-2"));
+    const fable = pricing.priceFor("claude-fable-5-2").?;
+    try std.testing.expectEqual(@as(f64, 8), fable.in);
+    try std.testing.expectEqual(@as(f64, 40), fable.out);
+    try std.testing.expectEqual(@as(f64, 0.2), fable.cache);
     try std.testing.expectEqual(@as(u64, 1_000_000), pricing.contextFor("claude-agent", "claude-sonnet-5-5[1m]"));
     try std.testing.expectEqual(@as(u64, 1_000_000), pricing.contextFor("claude-agent", "claude-opus-4-5[1m]"));
     try std.testing.expectEqual(@as(u64, pricing.default_context), pricing.contextFor("nope", "unknown-xyz"));

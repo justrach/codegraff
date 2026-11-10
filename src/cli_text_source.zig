@@ -5,6 +5,13 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.59
+    \\  • Claude Fable 5.2 in the baked catalog: `--model claude-fable-5-2` resolves by its bare name and is priced
+    \\  • image reads in one tool batch all reach the model, in call order (#1866): a bounded queue (16 images, 24 MB) replaces the single slot, with a tool error past the limit
+    \\  • uploads a client leaves as an `Attached images` trailer are staged as native images instead of paths the file tools refuse, also when sent mid-turn (#1865)
+    \\  • `graff refresh` / `graff models` / `/models` say when a provider rejects the live model-list request instead of silently showing the cached list
+    \\  • Lean 4 ImageDelivery kernel (3,870 verified cells): every staged image is delivered once or refused, in call order
+    \\
     \\0.302.74.58
     \\  • prompt-cache stability (#1320): jev_auto off by default (opt-in via /effort auto or GRAFF_JEV_AUTO=1), BustCause.effort HUD tracking, deterministic per-turn prompt_cache_key fallback, and in-session HTTP MCP schema retention
     \\  • ACP low-latency path + Lean 4 AcpLatency kernel (3,768 verified cells): 0-subprocess in-process .git worktree resolution, single-parse ACP inbox routing, batch-flushed LineWriter/EventSink with reusable scratch arena, and single-pass startup MCP config load

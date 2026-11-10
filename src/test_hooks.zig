@@ -371,6 +371,9 @@ test {
     _ = @import("acp_mcp_servers.zig");
     _ = @import("acp_workspace.zig");
     _ = @import("acp_images.zig");
+    _ = @import("image_inbox.zig");
+    _ = @import("attachment_refs.zig");
+    _ = @import("catalog_failures.zig");
     _ = @import("libgraff.zig");
     _ = @import("acp_auth.zig");
     _ = @import("local_tools.zig");

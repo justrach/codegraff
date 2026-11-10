@@ -403,8 +403,8 @@ test "read_file and read_image end-to-end: read tools normalize @ and U+202F; wr
         const out = exec.execTool(ctx, .{ .id = "r2", .name = "read_file", .input = parsed.value });
         defer gpa.free(out.text);
         try std.testing.expect(!out.is_error);
-        try std.testing.expect(reg.pending_image != null);
-        reg.pending_image = null;
+        try std.testing.expect(!reg.pending_images.isEmpty());
+        reg.pending_images.clear();
     }
 
     // Direct `read_image.stage` on unnormalized `resolved` also falls back on FileNotFound.
@@ -415,8 +415,8 @@ test "read_file and read_image end-to-end: read tools normalize @ and U+202F; wr
         const staged = (try read_image.stage(gpa, io, ctx, missing_abs, raw_rel, tiny_png.len)).?;
         defer gpa.free(staged.text);
         try std.testing.expect(!staged.is_error);
-        try std.testing.expect(reg.pending_image != null);
-        reg.pending_image = null;
+        try std.testing.expect(!reg.pending_images.isEmpty());
+        reg.pending_images.clear();
     }
 
     // edit_file does NOT normalize `@src/hello.txt` (read-only tools ONLY!).

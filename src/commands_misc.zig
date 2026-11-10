@@ -358,6 +358,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         // TTL that made /models show a boot-time snapshot until restart.
         const pinged = providers.refreshModelListing(root, keys.*);
         if (pinged > 0) try out.print("{s}(pinged {d} provider catalog(s) live){s}\n", .{ style.dim, pinged, style.reset });
+        try @import("catalog_failures.zig").report(out);
         // `cost` answers what a model name cannot: the same model through codex
         // (plan), codegraff (credits) and openai (api) is three different
         // bills. Same wording as the TUI picker; the surfaces must agree.

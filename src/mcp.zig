@@ -81,10 +81,13 @@ pub const Registry = struct {
     /// Cached stdio servers start on first use (mcp_lazy.zig). Only
     /// `Registry.init` reads `GRAFF_MCP_EAGER`; verification paths set false.
     lazy_stdio: bool = true,
-    /// An image an MCP tool returned, waiting for the next turn to collect it
-    /// (#249). Written under `mutex` by `call`, drained by
-    /// `vision.mcpImageHandoff` — the registry cannot reach the agent itself.
-    pending_image: ?vision.PendingImage = null,
+    /// Images tools staged, waiting for the batch checkpoint to collect them
+    /// (#249, #1866). Written under `mutex` by `call` and native image reads,
+    /// drained by `image_inbox.handoff` — the registry cannot reach the agent itself.
+    pending_images: @import("image_inbox.zig").Inbox = .{},
+    /// The batch position of the MCP call in flight. Written and read under
+    /// `mutex`, which `callAt` holds for the whole call.
+    staging_seq: u32 = @import("image_inbox.zig").unsequenced,
     /// Whether the active model accepts image blocks. The registry cannot see
     /// the provider, so the same per-turn handoff refreshes it; false until it
     /// does, so a result explains the drop rather than promising an attachment.
@@ -444,8 +447,16 @@ pub const Registry = struct {
 
     /// Calls and runtime registration share one lock, including tool lookup.
     pub fn call(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value) !@import("mcp_call.zig").CallResult {
+        return reg.callAt(out_alloc, qualified, input, @import("image_inbox.zig").unsequenced);
+    }
+
+    /// `call` from position `seq` of a tool batch: an image the result
+    /// carries is delivered in that call's place (#1866).
+    pub fn callAt(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value, seq: u32) !@import("mcp_call.zig").CallResult {
         reg.mutex.lockUncancelable(reg.io);
         defer reg.mutex.unlock(reg.io);
+        reg.staging_seq = seq;
+        defer reg.staging_seq = @import("image_inbox.zig").unsequenced;
         return @import("mcp_call.zig").call(reg, out_alloc, qualified, input);
     }
 };
