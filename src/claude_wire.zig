@@ -158,13 +158,14 @@ test "Claude model ids parse by family and version; dates are not minors" {
     try t.expectEqual(Version{ .family = .sonnet, .major = 4, .minor = 6 }, version("claude-sonnet-4-6-20260101").?);
     try t.expectEqual(Version{ .family = .sonnet, .major = 4, .minor = 0 }, version("claude-sonnet-4-20250514").?);
     try t.expectEqual(Version{ .family = .fable, .major = 5, .minor = 1 }, version("claude-fable-5-1").?);
+    try t.expectEqual(Version{ .family = .fable, .major = 5, .minor = 2 }, version("claude-fable-5-2").?);
     try t.expect(version("gpt-5.5") == null);
     try t.expect(version("claude-3-5-sonnet") == null);
 }
 
 test "5.5-era models are never forced to a tool and bind their thinking" {
     const t = std.testing;
-    for ([_][]const u8{ "claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-opus-6" }) |m| {
+    for ([_][]const u8{ "claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-fable-5-2", "claude-mythos-5-2", "claude-opus-6" }) |m| {
         try t.expect(rejectsForcedTools(m));
         try t.expect(bindsThinking(m));
         try t.expect(std.mem.indexOf(u8, thinkingObject(m), "\"prefix_mismatch_behavior\":\"drop_block\"") != null);
@@ -211,6 +212,8 @@ test "max_tokens leaves room for thinking on 128K-output models" {
     try t.expectEqual(@as(u32, 64_000), maxTokens("claude-opus-5-5", .medium, 16_000));
     try t.expectEqual(@as(u32, 128_000), maxTokens("claude-opus-5-5", .max, 16_000));
     try t.expectEqual(@as(u32, 128_000), maxTokens("claude-fable-5-1", .xhigh, 16_000));
+    try t.expectEqual(@as(u32, 128_000), maxTokens("claude-fable-5-2", .xhigh, 16_000));
+    try t.expectEqualStrings("medium", effortWire("claude-fable-5-2", .medium).?);
     try t.expectEqual(@as(u32, 16_000), maxTokens("claude-haiku-4-5", .max, 16_000));
     try t.expectEqual(@as(u32, 128_000), maxTokens("claude-haiku-5-5", .max, 16_000));
     try t.expectEqual(@as(u32, 16_000), maxTokens("claude-opus-4-8", .high, 16_000));

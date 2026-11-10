@@ -72,7 +72,7 @@ test "Claude thought-level discovery matches native effort support" {
     var keys: @import("provider.zig").Keys = .{ .values = @splat(null) };
     var live: LiveTurn = .{ .root = &root, .keys = &keys, .out = undefined };
     root.reasoning = .medium;
-    for ([_][]const u8{ "claude-opus-5-5", "claude-opus-4-5", "claude-sonnet-4-6", "claude-fable-5-1", "claude-mythos-5-1" }) |model| {
+    for ([_][]const u8{ "claude-opus-5-5", "claude-opus-4-5", "claude-sonnet-4-6", "claude-fable-5-1", "claude-fable-5-2", "claude-mythos-5-1" }) |model| {
         root.provider.model = model;
         try std.testing.expect(root.effortApplies());
         const offered = (try option(&live, arena)).?;
