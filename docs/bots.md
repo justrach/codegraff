@@ -53,12 +53,52 @@ payload (or pipe the payload on stdin), for a webhook receiver or a CI step.
 The payload reaches the bot marked as data, and a run an event started cannot
 change the bot's memory.
 
+## Your own bots, in any project
+
+`graff bot --user …` keeps bots in `~/.graff/bots`, not in one project.
+Every command above works with it.
+
+```bash
+graff bot --user create ada --primary -- "Coordinate. Don't do their work."
+graff bot --user create notes --project ~/code/comet -- "Draft release notes"
+graff bot --user about -- "Alex. Pacific time."
+graff bot --user set notes model claude-haiku-5-5
+```
+
+- `--project` is the folder a bot's runs work in.
+- One bot can be primary: your default contact. It knows your other bots,
+  says whose job a request is, and waits for your yes before anything starts.
+- `about` is a few facts about you that every one of your bots is shown.
+- `remember NAME TEXT` and `forget NAME TEXT` change one memory entry
+  without opening the file.
+
+## What ran, and what did not
+
+`graff bot tick --stale-after 300` does not run a slot that came due more
+than five minutes ago. It records it. After a night with the laptop shut:
+
+```bash
+graff bot --user missed          # notes/r1  due 2026-11-11 04:10Z, did not run (1)
+graff bot --user routine test notes r1    # run it now, if you still want it
+graff bot --user missed clear notes r1
+graff bot --user state           # every bot, and when routines were last checked
+```
+
+Without `--stale-after`, a late slot runs once when the next `tick` comes,
+which is what a cron entry usually wants.
+
 ## Other clients
 
 `graff bot due --claim --json` returns each due routine with the text to run
 it and moves it to its next slot, for a client that runs bots in its own
 chats. `graff bot prompt NAME` prints a bot's standing text. `list`, `show`
 and `routine list` take `--json`.
+
+`graff bot state --json` returns every bot, its routines (each marked `due`
+or not, with any missed slots), the last check and the last stretch in which
+nothing checked. `due --claim --json` rows carry the bot's `project`, `model`
+and `chat`, and `graff bot set NAME chat ID` stores a client's id for the
+bot's standing conversation.
 
 A client that passes text a person typed puts `--` before it:
 `graff bot create notes -- --draft the notes`. After `--` every word is text,

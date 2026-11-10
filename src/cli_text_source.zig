@@ -434,6 +434,7 @@ pub const usage_text =
     \\  graff peer list|send|inbox       talk with other agents on this device (Claude Code, Codex, graff)
     \\  graff bot create|run|routine     standing roles with their own memory, log and scheduled routines (`graff bot` lists the commands)
     \\  graff bot tick                   run every routine that is due, once (for cron, launchd or a client's timer)
+    \\  graff bot --user ...             your own bots in ~/.graff/bots, for any project; one can be --primary
     \\  graff sandboxes                  list your gateway sandboxes (what's burning credits)
     \\  graff sandboxes stop <id>        spin a sandbox down (stops it + settles the meter)
     \\  graff cube new                   spin up a cloud graff (sandbox + serve + preview URL)

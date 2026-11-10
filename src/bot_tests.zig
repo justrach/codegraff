@@ -7,6 +7,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const store = @import("bot_store.zig");
 const cli = @import("bot_cli.zig");
+const contacts = @import("bot_contacts.zig");
 
 const minute: i64 = std.time.ms_per_min;
 const hour: i64 = std.time.ms_per_hour;
@@ -14,12 +15,15 @@ const hour: i64 = std.time.ms_per_hour;
 /// Stands in for the graff child: keeps each argv and answers from a script.
 const Fake = struct {
     calls: std.ArrayList([]const []const u8) = .empty,
+    /// The folder each call was told to work in.
+    cwds: std.ArrayList([]const u8) = .empty,
     reply: cli.RunResult = .{ .ok = true, .text = "Checked the queue: nothing new." },
 
-    fn run(c: ?*anyopaque, arena: Allocator, argv: []const []const u8, timeout_s: u64) cli.RunResult {
+    fn run(c: ?*anyopaque, arena: Allocator, argv: []const []const u8, cwd: []const u8, timeout_s: u64) cli.RunResult {
         _ = timeout_s;
         const self: *Fake = @ptrCast(@alignCast(c.?));
         self.calls.append(arena, argv) catch {};
+        self.cwds.append(arena, cwd) catch {};
         return self.reply;
     }
 
@@ -36,6 +40,7 @@ const Bench = struct {
     tmp: testing.TmpDir,
     fake: Fake = .{},
     now_ms: i64 = 1_800_000_000_000,
+    scope: @import("bot_prompt.zig").Scope = .project,
     out: Io.Writer.Allocating,
 
     fn init() Bench {
@@ -49,7 +54,7 @@ const Bench = struct {
     }
 
     fn ctx(self: *Bench) cli.Ctx {
-        return .{ .io = testing.io, .dir = self.tmp.dir, .arena = self.arena_state.allocator(), .now_ms = self.now_ms, .exe = "graff", .runner = .{ .ctx = &self.fake, .run = Fake.run } };
+        return .{ .io = testing.io, .dir = self.tmp.dir, .arena = self.arena_state.allocator(), .now_ms = self.now_ms, .scope = self.scope, .exe = "graff", .runner = .{ .ctx = &self.fake, .run = Fake.run } };
     }
 
     /// Run `graff bot <args>` and return its exit code; output lands in `out`.
@@ -329,4 +334,206 @@ test "a run's remember and forget lines edit memory; an event's run cannot" {
     try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "prompt", "expenses" }));
     try testing.expect(std.mem.indexOf(u8, b.printed(), "graff bot log expenses") != null);
     try testing.expect(std.mem.indexOf(u8, b.printed(), "remember: <") == null);
+}
+
+// ------------------------------------------------- bots as contacts (0334)
+
+test "a late check runs only a fresh slot and records the older ones as missed" {
+    const r: store.Routine = .{ .id = "r1", .instruction = "check", .at_ms = 10 * minute, .interval_ms = hour };
+    const stale = 5 * minute;
+    try testing.expect(contacts.settle(r, 9 * minute, stale) == null);
+
+    // On time: it runs, nothing is missed.
+    const on_time = contacts.settle(r, 11 * minute, stale).?;
+    try testing.expect(on_time.run);
+    try testing.expectEqual(@as(u32, 0), on_time.next.missed_open);
+    try testing.expectEqual(70 * minute, on_time.next.at_ms);
+
+    // Nothing checked for five hours and the newest slot is 20 minutes old:
+    // nothing runs late, all six slots are missed, the grid is kept.
+    const late = contacts.settle(r, 5 * hour + 30 * minute, stale).?;
+    try testing.expect(!late.run);
+    try testing.expectEqual(@as(u32, 6), late.next.missed_open);
+    try testing.expectEqual(10 * minute, late.next.missed_at_ms);
+    try testing.expectEqual(@as(u32, 0), late.next.runs);
+    try testing.expectEqual(6 * hour + 10 * minute, late.next.at_ms);
+
+    // The same gap, checked two minutes after a slot: that one runs.
+    const fresh = contacts.settle(r, 5 * hour + 12 * minute, stale).?;
+    try testing.expect(fresh.run);
+    try testing.expectEqual(@as(u32, 5), fresh.next.missed_open);
+    try testing.expectEqual(@as(u32, 1), fresh.next.runs);
+
+    // A later miss keeps the first missed time and adds to the count.
+    const again = contacts.settle(late.next, 9 * hour, stale).?;
+    try testing.expectEqual(10 * minute, again.next.missed_at_ms);
+    try testing.expectEqual(@as(u32, 9), again.next.missed_open);
+
+    // A one-shot that came due long ago is spent, and missed.
+    const once = contacts.settle(.{ .id = "r2", .instruction = "check", .at_ms = minute }, 2 * hour, stale).?;
+    try testing.expect(!once.run and once.next.done);
+    try testing.expectEqual(@as(u32, 1), once.next.missed_open);
+
+    // Without a stale window a late slot still runs, once.
+    const cron = contacts.settle(r, 5 * hour + 30 * minute, 0).?;
+    try testing.expect(cron.run);
+    try testing.expectEqual(@as(u32, 0), cron.next.missed_open);
+    try testing.expectEqual(@as(u32, 5), cron.next.missed_fires);
+}
+
+test "a silence longer than the stale window is remembered as the gap" {
+    const first = contacts.checked(.{}, 100 * minute, 5 * minute);
+    try testing.expectEqual(100 * minute, first.last_ms);
+    try testing.expectEqual(@as(i64, 0), first.gap_to_ms);
+    const next = contacts.checked(first, 101 * minute, 5 * minute);
+    try testing.expectEqual(@as(i64, 0), next.gap_to_ms);
+    const after_night = contacts.checked(next, 700 * minute, 5 * minute);
+    try testing.expectEqual(101 * minute, after_night.gap_from_ms);
+    try testing.expectEqual(700 * minute, after_night.gap_to_ms);
+    // The gap stays on record until a newer one replaces it.
+    const later = contacts.checked(after_night, 701 * minute, 5 * minute);
+    try testing.expectEqual(101 * minute, later.gap_from_ms);
+    try testing.expectEqual(701 * minute, later.last_ms);
+}
+
+test "tick --stale-after leaves old slots unrun; missed lists them until cleared" {
+    var b = Bench.init();
+    defer b.deinit();
+    _ = try b.bot(&.{ "create", "triage", "Label new issues" });
+    _ = try b.bot(&.{ "routine", "add", "triage", "@every 1h", "label what came in" });
+    const first_slot = b.now_ms + hour;
+
+    // A check on time runs it.
+    b.now_ms = first_slot + minute;
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "tick", "--stale-after", "300" }));
+    try testing.expectEqual(@as(usize, 1), b.fake.calls.items.len);
+
+    // The laptop was shut for the night: three slots pass, the newest 40
+    // minutes ago. Nothing runs, and the check before it bounds the gap.
+    b.now_ms = first_slot + 3 * hour + 40 * minute;
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "due", "--claim", "--json", "--stale-after", "300" }));
+    try testing.expectEqualStrings("[]\n", b.printed());
+    try testing.expectEqual(@as(usize, 1), b.fake.calls.items.len);
+
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "missed", "--json" }));
+    const a = b.arena_state.allocator();
+    const missed = try std.json.parseFromSliceLeaky([]contacts.Missed, a, b.printed(), .{});
+    try testing.expectEqual(@as(usize, 1), missed.len);
+    try testing.expectEqualStrings("triage", missed[0].bot);
+    try testing.expectEqual(first_slot + hour, missed[0].at_ms);
+    try testing.expectEqual(@as(u32, 3), missed[0].count);
+
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "state", "--json" }));
+    const State = struct {
+        last_check_ms: i64,
+        gap_from_ms: i64,
+        gap_to_ms: i64,
+        bots: []struct { name: []const u8, routines: []struct { id: []const u8, missed_open: u32, due: bool } },
+    };
+    const st = try std.json.parseFromSliceLeaky(State, a, b.printed(), .{ .ignore_unknown_fields = true });
+    try testing.expectEqual(b.now_ms, st.last_check_ms);
+    try testing.expectEqual(first_slot + minute, st.gap_from_ms);
+    try testing.expectEqual(b.now_ms, st.gap_to_ms);
+    try testing.expectEqual(@as(u32, 3), st.bots[0].routines[0].missed_open);
+    try testing.expect(!st.bots[0].routines[0].due);
+
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "missed", "clear", "triage", "r1" }));
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{"missed"}));
+    try testing.expectEqualStrings("nothing was missed\n", b.printed());
+    try testing.expectEqual(@as(u8, 2), try b.bot(&.{ "missed", "clear", "triage", "r9" }));
+
+    // A check in a folder with no bots leaves no store behind.
+    var empty = Bench.init();
+    defer empty.deinit();
+    _ = try empty.bot(&.{ "tick", "--stale-after", "300" });
+    try testing.expectError(error.FileNotFound, empty.tmp.dir.statFile(testing.io, ".graff", .{}));
+}
+
+test "set changes one field; primary moves from bot to bot" {
+    var b = Bench.init();
+    defer b.deinit();
+    const a = b.arena_state.allocator();
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "create", "ada", "--primary", "Coordinate. Don't do their work." }));
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "create", "notes", "--project", "/repo/comet", "Draft release notes" }));
+    try testing.expectEqual(@as(u8, 2), try b.bot(&.{ "create", "deps", "--project", "atlas", "Keep dependencies current" }));
+    try testing.expect(store.load(testing.io, b.tmp.dir, a, "ada").?.primary);
+    try testing.expectEqualStrings("/repo/comet", store.load(testing.io, b.tmp.dir, a, "notes").?.project);
+
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "set", "notes", "primary", "true" }));
+    try testing.expect(!store.load(testing.io, b.tmp.dir, a, "ada").?.primary);
+    try testing.expect(store.load(testing.io, b.tmp.dir, a, "notes").?.primary);
+
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "set", "notes", "chat", "3f2a9c1e-0000", "--json" }));
+    try testing.expect(std.mem.indexOf(u8, b.printed(), "\"chat\":\"3f2a9c1e-0000\"") != null);
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "set", "notes", "job", "--", "--draft", "the", "notes" }));
+    try testing.expectEqualStrings("--draft the notes", store.load(testing.io, b.tmp.dir, a, "notes").?.job);
+    // Clearing a field is setting it to nothing.
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "set", "notes", "project" }));
+    try testing.expectEqualStrings("", store.load(testing.io, b.tmp.dir, a, "notes").?.project);
+
+    for ([_][]const []const u8{
+        &.{ "set", "notes", "yolo", "true" },
+        &.{ "set", "notes", "project", "relative/path" },
+        &.{ "set", "notes", "primary", "yes" },
+        &.{ "set", "notes", "chat", "two words" },
+        &.{ "set", "notes", "job" },
+        &.{ "set", "ghost", "job", "x" },
+    }) |bad| try testing.expectEqual(@as(u8, 2), try b.bot(bad));
+    // A refused set does not skip approvals or change anything else.
+    try testing.expect(!store.load(testing.io, b.tmp.dir, a, "notes").?.yolo);
+}
+
+test "remember and forget by command; what you say about yourself reaches every bot" {
+    var b = Bench.init();
+    defer b.deinit();
+    _ = try b.bot(&.{ "create", "notes", "Draft release notes" });
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "remember", "notes", "--", "No marketing adjectives." }));
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "remember", "notes", "Keep", "three", "bullets." }));
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "remember", "notes", "Keep three bullets." }));
+    try testing.expectEqualStrings("\xe2\x9c\x93 memory: 0 added, 0 removed\n", b.printed());
+    try testing.expectEqualStrings("- No marketing adjectives.\n- Keep three bullets.\n", b.file(".graff/bots/notes/memory.md"));
+    try testing.expectEqual(@as(u8, 2), try b.bot(&.{ "forget", "notes", "No", "adjectives." }));
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "forget", "notes", "No marketing adjectives." }));
+    try testing.expectEqualStrings("- Keep three bullets.\n", b.file(".graff/bots/notes/memory.md"));
+    try testing.expectEqual(@as(u8, 2), try b.bot(&.{ "remember", "notes", "two\nlines" }));
+
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{"about"}));
+    try testing.expectEqualStrings("(nothing yet)\n", b.printed());
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "about", "Alex.", "Pacific", "time." }));
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "run", "notes", "go" }));
+    try testing.expect(std.mem.indexOf(u8, b.fake.arg(0, "--append-system-prompt").?, "<about>\nAlex. Pacific time.\n</about>") != null);
+    // An explicit empty text clears it.
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "about", "" }));
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "prompt", "notes" }));
+    try testing.expect(std.mem.indexOf(u8, b.printed(), "<about>") == null);
+}
+
+test "a user-level bot works in its project and reaches its store with --user" {
+    var b = Bench.init();
+    defer b.deinit();
+    b.scope = .user;
+    _ = try b.bot(&.{ "create", "ada", "--primary", "Coordinate. Don't do their work." });
+    _ = try b.bot(&.{ "create", "notes", "--project", "/repo/comet", "Draft release notes" });
+    _ = try b.bot(&.{ "create", "triage", "Label new issues" });
+
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "run", "notes", "draft", "0.4" }));
+    try testing.expectEqualStrings("/repo/comet", b.fake.cwds.items[0]);
+    const headless = b.fake.arg(0, "--append-system-prompt").?;
+    try testing.expect(std.mem.indexOf(u8, headless, "~/.graff/bots/notes/memory.md") != null);
+    try testing.expect(std.mem.indexOf(u8, headless, "primary bot") == null);
+
+    // In a client's chat the bot changes its store by command, since the
+    // store is outside the folder its tools work in.
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "prompt", "notes" }));
+    for ([_][]const u8{ "graff bot --user remember notes -- ", "graff bot --user forget notes -- ", "graff bot --user log notes -- ", "graff bot --user routine add notes -- " }) |want|
+        try testing.expect(std.mem.indexOf(u8, b.printed(), want) != null);
+
+    // The primary bot knows the others and waits for a yes. A bot with no
+    // project runs where the command was typed.
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "run", "ada", "draft", "the", "notes" }));
+    try testing.expectEqualStrings("", b.fake.cwds.items[1]);
+    const ada = b.fake.arg(1, "--append-system-prompt").?;
+    for ([_][]const u8{ "primary bot", "- notes: Draft release notes (works in /repo/comet)", "- triage: Label new issues", "Start nothing until they say yes", "graff bot --user run <name> -- " }) |want|
+        try testing.expect(std.mem.indexOf(u8, ada, want) != null);
+    try testing.expect(std.mem.indexOf(u8, ada, "- ada:") == null);
 }
