@@ -10,7 +10,7 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## Unreleased
+## v0.302.74.59
 
 - Claude Fable 5.2 is in the baked catalog: `--model claude-fable-5-2` resolves by its bare name on the Anthropic and Claude Agent routes before any live catalog loads, and the cost meter and subagent tier ladder price it.
 - Fixed two image reads in one tool batch delivering only one image (#1866). The registry's single pending image is now a bounded queue (16 images, 24 MB of base64 per batch) shared by native image reads and MCP image blocks. Every queued image reaches the next model request in the order the calls were made, whichever read finished first, with a caption naming them; one past a limit is a tool error that says to read it again.
