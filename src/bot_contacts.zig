@@ -18,6 +18,40 @@ pub const about_rel = store.store_rel ++ "/about.md";
 pub const about_cap: usize = 2048;
 const chat_cap: usize = 128;
 
+// -------------------------------------------------------------------- flag
+
+/// Bots are experimental. They are off until the user turns them on, and the
+/// switch is one file in the user's home, so the terminal, a client's engine
+/// and a bot's own chat all read the same answer.
+pub const enabled_rel = store.store_rel ++ "/enabled";
+pub const flag_env = "GRAFF_BOTS";
+
+/// Whether bots are on. `GRAFF_BOTS=1` turns them on for one process and
+/// `GRAFF_BOTS=0` off, whatever the file says.
+pub fn enabled(env_value: ?[]const u8, marker: bool) bool {
+    if (env_value) |v| {
+        if (std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true")) return true;
+        if (std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false")) return false;
+    }
+    return marker;
+}
+
+pub fn marked(io: Io, home: Io.Dir) bool {
+    const stat = home.statFile(io, enabled_rel, .{}) catch return false;
+    return stat.kind == .file;
+}
+
+/// Turn bots on or off. Off keeps every bot and what it remembers.
+pub fn mark(io: Io, home: Io.Dir, on: bool) !void {
+    if (on) {
+        try home.createDirPath(io, store.store_rel);
+        try home.writeFile(io, .{ .sub_path = enabled_rel, .data = "bots are on; `graff bot disable` turns them off\n" });
+    } else home.deleteFile(io, enabled_rel) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+}
+
 // ------------------------------------------------------------------ checks
 
 pub const Check = struct {

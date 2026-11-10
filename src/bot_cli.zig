@@ -19,6 +19,7 @@ const util = @import("util.zig");
 
 pub const usage =
     \\usage: graff bot <command> [options]
+    \\  enable | disable                       bots are experimental: off until enabled (GRAFF_BOTS=1 for one run)
     \\  list [--json]                          the bots in this folder
     \\  create NAME [--model M] [--yolo] JOB   a new bot and the one job it holds
     \\         [--project DIR] [--primary]    the folder its runs work in; your default contact
@@ -461,6 +462,16 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, environ: *const std.pro
         try out.flush();
         return;
     };
+    // The user's home: where the on/off switch is, and where `--user` bots live.
+    var home_dir: ?Io.Dir = null;
+    defer if (home_dir) |*d| d.close(io);
+    const home = environ.get("HOME") orelse "";
+    if (home.len > 0) home_dir = Io.Dir.cwd().openDir(io, home, .{}) catch null;
+    if (try more.flag(io, home_dir, environ.get(contacts.flag_env), opts.words, out)) |code| {
+        try out.flush();
+        if (code != 0) std.process.exit(code);
+        return;
+    }
     const depth = std.fmt.parseInt(u32, environ.get(depth_env) orelse "0", 10) catch 0;
     var env = std.process.Environ.Map.init(gpa);
     defer env.deinit();
@@ -472,16 +483,10 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, environ: *const std.pro
     }
     var real: Real = .{ .io = io, .env = &env };
     // `--user`: the same store, rooted at the user's home.
-    var home_dir: ?Io.Dir = null;
-    defer if (home_dir) |*d| d.close(io);
-    if (opts.user) {
-        const home = environ.get("HOME") orelse "";
-        if (home.len == 0) std.process.fatal("graff bot --user: no HOME", .{});
-        home_dir = Io.Dir.cwd().openDir(io, home, .{}) catch std.process.fatal("graff bot --user: cannot open {s}", .{home});
-    }
+    if (opts.user and home_dir == null) std.process.fatal("graff bot --user: no HOME to keep bots in", .{});
     const ctx: Ctx = .{
         .io = io,
-        .dir = home_dir orelse Io.Dir.cwd(),
+        .dir = if (opts.user) home_dir.? else Io.Dir.cwd(),
         .scope = if (opts.user) .user else .project,
         .arena = arena,
         .now_ms = util.unixMs(io),

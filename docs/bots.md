@@ -4,6 +4,23 @@ A Bot is a standing role with one job. It keeps its own memory and work log
 between runs, and can start work by itself on a schedule (ADR 0333). Bots live
 in the folder you create them in, under `.graff/bots/<name>/`.
 
+Bots are experimental and off until you turn them on:
+
+```bash
+graff bot enable      # once; writes ~/.graff/bots/enabled
+graff bot disable     # off again; every bot and its memory is kept
+```
+
+While they are off every other `graff bot` command, `tick` included, exits 2
+before it touches a bot store, and prints:
+
+```
+graff bot: bots are experimental and off. Turn them on with `graff bot enable`
+```
+
+`GRAFF_BOTS=1` turns them on for one process and `GRAFF_BOTS=0` off, whatever
+the file says.
+
 ```bash
 graff bot create triage "Read TODO.md and report what is still open"
 graff bot run triage "what is open? from now on answer as a numbered list"
@@ -88,6 +105,9 @@ Without `--stale-after`, a late slot runs once when the next `tick` comes,
 which is what a cron entry usually wants.
 
 ## Other clients
+
+A client reads the same switch: the file `~/.graff/bots/enabled`, unless
+`GRAFF_BOTS` is `1` or `0`. `graff bot --user enable` and `disable` change it.
 
 `graff bot due --claim --json` returns each due routine with the text to run
 it and moves it to its next slot, for a client that runs bots in its own

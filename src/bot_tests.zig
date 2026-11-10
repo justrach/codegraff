@@ -537,3 +537,36 @@ test "a user-level bot works in its project and reaches its store with --user" {
         try testing.expect(std.mem.indexOf(u8, ada, want) != null);
     try testing.expect(std.mem.indexOf(u8, ada, "- ada:") == null);
 }
+
+test "bots are off until enabled, and one file in the home is the switch" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var out: Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    const more = @import("bot_cli_contacts.zig");
+    const io = testing.io;
+
+    // Off: every command is refused in one line, and nothing is written.
+    try testing.expectEqual(@as(?u8, 2), try more.flag(io, tmp.dir, null, &.{ "list", "--json" }, &out.writer));
+    try testing.expect(std.mem.indexOf(u8, out.writer.buffered(), "graff bot enable") != null);
+    try testing.expectError(error.FileNotFound, tmp.dir.statFile(io, ".graff", .{}));
+    // One process can be let through, or kept out, by the environment.
+    try testing.expectEqual(@as(?u8, null), try more.flag(io, tmp.dir, "1", &.{"list"}, &out.writer));
+    try testing.expectEqual(@as(?u8, null), try more.flag(io, null, "1", &.{"list"}, &out.writer));
+    try testing.expectEqual(@as(?u8, 2), try more.flag(io, null, null, &.{"enable"}, &out.writer));
+
+    try testing.expectEqual(@as(?u8, 0), try more.flag(io, tmp.dir, null, &.{"enable"}, &out.writer));
+    try testing.expect(contacts.marked(io, tmp.dir));
+    try testing.expectEqual(@as(?u8, null), try more.flag(io, tmp.dir, null, &.{"tick"}, &out.writer));
+    try testing.expectEqual(@as(?u8, 2), try more.flag(io, tmp.dir, "0", &.{"tick"}, &out.writer));
+    // The switch is not a bot, and turning bots off keeps them.
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    try store.create(io, tmp.dir, arena_state.allocator(), .{ .name = "notes", .job = "Draft release notes" });
+    try testing.expectEqual(@as(usize, 1), store.list(io, tmp.dir, arena_state.allocator()).len);
+    try testing.expectEqual(@as(?u8, 0), try more.flag(io, tmp.dir, null, &.{"disable"}, &out.writer));
+    try testing.expectEqual(@as(?u8, 0), try more.flag(io, tmp.dir, null, &.{"disable"}, &out.writer));
+    try testing.expect(!contacts.marked(io, tmp.dir));
+    try testing.expectEqual(@as(?u8, 2), try more.flag(io, tmp.dir, null, &.{"list"}, &out.writer));
+    try testing.expect(store.load(io, tmp.dir, arena_state.allocator(), "notes") != null);
+}

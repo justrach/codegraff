@@ -8,6 +8,27 @@ const cli = @import("bot_cli.zig");
 const store = @import("bot_store.zig");
 const contacts = @import("bot_contacts.zig");
 
+pub const off_text = "bots are experimental and off. Turn them on with `graff bot enable`";
+
+/// The switch itself, and the refusal while it is off. Returns the exit code
+/// when the command ends here, null when bots are on and it should go on.
+/// `home` is the user's home, or null when there is none to keep a switch in.
+pub fn flag(io: Io, home: ?Io.Dir, env_value: ?[]const u8, words: []const []const u8, out: *Io.Writer) !?u8 {
+    const action = words[0];
+    const turn_on = std.mem.eql(u8, action, "enable");
+    if (turn_on or std.mem.eql(u8, action, "disable")) {
+        const dir = home orelse return try cli.fail(out, "no HOME to keep the switch in; set {s}=1 for one run", .{contacts.flag_env});
+        contacts.mark(io, dir, turn_on) catch return try cli.fail(out, "could not write ~/{s}", .{contacts.enabled_rel});
+        try out.writeAll(if (turn_on)
+            "\xe2\x9c\x93 bots are on (experimental). `graff bot` lists the commands; `graff bot disable` turns them off\n"
+        else
+            "\xe2\x9c\x93 bots are off. Your bots and what they remember are kept\n");
+        return 0;
+    }
+    if (contacts.enabled(env_value, if (home) |dir| contacts.marked(io, dir) else false)) return null;
+    return try cli.fail(out, "{s}", .{off_text});
+}
+
 const BotRow = struct {
     name: []const u8,
     job: []const u8,

@@ -52,9 +52,20 @@ cannot edit its own `memory.md`.
 - `graff bot state --json` is everything a client draws in one call: the
   last check and gap, the about text, and every bot with its routines, each
   marked `due` or not.
+- Bots are experimental and off until `graff bot enable`, which writes the
+  file `~/.graff/bots/enabled`. While off, every other `graff bot`
+  command refuses with exit 2 before it reads or writes a store. The switch
+  is in the user's home for both scopes, so a terminal, a client's engine
+  and a bot's own chat read one answer; `GRAFF_BOTS=1` or `=0` decides for
+  one process. `disable` removes the file and keeps every bot.
 
 ## Consequences
 
+- A cron entry or a client's timer that calls `tick` while bots are off gets
+  the refusal and runs nothing. A client that wants to stay quiet checks the
+  file itself and starts no process.
+- The switch is per user, not per project: a project cannot turn bots on for
+  someone who cloned it.
 - A check in a folder with no bots writes nothing, so a client can check
   every project without leaving stores behind.
 - The gap is "nothing checked between these two times". graff does not know
