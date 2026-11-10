@@ -456,6 +456,12 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         return true;
     }
 
+    // `graff bot …`: standing roles with memory and routines (ADR 0333).
+    if ((comptime build_options.extras) and flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "bot")) {
+        try @import("bot_cli.zig").command(gpa, io, arena, init.environ_map, flags.positionals.items[1..]);
+        return true;
+    }
+
     // `graff keys …`: the end-to-end encrypted login vault (harness ADR 0005).
     if ((comptime build_options.extras) and flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "keys")) {
         try @import("keys_vault_cli.zig").command(gpa, io, arena, init.environ_map.get("HOME") orelse "", init.environ_map, flags.positionals.items[1..]);
