@@ -10,6 +10,12 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.62
+
+- The primary bot is now your main bot: one thread for every project (ADR 0335). In a client's chat (`graff bot prompt`, `due --claim`) its standing text tells it to start each piece of work as its own chat in the project the work belongs to, with the client's tools (Harness: `list_projects`, `create_chat`, on graff unless you name another agent), say in one line what it started, and end its turn. The client tells its thread when that chat stops, and it reports then. It asks only when more than one project could be meant, and leaves publishing, sending, paying and deleting to you.
+- From a terminal (`graff bot --user run NAME "…"`) the main bot cannot reach another folder, so it names the project the work belongs in and gives the command that starts it there.
+- Single-job bots stay as helpers. The main bot hands a request to the one whose job it is and says that it did, without waiting for a yes first (this replaces that part of ADR 0334). All of this is text given to a model: a started chat's own approvals are the real limit. Bots are still experimental and off until `graff bot enable`.
+
 ## v0.302.74.61
 
 - Added Bots, experimental and off until `graff bot enable`. A Bot is a standing role with one job that keeps its own memory, work log and scheduled routines in `.graff/bots/<name>/` (ADR 0333). `graff bot run NAME MESSAGE` is one headless turn with those in its system prompt, `graff bot routine add NAME "@every 2h" TEXT` schedules work, and `graff bot tick` runs every due routine once, for cron, launchd or a client's timer. There is no daemon: nothing runs unless something ticks. See `docs/bots.md`.
