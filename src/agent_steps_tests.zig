@@ -225,3 +225,45 @@ test "yield_turn (#1531): every wire returns the handoff after recording the too
         try std.testing.expectEqual(@as(usize, 2), agent.messages.items.len);
     }
 }
+
+test "#1881: OpenAI delta.reasoning populates reasoning_content and serde normalizes non-streamed reasoning" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = arena,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = .{ .id = "test", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "test", .context = 128000 },
+        .messages = .init(arena),
+        .sub = false,
+        .label = "test",
+        .out = null,
+    };
+
+    const root = (try agent.assembleOpenAI(
+        "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"reasoning\":\"step 1; \"}}]}\n" ++
+            "data: {\"choices\":[{\"delta\":{\"reasoning\":\"step 2\"}}]}\n" ++
+            "data: {\"choices\":[{\"delta\":{\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}\n" ++
+            "data: [DONE]\n",
+    )).?;
+    const msg = root.get("choices").?.array.items[0].object.get("message").?.object;
+    try std.testing.expectEqualStrings("step 1; step 2", msg.get("reasoning_content").?.string);
+    try std.testing.expectEqualStrings("step 1; step 2", msg.get("reasoning").?.string);
+
+    // Non-streamed / restored assistant message carrying only `reasoning` gets
+    // `reasoning_content` emitted on the OpenAI wire for chat-template KV cache stability.
+    const restored = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena,
+        "{\"role\":\"assistant\",\"content\":\"ok\",\"reasoning\":\"cached chain\"}",
+        .{},
+    );
+    var aw: std.Io.Writer.Allocating = .init(arena);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    try @import("serde.zig").writeOpenAIMessageNormalized(&s, restored);
+    const wire = aw.writer.buffered();
+    const reparsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, wire, .{});
+    try std.testing.expectEqualStrings("cached chain", reparsed.object.get("reasoning_content").?.string);
+}

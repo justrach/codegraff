@@ -83,6 +83,28 @@ pub fn classOf(call: tools.ToolCall) Class {
 /// dominant class — a model that keeps hammering after being told gets no
 /// repeats, and a shift to a DIFFERENT dominant class re-arms it.
 var g_last_skew: std.atomic.Value(u8) = .init(0);
+pub const read_streak_threshold: u64 = 16;
+var g_read_streak: u64 = 0;
+var g_read_streak_nudged: std.atomic.Value(u8) = .init(0);
+
+const ToolActivity = enum { read_explore, write_or_exec, neutral };
+
+fn classifyActivity(call: tools.ToolCall, class: Class) ToolActivity {
+    const name = call.name;
+    if (std.mem.eql(u8, name, "edit_file") or
+        std.mem.eql(u8, name, "write_file") or
+        std.mem.eql(u8, name, "apply_patch")) return .write_or_exec;
+    if (class != .other) return .read_explore;
+    if (std.mem.eql(u8, name, "list_dir") or
+        std.mem.eql(u8, name, "glob") or
+        std.mem.eql(u8, name, "web_search") or
+        std.mem.eql(u8, name, "fetch_url")) return .read_explore;
+    if (std.mem.eql(u8, name, "bash") or std.mem.eql(u8, name, "shell")) {
+        const cmd = tools.strField(call.input, "command") orelse return .neutral;
+        return if (@import("approvals.zig").Approvals.readOnlyAllowed(cmd)) .read_explore else .write_or_exec;
+    }
+    return .neutral;
+}
 
 fn isSuite(class: Class) bool {
     return switch (class) {
@@ -111,18 +133,47 @@ pub fn skewClass(snap: *const Snapshot) ?Class {
 /// nudge when suite usage NEWLY skews (the caller appends it to the tool
 /// result so the model hears it, not just /tools) — null otherwise.
 pub fn record(gpa: Allocator, call: tools.ToolCall, is_error: bool) ?[]u8 {
+    return recordWithMode(gpa, call, is_error, false);
+}
+
+pub fn recordWithMode(gpa: Allocator, call: tools.ToolCall, is_error: bool, allow_write_nudge: bool) ?[]u8 {
     const class = classOf(call);
     bump(&g_counts[@backingInt(class)]);
     if (is_error) bump(&g_errors);
-    if (!isSuite(class)) return null;
-    var snap = snapshot();
-    const top = skewClass(&snap) orelse {
-        g_last_skew.store(0, .release);
-        return null;
-    };
-    const marker: u8 = @intCast(@backingInt(top) + 1);
-    if (g_last_skew.swap(marker, .acq_rel) == marker) return null;
-    return std.fmt.allocPrint(gpa, "tool balance: {d}/{d} suite calls were {s} — read (outline-first), search and batch are all available; balance them", .{ snap.get(top), snap.suiteTotal(), top.label() }) catch null;
+
+    const activity = classifyActivity(call, class);
+    var streak_now: u64 = 0;
+    switch (activity) {
+        .read_explore => streak_now = @atomicRmw(u64, &g_read_streak, .Add, 1, .monotonic) + 1,
+        .write_or_exec => {
+            @atomicStore(u64, &g_read_streak, 0, .monotonic);
+            g_read_streak_nudged.store(0, .release);
+        },
+        .neutral => {},
+    }
+
+    if (isSuite(class)) {
+        var snap = snapshot();
+        if (skewClass(&snap)) |top| {
+            const marker: u8 = @intCast(@backingInt(top) + 1);
+            if (g_last_skew.swap(marker, .acq_rel) != marker) {
+                return std.fmt.allocPrint(gpa, "tool balance: {d}/{d} suite calls were {s} — read (outline-first), search and batch are all available; balance them", .{ snap.get(top), snap.suiteTotal(), top.label() }) catch null;
+            }
+        } else {
+            g_last_skew.store(0, .release);
+        }
+    }
+
+    if (allow_write_nudge and activity == .read_explore and streak_now >= read_streak_threshold) {
+        if (g_read_streak_nudged.swap(1, .acq_rel) == 0) {
+            return std.fmt.allocPrint(
+                gpa,
+                "exploration balance: {d} consecutive read/search calls without an edit or test run — if this task requires a code change, form a concrete hypothesis and run a targeted test or apply an edit now",
+                .{streak_now},
+            ) catch null;
+        }
+    }
+    return null;
 }
 
 /// codedbpro_report.nativeRefusal's hook: a native call the licensed gate
@@ -160,7 +211,9 @@ pub fn reset() void {
     inline for (0..class_count) |i| @atomicStore(u64, &g_counts[i], 0, .monotonic);
     @atomicStore(u64, &g_refused, 0, .monotonic);
     @atomicStore(u64, &g_errors, 0, .monotonic);
+    @atomicStore(u64, &g_read_streak, 0, .monotonic);
     g_last_skew.store(0, .monotonic);
+    g_read_streak_nudged.store(0, .monotonic);
 }
 
 /// The "not overleveraging just one" check for /tools: same rule record()
@@ -265,4 +318,27 @@ test "render shows classes, gate state and skew" {
     try std.testing.expect(std.mem.indexOf(u8, text, "search 9") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "fallback closed") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "skew:") != null);
+}
+
+test "#1879: recordWithMode edge-triggers once on a long read-only streak and resets after edit_file" {
+    reset();
+    defer reset();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const read_call: tools.ToolCall = .{ .id = "t", .name = "read_file", .input = .null };
+    var fired: usize = 0;
+    for (0..read_streak_threshold + 4) |_| {
+        if (recordWithMode(a, read_call, false, true)) |nudge| {
+            try std.testing.expect(std.mem.indexOf(u8, nudge, "exploration balance:") != null);
+            fired += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), fired);
+    // An edit resets the streak and re-arms the nudge for a later spiral.
+    try std.testing.expect(recordWithMode(a, .{ .id = "t", .name = "edit_file", .input = .null }, false, true) == null);
+    for (0..read_streak_threshold) |_| {
+        if (recordWithMode(a, read_call, false, true)) |_| fired += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), fired);
 }

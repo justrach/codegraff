@@ -92,7 +92,7 @@ fn currentInstructions(io: Io, a: Allocator) ?struct { name: []const u8, body: [
         const trimmed = std.mem.trim(u8, raw, " \t\r\n");
         if (trimmed.len == 0) continue;
         const limits = @import("context_limits.zig");
-        return .{ .name = name, .body = limits.applyAlloc(a, trimmed, limits.agents_md_bytes) };
+        return .{ .name = name, .body = limits.applyFileAlloc(a, name, trimmed, limits.agents_md_bytes) };
     }
     return null;
 }

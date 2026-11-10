@@ -12,19 +12,33 @@ pub const marker = "stopped: model loop";
 
 pub const Stream = struct {
     detector: Detector = .{},
+    reasoning_detector: Detector = .{},
     /// This reply's size before any tool call (agent_length_cutoff.zig).
     size: @import("agent_length_cutoff.zig").ReplySize = .{},
 
-    /// The loop detector reads only assistant text; the runaway size check also
-    /// counts reasoning and stops counting once a tool call starts.
+    /// The loop detector reads assistant text and (before any tool call or
+    /// visible text) repetitive reasoning streams (#1878); the runaway size
+    /// check also counts reasoning and stops counting once a tool call starts.
     /// Capture works even when the frontend doesn't paint streaming deltas.
     pub fn event(self: *Stream, agent: *Agent, payload: []const u8, paint: bool) !void {
         const parsed = std.json.parseFromSlice(Value, agent.gpa, payload, .{}) catch return;
         defer parsed.deinit();
         const text = delta(agent.provider.kind, parsed.value);
         if (self.size.feed(agent, parsed.value, text.len)) return error.ReplyRunaway;
-        if (text.len == 0) return;
         const enabled = !agent.compaction_request and agent.output_schema == null;
+        if (enabled and !self.size.tool_seen and text.len == 0) {
+            const r_text = @import("agent_length_cutoff.zig").reasoningDelta(agent.provider.kind, parsed.value);
+            if (r_text.len > 0) {
+                _ = self.reasoning_detector.feed(r_text);
+                if (self.reasoning_detector.stopped) {
+                    return if (agent.length_cutoffs < @import("agent_length_cutoff.zig").max_rewinds)
+                        error.ReplyRunaway
+                    else
+                        error.ModelLoop;
+                }
+            }
+        }
+        if (text.len == 0) return;
         const n = if (enabled) self.detector.feed(text) else text.len;
         try agent.partial_text.appendSlice(agent.arena, text[0..n]);
         if (!self.detector.stopped) return;

@@ -91,3 +91,42 @@ test "model loop exemptions preserve tool output structured answers and compacti
     const tools = try std.json.parseFromSlice(Value, arena, "{\"choices\":[{\"message\":{\"tool_calls\":[{\"function\":{\"arguments\":\"repeated text\"}}]}}]}", .{});
     try loop.checkResponse(&agent, tools.value.object);
 }
+
+test "#1878: repetitive reasoning_content / reasoning stream triggers ReplyRunaway rewind then ModelLoop" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var client: std.http.Client = .{ .allocator = std.testing.allocator, .io = std.testing.io };
+    defer client.deinit();
+    for ([_][]const u8{
+        "{\"choices\":[{\"delta\":{\"reasoning_content\":\"Wait, let me re-verify the implementation.\\n\"}}]}",
+        "{\"choices\":[{\"delta\":{\"reasoning\":\"Wait, let me re-verify the implementation.\\n\"}}]}",
+    }) |raw| {
+        var agent = testAgent(arena, &client);
+        agent.provider.model = "test-raw-reasoner";
+        agent.length_cutoffs = 0;
+        var guard: loop.Stream = .{};
+        var rewound = false;
+        for (0..100) |_| {
+            guard.event(&agent, raw, false) catch |err| {
+                try std.testing.expectEqual(error.ReplyRunaway, err);
+                rewound = true;
+                break;
+            };
+        }
+        try std.testing.expect(rewound);
+
+        // Once rewinds are exhausted, repetitive reasoning terminates with ModelLoop.
+        agent.length_cutoffs = @import("agent_length_cutoff.zig").max_rewinds;
+        guard = .{};
+        var halted = false;
+        for (0..100) |_| {
+            guard.event(&agent, raw, false) catch |err| {
+                try std.testing.expectEqual(error.ModelLoop, err);
+                halted = true;
+                break;
+            };
+        }
+        try std.testing.expect(halted);
+    }
+}

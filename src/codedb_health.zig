@@ -37,6 +37,20 @@ pub fn probe(io: Io, cwd: []const u8) Snapshot {
     return probeWithHome(io, cwd, posixHome());
 }
 
+/// True when `cwd` is a linked git worktree (`.git` is a gitdir pointer file
+/// rather than a `.git/` directory) and has no codedb snapshot of its own (#54).
+pub fn isUnindexedLinkedWorktree(io: Io, cwd: []const u8) bool {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target = if (cwd.len == 0) "." else cwd;
+    const git_path = if (std.mem.eql(u8, target, "."))
+        ".git"
+    else
+        std.fmt.bufPrint(&buf, "{s}/.git", .{target}) catch return false;
+    const st = Io.Dir.cwd().statFile(io, git_path, .{}) catch return false;
+    if (st.kind != .file) return false;
+    return !probe(io, target).present;
+}
+
 pub fn probeWithHome(io: Io, cwd: []const u8, home: ?[]const u8) Snapshot {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const target = if (cwd.len == 0) "." else cwd;

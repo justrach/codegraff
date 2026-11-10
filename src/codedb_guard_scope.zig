@@ -259,3 +259,26 @@ test "exempt: large write destinations pass, large source reads do not (#1709)" 
     try std.testing.expect(!exemptAt(io, tmp.dir, "cat", "cat > out.rs < big.rs"));
     try std.testing.expect(!exemptAt(io, tmp.dir, "grep", "grep fn big.rs > out.txt"));
 }
+
+/// Extract the first concrete source file path from a bash command (after the
+/// command word). Returns null for globs or non-source tokens.
+pub fn extractSourceFilePath(cmd: []const u8) ?[]const u8 {
+    const exts = [_][]const u8{
+        ".zig",  ".rs",  ".ts",  ".tsx", ".js",    ".jsx",   ".mjs",    ".cjs",
+        ".py",   ".go",  ".c",   ".h",   ".cc",    ".cpp",   ".hpp",    ".cxx",
+        ".java", ".kt",  ".rb",  ".php", ".swift", ".scala", ".cs",     ".lua",
+        ".ex",   ".exs", ".erl", ".clj", ".dart",  ".vue",   ".svelte",
+    };
+    var it = std.mem.tokenizeAny(u8, cmd, " \t\n");
+    var first = true;
+    while (it.next()) |raw| {
+        if (first) {
+            first = false;
+            continue;
+        }
+        const tok = std.mem.trim(u8, raw, "'\"`()");
+        if (std.mem.indexOfAny(u8, tok, "*?") != null) continue;
+        for (exts) |e| if (std.mem.endsWith(u8, tok, e)) return tok;
+    }
+    return null;
+}

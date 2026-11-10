@@ -5,9 +5,17 @@
 pub const changelog_text =
     \\What's new
     \\──────────
-    \\0.302.74.60
+    \\0.302.74.61
     \\  • Bots (experimental, off until `graff bot enable`): standing roles with one job and their own memory, work log and routines in `.graff/bots/<name>/`; `graff bot run`, `routine add`, `tick` for cron or a client's timer (ADR 0333)
     \\  • `graff bot --user`: your own bots in `~/.graff/bots` for any project, one `--primary`; a late check records what it missed instead of running it late (`--stale-after`, `graff bot missed`); `graff bot state --json` for clients (ADR 0334)
+    \\
+    \\0.302.74.60
+    \\  • runaway raw reasoning streams stop at a byte bound, run loop detection (`ReplyRunaway` -> `ModelLoop`), and skip the 270s empty-reply backoff (#1878)
+    \\  • `delta.reasoning` normalizes into `reasoning_content` on replay and `ReplySize` (#1881)
+    \\  • `#390` final budget-landing calls keep `tools` with `tool_choice: "none"`, settle reasoning-only `length` stops cleanly, and exit `0` when tool work completed (#1882)
+    \\  • `edit_file` resolves multi-line `old_string` blocks with stripped line-1 indentation and restores the matched prefix (#1880)
+    \\  • unattended `-p` action turns nudge long read-only streaks and bounce once on zero-mutation unfinished prose (#1879)
+    \\  • explicit truncation markers on capped instruction/skill/MCP sections (#1871), `CLAUDE_CODE_USER_EMAIL` stripped in `claude-agent` (#1870), and worktree-scoped `codedb` guards + exit-code checks (#54)
     \\
     \\0.302.74.59
     \\  • Claude Fable 5.2 in the baked catalog: `--model claude-fable-5-2` resolves by its bare name and is priced

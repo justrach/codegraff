@@ -84,6 +84,50 @@ pub fn applyAlloc(arena: std.mem.Allocator, text: []const u8, cap: usize) []cons
     return std.fmt.allocPrint(arena, "{s}{s}", .{ head, marker }) catch head;
 }
 
+/// Truncate file-backed instructions (`name`, e.g. `AGENTS.md`) to `<= cap`
+/// bytes while naming the file, kept/total bytes, and exact line to read from (#1871).
+pub fn applyFileAlloc(arena: std.mem.Allocator, name: []const u8, text: []const u8, cap: usize) []const u8 {
+    if (text.len <= cap) return text;
+    // Upper-bound marker length so `head.len + suffix.len <= cap` always holds.
+    const worst = std.fmt.allocPrint(
+        arena,
+        "\n[{s} cut at {d} of {d} bytes (--context-limit); read {s} from line {d} for the rest]",
+        .{ name, cap, text.len, name, text.len },
+    ) catch return applyAlloc(arena, text, cap);
+    if (cap <= worst.len) return applyAlloc(arena, text, cap);
+    var head = util.utf8Prefix(text, cap - worst.len);
+    if (std.mem.lastIndexOfScalar(u8, head, '\n')) |nl| {
+        if (nl > head.len / 2) head = head[0..nl];
+    }
+    const resume_line = 1 + std.mem.count(u8, head, "\n") + @intFromBool(head.len < text.len and text[head.len] == '\n');
+    return std.fmt.allocPrint(
+        arena,
+        "{s}\n[{s} cut at {d} of {d} bytes (--context-limit); read {s} from line {d} for the rest]",
+        .{ head, name, head.len, text.len, name, resume_line },
+    ) catch head;
+}
+
+/// Truncate a generated prompt section (`label`) to `<= cap` bytes with an
+/// actionable recovery `hint` (#1871).
+pub fn applySectionAlloc(arena: std.mem.Allocator, label: []const u8, text: []const u8, cap: usize, hint: []const u8) []const u8 {
+    if (text.len <= cap) return text;
+    const worst = std.fmt.allocPrint(
+        arena,
+        "\n[{s} cut at {d} of {d} bytes (--context-limit); {s}]",
+        .{ label, cap, text.len, hint },
+    ) catch return applyAlloc(arena, text, cap);
+    if (cap <= worst.len) return applyAlloc(arena, text, cap);
+    var head = util.utf8Prefix(text, cap - worst.len);
+    if (std.mem.lastIndexOfScalar(u8, head, '\n')) |nl| {
+        if (nl > head.len / 2) head = head[0..nl];
+    }
+    return std.fmt.allocPrint(
+        arena,
+        "{s}\n[{s} cut at {d} of {d} bytes (--context-limit); {s}]",
+        .{ head, label, head.len, text.len, hint },
+    ) catch head;
+}
+
 test "named limits parse and refuse a silent no-op" {
     resetForTest();
     defer resetForTest();
@@ -108,4 +152,21 @@ test "apply never grows and marks a truncate" {
     try std.testing.expect(cut.len <= 40);
     try std.testing.expect(std.mem.indexOf(u8, cut, "[truncated by --context-limit]") != null);
     try std.testing.expect(std.mem.startsWith(u8, cut, "abc"));
+}
+
+test "#1871: applyFileAlloc and applySectionAlloc stay within cap and give actionable recovery" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var doc: std.ArrayList(u8) = .empty;
+    for (1..30) |line_no| try doc.print(a, "Rule line {d}: keep every check deterministic and fast.\n", .{line_no});
+    const file_cut = applyFileAlloc(a, "AGENTS.md", doc.items, 320);
+    try std.testing.expect(file_cut.len <= 320);
+    try std.testing.expect(std.mem.indexOf(u8, file_cut, "[AGENTS.md cut at ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, file_cut, "read AGENTS.md from line ") != null);
+
+    const sec_cut = applySectionAlloc(a, "skill catalog", doc.items, 260, "call `skill` with no name for the full list");
+    try std.testing.expect(sec_cut.len <= 260);
+    try std.testing.expect(std.mem.indexOf(u8, sec_cut, "[skill catalog cut at ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sec_cut, "call `skill` with no name") != null);
 }

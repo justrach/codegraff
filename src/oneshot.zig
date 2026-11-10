@@ -110,7 +110,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     // Usage summary → stderr, so stdout stays exactly the answer.
     pricing.printUsageFooter(io);
     const saved = save(root, arena);
-    const incomplete: ?result.Failure = if (root.run_budget != null and (root.run_budget.?.tool_exhausted.load(.acquire) or root.run_budget.?.model_landed.load(.acquire)))
+    const incomplete: ?result.Failure = if (root.run_budget != null and (root.run_budget.?.tool_exhausted.load(.acquire) or @import("agent_unfinished_bounce.zig").landedBudgetExhausted(root, prompt_text, answer)))
         .{ .reason = "budget_exhausted", .exit_code = 3 }
     else if (root.eval_repair_pending or root.yielded != null or @import("subagent_interactive.zig").yielded or @import("goal_state.zig").openCount(root.todos.items, @import("goal_state.zig").currentEpoch(root.goal)) > 0)
         .{ .reason = "unfinished_work", .exit_code = 2 }

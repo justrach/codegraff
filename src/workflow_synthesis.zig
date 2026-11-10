@@ -24,11 +24,18 @@ pub const State = struct {
 
     pub fn keepsCatalog(self: State, agent: *const Agent) bool {
         if (!self.reporting() or (self.prior_text_only orelse true)) return false;
-        return switch (agent.provider.kind) {
-            .responses => true,
-            .openai => !@import("meta_wire.zig").restricted(agent.provider.id, agent.provider.model),
-            else => false,
-        };
+        return wireSupportsToolChoiceNone(agent);
+    }
+
+    /// True when the wire should retain `tools` and enforce `tool_choice: "none"`
+    /// — either for synthesis's final report or for the root's `#390` final
+    /// budget-landing call (#1882), preserving the prompt KV prefix cache.
+    pub fn keepsCatalogOrLanded(self: State, agent: *const Agent) bool {
+        if (self.keepsCatalog(agent)) return true;
+        if (!agent.sub and !agent.compaction_request) {
+            if (agent.run_budget) |b| if (b.model_landed.load(.acquire)) return wireSupportsToolChoiceNone(agent);
+        }
+        return false;
     }
 
     pub fn beforeRequest(self: *State, agent: *Agent) !void {
@@ -53,6 +60,14 @@ pub const State = struct {
         self.prior_text_only = null;
     }
 };
+
+pub fn wireSupportsToolChoiceNone(agent: *const Agent) bool {
+    return switch (agent.provider.kind) {
+        .responses => true,
+        .openai => !@import("meta_wire.zig").restricted(agent.provider.id, agent.provider.model),
+        else => false,
+    };
+}
 
 /// An aborted final stage does not erase the already-completed review.
 pub fn withEvidence(a: std.mem.Allocator, failure: []const u8, previous: []const u8) ![]const u8 {

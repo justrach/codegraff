@@ -10,11 +10,22 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## v0.302.74.60
+## v0.302.74.61
 
 - Added Bots, experimental and off until `graff bot enable`. A Bot is a standing role with one job that keeps its own memory, work log and scheduled routines in `.graff/bots/<name>/` (ADR 0333). `graff bot run NAME MESSAGE` is one headless turn with those in its system prompt, `graff bot routine add NAME "@every 2h" TEXT` schedules work, and `graff bot tick` runs every due routine once, for cron, launchd or a client's timer. There is no daemon: nothing runs unless something ticks. See `docs/bots.md`.
 - `graff bot --user` keeps the same store in `~/.graff/bots`, for bots you message from any project; one can be `--primary` (ADR 0334). With `--stale-after SECONDS` a check that comes late records the slots it missed (`graff bot missed`) and does not run them late. `graff bot state --json` returns every bot, its routines and the last check in one call, for a client that draws them.
 - While bots are off, every `graff bot` command except `enable` and `disable` exits 2 before it opens a store. The switch is the file `~/.graff/bots/enabled`; `GRAFF_BOTS=1` or `=0` decides for one process. `graff bot disable` keeps every bot and what it remembers.
+
+## v0.302.74.60
+
+- Fixed runaway raw reasoning streams bypassing `ReplySize` and `Stream` loop detection and sleeping up to 270s in empty-completion backoff before failing (#1878). Pure mid-task reasoning streams now stop at `raw_reasoning_runaway_bytes`, `Stream.event` runs `Detector` over reasoning deltas (`ReplyRunaway` rewind while rewinds remain, then `ModelLoop`), and `handleWithWait` skips transport sleep when `reasonedWithoutAnswer` is true.
+- Fixed unattended `-p` action turns chaining unbounded read-only calls without a write/verify nudge or stopping in plain text while admitting unfinished edits (#1879). Expanded `named_work` source extensions, added an edge-triggered exploration-balance nudge in `tool_balance`, and added a single-shot `maybeBounceUnfinishedStop` guard for unattended zero-mutation action turns.
+- Fixed `edit_file` rejecting multi-line `old_string` blocks when only line 1 lost its leading whitespace (#1880). `edit_match` now resolves unique line-1-stripped matches and restores the matched leading whitespace prefix on `new_string` when line 1 starts at column 0.
+- Fixed `/v1/chat/completions` streams carrying `choices[0].delta.reasoning` omitting `reasoning_content` on subsequent requests and escaping `ReplySize` (#1881). `assembleOpenAI` and `writeOpenAIMessageNormalized` now populate `reasoning_content` from `reasoning` when `reasoning_content` is absent, and `reasoningDelta` reads `delta.reasoning` as a fallback.
+- Fixed the `#390` final budget-landing call dropping `"tools"` from the serialized prefix, aborting on reasoning-only `length` stops, and exiting `3` (`budget_exhausted`) after completed tool runs (#1882). `.openai` and `.responses` wires now retain `"tools"` with `"tool_choice": "none"` on landed calls, `settleEmptyLanding` synthesizes a fallback summary when visible text is empty, and `oneshot` exits `0` when tools completed work and call `N` emitted a clean summary.
+- Fixed project instruction and skill/MCP prompt sections truncating silently past byte caps (#1871). `context_limits` now appends an explicit `[truncated: kept X of Y bytes ...]` marker, and repository `AGENTS.md` was tightened below the 8 KiB cap with detailed templates moved to `docs/contributing-checks.md`.
+- Fixed `claude-agent` forwarding `CLAUDE_CODE_USER_EMAIL` into child environments (#1870) and documented the local Claude CLI prompt boundary in ADR 0309 and `docs/anthropic-login.md`.
+- Fixed `codedb` guards and subprocess wrappers across git worktrees (#54): `codedbGuard` and `codedbFileIndexed` now skip unindexed linked worktrees, probe inside `agent_cwd`, and key per-file caches by `(cwd, path)`, while `codedb` subprocess wrappers propagate non-zero exit codes as `is_error`.
 
 ## v0.302.74.59
 

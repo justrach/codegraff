@@ -260,17 +260,16 @@ pub fn codedbGuard(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
     if (scope.exempt(ctx.io, ctx.agent_cwd, tool, trimmed)) return null;
 
     // …aimed at a concrete source file (not a glob — codedb glob/tree cover that).
-    const src_path = extractSourceFilePath(cmd) orelse return null;
+    const src_path = scope.extractSourceFilePath(cmd) orelse return null;
 
-    // Only redirect when codedb is actually installed (cache the PATH lookup).
+    // Only redirect when codedb is actually installed AND this is not an
+    // unindexed linked git worktree (#54).
     if (main_mod.g_codedb_present == null) main_mod.g_codedb_present = skills.binOnPath(ctx.io, "codedb");
     if (main_mod.g_codedb_present != true) return null;
+    if (@import("codedb_health.zig").isUnindexedLinkedWorktree(ctx.io, ctx.agent_cwd orelse ".")) return null;
 
-    // Only redirect when codedb actually indexed this file. Large files
-    // (e.g. a 13K-line main.zig) are silently skipped by codedb; blocking
-    // bash grep on them traps the agent between a blocked grep and an empty
-    // codedb result. Let bash through for un-indexed files (issue #54).
-    const indexed = hooks.codedbFileIndexed(ctx.io, ctx.gpa, src_path) catch return .{
+    // Only redirect when codedb actually indexed this file in this cwd/worktree.
+    const indexed = hooks.codedbFileIndexed(ctx.io, ctx.gpa, ctx.agent_cwd, src_path) catch return .{
         .text = ctx.gpa.dupe(u8, "cancelled: source-index probe stopped before bash dispatch") catch &.{},
         .is_error = true,
         .cancelled = true,
@@ -281,36 +280,10 @@ pub fn codedbGuard(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
     return .{ .text = msg, .is_error = true };
 }
 
-/// Extract the first concrete source file path from a bash command (after
-/// the command word). Returns null for globs or non-source tokens. Used by
-/// the codedb guard to check whether the target file is actually indexed
-/// before redirecting bash to codedb — a file codedb skipped (too large)
-/// must be allowed through bash, or the agent is trapped.
-fn extractSourceFilePath(cmd: []const u8) ?[]const u8 {
-    const exts = [_][]const u8{
-        ".zig",  ".rs",  ".ts",  ".tsx", ".js",    ".jsx",   ".mjs",    ".cjs",
-        ".py",   ".go",  ".c",   ".h",   ".cc",    ".cpp",   ".hpp",    ".cxx",
-        ".java", ".kt",  ".rb",  ".php", ".swift", ".scala", ".cs",     ".lua",
-        ".ex",   ".exs", ".erl", ".clj", ".dart",  ".vue",   ".svelte",
-    };
-    var it = std.mem.tokenizeAny(u8, cmd, " \t\n");
-    var first = true;
-    while (it.next()) |raw| {
-        if (first) {
-            first = false;
-            continue; // skip the command word itself
-        }
-        const tok = std.mem.trim(u8, raw, "'\"`()");
-        if (std.mem.indexOfAny(u8, tok, "*?") != null) continue; // glob, not a path
-        for (exts) |e| if (std.mem.endsWith(u8, tok, e)) return tok;
-    }
-    return null;
-}
-
 /// True when `cmd` names a concrete source file (delegates to
-/// extractSourceFilePath). Kept for the /hooks display and tests.
+/// `codedb_guard_scope.extractSourceFilePath`). Kept for the /hooks display and tests.
 fn referencesSourceFile(cmd: []const u8) bool {
-    return extractSourceFilePath(cmd) != null;
+    return @import("codedb_guard_scope.zig").extractSourceFilePath(cmd) != null;
 }
 
 /// Built-in pre_tool router for the metered companion — the tool-layer twin of

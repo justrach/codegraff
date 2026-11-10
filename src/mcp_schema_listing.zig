@@ -128,7 +128,7 @@ pub fn descWithListing(arena: Allocator, all: []const mcp.Tool) ![]const u8 {
         }
         try aw.writer.writeAll(");");
     }
-    return @import("context_limits.zig").applyAlloc(arena, aw.writer.buffered(), @import("context_limits.zig").mcp_schema_bytes);
+    return @import("context_limits.zig").applySectionAlloc(arena, "MCP tool catalog", aw.writer.buffered(), @import("context_limits.zig").mcp_schema_bytes, "call deferred tools directly or raise --context-limit mcp_schema_bytes=N");
 }
 
 /// What is deferred right now, names + short descriptions. Doubles as the

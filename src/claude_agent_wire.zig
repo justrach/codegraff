@@ -62,7 +62,7 @@ const dropped_env = [_][]const u8{
     "CLAUDE_CODE_SESSION_ID",   "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_EXECPATH",
     "CLAUDE_CODE_SSE_PORT",     "CLAUDE_PID",                   "CLAUDE_EFFORT",
     "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_CODE_SIMPLE",           "CLAUDE_AGENT_SDK_VERSION",
-    "MCP_TOOL_TIMEOUT",
+    "CLAUDE_CODE_USER_EMAIL",   "MCP_TOOL_TIMEOUT",
 };
 const dropped_prefixes = [_][]const u8{"CLAUDE_CODE_MESSAGING_"};
 
