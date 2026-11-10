@@ -76,15 +76,20 @@ change the bot's memory.
 Every command above works with it.
 
 ```bash
-graff bot --user create ada --primary -- "Coordinate. Don't do their work."
+graff bot --user create main --primary -- "Keep my work moving across my projects."
 graff bot --user create notes --project ~/code/comet -- "Draft release notes"
 graff bot --user about -- "Alex. Pacific time."
 graff bot --user set notes model claude-haiku-5-5
 ```
 
 - `--project` is the folder a bot's runs work in.
-- One bot can be primary: your default contact. It knows your other bots,
-  says whose job a request is, and waits for your yes before anything starts.
+- One bot can be primary: your main bot, the one thread for every project
+  (ADR 0335). In a client such as Harness it starts each piece of work as
+  its own chat in the project it belongs to, and the result comes back to
+  its thread. It asks only when it cannot tell which project you mean. Your
+  other bots are helpers it hands their own jobs to. From a terminal
+  (`graff bot --user run main "…"`) it cannot reach another folder, so it
+  says which project the work belongs in and gives you the command.
 - `about` is a few facts about you that every one of your bots is shown.
 - `remember NAME TEXT` and `forget NAME TEXT` change one memory entry
   without opening the file.

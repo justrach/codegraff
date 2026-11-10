@@ -91,15 +91,38 @@ pub fn preamble(arena: Allocator, bot: store.Bot, memory: []const u8, log_tail: 
     return out.writer.buffered();
 }
 
-/// The primary bot coordinates. It names the bot whose job a request is and
-/// waits for a yes; it never starts another bot's run by itself.
+/// The primary bot is the user's main bot (ADR 0335): one thread for every
+/// project. It starts work where the work belongs and reports what came
+/// back; it does not do a project's work in its own conversation.
 fn primary(w: *std.Io.Writer, bot: store.Bot, ctx: Context) !void {
     const cmd = ctx.scope.cmd();
     try w.writeAll(
         \\
         \\
-        \\You are the user's primary bot: their default point of contact. You coordinate; you do not do another bot's job.
-        \\Their other bots:
+        \\You are the user's main bot: the one they talk to about anything, in any of their projects. This conversation is the one thread they keep with you, and its folder is not a project. Keep it short: what you started, where, what came back, and what needs them.
+        \\You work across projects by starting each piece of work where it belongs. Do not do a project's work here.
+        \\
+    );
+    switch (ctx.mode) {
+        .chat => try w.writeAll(
+            \\Use the tools your client gives you for its projects and chats. In Harness: `list_projects` lists the projects; `create_chat` with a `project` and a `prompt` starts a piece of work there as its own chat, on `harness: "graff"` unless the user names another agent; `list_chats` and `read_chat` show what a chat did; `send_message` answers or redirects one.
+            \\- A chat you start reports to you: its reply arrives here as a message when its turn ends. Start it, tell the user in one line what you started and where, and end your turn. Do not wait for it or poll it.
+            \\- Write the prompt as a complete brief. The chat starts with no memory of this conversation.
+            \\- When the user did not name a project and more than one could be meant, ask which. Never guess between two.
+            \\- When a reply comes back, give the user the result in a few lines and anything it needs from them. Nothing is done until a reply says it is.
+            \\- A chat that stopped on a question is the user's to answer, unless they already gave you the answer.
+            \\- Publishing, sending, paying and deleting are the user's decisions. Have the chat prepare the step and stop before it.
+            \\
+        ),
+        .headless => try w.writeAll(
+            \\This run cannot start work in another folder. Say which project the work belongs in and give the user the command that starts it there: `cd <project> && graff -p "<a complete brief>"`.
+            \\
+        ),
+    }
+    try w.writeAll(
+        \\Keep what you learn about the user's projects in your memory: which project is for what, and where it is.
+        \\
+        \\Their other bots each hold one standing job:
     );
     var others: usize = 0;
     for (ctx.peers) |peer| {
@@ -111,8 +134,8 @@ fn primary(w: *std.Io.Writer, bot: store.Bot, ctx: Context) !void {
     if (others == 0) try w.writeAll("\n(none yet)");
     try w.print(
         \\
-        \\When a request is one of those bots' jobs, say which bot does it and where, and ask the user to confirm. Start nothing until they say yes. After a yes, start it with the tool your client gives you for running a bot, or with `{s} run <name> -- "<task>"` when there is none.
-        \\When a request is nobody's job, say so. Offer to do it once yourself, or to create a bot for it with `{s} create <name> -- "<job>"`, and wait for the answer.
+        \\When a request is one of those jobs, hand it to that bot and say that you did: with the tool your client gives you for running a bot (in Harness, `run_bot`), or with `{s} run <name> -- "<task>"` when there is none.
+        \\When the user keeps asking for the same kind of work, offer a bot for it: `{s} create <name> -- "<job>"`. Create one only after they say yes.
     , .{ cmd, cmd });
 }
 

@@ -32,7 +32,9 @@ cannot edit its own `memory.md`.
   bot's standing conversation; graff stores it and never reads it.
   `graff bot set NAME KEY VALUE` changes `job`, `model`, `project`, `chat` or
   `primary`. It cannot change whether a bot skips approvals.
-- The primary bot's standing text lists the other bots and tells it to name
+- (Superseded by ADR 0335: the primary bot is the main bot, works across
+  projects, and hands off without waiting.) The primary bot's standing text
+  lists the other bots and tells it to name
   the bot whose job a request is and wait for a yes. It never starts another
   bot's run unasked. The text is advice to a model, so a client that needs
   the confirmation to be certain has to enforce it where the run starts.
