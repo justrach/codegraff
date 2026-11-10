@@ -22,6 +22,7 @@ pub const Bust = enum {
     tools,
     mcp,
     mode,
+    effort,
     other,
 };
 
@@ -87,11 +88,19 @@ pub fn snapshot() Snap {
 /// Hash of the bytes the provider prefixes. First 32 bits of SHA-256 — enough
 /// to see a change, not enough to recover the prompt.
 pub fn prefixHash(system: []const u8, tools: []const u8) u32 {
+    return prefixHashWithEffort(system, tools, "");
+}
+
+pub fn prefixHashWithEffort(system: []const u8, tools: []const u8, effort: []const u8) u32 {
     var digest: [32]u8 = undefined;
     var h = std.crypto.hash.sha2.Sha256.init(.{});
     h.update(system);
     h.update("\x1e");
     h.update(tools);
+    if (effort.len > 0) {
+        h.update("\x1e");
+        h.update(effort);
+    }
     h.final(&digest);
     return std.mem.readInt(u32, digest[0..4], .big);
 }
@@ -120,7 +129,11 @@ pub fn noteWriteSplit(write_12h: u64, write_30m: u64) void {
 }
 
 pub fn noteRequest(io: Io, system: []const u8, tools: []const u8) void {
-    const hash = prefixHash(system, tools);
+    noteRequestWithEffort(io, system, tools, "");
+}
+
+pub fn noteRequestWithEffort(io: Io, system: []const u8, tools: []const u8, effort: []const u8) void {
+    const hash = prefixHashWithEffort(system, tools, effort);
     acquire();
     defer release();
     g_io = io;
@@ -166,6 +179,7 @@ pub fn bustLabel(b: Bust) []const u8 {
         .tools => "tools",
         .mcp => "mcp",
         .mode => "mode",
+        .effort => "effort",
         .other => "other",
     };
 }
@@ -397,5 +411,20 @@ test "hitPct saturates and handles zero" {
 test "bustLabel covers every tag" {
     try std.testing.expectEqualStrings("goal", bustLabel(.goal));
     try std.testing.expectEqualStrings("tools", bustLabel(.tools));
+    try std.testing.expectEqualStrings("effort", bustLabel(.effort));
     try std.testing.expectEqualStrings("start", bustLabel(.start));
+}
+
+test "effort change moves prefix hash and records effort bust (#1320)" {
+    reset();
+    defer reset();
+    noteRequestWithEffort(std.testing.io, "system", "[]", "medium");
+    noteRequestWithEffort(std.testing.io, "system", "[]", "medium");
+    try std.testing.expectEqual(@as(u32, 0), snapshot().busts);
+    noteBust(.effort);
+    noteRequestWithEffort(std.testing.io, "system", "[]", "low");
+    const s = snapshot();
+    try std.testing.expectEqual(@as(u32, 1), s.busts);
+    try std.testing.expectEqual(Bust.effort, s.last_bust);
+    try std.testing.expect(!s.same);
 }

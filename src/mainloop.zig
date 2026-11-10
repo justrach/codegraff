@@ -238,7 +238,7 @@ pub fn run(ctx: *Ctx) !void {
                     ctx.root.emit(.{ .type = "error", .message = "set_effort needs a level supported by the current model" });
                     continue;
                 };
-                ctx.root.jev_effort_pending.invalidate(ctx.root.io);
+                ctx.root.jev_effort_pending.pinUserEffort(ctx.root.io);
                 _ = repl_glue.saveThinkingSettings(ctx.root.io, ctx.root.gpa, ctx.root.reasoning, ctx.root.fast, ctx.root.ultracode_mode, ctx.root.show_thinking, ctx.root.ai_title);
                 ctx.root.emit(.{ .type = "effort", .ok = true, .level = @tagName(ctx.root.reasoning), .applies = ctx.root.effortApplies() });
                 continue;

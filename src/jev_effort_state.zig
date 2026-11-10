@@ -19,6 +19,8 @@ pub const Pending = struct {
     /// ADR 0246: the selection in flight is jev_auto's turn pick, which applies
     /// for one turn and is never saved; the jev_effort tool's is the session's.
     turn_scoped: bool = false,
+    /// #1320: true once the user explicitly chooses an effort (including medium).
+    user_pinned: bool = false,
     /// ADR 0246: this agent's turn pick, owned by jev_auto.zig.
     auto: Auto = .{},
 
@@ -100,6 +102,12 @@ pub const Pending = struct {
         self.token +%= 1;
         self.phase = .idle;
     }
+
+    pub fn pinUserEffort(self: *Pending, io: Io) void {
+        self.invalidate(io);
+        self.user_pinned = true;
+        @import("prompt_cache_hud.zig").noteBust(.effort);
+    }
 };
 
 pub fn applyToState(agent: anytype) bool {
@@ -109,6 +117,7 @@ pub fn applyToState(agent: anytype) bool {
 fn applyTaken(agent: anytype) ?Pending.Taken {
     const t = agent.jev_effort_pending.takeScoped(agent.io, agent.provider) orelse return null;
     if (!@import("effort_route.zig").allows(agent.provider.id, agent.provider.model, @tagName(t.effort))) return null;
+    if (!agent.sub and agent.reasoning != t.effort) @import("prompt_cache_hud.zig").noteBust(.effort);
     agent.reasoning = t.effort;
     return t;
 }

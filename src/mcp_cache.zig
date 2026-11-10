@@ -144,6 +144,14 @@ pub fn lookupAnyAge(io: Io, arena: Allocator, home: []const u8, key: []const u8)
     return lookupWith(io, arena, home, key, 0, true).hit;
 }
 
+/// Same as `lookupAnyAge`, keeping the cached `era` hint for HTTP servers
+/// (`mcp.zig`): advertising a cached HTTP catalog at startup avoids a background
+/// `tools/list` round-trip that lands after request 1 and rewrites `tools` on
+/// request 2 (#1320). `call()` initializes the session on first tool use.
+pub fn lookupAnyAgeWithEra(io: Io, arena: Allocator, home: []const u8, key: []const u8) Lookup {
+    return lookupWith(io, arena, home, key, 0, true);
+}
+
 fn lookupWith(io: Io, arena: Allocator, home: []const u8, key: []const u8, now_ms: i64, any_age: bool) Lookup {
     var out: Lookup = .{};
     if (key.len == 0) return out;
@@ -375,6 +383,9 @@ test "loadEra survives tools TTL so Auto can skip the modern probe" {
     store(io, a, home, key, .legacy, "2025-11-25", .{ .object = result }, 1_000);
     try std.testing.expect(load(io, a, home, key, 1_000 + 70_000) == null);
     try std.testing.expectEqual(mcp_rpc.Era.legacy, loadEra(io, a, home, key));
+    const any_age = lookupAnyAgeWithEra(io, a, home, key);
+    try std.testing.expect(any_age.hit != null);
+    try std.testing.expectEqual(mcp_rpc.Era.legacy, any_age.era);
 }
 
 test "concurrent stores keep every server's entry" {

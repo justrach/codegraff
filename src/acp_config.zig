@@ -35,7 +35,7 @@ pub fn set(ctx: *anyopaque, value: []const u8) anyerror!bool {
     const canonical = er.normalize(root.provider.id, root.provider.model, value);
     if (!root.effortApplies() or !er.allows(root.provider.id, root.provider.model, canonical)) return false;
     root.reasoning = std.meta.stringToEnum(ReasoningEffort, canonical) orelse return false;
-    root.jev_effort_pending.invalidate(root.io);
+    root.jev_effort_pending.pinUserEffort(root.io);
     _ = @import("repl_glue.zig").saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
     return true;
 }

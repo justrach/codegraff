@@ -208,7 +208,8 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             // Hash what goes out: where loaded tools ride announcements, the tail is not sent (ADR 0221).
             const at = @import("additional_tools.zig");
             const sent = if (tools) |t| (if (at.active(self.provider)) at.stripTail(self, self.scratchAlloc(), t) else t) else "";
-            hud.noteRequest(self.io, self.systemPrompt(), sent);
+            const effort_wire = if (self.sendReasoningEffort()) @import("effort_route.zig").wireEffort(self.provider.id, self.provider.model, @tagName(self.reasoning)) else "";
+            hud.noteRequestWithEffort(self.io, self.systemPrompt(), sent, effort_wire);
             var aff_buf: [96]u8 = undefined;
             hud.noteAffinity(
                 http_headers.promptCacheKey(self.io, self.label, self, &aff_buf),

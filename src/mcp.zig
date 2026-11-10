@@ -363,7 +363,10 @@ pub const Registry = struct {
         // 2025-11-25 session on first tools/call. Live stdio still handshakes.
         const cache_key = mcp_cache.keyFor(a, cfg);
         const now_ms = util.unixMs(reg.io);
-        const looked = mcp_cache.lookup(reg.io, a, reg.home, cache_key, now_ms);
+        const looked = if (server.transport == .http)
+            mcp_cache.lookupAnyAgeWithEra(reg.io, a, reg.home, cache_key)
+        else
+            mcp_cache.lookup(reg.io, a, reg.home, cache_key, now_ms);
         const era_hint = looked.era;
         var listed_result: ?Value = null;
         const tools_v: Value = if (looked.hit) |hit| blk: {
