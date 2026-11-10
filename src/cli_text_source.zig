@@ -5,6 +5,10 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.60
+    \\  • Bots (experimental, off until `graff bot enable`): standing roles with one job and their own memory, work log and routines in `.graff/bots/<name>/`; `graff bot run`, `routine add`, `tick` for cron or a client's timer (ADR 0333)
+    \\  • `graff bot --user`: your own bots in `~/.graff/bots` for any project, one `--primary`; a late check records what it missed instead of running it late (`--stale-after`, `graff bot missed`); `graff bot state --json` for clients (ADR 0334)
+    \\
     \\0.302.74.59
     \\  • Claude Fable 5.2 in the baked catalog: `--model claude-fable-5-2` resolves by its bare name and is priced
     \\  • image reads in one tool batch all reach the model, in call order (#1866): a bounded queue (16 images, 24 MB) replaces the single slot, with a tool error past the limit
