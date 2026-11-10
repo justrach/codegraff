@@ -44,8 +44,9 @@ install, supervise and update on three operating systems.
   `graff bot due --claim --json`, which moves each due routine to its next
   slot and returns the system text and the turn so the client can run it where
   the user sees it. That text (also `graff bot prompt NAME`) tells the bot to
-  edit `memory.md` with its file tools and to log with `graff bot log`, since
-  the client's session has tools its user approves.
+  change its memory with `graff bot remember` and `forget` and to log with
+  `graff bot log` (ADR 0334), since the client's session runs commands its
+  user approves.
 - An event starts a routine with `graff bot trigger NAME ID [PAYLOAD]`. The
   payload reaches the run inside `<payload>` tags, labelled as data and not
   instructions. A paused routine refuses an event; `routine test` still runs.

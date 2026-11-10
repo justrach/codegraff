@@ -11,13 +11,18 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const store = @import("bot_store.zig");
+const prompt = @import("bot_prompt.zig");
+const contacts = @import("bot_contacts.zig");
+const more = @import("bot_cli_contacts.zig");
 const runner = @import("process_runner.zig");
 const util = @import("util.zig");
 
 pub const usage =
     \\usage: graff bot <command> [options]
+    \\  enable | disable                       bots are experimental: off until enabled (GRAFF_BOTS=1 for one run)
     \\  list [--json]                          the bots in this folder
     \\  create NAME [--model M] [--yolo] JOB   a new bot and the one job it holds
+    \\         [--project DIR] [--primary]    the folder its runs work in; your default contact
     \\  show NAME [--json]                     its job, memory, routines and recent log
     \\  rm NAME                                delete the bot and everything it remembers
     \\  run NAME MESSAGE                       one turn as the bot; the result is logged
@@ -30,6 +35,14 @@ pub const usage =
     \\  trigger NAME ID [PAYLOAD]              run it now for an event (PAYLOAD or stdin)
     \\  due [--claim] [--json]                 routines that are due; --claim moves them on
     \\  tick [--json]                          run every due routine once, then exit
+    \\  missed [--json] | missed clear NAME ID routines that came due and were not run
+    \\  state [--json]                         every bot, its routines, and the last check
+    \\  set NAME KEY VALUE                     KEY is job, model, project, chat or primary
+    \\  remember NAME TEXT | forget NAME TEXT  add an entry to its memory, or drop one word for word
+    \\  about [TEXT]                           a few facts about you that every bot is shown
+    \\  --user                                 your own bots in ~/.graff/bots, for any project
+    \\  --stale-after SECONDS                  with tick or due --claim: a slot older than this is
+    \\                                         recorded as missed and not run late
     \\  --timeout SECONDS                      limit for one run (default 1800)
     \\  --                                     the rest is text, even if it starts with --
     \\
@@ -44,8 +57,13 @@ pub const Opts = struct {
     json: bool = false,
     yolo: bool = false,
     claim: bool = false,
+    user: bool = false,
+    primary: bool = false,
     model: []const u8 = "",
+    project: []const u8 = "",
     timeout_s: u64 = 1800,
+    /// A due slot older than this is missed, not run late. Zero: run it once.
+    stale_s: u64 = 0,
     /// Piped stdin, for `trigger` without a PAYLOAD.
     stdin_text: []const u8 = "",
 };
@@ -67,10 +85,19 @@ pub fn parseOpts(arena: Allocator, args: []const []const u8) error{ Usage, OutOf
             o.yolo = true;
         } else if (std.mem.eql(u8, a, "--claim")) {
             o.claim = true;
-        } else if (std.mem.eql(u8, a, "--model") or std.mem.eql(u8, a, "--timeout")) {
+        } else if (std.mem.eql(u8, a, "--user")) {
+            o.user = true;
+        } else if (std.mem.eql(u8, a, "--primary")) {
+            o.primary = true;
+        } else if (std.mem.eql(u8, a, "--model") or std.mem.eql(u8, a, "--project")) {
             i += 1;
             if (i >= args.len) return error.Usage;
-            if (a[2] == 'm') o.model = args[i] else o.timeout_s = std.fmt.parseInt(u64, args[i], 10) catch return error.Usage;
+            if (a[2] == 'm') o.model = args[i] else o.project = args[i];
+        } else if (std.mem.eql(u8, a, "--timeout") or std.mem.eql(u8, a, "--stale-after")) {
+            i += 1;
+            if (i >= args.len) return error.Usage;
+            const n = std.fmt.parseInt(u64, args[i], 10) catch return error.Usage;
+            if (a[2] == 't') o.timeout_s = n else o.stale_s = n;
         } else if (std.mem.startsWith(u8, a, "--")) {
             return error.Usage;
         } else try words.append(arena, a);
@@ -97,13 +124,15 @@ const Memory = enum { apply, ignore };
 /// How a turn is run. The real one starts a graff child; tests record argv.
 pub const Runner = struct {
     ctx: ?*anyopaque = null,
-    run: *const fn (ctx: ?*anyopaque, arena: Allocator, argv: []const []const u8, timeout_s: u64) RunResult,
+    /// `cwd` is the folder the turn works in; empty is this process's.
+    run: *const fn (ctx: ?*anyopaque, arena: Allocator, argv: []const []const u8, cwd: []const u8, timeout_s: u64) RunResult,
 };
 
 pub const Ctx = struct {
     io: Io,
-    /// The folder the bots live in: the project root.
+    /// The folder the bots live in: the project root, or the user's home.
     dir: Io.Dir,
+    scope: prompt.Scope = .project,
     arena: Allocator,
     now_ms: i64,
     exe: []const u8,
@@ -121,10 +150,21 @@ pub fn turnArgv(arena: Allocator, exe: []const u8, bot: store.Bot, system: []con
     return argv.items;
 }
 
+/// A bot's standing text as a run in `mode` is given it.
+pub fn standing(ctx: Ctx, bot: store.Bot, mode: prompt.Mode) ![]const u8 {
+    const a = ctx.arena;
+    return prompt.preamble(a, bot, store.readMemory(ctx.io, ctx.dir, a, bot.name), store.logTail(ctx.io, ctx.dir, a, bot.name, store.log_tail_lines), .{
+        .mode = mode,
+        .scope = ctx.scope,
+        .about = contacts.readAbout(ctx.io, ctx.dir, a),
+        .peers = if (bot.primary) store.list(ctx.io, ctx.dir, a) else &.{},
+    });
+}
+
 fn runTurn(ctx: Ctx, opts: Opts, bot: store.Bot, source: []const u8, message: []const u8, memory: Memory) !RunResult {
     const a = ctx.arena;
-    const system = try store.preamble(a, bot, store.readMemory(ctx.io, ctx.dir, a, bot.name), store.logTail(ctx.io, ctx.dir, a, bot.name, store.log_tail_lines), .headless);
-    var res = ctx.runner.run(ctx.runner.ctx, a, try turnArgv(a, ctx.exe, bot, system, message), opts.timeout_s);
+    const system = try standing(ctx, bot, .headless);
+    var res = ctx.runner.run(ctx.runner.ctx, a, try turnArgv(a, ctx.exe, bot, system, message), bot.project, opts.timeout_s);
     if (res.ok) {
         const edits = try store.memoryEdits(a, res.text);
         res.text = edits.reply;
@@ -143,21 +183,21 @@ fn printRun(out: *Io.Writer, res: RunResult) !u8 {
     return 1;
 }
 
-fn fail(out: *Io.Writer, comptime fmt: []const u8, args: anytype) !u8 {
+pub fn fail(out: *Io.Writer, comptime fmt: []const u8, args: anytype) !u8 {
     try out.print("graff bot: " ++ fmt ++ "\n", args);
     return 2;
 }
 
 /// Print one JSON value and a newline; the exit code of a command that
 /// only reports.
-fn writeJson(out: *Io.Writer, value: anytype) !u8 {
+pub fn writeJson(out: *Io.Writer, value: anytype) !u8 {
     var s: std.json.Stringify = .{ .writer = out };
     try s.write(value);
     try out.writeAll("\n");
     return 0;
 }
 
-const RoutineRow = struct {
+pub const RoutineRow = struct {
     bot: []const u8,
     id: []const u8,
     instruction: []const u8,
@@ -168,19 +208,24 @@ const RoutineRow = struct {
     done: bool,
     runs: u32,
     last_run_ms: i64,
+    /// The first slot that was not run, and how many were not (0: none).
+    missed_at_ms: i64,
+    missed_open: u32,
+    /// Whether a check right now would start it.
+    due: bool,
     /// The turn a client sends to run it now, without moving its schedule.
     message: []const u8,
 };
 
-fn row(arena: Allocator, bot: []const u8, r: store.Routine) !RoutineRow {
-    return .{ .bot = bot, .id = r.id, .instruction = r.instruction, .when = try store.describe(arena, r), .at_ms = r.at_ms, .interval_ms = r.interval_ms, .paused = r.paused, .done = r.done, .runs = r.runs, .last_run_ms = r.last_run_ms, .message = try store.routineMessage(arena, r, "") };
+pub fn row(arena: Allocator, bot: []const u8, r: store.Routine, now_ms: i64) !RoutineRow {
+    return .{ .bot = bot, .id = r.id, .instruction = r.instruction, .when = try store.describe(arena, r), .at_ms = r.at_ms, .interval_ms = r.interval_ms, .paused = r.paused, .done = r.done, .runs = r.runs, .last_run_ms = r.last_run_ms, .missed_at_ms = r.missed_at_ms, .missed_open = r.missed_open, .due = store.advance(r, now_ms) != null, .message = try prompt.routineMessage(arena, r, "") };
 }
 
 fn rows(ctx: Ctx, only: ?[]const u8) ![]const RoutineRow {
     var out: std.ArrayList(RoutineRow) = .empty;
     for (store.list(ctx.io, ctx.dir, ctx.arena)) |bot| {
         if (only) |name| if (!std.mem.eql(u8, name, bot.name)) continue;
-        for (store.routines(ctx.io, ctx.dir, ctx.arena, bot.name)) |r| try out.append(ctx.arena, try row(ctx.arena, bot.name, r));
+        for (store.routines(ctx.io, ctx.dir, ctx.arena, bot.name)) |r| try out.append(ctx.arena, try row(ctx.arena, bot.name, r, ctx.now_ms));
     }
     return out.items;
 }
@@ -207,18 +252,21 @@ pub fn dispatch(ctx: Ctx, opts: Opts, out: *Io.Writer) !u8 {
     if (std.mem.eql(u8, action, "due")) return dueCommand(ctx, opts, out);
     if (std.mem.eql(u8, action, "tick")) return tick(ctx, opts, out);
     if (std.mem.eql(u8, action, "routine")) return routineCommand(ctx, opts, out);
+    if (try more.dispatch(ctx, opts, out)) |code| return code;
     if (w.len < 2) return error.Usage;
     const name = w[1];
     const rest = try std.mem.join(a, " ", w[2..]);
     if (std.mem.eql(u8, action, "create")) {
-        store.create(ctx.io, ctx.dir, a, .{ .name = name, .job = rest, .model = opts.model, .yolo = opts.yolo, .created_ms = ctx.now_ms }) catch |err| return switch (err) {
+        if (opts.project.len > 0 and !std.fs.path.isAbsolute(opts.project)) return fail(out, "--project takes a full path, not '{s}'", .{opts.project});
+        store.create(ctx.io, ctx.dir, a, .{ .name = name, .job = rest, .model = opts.model, .yolo = opts.yolo, .created_ms = ctx.now_ms, .project = opts.project }) catch |err| return switch (err) {
             error.BadName => fail(out, "'{s}' is not a bot name: use a-z, 0-9, - and _ (32 at most)", .{name}),
             error.NoJob => fail(out, "say the job: graff bot create {s} \"what it does\"", .{name}),
             error.Exists => fail(out, "a bot named '{s}' already exists", .{name}),
             error.StoreUnavailable => fail(out, "could not write {s}", .{store.store_rel}),
             error.OutOfMemory => error.OutOfMemory,
         };
-        try out.print("\xe2\x9c\x93 created {s} in {s}/{s}\n", .{ name, store.store_rel, name });
+        if (opts.primary) _ = try contacts.set(ctx.io, ctx.dir, a, name, "primary", "true");
+        try out.print("\xe2\x9c\x93 created {s} in {s}/{s}\n", .{ name, ctx.scope.where(), name });
         return 0;
     }
     const bot = store.load(ctx.io, ctx.dir, a, name) orelse return fail(out, "no bot named '{s}' in this folder (graff bot list)", .{name});
@@ -229,7 +277,7 @@ pub fn dispatch(ctx: Ctx, opts: Opts, out: *Io.Writer) !u8 {
     }
     if (std.mem.eql(u8, action, "show")) return show(ctx, opts, bot, out);
     if (std.mem.eql(u8, action, "prompt")) {
-        try out.print("{s}\n", .{try store.preamble(a, bot, store.readMemory(ctx.io, ctx.dir, a, name), store.logTail(ctx.io, ctx.dir, a, name, store.log_tail_lines), .chat)});
+        try out.print("{s}\n", .{try standing(ctx, bot, .chat)});
         return 0;
     }
     if (std.mem.eql(u8, action, "log")) {
@@ -250,7 +298,7 @@ pub fn dispatch(ctx: Ctx, opts: Opts, out: *Io.Writer) !u8 {
         const r = store.loadRoutine(ctx.io, ctx.dir, a, name, w[2]) orelse return fail(out, "{s} has no routine {s}", .{ name, w[2] });
         if (r.paused) return fail(out, "routine {s} is paused: graff bot routine resume {s} {s}", .{ r.id, name, r.id });
         const typed = try std.mem.join(a, " ", w[3..]);
-        const message = try store.routineMessage(a, r, if (typed.len > 0) typed else opts.stdin_text);
+        const message = try prompt.routineMessage(a, r, if (typed.len > 0) typed else opts.stdin_text);
         return printRun(out, try runTurn(ctx, opts, bot, try std.fmt.allocPrint(a, "routine {s} (event)", .{r.id}), message, .ignore));
     }
     return error.Usage;
@@ -265,7 +313,9 @@ fn show(ctx: Ctx, opts: Opts, bot: store.Bot, out: *Io.Writer) !u8 {
     try out.print("{s}\n  job: {s}\n", .{ bot.name, std.mem.trim(u8, bot.job, " \t\r\n") });
     if (bot.model.len > 0) try out.print("  model: {s}\n", .{bot.model});
     try out.print("  approvals: {s}\n", .{if (bot.yolo) "skipped (--yolo)" else "graff's headless default"});
-    try out.print("\nmemory ({s}/{s}/memory.md)\n{s}\n", .{ store.store_rel, bot.name, if (memory.len > 0) memory else "(nothing yet)" });
+    if (bot.project.len > 0) try out.print("  works in: {s}\n", .{bot.project});
+    if (bot.primary) try out.writeAll("  primary: your default contact\n");
+    try out.print("\nmemory ({s}/{s}/memory.md)\n{s}\n", .{ ctx.scope.where(), bot.name, if (memory.len > 0) memory else "(nothing yet)" });
     try out.writeAll("\nroutines\n");
     if (list.len == 0) try out.writeAll("(none)\n") else try printRows(out, list, false);
     try out.print("\nrecent log\n{s}\n", .{if (tail.len > 0) tail else "(no runs yet)"});
@@ -308,7 +358,7 @@ fn routineCommand(ctx: Ctx, opts: Opts, out: *Io.Writer) !u8 {
             r.at_ms = @import("schedule.zig").nextGridSlot(r.at_ms, r.interval_ms, ctx.now_ms).next_at_ms;
         try store.saveRoutine(ctx.io, ctx.dir, a, name, r);
     } else if (std.mem.eql(u8, verb, "test")) {
-        return printRun(out, try runTurn(ctx, opts, bot, try std.fmt.allocPrint(a, "routine {s} (test)", .{r.id}), try store.routineMessage(a, r, ""), .apply));
+        return printRun(out, try runTurn(ctx, opts, bot, try std.fmt.allocPrint(a, "routine {s} (test)", .{r.id}), try prompt.routineMessage(a, r, ""), .apply));
     } else return error.Usage;
     try out.print("\xe2\x9c\x93 {s}/{s}: {s}\n", .{ name, r.id, if (deleted) "deleted" else try store.describe(a, r) });
     return 0;
@@ -319,14 +369,22 @@ const DueRow = struct {
     id: []const u8,
     instruction: []const u8,
     at_ms: i64,
+    /// Where the client runs it: the bot's folder, model and conversation.
+    project: []const u8,
+    model: []const u8,
+    chat: []const u8,
     /// What a client needs to run it itself: the system text and the turn.
     system: []const u8,
     message: []const u8,
 };
 
+fn staleMs(opts: Opts) i64 {
+    return @intCast(@min(opts.stale_s, 366 * std.time.s_per_day) * std.time.ms_per_s);
+}
+
 fn dueCommand(ctx: Ctx, opts: Opts, out: *Io.Writer) !u8 {
     const a = ctx.arena;
-    const list = store.due(ctx.io, ctx.dir, a, ctx.now_ms, opts.claim);
+    const list = if (opts.claim) contacts.claim(ctx.io, ctx.dir, a, ctx.now_ms, staleMs(opts)) else store.due(ctx.io, ctx.dir, a, ctx.now_ms, false);
     if (!opts.json) {
         if (list.len == 0) try out.writeAll("nothing is due\n");
         for (list) |d| try out.print("{s}/{s}  {s}\n", .{ d.bot.name, d.routine.id, d.routine.instruction });
@@ -338,8 +396,11 @@ fn dueCommand(ctx: Ctx, opts: Opts, out: *Io.Writer) !u8 {
         .id = d.routine.id,
         .instruction = d.routine.instruction,
         .at_ms = d.routine.at_ms,
-        .system = try store.preamble(a, d.bot, store.readMemory(ctx.io, ctx.dir, a, d.bot.name), store.logTail(ctx.io, ctx.dir, a, d.bot.name, store.log_tail_lines), .chat),
-        .message = try store.routineMessage(a, d.routine, ""),
+        .project = d.bot.project,
+        .model = d.bot.model,
+        .chat = d.bot.chat,
+        .system = try standing(ctx, d.bot, .chat),
+        .message = try prompt.routineMessage(a, d.routine, ""),
     });
     return writeJson(out, out_rows.items);
 }
@@ -350,8 +411,8 @@ fn tick(ctx: Ctx, opts: Opts, out: *Io.Writer) !u8 {
     const a = ctx.arena;
     var done: std.ArrayList(TickRow) = .empty;
     var code: u8 = 0;
-    for (store.due(ctx.io, ctx.dir, a, ctx.now_ms, true)) |d| {
-        const res = try runTurn(ctx, opts, d.bot, try std.fmt.allocPrint(a, "routine {s}", .{d.routine.id}), try store.routineMessage(a, d.routine, ""), .apply);
+    for (contacts.claim(ctx.io, ctx.dir, a, ctx.now_ms, staleMs(opts))) |d| {
+        const res = try runTurn(ctx, opts, d.bot, try std.fmt.allocPrint(a, "routine {s}", .{d.routine.id}), try prompt.routineMessage(a, d.routine, ""), .apply);
         if (!res.ok) code = 1;
         const what = store.summary(if (res.ok or res.text.len > 0) res.text else res.note);
         try done.append(a, .{ .bot = d.bot.name, .id = d.routine.id, .ok = res.ok, .summary = what });
@@ -370,9 +431,9 @@ fn tick(ctx: Ctx, opts: Opts, out: *Io.Writer) !u8 {
 
 const Real = struct { io: Io, env: *const std.process.Environ.Map };
 
-fn realRun(c: ?*anyopaque, arena: Allocator, argv: []const []const u8, timeout_s: u64) RunResult {
+fn realRun(c: ?*anyopaque, arena: Allocator, argv: []const []const u8, cwd: []const u8, timeout_s: u64) RunResult {
     const real: *Real = @ptrCast(@alignCast(c.?));
-    const r = runner.runCappedWithOptions(arena, real.io, argv, 256 * 1024, 16 * 1024, timeout_s * std.time.ms_per_s, .{ .environ_map = real.env, .kill_process_tree = true }) catch |err|
+    const r = runner.runCappedWithOptions(arena, real.io, argv, 256 * 1024, 16 * 1024, timeout_s * std.time.ms_per_s, .{ .cwd = if (cwd.len > 0) .{ .path = cwd } else .inherit, .environ_map = real.env, .kill_process_tree = true }) catch |err|
         return .{ .ok = false, .note = @errorName(err) };
     const text = std.mem.trim(u8, r.stdout, " \t\r\n");
     if (runner.ranOk(r) and !r.timed_out and !r.cancelled) return .{ .ok = true, .text = text };
@@ -401,6 +462,16 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, environ: *const std.pro
         try out.flush();
         return;
     };
+    // The user's home: where the on/off switch is, and where `--user` bots live.
+    var home_dir: ?Io.Dir = null;
+    defer if (home_dir) |*d| d.close(io);
+    const home = environ.get("HOME") orelse "";
+    if (home.len > 0) home_dir = Io.Dir.cwd().openDir(io, home, .{}) catch null;
+    if (try more.flag(io, home_dir, environ.get(contacts.flag_env), opts.words, out)) |code| {
+        try out.flush();
+        if (code != 0) std.process.exit(code);
+        return;
+    }
     const depth = std.fmt.parseInt(u32, environ.get(depth_env) orelse "0", 10) catch 0;
     var env = std.process.Environ.Map.init(gpa);
     defer env.deinit();
@@ -411,9 +482,12 @@ pub fn command(gpa: Allocator, io: Io, arena: Allocator, environ: *const std.pro
         if (std.mem.eql(u8, opts.words[0], "trigger")) opts.stdin_text = readStdin(io, arena);
     }
     var real: Real = .{ .io = io, .env = &env };
+    // `--user`: the same store, rooted at the user's home.
+    if (opts.user and home_dir == null) std.process.fatal("graff bot --user: no HOME to keep bots in", .{});
     const ctx: Ctx = .{
         .io = io,
-        .dir = Io.Dir.cwd(),
+        .dir = if (opts.user) home_dir.? else Io.Dir.cwd(),
+        .scope = if (opts.user) .user else .project,
         .arena = arena,
         .now_ms = util.unixMs(io),
         .exe = try std.process.executablePathAlloc(io, arena),
