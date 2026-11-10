@@ -159,6 +159,10 @@ pub const Inbox = struct {
         const line = std.mem.trimStart(u8, text, " \t\r\n");
         if (line.len == 0) return false;
         if (line[0] == '/' and @import("acp_command_intent.zig").selected(req.params)) return false;
+        // #1865: a trailer of attachment paths is an attachment too. Raw
+        // steering would hand the model paths its file tools cannot open; an
+        // ordinary prompt stages them as images.
+        if (@import("attachment_refs.zig").find(text) != null) return false;
         // Room posts need the dispatcher's agent framing, never raw human steering.
         if (params.object.get("_meta")) |meta| {
             if (meta == .object and meta.object.contains("harness/room")) return false;
@@ -463,6 +467,7 @@ test "an active plain prompt steers now instead of queueing" {
         "{\"prompt\":\"  /compact\",\"_meta\":{\"harness/command\":true}}",
         "{\"prompt\":\"/compact\"}",
         "{\"prompt\":[{\"type\":\"image\",\"data\":\"x\"}]}",
+        "{\"prompt\":\"look at this\\n\\nAttached images (local files):\\n- /uploads/ab12-shot.png\"}",
         "{\"prompt\":\"agent post\",\"_meta\":{\"harness/room\":{}}}",
     }) |params| {
         var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);

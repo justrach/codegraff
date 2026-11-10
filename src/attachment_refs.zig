@@ -13,6 +13,11 @@
 //! is staged as a native vision block, and its line leaves the text, so the
 //! model is never pointed at a path its tools cannot open. A ref that could
 //! not be staged keeps its line.
+//!
+//! A prompt that arrives while a turn is running is normally steered into it
+//! as raw text. One carrying this trailer is not (acp_inbox.trySteer): it
+//! goes back to the client and returns as an ordinary prompt, which takes
+//! the path above.
 
 const std = @import("std");
 const Io = std.Io;

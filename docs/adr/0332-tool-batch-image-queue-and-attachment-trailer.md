@@ -36,6 +36,10 @@ Two image paths lost pixels the model was told it would get.
   first bytes are an image is staged as a vision block, and its line leaves
   the text the model reads. A ref that could not be staged (text-only model,
   missing file, not an image) keeps its line.
+- **A trailer is an attachment for steering too.** A prompt that arrives
+  while a turn is running is steered in as raw text, except one that carries
+  images. One that carries the trailer now counts: it is handed back to the
+  client (`promptRequired`) or queued, and arrives as an ordinary prompt.
 - **The file tools stay confined.** No attachment grants `read_file` a path
   outside the working directory. The trailer is read only where the user's
   prompt names the file, and only image bytes are read.
