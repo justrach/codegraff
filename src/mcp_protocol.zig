@@ -12,6 +12,7 @@ pub const rewriteOneOf = mcp_schema.rewriteOneOf;
 pub const combinators = mcp_schema.combinators;
 pub const topLevelCombinator = mcp_schema.topLevelCombinator;
 pub const flattenTopLevel = mcp_schema.flattenTopLevel;
+pub const deepClone = mcp_schema.deepClone;
 
 test { // the moved tests still have to run from a referenced module
     _ = mcp_schema;

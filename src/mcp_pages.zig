@@ -73,7 +73,13 @@ pub fn appendTools(a: Allocator, tools: *std.ArrayList(Tool), server_index: usiz
         // Prefer description; fall back to the 2025-06-18+ human-readable
         // title so a metadata-only tool isn't blank to the model.
         const desc = if (t.object.get("description")) |d| (if (d == .string) d.string else "") else if (t.object.get("title")) |ti| (if (ti == .string) ti.string else "") else "";
-        var schema = t.object.get("inputSchema") orelse Value{ .object = .empty };
+        // Deep-clone: the Value copy from get() shares entries storage with
+        // tools_v, which mcp_cache.store serializes after this loop; mutating
+        // through the copy's shared ArrayHashMap storage corrupts that tree.
+        var schema = if (t.object.get("inputSchema")) |sv|
+            try mcp_protocol.deepClone(a, sv)
+        else
+            Value{ .object = .empty };
         try mcp_protocol.rewriteOneOf(a, &schema);
         // ...then lower any TOP-LEVEL combinator: Anthropic rejects the
         // whole request over one, so a single server advertising it would

@@ -9,6 +9,37 @@ const std = @import("std");
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
+/// Deep-copy a JSON Value so schema normalization can mutate it freely.
+///
+/// `object.get(key)` returns a Value *copy*, but `.object` and `.array`
+/// payloads share their entries/items storage with the parsed tree. The
+/// mutators below (put/swapRemove during rewriteOneOf and flattenTopLevel)
+/// can then grow or reorder storage the original tree still points at, so a
+/// later serialization of that tree — mcp_cache.store's tools catalog — reads
+/// scribbled memory (0.302.74: debug segfault in encodeJsonStringChars).
+/// Clone before mutating whenever the source tree outlives the mutation.
+pub fn deepClone(a: Allocator, v: Value) Allocator.Error!Value {
+    switch (v) {
+        .object => |om| {
+            var out: std.json.ObjectMap = .empty;
+            try out.ensureTotalCapacity(a, om.count());
+            var it = om.iterator();
+            while (it.next()) |e| {
+                try out.put(a, try a.dupe(u8, e.key_ptr.*), try deepClone(a, e.value_ptr.*));
+            }
+            return .{ .object = out };
+        },
+        .array => |arr| {
+            var out: std.json.Array = .init(a);
+            try out.ensureTotalCapacity(arr.items.len);
+            for (arr.items) |item| try out.append(try deepClone(a, item));
+            return .{ .array = out };
+        },
+        .string => |s| return .{ .string = try a.dupe(u8, s) },
+        else => return v,
+    }
+}
+
 /// Recursively rewrite the JSON Schema keyword `oneOf` to `anyOf` (graff's
 /// rewrite_one_of_to_any_of). OpenAI's tool-schema validator — including the
 /// chatgpt.com /codex/responses endpoint — rejects `oneOf` outright with
@@ -177,4 +208,25 @@ test "rewriteOneOf: arrays and scalars pass through untouched" {
     const first = v.object.get("items").?.array.items[0];
     try std.testing.expect(first.object.get("oneOf") == null);
     try std.testing.expect(first.object.get("anyOf") != null);
+}
+
+test "deepClone is independent of the source tree" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const src = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"type":"object","oneOf":[{"type":"object","properties":{"path":{"type":"string"}}}],"properties":{"keep":{"type":"integer"}}}
+    , .{ .allocate = .alloc_always });
+    var copy = try deepClone(a, src);
+    // Mutate the clone exactly like the normalization pass does.
+    try rewriteOneOf(a, &copy);
+    try flattenTopLevel(a, &copy);
+    // The source must be untouched: oneOf still present, keys still readable.
+    try std.testing.expect(src == .object);
+    try std.testing.expect(src.object.get("oneOf") != null);
+    try std.testing.expect(src.object.get("type") != null);
+    var it = src.object.iterator();
+    while (it.next()) |e| try std.testing.expect(e.key_ptr.len > 0);
+    // And the clone actually got normalized.
+    try std.testing.expect(copy.object.get("oneOf") == null);
 }

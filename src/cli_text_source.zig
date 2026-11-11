@@ -5,6 +5,9 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.64
+    \\  • mcp: tool schemas are deep-cloned before normalization — mutating the Value copy through shared ArrayHashMap storage corrupted the parsed tools tree, so debug builds segfaulted in mcp_cache.store right after a successful connect (#1892)
+    \\
     \\0.302.74.63
     \\  • `read_file` honors `offset` and `limit` line-window aliases when `start_line`/`end_line` are omitted (#1885)
     \\  • native file tools normalize `<agent_cwd>/…` absolute paths inside the workspace instead of rejecting them (#1886)
