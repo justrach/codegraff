@@ -112,9 +112,10 @@ pub fn exec(ctx: ToolCtx, input: std.json.Value) !ToolOutput {
     }
 
     if (isPathSub(sub)) {
-        if (firstPathArg(it.rest())) |path| {
+        if (firstPathArg(it.rest())) |raw_path| {
+            const path = @import("codedbpro_paths.zig").normalizeInCwd(io, ctx.agent_cwd, raw_path, false);
             if (!harness_policy.confinedPath(path) or !harness_policy.noSymlinkEscape(io, path, ctx.agent_cwd))
-                return tools.outsideCwd(gpa, path);
+                return tools.outsideCwd(gpa, raw_path);
             if ((std.mem.eql(u8, sub, "outline") or std.mem.eql(u8, sub, "deps")) and codedb_health.isDataOrTextPath(path)) {
                 return .{
                     .text = try std.fmt.allocPrint(gpa, "{s} is a data/text file (not an AST-indexed source file) — use read_file on {s} directly.", .{ path, path }),

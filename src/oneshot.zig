@@ -21,9 +21,28 @@ const title_mod = @import("title.zig");
 const engine_sink = @import("engine_sink.zig");
 const result = @import("headless_result.zig");
 
+const sigint_supported = @import("builtin").os.tag == .macos or @import("builtin").os.tag == .linux;
+
+pub fn installSigintCancel() void {
+    if (comptime !sigint_supported) return;
+    const posix = std.posix;
+    const act: posix.Sigaction = .{
+        .handler = .{ .sigaction = handleSigint },
+        .mask = posix.sigemptyset(),
+        .flags = posix.SA.SIGINFO | posix.SA.RESETHAND,
+    };
+    posix.sigaction(.INT, &act, null);
+}
+
+fn handleSigint(_: std.posix.SIG, _: *const std.posix.siginfo_t, _: ?*anyopaque) callconv(.c) void {
+    @import("cancel_source.zig").cancelIfIdle(.esc_key);
+    agent_mod.Agent.esc_cancel.store(true, .release);
+}
+
 pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_mod.Agent, keys: *provider_mod.Keys, tracer: *trace.Tracer, out: *Io.Writer, prompt_text: []const u8) !void {
     if (@import("goal_pacing.zig").oneshotSlashRefusal(prompt_text)) |why| std.process.fatal("{s}", .{why}); // usage error, not a prompt
     main_mod.unattended = true;
+    installSigintCancel(); // #1889: first SIGINT cancels cleanly via headless_result; second hits SIG_DFL
     @import("run_idle.zig").enabled = true; // nothing wakes a finished one-shot: wait for its background work
     @import("named_work.zig").rememberOn(root, prompt_text);
     root.in = null; // gate: deny instead of prompt; ask_user: self-decide
@@ -75,6 +94,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
         const detail = root.last_api_error orelse @errorName(err);
         const failure = result.classify(err, detail);
         run.finish(root, failure, detail, saved);
+        out.flush() catch {};
         if (root.tools_used.count() > 0) std.debug.print("note: {d} tool call(s) completed before the failure; their work was not rolled back\n", .{root.tools_used.count()});
         std.debug.print("turn failed ({s}): {s}\n", .{ failure.reason, detail });
         @import("orchestration_rows.zig").flushPending(0, if (root.run_budget) |b| b.used() else 0, 0, false, "");
@@ -138,6 +158,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     // sink owns now, in EVERY mode, exactly as the old unconditional call did.
     engine_sink.writerSink(out).emit(io, .run_finished);
     run.finish(root, incomplete, answer, saved);
+    out.flush() catch {};
     if (incomplete) |f| std.process.exit(f.exit_code);
 }
 
@@ -169,4 +190,16 @@ test "one-shot and --json do not auto-init a learning store" {
     try std.testing.expect(!@import("session_run.zig").shouldAutoLearn(false, true));
     try std.testing.expect(!@import("session_run.zig").shouldAutoLearn(true, true));
     try std.testing.expect(@import("session_run.zig").shouldAutoLearn(false, false));
+}
+
+test "#1889: SIGINT cancel handler raises Agent.esc_cancel and records cancel_source" {
+    const cancel_source = @import("cancel_source.zig");
+    cancel_source.clear();
+    defer cancel_source.clear();
+    if (comptime sigint_supported) {
+        var dummy_info: std.posix.siginfo_t = std.mem.zeroes(std.posix.siginfo_t);
+        handleSigint(.INT, &dummy_info, null);
+        try std.testing.expect(agent_mod.Agent.esc_cancel.load(.acquire));
+        try std.testing.expectEqual(cancel_source.Source.esc_key, cancel_source.take(null));
+    }
 }

@@ -151,6 +151,48 @@ fn heartbeatText(a: Allocator, silent_ms: u64, running: []const u8) ![]const u8 
     return std.fmt.allocPrint(a, "[heartbeat: no news from background work for {s}. Still running: {s}. Check on anything that may be stuck (action=output or agent_output for a snapshot, action=kill to stop a job), or end your reply to keep waiting.]", .{ tool_pulse.formatElapsed(&ebuf, silent_ms), running });
 }
 
+/// True when `cmd` is a standalone `sleep <N>[s|m|h]` polling wait with no
+/// chained commands or redirection (#1888).
+pub fn isStandaloneSleep(cmd: []const u8) bool {
+    const trimmed = std.mem.trim(u8, cmd, " \t\r\n");
+    if (!@import("harness_policy.zig").isSimple(trimmed)) return false;
+    var it = std.mem.tokenizeAny(u8, trimmed, " \t");
+    const verb = it.next() orelse return false;
+    if (!std.mem.eql(u8, verb, "sleep") and !std.mem.eql(u8, verb, "/bin/sleep")) return false;
+    const dur = it.next() orelse return false;
+    if (it.next() != null) return false;
+    const num = if (dur.len > 1 and (dur[dur.len - 1] == 's' or dur[dur.len - 1] == 'm' or dur[dur.len - 1] == 'h'))
+        dur[0 .. dur.len - 1]
+    else
+        dur;
+    const secs = std.fmt.parseFloat(f64, num) catch return false;
+    return secs >= 0 and std.math.isFinite(secs);
+}
+
+/// Returns a short description of active background work (`job 3` or `agent 1`)
+/// when any finite background job or root subagent is currently running.
+pub fn firstLiveBackgroundLabel(io: Io, buf: *[64]u8) ?[]const u8 {
+    {
+        const reg = &jobs.g_jobs;
+        reg.mutex.lockUncancelable(io);
+        defer reg.mutex.unlock(io);
+        for (reg.list.items) |job| {
+            if (job.done or job.quiet or job.persistent or job.pinned or job.detach) continue;
+            if (isStandaloneSleep(job.cmd)) continue;
+            return std.fmt.bufPrint(buf, "job {d}", .{job.id}) catch "background job";
+        }
+    }
+    const reg = &subagent.g_agent_jobs;
+    reg.mutex.lockUncancelable(io);
+    defer reg.mutex.unlock(io);
+    for (reg.list.items) |job| {
+        if (!job.done and !job.ctx.from_sub) {
+            return std.fmt.bufPrint(buf, "agent {d}", .{job.id}) catch "background agent";
+        }
+    }
+    return null;
+}
+
 /// The background work a run waits on, captured when it starts waiting.
 const Work = struct {
     jobs: std.ArrayList(JobRef) = .empty,
@@ -169,6 +211,7 @@ const Work = struct {
             for (reg.list.items) |job| {
                 // quiet: still in its foreground wait, the tool call is live.
                 if (job.done or job.quiet or job.persistent or job.pinned or job.detach) continue;
+                if (isStandaloneSleep(job.cmd)) continue; // #1888: never hold session open for polling sleep
                 try candidates.append(a, .{ .ref = .{ .id = job.id, .cmd = try a.dupe(u8, job.cmd), .started_ms = job.started_ms }, .pid = job.group_pid });
             }
         }
@@ -326,4 +369,13 @@ test "the heartbeat names the silence, the work and both ways forward" {
     try std.testing.expect(std.mem.indexOf(u8, text, "job 3 (zig build test, 12m)") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "action=kill") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "keep waiting") != null);
+}
+
+test "#1888: isStandaloneSleep detects pure polling sleeps and ignores compound commands" {
+    try std.testing.expect(isStandaloneSleep("sleep 90"));
+    try std.testing.expect(isStandaloneSleep("  /bin/sleep 120s  "));
+    try std.testing.expect(isStandaloneSleep("sleep 0.5"));
+    try std.testing.expect(!isStandaloneSleep("sleep 0.3; echo run-idle-done"));
+    try std.testing.expect(!isStandaloneSleep("sleep 5 && pytest"));
+    try std.testing.expect(!isStandaloneSleep("pytest"));
 }

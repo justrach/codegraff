@@ -180,16 +180,18 @@ pub fn drifted(io: Io, resolved: []const u8, prev: ?Io.Dir.Stat) bool {
 /// verified splice.
 pub fn execEdit(ctx: ToolCtx, input: Value) !ToolOutput {
     const gpa = ctx.gpa;
-    const path = strField(input, "path") orelse return missingArg(gpa, "path");
+    const raw_path = strField(input, "path") orelse return missingArg(gpa, "path");
+    const codedbpro_paths = @import("codedbpro_paths.zig");
+    const path = codedbpro_paths.normalizeInCwd(ctx.io, ctx.agent_cwd, raw_path, false);
     const old = strField(input, "old_string") orelse return missingArg(gpa, "old_string");
     const new = strField(input, "new_string") orelse return missingArg(gpa, "new_string");
-    if (!confinedPath(path) or !noSymlinkEscape(ctx.io, path, ctx.agent_cwd)) return outsideCwd(gpa, path);
+    if (!confinedPath(path) or !noSymlinkEscape(ctx.io, path, ctx.agent_cwd)) return outsideCwd(gpa, raw_path);
     if (approvals_mod.protectsGitMetadata(path) or approvals_mod.symlinkEntersGitMetadata(ctx.io, path, ctx.agent_cwd)) return .{ .text = try gpa.dupe(u8, approvals_mod.git_metadata_refusal), .is_error = true };
     const all = tools.json_args.flag(input, "replace_all");
     if (old.len == 0) return .{ .text = try gpa.dupe(u8, "old_string must not be empty"), .is_error = true };
 
     // #747: write and verify share one absolute path (selected tree).
-    const resolved = try @import("codedbpro_paths.zig").sessionAbs(gpa, ctx.io, ctx.agent_cwd, path);
+    const resolved = try codedbpro_paths.sessionAbs(gpa, ctx.io, ctx.agent_cwd, path);
     defer gpa.free(resolved);
     return applyEdit(ctx, path, resolved, old, new, all);
 }
@@ -232,11 +234,15 @@ pub fn applyEdit(ctx: ToolCtx, path: []const u8, resolved: []const u8, old: []co
         _ = std.mem.replace(u8, data, span.old, span.new, replaced);
         if (attempt == 0 and drifted(io, resolved, prev_stat)) continue;
         if (ctx.snapshots) |snaps| if (!ctx.from_sub) snaps.record(path, .{ .content = data });
+        const syntax_note = @import("syntax_note.zig");
         if (codedbpro_report.spliceViaDaemon(gpa, ctx, resolved, path, span.old, span.new, count, data.len)) |msg| {
             preserveMode(io, resolved, prev_stat);
             const verdict = verifyOnDisk(gpa, io, resolved, data, replaced, span.old, span.new, true);
-            if (verdict != .ok) return .{ .text = try verdictText(gpa, path, verdict, "codedb-pro"), .is_error = true };
-            return .{ .text = msg };
+            if (verdict != .ok) {
+                gpa.free(msg);
+                return .{ .text = try verdictText(gpa, path, verdict, "codedb-pro"), .is_error = true };
+            }
+            return .{ .text = try syntax_note.appendToOwned(gpa, io, msg, path, resolved, replaced) };
         }
         zp: {
             const run = runCapped(gpa, io, &.{ companion_bin, resolved, "-p", span.old, "--all", "--content", span.new }, 4096, 4096, 0) catch break :zp;
@@ -252,14 +258,16 @@ pub fn applyEdit(ctx: ToolCtx, path: []const u8, resolved: []const u8, old: []co
                 preserveMode(io, resolved, prev_stat);
                 const verdict = verifyOnDisk(gpa, io, resolved, data, replaced, span.old, span.new, true);
                 if (verdict != .ok) return .{ .text = try verdictText(gpa, path, verdict, "zigpatch"), .is_error = true };
-                return .{ .text = try std.fmt.allocPrint(gpa, "replaced {d} occurrence(s) in {s} (zigpatch, verified)", .{ count, path }) };
+                const msg = try std.fmt.allocPrint(gpa, "replaced {d} occurrence(s) in {s} (zigpatch, verified)", .{ count, path });
+                return .{ .text = try syntax_note.appendToOwned(gpa, io, msg, path, resolved, replaced) };
             }
         }
         try Io.Dir.cwd().writeFile(io, .{ .sub_path = resolved, .data = replaced });
         preserveMode(io, resolved, prev_stat); // #179: keep the pre-edit mode
         const verdict = verifyOnDisk(gpa, io, resolved, data, replaced, old, new, false);
         if (verdict != .ok) return .{ .text = try verdictText(gpa, path, verdict, "the write"), .is_error = true };
-        return .{ .text = try std.fmt.allocPrint(gpa, "replaced {d} occurrence(s) in {s} (verified)", .{ count, path }) };
+        const msg = try std.fmt.allocPrint(gpa, "replaced {d} occurrence(s) in {s} (verified)", .{ count, path });
+        return .{ .text = try syntax_note.appendToOwned(gpa, io, msg, path, resolved, replaced) };
     }
 }
 

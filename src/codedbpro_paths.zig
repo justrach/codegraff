@@ -88,6 +88,46 @@ pub fn sessionAbs(gpa: Allocator, io: Io, agent_cwd: ?[]const u8, path: []const 
     }
 }
 
+fn stripUnderRoot(raw_path: []const u8, root: []const u8, allow_self: bool) ?[]const u8 {
+    const clean = std.mem.trimEnd(u8, root, "/\\");
+    if (clean.len == 0 or !std.mem.startsWith(u8, raw_path, clean)) return null;
+    if (raw_path.len == clean.len) return if (allow_self) "." else null;
+    if (!std.fs.path.isSep(raw_path[clean.len])) return null;
+    const rel = std.mem.trimStart(u8, raw_path[clean.len..], "/\\");
+    if (rel.len == 0) return if (allow_self) "." else null;
+    return rel;
+}
+
+/// #1886: strip an exact `<agent_cwd>/` (or process cwd when `agent_cwd == null`)
+/// prefix from an in-workspace absolute path so `confinedPath` and
+/// `noSymlinkEscape` validate the resulting relative slice without rejecting
+/// `<cwd>/foo.py` as outside the working directory. Explicit `--add-dir` roots
+/// (`workspace_roots`) are left untouched.
+pub fn normalizeInCwd(io: Io, agent_cwd: ?[]const u8, raw_path: []const u8, allow_self: bool) []const u8 {
+    if (!std.fs.path.isAbsolute(raw_path) or @import("workspace_roots.zig").confined(raw_path)) return raw_path;
+    if (agent_cwd) |wt| {
+        if (stripUnderRoot(raw_path, wt, allow_self)) |rel| return rel;
+        var canon_buf: [std.fs.max_path_bytes]u8 = undefined;
+        if (Io.Dir.cwd().realPathFile(io, wt, &canon_buf)) |n| {
+            if (stripUnderRoot(raw_path, canon_buf[0..n], allow_self)) |rel| return rel;
+        } else |_| {}
+        return raw_path;
+    }
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    if (std.process.currentPath(io, &cwd_buf)) |cw| {
+        if (stripUnderRoot(raw_path, cwd_buf[0..cw], allow_self)) |rel| return rel;
+    } else |_| {}
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    if (Io.Dir.cwd().realPathFile(io, ".", &real_buf)) |n| {
+        if (stripUnderRoot(raw_path, real_buf[0..n], allow_self)) |rel| return rel;
+    } else |_| {}
+    const display = @import("main.zig").g_cwd_display;
+    if (display.len > 0) {
+        if (stripUnderRoot(raw_path, display, allow_self)) |rel| return rel;
+    }
+    return raw_path;
+}
+
 /// CodeDB Pro's resident daemon has one launch cwd that can outlive and differ
 /// from the Graff session using it. Normalize path-bearing calls at the client
 /// boundary so relative model arguments keep their documented session-cwd

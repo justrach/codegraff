@@ -13,6 +13,7 @@ const tools = @import("tools.zig");
 const approvals = @import("approvals.zig");
 const codedbpro_paths = @import("codedbpro_paths.zig");
 const edit_verify = @import("edit_verify.zig");
+const syntax_note = @import("syntax_note.zig");
 
 const page = std.heap.page_allocator;
 
@@ -58,7 +59,8 @@ fn isKnown(io: Io, abs_path: []const u8) bool {
 
 /// After a successful read_file or edit_file: the model has seen this path.
 pub fn noteInput(ctx: tools.ToolCtx, input: std.json.Value) void {
-    const path = tools.strField(input, "path") orelse return;
+    const raw_path = tools.strField(input, "path") orelse return;
+    const path = codedbpro_paths.normalizeInCwd(ctx.io, ctx.agent_cwd, raw_path, false);
     const resolved = codedbpro_paths.sessionAbs(ctx.gpa, ctx.io, ctx.agent_cwd, path) catch return;
     defer ctx.gpa.free(resolved);
     noteKnown(ctx.io, resolved);
@@ -67,9 +69,10 @@ pub fn noteInput(ctx: tools.ToolCtx, input: std.json.Value) void {
 pub fn exec(ctx: tools.ToolCtx, input: std.json.Value) !tools.ToolOutput {
     const gpa = ctx.gpa;
     const io = ctx.io;
-    const path = tools.strField(input, "path") orelse return tools.missingArg(gpa, "path");
+    const raw_path = tools.strField(input, "path") orelse return tools.missingArg(gpa, "path");
+    const path = codedbpro_paths.normalizeInCwd(io, ctx.agent_cwd, raw_path, false);
     const content = tools.strField(input, "content") orelse return tools.missingArg(gpa, "content");
-    if (!approvals.confinedPath(path) or !approvals.noSymlinkEscape(io, path, ctx.agent_cwd)) return tools.outsideCwd(gpa, path);
+    if (!approvals.confinedPath(path) or !approvals.noSymlinkEscape(io, path, ctx.agent_cwd)) return tools.outsideCwd(gpa, raw_path);
     if (approvals.protectsGitMetadata(path) or approvals.symlinkEntersGitMetadata(io, path, ctx.agent_cwd))
         return .{ .text = try gpa.dupe(u8, approvals.git_metadata_refusal), .is_error = true };
     // #747: share sessionAbs with edit_file so a write cannot land in
@@ -103,7 +106,7 @@ pub fn exec(ctx: tools.ToolCtx, input: std.json.Value) !tools.ToolOutput {
     edit_verify.preserveMode(io, resolved, prev_stat);
     noteKnown(io, resolved);
     const dir = if (made_dir) std.fs.path.dirname(path) else null;
-    return .{ .text = try resultText(gpa, path, content, if (prev_stat) |st| st.size else null, dir) };
+    return .{ .text = try resultText(gpa, io, path, resolved, content, if (prev_stat) |st| st.size else null, dir) };
 }
 
 /// A new file whose directory is missing gets the directory first, as
@@ -121,7 +124,7 @@ fn writeCreating(io: Io, resolved: []const u8, data: []const u8, new_file: bool)
     return false;
 }
 
-fn resultText(gpa: Allocator, path: []const u8, content: []const u8, prev_size: ?u64, made_dir: ?[]const u8) ![]u8 {
+fn resultText(gpa: Allocator, io: Io, path: []const u8, resolved: []const u8, content: []const u8, prev_size: ?u64, made_dir: ?[]const u8) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(gpa);
     errdefer out.deinit();
     const w = &out.writer;
@@ -129,24 +132,8 @@ fn resultText(gpa: Allocator, path: []const u8, content: []const u8, prev_size: 
         try w.print("replaced {s} ({d} bytes; was {d})", .{ path, content.len, was });
     } else try w.print("created {s} ({d} bytes)", .{ path, content.len });
     if (made_dir) |d| try w.print(" in new directory {s}", .{d});
-    if (std.ascii.endsWithIgnoreCase(path, ".json")) try jsonNote(gpa, w, content);
+    try syntax_note.append(gpa, io, w, path, resolved, content);
     return out.toOwnedSlice();
-}
-
-/// A generated data file is the usual thing a model re-opens to check, so
-/// the parse result rides the write's own result.
-fn jsonNote(gpa: Allocator, w: *std.Io.Writer, content: []const u8) !void {
-    var scanner = std.json.Scanner.initCompleteInput(gpa, content);
-    defer scanner.deinit();
-    var diag: std.json.Diagnostics = .{};
-    scanner.enableDiagnostics(&diag);
-    while (true) {
-        const token = scanner.next() catch |err| {
-            if (err == error.OutOfMemory) return;
-            return w.print("; NOT valid JSON ({t} at line {d}, column {d})", .{ err, diag.getLine(), diag.getColumn() });
-        };
-        if (token == .end_of_document) return w.writeAll("; parses as JSON");
-    }
 }
 
 test "write_file creates, refuses to clobber an unread file, and replaces a known one (ADR 0231)" {

@@ -344,9 +344,10 @@ fn resolveAbs(gpa: Allocator, path: []const u8, agent_cwd: ?[]const u8) ![]const
 
 /// PathConfine + list. `rest` is everything after `list_dir` in the codedb command.
 pub fn run(io: Io, gpa: Allocator, rest: []const u8, agent_cwd: ?[]const u8) !tools.ToolOutput {
-    const path = stripDot(rest);
+    const raw = stripDot(rest);
+    const path = @import("codedbpro_paths.zig").normalizeInCwd(io, agent_cwd, raw, true);
     if (!approvals.confinedPath(path) or !approvals.noSymlinkEscape(io, path, agent_cwd))
-        return tools.outsideCwd(gpa, path);
+        return tools.outsideCwd(gpa, raw);
 
     var scratch = std.heap.ArenaAllocator.init(gpa);
     defer scratch.deinit();

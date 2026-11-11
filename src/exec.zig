@@ -255,13 +255,19 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     }
     if (std.mem.eql(u8, call.name, result_read.tool_name)) return result_read.exec(ctx, call);
     if (std.mem.eql(u8, call.name, "read_file")) {
-        const path = strField(input, "path") orelse return missingArg(gpa, "path");
+        const raw_path = strField(input, "path") orelse return missingArg(gpa, "path");
+        const path = codedbpro_paths.normalizeInCwd(io, ctx.agent_cwd, raw_path, false);
         if (ctx.read_miss) |tracker| {
             if (tracker.shouldRefuse(path)) return .{ .text = try read_miss.refusalText(gpa, path), .is_error = true };
         }
-        if (!confinedPath(path) or !noSymlinkEscape(io, path, ctx.agent_cwd)) return outsideCwd(gpa, path);
-        const start_line = intField(input, "start_line");
-        const end_line = intField(input, "end_line");
+        if (!confinedPath(path) or !noSymlinkEscape(io, path, ctx.agent_cwd)) return outsideCwd(gpa, raw_path);
+        const start_line: ?i64 = intField(input, "start_line") orelse if (intField(input, "offset")) |off| @max(@as(i64, 1), off) else null;
+        const end_line: ?i64 = intField(input, "end_line") orelse blk_end: {
+            const lim = intField(input, "limit") orelse break :blk_end null;
+            if (lim <= 0) break :blk_end null;
+            const eff_start: i64 = start_line orelse 1;
+            break :blk_end eff_start +| (lim - 1);
+        };
         // Strict tool calling often sends null/"" for unused optionals (#761).
         // Empty contains is omitted so a whole-file or window read stays legal.
         const contains_raw = strField(input, "contains");
@@ -461,9 +467,52 @@ test "internal learning respects the parent privacy ceiling" {
     try std.testing.expectEqualSlices([]const u8, &.{ "graff", "--learning-privacy", "aggregate", "learn", "run", "--submit" }, argv[0..len]);
 }
 
+test "#1885 and #1886: read_file honors offset/limit and accepts <agent_cwd>/rel paths" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var lines_aw: Io.Writer.Allocating = .init(gpa);
+    defer lines_aw.deinit();
+    for (1..21) |i| try lines_aw.writer.print("line-{d}\n", .{i});
+    try tmp.dir.writeFile(io, .{ .sub_path = "mod.py", .data = lines_aw.written() });
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buf);
+    const root = root_buf[0..root_len];
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const abs_file = try std.fmt.allocPrint(a, "{s}/mod.py", .{root});
+    var args: std.json.ObjectMap = .empty;
+    try args.put(a, "path", .{ .string = abs_file });
+    try args.put(a, "offset", .{ .integer = 12 });
+    try args.put(a, "limit", .{ .integer = 3 });
+
+    var client: std.http.Client = undefined;
+    var ctx = edit_verify.testCtx(&client);
+    ctx.agent_cwd = root;
+    const out = try execToolInner(ctx, .{ .id = "r1", .name = "read_file", .input = .{ .object = args } });
+    defer gpa.free(out.text);
+    try std.testing.expect(!out.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, out.text, "line-12\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.text, "line-14\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.text, "line-11\n") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out.text, "line-15\n") == null);
+
+    // Traversal through <agent_cwd>/../still fails confinement.
+    const esc = try std.fmt.allocPrint(a, "{s}/../outside.py", .{root});
+    try args.put(a, "path", .{ .string = esc });
+    const denied = try execToolInner(ctx, .{ .id = "r2", .name = "read_file", .input = .{ .object = args } });
+    defer gpa.free(denied.text);
+    try std.testing.expect(denied.is_error);
+}
+
 test { // main.zig is at the 600-line cap; exec.zig is these modules' importer, so the compiled-in references live here (the reach check diffs the test binary, not which file holds the line)
     _ = exec_bash;
     _ = shell_tool;
+    _ = @import("syntax_note.zig");
     _ = @import("codedbpro_report.zig");
     _ = @import("tool_balance.zig");
     _ = @import("codedb_exec.zig");

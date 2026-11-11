@@ -441,6 +441,15 @@ fn execUnchecked(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
     };
     const ssh = isSshCommand(cmd);
     const bg = tools.json_args.flag(input, "run_in_background");
+    const run_idle = @import("run_idle.zig");
+    if (!ctx.from_sub and run_idle.isStandaloneSleep(cmd)) {
+        var label_buf: [64]u8 = undefined;
+        if (run_idle.firstLiveBackgroundLabel(io, &label_buf)) |live_label| {
+            return .{
+                .text = try std.fmt.allocPrint(gpa, "standalone sleep is unnecessary while {s} is running — end your reply to wait; graff automatically resumes when background work exits.", .{live_label}),
+            };
+        }
+    }
     const server_like = @import("job_class.zig").looksPersistent(cmd);
     if (bg or !ctx.from_sub) {
         var live = exec_bash_stream.Ctx{ .io = io };

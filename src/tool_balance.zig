@@ -89,20 +89,139 @@ var g_read_streak_nudged: std.atomic.Value(u8) = .init(0);
 
 const ToolActivity = enum { read_explore, write_or_exec, neutral };
 
+fn hasOutputFileRedirect(seg: []const u8) bool {
+    var quote: u8 = 0;
+    var i: usize = 0;
+    while (i < seg.len) : (i += 1) {
+        const c = seg[i];
+        if (quote != 0) {
+            if (c == '\\' and quote == '"' and i + 1 < seg.len) {
+                i += 1;
+                continue;
+            }
+            if (c == quote) quote = 0;
+            continue;
+        }
+        if (c == '\'' or c == '"') {
+            quote = c;
+            continue;
+        }
+        if (c == '`' or (c == '$' and i + 1 < seg.len and seg[i + 1] == '(')) return true;
+        if (c == '>') {
+            var next = i + 1;
+            if (next < seg.len and (seg[next] == '>' or seg[next] == '|')) next += 1;
+            if (next < seg.len and seg[next] == '&') continue; // fd dup (2>&1)
+            return true;
+        }
+    }
+    return false;
+}
+
+fn findHasMutatingFlag(seg: []const u8) bool {
+    var it = std.mem.tokenizeAny(u8, seg, " \t");
+    _ = it.next();
+    while (it.next()) |tok| {
+        if (std.mem.eql(u8, tok, "-exec") or std.mem.eql(u8, tok, "-execdir") or
+            std.mem.eql(u8, tok, "-ok") or std.mem.eql(u8, tok, "-okdir") or
+            std.mem.eql(u8, tok, "-delete") or std.mem.eql(u8, tok, "-fprint") or
+            std.mem.eql(u8, tok, "-fprintf")) return true;
+    }
+    return false;
+}
+
+fn classifyShellSegment(raw_seg: []const u8) ToolActivity {
+    const policy = @import("harness_policy.zig");
+    const guard_scope = @import("codedb_guard_scope.zig");
+    var seg = std.mem.trim(u8, raw_seg, " \t\r\n");
+    if (seg.len == 0) return .neutral;
+    if (hasOutputFileRedirect(seg)) return .write_or_exec;
+    // Strip leading VAR=val env assignments before inspecting the verb.
+    while (true) {
+        const tok = firstToken(seg);
+        if (tok.len == 0 or std.mem.indexOfScalar(u8, tok, '=') == null or tok[0] == '=' or tok[0] == '-') break;
+        seg = std.mem.trimStart(u8, seg[tok.len..], " \t");
+    }
+    if (seg.len == 0) return .neutral;
+    const verb = firstToken(seg);
+    if (std.mem.eql(u8, verb, "sed")) {
+        return if (guard_scope.inPlaceEdit("sed", seg)) .write_or_exec else .read_explore;
+    }
+    if (std.mem.eql(u8, verb, "find")) {
+        return if (findHasMutatingFlag(seg)) .write_or_exec else .read_explore;
+    }
+    const read_prefixes = [_][]const u8{
+        "ls",         "cat",           "head",     "tail",     "wc",        "grep",
+        "egrep",      "fgrep",         "rg",       "zigrep",   "pwd",       "which",
+        "file",       "stat",          "nl",       "less",     "more",      "sort",
+        "uniq",       "cut",           "tr",       "tree",     "fd",        "git status",
+        "git diff",   "git log",       "git show", "git grep", "git blame", "git ls-files",
+        "git branch", "git rev-parse",
+    };
+    for (read_prefixes) |p| if (policy.matchesPrefix(seg, p)) return .read_explore;
+
+    const write_exec_prefixes = [_][]const u8{
+        "pytest",       "py.test",         "go test",   "go build",  "go run",    "cargo test",
+        "cargo check",  "cargo build",     "cargo run", "zig build", "zig test",  "npm test",
+        "npm run",      "pnpm",            "yarn",      "bun test",  "make",      "cmake",
+        "ninja",        "ctest",           "mvn",       "gradle",    "tox",       "nox",
+        "ruff",         "mypy",            "flake8",    "eslint",    "tsc",       "git commit",
+        "git checkout", "git switch",      "git apply", "git stash", "git merge", "git rebase",
+        "git reset",    "git cherry-pick", "rm",        "mv",        "cp",        "mkdir",
+        "touch",        "chmod",           "patch",     "tee",
+    };
+    for (write_exec_prefixes) |p| if (policy.matchesPrefix(seg, p)) return .write_or_exec;
+    if (policy.isInterpreter(verb)) return .write_or_exec;
+    return .neutral;
+}
+
+fn classifyShellCommand(cmd: []const u8) ToolActivity {
+    var saw_read = false;
+    var quote: u8 = 0;
+    var seg_start: usize = 0;
+    var i: usize = 0;
+    while (i <= cmd.len) : (i += 1) {
+        const at_end = i == cmd.len;
+        const c: u8 = if (at_end) 0 else cmd[i];
+        if (!at_end and quote != 0) {
+            if (c == '\\' and quote == '"' and i + 1 < cmd.len) {
+                i += 1;
+                continue;
+            }
+            if (c == quote) quote = 0;
+            continue;
+        }
+        if (!at_end and (c == '\'' or c == '"')) {
+            quote = c;
+            continue;
+        }
+        const is_sep = at_end or c == ';' or c == '\n' or c == '|' or
+            (c == '&' and (i == 0 or cmd[i - 1] != '>') and (i + 1 >= cmd.len or cmd[i + 1] != '>'));
+        if (!is_sep) continue;
+        switch (classifyShellSegment(cmd[seg_start..i])) {
+            .write_or_exec => return .write_or_exec,
+            .read_explore => saw_read = true,
+            .neutral => {},
+        }
+        if (!at_end and (c == '|' or c == '&') and i + 1 < cmd.len and cmd[i + 1] == c) i += 1;
+        seg_start = i + 1;
+    }
+    return if (saw_read) .read_explore else .neutral;
+}
+
 fn classifyActivity(call: tools.ToolCall, class: Class) ToolActivity {
     const name = call.name;
     if (std.mem.eql(u8, name, "edit_file") or
         std.mem.eql(u8, name, "write_file") or
         std.mem.eql(u8, name, "apply_patch")) return .write_or_exec;
+    if (std.mem.eql(u8, name, "bash") or std.mem.eql(u8, name, "shell")) {
+        const cmd = tools.strField(call.input, "command") orelse return .neutral;
+        return classifyShellCommand(cmd);
+    }
     if (class != .other) return .read_explore;
     if (std.mem.eql(u8, name, "list_dir") or
         std.mem.eql(u8, name, "glob") or
         std.mem.eql(u8, name, "web_search") or
         std.mem.eql(u8, name, "fetch_url")) return .read_explore;
-    if (std.mem.eql(u8, name, "bash") or std.mem.eql(u8, name, "shell")) {
-        const cmd = tools.strField(call.input, "command") orelse return .neutral;
-        return if (@import("approvals.zig").Approvals.readOnlyAllowed(cmd)) .read_explore else .write_or_exec;
-    }
     return .neutral;
 }
 
@@ -339,6 +458,38 @@ test "#1879: recordWithMode edge-triggers once on a long read-only streak and re
     try std.testing.expect(recordWithMode(a, .{ .id = "t", .name = "edit_file", .input = .null }, false, true) == null);
     for (0..read_streak_threshold) |_| {
         if (recordWithMode(a, read_call, false, true)) |_| fired += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), fired);
+}
+
+test "#1887: read-only shell idioms (sed -n, nl | sed, piped grep, find) advance g_read_streak while sed -i / pytest reset it" {
+    reset();
+    defer reset();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const mkShell = struct {
+        fn call(alloc: Allocator, cmd: []const u8) tools.ToolCall {
+            var map: std.json.ObjectMap = .empty;
+            map.put(alloc, "command", .{ .string = cmd }) catch unreachable;
+            return .{ .id = "s", .name = "shell", .input = .{ .object = map } };
+        }
+    }.call;
+
+    var fired: usize = 0;
+    for (0..8) |_| _ = recordWithMode(a, mkShell(a, "sed -n '1,50p' compiler.go"), false, true);
+    for (0..4) |_| _ = recordWithMode(a, mkShell(a, "nl -ba httpx/_models.py | sed -n '760,900p'"), false, true);
+    for (0..3) |_| _ = recordWithMode(a, mkShell(a, "grep -rn foo src | head -20"), false, true);
+    if (recordWithMode(a, mkShell(a, "find . -maxdepth 3 -name '*.py'"), false, true)) |nudge| {
+        try std.testing.expect(std.mem.indexOf(u8, nudge, "exploration balance:") != null);
+        fired += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), fired);
+
+    // Mutating sed -i or test run resets the streak and re-arms the nudge.
+    try std.testing.expect(recordWithMode(a, mkShell(a, "sed -i 's/a/b/' compiler.go"), false, true) == null);
+    for (0..read_streak_threshold) |_| {
+        if (recordWithMode(a, mkShell(a, "git grep needle"), false, true)) |_| fired += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), fired);
 }

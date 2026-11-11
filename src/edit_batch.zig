@@ -23,9 +23,11 @@ const Value = std.json.Value;
 /// resolution as edit_verify.execEdit.
 pub fn execBatch(ctx: ToolCtx, input: Value) !ToolOutput {
     const gpa = ctx.gpa;
-    const path = tools.strField(input, "path") orelse return tools.missingArg(gpa, "path");
+    const raw_path = tools.strField(input, "path") orelse return tools.missingArg(gpa, "path");
+    const codedbpro_paths = @import("codedbpro_paths.zig");
+    const path = codedbpro_paths.normalizeInCwd(ctx.io, ctx.agent_cwd, raw_path, false);
     if (!approvals.confinedPath(path) or !approvals.noSymlinkEscape(ctx.io, path, ctx.agent_cwd))
-        return .{ .text = try std.fmt.allocPrint(gpa, "{s} is outside the working directory — edit_file stays inside it", .{path}), .is_error = true };
+        return .{ .text = try std.fmt.allocPrint(gpa, "{s} is outside the working directory — edit_file stays inside it", .{raw_path}), .is_error = true };
     if (approvals.protectsGitMetadata(path) or approvals.symlinkEntersGitMetadata(ctx.io, path, ctx.agent_cwd))
         return .{ .text = try gpa.dupe(u8, approvals.git_metadata_refusal), .is_error = true };
     const edits = input.object.get("edits") orelse return tools.missingArg(gpa, "edits");
@@ -34,7 +36,7 @@ pub fn execBatch(ctx: ToolCtx, input: Value) !ToolOutput {
     if (list.items.len == 0) return .{ .text = try gpa.dupe(u8, "edits must contain at least one span"), .is_error = true };
 
     // #747: same absolute selected-tree path as execEdit (write + verify).
-    const resolved = try @import("codedbpro_paths.zig").sessionAbs(gpa, ctx.io, ctx.agent_cwd, path);
+    const resolved = try codedbpro_paths.sessionAbs(gpa, ctx.io, ctx.agent_cwd, path);
     defer gpa.free(resolved);
 
     const lock = edit_verify.lockPath(ctx.io, resolved);
@@ -95,7 +97,8 @@ pub fn execBatch(ctx: ToolCtx, input: Value) !ToolOutput {
         defer gpa.free(after);
         const verdict = edit_verify.verifyNative(before, after, draft);
         if (verdict != .ok) return .{ .text = try edit_verify.verdictText(gpa, path, verdict, "the write"), .is_error = true };
-        return .{ .text = try std.fmt.allocPrint(gpa, "applied {d} edit span(s) to {s} (verified)", .{ list.items.len, path }) };
+        const msg = try std.fmt.allocPrint(gpa, "applied {d} edit span(s) to {s} (verified)", .{ list.items.len, path });
+        return .{ .text = try @import("syntax_note.zig").appendToOwned(gpa, ctx.io, msg, path, resolved, draft) };
     }
 }
 
