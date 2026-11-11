@@ -5,6 +5,10 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.62
+    \\  • the primary bot is your main bot (ADR 0335): one thread for every project; in a client such as Harness it starts each piece of work as its own chat where it belongs and reports when the client says it stopped; it asks only when the project is unclear
+    \\  • from a terminal the main bot names the project and gives the command; single-job bots stay as helpers it hands their own jobs to; Bots are still off until `graff bot enable`
+    \\
     \\0.302.74.61
     \\  • Bots (experimental, off until `graff bot enable`): standing roles with one job and their own memory, work log and routines in `.graff/bots/<name>/`; `graff bot run`, `routine add`, `tick` for cron or a client's timer (ADR 0333)
     \\  • `graff bot --user`: your own bots in `~/.graff/bots` for any project, one `--primary`; a late check records what it missed instead of running it late (`--stale-after`, `graff bot missed`); `graff bot state --json` for clients (ADR 0334)

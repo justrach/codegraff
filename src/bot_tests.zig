@@ -520,7 +520,7 @@ test "a user-level bot works in its project and reaches its store with --user" {
     try testing.expectEqualStrings("/repo/comet", b.fake.cwds.items[0]);
     const headless = b.fake.arg(0, "--append-system-prompt").?;
     try testing.expect(std.mem.indexOf(u8, headless, "~/.graff/bots/notes/memory.md") != null);
-    try testing.expect(std.mem.indexOf(u8, headless, "primary bot") == null);
+    try testing.expect(std.mem.indexOf(u8, headless, "main bot") == null);
 
     // In a client's chat the bot changes its store by command, since the
     // store is outside the folder its tools work in.
@@ -528,14 +528,24 @@ test "a user-level bot works in its project and reaches its store with --user" {
     for ([_][]const u8{ "graff bot --user remember notes -- ", "graff bot --user forget notes -- ", "graff bot --user log notes -- ", "graff bot --user routine add notes -- " }) |want|
         try testing.expect(std.mem.indexOf(u8, b.printed(), want) != null);
 
-    // The primary bot knows the others and waits for a yes. A bot with no
-    // project runs where the command was typed.
+    // The primary bot is the main bot: it knows the others and sends work
+    // to where it belongs. A bot with no project runs where the command
+    // was typed.
     try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "run", "ada", "draft", "the", "notes" }));
     try testing.expectEqualStrings("", b.fake.cwds.items[1]);
     const ada = b.fake.arg(1, "--append-system-prompt").?;
-    for ([_][]const u8{ "primary bot", "- notes: Draft release notes (works in /repo/comet)", "- triage: Label new issues", "Start nothing until they say yes", "graff bot --user run <name> -- " }) |want|
+    for ([_][]const u8{ "main bot", "- notes: Draft release notes (works in /repo/comet)", "- triage: Label new issues", "graff bot --user run <name> -- ", "cd <project> && graff -p " }) |want|
         try testing.expect(std.mem.indexOf(u8, ada, want) != null);
     try testing.expect(std.mem.indexOf(u8, ada, "- ada:") == null);
+    // A headless run has no way into another folder, so it is not told of one.
+    try testing.expect(std.mem.indexOf(u8, ada, "create_chat") == null);
+
+    // In a client's chat it starts work in any project with the client's
+    // tools, and the chat it starts reports back to its one thread.
+    try testing.expectEqual(@as(u8, 0), try b.bot(&.{ "prompt", "ada" }));
+    for ([_][]const u8{ "`create_chat` with a `project` and a `prompt`", "its reply arrives here", "Never guess between two", "`run_bot`" }) |want|
+        try testing.expect(std.mem.indexOf(u8, b.printed(), want) != null);
+    try testing.expect(std.mem.indexOf(u8, b.printed(), "graff -p") == null);
 }
 
 test "bots are off until enabled, and one file in the home is the switch" {
