@@ -5,6 +5,14 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.63
+    \\  • `read_file` honors `offset` and `limit` line-window aliases when `start_line`/`end_line` are omitted (#1885)
+    \\  • native file tools normalize `<agent_cwd>/…` absolute paths inside the workspace instead of rejecting them (#1886)
+    \\  • `tool_balance` treats read-only `shell` inspection commands/pipelines as `.read_explore` without resetting read streaks (#1887)
+    \\  • standalone `shell` `sleep N` polls run inline alongside background jobs and no longer hold `run_idle` open (#1888)
+    \\  • headless `graff -p` wires `SIGINT` to `esc_cancel` and flushes the final `result` record (#1889)
+    \\  • `write_file` and `edit_file` append inline JSON, Zig/ZON, Python, and Go syntax diagnostics (#1890)
+    \\
     \\0.302.74.62
     \\  • the primary bot is your main bot (ADR 0335): one thread for every project; in a client such as Harness it starts each piece of work as its own chat where it belongs and reports when the client says it stopped; it asks only when the project is unclear
     \\  • from a terminal the main bot names the project and gives the command; single-job bots stay as helpers it hands their own jobs to; Bots are still off until `graff bot enable`

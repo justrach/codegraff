@@ -10,6 +10,15 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.63
+
+- Fixed `read_file` ignoring `offset` and `limit` argument aliases when explicit `start_line`/`end_line` bounds are omitted (#1885). `execReadFile` now maps `offset` to 1-based `start_line` and `limit` to `start_line + limit - 1`.
+- Fixed native file tools (`read_file`, `write_file`, `edit_file`, `list_dir`, and `codedb` file checks) rejecting valid in-workspace absolute paths prefixed with `<agent_cwd>/` (#1886). Matching `agent_cwd` (or process cwd) prefixes are normalized to relative workspace paths before confinement checks, while out-of-workspace absolute paths and `..` escapes remain rejected.
+- Fixed `tool_balance` classifying read-only `shell` inspection commands and pipelines (`sed -n`, `head`, `tail`, `cat`, `nl`, `wc`, `grep`, `rg`, `find` without mutating actions, `git status`/`diff`/`log`/`show`) as `.write_or_exec` and resetting `g_read_streak` (#1887). Read-only shell inspection calls now count as `.read_explore` toward the exploration-balance nudge.
+- Fixed standalone `shell` `sleep N` polling alongside active background jobs auto-parking into new background tasks and holding headless `run_idle` open after completion (#1888). `exec_bash` runs short standalone `sleep` commands inline when background jobs exist, and `run_idle` excludes standalone sleep jobs from idle wake snapshots.
+- Fixed headless `graff -p` ignoring `SIGINT` and exiting without flushing the final `{"type":"result"}` summary record (#1889). `oneshot` now installs a `SIGINT` handler wired to `Agent.esc_cancel` across the run scope and flushes stdout after `headless_result` teardown.
+- Added inline post-write syntax diagnostics on `write_file` and `edit_file` (`src/syntax_note.zig`) for `.json`, `.zig`/`.zon`, `.py`/`.pyi`, and `.go` files so parse errors are appended directly to the tool output (#1890).
+
 ## v0.302.74.62
 
 - The primary bot is now your main bot: one thread for every project (ADR 0335). In a client's chat (`graff bot prompt`, `due --claim`) its standing text tells it to start each piece of work as its own chat in the project the work belongs to, with the client's tools (Harness: `list_projects`, `create_chat`, on graff unless you name another agent), say in one line what it started, and end its turn. The client tells its thread when that chat stops, and it reports then. It asks only when more than one project could be meant, and leaves publishing, sending, paying and deleting to you.
