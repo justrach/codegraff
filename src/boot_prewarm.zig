@@ -33,13 +33,18 @@
 //! can therefore miss the first catalog, and a late merge changes the catalog
 //! mid-run (ADR 0221) — the two costs of not stalling.
 //!
-//! Reporting is exact on both sides of the budget. A failure that lands before
-//! it is `take`'s error, `error.McpClosed` included; one that lands after it
-//! has no request left to return to, so the worker records it (`lateOutcome` /
-//! `lateError`) and names it on stderr — `-p` prints no notices of its own —
-//! and `take` reports `.late`, never `.connected`. Teardown ends the child on
-//! both platforms (`Watch.signal`) before it joins the worker, so the exit path
-//! costs the kill, not the probe plus handshake caps.
+//! Reporting is exact on both sides of the budget, and about who ended the
+//! attempt. A failure that lands before the budget is `take`'s error,
+//! `error.McpClosed` included; one that lands after it has no request left to
+//! return to, so the worker records it (`lateOutcome` / `lateError`) and names
+//! it on stderr — `-p` prints no notices of its own — and `take` reports
+//! `.late`, never `.connected`. A stop the exit path asked for is neither: it
+//! ends the child on both platforms (`Watch.signal`) before it joins the
+//! worker, and the `McpClosed` that kill produces is the run ending, so the
+//! attempt publishes `.stopped` and says nothing. Before that distinction a
+//! healthy companion printed "failed to connect" on its way out of a normal
+//! exit (ADR 0339). The exit path costs the kill, not the probe plus handshake
+//! caps.
 
 const std = @import("std");
 const Io = std.Io;
@@ -67,10 +72,11 @@ pub const Spec = struct {
 
 const Joined = struct { outcome: mcp_boot.StartOutcome = .{}, err: ?anyerror = null };
 
-/// What a handed-off attempt did when it landed (ADR 0339): merged into the
-/// registry, dropped because the name connected meanwhile (#505), or failed.
-/// `.none` means it has not landed yet — or nobody handed it a registry.
-pub const LateOutcome = enum { none, merged, duplicate, failed };
+/// What the attempt did (ADR 0339): merged into the registry it was handed,
+/// dropped because the name connected meanwhile (#505), failed — or `.stopped`,
+/// which is the exit path's own doing and no failure at all. `.none` means it
+/// has not landed yet — or nobody handed it a registry.
+pub const LateOutcome = enum { none, merged, duplicate, failed, stopped };
 
 /// What `take` / `connect` report. `.connected`: the catalog is in the
 /// registry. `.late`: the attempt is still running with this registry as its
@@ -110,8 +116,8 @@ pub const Watch = struct {
     /// merges into when it lands (ADR 0339). Under `lock` with `done`, so
     /// exactly one side consumes the outcome.
     late_merge: ?*mcp.Registry = null,
-    /// Worker: what that attempt then did — `.none` until it lands. Under
-    /// `lock`, read through `lateOutcome`.
+    /// Worker: what that attempt then did — `.none` until it lands, `.stopped`
+    /// when the exit path ended it first. Under `lock`, read through `outcome`.
     late_state: LateOutcome = .none,
     /// Worker: the error a handed-off attempt ended with, when it failed.
     late_err: ?anyerror = null,
@@ -177,17 +183,34 @@ pub const Watch = struct {
         return false;
     }
 
+    /// What `settle` saw, in one critical section: the merge target the boot
+    /// thread installed, and whether a stop was already requested. A stop is
+    /// requested before the child is killed, so an attempt whose read returned
+    /// `McpClosed` because of that kill reads `stopped` here — the run is
+    /// ending, which is not the same thing as the companion failing (ADR 0339).
+    const Settled = struct {
+        target: ?*mcp.Registry = null,
+        stopped: bool = false,
+    };
+
     /// Worker, last write: publish the result and claim a merge target the
     /// boot thread installed while it was still running. Each attempt settles
     /// once, so the outcome is consumed exactly once: here, or by `take` /
     /// `stopAtExit` through the future.
-    fn settle(w: *Watch, io: Io) ?*mcp.Registry {
+    fn settle(w: *Watch, io: Io) Settled {
         w.acquire();
-        const target = w.late_merge;
+        const settled: Settled = .{ .target = w.late_merge, .stopped = w.stopping };
         w.done = true;
         w.lock.unlock();
         w.done_event.set(io); // wakes the join's bounded wait
-        return target;
+        return settled;
+    }
+
+    /// The outcome the worker published, under the same lock as `done`.
+    fn outcome(w: *Watch) LateOutcome {
+        w.acquire();
+        defer w.lock.unlock();
+        return w.late_state;
     }
 
     /// Worker: publish what the handed-off attempt did. Same lock `done` uses,
@@ -345,19 +368,27 @@ fn connectTask(gpa: Allocator, io: Io, spec: Spec, watch: *Watch) Joined {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     const outcome = connectInto(gpa, io, spec, watch, &arena_state) catch |err| {
         arena_state.deinit();
+        const settled = watch.settle(io);
+        if (settled.stopped) {
+            // Teardown ended this attempt because the run is ending: this
+            // `McpClosed` is the stop, so it is published as one and said to
+            // nobody. Reporting it was the bug this fixes (ADR 0339).
+            watch.recordLate(.stopped, null);
+            return .{ .err = err };
+        }
         // An error has nothing to merge, but a handed-off attempt still owes
         // its failure to someone: the boot thread released the request on the
         // promise that this would land, so a silent failure here is
         // indistinguishable from a connect (ADR 0339). Record it, and say it
         // on stderr — the only channel left once the answer is out.
-        if (watch.settle(io) != null) {
+        if (settled.target != null) {
             watch.recordLate(.failed, err);
             std.debug.print("companion: {s} failed to connect after the boot budget ({t}); native tools only\n", .{ spec.name, err });
         }
         return .{ .err = err };
     };
     watch.forget(); // the outcome owns the child now
-    if (watch.settle(io)) |reg| {
+    if (watch.settle(io).target) |reg| {
         // The join went over budget and handed this attempt to the live
         // registry (ADR 0339). `adoptStarted` is the one merge point, so a
         // server that connected meanwhile keeps its tools and this one is
@@ -426,15 +457,15 @@ pub fn take(reg: *mcp.Registry, name: []const u8) ?anyerror!Adopted {
     return .connected;
 }
 
-/// What the handed-off attempt did once it landed: `.none` while it is still
-/// running, then `.merged`, `.duplicate` or `.failed`. `boot_prewarm_tests`
-/// polls it — the late merge and the duplicate guard are otherwise invisible
-/// (a dropped latecomer leaves no trace, and neither does a missing merge).
+/// What the attempt did: `.none` while it is still running, then `.merged`,
+/// `.duplicate`, `.failed`, or `.stopped` when the exit path ended it.
+/// `boot_prewarm_tests` polls it — the late merge and the duplicate guard are
+/// otherwise invisible (a dropped latecomer leaves no trace, and neither does
+/// a missing merge). The exit path frees the slot, so it reads the same state
+/// through `stopAtExit`'s return instead.
 pub fn lateOutcome() LateOutcome {
     const s = if (slot) |*s| s else return .none;
-    s.watch.acquire();
-    defer s.watch.lock.unlock();
-    return s.watch.late_state;
+    return s.watch.outcome();
 }
 
 /// The error a handed-off attempt ended with, when `lateOutcome` is `.failed`.
@@ -472,7 +503,7 @@ fn matches(reg: *const mcp.Registry, s: *const Slot) bool {
 pub fn discard(io: Io) void {
     const s = if (slot) |*s| s else return;
     if (s.watch.handedOff()) return;
-    stopJoin(io);
+    _ = stopJoin(io);
 }
 
 /// Exit-path teardown: stop and join the attempt even when `take` handed it
@@ -482,18 +513,23 @@ pub fn discard(io: Io) void {
 /// `std.process.exit` paths (`oneshot.zig`, which skip every `defer`) call it
 /// too. The join is bounded because `stop` ends the child on both platforms:
 /// a silent companion costs the kill plus a reap, not its 5 s probe and 15 s
-/// handshake.
-pub fn stopAtExit(io: Io) void {
-    stopJoin(io);
+/// handshake. Returns what the attempt did when the stop ended it: `.stopped`
+/// is the quiet case, `.failed` a companion that had already failed on its own
+/// (ADR 0339). The slot and its watch are freed here, so this is where that
+/// outcome is read — `lateOutcome` has nothing left to read afterwards.
+pub fn stopAtExit(io: Io) LateOutcome {
+    return stopJoin(io);
 }
 
-fn stopJoin(io: Io) void {
-    const s = if (slot) |*s| s else return;
+fn stopJoin(io: Io) LateOutcome {
+    const s = if (slot) |*s| s else return .none;
     s.watch.stop();
     var joined = s.future.await(io);
+    const ended = s.watch.outcome(); // before `release` frees the watch
     release();
     if (joined.outcome.server) |server| mcp_rpc.deinitServer(server, io, .init(io, mcp_teardown.teardown_grace));
     if (joined.outcome.arena_state) |*ta| ta.deinit();
+    return ended;
 }
 
 fn release() void {

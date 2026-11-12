@@ -440,7 +440,7 @@ pub const Registry = struct {
     /// `deinit` because tests and mid-session callers must never exit.
     pub fn deinitAtExit(reg: *Registry) void {
         shutdown_trace.mark("mcp-teardown"); // #364
-        @import("boot_prewarm.zig").stopAtExit(reg.io); // a companion prewarm nobody adopted, or one an over-budget join handed this registry (ADR 0339)
+        _ = @import("boot_prewarm.zig").stopAtExit(reg.io); // a companion prewarm nobody adopted, or one an over-budget join handed this registry (ADR 0339)
         reg.deinit();
         mcp_teardown.exitIfAbandoned();
     }

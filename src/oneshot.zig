@@ -101,7 +101,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
         // `exit` unwinds no defer, so main's `deinitAtExit` never runs on this
         // path: end the prewarmed companion here or it is abandoned (#325,
         // ADR 0339). The join is bounded — stop kills the child.
-        @import("boot_prewarm.zig").stopAtExit(io);
+        _ = @import("boot_prewarm.zig").stopAtExit(io);
         std.process.exit(failure.exit_code);
     };
     const had_schema = pending_schema != null;
@@ -164,7 +164,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     run.finish(root, incomplete, answer, saved);
     out.flush() catch {};
     if (incomplete) |f| {
-        @import("boot_prewarm.zig").stopAtExit(io); // same: budget_exhausted / unfinished_work skip main's defers
+        _ = @import("boot_prewarm.zig").stopAtExit(io); // same: budget_exhausted / unfinished_work skip main's defers
         std.process.exit(f.exit_code);
     }
 }

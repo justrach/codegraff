@@ -56,10 +56,12 @@ fn interactive(flags: args.Flags, json_mode: bool) bool {
     return !json_mode and flags.oneshot_prompt == null;
 }
 
-/// The notice goes to the engine sink when the session has one (interactive,
-/// where stdout is ours) and to stderr otherwise: a `-p` run's stdout is the
-/// answer, but its stderr is free, and a companion that missed the budget or
-/// failed must not be indistinguishable from one that connected (ADR 0339).
+/// The notice lands on stderr. The sink branch needs `GRAFF_REPL_DEBUG` and an
+/// interactive session, and every interactive session is `background`
+/// (`deferCompanion`), so the callers that reach the lines below — `-p` and
+/// `--json` — have `speak` false and a stdout that is the answer. stderr is
+/// free, and a companion that missed the budget or failed must not be
+/// indistinguishable from one that connected (ADR 0339).
 fn notice(io: Io, speak: bool, sink: anytype, arena: Allocator, comptime fmt: []const u8, params: anytype) !void {
     const text = try std.fmt.allocPrint(arena, fmt, params);
     if (speak) sink.emit(io, dimNotice(text)) else std.debug.print("{s}\n", .{text});

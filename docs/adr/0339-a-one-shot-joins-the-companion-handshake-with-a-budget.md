@@ -31,6 +31,14 @@ the budget was reported as a successful connect and its error was dropped; and
 the two late-merge tests were order-dependent, so a failure in one corrupted
 the run instead of failing where it happened.
 
+A second review against that fix found a fourth, and it is the one a user would
+have seen: teardown's own kill came back out as a connect failure. Ending a
+healthy companion because the run is ending is not the companion failing, but
+the worker reported the `McpClosed` that kill produces exactly like one, so a
+normal `-p` exit printed `companion: codedbpro failed to connect after the boot
+budget (McpClosed); native tools only` on its way out — after the tools it was
+claiming had failed to arrive.
+
 ## Decision
 
 - **A join budget, not an unbounded await.** `take` waits
@@ -63,10 +71,28 @@ the run instead of failing where it happened.
   lands *after* the budget has no request left to return to, so the worker
   records it (`lateOutcome` / `lateError`) and prints one line to stderr
   (`companion: <name> failed to connect after the boot budget (<err>); native
-  tools only`). `connectCompanion` says the same for `.late` on every path: the
-  engine sink when the session has one, stderr on `-p`, which prints no notices
-  of its own. Silence in either case is what made a late failure
-  indistinguishable from a connect.
+  tools only`). `connectCompanion` names the other half of the same fact for
+  `.late` (`companion: <bin> still connecting after the boot budget`). Both
+  lines go to **stderr**, which is the only destination this path can reach:
+  the dim engine notice `connectCompanion` prefers needs `GRAFF_REPL_DEBUG`
+  *and* an interactive session, and every interactive session — REPL and ACP
+  alike — queues the companion on `pending_starts` instead, so the branch that
+  could reach the sink is the one only `-p` and `--json` take, where `speak` is
+  already false. Silence is what made a late failure indistinguishable from a
+  connect; one line on stderr is what it gets instead.
+- **A stop the exit path asked for is not a failure.** `stopAtExit` ends the
+  attempt the run can no longer wait for, and the child's death arrives as a
+  `McpClosed` like any other. Reported as one, a healthy companion printed the
+  failure line above on a normal exit. `Watch.settle` now reads the stop intent
+  in the same critical section as the merge target, so an attempt whose read
+  returned `McpClosed` because teardown killed it publishes `.stopped`: the
+  outcome is recorded, never printed, and `lateError` stays null — `.failed` is
+  the only state that carries an error. A companion that genuinely failed at
+  the instant teardown asked it to stop is indistinguishable and is recorded as
+  `.stopped`, which is the quiet direction a dying run can afford. `stopAtExit`
+  returns that outcome because the slot and its watch are freed at exit, so
+  `lateOutcome` has nothing left to read; `boot_prewarm_tests` pins `.stopped`
+  against `.failed` there.
 - **`discard` keeps its meaning; `stopAtExit` is new and bounded on both
   platforms.** `discard` still means "nobody wants it: stop, join, tear down",
   and now leaves a handed-off attempt alone — it is running on purpose.
@@ -115,16 +141,19 @@ the run instead of failing where it happened.
   `stopAtExit` on macOS takes 0-1 ms (n=3) with the child kill in place and
   1025-1037 ms (n=3) with it suppressed — the attempt's own handshake timeout,
   which is what the reviewer measured as 1191 ms against the version this
-  fixes. **Windows is unmeasured.** What is verified there is weaker and is
-  stated as such: the Windows path cross-compiles and links
-  (`zig build test-bin -Dtarget=x86_64-windows`), `Child.Id` is the process
-  handle on Windows, and `NtTerminateProcess` is what `Child.kill` itself
-  issues before it reaps. Whether a terminated child's pipe reads return
-  promptly on Windows, and therefore whether the join is ~0 ms or "one
-  handshake timeout" there, has not been run on a Windows machine. The kill is
-  a signal, not a cancellation: the worker is never cancelled (a cancel that
-  lands inside the bounded handshake's `Io.Select` returns before the select's
-  read task stops, and that task would outlive its frame).
+  fixes. **Windows is unmeasured; what is verified there is a cross-compile.**
+  `zig build -Dtarget=x86_64-windows` builds the Windows branch and is the
+  command that passes — the whole binary, not the test binary: `zig build
+  test-bin -Dtarget=x86_64-windows` does not link, leaving `fchdir`, `setenv`
+  and `unsetenv` undefined from `src/git_dirs_tests.zig`. That builds the
+  branch, but it does not run it, so it says nothing about whether a
+  terminated child's pipe reads return promptly on Windows, and therefore
+  nothing about whether the join there is ~0 ms or one handshake timeout. What
+  is known by reading: `Child.Id` is the process handle on Windows, and
+  `NtTerminateProcess` is what `Child.kill` itself issues before it reaps. The
+  kill is a signal, not a cancellation: the worker is never cancelled (a
+  cancel that lands inside the bounded handshake's `Io.Select` returns before
+  the select's read task stops, and that task would outlive its frame).
 - The trade-off is the middle row: a cold-and-slow companion can miss the
   one-shot catalog. It keeps connecting, and a late merge is the same event
   `/mcp add` causes — the next request sees the tools and the prompt cache is
@@ -133,6 +162,30 @@ the run instead of failing where it happened.
   request and keep the catalog of a companion that has not answered. That the
   degradation is now visible (`.late` plus a one-line notice) is the only claim
   made about it: the catalog itself is still lost.
+- **The exit path is quiet, and measured on the binary as well.** A stub that
+  answers in 200 ms, `GRAFF_MCP_COMPANION_BOOT_MS=1`, and a `-p hi --model
+  lmstudio` run that finishes in ~18 ms: teardown kills the attempt in its
+  handshake, and the version this fixes prints `companion: codedbpro failed to
+  connect after the boot budget (McpClosed); native tools only` on stderr in
+  3/3 runs, this one in 0/3, recording `.stopped` instead. The silent row of
+  the table above is the same defect seen from the other side: a stub that
+  never answers printed that line 3/3 before and 0/3 now, and the wall clock it
+  measures did not move — 266.7-274.3 ms (n=12, two invocations, medians 268.3
+  and 268.1) against the 263.5-265.0 ms recorded here before. The other
+  direction is unchanged: a companion that exits 1 at 300 ms while the run is
+  still waiting on the model (1 s response) still prints that line exactly once
+  (3/3 before, 3/3 after), and a healthy 5 ms companion still shows its catalog
+  and no such line, at the 250 ms default and at a 1 ms budget alike (3/3
+  each).
+- **What is still not fixed, stated plainly.** A companion whose handshake has
+  not finished when the run ends is now lost quietly: no failure line, and no
+  catalog either, because the exit path kills it rather than waiting. `.stopped`
+  and `.failed` cannot be told apart when a companion dies at the same instant
+  teardown asks it to stop; the record says `.stopped`. The Windows join time
+  and the Windows pipe behaviour on a terminated child have not been run. A
+  late merge can land after the run's last request, so the catalog exists and is
+  never seen. And the budget is clamped at 60 s, so a genuinely slow companion
+  cannot be waited for through the knob.
 - Interactive and ACP sessions are untouched: they queue the companion on
   `pending_starts` (ADR 0230) and never create a prewarm slot, so the budget
   exists only on the `-p` path. The one shared line, `Registry.deinitAtExit`,

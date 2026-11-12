@@ -292,7 +292,7 @@ test "boot prewarm: over budget the join returns and the companion still lands (
     var reg = testRegistry();
     defer reg.deinit();
     startWithin(testing.io, testing.allocator, fixtureSpec("codedbpro", &slow_argv), 40);
-    defer stopAtExit(testing.io); // what Registry.deinitAtExit calls, on every path
+    defer _ = stopAtExit(testing.io); // what Registry.deinitAtExit calls, on every path
     try testing.expect(pending());
 
     const t0 = Io.Timestamp.now(testing.io, .awake);
@@ -306,7 +306,7 @@ test "boot prewarm: over budget the join returns and the companion still lands (
     try waitForLate(.merged);
     try testing.expectEqual(@as(usize, 2), try toolCount(&reg));
     try testing.expectEqual(@as(usize, 1), serverCount(&reg)); // one start, not two
-    stopAtExit(testing.io);
+    _ = stopAtExit(testing.io);
     try testing.expect(!pending());
 }
 
@@ -315,7 +315,7 @@ test "boot prewarm: a late merge cannot duplicate a companion that connected mea
     var reg = testRegistry();
     defer reg.deinit();
     startWithin(testing.io, testing.allocator, fixtureSpec("codedbpro", &slow_argv), 20);
-    defer stopAtExit(testing.io);
+    defer _ = stopAtExit(testing.io);
     // State the premise this test needs instead of inheriting it: the join
     // must hand the attempt off. If it adopts instead, there is no late merge
     // here to guard and the `addServer` below would only report that.
@@ -333,7 +333,7 @@ test "boot prewarm: a late merge cannot duplicate a companion that connected mea
     try waitForLate(.duplicate);
     try testing.expectEqual(@as(usize, 2), try toolCount(&reg));
     try testing.expectEqual(@as(usize, 1), serverCount(&reg));
-    stopAtExit(testing.io);
+    _ = stopAtExit(testing.io);
     try testing.expect(!pending());
 }
 
@@ -349,7 +349,7 @@ test "boot prewarm: a companion that fails after the budget is not reported as c
     // error dropped on the floor.
     const argv = [_][]const u8{ "-c", "echo $$ >> \"$0\"\nsleep 0.4\nexit 1", log.path };
     startWithin(testing.io, testing.allocator, fixtureSpec("codedbpro", &argv), 20);
-    defer stopAtExit(testing.io);
+    defer _ = stopAtExit(testing.io);
     const adopted = try (take(&reg, "codedbpro") orelse return error.TestExpectedPrewarm);
     try testing.expectEqual(bp.Adopted.late, adopted); // not `.connected`
     try testing.expectEqual(@as(usize, 0), serverCount(&reg));
@@ -359,8 +359,34 @@ test "boot prewarm: a companion that fails after the budget is not reported as c
     try testing.expectEqual(@as(usize, 0), serverCount(&reg)); // and nothing merged
     var buf: [8]std.posix.pid_t = undefined;
     try testing.expectEqual(@as(usize, 1), log.pids(&buf).len); // one spawn, not retried
-    stopAtExit(testing.io);
+    _ = stopAtExit(testing.io);
     try testing.expect(!pending());
+}
+
+test "boot prewarm: a teardown stop ends the attempt quietly, not as a connect failure (ADR 0339)" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var reg = testRegistry();
+    defer reg.deinit();
+    // The healthy fixture the late-merge test proves lands and connects
+    // (2 tools), only slow to answer: on a 20 ms budget the join hands it off,
+    // and the run ends while it is still in its handshake.
+    startWithin(testing.io, testing.allocator, fixtureSpec("codedbpro", &slow_argv), 20);
+    defer _ = stopAtExit(testing.io); // still joins the worker if an expect below fails
+    const adopted = try (take(&reg, "codedbpro") orelse return error.TestExpectedPrewarm);
+    try testing.expectEqual(bp.Adopted.late, adopted); // handed off, still connecting
+
+    // The run ending is the only thing that ends this attempt. `stopAtExit`
+    // kills it, and the `McpClosed` that kill produces used to come back out as
+    // "failed to connect after the boot budget" on a normal exit — a failure
+    // the run did nothing to earn. A stop is published as `.stopped` with no
+    // error recorded, and that record is the branch that prints the notice.
+    const t0 = Io.Timestamp.now(testing.io, .awake);
+    const ended = stopAtExit(testing.io);
+    const ms = t0.untilNow(testing.io, .awake).toMilliseconds();
+    try testing.expectEqual(bp.LateOutcome.stopped, ended); // not `.failed`
+    try testing.expect(!pending());
+    try testing.expect(ms < 1_500); // the kill, not a probe plus a handshake
+    try testing.expectEqual(@as(usize, 0), serverCount(&reg)); // nothing landed
 }
 
 test "boot prewarm: the join wakes on the worker's event, not the whole budget (ADR 0339)" {
@@ -372,7 +398,7 @@ test "boot prewarm: the join wakes on the worker's event, not the whole budget (
     // `settle` sets as its last write is what makes a 50 ms companion cost the
     // 50 ms and not the 1200.
     startWithin(testing.io, testing.allocator, fixtureSpec("codedbpro", &fixture_argv), 1_200);
-    defer stopAtExit(testing.io);
+    defer _ = stopAtExit(testing.io);
     const t0 = Io.Timestamp.now(testing.io, .awake);
     const adopted = try connect(&reg, "codedbpro", "/bin/sh", &fixture_argv);
     const ms = t0.untilNow(testing.io, .awake).toMilliseconds();
