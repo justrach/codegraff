@@ -212,7 +212,7 @@ pub fn announce(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, sess
 
 pub fn rebind(io: Io, gpa: Allocator, arena: Allocator) void {
     if (builtin.is_test or g_own_name == null) return;
-    const identity = worktree_lease.currentIdentity(gpa, io, arena);
+    const identity = worktree_lease.freshIdentity(gpa, io, arena);
     if (identity.id.len == 0 or std.mem.eql(u8, identity.id, g_identity)) return;
     if (g_identity.len > 0) gpa.free(g_identity);
     g_identity = gpa.dupe(u8, identity.id) catch return;

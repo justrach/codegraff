@@ -298,3 +298,39 @@ fn git(io: Io, a: Allocator, argv: []const []const u8) !void {
     }
     if (!ranOk(r)) return error.TestUnexpectedResult;
 }
+
+test "maybeAutoIsolate: lean, -w and non-git runs spawn no git (F3)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const git_dirs = @import("git_dirs.zig");
+    if (git_dirs.envOverride()) return error.SkipZigTest;
+    const lease = @import("worktree_lease.zig");
+    const fx = @import("git_dirs_tests.zig");
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(a);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    const saved = fx.countSpawns();
+    defer lease.rev_parse_hook = saved;
+    lease.invalidateIdentity();
+    defer lease.invalidateIdentity();
+    const spawns = lease.rev_parse_spawns.load(.monotonic);
+
+    // Lean one-shots and already-isolated sessions decide before any git work.
+    try std.testing.expect(ws.maybeAutoIsolate(a, io, ar, "/nonexistent-home", false, true) == .skip);
+    try std.testing.expect(ws.maybeAutoIsolate(a, io, ar, "/nonexistent-home", true, false) == .skip);
+    // An interactive run in a plain folder learns "not git" in-process.
+    const base = fx.scratch(io, ar) orelse return error.SkipZigTest;
+    defer Io.Dir.cwd().deleteTree(io, base) catch {};
+    var plain = try Io.Dir.cwd().openDir(io, base, .{});
+    defer plain.close(io);
+    var orig = try Io.Dir.cwd().openDir(io, ".", .{});
+    defer orig.close(io);
+    if (std.posix.system.fchdir(plain.handle) != 0) return error.ChdirFailed;
+    {
+        defer _ = std.posix.system.fchdir(orig.handle);
+        try std.testing.expect(ws.maybeAutoIsolate(a, io, ar, "/nonexistent-home", false, false) == .skip);
+    }
+    try std.testing.expectEqual(@as(u32, 0), fx.spawnCalls());
+    try std.testing.expectEqual(spawns, lease.rev_parse_spawns.load(.monotonic));
+}

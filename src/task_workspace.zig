@@ -399,6 +399,7 @@ pub fn enter(io: Io, arena: Allocator, wt: Workspace) !void {
     if (builtin.os.tag == .windows) return error.Unsupported;
     const z = try arena.dupeSentinel(u8, wt.path, 0);
     if (std.posix.system.chdir(z.ptr) != 0) return error.ChdirFailed;
+    lease.invalidateIdentity();
     // Session arena outlives the process; GPA dupes leaked at shutdown.
     main_mod.g_cwd_display = try arena.dupe(u8, wt.path);
     main_mod.g_worktree_branch = try arena.dupe(u8, wt.branch);
@@ -409,7 +410,10 @@ pub fn enter(io: Io, arena: Allocator, wt: Workspace) !void {
 /// A failed `git worktree add` is an isolation failure — do not stay on the claimed tree.
 pub fn maybeAutoIsolate(gpa: Allocator, io: Io, arena: Allocator, home: []const u8, already_isolated: bool, lean: bool) AutoIsolate {
     if (builtin.os.tag == .windows) return .skip;
-    const is_git = isGitAt(gpa, io, ".");
+    // Lean one-shots (ADR 0024) and isolated sessions never isolate: decide before any git work.
+    if (already_isolated or lean) return .skip;
+    const identity = lease.currentIdentity(gpa, io, arena);
+    const is_git = identity.id.len > 0 and identity.kind != .not_git;
     const eligible = shouldAutoIsolate(.{ .already_isolated = already_isolated, .lean = lean, .is_git = is_git, .claimed = true, .windows = false });
     // #1200: a live peer, or one that started with us and has not announced yet.
     if (!eligible or !(checkoutClaimed(gpa, io, arena, home) or startupContended(gpa, io, arena, home))) return .skip;
