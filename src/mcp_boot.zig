@@ -96,6 +96,7 @@ pub fn initWithMerged(gpa: Allocator, io: Io, config_path: []const u8, global_pa
     // concurrently, and a hash-map iterator is not a thing tasks can share.
     const Entry = struct { name: []const u8, cfg: std.json.ObjectMap };
     var entries: std.ArrayList(Entry) = .empty;
+    armRetryAbort(&reg);
     var it = merged.servers.iterator();
     const state = @import("mcp_state.zig").load(io, a, home); // `graff mcp enable|disable`
     while (it.next()) |entry| {
@@ -148,7 +149,29 @@ fn alreadyStartingLocked(reg: *const Registry, name: []const u8) bool {
 }
 
 fn startCtx(reg: *const Registry) StartCtx {
-    return .{ .gpa = reg.gpa, .io = reg.io, .home = reg.home, .show_diagnostics = reg.show_diagnostics, .stdio_probe = reg.stdio_probe, .lazy_stdio = reg.lazy_stdio };
+    return .{ .gpa = reg.gpa, .io = reg.io, .home = reg.home, .show_diagnostics = reg.show_diagnostics, .stdio_probe = reg.stdio_probe, .lazy_stdio = reg.lazy_stdio, .abort = reg.retry_abort };
+}
+
+/// The event `Registry.deinit` sets so a start waiting to retry stops
+/// waiting. Without one (no memory) a task keeps the plain pause.
+fn armRetryAbort(reg: *Registry) void {
+    if (reg.retry_abort != null) return;
+    const event = reg.gpa.create(Io.Event) catch return;
+    event.* = .unset;
+    reg.retry_abort = event;
+}
+
+/// Merge a connect that ran before the registry existed (boot_prewarm) where
+/// `addServer` would have put it: after the servers already present, under
+/// the registry mutex (ADR 0197). False when the name is already connected;
+/// the latecomer is then torn down, as for a deferred start.
+pub fn adoptStarted(reg: *Registry, outcome: StartOutcome) bool {
+    reg.mutex.lockUncancelable(reg.io);
+    defer reg.mutex.unlock(reg.io);
+    const before = reg.servers.len;
+    var one = [_]PendingStart{.{ .future = .{ .any_future = null, .result = outcome } }};
+    mergeOutcomes(reg, &one);
+    return reg.servers.len > before;
 }
 
 /// Queue a stdio server onto `pending_starts` without waiting. Used by
@@ -215,6 +238,7 @@ fn queueLocked(reg: *Registry, name: []const u8, cfg: std.json.ObjectMap) bool {
         return false;
     };
     flag.* = .init(false);
+    armRetryAbort(reg);
     var ctx = startCtx(reg);
     ctx.ready = flag;
     const fut = reg.io.concurrent(startServerTask, .{ ctx, n, cfg }) catch {

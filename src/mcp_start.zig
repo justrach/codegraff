@@ -26,17 +26,32 @@ pub const Ctx = struct {
     ready: ?*std.atomic.Value(bool) = null,
     /// Pause before the one retry of a transient failure.
     retry_ms: u32 = 1_500,
+    /// The owning registry's teardown signal (`Registry.retry_abort`). Set,
+    /// it ends the pause at once and skips the retry, so exit never waits
+    /// out the pause (the registry still joins the task: nothing outlives
+    /// `io`, #325). Heap-owned: the registry value moves after tasks start.
+    abort: ?*Io.Event = null,
 };
 
 pub fn task(ctx: Ctx, name: []const u8, cfg: std.json.ObjectMap) StartOutcome {
     defer if (ctx.ready) |flag| flag.store(true, .release);
     return attempt(ctx, name, cfg) catch |first| {
-        if (transient(first)) {
-            ctx.io.sleep(.fromMilliseconds(ctx.retry_ms), .awake) catch {};
+        if (transient(first) and pauseBeforeRetry(ctx)) {
             if (attempt(ctx, name, cfg)) |outcome| return outcome else |again| return failed(ctx, name, cfg, again);
         }
         return failed(ctx, name, cfg, first);
     };
+}
+
+/// False when the pause was cut short: the registry is tearing down, or the
+/// task was canceled. The first failure is then the one recorded.
+pub fn pauseBeforeRetry(ctx: Ctx) bool {
+    const event = ctx.abort orelse {
+        ctx.io.sleep(.fromMilliseconds(ctx.retry_ms), .awake) catch return false;
+        return true;
+    };
+    event.waitTimeout(ctx.io, .{ .duration = .{ .raw = .fromMilliseconds(ctx.retry_ms), .clock = .awake } }) catch |err| return err == error.Timeout;
+    return false;
 }
 
 fn failed(ctx: Ctx, name: []const u8, cfg: std.json.ObjectMap, err: anyerror) StartOutcome {
@@ -141,6 +156,41 @@ test "a transient start failure is retried once; a missing binary is not" {
     try std.testing.expect(!transient(error.FileNotFound));
     try std.testing.expect(!transient(error.McpAuthenticationRequired));
     try std.testing.expect(!transient(error.BadMcpConfig));
+}
+
+test "a retry pause ends at once when the registry tears down, or runs when it does not" {
+    const io = std.testing.io;
+    var event: Io.Event = .unset;
+    const ctx: Ctx = .{ .gpa = std.testing.allocator, .io = io, .home = "", .show_diagnostics = false, .stdio_probe = false, .retry_ms = 5, .abort = &event };
+    try std.testing.expect(pauseBeforeRetry(ctx)); // not tearing down: pause, then retry
+    event.set(io);
+    var slow = ctx;
+    slow.retry_ms = 60_000;
+    const t0 = Io.Timestamp.now(io, .awake);
+    try std.testing.expect(!pauseBeforeRetry(slow));
+    try std.testing.expect(t0.untilNow(io, .awake).toMilliseconds() < 200);
+}
+
+test "teardown with a pending transient retry returns in well under the pause" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest; // /bin/sh
+    const io = std.testing.io;
+    var reg = mcp.Registry.empty(std.testing.allocator, io);
+    reg.stdio_probe = false;
+    reg.lazy_stdio = false;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var cfg: std.json.ObjectMap = .empty;
+    try cfg.put(a, "command", .{ .string = "/bin/sh" });
+    var argv = std.json.Array.init(a);
+    try argv.appendSlice(&.{ .{ .string = "-c" }, .{ .string = "exit 1" } }); // closes during the handshake: transient
+    try cfg.put(a, "args", .{ .array = argv });
+    try std.testing.expect(@import("mcp_boot.zig").queueConfig(&reg, "teardown-retry-fixture", cfg));
+    try io.sleep(.fromMilliseconds(300), .awake); // first attempt fails; the task is in its 1.5s pause
+    const t0 = Io.Timestamp.now(io, .awake);
+    reg.deinit(); // joins the task: nothing is left holding `io` (#325)
+    try std.testing.expect(t0.untilNow(io, .awake).toMilliseconds() < 200);
+    try std.testing.expect(failure("teardown-retry-fixture") != null); // the first failure is still named
 }
 
 test "start failures are remembered by name until the server connects" {

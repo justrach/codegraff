@@ -12,6 +12,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const args = @import("args.zig");
+const boot_prewarm = @import("boot_prewarm.zig");
 const engine_events = @import("engine_events.zig");
 const engine_sink = @import("engine_sink.zig");
 const mcp = @import("mcp.zig");
@@ -62,6 +63,7 @@ pub fn connectCompanion(io: Io, arena: Allocator, registry: *mcp.Registry, flags
     const sink = engine_sink.writerSink(out);
     const speak = interactive(flags, json_mode) and environ_map.get("GRAFF_REPL_DEBUG") != null;
     const background = deferCompanion(flags, json_mode);
+    defer boot_prewarm.discard(io); // a prewarm this call did not adopt is stopped here
     connect: {
         for (skills.companion_servers) |c| {
             if (mcp_boot.alreadyStarting(registry, c.server)) break :connect;
@@ -75,13 +77,20 @@ pub fn connectCompanion(io: Io, arena: Allocator, registry: *mcp.Registry, flags
                 break;
             }
             if (speak) sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "companion: connecting {s}...", .{c.bin})));
-            if (registry.addServer(c.server, c.bin, &.{"--mcp"})) |_| {
+            if (connectNow(registry, c.server, c.bin)) |_| {
                 break;
             } else |err| {
                 if (speak) sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "[mcp:{s}] auto-connect failed ({t}) — native tools only", .{ c.server, err })));
             }
         }
     }
+}
+
+/// The joined boot prewarm when it ran this companion, else `addServer` on
+/// this thread, as before.
+fn connectNow(registry: *mcp.Registry, server: []const u8, bin: []const u8) !void {
+    if (boot_prewarm.take(registry, server)) |joined| return joined;
+    _ = try registry.addServer(server, bin, &.{"--mcp"});
 }
 
 test "deferCompanion: every interactive session, not -p or --json (ADR 0230)" {

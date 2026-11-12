@@ -108,6 +108,9 @@ pub const Registry = struct {
     task_arenas: []std.heap.ArenaAllocator = &.{},
     /// Unjoined startServer futures from a deferred --yolo boot.
     pending_starts: []mcp_boot.PendingStart = &.{},
+    /// Set by `deinit` so a start pausing before its retry stops pausing
+    /// (mcp_start.Ctx.abort). Heap-owned; created with the first start.
+    retry_abort: ?*Io.Event = null,
     /// Names paired with `pending_starts` so companion auto-connect can skip
     /// a second spawn of a server the deferred fan-out already queued.
     pending_names: []const []const u8 = &.{},
@@ -429,12 +432,16 @@ pub const Registry = struct {
     /// `deinit` because tests and mid-session callers must never exit.
     pub fn deinitAtExit(reg: *Registry) void {
         shutdown_trace.mark("mcp-teardown"); // #364
+        @import("boot_prewarm.zig").discard(reg.io); // a companion prewarm nobody adopted
         reg.deinit();
         mcp_teardown.exitIfAbandoned();
     }
 
     pub fn deinit(reg: *Registry) void {
+        if (reg.retry_abort) |event| event.set(reg.io); // exit does not wait out a retry pause
         _ = mcp_boot.joinPending(reg);
+        if (reg.retry_abort) |event| reg.gpa.destroy(event);
+        reg.retry_abort = null;
         const budget: mcp_teardown.Budget = .init(reg.io, mcp_teardown.teardown_grace);
         for (reg.servers) |server| deinitServer(server, reg.io, budget);
         for (reg.task_arenas) |*ta| ta.deinit();
