@@ -456,8 +456,8 @@ test "router discovery replaces only its provider slice" {
     try std.testing.expect(pricing.providerModelInTable("codex", "gpt-6-sol"));
 }
 
-test "startup catalog loads fan out with Kimi under one bounded wait" {
-    const src = @embedFile("router_catalog.zig");
+test "startup catalog loads detach a cold cache and batch only what --model needs" {
+    const src = @embedFile("router_catalog_boot.zig");
     const start = std.mem.indexOf(u8, src, "pub fn ensureForStartup") orelse return error.TestUnexpectedResult;
     const end = std.mem.indexOfPos(u8, src, start, "\nfn startSpec") orelse return error.TestUnexpectedResult;
     const body = src[start..end];
@@ -465,7 +465,9 @@ test "startup catalog loads fan out with Kimi under one bounded wait" {
     try std.testing.expect(std.mem.indexOf(u8, body, "startKimi(io, &batch") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "batch.wait(io, catalog_bounded.startup_budget)") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, ".await(io)") == null);
-    try std.testing.expect(std.mem.indexOf(u8, src, "if (alwaysLive(spec)) catalog_bounded.detach(job") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "if (rc.alwaysLive(spec)) catalog_bounded.detach(job") != null);
+    // ADR 0340: only a --model the baked rows cannot resolve joins the batch.
+    try std.testing.expect(std.mem.indexOf(u8, src, "if (needsLiveRows(spec.id, model_flag)) return batch.spawn(job") != null);
 }
 
 // ── provider.zig routing tests parked here under its 600-line ceiling ──────

@@ -2,7 +2,9 @@
 //!
 //! Workspace router cache: `.graff/.config.router`. Boot activates any disk
 //! cache now (fresh, or stale and refreshed behind it; xAI always refreshes)
-//! and waits at most `catalog_bounded.startup_budget` only when there is none.
+//! and never waits on a live GET to show the prompt: a provider with no cache
+//! boots on its baked rows and its list activates when the fetch lands
+//! (`router_catalog_boot.zig`, ADR 0340).
 //! `/models` is the blocking freshness moment. Catalog failures never prevent
 //! startup. Baked pricing.zig rows are offline fallback.
 
@@ -14,12 +16,10 @@ const Value = std.json.Value;
 const root = @import("main.zig");
 const catalog_selection = @import("catalog_selection.zig");
 const credential_store = @import("credential_store.zig");
-const catalog_bounded = @import("catalog_bounded.zig");
 const kimi_catalog = @import("kimi_catalog.zig");
 const pricing = @import("pricing.zig");
 const pricing_db = @import("pricing_db.zig"); // #557: LiteLLM price/context overlay, hydrated on the same beats as these catalogs
 const provider = @import("provider.zig");
-const serde = @import("serde.zig");
 const util = @import("util.zig");
 const buffered_http = @import("http2_buffered.zig");
 const failures = @import("catalog_failures.zig");
@@ -27,8 +27,8 @@ const failures = @import("catalog_failures.zig");
 /// Router catalogs change on the order of weeks; favour instant startup.
 const cache_ttl_ms: i64 = 6 * 60 * 60 * 1000;
 const catalog_page_limit = 16 * 1024 * 1024; // Full provider lists may be much larger than the picker response.
-var attempted: [provider.provider_specs.len]bool = @splat(false);
-var additional_attempted = false;
+pub var attempted: [provider.provider_specs.len]bool = @splat(false);
+pub var additional_attempted = false;
 
 /// xAI refreshes behind even a fresh cache; `/models` still blocks.
 pub fn alwaysLive(spec: provider.ProviderSpec) bool {
@@ -57,7 +57,7 @@ pub const Snapshot = struct {
     page_token: ?[]const u8 = null,
 };
 
-fn isAdditional(spec: provider.ProviderSpec) bool {
+pub fn isAdditional(spec: provider.ProviderSpec) bool {
     return if (provider.additional_router) |configured|
         std.mem.eql(u8, configured.id, spec.id)
     else
@@ -445,83 +445,15 @@ fn finishFetch(io: Io, arena: Allocator, home: []const u8, outcome: FetchOutcome
         _ = activate(arena, outcome.spec, snapshot.models);
 }
 
-fn cacheFresh(io: Io, arena: Allocator, home: []const u8, spec: provider.ProviderSpec) bool {
+pub fn cacheFresh(io: Io, arena: Allocator, home: []const u8, spec: provider.ProviderSpec) bool {
     const snapshot = cachedSnapshot(io, arena, home, spec) orelse return false;
     if (alwaysLive(spec)) return activate(arena, spec, snapshot.models);
     const age = util.unixMs(io) - snapshot.fetched_at_ms;
     return age >= 0 and age <= cache_ttl_ms and activate(arena, spec, snapshot.models);
 }
 
-/// Kimi's account catalog: any cache activates now (a stale one refreshes
-/// behind it); with none, a live fetch joins the boot batch. Returns its slot.
-fn startKimi(io: Io, batch: *catalog_bounded.Batch, arena: Allocator, home: []const u8, keys: provider.Keys, model_flag: ?[]const u8, saved: ?serde.SavedModel) ?usize {
-    if (!catalog_selection.startupMayUse(keys, "kimi", model_flag, saved)) return null;
-    if (!kimi_catalog.claimAttempt()) return null;
-    const access = keys.get("kimi") orelse "";
-    if (access.len == 0) {
-        kimi_catalog.commit(arena, &.{}, "baked fallback — no Kimi login");
-        return null;
-    }
-    const cache = kimi_catalog.cached(io, arena, home) orelse return batch.spawn(.kimi, home, access);
-    kimi_catalog.commit(arena, cache.rows, "cached account catalog");
-    if (!cache.fresh) catalog_bounded.detach(.kimi, home, access);
-    return null;
-}
-
-/// Startup catalog load. Never waits on a host that already has a disk
-/// cache: fresh caches activate as they are, stale ones activate and refresh
-/// behind. Hosts with no cache fetch concurrently under one budget, so boot
-/// pays at most `startup_budget` however slow DNS or TLS is; a fetch that
-/// misses it still caches its list for the next process.
-pub fn ensureForStartup(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys, model_flag: ?[]const u8, saved: ?serde.SavedModel, worker_hint: ?[]const u8) void {
-    _ = gpa;
-    var batch: catalog_bounded.Batch = .{};
-    const kimi_slot = startKimi(io, &batch, arena, home, keys, model_flag, saved);
-    var slots: [provider.provider_specs.len + 1]?usize = @splat(null);
-    for (provider.provider_specs, 0..) |spec, index| {
-        if (!dynamic(spec) or !catalog_selection.startupLoads(keys, spec.id, model_flag, saved, worker_hint)) continue;
-        if (attempted[index]) continue;
-        const key = keys.get(spec.id) orelse continue;
-        if (key.len == 0) continue;
-        attempted[index] = true;
-        slots[index] = startSpec(io, &batch, arena, home, spec, key, keys.source(spec.id));
-    }
-    if (provider.additional_router) |spec| {
-        if (catalog_selection.startupLoads(keys, spec.id, model_flag, saved, worker_hint) and !additional_attempted) {
-            if (keys.get(spec.id)) |key| if (key.len != 0) {
-                additional_attempted = true;
-                slots[provider.provider_specs.len] = startSpec(io, &batch, arena, home, spec, key, keys.source(spec.id));
-            };
-        }
-    }
-    if (batch.len == 0) return;
-    batch.wait(io, catalog_bounded.startup_budget);
-    if (batch.fetched(kimi_slot)) {
-        if (kimi_catalog.cached(io, arena, home)) |fresh| kimi_catalog.commit(arena, fresh.rows, "live account catalog");
-    } else if (kimi_slot != null) kimi_catalog.commit(arena, &.{}, "baked fallback — live catalog still loading");
-    for (provider.provider_specs, 0..) |spec, index|
-        if (batch.fetched(slots[index])) {
-            _ = activateCached(io, arena, home, spec);
-        };
-    if (provider.additional_router) |spec| if (batch.fetched(slots[provider.provider_specs.len])) {
-        _ = activateCached(io, arena, home, spec);
-    };
-}
-
-fn startSpec(io: Io, batch: *catalog_bounded.Batch, arena: Allocator, home: []const u8, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource) ?usize {
-    const job: catalog_bounded.Job = .{ .router = .{ .spec = spec, .source = source } };
-    // The workspace router caches under `.graff`, not home.
-    const cache_home = if (isAdditional(spec)) "." else home;
-    if (cacheFresh(io, arena, home, spec)) {
-        if (alwaysLive(spec)) catalog_bounded.detach(job, cache_home, key);
-        return null;
-    }
-    if (activateCached(io, arena, home, spec)) {
-        catalog_bounded.detach(job, cache_home, key);
-        return null;
-    }
-    return batch.spawn(job, cache_home, key);
-}
+/// Startup catalog load; it lives in `router_catalog_boot.zig`.
+pub const ensureForStartup = @import("router_catalog_boot.zig").ensureForStartup;
 
 /// An explicit /models listing is the freshness moment: hit every keyed
 /// dynamic provider live, concurrently (startup's own fan-out), bypassing
@@ -562,6 +494,7 @@ pub fn refreshForListing(io: Io, gpa: Allocator, arena: Allocator, home: []const
 pub fn ensureForQuery(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys, query: []const u8) void {
     // Cache/override only: this runs at boot too, and no model surface is worth
     // a 2 MB GET on the hot path. refreshForListing is the online arm.
+    @import("router_catalog_boot.zig").activateLanded(io, arena, home);
     pricing_db.ensure(io, gpa, arena, home, false);
     for (provider.provider_specs, 0..) |spec, index| {
         if (!dynamic(spec) or !catalog_selection.queryMayUse(spec.id, query)) continue;
