@@ -66,7 +66,7 @@ pub fn run(ctx: *Ctx) !void {
     // --json, serve and piped stdin have no idle wake: a turn waits for its background work.
     @import("run_idle.zig").enabled = !ctx.interactive;
     defer @import("run_idle.zig").enabled = false;
-    if (main_mod.json_mode) json_inbox.start(ctx.gpa, ctx.io, ctx.in);
+    if (main_mod.json_mode) try json_inbox.start(ctx.gpa, ctx.io, ctx.in);
     defer if (main_mod.json_mode) json_inbox.stop();
     var title_jobs: mainloop_title.Jobs = .{};
     defer title_jobs.deinit(ctx);

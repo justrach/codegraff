@@ -26,7 +26,7 @@ var queued_cancel = false;
 var reply_cancel_epoch: u64 = 0;
 var future: ?Io.Future(void) = null;
 
-pub fn start(gpa: Allocator, io: Io, reader: *Io.Reader) void {
+pub fn start(gpa: Allocator, io: Io, reader: *Io.Reader) Io.ConcurrentError!void {
     std.debug.assert(inbox_io == null);
     inbox_io = io;
     inbox_gpa = gpa;
@@ -38,7 +38,15 @@ pub fn start(gpa: Allocator, io: Io, reader: *Io.Reader) void {
     queued_cancel = false;
     turn_active.store(false, .release);
     turn_pending.store(false, .release);
-    future = io.async(readerTask, .{});
+    // The pump waits for the next input even after queuing a complete record.
+    // async may run inline when its worker budget is full, preventing mainloop
+    // from handling that record (or answering a control request) indefinitely.
+    future = io.concurrent(readerTask, .{}) catch |err| {
+        inbox_io = null;
+        inbox_gpa = null;
+        inbox_reader = null;
+        return err;
+    };
 }
 
 pub fn stop() void {
@@ -197,4 +205,41 @@ test "cancel classification is exact" {
     try std.testing.expect(isCancel(std.testing.allocator, "{\"type\":\"cancel\"}"));
     try std.testing.expect(!isCancel(std.testing.allocator, "{\"type\":\"user\",\"text\":\"cancel\"}"));
     try std.testing.expect(!isCancel(std.testing.allocator, "not json"));
+}
+
+test "JSON inbox reader never runs inline when async workers are exhausted" {
+    var threaded = Io.Threaded.init(std.testing.allocator, .{ .async_limit = .nothing });
+    defer threaded.deinit();
+    const io = threaded.io();
+    const Probe = struct {
+        interface: Io.Reader = .{ .vtable = &.{ .stream = stream }, .buffer = &.{}, .seek = 0, .end = 0 },
+        thread: ?std.Thread.Id = null,
+
+        fn stream(r: *Io.Reader, _: *Io.Writer, _: Io.Limit) Io.Reader.StreamError!usize {
+            const self: *@This() = @alignCast(@fieldParentPtr("interface", r));
+            self.thread = std.Thread.getCurrentId();
+            return error.EndOfStream;
+        }
+    };
+    var probe: Probe = .{};
+    var buffer: [1]u8 = undefined;
+    probe.interface.buffer = &buffer;
+    try start(std.testing.allocator, io, &probe.interface);
+    defer stop();
+    if (future) |*f| f.await(io);
+    try std.testing.expect(probe.thread != null);
+    try std.testing.expect(probe.thread.? != std.Thread.getCurrentId());
+}
+
+test "JSON inbox unavailable concurrency leaves startup retryable" {
+    var reader: Io.Reader = .fixed("{\"type\":\"set_mode\",\"mode\":\"normal\"}\n");
+    const no_concurrency = Io.Threaded.global_single_threaded.io();
+    try std.testing.expectError(error.ConcurrencyUnavailable, start(std.testing.allocator, no_concurrency, &reader));
+    try std.testing.expect(inbox_io == null and inbox_gpa == null and inbox_reader == null);
+    try std.testing.expect(future == null);
+    try start(std.testing.allocator, std.testing.io, &reader);
+    defer stop();
+    const line = (try request(std.testing.allocator, &reader)).?;
+    defer std.testing.allocator.free(line);
+    try std.testing.expectEqualStrings("{\"type\":\"set_mode\",\"mode\":\"normal\"}", line);
 }
