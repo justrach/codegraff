@@ -109,6 +109,18 @@ pub fn parse(arena: Allocator, data: []const u8) (Error || Allocator.Error)!prov
     };
 }
 
+/// The router's strings, copied out of the session arena. A catalog fetch for
+/// it runs on a detached worker (ADR 0340) that can still be reading its id
+/// and URL after `main` frees that arena on the way out; these few bytes are
+/// never freed, so the worker reads valid memory until the process ends.
+fn outliveSession(spec: provider.ProviderSpec) Allocator.Error!provider.ProviderSpec {
+    const process = std.heap.smp_allocator;
+    var out = spec;
+    inline for (.{ "id", "display_name", "url", "env_key", "default_model", "models_url" }) |field|
+        @field(out, field) = try process.dupe(u8, @field(spec, field));
+    return out;
+}
+
 /// Load the optional project router. A missing file is normal; malformed
 /// configuration is returned so startup can explain it instead of ignoring it.
 pub fn load(io: Io, arena: Allocator) !void {
@@ -119,7 +131,7 @@ pub fn load(io: Io, arena: Allocator) !void {
         },
         else => return err,
     };
-    const spec = try parse(arena, data);
+    const spec = try outliveSession(try parse(arena, data));
     provider.additional_router = spec;
     const fallback = [_]pricing.ModelInfo{.{
         .provider = spec.id,
@@ -165,4 +177,16 @@ test "parse rejects collisions and malformed router fields" {
     try std.testing.expectError(error.InlineSecret, parse(allocator,
         \\{"id":"custom","base_url":"https://example.com/v1","env_key":"KEY","default_model":"m","api_key":"secret"}
     ));
+}
+
+test "the router's strings outlive the session arena a detached catalog worker may outlast" {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    const spec = try outliveSession(try parse(state.allocator(),
+        \\{"id": "myrouter", "base_url": "https://router.example.com/v1", "env_key": "MYROUTER_API_KEY", "default_model": "m"}
+    ));
+    state.deinit(); // the testing allocator poisons what it frees
+    try std.testing.expectEqualStrings("myrouter", spec.id);
+    try std.testing.expectEqualStrings("https://router.example.com/v1/models", spec.models_url);
+    try std.testing.expectEqualStrings("https://router.example.com/v1/chat/completions", spec.url);
+    try std.testing.expectEqualStrings("MYROUTER_API_KEY", spec.env_key);
 }

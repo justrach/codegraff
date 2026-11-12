@@ -12,6 +12,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const args = @import("args.zig");
+const boot_prewarm = @import("boot_prewarm.zig");
 const engine_events = @import("engine_events.zig");
 const engine_sink = @import("engine_sink.zig");
 const mcp = @import("mcp.zig");
@@ -55,6 +56,17 @@ fn interactive(flags: args.Flags, json_mode: bool) bool {
     return !json_mode and flags.oneshot_prompt == null;
 }
 
+/// The notice lands on stderr. The sink branch needs `GRAFF_REPL_DEBUG` and an
+/// interactive session, and every interactive session is `background`
+/// (`deferCompanion`), so the callers that reach the lines below — `-p` and
+/// `--json` — have `speak` false and a stdout that is the answer. stderr is
+/// free, and a companion that missed the budget or failed must not be
+/// indistinguishable from one that connected (ADR 0339).
+fn notice(io: Io, speak: bool, sink: anytype, arena: Allocator, comptime fmt: []const u8, params: anytype) !void {
+    const text = try std.fmt.allocPrint(arena, fmt, params);
+    if (speak) sink.emit(io, dimNotice(text)) else std.debug.print("{s}\n", .{text});
+}
+
 /// Spawn the first PATH-installed companion that is not already connected
 /// or queued. An interactive session queues a background handshake (ADR 0230);
 /// every other path still `addServer`s on this thread.
@@ -62,6 +74,7 @@ pub fn connectCompanion(io: Io, arena: Allocator, registry: *mcp.Registry, flags
     const sink = engine_sink.writerSink(out);
     const speak = interactive(flags, json_mode) and environ_map.get("GRAFF_REPL_DEBUG") != null;
     const background = deferCompanion(flags, json_mode);
+    defer boot_prewarm.discard(io); // a prewarm this call did not adopt is stopped here
     connect: {
         for (skills.companion_servers) |c| {
             if (mcp_boot.alreadyStarting(registry, c.server)) break :connect;
@@ -75,10 +88,14 @@ pub fn connectCompanion(io: Io, arena: Allocator, registry: *mcp.Registry, flags
                 break;
             }
             if (speak) sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "companion: connecting {s}...", .{c.bin})));
-            if (registry.addServer(c.server, c.bin, &.{"--mcp"})) |_| {
+            if (boot_prewarm.connect(registry, c.server, c.bin, &.{"--mcp"})) |adopted| {
+                // `.late`: over the boot budget, so this is a hand-off and
+                // not a catalog. Never let it pass as a connect — say it, on
+                // `-p` too, where nothing else would (ADR 0339).
+                if (adopted == .late) try notice(io, speak, &sink, arena, "companion: {s} still connecting after the boot budget — its tools appear when it lands", .{c.bin});
                 break;
             } else |err| {
-                if (speak) sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "[mcp:{s}] auto-connect failed ({t}) — native tools only", .{ c.server, err })));
+                try notice(io, speak, &sink, arena, "[mcp:{s}] auto-connect failed ({t}) — native tools only", .{ c.server, err });
             }
         }
     }

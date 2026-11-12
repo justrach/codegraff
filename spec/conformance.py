@@ -68,6 +68,8 @@ from ref.bash_policy import check_properties as bash_check_properties
 from ref.bash_policy import payload as bash_model_payload
 from ref.structured_output import check_properties as sox_check_properties
 from ref.structured_output import payload as sox_model_payload
+from ref.acp_early_init import check_properties as early_check_properties
+from ref.acp_early_init import payload as early_payload
 
 ROOT = Path(__file__).resolve().parent
 KERNELS = ROOT / "kernels"
@@ -82,6 +84,7 @@ BASH_FIXTURE = KERNELS / "bash_policy.json"
 SOX_FIXTURE = KERNELS / "structured_output.json"
 CACHE_FIXTURE = KERNELS / "prompt_cache.json"
 PREFIX_FIXTURE = KERNELS / "prompt_prefix.json"
+EARLY_FIXTURE = KERNELS / "acp_early_init.json"
 LEAN_DIR = ROOT.parent / "lean-proofs"
 
 
@@ -388,6 +391,7 @@ def check_bash() -> int: return _ref(bash_check_properties, "bash")
 
 
 def check_sox() -> int: return _ref(sox_check_properties, "sox")
+def check_early() -> int: return _ref(early_check_properties, "acp_early_init")
 
 
 def prefixes_first(p: str) -> list[str]:
@@ -420,6 +424,7 @@ def export() -> list[Path]:
         _write(CACHE_FIXTURE, cache_payload()),
         write_cache_md(KERNELS / "prompt_cache.md"),
         _write(PREFIX_FIXTURE, prefix_payload()),
+        _write(EARLY_FIXTURE, early_payload()),
         write_prefix_md(KERNELS / "prompt_prefix.md"),
         _write(KERNELS / "prompt_stable.json", __import__("ref.prompt_stable", fromlist=["payload"]).payload()),
         __import__("ref.prompt_stable", fromlist=["write_kernel_md"]).write_kernel_md(KERNELS / "prompt_stable.md"),
@@ -445,6 +450,7 @@ def check_fixtures() -> None:
     _same(SOX_FIXTURE, sox_model_payload(), "structured_output")
     _same(CACHE_FIXTURE, cache_payload(), "prompt_cache")
     _same(PREFIX_FIXTURE, prefix_payload(), "prompt_prefix")
+    _same(EARLY_FIXTURE, early_payload(), "acp_early_init")
     from ref.prompt_stable import payload as stable_payload, kernel_md as stable_kernel_md
     _same(KERNELS / "prompt_stable.json", stable_payload(), "prompt_stable")
     from ref.goal_loop import kernel_md
@@ -558,17 +564,18 @@ def main() -> int:
         n_sc = check_score()
         n_ba = check_bash()
         n_sx = check_sox()
+        n_ae = check_early()
         if args.export:
             paths = export()
             rel = ", ".join(p.relative_to(ROOT.parent).as_posix() for p in paths)
-            print(f"exported catalog={n_cat} transport={n_tr} provider={n_pr} goal={n_gl} cache={n_ck} prefix={n_px} stable={n_ps} path={n_pc} shape={n_sh} score={n_sc} bash={n_ba} sox={n_sx} → {rel}")
+            print(f"exported catalog={n_cat} transport={n_tr} provider={n_pr} goal={n_gl} cache={n_ck} prefix={n_px} stable={n_ps} path={n_pc} shape={n_sh} score={n_sc} bash={n_ba} sox={n_sx} acp_early={n_ae} → {rel}")
         else:
             check_fixtures()
             print(
                 f"ok  tool_catalog {n_cat}  transport {n_tr} (1 ws)  "
                 f"provider {n_pr}  goal_loop {n_gl}  prompt_cache {n_ck}  prompt_prefix {n_px}  prompt_stable {n_ps}  path_confine {n_pc}  "
                 f"shape {n_sh}  score {n_sc}  bash {n_ba}  "
-                f"structured_output {n_sx}"
+                f"structured_output {n_sx}  acp_early_init {n_ae}"
             )
         if args.lean:
             try_lean()

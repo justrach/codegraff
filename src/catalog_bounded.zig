@@ -21,8 +21,9 @@ const Io = std.Io;
 
 const provider = @import("provider.zig");
 
-/// Boot waits this long for catalogs with no disk cache at all. A cached
-/// catalog, fresh or stale, never waits: it activates now and refreshes behind.
+/// Boot waits this long for a catalog with no disk cache only when its own
+/// `--model` names a row the baked table lacks (ADR 0340); any other boot,
+/// and any cached catalog, never waits: the fetch lands behind the prompt.
 pub const startup_budget: Io.Duration = .fromMilliseconds(800);
 
 pub const Job = union(enum) {
@@ -67,6 +68,8 @@ const Task = struct {
             .router => |r| @import("router_catalog.zig").fetchToCache(io, alloc, t.home, r.spec, t.key, r.source),
             .kimi => @import("kimi_catalog.zig").fetchToCache(io, alloc, t.home, t.key),
         };
+        // A cold boot's detached fetch is activated by the main thread later.
+        @import("catalog_landing.zig").settle(t.job, t.ok);
         // The waiter gave up: nobody else will free this task.
         if (t.state.cmpxchgStrong(running, finished, .acq_rel, .acquire) != null) t.destroy();
     }
@@ -77,7 +80,7 @@ const Task = struct {
 /// outlives the Io around it, so its restore can reinstate the default action
 /// another Io had replaced, and that Io's next cancellation SIGIO kills the
 /// process. The worker leaves the no-op handler installed instead.
-fn privateThreaded() Io.Threaded {
+pub fn privateThreaded() Io.Threaded {
     var threaded: Io.Threaded = .init(alloc, .{});
     threaded.have_signal_handler = false;
     return threaded;

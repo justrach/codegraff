@@ -124,7 +124,7 @@ test {
     _ = @import("obs_cost_test.zig");
     _ = @import("external_tui.zig");
     _ = provider_mod;
-    _ = .{ @import("named_work.zig"), @import("task_intent.zig") };
+    _ = .{ @import("named_work.zig"), @import("task_intent.zig"), @import("update_check_cache.zig") };
 }
 const prompts = @import("prompts.zig");
 const schema = @import("schema.zig");
@@ -247,7 +247,7 @@ const session_run = @import("session_run.zig");
 pub fn main(init: std.process.Init) !void {
     if ((comptime @import("build_options").acp) and init.environ_map.get("GRAFF_AGENT_OBSERVER") != null) return @import("acp_agents.zig").run(init);
     if (try @import("external_tui.zig").maybeRun(init)) return;
-    var boot = startup_timing.Tracker.init(startup_timing.shutdown_trace.arm(init.io, init.environ_map), init.environ_map.get("GRAFF_BOOT_DEBUG") != null); // #364: arm() passes io through, so the teardown below stamps phases without a line of its own
+    var boot: @import("acp_early.zig").Boot = .{ .inner = startup_timing.Tracker.init(startup_timing.shutdown_trace.arm(init.io, init.environ_map), init.environ_map.get("GRAFF_BOOT_DEBUG") != null) }; // #364: arm() passes io through, so the teardown below stamps phases without a line of its own; every mark is also an ACP early-initialize check
     const gpa = init.gpa;
     const io = init.io;
     defer @import("session_writer.zig").stop();
@@ -278,16 +278,14 @@ pub fn main(init: std.process.Init) !void {
     learning_privacy.init(flags.learning_privacy_flag, init.environ_map.get("GRAFF_LEARNING_PRIVACY"));
     var invocation_budget: run_budget_mod.RunBudget = .{ .max_model_calls = max_model_calls, .max_tool_calls = run_budget_mod.cli_max_tool_calls };
     boot.mark(init.io, "args");
-    // GRAFF_CODEX_URL: override the codex responses endpoint (localhost mocks / integration tests). Parsed BEFORE subcommand dispatch and
-    // resolveKeys — `graff models [refresh]` fetches the catalog inside runSubcommand and the initial Keys.build runs inside resolveKeys.
-    // environ_map slices are process-lifetime (resolveKeys stores them into Keys the same way), so the value is kept as-is without duping.
+    // GRAFF_CODEX_URL: codex endpoint override (localhost mocks), set BEFORE runSubcommand (`graff models [refresh]`) and resolveKeys (the
+    // initial Keys.build). environ_map slices are process-lifetime (resolveKeys stores them into Keys the same way): kept without duping.
     if (init.environ_map.get("GRAFF_CODEX_URL")) |cu| {
         if (cu.len > 0) provider_mod.g_codex_url_override = cu;
     }
     // --help / --version: handled before any subcommand dispatch, so `harness login --help` prints usage instead of starting an OAuth flow.
     if (try startup.runSubcommand(io, gpa, arena, init, flags)) return;
-    // Credential/model resolution (env vars → on-disk logins → `harness key set` store, env always wins; then --model or the last-saved model) lives
-    // in startup.zig as resolveKeys() — pure over env/disk/arena, safe to call outside main()'s own stack frame.
+    // Credentials/model (env > on-disk logins > `harness key set` store; then --model or the last-saved model): startup.zig resolveKeys().
     const resolved_keys = (try startup.resolveKeysOrRunAcpPreAuth(io, gpa, arena, init, flags)) orelse return;
     boot.mark(io, "credentials/model");
     var keys = resolved_keys.keys;
@@ -301,13 +299,11 @@ pub fn main(init: std.process.Init) !void {
     defer client_runtime.deinit(startup_timing.shutdown_trace.at(io, "ca-warm-await"));
     const client = &client_runtime.client;
     boot.mark(io, "CA warm scheduled");
-    var stdin_buf: [64 * 1024]u8 = undefined;
-    var stdin_reader = Io.File.stdin().reader(io, &stdin_buf);
-    const in = &stdin_reader.interface;
     var stdout_buf: [4096]u8 = undefined;
     var stdout_writer = Io.File.stdout().writer(io, &stdout_buf);
     const out = &stdout_writer.interface;
     g_out = out;
+    const in = @import("acp_early.zig").arm(io, gpa, out, flags.positionals.items); // the one stdin reader; ACP may answer `initialize` from it before the root exists
     if (try session_start.runTitleCommand(io, gpa, arena, client, default_provider, out, flags, &invocation_budget)) return;
     // Generate identity before opening either JSONL. The score channel and both
     // files share this run id; session_id is a separate runtime correlation id.
@@ -321,6 +317,8 @@ pub fn main(init: std.process.Init) !void {
     const run_trace_path = try trace.tracePath(arena, identity.run_id);
     const run_trajectory_path = try trace.trajectoryPath(arena, identity.run_id);
     try session_start.setupWorktreeAndBanner(io, gpa, arena, init.environ_map, flags, out, run_trace_path, codex_account, stale_saved_model, preferred_provider, default_provider);
+    @import("boot_prewarm.zig").startCompanion(io, gpa, init.environ_map, flags); // -p: overlap the companion handshake with the rest of boot (ADR 0337)
+    defer @import("boot_prewarm.zig").discard(io); // no-op once adopted; any return before the registry's teardown stops it
     session_start.loadScoreSigningKey(io, arena, init.environ_map);
     boot.mark(io, "banner");
     // Session trace (best-effort: a failed open just disables tracing).
@@ -561,13 +559,14 @@ const exec = @import("exec.zig");
 test { // ── Unit tests (`zig build test`): pull in tests from imported modules (mcp.zig)
     _ = .{ @import("beta_feed.zig"), @import("jev_tool.zig"), @import("jev_model_scope.zig"), @import("jev_provider_switch_tests.zig"), @import("jev_effort_state.zig"), @import("gemini_turns.zig"), @import("gemini_turns_tests.zig") };
     _ = .{ @import("mcp_apps.zig"), @import("html_view.zig"), @import("usage_trace.zig"), @import("providers_confirmation_tests.zig"), @import("repl_model_confirmation_tests.zig"), @import("repl_model_pick_tests.zig"), @import("engine_sink_citation_tests.zig"), @import("cite_markup_stream_tests.zig"), @import("oneshot_citation_tests.zig"), @import("acp_permission.zig"), @import("acp_usage.zig"), @import("context_savings.zig"), @import("session_snapshot.zig"), @import("session_store.zig"), @import("session_delta_tests.zig") };
+    _ = .{ @import("router_catalog_boot.zig"), @import("router_catalog_boot_tests.zig") }; // ADR 0340: a cold catalog cache never holds boot
     _ = .{ @import("mcp_server_tests.zig"), @import("main_test.zig"), @import("artifact_claim_command.zig"), @import("artifact_claim_tests.zig"), @import("escalation_scope.zig"), @import("peer_scope.zig"), @import("cli_path_hint.zig"), @import("run_budget.zig") };
     _ = .{ @import("session_catalog.zig"), @import("session_size_tests.zig"), @import("session_version.zig"), @import("session_version_tests.zig"), @import("session_prompt.zig"), @import("session_discovery.zig"), @import("session_workspaces.zig"), @import("commands_resume.zig"), @import("peer_live.zig"), @import("presence_tests.zig"), @import("presence_ack.zig"), @import("mcp_rpc_tests.zig") };
     _ = .{ @import("prompt_astra.zig"), @import("prompt_guidance.zig"), @import("oauth_chatgpt.zig"), @import("chatgpt_reauth.zig"), @import("oauth_anthropic.zig"), @import("anthropic_oauth_wire.zig"), @import("anthropic_login_tests.zig") };
     _ = .{ @import("agent_empty_completion.zig"), @import("agent_unfinished_bounce.zig"), @import("agent_length_cutoff.zig"), @import("agent_model_loop.zig"), @import("publication_policy_tests.zig"), @import("jobs_completion_tests.zig"), @import("headless_result.zig"), @import("oneshot.zig"), @import("agent_length.zig"), @import("agent_length_tests.zig") };
     _ = .{ @import("provider_routing_tests.zig"), @import("codegraff_messages_tests.zig"), @import("tool_result_empty_tests.zig"), @import("history_wire.zig"), @import("path_lookup.zig"), @import("agents_prepare.zig"), @import("catalog_price.zig"), @import("readline_paste_number_tests.zig"), @import("test_hooks.zig"), @import("peer_wake_loop.zig") };
     _ = .{ @import("list_dir_nearmiss.zig"), @import("tool_preview_tests.zig"), @import("stream_reconnect.zig"), @import("oauth_kimi.zig"), @import("signin_link.zig"), @import("followups.zig") };
-    _ = .{ @import("repo_map.zig"), @import("cli_text.zig") };
+    _ = .{ @import("repo_map.zig"), @import("cli_text.zig"), @import("boot_prewarm.zig") };
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests
     _ = @import("agent_gateway_retry.zig"); // #1019: flake vs overflow classification must stay reachable
     _ = .{ @import("agent_responses.zig"), @import("compaction_checkpoint_tests.zig"), @import("agent_context_meter_tests.zig") }; // Responses failures, checkpoint recovery, and context accounting
@@ -591,9 +590,9 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = .{ @import("presence_accord.zig"), @import("peer_idle.zig"), @import("acp_idle.zig"), @import("presence_chan.zig"), @import("presence_record.zig"), @import("daddy.zig"), @import("peer_inbox_content_test.zig"), @import("peer_inbox_failure_test.zig"), @import("peer_inbox_storage_test.zig"), @import("peer_inbox_sequence_test.zig"), @import("peer_inbox_snapshot_test.zig") };
     _ = .{ @import("acp_agents.zig"), @import("repo_context_tests.zig"), @import("session_select.zig") };
     _ = .{ @import("subagent_activity.zig"), @import("subagent_steer.zig"), @import("subagent_interactive.zig"), @import("subagent_recovery.zig"), @import("subagent_retained.zig"), @import("subagent_history.zig"), @import("subagent_history_copy.zig"), @import("subagent_history_tests.zig"), @import("subagent_run_tests.zig"), @import("workflow_synthesis.zig") };
-    _ = .{ @import("acp_agent_activity.zig"), @import("acp_subagent_live.zig"), @import("acp_line_writer.zig") };
+    _ = .{ @import("acp_agent_activity.zig"), @import("acp_subagent_live.zig"), @import("acp_line_writer.zig"), @import("acp_early.zig") };
     _ = .{ @import("acp_replay.zig"), @import("python_version.zig"), @import("jev_auto.zig"), @import("background_wait.zig"), @import("gateway_compact_tests.zig") };
     _ = @import("read_image.zig");
     _ = @import("image_orient.zig");
-    _ = .{ @import("mcp_interop_tests.zig"), @import("mcp_inbound.zig"), @import("mcp_names.zig"), @import("workspace_history.zig"), @import("workspace_tree_snap.zig"), @import("file_worktree.zig"), @import("review_deadline.zig"), @import("issue_cmd.zig"), @import("shell_tool.zig"), @import("acp_ask.zig"), @import("side_steer.zig"), @import("task_workspace_tests.zig"), @import("workspace_prepare_tests.zig"), @import("worktree_reap.zig") };
+    _ = .{ @import("mcp_interop_tests.zig"), @import("mcp_inbound.zig"), @import("mcp_names.zig"), @import("workspace_history.zig"), @import("workspace_tree_snap.zig"), @import("file_worktree.zig"), @import("review_deadline.zig"), @import("issue_cmd.zig"), @import("shell_tool.zig"), @import("acp_ask.zig"), @import("side_steer.zig"), @import("task_workspace_tests.zig"), @import("workspace_prepare_tests.zig"), @import("worktree_reap.zig"), @import("git_dirs_tests.zig") };
 }

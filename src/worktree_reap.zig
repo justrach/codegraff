@@ -90,6 +90,16 @@ pub fn orphans(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8) usize 
     return removed;
 }
 
+/// Boot-time `orphans`: same result, but no git spawn when an in-process look
+/// at the worktree registrations proves there is nothing to prune or reap.
+pub fn orphansAtBoot(gpa: Allocator, io: Io, arena: Allocator, cwd: []const u8) usize {
+    const dir = if (cwd.len > 0) cwd else ".";
+    const wt_dir = if (std.mem.eql(u8, dir, ".")) ".graff/worktrees" else (std.fs.path.join(arena, &.{ dir, ".graff", "worktrees" }) catch return 0);
+    if ((Io.Dir.cwd().statFile(io, wt_dir, .{}) catch null) == null) return 0;
+    if (!@import("worktree_reap_gate.zig").mayHaveOrphans(io, arena, dir)) return 0;
+    return orphans(gpa, io, arena, dir);
+}
+
 /// After an agent task: drop stale registrations and dead session checkouts.
 /// Named task workspaces stay; this does not archive them.
 pub fn reapAfterTask(gpa: Allocator, io: Io) void {

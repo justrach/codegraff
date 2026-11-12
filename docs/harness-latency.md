@@ -98,3 +98,67 @@ JSON containers and escaped string lengths directly, retaining the standard
 serializer where its formatting is needed. This preserves byte counts and
 context policy while avoiding unnecessary formatting. See [ADR 0115](adr/0115-context-estimates-count-json-bytes.md).
 Compare both payload kinds and the tool-loop fixture when changing this path.
+
+`boot_prewarm` joins a one-shot's prewarmed companion handshake with a 250 ms
+budget (`GRAFF_MCP_COMPANION_BOOT_MS`, [ADR 0339](adr/0339-a-one-shot-joins-the-companion-handshake-with-a-budget.md))
+instead of awaiting it: a companion that spawns and never answers used to hold
+`c_first_request` for 20.1 s, and ends up with no companion tools either way.
+When the budget expires the attempt keeps running and merges into the registry
+when it lands, so a warm companion's catalog is unchanged and a cold-and-slow
+one can miss the first catalog. Measure it with `--companion` (a stub that
+answers) and a second run of a stub that does not.
+
+## Cold-start benchmark
+
+`scripts/bench-startup.py` times process startup, from spawn to each ready
+point. It is hermetic: every sample gets a fresh copy of a temporary HOME and
+an empty non-git cwd (`--git-repo` uses a one-commit repo with no remote).
+The child environment is scrubbed to `TMPDIR`, `TERM`, a minimal `PATH`
+(system dirs plus git; no `codedb-pro`/`muonry` unless `--companion`), and
+`GRAFF_NO_TELEMETRY`, `GRAFF_NO_UPDATE_CHECK`, `GRAFF_AUTO_ISOLATE=off`,
+`GRAFF_FLEET=off`, `GRAFF_NO_SMOLIFY`, `GRAFF_LEARN_AUTO=off` and `NO_COLOR`.
+`security` is a stub that answers "not found", so the Keychain is never read.
+The only network traffic is to the loopback mock on port 1234, the `lmstudio`
+provider's fixed URL (no environment override exists). The script waits up to
+120 s for the port to be free. Each sample sends its own `LMSTUDIO_API_KEY`
+token, so a POST from another client on that port is recognised by its bearer
+and the sample is retried (`env.foreign_retries` counts them).
+
+| Point | Ready when |
+|---|---|
+| `a_version`, `a_help` | `--version` / `--help` exits (n ≥ 100) |
+| `b_repl_ready` | the REPL loop is reached with stdin=/dev/null: the first `final-save` stamp. This needs `GRAFF_SHUTDOWN_DEBUG=1`, the only debug env in the timing pass |
+| `c_first_request` | `-p hi --model lmstudio`: the mock receives the first POST |
+| `d_acp_initialize` | `graff acp`: the `initialize` response line on stdout, "handshake answered". graff can answer it during boot, before a session can be created, so it is not "ready". `_nokey` is the pre-auth path |
+| `d_acp_session_usable` | `graff acp` with `initialize` and `session/new` written at spawn: the `session/new` response, "ACP session usable". This is the time a client waits before it can prompt |
+| `floor` | `/usr/bin/true` and a compiled C hello, timed the same way |
+
+```sh
+zig build graff -Doptimize=ReleaseSafe -Dlearn=false
+cp zig-out/bin/graff /tmp/graff-before        # immutable baseline
+python3 scripts/bench-startup.py --graff /tmp/graff-before --out /tmp/before.json
+# ...change, rebuild, then:
+python3 scripts/bench-startup.py --out /tmp/after.json --compare /tmp/before.json \
+  --budgets scripts/startup-budgets.json
+python3 scripts/bench-startup.py --load /tmp/after.json --compare /tmp/before.json
+```
+
+The default is 3 warm-up rounds and 30 timed rounds. Points are interleaved, with
+the order rotated each round, so drift is spread across all points. After the
+timing pass, a `GRAFF_BOOT_DEBUG=1` pass records median per-phase ms
+(`phases_ms`). A PATH-shim pass counts `git`, `security` and companion spawns
+(`spawns`, `spawn_detail`) and fails the run if git fetches or adds a worktree.
+Children are spawned with `os.posix_spawn`, so the timer adds about 1 ms of
+interpreter cost, compared with about 2.7 ms for `subprocess`. Subtract
+`floor.hello_ms.median` to get graff-only time; `--compare` prints this as
+`net`. The `--budgets` gates are median/floor ratios plus exact spawn counts,
+never absolute ms. `--env KEY=VALUE` adds knobs such as `GRAFF_NO_PLUGINS=1`.
+
+On macOS, git resolves through `xcrun` to the real binary. The `/usr/bin/git`
+shim costs 70–110 ms on its first call under each new HOME, and every sample has
+a new HOME. Run-to-run medians move by about 5–15% with host load, and the floor
+moves too, so compare `net` values and gate on ratios. For small deltas, run the
+baseline and candidate binaries back to back, several times, in alternating
+order. These numbers exclude user plugins, the companion handshake (unless
+`--companion`), the update check, auto-isolation, cold model catalogs and real
+Keychain latency. Each of those adds to startup on a real HOME.

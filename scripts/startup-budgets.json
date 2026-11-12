@@ -1,0 +1,40 @@
+{
+ "schema": 1,
+ "_about": "Gates for scripts/bench-startup.py --budgets. Time gates are median / floor median (floor = compiled C hello), not absolute ms, so a slower or busier machine scales both sides. Ratio maxima are about 2.5x the measured ratio so they hold under load; tighten them after an optimization lands. Spawn gates are exact counts from the PATH-shim pass and do not depend on load. 'target' is the planned value once further startup work lands; only 'max' is enforced.",
+ "floor": "hello_ms",
+ "ratio_over_floor": {
+  "_baseline": "Ratios before the startup work, hermetic, non-git cwd: a_version 1.6, a_help 1.5, b ready 10.3, c request 3.7, c wall 5.0, d response 10.2, d no-key 10.3. After in-process worktree identity and the early ACP initialize: b ready 3.8, b wall 4.2, d response 1.5 (1.4 / 3.0 / 3.4 with every core busy); --git-repo is similar. c and d no-key did not move in this benchmark.",
+  "a_version.wall_ms": {"max": 4},
+  "a_help.wall_ms": {"max": 4},
+  "b_repl_ready.ready_ms": {"max": 10},
+  "b_repl_ready.wall_ms": {"max": 11},
+  "c_first_request.request_ms": {"max": 10},
+  "c_first_request.wall_ms": {"max": 13},
+  "d_acp_initialize.response_ms": {"max": 5},
+  "d_acp_initialize_nokey.response_ms": {"max": 26},
+  "_d_acp_session_usable": "spawn to the session/new response written right after initialize: the session is usable. d_acp_initialize is only the handshake answered, which graff can send before the session exists. Ratio about 3.6-4.0 after the startup work (pre-series about 10.5).",
+  "d_acp_session_usable.response_ms": {"max": 9}
+ },
+ "spawns": {
+  "default": {
+   "_tighten": "REPL/ACP boot resolves the worktree identity in-process (git_dirs.zig) and spawns no git. Tighten security on the no-key path once there is a Keychain index.",
+   "a_version": {"git": 0, "security": 0},
+   "a_help": {"git": 0, "security": 0},
+   "b_repl_ready": {"git": 0, "security": 0},
+   "c_first_request": {"git": 0, "security": 0},
+   "d_acp_initialize": {"git": 0, "security": 0},
+   "d_acp_initialize_nokey": {"git": 0, "security": {"max": 26, "target": 0}},
+   "d_acp_session_usable": {"git": 0, "security": 0}
+  },
+  "git_repo": {
+   "_tighten": "Same as default: an ordinary one-commit repo is resolved in-process too (GRAFF_AUTO_ISOLATE=off is always set by the benchmark).",
+   "a_version": {"git": 0, "security": 0},
+   "a_help": {"git": 0, "security": 0},
+   "b_repl_ready": {"git": 0, "security": 0},
+   "c_first_request": {"git": 0, "security": 0},
+   "d_acp_initialize": {"git": 0, "security": 0},
+   "d_acp_initialize_nokey": {"git": 0, "security": {"max": 26, "target": 0}},
+   "d_acp_session_usable": {"git": 0, "security": 0}
+  }
+ }
+}

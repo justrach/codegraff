@@ -257,17 +257,22 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     var line_arena_state = std.heap.ArenaAllocator.init(gpa);
     defer line_arena_state.deinit();
     var handshake: @import("acp_handshake_log.zig").Log = .{ .process_started = @import("startup_timing.zig").g_started };
+    var replay_buf: [256]u8 = undefined;
+    var replay_sink: Io.Writer.Discarding = .init(&replay_buf);
     while (true) {
         defer @import("agent_request_scratch.zig").reset(&line_arena_state);
         const line_arena = line_arena_state.allocator();
-        const event = (inbox.wait(line_arena) catch break) orelse break;
+        // An `initialize` answered during boot runs through the same handler
+        // first, its response discarded, so `d` and the latches match (acp_early.zig).
+        const replay = @import("acp_early.zig").loopStart();
+        const event: @import("acp_inbox.zig").Inbox.Event = if (replay) |line| .{ .line = line } else (inbox.wait(line_arena) catch break) orelse break;
         switch (event) {
             .tick => @import("acp_idle.zig").maybeWake(&d, line_arena, wire, io, root.session_name) catch |err| {
                 std.debug.print("acp: idle wake failed: {t}\n", .{err});
             },
             .line => |line| {
                 const phase = handshake.before(io, line); // #1837
-                handleLine(&d, line_arena, wire, line) catch |err| {
+                handleLine(&d, line_arena, if (replay != null) &replay_sink.writer else wire, line) catch |err| {
                     std.debug.print("acp: dispatch failed: {t}\n", .{err});
                     break;
                 };

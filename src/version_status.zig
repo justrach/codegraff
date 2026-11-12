@@ -152,8 +152,12 @@ pub fn fetchLatestReleaseTag(io: Io, gpa: Allocator, arena: Allocator, running_v
     return if (tag == .string) tag.string else null;
 }
 
+/// Live check for the explicit commands (`graff update`, `/version`); the tag
+/// it sees also refreshes the banner's cache.
 pub fn checkLatest(io: Io, gpa: Allocator, arena: Allocator, running_version: []const u8) Check {
-    return compare(running_version, fetchLatestReleaseTag(io, gpa, arena, running_version));
+    const tag = fetchLatestReleaseTag(io, gpa, arena, running_version);
+    @import("update_check_cache.zig").remember(io, tag);
+    return compare(running_version, tag);
 }
 
 /// Leak-free tag extract for tests and the update service: copies into `buf`.

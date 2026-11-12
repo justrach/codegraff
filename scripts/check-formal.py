@@ -30,6 +30,15 @@ CASES = (
     ("Http2Leases.tla", "Http2Leases.cfg", None),
     ("Http2Leases.tla", "Http2LeasesRetainIdle.cfg", "IdleActiveDisjoint"),
     ("Http2Leases.tla", "Http2LeasesEarlyReuse.cfg", "OnlyEndedIdle"),
+    ("BootPrewarm.tla", "BootPrewarm.cfg", None),
+    ("BootPrewarm.tla", "BootPrewarmNoJoin.cfg", "JoinedBeforeUse"),
+    ("BootPrewarm.tla", "BootPrewarmNoCwdKey.cfg", "NoStaleAdoption"),
+    ("BootPrewarm.tla", "BootPrewarmNoTeardownJoin.cfg", "NoUseAfterTeardown"),
+    ("BootPrewarm.tla", "BootPrewarmNoRetryAbort.cfg", "NoRetryAfterAbort"),
+    ("BootPrewarm.tla", "BootPrewarmEarlyStart.cfg", "ExitClean"),
+    ("BootPrewarm.tla", "BootPrewarmNoWindowDiscard.cfg", "ExitClean"),
+    ("BootPrewarm.tla", "BootPrewarmNoStop.cfg", "NoExitStall"),
+    ("BootPrewarm.tla", "BootPrewarmRetryFailed.cfg", "NoRepeatAfterResult"),
 )
 
 
