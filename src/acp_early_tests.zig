@@ -237,24 +237,133 @@ test "acp_early: the pre-auth path still answers initialize like the engine with
     try engine.handlePreAuthLine(a, &pre.writer, line);
     var direct: Io.Writer.Allocating = .init(a);
     resetLatches();
-    early.respond(a, &direct.writer, line, false);
+    try testing.expect(early.respond(a, &direct.writer, line, false));
     try testing.expectEqualStrings(pre.writer.buffered(), direct.writer.buffered());
     var gated: Io.Writer.Allocating = .init(a);
     try engine.handlePreAuthLine(a, &gated.writer, "{\"id\":2,\"method\":\"session/new\"}");
     try testing.expect(std.mem.indexOf(u8, gated.writer.buffered(), "\"error\"") != null);
 }
 
-test "acp_early: step answers only a booting initialize and replays only an answered one" {
-    const states = [_]early.State{ .booting, .answered, .passed, .loop };
+test "acp_early: step answers only a booting initialize, takes it only once sent, replays only a taken one" {
     const lines = [_]early.Line{ .none, .incomplete, .initialize, .other };
-    for (states) |s| {
+    for (std.enums.values(early.State)) |s| {
         for ([_]bool{ false, true }) |acp| for (lines) |l| {
             const r = early.step(s, .{ .boundary = .{ .acp = acp, .line = l } });
             try testing.expectEqual(s == .booting and acp and l == .initialize, r.action == .answer);
-            try testing.expect(r.action != .replay);
+            try testing.expect(r.action != .replay and r.action != .take);
         };
+        for ([_]bool{ false, true }) |ok| {
+            const r = early.step(s, .{ .sent = ok });
+            try testing.expectEqual(s == .answering and ok, r.action == .take);
+            if (s == .answering and !ok) try testing.expectEqual(early.State.passed, r.next);
+        }
         const r = early.step(s, .loop_start);
         try testing.expectEqual(early.State.loop, r.next);
         try testing.expectEqual(s == .answered, r.action == .replay);
+    }
+}
+
+const init_line = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":1}}";
+
+test "acp_early: an allocation failure anywhere in the early answer leaves the request for the loop" {
+    defer resetLatches();
+    var fail_index: usize = 0;
+    while (true) : (fail_index += 1) {
+        resetLatches();
+        var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = fail_index });
+        var in: Io.Reader = .fixed(init_line ++ "\n");
+        var aw: Io.Writer.Allocating = .init(testing.allocator);
+        defer aw.deinit();
+        var e: early.Early = .{ .gpa = failing.allocator(), .in = &in, .out = &aw.writer, .acp = true };
+        if (e.boundary()) {
+            // Answered: one complete framed response, and only then consumed.
+            const out = aw.writer.buffered();
+            try testing.expect(std.mem.indexOf(u8, out, "\"id\":1,\"result\"") != null);
+            try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\n"));
+            try testing.expect(std.mem.endsWith(u8, out, "\n"));
+            try testing.expectEqual(@as(usize, 0), in.bufferedLen());
+            try testing.expectEqualStrings(init_line, e.loopStart().?);
+            try testing.expect(e.loopStart() == null);
+            if (!failing.has_induced_failure) break;
+        } else {
+            // Not answered: nothing written, the line still where the loop reads.
+            try testing.expectEqual(@as(usize, 0), aw.writer.buffered().len);
+            try testing.expectEqualStrings(init_line ++ "\n", in.buffered());
+            try testing.expect(e.loopStart() == null);
+        }
+    }
+}
+
+/// A transport that accepts `budget` bytes in total, then fails every write:
+/// budget 0 is a closed pipe, a small budget a write that dies mid-line.
+const Short = struct {
+    budget: usize,
+    sink: [4096]u8 = undefined,
+    len: usize = 0,
+    buf: [64]u8 = undefined,
+    writer: Io.Writer,
+
+    fn init(self: *Short, budget: usize) void {
+        self.* = .{ .budget = budget, .writer = .{ .vtable = &.{ .drain = drain }, .buffer = &self.buf } };
+    }
+
+    fn sent(self: *const Short) []const u8 {
+        return self.sink[0..self.len];
+    }
+
+    fn send(self: *Short, bytes: []const u8) Io.Writer.Error!void {
+        const take = @min(bytes.len, self.budget);
+        @memcpy(self.sink[self.len..][0..take], bytes[0..take]);
+        self.len += take;
+        self.budget -= take;
+        if (take < bytes.len) return error.WriteFailed;
+    }
+
+    fn drain(w: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
+        const self: *Short = @alignCast(@fieldParentPtr("writer", w));
+        try self.send(w.buffer[0..w.end]);
+        w.end = 0;
+        var n: usize = 0;
+        for (data[0 .. data.len - 1]) |part| {
+            try self.send(part);
+            n += part.len;
+        }
+        for (0..splat) |_| try self.send(data[data.len - 1]);
+        return n + data[data.len - 1].len * splat;
+    }
+};
+
+/// The late path on `w`: the loop dispatches the line, then flushes the wire.
+fn lateOn(w: *Io.Writer, line: []const u8) bool {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var d: engine.Dispatch = .{ .turn = noTurn, .ctx = undefined, .load_session = noLoad };
+    engine.implementation_version = @import("build_options").version;
+    engine.handleLine(&d, arena.allocator(), w, line) catch return false;
+    w.flush() catch return false;
+    return true;
+}
+
+test "acp_early: a failed or short write of the early answer fails exactly as the late path" {
+    defer resetLatches();
+    for ([_]usize{ 0, 1, 100 }) |budget| {
+        resetLatches();
+        var early_out: Short = undefined;
+        early_out.init(budget);
+        var in: Io.Reader = .fixed(init_line ++ "\n");
+        var e: early.Early = .{ .gpa = testing.allocator, .in = &in, .out = &early_out.writer, .acp = true };
+        try testing.expect(!e.boundary()); // not claimed as answered
+        try testing.expectEqual(early.State.passed, e.state);
+        try testing.expectEqual(@as(usize, 0), early_out.writer.buffered().len); // no unframed bytes left behind
+        try testing.expectEqualStrings(init_line ++ "\n", in.buffered()); // the loop still reads it
+        try testing.expect(e.loopStart() == null);
+        // The loop then dispatches it on the same broken transport ...
+        try testing.expect(!lateOn(&early_out.writer, init_line));
+        // ... and the client has seen exactly what the late path alone shows.
+        resetLatches();
+        var late_out: Short = undefined;
+        late_out.init(budget);
+        try testing.expect(!lateOn(&late_out.writer, init_line));
+        try testing.expectEqualStrings(late_out.sent(), early_out.sent());
     }
 }

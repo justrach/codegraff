@@ -35,13 +35,16 @@ test "spec/acp_early_init: the step table is the Zig step" {
     try names(early.Line, universe.get("lines").?.array.items);
     try names(early.Action, universe.get("actions").?.array.items);
     const rows = root.object.get("step").?.array.items;
-    try std.testing.expectEqual(@as(usize, 36), rows.len);
+    try std.testing.expectEqual(std.enums.values(early.State).len * (2 * std.enums.values(early.Line).len + 3), rows.len);
     for (rows) |row_v| {
         const row = row_v.object;
         const s = std.meta.stringToEnum(early.State, str(row, "state")).?;
         const ev = row.get("event").?.object;
-        const e: early.Event = if (std.mem.eql(u8, str(ev, "kind"), "loop_start"))
+        const kind = str(ev, "kind");
+        const e: early.Event = if (std.mem.eql(u8, kind, "loop_start"))
             .loop_start
+        else if (std.mem.eql(u8, kind, "sent"))
+            .{ .sent = boolean(ev, "ok") }
         else
             .{ .boundary = .{ .acp = boolean(ev, "acp"), .line = std.meta.stringToEnum(early.Line, str(ev, "line")).? } };
         const got = early.step(s, e);

@@ -128,7 +128,7 @@
       "fixture": "spec/kernels/acp_early_init.json",
       "zig": "src/spec_acp_early_init_conformance.zig",
       "impl": "src/acp_early.zig:step",
-      "cells_floor": 396,
+      "cells_floor": 415,
       "cells_key": [
         "step",
         "cases"

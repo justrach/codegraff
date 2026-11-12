@@ -2,26 +2,44 @@
   ACP early `initialize` kernel.
 
   `graff acp` answers the client's `initialize` during boot, at a phase
-  boundary, instead of after the root Agent exists. This kernel is the
-  decision and the protocol around it:
+  boundary, instead of after the root Agent exists. This file models the
+  decision and the line bookkeeping around it.
 
-  (a) Process kernel: `step` over `State` × `Event` is the one decision the
-      Zig code consults (`src/acp_early.zig` `step`). `Sys` wraps it with
-      the shared stdin buffer, the protocol stdout and the dispatch log, and
-      the theorems quantify over every boot trace: the first `initialize` is
-      answered exactly once, the loop-start replay writes nothing, a first
-      line that is not `initialize` reaches the loop unchanged, and the early
-      path ends with the same stdout and dispatch history as the late path.
-  (b) Cube: the `initialize` response and the latches it sets, over
-      protocolVersion × v2 gate × subagent capabilities × `can_load` ×
-      client extras. The early answer is written on a scratch dispatch and
-      then replayed on the live one; the latches are last-writer-wins, so
-      early + replay equals late in every cell.
+  What it proves:
+  (a) `step` over `State` × `Event` (the function `src/acp_early.zig`
+      calls): only a booting ACP process with a complete `initialize` first
+      line attempts an early answer; the line is taken off stdin only after
+      the whole answer was sent; only a taken line is replayed at loop start.
+  (b) `Sys` wraps `step` with an abstract stdin queue, stdout and dispatch
+      log. Over every boot trace, including traces where the early answer
+      fails, the first `initialize` is answered exactly once, the replay
+      writes nothing, a non-`initialize` first line is untouched, a failed
+      answer consumes nothing, and stdout and the dispatch history equal the
+      late path's. This is line bookkeeping: nothing is dropped, duplicated
+      or reordered.
 
-  What it is NOT: a timing claim (when a boundary runs, or how fast), a model
-  of the non-blocking poll, or a proof that the Zig code refines it beyond the
-  exported fixture (`src/spec_acp_early_init_conformance.zig` runs the real
-  engine on every cube cell and the real `step` on every table cell).
+  What it assumes (stated, not proved):
+  - The response is a function of the request alone (`answerOf`). That the
+    engine's answer does not depend on boot state is not shown here.
+  - The live dispatch's state is determined by the lines it has handled:
+    equal `disp` histories are taken to mean equal dispatch state.
+  - A failed early answer leaves nothing on stdout. The Zig code drops what
+    it still buffers; bytes the OS accepted before a write error are not
+    modelled (the transport is then broken for the late path too).
+
+  What it is NOT:
+  - Anything about bytes: framing, CRLF, a BOM, a line longer than the stdin
+    buffer, JSON parsing, or how a line is classified.
+  - The non-blocking poll, the reader, or the discarding sink.
+  - A timing claim (when a boundary runs, or how fast).
+  - The cube (c) mirrors the engine's latch table; `early_eq_late` holds by
+    the model's construction (last writer wins). That `can_load` matches the
+    live dispatch is pinned by a Zig test of `live_can_load`, not here.
+  - A refinement proof. The Zig side is checked at fixture level: the
+    conformance test (`src/spec_acp_early_init_conformance.zig`) drives the
+    real `step` on every table cell and runs the real engine early and late
+    on every cube cell. The byte-equality claim rests on that test and on
+    `scripts/test-acp-early-init.py`, not on this file.
   Executable port: spec/ref/acp_early_init.py.
 -/
 
@@ -29,8 +47,9 @@ namespace Graff.AcpEarlyInit
 
 /-! ## (a) The decision -/
 
+/-- `answering`: the early answer is being written; the line is still on stdin. -/
 inductive State where
-  | booting | answered | passed | loop
+  | booting | answering | answered | passed | loop
 deriving DecidableEq, Repr, BEq
 
 /-- What the shared stdin buffer holds at a check. -/
@@ -38,44 +57,70 @@ inductive Line where
   | none | incomplete | initialize | other
 deriving DecidableEq, Repr, BEq
 
-/-- `acp` is ACP mode with a clean protocol stdout. -/
+/-- `acp` is ACP mode with a clean protocol stdout. `sent ok`: whether the
+whole early answer reached the transport. -/
 inductive Event where
   | boundary (acp : Bool) (line : Line)
+  | sent (ok : Bool)
   | loopStart
 deriving DecidableEq, Repr, BEq
 
+/-- `answer`: write the answer, consume nothing. `take`: consume and keep the
+line. `replay`: hand the kept line to the loop. -/
 inductive Action where
-  | none | answer | replay
+  | none | answer | take | replay
 deriving DecidableEq, Repr, BEq
 
 def step : State → Event → State × Action
   | .booting, .boundary false _ => (.passed, .none)
   | .booting, .boundary true .none => (.booting, .none)
   | .booting, .boundary true .incomplete => (.booting, .none)
-  | .booting, .boundary true .initialize => (.answered, .answer)
+  | .booting, .boundary true .initialize => (.answering, .answer)
   | .booting, .boundary true .other => (.passed, .none)
+  | .answering, .boundary _ _ => (.answering, .none)
   | .answered, .boundary _ _ => (.answered, .none)
   | .passed, .boundary _ _ => (.passed, .none)
   | .loop, .boundary _ _ => (.loop, .none)
+  | .answering, .sent true => (.answered, .take)
+  | .answering, .sent false => (.passed, .none)
+  | .booting, .sent _ => (.booting, .none)
+  | .answered, .sent _ => (.answered, .none)
+  | .passed, .sent _ => (.passed, .none)
+  | .loop, .sent _ => (.loop, .none)
   | .answered, .loopStart => (.loop, .replay)
   | .booting, .loopStart => (.loop, .none)
+  | .answering, .loopStart => (.loop, .none)
   | .passed, .loopStart => (.loop, .none)
   | .loop, .loopStart => (.loop, .none)
 
-def allStates : List State := [.booting, .answered, .passed, .loop]
+def allStates : List State := [.booting, .answering, .answered, .passed, .loop]
 def allLines : List Line := [.none, .incomplete, .initialize, .other]
 def allEvents : List Event :=
-  ([false, true].flatMap fun acp => allLines.map fun l => Event.boundary acp l) ++ [.loopStart]
+  ([false, true].flatMap fun acp => allLines.map fun l => Event.boundary acp l) ++
+    [.sent false, .sent true, .loopStart]
 
-theorem step_cells : allStates.length * allEvents.length = 36 := by native_decide
+/- Sanity check, not a result: the table the fixture exports has 55 cells. -/
+example : allStates.length * allEvents.length = 55 := by native_decide
 
-/-- Only a booting process in ACP mode with a complete `initialize` answers. -/
+/-- Only a booting process in ACP mode with a complete `initialize` attempts an answer. -/
 theorem step_answer_iff :
     allStates.all (fun s => allEvents.all fun e =>
       ((step s e).2 == .answer) == (s == .booting && e == .boundary true .initialize)) = true := by
   native_decide
 
-/-- Only loop start replays, and only after an early answer. -/
+/-- The line is taken only once the whole answer was sent. -/
+theorem step_take_iff :
+    allStates.all (fun s => allEvents.all fun e =>
+      ((step s e).2 == .take) == (s == .answering && e == .sent true)) = true := by
+  native_decide
+
+/-- An answer that failed gives up for good: the loop answers the line. -/
+theorem step_failed_passes :
+    allStates.all (fun s => allEvents.all fun e =>
+      !(s == .answering && e == .sent false) || step s e == (.passed, .none)) = true := by
+  native_decide
+
+/-- Only loop start replays, and only after a taken answer. -/
 theorem step_replay_iff :
     allStates.all (fun s => allEvents.all fun e =>
       ((step s e).2 == .replay) == (s == .answered && e == .loopStart)) = true := by
@@ -88,6 +133,7 @@ theorem loop_start_reaches_loop (s : State) : (step s .loopStart).1 = .loop := b
 theorem loop_absorbing (e : Event) : step .loop e = (.loop, .none) := by
   cases e with
   | boundary acp l => cases acp <;> cases l <;> rfl
+  | sent ok => cases ok <;> rfl
   | loopStart => rfl
 
 /-- Once answered, no boundary answers again. -/
@@ -139,16 +185,26 @@ def classify (s : Sys) : Line :=
 inductive BootEv where
   /-- The client's first line becomes complete. -/
   | arrive
-  /-- A boot phase boundary checks. -/
-  | boundary
+  /-- A boot phase boundary checks. If it attempts an answer, the whole
+  answer reaches the client iff `ok` (the environment decides). -/
+  | boundary (ok : Bool)
 deriving DecidableEq, Repr, BEq
+
+/-- An answer attempt: the answer reaches stdout iff `ok`; the line is taken
+iff `step` says so. A failed attempt writes nothing (assumption above). -/
+def attempt (s : Sys) (st : State) (ok : Bool) : Sys :=
+  match step st (.sent ok), s.input with
+  | (st', .take), m :: rest =>
+    { s with st := st', input := rest, stash := some m,
+             out := s.out ++ (if ok then [answerOf m] else []) }
+  | (st', _), _ => { s with st := st' }
 
 def bootStep (acp : Bool) (s : Sys) : BootEv → Sys
   | .arrive => { s with avail := true }
-  | .boundary =>
-    match step s.st (.boundary acp (classify s)), s.input with
-    | (st, .answer), m :: rest => { s with st := st, input := rest, stash := some m, out := s.out ++ [answerOf m] }
-    | (st, _), _ => { s with st := st }
+  | .boundary ok =>
+    match step s.st (.boundary acp (classify s)) with
+    | (st, .answer) => attempt s st ok
+    | (st, _) => { s with st := st }
 
 def boot (acp : Bool) (s : Sys) : List BootEv → Sys
   | [] => s
@@ -190,11 +246,12 @@ theorem inv_bootStep (acp : Bool) (input : List Msg) (s : Sys) (e : BootEv)
   cases e with
   | arrive =>
     exact ⟨rfl, h⟩
-  | boundary =>
+  | boundary ok =>
     rcases h with ⟨hst | hst, hs, hi, ho⟩ | ⟨i, rest, hin, hst, hs, hi, ho⟩
     · subst hst hs hi ho
-      cases acp <;> cases avail <;> rcases inp with _ | ⟨_ | _, _⟩ <;>
-        simp [bootStep, classify, step, Inv, answerOf] <;> exact ⟨_, _, ⟨rfl, rfl⟩, rfl, rfl, rfl⟩
+      cases acp <;> cases avail <;> cases ok <;> rcases inp with _ | ⟨_ | _, _⟩ <;>
+        simp [bootStep, attempt, classify, step, Inv, answerOf] <;>
+        exact ⟨_, _, ⟨rfl, rfl⟩, rfl, rfl, rfl⟩
     · subst hst hs hi ho
       cases acp <;> simp [bootStep, step, Inv]
     · subst hst hs hi ho hin
@@ -247,7 +304,8 @@ theorem early_out_eq_late (acp : Bool) (input : List Msg) (tr : List BootEv) :
     subst hd <;> (try subst hst) <;> (try subst hs) <;> (try subst hi) <;> (try subst ho) <;>
     (try subst hin) <;> simp [drain_out, loopStart, step, answerOf]
 
-/-- Early and late leave the live dispatch with the same history, hence the same state. -/
+/-- Early and late leave the live dispatch with the same history (equal state
+under the assumption in the header). -/
 theorem early_disp_eq_late (acp : Bool) (input : List Msg) (tr : List BootEv) :
     (runEarly acp input tr).disp = (runLate input).disp := by
   have h := inv_boot acp input tr (start input) (inv_start input)
@@ -261,7 +319,8 @@ theorem early_disp_eq_late (acp : Bool) (input : List Msg) (tr : List BootEv) :
     subst hd <;> (try subst hst) <;> (try subst hs) <;> (try subst hi) <;> (try subst ho) <;>
     (try subst hin) <;> simp [drain_disp, loopStart, step]
 
-/-- A first `initialize` is answered exactly once on every boot trace. -/
+/-- A first `initialize` is answered exactly once on every boot trace, whether
+or not an early answer failed along the way. -/
 theorem initialize_answered_once (acp : Bool) (i : Nat) (rest : List Msg) (tr : List BootEv)
     (fresh : ∀ m ∈ rest, answerOf m ≠ .resp i) :
     (runEarly acp (.init i :: rest) tr).out.filter (fun o => decide (o = .resp i)) = [.resp i] := by
@@ -291,12 +350,22 @@ theorem other_first_untouched (acp : Bool) (k : Nat) (rest : List Msg) (tr : Lis
   · cases hin
 
 /-- A check that sees no complete first line consumes nothing. -/
-theorem partial_not_consumed (acp : Bool) (s : Sys) (h : s.avail = false) :
-    (bootStep acp s .boundary).input = s.input ∧ (bootStep acp s .boundary).out = s.out := by
+theorem partial_not_consumed (acp ok : Bool) (s : Sys) (h : s.avail = false) :
+    (bootStep acp s (.boundary ok)).input = s.input ∧ (bootStep acp s (.boundary ok)).out = s.out := by
   obtain ⟨st, avail, inp, stash, out, disp⟩ := s
   simp only at h
   subst h
   cases st <;> cases acp <;> simp [bootStep, classify, step]
+
+/-- A check whose answer fails takes nothing off stdin, keeps nothing and
+writes nothing, from any state. -/
+theorem failed_answer_not_consumed (acp : Bool) (s : Sys) :
+    (bootStep acp s (.boundary false)).input = s.input ∧
+    (bootStep acp s (.boundary false)).stash = s.stash ∧
+    (bootStep acp s (.boundary false)).out = s.out := by
+  obtain ⟨st, avail, inp, stash, out, disp⟩ := s
+  cases st <;> cases acp <;> cases avail <;> rcases inp with _ | ⟨_ | _, _⟩ <;>
+    simp [bootStep, attempt, classify, step]
 
 /-! ## (b) The response cube -/
 
@@ -338,7 +407,8 @@ def allCells : List Cell := Id.run do
               acc := acc ++ [{ pv, gate, sub, bg, canLoad, extras }]
   return acc
 
-theorem cube_cells : allCells.length = 360 := by native_decide
+/- Sanity check, not a result: the cube has 360 cells. -/
+example : allCells.length = 360 := by native_decide
 
 /-- `acp_v2.negotiated`: v2 only behind the gate and on request (ADR 0206). -/
 def isV2 (c : Cell) : Bool := c.gate && decide (c.pv.requested ≥ 2)
@@ -378,28 +448,36 @@ def latch (l : Latch) (c : Cell) (seed : Nat) : Latch :=
 def late (l : Latch) (c : Cell) (s : Nat) : Latch × Resp := (latch l c s, resp c c.canLoad)
 
 /-- Early: a scratch dispatch (seed 0) writes the response; the replay on the
-live dispatch writes the latches again and its response is discarded. -/
+live dispatch writes the latches again and its response is discarded. The
+response is `resp c c.canLoad` by construction: that the engine's bytes
+agree is the Zig conformance test's job, not this model's. -/
 def early (l : Latch) (c : Cell) (s : Nat) : Latch × Resp :=
   (latch (latch l c 0) c s, resp c c.canLoad)
 
+/-- The model's latch table is last-writer-wins: a second `initialize` handling
+overwrites everything the first one wrote. -/
 theorem latch_last_writer_wins (l : Latch) (c : Cell) (s₀ s : Nat) :
     latch (latch l c s₀) c s = latch l c s := by
   unfold latch
   cases isV2 c <;> simp
 
+/-- Early + replay equals late in the model. Immediate from
+`latch_last_writer_wins`; it records the design, the Zig test checks it. -/
 theorem early_eq_late (l : Latch) (c : Cell) (s : Nat) : early l c s = late l c s := by
   simp [early, late, latch_last_writer_wins]
 
-theorem cube_early_eq_late :
+/- Sanity check, not a result: `early_eq_late` on every cube cell and seed. -/
+example :
     allCells.all (fun c => [0, 1, 0x5eed].all fun s => early bootLatch c s == late bootLatch c s) = true := by
   native_decide
 
-/-- The draft child-session stream is a v1 shape: v2 never latches it. -/
-theorem cube_v2_no_subagents :
+/- Sanity check: the draft child-session stream is a v1 shape, so v2 never
+latches it (true by the definition of `latch`). -/
+example :
     allCells.all (fun c => !(isV2 c && (late bootLatch c 7).1.subagents)) = true := by
   native_decide
 
-/-- Exactly the gated cells that ask for ≥ 2 answer 2. -/
-theorem cube_v2_cells : (allCells.filter isV2).length = 72 := by native_decide
+/- Sanity check, not a result: 72 cells are gated and ask for ≥ 2. -/
+example : (allCells.filter isV2).length = 72 := by native_decide
 
 end Graff.AcpEarlyInit

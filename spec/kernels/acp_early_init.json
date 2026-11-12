@@ -4,6 +4,7 @@
   "universe": {
     "states": [
       "booting",
+      "answering",
       "answered",
       "passed",
       "loop"
@@ -17,6 +18,7 @@
     "actions": [
       "none",
       "answer",
+      "take",
       "replay"
     ]
   },
@@ -25,7 +27,8 @@
     "replay-emits-response",
     "consume-other-first-line",
     "early-can-load-false",
-    "skip-replay"
+    "skip-replay",
+    "take-line-although-answer-failed"
   ],
   "step": [
     {
@@ -95,7 +98,7 @@
         "acp": true,
         "line": "initialize"
       },
-      "next": "answered",
+      "next": "answering",
       "action": "answer"
     },
     {
@@ -110,6 +113,130 @@
     },
     {
       "state": "booting",
+      "event": {
+        "kind": "sent",
+        "ok": false
+      },
+      "next": "booting",
+      "action": "none"
+    },
+    {
+      "state": "booting",
+      "event": {
+        "kind": "sent",
+        "ok": true
+      },
+      "next": "booting",
+      "action": "none"
+    },
+    {
+      "state": "booting",
+      "event": {
+        "kind": "loop_start"
+      },
+      "next": "loop",
+      "action": "none"
+    },
+    {
+      "state": "answering",
+      "event": {
+        "kind": "boundary",
+        "acp": false,
+        "line": "none"
+      },
+      "next": "answering",
+      "action": "none"
+    },
+    {
+      "state": "answering",
+      "event": {
+        "kind": "boundary",
+        "acp": false,
+        "line": "incomplete"
+      },
+      "next": "answering",
+      "action": "none"
+    },
+    {
+      "state": "answering",
+      "event": {
+        "kind": "boundary",
+        "acp": false,
+        "line": "initialize"
+      },
+      "next": "answering",
+      "action": "none"
+    },
+    {
+      "state": "answering",
+      "event": {
+        "kind": "boundary",
+        "acp": false,
+        "line": "other"
+      },
+      "next": "answering",
+      "action": "none"
+    },
+    {
+      "state": "answering",
+      "event": {
+        "kind": "boundary",
+        "acp": true,
+        "line": "none"
+      },
+      "next": "answering",
+      "action": "none"
+    },
+    {
+      "state": "answering",
+      "event": {
+        "kind": "boundary",
+        "acp": true,
+        "line": "incomplete"
+      },
+      "next": "answering",
+      "action": "none"
+    },
+    {
+      "state": "answering",
+      "event": {
+        "kind": "boundary",
+        "acp": true,
+        "line": "initialize"
+      },
+      "next": "answering",
+      "action": "none"
+    },
+    {
+      "state": "answering",
+      "event": {
+        "kind": "boundary",
+        "acp": true,
+        "line": "other"
+      },
+      "next": "answering",
+      "action": "none"
+    },
+    {
+      "state": "answering",
+      "event": {
+        "kind": "sent",
+        "ok": false
+      },
+      "next": "passed",
+      "action": "none"
+    },
+    {
+      "state": "answering",
+      "event": {
+        "kind": "sent",
+        "ok": true
+      },
+      "next": "answered",
+      "action": "take"
+    },
+    {
+      "state": "answering",
       "event": {
         "kind": "loop_start"
       },
@@ -192,6 +319,24 @@
         "kind": "boundary",
         "acp": true,
         "line": "other"
+      },
+      "next": "answered",
+      "action": "none"
+    },
+    {
+      "state": "answered",
+      "event": {
+        "kind": "sent",
+        "ok": false
+      },
+      "next": "answered",
+      "action": "none"
+    },
+    {
+      "state": "answered",
+      "event": {
+        "kind": "sent",
+        "ok": true
       },
       "next": "answered",
       "action": "none"
@@ -287,6 +432,24 @@
     {
       "state": "passed",
       "event": {
+        "kind": "sent",
+        "ok": false
+      },
+      "next": "passed",
+      "action": "none"
+    },
+    {
+      "state": "passed",
+      "event": {
+        "kind": "sent",
+        "ok": true
+      },
+      "next": "passed",
+      "action": "none"
+    },
+    {
+      "state": "passed",
+      "event": {
         "kind": "loop_start"
       },
       "next": "loop",
@@ -368,6 +531,24 @@
         "kind": "boundary",
         "acp": true,
         "line": "other"
+      },
+      "next": "loop",
+      "action": "none"
+    },
+    {
+      "state": "loop",
+      "event": {
+        "kind": "sent",
+        "ok": false
+      },
+      "next": "loop",
+      "action": "none"
+    },
+    {
+      "state": "loop",
+      "event": {
+        "kind": "sent",
+        "ok": true
       },
       "next": "loop",
       "action": "none"

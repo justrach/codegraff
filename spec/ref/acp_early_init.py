@@ -2,9 +2,11 @@
 
 `graff acp` answers `initialize` at a boot phase boundary. (a) `step` is the
 decision `src/acp_early.zig` consults; the system around it (shared stdin,
-protocol stdout, dispatch log) is checked over every boot trace up to a bound.
-(b) The response cube: the early answer + loop-start replay leave the same
-bytes and latches as the late path in every cell.
+protocol stdout, dispatch log) is checked over every boot trace up to a bound,
+including boundaries whose early answer fails to reach the client. (b) The
+response cube: the model's early answer + loop-start replay leave the same
+response and latches as the late path in every cell (the Zig conformance test
+checks the real engine's bytes on the same cells).
 
 `MUTANTS` are broken designs `check_properties` must reject.
 """
@@ -14,10 +16,13 @@ from __future__ import annotations
 import json
 from itertools import product
 
-STATES = ("booting", "answered", "passed", "loop")
+STATES = ("booting", "answering", "answered", "passed", "loop")
 LINES = ("none", "incomplete", "initialize", "other")
-ACTIONS = ("none", "answer", "replay")
-EVENTS: tuple[tuple, ...] = tuple(("boundary", acp, line) for acp in (False, True) for line in LINES) + (("loop_start",),)
+ACTIONS = ("none", "answer", "take", "replay")
+EVENTS: tuple[tuple, ...] = (
+    tuple(("boundary", acp, line) for acp in (False, True) for line in LINES)
+    + (("sent", False), ("sent", True), ("loop_start",))
+)
 
 MUTANTS = (
     "answer-early-and-again-in-loop",
@@ -25,6 +30,7 @@ MUTANTS = (
     "consume-other-first-line",
     "early-can-load-false",
     "skip-replay",
+    "take-line-although-answer-failed",
 )
 
 
@@ -38,9 +44,15 @@ def step(s: str, e: tuple, mutant: str | None = None) -> tuple[str, str]:
         if line in ("none", "incomplete"):
             return "booting", "none"
         if line == "initialize":
-            return "answered", "answer"
+            return "answering", "answer"
         if mutant == "consume-other-first-line":
-            return "answered", "answer"
+            return "answering", "answer"
+        return "passed", "none"
+    if e[0] == "sent":
+        if s != "answering":
+            return s, "none"
+        if e[1] or mutant == "take-line-although-answer-failed":
+            return "answered", "take"
         return "passed", "none"
     if e[0] == "loop_start":
         if s == "answered" and mutant != "skip-replay":
@@ -69,16 +81,24 @@ def start(inp: list) -> dict:
 
 
 def boot_step(acp: bool, s: dict, ev: str, mutant: str | None) -> dict:
+    """`ev`: "arrive", "boundary" (an answer it attempts reaches the client) or
+    "fail" (a boundary whose answer attempt fails and writes nothing)."""
     s = dict(s, input=list(s["input"]), out=list(s["out"]), disp=list(s["disp"]))
     if ev == "arrive":
         s["avail"] = True
         return s
     st, act = step(s["st"], ("boundary", acp, classify(s)), mutant)
     s["st"] = st
-    if act == "answer" and s["input"]:
+    if act != "answer":
+        return s
+    ok = ev == "boundary"
+    st, act = step(st, ("sent", ok), mutant)
+    s["st"] = st
+    if act == "take" and s["input"]:
         m = s["input"].pop(0)
         s["stash"] = m
-        s["out"].append(answer_of(m))
+        if ok:
+            s["out"].append(answer_of(m))
     return s
 
 
@@ -131,7 +151,7 @@ def inputs(max_len: int = 3) -> list[list]:
 def traces(max_len: int = 5) -> list[tuple]:
     out = []
     for n in range(max_len + 1):
-        out.extend(product(("arrive", "boundary"), repeat=n))
+        out.extend(product(("arrive", "boundary", "fail"), repeat=n))
     return out
 
 
@@ -154,6 +174,12 @@ def check_protocol(mutant: str | None = None) -> int:
             raise ValueError(f"initialize_answered_once: {where}")
         if inp and inp[0][0] == "other" and (booted["input"] != inp or booted["out"]):
             raise ValueError(f"other_first_untouched: {where}")
+        s = start(inp)
+        for ev in tr:
+            failed = boot_step(acp, s, "fail", mutant)
+            if (failed["input"], failed["stash"], failed["out"]) != (s["input"], s["stash"], s["out"]):
+                raise ValueError(f"failed_answer_not_consumed: {where} at {ev}")
+            s = boot_step(acp, s, ev, mutant)
     return n
 
 
@@ -164,6 +190,10 @@ def check_step_table(mutant: str | None = None) -> int:
         nxt, act = step(s, e, mutant)
         if (act == "answer") != (s == "booting" and e == ("boundary", True, "initialize")):
             raise ValueError(f"step_answer_iff: {s} {e}")
+        if (act == "take") != (s == "answering" and e == ("sent", True)):
+            raise ValueError(f"step_take_iff: {s} {e}")
+        if s == "answering" and e == ("sent", False) and (nxt, act) != ("passed", "none"):
+            raise ValueError(f"step_failed_passes: {s} {e}")
         if (act == "replay") != (s == "answered" and e == ("loop_start",)):
             raise ValueError(f"step_replay_iff: {s} {e}")
         if e == ("loop_start",) and nxt != "loop":
@@ -177,7 +207,12 @@ def step_rows() -> list[dict]:
     rows = []
     for s, e in product(STATES, EVENTS):
         nxt, act = step(s, e)
-        ev = {"kind": e[0]} if e[0] == "loop_start" else {"kind": "boundary", "acp": e[1], "line": e[2]}
+        if e[0] == "loop_start":
+            ev = {"kind": "loop_start"}
+        elif e[0] == "sent":
+            ev = {"kind": "sent", "ok": e[1]}
+        else:
+            ev = {"kind": "boundary", "acp": e[1], "line": e[2]}
         rows.append({"state": s, "event": ev, "next": nxt, "action": act})
     return rows
 

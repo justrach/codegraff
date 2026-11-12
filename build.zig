@@ -179,6 +179,9 @@ pub fn build(b: *std.Build) void {
     const acp_preauth_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-preauth.py" });
     acp_preauth_test.addArtifactArg(exe);
     test_step.dependOn(&acp_preauth_test.step);
+    const acp_early_init_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-early-init.py" });
+    acp_early_init_test.addArtifactArg(exe);
+    test_step.dependOn(&acp_early_init_test.step);
     const issue_acp_test = b.addSystemCommand(&.{ "python3", "scripts/test-issue-acp.py" });
     issue_acp_test.addArtifactArg(exe);
     test_step.dependOn(&issue_acp_test.step);

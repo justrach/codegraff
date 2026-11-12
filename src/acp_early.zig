@@ -10,9 +10,15 @@
 //!
 //! `step` is the decision the Lean kernel `Graff.AcpEarlyInit` models; nothing
 //! here decides without it. A first line that is incomplete, not `initialize`,
-//! or larger than the stdin buffer is left in place for the loop.
+//! or larger than the stdin buffer is left in place for the loop. So is an
+//! `initialize` whose answer could not be rendered, written and flushed whole:
+//! the line is taken off stdin only after the client has the full answer.
+//!
+//! A build without ACP (`-Dacp=false`, `-Dminimal`) compiles none of the
+//! engine: `boundary` declines at comptime before anything reaches it.
 const std = @import("std");
 const builtin = @import("builtin");
+const build_options = @import("build_options");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const engine = @import("acp_engine.zig");
@@ -21,14 +27,18 @@ const startup_timing = @import("startup_timing.zig");
 
 // ── the kernel: lean-proofs/Graff/AcpEarlyInit.lean `step` ─────────────────
 
-pub const State = enum { booting, answered, passed, loop };
+/// `answering`: the answer is being written; the line is still on stdin.
+pub const State = enum { booting, answering, answered, passed, loop };
 /// What the shared stdin buffer holds at a check. `none`/`incomplete`: no
 /// complete first line yet; `initialize`: a complete `initialize` request
 /// with an id; `other`: any other complete first line.
 pub const Line = enum { none, incomplete, initialize, other };
 /// `acp` is ACP mode with a clean protocol stdout; false declines for good.
-pub const Event = union(enum) { boundary: struct { acp: bool, line: Line }, loop_start };
-pub const Action = enum { none, answer, replay };
+/// `sent`: whether the whole framed answer reached the transport.
+pub const Event = union(enum) { boundary: struct { acp: bool, line: Line }, sent: bool, loop_start };
+/// `answer`: write the answer, consume nothing; `take`: consume and keep the
+/// line; `replay`: hand the kept line to the loop.
+pub const Action = enum { none, answer, take, replay };
 pub const Step = struct { next: State, action: Action };
 
 pub fn step(s: State, e: Event) Step {
@@ -36,11 +46,14 @@ pub fn step(s: State, e: Event) Step {
         .boundary => |b| switch (s) {
             .booting => if (!b.acp) .{ .next = .passed, .action = .none } else switch (b.line) {
                 .none, .incomplete => .{ .next = .booting, .action = .none },
-                .initialize => .{ .next = .answered, .action = .answer },
+                .initialize => .{ .next = .answering, .action = .answer },
                 .other => .{ .next = .passed, .action = .none },
             },
-            .answered, .passed, .loop => .{ .next = s, .action = .none },
+            .answering, .answered, .passed, .loop => .{ .next = s, .action = .none },
         },
+        // A failed answer leaves the line to the loop, which then fails or
+        // answers exactly as it would have without the early attempt.
+        .sent => |ok| if (s != .answering) .{ .next = s, .action = .none } else if (ok) .{ .next = .answered, .action = .take } else .{ .next = .passed, .action = .none },
         .loop_start => .{ .next = .loop, .action = if (s == .answered) .replay else .none },
     };
 }
@@ -61,13 +74,29 @@ fn noLoad(_: *anyopaque, _: Allocator, _: *Io.Writer, _: proto.Request) anyerror
 /// dispatch whose only setting the response reads (`load_session != null`)
 /// matches the live one. The process latches it sets are overwritten by the
 /// replay at loop start (last writer wins, ADR 0206 latch).
-pub fn respond(gpa: Allocator, w: *Io.Writer, line: []const u8, can_load: bool) void {
+///
+/// True only when the whole answer, one complete line, was written and
+/// flushed. It is rendered aside first, so an engine or allocation failure
+/// writes nothing. On a write failure the bytes still buffered in `w` are
+/// dropped (`w` was empty on entry); bytes the OS already accepted cannot be
+/// recalled, and the transport is then broken for the loop's write as well.
+pub fn respond(gpa: Allocator, w: *Io.Writer, line: []const u8, can_load: bool) bool {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
+    var rendered: Io.Writer.Allocating = .init(arena.allocator());
     var scratch: engine.Dispatch = .{ .turn = noTurn, .ctx = undefined, .load_session = if (can_load) noLoad else null };
-    engine.implementation_version = @import("build_options").version;
-    engine.handleLine(&scratch, arena.allocator(), w, line) catch return;
-    w.flush() catch {};
+    engine.implementation_version = build_options.version;
+    engine.handleLine(&scratch, arena.allocator(), &rendered.writer, line) catch return false;
+    const bytes = rendered.written();
+    if (!std.mem.endsWith(u8, bytes, "\n")) return false;
+    w.writeAll(bytes) catch return dropBuffered(w);
+    w.flush() catch return dropBuffered(w);
+    return true;
+}
+
+fn dropBuffered(w: *Io.Writer) bool {
+    w.undo(w.end);
+    return false;
 }
 
 // ── the runtime ────────────────────────────────────────────────────────────
@@ -89,6 +118,7 @@ pub const Early = struct {
 
     /// One phase boundary: classify the first line, then do what `step` says.
     pub fn boundary(self: *Early) bool {
+        if (comptime !build_options.acp) return false;
         if (self.state != .booting) return false;
         const ready = self.acp and self.out.buffered().len == 0;
         var copy: ?[]u8 = null;
@@ -100,9 +130,14 @@ pub const Early = struct {
             return false;
         }
         const taken = copy.?;
+        const t = step(self.state, .{ .sent = respond(self.gpa, self.out, taken, self.can_load) });
+        self.state = t.next;
+        if (t.action != .take) {
+            self.gpa.free(taken);
+            return false;
+        }
         self.in.toss(taken.len + 1);
         self.stash = taken;
-        respond(self.gpa, self.out, taken, self.can_load);
         return true;
     }
 
@@ -160,7 +195,7 @@ var stdin_reader: Io.File.Reader = undefined;
 var g: ?Early = null;
 
 pub fn isAcp(positionals: []const []const u8) bool {
-    return (comptime @import("build_options").acp) and positionals.len > 0 and std.mem.eql(u8, positionals[0], "acp");
+    return (comptime build_options.acp) and positionals.len > 0 and std.mem.eql(u8, positionals[0], "acp");
 }
 
 /// Creates the process stdin reader (every frontend reads this one) and runs
@@ -172,12 +207,6 @@ pub fn arm(io: Io, gpa: Allocator, out: *Io.Writer, positionals: []const []const
     return &stdin_reader.interface;
 }
 
-/// A boundary for boot code outside main.zig's marks (a long phase can call
-/// it between its steps). No-op before `arm` and once `step` has decided.
-pub fn check() void {
-    if (g) |*e| _ = e.boundary();
-}
-
 /// The ACP loop's first-iteration hook; null outside a process that armed.
 pub fn loopStart() ?[]const u8 {
     if (g) |*e| return e.loopStart();
@@ -187,10 +216,17 @@ pub fn loopStart() ?[]const u8 {
 /// The boot tracker with a check at every phase boundary.
 pub const Boot = struct {
     inner: startup_timing.Tracker,
+    told: bool = false,
 
+    /// With `GRAFF_BOOT_DEBUG`, names where the early answer happened: the
+    /// mark it followed, or the check `arm` runs when stdin is opened.
     pub fn mark(self: *Boot, io: Io, label: []const u8) void {
         self.inner.mark(io, label);
-        if (g) |*e| if (e.boundary() and self.inner.debug) std.debug.print("[boot] acp initialize answered after {s}\n", .{label});
+        const e = if (g) |*e| e else return;
+        const now = e.boundary();
+        if (!self.inner.debug or self.told or e.state != .answered) return;
+        self.told = true;
+        std.debug.print("[boot] acp initialize answered {s}{s}\n", .{ if (now) "after " else "when stdin was opened, before ", label });
     }
 
     pub fn attach(self: *Boot, tracer: anytype) void {

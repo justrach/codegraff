@@ -25,10 +25,15 @@ latches that `initialize` sets could differ from the late path's.
   never reads past a full buffer, and it never reads outside ACP.
 - There is one stdin reader. The ACP inbox pump later reads the same reader,
   so the bytes after the first line stay where they were.
-- A complete first line that is an `initialize` request with an id is taken
-  off the reader. The engine's own `handleLine` answers it on a fresh
-  dispatch whose `can_load` matches the live one. The answer is written only
-  to a clean protocol stdout. The line is kept.
+- For a complete first line that is an `initialize` request with an id, the
+  engine's own `handleLine` renders the answer on a fresh dispatch whose
+  `can_load` matches the live one. The answer is written only to a clean
+  protocol stdout. Only after the whole line was written and flushed is the
+  request taken off the reader and kept. If rendering or the write fails,
+  nothing stays buffered, the line stays on the reader and the checks stop.
+  The loop then answers it, or fails the way it would have anyway.
+  (Bytes the OS accepted before a write error cannot be taken back. The
+  transport is broken by then, and the loop's write fails too.)
 - Any other first line (no `initialize`, a notification, invalid JSON, or a
   line larger than the buffer) is left in place. So is an incomplete one.
   After a non-`initialize` first line the checks stop.
@@ -37,15 +42,26 @@ latches that `initialize` sets could differ from the late path's.
   latches are rebuilt by the code the late path runs. The latches are
   last-writer-wins: the v2 message-id seed is the live dispatch's.
 - One pure `step` makes the decision. It is modelled in
-  `lean-proofs/Graff/AcpEarlyInit.lean`, and the Zig code calls it. The
-  model proves, for every boot trace:
+  `lean-proofs/Graff/AcpEarlyInit.lean`, and the Zig code calls it. Over
+  every boot trace, including ones where the early answer fails, the model
+  proves line bookkeeping only:
   - the first `initialize` is answered exactly once;
+  - a line is taken only after its answer was sent;
   - the replay writes nothing;
   - a non-`initialize` first line reaches the loop unchanged;
   - stdout and the dispatch history equal the late path's.
-  A 360-cell cube shows that the early answer plus the replay leaves the same
-  bytes and latches as the late path. The conformance test runs the real
-  engine on every cell.
+  It assumes that the response is a function of the request alone, and that
+  equal dispatch history means equal dispatch state. It says nothing about
+  bytes, the poll, the reader or timing.
+- The byte-equality claim rests on two tests, not on the Lean kernel:
+  - the Zig conformance test, which runs the real engine early and late on
+    each of the 360 cells of the `initialize` cube and compares bytes and
+    latches;
+  - `scripts/test-acp-early-init.py`, which drives the built binary at
+    random write offsets during boot and compares stdout with a client that
+    writes after boot.
+- A build without ACP (`-Dacp=false`, `-Dminimal`) declines at comptime, so
+  the engine is not compiled in.
 - No thread is added, so no TLA+ model is needed (`formal/README.md`).
 
 ## Consequences
@@ -63,7 +79,7 @@ Differences from the late path:
 - A request that arrives during root construction is answered at the
   `root agent` mark, just before the loop would have answered it. With
   worktree identity resolved in-process that phase takes about 2 ms, so
-  `buildRootAgent` has no checks of its own. If it grows long again, boot
-  code inside it can call `acp_early.check()` between its steps.
+  `buildRootAgent` has no checks of its own. If it grows long again, it
+  needs a check between its steps; none exists today.
 - Windows has no `poll` on stdin. There, only bytes already buffered count,
   which in practice means the late path.

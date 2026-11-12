@@ -25,11 +25,14 @@ is delivered once or refused, never dropped; a request is in call order
 whichever read finished first; a trailer ref is an image
 block or its line; the port is the `Model` in `src/image_inbox.zig`, run
 against the queue over every sequence of six events). They are not Turing
-machines: no tape, no halt state. `AcpEarlyInit` (an `initialize`
-answered at a boot boundary is answered once, its loop-start replay writes
-nothing, a non-`initialize` first line reaches the loop unchanged, and
-stdout and dispatch history equal the late path's on every boot trace) is
-the decision `src/acp_early.zig` consults.
+machines: no tape, no halt state. `AcpEarlyInit` is the decision
+`src/acp_early.zig` consults. It proves line bookkeeping on every boot
+trace, including traces where the early answer fails: the first
+`initialize` is answered once, a line is taken only after its answer was
+sent, the loop-start replay writes nothing, a non-`initialize` first line
+reaches the loop unchanged, and stdout and dispatch history equal the late
+path's. It assumes, and does not prove, that the response is a function of
+the request alone and that equal dispatch history means equal state.
 
 The shape of a subagent fleet is not a cube. `Shape` is the observation
 ladder of one turn and stays a cube. How many children spawn, which
@@ -69,7 +72,7 @@ not a skip: TUI, prompts, and SSE bytes stay out of Lean on purpose.
 |---|---|---|
 | `BashPolicy` | finite command cube: `isSimple`, `escapesCwd`, `readOnlyAllowed`, `readOnlyExternal` | live argv quoting, Windows cmd.exe |
 | `ImageDelivery` | 102 admit cells + `Event`/`step` (inbox) + the trailer promotion fold | base64 bytes, provider wire shape, which read finishes first |
-| `AcpEarlyInit` | 36 `step` cells + boot-trace theorems (∀ traces) + 360 `initialize` response cells; 5 mutants rejected | a timing claim (when a boundary runs, how fast), the non-blocking poll, or Zig refinement beyond the fixture (the conformance test runs the real `step` and the real engine per cell) |
+| `AcpEarlyInit` | 55 `step` cells + boot-trace theorems (∀ traces, early answers that fail included) + 360 `initialize` response cells; 6 mutants rejected | proof that the response is independent of boot state (the model's `answerOf` is a pure function of the request) or that equal dispatch history means equal state (assumed); bytes, framing, CRLF, BOM, overlong lines; the poll, the reader, the discard sink; `can_load` equality (a Zig test pins it); timing; Zig refinement beyond the fixture. The cube's `early_eq_late` holds by the model's construction. Byte equality rests on the conformance test (real engine, early vs late, every cube cell) and `scripts/test-acp-early-init.py` |
 
 ### Never (accounted for; eval / tier 2)
 
