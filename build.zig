@@ -156,6 +156,7 @@ pub fn build(b: *std.Build) void {
     unit_tests.root_module.addAnonymousImport("spec_prompt_cache", .{ .root_source_file = b.path("spec/kernels/prompt_cache.json") });
     unit_tests.root_module.addAnonymousImport("spec_prompt_prefix", .{ .root_source_file = b.path("spec/kernels/prompt_prefix.json") });
     unit_tests.root_module.addAnonymousImport("spec_prompt_stable", .{ .root_source_file = b.path("spec/kernels/prompt_stable.json") });
+    unit_tests.root_module.addAnonymousImport("spec_acp_early_init", .{ .root_source_file = b.path("spec/kernels/acp_early_init.json") });
     const run_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit and subprocess integration tests");
     test_step.dependOn(&run_tests.step);

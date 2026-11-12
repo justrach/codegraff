@@ -247,7 +247,7 @@ const session_run = @import("session_run.zig");
 pub fn main(init: std.process.Init) !void {
     if ((comptime @import("build_options").acp) and init.environ_map.get("GRAFF_AGENT_OBSERVER") != null) return @import("acp_agents.zig").run(init);
     if (try @import("external_tui.zig").maybeRun(init)) return;
-    var boot = startup_timing.Tracker.init(startup_timing.shutdown_trace.arm(init.io, init.environ_map), init.environ_map.get("GRAFF_BOOT_DEBUG") != null); // #364: arm() passes io through, so the teardown below stamps phases without a line of its own
+    var boot: @import("acp_early.zig").Boot = .{ .inner = startup_timing.Tracker.init(startup_timing.shutdown_trace.arm(init.io, init.environ_map), init.environ_map.get("GRAFF_BOOT_DEBUG") != null) }; // #364: arm() passes io through, so the teardown below stamps phases without a line of its own; every mark is also an ACP early-initialize check
     const gpa = init.gpa;
     const io = init.io;
     defer @import("session_writer.zig").stop();
@@ -301,13 +301,11 @@ pub fn main(init: std.process.Init) !void {
     defer client_runtime.deinit(startup_timing.shutdown_trace.at(io, "ca-warm-await"));
     const client = &client_runtime.client;
     boot.mark(io, "CA warm scheduled");
-    var stdin_buf: [64 * 1024]u8 = undefined;
-    var stdin_reader = Io.File.stdin().reader(io, &stdin_buf);
-    const in = &stdin_reader.interface;
     var stdout_buf: [4096]u8 = undefined;
     var stdout_writer = Io.File.stdout().writer(io, &stdout_buf);
     const out = &stdout_writer.interface;
     g_out = out;
+    const in = @import("acp_early.zig").arm(io, gpa, out, flags.positionals.items); // the one stdin reader; ACP may answer `initialize` from it before the root exists
     if (try session_start.runTitleCommand(io, gpa, arena, client, default_provider, out, flags, &invocation_budget)) return;
     // Generate identity before opening either JSONL. The score channel and both
     // files share this run id; session_id is a separate runtime correlation id.
@@ -591,7 +589,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = .{ @import("presence_accord.zig"), @import("peer_idle.zig"), @import("acp_idle.zig"), @import("presence_chan.zig"), @import("presence_record.zig"), @import("daddy.zig"), @import("peer_inbox_content_test.zig"), @import("peer_inbox_failure_test.zig"), @import("peer_inbox_storage_test.zig"), @import("peer_inbox_sequence_test.zig"), @import("peer_inbox_snapshot_test.zig") };
     _ = .{ @import("acp_agents.zig"), @import("repo_context_tests.zig"), @import("session_select.zig") };
     _ = .{ @import("subagent_activity.zig"), @import("subagent_steer.zig"), @import("subagent_interactive.zig"), @import("subagent_recovery.zig"), @import("subagent_retained.zig"), @import("subagent_history.zig"), @import("subagent_history_copy.zig"), @import("subagent_history_tests.zig"), @import("subagent_run_tests.zig"), @import("workflow_synthesis.zig") };
-    _ = .{ @import("acp_agent_activity.zig"), @import("acp_subagent_live.zig"), @import("acp_line_writer.zig") };
+    _ = .{ @import("acp_agent_activity.zig"), @import("acp_subagent_live.zig"), @import("acp_line_writer.zig"), @import("acp_early.zig") };
     _ = .{ @import("acp_replay.zig"), @import("python_version.zig"), @import("jev_auto.zig"), @import("background_wait.zig"), @import("gateway_compact_tests.zig") };
     _ = @import("read_image.zig");
     _ = @import("image_orient.zig");

@@ -25,7 +25,11 @@ is delivered once or refused, never dropped; a request is in call order
 whichever read finished first; a trailer ref is an image
 block or its line; the port is the `Model` in `src/image_inbox.zig`, run
 against the queue over every sequence of six events). They are not Turing
-machines: no tape, no halt state.
+machines: no tape, no halt state. `AcpEarlyInit` (an `initialize`
+answered at a boot boundary is answered once, its loop-start replay writes
+nothing, a non-`initialize` first line reaches the loop unchanged, and
+stdout and dispatch history equal the late path's on every boot trace) is
+the decision `src/acp_early.zig` consults.
 
 The shape of a subagent fleet is not a cube. `Shape` is the observation
 ladder of one turn and stays a cube. How many children spawn, which
@@ -65,6 +69,7 @@ not a skip: TUI, prompts, and SSE bytes stay out of Lean on purpose.
 |---|---|---|
 | `BashPolicy` | finite command cube: `isSimple`, `escapesCwd`, `readOnlyAllowed`, `readOnlyExternal` | live argv quoting, Windows cmd.exe |
 | `ImageDelivery` | 102 admit cells + `Event`/`step` (inbox) + the trailer promotion fold | base64 bytes, provider wire shape, which read finishes first |
+| `AcpEarlyInit` | 36 `step` cells + boot-trace theorems (∀ traces) + 360 `initialize` response cells; 5 mutants rejected | a timing claim (when a boundary runs, how fast), the non-blocking poll, or Zig refinement beyond the fixture (the conformance test runs the real `step` and the real engine per cell) |
 
 ### Never (accounted for; eval / tier 2)
 

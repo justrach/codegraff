@@ -120,6 +120,19 @@
       "impl": "src/goal_state.zig:steeringGate+src/prompts.zig:pinStandingGoal+src/skill_docs.zig:execSkill",
       "cells_floor": 20,
       "cells_key": "cases"
+    },
+    {
+      "id": "acp_early_init",
+      "lean": "lean-proofs/Graff/AcpEarlyInit.lean",
+      "ref": "spec/ref/acp_early_init.py",
+      "fixture": "spec/kernels/acp_early_init.json",
+      "zig": "src/spec_acp_early_init_conformance.zig",
+      "impl": "src/acp_early.zig:step",
+      "cells_floor": 396,
+      "cells_key": [
+        "step",
+        "cases"
+      ]
     }
   ]
 }
