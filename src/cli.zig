@@ -16,14 +16,20 @@ const harness_version = root.harness_version;
 const version_status = @import("version_status.zig");
 const update_service = @import("update_service.zig");
 const update_target = @import("update_target.zig");
+const update_check_cache = @import("update_check_cache.zig");
 
-/// Dim REPL/TUI line when GitHub has a newer release. Null if current, newer,
-/// offline, or GRAFF_NO_UPDATE_CHECK is set.
+/// Dim REPL/TUI line when the cached latest release is newer. Null if current,
+/// newer, no cache yet, or GRAFF_NO_UPDATE_CHECK is set. Never touches the
+/// network: a missing or stale cache refreshes on a detached thread.
 pub fn updateAvailableLine(io: Io, gpa: Allocator, arena: Allocator, skip: bool) ?[]const u8 {
-    if (skip) return null;
-    const check = version_status.checkLatest(io, gpa, arena, harness_version);
-    if (check.order != .lt) return null;
-    return std.fmt.allocPrint(arena, "graff v{s} is available (you have {s}) — graff update", .{ check.latest.?, check.running }) catch null;
+    _ = gpa;
+    return update_check_cache.banner(io, arena, .{
+        .home = @import("credential_store.zig").g_home,
+        .running = harness_version,
+        .skip = skip,
+        .now_ms = @import("util.zig").unixMs(io),
+        .fetch = version_status.fetchLatestReleaseTag,
+    }).line;
 }
 
 /// `graff update [--force|--check]` — bring the installed binary up to the
