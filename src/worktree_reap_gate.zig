@@ -88,8 +88,10 @@ test "mayHaveOrphans: only stale registrations or dead session trees need git" {
     var arena_state = std.heap.ArenaAllocator.init(a);
     defer arena_state.deinit();
     const ar = arena_state.allocator();
-    const base = fx.scratch(io, ar) orelse return error.SkipZigTest;
+    const base = try fx.scratch(io, ar);
     defer Io.Dir.cwd().deleteTree(io, base) catch {};
+    const saved = fx.hermetic();
+    defer git_dirs.user_configs_for_test = saved;
     const root = try std.fmt.allocPrint(ar, "{s}/repo", .{base});
     try fx.repoWithCommit(io, ar, root);
     const ws = @import("task_workspace.zig");
@@ -115,4 +117,86 @@ test "mayHaveOrphans: only stale registrations or dead session trees need git" {
 
     // Outside any repo there is nothing for git to do.
     try std.testing.expect(!mayHaveOrphans(io, ar, base));
+}
+
+/// `git worktree prune --dry-run --verbose` names something to prune.
+fn pruneWould(io: Io, root: []const u8) bool {
+    const gpa = std.testing.allocator;
+    const r = @import("process_runner.zig").runCapped(gpa, io, &.{ "git", "-C", root, "worktree", "prune", "-n", "-v" }, 8192, 8192, 15_000) catch return true;
+    defer {
+        gpa.free(r.stdout);
+        gpa.free(r.stderr);
+    }
+    return r.stdout.len + r.stderr.len > 0;
+}
+
+test "mayHaveOrphans: locked, duplicate, relative, empty worktrees/ and a main HEAD on a dead session" {
+    const builtin = @import("builtin");
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
+    if (git_dirs.envOverride()) return error.SkipZigTest;
+    const io = std.testing.io;
+    const fx = @import("git_dirs_tests.zig");
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    const base = try fx.scratch(io, ar);
+    defer Io.Dir.cwd().deleteTree(io, base) catch {};
+    const saved = fx.hermetic();
+    defer git_dirs.user_configs_for_test = saved;
+    const T = struct {
+        fn repo(b: []const u8, a: Allocator, name: []const u8) ![]const u8 {
+            const r = try std.fmt.allocPrint(a, "{s}/{s}", .{ b, name });
+            try fx.repoWithCommit(std.testing.io, a, r);
+            return r;
+        }
+        fn tree(a: Allocator, root: []const u8, name: []const u8) ![]const u8 {
+            const p = try std.fmt.allocPrint(a, "{s}/.graff/worktrees/{s}", .{ root, name });
+            const br = try std.fmt.allocPrint(a, "worktree-{s}", .{name});
+            if (!fx.git(std.testing.io, &.{ "-C", root, "worktree", "add", "-q", "-b", br, p })) return error.WorktreeAddFailed;
+            return p;
+        }
+    };
+
+    // Locked and deleted out of band: git keeps the registration, so no spawn.
+    const locked = try T.repo(base, ar, "locked");
+    const kept = try T.tree(ar, locked, "task-kept");
+    try std.testing.expect(fx.git(io, &.{ "-C", locked, "worktree", "lock", kept }));
+    try Io.Dir.cwd().deleteTree(io, kept);
+    try std.testing.expect(!pruneWould(io, locked));
+    try std.testing.expect(!mayHaveOrphans(io, ar, locked));
+    // A lock does not hide a dead session's tree from the reaper.
+    const dead = try T.tree(ar, locked, "session-0-locked");
+    try std.testing.expect(fx.git(io, &.{ "-C", locked, "worktree", "lock", dead }));
+    try std.testing.expect(mayHaveOrphans(io, ar, locked));
+
+    // Two registrations naming one checkout: git prunes the duplicate.
+    const dup = try T.repo(base, ar, "dup");
+    _ = try T.tree(ar, dup, "task-a");
+    _ = try T.tree(ar, dup, "task-b");
+    const a_gitdir = try std.fmt.allocPrint(ar, "{s}/.git/worktrees/task-a/gitdir", .{dup});
+    const b_gitdir = try std.fmt.allocPrint(ar, "{s}/.git/worktrees/task-b/gitdir", .{dup});
+    const same = try Io.Dir.cwd().readFileAlloc(io, a_gitdir, ar, .limited(4096));
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = b_gitdir, .data = same });
+    try std.testing.expect(pruneWould(io, dup));
+    try std.testing.expect(mayHaveOrphans(io, ar, dup));
+
+    // A relative gitdir (worktree.useRelativePaths) is git's call.
+    const rel = try T.repo(base, ar, "rel");
+    _ = try T.tree(ar, rel, "task-rel");
+    const rel_gitdir = try std.fmt.allocPrint(ar, "{s}/.git/worktrees/task-rel/gitdir", .{rel});
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = rel_gitdir, .data = "../../../.graff/worktrees/task-rel/.git\n" });
+    try std.testing.expect(mayHaveOrphans(io, ar, rel));
+
+    // An empty worktrees/ directory: prune removes it, then nothing is left.
+    const empty = try T.repo(base, ar, "empty");
+    try Io.Dir.cwd().createDirPath(io, try std.fmt.allocPrint(ar, "{s}/.git/worktrees", .{empty}));
+    try std.testing.expect(mayHaveOrphans(io, ar, empty));
+    try std.testing.expect(fx.git(io, &.{ "-C", empty, "worktree", "prune" }));
+    try std.testing.expect(!mayHaveOrphans(io, ar, empty));
+
+    // The main checkout itself sits on a dead session's branch.
+    const main_dead = try T.repo(base, ar, "maindead");
+    try std.testing.expect(!mayHaveOrphans(io, ar, main_dead));
+    try std.testing.expect(fx.git(io, &.{ "-C", main_dead, "checkout", "-q", "-b", "worktree-session-0-main" }));
+    try std.testing.expect(mayHaveOrphans(io, ar, main_dead));
 }

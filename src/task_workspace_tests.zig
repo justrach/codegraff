@@ -320,7 +320,7 @@ test "maybeAutoIsolate: lean, -w and non-git runs spawn no git (F3)" {
     try std.testing.expect(ws.maybeAutoIsolate(a, io, ar, "/nonexistent-home", false, true) == .skip);
     try std.testing.expect(ws.maybeAutoIsolate(a, io, ar, "/nonexistent-home", true, false) == .skip);
     // An interactive run in a plain folder learns "not git" in-process.
-    const base = fx.scratch(io, ar) orelse return error.SkipZigTest;
+    const base = try fx.scratch(io, ar);
     defer Io.Dir.cwd().deleteTree(io, base) catch {};
     var plain = try Io.Dir.cwd().openDir(io, base, .{});
     defer plain.close(io);
@@ -333,4 +333,56 @@ test "maybeAutoIsolate: lean, -w and non-git runs spawn no git (F3)" {
     }
     try std.testing.expectEqual(@as(u32, 0), fx.spawnCalls());
     try std.testing.expectEqual(spawns, lease.rev_parse_spawns.load(.monotonic));
+}
+
+test "maybeAutoIsolate: a peer plus a git that rejects --path-format skips, as before, never fails" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const git_dirs = @import("git_dirs.zig");
+    if (git_dirs.envOverride()) return error.SkipZigTest;
+    const lease = @import("worktree_lease.zig");
+    const fx = @import("git_dirs_tests.zig");
+    const claim = @import("startup_claim.zig");
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(a);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    const base = try fx.scratch(io, ar);
+    defer Io.Dir.cwd().deleteTree(io, base) catch {};
+    const saved_cfg = fx.hermetic();
+    defer git_dirs.user_configs_for_test = saved_cfg;
+    const repo = try std.fmt.allocPrint(ar, "{s}/repo", .{base});
+    try fx.repoWithCommit(io, ar, repo);
+    const home = try std.fmt.allocPrint(ar, "{s}/home", .{base});
+    const saved_run = lease.run_git_hook;
+    lease.run_git_hook = &fx.oldGit;
+    defer lease.run_git_hook = saved_run;
+    lease.invalidateIdentity();
+    defer lease.invalidateIdentity();
+
+    // The checkout and its isolation root agree, both read in-process.
+    try std.testing.expectEqualStrings(repo, ws.autoIsolationRoot(a, io, ar, repo) orelse "");
+    var dir = try Io.Dir.cwd().openDir(io, repo, .{});
+    defer dir.close(io);
+    var orig = try Io.Dir.cwd().openDir(io, ".", .{});
+    defer orig.close(io);
+    if (std.posix.system.fchdir(dir.handle) != 0) return error.ChdirFailed;
+    defer _ = std.posix.system.fchdir(orig.handle);
+    const id = lease.currentIdentity(a, io, ar);
+    try std.testing.expectEqual(lease.Identity.Kind.main_checkout, id.kind);
+
+    // A live peer (pid 1) holds this checkout's fresh startup claim.
+    const live = try std.fmt.allocPrint(ar, "{s}/.graff/live", .{home});
+    try Io.Dir.cwd().createDirPath(io, live);
+    var nbuf: [48]u8 = undefined;
+    const claim_file = try std.fmt.allocPrint(ar, "{s}/{s}", .{ live, claim.fileName(&nbuf, id.id) });
+    const line = try std.fmt.allocPrint(ar, "graff-owner 1 pid=1 start=0 ms={d}\n", .{@import("util.zig").unixMs(io)});
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = claim_file, .data = line });
+
+    // Before this series that git made the checkout `not_git`: no isolation,
+    // no error. It must not become a boot-fatal `.failed`.
+    const got = ws.maybeAutoIsolate(a, io, ar, home, false, false);
+    try std.testing.expect(got == .skip);
+    const minted = try std.fmt.allocPrint(ar, "{s}/.graff/worktrees", .{repo});
+    try std.testing.expect((Io.Dir.cwd().statFile(io, minted, .{}) catch null) == null);
 }

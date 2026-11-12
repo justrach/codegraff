@@ -165,10 +165,19 @@ pub fn duplicateOwnerWarning(arena: Allocator, rec: Owner, age_ms: i64) []const 
     ) catch "⚠ another graff session already owns this worktree\n";
 }
 
+/// Every git spawn behind an identity or common-dir question. Swappable so a
+/// test can stand in a git that, like git < 2.31, rejects `--path-format`.
+pub const RunGitFn = *const fn (gpa: Allocator, io: Io, argv: []const []const u8) anyerror!process_runner.CappedRun;
+pub var run_git_hook: RunGitFn = &runGit;
+
+fn runGit(gpa: Allocator, io: Io, argv: []const []const u8) anyerror!process_runner.CappedRun {
+    return runCapped(gpa, io, argv, 8192, 8192, 15_000);
+}
+
 fn revParse(gpa: Allocator, io: Io, arena: Allocator, flag: []const u8) []const u8 {
     // --path-format=absolute so a nested cwd yields the same string as the repo
     // root. Old git without the flag just fails and we degrade to the cwd.
-    const r = runCapped(gpa, io, &.{ "git", "rev-parse", "--path-format=absolute", flag }, 8192, 8192, 15_000) catch return "";
+    const r = run_git_hook(gpa, io, &.{ "git", "rev-parse", "--path-format=absolute", flag }) catch return "";
     defer {
         gpa.free(r.stdout);
         gpa.free(r.stderr);
@@ -189,8 +198,31 @@ pub fn gitCommonDirAt(gpa: Allocator, io: Io, arena: Allocator, dir: []const u8)
     return revParseAt(gpa, io, arena, dir, "--git-common-dir");
 }
 
+/// Physical path of `dir`; "." or empty is the process cwd, read with
+/// `currentPath` (a `realPath` of "." can go stale after chdir, #721).
+fn physical(io: Io, arena: Allocator, dir: []const u8) []const u8 {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = (if (dir.len == 0 or std.mem.eql(u8, dir, "."))
+        std.process.currentPath(io, &buf)
+    else
+        Io.Dir.cwd().realPathFile(io, dir, &buf)) catch return "";
+    return arena.dupe(u8, buf[0..n]) catch "";
+}
+
+/// `gitCommonDirAt`, answered in-process when git_dirs can; one spawn only
+/// when it defers. Empty when neither finds a repository.
+pub fn commonDirAt(gpa: Allocator, io: Io, arena: Allocator, dir: []const u8) []const u8 {
+    const start = physical(io, arena, dir);
+    if (start.len > 0) switch (git_dirs.resolve(io, arena, start)) {
+        .not_git => return "",
+        .found => |d| return d.common_dir,
+        .fallback => {},
+    };
+    return gitCommonDirAt(gpa, io, arena, if (dir.len > 0) dir else ".");
+}
+
 fn revParseAt(gpa: Allocator, io: Io, arena: Allocator, dir: []const u8, flag: []const u8) []const u8 {
-    const r = runCapped(gpa, io, &.{ "git", "-C", dir, "rev-parse", "--path-format=absolute", flag }, 8192, 8192, 15_000) catch return "";
+    const r = run_git_hook(gpa, io, &.{ "git", "-C", dir, "rev-parse", "--path-format=absolute", flag }) catch return "";
     defer {
         gpa.free(r.stdout);
         gpa.free(r.stderr);
@@ -213,7 +245,7 @@ pub var rev_parse_spawns: std.atomic.Value(u32) = .init(0);
 fn spawnRevParse(gpa: Allocator, io: Io, arena: Allocator, dir: ?[]const u8) RevParse {
     _ = rev_parse_spawns.fetchAdd(1, .monotonic);
     const tail = [_][]const u8{ "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir" };
-    const r = (if (dir) |d| runCapped(gpa, io, &([_][]const u8{ "git", "-C", d } ++ tail), 8192, 8192, 15_000) else runCapped(gpa, io, &([_][]const u8{"git"} ++ tail), 8192, 8192, 15_000)) catch return .{};
+    const r = (if (dir) |d| run_git_hook(gpa, io, &([_][]const u8{ "git", "-C", d } ++ tail)) else run_git_hook(gpa, io, &([_][]const u8{"git"} ++ tail))) catch return .{};
     defer {
         gpa.free(r.stdout);
         gpa.free(r.stderr);
@@ -235,7 +267,8 @@ fn spawnRevParse(gpa: Allocator, io: Io, arena: Allocator, dir: ?[]const u8) Rev
 }
 
 // Memo of git's answer for one cwd (getcwd, what git itself sees). In-process
-// answers are cheap and always recomputed; only the spawn is cached.
+// answers are cheap and always recomputed; only a spawn that found a
+// repository is cached, and only consulted while git_dirs still defers.
 var memo_lock: std.atomic.Value(bool) = .init(false);
 var memo_key: [4096]u8 = undefined;
 var memo_key_len: usize = 0;
@@ -275,22 +308,17 @@ fn memoPut(key: []const u8, id: Identity) void {
 /// Live canonical identity for this process's working directory. Zero git
 /// spawns for ordinary layouts (git_dirs.zig); otherwise one, memoized.
 pub fn currentIdentity(gpa: Allocator, io: Io, arena: Allocator) Identity {
-    var here_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const here: []const u8 = if (std.process.currentPath(io, &here_buf)) |n| here_buf[0..n] else |_| "";
-    if (here.len > 0) if (memoGet(arena, here)) |hit| return hit;
-    var buf: [4096]u8 = undefined;
-    const cwd = blk: {
-        const n = Io.Dir.cwd().realPathFile(io, ".", &buf) catch break :blk "";
-        break :blk arena.dupe(u8, buf[0..n]) catch "";
-    };
+    const here = physical(io, arena, ".");
     if (here.len > 0) switch (git_dirs.resolve(io, arena, here)) {
-        .not_git => return canonicalIdentity("", "", cwd),
-        .found => |d| return canonicalIdentity(d.git_dir, d.common_dir, cwd),
-        .fallback => {},
+        .not_git => return canonicalIdentity("", "", here),
+        .found => |d| return canonicalIdentity(d.git_dir, d.common_dir, here),
+        .fallback => if (memoGet(arena, here)) |hit| return hit,
     };
     const rp = rev_parse_hook(gpa, io, arena, null);
-    const id = canonicalIdentity(rp.git_dir, rp.common_dir, cwd);
-    memoPut(here, id);
+    const id = canonicalIdentity(rp.git_dir, rp.common_dir, here);
+    // A spawn that found nothing (old git, a config git rejects, a timeout)
+    // is asked again next call, so a later `git init` here is seen (ADR 0118).
+    if (rp.git_dir.len > 0) memoPut(here, id);
     return id;
 }
 
@@ -303,8 +331,8 @@ pub fn freshIdentity(gpa: Allocator, io: Io, arena: Allocator) Identity {
 /// Identity of an explicit path (`git -C` / `cd` target), not the caller cwd.
 pub fn identityAt(gpa: Allocator, io: Io, arena: Allocator, path: []const u8) Identity {
     if (path.len == 0) return .{};
-    var buf: [4096]u8 = undefined;
-    const real: ?[]const u8 = if (Io.Dir.cwd().realPathFile(io, path, &buf)) |n| (arena.dupe(u8, buf[0..n]) catch null) else |_| null;
+    const phys = physical(io, arena, path);
+    const real: ?[]const u8 = if (phys.len > 0) phys else null;
     const cwd = real orelse path;
     if (real) |start| switch (git_dirs.resolve(io, arena, start)) {
         .not_git => return canonicalIdentity("", "", cwd),

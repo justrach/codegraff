@@ -105,9 +105,10 @@ pub fn gitDirAt(gpa: Allocator, io: Io, arena: Allocator, checkout: []const u8) 
 }
 
 /// Auto-isolation always writes under the owning main checkout, even when
-/// the new session was launched from another linked worktree.
+/// the new session was launched from another linked worktree. Read the same
+/// way as the identity: in-process, one spawn only when git_dirs defers.
 pub fn autoIsolationRoot(gpa: Allocator, io: Io, arena: Allocator, checkout: []const u8) ?[]const u8 {
-    const common = lease.gitCommonDirAt(gpa, io, arena, checkout);
+    const common = lease.commonDirAt(gpa, io, arena, checkout);
     const root = worktree_prune.mainWorktreePath(common);
     return if (root.len > 0) root else null;
 }
@@ -417,11 +418,17 @@ pub fn maybeAutoIsolate(gpa: Allocator, io: Io, arena: Allocator, home: []const 
     const eligible = shouldAutoIsolate(.{ .already_isolated = already_isolated, .lean = lean, .is_git = is_git, .claimed = true, .windows = false });
     // #1200: a live peer, or one that started with us and has not announced yet.
     if (!eligible or !(checkoutClaimed(gpa, io, arena, home) or startupContended(gpa, io, arena, home))) return .skip;
+    // A peer is here and minting will spawn git anyway: ask it the question
+    // the identity used to spawn for. A git that cannot answer (older than
+    // 2.31, a config it rejects) was a `not_git` checkout before, so skip.
+    const asked = lease.rev_parse_hook(gpa, io, arena, null);
+    if (asked.git_dir.len == 0) return .skip;
     var raw: [4]u8 = undefined;
     io.random(&raw);
     const nonce = std.fmt.bytesToHex(raw, .lower);
     const slug = autoSlug(arena, proc_identity.selfPid(), nonce[0..8]) catch return .{ .failed = error.CreateFailed };
-    const project = autoIsolationRoot(gpa, io, arena, ".") orelse return .{ .failed = error.CreateFailed };
+    const root = worktree_prune.mainWorktreePath(asked.common_dir);
+    const project = if (root.len > 0) root else return .{ .failed = error.CreateFailed };
     const wt = create(gpa, io, arena, .{ .slug = slug, .cwd = project, .unique = true }) catch |err| return .{ .failed = err };
     enter(io, arena, wt) catch |err| return .{ .failed = err };
     return .{ .isolated = wt };

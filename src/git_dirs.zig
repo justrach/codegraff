@@ -9,28 +9,35 @@
 //! way `strbuf_realpath` does.
 //!
 //! Anything git could answer differently is `.fallback`, and the caller asks
-//! git: discovery env vars, bare repos or a cwd inside a git dir, symlinks
-//! anywhere in a resolved path, foreign ownership (safe.directory), repository
-//! format extensions or config includes, unreadable or oversized files, and
-//! every platform but macOS and Linux. `.not_git` is returned only where git
-//! itself fails discovery.
+//! git: discovery or config env vars, bare repos or a cwd inside a git dir,
+//! symlinks anywhere in a resolved path, foreign ownership (safe.directory),
+//! repository format extensions, any config file git would reject or that
+//! git_config_check.zig cannot prove it accepts, unreadable or oversized
+//! files, and every platform but macOS and Linux. `.not_git` is returned only
+//! where git itself fails discovery.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const config_check = @import("git_config_check.zig");
 
 pub const Dirs = struct { git_dir: []const u8, common_dir: []const u8 };
 pub const Result = union(enum) { not_git, found: Dirs, fallback };
 
 const supported = builtin.os.tag == .macos or builtin.os.tag == .linux;
 
-/// Present at all (even empty) means git's discovery may differ from ours.
+/// Present at all (even empty) means git's discovery, or the config files it
+/// reads, may differ from ours.
 pub const discovery_env = [_][:0]const u8{
     "GIT_DIR",                 "GIT_WORK_TREE",                   "GIT_COMMON_DIR",
     "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_OBJECT_DIRECTORY",
-    "GIT_IMPLICIT_WORK_TREE",  "GIT_TEST_ASSUME_DIFFERENT_OWNER",
+    "GIT_IMPLICIT_WORK_TREE",  "GIT_TEST_ASSUME_DIFFERENT_OWNER", "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",       "GIT_CONFIG_PARAMETERS",
 };
+
+/// Tests only: check these files instead of the system and global configs.
+pub var user_configs_for_test: ?[]const []const u8 = null;
 
 /// Tests only: pretend a discovery env var is (true) or is not (false) set.
 pub var env_override_for_test: ?bool = null;
@@ -145,24 +152,47 @@ fn validHead(io: Io, arena: Allocator, git_dir: []const u8) bool {
     return true;
 }
 
-/// Repository format git is sure to accept: version 0/1, no extensions, no
-/// includes that could add them. Anything else is git's call.
+fn envPath(name: [:0]const u8) ?[]const u8 {
+    if (comptime !supported) return null;
+    const v = std.mem.span(std.c.getenv(name.ptr) orelse return null);
+    return if (v.len > 0) v else null;
+}
+
+/// Every config file `git rev-parse` reads passes git_config_check.zig:
+/// system (`/etc/gitconfig`; a git built with another prefix reads its own,
+/// which is not checked), XDG and `~/.gitconfig`, then the repository's own
+/// config, which must exist. Repository format version 0/1 and no extensions
+/// are part of that check. Anything else is git's call.
 pub fn plainFormat(io: Io, arena: Allocator, common: []const u8) bool {
+    if (comptime !supported) return false;
+    const home = envPath("HOME");
+    if (home == null and std.c.getenv("HOME") != null) return false; // set but empty
+    const ctx: config_check.Ctx = .{ .io = io, .arena = arena, .home = home };
+    if (user_configs_for_test) |paths| {
+        for (paths) |p| if (!config_check.fileOk(ctx, p, true)) return false;
+    } else {
+        if (!config_check.fileOk(ctx, "/etc/gitconfig", true)) return false;
+        const xdg = if (envPath("XDG_CONFIG_HOME")) |x| child(arena, x, "git/config") else if (home) |h| child(arena, h, ".config/git/config") else null;
+        if (xdg) |p| if (!config_check.fileOk(ctx, p, true)) return false;
+        if (home) |h| if (!config_check.fileOk(ctx, child(arena, h, ".gitconfig") orelse return false, true)) return false;
+    }
     const p = child(arena, common, "config") orelse return false;
-    const raw = readSmall(io, arena, p, 64 * 1024) orelse return false;
-    const text = std.ascii.allocLowerString(arena, raw) catch return false;
-    if (std.mem.indexOf(u8, text, "[extensions") != null) return false;
-    if (std.mem.indexOf(u8, text, "[include") != null) return false;
-    const key = "repositoryformatversion";
-    var at: usize = 0;
-    while (std.mem.indexOfPos(u8, text, at, key)) |i| {
-        at = i + key.len;
-        var v = std.mem.trimStart(u8, text[at..], " \t");
-        if (v.len == 0 or v[0] != '=') return false;
-        v = v[1..];
-        const end = std.mem.indexOfAny(u8, v, "\n;#") orelse v.len;
-        const val = std.mem.trim(u8, v[0..end], " \t\r");
-        if (!std.mem.eql(u8, val, "0") and !std.mem.eql(u8, val, "1")) return false;
+    return config_check.fileOk(ctx, p, false) and envConfigOk(ctx);
+}
+
+/// `GIT_CONFIG_COUNT` pairs (graff's own tool shells set two). A count or
+/// pair git would reject is git's call.
+fn envConfigOk(ctx: config_check.Ctx) bool {
+    const raw = std.mem.span(std.c.getenv("GIT_CONFIG_COUNT") orelse return true);
+    if (raw.len == 0 or raw.len > 3) return false;
+    for (raw) |c| if (!std.ascii.isDigit(c)) return false;
+    const n = std.fmt.parseInt(u16, raw, 10) catch return false;
+    for (0..n) |i| {
+        var kb: [32]u8 = undefined;
+        var vb: [32]u8 = undefined;
+        const k = std.c.getenv((std.mem.printSentinel(&kb, "GIT_CONFIG_KEY_{d}", .{i}, 0) catch return false).ptr) orelse return false;
+        const v = std.c.getenv((std.mem.printSentinel(&vb, "GIT_CONFIG_VALUE_{d}", .{i}, 0) catch return false).ptr) orelse return false;
+        if (!config_check.pairOk(ctx, std.mem.span(k), std.mem.span(v))) return false;
     }
     return true;
 }
