@@ -23,42 +23,73 @@ a lean `-p` — and `boot_prewarm.wantsCompanion` refuses to prewarm at all when
 any of those variables is set. The one case where a shorter handshake would
 help was the one case where it could not be asked for.
 
+The first version of this change bounded the join and got three things wrong,
+all three found by review against it and fixed here: teardown was only bounded
+on POSIX (`signal` returned early on Windows, so `stopAtExit` still awaited the
+attempt, up to the probe plus handshake caps); a companion that failed *after*
+the budget was reported as a successful connect and its error was dropped; and
+the two late-merge tests were order-dependent, so a failure in one corrupted
+the run instead of failing where it happened.
+
 ## Decision
 
 - **A join budget, not an unbounded await.** `take` waits
   `boot_prewarm.default_budget_ms` for the attempt and then returns. 250 ms is
   the `acp_mcp_servers.attach_budget_ms` precedent for the same decision, 1500
   ms on Windows as there. `GRAFF_MCP_COMPANION_BOOT_MS` overrides it; unset,
-  `0`, unparsable or above 60 s mean the default, so a typo cannot restore the
-  unbounded join. It is read where the prewarm starts (`startCompanion`) — not
-  by `applyHandshakeTimeoutEnv` — and it is deliberately not in
-  `wantsCompanion`'s disable list: a knob for this path must not turn the path
-  off. The wait is an `Io.Event` deadline set by the worker's last write, not
-  a poll: a 2 ms `io.sleep` costs ~5 ms of overshoot on macOS, which turned a
-  250 ms budget into a 355 ms wait.
+  `0` or unparsable mean the default, and anything above the 60 s cap is
+  clamped to the cap — a typo buys a long bound, never the unbounded join, and
+  never a silent fall back to the default either. It is read where the prewarm
+  starts (`startCompanion`) — not by `applyHandshakeTimeoutEnv` — and it is
+  deliberately not in `wantsCompanion`'s disable list: a knob for this path
+  must not turn the path off. The wait is an `Io.Event` deadline set by the
+  worker's last write, not a poll: a 2 ms `io.sleep` costs ~5 ms of overshoot on
+  macOS, which turned a 250 ms budget into a 355 ms wait.
 - **Over budget, the attempt keeps running and merges itself.** `take` hands
-  `reg` to the watch (`Watch.late_merge`, written under the same lock as
-  `Watch.done`) and reports success, so `connectCompanion` neither waits nor
-  falls back to `addServer`: one spawn either way. Whichever side gets there
-  first consumes the outcome exactly once — `take` awaits the future and
-  adopts, or the worker merges through `mcp_boot.adoptStarted`, the single
-  merge point, which drops a latecomer whose server name is already connected
-  (#505: two copies of every tool make a strict Responses endpoint reject the
-  request) and keeps its arena in `task_arenas` for the normal teardown.
-- **`discard` keeps its meaning; `stopAtExit` is new.** `discard` still means
-  "nobody wants it: stop, join, tear down", and now leaves a handed-off
-  attempt alone — it is running on purpose. `Registry.deinitAtExit` calls
-  `stopAtExit` instead: kill the child, join the worker, tear down. That runs
-  before `reg.deinit()`, which is what makes the worker's late merge safe at
-  exit and keeps a silent companion from stalling teardown.
+  `reg` to the watch (`Watch.late_merge`, written once under the same lock as
+  `Watch.done`, asserted null before the write) and reports `.late`, so
+  `connectCompanion` neither waits nor falls back to `addServer`: one spawn
+  either way. Whichever side gets there first consumes the outcome exactly
+  once — `take` awaits the future and adopts, or the worker merges through
+  `mcp_boot.adoptStarted`, the single merge point, which drops a latecomer
+  whose server name is already connected (#505: two copies of every tool make a
+  strict Responses endpoint reject the request) and keeps its arena in
+  `task_arenas` for the normal teardown.
+- **`.late` is not "connected", and a late failure is not a success.** `take`
+  and `connect` return `Adopted`: `.connected` (the catalog is in the
+  registry), `.late` (still running, this registry is its merge target), or an
+  error. A failure that lands before the budget keeps the contract the serial
+  path had — `take` returns it, `error.McpClosed` included. A failure that
+  lands *after* the budget has no request left to return to, so the worker
+  records it (`lateOutcome` / `lateError`) and prints one line to stderr
+  (`companion: <name> failed to connect after the boot budget (<err>); native
+  tools only`). `connectCompanion` says the same for `.late` on every path: the
+  engine sink when the session has one, stderr on `-p`, which prints no notices
+  of its own. Silence in either case is what made a late failure
+  indistinguishable from a connect.
+- **`discard` keeps its meaning; `stopAtExit` is new and bounded on both
+  platforms.** `discard` still means "nobody wants it: stop, join, tear down",
+  and now leaves a handed-off attempt alone — it is running on purpose.
+  `Registry.deinitAtExit` calls `stopAtExit` instead: end the child, join the
+  worker, tear down. `Watch.signal` ends the child on both platforms — POSIX
+  `SIGKILL`, and on Windows `NtTerminateProcess` on the process handle
+  (`Child.Id` is that handle there) — without waiting or freeing the `Child`,
+  which the worker still reaps. So the join is bounded by "the read sees end of
+  stream", not by the 5 s probe plus the 15 s handshake, and that runs before
+  `reg.deinit()`, which is what makes the worker's late merge safe at exit.
+- **The one-shot's own exits take the same path.** `std.process.exit` unwinds
+  no `defer`, so `main`'s `deinitAtExit` never runs on the two exits inside
+  `oneshot.run` — the provider-failure one and the `budget_exhausted` /
+  `unfinished_work` one a `-p` run actually takes. Both call
+  `boot_prewarm.stopAtExit(io)` first. They still skip the rest of the
+  registry's teardown, as they did before; what they no longer do is abandon a
+  live worker and, on Windows, orphan the companion process.
 - **A run that is going to fatal prewarms nothing.** The side finding that
   framed this work — a keyless `-p` spawning the companion before exiting 1 —
   does not reproduce on this tree. `main` starts the prewarm after
   `resolveKeysOrRunAcpPreAuth` returns, and that call is an `orelse return`, so
   the credential fatal returns first: `-p hi` with no key and a stub on PATH
-  spawns nothing and exits in ~66 ms. `boot_prewarm_tests` pins the ordering;
-  the earlier observation came from a revision of the branch that predates the
-  ordering commit.
+  spawns nothing and exits in ~66 ms. `boot_prewarm_tests` pins the ordering.
 
 ## Consequences
 
@@ -73,15 +104,35 @@ help was the one case where it could not be asked for.
   | answers in 600 ms (n=5) | 624.6 ms (618.4-642.6) | 265.9 ms (264.8-266.9) | present before, absent after |
   | never answers (n=5) | 20 134.0 ms (20 125.7-20 179.4) | 266.1 ms (263.9-300.5) | absent both |
 
-  The silent row is why this is not a regression for it: the unbounded join
-  paid 20 s and still ended with no companion tools, because the attempt
-  failed at its own timeout.
+  Re-measured on the fixed tree: a 6 ms stub answers in 20.3 ms (n=8) with
+  `codedbpro (search, read)` on the first request in 8/8, and a silent stub
+  costs 263.5-265.0 ms (n=5, three runs) with one spawn per run. The silent row
+  is why this is not a regression for it: the unbounded join paid 20 s and
+  still ended with no companion tools, because the attempt failed at its own
+  timeout.
+- **Teardown is bounded too, and that is measured, not argued.** With a silent
+  child, the handshake cap lowered to 1200 ms and the join already handed off,
+  `stopAtExit` on macOS takes 0-1 ms (n=3) with the child kill in place and
+  1025-1037 ms (n=3) with it suppressed — the attempt's own handshake timeout,
+  which is what the reviewer measured as 1191 ms against the version this
+  fixes. **Windows is unmeasured.** What is verified there is weaker and is
+  stated as such: the Windows path cross-compiles and links
+  (`zig build test-bin -Dtarget=x86_64-windows`), `Child.Id` is the process
+  handle on Windows, and `NtTerminateProcess` is what `Child.kill` itself
+  issues before it reaps. Whether a terminated child's pipe reads return
+  promptly on Windows, and therefore whether the join is ~0 ms or "one
+  handshake timeout" there, has not been run on a Windows machine. The kill is
+  a signal, not a cancellation: the worker is never cancelled (a cancel that
+  lands inside the bounded handshake's `Io.Select` returns before the select's
+  read task stops, and that task would outlive its frame).
 - The trade-off is the middle row: a cold-and-slow companion can miss the
   one-shot catalog. It keeps connecting, and a late merge is the same event
   `/mcp add` causes — the next request sees the tools and the prompt cache is
   busted from that turn (ADR 0221) — but it can also land after the run's last
   request and never be seen at all. Nothing here can both hold the first
-  request and keep the catalog of a companion that has not answered.
+  request and keep the catalog of a companion that has not answered. That the
+  degradation is now visible (`.late` plus a one-line notice) is the only claim
+  made about it: the catalog itself is still lost.
 - Interactive and ACP sessions are untouched: they queue the companion on
   `pending_starts` (ADR 0230) and never create a prewarm slot, so the budget
   exists only on the `-p` path. The one shared line, `Registry.deinitAtExit`,
@@ -89,6 +140,23 @@ help was the one case where it could not be asked for.
 - The worker now merges from a task thread rather than the boot thread. Every
   reader that matters takes the registry mutex (`snapshotTools`), the same
   assumption a deferred start's join already makes.
+- **The late-merge tests own their fixtures.** Each defers `stopAtExit` before
+  its first assertion, so a failed `expect` still joins the worker before the
+  registry it merges into is deinited; otherwise one failure leaks the slot and
+  the next test crashes inside a merge into freed memory. Each states its own
+  premise (`.late`, empty catalog) instead of depending on a fixture that has
+  not landed yet, and each names its property through the worker's published
+  outcome (`.merged`, `.duplicate`, `.failed`) rather than through "nothing
+  visibly went wrong" — a dropped latecomer and a merge that never happened
+  look identical from the registry otherwise. Proved by mutation, each applied
+  to the fixed tests and run over the whole filtered suite: deleting
+  `and !s.watch.handOff(reg)` fails all three budget tests in `waitForLate`
+  (`TestExpectedLateMerge`) — `take` still reports `.late`, but nothing ever
+  merges it — with the other 120 passing; deleting `w.late_merge = reg` fails
+  the same three the same way, and the tests that follow still pass with no
+  leaked allocations, which is the case that used to segfault the next test;
+  deleting `done_event.set(io)` fails only the join-wake test, at
+  `expect(ms < 500)` (1200 ms budget, one instant answer), with 122 passing.
 - Revisit by raising `default_budget_ms`, not by restoring the unbounded join;
   measure with `scripts/bench-startup.py --companion` plus a first-request
   body capture (the schema gate's `Deferred now:` line names what was left

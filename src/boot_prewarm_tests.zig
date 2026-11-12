@@ -81,8 +81,8 @@ test "boot prewarm: the adopted companion matches the inline addServer catalog b
     start(testing.io, testing.allocator, fixtureSpec("codedbpro", &fixture_argv));
     try testing.expect(pending());
     try testing.expect(take(&warm_reg, "other") == null); // another name leaves the slot alone
-    const joined = take(&warm_reg, "codedbpro") orelse return error.TestExpectedPrewarm;
-    try joined;
+    const adopted = try (take(&warm_reg, "codedbpro") orelse return error.TestExpectedPrewarm);
+    try testing.expectEqual(bp.Adopted.connected, adopted);
     try testing.expect(!pending());
     try testing.expectEqual(@as(usize, 2), warm_reg.tools.len);
     try testing.expectEqualStrings(try toolsJson(a, &inline_reg), try toolsJson(a, &warm_reg));
@@ -267,33 +267,46 @@ fn serverCount(reg: *mcp.Registry) usize {
 /// join, then lands.
 const slow_argv = [_][]const u8{ "-c", "sleep 0.4\n" ++ fixture_script };
 
-fn waitForTools(reg: *mcp.Registry, want: usize) !void {
+/// Wait for the attempt the join handed off to land, and insist on what it
+/// did. The merge and the duplicate drop leave no trace in a dropped attempt,
+/// so the worker publishes the outcome: this is the property, not a proxy for
+/// it (a missing `late_merge` or a missing `settle` times out here instead of
+/// passing as "nothing went wrong").
+fn waitForLate(want: bp.LateOutcome) !void {
     var waited: u32 = 0;
     while (waited < 4_000) : (waited += 10) {
-        if (try toolCount(reg) >= want) return;
+        const state = bp.lateOutcome();
+        if (state != .none) return testing.expectEqual(want, state);
         try testing.io.sleep(.fromMilliseconds(10), .awake);
     }
     return error.TestExpectedLateMerge;
 }
 
+// Both late-merge tests own their attempt start to finish: `stopAtExit` is
+// deferred before the first assertion, so a failed `expect` still stops and
+// joins the worker before the registry it merges into is deinited. Without
+// that, one failure leaks the slot and the NEXT test segfaults inside a merge
+// into freed memory — the wrong test failing for the wrong reason.
 test "boot prewarm: over budget the join returns and the companion still lands (ADR 0339)" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest; // /bin/sh
     var reg = testRegistry();
     defer reg.deinit();
     startWithin(testing.io, testing.allocator, fixtureSpec("codedbpro", &slow_argv), 40);
+    defer stopAtExit(testing.io); // what Registry.deinitAtExit calls, on every path
     try testing.expect(pending());
 
     const t0 = Io.Timestamp.now(testing.io, .awake);
-    try connect(&reg, "codedbpro", "/bin/sh", &slow_argv); // returns; no inline second spawn
+    const adopted = try connect(&reg, "codedbpro", "/bin/sh", &slow_argv); // returns; no inline second spawn
     const ms = t0.untilNow(testing.io, .awake).toMilliseconds();
+    try testing.expectEqual(bp.Adopted.late, adopted); // a hand-off, not a connect
     try testing.expect(ms < 300); // the 40 ms budget, not the 400 ms handshake
     try testing.expectEqual(@as(usize, 0), try toolCount(&reg)); // missed the first catalog
 
     // It keeps running and merges into this registry when it lands — once.
-    try waitForTools(&reg, 2);
+    try waitForLate(.merged);
     try testing.expectEqual(@as(usize, 2), try toolCount(&reg));
     try testing.expectEqual(@as(usize, 1), serverCount(&reg)); // one start, not two
-    stopAtExit(testing.io); // what Registry.deinitAtExit calls
+    stopAtExit(testing.io);
     try testing.expect(!pending());
 }
 
@@ -302,8 +315,13 @@ test "boot prewarm: a late merge cannot duplicate a companion that connected mea
     var reg = testRegistry();
     defer reg.deinit();
     startWithin(testing.io, testing.allocator, fixtureSpec("codedbpro", &slow_argv), 20);
-    const joined = take(&reg, "codedbpro") orelse return error.TestExpectedPrewarm;
-    try joined; // over budget: success, still connecting
+    defer stopAtExit(testing.io);
+    // State the premise this test needs instead of inheriting it: the join
+    // must hand the attempt off. If it adopts instead, there is no late merge
+    // here to guard and the `addServer` below would only report that.
+    const adopted = try (take(&reg, "codedbpro") orelse return error.TestExpectedPrewarm);
+    try testing.expectEqual(bp.Adopted.late, adopted);
+    try testing.expectEqual(@as(usize, 0), serverCount(&reg));
     // Something else connects the same server while the attempt is in flight
     // (an eager pin, `/mcp add`, a `-i` deferred start).
     _ = try reg.addServer("codedbpro", "/bin/sh", &fixture_argv);
@@ -311,13 +329,74 @@ test "boot prewarm: a late merge cannot duplicate a companion that connected mea
 
     // When the attempt lands, `adoptStarted` finds the name taken and tears
     // the latecomer down instead of appending it: every tool twice makes a
-    // strict Responses endpoint reject the whole request (#505). A dropped
-    // latecomer leaves no trace to poll for, so wait past its 400 ms fixture.
-    try testing.io.sleep(.fromMilliseconds(800), .awake);
+    // strict Responses endpoint reject the whole request (#505).
+    try waitForLate(.duplicate);
     try testing.expectEqual(@as(usize, 2), try toolCount(&reg));
     try testing.expectEqual(@as(usize, 1), serverCount(&reg));
     stopAtExit(testing.io);
     try testing.expect(!pending());
+}
+
+test "boot prewarm: a companion that fails after the budget is not reported as connected" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var log = try SpawnLog.init();
+    defer log.deinit();
+    var reg = testRegistry();
+    defer reg.deinit();
+    // Spawns, stays quiet past the 20 ms budget, then exits 1: the failure
+    // lands after the boot thread had to let the first request go. Before this
+    // test it surfaced as a successful connect with an empty catalog and the
+    // error dropped on the floor.
+    const argv = [_][]const u8{ "-c", "echo $$ >> \"$0\"\nsleep 0.4\nexit 1", log.path };
+    startWithin(testing.io, testing.allocator, fixtureSpec("codedbpro", &argv), 20);
+    defer stopAtExit(testing.io);
+    const adopted = try (take(&reg, "codedbpro") orelse return error.TestExpectedPrewarm);
+    try testing.expectEqual(bp.Adopted.late, adopted); // not `.connected`
+    try testing.expectEqual(@as(usize, 0), serverCount(&reg));
+
+    try waitForLate(.failed);
+    try testing.expectEqual(error.McpClosed, bp.lateError().?); // the attempt's own error, kept
+    try testing.expectEqual(@as(usize, 0), serverCount(&reg)); // and nothing merged
+    var buf: [8]std.posix.pid_t = undefined;
+    try testing.expectEqual(@as(usize, 1), log.pids(&buf).len); // one spawn, not retried
+    stopAtExit(testing.io);
+    try testing.expect(!pending());
+}
+
+test "boot prewarm: the join wakes on the worker's event, not the whole budget (ADR 0339)" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var reg = testRegistry();
+    defer reg.deinit();
+    // A companion that answers at once, with a budget long enough that a join
+    // which never got the worker's wake-up would spend all of it: the `Event`
+    // `settle` sets as its last write is what makes a 50 ms companion cost the
+    // 50 ms and not the 1200.
+    startWithin(testing.io, testing.allocator, fixtureSpec("codedbpro", &fixture_argv), 1_200);
+    defer stopAtExit(testing.io);
+    const t0 = Io.Timestamp.now(testing.io, .awake);
+    const adopted = try connect(&reg, "codedbpro", "/bin/sh", &fixture_argv);
+    const ms = t0.untilNow(testing.io, .awake).toMilliseconds();
+    try testing.expectEqual(bp.Adopted.connected, adopted);
+    try testing.expect(ms < 500); // the fixture's own start, not the 1200 ms budget
+    try testing.expectEqual(@as(usize, 2), try toolCount(&reg));
+}
+
+test "boot prewarm: the one-shot's own exit paths stop and join the attempt first" {
+    // `std.process.exit` unwinds no `defer`, so main's `deinitAtExit` (and its
+    // `stopAtExit`) never runs on the two exits inside `oneshot.run` — the
+    // `budget_exhausted` / `unfinished_work` ones a `-p` run actually takes.
+    // Both must end the attempt themselves or they abandon a live worker and,
+    // on Windows, orphan the companion process.
+    const src = @embedFile("oneshot.zig");
+    var from: usize = 0;
+    var exits: usize = 0;
+    while (std.mem.indexOfPos(u8, src, from, "std.process.exit(")) |i| {
+        from = i + 1;
+        exits += 1;
+        const window = src[i - @min(i, 600) .. i];
+        try testing.expect(std.mem.indexOf(u8, window, "boot_prewarm.zig\").stopAtExit(io)") != null);
+    }
+    try testing.expectEqual(@as(usize, 2), exits);
 }
 
 test "boot prewarm: the join budget is a real knob, not an inert one (ADR 0339)" {
@@ -330,10 +409,13 @@ test "boot prewarm: the join budget is a real knob, not an inert one (ADR 0339)"
     try testing.expectEqual(default_budget_ms, budgetMs(&env));
     try env.put(budget_env, "nonsense");
     try testing.expectEqual(default_budget_ms, budgetMs(&env));
-    try env.put(budget_env, "999999"); // a typo cannot restore the unbounded join
-    try testing.expectEqual(default_budget_ms, budgetMs(&env));
+    try env.put(budget_env, "60000");
+    try testing.expectEqual(bp.budget_cap_ms, budgetMs(&env));
+    try env.put(budget_env, "999999"); // clamped: a typo cannot restore the unbounded join
+    try testing.expectEqual(bp.budget_cap_ms, budgetMs(&env));
     // The default is the ACP `attach_budget_ms` order, not the probe plus
-    // handshake caps the unbounded join used to pay.
+    // handshake caps the unbounded join used to pay. Nothing here falls back
+    // to that default except "unset/garbage/0": above the cap is the cap.
     try testing.expectEqual(withWindows(250, 1_500), default_budget_ms);
 }
 

@@ -98,6 +98,10 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
         if (root.tools_used.count() > 0) std.debug.print("note: {d} tool call(s) completed before the failure; their work was not rolled back\n", .{root.tools_used.count()});
         std.debug.print("turn failed ({s}): {s}\n", .{ failure.reason, detail });
         @import("orchestration_rows.zig").flushPending(0, if (root.run_budget) |b| b.used() else 0, 0, false, "");
+        // `exit` unwinds no defer, so main's `deinitAtExit` never runs on this
+        // path: end the prewarmed companion here or it is abandoned (#325,
+        // ADR 0339). The join is bounded — stop kills the child.
+        @import("boot_prewarm.zig").stopAtExit(io);
         std.process.exit(failure.exit_code);
     };
     const had_schema = pending_schema != null;
@@ -159,7 +163,10 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     engine_sink.writerSink(out).emit(io, .run_finished);
     run.finish(root, incomplete, answer, saved);
     out.flush() catch {};
-    if (incomplete) |f| std.process.exit(f.exit_code);
+    if (incomplete) |f| {
+        @import("boot_prewarm.zig").stopAtExit(io); // same: budget_exhausted / unfinished_work skip main's defers
+        std.process.exit(f.exit_code);
+    }
 }
 
 fn save(root: *agent_mod.Agent, arena: Allocator) bool {

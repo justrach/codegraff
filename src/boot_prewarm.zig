@@ -32,6 +32,14 @@
 //! `oneshotSkipsImportedMcp` skips on this path. A slow-and-cold companion
 //! can therefore miss the first catalog, and a late merge changes the catalog
 //! mid-run (ADR 0221) — the two costs of not stalling.
+//!
+//! Reporting is exact on both sides of the budget. A failure that lands before
+//! it is `take`'s error, `error.McpClosed` included; one that lands after it
+//! has no request left to return to, so the worker records it (`lateOutcome` /
+//! `lateError`) and names it on stderr — `-p` prints no notices of its own —
+//! and `take` reports `.late`, never `.connected`. Teardown ends the child on
+//! both platforms (`Watch.signal`) before it joins the worker, so the exit path
+//! costs the kill, not the probe plus handshake caps.
 
 const std = @import("std");
 const Io = std.Io;
@@ -58,6 +66,17 @@ pub const Spec = struct {
 };
 
 const Joined = struct { outcome: mcp_boot.StartOutcome = .{}, err: ?anyerror = null };
+
+/// What a handed-off attempt did when it landed (ADR 0339): merged into the
+/// registry, dropped because the name connected meanwhile (#505), or failed.
+/// `.none` means it has not landed yet — or nobody handed it a registry.
+pub const LateOutcome = enum { none, merged, duplicate, failed };
+
+/// What `take` / `connect` report. `.connected`: the catalog is in the
+/// registry. `.late`: the attempt is still running with this registry as its
+/// merge target — not a catalog, and not a failure either, so no caller may
+/// report it as connected.
+pub const Adopted = enum { connected, late };
 
 const Slot = struct {
     future: Io.Future(Joined),
@@ -91,6 +110,11 @@ pub const Watch = struct {
     /// merges into when it lands (ADR 0339). Under `lock` with `done`, so
     /// exactly one side consumes the outcome.
     late_merge: ?*mcp.Registry = null,
+    /// Worker: what that attempt then did — `.none` until it lands. Under
+    /// `lock`, read through `lateOutcome`.
+    late_state: LateOutcome = .none,
+    /// Worker: the error a handed-off attempt ended with, when it failed.
+    late_err: ?anyerror = null,
     /// Set by the worker's last write, so the join's bounded wait is a
     /// deadline on the kernel timer rather than a poll: a 2 ms sleep on this
     /// platform costs ~4 ms of overshoot apiece, which a 250 ms budget cannot
@@ -124,21 +148,31 @@ pub const Watch = struct {
         w.signal();
     }
 
-    /// Windows has no signal here: `discard` then waits for the attempt,
-    /// which the handshake timeout bounds.
+    /// End the child, not the worker. Both platforms can: POSIX has `SIGKILL`,
+    /// and on Windows `Child.Id` *is* the process handle, so the same
+    /// `NtTerminateProcess` `Child.kill` issues works there too. Neither waits
+    /// nor frees the `Child` — the worker still owns the reap — so teardown is
+    /// bounded by "the read sees end of stream", not by the 5 s probe plus the
+    /// 15 s handshake. The caller holds `lock`, so the handle cannot have been
+    /// reaped (and on Windows closed) underneath it.
     fn signal(w: *Watch) void {
         const id = w.child orelse return;
-        if (@import("builtin").os.tag == .windows) return;
-        std.posix.kill(id, .KILL) catch {};
+        switch (@import("builtin").os.tag) {
+            .windows => _ = std.os.windows.ntdll.NtTerminateProcess(id, @fromBackingInt(1)),
+            else => std.posix.kill(id, .KILL) catch {},
+        }
     }
 
     /// Boot thread, at the join: publish `reg` as the merge target for an
     /// attempt still running, or report that it already finished — then the
-    /// caller awaits and adopts the result itself.
+    /// caller awaits and adopts the result itself. Write-once: it runs once per
+    /// attempt and the worker takes the target under this lock, so "exactly
+    /// once" is a property of the field, asserted rather than assumed.
     fn handOff(w: *Watch, reg: *mcp.Registry) bool {
         w.acquire();
         defer w.lock.unlock();
         if (w.done) return true;
+        std.debug.assert(w.late_merge == null);
         w.late_merge = reg;
         return false;
     }
@@ -154,6 +188,16 @@ pub const Watch = struct {
         w.lock.unlock();
         w.done_event.set(io); // wakes the join's bounded wait
         return target;
+    }
+
+    /// Worker: publish what the handed-off attempt did. Same lock `done` uses,
+    /// so a reader that waits for `lateOutcome` to leave `.none` also sees the
+    /// registry in its final shape.
+    fn recordLate(w: *Watch, state: LateOutcome, err: ?anyerror) void {
+        w.acquire();
+        defer w.lock.unlock();
+        w.late_state = state;
+        w.late_err = err;
     }
 
     fn finished(w: *Watch) bool {
@@ -180,16 +224,17 @@ const registry_env = [_][]const u8{ "GRAFF_MCP_PROBE", "GRAFF_MCP_EAGER", "GRAFF
 /// ACP figure too (the platform boots slower).
 pub const default_budget_ms: u32 = if (@import("builtin").os.tag == .windows) 1_500 else 250;
 
-/// The knob for that budget. Unset, unparsable, `0` or above the cap mean the
-/// default; it is capped so a typo cannot restore the unbounded join.
+/// The knob for that budget. Unset, unparsable or `0` mean the default, and
+/// anything above `budget_cap_ms` is clamped to it — a typo buys the cap, never
+/// the unbounded join.
 pub const budget_env = "GRAFF_MCP_COMPANION_BOOT_MS";
 pub const budget_cap_ms: u32 = 60_000;
 
 pub fn budgetMs(environ_map: anytype) u32 {
     const raw = environ_map.get(budget_env) orelse return default_budget_ms;
     const v = std.fmt.parseInt(u32, raw, 10) catch return default_budget_ms;
-    if (v == 0 or v > budget_cap_ms) return default_budget_ms;
-    return v;
+    if (v == 0) return default_budget_ms; // 0 is "unset", not "wait forever"
+    return @min(v, budget_cap_ms); // above the cap is a bound, not the default
 }
 
 /// The flag/env half of the gate: a lean one-shot that will build the empty
@@ -300,7 +345,15 @@ fn connectTask(gpa: Allocator, io: Io, spec: Spec, watch: *Watch) Joined {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     const outcome = connectInto(gpa, io, spec, watch, &arena_state) catch |err| {
         arena_state.deinit();
-        _ = watch.settle(io); // an error has nothing to merge
+        // An error has nothing to merge, but a handed-off attempt still owes
+        // its failure to someone: the boot thread released the request on the
+        // promise that this would land, so a silent failure here is
+        // indistinguishable from a connect (ADR 0339). Record it, and say it
+        // on stderr — the only channel left once the answer is out.
+        if (watch.settle(io) != null) {
+            watch.recordLate(.failed, err);
+            std.debug.print("companion: {s} failed to connect after the boot budget ({t}); native tools only\n", .{ spec.name, err });
+        }
         return .{ .err = err };
     };
     watch.forget(); // the outcome owns the child now
@@ -309,7 +362,7 @@ fn connectTask(gpa: Allocator, io: Io, spec: Spec, watch: *Watch) Joined {
         // registry (ADR 0339). `adoptStarted` is the one merge point, so a
         // server that connected meanwhile keeps its tools and this one is
         // torn down (#505); the registry owns the outcome either way.
-        _ = mcp_boot.adoptStarted(reg, outcome);
+        watch.recordLate(if (mcp_boot.adoptStarted(reg, outcome)) .merged else .duplicate, null);
         return .{};
     }
     return .{ .outcome = outcome };
@@ -343,32 +396,53 @@ fn connectInto(gpa: Allocator, io: Io, spec: Spec, watch: *Watch, arena_state: *
 
 /// `addServer(name, command, args)` for the consumer, served by the prewarm
 /// when it ran this companion: one start either way.
-pub fn connect(reg: *mcp.Registry, name: []const u8, command: []const u8, argv: []const []const u8) !void {
+pub fn connect(reg: *mcp.Registry, name: []const u8, command: []const u8, argv: []const []const u8) !Adopted {
     if (take(reg, name)) |joined| return joined;
     _ = try reg.addServer(name, command, argv);
+    return .connected;
 }
 
 /// The consumer. Null: no attempt ran to a result for `name` (none started,
 /// or discarded on a mismatch) — connect inline as before.
-/// Otherwise the joined result: the server merged into `reg`, or the error
-/// that attempt ended with, which is the error `addServer` would have
-/// returned. A failed attempt is not repeated: the serial path made one.
-/// Over budget (ADR 0339) the attempt is not adopted here and not stopped
-/// either: it keeps running and merges into `reg` when it lands, so this
-/// returns success with an empty catalog and no inline second spawn.
-pub fn take(reg: *mcp.Registry, name: []const u8) ?anyerror!void {
+/// Otherwise `.connected` with the server merged into `reg`, or the error the
+/// attempt ended with, which is the error `addServer` would have returned (the
+/// pre-budget contract, `error.McpClosed` included; see `budgetMs`). A failed
+/// attempt is not repeated: the serial path made one.
+/// Over budget (ADR 0339) the attempt is neither adopted nor stopped: it keeps
+/// running and merges into `reg` when it lands, so this returns `.late` — no
+/// catalog yet, no inline second spawn, and nothing claiming a connect.
+pub fn take(reg: *mcp.Registry, name: []const u8) ?anyerror!Adopted {
     const s = if (slot) |*s| s else return null;
     if (!std.mem.eql(u8, s.spec.name, name)) return null;
     if (!matches(reg, s)) {
         discard(reg.io);
         return null;
     }
-    if (!awaitWithin(s, reg.io) and !s.watch.handOff(reg)) return {};
+    if (!awaitWithin(s, reg.io) and !s.watch.handOff(reg)) return .late;
     const joined = s.future.await(reg.io);
     release();
     if (joined.err) |err| return err;
     if (!mcp_boot.adoptStarted(reg, joined.outcome)) return error.McpServerAlreadyConnected;
-    return {};
+    return .connected;
+}
+
+/// What the handed-off attempt did once it landed: `.none` while it is still
+/// running, then `.merged`, `.duplicate` or `.failed`. `boot_prewarm_tests`
+/// polls it — the late merge and the duplicate guard are otherwise invisible
+/// (a dropped latecomer leaves no trace, and neither does a missing merge).
+pub fn lateOutcome() LateOutcome {
+    const s = if (slot) |*s| s else return .none;
+    s.watch.acquire();
+    defer s.watch.lock.unlock();
+    return s.watch.late_state;
+}
+
+/// The error a handed-off attempt ended with, when `lateOutcome` is `.failed`.
+pub fn lateError() ?anyerror {
+    const s = if (slot) |*s| s else return null;
+    s.watch.acquire();
+    defer s.watch.lock.unlock();
+    return s.watch.late_err;
 }
 
 /// Wait for the attempt's result, for at most `s.budget_ms`. True: it is on
@@ -404,7 +478,11 @@ pub fn discard(io: Io) void {
 /// Exit-path teardown: stop and join the attempt even when `take` handed it
 /// to the live registry, so no worker outlives the registry or its `io`
 /// (#325). `Registry.deinitAtExit` calls this before the registry goes away,
-/// which is also what makes the worker's late merge safe.
+/// which is also what makes the worker's late merge safe; the one-shot's own
+/// `std.process.exit` paths (`oneshot.zig`, which skip every `defer`) call it
+/// too. The join is bounded because `stop` ends the child on both platforms:
+/// a silent companion costs the kill plus a reap, not its 5 s probe and 15 s
+/// handshake.
 pub fn stopAtExit(io: Io) void {
     stopJoin(io);
 }
