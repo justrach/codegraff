@@ -330,10 +330,15 @@ pub const LiveTurn = struct {
 
 /// What an ACP client shows for a failed turn. An exhausted empty-reply retry
 /// carries its own explanation (#1802); a bare error name told the user nothing.
+/// #1893: an exhausted output-length continuation is the same shape of loss —
+/// the work is partial and kept, and the next message resumes it — so it reuses
+/// the explanation agent_length already prints on the line REPL instead of
+/// handing the client `OutputLengthExceeded` and no way to act on it.
 pub fn describeError(err: anyerror, last_api_error: ?[]const u8) []const u8 {
     return switch (err) {
         error.ApiError, error.ProviderQuotaExceeded, error.ProviderAuthenticationFailed, error.ProviderAccessDenied => last_api_error orelse "Provider request failed",
         error.EmptyCompletion => last_api_error orelse @import("agent_empty_completion.zig").exhausted_text,
+        error.OutputLengthExceeded => last_api_error orelse @import("agent_length.zig").exhausted_message,
         else => @errorName(err),
     };
 }
@@ -387,6 +392,18 @@ test "#1802: an exhausted empty-reply retry is explained, not named" {
     try std.testing.expect(std.mem.indexOf(u8, exhausted, "6 times") != null);
     try std.testing.expectEqualStrings("Provider request failed", describeError(error.ApiError, null));
     try std.testing.expectEqualStrings("Interrupted", describeError(error.Interrupted, "stale"));
+}
+
+test "#1893: an exhausted output-length continuation is explained, not named" {
+    const length = @import("agent_length.zig");
+    // The exhaustion branch calls sayApiError first, so last_api_error already
+    // holds the same sentence the line REPL prints before it aborts the turn.
+    try std.testing.expectEqualStrings(length.exhausted_message, describeError(error.OutputLengthExceeded, length.exhausted_message));
+    // No parked detail (arena failure, or a producer that never spoke): still
+    // the explanation, never the bare error name the issue reported.
+    try std.testing.expectEqualStrings(length.exhausted_message, describeError(error.OutputLengthExceeded, null));
+    try std.testing.expect(!std.mem.eql(u8, describeError(error.OutputLengthExceeded, null), @errorName(error.OutputLengthExceeded)));
+    try std.testing.expect(std.mem.indexOf(u8, describeError(error.OutputLengthExceeded, null), "partial") != null);
 }
 
 test "session/prompt receipt is traced even when dedup skips the turn" {
