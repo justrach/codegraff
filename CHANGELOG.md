@@ -12,12 +12,9 @@ current is part of cutting a release.
 
 ## v0.302.74.65
 
-- Startup: a `-p` one-shot prewarms its companion handshake, and the join is now a 250 ms budget (1500 ms on Windows; `GRAFF_MCP_COMPANION_BOOT_MS`, capped at 60 s) instead of an unbounded await — a companion that spawns and never answers held the first request for 20,134 ms and now costs the budget, merging late through the single merge point or stopping quietly at teardown, on POSIX and Windows alike (ADR 0339, #1896). Medians over hermetic runs: silent companion 20,134.0 ms → 268 ms; 600 ms companion 624.6 ms → 265.9 ms; healthy 6 ms companion unchanged at ~23 ms with its tools on the first request.
-- Startup: a cold provider model-catalog cache never holds boot — the fetch detaches like a stale cache's refresh and the landed cache activates at the next query/model-option beat (REPL picker and ACP `session/set_config_option` alike), while a `--model` naming a row the baked table lacks still joins the bounded batch so startup never accepts a model the provider does not serve (ADR 0340, #1896). Third-party cold-start rig, first keystroke: 312.0 ms → 57.2 ms.
-- Startup: REPL/ACP boot resolves worktree identity in-process (memoized single-spawn fallback) instead of spawning `git rev-parse` up to 7–9 times, and the boot worktree reap skips git when nothing is prunable — zero git spawns before ready (#1896).
-- Startup: the interactive update banner reads a cached release tag instead of a blocking GitHub GET (~300 ms) on every launch; a missing or >24 h cache refreshes on a detached thread neither boot nor exit waits on (ADR 0336, #1896).
-- Startup: the `-p` companion prewarms after credential resolution — one attempt, discarded on a cwd/settings mismatch (ADR 0337) — and an ACP `initialize` received during boot is answered immediately, with the AcpEarlyInit Lean kernel proving stdout and dispatch history equal the late path on every boot trace (ADR 0338, #1896).
-- Fixed ACP surfacing output-length continuation exhaustion as an opaque `{"code":-32603,"message":"OutputLengthExceeded"}` (#1893, #1894). `describeError` now hands the client the same explanation the REPL and one-shot paths print — the work is partial and preserved; send a new message or resume to continue.
+- Improve startup responsiveness across the REPL, one-shot, and ACP paths.
+- Avoid blocking startup on optional companion handshakes and model-catalog refreshes.
+- Explain output-length continuation exhaustion in ACP while preserving partial work (#1893).
 
 ## v0.302.74.63
 
