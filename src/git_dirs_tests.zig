@@ -113,6 +113,7 @@ fn expectRow(io: Io, arena: Allocator, path: []const u8, want: Want) !void {
 }
 
 test "git_dirs: fixture matrix matches git rev-parse byte for byte" {
+    if (comptime !supported) return error.SkipZigTest;
     if (git_dirs.envOverride()) return error.SkipZigTest;
     const io = std.testing.io;
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -363,6 +364,7 @@ pub fn oldGit(gpa: Allocator, io: Io, argv: []const []const u8) anyerror!process
 }
 
 test "currentIdentity: a git answer of \"no repository\" is asked again, so a later git init is seen" {
+    if (comptime !supported) return error.SkipZigTest;
     if (git_dirs.envOverride()) return error.SkipZigTest;
     const io = std.testing.io;
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);

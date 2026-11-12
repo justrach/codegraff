@@ -88,7 +88,7 @@ class Model:
 
 class Client:
     def __init__(self, binary, root, model, mode):
-        self.root, self.mode = root, mode
+        self.root, self.mode, self.model = root, mode, model
         self.seen, self.events = [], queue.Queue()
         self.counter = 0
         self.sid = None
@@ -126,7 +126,14 @@ class Client:
         self.reader = threading.Thread(target=read, daemon=True)
         self.reader.start()
         try:
-            if mode != 'json':
+            if mode == 'json':
+                # A control ack proves boot reached the inbox without making a
+                # model request. Keep startup out of the retry-backoff deadline,
+                # just as initialize/session-new already do for ACP.
+                self.send({'type':'set_mode', 'mode':'normal'})
+                ready = self.until(lambda event: event.get('type') == 'mode')
+                assert ready.get('ok') is True and ready.get('mode') == 'normal', ready
+            else:
                 init = self.call('initialize', {'protocolVersion':2 if mode == 'acp2' else 1})
                 assert init['result']['protocolVersion'] == (2 if mode == 'acp2' else 1), init
                 self.sid = self.call('session/new', {'cwd':str(root), 'mcpServers':[]})['result']['sessionId']
@@ -143,15 +150,31 @@ class Client:
         self.send(dict(jsonrpc='2.0', id=self.counter, method=method, params=params))
         return self.counter
 
+    def diagnostics(self):
+        with self.events.mutex:
+            pending = list(self.events.queue)[-3:]
+        return dict(mode=self.mode, returncode=self.proc.poll(),
+                    requests=len(self.model.requests()),
+                    recent_events=[value.get('type', value.get('method'))
+                                   for value in self.seen[-3:]],
+                    pending_events=[value.get('type', value.get('method'))
+                                    if isinstance(value, dict) else type(value).__name__
+                                    for value in pending],
+                    trace_events=[row.get('ev') for row in self.trace()[-5:]],
+                    stderr=(self.root/'stderr').read_text(errors='replace')[-4096:])
+
     def until(self, predicate, timeout=8):
         deadline = time.monotonic() + timeout
         while True:
-            value = self.events.get(timeout=max(.01, deadline-time.monotonic()))
-            assert isinstance(value, dict), ('invalid/closed protocol stream', value)
+            try:
+                value = self.events.get(timeout=max(.01, deadline-time.monotonic()))
+            except queue.Empty as error:
+                raise AssertionError(('protocol deadline', self.diagnostics())) from error
+            assert isinstance(value, dict), ('invalid/closed protocol stream', value, self.diagnostics())
             self.seen.append(value)
             if predicate(value):
                 return value
-            assert time.monotonic() < deadline, ('protocol deadline', self.seen[-3:])
+            assert time.monotonic() < deadline, ('protocol deadline', self.diagnostics())
 
     def call(self, method, params):
         identifier = self.request(method, params)
@@ -172,8 +195,8 @@ class Client:
     def wait_retry(self):
         deadline = time.monotonic() + 8
         while sum(row.get('ev') == 'retry' for row in self.trace()) <= self.retry_count:
-            assert self.proc.poll() is None, 'worker exited before retry'
-            assert time.monotonic() < deadline, 'retry backoff not reached'
+            assert self.proc.poll() is None, ('worker exited before retry', self.diagnostics())
+            assert time.monotonic() < deadline, ('retry backoff not reached', self.diagnostics())
             time.sleep(.01)
 
     def cancel(self, wrong=False, client=False):
