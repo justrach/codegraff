@@ -29,6 +29,10 @@ For each behavioral change, retain this chain:
 | A synchronous predecessor stops early admission | `NoLateAdmission` | `src/agent_async_tools.zig`: `async tools do not cross a synchronous predecessor or execute partial arguments` |
 | Owned workers retire before their storage is freed | Async cancellation/reset model | `src/agent_async_tools.zig`: `async tools reset cancels and joins workers before freeing owned state` |
 | Permission replies belong to their live transport and session | ACP permission extension | Client-side evidence moved with the desktop app to Harness |
+| A companion prewarm is joined before its result is used | `JoinedBeforeUse` | `src/boot_prewarm.zig`: `boot prewarm: the adopted companion matches the inline addServer catalog byte for byte` |
+| A prewarm started in another cwd is never adopted | `NoStaleAdoption` | `src/boot_prewarm.zig`: `boot prewarm: a cwd change between start and consumer discards it and the inline path runs` |
+| No prewarm worker outlives teardown | `NoUseAfterTeardown` | `src/boot_prewarm.zig`: `boot prewarm: discard joins a pending handshake and tears it down` |
+| Teardown ends a retry pause and the retry does not run | `NoRetryAfterAbort` | `src/mcp_start.zig`: `teardown with a pending transient retry returns in well under the pause` |
 
 These anchors connect intent and implementation tests. They do not establish
 that every modeled interleaving is exercised by a runtime test, or that the

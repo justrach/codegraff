@@ -77,7 +77,7 @@ const Task = struct {
 /// outlives the Io around it, so its restore can reinstate the default action
 /// another Io had replaced, and that Io's next cancellation SIGIO kills the
 /// process. The worker leaves the no-op handler installed instead.
-fn privateThreaded() Io.Threaded {
+pub fn privateThreaded() Io.Threaded {
     var threaded: Io.Threaded = .init(alloc, .{});
     threaded.have_signal_handler = false;
     return threaded;

@@ -1,6 +1,6 @@
-# NNNN. A one-shot prewarms the companion handshake; teardown ends retry pauses
+# 0337. A one-shot prewarms the companion handshake; teardown ends retry pauses
 
-Status: proposed (number assigned at merge)
+Status: accepted 2026-11-12
 
 ## Context
 

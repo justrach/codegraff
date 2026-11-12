@@ -1,6 +1,6 @@
-# DRAFT. ACP answers `initialize` during boot
+# 0338. ACP answers `initialize` during boot
 
-Status: proposed. The integrator assigns the number and adds the index row.
+Status: accepted 2026-11-12
 
 ## Context
 
@@ -60,9 +60,10 @@ Differences from the late path:
   succeed and then sees EOF. Before this change it saw EOF alone.
 - The handshake log's `startup` phase still measures time to the loop. It
   times the replay, not when the client was answered.
-- A request that arrives during root construction, the longest phase, is
-  answered at the `root agent` mark, only slightly before the loop would
-  have answered it. Boot code inside a long phase can call
-  `acp_early.check()` between its steps to narrow the gap.
+- A request that arrives during root construction is answered at the
+  `root agent` mark, just before the loop would have answered it. With
+  worktree identity resolved in-process that phase takes about 2 ms, so
+  `buildRootAgent` has no checks of its own. If it grows long again, boot
+  code inside it can call `acp_early.check()` between its steps.
 - Windows has no `poll` on stdin. There, only bytes already buffered count,
   which in practice means the late path.

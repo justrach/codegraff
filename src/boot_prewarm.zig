@@ -1,6 +1,6 @@
 //! Boot prewarm: run the companion handshake (`codedb-pro --mcp`) while the
 //! rest of a one-shot boots, and join it where `connectCompanion` would have
-//! called `addServer` (DRAFT-boot-prewarm ADR; formal/BootPrewarm.tla).
+//! called `addServer` (ADR 0337; formal/BootPrewarm.tla).
 //!
 //! `-p` connects the companion synchronously (ADR 0230 defers only
 //! interactive and ACP sessions), so its spawn + handshake used to sit in

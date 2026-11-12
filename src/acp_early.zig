@@ -1,5 +1,5 @@
 //! `graff acp` answers the client's `initialize` during boot instead of after
-//! the root Agent exists (draft ADR acp-early-initialize). Single-threaded: at
+//! the root Agent exists (ADR 0338). Single-threaded: at
 //! each boot phase boundary the main thread asks stdin, without blocking,
 //! whether a complete first line is buffered. If it is an `initialize`
 //! request, the line is taken off the ONE stdin reader the dispatch loop later

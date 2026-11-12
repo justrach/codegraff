@@ -3,7 +3,7 @@
 `BootPrewarm.tla` is a finite model of two lifecycles that decide whether a
 worker can still use the process `Io` when boot or teardown moves on:
 
-- the companion prewarm (`src/boot_prewarm.zig`, DRAFT-boot-prewarm ADR): a
+- the companion prewarm (`src/boot_prewarm.zig`, ADR 0337): a
   worker connects `codedb-pro --mcp` before the registry exists, and the boot
   thread joins it at its one consumer, `connectCompanion`;
 - one registry start task's retry pause (`src/mcp_start.zig`): teardown must

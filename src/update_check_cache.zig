@@ -138,7 +138,7 @@ const Task = struct {
     fn run(t: *Task) void {
         defer _ = live.fetchSub(1, .release);
         defer t.destroy();
-        var threaded = privateThreaded();
+        var threaded = @import("catalog_bounded.zig").privateThreaded(); // the worker may outlive every other Io
         defer threaded.deinit();
         const io = threaded.io();
         var arena_state = std.heap.ArenaAllocator.init(alloc);
@@ -147,14 +147,6 @@ const Task = struct {
         _ = store(io, t.home, tag, util.unixMs(io));
     }
 };
-
-/// Same as `catalog_bounded.privateThreaded`: the worker may outlive every
-/// other Io, so it must not restore the SIGIO/SIGPIPE action on deinit.
-fn privateThreaded() Io.Threaded {
-    var threaded: Io.Threaded = .init(alloc, .{});
-    threaded.have_signal_handler = false;
-    return threaded;
-}
 
 /// Start a refresh nobody waits for. False when it could not start.
 fn detach(home: []const u8, running: []const u8, fetch: Fetch) bool {

@@ -1,4 +1,4 @@
-# NNNN. The REPL update notice reads a cache; the network never holds the banner
+# 0336. The REPL update notice reads a cache; the network never holds the banner
 
 Status: accepted 2026-11-12
 
