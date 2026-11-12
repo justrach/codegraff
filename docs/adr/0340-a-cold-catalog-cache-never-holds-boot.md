@@ -39,7 +39,9 @@ and already what a boot sees when the fetch misses the budget or fails.
   top of `router_catalog.ensureForQuery`, the beat every `/model` picker,
   `set_model`, and the stdin chat REPL already go through. `/models` refetches
   live anyway (`refreshForListing`), and `--schema` / ACP model options read
-  every cache (`loadCachedAll`). A stale cache's refresh is not marked, so it
+  every cache (`loadCachedAll`); ACP model options also run `activateLanded`
+  at every `acp_model_option.hydrate`, the same beat shape as the REPL picker.
+  A stale cache's refresh is not marked, so it
   still lands for the next process only — that path is byte-for-byte unchanged.
 - **One case still waits, bounded as before: a `--model` the baked rows cannot
   resolve.** Startup resolves `--model` before the prompt and fatals on an
@@ -82,9 +84,17 @@ and already what a boot sees when the fetch misses the budget or fails.
   rows.** Until the fetch lands (one round trip, ~250 ms against Anthropic) the
   provider's slice is the baked one; the first picker opened after that shows
   the live list. ACP model options read the caches once per live session
-  (`acp_model_option.hydrate`), so a session that built them before the
-  landing can keep the baked list; that path was read, not measured. A boot whose fetch fails sees the
-  baked rows, as it did when the fetch failed inside the budget.
+  (`acp_model_option.hydrate`), so a session built before the landing kept
+  the baked list until a `/model`. That gap is now closed and measured:
+  `hydrate` runs `activateLanded` on every beat, and with a fresh `HOME`, a
+  loopback `/v1/models` behind a dummy Z.AI key (`GRAFF_ZAI_URL`) answering
+  after 1.2 s, and `graff acp` initialized as t3-code, `session/new` before
+  the landing served the 7 baked zai rows; after the fetch landed, the same
+  session's model options (re-read through a `session/set_config_option`
+  response) and the `graff/models` view listed the landed row, no `/model`
+  issued — the pre-fix binary kept the 7 baked rows on both re-reads. A boot
+  whose fetch fails sees the baked rows, as it did when the fetch failed
+  inside the budget.
 - **Rejected: a small blocking budget (e.g. 100 ms) on a cold cache.** It still
   adds up to that much to every first keystroke, and the fetch it protects is
   ~250 ms to a real provider, so it would almost always expire anyway and buy
@@ -100,3 +110,7 @@ and already what a boot sees when the fetch misses the budget or fails.
   refreshes for the next process, a 401 activates nothing and starts no second
   GET. Restoring the batched cold path fails the first at its elapsed-time
   assertion; dropping the `activateLanded` call fails it at the activation.
+  `acp_model_option.zig` pins the ACP half: a session that hydrated before a
+  landing must activate the landed rows on its next `hydrate`, and removing
+  that call fails the test at the same assertion (mutation-verified in a
+  tree copy).

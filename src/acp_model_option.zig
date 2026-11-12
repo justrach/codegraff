@@ -34,6 +34,11 @@ pub fn hydrate(live: *LiveTurn) void {
         if (root.home.len > 0) @import("router_catalog.zig").loadCachedAll(root.io, root.arena, root.home);
         live.local_catalog_loaded = true;
     }
+    // A catalog boot detached with no cache may have landed since this
+    // session's first beat: activate it here, as the REPL picker does at its
+    // `ensureForQuery` beat (ADR 0340). One atomic load per slot when nothing
+    // landed; never a fetch.
+    @import("router_catalog_boot.zig").activateLanded(root.io, root.arena, root.home);
 }
 
 pub const Choice = struct { provider: []const u8, model: []const u8 };
@@ -112,4 +117,48 @@ test "model choices: reachable models only, current first, capped" {
     try std.testing.expectEqual(@as(usize, 3), list.len);
     try std.testing.expectEqualStrings("gpt-b", list[0].model);
     for (list) |c| try std.testing.expect(!std.mem.eql(u8, c.provider, "anthropic"));
+}
+
+test "hydrate activates a boot-detached catalog that landed after the session's first beat" {
+    // ADR 0340: a first-ever ACP session can hydrate before a cold boot's
+    // detached catalog fetch lands; the next beat must activate the landed
+    // rows, as the REPL picker's `ensureForQuery` beat does.
+    const landing = @import("catalog_landing.zig");
+    const provider_mod = @import("provider.zig");
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(home);
+
+    var root = try @import("agent_request_body_responses.zig").testAgentFor(a, "zai", .openai, "glm-5.3");
+    root.home = home;
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    var live: LiveTurn = .{ .root = &root, .keys = &keys, .out = undefined };
+    const saved_table = pricing.active_model_table;
+    defer pricing.active_model_table = saved_table;
+    landing.reset();
+    defer landing.reset();
+
+    // First beat on a fresh HOME: nothing on disk yet, the baked rows serve.
+    hydrate(&live);
+    try std.testing.expect(!pricing.providerModelInTable("zai", "glm-landed-test"));
+
+    // The detached worker lands: its cache is on disk and its slot reports.
+    const spec = provider_mod.specFor("zai").?;
+    try tmp.dir.createDirPath(io, ".codegraff");
+    const document = try std.fmt.allocPrint(a, "{{\"source\":\"{s}\",\"fetched_at_ms\":1,\"models\":[{{\"name\":\"glm-landed-test\"}}]}}\n", .{spec.models_url});
+    const path = try std.fmt.allocPrint(a, "{s}/.codegraff/zai-models.json", .{home});
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = document });
+    const job: @import("catalog_bounded.zig").Job = .{ .router = .{ .spec = spec, .source = .environment } };
+    landing.expect(job);
+    landing.settle(job, true);
+
+    // The session's next beat activates the landed rows, no /model needed.
+    hydrate(&live);
+    try std.testing.expect(pricing.providerModelInTable("zai", "glm-landed-test"));
+    try std.testing.expect(!landing.take(landing.slotOf(job)));
 }
