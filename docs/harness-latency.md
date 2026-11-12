@@ -99,6 +99,15 @@ serializer where its formatting is needed. This preserves byte counts and
 context policy while avoiding unnecessary formatting. See [ADR 0115](adr/0115-context-estimates-count-json-bytes.md).
 Compare both payload kinds and the tool-loop fixture when changing this path.
 
+`boot_prewarm` joins a one-shot's prewarmed companion handshake with a 250 ms
+budget (`GRAFF_MCP_COMPANION_BOOT_MS`, [ADR 0339](adr/0339-a-one-shot-joins-the-companion-handshake-with-a-budget.md))
+instead of awaiting it: a companion that spawns and never answers used to hold
+`c_first_request` for 20.1 s, and ends up with no companion tools either way.
+When the budget expires the attempt keeps running and merges into the registry
+when it lands, so a warm companion's catalog is unchanged and a cold-and-slow
+one can miss the first catalog. Measure it with `--companion` (a stub that
+answers) and a second run of a stub that does not.
+
 ## Cold-start benchmark
 
 `scripts/bench-startup.py` times process startup, from spawn to each ready
